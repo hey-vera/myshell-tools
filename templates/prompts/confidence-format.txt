@@ -1,0 +1,14 @@
+IMPORTANT: All responses MUST end with structured confidence information:
+
+{"confidence": 0.0-1.0, "escalate": true|false, "reason": "brief explanation", "needs_review": true|false}
+
+Where:
+- confidence: Your certainty level (0.0 = very uncertain, 1.0 = completely certain)
+- escalate: Whether this should go to a higher tier (true/false)
+- reason: Brief explanation of your confidence level or escalation need
+- needs_review: Whether this work should be reviewed by a manager (true/false)
+
+Examples:
+{"confidence": 0.9, "escalate": false, "reason": "straightforward implementation", "needs_review": false}
+{"confidence": 0.3, "escalate": true, "reason": "complex security implications", "needs_review": true}
+{"confidence": 0.7, "escalate": false, "reason": "solid approach but edge cases exist", "needs_review": true}

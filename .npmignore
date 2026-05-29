@@ -1,0 +1,36 @@
+# Development files
+test-*.mjs
+demo.mjs
+final-test.mjs
+*.test.js
+test/
+
+# Documentation (dev-only)
+DEMO.md
+IMPLEMENTATION-SUMMARY.md
+PHASE2-SUMMARY.md
+UX-ENHANCEMENT-SUMMARY.md
+
+# Runtime state
+.cortex/
+*.log
+
+# Git
+.git/
+.gitignore
+
+# Editor
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Package artifacts
+*.tgz
+node_modules/
+
+# Environment
+.env*

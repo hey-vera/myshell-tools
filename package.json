@@ -1,0 +1,49 @@
+{
+  "name": "cortex-ai",
+  "version": "1.0.0",
+  "description": "Hierarchical AI orchestration for your shell - Claude + GPT working together like an org chart",
+  "type": "module",
+  "bin": {
+    "cortex": "./src/cli.mjs"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "keywords": [
+    "ai",
+    "claude",
+    "gpt",
+    "orchestration",
+    "cli",
+    "shell",
+    "coding",
+    "assistant",
+    "hierarchical",
+    "automation",
+    "developer-tools",
+    "artificial-intelligence"
+  ],
+  "author": "HeyVera <hello@heyvera.org>",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/heyvera/cortex-ai.git"
+  },
+  "bugs": {
+    "url": "https://github.com/heyvera/cortex-ai/issues"
+  },
+  "homepage": "https://github.com/heyvera/cortex-ai#readme",
+  "files": [
+    "src/",
+    "data/",
+    "templates/",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md"
+  ],
+  "dependencies": {},
+  "scripts": {
+    "start": "node src/cli.mjs",
+    "test": "node src/cli.mjs --doctor"
+  }
+}
