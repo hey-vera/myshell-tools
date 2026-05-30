@@ -26,6 +26,7 @@ import { summarizeSpend, formatUsd } from '../infra/insights.js';
 import type { SpendSummary } from '../infra/insights.js';
 import type { EnvironmentStatus } from '../providers/detect.js';
 import { detectEnvironment, getInstallCommand } from '../providers/detect.js';
+import { installProvider, installCommandFor } from '../providers/install.js';
 import type { Provider, ProviderId, SandboxLevel } from '../providers/port.js';
 import { DEFAULT_POLICY, POLICY_PRESETS } from '../core/policy.js';
 import type { OutputSink } from './render.js';
@@ -272,12 +273,62 @@ async function runWelcome(
   readLine: () => Promise<string | null>,
   mutableConfig: AppConfig,
 ): Promise<AppConfig> {
-  const headerLines = renderHeaderLines(ctx.env, ctx.version);
-  out.write('\n' + box(`🧠 myshell-tools v${ctx.version} — Setup`, headerLines) + '\n\n');
-  out.write('  [Enter] Save & go\n');
-  out.write('  [l]     Sign in to providers\n');
-  out.write('  [c]     Customize mode\n\n');
+  // Use the mutable env so re-detection after installs is visible downstream.
+  let env = ctx.env;
 
+  const headerLines = renderHeaderLines(env, ctx.version);
+  out.write('\n' + box(`🧠 myshell-tools v${ctx.version} — Setup`, headerLines) + '\n\n');
+
+  // ---- Offer to install any missing provider --------------------------------
+  // Consent is required: we ask once per missing provider.  Enter = yes, n = skip.
+  const providers: ProviderId[] = ['claude', 'codex'];
+  let didInstallAny = false;
+
+  for (const id of providers) {
+    const ps = env[id];
+    if (ps.installed) continue;
+
+    const pkg = id === 'claude' ? '@anthropic-ai/claude-code' : '@openai/codex';
+    out.write(`Install ${id} (${pkg})? [Enter] yes · [n] no\n`);
+    out.write('> ');
+    const ans = await readLine();
+
+    // EOF or 'n'/'no' → skip; anything else (including '') → yes
+    const skip = ans === null || ans.toLowerCase() === 'n' || ans.toLowerCase() === 'no';
+    if (!skip) {
+      const ok = await installProvider(id, out);
+      if (ok) {
+        didInstallAny = true;
+      }
+    } else {
+      out.write(`Skipping ${id} install. You can run it yourself: ${installCommandFor(id)}\n`);
+    }
+  }
+
+  // ---- Re-detect if anything was installed so sign-in offers are accurate --
+  if (didInstallAny) {
+    env = await detectEnvironment();
+  }
+
+  // ---- Offer sign-in for installed-but-unauthenticated providers -----------
+  for (const id of providers) {
+    const ps = env[id];
+    if (!ps.installed || ps.authenticated) continue;
+
+    out.write(`\nSign in to ${id} now? [Enter] yes · [n] no\n`);
+    out.write('> ');
+    const ans = await readLine();
+
+    const skip = ans === null || ans.toLowerCase() === 'n' || ans.toLowerCase() === 'no';
+    if (!skip) {
+      await runLogin(out, id);
+    }
+  }
+
+  // ---- Mode / default-shell options ----------------------------------------
+  out.write('\n');
+  out.write('  [c]     Customize mode\n');
+  out.write('  [Enter] Continue\n\n');
   out.write('> ');
   const key = await readLine();
 
@@ -294,12 +345,7 @@ async function runWelcome(
 
   let updated = mutableConfig;
 
-  if (key === 'l') {
-    const loginCode = await runLogin(out);
-    if (loginCode !== 0) {
-      out.write('[warn] Login did not complete cleanly.\n');
-    }
-  } else if (key === 'c') {
+  if (key === 'c') {
     updated = await runModeSelect(updated, out, readLine);
   }
   // [Enter] or anything else → fall through to save & go

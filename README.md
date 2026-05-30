@@ -4,7 +4,33 @@
 
 `myshell-tools` routes each task to the *cheapest* model likely to succeed, runs it on your real codebase, optionally has a **different vendor** review the result, and shows you exactly what it did and what it truly cost — with **no fabricated data, ever**.
 
-> **Status: `2.1.0` — honest, tested, and real.** Both the Claude and Codex paths work, and provider auth is detected for real. Install with `npm i -g myshell-tools`, or from source (below).
+> **Status: `2.1.0` — honest, tested, and real.** Both the Claude and Codex paths work, and provider auth is detected for real.
+
+---
+
+## Quickstart — zero install
+
+```bash
+npx myshell-tools
+```
+
+That's it.  `npx` fetches the package, runs the interactive setup, and:
+
+1. **Detects** which provider CLIs (Claude Code / Codex) are already installed.
+2. **Offers to install** any missing ones — one keypress (`Enter` to install, `n` to skip).  It never installs anything silently; consent is always required.
+3. **Offers to sign you in** to providers that are installed but not yet authenticated.
+4. Drops you into the control-panel menu, ready to use.
+
+On subsequent runs `npx myshell-tools` goes straight to the menu (setup only runs once).
+
+### Install once (optional)
+
+If you prefer a permanent global install:
+
+```bash
+npm install -g myshell-tools
+myshell-tools
+```
 
 ---
 
@@ -22,15 +48,23 @@ Using one frontier model for everything is wasteful (renaming a variable doesn't
 ## Requirements
 
 - **Node.js ≥ 20** (the CLI itself; tests require Node ≥ 22).
-- At least one provider CLI, installed and authenticated:
-  - **Claude Code** — `npm install -g @anthropic-ai/claude-code` then `claude` (sign in).
-  - **Codex** — `npm install -g @openai/codex` then `codex login`.
+- At least one provider CLI.  `npx myshell-tools` will **offer to install** them for you on first run — or you can install manually:
+  - **Claude Code** — `npm install -g @anthropic-ai/claude-code`, then sign in when prompted.
+  - **Codex** — `npm install -g @openai/codex`, then `codex login`.
 
 You need **one** to start; install **both** to unlock cross‑vendor review.
 
 ---
 
-## Install (from source, during alpha)
+## Install options
+
+| Method | Command | Notes |
+|--------|---------|-------|
+| Zero-install (recommended) | `npx myshell-tools` | Fetches, runs, and offers to set up providers on first run |
+| Global install | `npm install -g myshell-tools` then `myshell-tools` | Faster on subsequent runs |
+| From source | See below | For development |
+
+### From source
 
 ```bash
 git clone <this-repo>

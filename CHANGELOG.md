@@ -11,6 +11,12 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 - Cross-OS CI execution (requires a public remote).
 - First npm publish.
 
+## [2.2.0]
+
+### Added
+- **Frictionless `npx myshell-tools` first-run setup**: detects missing provider CLIs and offers to install them (Claude Code / Codex) with one keypress (never silent), then offers sign-in **only for providers not already authenticated** (no double login). One command from nothing to ready.
+- README is now npx-first.
+
 ## [2.1.0]
 
 ### Added

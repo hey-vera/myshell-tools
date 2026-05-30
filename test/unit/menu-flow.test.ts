@@ -677,3 +677,211 @@ describe('defaultAliasHint', () => {
     assert.equal(a, b, 'same inputs → identical output');
   });
 });
+
+// ---------------------------------------------------------------------------
+// FLOW 6: first-run welcome — install prompt shown for missing provider,
+//          answered "n" (skip), no real npm spawned, flow proceeds to menu.
+// ---------------------------------------------------------------------------
+
+/**
+ * Fake EnvironmentStatus where claude is missing and codex is installed+authed.
+ * This exercises the install prompt path without triggering a real npm run.
+ */
+const FAKE_ENV_CLAUDE_MISSING: EnvironmentStatus = {
+  claude: {
+    id: 'claude',
+    installed: false,
+    version: null,
+    authenticated: false,
+    plan: null,
+    binaryPath: null,
+    availableModels: [],
+  },
+  codex: {
+    id: 'codex',
+    installed: true,
+    version: '1.0.0',
+    authenticated: true,
+    plan: null,
+    binaryPath: 'codex',
+    availableModels: ['gpt-5.4'],
+  },
+  hasAnyProvider: true,
+  platform: 'linux',
+};
+
+describe('startMenu — first-run welcome: install prompt for missing provider', () => {
+  /**
+   * Build a first-run context (onboarded: false) with the given env and scripted reader.
+   * Codex is installed+authed; claude is missing → install prompt for claude only.
+   */
+  function makeFirstRunCtx(
+    inputs: ReadonlyArray<string | null>,
+    env: EnvironmentStatus = FAKE_ENV_CLAUDE_MISSING,
+  ): MenuContext {
+    const clock = makeFakeClock();
+    const store = makeStore(clock);
+    const ledger = makeFakeLedger();
+    const dir = join(tmpdir(), `menu-flow-first-${randomUUID()}`);
+
+    const config: AppConfig = { onboarded: false, setAsDefault: false };
+
+    return {
+      version: '2.0.0',
+      clock,
+      ledger,
+      providers: { codex: makeFakeProvider('codex') },
+      env,
+      store,
+      config,
+      cwd: dir,
+      sandbox: 'workspace-write',
+      timeoutMs: 5_000,
+      readLine: makeScriptedReader(inputs),
+    };
+  }
+
+  it('resolves cleanly when user answers n to install and n to default shell', async () => {
+    const sink = makeSink();
+    // claude missing → install prompt → n (skip)
+    // codex missing sign-in prompt → none (codex is authed in FAKE_ENV_CLAUDE_MISSING)
+    // mode/continue → '' (Enter)
+    // default shell → n
+    const ctx = makeFirstRunCtx(['n', '', 'n']);
+
+    await assert.doesNotReject(
+      () => startMenu(ctx, sink),
+      'welcome flow with install-skip should resolve cleanly',
+    );
+  });
+
+  it('shows the install prompt for the missing provider', async () => {
+    const sink = makeSink();
+    const ctx = makeFirstRunCtx(['n', '', 'n']);
+
+    await startMenu(ctx, sink);
+
+    assert.ok(
+      sink.buf.includes('Install claude'),
+      'install prompt for "claude" must appear in output',
+    );
+  });
+
+  it('shows the package name in the install prompt', async () => {
+    const sink = makeSink();
+    const ctx = makeFirstRunCtx(['n', '', 'n']);
+
+    await startMenu(ctx, sink);
+
+    assert.ok(
+      sink.buf.includes('@anthropic-ai/claude-code'),
+      'install prompt must mention the @anthropic-ai/claude-code package',
+    );
+  });
+
+  it('shows skip message with manual command when user answers n', async () => {
+    const sink = makeSink();
+    const ctx = makeFirstRunCtx(['n', '', 'n']);
+
+    await startMenu(ctx, sink);
+
+    assert.ok(
+      sink.buf.includes('npm install -g @anthropic-ai/claude-code'),
+      'skipping install must print the manual install command',
+    );
+  });
+
+  it('does NOT show codex install prompt when codex is installed', async () => {
+    const sink = makeSink();
+    const ctx = makeFirstRunCtx(['n', '', 'n']);
+
+    await startMenu(ctx, sink);
+
+    // codex is installed in FAKE_ENV_CLAUDE_MISSING, so no install prompt for it
+    assert.ok(
+      !sink.buf.includes('Install codex'),
+      'no install prompt should appear for an already-installed provider',
+    );
+  });
+
+  it('proceeds to the menu after install prompts are answered', async () => {
+    const sink = makeSink();
+    // After welcome: we land on the main menu and quit
+    const ctx = makeFirstRunCtx(['n', '', 'n', 'q']);
+
+    await assert.doesNotReject(
+      () => startMenu(ctx, sink),
+      'should reach the main menu after welcome',
+    );
+
+    assert.ok(
+      sink.buf.includes('myshell-tools'),
+      'main menu should be rendered after welcome completes',
+    );
+  });
+
+  it('EOF during install prompt → skips install and continues', async () => {
+    const sink = makeSink();
+    // EOF immediately at first prompt
+    const ctx = makeFirstRunCtx([null]);
+
+    await assert.doesNotReject(
+      () => startMenu(ctx, sink),
+      'EOF at install prompt should not throw',
+    );
+  });
+
+  it('does not contain digit-% literals in welcome output (Honesty Contract)', async () => {
+    const sink = makeSink();
+    const ctx = makeFirstRunCtx(['n', '', 'n']);
+
+    await startMenu(ctx, sink);
+
+    assert.ok(
+      !/\d+%/.test(sink.buf),
+      'welcome output must not contain hardcoded digit-% literals',
+    );
+  });
+
+  it('shows sign-in prompt for installed-but-unauthenticated codex', async () => {
+    const sink = makeSink();
+
+    // Env where both providers are installed but neither is authenticated
+    const envBothUnauthenticated: EnvironmentStatus = {
+      claude: {
+        id: 'claude',
+        installed: true,
+        version: '1.0.0',
+        authenticated: false,
+        plan: null,
+        binaryPath: 'claude',
+        availableModels: ['opus'],
+      },
+      codex: {
+        id: 'codex',
+        installed: true,
+        version: '1.0.0',
+        authenticated: false,
+        plan: null,
+        binaryPath: 'codex',
+        availableModels: ['gpt-5.4'],
+      },
+      hasAnyProvider: true,
+      platform: 'linux',
+    };
+
+    // No install prompts (both installed); sign-in prompts for both → answer n to avoid spawn
+    // Then mode/continue → '' (Enter); default shell → n
+    const ctx = makeFirstRunCtx(['n', 'n', '', 'n'], envBothUnauthenticated);
+
+    await assert.doesNotReject(
+      () => startMenu(ctx, sink),
+      'should handle sign-in prompts for unauthenticated providers without throwing',
+    );
+
+    assert.ok(
+      sink.buf.toLowerCase().includes('sign in'),
+      'sign-in prompt must appear for unauthenticated providers',
+    );
+  });
+});
