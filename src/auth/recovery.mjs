@@ -10,9 +10,11 @@ import { backgroundRefresh, displayRefreshStatus } from './refresh.mjs';
  */
 function isCliInstalled(command) {
   try {
-    const result = spawnSync('which', [command], {
+    const cmd = process.platform === 'win32' ? 'where' : 'which';
+    const result = spawnSync(cmd, [command], {
       encoding: 'utf8',
-      stdio: 'pipe'
+      stdio: 'pipe',
+      shell: process.platform === 'win32'
     });
     return result.status === 0;
   } catch {

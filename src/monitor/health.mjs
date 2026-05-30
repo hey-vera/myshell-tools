@@ -38,7 +38,8 @@ export class HealthMonitor {
       const result = spawnSync(command, args, {
         encoding: 'utf8',
         stdio: 'pipe',
-        timeout: 10000 // 10 second timeout
+        timeout: 10000,
+        shell: process.platform === 'win32'
       });
 
       const responseTime = Date.now() - startTime;

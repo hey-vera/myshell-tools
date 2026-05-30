@@ -157,7 +157,8 @@ function checkSingleCLI(command, args) {
     const result = spawnSync(command, args, {
       encoding: 'utf8',
       stdio: 'pipe',
-      timeout: 5000
+      timeout: 5000,
+      shell: process.platform === 'win32'
     });
 
     return {

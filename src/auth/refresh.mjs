@@ -82,7 +82,7 @@ function computeExpiresInHours(expiresAtMs) {
  */
 function getClaudeCredentialPaths(workspace = process.cwd()) {
   const configDir = process.env.CLAUDE_CONFIG_DIR;
-  const home = process.env.HOME || '';
+  const home = process.env.HOME || process.env.USERPROFILE || '';
   return [
     configDir ? join(configDir, '.credentials.json') : null,
     join(home, '.claude', '.credentials.json'),
@@ -95,7 +95,7 @@ function getClaudeCredentialPaths(workspace = process.cwd()) {
  * Get Codex auth file path
  */
 function getCodexAuthPath() {
-  const home = process.env.HOME || '';
+  const home = process.env.HOME || process.env.USERPROFILE || '';
   return join(home, '.codex', 'auth.json');
 }
 
@@ -265,7 +265,7 @@ export async function refreshTokens() {
  * Get refresh state file path
  */
 function getRefreshStatePath() {
-  const home = process.env.HOME || '';
+  const home = process.env.HOME || process.env.USERPROFILE || '';
   const dir = join(home, '.cortex', 'auth');
   if (!existsSync(dir)) {
     mkdirSync(dir, { recursive: true });
