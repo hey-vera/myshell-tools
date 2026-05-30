@@ -1,318 +1,178 @@
-# Cortex AI
+# myshell-tools
 
-[![npm version](https://badge.fury.io/js/cortex-ai.svg)](https://badge.fury.io/js/cortex-ai)
-[![Node.js Version](https://img.shields.io/badge/node-%3E%3D20.0.0-brightgreen.svg)](https://nodejs.org/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+**Hierarchical, multi-provider AI orchestration for your shell — over the CLIs you already use.**
 
-```
- ██████╗ ██████╗ ██████╗ ████████╗███████╗██╗  ██╗
-██╔════╝██╔═══██╗██╔══██╗╚══██╔══╝██╔════╝╚██╗██╔╝
-██║     ██║   ██║██████╔╝   ██║   █████╗   ╚███╔╝ 
-██║     ██║   ██║██╔══██╗   ██║   ██╔══╝   ██╔██╗ 
-╚██████╗╚██████╔╝██║  ██║   ██║   ███████╗██╔╝ ██╗
- ╚═════╝ ╚═════╝ ╚═╝  ╚═╝   ╚═╝   ╚══════╝╚═╝  ╚═╝
-```
+`myshell-tools` routes each task to the *cheapest* model likely to succeed, runs it on your real codebase, optionally has a **different vendor** review the result, and shows you exactly what it did and what it truly cost — with **no fabricated data, ever**.
 
-**Hierarchical AI orchestration for your shell**
-
-Transform your existing Claude/GPT subscriptions into an intelligent AI organization. No new accounts needed.
-
-## Quick Start
-
-```bash
-# Install and run immediately
-npx cortex-ai
-
-# Check your AI providers
-npx cortex-ai --doctor
-```
-
-That's it! Cortex detects your existing Claude CLI and OpenAI setups automatically.
-
-## What is Cortex?
-
-Cortex creates a **hierarchical AI organization** in your shell where AI models work together like a company org chart. Instead of always using the most expensive model, tasks flow through appropriate tiers:
-
-```
-👤 You
- │
- ├── 👨‍💻 IC (Sonnet/GPT-4) ← Most tasks start here
- │    ├── ⬇️  DELEGATE → 🏗️  Worker (Haiku/GPT-4-mini)
- │    │                    └── Simple: grep, format, info lookup
- │    └── ⬆️  ESCALATE → 👔 Manager (Opus/GPT-4-o)
- │                        └── Complex: architecture, security, debugging
- └── 🔄 Smart routing based on confidence and complexity
-```
-
-**Result**: Better decisions + lower costs + transparent reasoning.
-
-## The AI Hierarchy Explained
-
-### 🏗️ **Worker Tier** (Efficient Execution)
-- **Models**: Claude Haiku, GPT-4o-mini
-- **Perfect for**: File searches, code formatting, running tests, simple queries
-- **Escalates when**: Task requires reasoning or code changes
-- **Cost**: Lowest tier, handles 30% of simple tasks
-
-### 👨‍💻 **IC Tier** (Individual Contributor) 
-- **Models**: Claude Sonnet, GPT-4
-- **Perfect for**: Implementation, refactoring, bug fixes, most coding work
-- **Escalates when**: Low confidence (<50%), complex architecture, security concerns
-- **Cost**: Medium tier, handles 60% of development tasks
-
-### 👔 **Manager Tier** (Strategic Oversight)
-- **Models**: Claude Opus, GPT-4o
-- **Perfect for**: Architecture decisions, security reviews, complex debugging
-- **Never escalates**: Top of the hierarchy, final authority
-- **Cost**: Premium tier, handles 10% of critical decisions
-
-## Installation & Requirements
-
-**Prerequisites**: You need at least one AI CLI installed and authenticated:
-
-### Claude CLI Setup
-```bash
-# Install Claude CLI
-pip install claude-ai-cli
-
-# Authenticate with your Anthropic account
-claude auth login
-```
-
-### OpenAI CLI Setup  
-```bash
-# Install OpenAI CLI
-npm install -g @openai/openai-cli
-
-# Authenticate with your OpenAI account
-openai auth login
-```
-
-### System Requirements
-- **Node.js**: 20.0.0 or higher
-- **Operating System**: macOS, Linux, Windows (WSL recommended)
-- **Memory**: 100MB RAM
-- **Dependencies**: Zero npm dependencies (uses only Node.js builtins)
-
-## Usage Examples
-
-### Basic Interaction
-```bash
-$ npx cortex-ai
-
-🧠 Cortex v1.0.0
-AI Org Chart Active
-├─ Claude (Opus/Sonnet/Haiku) ✅
-└─ OpenAI (GPT-4o/GPT-4/GPT-4o-mini) ✅
-
-❯ refactor the auth system to use JWT tokens
-
-🔄 IC (Sonnet): Analyzing authentication architecture...
-  ├─ DELEGATE → Worker (Haiku): mapping auth files
-  │  └─ Found 12 auth-related files ✅ (confidence: 0.9)
-  └─ ESCALATE → Manager (Opus): security-critical refactor
-     └─ Manager: Recommending incremental JWT migration ✅
-
-✅ Completed by MANAGER (Opus)
-🎯 Confidence: 92% | 🔄 Escalations: 1
-```
-
-### Complex Task Handling
-```bash
-❯ optimize this database query for better performance
-
-🔄 IC (GPT-4): Analyzing query performance...
-  ├─ Current query uses inefficient joins
-  ├─ DELEGATE → Worker: analyze query execution plan  
-  │  └─ Worker: Found 3 missing indexes ✅
-  └─ IC: Proposed optimized query with proper indexing ✅
-
-✅ Completed by IC (GPT-4)  
-🎯 Confidence: 87% | 🔄 No escalation needed
-```
-
-### System Health Check
-```bash
-$ npx cortex-ai --doctor
-
-🔍 Cortex System Health Check
-
-Provider Status:
-✅ Claude CLI: Authenticated (3 models available)
-   ├─ claude-3-opus-20240229 (Manager tier)
-   ├─ claude-3-sonnet-20240229 (IC tier) 
-   └─ claude-3-haiku-20240307 (Worker tier)
-
-✅ OpenAI CLI: Authenticated (3 models available)
-   ├─ gpt-4o (Manager tier)
-   ├─ gpt-4 (IC tier)
-   └─ gpt-4o-mini (Worker tier)
-
-System Status:
-✅ Node.js 20.2.0 (compatible)
-✅ Directory permissions (read/write access)
-✅ Session storage (.cortex/ directory)
-✅ All prompt templates loaded
-
-🎉 System ready for hierarchical AI orchestration!
-```
-
-## Advanced Features
-
-### Smart Load Balancing
-Cortex automatically balances work across providers:
-- **50/50 split**: Equal distribution between Claude and OpenAI when both available  
-- **Failover**: Automatically switches providers if one is unavailable
-- **Cost optimization**: Prefers cheaper models when confidence is high
-
-### Session Persistence
-All conversations auto-save to `.cortex/sessions/current.jsonl`:
-```bash
-cd my-project
-npx cortex-ai  # Automatically resumes project context
-```
-
-### Interactive Commands
-Inside Cortex REPL:
-- `/help` - Show available commands
-- `/status` - Current provider balance and model availability
-- `/clear` - Clear conversation history  
-- `/reset` - Reset session state
-- `/quit` - Exit Cortex
-
-## Configuration
-
-Cortex works zero-config, but you can customize behavior:
-
-### Custom Model Preferences
-```bash
-# Prefer Claude for coding tasks
-export CORTEX_PREFER_CLAUDE=true
-
-# Prefer OpenAI for creative tasks  
-export CORTEX_PREFER_OPENAI=true
-```
-
-### Confidence Thresholds
-```bash
-# Higher escalation threshold (more conservative)
-export CORTEX_ESCALATION_THRESHOLD=0.7
-
-# Lower escalation threshold (more aggressive delegation)
-export CORTEX_ESCALATION_THRESHOLD=0.3
-```
-
-## Troubleshooting
-
-### "No AI providers detected"
-```bash
-# Check authentication status
-claude auth status
-openai auth status
-
-# Re-authenticate if needed
-claude auth login
-openai auth login
-```
-
-### "Permission denied" errors
-```bash
-# Ensure Node.js permissions
-chmod +x ~/.local/bin/cortex
-
-# Check directory permissions
-ls -la .cortex/
-```
-
-### Provider-specific issues
-```bash
-# Test Claude connection
-claude chat "Hello, can you respond?"
-
-# Test OpenAI connection  
-openai chat "Hello, can you respond?"
-
-# Run full system check
-npx cortex-ai --doctor
-```
-
-### Performance Issues
-```bash
-# Clear session cache
-rm -rf .cortex/sessions/
-
-# Reset to defaults
-npx cortex-ai --reset
-```
-
-## Why Hierarchical AI?
-
-### Traditional Approach Problems
-- ❌ Every task burns expensive premium model tokens
-- ❌ Simple tasks get over-engineered solutions  
-- ❌ No transparency into decision-making process
-- ❌ High costs for routine work
-
-### Cortex Approach Benefits
-- ✅ **Cost Efficient**: 80% of tasks complete at IC tier or below
-- ✅ **Better Quality**: Managers review complex/security-critical work
-- ✅ **Transparent**: See exactly which model handled what and why
-- ✅ **Adaptive**: Automatically escalates when confidence is low
-- ✅ **Local Privacy**: Uses your existing subscriptions, no data sharing
-
-## Contributing
-
-We welcome contributions! This is a community-driven project.
-
-### Development Setup
-```bash
-git clone https://github.com/heyvera/cortex-ai.git
-cd cortex-ai
-npm install
-npm start
-```
-
-### Architecture Overview
-- **`src/cli.mjs`**: Main entry point and argument parsing
-- **`src/orchestrator/`**: Hierarchical routing and escalation logic
-- **`src/providers/`**: Claude and OpenAI CLI integration
-- **`src/repl.mjs`**: Interactive shell implementation
-- **`templates/`**: Prompt templates for each tier
-
-### Contributing Guidelines
-1. **Issues**: Report bugs or suggest features via GitHub Issues
-2. **Pull Requests**: Fork, create feature branch, submit PR
-3. **Code Style**: Follow existing patterns, use ESLint
-4. **Testing**: Test with both Claude and OpenAI setups
-5. **Documentation**: Update README for new features
-
-## Roadmap
-
-### v1.1 (Next Release)
-- [ ] Plugin system for custom AI providers
-- [ ] Team collaboration features
-- [ ] Advanced analytics and usage tracking
-- [ ] Custom prompt template management
-
-### v1.2 (Future)
-- [ ] Web dashboard for session management
-- [ ] Integration with VS Code extension
-- [ ] Multi-project workspace support
-- [ ] Advanced caching and performance optimization
-
-## License
-
-MIT License - see [LICENSE](LICENSE) file for details.
-
-## Support
-
-- **Documentation**: [GitHub Wiki](https://github.com/heyvera/cortex-ai/wiki)
-- **Issues**: [GitHub Issues](https://github.com/heyvera/cortex-ai/issues)
-- **Discussions**: [GitHub Discussions](https://github.com/heyvera/cortex-ai/discussions)
-- **Email**: hello@heyvera.org
+> **Status: `2.0.0-alpha.0` — early, honest, and real.** The Claude path is validated end‑to‑end on real models; the Codex path auto‑activates the moment `codex` is installed and authenticated. Not yet published to npm — install from source (below).
 
 ---
 
-**Made with ❤️ by the HeyVera team**
+## Why it exists
 
-*Cortex AI: Where artificial intelligence meets organizational intelligence.*
+Using one frontier model for everything is wasteful (renaming a variable doesn't need Opus) and single‑model output has blind spots. `myshell-tools` addresses both, honestly:
+
+- **Cost‑aware routing** — trivial work goes to the cheap tier (Haiku / GPT‑5 mini), real implementation to the mid tier, hard calls to the flagship. You see the savings as a real number.
+- **Cross‑vendor adversarial review** — for high‑risk work, a *different vendor* checks the first model's output (Codex reviewing Claude, or vice‑versa). Different families, different blind spots.
+- **Subscription, not metering** — it drives the **Claude Code** and **Codex** CLIs you already pay for. No API keys, no per‑token bill.
+- **Honest by construction** — every number on screen traces to a real measurement. A suite of *architecture tests* makes fabricated/mock output literally unmergeable.
+
+---
+
+## Requirements
+
+- **Node.js ≥ 20** (the CLI itself; tests require Node ≥ 22).
+- At least one provider CLI, installed and authenticated:
+  - **Claude Code** — `npm install -g @anthropic-ai/claude-code` then `claude` (sign in).
+  - **Codex** — `npm install -g @openai/codex` then `codex login`.
+
+You need **one** to start; install **both** to unlock cross‑vendor review.
+
+---
+
+## Install (from source, during alpha)
+
+```bash
+git clone <this-repo>
+cd myshell-tools
+npm install
+npm run build
+node dist/cli.js --help
+# optional: make `myshell-tools` available globally
+npm link
+```
+
+---
+
+## Usage
+
+```text
+myshell-tools [command] [options]
+
+Commands:
+  run <task...>   Run a one-shot task and exit
+  repl            Interactive session (default when no command is given)
+  doctor          Check providers, auth, environment
+  cost            Show real spend + the cost-routing counterfactual
+
+Options:
+  -h, --help      Show help
+  -v, --version   Print version
+```
+
+### A real run
+
+These are **actual, unedited** outputs (your costs/timings will differ):
+
+```text
+$ myshell-tools run "what is 2 plus 2"
+Classified: worker tier, low risk — tier: worker keyword 'what is'; risk: defaulting to low
+▶ WORKER (claude/claude-haiku-4-5) attempt 1
+2 plus 2 equals 4.
+✓ tier done — confidence: 100%, cost: $0.0124, duration: 5648ms
+Success — tier: worker, cost: $0.0124, attempts: 1, session: 0dbfe2e3-…
+```
+
+The confidence (`100%`) is **parsed from the model's own structured reply**, not invented. The cost is the **CLI's own reported figure**, not an estimate.
+
+### Health check
+
+```text
+$ myshell-tools doctor
+Providers
+  ✓ claude — installed, version: 2.1.157 (Claude Code)
+    auth: assumed; verified on first run
+  ✓ codex — installed, version: codex-cli 0.135.0
+Ready — at least one provider is available.
+```
+
+### Cost & the routing counterfactual
+
+```text
+$ myshell-tools cost
+Billed total: $0.0125 (as billed, incl. caching/discounts)
+Total calls: 1
+Per-model breakdown
+  claude-haiku-4-5: 1 call, $0.0125
+Counterfactual — list price, token-for-token
+  Routed (models used): $0.0010
+  Always-flagship:      $0.0063
+  Routing saved you money: always-flagship would cost 6.3x more …
+```
+
+The counterfactual is **apples‑to‑apples** (both routed and flagship priced the same way), and the *billed* total is shown separately and labeled — no mixing of cache‑adjusted and list prices.
+
+---
+
+## How it works
+
+```
+classify ─▶ route(cheapest tier) ─▶ run ─▶ assess
+                                      │
+       high-risk IC work ────────────┘──▶ cross-vendor review (other vendor)
+                                              approve → accept
+                                              revise  → retry with feedback
+                                              escalate→ manager tier
+       low confidence / failure ─────────▶ escalate to a higher tier
+```
+
+- **Tiers** map to stable model *aliases* (`haiku`/`sonnet`/`opus`, or the Codex tiers), so when a vendor ships a newer model the alias resolves to it automatically — no myshell-tools update needed.
+- **Cost** prefers the provider CLI's own reported figure (Claude does this); otherwise it estimates from real token counts and a dated, staleness‑warned price seed.
+- Every run is recorded to an append‑only **session log** and **cost ledger** under `.myshell-tools/`.
+
+---
+
+## The honesty contract
+
+This is a ground‑up rebuild whose first principle is: **the tool never shows fabricated, mocked, or randomized data as if it were real.** It's enforced, not promised:
+
+- **Architecture guard tests** fail the build if the UI/command layers contain hardcoded "AI responses", fake metrics, or a digit‑then‑`%` literal; if the orchestration core touches the filesystem, clock, or RNG directly; or if any module other than the entry point can terminate the process.
+- **513 unit/architecture tests + 42 contract tests** (parsers pinned to *recorded real transcripts*), with `tsc --strict`, ESLint, and a clean `npm pack` checked in CI across Windows / macOS / Linux.
+
+---
+
+## Architecture
+
+Hexagonal / ports‑and‑adapters:
+
+- `src/core/` — **pure** orchestration (classify, route, assess, review, escalate). No I/O; everything injected. 100% testable with fakes.
+- `src/providers/` — the `Provider` port + Claude/Codex adapters (via `execa`, prompt over **stdin**, cancelable, streaming).
+- `src/infra/` — atomic session/ledger persistence, clock, pricing seed.
+- `src/interface/` + `src/ui/` — REPL, one‑shot runner, streaming renderer, theme.
+- `src/commands/` — `doctor`, `cost`.
+
+**One runtime dependency** (`execa`, for correct cross‑platform process handling — including Windows process‑tree cancellation). Everything else is the Node standard library.
+
+---
+
+## Development
+
+```bash
+npm run typecheck   # tsc --strict, 0 errors
+npm run lint        # ESLint (typescript-eslint strict)
+npm test            # unit + architecture tests
+npm run test:contract  # parser contract tests vs recorded transcripts
+npm run build       # → dist/
+```
+
+---
+
+## Status & roadmap
+
+Honest snapshot of `2.0.0-alpha.0`:
+
+| Area | State |
+| --- | --- |
+| Core routing + escalation + cross‑vendor review loop | ✅ implemented & unit‑proven |
+| Claude adapter | ✅ live, validated end‑to‑end on real models |
+| Codex adapter | ✅ built; auto‑activates once `codex` is installed + authed |
+| `doctor` / `cost` / REPL / streaming UI | ✅ |
+| Live cross‑vendor demonstration | ⏳ pending Codex auth |
+| Cross‑OS CI run | ⏳ pending a public remote |
+| npm publish | ⏳ alpha |
+
+---
+
+## License
+
+MIT — see [LICENSE](LICENSE).

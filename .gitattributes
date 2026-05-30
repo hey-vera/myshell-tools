@@ -1,0 +1,8 @@
+# Normalize line endings to LF in the repo across all platforms.
+* text=auto eol=lf
+
+# Windows-only scripts keep CRLF.
+*.ps1 text eol=crlf
+
+# Treat fixtures as text but never alter their bytes (recorded transcripts).
+*.jsonl -text

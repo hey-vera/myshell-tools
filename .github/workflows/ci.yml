@@ -1,0 +1,129 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Test (os=${{ matrix.os }}, node=${{ matrix.node }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest, ubuntu-latest]
+        node: [22, 24]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js ${{ matrix.node }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Type check
+        run: npm run typecheck
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Unit and architecture tests
+        run: npm test
+
+      - name: Contract tests
+        run: npm run test:contract
+
+  coverage:
+    name: Coverage (ubuntu-latest / node 22)
+    runs-on: ubuntu-latest
+    needs: test
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run tests with coverage
+        run: >
+          npx c8
+          --reporter=text
+          --reporter=lcov
+          --include='src/**'
+          --lines=85
+          --branches=80
+          --functions=85
+          --check-coverage
+          npm test
+
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage/
+          retention-days: 30
+
+  package-check:
+    name: Package check (ubuntu-latest / node 22)
+    runs-on: ubuntu-latest
+    needs: test
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Dry-run pack and verify contents
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # Capture the list of files that would be packed
+          pack_output=$(npm pack --dry-run 2>&1)
+          echo "$pack_output"
+
+          # Extract the file list section (lines after "Tarball Contents")
+          file_list=$(echo "$pack_output" | awk '/Tarball Contents/,/Tarball Details/' | tail -n +2 | head -n -1)
+
+          # Fail if any forbidden paths appear in the packed file list
+          forbidden=(src/ test/ docs/ .github/)
+          for pattern in "${forbidden[@]}"; do
+            if echo "$file_list" | grep -q "$pattern"; then
+              echo "ERROR: packed tarball contains forbidden path matching '$pattern'"
+              echo "$file_list" | grep "$pattern"
+              exit 1
+            fi
+          done
+
+          echo "Package contents look clean — no src/, test/, docs/, or .github/ files included."

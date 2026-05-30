@@ -1,49 +1,55 @@
 {
   "name": "myshell-tools",
-  "version": "1.1.0",
-  "description": "Hierarchical AI orchestration for your shell - Claude + GPT working together like an org chart",
+  "version": "2.0.0-alpha.0",
   "type": "module",
   "bin": {
-    "cortex": "./src/cli.mjs"
+    "myshell-tools": "dist/cli.js",
+    "myshell": "dist/cli.js"
   },
   "engines": {
     "node": ">=20.0.0"
   },
-  "keywords": [
-    "ai",
-    "claude",
-    "gpt",
-    "orchestration",
-    "cli",
-    "shell",
-    "coding",
-    "assistant",
-    "hierarchical",
-    "automation",
-    "developer-tools",
-    "artificial-intelligence"
-  ],
-  "author": "HeyVera <hello@heyvera.org>",
-  "license": "MIT",
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/heyvera/cortex-ai.git"
+  "scripts": {
+    "build": "tsc",
+    "test": "node --import ./test/register.mjs --experimental-strip-types --test \"test/unit/**/*.test.ts\" \"test/arch/**/*.test.ts\"",
+    "test:contract": "node --import ./test/register.mjs --experimental-strip-types --test \"test/contract/**/*.test.ts\"",
+    "test:e2e": "CORTEX_E2E=1 node --import ./test/register.mjs --experimental-strip-types --test \"test/integration/**/*.test.ts\"",
+    "lint": "eslint src test",
+    "format": "prettier --check .",
+    "typecheck": "tsc --noEmit",
+    "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
+    "prepublishOnly": "npm run clean && npm run build && npm run test"
   },
-  "bugs": {
-    "url": "https://github.com/heyvera/cortex-ai/issues"
-  },
-  "homepage": "https://github.com/heyvera/cortex-ai#readme",
   "files": [
-    "src/",
-    "data/",
-    "templates/",
+    "dist/",
     "README.md",
     "LICENSE",
     "CHANGELOG.md"
   ],
-  "dependencies": {},
-  "scripts": {
-    "start": "node src/cli.mjs",
-    "test": "node src/cli.mjs --doctor"
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/hey-vera/myshell-tools.git"
+  },
+  "author": "HeyVera <hello@heyvera.org>",
+  "license": "MIT",
+  "keywords": [
+    "ai",
+    "orchestration",
+    "cli",
+    "claude",
+    "codex",
+    "multi-model"
+  ],
+  "devDependencies": {
+    "@eslint/js": "^9.0.0",
+    "@types/node": "^20.0.0",
+    "c8": "^10.0.0",
+    "eslint": "^9.0.0",
+    "prettier": "^3.0.0",
+    "typescript": "^5.0.0",
+    "typescript-eslint": "^8.0.0"
+  },
+  "dependencies": {
+    "execa": "^9.6.1"
   }
 }

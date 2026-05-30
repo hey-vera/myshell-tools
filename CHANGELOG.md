@@ -1,69 +1,44 @@
 # Changelog
 
-All notable changes to Cortex AI will be documented in this file.
+All notable changes to **myshell-tools** are documented here.
+The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
+and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
-and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+## [Unreleased]
 
-## [1.0.0] - 2024-05-29
+### Pending
+- Live cross-vendor review demonstration (requires an authenticated Codex CLI).
+- Cross-OS CI execution (requires a public remote).
+- First npm publish.
+
+## [2.0.0-alpha.0]
+
+A ground-up rebuild. The architecture is hexagonal (a pure, injected orchestration
+core behind a `Provider` port), and the first principle is the **Honesty Contract**:
+the tool never presents fabricated, mocked, or randomized data as if it were real —
+enforced by architecture tests, not by convention.
 
 ### Added
-- 🎉 **Initial public release of Cortex AI**
-- **Hierarchical AI orchestration** with three-tier system (Worker/IC/Manager)
-- **Multi-provider support** for Claude (Opus/Sonnet/Haiku) and OpenAI (GPT-4o/GPT-4/GPT-4o-mini)
-- **Smart routing** based on task complexity and confidence scoring
-- **Automatic escalation** when models need help from higher tiers
-- **Load balancing** across AI providers (50/50 split when both available)
-- **Session persistence** with automatic conversation resumption
-- **Zero dependencies** - uses only Node.js built-in modules
-- **CLI detection** for existing Claude CLI and OpenAI CLI setups
-- **Interactive REPL** with command history and helpful commands
-- **System health checks** via `--doctor` flag
-- **Transparent logging** of all model decisions and escalations
+- **Orchestration core (pure, fully unit-tested):** task classification, cost-aware
+  tier routing (worker / ic / manager), output assessment, a bounded
+  escalation + **cross-vendor review** loop, and a typed policy of thresholds.
+- **Provider port + adapters:** Claude (`claude -p --output-format stream-json`) and
+  Codex (`codex exec --json`), both via `execa` with the prompt delivered over
+  **stdin**, streaming events, `AbortSignal` cancellation (child terminated < 250 ms),
+  and Windows-safe process handling. Providers are **auto-detected** and routing uses
+  stable model aliases so newer models are picked up without code changes.
+- **Honest cost:** prefers the provider CLI's own reported cost; an append-only cost
+  **ledger** and session log under `.myshell-tools/`; `myshell-tools cost` shows real spend plus an
+  apples-to-apples "always-flagship" counterfactual.
+- **Commands & UX:** `run`, `repl`, `doctor`, `cost`; streaming renderer with an
+  honest working-indicator, theme, and banner. `NO_COLOR` / non-TTY aware.
+- **Tooling:** TypeScript strict, ESLint, `node:test`, contract tests pinned to
+  recorded real transcripts, and **architecture/honesty guard tests** (no-mock,
+  core purity, single process-exit entry point, no fabricated metrics). CI matrix
+  across Windows / macOS / Linux on Node 22 & 24.
 
-### Features
-- **Worker Tier**: Handles simple tasks (file searches, formatting, info lookup)
-- **IC Tier**: Manages most development work (coding, refactoring, testing)
-- **Manager Tier**: Oversees complex decisions (architecture, security, debugging)
-- **Confidence-based escalation**: Models self-assess and escalate when uncertain
-- **Provider failover**: Automatically switches providers if one is unavailable
-- **Local privacy**: All processing uses your existing AI subscriptions
-- **Cross-platform support**: Works on macOS, Linux, and Windows (WSL)
-
-### CLI Commands
-- `npx cortex-ai` - Start interactive AI organization
-- `npx cortex-ai --doctor` - Comprehensive system health check
-- `npx cortex-ai --help` - Show usage information
-- `npx cortex-ai --version` - Display version information
-
-### REPL Commands
-- `/help` - Show available commands
-- `/status` - Current provider status and model availability
-- `/clear` - Clear conversation history
-- `/reset` - Reset session state
-- `/quit` - Exit Cortex
-
-### Technical Details
-- **Node.js requirement**: 20.0.0 or higher
-- **Package size**: Lightweight (~100KB installed)
-- **Memory usage**: ~50MB RAM typical usage
-- **Session storage**: `.cortex/sessions/` directory for conversation history
-- **Configuration**: Environment variables for customization
-
-### Documentation
-- Comprehensive README with installation and usage examples
-- Troubleshooting guide for common setup issues
-- Contributing guidelines for community development
-- MIT license for open source usage
-
----
-
-## Development History
-
-This release represents the culmination of three development phases:
-
-**Phase 1**: Core orchestration engine and CLI detection
-**Phase 2**: Enhanced confidence scoring and manager review patterns  
-**Phase 3**: UX polish, error handling, and production readiness
-
-The codebase is designed for reliability, maintainability, and extensibility as we grow the Cortex ecosystem.
+### Notes
+- Zero runtime dependencies other than `execa` (correct cross-platform process
+  execution), isolated behind the `Provider` port.
+- Pricing is a small, dated seed used only for estimates/counterfactuals and carries
+  a staleness warning; real per-run cost comes from the provider CLIs.

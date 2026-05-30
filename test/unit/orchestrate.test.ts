@@ -1,0 +1,938 @@
+/**
+ * Unit tests for src/core/orchestrate.ts
+ * Run with: node --experimental-strip-types --test test/unit/orchestrate.test.ts
+ *
+ * All dependencies are faked in-memory — no network, no filesystem, no child
+ * processes.  The fake Provider yields scripted ProviderEvents.
+ */
+
+import { describe, it, beforeEach } from 'node:test';
+import assert from 'node:assert/strict';
+import { orchestrate } from '../../src/core/orchestrate.ts';
+import { DEFAULT_POLICY } from '../../src/core/policy.ts';
+import type {
+  Clock,
+  SessionWriter,
+  SessionEntry,
+  LedgerWriter,
+  LedgerEntry,
+  OrchestrateDeps,
+  CoreEvent,
+} from '../../src/core/types.ts';
+import type { Provider, ProviderRequest, ProviderEvent, Usage } from '../../src/providers/port.ts';
+
+// ---------------------------------------------------------------------------
+// Fake Clock
+// ---------------------------------------------------------------------------
+
+function makeFakeClock(): Clock & { tick(ms: number): void } {
+  let now = 1_000_000; // fixed start epoch ms
+  let uuidCounter = 0;
+  return {
+    now(): number {
+      return now;
+    },
+    isoNow(): string {
+      return new Date(now).toISOString();
+    },
+    uuid(): string {
+      uuidCounter++;
+      return `fake-uuid-${uuidCounter}`;
+    },
+    random(): number {
+      return 0.42; // deterministic
+    },
+    tick(ms: number): void {
+      now += ms;
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Fake SessionWriter
+// ---------------------------------------------------------------------------
+
+function makeFakeSession(id = 'sess-test-1'): SessionWriter & { entries: SessionEntry[] } {
+  const entries: SessionEntry[] = [];
+  return {
+    id,
+    async append(entry: SessionEntry): Promise<void> {
+      entries.push(entry);
+    },
+    entries,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Fake LedgerWriter
+// ---------------------------------------------------------------------------
+
+function makeFakeLedger(): LedgerWriter & { entries: LedgerEntry[] } {
+  const entries: LedgerEntry[] = [];
+  return {
+    async record(entry: LedgerEntry): Promise<void> {
+      entries.push(entry);
+    },
+    entries,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Fake Provider builder
+// ---------------------------------------------------------------------------
+
+const CONFIDENCE_ENVELOPE =
+  '{"confidence": 0.88, "escalate": false, "reason": "task complete", "needs_review": false}';
+
+const FINAL_TEXT = `I have refactored the X module.\n${CONFIDENCE_ENVELOPE}`;
+
+const FAKE_USAGE: Usage = { inputTokens: 1000, outputTokens: 500 };
+
+function makeFakeProvider(
+  id: 'claude' | 'codex' = 'claude',
+  events?: ProviderEvent[],
+): Provider {
+  const defaultEvents: ProviderEvent[] = [
+    { type: 'text', delta: 'I have refactored ' },
+    { type: 'text', delta: 'the X module.\n' },
+    {
+      type: 'done',
+      text: FINAL_TEXT,
+      usage: FAKE_USAGE,
+      raw: {},
+    },
+  ];
+
+  const eventsToYield = events ?? defaultEvents;
+
+  return {
+    id,
+    async detect() {
+      return {
+        id,
+        installed: true,
+        version: '1.0.0',
+        authenticated: true,
+        binaryPath: '/usr/bin/fake',
+        availableModels: [],
+      };
+    },
+    async *run(_req: ProviderRequest, _signal: AbortSignal): AsyncIterable<ProviderEvent> {
+      for (const ev of eventsToYield) {
+        yield ev;
+      }
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Helper: collect all events from the generator
+// ---------------------------------------------------------------------------
+
+async function collectEvents(gen: AsyncGenerator<CoreEvent>): Promise<CoreEvent[]> {
+  const events: CoreEvent[] = [];
+  for await (const ev of gen) {
+    events.push(ev);
+  }
+  return events;
+}
+
+// ---------------------------------------------------------------------------
+// Main orchestrate test suite
+// ---------------------------------------------------------------------------
+
+describe('orchestrate — happy path (claude available)', () => {
+  let clock: ReturnType<typeof makeFakeClock>;
+  let session: ReturnType<typeof makeFakeSession>;
+  let ledger: ReturnType<typeof makeFakeLedger>;
+  let deps: OrchestrateDeps;
+
+  beforeEach(() => {
+    clock = makeFakeClock();
+    session = makeFakeSession();
+    ledger = makeFakeLedger();
+    deps = {
+      providers: { claude: makeFakeProvider('claude') },
+      clock,
+      session,
+      ledger,
+      policy: DEFAULT_POLICY,
+      cwd: '/fake/cwd',
+      sandbox: 'workspace-write',
+      timeoutMs: 30_000,
+    };
+  });
+
+  it('yields events in correct sequence: classified → tier-start → provider-event(s) → tier-done → final', async () => {
+    const events = await collectEvents(
+      orchestrate('refactor X', deps, new AbortController().signal),
+    );
+
+    const types = events.map((e) => e.type);
+    assert.equal(types[0], 'classified');
+    assert.equal(types[1], 'tier-start');
+
+    // provider-event(s) come next
+    const providerEventIndices = types
+      .map((t, i) => (t === 'provider-event' ? i : -1))
+      .filter((i) => i >= 0);
+    assert.ok(providerEventIndices.length > 0, 'Expected at least one provider-event');
+
+    // tier-done comes before final
+    const tierDoneIdx = types.lastIndexOf('tier-done');
+    const finalIdx = types.lastIndexOf('final');
+    assert.ok(tierDoneIdx >= 0, 'Expected a tier-done event');
+    assert.ok(finalIdx >= 0, 'Expected a final event');
+    assert.ok(tierDoneIdx < finalIdx, 'tier-done must precede final');
+  });
+
+  it('classified event contains correct classification', async () => {
+    const events = await collectEvents(
+      orchestrate('refactor X', deps, new AbortController().signal),
+    );
+    const classified = events.find((e) => e.type === 'classified');
+    assert.ok(classified !== undefined);
+    assert.equal(classified.type, 'classified');
+    if (classified.type === 'classified') {
+      assert.equal(classified.classification.tier, 'ic');
+    }
+  });
+
+  it('tier-start event has correct provider and model', async () => {
+    const events = await collectEvents(
+      orchestrate('refactor X', deps, new AbortController().signal),
+    );
+    const tierStart = events.find((e) => e.type === 'tier-start');
+    assert.ok(tierStart !== undefined);
+    if (tierStart.type === 'tier-start') {
+      assert.equal(tierStart.provider, 'claude');
+      assert.equal(tierStart.model, 'claude-sonnet-4-6');
+      assert.equal(tierStart.attempt, 1);
+    }
+  });
+
+  it('final event has success=true and correct output', async () => {
+    const events = await collectEvents(
+      orchestrate('refactor X', deps, new AbortController().signal),
+    );
+    const final = events.find((e) => e.type === 'final');
+    assert.ok(final !== undefined);
+    if (final.type === 'final') {
+      assert.equal(final.success, true);
+      assert.equal(final.output, FINAL_TEXT);
+      assert.equal(final.sessionId, 'sess-test-1');
+      assert.equal(final.attempts, 1);
+    }
+  });
+
+  it('ledger gets exactly 1 entry with usd > 0', async () => {
+    await collectEvents(orchestrate('refactor X', deps, new AbortController().signal));
+    assert.equal(ledger.entries.length, 1);
+    const entry = ledger.entries[0]!;
+    assert.ok(entry.usd > 0, `Expected usd > 0 but got ${entry.usd}`);
+    assert.equal(entry.provider, 'claude');
+    assert.equal(entry.model, 'claude-sonnet-4-6');
+    assert.equal(entry.inputTokens, 1000);
+    assert.equal(entry.outputTokens, 500);
+    assert.equal(entry.success, true);
+  });
+
+  it('ledger usd matches real pricing calculation (1000 input + 500 output on sonnet)', async () => {
+    await collectEvents(orchestrate('refactor X', deps, new AbortController().signal));
+    const entry = ledger.entries[0]!;
+    // claude-sonnet-4-6: $3/1M input, $15/1M output
+    // 1000 input → $0.003, 500 output → $0.0075 → total $0.0105
+    const expectedUsd = (1000 / 1_000_000) * 3 + (500 / 1_000_000) * 15;
+    assert.ok(
+      Math.abs(entry.usd - expectedUsd) < 1e-9,
+      `Expected usd=${expectedUsd} but got ${entry.usd}`,
+    );
+  });
+
+  it('session gets a user entry and an assistant entry', async () => {
+    await collectEvents(orchestrate('refactor X', deps, new AbortController().signal));
+    assert.equal(session.entries.length, 2);
+    assert.equal(session.entries[0]?.role, 'user');
+    assert.equal(session.entries[0]?.content, 'refactor X');
+    assert.equal(session.entries[1]?.role, 'assistant');
+    assert.equal(session.entries[1]?.content, FINAL_TEXT);
+  });
+
+  it('assistant session entry has confidence from the parsed envelope', async () => {
+    await collectEvents(orchestrate('refactor X', deps, new AbortController().signal));
+    const assistantEntry = session.entries[1]!;
+    assert.equal(assistantEntry.confidence, 0.88);
+  });
+
+  it('tier-done event has confidence from the parsed envelope', async () => {
+    const events = await collectEvents(
+      orchestrate('refactor X', deps, new AbortController().signal),
+    );
+    const tierDone = events.find((e) => e.type === 'tier-done');
+    assert.ok(tierDone !== undefined);
+    if (tierDone.type === 'tier-done') {
+      assert.equal(tierDone.confidence, 0.88);
+      assert.equal(tierDone.success, true);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// No providers path
+// ---------------------------------------------------------------------------
+
+describe('orchestrate — no providers path', () => {
+  it('yields classified → notice(error) → final(success:false)', async () => {
+    const clock = makeFakeClock();
+    const session = makeFakeSession();
+    const ledger = makeFakeLedger();
+    const deps: OrchestrateDeps = {
+      providers: {},
+      clock,
+      session,
+      ledger,
+      policy: DEFAULT_POLICY,
+      cwd: '/fake/cwd',
+      sandbox: 'workspace-write',
+      timeoutMs: 30_000,
+    };
+
+    const events = await collectEvents(
+      orchestrate('refactor X', deps, new AbortController().signal),
+    );
+
+    const types = events.map((e) => e.type);
+    assert.equal(types[0], 'classified');
+    assert.ok(types.includes('notice'), 'Expected a notice event');
+    assert.ok(types.includes('final'), 'Expected a final event');
+
+    const noticeEv = events.find((e) => e.type === 'notice');
+    assert.ok(noticeEv !== undefined);
+    if (noticeEv.type === 'notice') {
+      assert.equal(noticeEv.level, 'error');
+    }
+
+    const finalEv = events.find((e) => e.type === 'final');
+    assert.ok(finalEv !== undefined);
+    if (finalEv.type === 'final') {
+      assert.equal(finalEv.success, false);
+      assert.equal(finalEv.totalCostUsd, 0);
+      assert.equal(finalEv.attempts, 0);
+    }
+  });
+
+  it('does not write to ledger when no providers', async () => {
+    const clock = makeFakeClock();
+    const session = makeFakeSession();
+    const ledger = makeFakeLedger();
+    const deps: OrchestrateDeps = {
+      providers: {},
+      clock,
+      session,
+      ledger,
+      policy: DEFAULT_POLICY,
+      cwd: '/fake/cwd',
+      sandbox: 'workspace-write',
+      timeoutMs: 30_000,
+    };
+
+    await collectEvents(orchestrate('refactor X', deps, new AbortController().signal));
+    assert.equal(ledger.entries.length, 0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Codex provider path
+// ---------------------------------------------------------------------------
+
+describe('orchestrate — codex provider', () => {
+  it('routes to codex when only codex is available', async () => {
+    const clock = makeFakeClock();
+    const session = makeFakeSession();
+    const ledger = makeFakeLedger();
+    const deps: OrchestrateDeps = {
+      providers: { codex: makeFakeProvider('codex') },
+      clock,
+      session,
+      ledger,
+      policy: DEFAULT_POLICY,
+      cwd: '/fake/cwd',
+      sandbox: 'workspace-write',
+      timeoutMs: 30_000,
+    };
+
+    const events = await collectEvents(
+      orchestrate('refactor X', deps, new AbortController().signal),
+    );
+
+    const tierStart = events.find((e) => e.type === 'tier-start');
+    assert.ok(tierStart !== undefined);
+    if (tierStart.type === 'tier-start') {
+      assert.equal(tierStart.provider, 'codex');
+    }
+
+    assert.equal(ledger.entries.length, 1);
+    const entry = ledger.entries[0]!;
+    assert.equal(entry.provider, 'codex');
+    assert.ok(entry.usd > 0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Provider error path
+// ---------------------------------------------------------------------------
+
+describe('orchestrate — provider emits error', () => {
+  it('yields final(success:false) when provider emits an error event', async () => {
+    const errorProvider = makeFakeProvider('claude', [
+      { type: 'text', delta: 'Starting...' },
+      {
+        type: 'error',
+        error: {
+          category: 'network',
+          recoverable: true,
+          message: 'connection reset',
+          suggestion: 'retry',
+        },
+      },
+    ]);
+
+    const clock = makeFakeClock();
+    const session = makeFakeSession();
+    const ledger = makeFakeLedger();
+    const deps: OrchestrateDeps = {
+      providers: { claude: errorProvider },
+      clock,
+      session,
+      ledger,
+      policy: DEFAULT_POLICY,
+      cwd: '/fake/cwd',
+      sandbox: 'workspace-write',
+      timeoutMs: 30_000,
+    };
+
+    const events = await collectEvents(
+      orchestrate('refactor X', deps, new AbortController().signal),
+    );
+
+    const finalEv = events.find((e) => e.type === 'final');
+    assert.ok(finalEv !== undefined);
+    if (finalEv.type === 'final') {
+      assert.equal(finalEv.success, false);
+    }
+
+    // With escalation loop: IC failure → escalate to manager → manager failure → break.
+    // So the ledger gets 2 failed entries (one for IC, one for manager).
+    assert.ok(ledger.entries.length >= 1, 'Expected at least 1 ledger entry');
+    assert.equal(ledger.entries[0]?.success, false);
+  });
+
+  it('(d) provider failure escalates to manager then emits final(success:false)', async () => {
+    // The fake error provider always fails
+    const errorEvents: ProviderEvent[] = [
+      {
+        type: 'error',
+        error: { category: 'network', recoverable: true, message: 'timeout', suggestion: 'retry' },
+      },
+    ];
+    const errorProvider = makeFakeProvider('claude', errorEvents);
+
+    const clock = makeFakeClock();
+    const session = makeFakeSession();
+    const ledger = makeFakeLedger();
+    const deps: OrchestrateDeps = {
+      providers: { claude: errorProvider },
+      clock,
+      session,
+      ledger,
+      policy: DEFAULT_POLICY,
+      cwd: '/fake/cwd',
+      sandbox: 'workspace-write',
+      timeoutMs: 30_000,
+    };
+
+    const events = await collectEvents(
+      orchestrate('refactor X', deps, new AbortController().signal),
+    );
+
+    const types = events.map((e) => e.type);
+
+    // Must emit an 'escalate' event (IC → manager)
+    const escalateEv = events.find((e) => e.type === 'escalate');
+    assert.ok(escalateEv !== undefined, 'Expected an escalate event on provider failure');
+    if (escalateEv.type === 'escalate') {
+      assert.equal(escalateEv.from, 'ic');
+      assert.equal(escalateEv.to, 'manager');
+      assert.equal(escalateEv.reason, 'execution failure');
+    }
+
+    // Must have a second tier-start (the manager retry)
+    const tierStarts = events.filter((e) => e.type === 'tier-start');
+    assert.ok(tierStarts.length >= 2, `Expected ≥2 tier-start events, got ${tierStarts.length}`);
+
+    // Final must be failure
+    const finalEv = events.find((e) => e.type === 'final');
+    assert.ok(finalEv !== undefined);
+    if (finalEv.type === 'final') {
+      assert.equal(finalEv.success, false);
+    }
+
+    assert.ok(types.includes('final'));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Abort / cancellation path
+// ---------------------------------------------------------------------------
+
+describe('orchestrate — abort signal', () => {
+  it('yields notice(warn, cancelled) + final(success:false) when aborted before run', async () => {
+    const controller = new AbortController();
+    controller.abort(); // abort immediately
+
+    const clock = makeFakeClock();
+    const session = makeFakeSession();
+    const ledger = makeFakeLedger();
+    const deps: OrchestrateDeps = {
+      providers: { claude: makeFakeProvider('claude') },
+      clock,
+      session,
+      ledger,
+      policy: DEFAULT_POLICY,
+      cwd: '/fake/cwd',
+      sandbox: 'workspace-write',
+      timeoutMs: 30_000,
+    };
+
+    const events = await collectEvents(orchestrate('refactor X', deps, controller.signal));
+    const types = events.map((e) => e.type);
+
+    assert.ok(types.includes('notice'), 'Expected a notice event for cancellation');
+    const notice = events.find((e) => e.type === 'notice');
+    if (notice?.type === 'notice') {
+      assert.equal(notice.level, 'warn');
+      assert.match(notice.message, /cancel/i);
+    }
+
+    const finalEv = events.find((e) => e.type === 'final');
+    assert.ok(finalEv !== undefined);
+    if (finalEv.type === 'final') {
+      assert.equal(finalEv.success, false);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Usage via separate 'usage' event (not in 'done')
+// ---------------------------------------------------------------------------
+
+describe('orchestrate — usage from usage event', () => {
+  it('picks up usage from a standalone usage event when done has no usage', async () => {
+    const fakeUsage: Usage = { inputTokens: 2000, outputTokens: 1000 };
+    const providerWithUsageEvent = makeFakeProvider('claude', [
+      { type: 'text', delta: 'Result text\n' },
+      { type: 'usage', usage: fakeUsage },
+      { type: 'done', text: `Result text\n${CONFIDENCE_ENVELOPE}`, raw: {} },
+      // NOTE: done has no usage property here — usage should come from the usage event
+    ]);
+
+    const clock = makeFakeClock();
+    const session = makeFakeSession();
+    const ledger = makeFakeLedger();
+    const deps: OrchestrateDeps = {
+      providers: { claude: providerWithUsageEvent },
+      clock,
+      session,
+      ledger,
+      policy: DEFAULT_POLICY,
+      cwd: '/fake/cwd',
+      sandbox: 'workspace-write',
+      timeoutMs: 30_000,
+    };
+
+    await collectEvents(orchestrate('refactor X', deps, new AbortController().signal));
+
+    assert.equal(ledger.entries.length, 1);
+    const entry = ledger.entries[0]!;
+    assert.equal(entry.inputTokens, 2000);
+    assert.equal(entry.outputTokens, 1000);
+    // claude-sonnet-4-6: $3/1M input, $15/1M output
+    // 2000 input → $0.006, 1000 output → $0.015 → $0.021
+    const expectedUsd = (2000 / 1_000_000) * 3 + (1000 / 1_000_000) * 15;
+    assert.ok(Math.abs(entry.usd - expectedUsd) < 1e-9);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Missing confidence envelope → confidence=null, not a fabricated number
+// ---------------------------------------------------------------------------
+
+describe('orchestrate — model with no confidence envelope', () => {
+  it('records confidence=null in session, not a fabricated number', async () => {
+    const plainProvider = makeFakeProvider('claude', [
+      { type: 'done', text: 'Here is the answer.', usage: FAKE_USAGE, raw: {} },
+    ]);
+
+    const clock = makeFakeClock();
+    const session = makeFakeSession();
+    const ledger = makeFakeLedger();
+    const deps: OrchestrateDeps = {
+      providers: { claude: plainProvider },
+      clock,
+      session,
+      ledger,
+      policy: DEFAULT_POLICY,
+      cwd: '/fake/cwd',
+      sandbox: 'workspace-write',
+      timeoutMs: 30_000,
+    };
+
+    await collectEvents(orchestrate('list files', deps, new AbortController().signal));
+
+    const assistantEntry = session.entries.find((e) => e.role === 'assistant');
+    assert.ok(assistantEntry !== undefined);
+    assert.equal(assistantEntry.confidence, null);
+  });
+
+  it('tier-done event has confidence=null when no envelope', async () => {
+    const plainProvider = makeFakeProvider('claude', [
+      { type: 'done', text: 'Here is the answer.', usage: FAKE_USAGE, raw: {} },
+    ]);
+
+    const clock = makeFakeClock();
+    const session = makeFakeSession();
+    const ledger = makeFakeLedger();
+    const deps: OrchestrateDeps = {
+      providers: { claude: plainProvider },
+      clock,
+      session,
+      ledger,
+      policy: DEFAULT_POLICY,
+      cwd: '/fake/cwd',
+      sandbox: 'workspace-write',
+      timeoutMs: 30_000,
+    };
+
+    const events = await collectEvents(
+      orchestrate('list files', deps, new AbortController().signal),
+    );
+    const tierDone = events.find((e) => e.type === 'tier-done');
+    assert.ok(tierDone !== undefined);
+    if (tierDone.type === 'tier-done') {
+      assert.equal(tierDone.confidence, null);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// (a) Low-confidence envelope → escalates to next tier
+// ---------------------------------------------------------------------------
+
+describe('orchestrate — low-confidence escalation', () => {
+  it('(a) low-confidence IC output escalates to manager tier', async () => {
+    // Confidence 0.3 is below low-risk threshold (0.4) so it will escalate
+    const LOW_CONF_ENVELOPE =
+      '{"confidence": 0.3, "escalate": false, "reason": "not sure", "needs_review": false}';
+    const lowConfText = `I did some work.\n${LOW_CONF_ENVELOPE}`;
+
+    // Manager output has high confidence to break the loop
+    const HIGH_CONF_ENVELOPE =
+      '{"confidence": 0.92, "escalate": false, "reason": "manager done", "needs_review": false}';
+    const managerText = `Manager reviewed.\n${HIGH_CONF_ENVELOPE}`;
+
+    let callCount = 0;
+    const smartProvider: Provider = {
+      id: 'claude',
+      async detect() {
+        return {
+          id: 'claude',
+          installed: true,
+          version: '1.0.0',
+          authenticated: true,
+          binaryPath: '/usr/bin/fake',
+          availableModels: [],
+        };
+      },
+      async *run(_req: ProviderRequest, _signal: AbortSignal): AsyncIterable<ProviderEvent> {
+        callCount++;
+        const text = callCount === 1 ? lowConfText : managerText;
+        yield { type: 'done', text, usage: FAKE_USAGE, raw: {} };
+      },
+    };
+
+    const clock = makeFakeClock();
+    const session = makeFakeSession();
+    const ledger = makeFakeLedger();
+    const deps: OrchestrateDeps = {
+      providers: { claude: smartProvider },
+      clock,
+      session,
+      ledger,
+      policy: DEFAULT_POLICY,
+      cwd: '/fake/cwd',
+      sandbox: 'workspace-write',
+      timeoutMs: 30_000,
+    };
+
+    const events = await collectEvents(
+      orchestrate('refactor X', deps, new AbortController().signal),
+    );
+
+    // Must have an escalate event
+    const escalateEv = events.find((e) => e.type === 'escalate');
+    assert.ok(escalateEv !== undefined, 'Expected an escalate event for low confidence');
+    if (escalateEv.type === 'escalate') {
+      assert.equal(escalateEv.from, 'ic');
+      assert.equal(escalateEv.to, 'manager');
+    }
+
+    // Must have a second tier-start (manager run)
+    const tierStarts = events.filter((e) => e.type === 'tier-start');
+    assert.ok(tierStarts.length >= 2, `Expected ≥2 tier-start events, got ${tierStarts.length}`);
+
+    // Final must be success
+    const finalEv = events.find((e) => e.type === 'final');
+    assert.ok(finalEv !== undefined);
+    if (finalEv.type === 'final') {
+      assert.equal(finalEv.success, true);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// (b) High-risk IC task → reviewer runs and approves
+// ---------------------------------------------------------------------------
+
+describe('orchestrate — cross-vendor review (high risk)', () => {
+  it('(b) high-risk IC task triggers a review run that approves', async () => {
+    // "payment" keyword → high risk → IC output gets reviewed
+    const icEnvelope =
+      '{"confidence": 0.85, "escalate": false, "reason": "done", "needs_review": false}';
+    const icText = `Payment code implemented.\n${icEnvelope}`;
+
+    const reviewApproveText =
+      'Looks good to me.\n{"verdict": "approve", "notes": "all clear", "confidence": 0.9}';
+
+    // claude is the IC provider; codex is the reviewer (cross-vendor)
+    const claudeProvider: Provider = {
+      id: 'claude',
+      async detect() {
+        return { id: 'claude', installed: true, version: '1.0.0', authenticated: true, binaryPath: '/usr/bin/fake', availableModels: [] };
+      },
+      async *run(_req: ProviderRequest, _signal: AbortSignal): AsyncIterable<ProviderEvent> {
+        yield { type: 'done', text: icText, usage: FAKE_USAGE, raw: {} };
+      },
+    };
+
+    const codexProvider: Provider = {
+      id: 'codex',
+      async detect() {
+        return { id: 'codex', installed: true, version: '1.0.0', authenticated: true, binaryPath: '/usr/bin/fake', availableModels: [] };
+      },
+      async *run(_req: ProviderRequest, _signal: AbortSignal): AsyncIterable<ProviderEvent> {
+        yield { type: 'done', text: reviewApproveText, usage: { inputTokens: 500, outputTokens: 200 }, raw: {} };
+      },
+    };
+
+    const clock = makeFakeClock();
+    const session = makeFakeSession();
+    const ledger = makeFakeLedger();
+    const deps: OrchestrateDeps = {
+      providers: { claude: claudeProvider, codex: codexProvider },
+      clock,
+      session,
+      ledger,
+      policy: DEFAULT_POLICY,
+      cwd: '/fake/cwd',
+      sandbox: 'workspace-write',
+      timeoutMs: 30_000,
+    };
+
+    // "payment" → high risk → review triggered
+    const events = await collectEvents(
+      orchestrate('implement payment handler', deps, new AbortController().signal),
+    );
+
+    // Must have a manager-tier tier-start for the review run
+    const managerTierStarts = events.filter(
+      (e) => e.type === 'tier-start' && e.tier === 'manager',
+    );
+    assert.ok(managerTierStarts.length >= 1, 'Expected a manager-tier tier-start for review run');
+
+    // Must have notice events about the review
+    const noticeEvents = events.filter((e) => e.type === 'notice');
+    assert.ok(noticeEvents.length >= 1, 'Expected notice events about the review');
+    const reviewNotice = noticeEvents.find(
+      (e) => e.type === 'notice' && e.message.includes('Review by'),
+    );
+    assert.ok(reviewNotice !== undefined, 'Expected a "Review by" notice');
+
+    const verdictNotice = noticeEvents.find(
+      (e) => e.type === 'notice' && e.message.includes('verdict'),
+    );
+    assert.ok(verdictNotice !== undefined, 'Expected a verdict notice');
+    if (verdictNotice.type === 'notice') {
+      assert.ok(verdictNotice.message.includes('approve'), 'Expected approve verdict in notice');
+    }
+
+    // Final must be success
+    const finalEv = events.find((e) => e.type === 'final');
+    assert.ok(finalEv !== undefined);
+    if (finalEv.type === 'final') {
+      assert.equal(finalEv.success, true);
+    }
+  });
+
+  // -------------------------------------------------------------------------
+  // (c) Reviewer returns revise → IC retried with managerNotes
+  // -------------------------------------------------------------------------
+
+  it('(c) reviewer revise verdict retries IC with feedback (≥2 IC attempts)', async () => {
+    const icEnvelope =
+      '{"confidence": 0.85, "escalate": false, "reason": "done", "needs_review": false}';
+
+    let icCallCount = 0;
+    const claudeProvider: Provider = {
+      id: 'claude',
+      async detect() {
+        return { id: 'claude', installed: true, version: '1.0.0', authenticated: true, binaryPath: '/usr/bin/fake', availableModels: [] };
+      },
+      async *run(_req: ProviderRequest, _signal: AbortSignal): AsyncIterable<ProviderEvent> {
+        icCallCount++;
+        const text = `Payment code attempt ${icCallCount}.\n${icEnvelope}`;
+        yield { type: 'done', text, usage: FAKE_USAGE, raw: {} };
+      },
+    };
+
+    let reviewCallCount = 0;
+    const codexProvider: Provider = {
+      id: 'codex',
+      async detect() {
+        return { id: 'codex', installed: true, version: '1.0.0', authenticated: true, binaryPath: '/usr/bin/fake', availableModels: [] };
+      },
+      async *run(_req: ProviderRequest, _signal: AbortSignal): AsyncIterable<ProviderEvent> {
+        reviewCallCount++;
+        // First review → revise; second review → approve
+        const text =
+          reviewCallCount === 1
+            ? '{"verdict": "revise", "notes": "payment.ts:10 — missing validation", "confidence": 0.7}'
+            : '{"verdict": "approve", "notes": "fixed", "confidence": 0.95}';
+        yield { type: 'done', text, usage: { inputTokens: 300, outputTokens: 100 }, raw: {} };
+      },
+    };
+
+    const clock = makeFakeClock();
+    const session = makeFakeSession();
+    const ledger = makeFakeLedger();
+    const deps: OrchestrateDeps = {
+      providers: { claude: claudeProvider, codex: codexProvider },
+      clock,
+      session,
+      ledger,
+      policy: DEFAULT_POLICY,
+      cwd: '/fake/cwd',
+      sandbox: 'workspace-write',
+      timeoutMs: 30_000,
+    };
+
+    const events = await collectEvents(
+      orchestrate('implement payment handler', deps, new AbortController().signal),
+    );
+
+    // IC must have been called at least twice (initial + retry after revise)
+    assert.ok(icCallCount >= 2, `Expected ≥2 IC calls, got ${icCallCount}`);
+
+    // Must have tier-start at 'ic' tier at least twice
+    const icTierStarts = events.filter(
+      (e) => e.type === 'tier-start' && e.tier === 'ic',
+    );
+    assert.ok(icTierStarts.length >= 2, `Expected ≥2 ic tier-start events, got ${icTierStarts.length}`);
+
+    // Final must be success
+    const finalEv = events.find((e) => e.type === 'final');
+    assert.ok(finalEv !== undefined);
+    if (finalEv.type === 'final') {
+      assert.equal(finalEv.success, true);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// (e) totalCostUsd equals sum of all run costs
+// ---------------------------------------------------------------------------
+
+describe('orchestrate — totalCostUsd accumulation', () => {
+  it('(e) totalCostUsd in final equals sum of all run costs (IC + review)', async () => {
+    const icEnvelope =
+      '{"confidence": 0.85, "escalate": false, "reason": "done", "needs_review": false}';
+    const icText = `Payment done.\n${icEnvelope}`;
+
+    const reviewText =
+      '{"verdict": "approve", "notes": "ok", "confidence": 0.95}';
+
+    const icUsage: Usage = { inputTokens: 1000, outputTokens: 500 };    // claude-sonnet-4-6
+    const reviewUsage: Usage = { inputTokens: 500, outputTokens: 200 }; // codex gpt-5.5 (manager)
+
+    const claudeProvider: Provider = {
+      id: 'claude',
+      async detect() {
+        return { id: 'claude', installed: true, version: '1.0.0', authenticated: true, binaryPath: '/usr/bin/fake', availableModels: [] };
+      },
+      async *run(_req: ProviderRequest, _signal: AbortSignal): AsyncIterable<ProviderEvent> {
+        yield { type: 'done', text: icText, usage: icUsage, raw: {} };
+      },
+    };
+
+    const codexProvider: Provider = {
+      id: 'codex',
+      async detect() {
+        return { id: 'codex', installed: true, version: '1.0.0', authenticated: true, binaryPath: '/usr/bin/fake', availableModels: [] };
+      },
+      async *run(_req: ProviderRequest, _signal: AbortSignal): AsyncIterable<ProviderEvent> {
+        yield { type: 'done', text: reviewText, usage: reviewUsage, raw: {} };
+      },
+    };
+
+    const clock = makeFakeClock();
+    const session = makeFakeSession();
+    const ledger = makeFakeLedger();
+    const deps: OrchestrateDeps = {
+      providers: { claude: claudeProvider, codex: codexProvider },
+      clock,
+      session,
+      ledger,
+      policy: DEFAULT_POLICY,
+      cwd: '/fake/cwd',
+      sandbox: 'workspace-write',
+      timeoutMs: 30_000,
+    };
+
+    const events = await collectEvents(
+      orchestrate('implement payment handler', deps, new AbortController().signal),
+    );
+
+    // Compute expected costs from pricing table
+    // IC: claude-sonnet-4-6 → $3/1M input, $15/1M output
+    const icCost = (1000 / 1_000_000) * 3 + (500 / 1_000_000) * 15;
+    // Review: codex manager (gpt-5.5) → $5/1M input, $30/1M output
+    const reviewCost = (500 / 1_000_000) * 5 + (200 / 1_000_000) * 30;
+    const expectedTotal = icCost + reviewCost;
+
+    const finalEv = events.find((e) => e.type === 'final');
+    assert.ok(finalEv !== undefined);
+    if (finalEv.type === 'final') {
+      assert.ok(
+        Math.abs(finalEv.totalCostUsd - expectedTotal) < 1e-9,
+        `Expected totalCostUsd=${expectedTotal} but got ${finalEv.totalCostUsd}`,
+      );
+    }
+
+    // Ledger should have 2 entries (IC + review)
+    assert.ok(ledger.entries.length >= 2, `Expected ≥2 ledger entries, got ${ledger.entries.length}`);
+    const sumFromLedger = ledger.entries.reduce((acc, e) => acc + e.usd, 0);
+    assert.ok(
+      Math.abs(sumFromLedger - expectedTotal) < 1e-9,
+      `Ledger sum ${sumFromLedger} !== expected ${expectedTotal}`,
+    );
+  });
+});

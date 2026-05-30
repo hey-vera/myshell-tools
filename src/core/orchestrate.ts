@@ -1,0 +1,501 @@
+/**
+ * src/core/orchestrate.ts — the bounded escalation + review loop.
+ *
+ * Implements the Phase-2 multi-tier loop:
+ *   classify → route → run IC → (optionally) cross-vendor review → assess →
+ *   escalate/retry/accept → final
+ *
+ * Control-flow overview:
+ *   1. Classify the task.
+ *   2. If no providers → notice(error) + final(false); return.
+ *   3. Append user session entry once.
+ *   4. Loop (≤ maxAttempts):
+ *      a. Route to provider+model for currentTier.
+ *      b. Yield tier-start → stream provider events → yield tier-done.
+ *      c. Provider failure → escalate to manager (or break if already there).
+ *      d. If IC tier + shouldReview(classification, assessment):
+ *         run cross-vendor reviewer at manager tier.
+ *         approve → accept; revise → retry IC with notes; escalate → escalate tier.
+ *      e. Low-confidence / escalate signal → nextTierUp → continue.
+ *      f. All good → yield final(success:true); return.
+ *   5. Loop exhausted or broke on failure → yield final(success:false).
+ *
+ * Purity rules (enforced by test/arch/guards.test.ts):
+ *  - No imports of fs / path / child_process
+ *  - No console.* calls
+ *  - No Date.now() / Math.random() / new Date() — use deps.clock
+ *  - No process.exit() — only src/cli.ts may terminate the process
+ */
+
+import type { CoreEvent, OrchestrateDeps, Tier, Classification, Assessment } from './types.js';
+import type { CliError, Usage, ProviderRequest, ProviderId } from '../providers/port.js';
+import { classify } from './classify.js';
+import { route } from './route.js';
+import { buildPrompt } from './prompt.js';
+import { assess } from './assess.js';
+import { getModelPricing, calculateCost } from '../infra/pricing.js';
+import { nextTierUp, pickReviewer } from './escalate.js';
+import { buildReviewPrompt, parseReviewVerdict } from './review.js';
+
+// ---------------------------------------------------------------------------
+// Pure helper: should this IC output be cross-vendor reviewed?
+// ---------------------------------------------------------------------------
+
+function shouldReview(classification: Classification, assessment: Assessment): boolean {
+  return (
+    classification.risk === 'high' ||
+    classification.risk === 'critical' ||
+    assessment.needsReview === true
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Public API
+// ---------------------------------------------------------------------------
+
+/**
+ * Orchestrate a task through the bounded escalation + review loop.
+ *
+ * Yields a sequence of {@link CoreEvent} objects.
+ * The interface/render layer drives the generator and surfaces events to
+ * the user.
+ *
+ * @param task   - The raw user task description.
+ * @param deps   - Injected dependencies (providers, clock, session, ledger, policy, …).
+ * @param signal - AbortSignal; when aborted the generator stops and yields a
+ *                 notice(warn, 'cancelled') followed by final(success:false).
+ */
+export async function* orchestrate(
+  task: string,
+  deps: OrchestrateDeps,
+  signal: AbortSignal,
+): AsyncGenerator<CoreEvent> {
+  // -------------------------------------------------------------------------
+  // (a) Classify the task
+  // -------------------------------------------------------------------------
+  const classification = classify(task);
+  yield { type: 'classified', classification };
+
+  // -------------------------------------------------------------------------
+  // (b) Resolve available providers
+  // -------------------------------------------------------------------------
+  const available = (Object.keys(deps.providers) as Array<keyof typeof deps.providers>).filter(
+    (id) => deps.providers[id] !== undefined,
+  ) as ProviderId[];
+
+  // -------------------------------------------------------------------------
+  // (c) No providers path
+  // -------------------------------------------------------------------------
+  if (available.length === 0) {
+    yield {
+      type: 'notice',
+      level: 'error',
+      message:
+        'No providers are available. Install and authenticate at least one provider ' +
+        '(claude or codex) and try again.',
+    };
+    yield {
+      type: 'final',
+      success: false,
+      output: 'No providers available.',
+      tier: classification.tier,
+      totalCostUsd: 0,
+      sessionId: deps.session.id,
+      attempts: 0,
+    };
+    return;
+  }
+
+  // -------------------------------------------------------------------------
+  // (d) Append user message to session once (before any tier run)
+  // -------------------------------------------------------------------------
+  await deps.session.append({
+    timestamp: deps.clock.isoNow(),
+    role: 'user',
+    content: task,
+  });
+
+  // -------------------------------------------------------------------------
+  // (e) Loop state
+  // -------------------------------------------------------------------------
+  let currentTier: Tier = classification.tier;
+  let managerNotes: string | undefined;
+  let attempts = 0;
+  let totalCostUsd = 0;
+  let lastOutput = '';
+
+  // -------------------------------------------------------------------------
+  // (f) Main orchestration loop
+  // -------------------------------------------------------------------------
+  mainLoop: while (attempts < deps.policy.maxAttempts) {
+    attempts++;
+
+    // --- Route for current tier ---
+    const decision = route(currentTier, available, deps.policy);
+
+    const provider = deps.providers[decision.provider];
+    if (provider === undefined) {
+      yield {
+        type: 'notice',
+        level: 'error',
+        message: `Provider "${decision.provider}" was selected by route() but is not present in deps.providers.`,
+      };
+      break mainLoop;
+    }
+
+    // --- Build prompt (with optional reviewer feedback on IC retry) ---
+    const prompt =
+      currentTier === 'ic' && managerNotes !== undefined
+        ? buildPrompt(currentTier, task, managerNotes)
+        : buildPrompt(currentTier, task);
+
+    // --- Yield tier-start ---
+    yield {
+      type: 'tier-start',
+      tier: decision.tier,
+      provider: decision.provider,
+      model: decision.model,
+      attempt: attempts,
+    };
+
+    // --- Build request and record start time ---
+    const req: ProviderRequest = {
+      model: decision.model,
+      prompt,
+      cwd: deps.cwd,
+      sandbox: deps.sandbox,
+      timeoutMs: deps.timeoutMs,
+    };
+    const start = deps.clock.now();
+
+    let finalText: string | undefined;
+    let errored: CliError | undefined;
+    let usage: Usage | undefined;
+    let providerCostUsd: number | undefined;
+
+    // Check abort before entering the stream
+    if (signal.aborted) {
+      yield { type: 'notice', level: 'warn', message: 'cancelled' };
+      yield {
+        type: 'final',
+        success: false,
+        output: 'Task was cancelled before it started.',
+        tier: decision.tier,
+        totalCostUsd,
+        sessionId: deps.session.id,
+        attempts,
+      };
+      return;
+    }
+
+    // --- Stream provider events ---
+    for await (const ev of provider.run(req, signal)) {
+      yield { type: 'provider-event', tier: decision.tier, event: ev };
+
+      if (ev.type === 'done') {
+        finalText = ev.text;
+        if (ev.usage !== undefined && usage === undefined) {
+          usage = ev.usage;
+        }
+        if (ev.costUsd !== undefined) {
+          providerCostUsd = ev.costUsd;
+        }
+      } else if (ev.type === 'error') {
+        errored = ev.error;
+      } else if (ev.type === 'usage' && usage === undefined) {
+        usage = ev.usage;
+      }
+
+      if (signal.aborted) {
+        yield { type: 'notice', level: 'warn', message: 'cancelled' };
+        yield {
+          type: 'final',
+          success: false,
+          output: 'Task was cancelled.',
+          tier: decision.tier,
+          totalCostUsd,
+          sessionId: deps.session.id,
+          attempts,
+        };
+        return;
+      }
+    }
+
+    // --- Compute duration + cost ---
+    const durationMs = deps.clock.now() - start;
+    const success = errored == null;
+
+    const pricing = getModelPricing(decision.provider, decision.model);
+    const usd =
+      providerCostUsd ??
+      (usage !== undefined && pricing !== undefined
+        ? calculateCost(usage.inputTokens, usage.outputTokens, pricing)
+        : 0);
+    totalCostUsd += usd;
+
+    // --- Assess output ---
+    const assessment = assess(finalText ?? '');
+
+    // --- Record in ledger ---
+    await deps.ledger.record({
+      timestamp: deps.clock.isoNow(),
+      sessionId: deps.session.id,
+      taskId: deps.clock.uuid(),
+      provider: decision.provider,
+      model: decision.model,
+      tier: decision.tier,
+      inputTokens: usage?.inputTokens ?? 0,
+      outputTokens: usage?.outputTokens ?? 0,
+      cachedInputTokens: usage?.cachedInputTokens ?? 0,
+      usd,
+      durationMs,
+      success,
+    });
+
+    // --- Append assistant session entry ---
+    await deps.session.append({
+      timestamp: deps.clock.isoNow(),
+      role: 'assistant',
+      content: finalText ?? (errored?.message ?? ''),
+      tier: decision.tier,
+      provider: decision.provider,
+      model: decision.model,
+      confidence: assessment.confidence,
+      costUsd: usd,
+      durationMs,
+    });
+
+    // --- Yield tier-done ---
+    yield {
+      type: 'tier-done',
+      tier: decision.tier,
+      success,
+      confidence: assessment.confidence,
+      costUsd: usd,
+      durationMs,
+    };
+
+    lastOutput = finalText ?? (errored?.message ?? '');
+
+    // -----------------------------------------------------------------------
+    // Decision tree
+    // -----------------------------------------------------------------------
+
+    // 1) Provider failure → escalate to manager (or fail if already there)
+    if (!success) {
+      if (currentTier !== 'manager') {
+        yield { type: 'escalate', from: currentTier, to: 'manager', reason: 'execution failure' };
+        currentTier = 'manager';
+        continue mainLoop;
+      } else {
+        break mainLoop; // already at manager; emit failing final below
+      }
+    }
+
+    // 2) Cross-vendor review for IC work on high/critical risk or needsReview
+    if (currentTier === 'ic' && shouldReview(classification, assessment)) {
+      const reviewerId = pickReviewer(available, decision.provider);
+      const reviewerProvider =
+        reviewerId === null ? undefined : deps.providers[reviewerId];
+
+      if (reviewerId !== null && reviewerProvider !== undefined) {
+        const sameVendor = reviewerId === decision.provider;
+        yield {
+          type: 'notice',
+          level: 'info',
+          message: `Review by ${reviewerId} (${sameVendor ? 'same vendor' : 'cross-vendor'})`,
+        };
+
+        // Route reviewer at manager tier
+        const reviewDecision = route('manager', [reviewerId], deps.policy);
+        const reviewPrompt = buildReviewPrompt(task, lastOutput);
+
+        // Yield tier-start for review run
+        yield {
+          type: 'tier-start',
+          tier: 'manager' as Tier,
+          provider: reviewerId,
+          model: reviewDecision.model,
+          attempt: attempts,
+        };
+
+        const reviewReq: ProviderRequest = {
+          model: reviewDecision.model,
+          prompt: reviewPrompt,
+          cwd: deps.cwd,
+          sandbox: deps.sandbox,
+          timeoutMs: deps.timeoutMs,
+        };
+        const reviewStart = deps.clock.now();
+
+        let reviewText: string | undefined;
+        let reviewErrored: CliError | undefined;
+        let reviewUsage: Usage | undefined;
+        let reviewProviderCostUsd: number | undefined;
+
+        // Check abort before reviewer streaming
+        if (signal.aborted) {
+          yield { type: 'notice', level: 'warn', message: 'cancelled' };
+          yield {
+            type: 'final',
+            success: false,
+            output: 'Task was cancelled.',
+            tier: currentTier,
+            totalCostUsd,
+            sessionId: deps.session.id,
+            attempts,
+          };
+          return;
+        }
+
+        for await (const rev of reviewerProvider.run(reviewReq, signal)) {
+          yield { type: 'provider-event', tier: 'manager', event: rev };
+
+          if (rev.type === 'done') {
+            reviewText = rev.text;
+            if (rev.usage !== undefined && reviewUsage === undefined) {
+              reviewUsage = rev.usage;
+            }
+            if (rev.costUsd !== undefined) {
+              reviewProviderCostUsd = rev.costUsd;
+            }
+          } else if (rev.type === 'error') {
+            reviewErrored = rev.error;
+          } else if (rev.type === 'usage' && reviewUsage === undefined) {
+            reviewUsage = rev.usage;
+          }
+
+          if (signal.aborted) {
+            yield { type: 'notice', level: 'warn', message: 'cancelled' };
+            yield {
+              type: 'final',
+              success: false,
+              output: 'Task was cancelled.',
+              tier: currentTier,
+              totalCostUsd,
+              sessionId: deps.session.id,
+              attempts,
+            };
+            return;
+          }
+        }
+
+        const reviewDurationMs = deps.clock.now() - reviewStart;
+        const reviewSuccess = reviewErrored == null;
+
+        const reviewPricing = getModelPricing(reviewerId, reviewDecision.model);
+        const reviewUsd =
+          reviewProviderCostUsd ??
+          (reviewUsage !== undefined && reviewPricing !== undefined
+            ? calculateCost(reviewUsage.inputTokens, reviewUsage.outputTokens, reviewPricing)
+            : 0);
+        totalCostUsd += reviewUsd;
+
+        // Record reviewer run in ledger
+        await deps.ledger.record({
+          timestamp: deps.clock.isoNow(),
+          sessionId: deps.session.id,
+          taskId: deps.clock.uuid(),
+          provider: reviewerId,
+          model: reviewDecision.model,
+          tier: 'manager',
+          inputTokens: reviewUsage?.inputTokens ?? 0,
+          outputTokens: reviewUsage?.outputTokens ?? 0,
+          cachedInputTokens: reviewUsage?.cachedInputTokens ?? 0,
+          usd: reviewUsd,
+          durationMs: reviewDurationMs,
+          success: reviewSuccess,
+        });
+
+        // Yield tier-done for reviewer
+        yield {
+          type: 'tier-done',
+          tier: 'manager' as Tier,
+          success: reviewSuccess,
+          confidence: null,
+          costUsd: reviewUsd,
+          durationMs: reviewDurationMs,
+        };
+
+        // Parse verdict and act on it
+        const verdict = parseReviewVerdict(reviewText ?? '');
+        yield {
+          type: 'notice',
+          level: 'info',
+          message: `Review verdict: ${verdict.verdict}`,
+        };
+
+        if (verdict.verdict === 'approve') {
+          yield {
+            type: 'final',
+            success: true,
+            output: lastOutput,
+            tier: currentTier,
+            totalCostUsd,
+            sessionId: deps.session.id,
+            attempts,
+          };
+          return;
+        }
+
+        if (verdict.verdict === 'revise') {
+          // Retry IC with reviewer's notes; managerNotes is cleared after use
+          managerNotes = verdict.notes;
+          // Stay at 'ic' tier; loop continues
+          continue mainLoop;
+        }
+
+        // verdict === 'escalate'
+        yield { type: 'escalate', from: 'ic', to: 'manager', reason: 'reviewer escalation' };
+        currentTier = 'manager';
+        continue mainLoop;
+      }
+    }
+
+    // 3) Confidence-based escalation
+    const threshold = deps.policy.escalateBelowConfidence[classification.risk];
+    const needEsc =
+      assessment.escalate ||
+      (assessment.confidence !== null && assessment.confidence < threshold);
+
+    const nextTier = nextTierUp(currentTier);
+    if (needEsc && nextTier !== null) {
+      const escalateReason =
+        assessment.reason !== 'model provided no reason' &&
+        assessment.reason !== 'no confidence envelope'
+          ? assessment.reason
+          : 'low confidence';
+      yield {
+        type: 'escalate',
+        from: currentTier,
+        to: nextTier,
+        reason: escalateReason,
+      };
+      currentTier = nextTier;
+      continue mainLoop;
+    }
+
+    // 4) Accept — everything checks out
+    yield {
+      type: 'final',
+      success: true,
+      output: lastOutput,
+      tier: currentTier,
+      totalCostUsd,
+      sessionId: deps.session.id,
+      attempts,
+    };
+    return;
+  }
+
+  // Loop exhausted or broke out on failure
+  yield {
+    type: 'final',
+    success: false,
+    output: lastOutput,
+    tier: currentTier,
+    totalCostUsd,
+    sessionId: deps.session.id,
+    attempts,
+  };
+}

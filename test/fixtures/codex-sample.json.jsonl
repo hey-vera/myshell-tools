@@ -1,0 +1,5 @@
+{"type":"thread.started","thread_id":"thread-001"}
+{"type":"turn.started","turn_id":"turn-001"}
+{"type":"item.completed","item":{"type":"agent_message","text":"Hello from Codex"}}
+{"type":"item.completed","item":{"type":"reasoning","text":"Thinking about the problem"}}
+{"type":"turn.completed","usage":{"input_tokens":42,"output_tokens":7,"cached_input_tokens":10}}

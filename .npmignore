@@ -1,36 +1,9 @@
-# Development files
-test-*.mjs
-demo.mjs
-final-test.mjs
-*.test.js
+src/
 test/
-
-# Documentation (dev-only)
-DEMO.md
-IMPLEMENTATION-SUMMARY.md
-PHASE2-SUMMARY.md
-UX-ENHANCEMENT-SUMMARY.md
-
-# Runtime state
-.cortex/
-*.log
-
-# Git
-.git/
+docs/
+.github/
+tsconfig.json
+.eslintrc*
+.prettierrc*
 .gitignore
-
-# Editor
-.vscode/
-.idea/
-*.swp
-
-# OS
-.DS_Store
-Thumbs.db
-
-# Package artifacts
-*.tgz
-node_modules/
-
-# Environment
-.env*
+coverage/
