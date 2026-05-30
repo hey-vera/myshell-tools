@@ -24,6 +24,7 @@ import type { ProviderId } from './port.js';
 const PACKAGES: Record<ProviderId, string> = {
   claude: '@anthropic-ai/claude-code',
   codex: '@openai/codex',
+  opencode: 'opencode-ai',
 };
 
 // ---------------------------------------------------------------------------

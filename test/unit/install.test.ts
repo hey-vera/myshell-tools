@@ -444,8 +444,13 @@ describe('installCommandFor — pure helper, no I/O', () => {
     assert.equal(cmd, 'npm install -g @openai/codex');
   });
 
+  it('returns the correct npm install command for opencode', () => {
+    const cmd = installCommandFor('opencode');
+    assert.equal(cmd, 'npm install -g opencode-ai');
+  });
+
   it('commands start with "npm install -g "', () => {
-    for (const id of ['claude', 'codex'] as const) {
+    for (const id of ['claude', 'codex', 'opencode'] as const) {
       assert.ok(
         installCommandFor(id).startsWith('npm install -g '),
         `${id}: command must start with "npm install -g "`,
@@ -467,22 +472,40 @@ describe('installCommandFor — pure helper, no I/O', () => {
     );
   });
 
+  it('opencode command references opencode-ai', () => {
+    assert.ok(
+      installCommandFor('opencode').includes('opencode-ai'),
+      'opencode command must include the opencode-ai package name',
+    );
+  });
+
   it('is a pure function — same inputs always produce the same output', () => {
     assert.equal(installCommandFor('claude'), installCommandFor('claude'));
     assert.equal(installCommandFor('codex'), installCommandFor('codex'));
+    assert.equal(installCommandFor('opencode'), installCommandFor('opencode'));
   });
 
   it('does not contain digit-% literals (Honesty Contract)', () => {
-    for (const id of ['claude', 'codex'] as const) {
+    for (const id of ['claude', 'codex', 'opencode'] as const) {
       const cmd = installCommandFor(id);
       assert.ok(!/\d+%/.test(cmd), `no digit-% literal in: "${cmd}"`);
     }
   });
 
-  it('commands are different for different providers', () => {
+  it('commands are all different from each other', () => {
     assert.notEqual(
       installCommandFor('claude'),
       installCommandFor('codex'),
+      'install commands must differ between providers',
+    );
+    assert.notEqual(
+      installCommandFor('claude'),
+      installCommandFor('opencode'),
+      'install commands must differ between providers',
+    );
+    assert.notEqual(
+      installCommandFor('codex'),
+      installCommandFor('opencode'),
       'install commands must differ between providers',
     );
   });

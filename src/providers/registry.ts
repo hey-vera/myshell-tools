@@ -6,14 +6,15 @@
  * on `installed`, NOT `authenticated`, because auth is only truly known at
  * call time and errors render honestly via classifyError().
  *
- * With both Claude and Codex installed, `deps.providers` will have entries for
- * both — which automatically activates cross-vendor review in the orchestrator.
+ * With multiple providers installed, `deps.providers` will have entries for
+ * each — which automatically activates cross-vendor review in the orchestrator.
  */
 
 import type { Provider, ProviderId } from './port.js';
 import { detectEnvironment } from './detect.js';
 import { createClaudeProvider } from './claude.js';
 import { createCodexProvider } from './codex.js';
+import { createOpencodeProvider } from './opencode.js';
 
 /**
  * Discover which providers are available in the current environment and build
@@ -35,6 +36,10 @@ export async function buildProviders(
 
   if (env.codex.installed) {
     providers.codex = createCodexProvider();
+  }
+
+  if (env.opencode.installed) {
+    providers.opencode = createOpencodeProvider();
   }
 
   return providers;

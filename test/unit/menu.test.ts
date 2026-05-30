@@ -66,7 +66,7 @@ function assertNoDigitPercent(output: string, label: string): void {
 type ProviderStatusWithPlan = EnvironmentStatus['claude'] & { readonly plan?: string | null };
 
 function makeProvider(
-  id: 'claude' | 'codex',
+  id: 'claude' | 'codex' | 'opencode',
   opts: {
     installed: boolean;
     version?: string | null;
@@ -85,9 +85,13 @@ function makeProvider(
   } as ProviderStatusWithPlan;
 }
 
+/** Canonical not-installed opencode status used as a default in fake envs. */
+const OPENCODE_NOT_INSTALLED = makeProvider('opencode', { installed: false });
+
 const FAKE_ENV_BOTH_INSTALLED: EnvironmentStatus = {
   claude: makeProvider('claude', { installed: true, version: '1.2.3', authenticated: true }),
   codex: makeProvider('codex', { installed: true, version: '4.5.6', authenticated: true }),
+  opencode: OPENCODE_NOT_INSTALLED,
   hasAnyProvider: true,
   platform: 'linux',
 };
@@ -95,6 +99,7 @@ const FAKE_ENV_BOTH_INSTALLED: EnvironmentStatus = {
 const FAKE_ENV_NONE_INSTALLED: EnvironmentStatus = {
   claude: makeProvider('claude', { installed: false }),
   codex: makeProvider('codex', { installed: false }),
+  opencode: OPENCODE_NOT_INSTALLED,
   hasAnyProvider: false,
   platform: 'linux',
 };
@@ -102,6 +107,7 @@ const FAKE_ENV_NONE_INSTALLED: EnvironmentStatus = {
 const FAKE_ENV_MIXED: EnvironmentStatus = {
   claude: makeProvider('claude', { installed: true, version: '2.0.0', authenticated: true }),
   codex: makeProvider('codex', { installed: false }),
+  opencode: OPENCODE_NOT_INSTALLED,
   hasAnyProvider: true,
   platform: 'win32',
 };
@@ -110,6 +116,7 @@ const FAKE_ENV_MIXED: EnvironmentStatus = {
 const FAKE_ENV_INSTALLED_NOT_AUTHED: EnvironmentStatus = {
   claude: makeProvider('claude', { installed: true, version: '1.0.0', authenticated: false }),
   codex: makeProvider('codex', { installed: true, version: '4.0.0', authenticated: true }),
+  opencode: OPENCODE_NOT_INSTALLED,
   hasAnyProvider: true,
   platform: 'linux',
 };
@@ -118,6 +125,7 @@ const FAKE_ENV_INSTALLED_NOT_AUTHED: EnvironmentStatus = {
 const FAKE_ENV_WITH_PLANS: EnvironmentStatus = {
   claude: makeProvider('claude', { installed: true, version: '1.0.0', authenticated: true, plan: 'Max x5' }),
   codex: makeProvider('codex', { installed: true, version: '4.0.0', authenticated: true, plan: 'Plus' }),
+  opencode: OPENCODE_NOT_INSTALLED,
   hasAnyProvider: true,
   platform: 'linux',
 };
@@ -126,6 +134,7 @@ const FAKE_ENV_WITH_PLANS: EnvironmentStatus = {
 const FAKE_ENV_NO_PLAN: EnvironmentStatus = {
   claude: makeProvider('claude', { installed: true, version: '1.0.0', authenticated: true, plan: null }),
   codex: makeProvider('codex', { installed: true, version: '4.0.0', authenticated: true, plan: null }),
+  opencode: OPENCODE_NOT_INSTALLED,
   hasAnyProvider: true,
   platform: 'linux',
 };
@@ -301,6 +310,50 @@ describe('renderHeaderLines', () => {
     for (const line of lines) {
       assertNoDigitPercent(line, 'renderHeaderLines');
     }
+  });
+
+  // ---- opencode conditional rendering ----------------------------------------
+
+  it('shows opencode line (✅ ready) when opencode is installed', () => {
+    const envWithOpencode: EnvironmentStatus = {
+      ...FAKE_ENV_BOTH_INSTALLED,
+      opencode: makeProvider('opencode', { installed: true, version: '0.1.0', authenticated: true }),
+    };
+    const lines = renderHeaderLines(envWithOpencode, '2.0.0');
+    // Should now be 3 lines: claude, codex, opencode
+    assert.strictEqual(lines.length, 3);
+    const opencodeLine = lines.find((l) => l.includes('opencode'));
+    assert.ok(opencodeLine !== undefined, 'opencode line must appear when installed');
+    assert.ok(opencodeLine.includes('✅'), 'opencode installed+authed → ✅');
+    assert.ok(opencodeLine.includes('ready'), 'opencode line shows "ready"');
+  });
+
+  it('does NOT show opencode line when opencode is not installed', () => {
+    // All existing fixtures have opencode not-installed — verify no nag line.
+    const lines = renderHeaderLines(FAKE_ENV_BOTH_INSTALLED, '2.0.0');
+    assert.strictEqual(lines.length, 2, 'only claude+codex lines when opencode not installed');
+    const opencodeLine = lines.find((l) => l.includes('opencode'));
+    assert.ok(opencodeLine === undefined, 'no opencode line when not installed');
+  });
+
+  it('existing header assertions unchanged when opencode is not installed', () => {
+    // Regression: existing tests (2 lines, ✅ claude, ✅ codex) must still hold.
+    const lines = renderHeaderLines(FAKE_ENV_BOTH_INSTALLED, '2.0.0');
+    assert.strictEqual(lines.length, 2);
+    assert.ok(lines.some((l) => l.includes('✅') && l.includes('claude')));
+    assert.ok(lines.some((l) => l.includes('✅') && l.includes('codex')));
+  });
+
+  it('shows ⚠️ for opencode installed but not authenticated', () => {
+    const envWithUnauthOpencode: EnvironmentStatus = {
+      ...FAKE_ENV_BOTH_INSTALLED,
+      opencode: makeProvider('opencode', { installed: true, version: '0.1.0', authenticated: false }),
+    };
+    const lines = renderHeaderLines(envWithUnauthOpencode, '2.0.0');
+    const opencodeLine = lines.find((l) => l.includes('opencode'));
+    assert.ok(opencodeLine !== undefined, 'opencode line must appear when installed');
+    assert.ok(opencodeLine.includes('⚠'), 'opencode installed but not authed → ⚠️');
+    assert.ok(opencodeLine.includes('not signed in'), 'includes "not signed in"');
   });
 });
 

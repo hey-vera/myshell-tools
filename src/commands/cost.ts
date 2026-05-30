@@ -41,7 +41,10 @@ export function formatCostReport(entries: LedgerEntry[], color = false): string[
   }
 
   const summary = summarizeLedger(entries);
-  const flagship = getCheapestForTier('manager');
+  // Counterfactual uses the flagship from paid providers only (claude/codex).
+  // opencode's zero-cost sentinel entries must not suppress the counterfactual
+  // by making the "flagship" appear free.
+  const flagship = getCheapestForTier('manager', ['claude', 'codex']);
 
   // Apples-to-apples: price BOTH the models actually used AND the flagship on the
   // SAME basis (list price × tokens). We do NOT compare the billed total (which

@@ -108,6 +108,25 @@ export interface Policy {
   readonly escalateBelowConfidence: Record<Risk, number>;
   /** Ordered provider preference per tier; route() honours availability. */
   readonly providerOrderByTier: Record<Tier, readonly ProviderId[]>;
+  /**
+   * Controls when cross-vendor review runs automatically.
+   *
+   * - `'auto'`          : review when risk is high/critical OR the model sets needsReview
+   *                       (current default behaviour).
+   * - `'critical-only'` : review only when risk is `critical` (or needsReview AND critical).
+   * - `'off'`           : never trigger an automatic cross-vendor review.
+   *
+   * Omitting the field is equivalent to `'auto'` (backward-compatible).
+   */
+  readonly reviewPolicy?: 'auto' | 'critical-only' | 'off';
+  /**
+   * Per-task cost budget cap in USD.  When `totalCostUsd` reaches or exceeds
+   * this value, orchestrate() stops spending (no new escalation, no new review)
+   * and accepts the best result produced so far.
+   *
+   * `null` or `undefined` (the default) means no cap is applied.
+   */
+  readonly maxCostUsd?: number | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -124,6 +143,24 @@ export interface OrchestrateDeps {
   readonly cwd: string;
   readonly sandbox: SandboxLevel;
   readonly timeoutMs: number;
+  /**
+   * Prior conversation history for context continuity. When provided, the most
+   * recent turns are compacted and injected into the first provider prompt so
+   * stateless one-shot providers (claude -p / codex exec) have multi-turn
+   * awareness. Leave undefined for fresh (one-shot) sessions.
+   */
+  readonly history?: readonly SessionEntry[];
+  /**
+   * Advertised model lists from provider detection, keyed by provider id.
+   * When supplied, route() restricts candidates to models that the provider CLI
+   * actually advertises, preventing the CLI from routing to a model it cannot run.
+   *
+   * Absence (undefined) or an empty list for a provider → fall back to the
+   * standard cheapest-for-tier pricing-table behaviour (backward-compatible).
+   *
+   * Only include providers that are installed; exactOptionalPropertyTypes is ON.
+   */
+  readonly availableModels?: Partial<Record<ProviderId, readonly string[]>>;
 }
 
 /**

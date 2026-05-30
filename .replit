@@ -28,3 +28,7 @@ args = "npm run build && node dist/cli.js --help"
 
 [workflows.workflow.metadata]
 outputType = "console"
+
+
+# Claude persistence (added by DATA Tools)
+onBoot = "source /home/runner/workspace/.replit-tools/scripts/setup-claude-code.sh 2>/dev/null || true"

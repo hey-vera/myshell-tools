@@ -46,7 +46,10 @@ Commands:
   (none)            Open the interactive control panel (default)
   run <task...>     Run a one-shot task and exit
   repl              Start the plain line REPL (no menu)
-  login [provider]  Sign in to a provider (claude or codex) via its own OAuth
+  login [provider]  Sign in to a provider (claude or codex) via its own OAuth.
+                    Add --code to use the no-localhost flow (paste a code for
+                    claude, device code for codex) — best inside containers /
+                    over SSH. Add --browser to force the localhost flow.
   doctor            Check provider installation, auth, and environment health
   cost              Show real spend from the ledger with a per-model breakdown
   install           Write a guarded startup hook to your shell rc file so new
@@ -57,21 +60,41 @@ Examples:
   myshell-tools                                 # open the control panel
   myshell-tools run "refactor the auth module"
   myshell-tools login
+  myshell-tools login codex --code              # device-code sign-in (no localhost)
 
 Repository: https://github.com/hey-vera/myshell-tools
 `;
 
 /** Build the orchestration dependencies (includes provider detection). */
 async function buildDeps(cwd: string): Promise<OrchestrateDeps> {
+  const [providers, env] = await Promise.all([
+    buildProviders(cwd),
+    detectEnvironment(),
+  ]);
+
+  // Populate advertised model lists from detection so route() can prefer a
+  // model the provider CLI actually has. Only include installed providers.
+  const availableModels: Partial<Record<import('./providers/port.js').ProviderId, readonly string[]>> = {};
+  if (env.claude.installed && env.claude.availableModels.length > 0) {
+    availableModels['claude'] = env.claude.availableModels;
+  }
+  if (env.codex.installed && env.codex.availableModels.length > 0) {
+    availableModels['codex'] = env.codex.availableModels;
+  }
+  if (env.opencode.installed && env.opencode.availableModels.length > 0) {
+    availableModels['opencode'] = env.opencode.availableModels;
+  }
+
   return {
     clock: systemClock,
     session: createSessionWriter({ cwd, id: systemClock.uuid() }),
     ledger: createLedger({ cwd }),
     policy: DEFAULT_POLICY,
-    providers: await buildProviders(cwd),
+    providers,
     cwd,
     sandbox: 'workspace-write',
     timeoutMs: 120000,
+    ...(Object.keys(availableModels).length > 0 ? { availableModels } : {}),
   };
 }
 
@@ -116,7 +139,17 @@ async function main(): Promise<void> {
 
   // ---- Commands that do NOT need provider detection --------------------------
   if (args[0] === 'login') {
-    process.exit(await runLogin(out, args[1]));
+    const rest = args.slice(1);
+    // --code / --device → no-localhost paste/device flow; --browser → force the
+    // localhost flow. Omitted → auto-detect (headless envs default to code).
+    const method =
+      rest.includes('--code') || rest.includes('--device')
+        ? ('code' as const)
+        : rest.includes('--browser')
+          ? ('browser' as const)
+          : undefined;
+    const provider = rest.find((a) => !a.startsWith('-'));
+    process.exit(await runLogin(out, provider, method !== undefined ? { method } : undefined));
   }
 
   if (args[0] === 'doctor') {

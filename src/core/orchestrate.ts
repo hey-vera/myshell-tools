@@ -27,21 +27,45 @@
  *  - No process.exit() — only src/cli.ts may terminate the process
  */
 
-import type { CoreEvent, OrchestrateDeps, Tier, Classification, Assessment } from './types.js';
+import type { CoreEvent, OrchestrateDeps, Tier, Classification, Assessment, Policy } from './types.js';
 import type { CliError, Usage, ProviderRequest, ProviderId } from '../providers/port.js';
 import { classify } from './classify.js';
 import { route } from './route.js';
 import { buildPrompt } from './prompt.js';
 import { assess } from './assess.js';
+import { compactHistory } from './history.js';
 import { getModelPricing, calculateCost } from '../infra/pricing.js';
 import { nextTierUp, pickReviewer } from './escalate.js';
 import { buildReviewPrompt, parseReviewVerdict } from './review.js';
+import { budgetExceeded } from './budget.js';
 
 // ---------------------------------------------------------------------------
-// Pure helper: should this IC output be cross-vendor reviewed?
+// Pure helper: should this output be cross-vendor reviewed?
 // ---------------------------------------------------------------------------
 
-function shouldReview(classification: Classification, assessment: Assessment): boolean {
+/**
+ * Decides whether a cross-vendor review should be triggered, given the task
+ * classification, assessment signals, and the active review policy.
+ *
+ * @param classification - Task classification (tier + risk).
+ * @param assessment     - Model self-assessment (confidence, escalate, needsReview).
+ * @param reviewPolicy   - Policy field; `undefined` is treated as `'auto'` for
+ *                         backward compatibility.
+ */
+function shouldReview(
+  classification: Classification,
+  assessment: Assessment,
+  reviewPolicy: Policy['reviewPolicy'],
+): boolean {
+  // 'off' — never auto-review.
+  if (reviewPolicy === 'off') return false;
+
+  // 'critical-only' — review only when risk is critical.
+  if (reviewPolicy === 'critical-only') {
+    return classification.risk === 'critical';
+  }
+
+  // 'auto' (or undefined, treated as 'auto') — original behaviour.
   return (
     classification.risk === 'high' ||
     classification.risk === 'critical' ||
@@ -123,6 +147,14 @@ export async function* orchestrate(
   let attempts = 0;
   let totalCostUsd = 0;
   let lastOutput = '';
+
+  // Compute history context once per orchestrate() call (before the loop).
+  // It is injected into the first-tier prompt to give stateless providers
+  // multi-turn context; the history does NOT grow during the loop.
+  const historyContext =
+    deps.history !== undefined && deps.history.length > 0
+      ? compactHistory(deps.history)
+      : undefined;
   /**
    * Track which attempt indices have already been reviewed so that re-runs
    * (e.g. after a revise verdict) are not reviewed a second time and we
@@ -137,7 +169,7 @@ export async function* orchestrate(
     attempts++;
 
     // --- Route for current tier ---
-    const decision = route(currentTier, available, deps.policy);
+    const decision = route(currentTier, available, deps.policy, deps.availableModels);
 
     const provider = deps.providers[decision.provider];
     if (provider === undefined) {
@@ -149,11 +181,11 @@ export async function* orchestrate(
       break mainLoop;
     }
 
-    // --- Build prompt (with optional reviewer feedback on IC retry) ---
+    // --- Build prompt (with optional reviewer feedback on IC retry + history context) ---
     const prompt =
       currentTier === 'ic' && managerNotes !== undefined
-        ? buildPrompt(currentTier, task, managerNotes)
-        : buildPrompt(currentTier, task);
+        ? buildPrompt(currentTier, task, managerNotes, historyContext)
+        : buildPrompt(currentTier, task, undefined, historyContext);
 
     // --- Yield tier-start ---
     yield {
@@ -302,7 +334,30 @@ export async function* orchestrate(
     //    Guard: each attempt is reviewed at most once (prevents infinite loops).
     //    Guard: skip review if the only available reviewer is the same vendor
     //           (cross-vendor review is required; same-vendor-only → skip).
-    if (shouldReview(classification, assessment) && !reviewedAttempts.has(attempts)) {
+    //    Guard: skip review when budget is exhausted (gating new spend only).
+    if (
+      shouldReview(classification, assessment, deps.policy.reviewPolicy) &&
+      !reviewedAttempts.has(attempts)
+    ) {
+      // Budget cap: do not start a review run if we have already spent the cap.
+      if (budgetExceeded(totalCostUsd, deps.policy.maxCostUsd)) {
+        yield {
+          type: 'notice',
+          level: 'warn',
+          message: 'cost budget reached — accepting best result so far',
+        };
+        yield {
+          type: 'final',
+          success: true,
+          output: lastOutput,
+          tier: currentTier,
+          totalCostUsd,
+          sessionId: deps.session.id,
+          attempts,
+        };
+        return;
+      }
+
       const reviewerId = pickReviewer(available, decision.provider);
       // Only proceed with a DIFFERENT-vendor reviewer (cross-vendor requirement).
       const reviewerProvider =
@@ -319,7 +374,7 @@ export async function* orchestrate(
         };
 
         // Route reviewer at manager tier
-        const reviewDecision = route('manager', [reviewerId], deps.policy);
+        const reviewDecision = route('manager', [reviewerId], deps.policy, deps.availableModels);
         const reviewPrompt = buildReviewPrompt(task, lastOutput);
 
         // Yield tier-start for review run
@@ -487,6 +542,24 @@ export async function* orchestrate(
           }
 
           if (verdict.verdict === 'revise') {
+            // Budget cap: do not retry current tier if we have spent the cap.
+            if (budgetExceeded(totalCostUsd, deps.policy.maxCostUsd)) {
+              yield {
+                type: 'notice',
+                level: 'warn',
+                message: 'cost budget reached — accepting best result so far',
+              };
+              yield {
+                type: 'final',
+                success: true,
+                output: lastOutput,
+                tier: currentTier,
+                totalCostUsd,
+                sessionId: deps.session.id,
+                attempts,
+              };
+              return;
+            }
             // Retry current tier with reviewer's notes
             managerNotes = verdict.notes;
             continue mainLoop;
@@ -495,6 +568,24 @@ export async function* orchestrate(
           // verdict === 'escalate'
           const escalateTo = nextTierUp(currentTier);
           if (escalateTo !== null) {
+            // Budget cap: do not escalate to a new tier if we have spent the cap.
+            if (budgetExceeded(totalCostUsd, deps.policy.maxCostUsd)) {
+              yield {
+                type: 'notice',
+                level: 'warn',
+                message: 'cost budget reached — accepting best result so far',
+              };
+              yield {
+                type: 'final',
+                success: true,
+                output: lastOutput,
+                tier: currentTier,
+                totalCostUsd,
+                sessionId: deps.session.id,
+                attempts,
+              };
+              return;
+            }
             yield { type: 'escalate', from: currentTier, to: escalateTo, reason: 'reviewer escalation' };
             currentTier = escalateTo;
           }
@@ -511,6 +602,25 @@ export async function* orchestrate(
 
     const nextTier = nextTierUp(currentTier);
     if (needEsc && nextTier !== null) {
+      // Budget cap: do not escalate to a new tier if we have spent the cap.
+      if (budgetExceeded(totalCostUsd, deps.policy.maxCostUsd)) {
+        yield {
+          type: 'notice',
+          level: 'warn',
+          message: 'cost budget reached — accepting best result so far',
+        };
+        yield {
+          type: 'final',
+          success: true,
+          output: lastOutput,
+          tier: currentTier,
+          totalCostUsd,
+          sessionId: deps.session.id,
+          attempts,
+        };
+        return;
+      }
+
       const escalateReason =
         assessment.reason !== 'model provided no reason' &&
         assessment.reason !== 'no confidence envelope'

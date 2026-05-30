@@ -114,13 +114,30 @@ situation warrants immediate human or higher-tier intervention.`;
  * the prompt is extended with a REVIEWER FEEDBACK section so the IC can address
  * the specific feedback on its next attempt.
  *
- * @param tier         - The orchestration tier that will handle the task.
- * @param task         - The raw user task description.
- * @param managerNotes - Optional feedback from a cross-vendor reviewer to be addressed.
+ * When `historyContext` is provided (a non-empty compacted prior conversation
+ * summary), a CONVERSATION SO FAR section is inserted between the system prompt
+ * and the Task block, giving stateless one-shot providers multi-turn awareness.
+ *
+ * @param tier           - The orchestration tier that will handle the task.
+ * @param task           - The raw user task description.
+ * @param managerNotes   - Optional feedback from a cross-vendor reviewer to be addressed.
+ * @param historyContext - Optional compacted prior conversation history string.
  */
-export function buildPrompt(tier: Tier, task: string, managerNotes?: string): string {
+export function buildPrompt(
+  tier: Tier,
+  task: string,
+  managerNotes?: string,
+  historyContext?: string,
+): string {
   const system = TIER_PROMPTS[tier];
-  let prompt = `${system}\n\n---\n\nTask:\n${task}`;
+  let prompt = system;
+
+  if (historyContext !== undefined && historyContext.trim().length > 0) {
+    prompt += `\n\nCONVERSATION SO FAR (for context; do not repeat it back):\n${historyContext.trim()}`;
+  }
+
+  prompt += `\n\n---\n\nTask:\n${task}`;
+
   if (managerNotes !== undefined && managerNotes.trim().length > 0) {
     prompt += `\n\nREVIEWER FEEDBACK:\n${managerNotes.trim()}\nAddress this specifically.`;
   }

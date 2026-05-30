@@ -1,9 +1,10 @@
 /**
- * Unit tests for parseClaudeAuth and parseCodexAuth in src/providers/detect.ts
+ * Unit tests for parseClaudeAuth, parseCodexAuth, and the opencode detection
+ * helpers in src/providers/detect.ts.
  *
  * All tests are hermetic — no live CLI spawns. Input strings are representative
- * samples based on real captured output from `claude auth status` and
- * `codex login status`.
+ * samples based on real captured output from `claude auth status`,
+ * `codex login status`, and `opencode --version`.
  */
 
 import { describe, it } from 'node:test';
@@ -11,6 +12,7 @@ import assert from 'node:assert/strict';
 import {
   parseClaudeAuth,
   parseCodexAuth,
+  getInstallCommand,
 } from '../../src/providers/detect.ts';
 
 // ---------------------------------------------------------------------------
@@ -241,5 +243,100 @@ describe('parseCodexAuth — empty stdout with exit code 0', () => {
 
   it('plan is null', () => {
     assert.equal(result.plan, null);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// opencode detection helpers — pure / hermetic
+// ---------------------------------------------------------------------------
+
+/**
+ * opencode has no auth parse function because it ships free models that need
+ * no credentials. The detection contract is: installed → authenticated:true.
+ * We test the supporting pure helpers (getInstallCommand) and document the
+ * rationale in assertions.
+ */
+
+describe('opencode — getInstallCommand returns the opencode-ai npm package', () => {
+  it('does not throw', () => {
+    assert.doesNotThrow(() => getInstallCommand('opencode'));
+  });
+
+  it('returns the npm install -g opencode-ai command', () => {
+    assert.equal(getInstallCommand('opencode'), 'npm install -g opencode-ai');
+  });
+
+  it('starts with "npm install -g "', () => {
+    assert.ok(
+      getInstallCommand('opencode').startsWith('npm install -g '),
+      'opencode install command must start with "npm install -g "',
+    );
+  });
+
+  it('contains the opencode-ai package name', () => {
+    assert.ok(
+      getInstallCommand('opencode').includes('opencode-ai'),
+      'opencode install command must include the "opencode-ai" package name',
+    );
+  });
+
+  it('is different from the claude install command', () => {
+    assert.notEqual(
+      getInstallCommand('opencode'),
+      getInstallCommand('claude'),
+      'opencode and claude install commands must differ',
+    );
+  });
+
+  it('is different from the codex install command', () => {
+    assert.notEqual(
+      getInstallCommand('opencode'),
+      getInstallCommand('codex'),
+      'opencode and codex install commands must differ',
+    );
+  });
+
+  it('is a pure function — same input always returns same output', () => {
+    assert.equal(getInstallCommand('opencode'), getInstallCommand('opencode'));
+  });
+
+  it('does not contain digit-% literals (Honesty Contract)', () => {
+    assert.ok(
+      !/\d+%/.test(getInstallCommand('opencode')),
+      'opencode install command must not contain digit-% literals',
+    );
+  });
+});
+
+describe('opencode — detection rationale: installed implies authenticated (free models)', () => {
+  /**
+   * opencode ships free models (e.g. opencode/deepseek-v4-flash-free) that
+   * require no credentials. The detection contract documented here:
+   *  - When `opencode --version` exits 0, installed=true AND authenticated=true.
+   *  - This is honest: any installed opencode binary is immediately usable.
+   *  - plan is always null (opencode --version does not expose subscription).
+   *
+   * Because detectProvider('opencode') spawns a real binary, we cannot test it
+   * hermetically here. Instead, we document the contract via assertions about
+   * the getInstallCommand output and by verifying the ProviderId union includes
+   * 'opencode'. The real spawn is exercised by the integration suite.
+   */
+
+  it('opencode is a valid ProviderId (compile-time verified by typecheck)', () => {
+    // If 'opencode' were not in the ProviderId union, getInstallCommand('opencode')
+    // would be a TypeScript error. The fact that this test compiles at all is the
+    // assertion. We add a runtime check for belt-and-suspenders.
+    const cmd = getInstallCommand('opencode');
+    assert.ok(typeof cmd === 'string' && cmd.length > 0, 'opencode is a valid ProviderId');
+  });
+
+  it('all three install commands are distinct (claude, codex, opencode)', () => {
+    const commands = [
+      getInstallCommand('claude'),
+      getInstallCommand('codex'),
+      getInstallCommand('opencode'),
+    ];
+    const uniqueCommands = new Set(commands);
+    assert.equal(uniqueCommands.size, 3, 'all three install commands must be distinct');
   });
 });

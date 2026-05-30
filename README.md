@@ -4,7 +4,7 @@
 
 `myshell-tools` routes each task to the *cheapest* model likely to succeed, runs it on your real codebase, optionally has a **different vendor** review the result, and shows you exactly what it did and what it truly cost — with **no fabricated data, ever**.
 
-> **Status: `2.1.0` — honest, tested, and real.** Both the Claude and Codex paths work, and provider auth is detected for real.
+> **Status: `2.6.0` — honest, tested, and real.** Claude, Codex, and opencode (experimental) all work, and provider auth is detected for real.
 
 ---
 
@@ -39,20 +39,29 @@ myshell-tools
 Using one frontier model for everything is wasteful (renaming a variable doesn't need Opus) and single‑model output has blind spots. `myshell-tools` addresses both, honestly:
 
 - **Cost‑aware routing** — trivial work goes to the cheap tier (Haiku / GPT‑5 mini), real implementation to the mid tier, hard calls to the flagship. You see the savings as a real number.
-- **Cross‑vendor adversarial review** — for high‑risk work, a *different vendor* checks the first model's output (Codex reviewing Claude, or vice‑versa). Different families, different blind spots.
-- **Subscription, not metering** — it drives the **Claude Code** and **Codex** CLIs you already pay for. No API keys, no per‑token bill.
+- **Efficiency modes** — three policy presets control the cost/quality trade-off:
+  - `cost-saver` — routes to the cheapest capable model for each tier; only runs the cross-vendor review pass on *critical*-risk tasks (not every IC call). An optional `maxCostUsd` cap halts further escalation/review once spend reaches the limit.
+  - `balanced` — the default; routes intelligently and reviews high-risk work.
+  - `quality-first` — always reviews IC output for high/critical tasks, regardless of cost.
+- **Cross‑vendor adversarial review** — a *different vendor* checks the first model's output (Codex reviewing Claude, or vice‑versa). Different families, different blind spots. Review gating depends on mode; see Efficiency modes above.
+- **Multi-turn context continuity** — follow-up messages carry real context. Prior conversation turns are compacted into a bounded history block (~6 k chars, most recent 12 turns) and replayed to the model, so it actually knows what was said earlier. Confidence envelopes are stripped before replay to save tokens.
+- **Container / SSH sign-in** — `myshell-tools login` auto-detects headless and cloud-IDE environments (Replit, Codespaces, Gitpod, SSH sessions) and switches to a no-localhost sign-in flow automatically. Force either flow with `--code` or `--browser`.
+- **opencode provider (experimental)** — auto-detected; works instantly with free hosted models (no keys). Add premium providers through opencode's own `auth login`. Route to it explicitly or let the policy fall back to it automatically.
+- **Routing prefers advertised models** — detection passes each provider's actual model list to `route()`, which picks the cheapest model the CLI *actually has*, not just the cheapest in the pricing table. Falls back gracefully if the advertised list doesn't match any pricing entry.
+- **Subscription, not metering** — it drives the **Claude Code**, **Codex**, and **opencode** CLIs you already use. No API keys, no per‑token bill for the free path.
 - **Honest by construction** — every number on screen traces to a real measurement. A suite of *architecture tests* makes fabricated/mock output literally unmergeable.
 
 ---
 
 ## Requirements
 
-- **Node.js ≥ 20** (the CLI itself; tests require Node ≥ 22).
+- **Node.js ≥ 20** for the compiled CLI (`dist/`). **Node ≥ 22** is required to run the test suite (see Development below).
 - At least one provider CLI.  `npx myshell-tools` will **offer to install** them for you on first run — or you can install manually:
   - **Claude Code** — `npm install -g @anthropic-ai/claude-code`, then sign in when prompted.
   - **Codex** — `npm install -g @openai/codex`, then `codex login`.
+  - **opencode** *(experimental, optional)* — auto-detected when the `opencode` CLI is installed. Works immediately with free hosted models (no keys). Premium providers (Gemini, Claude, GPT, local models, etc.) are available through opencode's own `auth login` — myshell-tools never handles the keys. Appears in the control-panel header and session picker only when installed.
 
-You need **one** to start; install **both** to unlock cross‑vendor review.
+You need **one** to start; install **both** claude and codex to unlock cross‑vendor review.
 
 ---
 
@@ -164,7 +173,7 @@ classify ─▶ route(cheapest tier) ─▶ run ─▶ assess
 This is a ground‑up rebuild whose first principle is: **the tool never shows fabricated, mocked, or randomized data as if it were real.** It's enforced, not promised:
 
 - **Architecture guard tests** fail the build if the UI/command layers contain hardcoded "AI responses", fake metrics, or a digit‑then‑`%` literal; if the orchestration core touches the filesystem, clock, or RNG directly; or if any module other than the entry point can terminate the process.
-- **513 unit/architecture tests + 42 contract tests** (parsers pinned to *recorded real transcripts*), with `tsc --strict`, ESLint, and a clean `npm pack` checked in CI across Windows / macOS / Linux.
+- **1000+ unit/architecture tests + 42 contract tests** (parsers pinned to *recorded real transcripts*), with `tsc --strict`, ESLint, and a clean `npm pack` checked in CI across Windows / macOS / Linux.
 
 ---
 
@@ -184,12 +193,17 @@ Hexagonal / ports‑and‑adapters:
 
 ## Development
 
+**Node ≥ 22 is required to run the test suite.** `npm test` uses
+`node --experimental-strip-types` (native TypeScript stripping, available from
+Node 22+). The compiled runtime (`dist/`) supports Node ≥ 20, so
+`package.json` `engines` is left at `>=20`.
+
 ```bash
-npm run typecheck   # tsc --strict, 0 errors
-npm run lint        # ESLint (typescript-eslint strict)
-npm test            # unit + architecture tests
+npm run typecheck      # tsc --strict, 0 errors
+npm run lint           # ESLint (typescript-eslint strict)
+npm test               # unit + architecture tests (requires Node ≥ 22)
 npm run test:contract  # parser contract tests vs recorded transcripts
-npm run build       # → dist/
+npm run build          # tsc → dist/
 ```
 
 ---
@@ -203,6 +217,8 @@ Honest snapshot of `2.0.0-alpha.0`:
 | Core routing + escalation + cross‑vendor review loop | ✅ implemented & unit‑proven |
 | Claude adapter | ✅ live, validated end‑to‑end on real models |
 | Codex adapter | ✅ built; auto‑activates once `codex` is installed + authed |
+| opencode adapter (experimental) | ✅ auto-detected; free models work without keys |
+| Routing prefers advertised models (never routes to unavailable model) | ✅ |
 | `doctor` / `cost` / REPL / streaming UI | ✅ |
 | Live cross‑vendor demonstration | ⏳ pending Codex auth |
 | Cross‑OS CI run | ⏳ pending a public remote |

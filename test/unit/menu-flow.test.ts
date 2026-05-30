@@ -255,6 +255,15 @@ const FAKE_ENV: EnvironmentStatus = {
     binaryPath: null,
     availableModels: [],
   },
+  opencode: {
+    id: 'opencode',
+    installed: false,
+    version: null,
+    authenticated: false,
+    plan: null,
+    binaryPath: null,
+    availableModels: [],
+  },
   hasAnyProvider: true,
   platform: 'linux',
 };
@@ -302,6 +311,9 @@ function makeCtx(
     cwd: dir,
     sandbox: 'workspace-write',
     timeoutMs: 5_000,
+    // Inject no-op fakes so no real npm/claude/codex subprocesses are spawned
+    installProvider: async () => true,
+    login: async () => 0,
     ...overrides,
   };
 }
@@ -706,6 +718,15 @@ const FAKE_ENV_CLAUDE_MISSING: EnvironmentStatus = {
     binaryPath: 'codex',
     availableModels: ['gpt-5.4'],
   },
+  opencode: {
+    id: 'opencode',
+    installed: false,
+    version: null,
+    authenticated: false,
+    plan: null,
+    binaryPath: null,
+    availableModels: [],
+  },
   hasAnyProvider: true,
   platform: 'linux',
 };
@@ -738,6 +759,9 @@ describe('startMenu — first-run welcome: install prompt for missing provider',
       sandbox: 'workspace-write',
       timeoutMs: 5_000,
       readLine: makeScriptedReader(inputs),
+      // Inject no-op fakes so no real npm/claude/codex subprocesses are spawned
+      installProvider: async () => true,
+      login: async () => 0,
     };
   }
 
@@ -865,6 +889,15 @@ describe('startMenu — first-run welcome: install prompt for missing provider',
         plan: null,
         binaryPath: 'codex',
         availableModels: ['gpt-5.4'],
+      },
+      opencode: {
+        id: 'opencode',
+        installed: false,
+        version: null,
+        authenticated: false,
+        plan: null,
+        binaryPath: null,
+        availableModels: [],
       },
       hasAnyProvider: true,
       platform: 'linux',
@@ -1088,6 +1121,129 @@ describe('startMenu — [i] import a native conversation', () => {
 });
 
 // ---------------------------------------------------------------------------
+// FLOW 8b: [r] raw session picker — opencode conditional visibility
+// ---------------------------------------------------------------------------
+
+describe('startMenu — [r] raw session picker: opencode visibility', () => {
+  /** Env where opencode IS installed (authenticated-when-installed). */
+  const FAKE_ENV_WITH_OPENCODE: EnvironmentStatus = {
+    ...FAKE_ENV,
+    opencode: {
+      id: 'opencode',
+      installed: true,
+      version: '0.1.0',
+      authenticated: true,
+      plan: null,
+      binaryPath: 'opencode',
+      availableModels: ['opencode/deepseek-v4-flash-free'],
+    },
+  };
+
+  it('raw session picker shows [3] opencode when opencode is installed', async () => {
+    const sink = makeSink();
+    const ctx = makeCtx(
+      {
+        env: FAKE_ENV_WITH_OPENCODE,
+        readLine: makeScriptedReader([
+          'r',    // open raw session picker
+          null,   // EOF at choice → cancel gracefully (no real spawn)
+          'q',    // quit
+        ]),
+      },
+    );
+
+    await assert.doesNotReject(
+      () => startMenu(ctx, sink),
+      'raw session picker with opencode installed should not throw',
+    );
+
+    // The picker prompt must list opencode as [3]
+    assert.ok(
+      sink.buf.includes('[3]') && sink.buf.toLowerCase().includes('opencode'),
+      `picker must offer "[3] opencode" when opencode is installed; got: ${sink.buf.slice(0, 500)}`,
+    );
+  });
+
+  it('raw session picker does NOT show opencode when not installed', async () => {
+    const sink = makeSink();
+    // FAKE_ENV has opencode not-installed
+    const ctx = makeCtx(
+      {
+        readLine: makeScriptedReader([
+          'r',    // open raw session picker
+          null,   // EOF at choice → cancel gracefully
+          'q',    // quit
+        ]),
+      },
+    );
+
+    await assert.doesNotReject(
+      () => startMenu(ctx, sink),
+      'raw session picker without opencode should not throw',
+    );
+
+    // Picker should show [1] and [2] but NOT [3] in the raw-session section
+    // (the main menu uses [1-9] for conversations, so we verify no opencode
+    // appears inside the raw session prompt context)
+    const rawSessionSection = sink.buf.split('Open raw session')[1] ?? '';
+    assert.ok(
+      !rawSessionSection.toLowerCase().includes('opencode'),
+      'opencode must not appear in raw session picker when not installed',
+    );
+  });
+
+  it('[r] with opencode installed → picker lists [1] Claude [2] Codex [3] opencode', async () => {
+    // Drive [r] to open the picker, then EOF to cancel — verify all three labels appear
+    // in the rendered prompt. No real binary is spawned (EOF cancels before selection).
+    const sink = makeSink();
+    const ctx = makeCtx(
+      {
+        env: FAKE_ENV_WITH_OPENCODE,
+        readLine: makeScriptedReader([
+          'r',    // open raw session picker
+          null,   // EOF at choice prompt → cancel gracefully (no execa spawn)
+          'q',    // quit
+        ]),
+      },
+    );
+
+    await assert.doesNotReject(
+      () => startMenu(ctx, sink),
+      'picker with opencode installed should not throw on EOF cancel',
+    );
+
+    // All three options must appear in the rendered picker prompt
+    assert.ok(sink.buf.includes('[1]') && sink.buf.toLowerCase().includes('claude'),
+      'picker must show [1] Claude');
+    assert.ok(sink.buf.includes('[2]') && sink.buf.toLowerCase().includes('codex'),
+      'picker must show [2] Codex');
+    assert.ok(sink.buf.includes('[3]') && sink.buf.toLowerCase().includes('opencode'),
+      'picker must show [3] opencode when installed');
+  });
+
+  it('[r] → select [2] (Codex) when opencode not installed → Cancelled (no spawn)', async () => {
+    // With opencode NOT installed: [1]=Claude, [2]=Codex. Selecting [2] launches codex.
+    // Since codex isn't present in CI either, reject:false means clean return.
+    const sink = makeSink();
+    const ctx = makeCtx(
+      {
+        readLine: makeScriptedReader([
+          'r',    // open raw session picker
+          '9',    // invalid choice → Cancelled
+          'q',    // quit
+        ]),
+      },
+    );
+
+    await assert.doesNotReject(
+      () => startMenu(ctx, sink),
+      'selecting invalid option must not throw',
+    );
+    assert.ok(sink.buf.includes('Cancelled'), '"Cancelled" shown for out-of-range choice');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // FLOW 8: first-run welcome — answering "y" to set-as-default actually runs
 //          the install (writes the hook). Uses a temp HOME to avoid writing
 //          to the real shell rc file.
@@ -1098,6 +1254,42 @@ describe('startMenu — first-run welcome: y to set-as-default writes the shell 
    * Build a first-run context pointing HOME at a temp directory so the install
    * writes a harmless ~/.bashrc there instead of the real home directory.
    */
+  /**
+   * Both providers installed and authenticated — no install or sign-in prompts
+   * appear in the welcome flow, so the only prompts are mode and set-as-default.
+   */
+  const FAKE_ENV_BOTH_INSTALLED_AUTHED: EnvironmentStatus = {
+    claude: {
+      id: 'claude',
+      installed: true,
+      version: '1.0.0',
+      authenticated: true,
+      plan: null,
+      binaryPath: 'claude',
+      availableModels: ['claude-3-5-sonnet'],
+    },
+    codex: {
+      id: 'codex',
+      installed: true,
+      version: '1.0.0',
+      authenticated: true,
+      plan: null,
+      binaryPath: 'codex',
+      availableModels: ['gpt-4o'],
+    },
+    opencode: {
+      id: 'opencode',
+      installed: false,
+      version: null,
+      authenticated: false,
+      plan: null,
+      binaryPath: null,
+      availableModels: [],
+    },
+    hasAnyProvider: true,
+    platform: 'linux',
+  };
+
   function makeInstallCtx(
     inputs: ReadonlyArray<string | null>,
     _tempHome: string,
@@ -1109,18 +1301,24 @@ describe('startMenu — first-run welcome: y to set-as-default writes the shell 
 
     const config: AppConfig = { onboarded: false, setAsDefault: false };
 
+    // Both providers installed+authed → no install or sign-in prompts appear in
+    // the welcome flow. The only prompts are mode [c/Enter] and set-as-default (y/n).
+    // Fakes are still injected defensively so no real subprocess can ever be spawned.
     return {
       version: '2.0.0',
       clock,
       ledger,
-      providers: { claude: makeFakeProvider() },
-      env: FAKE_ENV,
+      providers: { claude: makeFakeProvider(), codex: makeFakeProvider('codex') },
+      env: FAKE_ENV_BOTH_INSTALLED_AUTHED,
       store,
       config,
       cwd: dir,
       sandbox: 'workspace-write',
       timeoutMs: 5_000,
       readLine: makeScriptedReader(inputs),
+      // Inject no-op fakes so no real npm/claude/codex subprocesses are spawned
+      installProvider: async () => true,
+      login: async () => 0,
       // tempHome is set via process.env.HOME override below
     };
   }

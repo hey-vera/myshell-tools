@@ -70,7 +70,7 @@ export function buildDoctorReport(
   // ---- Providers -------------------------------------------------------------
   lines.push(bold('Providers', color));
 
-  for (const ps of [env.claude, env.codex]) {
+  for (const ps of [env.claude, env.codex, env.opencode]) {
     if (ps.installed) {
       const versionStr = ps.version !== null ? ps.version : 'unknown';
       lines.push(
@@ -104,7 +104,7 @@ export function buildDoctorReport(
   } else {
     lines.push(
       red('No providers found.', color) +
-        ' Install claude or codex to use myshell-tools.',
+        ' Install claude, codex, or opencode to use myshell-tools.',
     );
   }
 

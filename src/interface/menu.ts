@@ -62,6 +62,18 @@ export interface MenuContext {
    * Returns the next trimmed line of input, or `null` on EOF/close.
    */
   readonly readLine?: () => Promise<string | null>;
+  /**
+   * Optional injected installProvider for testing. When provided, `startMenu`
+   * uses this instead of the real `installProvider` from providers/install.ts,
+   * preventing real `npm install -g …` subprocesses from spawning during tests.
+   */
+  readonly installProvider?: (id: ProviderId, out: OutputSink) => Promise<boolean>;
+  /**
+   * Optional injected login function for testing. When provided, `startMenu`
+   * uses this instead of the real `runLogin` from commands/login.ts, preventing
+   * real `claude`/`codex login` subprocesses from spawning during tests.
+   */
+  readonly login?: (out: OutputSink, providerArg?: string) => Promise<number>;
 }
 
 // ---------------------------------------------------------------------------
@@ -140,6 +152,18 @@ export function renderHeaderLines(env: EnvironmentStatus, _version: string): str
     if (!ps.installed) {
       lines.push(`❌ ${ps.id}: not installed — ${getInstallCommand(ps.id)}`);
     } else if (ps.authenticated) {
+      lines.push(`✅ ${ps.id}: ready${planSuffix}`);
+    } else {
+      lines.push(`⚠️  ${ps.id}: not signed in${planSuffix}`);
+    }
+  }
+
+  // opencode: only show when installed (never nag users who only use claude/codex).
+  // opencode is authenticated-when-installed (free models, no credentials required).
+  if (env.opencode.installed) {
+    const ps = env.opencode;
+    const planSuffix = ps.plan != null ? ` (${ps.plan})` : '';
+    if (ps.authenticated) {
       lines.push(`✅ ${ps.id}: ready${planSuffix}`);
     } else {
       lines.push(`⚠️  ${ps.id}: not signed in${planSuffix}`);
@@ -275,6 +299,8 @@ async function runWelcome(
   out: OutputSink,
   readLine: () => Promise<string | null>,
   mutableConfig: AppConfig,
+  installProviderFn: (id: ProviderId, out: OutputSink) => Promise<boolean>,
+  loginFn: (out: OutputSink, providerArg?: string) => Promise<number>,
 ): Promise<AppConfig> {
   // Use the mutable env so re-detection after installs is visible downstream.
   let env = ctx.env;
@@ -299,7 +325,7 @@ async function runWelcome(
     // EOF or 'n'/'no' → skip; anything else (including '') → yes
     const skip = ans === null || ans.toLowerCase() === 'n' || ans.toLowerCase() === 'no';
     if (!skip) {
-      const ok = await installProvider(id, out);
+      const ok = await installProviderFn(id, out);
       if (ok) {
         didInstallAny = true;
       }
@@ -324,7 +350,9 @@ async function runWelcome(
 
     const skip = ans === null || ans.toLowerCase() === 'n' || ans.toLowerCase() === 'no';
     if (!skip) {
-      await runLogin(out, id);
+      // loginFn auto-detects the right method (code in containers/SSH where the
+      // localhost OAuth callback can't be reached, browser on a desktop).
+      await loginFn(out, id);
     }
   }
 
@@ -416,13 +444,60 @@ async function runModeSelect(
   return updated;
 }
 
+/**
+ * Toggle the "set as default shell" preference and actually install/uninstall
+ * the shell startup hook to match. The config flag is only flipped when the
+ * hook write succeeds, so the stored value never lies about the real state.
+ */
+async function toggleDefaultShell(
+  config: AppConfig,
+  out: OutputSink,
+): Promise<AppConfig> {
+  const enable = !config.setAsDefault;
+  // runInstall reports exactly what it wrote (or removed) and how to reverse.
+  const code = await runInstall(out, enable ? undefined : { uninstall: true });
+
+  // Only adopt the new state if the hook write succeeded; otherwise keep the old.
+  const setAsDefault = code === 0 ? enable : config.setAsDefault;
+
+  const updated: AppConfig = {
+    onboarded: config.onboarded,
+    setAsDefault,
+    ...(config.mode !== undefined ? { mode: config.mode } : {}),
+  };
+  await saveConfig(updated);
+  return updated;
+}
+
 async function runSettings(
-  ctx: MenuContext,
+  _ctx: MenuContext,
   mutableCtx: { config: AppConfig },
   out: OutputSink,
   readLine: () => Promise<string | null>,
 ): Promise<void> {
-  mutableCtx.config = await runModeSelect(mutableCtx.config, out, readLine);
+  const cfg = mutableCtx.config;
+  const settingsLines = [
+    '',
+    `  [1] Mode: ${cfg.mode ?? 'balanced'}`,
+    `  [2] Set as default shell: ${cfg.setAsDefault ? 'on' : 'off'}`,
+    '',
+    '  [Enter] Back',
+    '',
+  ];
+  out.write('\n' + box('Settings', settingsLines) + '\n\n');
+
+  out.write('> ');
+  const key = await readLine();
+
+  // EOF or Enter → back, no change
+  if (key === null || key.length === 0) return;
+
+  if (key === '1') {
+    mutableCtx.config = await runModeSelect(mutableCtx.config, out, readLine);
+  } else if (key === '2') {
+    mutableCtx.config = await toggleDefaultShell(mutableCtx.config, out);
+  }
+  // anything else → back
 }
 
 // ---------------------------------------------------------------------------
@@ -603,30 +678,39 @@ async function runImportNative(
 // ---------------------------------------------------------------------------
 
 /**
- * Launch the native `claude` or `codex` interactive CLI directly (stdio:inherit),
- * so the user gets a raw provider session. The session is owned by the native CLI
- * (not by myshell-tools); we simply hand over the terminal and wait.
+ * Launch the native `claude`, `codex`, or `opencode` interactive CLI directly
+ * (stdio:inherit), so the user gets a raw provider session. The session is owned
+ * by the native CLI (not by myshell-tools); we simply hand over the terminal and wait.
  *
  * On exit (any exit code), control returns to the myshell-tools menu.
  */
 async function runRawProviderSession(
   out: OutputSink,
   readLine: () => Promise<string | null>,
+  env: EnvironmentStatus,
 ): Promise<void> {
-  out.write('\nOpen raw session with:\n  [1] Claude\n  [2] Codex\n\n> ');
+  // Build the choice list dynamically: opencode only when installed.
+  const choices: Array<{ label: string; bin: string }> = [
+    { label: 'Claude', bin: 'claude' },
+    { label: 'Codex', bin: 'codex' },
+  ];
+  if (env.opencode.installed) {
+    choices.push({ label: 'opencode', bin: 'opencode' });
+  }
+
+  const choiceLines = choices.map((c, i) => `  [${i + 1}] ${c.label}`).join('\n');
+  out.write(`\nOpen raw session with:\n${choiceLines}\n\n> `);
   const choice = await readLine();
   if (choice === null) return;
 
-  let bin: string;
-  if (choice === '1') {
-    bin = 'claude';
-  } else if (choice === '2') {
-    bin = 'codex';
-  } else {
+  const idx = parseInt(choice, 10) - 1;
+  const selected = choices[idx];
+  if (selected === undefined) {
     out.write('Cancelled.\n');
     return;
   }
 
+  const bin = selected.bin;
   out.write(`\nLaunching ${bin} — press Ctrl+C or type /exit inside ${bin} to return.\n`);
   // stdio:'inherit' hands the terminal to the native CLI so its interactive
   // session runs in place. reject:false so we return to menu on any exit code.
@@ -701,6 +785,26 @@ async function runChatLoop(
           ? POLICY_PRESETS[mutableCtx.config.mode]
           : DEFAULT_POLICY;
 
+      // Load prior history before each turn so the provider receives conversation
+      // context. load() returns only the entries persisted so far — the current
+      // user turn is appended by orchestrate() after this point, so there is no
+      // double-inclusion risk.
+      const priorHistory = await ctx.store.load(convId);
+
+      // Build per-provider advertised model sets from the live env so route()
+      // can prefer a model the CLI actually advertises. Only include installed
+      // providers (exactOptionalPropertyTypes is ON).
+      const menuAvailableModels: Partial<Record<ProviderId, readonly string[]>> = {};
+      if (ctx.env.claude.installed && ctx.env.claude.availableModels.length > 0) {
+        menuAvailableModels['claude'] = ctx.env.claude.availableModels;
+      }
+      if (ctx.env.codex.installed && ctx.env.codex.availableModels.length > 0) {
+        menuAvailableModels['codex'] = ctx.env.codex.availableModels;
+      }
+      if (ctx.env.opencode.installed && ctx.env.opencode.availableModels.length > 0) {
+        menuAvailableModels['opencode'] = ctx.env.opencode.availableModels;
+      }
+
       const deps: OrchestrateDeps = {
         clock: ctx.clock,
         session: ctx.store.writer(convId),
@@ -710,6 +814,8 @@ async function runChatLoop(
         cwd: ctx.cwd,
         sandbox: ctx.sandbox,
         timeoutMs: ctx.timeoutMs,
+        ...(priorHistory.length > 0 ? { history: priorHistory } : {}),
+        ...(Object.keys(menuAvailableModels).length > 0 ? { availableModels: menuAvailableModels } : {}),
       };
 
       const ac = new AbortController();
@@ -796,6 +902,10 @@ async function renderMainScreen(
  * that EOF resolves gracefully instead of throwing.
  */
 export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void> {
+  // Resolve injected seams — use the real implementations when not provided.
+  const installProviderFn = ctx.installProvider !== undefined ? ctx.installProvider : installProvider;
+  const loginFn = ctx.login !== undefined ? ctx.login : runLogin;
+
   // Build the readLine function — either injected (for tests) or backed by a
   // real readline interface driven by the event-driven LineReader queue.
   let readLine: () => Promise<string | null>;
@@ -830,7 +940,7 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
   try {
     // ---- A. First-run welcome -----------------------------------------------
     if (!mutableCtx.config.onboarded) {
-      mutableCtx.config = await runWelcome(ctx, out, readLine, mutableCtx.config);
+      mutableCtx.config = await runWelcome(ctx, out, readLine, mutableCtx.config, installProviderFn, loginFn);
     }
 
     // ---- B. Main screen loop -------------------------------------------------
@@ -900,20 +1010,22 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
 
       // ---- [r] Open a raw provider session ------------------------------------
       if (key === 'r') {
-        await runRawProviderSession(out, readLine);
+        await runRawProviderSession(out, readLine, mutableCtx.env);
         continue;
       }
 
       // ---- [j] Login Claude ---------------------------------------------------
+      // loginFn auto-detects the right sign-in method (code in containers/SSH,
+      // browser on a desktop). Force either with `myshell-tools login claude --code|--browser`.
       if (key === 'j') {
-        await runLogin(out, 'claude');
+        await loginFn(out, 'claude');
         mutableCtx.env = await detectEnvironment();
         continue;
       }
 
       // ---- [k] Login Codex ----------------------------------------------------
       if (key === 'k') {
-        await runLogin(out, 'codex');
+        await loginFn(out, 'codex');
         mutableCtx.env = await detectEnvironment();
         continue;
       }

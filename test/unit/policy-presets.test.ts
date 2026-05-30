@@ -129,3 +129,41 @@ describe('POLICY_PRESETS — honesty contract', () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// POLICY_PRESETS — reviewPolicy field
+// ---------------------------------------------------------------------------
+
+describe('POLICY_PRESETS — reviewPolicy field', () => {
+  it("cost-saver has reviewPolicy:'critical-only'", () => {
+    assert.equal(
+      POLICY_PRESETS['cost-saver'].reviewPolicy,
+      'critical-only',
+      "cost-saver preset must have reviewPolicy:'critical-only' to reduce spend",
+    );
+  });
+
+  it("balanced has reviewPolicy:'auto' (via DEFAULT_POLICY)", () => {
+    assert.equal(
+      POLICY_PRESETS['balanced'].reviewPolicy,
+      'auto',
+      "balanced preset must have reviewPolicy:'auto'",
+    );
+  });
+
+  it("quality-first has reviewPolicy:'auto'", () => {
+    assert.equal(
+      POLICY_PRESETS['quality-first'].reviewPolicy,
+      'auto',
+      "quality-first preset must have reviewPolicy:'auto'",
+    );
+  });
+
+  it('DEFAULT_POLICY has reviewPolicy explicitly set to auto', () => {
+    assert.equal(
+      DEFAULT_POLICY.reviewPolicy,
+      'auto',
+      "DEFAULT_POLICY must have reviewPolicy:'auto'",
+    );
+  });
+});

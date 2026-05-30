@@ -143,3 +143,73 @@ describe('route — fallback when preferred providers unavailable', () => {
     assert.equal(decision.model, 'claude-sonnet-4-6');
   });
 });
+
+// ---------------------------------------------------------------------------
+// route — opencode-only (JOB-1 regression guard)
+// ---------------------------------------------------------------------------
+
+describe('route — opencode-only provider', () => {
+  const OPENCODE_ONLY: ProviderId[] = ['opencode'];
+
+  it('worker tier with opencode-only returns a valid opencode decision (does not throw)', () => {
+    const decision = route('worker', OPENCODE_ONLY, DEFAULT_POLICY);
+    assert.equal(decision.tier, 'worker');
+    assert.equal(decision.provider, 'opencode');
+    assert.ok(decision.model.length > 0, 'model should be non-empty');
+  });
+
+  it('ic tier with opencode-only returns a valid opencode decision (does not throw)', () => {
+    const decision = route('ic', OPENCODE_ONLY, DEFAULT_POLICY);
+    assert.equal(decision.tier, 'ic');
+    assert.equal(decision.provider, 'opencode');
+    assert.ok(decision.model.length > 0, 'model should be non-empty');
+  });
+
+  it('manager tier with opencode-only returns a valid opencode decision (does not throw)', () => {
+    const decision = route('manager', OPENCODE_ONLY, DEFAULT_POLICY);
+    assert.equal(decision.tier, 'manager');
+    assert.equal(decision.provider, 'opencode');
+    assert.ok(decision.model.length > 0, 'model should be non-empty');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// route — availableModels filter
+// ---------------------------------------------------------------------------
+
+describe('route — availableModels filter', () => {
+  it('prefers a model in the advertised set for the preferred provider', () => {
+    // gpt-5.4 is advertised for codex; with codex-only, route should prefer it
+    const decision = route('ic', ['codex'], DEFAULT_POLICY, {
+      codex: ['gpt-5.4', 'gpt-5.5'],
+    });
+    assert.equal(decision.provider, 'codex');
+    // gpt-5.4 is a valid codex ic model and is in the advertised set
+    assert.equal(decision.model, 'gpt-5.4');
+  });
+
+  it('graceful fallback: when advertised set matches no pricing entry, still returns a valid decision', () => {
+    // 'phantom-model-xyz' is advertised but not in our pricing table; should
+    // fall back gracefully to the cheapest codex ic model (not throw).
+    const decision = route('ic', ['codex'], DEFAULT_POLICY, {
+      codex: ['phantom-model-xyz'],
+    });
+    assert.equal(decision.tier, 'ic');
+    assert.equal(decision.provider, 'codex');
+    assert.ok(decision.model.length > 0, 'model should be non-empty');
+  });
+
+  it('when availableModels is omitted, behaviour is identical to pre-existing routing', () => {
+    const withoutModels = route('ic', CLAUDE_ONLY, DEFAULT_POLICY);
+    const withUndefined = route('ic', CLAUDE_ONLY, DEFAULT_POLICY, undefined);
+    assert.equal(withoutModels.provider, withUndefined.provider);
+    assert.equal(withoutModels.model, withUndefined.model);
+    assert.equal(withoutModels.tier, withUndefined.tier);
+  });
+
+  it('when availableModels has an empty array for a provider, behaviour is identical to omitting it', () => {
+    const withEmpty = route('ic', CLAUDE_ONLY, DEFAULT_POLICY, { claude: [] });
+    const withOmitted = route('ic', CLAUDE_ONLY, DEFAULT_POLICY);
+    assert.equal(withEmpty.model, withOmitted.model);
+  });
+});

@@ -15,7 +15,7 @@
 // ---------------------------------------------------------------------------
 
 export interface ModelPricing {
-  readonly provider: 'claude' | 'codex';
+  readonly provider: 'claude' | 'codex' | 'opencode';
   readonly model: string; // full model ID
   readonly aliases: readonly string[]; // e.g. ['opus', 'opus-4.7']
   readonly tier: 'worker' | 'ic' | 'manager';
@@ -39,6 +39,7 @@ export const PRICING_TABLE: PricingTable = {
   sourceUrls: [
     'https://www.anthropic.com/pricing',
     'https://platform.openai.com/docs/pricing',
+    'https://opencode.ai/docs',
   ],
   models: [
     // ---- Anthropic / Claude ------------------------------------------------
@@ -116,6 +117,49 @@ export const PRICING_TABLE: PricingTable = {
       outputPer1M: 14,
       contextWindow: 128_000,
     },
+
+    // ---- opencode ----------------------------------------------------------
+    // opencode ships free models whose real cost is reported at runtime via the
+    // step_finish `cost` field in JSONL output (see opencode.ts). The zero-cost
+    // entries below exist solely for model SELECTION by getCheapestForTier/route
+    // when opencode is the only available provider. They must NOT displace
+    // claude/codex in the pricing sort when those providers are also available,
+    // because opencode's cost=0 entries would always win. The route() function
+    // respects providerOrderByTier (opencode last) before falling back to the
+    // pricing table, so this zero-cost sentinel is safe.
+    {
+      provider: 'opencode',
+      model: 'opencode/mimo-v2.5-free',
+      aliases: ['mimo-v2.5-free', 'opencode-worker'],
+      tier: 'worker',
+      // Real cost is reported at runtime by opencode's step_finish event.
+      // Zero here is a placeholder for model selection only — not for billing.
+      inputPer1M: 0,
+      outputPer1M: 0,
+      contextWindow: 32_000,
+    },
+    {
+      provider: 'opencode',
+      model: 'opencode/deepseek-v4-flash-free',
+      aliases: ['deepseek-v4-flash-free', 'opencode-free'],
+      tier: 'ic',
+      // Real cost is reported at runtime by opencode's step_finish event.
+      // Zero here is a placeholder for model selection only — not for billing.
+      inputPer1M: 0,
+      outputPer1M: 0,
+      contextWindow: 128_000,
+    },
+    {
+      provider: 'opencode',
+      model: 'opencode/big-pickle',
+      aliases: ['big-pickle', 'opencode-manager'],
+      tier: 'manager',
+      // Real cost is reported at runtime by opencode's step_finish event.
+      // Zero here is a placeholder for model selection only — not for billing.
+      inputPer1M: 0,
+      outputPer1M: 0,
+      contextWindow: 128_000,
+    },
   ],
 };
 
@@ -155,13 +199,27 @@ export function calculateCost(
 
 /**
  * Return the cheapest model (lowest inputPer1M) for a given tier,
- * optionally restricted to the supplied provider IDs.
+ * optionally restricted to the supplied provider IDs and/or an allowed-model set.
  *
- * Throws if no matching model exists.
+ * When `allowedModels` is supplied and non-empty for the relevant provider(s),
+ * only models whose `model` id or any alias appears in `allowedModels` are
+ * considered. The match is case-insensitive (mirrors getModelPricing behaviour).
+ * If no candidates survive the allowed-model filter, the filter is ignored and
+ * the full provider-scoped set is used (graceful degradation — never throws due
+ * to a missing advertised model).
+ *
+ * Throws if no matching model exists (no tier entries at all, or no entries for
+ * the given providers).
+ *
+ * @param tier              - Orchestration tier to select for.
+ * @param availableProviders - Restrict to these provider IDs when supplied.
+ * @param allowedModels     - Further restrict to models advertised by the CLI.
+ *                            The set contains model IDs and/or aliases (any case).
  */
 export function getCheapestForTier(
   tier: 'worker' | 'ic' | 'manager',
   availableProviders?: string[],
+  allowedModels?: readonly string[],
 ): ModelPricing {
   let candidates = PRICING_TABLE.models.filter((m) => m.tier === tier);
 
@@ -176,6 +234,24 @@ export function getCheapestForTier(
       `No models available for tier "${tier}"` +
         (availableProviders ? ` with providers [${availableProviders.join(', ')}]` : ''),
     );
+  }
+
+  // When an allowed-model set is provided and non-empty, further restrict
+  // candidates to those whose model id or any alias appears in the set.
+  // Case-insensitive to match getModelPricing behaviour.
+  if (allowedModels !== undefined && allowedModels.length > 0) {
+    const allowed = new Set(allowedModels.map((a) => a.toLowerCase()));
+    const filtered = candidates.filter(
+      (m) =>
+        allowed.has(m.model.toLowerCase()) ||
+        m.aliases.some((a) => allowed.has(a.toLowerCase())),
+    );
+    // Graceful degradation: if the filter eliminates all candidates (e.g. the
+    // provider advertised a model not yet in our pricing table), fall back to the
+    // full provider-scoped set — never throw, never return nothing.
+    if (filtered.length > 0) {
+      candidates = filtered;
+    }
   }
 
   // Primary sort: inputPer1M ascending; secondary: outputPer1M ascending

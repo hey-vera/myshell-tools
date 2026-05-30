@@ -23,11 +23,16 @@ export const DEFAULT_POLICY: Policy = {
   // Provider preference per tier. route() picks the first available provider in
   // this order that has a model for the tier; otherwise it falls back to the
   // cheapest available model for that tier (via pricing.getCheapestForTier).
+  // opencode is listed last — it is a fallback / explicit-choice provider and
+  // must NOT displace claude or codex when those are available.
   providerOrderByTier: {
-    worker: ['claude', 'codex'],
-    ic: ['claude', 'codex'],
-    manager: ['claude', 'codex'],
+    worker: ['claude', 'codex', 'opencode'],
+    ic: ['claude', 'codex', 'opencode'],
+    manager: ['claude', 'codex', 'opencode'],
   },
+
+  // Review policy: 'auto' = current default behaviour (review on high/critical or needsReview).
+  reviewPolicy: 'auto',
 };
 
 /**
@@ -49,10 +54,12 @@ export const POLICY_PRESETS: Record<'cost-saver' | 'balanced' | 'quality-first',
       critical: 0.65,
     },
     providerOrderByTier: {
-      worker: ['claude', 'codex'],
-      ic: ['claude', 'codex'],
-      manager: ['claude', 'codex'],
+      worker: ['claude', 'codex', 'opencode'],
+      ic: ['claude', 'codex', 'opencode'],
+      manager: ['claude', 'codex', 'opencode'],
     },
+    // Only trigger cross-vendor review for critical-risk tasks to halve spend.
+    reviewPolicy: 'critical-only',
   },
 
   'balanced': DEFAULT_POLICY,
@@ -66,9 +73,11 @@ export const POLICY_PRESETS: Record<'cost-saver' | 'balanced' | 'quality-first',
       critical: 0.92,
     },
     providerOrderByTier: {
-      worker: ['claude', 'codex'],
-      ic: ['claude', 'codex'],
-      manager: ['claude', 'codex'],
+      worker: ['claude', 'codex', 'opencode'],
+      ic: ['claude', 'codex', 'opencode'],
+      manager: ['claude', 'codex', 'opencode'],
     },
+    // Review on high/critical risk or model-requested needsReview (most thorough).
+    reviewPolicy: 'auto',
   },
 };

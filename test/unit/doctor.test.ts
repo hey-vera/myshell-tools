@@ -16,7 +16,7 @@ import { buildDoctorReport } from '../../src/commands/doctor.ts';
 // ---------------------------------------------------------------------------
 
 function makeProviderStatus(
-  id: 'claude' | 'codex',
+  id: 'claude' | 'codex' | 'opencode',
   overrides?: Partial<ProviderStatus>,
 ): ProviderStatus {
   return {
@@ -34,13 +34,16 @@ function makeProviderStatus(
 function makeEnv(
   claudeOverrides?: Partial<ProviderStatus>,
   codexOverrides?: Partial<ProviderStatus>,
+  opencodeOverrides?: Partial<ProviderStatus>,
 ): EnvironmentStatus {
   const claude = makeProviderStatus('claude', claudeOverrides);
   const codex = makeProviderStatus('codex', codexOverrides);
+  const opencode = makeProviderStatus('opencode', opencodeOverrides);
   return {
     claude,
     codex,
-    hasAnyProvider: claude.installed || codex.installed,
+    opencode,
+    hasAnyProvider: claude.installed || codex.installed || opencode.installed,
     platform: 'linux',
   };
 }
