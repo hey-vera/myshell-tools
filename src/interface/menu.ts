@@ -21,6 +21,9 @@ import type { Clock, LedgerWriter, OrchestrateDeps } from '../core/types.js';
 import type { AppConfig } from '../infra/config.js';
 import { saveConfig } from '../infra/config.js';
 import type { ConversationMeta, ConversationStore } from '../infra/conversation-store.js';
+import { readLedger } from '../infra/ledger.js';
+import { summarizeSpend, formatUsd } from '../infra/insights.js';
+import type { SpendSummary } from '../infra/insights.js';
 import type { EnvironmentStatus, ProviderStatus } from '../providers/detect.js';
 import { detectEnvironment, getInstallCommand } from '../providers/detect.js';
 import type { Provider, ProviderId, SandboxLevel } from '../providers/port.js';
@@ -99,6 +102,25 @@ export function renderHeaderLines(env: EnvironmentStatus, _version: string): str
   }
 
   return lines;
+}
+
+/**
+ * Render the budget/spend status line shown beneath the provider header.
+ *
+ * Uses real numbers only — all values come from the SpendSummary which is
+ * derived from `readLedger`. No digit-% literals appear in this function; it
+ * shows dollar amounts only.
+ *
+ * @param spend - Output of summarizeSpend() over real ledger entries.
+ * @param color - When false, no ANSI escape codes are emitted.
+ */
+export function renderBudgetLine(spend: SpendSummary, _color: boolean): string {
+  if (spend.calls === 0) {
+    return 'Today: ' + formatUsd(0) + ' · no runs yet';
+  }
+  const todayPart = 'Today: ' + formatUsd(spend.todayUsd) + ' · ' + String(spend.calls) + ' calls';
+  const totalPart = 'Total: ' + formatUsd(spend.totalUsd);
+  return todayPart + '   ·   ' + totalPart;
 }
 
 /**
@@ -398,17 +420,22 @@ async function runChatLoop(
 // Main screen render
 // ---------------------------------------------------------------------------
 
-function renderMainScreen(
+async function renderMainScreen(
   ctx: MenuContext,
   mutableCtx: { config: AppConfig; env: EnvironmentStatus },
   metas: ConversationMeta[],
   out: OutputSink,
-): void {
+): Promise<void> {
   out.write('\n');
 
   // Header box — always box(), 🧠 emoji, real provider data
   const headerLines = renderHeaderLines(mutableCtx.env, ctx.version);
   out.write(box(`🧠 myshell-tools v${ctx.version}`, headerLines) + '\n\n');
+
+  // Budget line — real ledger data, never fabricated
+  const entries = await readLedger(ctx.cwd);
+  const spend = summarizeSpend(entries, ctx.clock.isoNow());
+  out.write('  ' + renderBudgetLine(spend, out.color) + '\n\n');
 
   // Recent conversations — separator() then list
   out.write(separator('Recent Conversations') + '\n');
@@ -478,7 +505,7 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
     // ---- B. Main screen loop -------------------------------------------------
     while (true) {
       const metas = await ctx.store.list();
-      renderMainScreen(ctx, mutableCtx, metas, out);
+      await renderMainScreen(ctx, mutableCtx, metas, out);
 
       const key = await ask(rl, '> ');
 

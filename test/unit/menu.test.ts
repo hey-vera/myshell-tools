@@ -15,9 +15,11 @@ import {
   relativeTime,
   renderHeaderLines,
   renderConversationList,
+  renderBudgetLine,
 } from '../../src/interface/menu.ts';
 import type { EnvironmentStatus } from '../../src/providers/detect.ts';
 import type { ConversationMeta } from '../../src/infra/conversation-store.ts';
+import type { SpendSummary } from '../../src/infra/insights.ts';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -404,5 +406,86 @@ describe('renderConversationList', () => {
     const lines = renderConversationList(metas, NOW_MS);
     assert.ok(lines[0]?.includes('📌'), 'shows 📌 when pinned');
     assert.ok(lines[0]?.includes('[refactor]'), 'shows [refactor] category');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// renderBudgetLine
+// ---------------------------------------------------------------------------
+
+describe('renderBudgetLine', () => {
+  /** Helper: build a SpendSummary with the given values. */
+  function makeSpend(overrides?: Partial<SpendSummary>): SpendSummary {
+    return {
+      todayUsd: 0,
+      totalUsd: 0,
+      calls: 0,
+      byProvider: {},
+      ...overrides,
+    };
+  }
+
+  it('shows "no runs yet" when calls is 0', () => {
+    const line = renderBudgetLine(makeSpend({ calls: 0 }), false);
+    assert.ok(line.includes('no runs yet'), `expected "no runs yet" in: "${line}"`);
+  });
+
+  it('shows $0.0000 for todayUsd when calls is 0', () => {
+    const line = renderBudgetLine(makeSpend({ calls: 0 }), false);
+    assert.ok(line.includes('$0.0000'), `expected "$0.0000" in: "${line}"`);
+  });
+
+  it('shows real today and total values when calls > 0', () => {
+    const spend = makeSpend({ todayUsd: 0.0124, totalUsd: 0.0890, calls: 3 });
+    const line = renderBudgetLine(spend, false);
+    assert.ok(line.includes('$0.0124'), `expected "$0.0124" in: "${line}"`);
+    assert.ok(line.includes('$0.0890'), `expected "$0.0890" in: "${line}"`);
+  });
+
+  it('shows the call count when calls > 0', () => {
+    const spend = makeSpend({ todayUsd: 0.0050, totalUsd: 0.0050, calls: 3 });
+    const line = renderBudgetLine(spend, false);
+    assert.ok(line.includes('3 calls'), `expected "3 calls" in: "${line}"`);
+  });
+
+  it('includes "Today:" prefix', () => {
+    const line = renderBudgetLine(makeSpend({ calls: 1, todayUsd: 0.0010, totalUsd: 0.0010 }), false);
+    assert.ok(line.startsWith('Today:'), `expected "Today:" prefix in: "${line}"`);
+  });
+
+  it('includes "Total:" label when calls > 0', () => {
+    const line = renderBudgetLine(makeSpend({ calls: 2, todayUsd: 0.0020, totalUsd: 0.0030 }), false);
+    assert.ok(line.includes('Total:'), `expected "Total:" in: "${line}"`);
+  });
+
+  it('color=false → no ANSI codes', () => {
+    const line = renderBudgetLine(makeSpend({ calls: 1, todayUsd: 0.001, totalUsd: 0.001 }), false);
+    assert.ok(
+      !ANSI_RE.test(line),
+      `renderBudgetLine(color=false) must not contain ANSI codes: "${line}"`,
+    );
+  });
+
+  it('does not contain a digit-% literal', () => {
+    const cases = [
+      makeSpend({ calls: 0 }),
+      makeSpend({ calls: 1, todayUsd: 0.0010, totalUsd: 0.0010 }),
+      makeSpend({ calls: 99, todayUsd: 0.9999, totalUsd: 1.2345 }),
+    ];
+    for (const spend of cases) {
+      const line = renderBudgetLine(spend, false);
+      assertNoDigitPercent(line, 'renderBudgetLine');
+    }
+  });
+
+  it('does not contain forbidden substrings', () => {
+    const cases = [
+      makeSpend({ calls: 0 }),
+      makeSpend({ calls: 1, todayUsd: 0.0010, totalUsd: 0.0010 }),
+    ];
+    for (const spend of cases) {
+      const line = renderBudgetLine(spend, false);
+      assertNoForbidden(line, 'renderBudgetLine');
+    }
   });
 });

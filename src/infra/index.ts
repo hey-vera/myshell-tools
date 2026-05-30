@@ -17,3 +17,5 @@ export { createFileConversationStore } from './conversations.js';
 export { loadConfig, saveConfig } from './config.js';
 export type { AppConfig } from './config.js';
 export type { ConversationStore, ConversationMeta } from './conversation-store.js';
+export { summarizeSpend, providerHealth, formatUsd } from './insights.js';
+export type { SpendSummary, ProviderHealth } from './insights.js';
