@@ -29,3 +29,46 @@ export const DEFAULT_POLICY: Policy = {
     manager: ['claude', 'codex'],
   },
 };
+
+/**
+ * Named policy presets selectable from the Settings screen.
+ *
+ * - cost-saver   : raises escalation thresholds so it rarely escalates; stays
+ *                  on cheaper worker/IC tiers as long as possible.
+ * - balanced     : identical to DEFAULT_POLICY; good for most work.
+ * - quality-first: lowers escalation thresholds so it escalates sooner and
+ *                  reviews more; prioritises quality over token cost.
+ */
+export const POLICY_PRESETS: Record<'cost-saver' | 'balanced' | 'quality-first', Policy> = {
+  'cost-saver': {
+    maxAttempts: 4,
+    escalateBelowConfidence: {
+      low: 0.2,
+      medium: 0.3,
+      high: 0.5,
+      critical: 0.65,
+    },
+    providerOrderByTier: {
+      worker: ['claude', 'codex'],
+      ic: ['claude', 'codex'],
+      manager: ['claude', 'codex'],
+    },
+  },
+
+  'balanced': DEFAULT_POLICY,
+
+  'quality-first': {
+    maxAttempts: 3,
+    escalateBelowConfidence: {
+      low: 0.6,
+      medium: 0.7,
+      high: 0.85,
+      critical: 0.92,
+    },
+    providerOrderByTier: {
+      worker: ['claude', 'codex'],
+      ic: ['claude', 'codex'],
+      manager: ['claude', 'codex'],
+    },
+  },
+};

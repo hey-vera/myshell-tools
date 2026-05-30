@@ -13,3 +13,7 @@ export { getStateDir, getSessionsDir, getSessionFile, getLedgerFile } from './pa
 export { createSessionWriter, readSession } from './session.js';
 export { createLedger, readLedger, summarizeLedger } from './ledger.js';
 export type { ModelSummary, LedgerSummary } from './ledger.js';
+export { createFileConversationStore } from './conversations.js';
+export { loadConfig, saveConfig } from './config.js';
+export type { AppConfig } from './config.js';
+export type { ConversationStore, ConversationMeta } from './conversation-store.js';

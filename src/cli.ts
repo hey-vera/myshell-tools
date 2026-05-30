@@ -15,7 +15,12 @@ import type { OrchestrateDeps } from './core/types.js';
 import type { OutputSink } from './interface/render.js';
 import { runTask } from './interface/run.js';
 import { startRepl } from './interface/repl.js';
+import { startMenu } from './interface/menu.js';
+import type { MenuContext } from './interface/menu.js';
 import { buildProviders } from './providers/registry.js';
+import { detectEnvironment } from './providers/detect.js';
+import { createFileConversationStore } from './infra/conversations.js';
+import { loadConfig } from './infra/config.js';
 import { runDoctor } from './commands/doctor.js';
 import { runCost } from './commands/cost.js';
 import { runLogin } from './commands/login.js';
@@ -37,17 +42,17 @@ Options:
   -v, --version  Print version number
 
 Commands:
+  (none)            Open the interactive control panel (default)
   run <task...>     Run a one-shot task and exit
-  repl              Start an interactive session (default when no command given)
+  repl              Start the plain line REPL (no menu)
   login [provider]  Sign in to a provider (claude or codex) via its own OAuth
   doctor            Check provider installation, auth, and environment health
   cost              Show real spend from the ledger with a per-model breakdown
 
 Examples:
-  myshell-tools login
+  myshell-tools                                 # open the control panel
   myshell-tools run "refactor the auth module"
-  myshell-tools doctor
-  myshell-tools
+  myshell-tools login
 
 Repository: https://github.com/hey-vera/myshell-tools
 `;
@@ -130,8 +135,39 @@ async function main(): Promise<void> {
     process.exit(code);
   }
 
-  // ---- Interactive REPL (default) --------------------------------------------
-  if (args.length === 0 || args[0] === 'repl') {
+  // ---- Interactive Menu (default — sessions-first control panel) ------------
+  if (args.length === 0) {
+    const spinner = createSpinner(out);
+    spinner.start('Detecting providers…');
+    const [providers, env, config] = await Promise.all([
+      buildProviders(cwd),
+      detectEnvironment(),
+      loadConfig(),
+    ]);
+    spinner.stop();
+
+    const store = createFileConversationStore({ clock: systemClock });
+    const ledger = createLedger({ cwd });
+
+    const menuCtx: MenuContext = {
+      version,
+      clock: systemClock,
+      ledger,
+      providers,
+      env,
+      store,
+      config,
+      cwd,
+      sandbox: 'workspace-write',
+      timeoutMs: 120000,
+    };
+
+    await startMenu(menuCtx, out);
+    process.exit(0);
+  }
+
+  // ---- Interactive REPL (legacy subcommand) ----------------------------------
+  if (args[0] === 'repl') {
     out.write(banner(version, out.color) + '\n');
     const spinner = createSpinner(out);
     spinner.start('Detecting providers…');
