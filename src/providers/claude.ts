@@ -14,9 +14,10 @@
  *  permission-bypass flag here.
  *
  * Authentication note:
- *  Auth state is OPTIMISTIC at detect() time — we cannot cheaply probe it.
- *  The real auth state surfaces at run time: an unauthenticated run produces
- *  a stderr that classifyError() maps to category 'auth'.
+ *  Auth state is probed at detect() time by spawning `claude auth status` and
+ *  parsing its JSON output (see detect.ts / parseClaudeAuth). An unauthenticated
+ *  run will also surface at run time: the stderr is classified as category 'auth'
+ *  by classifyError().
  *
  * Execa v9 streaming:
  *  We use `subprocess[Symbol.asyncIterator]()` (i.e. `for await … of subprocess`)

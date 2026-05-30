@@ -109,10 +109,13 @@ export function parseClaudeAuth(
  *
  * Real output shape (exit code 0, authenticated):
  * ```
- * Logged in using ChatGPT
+ * Logged in using ChatGPT   ← written to stderr (not stdout)
  * ```
  *
- * Authenticated when: exitCode === 0 AND stdout contains "logged in" (case-insensitive).
+ * Authenticated when: exitCode === 0 AND either stdout OR stderr contains
+ * "logged in" (case-insensitive). The haystack is built from both streams
+ * because `codex login status` writes to stderr in practice.
+ *
  * Plan: null — codex login status does not expose a subscription/plan label.
  * Conservative: on any unexpected output, authenticated stays false and plan is null.
  *
@@ -121,15 +124,16 @@ export function parseClaudeAuth(
  */
 export function parseCodexAuth(
   stdout: string,
-  _stderr: string,
+  stderr: string,
   exitCode: number,
 ): { authenticated: boolean; plan: string | null } {
   if (exitCode !== 0) {
     return { authenticated: false, plan: null };
   }
 
-  const lower = stdout.toLowerCase();
-  const authenticated = lower.includes('logged in');
+  // Build haystack from both streams — codex login status uses stderr in practice.
+  const haystack = (stdout + '\n' + stderr).toLowerCase();
+  const authenticated = haystack.includes('logged in');
 
   return { authenticated, plan: null };
 }

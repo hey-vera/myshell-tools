@@ -21,11 +21,16 @@
  * - `approve`   : IC output is acceptable; proceed to final.
  * - `revise`    : IC output needs changes; retry IC with the reviewer's notes.
  * - `escalate`  : The issue is beyond IC scope; escalate to manager tier.
+ * - `parsed`    : True when a real verdict envelope was found and validated;
+ *                 false when the fail-open default was used. Callers should
+ *                 treat `parsed === false` on high/critical risk as
+ *                 inconclusive rather than approved.
  */
 export interface ReviewVerdict {
   readonly verdict: 'approve' | 'revise' | 'escalate';
   readonly notes: string;
   readonly confidence: number | null;
+  readonly parsed: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -93,7 +98,7 @@ interface RawVerdict {
 const VALID_VERDICTS = new Set<string>(['approve', 'revise', 'escalate']);
 
 /** Fail-open default used whenever the envelope is absent or malformed. */
-const FAIL_OPEN: ReviewVerdict = { verdict: 'approve', notes: '', confidence: null };
+const FAIL_OPEN: ReviewVerdict = { verdict: 'approve', notes: '', confidence: null, parsed: false };
 
 /**
  * Attempt to extract the last JSON object from `text` that contains a `verdict` key.
@@ -185,5 +190,5 @@ export function parseReviewVerdict(output: string): ReviewVerdict {
     confidence = Math.min(1, Math.max(0, envelope.confidence));
   }
 
-  return { verdict, notes, confidence };
+  return { verdict, notes, confidence, parsed: true };
 }

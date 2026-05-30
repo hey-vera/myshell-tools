@@ -11,9 +11,11 @@
  *  full-access      → '--sandbox danger-full-access'
  *
  * Authentication note:
- *  Auth state is OPTIMISTIC at detect() time — we cannot cheaply probe it.
- *  The real auth state surfaces at run time: an unauthenticated run produces
- *  a stderr/event that classifyError() maps to category 'auth'.
+ *  Auth state is probed at detect() time by spawning `codex login status` and
+ *  inspecting both stdout and stderr (see detect.ts / parseCodexAuth). In
+ *  practice codex writes "Logged in using ChatGPT" to stderr. An unauthenticated
+ *  run will also surface at run time: the stderr/event is classified as category
+ *  'auth' by classifyError().
  *
  * costUsd note:
  *  Codex does NOT report a USD cost. The `done` event therefore omits

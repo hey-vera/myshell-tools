@@ -50,11 +50,55 @@ export interface MenuContext {
   readonly cwd: string;
   readonly sandbox: SandboxLevel;
   readonly timeoutMs: number;
+  /**
+   * Optional injected line reader for testing. When provided, `startMenu` uses
+   * this instead of the real `node:readline` interface, allowing tests to drive
+   * the menu with scripted input without a TTY.
+   *
+   * Returns the next trimmed line of input, or `null` on EOF/close.
+   */
+  readonly readLine?: () => Promise<string | null>;
 }
 
 // ---------------------------------------------------------------------------
 // Pure helpers — exported for unit tests
 // ---------------------------------------------------------------------------
+
+/**
+ * Return the shell alias hint the user can add to their shell profile to make
+ * `myshell-tools` the default command-line assistant.
+ *
+ * This is a pure, I/O-free helper — it never reads or writes any file. The
+ * caller is responsible for printing the result. No claim is made that the
+ * system has been changed; the output is a copy-pasteable suggestion only.
+ *
+ * @param shell    - The value of `process.env.SHELL` (e.g. '/bin/bash'), or
+ *                   empty/undefined on Windows where SHELL is absent.
+ * @param platform - The `process.platform` string (e.g. 'win32', 'linux').
+ * @returns A human-readable string containing the exact alias line to add.
+ */
+export function defaultAliasHint(shell: string | undefined, platform: string): string {
+  if (platform === 'win32') {
+    return (
+      'Add to your PowerShell profile ($PROFILE):\n' +
+      "  function mst { myshell-tools @args }"
+    );
+  }
+  const shellName = typeof shell === 'string' && shell.length > 0
+    ? shell.split('/').at(-1) ?? 'bash'
+    : 'bash';
+  if (shellName === 'fish') {
+    return (
+      'Add to ~/.config/fish/config.fish:\n' +
+      '  alias mst="myshell-tools"'
+    );
+  }
+  const rcFile = shellName === 'zsh' ? '~/.zshrc' : '~/.bashrc';
+  return (
+    `Add to ${rcFile}:\n` +
+    '  alias mst="myshell-tools"'
+  );
+}
 
 /**
  * Format a relative time string from a past epoch-ms to a now epoch-ms.
@@ -146,10 +190,28 @@ export function renderConversationList(metas: ConversationMeta[], nowMs: number)
 // Internal readline helpers
 // ---------------------------------------------------------------------------
 
-/** Ask a question and resolve with the trimmed answer. */
-function ask(rl: readline.Interface, question: string): Promise<string> {
+/**
+ * Ask a question via a real readline interface and resolve with the trimmed
+ * answer, or `null` if the interface was closed (EOF) before an answer arrived.
+ *
+ * Registers a one-shot `close` listener so the pending `question()` call never
+ * throws `ERR_USE_AFTER_CLOSE` — instead it resolves cleanly to `null`.
+ */
+function askRl(rl: readline.Interface, question: string): Promise<string | null> {
   return new Promise((resolve) => {
-    rl.question(question, (ans) => resolve(ans.trim()));
+    // Guard: if the interface is already closed, resolve immediately.
+    // (readline.Interface has no public `.closed` property in all Node versions,
+    // so we detect it by attempting the question and catching via the close event.)
+    let settled = false;
+    function settle(value: string | null): void {
+      if (!settled) {
+        settled = true;
+        resolve(value);
+      }
+    }
+
+    rl.once('close', () => settle(null));
+    rl.question(question, (ans: string) => settle(ans.trim()));
   });
 }
 
@@ -160,7 +222,7 @@ function ask(rl: readline.Interface, question: string): Promise<string> {
 async function runWelcome(
   ctx: MenuContext,
   out: OutputSink,
-  rl: readline.Interface,
+  readLine: () => Promise<string | null>,
   mutableConfig: AppConfig,
 ): Promise<AppConfig> {
   const headerLines = renderHeaderLines(ctx.env, ctx.version);
@@ -169,7 +231,19 @@ async function runWelcome(
   out.write('  [l]     Sign in to providers\n');
   out.write('  [c]     Customize mode\n\n');
 
-  const key = await ask(rl, '> ');
+  out.write('> ');
+  const key = await readLine();
+
+  // EOF during setup — save bare onboarded config and return
+  if (key === null) {
+    const saved: AppConfig = {
+      onboarded: true,
+      setAsDefault: false,
+      ...(mutableConfig.mode !== undefined ? { mode: mutableConfig.mode } : {}),
+    };
+    await saveConfig(saved);
+    return saved;
+  }
 
   let updated = mutableConfig;
 
@@ -179,12 +253,15 @@ async function runWelcome(
       out.write('[warn] Login did not complete cleanly.\n');
     }
   } else if (key === 'c') {
-    updated = await runModeSelect(updated, out, rl);
+    updated = await runModeSelect(updated, out, readLine);
   }
   // [Enter] or anything else → fall through to save & go
 
-  const defaultAns = await ask(rl, 'Set myshell-tools as your default shell tool? (y/n) ');
-  const setAsDefault = defaultAns.toLowerCase() === 'y';
+  out.write('Set myshell-tools as your default shell tool? (y/n) ');
+  const defaultAns = await readLine();
+
+  // EOF before answer → treat as "no"
+  const setAsDefault = (defaultAns ?? '').toLowerCase() === 'y';
 
   const saved: AppConfig = {
     onboarded: true,
@@ -193,6 +270,13 @@ async function runWelcome(
   };
 
   await saveConfig(saved);
+
+  // When the user opted in, print the alias hint so the prompt is honest.
+  if (setAsDefault) {
+    const hint = defaultAliasHint(process.env['SHELL'], process.platform);
+    out.write('\n[info] To make myshell-tools your default, ' + hint + '\n\n');
+  }
+
   return saved;
 }
 
@@ -203,7 +287,7 @@ async function runWelcome(
 async function runModeSelect(
   config: AppConfig,
   out: OutputSink,
-  rl: readline.Interface,
+  readLine: () => Promise<string | null>,
 ): Promise<AppConfig> {
   const currentMode = config.mode ?? 'balanced';
   const settingsLines = [
@@ -216,8 +300,10 @@ async function runModeSelect(
   ];
   out.write('\n' + box('Settings', settingsLines) + '\n\n');
 
-  const key = await ask(rl, '[1/2/3 to change, Enter to keep] ');
+  out.write('[1/2/3 to change, Enter to keep] ');
+  const key = await readLine();
 
+  // EOF → keep current mode
   let newMode = config.mode;
   if (key === '1') newMode = 'cost-saver';
   else if (key === '2') newMode = 'balanced';
@@ -238,9 +324,9 @@ async function runSettings(
   ctx: MenuContext,
   mutableCtx: { config: AppConfig },
   out: OutputSink,
-  rl: readline.Interface,
+  readLine: () => Promise<string | null>,
 ): Promise<void> {
-  mutableCtx.config = await runModeSelect(mutableCtx.config, out, rl);
+  mutableCtx.config = await runModeSelect(mutableCtx.config, out, readLine);
 }
 
 // ---------------------------------------------------------------------------
@@ -250,7 +336,7 @@ async function runSettings(
 async function runManage(
   ctx: MenuContext,
   out: OutputSink,
-  rl: readline.Interface,
+  readLine: () => Promise<string | null>,
 ): Promise<void> {
   // Inner helper to re-fetch and re-render the conversation list.
   async function renderList(): Promise<ConversationMeta[]> {
@@ -269,17 +355,23 @@ async function runManage(
 
   if (metas.length === 0) {
     out.write('No conversations yet.\n');
-    await ask(rl, '[Enter to go back] ');
+    out.write('[Enter to go back] ');
+    await readLine();
     return;
   }
 
   metas = await renderList();
 
-  const key = await ask(rl, '> ');
+  out.write('> ');
+  const key = await readLine();
+
+  // EOF → treat as back
+  if (key === null) return;
 
   if (key === 'p') {
-    const numStr = await ask(rl, 'Pin/unpin conversation number: ');
-    const num = parseInt(numStr, 10);
+    out.write('Pin/unpin conversation number: ');
+    const numStr = await readLine();
+    const num = parseInt(numStr ?? '', 10);
     if (!Number.isNaN(num) && num >= 1 && num <= metas.length) {
       const conv = metas[num - 1];
       if (conv !== undefined) {
@@ -290,24 +382,28 @@ async function runManage(
       }
     }
   } else if (key === 't') {
-    const numStr = await ask(rl, 'Set category for conversation number: ');
-    const num = parseInt(numStr, 10);
+    out.write('Set category for conversation number: ');
+    const numStr = await readLine();
+    const num = parseInt(numStr ?? '', 10);
     if (!Number.isNaN(num) && num >= 1 && num <= metas.length) {
       const conv = metas[num - 1];
       if (conv !== undefined) {
-        const tag = await ask(rl, `Category tag for "${conv.title}" (empty to clear): `);
+        out.write(`Category tag for "${conv.title}" (empty to clear): `);
+        const tag = await readLine() ?? '';
         await ctx.store.setCategory(conv.id, tag.length > 0 ? tag : null);
         out.write(tag.length > 0 ? `Category set to "${tag}"\n` : 'Category cleared.\n');
         await renderList();
       }
     }
   } else if (key === 'r') {
-    const numStr = await ask(rl, 'Rename conversation number: ');
-    const num = parseInt(numStr, 10);
+    out.write('Rename conversation number: ');
+    const numStr = await readLine();
+    const num = parseInt(numStr ?? '', 10);
     if (!Number.isNaN(num) && num >= 1 && num <= metas.length) {
       const conv = metas[num - 1];
       if (conv !== undefined) {
-        const newTitle = await ask(rl, `New name for "${conv.title}": `);
+        out.write(`New name for "${conv.title}": `);
+        const newTitle = await readLine() ?? '';
         if (newTitle.length > 0) {
           await ctx.store.rename(conv.id, newTitle);
           out.write(`Renamed to "${newTitle}"\n`);
@@ -316,13 +412,15 @@ async function runManage(
       }
     }
   } else if (key === 'x') {
-    const numStr = await ask(rl, 'Delete conversation number: ');
-    const num = parseInt(numStr, 10);
+    out.write('Delete conversation number: ');
+    const numStr = await readLine();
+    const num = parseInt(numStr ?? '', 10);
     if (!Number.isNaN(num) && num >= 1 && num <= metas.length) {
       const conv = metas[num - 1];
       if (conv !== undefined) {
-        const confirm = await ask(rl, `Delete "${conv.title}"? (y/n) `);
-        if (confirm.toLowerCase() === 'y') {
+        out.write(`Delete "${conv.title}"? (y/n) `);
+        const confirmAns = await readLine();
+        if ((confirmAns ?? '').toLowerCase() === 'y') {
           await ctx.store.remove(conv.id);
           out.write('Deleted.\n');
         }
@@ -341,7 +439,7 @@ async function runChatLoop(
   mutableCtx: { config: AppConfig },
   convId: string,
   out: OutputSink,
-  rl: readline.Interface,
+  readLine: () => Promise<string | null>,
 ): Promise<void> {
   // Print a short recap of the conversation (last entry) if history exists
   const history = await ctx.store.load(convId);
@@ -373,7 +471,11 @@ async function runChatLoop(
 
   try {
     while (true) {
-      const line = await ask(rl, 'myshell-tools> ');
+      out.write('myshell-tools> ');
+      const line = await readLine();
+
+      // EOF → exit the chat loop gracefully
+      if (line === null) break;
 
       if (line.length === 0) continue;
 
@@ -479,15 +581,35 @@ async function renderMainScreen(
  *   B. Main screen loop: header + recent conversations + sectioned menu.
  *   C. Per-conversation chat loop backed by runTask().
  *
- * Never calls process.exit() — resolves when the user presses [q].
+ * Never calls process.exit() — resolves when the user presses [q] or when
+ * stdin reaches EOF (resolves cleanly, no ERR_USE_AFTER_CLOSE thrown).
+ *
+ * When `ctx.readLine` is provided (e.g. in tests), it is used directly in
+ * place of a real readline interface. When absent, a readline interface is
+ * created from `process.stdin` as usual; the `close` event is wired up so
+ * that EOF resolves gracefully instead of throwing.
  */
 export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void> {
-  // Create ONE readline interface for the whole menu lifecycle.
-  const rl = readline.createInterface({
-    input: process.stdin,
-    output: process.stdout,
-    terminal: out.isTty,
-  });
+  // Build the readLine function — either injected (for tests) or backed by a
+  // real readline interface whose `close` event is properly guarded.
+  let readLine: () => Promise<string | null>;
+  let rl: readline.Interface | null = null;
+
+  if (ctx.readLine !== undefined) {
+    // Injected reader — no real readline needed.
+    readLine = ctx.readLine;
+  } else {
+    // Create ONE readline interface for the whole menu lifecycle.
+    rl = readline.createInterface({
+      input: process.stdin,
+      output: process.stdout,
+      terminal: out.isTty,
+    });
+    const capturedRl = rl;
+    // Each call waits for the next line; askRl handles the close event safely.
+    // All prompt text is already written to `out` before readLine() is called.
+    readLine = () => askRl(capturedRl, '');
+  }
 
   // Mutable local copy of config & env — updated as the user changes settings /
   // re-authenticates without mutating the immutable ctx parameter.
@@ -499,7 +621,7 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
   try {
     // ---- A. First-run welcome -----------------------------------------------
     if (!mutableCtx.config.onboarded) {
-      mutableCtx.config = await runWelcome(ctx, out, rl, mutableCtx.config);
+      mutableCtx.config = await runWelcome(ctx, out, readLine, mutableCtx.config);
     }
 
     // ---- B. Main screen loop -------------------------------------------------
@@ -507,7 +629,13 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
       const metas = await ctx.store.list();
       await renderMainScreen(ctx, mutableCtx, metas, out);
 
-      const key = await ask(rl, '> ');
+      out.write('> ');
+      const key = await readLine();
+
+      // ---- EOF / close — exit gracefully (FIX 1: no ERR_USE_AFTER_CLOSE) ----
+      if (key === null) {
+        break;
+      }
 
       // ---- [q] Quit -----------------------------------------------------------
       if (key === 'q') {
@@ -516,10 +644,11 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
 
       // ---- [n] New conversation -----------------------------------------------
       if (key === 'n') {
-        const firstMsg = await ask(rl, 'First message (becomes the title): ');
-        if (firstMsg.length > 0) {
+        out.write('First message (becomes the title): ');
+        const firstMsg = await readLine();
+        if (firstMsg !== null && firstMsg.length > 0) {
           const meta = await ctx.store.create(firstMsg);
-          await runChatLoop(ctx, mutableCtx, meta.id, out, rl);
+          await runChatLoop(ctx, mutableCtx, meta.id, out, readLine);
         }
         continue;
       }
@@ -529,7 +658,7 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
         const all = await ctx.store.list();
         const latest = all[0];
         if (latest !== undefined) {
-          await runChatLoop(ctx, mutableCtx, latest.id, out, rl);
+          await runChatLoop(ctx, mutableCtx, latest.id, out, readLine);
         } else {
           out.write('No conversations yet. Press n to start one.\n');
         }
@@ -541,7 +670,7 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
       if (!Number.isNaN(digit) && digit >= 1 && digit <= 9) {
         const target = metas[digit - 1];
         if (target !== undefined) {
-          await runChatLoop(ctx, mutableCtx, target.id, out, rl);
+          await runChatLoop(ctx, mutableCtx, target.id, out, readLine);
         } else {
           out.write(`No conversation at position ${digit}.\n`);
         }
@@ -550,7 +679,7 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
 
       // ---- [e] Manage conversations -------------------------------------------
       if (key === 'e') {
-        await runManage(ctx, out, rl);
+        await runManage(ctx, out, readLine);
         continue;
       }
 
@@ -570,7 +699,7 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
 
       // ---- [s] Settings -------------------------------------------------------
       if (key === 's') {
-        await runSettings(ctx, mutableCtx, out, rl);
+        await runSettings(ctx, mutableCtx, out, readLine);
         continue;
       }
 
@@ -592,6 +721,6 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
       }
     }
   } finally {
-    rl.close();
+    rl?.close();
   }
 }

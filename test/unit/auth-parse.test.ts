@@ -141,17 +141,19 @@ describe('parseClaudeAuth — empty stdout', () => {
 // parseCodexAuth
 // ---------------------------------------------------------------------------
 
-describe('parseCodexAuth — logged in', () => {
+describe('parseCodexAuth — logged in (stderr only, real codex behaviour)', () => {
   // Real captured output from `codex login status` (exit code 0):
-  const stdout = 'Logged in using ChatGPT';
+  // stdout is EMPTY; the "Logged in using ChatGPT" message goes to stderr.
+  // Verified by running: codex login status > /tmp/out.txt 2>/tmp/err.txt
+  const stderr = 'Logged in using ChatGPT';
 
-  const result = parseCodexAuth(stdout, '', 0);
+  const result = parseCodexAuth('', stderr, 0);
 
   it('does not throw', () => {
-    assert.doesNotThrow(() => parseCodexAuth(stdout, '', 0));
+    assert.doesNotThrow(() => parseCodexAuth('', stderr, 0));
   });
 
-  it('authenticated is true', () => {
+  it('authenticated is true when message is in stderr', () => {
     assert.equal(result.authenticated, true);
   });
 
@@ -160,10 +162,23 @@ describe('parseCodexAuth — logged in', () => {
   });
 });
 
-describe('parseCodexAuth — logged in variant casing', () => {
-  const result = parseCodexAuth('logged in using API key', '', 0);
+describe('parseCodexAuth — logged in (stdout only, fallback)', () => {
+  // If future codex versions write to stdout, that should also work.
+  const result = parseCodexAuth('Logged in using ChatGPT', '', 0);
 
-  it('authenticated is true', () => {
+  it('authenticated is true when message is in stdout', () => {
+    assert.equal(result.authenticated, true);
+  });
+
+  it('plan is null', () => {
+    assert.equal(result.plan, null);
+  });
+});
+
+describe('parseCodexAuth — logged in variant casing (stderr)', () => {
+  const result = parseCodexAuth('', 'logged in using API key', 0);
+
+  it('authenticated is true (case-insensitive match in stderr)', () => {
     assert.equal(result.authenticated, true);
   });
 

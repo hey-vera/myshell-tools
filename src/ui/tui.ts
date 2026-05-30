@@ -60,16 +60,24 @@ export function stripAnsi(s: string): string {
 /**
  * Visible display width of a string.
  * Strips ANSI codes first, then counts emoji/wide symbols as 2 columns.
+ *
+ * Variation selectors (U+FE00–U+FE0F, including U+FE0F / VS16) are counted
+ * as zero-width: a base symbol + VS16 (e.g. ⚠️ = U+26A0 + U+FE0F) renders
+ * as a single 2-column glyph in terminals — not 4 columns. Treating the
+ * variation selector as zero-width keeps box borders aligned.
  */
 export function visibleLength(s: string): number {
   const plain = stripAnsi(String(s));
   let len = 0;
   for (const ch of plain) {
     const cp = ch.codePointAt(0) ?? 0;
+    // Variation selectors are zero-width modifiers — skip them entirely.
+    if (cp >= 0xfe00 && cp <= 0xfe0f) {
+      continue;
+    }
     if (
       (cp >= 0x1f300 && cp <= 0x1faff) ||  // Misc symbols & emoji
       (cp >= 0x2600  && cp <= 0x27bf)  ||  // Misc symbols
-      (cp >= 0xfe00  && cp <= 0xfe0f)  ||  // Variation selectors
       (cp >= 0x1f1e0 && cp <= 0x1f1ff) ||  // Regional indicator (flags)
       cp === 0x20e3                         // Combining enclosing keycap
     ) {

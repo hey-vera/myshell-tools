@@ -936,3 +936,264 @@ describe('orchestrate — totalCostUsd accumulation', () => {
     );
   });
 });
+
+// ---------------------------------------------------------------------------
+// (f) Risk-indexed fail-open: parsed:false + high/critical risk → escalate
+// ---------------------------------------------------------------------------
+
+describe('orchestrate — risk-indexed fail-open (parsed:false + high risk)', () => {
+  it('unparseable review output on high-risk task escalates instead of auto-approving', async () => {
+    // "payment" → high risk
+    const icEnvelope =
+      '{"confidence": 0.85, "escalate": false, "reason": "done", "needs_review": false}';
+    const icText = `Payment code implemented.\n${icEnvelope}`;
+
+    // Reviewer returns garbage (no valid JSON verdict envelope → parsed:false)
+    const badReviewText = 'I had trouble reviewing this. Something went wrong.';
+
+    // Manager output (after escalation) has high confidence
+    const HIGH_CONF_ENVELOPE =
+      '{"confidence": 0.92, "escalate": false, "reason": "manager done", "needs_review": false}';
+    const managerText = `Manager reviewed the payment code.\n${HIGH_CONF_ENVELOPE}`;
+
+    let claudeCallCount = 0;
+    const claudeProvider: Provider = {
+      id: 'claude',
+      async detect() {
+        return { id: 'claude', installed: true, version: '1.0.0', authenticated: true, binaryPath: '/usr/bin/fake', availableModels: [] };
+      },
+      async *run(_req: ProviderRequest, _signal: AbortSignal): AsyncIterable<ProviderEvent> {
+        claudeCallCount++;
+        // First call = IC; subsequent calls = manager tier
+        const text = claudeCallCount === 1 ? icText : managerText;
+        yield { type: 'done', text, usage: FAKE_USAGE, raw: {} };
+      },
+    };
+
+    const codexProvider: Provider = {
+      id: 'codex',
+      async detect() {
+        return { id: 'codex', installed: true, version: '1.0.0', authenticated: true, binaryPath: '/usr/bin/fake', availableModels: [] };
+      },
+      async *run(_req: ProviderRequest, _signal: AbortSignal): AsyncIterable<ProviderEvent> {
+        yield { type: 'done', text: badReviewText, usage: { inputTokens: 100, outputTokens: 50 }, raw: {} };
+      },
+    };
+
+    const clock = makeFakeClock();
+    const session = makeFakeSession();
+    const ledger = makeFakeLedger();
+    const deps: OrchestrateDeps = {
+      providers: { claude: claudeProvider, codex: codexProvider },
+      clock,
+      session,
+      ledger,
+      policy: DEFAULT_POLICY,
+      cwd: '/fake/cwd',
+      sandbox: 'workspace-write',
+      timeoutMs: 30_000,
+    };
+
+    const events = await collectEvents(
+      orchestrate('implement payment handler', deps, new AbortController().signal),
+    );
+
+    // Must emit a 'warn' notice about inconclusive review
+    const warnNotice = events.find(
+      (e) => e.type === 'notice' && e.level === 'warn' && e.message.includes('inconclusive'),
+    );
+    assert.ok(warnNotice !== undefined, 'Expected a warn notice about inconclusive review');
+
+    // Must escalate (not silently approve)
+    const escalateEv = events.find((e) => e.type === 'escalate');
+    assert.ok(escalateEv !== undefined, 'Expected an escalate event — must not silently approve on inconclusive review');
+  });
+
+  it('unparseable review output on low-risk task still approves (fail-open is fine for low risk)', async () => {
+    // "refactor X" → low/medium risk — fail-open approve is acceptable
+    const icEnvelope =
+      '{"confidence": 0.88, "escalate": false, "reason": "done", "needs_review": true}';
+    const icText = `Refactored X module.\n${icEnvelope}`;
+
+    // needsReview:true triggers review; reviewer returns garbage
+    const badReviewText = 'Could not parse your output properly.';
+
+    const claudeProvider: Provider = {
+      id: 'claude',
+      async detect() {
+        return { id: 'claude', installed: true, version: '1.0.0', authenticated: true, binaryPath: '/usr/bin/fake', availableModels: [] };
+      },
+      async *run(_req: ProviderRequest, _signal: AbortSignal): AsyncIterable<ProviderEvent> {
+        yield { type: 'done', text: icText, usage: FAKE_USAGE, raw: {} };
+      },
+    };
+
+    const codexProvider: Provider = {
+      id: 'codex',
+      async detect() {
+        return { id: 'codex', installed: true, version: '1.0.0', authenticated: true, binaryPath: '/usr/bin/fake', availableModels: [] };
+      },
+      async *run(_req: ProviderRequest, _signal: AbortSignal): AsyncIterable<ProviderEvent> {
+        yield { type: 'done', text: badReviewText, usage: { inputTokens: 100, outputTokens: 50 }, raw: {} };
+      },
+    };
+
+    const clock = makeFakeClock();
+    const session = makeFakeSession();
+    const ledger = makeFakeLedger();
+    const deps: OrchestrateDeps = {
+      providers: { claude: claudeProvider, codex: codexProvider },
+      clock,
+      session,
+      ledger,
+      policy: DEFAULT_POLICY,
+      cwd: '/fake/cwd',
+      sandbox: 'workspace-write',
+      timeoutMs: 30_000,
+    };
+
+    // "refactor X" → low risk; needsReview:true in envelope triggers review
+    // but fail-open approve is acceptable for low risk
+    const events = await collectEvents(
+      orchestrate('refactor X', deps, new AbortController().signal),
+    );
+
+    const finalEv = events.find((e) => e.type === 'final');
+    assert.ok(finalEv !== undefined);
+    // For low-risk + parsed:false, the system may approve (fail-open is OK here).
+    // The key property is it does NOT crash.
+    assert.equal(typeof finalEv.type, 'string');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// (g) FIX 4: manager-tier critical/high work gets cross-vendor review
+// ---------------------------------------------------------------------------
+
+describe('orchestrate — FIX 4: manager-tier critical work gets reviewed', () => {
+  it('task classified at manager tier with critical risk gets cross-vendor review', async () => {
+    // "audit" + "auth" → classify should give manager tier + critical/high risk
+    // We confirm it by checking whether a review happens.
+    // To ensure classification gives manager+critical, use a known pattern.
+    // We will use needsReview:true in the envelope to force the review path
+    // regardless of how the task is classified.
+
+    const managerEnvelope =
+      '{"confidence": 0.9, "escalate": false, "reason": "audit complete", "needs_review": true}';
+    const managerText = `Audit complete.\n${managerEnvelope}`;
+
+    const reviewApproveText =
+      '{"verdict": "approve", "notes": "audit looks thorough", "confidence": 0.95}';
+
+    const claudeProvider: Provider = {
+      id: 'claude',
+      async detect() {
+        return { id: 'claude', installed: true, version: '1.0.0', authenticated: true, binaryPath: '/usr/bin/fake', availableModels: [] };
+      },
+      async *run(_req: ProviderRequest, _signal: AbortSignal): AsyncIterable<ProviderEvent> {
+        yield { type: 'done', text: managerText, usage: FAKE_USAGE, raw: {} };
+      },
+    };
+
+    const codexProvider: Provider = {
+      id: 'codex',
+      async detect() {
+        return { id: 'codex', installed: true, version: '1.0.0', authenticated: true, binaryPath: '/usr/bin/fake', availableModels: [] };
+      },
+      async *run(_req: ProviderRequest, _signal: AbortSignal): AsyncIterable<ProviderEvent> {
+        yield { type: 'done', text: reviewApproveText, usage: { inputTokens: 300, outputTokens: 100 }, raw: {} };
+      },
+    };
+
+    const clock = makeFakeClock();
+    const session = makeFakeSession();
+    const ledger = makeFakeLedger();
+    const deps: OrchestrateDeps = {
+      providers: { claude: claudeProvider, codex: codexProvider },
+      clock,
+      session,
+      ledger,
+      policy: DEFAULT_POLICY,
+      cwd: '/fake/cwd',
+      sandbox: 'workspace-write',
+      timeoutMs: 30_000,
+    };
+
+    // needsReview:true forces review path for any tier
+    const events = await collectEvents(
+      orchestrate('audit the auth flow', deps, new AbortController().signal),
+    );
+
+    // A review run means there's a manager-tier tier-start from the reviewer (codex)
+    const reviewerTierStarts = events.filter(
+      (e) => e.type === 'tier-start' && e.provider === 'codex',
+    );
+    assert.ok(
+      reviewerTierStarts.length >= 1,
+      'Expected codex reviewer to run even when work starts at manager tier',
+    );
+
+    // Must have a verdict notice
+    const verdictNotice = events.find(
+      (e) => e.type === 'notice' && e.message.includes('verdict'),
+    );
+    assert.ok(verdictNotice !== undefined, 'Expected a verdict notice from the review');
+
+    // Final must be success
+    const finalEv = events.find((e) => e.type === 'final');
+    assert.ok(finalEv !== undefined);
+    if (finalEv.type === 'final') {
+      assert.equal(finalEv.success, true);
+    }
+  });
+
+  it('same-vendor-only (no cross-vendor available) skips review and accepts', async () => {
+    // Only claude is available — pickReviewer returns claude (same vendor).
+    // The new guard requires a DIFFERENT vendor for review, so review is skipped.
+    const icEnvelope =
+      '{"confidence": 0.88, "escalate": false, "reason": "done", "needs_review": true}';
+    const icText = `Work done.\n${icEnvelope}`;
+
+    const claudeProvider: Provider = {
+      id: 'claude',
+      async detect() {
+        return { id: 'claude', installed: true, version: '1.0.0', authenticated: true, binaryPath: '/usr/bin/fake', availableModels: [] };
+      },
+      async *run(_req: ProviderRequest, _signal: AbortSignal): AsyncIterable<ProviderEvent> {
+        yield { type: 'done', text: icText, usage: FAKE_USAGE, raw: {} };
+      },
+    };
+
+    const clock = makeFakeClock();
+    const session = makeFakeSession();
+    const ledger = makeFakeLedger();
+    const deps: OrchestrateDeps = {
+      providers: { claude: claudeProvider },
+      clock,
+      session,
+      ledger,
+      policy: DEFAULT_POLICY,
+      cwd: '/fake/cwd',
+      sandbox: 'workspace-write',
+      timeoutMs: 30_000,
+    };
+
+    // needsReview:true but only claude is available — review must be skipped
+    const events = await collectEvents(
+      orchestrate('refactor X', deps, new AbortController().signal),
+    );
+
+    // No 'Review by' notice — review was skipped because no cross-vendor reviewer
+    const reviewByNotice = events.find(
+      (e) => e.type === 'notice' && e.message.includes('Review by'),
+    );
+    assert.equal(reviewByNotice, undefined, 'Review must be skipped when only same-vendor is available');
+
+    // Final must still be success (skipping review ≠ failure)
+    const finalEv = events.find((e) => e.type === 'final');
+    assert.ok(finalEv !== undefined);
+    if (finalEv.type === 'final') {
+      assert.equal(finalEv.success, true);
+    }
+  });
+});

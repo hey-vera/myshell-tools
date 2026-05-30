@@ -19,6 +19,7 @@ describe('parseReviewVerdict — valid verdict envelopes', () => {
     assert.equal(verdict.notes, 'All checks pass.');
     assert.ok(verdict.confidence !== null);
     assert.ok(Math.abs(verdict.confidence - 0.95) < 1e-9);
+    assert.equal(verdict.parsed, true, 'parsed must be true when envelope was found');
   });
 
   it('parses a revise verdict', () => {
@@ -58,6 +59,7 @@ describe('parseReviewVerdict — valid verdict envelopes', () => {
     const verdict = parseReviewVerdict(output);
     assert.equal(verdict.verdict, 'approve');
     assert.equal(verdict.notes, 'all good');
+    assert.equal(verdict.parsed, true);
   });
 
   it('handles missing notes field — defaults to empty string', () => {
@@ -80,17 +82,19 @@ describe('parseReviewVerdict — valid verdict envelopes', () => {
 // ---------------------------------------------------------------------------
 
 describe('parseReviewVerdict — fail-open (broken reviewer must not block user)', () => {
-  it('missing envelope → fail-open approve with confidence null', () => {
+  it('missing envelope → fail-open approve with confidence null AND parsed:false', () => {
     const verdict = parseReviewVerdict('No JSON here at all.');
     assert.equal(verdict.verdict, 'approve');
     assert.equal(verdict.notes, '');
     assert.equal(verdict.confidence, null);
+    assert.equal(verdict.parsed, false, 'fail-open must set parsed:false');
   });
 
-  it('empty string → fail-open approve', () => {
+  it('empty string → fail-open approve with parsed:false', () => {
     const verdict = parseReviewVerdict('');
     assert.equal(verdict.verdict, 'approve');
     assert.equal(verdict.confidence, null);
+    assert.equal(verdict.parsed, false);
   });
 
   it('malformed JSON → fail-open approve', () => {
@@ -154,6 +158,11 @@ describe('parseReviewVerdict — fail-open (broken reviewer must not block user)
         verdict.confidence,
         null,
         `Expected confidence null for junk: ${JSON.stringify(junk)}, got: ${verdict.confidence}`,
+      );
+      assert.equal(
+        verdict.parsed,
+        false,
+        `Expected parsed:false for junk: ${JSON.stringify(junk)}, got: ${String(verdict.parsed)}`,
       );
     }
   });

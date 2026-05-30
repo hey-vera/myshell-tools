@@ -99,6 +99,23 @@ describe('visibleLength', () => {
     // '🟢🟡' → 2 + 2 = 4
     assert.strictEqual(visibleLength('🟢🟡'), 4);
   });
+
+  it('⚠️ (U+26A0 + U+FE0F variation selector) counts as 2, not 4', () => {
+    // U+26A0 = warning sign (misc symbol, 2 cols)
+    // U+FE0F = VS16 variation selector (zero-width modifier, 0 cols)
+    // Terminal renders ⚠️ as a single 2-column glyph.
+    assert.strictEqual(visibleLength('⚠️'), 2);
+  });
+
+  it('variation-selector-only string counts as 0', () => {
+    // U+FE0F alone is zero-width
+    assert.strictEqual(visibleLength('️'), 0);
+  });
+
+  it('plain warning sign without VS16 counts as 2', () => {
+    // U+26A0 without a variation selector is 2 cols
+    assert.strictEqual(visibleLength('⚠'), 2);
+  });
 });
 
 describe('pad', () => {
@@ -166,6 +183,21 @@ describe('box', () => {
     const narrowLen = visibleLength(narrow.split('\n')[0] ?? '');
     const wideLen   = visibleLength(wide.split('\n')[0] ?? '');
     assert.ok(wideLen > narrowLen, 'wider width option must produce wider box');
+  });
+
+  it('all rows have equal visibleLength when body lines contain ⚠️ (variation selector)', () => {
+    // ⚠️ must count as 2 (not 4) so the right border aligns with other rows.
+    const out = box('Warning', ['⚠️ auth failure', 'normal line']);
+    const rows = out.split('\n');
+    const lengths = rows.map(r => visibleLength(r));
+    const first = lengths[0];
+    assert.ok(first !== undefined, 'box must have at least one row');
+    for (let i = 1; i < lengths.length; i++) {
+      assert.strictEqual(
+        lengths[i], first,
+        `Row ${i} has visibleLength ${String(lengths[i])}, expected ${String(first)} — emoji variation selector may be double-counted`,
+      );
+    }
   });
 });
 

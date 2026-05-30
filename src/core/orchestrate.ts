@@ -123,6 +123,12 @@ export async function* orchestrate(
   let attempts = 0;
   let totalCostUsd = 0;
   let lastOutput = '';
+  /**
+   * Track which attempt indices have already been reviewed so that re-runs
+   * (e.g. after a revise verdict) are not reviewed a second time and we
+   * cannot enter an infinite review loop.
+   */
+  const reviewedAttempts = new Set<number>();
 
   // -------------------------------------------------------------------------
   // (f) Main orchestration loop
@@ -292,18 +298,24 @@ export async function* orchestrate(
       }
     }
 
-    // 2) Cross-vendor review for IC work on high/critical risk or needsReview
-    if (currentTier === 'ic' && shouldReview(classification, assessment)) {
+    // 2) Cross-vendor review for high/critical risk or needsReview — any tier
+    //    Guard: each attempt is reviewed at most once (prevents infinite loops).
+    //    Guard: skip review if the only available reviewer is the same vendor
+    //           (cross-vendor review is required; same-vendor-only → skip).
+    if (shouldReview(classification, assessment) && !reviewedAttempts.has(attempts)) {
       const reviewerId = pickReviewer(available, decision.provider);
+      // Only proceed with a DIFFERENT-vendor reviewer (cross-vendor requirement).
       const reviewerProvider =
-        reviewerId === null ? undefined : deps.providers[reviewerId];
+        reviewerId !== null && reviewerId !== decision.provider
+          ? deps.providers[reviewerId]
+          : undefined;
 
       if (reviewerId !== null && reviewerProvider !== undefined) {
-        const sameVendor = reviewerId === decision.provider;
+        reviewedAttempts.add(attempts);
         yield {
           type: 'notice',
           level: 'info',
-          message: `Review by ${reviewerId} (${sameVendor ? 'same vendor' : 'cross-vendor'})`,
+          message: `Review by ${reviewerId} (cross-vendor)`,
         };
 
         // Route reviewer at manager tier
@@ -419,36 +431,65 @@ export async function* orchestrate(
 
         // Parse verdict and act on it
         const verdict = parseReviewVerdict(reviewText ?? '');
-        yield {
-          type: 'notice',
-          level: 'info',
-          message: `Review verdict: ${verdict.verdict}`,
-        };
 
-        if (verdict.verdict === 'approve') {
+        // Risk-indexed fail-open: when parsing failed (verdict.parsed === false)
+        // AND the task is high/critical risk, do NOT silently auto-approve —
+        // escalate (or warn if already at manager) rather than letting
+        // unparseable output pass as approved.
+        if (!verdict.parsed && (classification.risk === 'high' || classification.risk === 'critical')) {
+          if (currentTier !== 'manager') {
+            yield {
+              type: 'notice',
+              level: 'warn',
+              message: 'review inconclusive — not auto-approving',
+            };
+            yield { type: 'escalate', from: currentTier, to: 'manager', reason: 'review inconclusive' };
+            currentTier = 'manager';
+            continue mainLoop;
+          } else {
+            // Already at manager — emit a warn notice and treat as needing escalation
+            // (loop will naturally exhaust or fall through to confidence check).
+            yield {
+              type: 'notice',
+              level: 'warn',
+              message: 'review inconclusive — not auto-approving',
+            };
+            // Fall through to confidence-based escalation below.
+          }
+        } else {
           yield {
-            type: 'final',
-            success: true,
-            output: lastOutput,
-            tier: currentTier,
-            totalCostUsd,
-            sessionId: deps.session.id,
-            attempts,
+            type: 'notice',
+            level: 'info',
+            message: `Review verdict: ${verdict.verdict}`,
           };
-          return;
-        }
 
-        if (verdict.verdict === 'revise') {
-          // Retry IC with reviewer's notes; managerNotes is cleared after use
-          managerNotes = verdict.notes;
-          // Stay at 'ic' tier; loop continues
+          if (verdict.verdict === 'approve') {
+            yield {
+              type: 'final',
+              success: true,
+              output: lastOutput,
+              tier: currentTier,
+              totalCostUsd,
+              sessionId: deps.session.id,
+              attempts,
+            };
+            return;
+          }
+
+          if (verdict.verdict === 'revise') {
+            // Retry current tier with reviewer's notes
+            managerNotes = verdict.notes;
+            continue mainLoop;
+          }
+
+          // verdict === 'escalate'
+          const escalateTo = nextTierUp(currentTier);
+          if (escalateTo !== null) {
+            yield { type: 'escalate', from: currentTier, to: escalateTo, reason: 'reviewer escalation' };
+            currentTier = escalateTo;
+          }
           continue mainLoop;
         }
-
-        // verdict === 'escalate'
-        yield { type: 'escalate', from: 'ic', to: 'manager', reason: 'reviewer escalation' };
-        currentTier = 'manager';
-        continue mainLoop;
       }
     }
 

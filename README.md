@@ -50,8 +50,10 @@ npm link
 myshell-tools [command] [options]
 
 Commands:
+  (none)          Open the interactive control panel (default)
   run <task...>   Run a one-shot task and exit
-  repl            Interactive session (default when no command is given)
+  repl            Plain line REPL (no menu)
+  login [prov]    Sign in to a provider (claude or codex) via its own OAuth
   doctor          Check providers, auth, environment
   cost            Show real spend + the cost-routing counterfactual
 
