@@ -87,6 +87,14 @@ describe('createFileConversationStore — create and list', () => {
     assert.equal(meta.messageCount, 0);
   });
 
+  it('create defaults pinned=false and category=null', async () => {
+    const clock = makeFakeClock('2024-06-01T10:00:00.000Z');
+    const store = createFileConversationStore({ homeDir, clock });
+    const meta = await store.create('Defaults test');
+    assert.equal(meta.pinned, false);
+    assert.equal(meta.category, null);
+  });
+
   it('list returns 2 conversations newest-first by updatedAt', async () => {
     const home2 = await mkdtemp(join(tmpdir(), `conv-order-${randomUUID()}-`));
     try {
@@ -308,6 +316,161 @@ describe('createFileConversationStore — rename and remove', () => {
       // After remove, load returns []
       const after = await store.load(meta.id);
       assert.deepEqual(after, []);
+    } finally {
+      await rm(home2, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// setPinned / setCategory
+// ---------------------------------------------------------------------------
+
+describe('createFileConversationStore — setPinned and setCategory', () => {
+  it('setPinned(true) makes a conversation sort before unpinned ones', async () => {
+    const home2 = await mkdtemp(join(tmpdir(), `conv-pin-${randomUUID()}-`));
+    try {
+      const clock = makeFakeClock('2024-01-01T00:00:00.000Z');
+      const store = createFileConversationStore({ homeDir: home2, clock });
+
+      await store.create('Unpinned A');
+      clock.advance();
+      const b = await store.create('To be pinned B');
+
+      // B was created after A so it is already first; pin A to force it ahead
+      const a = (await store.list()).find((m) => m.title === 'Unpinned A');
+      assert.ok(a !== undefined);
+      await store.setPinned(a.id, true);
+
+      const list = await store.list();
+      assert.equal(list[0]?.title, 'Unpinned A', 'pinned conversation is first');
+      assert.equal(list[1]?.title, 'To be pinned B');
+      // pinned flag is reflected
+      assert.equal(list[0]?.pinned, true);
+      assert.equal(list[1]?.pinned, false);
+      void b; // used above
+    } finally {
+      await rm(home2, { recursive: true, force: true });
+    }
+  });
+
+  it('setPinned(false) demotes a pinned conversation back to updatedAt order', async () => {
+    const home2 = await mkdtemp(join(tmpdir(), `conv-unpin-${randomUUID()}-`));
+    try {
+      const clock = makeFakeClock('2024-01-01T00:00:00.000Z');
+      const store = createFileConversationStore({ homeDir: home2, clock });
+
+      const a = await store.create('A');
+      clock.advance();
+      await store.create('B');
+
+      // pin A, then unpin it
+      await store.setPinned(a.id, true);
+      await store.setPinned(a.id, false);
+
+      const list = await store.list();
+      // B has a later updatedAt, so it should be first now that A is not pinned
+      assert.equal(list[0]?.title, 'B');
+      assert.equal(list[1]?.title, 'A');
+    } finally {
+      await rm(home2, { recursive: true, force: true });
+    }
+  });
+
+  it('setPinned is a no-op for unknown id', async () => {
+    const home2 = await mkdtemp(join(tmpdir(), `conv-pinnoop-${randomUUID()}-`));
+    try {
+      const clock = makeFakeClock();
+      const store = createFileConversationStore({ homeDir: home2, clock });
+      // Should not throw
+      await store.setPinned('does-not-exist', true);
+    } finally {
+      await rm(home2, { recursive: true, force: true });
+    }
+  });
+
+  it('setCategory persists the tag and list/load reflect it', async () => {
+    const home2 = await mkdtemp(join(tmpdir(), `conv-cat-${randomUUID()}-`));
+    try {
+      const clock = makeFakeClock();
+      const store = createFileConversationStore({ homeDir: home2, clock });
+      const meta = await store.create('Categorised conversation');
+
+      await store.setCategory(meta.id, 'ui');
+
+      const list = await store.list();
+      const found = list.find((m) => m.id === meta.id);
+      assert.ok(found !== undefined);
+      assert.equal(found.category, 'ui');
+    } finally {
+      await rm(home2, { recursive: true, force: true });
+    }
+  });
+
+  it('setCategory(null) clears an existing category', async () => {
+    const home2 = await mkdtemp(join(tmpdir(), `conv-catclear-${randomUUID()}-`));
+    try {
+      const clock = makeFakeClock();
+      const store = createFileConversationStore({ homeDir: home2, clock });
+      const meta = await store.create('Category then clear');
+
+      await store.setCategory(meta.id, 'refactor');
+      await store.setCategory(meta.id, null);
+
+      const list = await store.list();
+      const found = list.find((m) => m.id === meta.id);
+      assert.ok(found !== undefined);
+      assert.equal(found.category, null);
+    } finally {
+      await rm(home2, { recursive: true, force: true });
+    }
+  });
+
+  it('setCategory is a no-op for unknown id', async () => {
+    const home2 = await mkdtemp(join(tmpdir(), `conv-catnoop-${randomUUID()}-`));
+    try {
+      const clock = makeFakeClock();
+      const store = createFileConversationStore({ homeDir: home2, clock });
+      // Should not throw
+      await store.setCategory('does-not-exist', 'ui');
+    } finally {
+      await rm(home2, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Legacy index migration (entries written before pinned/category existed)
+// ---------------------------------------------------------------------------
+
+describe('createFileConversationStore — legacy index migration', () => {
+  it('old index entries missing pinned/category still load with defaults', async () => {
+    const home2 = await mkdtemp(join(tmpdir(), `conv-legacy-${randomUUID()}-`));
+    try {
+      // Write a legacy index.json that is missing pinned and category fields
+      const convDir = join(home2, '.myshell-tools', 'conversations');
+      await mkdir(convDir, { recursive: true });
+      const legacyIndex = [
+        {
+          id: 'legacy-id-1',
+          title: 'Old conversation',
+          createdAt: '2023-01-01T00:00:00.000Z',
+          updatedAt: '2023-01-01T00:00:00.000Z',
+          messageCount: 3,
+          // deliberately omits: pinned, category
+        },
+      ];
+      await writeFile(join(convDir, 'index.json'), JSON.stringify(legacyIndex), 'utf8');
+
+      const clock = makeFakeClock();
+      const store = createFileConversationStore({ homeDir: home2, clock });
+      const list = await store.list();
+
+      assert.equal(list.length, 1);
+      assert.equal(list[0]?.title, 'Old conversation');
+      // Migrated to defaults
+      assert.equal(list[0]?.pinned, false);
+      assert.equal(list[0]?.category, null);
     } finally {
       await rm(home2, { recursive: true, force: true });
     }

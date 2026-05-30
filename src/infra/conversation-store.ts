@@ -19,10 +19,14 @@ export interface ConversationMeta {
   readonly createdAt: string; // ISO
   readonly updatedAt: string; // ISO
   readonly messageCount: number;
+  /** Whether this conversation is pinned (sorted to the top of the list). */
+  readonly pinned: boolean;
+  /** Optional short category tag (e.g. "ui", "refactor"); null when unset. */
+  readonly category: string | null;
 }
 
 export interface ConversationStore {
-  /** All conversations, most-recently-updated first. */
+  /** All conversations, pinned first then most-recently-updated first. */
   list(): Promise<ConversationMeta[]>;
   /** Create a new conversation; returns its metadata (with a fresh id). */
   create(title: string): Promise<ConversationMeta>;
@@ -34,6 +38,10 @@ export interface ConversationStore {
   remove(id: string): Promise<void>;
   /** A SessionWriter bound to `id` — appends entries and bumps updatedAt/count. */
   writer(id: string): SessionWriter;
+  /** Pin or unpin a conversation. No-op if the id does not exist. */
+  setPinned(id: string, pinned: boolean): Promise<void>;
+  /** Set or clear the category tag for a conversation. No-op if id missing. */
+  setCategory(id: string, category: string | null): Promise<void>;
 }
 
 /** Re-export for implementors/consumers that thread message entries through. */

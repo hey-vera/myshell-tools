@@ -5,8 +5,9 @@
  * an honest, human-readable report to an OutputSink. All displayed data comes
  * from real detection results — no fabricated values.
  *
- * Honesty contract: authentication status for Claude is labelled OPTIMISTIC
- * because we cannot cheaply probe auth state without spending API quota.
+ * Honesty contract: authentication status is based on real CLI probes
+ * (`claude auth status`, `codex login status`). Plan labels are only shown
+ * when the CLI output clearly provides them; plan is never fabricated.
  */
 
 import { access, mkdir, writeFile, rm } from 'node:fs/promises';
@@ -75,10 +76,14 @@ export function buildDoctorReport(
       lines.push(
         `  ${green('✓', color)} ${bold(ps.id, color)} — installed, version: ${versionStr}`,
       );
-      // Auth is optimistic for Claude; codex is always not-installed for now
-      if (ps.id === 'claude') {
+      if (ps.authenticated) {
+        const planLabel = ps.plan !== null ? ` (${ps.plan})` : '';
         lines.push(
-          `    ${label('auth', color)}: ${dim('assumed; verified on first run', color)}`,
+          `    ${label('auth', color)}: ${green('signed in', color)}${planLabel}`,
+        );
+      } else {
+        lines.push(
+          `    ${label('auth', color)}: ${yellow('not signed in', color)} — run: myshell-tools login`,
         );
       }
     } else {

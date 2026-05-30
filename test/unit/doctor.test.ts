@@ -24,6 +24,7 @@ function makeProviderStatus(
     installed: false,
     version: null,
     authenticated: false,
+    plan: null,
     binaryPath: null,
     availableModels: [],
     ...overrides,
@@ -51,12 +52,18 @@ const defaultExtras: DoctorExtras = {
 };
 
 // ---------------------------------------------------------------------------
-// Claude installed, codex not installed
+// Claude installed + authenticated with plan, codex not installed
 // ---------------------------------------------------------------------------
 
-describe('buildDoctorReport — claude installed, codex not installed', () => {
+describe('buildDoctorReport — claude installed signed in with plan, codex not installed', () => {
   const env = makeEnv(
-    { installed: true, version: '1.2.3', authenticated: true, binaryPath: 'claude' },
+    {
+      installed: true,
+      version: '1.2.3',
+      authenticated: true,
+      plan: 'pro',
+      binaryPath: 'claude',
+    },
     { installed: false },
   );
 
@@ -79,10 +86,24 @@ describe('buildDoctorReport — claude installed, codex not installed', () => {
     assert.ok(claudeLine !== undefined, 'expected a line mentioning claude installed');
   });
 
-  it('notes that claude auth is assumed / optimistic', () => {
+  it('shows "signed in" for authenticated claude', () => {
     assert.ok(
-      output.includes('assumed'),
-      `expected "assumed" auth note for claude in output`,
+      output.includes('signed in'),
+      `expected "signed in" auth status in output:\n${output}`,
+    );
+  });
+
+  it('shows the plan label', () => {
+    assert.ok(
+      output.includes('pro'),
+      `expected plan label "pro" in output:\n${output}`,
+    );
+  });
+
+  it('does not contain old "assumed" wording', () => {
+    assert.ok(
+      !output.includes('assumed'),
+      `expected no "assumed" wording in output:\n${output}`,
     );
   });
 
@@ -119,6 +140,89 @@ describe('buildDoctorReport — claude installed, codex not installed', () => {
       output.includes('Ready'),
       `expected "Ready" status in output:\n${output}`,
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Claude installed + authenticated, no plan
+// ---------------------------------------------------------------------------
+
+describe('buildDoctorReport — claude installed signed in, plan null', () => {
+  const env = makeEnv(
+    {
+      installed: true,
+      version: '1.2.3',
+      authenticated: true,
+      plan: null,
+      binaryPath: 'claude',
+    },
+  );
+
+  const lines = buildDoctorReport(env, defaultExtras, false);
+  const output = lines.join('\n');
+
+  it('shows "signed in"', () => {
+    assert.ok(output.includes('signed in'), `expected "signed in" in output:\n${output}`);
+  });
+
+  it('does not show a plan label when plan is null', () => {
+    // Should not show parenthesised plan string
+    assert.ok(
+      !output.includes('(null)') && !output.includes('(undefined)'),
+      `expected no spurious plan label in output:\n${output}`,
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Claude installed but NOT authenticated
+// ---------------------------------------------------------------------------
+
+describe('buildDoctorReport — claude installed but not signed in', () => {
+  const env = makeEnv(
+    {
+      installed: true,
+      version: '1.2.3',
+      authenticated: false,
+      plan: null,
+      binaryPath: 'claude',
+    },
+  );
+
+  const lines = buildDoctorReport(env, defaultExtras, false);
+  const output = lines.join('\n');
+
+  it('shows "not signed in"', () => {
+    assert.ok(
+      output.includes('not signed in'),
+      `expected "not signed in" in output:\n${output}`,
+    );
+  });
+
+  it('suggests running myshell-tools login', () => {
+    assert.ok(
+      output.includes('myshell-tools login'),
+      `expected login suggestion in output:\n${output}`,
+    );
+  });
+
+  it('does not show "signed in" without "not"', () => {
+    // Ensure we see "not signed in" and not just "signed in" (positive)
+    const signedInIdx = output.indexOf('signed in');
+    const notSignedInIdx = output.indexOf('not signed in');
+    assert.ok(
+      notSignedInIdx !== -1,
+      `expected "not signed in" in output:\n${output}`,
+    );
+    assert.equal(
+      signedInIdx,
+      notSignedInIdx + 'not '.length,
+      `"signed in" should only appear as part of "not signed in"`,
+    );
+  });
+
+  it('does not contain old "assumed" wording', () => {
+    assert.ok(!output.includes('assumed'), `expected no "assumed" wording`);
   });
 });
 
@@ -161,10 +265,22 @@ describe('buildDoctorReport — no providers installed', () => {
 // Both providers installed
 // ---------------------------------------------------------------------------
 
-describe('buildDoctorReport — both providers installed', () => {
+describe('buildDoctorReport — both providers installed and signed in', () => {
   const env = makeEnv(
-    { installed: true, version: '2.0.0', authenticated: true, binaryPath: 'claude' },
-    { installed: true, version: '0.5.0', authenticated: true, binaryPath: 'codex' },
+    {
+      installed: true,
+      version: '2.0.0',
+      authenticated: true,
+      plan: 'pro',
+      binaryPath: 'claude',
+    },
+    {
+      installed: true,
+      version: '0.5.0',
+      authenticated: true,
+      plan: null,
+      binaryPath: 'codex',
+    },
   );
   const lines = buildDoctorReport(env, defaultExtras, false);
   const output = lines.join('\n');
@@ -181,6 +297,11 @@ describe('buildDoctorReport — both providers installed', () => {
   it('reports "Ready"', () => {
     assert.ok(output.includes('Ready'), `expected "Ready" in output`);
   });
+
+  it('shows "signed in" for both providers', () => {
+    const signedInCount = (output.match(/signed in/g) ?? []).length;
+    assert.ok(signedInCount >= 2, `expected at least 2 "signed in" occurrences, got ${signedInCount}`);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -188,7 +309,13 @@ describe('buildDoctorReport — both providers installed', () => {
 // ---------------------------------------------------------------------------
 
 describe('buildDoctorReport — stale pricing and non-writable .myshell-tools', () => {
-  const env = makeEnv({ installed: true, version: '1.0.0', binaryPath: 'claude' });
+  const env = makeEnv({
+    installed: true,
+    version: '1.0.0',
+    authenticated: true,
+    plan: null,
+    binaryPath: 'claude',
+  });
   const extras: DoctorExtras = {
     nodeVersion: 'v20.0.0',
     stateWritable: false,
@@ -218,7 +345,13 @@ describe('buildDoctorReport — stale pricing and non-writable .myshell-tools', 
 // ---------------------------------------------------------------------------
 
 describe('buildDoctorReport — color=true produces ANSI codes', () => {
-  const env = makeEnv({ installed: true, version: '1.0.0', binaryPath: 'claude' });
+  const env = makeEnv({
+    installed: true,
+    version: '1.0.0',
+    authenticated: true,
+    plan: null,
+    binaryPath: 'claude',
+  });
   const lines = buildDoctorReport(env, defaultExtras, true);
   const output = lines.join('\n');
 
@@ -235,7 +368,13 @@ describe('buildDoctorReport — color=true produces ANSI codes', () => {
 // ---------------------------------------------------------------------------
 
 describe('buildDoctorReport — color=false produces plain text', () => {
-  const env = makeEnv({ installed: true, version: '1.0.0', binaryPath: 'claude' });
+  const env = makeEnv({
+    installed: true,
+    version: '1.0.0',
+    authenticated: true,
+    plan: null,
+    binaryPath: 'claude',
+  });
   const lines = buildDoctorReport(env, defaultExtras, false);
   const output = lines.join('\n');
 

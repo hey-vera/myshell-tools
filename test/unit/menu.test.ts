@@ -55,67 +55,77 @@ function assertNoDigitPercent(output: string, label: string): void {
 // Fake EnvironmentStatus for testing
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Helper to build a ProviderStatus object with optional plan field.
+// `plan` is added by a parallel workstream; we cast to match the shared
+// contract so tests exercise the real rendering path.
+// ---------------------------------------------------------------------------
+
+type ProviderStatusWithPlan = EnvironmentStatus['claude'] & { readonly plan?: string | null };
+
+function makeProvider(
+  id: 'claude' | 'codex',
+  opts: {
+    installed: boolean;
+    version?: string | null;
+    authenticated?: boolean;
+    plan?: string | null;
+  },
+): ProviderStatusWithPlan {
+  return {
+    id,
+    installed: opts.installed,
+    version: opts.version ?? null,
+    authenticated: opts.authenticated ?? false,
+    binaryPath: opts.installed ? id : null,
+    availableModels: opts.installed ? ['model-a'] : [],
+    plan: opts.plan ?? null,
+  } as ProviderStatusWithPlan;
+}
+
 const FAKE_ENV_BOTH_INSTALLED: EnvironmentStatus = {
-  claude: {
-    id: 'claude',
-    installed: true,
-    version: '1.2.3',
-    authenticated: true,
-    binaryPath: 'claude',
-    availableModels: ['opus', 'sonnet'],
-  },
-  codex: {
-    id: 'codex',
-    installed: true,
-    version: '4.5.6',
-    authenticated: true,
-    binaryPath: 'codex',
-    availableModels: ['gpt-5.5'],
-  },
+  claude: makeProvider('claude', { installed: true, version: '1.2.3', authenticated: true }),
+  codex: makeProvider('codex', { installed: true, version: '4.5.6', authenticated: true }),
   hasAnyProvider: true,
   platform: 'linux',
 };
 
 const FAKE_ENV_NONE_INSTALLED: EnvironmentStatus = {
-  claude: {
-    id: 'claude',
-    installed: false,
-    version: null,
-    authenticated: false,
-    binaryPath: null,
-    availableModels: [],
-  },
-  codex: {
-    id: 'codex',
-    installed: false,
-    version: null,
-    authenticated: false,
-    binaryPath: null,
-    availableModels: [],
-  },
+  claude: makeProvider('claude', { installed: false }),
+  codex: makeProvider('codex', { installed: false }),
   hasAnyProvider: false,
   platform: 'linux',
 };
 
 const FAKE_ENV_MIXED: EnvironmentStatus = {
-  claude: {
-    id: 'claude',
-    installed: true,
-    version: '2.0.0',
-    authenticated: true,
-    binaryPath: 'claude',
-    availableModels: ['opus'],
-  },
-  codex: {
-    id: 'codex',
-    installed: false,
-    version: null,
-    authenticated: false,
-    binaryPath: null,
-    availableModels: [],
-  },
+  claude: makeProvider('claude', { installed: true, version: '2.0.0', authenticated: true }),
+  codex: makeProvider('codex', { installed: false }),
   hasAnyProvider: true,
   platform: 'win32',
+};
+
+/** Both installed, claude NOT signed in (installed && !authenticated). */
+const FAKE_ENV_INSTALLED_NOT_AUTHED: EnvironmentStatus = {
+  claude: makeProvider('claude', { installed: true, version: '1.0.0', authenticated: false }),
+  codex: makeProvider('codex', { installed: true, version: '4.0.0', authenticated: true }),
+  hasAnyProvider: true,
+  platform: 'linux',
+};
+
+/** Both installed with plan labels. */
+const FAKE_ENV_WITH_PLANS: EnvironmentStatus = {
+  claude: makeProvider('claude', { installed: true, version: '1.0.0', authenticated: true, plan: 'Max x5' }),
+  codex: makeProvider('codex', { installed: true, version: '4.0.0', authenticated: true, plan: 'Plus' }),
+  hasAnyProvider: true,
+  platform: 'linux',
+};
+
+/** Both installed, no plan labels (plan: null). */
+const FAKE_ENV_NO_PLAN: EnvironmentStatus = {
+  claude: makeProvider('claude', { installed: true, version: '1.0.0', authenticated: true, plan: null }),
+  codex: makeProvider('codex', { installed: true, version: '4.0.0', authenticated: true, plan: null }),
+  hasAnyProvider: true,
+  platform: 'linux',
 };
 
 // ---------------------------------------------------------------------------
@@ -124,13 +134,19 @@ const FAKE_ENV_MIXED: EnvironmentStatus = {
 
 const NOW_MS = 1_700_000_000_000; // arbitrary fixed "now" for deterministic tests
 
-function meta(i: number, updatedAtMs: number): ConversationMeta {
+function meta(
+  i: number,
+  updatedAtMs: number,
+  opts?: { pinned?: boolean; category?: string | null },
+): ConversationMeta {
   return {
     id: `id-${i}`,
     title: `Conversation ${i}`,
     createdAt: new Date(updatedAtMs).toISOString(),
     updatedAt: new Date(updatedAtMs).toISOString(),
     messageCount: i,
+    pinned: opts?.pinned ?? false,
+    category: opts?.category ?? null,
   };
 }
 
@@ -219,18 +235,40 @@ describe('renderHeaderLines', () => {
     assert.ok(lines.some((l) => l.includes('✅') && l.includes('codex')));
   });
 
-  it('shows ⚠️ for missing providers', () => {
+  it('shows ❌ for not-installed providers', () => {
     const lines = renderHeaderLines(FAKE_ENV_NONE_INSTALLED, '2.0.0');
-    assert.ok(lines.some((l) => l.includes('⚠') && l.includes('claude')));
-    assert.ok(lines.some((l) => l.includes('⚠') && l.includes('codex')));
+    assert.ok(lines.some((l) => l.includes('❌') && l.includes('claude')));
+    assert.ok(lines.some((l) => l.includes('❌') && l.includes('codex')));
   });
 
-  it('shows ✅ claude and ⚠️ codex for mixed env', () => {
+  it('shows ✅ claude and ❌ codex for mixed env', () => {
     const lines = renderHeaderLines(FAKE_ENV_MIXED, '2.0.0');
     const claudeLine = lines.find((l) => l.includes('claude'));
     const codexLine = lines.find((l) => l.includes('codex'));
-    assert.ok(claudeLine?.includes('✅'), 'claude installed → ✅');
-    assert.ok(codexLine?.includes('⚠'), 'codex not installed → ⚠️');
+    assert.ok(claudeLine?.includes('✅'), 'claude installed + authed → ✅');
+    assert.ok(codexLine?.includes('❌'), 'codex not installed → ❌');
+  });
+
+  it('shows ⚠️ for installed-but-not-authenticated provider', () => {
+    const lines = renderHeaderLines(FAKE_ENV_INSTALLED_NOT_AUTHED, '2.0.0');
+    const claudeLine = lines.find((l) => l.includes('claude'));
+    assert.ok(claudeLine?.includes('⚠'), 'installed but not authed → ⚠️');
+    assert.ok(claudeLine?.includes('not signed in'), 'includes "not signed in"');
+  });
+
+  it('appends plan label when ps.plan is non-null', () => {
+    const lines = renderHeaderLines(FAKE_ENV_WITH_PLANS, '2.0.0');
+    const claudeLine = lines.find((l) => l.includes('claude')) ?? '';
+    const codexLine = lines.find((l) => l.includes('codex')) ?? '';
+    assert.ok(claudeLine.includes('Max x5'), 'claude line shows plan "Max x5"');
+    assert.ok(codexLine.includes('Plus'), 'codex line shows plan "Plus"');
+  });
+
+  it('omits plan label when ps.plan is null', () => {
+    const lines = renderHeaderLines(FAKE_ENV_NO_PLAN, '2.0.0');
+    for (const line of lines) {
+      assert.ok(!line.includes('('), `plan label must be omitted when null: "${line}"`);
+    }
   });
 
   it('shows install hint for missing providers', () => {
@@ -330,5 +368,41 @@ describe('renderConversationList', () => {
     for (const line of lines) {
       assertNoDigitPercent(line, 'renderConversationList');
     }
+  });
+
+  it('shows 📌 prefix for pinned conversation', () => {
+    const metas = [meta(1, NOW_MS - 60_000, { pinned: true })];
+    const lines = renderConversationList(metas, NOW_MS);
+    assert.ok(lines[0]?.includes('📌'), 'pinned conversation shows 📌');
+  });
+
+  it('shows 3-space prefix for non-pinned conversation (alignment)', () => {
+    const metas = [meta(1, NOW_MS - 60_000, { pinned: false })];
+    const lines = renderConversationList(metas, NOW_MS);
+    // Line should start with "[1]    " — [1] then space then 3 spaces
+    assert.ok(lines[0]?.startsWith('[1]    '), `non-pinned has 3-space indent: "${lines[0]}"`);
+  });
+
+  it('shows [category] suffix when category is set', () => {
+    const metas = [meta(1, NOW_MS - 60_000, { category: 'ui' })];
+    const lines = renderConversationList(metas, NOW_MS);
+    assert.ok(lines[0]?.includes('[ui]'), 'categorised conversation shows [ui]');
+  });
+
+  it('omits category suffix when category is null', () => {
+    const metas = [meta(1, NOW_MS - 60_000, { category: null })];
+    const lines = renderConversationList(metas, NOW_MS);
+    // The line starts with [1] which contains [ — check no trailing [category] suffix
+    const line = lines[0] ?? '';
+    // After the index bracket [N] there should be no further [...] groups
+    const afterIndex = line.replace(/^\[\d+\]\s+/, '');
+    assert.ok(!afterIndex.includes('['), `no category suffix when null: "${line}"`);
+  });
+
+  it('pinned + category both appear together', () => {
+    const metas = [meta(1, NOW_MS - 60_000, { pinned: true, category: 'refactor' })];
+    const lines = renderConversationList(metas, NOW_MS);
+    assert.ok(lines[0]?.includes('📌'), 'shows 📌 when pinned');
+    assert.ok(lines[0]?.includes('[refactor]'), 'shows [refactor] category');
   });
 });

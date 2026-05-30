@@ -42,12 +42,30 @@ async function ensureDir(homeDir: string): Promise<void> {
   await mkdir(getConversationsDir(homeDir), { recursive: true });
 }
 
+/**
+ * Normalise a raw index entry that may be missing fields added in later
+ * versions (pinned, category). Old on-disk entries that predate these fields
+ * will be migrated transparently on read so existing stores keep working.
+ */
+function normaliseMeta(raw: unknown): ConversationMeta {
+  const r = raw as Record<string, unknown>;
+  return {
+    id: String(r['id'] ?? ''),
+    title: String(r['title'] ?? ''),
+    createdAt: String(r['createdAt'] ?? ''),
+    updatedAt: String(r['updatedAt'] ?? ''),
+    messageCount: typeof r['messageCount'] === 'number' ? r['messageCount'] : 0,
+    pinned: typeof r['pinned'] === 'boolean' ? r['pinned'] : false,
+    category: typeof r['category'] === 'string' ? r['category'] : null,
+  };
+}
+
 async function readIndex(homeDir: string): Promise<ConversationMeta[]> {
   try {
     const raw = await readFile(getIndexPath(homeDir), 'utf8');
     const parsed = JSON.parse(raw);
     if (!Array.isArray(parsed)) return [];
-    return parsed as ConversationMeta[];
+    return parsed.map(normaliseMeta);
   } catch {
     return [];
   }
@@ -89,7 +107,12 @@ export function createFileConversationStore(opts: {
     // -----------------------------------------------------------------------
     async list(): Promise<ConversationMeta[]> {
       const index = await readIndex(home);
-      return [...index].sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1));
+      return [...index].sort((a, b) => {
+        // Pinned items always come before unpinned
+        if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
+        // Within the same pin group, most-recently-updated first
+        return a.updatedAt < b.updatedAt ? 1 : -1;
+      });
     },
 
     // -----------------------------------------------------------------------
@@ -105,6 +128,8 @@ export function createFileConversationStore(opts: {
         createdAt: now,
         updatedAt: now,
         messageCount: 0,
+        pinned: false,
+        category: null,
       };
 
       await withLock(getIndexLockPath(home), async () => {
@@ -181,6 +206,8 @@ export function createFileConversationStore(opts: {
               createdAt: existing.createdAt,
               updatedAt,
               messageCount,
+              pinned: existing.pinned,
+              category: existing.category,
             };
 
             const newIndex = [...index];
@@ -208,6 +235,8 @@ export function createFileConversationStore(opts: {
           createdAt: existing.createdAt,
           updatedAt: existing.updatedAt,
           messageCount: existing.messageCount,
+          pinned: existing.pinned,
+          category: existing.category,
         };
         const newIndex = [...index];
         newIndex[idx] = updated;
@@ -232,6 +261,60 @@ export function createFileConversationStore(opts: {
         const filtered = index.filter((m) => m.id !== id);
         if (filtered.length === index.length) return; // not found, no-op
         await writeIndex(home, filtered);
+      });
+    },
+
+    // -----------------------------------------------------------------------
+    // setPinned
+    // -----------------------------------------------------------------------
+    async setPinned(id: string, pinned: boolean): Promise<void> {
+      await ensureDir(home);
+      await withLock(getIndexLockPath(home), async () => {
+        const index = await readIndex(home);
+        const idx = index.findIndex((m) => m.id === id);
+        if (idx === -1) return; // no-op if missing
+
+        const existing = index[idx];
+        if (existing === undefined) return;
+        const updated: ConversationMeta = {
+          id: existing.id,
+          title: existing.title,
+          createdAt: existing.createdAt,
+          updatedAt: existing.updatedAt,
+          messageCount: existing.messageCount,
+          pinned,
+          category: existing.category,
+        };
+        const newIndex = [...index];
+        newIndex[idx] = updated;
+        await writeIndex(home, newIndex);
+      });
+    },
+
+    // -----------------------------------------------------------------------
+    // setCategory
+    // -----------------------------------------------------------------------
+    async setCategory(id: string, category: string | null): Promise<void> {
+      await ensureDir(home);
+      await withLock(getIndexLockPath(home), async () => {
+        const index = await readIndex(home);
+        const idx = index.findIndex((m) => m.id === id);
+        if (idx === -1) return; // no-op if missing
+
+        const existing = index[idx];
+        if (existing === undefined) return;
+        const updated: ConversationMeta = {
+          id: existing.id,
+          title: existing.title,
+          createdAt: existing.createdAt,
+          updatedAt: existing.updatedAt,
+          messageCount: existing.messageCount,
+          pinned: existing.pinned,
+          category,
+        };
+        const newIndex = [...index];
+        newIndex[idx] = updated;
+        await writeIndex(home, newIndex);
       });
     },
   };

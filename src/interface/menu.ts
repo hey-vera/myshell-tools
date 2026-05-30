@@ -21,7 +21,7 @@ import type { Clock, LedgerWriter, OrchestrateDeps } from '../core/types.js';
 import type { AppConfig } from '../infra/config.js';
 import { saveConfig } from '../infra/config.js';
 import type { ConversationMeta, ConversationStore } from '../infra/conversation-store.js';
-import type { EnvironmentStatus } from '../providers/detect.js';
+import type { EnvironmentStatus, ProviderStatus } from '../providers/detect.js';
 import { detectEnvironment, getInstallCommand } from '../providers/detect.js';
 import type { Provider, ProviderId, SandboxLevel } from '../providers/port.js';
 import { DEFAULT_POLICY, POLICY_PRESETS } from '../core/policy.js';
@@ -73,16 +73,28 @@ export function relativeTime(thenMs: number, nowMs: number): string {
 /**
  * Build the header box lines (provider status) from real EnvironmentStatus.
  * Returns string[] safe to pass as the `lines` arg to box().
- * Each line shows ✅ (installed) or ⚠️ (missing) + provider name + install hint.
+ *
+ * Per-provider logic (uses REAL authenticated + plan fields):
+ *   ✅  when ps.installed && ps.authenticated
+ *   ⚠️  when ps.installed && !ps.authenticated  (append " not signed in")
+ *   ❌  when !ps.installed                       (append install command)
+ * Plan label appended when ps.plan is non-null (e.g. " (Max x5)").
  */
 export function renderHeaderLines(env: EnvironmentStatus, _version: string): string[] {
   const lines: string[] = [];
 
   for (const ps of [env.claude, env.codex]) {
-    if (ps.installed) {
-      lines.push(`✅ ${ps.id}: ready`);
+    // `plan` is added by a parallel workstream; access defensively so this
+    // file compiles standalone while the parallel agent's detect.ts lands.
+    const plan: string | null = (ps as ProviderStatus & { readonly plan?: string | null }).plan ?? null;
+    const planSuffix = plan != null ? ` (${plan})` : '';
+
+    if (!ps.installed) {
+      lines.push(`❌ ${ps.id}: not installed — ${getInstallCommand(ps.id)}`);
+    } else if (ps.authenticated) {
+      lines.push(`✅ ${ps.id}: ready${planSuffix}`);
     } else {
-      lines.push(`⚠️  ${ps.id}: not installed — ${getInstallCommand(ps.id)}`);
+      lines.push(`⚠️  ${ps.id}: not signed in${planSuffix}`);
     }
   }
 
@@ -91,7 +103,10 @@ export function renderHeaderLines(env: EnvironmentStatus, _version: string): str
 
 /**
  * Build the conversation list lines from real ConversationMeta[].
- * Formats each as "[N] <relative-time>  <title>".
+ * Format: "[N] <pin> <relative-time>  <title>[  [<category>]]"
+ *
+ * Pin prefix: "📌 " for pinned, "   " (3 spaces) for alignment when not pinned.
+ * Category suffix: "  [<category>]" appended when category is set, omitted otherwise.
  * Returns string[] (no ANSI — pure string building, safe for tests).
  */
 export function renderConversationList(metas: ConversationMeta[], nowMs: number): string[] {
@@ -99,7 +114,9 @@ export function renderConversationList(metas: ConversationMeta[], nowMs: number)
     const thenMs = new Date(m.updatedAt).getTime();
     const rel = relativeTime(thenMs, nowMs);
     const idx = i + 1;
-    return `[${idx}] ${rel}  ${m.title}`;
+    const pin = m.pinned ? '📌 ' : '   ';
+    const categorySuffix = m.category != null ? `  [${m.category}]` : '';
+    return `[${idx}] ${pin}${rel}  ${m.title}${categorySuffix}`;
   });
 }
 
@@ -213,7 +230,20 @@ async function runManage(
   out: OutputSink,
   rl: readline.Interface,
 ): Promise<void> {
-  const metas = await ctx.store.list();
+  // Inner helper to re-fetch and re-render the conversation list.
+  async function renderList(): Promise<ConversationMeta[]> {
+    const latest = await ctx.store.list();
+    const nowMs = ctx.clock.now();
+    const lines = renderConversationList(latest, nowMs);
+    out.write('\n' + separator('Conversations') + '\n');
+    for (const line of lines) {
+      out.write(`  ${line}\n`);
+    }
+    out.write('\n  [p] Pin/unpin  [t] Set category  [r] Rename  [x] Delete  [Enter] Back\n\n');
+    return latest;
+  }
+
+  let metas = await ctx.store.list();
 
   if (metas.length === 0) {
     out.write('No conversations yet.\n');
@@ -221,17 +251,35 @@ async function runManage(
     return;
   }
 
-  const nowMs = ctx.clock.now();
-  const lines = renderConversationList(metas, nowMs);
-  out.write('\n' + separator('Conversations') + '\n');
-  for (const line of lines) {
-    out.write(`  ${line}\n`);
-  }
-  out.write('\n  [r] Rename  [x] Delete  [Enter] Back\n\n');
+  metas = await renderList();
 
   const key = await ask(rl, '> ');
 
-  if (key === 'r') {
+  if (key === 'p') {
+    const numStr = await ask(rl, 'Pin/unpin conversation number: ');
+    const num = parseInt(numStr, 10);
+    if (!Number.isNaN(num) && num >= 1 && num <= metas.length) {
+      const conv = metas[num - 1];
+      if (conv !== undefined) {
+        const newPinned = !conv.pinned;
+        await ctx.store.setPinned(conv.id, newPinned);
+        out.write(newPinned ? `📌 Pinned "${conv.title}"\n` : `Unpinned "${conv.title}"\n`);
+        await renderList();
+      }
+    }
+  } else if (key === 't') {
+    const numStr = await ask(rl, 'Set category for conversation number: ');
+    const num = parseInt(numStr, 10);
+    if (!Number.isNaN(num) && num >= 1 && num <= metas.length) {
+      const conv = metas[num - 1];
+      if (conv !== undefined) {
+        const tag = await ask(rl, `Category tag for "${conv.title}" (empty to clear): `);
+        await ctx.store.setCategory(conv.id, tag.length > 0 ? tag : null);
+        out.write(tag.length > 0 ? `Category set to "${tag}"\n` : 'Category cleared.\n');
+        await renderList();
+      }
+    }
+  } else if (key === 'r') {
     const numStr = await ask(rl, 'Rename conversation number: ');
     const num = parseInt(numStr, 10);
     if (!Number.isNaN(num) && num >= 1 && num <= metas.length) {
@@ -241,6 +289,7 @@ async function runManage(
         if (newTitle.length > 0) {
           await ctx.store.rename(conv.id, newTitle);
           out.write(`Renamed to "${newTitle}"\n`);
+          await renderList();
         }
       }
     }
