@@ -17,6 +17,7 @@
  */
 
 import readline from 'node:readline';
+import { execa } from 'execa';
 import type { Clock, LedgerWriter, OrchestrateDeps } from '../core/types.js';
 import type { AppConfig } from '../infra/config.js';
 import { saveConfig } from '../infra/config.js';
@@ -28,6 +29,7 @@ import type { EnvironmentStatus } from '../providers/detect.js';
 import { detectEnvironment, getInstallCommand } from '../providers/detect.js';
 import { installProvider, installCommandFor } from '../providers/install.js';
 import type { Provider, ProviderId, SandboxLevel } from '../providers/port.js';
+import { listNativeSessions, importNativeSession } from '../providers/native-sessions.js';
 import { DEFAULT_POLICY, POLICY_PRESETS } from '../core/policy.js';
 import type { OutputSink } from './render.js';
 import { runTask } from './run.js';
@@ -524,6 +526,114 @@ async function runManage(
 }
 
 // ---------------------------------------------------------------------------
+// Import a native conversation
+// ---------------------------------------------------------------------------
+
+/**
+ * Ask the user which provider to import from, list its native sessions, let the
+ * user pick one, then import it into a new myshell-tools conversation and enter
+ * the chat loop for that conversation.
+ *
+ * Follows the injected `readLine` seam so it is fully testable without TTY.
+ * Never modifies the native CLI's files.
+ */
+async function runImportNative(
+  ctx: MenuContext,
+  mutableCtx: { config: AppConfig },
+  out: OutputSink,
+  readLine: () => Promise<string | null>,
+): Promise<void> {
+  out.write('\nImport from:\n  [1] Claude\n  [2] Codex\n\n> ');
+  const choice = await readLine();
+  if (choice === null) return;
+
+  let provider: ProviderId;
+  if (choice === '1') {
+    provider = 'claude';
+  } else if (choice === '2') {
+    provider = 'codex';
+  } else {
+    out.write('Cancelled.\n');
+    return;
+  }
+
+  const sessions = await listNativeSessions(provider);
+
+  if (sessions.length === 0) {
+    out.write(`No ${provider} conversations found.\n`);
+    return;
+  }
+
+  // Render a numbered picker
+  const nowMs = ctx.clock.now();
+  out.write('\n' + separator(`${provider} conversations`) + '\n');
+  for (let idx = 0; idx < sessions.length; idx++) {
+    const s = sessions[idx];
+    if (s === undefined) continue;
+    const thenMs = new Date(s.updatedAt).getTime();
+    const rel = relativeTime(thenMs, nowMs);
+    const titleDisplay = s.title.length > 0 ? s.title : '(untitled)';
+    out.write(`  [${idx + 1}] ${rel}  ${titleDisplay}  (${s.messageCount} msgs)\n`);
+  }
+  out.write('\nPick a conversation number (or Enter to cancel): ');
+
+  const pick = await readLine();
+  if (pick === null || pick.length === 0) return;
+
+  const num = parseInt(pick, 10);
+  if (Number.isNaN(num) || num < 1 || num > sessions.length) {
+    out.write('Invalid selection.\n');
+    return;
+  }
+
+  const session = sessions[num - 1];
+  if (session === undefined) return;
+
+  const { id, imported } = await importNativeSession(session, ctx.store);
+  const convTitle = session.title.length > 0 ? session.title : '(untitled)';
+  out.write(`Imported ${imported} messages into a new conversation: "${convTitle}"\n`);
+
+  // Enter the chat loop for the newly imported conversation
+  await runChatLoop(ctx, mutableCtx, id, out, readLine);
+}
+
+// ---------------------------------------------------------------------------
+// Raw provider passthrough
+// ---------------------------------------------------------------------------
+
+/**
+ * Launch the native `claude` or `codex` interactive CLI directly (stdio:inherit),
+ * so the user gets a raw provider session. The session is owned by the native CLI
+ * (not by myshell-tools); we simply hand over the terminal and wait.
+ *
+ * On exit (any exit code), control returns to the myshell-tools menu.
+ */
+async function runRawProviderSession(
+  out: OutputSink,
+  readLine: () => Promise<string | null>,
+): Promise<void> {
+  out.write('\nOpen raw session with:\n  [1] Claude\n  [2] Codex\n\n> ');
+  const choice = await readLine();
+  if (choice === null) return;
+
+  let bin: string;
+  if (choice === '1') {
+    bin = 'claude';
+  } else if (choice === '2') {
+    bin = 'codex';
+  } else {
+    out.write('Cancelled.\n');
+    return;
+  }
+
+  out.write(`\nLaunching ${bin} — press Ctrl+C or type /exit inside ${bin} to return.\n`);
+  // stdio:'inherit' hands the terminal to the native CLI so its interactive
+  // session runs in place. reject:false so we return to menu on any exit code.
+  await execa(bin, [], { stdio: 'inherit', reject: false });
+  out.write(`\nReturned from ${bin}.\n`);
+}
+
+// ---------------------------------------------------------------------------
 // Chat loop
 // ---------------------------------------------------------------------------
 
@@ -652,6 +762,8 @@ async function renderMainScreen(
       { key: 'n', label: 'New conversation', section: 'Conversations' },
       { key: '1-9', label: 'Resume numbered conversation', section: 'Conversations' },
       { key: 'e', label: 'Manage conversations', section: 'Conversations' },
+      { key: 'i', label: 'Import a conversation', section: 'Conversations' },
+      { key: 'r', label: 'Open a raw provider session', section: 'Conversations' },
       { key: 'j', label: 'Login Claude', section: 'Auth' },
       { key: 'k', label: 'Login Codex', section: 'Auth' },
       { key: 's', label: 'Settings', section: 'Options' },
@@ -776,6 +888,18 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
       // ---- [e] Manage conversations -------------------------------------------
       if (key === 'e') {
         await runManage(ctx, out, readLine);
+        continue;
+      }
+
+      // ---- [i] Import a native conversation -----------------------------------
+      if (key === 'i') {
+        await runImportNative(ctx, mutableCtx, out, readLine);
+        continue;
+      }
+
+      // ---- [r] Open a raw provider session ------------------------------------
+      if (key === 'r') {
+        await runRawProviderSession(out, readLine);
         continue;
       }
 
