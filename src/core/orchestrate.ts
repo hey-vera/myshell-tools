@@ -447,14 +447,24 @@ export async function* orchestrate(
             currentTier = 'manager';
             continue mainLoop;
           } else {
-            // Already at manager — emit a warn notice and treat as needing escalation
-            // (loop will naturally exhaust or fall through to confidence check).
+            // Already at manager (top tier): a high/critical-risk review came back
+            // inconclusive and there is no higher tier to escalate to. Do NOT ship
+            // it as a clean success — surface the inconclusive result honestly.
             yield {
               type: 'notice',
               level: 'warn',
               message: 'review inconclusive — not auto-approving',
             };
-            // Fall through to confidence-based escalation below.
+            yield {
+              type: 'final',
+              success: false,
+              output: lastOutput,
+              tier: currentTier,
+              totalCostUsd,
+              sessionId: deps.session.id,
+              attempts,
+            };
+            return;
           }
         } else {
           yield {

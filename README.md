@@ -4,7 +4,7 @@
 
 `myshell-tools` routes each task to the *cheapest* model likely to succeed, runs it on your real codebase, optionally has a **different vendor** review the result, and shows you exactly what it did and what it truly cost — with **no fabricated data, ever**.
 
-> **Status: `2.0.0-alpha.0` — early, honest, and real.** The Claude path is validated end‑to‑end on real models; the Codex path auto‑activates the moment `codex` is installed and authenticated. Not yet published to npm — install from source (below).
+> **Status: `2.1.0` — honest, tested, and real.** Both the Claude and Codex paths work, and provider auth is detected for real. Install with `npm i -g myshell-tools`, or from source (below).
 
 ---
 
@@ -83,8 +83,9 @@ The confidence (`100%`) is **parsed from the model's own structured reply**, not
 $ myshell-tools doctor
 Providers
   ✓ claude — installed, version: 2.1.157 (Claude Code)
-    auth: assumed; verified on first run
+    auth: signed in (pro)
   ✓ codex — installed, version: codex-cli 0.135.0
+    auth: signed in
 Ready — at least one provider is available.
 ```
 

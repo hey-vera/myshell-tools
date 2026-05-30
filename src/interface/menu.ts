@@ -24,7 +24,7 @@ import type { ConversationMeta, ConversationStore } from '../infra/conversation-
 import { readLedger } from '../infra/ledger.js';
 import { summarizeSpend, formatUsd } from '../infra/insights.js';
 import type { SpendSummary } from '../infra/insights.js';
-import type { EnvironmentStatus, ProviderStatus } from '../providers/detect.js';
+import type { EnvironmentStatus } from '../providers/detect.js';
 import { detectEnvironment, getInstallCommand } from '../providers/detect.js';
 import type { Provider, ProviderId, SandboxLevel } from '../providers/port.js';
 import { DEFAULT_POLICY, POLICY_PRESETS } from '../core/policy.js';
@@ -131,10 +131,7 @@ export function renderHeaderLines(env: EnvironmentStatus, _version: string): str
   const lines: string[] = [];
 
   for (const ps of [env.claude, env.codex]) {
-    // `plan` is added by a parallel workstream; access defensively so this
-    // file compiles standalone while the parallel agent's detect.ts lands.
-    const plan: string | null = (ps as ProviderStatus & { readonly plan?: string | null }).plan ?? null;
-    const planSuffix = plan != null ? ` (${plan})` : '';
+    const planSuffix = ps.plan != null ? ` (${ps.plan})` : '';
 
     if (!ps.installed) {
       lines.push(`❌ ${ps.id}: not installed — ${getInstallCommand(ps.id)}`);
@@ -191,28 +188,78 @@ export function renderConversationList(metas: ConversationMeta[], nowMs: number)
 // ---------------------------------------------------------------------------
 
 /**
- * Ask a question via a real readline interface and resolve with the trimmed
- * answer, or `null` if the interface was closed (EOF) before an answer arrived.
+ * An event-driven line reader over a single readline interface.
  *
- * Registers a one-shot `close` listener so the pending `question()` call never
- * throws `ERR_USE_AFTER_CLOSE` — instead it resolves cleanly to `null`.
+ * This is the proven-correct pattern (mirrors `repl.ts`): instead of a
+ * per-prompt `rl.question()` — which (a) throws `ERR_USE_AFTER_CLOSE` if the
+ * interface has already closed and (b) loses lines that `readline` eagerly
+ * drains from a pipe before the first prompt is even written — we attach a
+ * single `'line'` listener that buffers every line and a single `'close'`
+ * listener that marks EOF.
+ *
+ * `nextLine()` returns the next buffered/awaited line, or `null` once the
+ * stream is closed/EOF. It NEVER throws and returns `null` for every call after
+ * close, so callers can treat `null` as a clean end-of-input sentinel.
  */
-function askRl(rl: readline.Interface, question: string): Promise<string | null> {
-  return new Promise((resolve) => {
-    // Guard: if the interface is already closed, resolve immediately.
-    // (readline.Interface has no public `.closed` property in all Node versions,
-    // so we detect it by attempting the question and catching via the close event.)
-    let settled = false;
-    function settle(value: string | null): void {
-      if (!settled) {
-        settled = true;
-        resolve(value);
-      }
-    }
+interface LineReader {
+  /** Resolve with the next line, or `null` on EOF (and for every call after). */
+  nextLine(): Promise<string | null>;
+  /** Close the underlying readline interface (idempotent). */
+  close(): void;
+}
 
-    rl.once('close', () => settle(null));
-    rl.question(question, (ans: string) => settle(ans.trim()));
+/**
+ * Build a {@link LineReader} backed by a single `node:readline` interface.
+ *
+ * Lines that arrive before they are awaited are buffered (fixing the eager
+ * pipe-drain line loss); awaiters that arrive before a line block on a queued
+ * resolver. On `close`, every pending and future awaiter resolves to `null`.
+ */
+function createLineReader(rl: readline.Interface): LineReader {
+  // Lines received but not yet consumed by a nextLine() caller.
+  const buffered: string[] = [];
+  // nextLine() callers waiting for a line that hasn't arrived yet.
+  const waiters: Array<(value: string | null) => void> = [];
+  let closed = false;
+
+  rl.on('line', (raw: string) => {
+    const line = raw.trim();
+    const waiter = waiters.shift();
+    if (waiter !== undefined) {
+      waiter(line);
+    } else {
+      buffered.push(line);
+    }
   });
+
+  rl.on('close', () => {
+    closed = true;
+    // Drain every pending awaiter with the EOF sentinel.
+    while (waiters.length > 0) {
+      const waiter = waiters.shift();
+      if (waiter !== undefined) waiter(null);
+    }
+  });
+
+  return {
+    nextLine(): Promise<string | null> {
+      // Deliver any buffered line first (FIFO).
+      if (buffered.length > 0) {
+        const next = buffered.shift();
+        return Promise.resolve(next ?? null);
+      }
+      // Once closed with nothing buffered, every call yields EOF — never throws.
+      if (closed) {
+        return Promise.resolve(null);
+      }
+      return new Promise<string | null>((resolve) => {
+        waiters.push(resolve);
+      });
+    },
+    close(): void {
+      rl.close();
+    },
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -591,24 +638,27 @@ async function renderMainScreen(
  */
 export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void> {
   // Build the readLine function — either injected (for tests) or backed by a
-  // real readline interface whose `close` event is properly guarded.
+  // real readline interface driven by the event-driven LineReader queue.
   let readLine: () => Promise<string | null>;
-  let rl: readline.Interface | null = null;
+  let lineReader: LineReader | null = null;
 
   if (ctx.readLine !== undefined) {
     // Injected reader — no real readline needed.
     readLine = ctx.readLine;
   } else {
-    // Create ONE readline interface for the whole menu lifecycle.
-    rl = readline.createInterface({
+    // Create ONE readline interface for the whole menu lifecycle and drive it
+    // through the event-driven queue (NOT per-prompt rl.question). This buffers
+    // lines that arrive before they're awaited (fixing pipe eager-drain loss)
+    // and resolves to `null` on EOF instead of throwing ERR_USE_AFTER_CLOSE.
+    const rl = readline.createInterface({
       input: process.stdin,
       output: process.stdout,
       terminal: out.isTty,
     });
-    const capturedRl = rl;
-    // Each call waits for the next line; askRl handles the close event safely.
+    lineReader = createLineReader(rl);
+    const reader = lineReader;
     // All prompt text is already written to `out` before readLine() is called.
-    readLine = () => askRl(capturedRl, '');
+    readLine = () => reader.nextLine();
   }
 
   // Mutable local copy of config & env — updated as the user changes settings /
@@ -721,6 +771,6 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
       }
     }
   } finally {
-    rl?.close();
+    lineReader?.close();
   }
 }

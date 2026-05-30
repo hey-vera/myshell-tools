@@ -1147,6 +1147,63 @@ describe('orchestrate — FIX 4: manager-tier critical work gets reviewed', () =
     }
   });
 
+  it('manager-tier high-risk work with an INCONCLUSIVE review fails honestly (not success)', async () => {
+    const managerEnvelope =
+      '{"confidence": 0.9, "escalate": false, "reason": "audit", "needs_review": true}';
+    const managerText = `Audit complete.\n${managerEnvelope}`;
+    // Reviewer returns no parseable verdict envelope -> parsed:false
+    const garbageReview = 'I was unable to complete the review.';
+
+    const claudeProvider: Provider = {
+      id: 'claude',
+      async detect() {
+        return { id: 'claude', installed: true, version: '1.0.0', authenticated: true, binaryPath: '/x', availableModels: [] };
+      },
+      async *run(_req: ProviderRequest, _signal: AbortSignal): AsyncIterable<ProviderEvent> {
+        yield { type: 'done', text: managerText, usage: FAKE_USAGE, raw: {} };
+      },
+    };
+    const codexProvider: Provider = {
+      id: 'codex',
+      async detect() {
+        return { id: 'codex', installed: true, version: '1.0.0', authenticated: true, binaryPath: '/x', availableModels: [] };
+      },
+      async *run(_req: ProviderRequest, _signal: AbortSignal): AsyncIterable<ProviderEvent> {
+        yield { type: 'done', text: garbageReview, usage: { inputTokens: 100, outputTokens: 50 }, raw: {} };
+      },
+    };
+
+    const deps: OrchestrateDeps = {
+      providers: { claude: claudeProvider, codex: codexProvider },
+      clock: makeFakeClock(),
+      session: makeFakeSession(),
+      ledger: makeFakeLedger(),
+      policy: DEFAULT_POLICY,
+      cwd: '/fake/cwd',
+      sandbox: 'workspace-write',
+      timeoutMs: 30_000,
+    };
+
+    const events = await collectEvents(
+      orchestrate('audit the auth flow', deps, new AbortController().signal),
+    );
+
+    const warn = events.find(
+      (e) => e.type === 'notice' && e.level === 'warn' && e.message.includes('inconclusive'),
+    );
+    assert.ok(warn !== undefined, 'Expected a warn notice about an inconclusive review');
+
+    const finalEv = events.find((e) => e.type === 'final');
+    assert.ok(finalEv !== undefined && finalEv.type === 'final');
+    if (finalEv.type === 'final') {
+      assert.equal(
+        finalEv.success,
+        false,
+        'Top-tier high-risk work with an inconclusive review must NOT ship as success',
+      );
+    }
+  });
+
   it('same-vendor-only (no cross-vendor available) skips review and accepts', async () => {
     // Only claude is available — pickReviewer returns claude (same vendor).
     // The new guard requires a DIFFERENT vendor for review, so review is skipped.
