@@ -416,14 +416,12 @@ process.on('uncaughtException', (error) => {
   process.exit(1);
 });
 
-// Run the CLI with enhanced error handling
-if (import.meta.url === `file://${process.argv[1]}`) {
-  main().catch(error => {
-    console.log(''); // Add spacing
-    handleError(error, {
-      operation: 'CLI startup',
-      context: 'main execution'
-    });
-    process.exit(1);
+// Run the CLI
+main().catch(error => {
+  console.log('');
+  handleError(error, {
+    operation: 'CLI startup',
+    context: 'main execution'
   });
-}
+  process.exit(1);
+});

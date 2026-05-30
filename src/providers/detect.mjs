@@ -7,15 +7,16 @@ import { spawnSync } from 'child_process';
 import { existsSync, readFileSync } from 'fs';
 import { join, resolve } from 'path';
 
-/**
- * Run a command and capture output safely
- */
+const IS_WINDOWS = process.platform === 'win32';
+const WHICH_CMD = IS_WINDOWS ? 'where' : 'which';
+
 function run(cmd, args = [], options = {}) {
   try {
     return spawnSync(cmd, args, {
       encoding: 'utf8',
       stdio: ['pipe', 'pipe', 'pipe'],
       timeout: 10000,
+      shell: IS_WINDOWS,
       ...options
     });
   } catch (err) {
@@ -44,7 +45,7 @@ export function detectClaude() {
 
   // Fallback: check if claude exists in PATH
   if (!result.installed) {
-    const which = run('which', ['claude']);
+    const which = run(WHICH_CMD, ['claude']);
     if (which.status === 0 && which.stdout.trim()) {
       result.installed = true;
       result.bin = which.stdout.trim();
@@ -53,8 +54,8 @@ export function detectClaude() {
 
   // Check authentication via credential files
   const credPaths = [
-    join(process.env.HOME || '', '.claude', '.credentials.json'),
-    join(process.env.HOME || '', '.claude', 'credentials.json'),
+    join(process.env.HOME || process.env.USERPROFILE || '', '.claude', '.credentials.json'),
+    join(process.env.HOME || process.env.USERPROFILE || '', '.claude', 'credentials.json'),
     resolve(process.cwd(), '.replit-tools', '.claude-persistent', '.credentials.json'),
   ];
 
@@ -98,7 +99,7 @@ export function detectCodex() {
   };
 
   // Try which first
-  const which = run('which', ['codex']);
+  const which = run(WHICH_CMD, ['codex']);
   if (which.status === 0 && which.stdout.trim()) {
     result.path = which.stdout.trim();
     result.installed = true;
@@ -106,7 +107,7 @@ export function detectCodex() {
 
   // Try common fallback locations
   if (!result.installed) {
-    const home = process.env.HOME || '';
+    const home = process.env.HOME || process.env.USERPROFILE || '';
     const fallbacks = [
       join(home, '.local', 'bin', 'codex'),
       join(home, 'bin', 'codex'),

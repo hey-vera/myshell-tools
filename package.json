@@ -1,6 +1,6 @@
 {
   "name": "cortex-ai",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Hierarchical AI orchestration for your shell - Claude + GPT working together like an org chart",
   "type": "module",
   "bin": {
