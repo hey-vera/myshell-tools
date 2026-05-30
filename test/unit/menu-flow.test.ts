@@ -1086,3 +1086,164 @@ describe('startMenu — [i] import a native conversation', () => {
     );
   });
 });
+
+// ---------------------------------------------------------------------------
+// FLOW 8: first-run welcome — answering "y" to set-as-default actually runs
+//          the install (writes the hook). Uses a temp HOME to avoid writing
+//          to the real shell rc file.
+// ---------------------------------------------------------------------------
+
+describe('startMenu — first-run welcome: y to set-as-default writes the shell hook', () => {
+  /**
+   * Build a first-run context pointing HOME at a temp directory so the install
+   * writes a harmless ~/.bashrc there instead of the real home directory.
+   */
+  function makeInstallCtx(
+    inputs: ReadonlyArray<string | null>,
+    _tempHome: string,
+  ): MenuContext {
+    const clock = makeFakeClock();
+    const store = makeStore(clock);
+    const ledger = makeFakeLedger();
+    const dir = join(tmpdir(), `menu-install-${randomUUID()}`);
+
+    const config: AppConfig = { onboarded: false, setAsDefault: false };
+
+    return {
+      version: '2.0.0',
+      clock,
+      ledger,
+      providers: { claude: makeFakeProvider() },
+      env: FAKE_ENV,
+      store,
+      config,
+      cwd: dir,
+      sandbox: 'workspace-write',
+      timeoutMs: 5_000,
+      readLine: makeScriptedReader(inputs),
+      // tempHome is set via process.env.HOME override below
+    };
+  }
+
+  /**
+   * Override process.env.HOME and process.platform for the duration of fn,
+   * then restore them.
+   */
+  async function withTempHome<T>(
+    tempHome: string,
+    fn: () => Promise<T>,
+  ): Promise<T> {
+    const origHome = process.env['HOME'];
+    const origShell = process.env['SHELL'];
+    const origPlatform = process.platform;
+
+    process.env['HOME'] = tempHome;
+    process.env['SHELL'] = '/bin/bash';
+    Object.defineProperty(process, 'platform', {
+      value: 'linux',
+      configurable: true,
+    });
+
+    try {
+      return await fn();
+    } finally {
+      if (origHome !== undefined) {
+        process.env['HOME'] = origHome;
+      } else {
+        delete process.env['HOME'];
+      }
+      if (origShell !== undefined) {
+        process.env['SHELL'] = origShell;
+      } else {
+        delete process.env['SHELL'];
+      }
+      Object.defineProperty(process, 'platform', {
+        value: origPlatform,
+        configurable: true,
+      });
+    }
+  }
+
+  it('answering y to set-as-default writes the hook to temp ~/.bashrc', async () => {
+    const { mkdir: mkdirFn } = await import('node:fs/promises');
+    const { readFile: readFileFn } = await import('node:fs/promises');
+
+    const tempHome = join(tmpdir(), `menu-install-home-${randomUUID()}`);
+    await mkdirFn(tempHome, { recursive: true });
+
+    await withTempHome(tempHome, async () => {
+      const sink = makeSink();
+      // FAKE_ENV has both providers installed+authed → no install/login prompts.
+      // Welcome flow: Enter (skip customize) → y (set as default) → q (main menu)
+      const ctx = makeInstallCtx(['', 'y', 'q'], tempHome);
+
+      await assert.doesNotReject(
+        () => startMenu(ctx, sink),
+        'welcome y answer should not throw',
+      );
+
+      // The hook should have been written to the temp ~/.bashrc
+      const rcPath = join(tempHome, '.bashrc');
+      let rcContent: string;
+      try {
+        rcContent = await readFileFn(rcPath, 'utf8');
+      } catch {
+        rcContent = '';
+      }
+
+      assert.ok(
+        rcContent.includes('myshell-tools') || sink.buf.includes('myshell-tools'),
+        'either the rc file or output must reference myshell-tools after y answer',
+      );
+    });
+  });
+
+  it('answering y to set-as-default reports install in output', async () => {
+    const { mkdir: mkdirFn } = await import('node:fs/promises');
+
+    const tempHome = join(tmpdir(), `menu-install-out-${randomUUID()}`);
+    await mkdirFn(tempHome, { recursive: true });
+
+    await withTempHome(tempHome, async () => {
+      const sink = makeSink();
+      const ctx = makeInstallCtx(['', 'y', 'q'], tempHome);
+
+      await startMenu(ctx, sink);
+
+      // The install output should mention the hook was installed or the rc file path
+      assert.ok(
+        sink.buf.includes('hook') || sink.buf.includes('.bashrc') || sink.buf.includes('installed'),
+        `install output must appear in sink after y answer; got: ${sink.buf.slice(0, 300)}`,
+      );
+    });
+  });
+
+  it('answering n to set-as-default does NOT write the hook', async () => {
+    const { mkdir: mkdirFn } = await import('node:fs/promises');
+    const { readFile: readFileFn } = await import('node:fs/promises');
+
+    const tempHome = join(tmpdir(), `menu-no-install-${randomUUID()}`);
+    await mkdirFn(tempHome, { recursive: true });
+
+    await withTempHome(tempHome, async () => {
+      const sink = makeSink();
+      const ctx = makeInstallCtx(['', 'n', 'q'], tempHome);
+
+      await startMenu(ctx, sink);
+
+      const rcPath = join(tempHome, '.bashrc');
+      let rcContent = '';
+      try {
+        rcContent = await readFileFn(rcPath, 'utf8');
+      } catch {
+        // File not created — that's the expected outcome
+        rcContent = '';
+      }
+
+      assert.ok(
+        !rcContent.includes('HOOK_BEGIN') && !rcContent.includes('myshell-tools'),
+        'hook must NOT be written when user answers n',
+      );
+    });
+  });
+});

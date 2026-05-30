@@ -24,6 +24,7 @@ import { loadConfig } from './infra/config.js';
 import { runDoctor } from './commands/doctor.js';
 import { runCost } from './commands/cost.js';
 import { runLogin } from './commands/login.js';
+import { runInstall } from './commands/install.js';
 import { banner } from './ui/banner.js';
 import { createSpinner } from './ui/spinner.js';
 import { dim } from './ui/theme.js';
@@ -48,6 +49,9 @@ Commands:
   login [provider]  Sign in to a provider (claude or codex) via its own OAuth
   doctor            Check provider installation, auth, and environment health
   cost              Show real spend from the ledger with a per-model breakdown
+  install           Write a guarded startup hook to your shell rc file so new
+                    interactive shells launch myshell-tools automatically
+  uninstall         Remove the startup hook written by "install"
 
 Examples:
   myshell-tools                                 # open the control panel
@@ -121,6 +125,14 @@ async function main(): Promise<void> {
 
   if (args[0] === 'cost') {
     process.exit(await runCost(cwd, out));
+  }
+
+  if (args[0] === 'install') {
+    process.exit(await runInstall(out));
+  }
+
+  if (args[0] === 'uninstall') {
+    process.exit(await runInstall(out, { uninstall: true }));
   }
 
   // ---- One-shot run ----------------------------------------------------------

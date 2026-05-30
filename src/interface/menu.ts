@@ -36,6 +36,7 @@ import { runTask } from './run.js';
 import { runLogin } from '../commands/login.js';
 import { runDoctor } from '../commands/doctor.js';
 import { runCost } from '../commands/cost.js';
+import { runInstall } from '../commands/install.js';
 import { box, separator, menu, prompt } from '../ui/tui.js';
 
 // ---------------------------------------------------------------------------
@@ -366,10 +367,10 @@ async function runWelcome(
 
   await saveConfig(saved);
 
-  // When the user opted in, print the alias hint so the prompt is honest.
+  // When the user opts in, actually write the shell startup hook (real install,
+  // not just a hint). runInstall reports what it wrote and how to reverse.
   if (setAsDefault) {
-    const hint = defaultAliasHint(process.env['SHELL'], process.platform);
-    out.write('\n[info] To make myshell-tools your default, ' + hint + '\n\n');
+    await runInstall(out);
   }
 
   return saved;
