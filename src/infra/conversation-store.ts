@@ -43,6 +43,3 @@ export interface ConversationStore {
   /** Set or clear the category tag for a conversation. No-op if id missing. */
   setCategory(id: string, category: string | null): Promise<void>;
 }
-
-/** Re-export for implementors/consumers that thread message entries through. */
-export type { SessionEntry };

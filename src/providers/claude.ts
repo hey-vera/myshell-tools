@@ -46,7 +46,7 @@ import { parseClaudeLine } from './claude-parse.js';
  *  - claude-haiku-*  → 'haiku'
  *  - anything else   → returned unchanged
  */
-export function toClaudeModelArg(model: string): string {
+function toClaudeModelArg(model: string): string {
   if (model.startsWith('claude-opus')) return 'opus';
   if (model.startsWith('claude-sonnet')) return 'sonnet';
   if (model.startsWith('claude-haiku')) return 'haiku';

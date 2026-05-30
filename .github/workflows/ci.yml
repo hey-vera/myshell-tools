@@ -39,11 +39,20 @@ jobs:
       - name: Lint
         run: npm run lint
 
+      - name: Dead-code check (knip)
+        run: npm run knip
+
       - name: Unit and architecture tests
         run: npm test
 
       - name: Contract tests
         run: npm run test:contract
+
+      - name: Build
+        run: npm run build
+
+      - name: Integration tests (real CLI, piped stdin)
+        run: npm run test:integration
 
   coverage:
     name: Coverage (ubuntu-latest / node 22)

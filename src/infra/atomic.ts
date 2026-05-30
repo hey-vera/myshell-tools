@@ -29,7 +29,7 @@ export class LockTimeoutError extends Error {
   }
 }
 
-export class AtomicWriteError extends Error {
+class AtomicWriteError extends Error {
   constructor(filePath: string, cause: unknown) {
     super(
       `Atomic write failed for: ${filePath} — ${cause instanceof Error ? cause.message : String(cause)}`,

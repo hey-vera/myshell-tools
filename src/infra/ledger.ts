@@ -58,17 +58,11 @@ export async function readLedger(cwd: string): Promise<LedgerEntry[]> {
   return entries;
 }
 
-/** Per-model aggregation used in the summary. */
-export interface ModelSummary {
-  readonly calls: number;
-  readonly usd: number;
-}
-
 /** Aggregate summary returned by `summarizeLedger`. */
 export interface LedgerSummary {
   readonly totalUsd: number;
   readonly calls: number;
-  readonly byModel: Record<string, ModelSummary>;
+  readonly byModel: Record<string, { readonly calls: number; readonly usd: number }>;
 }
 
 /**

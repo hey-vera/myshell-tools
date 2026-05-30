@@ -46,7 +46,7 @@ import { createCodexParser } from './codex-parse.js';
  * NEVER default to 'danger-full-access' — always require the caller to opt in
  * explicitly by passing SandboxLevel 'full-access'.
  */
-export function toSandboxArg(level: SandboxLevel): string {
+function toSandboxArg(level: SandboxLevel): string {
   switch (level) {
     case 'read-only':
       return 'read-only';
