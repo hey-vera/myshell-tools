@@ -18,6 +18,10 @@ import { startRepl } from './interface/repl.js';
 import { buildProviders } from './providers/registry.js';
 import { runDoctor } from './commands/doctor.js';
 import { runCost } from './commands/cost.js';
+import { runLogin } from './commands/login.js';
+import { banner } from './ui/banner.js';
+import { createSpinner } from './ui/spinner.js';
+import { dim } from './ui/theme.js';
 
 const require = createRequire(import.meta.url);
 const pkg = require('../package.json');
@@ -33,20 +37,51 @@ Options:
   -v, --version  Print version number
 
 Commands:
-  run <task...>  Run a one-shot task and exit
-  repl           Start an interactive REPL session (default when no command given)
-  doctor         Check provider installation, auth, and environment health
-  cost           Show real spend from the ledger with a per-model breakdown
+  run <task...>     Run a one-shot task and exit
+  repl              Start an interactive session (default when no command given)
+  login [provider]  Sign in to a provider (claude or codex) via its own OAuth
+  doctor            Check provider installation, auth, and environment health
+  cost              Show real spend from the ledger with a per-model breakdown
 
 Examples:
+  myshell-tools login
   myshell-tools run "refactor the auth module"
-  myshell-tools repl
   myshell-tools doctor
-  myshell-tools cost
   myshell-tools
 
 Repository: https://github.com/hey-vera/myshell-tools
 `;
+
+/** Build the orchestration dependencies (includes provider detection). */
+async function buildDeps(cwd: string): Promise<OrchestrateDeps> {
+  return {
+    clock: systemClock,
+    session: createSessionWriter({ cwd, id: systemClock.uuid() }),
+    ledger: createLedger({ cwd }),
+    policy: DEFAULT_POLICY,
+    providers: await buildProviders(cwd),
+    cwd,
+    sandbox: 'workspace-write',
+    timeoutMs: 120000,
+  };
+}
+
+/** Honest one-line welcome: which providers were actually detected. */
+function welcome(deps: OrchestrateDeps, color: boolean): string {
+  const ready = Object.keys(deps.providers);
+  if (ready.length > 0) {
+    return dim(
+      `Providers: ${ready.join(', ')}.  Type a task and press Enter, or /help.  ` +
+        `Not signed in? run: myshell-tools login`,
+      color,
+    );
+  }
+  return dim(
+    'No providers detected.  Install Claude Code or Codex, then run: myshell-tools login  ' +
+      '(diagnose: myshell-tools doctor)',
+    color,
+  );
+}
 
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
@@ -61,31 +96,20 @@ async function main(): Promise<void> {
     process.exit(0);
   }
 
-  // ---------------------------------------------------------------------------
-  // Build shared infrastructure
-  // ---------------------------------------------------------------------------
   const cwd = process.cwd();
-
   const out: OutputSink = {
-    write: (s) => { process.stdout.write(s); },
+    write: (s) => {
+      process.stdout.write(s);
+    },
     color: process.stdout.isTTY === true && !process.env['NO_COLOR'],
     isTty: process.stdout.isTTY === true,
   };
 
-  const deps: OrchestrateDeps = {
-    clock: systemClock,
-    session: createSessionWriter({ cwd, id: systemClock.uuid() }),
-    ledger: createLedger({ cwd }),
-    policy: DEFAULT_POLICY,
-    providers: await buildProviders(cwd),
-    cwd,
-    sandbox: 'workspace-write',
-    timeoutMs: 120000,
-  };
+  // ---- Commands that do NOT need provider detection --------------------------
+  if (args[0] === 'login') {
+    process.exit(await runLogin(out, args[1]));
+  }
 
-  // ---------------------------------------------------------------------------
-  // Dispatch
-  // ---------------------------------------------------------------------------
   if (args[0] === 'doctor') {
     process.exit(await runDoctor(out));
   }
@@ -94,25 +118,34 @@ async function main(): Promise<void> {
     process.exit(await runCost(cwd, out));
   }
 
+  // ---- One-shot run ----------------------------------------------------------
   if (args[0] === 'run') {
     const taskParts = args.slice(1);
     if (taskParts.length === 0) {
       process.stderr.write('myshell-tools run: expected a task description\n');
       process.exit(1);
     }
-    const task = taskParts.join(' ');
-    const ac = new AbortController();
-    const code = await runTask(task, deps, out, ac.signal);
+    const deps = await buildDeps(cwd);
+    const code = await runTask(taskParts.join(' '), deps, out, new AbortController().signal);
     process.exit(code);
   }
 
+  // ---- Interactive REPL (default) --------------------------------------------
   if (args.length === 0 || args[0] === 'repl') {
+    out.write(banner(version, out.color) + '\n');
+    const spinner = createSpinner(out);
+    spinner.start('Detecting providers…');
+    const deps = await buildDeps(cwd);
+    spinner.stop();
+    out.write(welcome(deps, out.color) + '\n\n');
     await startRepl(deps, out);
     process.exit(0);
   }
 
-  // Unknown command
-  process.stderr.write(`myshell-tools: unknown command "${args[0] ?? ''}"\nRun myshell-tools --help for usage.\n`);
+  // ---- Unknown command -------------------------------------------------------
+  process.stderr.write(
+    `myshell-tools: unknown command "${args[0] ?? ''}"\nRun myshell-tools --help for usage.\n`,
+  );
   process.exit(1);
 }
 

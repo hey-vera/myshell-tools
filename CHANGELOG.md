@@ -11,7 +11,7 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 - Cross-OS CI execution (requires a public remote).
 - First npm publish.
 
-## [2.0.0-alpha.0]
+## [2.0.0]
 
 A ground-up rebuild. The architecture is hexagonal (a pure, injected orchestration
 core behind a `Provider` port), and the first principle is the **Honesty Contract**:
