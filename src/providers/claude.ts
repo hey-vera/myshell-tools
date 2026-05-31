@@ -5,13 +5,17 @@
  * delivers the prompt via STDIN (never as an argv argument), and streams
  * parsed ProviderEvents to the caller as they arrive.
  *
- * Sandbox enforcement note (Phase-4 item):
- *  The `req.sandbox` level is accepted but NOT yet translated into Claude CLI
- *  flags. Default headless `claude -p` is inherently safe — tool calls that
- *  would require elevated permissions are auto-denied by the Claude CLI. Full
- *  sandbox→flag mapping (e.g. `--allowedTools` restrictions) is deferred to
- *  Phase 4. Do NOT pass `--dangerously-skip-permissions` or any
- *  permission-bypass flag here.
+ * Sandbox enforcement:
+ *  The `req.sandbox` privilege level is mapped to real Claude CLI flags (see
+ *  claudeSandboxArgs):
+ *   - read-only       → --disallowedTools Write Edit NotebookEdit Bash
+ *                       (mutation/execution tools removed; reads still allowed)
+ *   - workspace-write → no permission flag — Claude's default headless behavior
+ *                       (the verified default working mode)
+ *   - full-access     → --permission-mode bypassPermissions (only when the
+ *                       caller explicitly opts into full access)
+ *  We never pass `--dangerously-skip-permissions`; `bypassPermissions` is the
+ *  supported, intentional opt-in used solely for the full-access level.
  *
  * Authentication note:
  *  Auth state is probed at detect() time by spawning `claude auth status` and
@@ -27,7 +31,7 @@
  */
 
 import { execa } from 'execa';
-import type { Provider, ProviderRequest, ProviderEvent } from './port.js';
+import type { Provider, ProviderRequest, ProviderEvent, SandboxLevel } from './port.js';
 import type { ProviderStatus } from './detect.js';
 import { detectProvider } from './detect.js';
 import { classifyError } from './errors.js';
@@ -55,13 +59,38 @@ function toClaudeModelArg(model: string): string {
 }
 
 /**
+ * Map the abstract privilege ladder to Claude CLI permission flags. Pure.
+ *
+ *  - read-only       → remove mutation/execution tools (reads still allowed)
+ *  - workspace-write → no flag (Claude's default headless behavior)
+ *  - full-access     → --permission-mode bypassPermissions (explicit opt-in)
+ *
+ * Never emits `--dangerously-skip-permissions`. The mutation tool list uses the
+ * stable Claude Code tool names (Write/Edit/NotebookEdit/Bash); unknown names
+ * are harmless. `--disallowedTools` is variadic, so callers append it LAST.
+ */
+function claudeSandboxArgs(sandbox: SandboxLevel): string[] {
+  switch (sandbox) {
+    case 'read-only':
+      return ['--disallowedTools', 'Write', 'Edit', 'NotebookEdit', 'Bash'];
+    case 'full-access':
+      return ['--permission-mode', 'bypassPermissions'];
+    case 'workspace-write':
+    default:
+      return [];
+  }
+}
+
+/**
  * Build the `claude` CLI argv for a request. Pure and exported so flag
- * construction — including the EXPERIMENTAL native-session flags — is
- * unit-testable without spawning a real CLI.
+ * construction — model alias, native-session flags, and sandbox/permission
+ * flags — is unit-testable without spawning a real CLI.
  *
  * Native session (opt-in): when `req.sessionId` is set, add `--resume <id>` to
  * continue an existing session, or `--session-id <id>` to establish a new one
  * with our chosen id. When unset, the run is a stateless one-shot (the default).
+ *
+ * Sandbox flags are appended LAST because `--disallowedTools` is variadic.
  */
 export function buildClaudeArgs(req: ProviderRequest): string[] {
   const args = [
@@ -79,6 +108,7 @@ export function buildClaudeArgs(req: ProviderRequest): string[] {
       args.push('--session-id', req.sessionId);
     }
   }
+  args.push(...claudeSandboxArgs(req.sandbox));
   return args;
 }
 

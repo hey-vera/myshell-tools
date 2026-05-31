@@ -53,4 +53,41 @@ describe('buildClaudeArgs', () => {
     const args = buildClaudeArgs(makeReq({ sessionId: '', resume: true }));
     assert.ok(!args.includes('--resume') && !args.includes('--session-id'));
   });
+
+  // ---- Sandbox / privilege ladder ----------------------------------------
+
+  it('read-only removes mutation/execution tools via --disallowedTools', () => {
+    const args = buildClaudeArgs(makeReq({ sandbox: 'read-only' }));
+    const i = args.indexOf('--disallowedTools');
+    assert.ok(i >= 0, 'read-only must pass --disallowedTools');
+    const tools = args.slice(i + 1);
+    for (const t of ['Write', 'Edit', 'NotebookEdit', 'Bash']) {
+      assert.ok(tools.includes(t), `read-only must disallow ${t}`);
+    }
+    assert.ok(!args.includes('bypassPermissions'), 'read-only must not bypass permissions');
+  });
+
+  it('workspace-write adds no permission flag (default headless behavior)', () => {
+    const args = buildClaudeArgs(makeReq({ sandbox: 'workspace-write' }));
+    assert.ok(!args.includes('--disallowedTools'), 'workspace-write must not restrict tools');
+    assert.ok(!args.includes('--permission-mode'), 'workspace-write must not set a permission mode');
+  });
+
+  it('full-access opts into --permission-mode bypassPermissions (never --dangerously-skip-permissions)', () => {
+    const args = buildClaudeArgs(makeReq({ sandbox: 'full-access' }));
+    const i = args.indexOf('--permission-mode');
+    assert.ok(i >= 0, 'full-access must set a permission mode');
+    assert.strictEqual(args[i + 1], 'bypassPermissions');
+    assert.ok(
+      !args.includes('--dangerously-skip-permissions'),
+      'must never pass the dangerous skip flag',
+    );
+  });
+
+  it('--disallowedTools is appended LAST (it is variadic)', () => {
+    const args = buildClaudeArgs(makeReq({ sandbox: 'read-only', sessionId: 'c1', resume: true }));
+    // The session flags must precede the variadic --disallowedTools.
+    assert.ok(args.indexOf('--resume') < args.indexOf('--disallowedTools'));
+    assert.strictEqual(args[args.length - 1], 'Bash', 'tool list is the tail of argv');
+  });
 });
