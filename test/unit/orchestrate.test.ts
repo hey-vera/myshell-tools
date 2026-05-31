@@ -2331,3 +2331,465 @@ describe('orchestrate — authenticatedProviders routes to signed-in provider fi
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// Bug 1 fix: Auth errors short-circuit — no failover, no escalation
+// ---------------------------------------------------------------------------
+
+describe('orchestrate — Bug 1 fix: auth error short-circuits immediately', () => {
+  it('auth error from single provider: single attempt, final.errorCategory:auth, NO failover/escalate', async () => {
+    const authErrorProvider = makeFakeProvider('claude', [
+      {
+        type: 'error',
+        error: {
+          category: 'auth',
+          recoverable: false,
+          message: 'authentication failed',
+          suggestion: 'run claude auth login',
+        },
+      },
+    ]);
+
+    const clock = makeFakeClock();
+    const session = makeFakeSession();
+    const ledger = makeFakeLedger();
+    const deps: OrchestrateDeps = {
+      providers: { claude: authErrorProvider },
+      clock,
+      session,
+      ledger,
+      policy: DEFAULT_POLICY,
+      cwd: '/fake/cwd',
+      sandbox: 'workspace-write',
+      timeoutMs: 30_000,
+    };
+
+    const events = await collectEvents(
+      orchestrate('refactor X', deps, new AbortController().signal),
+    );
+
+    // Only 1 tier-start (no escalation to manager, no retry)
+    const tierStarts = events.filter((e) => e.type === 'tier-start');
+    assert.equal(tierStarts.length, 1, 'Auth error must cause exactly 1 attempt (no retry/escalation)');
+
+    // No failover event
+    const failoverEv = events.find((e) => e.type === 'failover');
+    assert.equal(failoverEv, undefined, 'Auth error must NOT emit a failover event');
+
+    // No escalate event
+    const escalateEv = events.find((e) => e.type === 'escalate');
+    assert.equal(escalateEv, undefined, 'Auth error must NOT emit an escalate event');
+
+    // Final must be failure with errorCategory:'auth' and correct provider
+    const finalEv = events.find((e) => e.type === 'final');
+    assert.ok(finalEv !== undefined, 'Expected a final event');
+    if (finalEv.type === 'final') {
+      assert.equal(finalEv.success, false, 'Auth failure final must have success:false');
+      assert.equal(finalEv.errorCategory, 'auth', 'Auth failure final must have errorCategory:"auth"');
+      assert.equal(finalEv.provider, 'claude', 'Auth failure final must record the failing provider');
+      assert.equal(finalEv.attempts, 1, 'Auth failure must record exactly 1 attempt');
+    }
+  });
+
+  it('auth error with two providers: still short-circuits — second provider never tried', async () => {
+    let codexRunCount = 0;
+    const authErrorProvider = makeFakeProvider('claude', [
+      {
+        type: 'error',
+        error: {
+          category: 'auth',
+          recoverable: false,
+          message: 'authentication failed',
+          suggestion: 'run claude auth login',
+        },
+      },
+    ]);
+    const codexProvider: Provider = {
+      id: 'codex',
+      async detect() {
+        return { id: 'codex', installed: true, version: '1.0.0', authenticated: true, binaryPath: '/x', availableModels: [] };
+      },
+      async *run(_req: ProviderRequest, _signal: AbortSignal): AsyncIterable<ProviderEvent> {
+        codexRunCount++;
+        yield { type: 'done', text: FINAL_TEXT, usage: FAKE_USAGE, raw: {} };
+      },
+    };
+
+    const deps: OrchestrateDeps = {
+      providers: { claude: authErrorProvider, codex: codexProvider },
+      clock: makeFakeClock(),
+      session: makeFakeSession(),
+      ledger: makeFakeLedger(),
+      policy: DEFAULT_POLICY,
+      cwd: '/fake/cwd',
+      sandbox: 'workspace-write',
+      timeoutMs: 30_000,
+    };
+
+    const events = await collectEvents(
+      orchestrate('refactor X', deps, new AbortController().signal),
+    );
+
+    // Codex must never have run (auth error = no failover)
+    assert.equal(codexRunCount, 0, 'Auth error must not trigger failover to second provider');
+
+    // No failover event
+    const failoverEv = events.find((e) => e.type === 'failover');
+    assert.equal(failoverEv, undefined, 'No failover event must be emitted on auth error');
+
+    // Final must be auth failure
+    const finalEv = events.find((e) => e.type === 'final');
+    assert.ok(finalEv !== undefined);
+    if (finalEv.type === 'final') {
+      assert.equal(finalEv.success, false);
+      assert.equal(finalEv.errorCategory, 'auth');
+      assert.equal(finalEv.provider, 'claude');
+    }
+  });
+
+  it('non-auth error (network) still uses existing failover/escalate behaviour', async () => {
+    // Regression: make sure network errors still failover as before
+    const networkErrorProvider = makeFakeProvider('claude', [
+      {
+        type: 'error',
+        error: {
+          category: 'network',
+          recoverable: true,
+          message: 'timeout',
+          suggestion: 'retry',
+        },
+      },
+    ]);
+
+    const deps: OrchestrateDeps = {
+      providers: { claude: networkErrorProvider },
+      clock: makeFakeClock(),
+      session: makeFakeSession(),
+      ledger: makeFakeLedger(),
+      policy: DEFAULT_POLICY,
+      cwd: '/fake/cwd',
+      sandbox: 'workspace-write',
+      timeoutMs: 30_000,
+    };
+
+    const events = await collectEvents(
+      orchestrate('refactor X', deps, new AbortController().signal),
+    );
+
+    // Network error with single provider → escalate (not short-circuit)
+    const escalateEv = events.find((e) => e.type === 'escalate');
+    assert.ok(escalateEv !== undefined, 'Network error must still trigger escalation');
+
+    const finalEv = events.find((e) => e.type === 'final');
+    assert.ok(finalEv !== undefined);
+    if (finalEv.type === 'final') {
+      assert.equal(finalEv.success, false);
+      assert.equal(finalEv.errorCategory, 'network', 'errorCategory must be "network" for network errors');
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Bug 2 fix: Reviewer escalate verdict at manager tier → emits notice + final
+// ---------------------------------------------------------------------------
+
+describe('orchestrate — Bug 2 fix: reviewer escalate at manager tier emits final (no infinite loop)', () => {
+  it('reviewer returns escalate at manager tier: emits warn notice + final(success:false), no loop', async () => {
+    // Task classified at manager tier with needsReview so review fires immediately.
+    // We force classification to manager + high risk by using "needsReview:true"
+    // so the review path is triggered regardless of classification tier.
+    // The reviewer returns "escalate", but currentTier is already manager.
+    // Bug 2 fix: must emit a warn notice + final(success:false) and stop.
+
+    const managerEnvelope =
+      '{"confidence": 0.85, "escalate": false, "reason": "done", "needs_review": true}';
+    const managerText = `Manager work done.\n${managerEnvelope}`;
+
+    // Reviewer always returns "escalate"
+    const reviewEscalateText = '{"verdict": "escalate", "notes": "needs senior review", "confidence": 0.5}';
+
+    let claudeCallCount = 0;
+    const claudeProvider: Provider = {
+      id: 'claude',
+      async detect() {
+        return { id: 'claude', installed: true, version: '1.0.0', authenticated: true, binaryPath: '/x', availableModels: [] };
+      },
+      async *run(_req: ProviderRequest, _signal: AbortSignal): AsyncIterable<ProviderEvent> {
+        claudeCallCount++;
+        yield { type: 'done', text: managerText, usage: FAKE_USAGE, raw: {} };
+      },
+    };
+
+    const codexProvider: Provider = {
+      id: 'codex',
+      async detect() {
+        return { id: 'codex', installed: true, version: '1.0.0', authenticated: true, binaryPath: '/x', availableModels: [] };
+      },
+      async *run(_req: ProviderRequest, _signal: AbortSignal): AsyncIterable<ProviderEvent> {
+        yield { type: 'done', text: reviewEscalateText, usage: { inputTokens: 200, outputTokens: 100 }, raw: {} };
+      },
+    };
+
+    const deps: OrchestrateDeps = {
+      providers: { claude: claudeProvider, codex: codexProvider },
+      clock: makeFakeClock(),
+      session: makeFakeSession(),
+      ledger: makeFakeLedger(),
+      policy: { ...DEFAULT_POLICY, maxAttempts: 10 }, // generous cap to detect loop
+      cwd: '/fake/cwd',
+      sandbox: 'workspace-write',
+      timeoutMs: 30_000,
+    };
+
+    // Use a task that gets classified at manager tier + needsReview triggers review
+    const events = await collectEvents(
+      orchestrate('audit the auth flow', deps, new AbortController().signal),
+    );
+
+    // Must emit the warn notice about top-tier escalation
+    const warnNotice = events.find(
+      (e) => e.type === 'notice' && e.level === 'warn' && e.message.includes('top tier'),
+    );
+    assert.ok(warnNotice !== undefined, 'Expected a warn notice about already being at top tier');
+
+    // Must emit final(success:false)
+    const finalEv = events.find((e) => e.type === 'final');
+    assert.ok(finalEv !== undefined, 'Expected a final event');
+    if (finalEv.type === 'final') {
+      assert.equal(finalEv.success, false, 'Must be failure when reviewer requests escalation at top tier');
+    }
+
+    // Claude (the worker) must have been called at most once — not looping
+    assert.ok(claudeCallCount <= 2, `Claude must not loop excessively; was called ${claudeCallCount} times`);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Bug 3 fix: No misleading failover event at maxAttempts boundary
+// ---------------------------------------------------------------------------
+
+describe('orchestrate — Bug 3 fix: no misleading failover event at maxAttempts ceiling', () => {
+  it('when maxAttempts=1, a failure with untried providers emits NO failover event', async () => {
+    // With maxAttempts=1: the first (and only) attempt fails.
+    // There is a second provider (codex) untried, but there is no room for another attempt.
+    // Bug 3 fix: must NOT emit a failover event because codex would never actually run.
+    let codexRunCount = 0;
+    const claudeErrorProvider = makeFakeProvider('claude', [
+      {
+        type: 'error',
+        error: {
+          category: 'network',
+          recoverable: true,
+          message: 'timeout',
+          suggestion: 'retry',
+        },
+      },
+    ]);
+    const codexProvider: Provider = {
+      id: 'codex',
+      async detect() {
+        return { id: 'codex', installed: true, version: '1.0.0', authenticated: true, binaryPath: '/x', availableModels: [] };
+      },
+      async *run(_req: ProviderRequest, _signal: AbortSignal): AsyncIterable<ProviderEvent> {
+        codexRunCount++;
+        yield { type: 'done', text: FINAL_TEXT, usage: FAKE_USAGE, raw: {} };
+      },
+    };
+
+    const deps: OrchestrateDeps = {
+      providers: { claude: claudeErrorProvider, codex: codexProvider },
+      clock: makeFakeClock(),
+      session: makeFakeSession(),
+      ledger: makeFakeLedger(),
+      policy: { ...DEFAULT_POLICY, maxAttempts: 1 },
+      cwd: '/fake/cwd',
+      sandbox: 'workspace-write',
+      timeoutMs: 30_000,
+    };
+
+    const events = await collectEvents(
+      orchestrate('refactor X', deps, new AbortController().signal),
+    );
+
+    // Codex must never have actually run (no room for another attempt)
+    assert.equal(codexRunCount, 0, 'Codex must never run when maxAttempts=1');
+
+    // No misleading failover event
+    const failoverEv = events.find((e) => e.type === 'failover');
+    assert.equal(failoverEv, undefined, 'Must NOT emit a failover event when no room for another attempt');
+
+    // Must still emit a final
+    const finalEv = events.find((e) => e.type === 'final');
+    assert.ok(finalEv !== undefined, 'Expected a final event');
+    if (finalEv.type === 'final') {
+      assert.equal(finalEv.success, false, 'Must be a failure final');
+    }
+  });
+
+  it('when maxAttempts=2 with two providers, failover IS emitted (room exists for 2nd attempt)', async () => {
+    // Regression: when there IS room, failover must still be emitted as before.
+    const claudeErrorProvider = makeFakeProvider('claude', [
+      {
+        type: 'error',
+        error: { category: 'network', recoverable: true, message: 'timeout', suggestion: 'retry' },
+      },
+    ]);
+    const codexProvider = makeFakeProvider('codex');
+
+    const deps: OrchestrateDeps = {
+      providers: { claude: claudeErrorProvider, codex: codexProvider },
+      clock: makeFakeClock(),
+      session: makeFakeSession(),
+      ledger: makeFakeLedger(),
+      policy: { ...DEFAULT_POLICY, maxAttempts: 2 },
+      cwd: '/fake/cwd',
+      sandbox: 'workspace-write',
+      timeoutMs: 30_000,
+    };
+
+    const events = await collectEvents(
+      orchestrate('refactor X', deps, new AbortController().signal),
+    );
+
+    // Failover MUST be emitted when there is room for another attempt
+    const failoverEv = events.find((e) => e.type === 'failover');
+    assert.ok(failoverEv !== undefined, 'Failover must be emitted when another attempt is possible');
+
+    // Final must be success (codex succeeded on second attempt)
+    const finalEv = events.find((e) => e.type === 'final');
+    assert.ok(finalEv !== undefined);
+    if (finalEv.type === 'final') {
+      assert.equal(finalEv.success, true, 'Second provider (codex) must succeed');
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Bug 4 fix: revise verdict injects notes at any tier (not just IC)
+// ---------------------------------------------------------------------------
+
+describe('orchestrate — Bug 4 fix: revise verdict injects reviewer notes at any tier', () => {
+  it('revise at IC tier: retry prompt contains the reviewer notes', async () => {
+    // Classic case — still works after the fix.
+    const icEnvelope =
+      '{"confidence": 0.85, "escalate": false, "reason": "done", "needs_review": false}';
+
+    const capturedPrompts: string[] = [];
+    let icCallCount = 0;
+
+    const claudeProvider: Provider = {
+      id: 'claude',
+      async detect() {
+        return { id: 'claude', installed: true, version: '1.0.0', authenticated: true, binaryPath: '/x', availableModels: [] };
+      },
+      async *run(req: ProviderRequest, _signal: AbortSignal): AsyncIterable<ProviderEvent> {
+        icCallCount++;
+        capturedPrompts.push(req.prompt);
+        const text = `Payment code attempt ${icCallCount}.\n${icEnvelope}`;
+        yield { type: 'done', text, usage: FAKE_USAGE, raw: {} };
+      },
+    };
+
+    let reviewCallCount = 0;
+    const codexProvider: Provider = {
+      id: 'codex',
+      async detect() {
+        return { id: 'codex', installed: true, version: '1.0.0', authenticated: true, binaryPath: '/x', availableModels: [] };
+      },
+      async *run(_req: ProviderRequest, _signal: AbortSignal): AsyncIterable<ProviderEvent> {
+        reviewCallCount++;
+        const text =
+          reviewCallCount === 1
+            ? '{"verdict": "revise", "notes": "NOTES_FROM_REVIEWER: add validation", "confidence": 0.7}'
+            : '{"verdict": "approve", "notes": "fixed", "confidence": 0.95}';
+        yield { type: 'done', text, usage: { inputTokens: 200, outputTokens: 100 }, raw: {} };
+      },
+    };
+
+    const deps: OrchestrateDeps = {
+      providers: { claude: claudeProvider, codex: codexProvider },
+      clock: makeFakeClock(),
+      session: makeFakeSession(),
+      ledger: makeFakeLedger(),
+      policy: DEFAULT_POLICY,
+      cwd: '/fake/cwd',
+      sandbox: 'workspace-write',
+      timeoutMs: 30_000,
+    };
+
+    await collectEvents(
+      orchestrate('implement payment handler', deps, new AbortController().signal),
+    );
+
+    // The second IC prompt must contain the reviewer notes
+    assert.ok(capturedPrompts.length >= 2, 'Expected at least 2 IC prompts (initial + retry)');
+    const retryPrompt = capturedPrompts[1] ?? '';
+    assert.ok(
+      retryPrompt.includes('NOTES_FROM_REVIEWER'),
+      'Retry prompt at IC tier must contain the reviewer notes',
+    );
+  });
+
+  it('revise at manager tier: retry prompt also contains the reviewer notes', async () => {
+    // The worker (manager tier directly) gets a revise → retry must have notes.
+    // We force classification to manager tier by using a high-confidence manager envelope
+    // but inject needsReview:true so review fires.
+    const managerEnvelope =
+      '{"confidence": 0.85, "escalate": false, "reason": "done", "needs_review": true}';
+
+    const capturedPrompts: string[] = [];
+    let claudeCallCount = 0;
+
+    const claudeProvider: Provider = {
+      id: 'claude',
+      async detect() {
+        return { id: 'claude', installed: true, version: '1.0.0', authenticated: true, binaryPath: '/x', availableModels: [] };
+      },
+      async *run(req: ProviderRequest, _signal: AbortSignal): AsyncIterable<ProviderEvent> {
+        claudeCallCount++;
+        capturedPrompts.push(req.prompt);
+        yield { type: 'done', text: `Attempt ${claudeCallCount}.\n${managerEnvelope}`, usage: FAKE_USAGE, raw: {} };
+      },
+    };
+
+    let reviewCallCount = 0;
+    const codexProvider: Provider = {
+      id: 'codex',
+      async detect() {
+        return { id: 'codex', installed: true, version: '1.0.0', authenticated: true, binaryPath: '/x', availableModels: [] };
+      },
+      async *run(_req: ProviderRequest, _signal: AbortSignal): AsyncIterable<ProviderEvent> {
+        reviewCallCount++;
+        const text =
+          reviewCallCount === 1
+            ? '{"verdict": "revise", "notes": "MANAGER_REVIEW_NOTES: tighten error handling", "confidence": 0.65}'
+            : '{"verdict": "approve", "notes": "good now", "confidence": 0.9}';
+        yield { type: 'done', text, usage: { inputTokens: 200, outputTokens: 100 }, raw: {} };
+      },
+    };
+
+    const deps: OrchestrateDeps = {
+      providers: { claude: claudeProvider, codex: codexProvider },
+      clock: makeFakeClock(),
+      session: makeFakeSession(),
+      ledger: makeFakeLedger(),
+      policy: DEFAULT_POLICY,
+      cwd: '/fake/cwd',
+      sandbox: 'workspace-write',
+      timeoutMs: 30_000,
+    };
+
+    // Use a task that is reviewed (needsReview:true in envelope ensures review path)
+    await collectEvents(
+      orchestrate('audit the auth flow', deps, new AbortController().signal),
+    );
+
+    // The second claude call must receive a prompt containing the reviewer notes
+    assert.ok(capturedPrompts.length >= 2, `Expected ≥2 claude calls (initial + retry after revise), got ${capturedPrompts.length}`);
+    const retryPrompt = capturedPrompts[1] ?? '';
+    assert.ok(
+      retryPrompt.includes('MANAGER_REVIEW_NOTES'),
+      `Retry prompt at manager tier must contain the reviewer notes. Got: ${retryPrompt.slice(0, 200)}`,
+    );
+  });
+});

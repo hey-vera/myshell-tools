@@ -3340,3 +3340,332 @@ describe('autoUpdateEnabled', () => {
     assert.equal(a, b);
   });
 });
+
+// ---------------------------------------------------------------------------
+// FLOW 12: Chat prompt is plain "> " (not "myshell-tools> ")
+// ---------------------------------------------------------------------------
+
+describe('startMenu — chat loop prompt is plain "> "', () => {
+  it('chat prompt inside a conversation is plain "> " not "myshell-tools> "', async () => {
+    const clock = makeFakeClock();
+    const store = makeStore(clock);
+    const sink = makeSink();
+
+    const ctx = makeCtx(
+      {
+        readLine: makeScriptedReader([
+          'n',       // new conversation
+          'My task', // title (becomes first message)
+          '/exit',   // exit chat loop without sending a task
+          'q',       // quit menu
+        ]),
+      },
+      clock,
+      store,
+    );
+
+    await startMenu(ctx, sink);
+
+    // The chat prompt inside the loop must be plain ">"
+    // The main menu prompt is also "> " so we check both.
+    // Key: "myshell-tools> " must NOT appear anywhere in the output.
+    assert.ok(
+      !sink.buf.includes('myshell-tools> '),
+      'Chat prompt must NOT be "myshell-tools> " — it should be plain "> "',
+    );
+    assert.ok(
+      sink.buf.includes('> '),
+      'Chat prompt must be plain "> "',
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// FLOW 13: No-provider gate — doomed task is NOT dispatched when no provider
+//          is authenticated; IS dispatched when at least one is.
+// ---------------------------------------------------------------------------
+
+describe('startMenu — no-provider gate in chat loop', () => {
+  /** EnvironmentStatus where no provider is authenticated or installed. */
+  const NO_AUTH_ENV: EnvironmentStatus = {
+    claude: {
+      id: 'claude',
+      installed: false,
+      version: null,
+      authenticated: false,
+      plan: null,
+      binaryPath: null,
+      availableModels: [],
+    },
+    codex: {
+      id: 'codex',
+      installed: false,
+      version: null,
+      authenticated: false,
+      plan: null,
+      binaryPath: null,
+      availableModels: [],
+    },
+    opencode: {
+      id: 'opencode',
+      installed: false,
+      version: null,
+      authenticated: false,
+      plan: null,
+      binaryPath: null,
+      availableModels: [],
+    },
+    hasAnyProvider: false,
+    platform: 'linux',
+  };
+
+  it('prints no-provider message and does NOT dispatch task when no provider is authed', async () => {
+    const clock = makeFakeClock();
+    const store = makeStore(clock);
+    const sink = makeSink();
+
+    const ctx = makeCtx(
+      {
+        env: NO_AUTH_ENV,
+        providers: {},  // no providers installed
+        readLine: makeScriptedReader([
+          'n',        // new conversation
+          'My task',  // title
+          'do work',  // attempted task — should be blocked
+          '/exit',    // exit chat
+          'q',        // quit
+        ]),
+        // Spy: if runTask were called the provider run() would be invoked
+        // We detect this by checking if the fake provider was called.
+        // Since providers: {} the orchestrator won't find any anyway;
+        // the gate fires first.
+      },
+      clock,
+      store,
+    );
+
+    // Track writer entries to confirm no task was dispatched
+    await startMenu(ctx, sink);
+
+    // The gate message must appear
+    assert.ok(
+      sink.buf.includes('No signed-in provider yet'),
+      'Must print no-provider gate message when no provider is authenticated',
+    );
+    // The gate message must mention how to sign in
+    assert.ok(
+      sink.buf.toLowerCase().includes('sign in'),
+      'Gate message must guide user toward signing in',
+    );
+
+    // No task should have been written to the session
+    const metas = await store.list();
+    if (metas.length > 0 && metas[0] !== undefined) {
+      const w = store._writers.get(metas[0].id);
+      // If writer exists, it should have no entries (no task was dispatched)
+      if (w !== undefined) {
+        const userEntry = w.entries.find((e) => e.role === 'user' && e.content === 'do work');
+        assert.ok(
+          userEntry === undefined,
+          'No user entry for the blocked task should exist in the session',
+        );
+      }
+    }
+  });
+
+  it('dispatches task normally when at least one provider is authenticated', async () => {
+    // FAKE_ENV has claude authenticated — task should proceed
+    const clock = makeFakeClock();
+    const store = makeStore(clock);
+    const sink = makeSink();
+
+    const ctx = makeCtx(
+      {
+        readLine: makeScriptedReader([
+          'n',           // new conversation
+          'My task',     // title
+          'do work',     // task — should be dispatched (claude is authed)
+          '/exit',       // exit chat
+          'q',           // quit
+        ]),
+      },
+      clock,
+      store,
+    );
+
+    await assert.doesNotReject(
+      () => startMenu(ctx, sink),
+      'Task dispatch with authenticated provider must not throw',
+    );
+
+    // 'No signed-in provider yet' must NOT appear when a provider is available
+    assert.ok(
+      !sink.buf.includes('No signed-in provider yet'),
+      'No-provider gate message must NOT appear when a provider is authenticated',
+    );
+
+    // The session writer should have received the user entry
+    const metas = await store.list();
+    const id = metas[0]?.id;
+    if (id !== undefined) {
+      const w = store._writers.get(id);
+      if (w !== undefined) {
+        const userEntry = w.entries.find((e) => e.role === 'user');
+        assert.ok(userEntry !== undefined, 'User entry should be present when provider is authed');
+      }
+    }
+  });
+
+  it('opencode installed counts as authenticated-when-installed (gate passes)', async () => {
+    // opencode installed + not authenticated → should still pass the gate
+    const opencodeInstalledEnv: EnvironmentStatus = {
+      ...NO_AUTH_ENV,
+      opencode: {
+        id: 'opencode',
+        installed: true,
+        version: '0.1.0',
+        authenticated: false,  // not explicitly authed, but installed = pass
+        plan: null,
+        binaryPath: 'opencode',
+        availableModels: [],
+      },
+    };
+
+    const clock = makeFakeClock();
+    const store = makeStore(clock);
+    const sink = makeSink();
+
+    const ctx = makeCtx(
+      {
+        env: opencodeInstalledEnv,
+        providers: {},
+        readLine: makeScriptedReader([
+          'n',
+          'My task',
+          'do work',  // should pass gate (opencode is installed)
+          '/exit',
+          'q',
+        ]),
+      },
+      clock,
+      store,
+    );
+
+    await assert.doesNotReject(() => startMenu(ctx, sink));
+
+    // Gate message must NOT appear when opencode is installed
+    assert.ok(
+      !sink.buf.includes('No signed-in provider yet'),
+      'Gate must not fire when opencode is installed (authenticated-when-installed)',
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// FLOW 14: Inline re-login uses refreshed auth (stale-deps fix)
+// ---------------------------------------------------------------------------
+
+describe('startMenu — inline re-login uses refreshed auth (stale-deps fix)', () => {
+  /**
+   * Build a provider that fails with auth error on the first call,
+   * then succeeds on subsequent calls (simulating what happens after re-login).
+   */
+  function makeAuthThenOkProvider(id: 'claude' | 'codex' = 'claude'): Provider & { callCount: number } {
+    let callCount = 0;
+    const CONF = '{"confidence": 0.85, "escalate": false, "reason": "done", "needs_review": false}';
+    const provider = {
+      id,
+      callCount: 0,
+      async detect() {
+        return { id, installed: true, version: '1.0.0', authenticated: false, plan: null, binaryPath: null, availableModels: [] };
+      },
+      async *run(_req: ProviderRequest, _signal: AbortSignal): AsyncIterable<ProviderEvent> {
+        callCount++;
+        provider.callCount = callCount;
+        if (callCount <= 2) {
+          // First two calls fail with auth (IC + manager both fail → final is auth error)
+          yield { type: 'error', error: { category: 'auth', recoverable: false, message: 'not signed in', suggestion: 'login' } };
+        } else {
+          // After re-login: succeed
+          yield { type: 'text', delta: 'Done after relogin.' };
+          yield { type: 'done', text: `Done after relogin.\n${CONF}`, usage: FAKE_USAGE, raw: {} };
+        }
+      },
+    };
+    return provider;
+  }
+
+  it('after re-login, retry uses fresh env (detectEnvironment is called before retry)', async () => {
+    const clock = makeFakeClock();
+    const store = makeStore(clock);
+    const sink = makeSink();
+
+    const freshEnv: EnvironmentStatus = {
+      ...FAKE_ENV,
+      claude: {
+        ...FAKE_ENV.claude,
+        authenticated: true,
+        availableModels: ['fresh-model'],
+      },
+    };
+
+    let detectCallCount = 0;
+    const ctx = makeCtx(
+      {
+        providers: { claude: makeAuthThenOkProvider('claude') },
+        readLine: makeScriptedReader([
+          'n',        // new conversation
+          'My task',  // title
+          'do work',  // task → auth fail → re-login prompt → y
+          'y',        // yes to re-login
+          '/exit',    // exit
+          'q',        // quit
+        ]),
+        login: async () => 0,
+        detectEnvironment: async () => {
+          detectCallCount += 1;
+          return freshEnv;
+        },
+      },
+      clock,
+      store,
+    );
+
+    await assert.doesNotReject(
+      () => startMenu(ctx, sink),
+      'inline re-login with fresh env should not throw',
+    );
+
+    // detectEnvironment must have been called at least once after login
+    assert.ok(
+      detectCallCount >= 1,
+      'detectEnvironment must be called at least once after re-login to refresh env',
+    );
+  });
+
+  it('after re-login, the re-login prompt mentions the failing provider', async () => {
+    const clock = makeFakeClock();
+    const store = makeStore(clock);
+    const sink = makeSink();
+
+    const ctx = makeCtx(
+      {
+        providers: { claude: makeAuthThenOkProvider('claude') },
+        readLine: makeScriptedReader([
+          'n', 'My task', 'do work', 'n', '/exit', 'q',
+        ]),
+        login: async () => 0,
+        detectEnvironment: async () => FAKE_ENV,
+      },
+      clock,
+      store,
+    );
+
+    await startMenu(ctx, sink);
+
+    assert.ok(
+      sink.buf.includes('claude') && sink.buf.toLowerCase().includes('sign in'),
+      'Re-login prompt must mention the failing provider (claude)',
+    );
+  });
+});

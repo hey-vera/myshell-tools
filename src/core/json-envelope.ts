@@ -33,6 +33,12 @@ interface ScanMatch {
  * Walk `text` left-to-right, collecting every balanced `{...}` block that
  * parses as a plain JSON object and contains `key`.  Returns the last match
  * (or null if none found).  Never throws.
+ *
+ * String-awareness (Bug 5 fix): `{` / `}` characters inside JSON string
+ * literals are ignored when tracking brace depth, so an envelope like
+ * `{"reason":"used {curly} brace","confidence":0.9}` is correctly found.
+ * Backslash escapes (including `\"`) inside strings are also handled so a
+ * string containing `\"` does not prematurely end the string scan.
  */
 function scanLast(text: string, key: string): ScanMatch | null {
   if (typeof text !== 'string' || text.length === 0) return null;
@@ -44,14 +50,33 @@ function scanLast(text: string, key: string): ScanMatch | null {
     const start = text.indexOf('{', i);
     if (start === -1) break;
 
-    // Walk forward tracking brace depth to find the matching '}'
+    // Walk forward tracking brace depth to find the matching '}'.
+    // Be string-aware: skip over double-quoted JSON strings so braces inside
+    // string values do not affect the depth counter.
     let depth = 0;
     let j = start;
     let foundClose = false;
     while (j < text.length) {
-      if (text[j] === '{') {
+      const ch = text[j];
+      if (ch === '"') {
+        // Enter a JSON string — advance j past the closing unescaped '"'.
+        j++;
+        while (j < text.length) {
+          const sc = text[j];
+          if (sc === '\\') {
+            // Backslash escape — skip the next character unconditionally.
+            j += 2;
+          } else if (sc === '"') {
+            // Closing quote — exit the string scan.
+            break;
+          } else {
+            j++;
+          }
+        }
+        // j now points at the closing '"' (or end-of-text if unterminated).
+      } else if (ch === '{') {
         depth++;
-      } else if (text[j] === '}') {
+      } else if (ch === '}') {
         depth--;
         if (depth === 0) {
           foundClose = true;

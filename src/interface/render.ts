@@ -74,22 +74,26 @@ export async function renderStream(
   for await (const ev of events) {
     switch (ev.type) {
       case 'classified': {
-        const cl = ev.classification;
-        out.write(
-          cyan(`Classified: ${cl.tier} tier, ${cl.risk} risk`, c) +
-          ` — ${cl.rationale}\n`,
-        );
+        // Only emit the classifier metadata line in debug mode — it's useful for
+        // development but clutters the chat experience for regular users.
+        if (process.env['MYSHELL_DEBUG']) {
+          const cl = ev.classification;
+          out.write(
+            cyan(`Classified: ${cl.tier} tier, ${cl.risk} risk`, c) +
+            ` — ${cl.rationale}\n`,
+          );
+        }
         break;
       }
 
       case 'tier-start': {
         out.write(
-          bold(`▶ ${ev.tier.toUpperCase()} (${ev.provider}/${ev.model}) attempt ${ev.attempt}`, c) +
+          dim(`▶ ${ev.tier} (${ev.provider}/${ev.model})`, c) +
           `\n`,
         );
         // Start spinner while waiting for the first provider output.
         if (out.isTty) {
-          spinner.start(`${ev.tier.toUpperCase()} (${ev.provider}/${ev.model}) working…`);
+          spinner.start(`${ev.tier} (${ev.provider}/${ev.model}) working…`);
           spinnerActive = true;
         }
         break;

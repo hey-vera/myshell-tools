@@ -227,6 +227,8 @@ export function stripPastedSecretWrapper(raw: string): string {
  * - `'api-key'`     — starts with `sk-ant-api` (a raw Anthropic API key, NOT what we want).
  * - `'none'`        — neither; blank or unrecognised.
  *
+ * Uses `startsWith` semantics: mid-string occurrences of `sk-ant-oat` or
+ * `sk-ant-api` do NOT classify as oauth-token or api-key respectively.
  * Input is pre-normalised (trimmed, quotes stripped) by the caller.
  * Pure / never throws.
  *
@@ -234,11 +236,12 @@ export function stripPastedSecretWrapper(raw: string): string {
  *   classifyPastedSecret('sk-ant-oat01-abc-XYZ') // → 'oauth-token'
  *   classifyPastedSecret('sk-ant-api03-abc-XYZ') // → 'api-key'
  *   classifyPastedSecret('not-a-token')           // → 'none'
+ *   classifyPastedSecret('prefix sk-ant-oat01-x') // → 'none'
  */
 export function classifyPastedSecret(s: string): 'oauth-token' | 'api-key' | 'none' {
   try {
-    if (s.includes('sk-ant-oat')) return 'oauth-token';
-    if (s.includes('sk-ant-api')) return 'api-key';
+    if (s.startsWith('sk-ant-oat')) return 'oauth-token';
+    if (s.startsWith('sk-ant-api')) return 'api-key';
     return 'none';
   } catch {
     return 'none';

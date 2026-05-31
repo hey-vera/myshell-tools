@@ -11,6 +11,22 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 - Cross-OS CI execution (requires a public remote).
 - First npm publish.
 
+## [2.16.0]
+
+### Fixed
+- **Login no longer garbles the screen**: the Claude code-method sign-in now runs claude setup-token with inherited stdio (clean native animation) and uses the robust paste prompt, instead of piping/echoing the output (which turned the spinner into a scroll of repeated banners). Honest error on non-zero exit.
+- **Auth errors short-circuit**: a not-signed-in provider no longer burns failover + tier escalation (3 failed attempts) before surfacing — it stops after one attempt and the conversation offers inline re-login immediately.
+- **Orchestrator edge cases**: reviewer escalate at the top tier no longer loops silently; a failover event is never shown when no attempt remains to honor it; reviewer revise notes are now applied on retries at any tier; the JSON-envelope scanner is string-aware (braces inside string values no longer break confidence/verdict parsing).
+- **Ctrl+C x2 returns to menu even mid-task** (was dropped while a task was running).
+- **No dead-end runs**: starting a task with no signed-in provider now prompts you to sign in instead of failing through the tiers.
+- **Inline re-login retries with refreshed auth** (was reusing stale provider state).
+
+### Changed
+- **Conversation feels like a chat**: the per-message prompt is now a plain > (not myshell-tools>), and the verbose Classified: routing line is hidden unless MYSHELL_DEBUG is set — the model's reply is the focus.
+
+### Security
+- Credentials file is created with 0600 and its dir 0700 from the start (no world-readable race) — see 2.16.x.
+
 ## [2.15.0]
 
 ### Changed

@@ -393,23 +393,25 @@ describe('stripPastedSecretWrapper — strips whitespace and surrounding quotes'
 // ---------------------------------------------------------------------------
 
 describe('classifyPastedSecret — classifies OAuth tokens, API keys, and other strings', () => {
-  it('returns "oauth-token" for a string containing sk-ant-oat', () => {
+  it('returns "oauth-token" for a string starting with sk-ant-oat', () => {
     assert.equal(classifyPastedSecret('sk-ant-oat01-abc-XYZ'), 'oauth-token');
   });
 
-  it('returns "oauth-token" for sk-ant-oat embedded in longer output', () => {
+  it('returns "none" for sk-ant-oat embedded mid-string (startsWith semantics)', () => {
+    // Mid-string occurrence must NOT classify as oauth-token.
     assert.equal(
       classifyPastedSecret('Your token: sk-ant-oat01-session-TOKENPART here'),
-      'oauth-token',
+      'none',
     );
   });
 
-  it('returns "api-key" for a string containing sk-ant-api', () => {
+  it('returns "api-key" for a string starting with sk-ant-api', () => {
     assert.equal(classifyPastedSecret('sk-ant-api03-abc-XYZ'), 'api-key');
   });
 
-  it('returns "api-key" for sk-ant-api embedded in a description', () => {
-    assert.equal(classifyPastedSecret('API key: sk-ant-api01-somekey-ABC'), 'api-key');
+  it('returns "none" for sk-ant-api embedded mid-string (startsWith semantics)', () => {
+    // Mid-string occurrence must NOT classify as api-key.
+    assert.equal(classifyPastedSecret('API key: sk-ant-api01-somekey-ABC'), 'none');
   });
 
   it('returns "none" for an unrelated string', () => {
@@ -429,10 +431,15 @@ describe('classifyPastedSecret — classifies OAuth tokens, API keys, and other 
     assert.equal(classifyPastedSecret('sk-ant-something-else'), 'none');
   });
 
-  it('prefers "oauth-token" when oat appears before api in the string', () => {
+  it('returns "oauth-token" when string starts with oat and also contains api later', () => {
     // Extremely unlikely in practice, but the oat check wins because it is first.
     const s = 'sk-ant-oat01-x sk-ant-api01-y';
     assert.equal(classifyPastedSecret(s), 'oauth-token');
+  });
+
+  it('returns "none" for leading-prefix mismatch even if oat appears later', () => {
+    // startsWith means leading prefix ONLY — mid-string oat should not match.
+    assert.equal(classifyPastedSecret('prefix sk-ant-oat01-x'), 'none');
   });
 
   it('never throws on empty string', () => {

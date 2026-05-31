@@ -1046,9 +1046,10 @@ async function runChatLoop(
   const interruptTimes: number[] = [];
   const INTERRUPT_WINDOW_MS = 1_500;
 
-  // The 'exit' signal is communicated from the SIGINT handler to the main
-  // loop via this flag (the handler can't break the outer while directly).
+  // The 'exit' and 'menu' signals are communicated from the SIGINT handler to
+  // the main loop via these flags (the handler can't break the outer while directly).
   let shouldExit = false;
+  let shouldMenu = false;
 
   // Handle Ctrl+C with the press-counting model.
   const sigintHandler = (): void => {
@@ -1069,13 +1070,10 @@ async function runChatLoop(
         currentAc.abort();
         currentAc = null;
       }
-      // Signal the main loop; the loop checks this flag after each await.
-      shouldExit = false;
-      // We can't directly break the loop from an event handler, so we set a
-      // flag and resolve any pending readLine by closing (the loop checks the
-      // flag). In practice the loop is either awaiting readLine() or runTask().
-      // For the readLine case the user typed nothing yet — we need to interrupt
-      // that await. We use a shared resolver pattern: see loopBreaker below.
+      // Set shouldMenu so the loop returns 'menu' after any running task settles.
+      shouldMenu = true;
+      // For the readLine case (idle prompt) we can interrupt the await immediately
+      // via the loopBreaker resolver.
       loopBreaker?.('menu');
     } else {
       // exit-app
@@ -1098,7 +1096,7 @@ async function runChatLoop(
 
   try {
     while (true) {
-      out.write('myshell-tools> ');
+      out.write('> ');
 
       // Race readLine() against a loopBreak signal from the SIGINT handler.
       // When Ctrl+C fires (to-menu or exit-app), loopBreaker is called with the
@@ -1142,58 +1140,85 @@ async function runChatLoop(
           ? POLICY_PRESETS[mutableCtx.config.mode]
           : DEFAULT_POLICY;
 
+      // ---- Bug 4 fix: no-provider gate ----------------------------------------
+      // Check whether any provider is actually authenticated before dispatching a
+      // task that is doomed to fail.  opencode counts as authenticated-when-installed.
+      const hasAuthenticatedProvider =
+        mutableCtx.env.claude.authenticated ||
+        mutableCtx.env.codex.authenticated ||
+        mutableCtx.env.opencode.authenticated ||
+        mutableCtx.env.opencode.installed;
+
+      if (!hasAuthenticatedProvider) {
+        out.write(
+          '\n[info] No signed-in provider yet — press Ctrl+C to go back, then [j] Claude / [k] Codex / [o] opencode to sign in.\n',
+        );
+        continue;
+      }
+
       // Load prior history before each turn so the provider receives conversation
       // context. load() returns only the entries persisted so far — the current
       // user turn is appended by orchestrate() after this point, so there is no
       // double-inclusion risk.
       const priorHistory = await ctx.store.load(convId);
 
-      // Build per-provider advertised model sets from the live env so route()
-      // can prefer a model the CLI actually advertises. Only include installed
-      // providers (exactOptionalPropertyTypes is ON).
-      // Use mutableCtx.env (not ctx.env) so post-login re-detect is reflected.
-      const menuAvailableModels: Partial<Record<ProviderId, readonly string[]>> = {};
-      if (mutableCtx.env.claude.installed && mutableCtx.env.claude.availableModels.length > 0) {
-        menuAvailableModels['claude'] = mutableCtx.env.claude.availableModels;
-      }
-      if (mutableCtx.env.codex.installed && mutableCtx.env.codex.availableModels.length > 0) {
-        menuAvailableModels['codex'] = mutableCtx.env.codex.availableModels;
-      }
-      if (mutableCtx.env.opencode.installed && mutableCtx.env.opencode.availableModels.length > 0) {
-        menuAvailableModels['opencode'] = mutableCtx.env.opencode.availableModels;
-      }
+      // ---- Build deps from the live mutableCtx.env ----------------------------
+      // This helper is inlined as a function so it can be called again after
+      // inline re-login with the refreshed env (bug 5 fix: no stale auth state).
+      const buildDeps = (): OrchestrateDeps => {
+        // Build per-provider advertised model sets from the live env so route()
+        // can prefer a model the CLI actually advertises. Only include installed
+        // providers (exactOptionalPropertyTypes is ON).
+        // Use mutableCtx.env (not ctx.env) so post-login re-detect is reflected.
+        const availableModels: Partial<Record<ProviderId, readonly string[]>> = {};
+        if (mutableCtx.env.claude.installed && mutableCtx.env.claude.availableModels.length > 0) {
+          availableModels['claude'] = mutableCtx.env.claude.availableModels;
+        }
+        if (mutableCtx.env.codex.installed && mutableCtx.env.codex.availableModels.length > 0) {
+          availableModels['codex'] = mutableCtx.env.codex.availableModels;
+        }
+        if (mutableCtx.env.opencode.installed && mutableCtx.env.opencode.availableModels.length > 0) {
+          availableModels['opencode'] = mutableCtx.env.opencode.availableModels;
+        }
 
-      // Collect authenticated providers from the live env so route() prefers
-      // signed-in providers over signed-out ones. Uses mutableCtx.env so
-      // post-login re-detection is reflected without restart.
-      const menuAuthenticatedProviders: ProviderId[] = [];
-      if (mutableCtx.env.claude.authenticated) menuAuthenticatedProviders.push('claude');
-      if (mutableCtx.env.codex.authenticated) menuAuthenticatedProviders.push('codex');
-      if (mutableCtx.env.opencode.authenticated) menuAuthenticatedProviders.push('opencode');
+        // Collect authenticated providers from the live env so route() prefers
+        // signed-in providers over signed-out ones. Uses mutableCtx.env so
+        // post-login re-detection is reflected without restart.
+        const authenticatedProviders: ProviderId[] = [];
+        if (mutableCtx.env.claude.authenticated) authenticatedProviders.push('claude');
+        if (mutableCtx.env.codex.authenticated) authenticatedProviders.push('codex');
+        if (mutableCtx.env.opencode.authenticated) authenticatedProviders.push('opencode');
 
-      const deps: OrchestrateDeps = {
-        clock: ctx.clock,
-        session: ctx.store.writer(convId),
-        ledger: ctx.ledger,
-        policy,
-        providers: ctx.providers,
-        cwd: ctx.cwd,
-        sandbox: ctx.sandbox,
-        timeoutMs: ctx.timeoutMs,
-        ...(priorHistory.length > 0 ? { history: priorHistory } : {}),
-        ...(Object.keys(menuAvailableModels).length > 0 ? { availableModels: menuAvailableModels } : {}),
-        ...(menuAuthenticatedProviders.length > 0 ? { authenticatedProviders: menuAuthenticatedProviders } : {}),
+        return {
+          clock: ctx.clock,
+          session: ctx.store.writer(convId),
+          ledger: ctx.ledger,
+          policy,
+          providers: ctx.providers,
+          cwd: ctx.cwd,
+          sandbox: ctx.sandbox,
+          timeoutMs: ctx.timeoutMs,
+          ...(priorHistory.length > 0 ? { history: priorHistory } : {}),
+          ...(Object.keys(availableModels).length > 0 ? { availableModels } : {}),
+          ...(authenticatedProviders.length > 0 ? { authenticatedProviders } : {}),
+        };
       };
+
+      const deps = buildDeps();
 
       const ac = new AbortController();
       currentAc = ac;
       const result = await runTask(line, deps, out, ac.signal);
       currentAc = null;
 
-      // Check for a loopBreaker signal that fired during the task (e.g. 3×Ctrl+C
-      // while runTask was awaited — the abort fires and the flag is set).
+      // Check for SIGINT-driven signals that fired while runTask was awaited.
       if (shouldExit) {
         loopResult = 'exit';
+        break;
+      }
+      // Bug 3 fix: shouldMenu may have been set by a 2×Ctrl+C during the task.
+      if (shouldMenu) {
+        loopResult = 'menu';
         break;
       }
 
@@ -1210,14 +1235,21 @@ async function runChatLoop(
         const ans = await readLine();
         if (parseYesNo(ans, true)) {
           await loginFn(out, failingProvider, { readLine });
+          // Bug 5 fix: re-detect with the freshly-authenticated env so the retry
+          // deps reflect the now-signed-in provider (not the stale pre-login state).
           mutableCtx.env = await detectEnvironmentFn();
+          const retryDeps = buildDeps();
           // Retry the same task once.
           const retryAc = new AbortController();
           currentAc = retryAc;
-          const retryResult = await runTask(line, deps, out, retryAc.signal);
+          const retryResult = await runTask(line, retryDeps, out, retryAc.signal);
           currentAc = null;
           if (shouldExit) {
             loopResult = 'exit';
+            break;
+          }
+          if (shouldMenu) {
+            loopResult = 'menu';
             break;
           }
           // If still auth failure after retry, inform and continue to prompt.

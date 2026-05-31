@@ -245,3 +245,87 @@ describe('lastJsonObjectBoundsWithKey — correct start/end offsets', () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// Bug 5 fix: string-aware brace scanner
+// ---------------------------------------------------------------------------
+
+describe('lastJsonObjectWithKey — string-aware scanning (Bug 5 fix)', () => {
+  it('parses envelope where a string value contains an opening brace', () => {
+    const text = '{"reason":"used {curly","confidence":0.9}';
+    const result = lastJsonObjectWithKey(text, 'confidence');
+    assert.ok(result !== null, 'Expected a match despite { inside a string value');
+    assert.equal(result['confidence'], 0.9);
+    assert.equal(result['reason'], 'used {curly');
+  });
+
+  it('parses envelope where a string value contains both braces (unbalanced-looking)', () => {
+    const text = '{"reason":"used {curly} brace","confidence":0.9}';
+    const result = lastJsonObjectWithKey(text, 'confidence');
+    assert.ok(result !== null, 'Expected a match despite { and } inside a string value');
+    assert.equal(result['confidence'], 0.9);
+  });
+
+  it('parses envelope where a string value contains multiple unbalanced braces', () => {
+    const text = '{"notes":"fix {bug} and {other}","verdict":"approve","confidence":0.85}';
+    const result = lastJsonObjectWithKey(text, 'verdict');
+    assert.ok(result !== null, 'Expected a match with multiple braces inside string values');
+    assert.equal(result['verdict'], 'approve');
+    assert.equal(result['notes'], 'fix {bug} and {other}');
+  });
+
+  it('handles escaped quotes inside strings without breaking scan', () => {
+    const text = '{"reason":"he said \\"hello\\" to {me}","confidence":0.7}';
+    const result = lastJsonObjectWithKey(text, 'confidence');
+    assert.ok(result !== null, 'Expected a match with escaped quotes in string value');
+    assert.equal(result['confidence'], 0.7);
+  });
+
+  it('handles backslash-escaped backslash followed by closing quote', () => {
+    // {\\"} — the \\ is an escaped backslash, so the " after it closes the string
+    const text = '{"path":"C:\\\\","confidence":0.6}';
+    const result = lastJsonObjectWithKey(text, 'confidence');
+    assert.ok(result !== null, 'Expected a match with escaped backslash before closing quote');
+    assert.equal(result['confidence'], 0.6);
+  });
+
+  it('still returns null for genuinely-absent envelope even with braces in text', () => {
+    // Text has braces but no confidence key
+    const text = 'Something went wrong in {module} and {other}.';
+    const result = lastJsonObjectWithKey(text, 'confidence');
+    assert.equal(result, null, 'Must return null when no valid envelope is present');
+  });
+
+  it('last-wins still works when string values contain braces', () => {
+    const text =
+      '{"confidence":0.3,"reason":"step {1}"}\n' +
+      '{"confidence":0.9,"reason":"step {2}"}';
+    const result = lastJsonObjectWithKey(text, 'confidence');
+    assert.ok(result !== null);
+    assert.equal(result['confidence'], 0.9, 'Last matching envelope must win');
+    assert.equal(result['reason'], 'step {2}');
+  });
+
+  it('never throws on text with braces only inside strings', () => {
+    const inputs = [
+      '{"k":"{{{"}',
+      '{"k":"}}}"}',
+      '{"k":"{}{}{}"}',
+      '{"k":"\\"{"}',
+    ];
+    for (const inp of inputs) {
+      assert.doesNotThrow(() => lastJsonObjectWithKey(inp, 'k'));
+    }
+  });
+});
+
+describe('lastJsonObjectBoundsWithKey — string-aware scanning (Bug 5 fix)', () => {
+  it('bounds are correct for envelope with braces inside a string value', () => {
+    const envelope = '{"reason":"used {curly} brace","confidence":0.9}';
+    const text = `Some text.\n${envelope}\nAfter.`;
+    const result = lastJsonObjectBoundsWithKey(text, 'confidence');
+    assert.ok(result !== null, 'Expected a match');
+    assert.equal(text.slice(result.start, result.end), envelope, 'Bounds must reproduce the original envelope');
+    assert.equal(result.value['confidence'], 0.9);
+  });
+});

@@ -273,11 +273,9 @@ export async function* orchestrate(
       break mainLoop;
     }
 
-    // --- Build prompt (with optional reviewer feedback on IC retry + history context) ---
-    const prompt =
-      currentTier === 'ic' && managerNotes !== undefined
-        ? buildPrompt(currentTier, task, managerNotes, historyContext)
-        : buildPrompt(currentTier, task, undefined, historyContext);
+    // --- Build prompt (with optional reviewer feedback on retry + history context) ---
+    // Bug 4 fix: inject managerNotes whenever defined, not just when currentTier === 'ic'.
+    const prompt = buildPrompt(currentTier, task, managerNotes, historyContext);
 
     // --- Yield tier-start ---
     yield {
@@ -388,28 +386,53 @@ export async function* orchestrate(
     // 1) Provider failure → try cross-vendor failover first; escalate only when
     //    all vendors at this tier have been exhausted.
     if (!success) {
+      // Bug 1 fix: auth errors are terminal — a missing credential cannot be
+      // fixed by switching provider or escalating tier.  Short-circuit now.
+      if (errored !== undefined && errored.category === 'auth') {
+        yield {
+          type: 'final',
+          success: false,
+          output: lastOutput,
+          tier: currentTier,
+          totalCostUsd,
+          sessionId: deps.session.id,
+          attempts,
+          errorCategory: 'auth',
+          provider: decision.provider,
+        };
+        return;
+      }
+
       // Compute which providers haven't been tried at this tier yet.
       const triedAtTier = triedByTier.get(currentTier) ?? new Set<ProviderId>();
       const remaining = available.filter((id) => !triedAtTier.has(id));
 
       if (remaining.length > 0) {
-        // Failover to an untried vendor at the same tier.
-        // Peek at what route() would pick from the remaining pool so we can
-        // name the target provider in the failover event.
-        const nextDecision = route(currentTier, remaining, deps.policy, deps.availableModels, deps.authenticatedProviders);
-        yield {
-          type: 'failover',
-          from: decision.provider,
-          to: nextDecision.provider,
-          tier: currentTier,
-          reason: errored?.message ?? 'execution failure',
-        };
-        // Signal the next iteration to route among only the remaining vendors.
-        failoverPool = remaining;
-        continue mainLoop;
+        // Failover to an untried vendor at the same tier only when there is
+        // still room for another attempt.
+        // Bug 3 fix: only emit the failover event when another iteration can
+        // actually execute — i.e., when attempts < maxAttempts.  At the ceiling
+        // the next loop condition (attempts < maxAttempts) would be false, so the
+        // promised failover run would never happen; don't mislead the caller.
+        if (attempts < deps.policy.maxAttempts) {
+          // Peek at what route() would pick from the remaining pool so we can
+          // name the target provider in the failover event.
+          const nextDecision = route(currentTier, remaining, deps.policy, deps.availableModels, deps.authenticatedProviders);
+          yield {
+            type: 'failover',
+            from: decision.provider,
+            to: nextDecision.provider,
+            tier: currentTier,
+            reason: errored?.message ?? 'execution failure',
+          };
+          // Signal the next iteration to route among only the remaining vendors.
+          failoverPool = remaining;
+          continue mainLoop;
+        }
+        // Reached maxAttempts with untried vendors — fall through to escalate/break.
       }
 
-      // All vendors at this tier have been tried — escalate or break.
+      // All vendors at this tier have been tried (or maxAttempts reached) — escalate or break.
       if (currentTier !== 'manager') {
         yield { type: 'escalate', from: currentTier, to: 'manager', reason: 'execution failure' };
         currentTier = 'manager';
@@ -623,28 +646,47 @@ export async function* orchestrate(
 
           // verdict === 'escalate'
           const escalateTo = nextTierUp(currentTier);
-          if (escalateTo !== null) {
-            // Budget cap: do not escalate to a new tier if we have spent the cap.
-            if (budgetExceeded(totalCostUsd, deps.policy.maxCostUsd)) {
-              yield {
-                type: 'notice',
-                level: 'warn',
-                message: 'cost budget reached — accepting best result so far',
-              };
-              yield {
-                type: 'final',
-                success: true,
-                output: lastOutput,
-                tier: currentTier,
-                totalCostUsd,
-                sessionId: deps.session.id,
-                attempts,
-              };
-              return;
-            }
-            yield { type: 'escalate', from: currentTier, to: escalateTo, reason: 'reviewer escalation' };
-            currentTier = escalateTo;
+          if (escalateTo === null) {
+            // Bug 2 fix: already at the top tier — reviewer requested escalation
+            // but there is nowhere higher to go.  Yield an honest warn + failing
+            // final instead of silently looping until maxAttempts.
+            yield {
+              type: 'notice',
+              level: 'warn',
+              message: 'reviewer requested escalation but already at the top tier — accepting best result',
+            };
+            yield {
+              type: 'final',
+              success: false,
+              output: lastOutput,
+              tier: currentTier,
+              totalCostUsd,
+              sessionId: deps.session.id,
+              attempts,
+              ...(lastAttemptedProvider !== undefined ? { provider: lastAttemptedProvider } : {}),
+            };
+            return;
           }
+          // Budget cap: do not escalate to a new tier if we have spent the cap.
+          if (budgetExceeded(totalCostUsd, deps.policy.maxCostUsd)) {
+            yield {
+              type: 'notice',
+              level: 'warn',
+              message: 'cost budget reached — accepting best result so far',
+            };
+            yield {
+              type: 'final',
+              success: true,
+              output: lastOutput,
+              tier: currentTier,
+              totalCostUsd,
+              sessionId: deps.session.id,
+              attempts,
+            };
+            return;
+          }
+          yield { type: 'escalate', from: currentTier, to: escalateTo, reason: 'reviewer escalation' };
+          currentTier = escalateTo;
           continue mainLoop;
         }
       }

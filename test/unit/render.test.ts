@@ -101,15 +101,99 @@ describe('renderStream — happy path with confidence 0.8', () => {
     // Session id rendered truthfully
     assert.ok(joined.includes('test-session-id-1'), 'Should contain the real sessionId');
 
-    // Classification details present
-    assert.ok(joined.includes('ic'), 'Should contain tier name');
-    assert.ok(joined.includes('medium'), 'Should contain risk level');
-    assert.ok(joined.includes('requires IC judgment'), 'Should contain the rationale');
+    // Classification details NOT present by default (MYSHELL_DEBUG is not set)
+    // Tier name still appears from tier-start/tier-done lines
+    assert.ok(joined.includes('ic'), 'Should contain tier name (from tier-start/tier-done)');
+
+    // The 'Classified:' line must NOT appear without MYSHELL_DEBUG
+    assert.ok(
+      !joined.includes('Classified:'),
+      'Classified line must be suppressed by default (no MYSHELL_DEBUG)',
+    );
 
     // No forbidden mock substrings (honesty guard)
     const forbidden = ['JWT', 'Authentication bug', 'Found', 'relevant files', 'sess-abc', '8m 23s', '12 exchanges'];
     for (const f of forbidden) {
       assert.ok(!joined.includes(f), `Output must not contain forbidden mock string: "${f}"`);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 1b. Classified line appears when MYSHELL_DEBUG is set
+// ---------------------------------------------------------------------------
+
+describe('renderStream — classified line with MYSHELL_DEBUG', () => {
+  it('emits "Classified:" line when MYSHELL_DEBUG is set', async () => {
+    const origDebug = process.env['MYSHELL_DEBUG'];
+    process.env['MYSHELL_DEBUG'] = '1';
+    try {
+      const sink = makeSink();
+      const events: CoreEvent[] = [
+        {
+          type: 'classified',
+          classification: { tier: 'ic', risk: 'medium', rationale: 'requires IC judgment' },
+        },
+        {
+          type: 'final',
+          success: true,
+          output: '',
+          tier: 'ic',
+          totalCostUsd: 0,
+          sessionId: 'debug-session',
+          attempts: 1,
+        },
+      ];
+
+      await renderStream(makeStream(events), sink);
+      const joined = sink.buf.join('');
+
+      assert.ok(
+        joined.includes('Classified:'),
+        'Classified line must appear when MYSHELL_DEBUG is set',
+      );
+      assert.ok(joined.includes('requires IC judgment'), 'Rationale must appear when MYSHELL_DEBUG is set');
+    } finally {
+      if (origDebug !== undefined) {
+        process.env['MYSHELL_DEBUG'] = origDebug;
+      } else {
+        delete process.env['MYSHELL_DEBUG'];
+      }
+    }
+  });
+
+  it('does NOT emit "Classified:" line when MYSHELL_DEBUG is unset', async () => {
+    const origDebug = process.env['MYSHELL_DEBUG'];
+    delete process.env['MYSHELL_DEBUG'];
+    try {
+      const sink = makeSink();
+      const events: CoreEvent[] = [
+        {
+          type: 'classified',
+          classification: { tier: 'worker', risk: 'low', rationale: 'simple task' },
+        },
+        {
+          type: 'final',
+          success: true,
+          output: '',
+          tier: 'worker',
+          totalCostUsd: 0,
+          sessionId: 'nodebug-session',
+          attempts: 1,
+        },
+      ];
+
+      await renderStream(makeStream(events), sink);
+      const joined = sink.buf.join('');
+
+      assert.ok(
+        !joined.includes('Classified:'),
+        'Classified line must be absent when MYSHELL_DEBUG is not set',
+      );
+    } finally {
+      if (origDebug !== undefined) {
+        process.env['MYSHELL_DEBUG'] = origDebug;
+      }
     }
   });
 });

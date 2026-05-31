@@ -175,4 +175,14 @@ describe('paste-fallback: classifyPastedSecret — api-key vs oauth-token distin
   it('classifies empty string as "none"', () => {
     assert.equal(classifyPastedSecret(''), 'none');
   });
+
+  it('uses startsWith semantics — mid-string sk-ant-oat is NOT oauth-token', () => {
+    // classifyPastedSecret receives pre-normalised (trimmed) input from the caller.
+    // A mid-string occurrence must not match, confirming startsWith not includes.
+    assert.equal(classifyPastedSecret('prefix sk-ant-oat01-abc-TOKEN'), 'none');
+  });
+
+  it('uses startsWith semantics — leading sk-ant-oat IS oauth-token', () => {
+    assert.equal(classifyPastedSecret('sk-ant-oat01-abc-TOKEN'), 'oauth-token');
+  });
 });

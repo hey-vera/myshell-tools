@@ -11,13 +11,11 @@
  *     containers / over SSH (Replit, Codespaces, etc.) where localhost can't be
  *     reached from the user's browser.
  *   - 'code':   a no-localhost flow that works anywhere.
- *       · claude → `claude setup-token`: prints a link; the user signs in at
- *         claude.ai, copies the authorization code, and pastes it back here.
- *         We TEE the output so we can scan it for the minted token
- *         (sk-ant-oat…) automatically. If auto-capture finds the token, it is
- *         persisted immediately with no user action required. Otherwise we fall
- *         back to prompting the user to paste it (up to 3 retries, with helpful
- *         warnings for blank or wrong-type inputs).
+ *       · claude → `claude setup-token`: spawned with fully inherited stdio so
+ *         the native spinner/animation renders cleanly. After the process exits
+ *         successfully, the user is prompted to paste the token (sk-ant-oat…)
+ *         back here (up to 3 retries, with helpful warnings for blank or
+ *         wrong-type inputs).
  *       · codex  → `codex login --device-auth`: prints a URL + one-time code;
  *         the user authorizes their ChatGPT account on any device.
  *
@@ -25,9 +23,8 @@
  * to 'code' (so the localhost trap is avoided), everything else to 'browser'.
  *
  * Security: myshell-tools never stores raw API keys or passwords.  The Claude
- * OAuth token (sk-ant-oat…) is either auto-captured from the tee'd output or
- * captured after the user explicitly pastes it, and is stored in
- * ~/.myshell-tools/credentials.json (mode 0o600).
+ * OAuth token (sk-ant-oat…) is captured after the user explicitly pastes it,
+ * and is stored in ~/.myshell-tools/credentials.json (mode 0o600).
  */
 
 import readline from 'node:readline';
@@ -69,9 +66,8 @@ const LOGIN_CODE_COMMAND: Record<
     guidance:
       'A sign-in link will appear below.\n' +
       '  1. Open it in any browser and sign in at claude.ai.\n' +
-      '  2. Copy the authorization code it shows you.\n' +
-      '  3. Paste the code back here at the prompt and press Enter.\n' +
-      '  We will capture the token automatically when possible.',
+      '  2. Copy the token it shows you (starts with sk-ant-oat).\n' +
+      '  3. When prompted below, paste it here and press Enter.',
   },
   codex: {
     bin: 'codex',
@@ -187,23 +183,13 @@ export async function runLogin(
 
     // stdio:'inherit' hands the terminal to the provider CLI so its OAuth /
     // device / paste flow runs in place. reject:false so we report rather than throw.
-    //
-    // For the claude code method we use a special tee-capture approach: stdout
-    // and stderr are piped so we can scan for the token, but each line is also
-    // written verbatim to the real terminal so the user sees the flow live.
-    // stdin is still inherited so the user can interact (paste the auth code).
     let result;
-    let capturedOutput = '';
 
     if (method === 'code' && id === 'claude') {
       const { bin, args, guidance } = LOGIN_CODE_COMMAND[id];
       out.write(bold(`\nSigning in to ${id} — code method (no localhost needed).\n`, out.color));
       out.write(dim(guidance + '\n', out.color));
-      capturedOutput = await runWithTeeCapture(bin, [...args]);
-      // We use a synthetic exit-code-0 result — tee-capture never throws, and
-      // we treat the flow as complete regardless of the subprocess exit code
-      // (the token presence is the real signal).
-      result = { exitCode: 0 } as const;
+      result = await execa(bin, [...args], { stdin: 'inherit', stdout: 'inherit', stderr: 'inherit', reject: false });
     } else if (method === 'code') {
       const { bin, args, guidance } = LOGIN_CODE_COMMAND[id];
       out.write(bold(`\nSigning in to ${id} — code method (no localhost needed).\n`, out.color));
@@ -216,54 +202,37 @@ export async function runLogin(
     }
 
     if (result.exitCode === 0) {
-      // --- Claude code-method token capture -----------------------------------
-      // `claude setup-token` mints a long-lived token (sk-ant-oat01-…) and PRINTS
-      // it to the terminal. We tee'd the output above and scan it first.
-      // If auto-capture finds the token, we're done. Otherwise we fall back to
-      // the paste prompt (up to 3 retries) so the user can paste it manually.
       if (id === 'claude' && method === 'code') {
-        const autoToken = extractClaudeToken(capturedOutput);
-        if (autoToken !== null) {
-          try {
-            await saveClaudeToken(autoToken);
-            process.env['CLAUDE_CODE_OAUTH_TOKEN'] = autoToken;
-            out.write(
-              green(
-                '✓ Claude token captured and saved — claude is now ready.\n',
-                out.color,
-              ),
-            );
-          } catch {
-            out.write(
-              dim(
-                'Could not save token to disk — re-run `myshell-tools login claude --code` later.\n',
-                out.color,
-              ),
-            );
-          }
-        } else {
-          // Auto-capture found nothing — fall back to paste prompt.
-          // Do NOT print "sign-in complete" here: the paste prompt is the real
-          // outcome gate; captureClaudeTokenWithPaste reports success itself.
-          await captureClaudeTokenWithPaste(out, opts?.readLine);
-        }
+        // `claude setup-token` ran with inherited stdio (so the native animation
+        // rendered cleanly). Now prompt the user to paste the token it printed.
+        // captureClaudeTokenWithPaste reports its own success/failure messages.
+        await captureClaudeTokenWithPaste(out, opts?.readLine);
       } else {
         out.write(green(`✓ ${id} sign-in complete.\n`, out.color));
       }
     } else {
-      out.write(
-        red(`✗ ${id} sign-in did not complete (exit ${result.exitCode ?? 'unknown'}).\n`, out.color),
-      );
-      // The classic container failure mode is a dead localhost callback. Point
-      // the user at the code method, which sidesteps localhost entirely.
-      if (method === 'browser') {
+      if (id === 'claude' && method === 'code') {
         out.write(
-          dim(
-            `If the browser/localhost step failed, try the code method instead:\n` +
-              `  myshell-tools login ${id} --code\n`,
+          red(
+            `✗ claude setup-token did not complete (exit ${result.exitCode ?? 'unknown'}). Run it manually: claude setup-token\n`,
             out.color,
           ),
         );
+      } else {
+        out.write(
+          red(`✗ ${id} sign-in did not complete (exit ${result.exitCode ?? 'unknown'}).\n`, out.color),
+        );
+        // The classic container failure mode is a dead localhost callback. Point
+        // the user at the code method, which sidesteps localhost entirely.
+        if (method === 'browser') {
+          out.write(
+            dim(
+              `If the browser/localhost step failed, try the code method instead:\n` +
+                `  myshell-tools login ${id} --code\n`,
+              out.color,
+            ),
+          );
+        }
       }
     }
   }
@@ -272,49 +241,7 @@ export async function runLogin(
 }
 
 // ---------------------------------------------------------------------------
-// Tee-capture helper (internal)
-// ---------------------------------------------------------------------------
-
-/**
- * Run a command with stdout and stderr piped (tee'd to the real terminal) and
- * stdin inherited. Returns the accumulated stdout+stderr text, or an empty
- * string on spawn failure. Never throws.
- *
- * Uses execa v9's `all: true` option to merge stdout+stderr into one stream,
- * then iterates it via `subprocess.iterable({ from: 'all', preserveNewlines: true })`
- * while mirroring each chunk to `process.stdout` so the user sees the output
- * live. stdin is inherited so the user can interact (e.g. paste an auth code).
- */
-async function runWithTeeCapture(bin: string, args: readonly string[]): Promise<string> {
-  try {
-    const subprocess = execa(bin, [...args], {
-      stdin: 'inherit',
-      stdout: 'pipe',
-      stderr: 'pipe',
-      all: true,
-      reject: false,
-      timeout: 300_000,
-    });
-
-    const chunks: string[] = [];
-
-    for await (const line of subprocess.iterable({ from: 'all', preserveNewlines: true })) {
-      const text = typeof line === 'string' ? line : String(line);
-      process.stdout.write(text);
-      chunks.push(text);
-    }
-
-    await subprocess; // wait for exit (already resolved by the iteration above)
-    return chunks.join('');
-  } catch {
-    // Spawn error or unexpected failure — return empty so the caller falls back
-    // to the paste prompt.
-    return '';
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Paste-fallback token capture helper (internal)
+// Paste token capture helper (internal)
 // ---------------------------------------------------------------------------
 
 /**
