@@ -21,9 +21,10 @@ export interface AppConfig {
   /** Active routing mode. Absent → use DEFAULT_POLICY (same as 'balanced'). */
   mode?: 'cost-saver' | 'balanced' | 'quality-first';
   /**
-   * When true, myshell-tools automatically updates itself at startup when a
-   * newer version is available and relaunches the updated binary.
-   * When absent or false, only a notification banner is shown.
+   * When true or absent (default), myshell-tools automatically updates itself
+   * at startup when a newer version is available and relaunches the updated
+   * binary.  Set to false (or `MYSHELL_NO_UPDATE=1` in the environment) to
+   * disable auto-update and show only the notification banner instead.
    */
   autoUpdate?: boolean;
 }
@@ -35,6 +36,7 @@ export interface AppConfig {
 const DEFAULTS: AppConfig = {
   onboarded: false,
   setAsDefault: false,
+  autoUpdate: true,
 };
 
 // ---------------------------------------------------------------------------

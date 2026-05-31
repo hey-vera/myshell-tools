@@ -30,7 +30,7 @@ describe('loadConfig — defaults', () => {
 
   it('returns default config when file does not exist', async () => {
     const config = await loadConfig(homeDir);
-    assert.deepEqual(config, { onboarded: false, setAsDefault: false });
+    assert.deepEqual(config, { onboarded: false, setAsDefault: false, autoUpdate: true });
   });
 
   it('onboarded defaults to false', async () => {
@@ -41,6 +41,11 @@ describe('loadConfig — defaults', () => {
   it('setAsDefault defaults to false', async () => {
     const config = await loadConfig(homeDir);
     assert.equal(config.setAsDefault, false);
+  });
+
+  it('autoUpdate defaults to true', async () => {
+    const config = await loadConfig(homeDir);
+    assert.equal(config.autoUpdate, true);
   });
 });
 
@@ -79,7 +84,10 @@ describe('saveConfig + loadConfig — round-trip', () => {
     const cfg: AppConfig = { onboarded: true, setAsDefault: true };
     await saveConfig(cfg, homeDir);
     const loaded = await loadConfig(homeDir);
-    assert.deepEqual(loaded, { onboarded: true, setAsDefault: true });
+    // autoUpdate defaults to true so it is present in the loaded config
+    assert.equal(loaded.onboarded, true);
+    assert.equal(loaded.setAsDefault, true);
+    assert.equal(loaded.autoUpdate, true);
   });
 
   it('saveConfig creates .myshell-tools dir if missing', async () => {
@@ -108,7 +116,7 @@ describe('loadConfig — resilience', () => {
       await writeFile(join(configDir, 'config.json'), 'CORRUPT JSON!!!', 'utf8');
 
       const config = await loadConfig(home2);
-      assert.deepEqual(config, { onboarded: false, setAsDefault: false });
+      assert.deepEqual(config, { onboarded: false, setAsDefault: false, autoUpdate: true });
     } finally {
       await rm(home2, { recursive: true, force: true });
     }
@@ -123,9 +131,38 @@ describe('loadConfig — resilience', () => {
       await writeFile(join(configDir, 'config.json'), JSON.stringify({ onboarded: true }), 'utf8');
 
       const config = await loadConfig(home2);
-      // onboarded from disk, setAsDefault from defaults
+      // onboarded from disk, setAsDefault + autoUpdate from defaults
       assert.equal(config.onboarded, true);
       assert.equal(config.setAsDefault, false);
+      assert.equal(config.autoUpdate, true);
+    } finally {
+      await rm(home2, { recursive: true, force: true });
+    }
+  });
+
+  it('on-disk autoUpdate:false is preserved (user opt-out is kept)', async () => {
+    const home2 = await mkdtemp(join(tmpdir(), `config-autoupdate-false-${randomUUID()}-`));
+    try {
+      const configDir = join(home2, '.myshell-tools');
+      await mkdir(configDir, { recursive: true });
+      await writeFile(join(configDir, 'config.json'), JSON.stringify({ onboarded: true, setAsDefault: false, autoUpdate: false }), 'utf8');
+
+      const config = await loadConfig(home2);
+      assert.equal(config.autoUpdate, false, 'explicit autoUpdate:false must not be overridden by defaults');
+    } finally {
+      await rm(home2, { recursive: true, force: true });
+    }
+  });
+
+  it('on-disk autoUpdate:true is preserved', async () => {
+    const home2 = await mkdtemp(join(tmpdir(), `config-autoupdate-true-${randomUUID()}-`));
+    try {
+      const configDir = join(home2, '.myshell-tools');
+      await mkdir(configDir, { recursive: true });
+      await writeFile(join(configDir, 'config.json'), JSON.stringify({ onboarded: true, setAsDefault: false, autoUpdate: true }), 'utf8');
+
+      const config = await loadConfig(home2);
+      assert.equal(config.autoUpdate, true, 'explicit autoUpdate:true must be preserved');
     } finally {
       await rm(home2, { recursive: true, force: true });
     }

@@ -21,7 +21,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 
-import { startMenu, defaultAliasHint, parseYesNo } from '../../src/interface/menu.ts';
+import { startMenu, defaultAliasHint, parseYesNo, autoUpdateEnabled } from '../../src/interface/menu.ts';
 import type { MenuContext } from '../../src/interface/menu.ts';
 import type { UpdateCheckResult } from '../../src/infra/update-check.ts';
 import type { OutputSink } from '../../src/interface/render.ts';
@@ -2350,7 +2350,13 @@ describe('startMenu — [o] opencode discoverability in Auth section', () => {
 // ---------------------------------------------------------------------------
 
 describe('startMenu — update notifier: banner, [u], auto-update', () => {
-  /** Build a ctx with an update available (or not). */
+  /**
+   * Build a ctx for banner / manual-[u] tests.
+   *
+   * Uses `autoUpdate: false` so the launch auto-update gate does NOT fire —
+   * these tests exercise the notify-banner + manual [u] path, not the
+   * auto-update-at-launch path (which is tested separately with inline configs).
+   */
   function makeUpdateCtx(
     overrides: Partial<MenuContext> & { readLine: () => Promise<string | null> },
     updateAvailable: boolean,
@@ -2360,10 +2366,31 @@ describe('startMenu — update notifier: banner, [u], auto-update', () => {
       ? { current: '2.0.0', latest, updateAvailable: true }
       : { current: '2.0.0', latest: null, updateAvailable: false };
 
-    return makeCtx({
+    const clock = makeFakeClock();
+    const store = makeStore(clock);
+    const ledger = makeFakeLedger();
+    const dir = join(tmpdir(), `menu-update-ctx-${randomUUID()}`);
+
+    // Explicit autoUpdate:false so the launch auto-update gate does NOT fire.
+    // These tests are testing the banner / manual [u] path only.
+    const config: AppConfig = { onboarded: true, setAsDefault: false, autoUpdate: false };
+
+    return {
+      version: '2.0.0',
+      clock,
+      ledger,
+      providers: { claude: makeFakeProvider() },
+      env: FAKE_ENV,
+      store,
+      config,
+      cwd: dir,
+      sandbox: 'workspace-write',
+      timeoutMs: 5_000,
+      installProvider: async () => true,
+      login: async () => 0,
       checkForUpdate: async () => updateResult,
       ...overrides,
-    });
+    };
   }
 
   // ---- Update banner visibility --------------------------------------------
@@ -2663,14 +2690,14 @@ describe('startMenu — update notifier: banner, [u], auto-update', () => {
     );
   });
 
-  it('auto-update: does NOT run when autoUpdate is false', async () => {
+  it('auto-update: does NOT run when autoUpdate is explicitly false', async () => {
     let updateSelfCalled = false;
 
     const clock = makeFakeClock();
     const store = makeStore(clock);
     const ledger = makeFakeLedger();
     const dir = join(tmpdir(), `menu-no-autoupdate-${randomUUID()}`);
-    const config: AppConfig = { onboarded: true, setAsDefault: false };  // autoUpdate absent = false
+    const config: AppConfig = { onboarded: true, setAsDefault: false, autoUpdate: false };  // explicit opt-out
 
     const ctx: MenuContext = {
       version: '2.0.0',
@@ -2700,12 +2727,116 @@ describe('startMenu — update notifier: banner, [u], auto-update', () => {
     const sink = makeSink();
     await startMenu(ctx, sink);
 
-    assert.equal(updateSelfCalled, false, 'updateSelf must NOT be called when autoUpdate is not true');
+    assert.equal(updateSelfCalled, false, 'updateSelf must NOT be called when autoUpdate is false');
     // Banner should still appear
     assert.ok(
       sink.buf.includes('▲ Update available'),
       'update banner must still appear even when autoUpdate is off',
     );
+  });
+
+  it('auto-update: runs when autoUpdate is absent (default-on)', async () => {
+    const calls: string[] = [];
+
+    const clock = makeFakeClock();
+    const store = makeStore(clock);
+    const ledger = makeFakeLedger();
+    const dir = join(tmpdir(), `menu-autoupdate-absent-${randomUUID()}`);
+    // autoUpdate is absent → defaults to true (enabled)
+    const config: AppConfig = { onboarded: true, setAsDefault: false };
+
+    const ctx: MenuContext = {
+      version: '2.0.0',
+      clock,
+      ledger,
+      providers: { claude: makeFakeProvider() },
+      env: FAKE_ENV,
+      store,
+      config,
+      cwd: dir,
+      sandbox: 'workspace-write',
+      timeoutMs: 5_000,
+      readLine: makeScriptedReader([]),
+      installProvider: async () => true,
+      login: async () => 0,
+      checkForUpdate: async (): Promise<UpdateCheckResult> => ({
+        current: '2.0.0',
+        latest: '3.0.0',
+        updateAvailable: true,
+      }),
+      updateSelf: async () => {
+        calls.push('updateSelf');
+        return true;
+      },
+      relaunch: async () => {
+        calls.push('relaunch');
+        return 0;
+      },
+    };
+
+    const sink = makeSink();
+    await assert.doesNotReject(
+      () => startMenu(ctx, sink),
+      'auto-update with absent autoUpdate (default-on) must not throw',
+    );
+
+    assert.ok(calls.includes('updateSelf'), 'updateSelf must be called when autoUpdate is absent (default-on)');
+    assert.ok(calls.includes('relaunch'), 'relaunch must be called after successful updateSelf');
+  });
+
+  it('auto-update: MYSHELL_NO_UPDATE env var prevents auto-update even when autoUpdate=true', async () => {
+    let updateSelfCalled = false;
+
+    const clock = makeFakeClock();
+    const store = makeStore(clock);
+    const ledger = makeFakeLedger();
+    const dir = join(tmpdir(), `menu-no-autoupdate-env-${randomUUID()}`);
+    const config: AppConfig = { onboarded: true, setAsDefault: false, autoUpdate: true };
+
+    const ctx: MenuContext = {
+      version: '2.0.0',
+      clock,
+      ledger,
+      providers: { claude: makeFakeProvider() },
+      env: FAKE_ENV,
+      store,
+      config,
+      cwd: dir,
+      sandbox: 'workspace-write',
+      timeoutMs: 5_000,
+      readLine: makeScriptedReader(['q']),
+      installProvider: async () => true,
+      login: async () => 0,
+      checkForUpdate: async (): Promise<UpdateCheckResult> => ({
+        current: '2.0.0',
+        latest: '3.0.0',
+        updateAvailable: true,
+      }),
+      updateSelf: async () => {
+        updateSelfCalled = true;
+        return true;
+      },
+    };
+
+    const origVal = process.env['MYSHELL_NO_UPDATE'];
+    process.env['MYSHELL_NO_UPDATE'] = '1';
+    try {
+      const sink = makeSink();
+      await startMenu(ctx, sink);
+
+      assert.equal(updateSelfCalled, false, 'updateSelf must NOT be called when MYSHELL_NO_UPDATE is set');
+      // Banner should still appear (notify-only mode)
+      assert.ok(
+        sink.buf.includes('▲ Update available'),
+        'update banner must still appear when auto-update is disabled via env',
+      );
+    } finally {
+      if (origVal !== undefined) {
+        process.env['MYSHELL_NO_UPDATE'] = origVal;
+      } else {
+        delete process.env['MYSHELL_NO_UPDATE'];
+      }
+    }
   });
 
   it('auto-update: prints the auto-update message before running', async () => {
@@ -2767,12 +2898,12 @@ describe('startMenu — update notifier: banner, [u], auto-update', () => {
     );
   });
 
-  it('[s] → [3] toggles autoUpdate from off to on', async () => {
+  it('[s] → [3] toggles autoUpdate and reports the new state', async () => {
     const sink = makeSink();
     const dir = join(tmpdir(), `menu-autoupdate-toggle-${randomUUID()}`);
 
-    // Override saveConfig to capture what is saved
-    // We test that "Auto-update: on" appears in the output after toggling
+    // makeCtx uses { onboarded: true, setAsDefault: false } with no explicit autoUpdate.
+    // autoUpdate is undefined → default-on. Pressing [3] toggles it OFF.
     const ctx = makeCtx({
       cwd: dir,
       readLine: makeScriptedReader(['s', '3', 'q']),  // enter settings → [3] toggle → quit
@@ -2783,9 +2914,9 @@ describe('startMenu — update notifier: banner, [u], auto-update', () => {
       'toggling auto-update should not throw',
     );
 
-    // After toggling from off (default) → on, the message "Auto-update: on" must appear
+    // Toggling from on (default) → off, the message "Auto-update: off" must appear
     assert.ok(
-      sink.buf.includes('Auto-update: on') || sink.buf.includes('auto-update'),
+      sink.buf.includes('Auto-update: off') || sink.buf.includes('auto-update'),
       'toggling must report the new auto-update state',
     );
   });
@@ -2832,7 +2963,7 @@ describe('startMenu — update notifier: banner, [u], auto-update', () => {
     );
   });
 
-  it('welcome wizard auto-update prompt uses (y/N) — default NO', async () => {
+  it('welcome wizard auto-update prompt uses (Y/n) — default YES', async () => {
     const clock = makeFakeClock();
     const store = makeStore(clock);
     const ledger = makeFakeLedger();
@@ -2849,6 +2980,8 @@ describe('startMenu — update notifier: banner, [u], auto-update', () => {
       cwd: dir,
       sandbox: 'workspace-write',
       timeoutMs: 5_000,
+      // The auto-update prompt is now (Y/n): pressing Enter accepts (yes).
+      // We answer 'n' explicitly to keep auto-update off for this test.
       readLine: makeScriptedReader(['n', 'n', '', 'n', 'n']),
       installProvider: async () => true,
       login: async () => 0,
@@ -2863,10 +2996,10 @@ describe('startMenu — update notifier: banner, [u], auto-update', () => {
     const sink = makeSink();
     await startMenu(ctx, sink);
 
-    // The auto-update prompt must use (y/N) convention — Enter → no
+    // The auto-update prompt must use (Y/n) convention — Enter → yes (recommended)
     assert.ok(
-      sink.buf.includes('(y/N)'),
-      'auto-update prompt must use (y/N) — default is NO',
+      sink.buf.includes('(Y/n)'),
+      'auto-update prompt must use (Y/n) — default is YES (recommended)',
     );
   });
 });
@@ -3115,5 +3248,95 @@ describe('startMenu — chat loop inline re-login on auth failure', () => {
     await startMenu(ctx, sink);
 
     assert.equal(loginSeamCalled, true, 'login seam must be called (not a real subprocess)');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// autoUpdateEnabled — pure helper unit tests
+// ---------------------------------------------------------------------------
+
+describe('autoUpdateEnabled', () => {
+  // ---- default-on behaviour (undefined = enabled) ---------------------------
+
+  it('returns true when config.autoUpdate is undefined and no env var', () => {
+    assert.equal(autoUpdateEnabled({}, {}), true);
+  });
+
+  it('returns true when config.autoUpdate is undefined (explicit)', () => {
+    assert.equal(autoUpdateEnabled({ autoUpdate: undefined }, {}), true);
+  });
+
+  it('returns true when config.autoUpdate is true and no env var', () => {
+    assert.equal(autoUpdateEnabled({ autoUpdate: true }, {}), true);
+  });
+
+  // ---- explicit opt-out via config ------------------------------------------
+
+  it('returns false when config.autoUpdate is false', () => {
+    assert.equal(autoUpdateEnabled({ autoUpdate: false }, {}), false);
+  });
+
+  it('returns false when config.autoUpdate is false even when env is empty', () => {
+    assert.equal(autoUpdateEnabled({ autoUpdate: false }, { MYSHELL_NO_UPDATE: '' }), false);
+  });
+
+  // ---- env-var opt-out (MYSHELL_NO_UPDATE) ----------------------------------
+
+  it('returns false when MYSHELL_NO_UPDATE is "1"', () => {
+    assert.equal(autoUpdateEnabled({ autoUpdate: true }, { MYSHELL_NO_UPDATE: '1' }), false);
+  });
+
+  it('returns false when MYSHELL_NO_UPDATE is "true"', () => {
+    assert.equal(autoUpdateEnabled({ autoUpdate: true }, { MYSHELL_NO_UPDATE: 'true' }), false);
+  });
+
+  it('returns false when MYSHELL_NO_UPDATE is any non-empty string', () => {
+    assert.equal(autoUpdateEnabled({ autoUpdate: true }, { MYSHELL_NO_UPDATE: 'yes' }), false);
+  });
+
+  it('returns false when MYSHELL_NO_UPDATE is set and config is undefined', () => {
+    assert.equal(autoUpdateEnabled({}, { MYSHELL_NO_UPDATE: '1' }), false);
+  });
+
+  it('env var wins over config.autoUpdate:true', () => {
+    assert.equal(autoUpdateEnabled({ autoUpdate: true }, { MYSHELL_NO_UPDATE: '1' }), false);
+  });
+
+  // ---- empty / absent env var does not disable ------------------------------
+
+  it('returns true when MYSHELL_NO_UPDATE is empty string', () => {
+    assert.equal(autoUpdateEnabled({ autoUpdate: true }, { MYSHELL_NO_UPDATE: '' }), true);
+  });
+
+  it('returns true when MYSHELL_NO_UPDATE is absent from env object', () => {
+    assert.equal(autoUpdateEnabled({ autoUpdate: true }, {}), true);
+  });
+
+  // ---- pure function properties ---------------------------------------------
+
+  it('never throws for any input combination', () => {
+    const configs: Array<{ autoUpdate?: boolean }> = [
+      {},
+      { autoUpdate: true },
+      { autoUpdate: false },
+      { autoUpdate: undefined },
+    ];
+    const envs: NodeJS.ProcessEnv[] = [
+      {},
+      { MYSHELL_NO_UPDATE: '1' },
+      { MYSHELL_NO_UPDATE: '' },
+      { MYSHELL_NO_UPDATE: undefined },
+    ];
+    for (const cfg of configs) {
+      for (const env of envs) {
+        assert.doesNotThrow(() => autoUpdateEnabled(cfg, env));
+      }
+    }
+  });
+
+  it('is pure — same inputs always produce same output', () => {
+    const a = autoUpdateEnabled({ autoUpdate: true }, {});
+    const b = autoUpdateEnabled({ autoUpdate: true }, {});
+    assert.equal(a, b);
   });
 });

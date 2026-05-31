@@ -145,6 +145,33 @@ export function parseYesNo(input: string | null, defaultYes: boolean): boolean {
 }
 
 /**
+ * Decide whether auto-update is enabled for this launch.
+ *
+ * Auto-update is considered ENABLED when:
+ *   - `config.autoUpdate` is `true` or `undefined` (absent = default-on), AND
+ *   - `env['MYSHELL_NO_UPDATE']` is not set (any non-empty value disables it).
+ *
+ * A user who explicitly set `autoUpdate: false` in their config keeps it off.
+ * Setting `MYSHELL_NO_UPDATE=1` (or any non-empty value) in the environment
+ * overrides even an explicit `autoUpdate: true`.
+ *
+ * Pure — no I/O, no side effects, never throws.
+ *
+ * @param config - The loaded AppConfig (only `autoUpdate` field is read).
+ * @param env    - A `NodeJS.ProcessEnv`-shaped object to read `MYSHELL_NO_UPDATE` from.
+ * @returns True when auto-update should run at launch.
+ */
+export function autoUpdateEnabled(
+  config: { autoUpdate?: boolean },
+  env: NodeJS.ProcessEnv,
+): boolean {
+  if (env['MYSHELL_NO_UPDATE'] !== undefined && env['MYSHELL_NO_UPDATE'].length > 0) {
+    return false;
+  }
+  return config.autoUpdate !== false;
+}
+
+/**
  * Return the shell alias hint the user can add to their shell profile to make
  * `myshell-tools` the default command-line assistant.
  *
@@ -525,16 +552,16 @@ async function runWelcome(
 
   const setAsDefault = parseYesNo(defaultAns, false);
 
-  // Default is NO for auto-update — require explicit 'y' to enable.
-  out.write('Keep myshell-tools up to date automatically? (y/N) ');
+  // Default is YES for auto-update (recommended; user can opt out with n or via Settings).
+  out.write('Keep myshell-tools up to date automatically? (Y/n) ');
   const autoUpdateAns = await readLine();
-  const autoUpdate = parseYesNo(autoUpdateAns, false);
+  const autoUpdate = parseYesNo(autoUpdateAns, true);
 
   const saved: AppConfig = {
     onboarded: true,
     setAsDefault,
     ...(updated.mode !== undefined ? { mode: updated.mode } : {}),
-    ...(autoUpdate ? { autoUpdate: true } : {}),
+    ...(!autoUpdate ? { autoUpdate: false } : {}),
   };
 
   await saveConfig(saved);
@@ -624,7 +651,7 @@ async function runSettings(
     '',
     `  [1] Mode: ${cfg.mode ?? 'balanced'}`,
     `  [2] Set as default shell: ${cfg.setAsDefault ? 'on' : 'off'}`,
-    `  [3] Auto-update: ${cfg.autoUpdate === true ? 'on' : 'off'}`,
+    `  [3] Auto-update: ${cfg.autoUpdate !== false ? 'on' : 'off'}`,
     '',
     '  [Enter] Back',
     '',
@@ -650,14 +677,20 @@ async function runSettings(
 /**
  * Toggle the auto-update preference and persist the updated config.
  * Reports the new state so the user knows what changed.
+ *
+ * Since auto-update now defaults to ON (undefined → enabled), toggling when
+ * currently enabled (true or undefined) sets it explicitly to false; toggling
+ * when currently disabled (false) removes the explicit flag (restores default-on).
  */
 async function toggleAutoUpdate(config: AppConfig, out: OutputSink): Promise<AppConfig> {
-  const enable = config.autoUpdate !== true;
+  // Currently enabled when autoUpdate !== false (undefined counts as on)
+  const currentlyEnabled = config.autoUpdate !== false;
+  const enable = !currentlyEnabled;
   const updated: AppConfig = {
     onboarded: config.onboarded,
     setAsDefault: config.setAsDefault,
     ...(config.mode !== undefined ? { mode: config.mode } : {}),
-    ...(enable ? { autoUpdate: true } : {}),
+    ...(!enable ? { autoUpdate: false } : {}),
   };
   await saveConfig(updated);
   out.write(`Auto-update: ${enable ? 'on' : 'off'}\n`);
@@ -1363,15 +1396,19 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
       updateInfo = await checkForUpdateFn().catch(() => undefined);
     }
 
-    // ---- Opt-in auto-update at launch ----------------------------------------
+    // ---- Auto-update at launch (default ON) ----------------------------------
     // Guard: only runs once; requires both the update and relaunch seams to be wired.
+    // Disabled when MYSHELL_NO_UPDATE is set in the environment or autoUpdate===false.
     if (
-      mutableCtx.config.autoUpdate === true &&
+      autoUpdateEnabled(mutableCtx.config, process.env) &&
       updateInfo?.updateAvailable === true &&
       updateInfo.latest !== null &&
       updateSelfFn !== undefined
     ) {
-      out.write(`▲ Auto-updating ${updateInfo.current} → ${updateInfo.latest}…\n`);
+      out.write(
+        `▲ Auto-updating ${updateInfo.current} → ${updateInfo.latest}…` +
+        `  (disable: Settings → Auto-update, or MYSHELL_NO_UPDATE=1)\n`,
+      );
       const ok = await updateSelfFn(out).catch(() => false);
       if (ok) {
         if (relaunchFn !== undefined) {
