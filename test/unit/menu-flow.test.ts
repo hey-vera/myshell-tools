@@ -896,7 +896,7 @@ describe('startMenu — first-run welcome: install prompt for missing provider',
     // claude missing → install prompt → n (skip)
     // opencode optional prompt → n (skip)
     // codex missing sign-in prompt → none (codex is authed in FAKE_ENV_CLAUDE_MISSING)
-    // mode/continue → '' (Enter)
+    // mode → '' (Enter = balanced default)
     // default shell → n
     // auto-update → n
     const ctx = makeFirstRunCtx(['n', 'n', '', 'n', 'n']);
@@ -1033,7 +1033,7 @@ describe('startMenu — first-run welcome: install prompt for missing provider',
 
     // No install prompts (both installed); opencode optional prompt → n
     // Sign-in prompts for both → answer n to avoid spawn
-    // Then mode/continue → '' (Enter); default shell → n; auto-update → n
+    // Then mode → '' (Enter = balanced default); default shell → n; auto-update → n
     const ctx = makeFirstRunCtx(['n', 'n', 'n', '', 'n', 'n'], envBothUnauthenticated);
 
     await assert.doesNotReject(
@@ -1044,6 +1044,134 @@ describe('startMenu — first-run welcome: install prompt for missing provider',
     assert.ok(
       sink.buf.toLowerCase().includes('sign in'),
       'sign-in prompt must appear for unauthenticated providers',
+    );
+  });
+
+  // ---- Orientation header --------------------------------------------------
+
+  it('shows orientation header at the start of the welcome flow', async () => {
+    const sink = makeSink();
+    const ctx = makeFirstRunCtx(['n', 'n', '', 'n', 'n']);
+
+    await startMenu(ctx, sink);
+
+    assert.ok(
+      sink.buf.includes('Quick setup'),
+      'orientation header must include "Quick setup"',
+    );
+    assert.ok(
+      sink.buf.includes('~30 seconds'),
+      'orientation header must mention ~30 seconds',
+    );
+    assert.ok(
+      sink.buf.includes('Enter'),
+      'orientation header must mention Enter key for defaults',
+    );
+  });
+
+  it('orientation header mentions the [Capitalized] default convention', async () => {
+    const sink = makeSink();
+    const ctx = makeFirstRunCtx(['n', 'n', '', 'n', 'n']);
+
+    await startMenu(ctx, sink);
+
+    // The header must reference the capitalized-default convention
+    assert.ok(
+      sink.buf.includes('Capitalized') || sink.buf.includes('capitalized'),
+      'orientation header must reference the [Capitalized] default convention',
+    );
+  });
+
+  // ---- Collapsed single mode prompt ----------------------------------------
+
+  it('shows the single mode prompt with all three modes inline', async () => {
+    const sink = makeSink();
+    const ctx = makeFirstRunCtx(['n', 'n', '', 'n', 'n']);
+
+    await startMenu(ctx, sink);
+
+    // The single collapsed prompt must list all three modes and a default
+    assert.ok(
+      sink.buf.includes('cost-saver'),
+      'mode prompt must mention cost-saver',
+    );
+    assert.ok(
+      sink.buf.includes('balanced'),
+      'mode prompt must mention balanced',
+    );
+    assert.ok(
+      sink.buf.includes('quality-first'),
+      'mode prompt must mention quality-first',
+    );
+    assert.ok(
+      sink.buf.includes('Enter = balanced'),
+      'mode prompt must show Enter = balanced default',
+    );
+  });
+
+  it('does NOT show the old two-step [c] Customize mode prompt', async () => {
+    const sink = makeSink();
+    const ctx = makeFirstRunCtx(['n', 'n', '', 'n', 'n']);
+
+    await startMenu(ctx, sink);
+
+    // The old two-step gateway must be gone
+    assert.ok(
+      !sink.buf.includes('[c]     Customize mode'),
+      'old [c] Customize mode gateway must not appear in the welcome flow',
+    );
+    assert.ok(
+      !sink.buf.includes('[Enter] Continue'),
+      'old [Enter] Continue gateway must not appear in the welcome flow',
+    );
+  });
+
+  it('answering 1 to mode prompt sets cost-saver mode (config is saved)', async () => {
+    const sink = makeSink();
+    // n → skip opencode; '1' → mode cost-saver; n → set-default; n → auto-update; q → quit
+    const ctx = makeFirstRunCtx(['n', '1', 'n', 'n', 'q']);
+
+    await assert.doesNotReject(
+      () => startMenu(ctx, sink),
+      'answering 1 to mode prompt should not throw',
+    );
+
+    // Flow must reach the main menu (mode was accepted)
+    assert.ok(
+      sink.buf.includes('myshell-tools'),
+      'main menu must be rendered after mode selection',
+    );
+  });
+
+  it('answering 3 to mode prompt sets quality-first mode', async () => {
+    const sink = makeSink();
+    // n → skip opencode; '3' → mode quality-first; n → set-default; n → auto-update; q → quit
+    const ctx = makeFirstRunCtx(['n', '3', 'n', 'n', 'q']);
+
+    await assert.doesNotReject(
+      () => startMenu(ctx, sink),
+      'answering 3 to mode prompt should not throw',
+    );
+
+    assert.ok(
+      sink.buf.includes('myshell-tools'),
+      'main menu must be rendered after quality-first mode selection',
+    );
+  });
+
+  it('Enter (empty) on mode prompt keeps balanced default and proceeds', async () => {
+    const sink = makeSink();
+    // n → skip opencode; '' → mode Enter = balanced; n → set-default; n → auto-update; q → quit
+    const ctx = makeFirstRunCtx(['n', '', 'n', 'n', 'q']);
+
+    await assert.doesNotReject(
+      () => startMenu(ctx, sink),
+      'Enter on mode prompt should not throw',
+    );
+
+    assert.ok(
+      sink.buf.includes('myshell-tools'),
+      'main menu must be rendered after Enter on mode prompt',
     );
   });
 });
@@ -1146,7 +1274,7 @@ describe('startMenu — first-run welcome: opencode onboarding prompt', () => {
 
   it('shows opencode optional prompt when opencode is not installed', async () => {
     const sink = makeSink();
-    // No install prompts (both installed); opencode prompt → n; mode → ''; set-default → n; auto-update → n; quit
+    // No install prompts (both installed); opencode prompt → n; mode → '' (Enter = balanced); set-default → n; auto-update → n; quit
     const ctx = makeOpencodeOnboardCtx(['n', '', 'n', 'n', 'q']);
 
     await assert.doesNotReject(
@@ -1178,6 +1306,7 @@ describe('startMenu — first-run welcome: opencode onboarding prompt', () => {
 
   it('answering n to opencode prompt skips install — installProvider NOT called with opencode', async () => {
     const installedIds: string[] = [];
+    // opencode → n; mode → '' (Enter = balanced); set-default → n; auto-update → n; quit
     const ctx = makeOpencodeOnboardCtx(['n', '', 'n', 'n', 'q'], (id) => { installedIds.push(id); });
     const sink = makeSink();
 
@@ -1191,7 +1320,7 @@ describe('startMenu — first-run welcome: opencode onboarding prompt', () => {
 
   it('answering y to opencode prompt calls installProvider with "opencode"', async () => {
     const installedIds: string[] = [];
-    // 'y' → install opencode; '' → mode/continue; 'n' → set-as-default; 'n' → auto-update; 'q' → main menu
+    // 'y' → install opencode; '' → mode (Enter = balanced); 'n' → set-as-default; 'n' → auto-update; 'q' → main menu
     const ctx = makeOpencodeOnboardCtx(
       ['y', '', 'n', 'n', 'q'],
       (id) => { installedIds.push(id); },
@@ -1211,7 +1340,7 @@ describe('startMenu — first-run welcome: opencode onboarding prompt', () => {
 
   it('answering y triggers re-detect via injected detectEnvironment', async () => {
     let detectCallCount = 0;
-    // 'y' → install opencode; '' → mode; 'n' → set-default; 'n' → auto-update; 'q' → quit
+    // 'y' → install opencode; '' → mode (Enter = balanced); 'n' → set-default; 'n' → auto-update; 'q' → quit
     const ctx = makeOpencodeOnboardCtx(
       ['y', '', 'n', 'n', 'q'],
       undefined,
@@ -1231,7 +1360,7 @@ describe('startMenu — first-run welcome: opencode onboarding prompt', () => {
 
   it('no opencode sign-in prompt during onboarding (opencode is auth-when-installed)', async () => {
     const sink = makeSink();
-    // 'y' → install opencode; '' → mode; 'n' → set-default; 'n' → auto-update; 'q' → quit
+    // 'y' → install opencode; '' → mode (Enter = balanced); 'n' → set-default; 'n' → auto-update; 'q' → quit
     // detectEnvironment returns ENV_WITH_OPENCODE (authenticated: true)
     // So after install, no sign-in prompt should appear for opencode
     const ctx = makeOpencodeOnboardCtx(['y', '', 'n', 'n', 'q']);
@@ -1269,7 +1398,7 @@ describe('startMenu — first-run welcome: opencode onboarding prompt', () => {
       cwd: dir,
       sandbox: 'workspace-write',
       timeoutMs: 5_000,
-      // No opencode prompt → mode/continue; set-as-default; auto-update; quit main menu
+      // No opencode prompt → mode (Enter = balanced); set-as-default; auto-update; quit main menu
       readLine: makeScriptedReader(['', 'n', 'n', 'q']),
       installProvider: async () => true,
       login: async () => 0,
@@ -1680,7 +1809,7 @@ describe('startMenu — first-run welcome: y to set-as-default writes the shell 
     const config: AppConfig = { onboarded: false, setAsDefault: false };
 
     // Both providers installed+authed → no install or sign-in prompts appear in
-    // the welcome flow. The only prompts are mode [c/Enter] and set-as-default (y/n).
+    // the welcome flow. The only prompts are mode (single inline prompt) and set-as-default (y/n).
     // Fakes are still injected defensively so no real subprocess can ever be spawned.
     return {
       version: '2.0.0',
@@ -1758,7 +1887,7 @@ describe('startMenu — first-run welcome: y to set-as-default writes the shell 
     await withTempHome(tempHome, async () => {
       const sink = makeSink();
       // FAKE_ENV has both providers installed+authed → no install/login prompts.
-      // Welcome flow: n (skip opencode) → Enter (skip customize) → y (set as default) → n (auto-update) → q (main menu)
+      // Welcome flow: n (skip opencode) → '' (mode Enter = balanced) → y (set as default) → n (auto-update) → q (main menu)
       const ctx = makeInstallCtx(['n', '', 'y', 'n', 'q'], tempHome);
 
       await assert.doesNotReject(
@@ -1811,6 +1940,7 @@ describe('startMenu — first-run welcome: y to set-as-default writes the shell 
 
     await withTempHome(tempHome, async () => {
       const sink = makeSink();
+      // n → skip opencode; '' → mode (Enter = balanced); n → skip set-as-default; n → auto-update; q → quit
       const ctx = makeInstallCtx(['n', '', 'n', 'n', 'q'], tempHome);
 
       await startMenu(ctx, sink);
@@ -1921,7 +2051,7 @@ describe('startMenu — first-run: post-onboarding env refresh (BUG 1)', () => {
 
     // Welcome flow for STALE_ENV: codex not installed (install prompt → y), opencode not installed
     // (opencode prompt → n), claude installed but unauthenticated (no sign-in prompt in FRESH_ENV
-    // since FRESH_ENV has claude authenticated). Mode → Enter, default shell → n. Then main menu → q.
+    // since FRESH_ENV has claude authenticated). Mode → Enter (balanced), default shell → n. Then main menu → q.
     const ctx: MenuContext = {
       version: '2.0.0',
       clock,
@@ -1984,7 +2114,7 @@ describe('startMenu — first-run: post-onboarding env refresh (BUG 1)', () => {
       cwd: dir,
       sandbox: 'workspace-write',
       timeoutMs: 5_000,
-      // 'y' → install codex; 'n' → skip opencode; '' → mode/continue; 'n' → set-as-default; 'n' → auto-update; 'q' → main menu quit
+      // 'y' → install codex; 'n' → skip opencode; '' → mode (Enter = balanced); 'n' → set-as-default; 'n' → auto-update; 'q' → main menu quit
       readLine: makeScriptedReader(['y', 'n', '', 'n', 'n', 'q']),
       installProvider: async () => true,
       login: async () => 0,
@@ -2930,7 +3060,7 @@ describe('startMenu — update notifier: banner, [u], auto-update', () => {
     const ledger = makeFakeLedger();
     const dir = join(tmpdir(), `menu-wizard-au-${randomUUID()}`);
     const config: AppConfig = { onboarded: false, setAsDefault: false };
-    // Both providers installed+authed: no install prompts; opencode prompt → n; mode → ''; set-default → n; auto-update → n
+    // Both providers installed+authed: no install prompts; opencode prompt → n; mode → '' (Enter = balanced); set-default → n; auto-update → n
     const ctx: MenuContext = {
       version: '2.0.0',
       clock,

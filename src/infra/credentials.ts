@@ -5,9 +5,11 @@
  * shape `{ claudeOauthToken?: string }` so the Claude OAuth token captured
  * during `myshell-tools login claude --code` is available across restarts.
  *
- * On startup, `applyStoredCredentials` injects the token into `process.env` so
- * that both the provider detection (`claude auth status`) and the spawned
- * `claude -p …` child process see it via the inherited environment.
+ * Token scoping: instead of injecting the token into the global `process.env`
+ * at startup (which would expose it to every child process), callers use
+ * `loadClaudeToken()` + `claudeEnv()` to build a scoped env object that is
+ * passed only to Claude CLI invocations.  Other providers (codex, opencode,
+ * npm) never see the token.
  *
  * Security: the file is written with mode 0o600 (owner-read-only) on POSIX
  * systems. The chmod is best-effort — a failure is silently ignored so the
@@ -79,6 +81,53 @@ export async function loadCredentials(homeDir?: string): Promise<Credentials> {
   } catch {
     return {};
   }
+}
+
+/**
+ * Load the stored Claude OAuth token. Returns `null` when no token is stored
+ * or when the credentials file is missing/corrupt. Never throws.
+ *
+ * This is a thin convenience wrapper over `loadCredentials` that returns the
+ * token string directly so callers don't need to destructure `Credentials`.
+ */
+export async function loadClaudeToken(homeDir?: string): Promise<string | null> {
+  try {
+    const creds = await loadCredentials(homeDir);
+    return creds.claudeOauthToken ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Build a child-process environment that injects the Claude OAuth token into
+ * ONLY the `CLAUDE_CODE_OAUTH_TOKEN` variable, leaving all other variables
+ * from `baseEnv` intact.
+ *
+ * Rules (pure — no I/O):
+ *  - Returns `baseEnv` unchanged when `token` is `null` (nothing stored).
+ *  - Returns `baseEnv` unchanged when `baseEnv.CLAUDE_CODE_OAUTH_TOKEN` is
+ *    already set — the user's explicitly-exported value always wins.
+ *  - Otherwise returns `{ ...baseEnv, CLAUDE_CODE_OAUTH_TOKEN: token }`.
+ *
+ * Pass the result as the `env` option to execa for Claude CLI spawns only.
+ * Never pass it to codex/opencode/npm children — they do not need it and
+ * should not see the token.
+ *
+ * Pure / never throws.
+ */
+export function claudeEnv(
+  baseEnv: NodeJS.ProcessEnv,
+  token: string | null,
+): NodeJS.ProcessEnv {
+  if (token === null) {
+    return baseEnv;
+  }
+  if (baseEnv['CLAUDE_CODE_OAUTH_TOKEN'] !== undefined) {
+    // User's explicitly-exported env wins — do not overwrite.
+    return baseEnv;
+  }
+  return { ...baseEnv, CLAUDE_CODE_OAUTH_TOKEN: token };
 }
 
 /**

@@ -16,6 +16,7 @@
  */
 
 import { execa } from 'execa';
+import { loadClaudeToken, claudeEnv } from '../infra/credentials.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -172,10 +173,22 @@ export async function detectProvider(
   id: 'claude' | 'codex' | 'opencode',
 ): Promise<ProviderStatus> {
   if (id === 'claude') {
+    // Load the stored token once so both the version probe and the auth probe
+    // see it — but never inject it into the global process.env.
+    // Fall back to process.env unchanged if loading fails.
+    let claudeChildEnv: NodeJS.ProcessEnv = process.env;
+    try {
+      const token = await loadClaudeToken();
+      claudeChildEnv = claudeEnv(process.env, token);
+    } catch {
+      // Never throw — detection must be robust
+    }
+
     try {
       const result = await execa('claude', ['--version'], {
         reject: false,
         timeout: 10_000,
+        env: claudeChildEnv,
       });
 
       if (result.exitCode === 0) {
@@ -187,6 +200,7 @@ export async function detectProvider(
           const authResult = await execa('claude', ['auth', 'status'], {
             reject: false,
             timeout: 10_000,
+            env: claudeChildEnv,
           });
           const parsed = parseClaudeAuth(
             typeof authResult.stdout === 'string' ? authResult.stdout : '',

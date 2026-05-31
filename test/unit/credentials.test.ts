@@ -15,6 +15,8 @@ import { randomUUID } from 'node:crypto';
 
 import {
   loadCredentials,
+  loadClaudeToken,
+  claudeEnv,
   saveClaudeToken,
   clearClaudeToken,
   applyStoredCredentials,
@@ -22,6 +24,149 @@ import {
   stripPastedSecretWrapper,
   classifyPastedSecret,
 } from '../../src/infra/credentials.ts';
+
+// ---------------------------------------------------------------------------
+// claudeEnv — pure helper (no I/O)
+// ---------------------------------------------------------------------------
+
+describe('claudeEnv — returns baseEnv unchanged when token is null', () => {
+  it('returns the exact same object reference when token is null', () => {
+    const base: NodeJS.ProcessEnv = { PATH: '/usr/bin' };
+    const result = claudeEnv(base, null);
+    assert.strictEqual(result, base);
+  });
+
+  it('does not add CLAUDE_CODE_OAUTH_TOKEN when token is null', () => {
+    const base: NodeJS.ProcessEnv = {};
+    const result = claudeEnv(base, null);
+    assert.equal(result['CLAUDE_CODE_OAUTH_TOKEN'], undefined);
+  });
+});
+
+describe('claudeEnv — returns baseEnv unchanged when token already set in env', () => {
+  it('returns the exact same object reference when CLAUDE_CODE_OAUTH_TOKEN is set', () => {
+    const base: NodeJS.ProcessEnv = { CLAUDE_CODE_OAUTH_TOKEN: 'existing-value' };
+    const result = claudeEnv(base, 'new-token');
+    assert.strictEqual(result, base);
+  });
+
+  it('does NOT overwrite the user-exported env value', () => {
+    const base: NodeJS.ProcessEnv = { CLAUDE_CODE_OAUTH_TOKEN: 'user-value' };
+    const result = claudeEnv(base, 'stored-token');
+    assert.equal(result['CLAUDE_CODE_OAUTH_TOKEN'], 'user-value');
+  });
+});
+
+describe('claudeEnv — injects token when token is non-null and env has no existing value', () => {
+  it('returns a new object (not the same reference)', () => {
+    const base: NodeJS.ProcessEnv = { PATH: '/usr/bin' };
+    const result = claudeEnv(base, 'sk-ant-oat01-test-TOKEN');
+    assert.notStrictEqual(result, base);
+  });
+
+  it('injects CLAUDE_CODE_OAUTH_TOKEN into the returned env', () => {
+    const base: NodeJS.ProcessEnv = { PATH: '/usr/bin' };
+    const result = claudeEnv(base, 'sk-ant-oat01-test-TOKEN');
+    assert.equal(result['CLAUDE_CODE_OAUTH_TOKEN'], 'sk-ant-oat01-test-TOKEN');
+  });
+
+  it('preserves all other keys from baseEnv', () => {
+    const base: NodeJS.ProcessEnv = { PATH: '/usr/bin', HOME: '/home/user', FOO: 'bar' };
+    const result = claudeEnv(base, 'sk-ant-oat01-test-TOKEN');
+    assert.equal(result['PATH'], '/usr/bin');
+    assert.equal(result['HOME'], '/home/user');
+    assert.equal(result['FOO'], 'bar');
+  });
+
+  it('does not mutate the original baseEnv', () => {
+    const base: NodeJS.ProcessEnv = { PATH: '/usr/bin' };
+    claudeEnv(base, 'sk-ant-oat01-test-TOKEN');
+    assert.equal(base['CLAUDE_CODE_OAUTH_TOKEN'], undefined);
+  });
+
+  it('works with an empty baseEnv', () => {
+    const result = claudeEnv({}, 'sk-ant-oat01-empty-base-TOKEN');
+    assert.equal(result['CLAUDE_CODE_OAUTH_TOKEN'], 'sk-ant-oat01-empty-base-TOKEN');
+  });
+});
+
+describe('claudeEnv — pure (never throws)', () => {
+  it('does not throw when token is null', () => {
+    assert.doesNotThrow(() => claudeEnv({}, null));
+  });
+
+  it('does not throw when token is non-null and env is empty', () => {
+    assert.doesNotThrow(() => claudeEnv({}, 'sk-ant-oat01-test-TOKEN'));
+  });
+
+  it('does not throw when CLAUDE_CODE_OAUTH_TOKEN is already set', () => {
+    assert.doesNotThrow(() =>
+      claudeEnv({ CLAUDE_CODE_OAUTH_TOKEN: 'existing' }, 'sk-ant-oat01-new-TOKEN'),
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// loadClaudeToken — async wrapper around loadCredentials
+// ---------------------------------------------------------------------------
+
+describe('loadClaudeToken — returns null when no token is stored', () => {
+  let homeDir: string;
+
+  before(async () => {
+    homeDir = await mkdtemp(join(tmpdir(), `creds-lct-missing-${randomUUID()}-`));
+  });
+
+  after(async () => {
+    await rm(homeDir, { recursive: true, force: true });
+  });
+
+  it('returns null when credentials file does not exist', async () => {
+    const token = await loadClaudeToken(homeDir);
+    assert.equal(token, null);
+  });
+
+  it('does not throw when credentials file is missing', async () => {
+    await assert.doesNotReject(() => loadClaudeToken(homeDir));
+  });
+});
+
+describe('loadClaudeToken — returns stored token', () => {
+  let homeDir: string;
+
+  before(async () => {
+    homeDir = await mkdtemp(join(tmpdir(), `creds-lct-saved-${randomUUID()}-`));
+    await saveClaudeToken('sk-ant-oat01-load-TOKEN', homeDir);
+  });
+
+  after(async () => {
+    await rm(homeDir, { recursive: true, force: true });
+  });
+
+  it('returns the stored token string', async () => {
+    const token = await loadClaudeToken(homeDir);
+    assert.equal(token, 'sk-ant-oat01-load-TOKEN');
+  });
+});
+
+describe('loadClaudeToken — returns null after clearClaudeToken', () => {
+  let homeDir: string;
+
+  before(async () => {
+    homeDir = await mkdtemp(join(tmpdir(), `creds-lct-clear-${randomUUID()}-`));
+    await saveClaudeToken('sk-ant-oat01-to-clear-TOKEN', homeDir);
+    await clearClaudeToken(homeDir);
+  });
+
+  after(async () => {
+    await rm(homeDir, { recursive: true, force: true });
+  });
+
+  it('returns null after token is cleared', async () => {
+    const token = await loadClaudeToken(homeDir);
+    assert.equal(token, null);
+  });
+});
 
 // ---------------------------------------------------------------------------
 // extractClaudeToken — pure helper (no I/O)

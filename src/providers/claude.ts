@@ -32,6 +32,7 @@ import type { ProviderStatus } from './detect.js';
 import { detectProvider } from './detect.js';
 import { classifyError } from './errors.js';
 import { parseClaudeLine } from './claude-parse.js';
+import { loadClaudeToken, claudeEnv } from '../infra/credentials.js';
 
 // ---------------------------------------------------------------------------
 // Model alias mapping
@@ -82,6 +83,16 @@ export function createClaudeProvider(opts?: { bin?: string }): Provider {
         toClaudeModelArg(req.model),
       ];
 
+      // Load the stored Claude OAuth token and scope it to this child process
+      // only — never written into the global process.env.
+      let childEnv: NodeJS.ProcessEnv = process.env;
+      try {
+        const token = await loadClaudeToken();
+        childEnv = claudeEnv(process.env, token);
+      } catch {
+        // Never throw — fall back to the unmodified env
+      }
+
       // Spawn with reject:false so we always get the result object (never throws).
       // cancelSignal wires our AbortSignal directly to execa's termination path.
       const subprocess = execa(bin, args, {
@@ -90,6 +101,7 @@ export function createClaudeProvider(opts?: { bin?: string }): Provider {
         cancelSignal: signal,
         timeout: req.timeoutMs,
         reject: false,
+        env: childEnv,
       });
 
       let emittedTerminal = false;

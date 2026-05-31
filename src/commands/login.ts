@@ -33,6 +33,7 @@ import type { OutputSink } from '../interface/render.js';
 import type { ProviderId } from '../providers/port.js';
 import { detectProvider, getInstallCommand } from '../providers/detect.js';
 import { bold, dim, green, red, yellow } from '../ui/theme.js';
+import { parseYesNo } from '../interface/menu.js';
 import {
   classifyPastedSecret,
   extractClaudeToken,
@@ -144,6 +145,62 @@ export function resolveLoginMethod(
 }
 
 /**
+ * Decide whether to retry a failed browser sign-in using the code method,
+ * based on the user's answer to the interactive prompt.
+ *
+ * Wraps {@link parseYesNo} with `defaultYes=true` (pressing Enter accepts the
+ * retry). Pure / hermetically testable.
+ *
+ * @param answer - Raw line from readLine(), or null on EOF.
+ * @returns True if the code method should be retried; false if not.
+ */
+export function shouldRetryWithCode(answer: string | null): boolean {
+  return parseYesNo(answer, true);
+}
+
+/**
+ * Run the code sign-in method for a single provider.
+ *
+ * Factored out so both the initial `--code` path and the browser-fail retry
+ * path can invoke it without duplicating the spawn + paste-capture logic.
+ * Never throws.
+ */
+async function runCodeMethodForProvider(
+  out: OutputSink,
+  id: ProviderId,
+  readLine?: () => Promise<string | null>,
+): Promise<void> {
+  const { bin, args, guidance } = LOGIN_CODE_COMMAND[id];
+  out.write(bold(`\nSigning in to ${id} — code method (no localhost needed).\n`, out.color));
+  out.write(dim(guidance + '\n', out.color));
+  const result = await execa(bin, [...args], { stdin: 'inherit', stdout: 'inherit', stderr: 'inherit', reject: false });
+
+  if (result.exitCode === 0) {
+    if (id === 'claude') {
+      // `claude setup-token` ran with inherited stdio (so the native animation
+      // rendered cleanly). Now prompt the user to paste the token it printed.
+      // captureClaudeTokenWithPaste reports its own success/failure messages.
+      await captureClaudeTokenWithPaste(out, readLine);
+    } else {
+      out.write(green(`✓ ${id} sign-in complete.\n`, out.color));
+    }
+  } else {
+    if (id === 'claude') {
+      out.write(
+        red(
+          `✗ claude setup-token did not complete (exit ${result.exitCode ?? 'unknown'}). Run it manually: claude setup-token\n`,
+          out.color,
+        ),
+      );
+    } else {
+      out.write(
+        red(`✗ ${id} sign-in did not complete (exit ${result.exitCode ?? 'unknown'}).\n`, out.color),
+      );
+    }
+  }
+}
+
+/**
  * Run the interactive sign-in flow for one provider (or all installed providers
  * when no argument is given). Returns 0 on success, 1 only for an invalid
  * argument — individual sign-in failures are reported but do not fail the command.
@@ -181,50 +238,43 @@ export async function runLogin(
       continue;
     }
 
-    // stdio:'inherit' hands the terminal to the provider CLI so its OAuth /
-    // device / paste flow runs in place. reject:false so we report rather than throw.
-    let result;
-
-    if (method === 'code' && id === 'claude') {
-      const { bin, args, guidance } = LOGIN_CODE_COMMAND[id];
-      out.write(bold(`\nSigning in to ${id} — code method (no localhost needed).\n`, out.color));
-      out.write(dim(guidance + '\n', out.color));
-      result = await execa(bin, [...args], { stdin: 'inherit', stdout: 'inherit', stderr: 'inherit', reject: false });
-    } else if (method === 'code') {
-      const { bin, args, guidance } = LOGIN_CODE_COMMAND[id];
-      out.write(bold(`\nSigning in to ${id} — code method (no localhost needed).\n`, out.color));
-      out.write(dim(guidance + '\n', out.color));
-      result = await execa(bin, [...args], { stdin: 'inherit', stdout: 'inherit', stderr: 'inherit', reject: false });
+    if (method === 'code') {
+      // stdio:'inherit' hands the terminal to the provider CLI so its OAuth /
+      // device / paste flow runs in place.
+      await runCodeMethodForProvider(out, id, opts?.readLine);
     } else {
+      // Browser method
       const { bin, args } = LOGIN_COMMAND[id];
       out.write(bold(`\nSigning in to ${id} — a browser window may open…\n`, out.color));
-      result = await execa(bin, [...args], { stdin: 'inherit', stdout: 'inherit', stderr: 'inherit', reject: false });
-    }
+      const result = await execa(bin, [...args], { stdin: 'inherit', stdout: 'inherit', stderr: 'inherit', reject: false });
 
-    if (result.exitCode === 0) {
-      if (id === 'claude' && method === 'code') {
-        // `claude setup-token` ran with inherited stdio (so the native animation
-        // rendered cleanly). Now prompt the user to paste the token it printed.
-        // captureClaudeTokenWithPaste reports its own success/failure messages.
-        await captureClaudeTokenWithPaste(out, opts?.readLine);
-      } else {
+      if (result.exitCode === 0) {
         out.write(green(`✓ ${id} sign-in complete.\n`, out.color));
-      }
-    } else {
-      if (id === 'claude' && method === 'code') {
-        out.write(
-          red(
-            `✗ claude setup-token did not complete (exit ${result.exitCode ?? 'unknown'}). Run it manually: claude setup-token\n`,
-            out.color,
-          ),
-        );
       } else {
         out.write(
           red(`✗ ${id} sign-in did not complete (exit ${result.exitCode ?? 'unknown'}).\n`, out.color),
         );
-        // The classic container failure mode is a dead localhost callback. Point
-        // the user at the code method, which sidesteps localhost entirely.
-        if (method === 'browser') {
+        // The classic container failure mode is a dead localhost callback.
+        // When an interactive readline is available, offer to immediately retry
+        // using the no-localhost code method. Otherwise print the manual hint.
+        if (opts?.readLine !== undefined) {
+          out.write(
+            `Browser sign-in failed. Try the no-localhost code method now? (Y/n) `,
+          );
+          const ans = await opts.readLine();
+          if (shouldRetryWithCode(ans)) {
+            await runCodeMethodForProvider(out, id, opts.readLine);
+          } else {
+            out.write(
+              dim(
+                `If the browser/localhost step failed, try the code method instead:\n` +
+                  `  myshell-tools login ${id} --code\n`,
+                out.color,
+              ),
+            );
+          }
+        } else {
+          // Non-interactive path: print the hint as before.
           out.write(
             dim(
               `If the browser/localhost step failed, try the code method instead:\n` +

@@ -460,6 +460,9 @@ async function runWelcome(
   const headerLines = renderHeaderLines(env, ctx.version);
   out.write('\n' + box(`🧠 myshell-tools v${ctx.version} — Setup`, headerLines) + '\n\n');
 
+  // ---- Orientation header --------------------------------------------------
+  out.write('Quick setup — a few questions, ~30 seconds. Press Enter to accept the [Capitalized] default.\n\n');
+
   // ---- Offer to install any missing provider (claude / codex) --------------
   // Consent is required: we ask once per missing provider.
   // Display: (Y/n) — default YES, so Enter installs; explicit n skips.
@@ -522,15 +525,13 @@ async function runWelcome(
     }
   }
 
-  // ---- Mode / default-shell options ----------------------------------------
-  out.write('\n');
-  out.write('  [c]     Customize mode\n');
-  out.write('  [Enter] Continue\n\n');
-  out.write('> ');
-  const key = await readLine();
+  // ---- Mode selection — single collapsed prompt ----------------------------
+  // Accepts 1/2/3 directly; Enter (or empty) keeps current default (balanced).
+  out.write('\nMode — [1] cost-saver  [2] balanced (default)  [3] quality-first  (Enter = balanced): ');
+  const modeKey = await readLine();
 
   // EOF during setup — save bare onboarded config and return
-  if (key === null) {
+  if (modeKey === null) {
     const saved: AppConfig = {
       onboarded: true,
       setAsDefault: false,
@@ -540,12 +541,17 @@ async function runWelcome(
     return saved;
   }
 
-  let updated = mutableConfig;
+  let newMode = mutableConfig.mode;
+  if (modeKey === '1') newMode = 'cost-saver';
+  else if (modeKey === '2') newMode = 'balanced';
+  else if (modeKey === '3') newMode = 'quality-first';
+  // Enter/empty/anything else → keep current (balanced default)
 
-  if (key === 'c') {
-    updated = await runModeSelect(updated, out, readLine);
-  }
-  // [Enter] or anything else → fall through to save & go
+  const updated: AppConfig = {
+    onboarded: mutableConfig.onboarded,
+    setAsDefault: mutableConfig.setAsDefault,
+    ...(newMode !== undefined ? { mode: newMode } : {}),
+  };
 
   // Default is NO for set-as-default — require explicit 'y' to enable.
   out.write('Set myshell-tools as your default shell tool? (y/N) ');

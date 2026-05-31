@@ -13,7 +13,7 @@
 
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { isProviderId, isHeadlessEnv, resolveLoginMethod, runLogin } from '../../src/commands/login.ts';
+import { isProviderId, isHeadlessEnv, resolveLoginMethod, shouldRetryWithCode, runLogin } from '../../src/commands/login.ts';
 import { extractClaudeToken, stripPastedSecretWrapper, classifyPastedSecret } from '../../src/infra/credentials.ts';
 
 describe('isProviderId', () => {
@@ -111,6 +111,57 @@ describe('resolveLoginMethod — explicit method overrides detection', () => {
 
   it('auto-detects "browser" on linux when DISPLAY is set', () => {
     assert.equal(resolveLoginMethod(undefined, { DISPLAY: ':0' }, 'linux'), 'browser');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// shouldRetryWithCode — pure seam for the browser-fail → code-retry decision
+// ---------------------------------------------------------------------------
+
+describe('shouldRetryWithCode — browser-fail retry decision (pure, hermetic)', () => {
+  it('returns true on "y" (explicit yes)', () => {
+    assert.equal(shouldRetryWithCode('y'), true);
+  });
+
+  it('returns true on "Y"', () => {
+    assert.equal(shouldRetryWithCode('Y'), true);
+  });
+
+  it('returns true on "yes"', () => {
+    assert.equal(shouldRetryWithCode('yes'), true);
+  });
+
+  it('returns true on empty string (defaultYes=true — Enter accepts retry)', () => {
+    assert.equal(shouldRetryWithCode(''), true);
+  });
+
+  it('returns true on whitespace-only input (treated as empty)', () => {
+    assert.equal(shouldRetryWithCode('   '), true);
+  });
+
+  it('returns true on null (EOF / stream closed — default yes)', () => {
+    assert.equal(shouldRetryWithCode(null), true);
+  });
+
+  it('returns false on "n" (explicit no)', () => {
+    assert.equal(shouldRetryWithCode('n'), false);
+  });
+
+  it('returns false on "N"', () => {
+    assert.equal(shouldRetryWithCode('N'), false);
+  });
+
+  it('returns false on "no"', () => {
+    assert.equal(shouldRetryWithCode('no'), false);
+  });
+
+  it('returns false on "NO" (case-insensitive)', () => {
+    assert.equal(shouldRetryWithCode('NO'), false);
+  });
+
+  it('returns true on unrecognised input (falls through to defaultYes=true)', () => {
+    // Anything that is not y/yes/n/no falls back to the default (yes).
+    assert.equal(shouldRetryWithCode('maybe'), true);
   });
 });
 
