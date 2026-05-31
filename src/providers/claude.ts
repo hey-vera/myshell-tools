@@ -54,6 +54,34 @@ function toClaudeModelArg(model: string): string {
   return model;
 }
 
+/**
+ * Build the `claude` CLI argv for a request. Pure and exported so flag
+ * construction — including the EXPERIMENTAL native-session flags — is
+ * unit-testable without spawning a real CLI.
+ *
+ * Native session (opt-in): when `req.sessionId` is set, add `--resume <id>` to
+ * continue an existing session, or `--session-id <id>` to establish a new one
+ * with our chosen id. When unset, the run is a stateless one-shot (the default).
+ */
+export function buildClaudeArgs(req: ProviderRequest): string[] {
+  const args = [
+    '-p',
+    '--output-format',
+    'stream-json',
+    '--verbose',
+    '--model',
+    toClaudeModelArg(req.model),
+  ];
+  if (req.sessionId !== undefined && req.sessionId.length > 0) {
+    if (req.resume === true) {
+      args.push('--resume', req.sessionId);
+    } else {
+      args.push('--session-id', req.sessionId);
+    }
+  }
+  return args;
+}
+
 // ---------------------------------------------------------------------------
 // Factory
 // ---------------------------------------------------------------------------
@@ -74,14 +102,7 @@ export function createClaudeProvider(opts?: { bin?: string }): Provider {
     },
 
     async *run(req: ProviderRequest, signal: AbortSignal): AsyncIterable<ProviderEvent> {
-      const args = [
-        '-p',
-        '--output-format',
-        'stream-json',
-        '--verbose',
-        '--model',
-        toClaudeModelArg(req.model),
-      ];
+      const args = buildClaudeArgs(req);
 
       // Load the stored Claude OAuth token and scope it to this child process
       // only — never written into the global process.env.

@@ -273,9 +273,17 @@ export async function* orchestrate(
       break mainLoop;
     }
 
+    // --- Native session decision (EXPERIMENTAL, opt-in) ---
+    // Use native continuity only when a plan exists AND this tier routes to the
+    // plan's provider. Otherwise (different provider, or no plan) fall back to
+    // replaying the compacted history — so switching providers never loses context.
+    const useNative =
+      deps.nativeSession !== undefined && decision.provider === deps.nativeSession.provider;
+
     // --- Build prompt (with optional reviewer feedback on retry + history context) ---
     // Bug 4 fix: inject managerNotes whenever defined, not just when currentTier === 'ic'.
-    const prompt = buildPrompt(currentTier, task, managerNotes, historyContext);
+    // When using a native session, skip the replayed history — the provider holds it.
+    const prompt = buildPrompt(currentTier, task, managerNotes, useNative ? undefined : historyContext);
 
     // --- Yield tier-start ---
     yield {
@@ -293,6 +301,9 @@ export async function* orchestrate(
       cwd: deps.cwd,
       sandbox: deps.sandbox,
       timeoutMs: deps.timeoutMs,
+      ...(useNative && deps.nativeSession !== undefined
+        ? { sessionId: deps.nativeSession.sessionId, resume: deps.nativeSession.resume }
+        : {}),
     };
     const start = deps.clock.now();
 

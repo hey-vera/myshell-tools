@@ -2797,3 +2797,98 @@ describe('orchestrate — Bug 4 fix: revise verdict injects reviewer notes at an
     );
   });
 });
+
+describe('orchestrate — native session (EXPERIMENTAL) skips history and passes session id', () => {
+  it('when nativeSession matches the routed provider: no history replay, sessionId passed', async () => {
+    const capturedReqs: ProviderRequest[] = [];
+
+    const provider: Provider = {
+      id: 'claude',
+      async detect() {
+        return { id: 'claude', installed: true, version: '1.0.0', authenticated: true, binaryPath: '/x', availableModels: [] };
+      },
+      async *run(req: ProviderRequest, _signal: AbortSignal): AsyncIterable<ProviderEvent> {
+        capturedReqs.push(req);
+        yield { type: 'done', text: FINAL_TEXT, usage: FAKE_USAGE, raw: {} };
+      },
+    };
+
+    const priorHistory: SessionEntry[] = [
+      { timestamp: '2026-05-31T00:00:00.000Z', role: 'user', content: 'earlier question about the parser' },
+      { timestamp: '2026-05-31T00:01:00.000Z', role: 'assistant', content: 'earlier answer', provider: 'claude' },
+    ];
+
+    const deps: OrchestrateDeps = {
+      providers: { claude: provider },
+      clock: makeFakeClock(),
+      session: makeFakeSession(),
+      ledger: makeFakeLedger(),
+      policy: DEFAULT_POLICY,
+      cwd: '/fake/cwd',
+      sandbox: 'workspace-write',
+      timeoutMs: 30_000,
+      history: priorHistory,
+      nativeSession: { provider: 'claude', sessionId: 'conv-xyz', resume: true },
+    };
+
+    await collectEvents(orchestrate('follow-up question', deps, new AbortController().signal));
+
+    assert.ok(capturedReqs.length >= 1, 'expected a captured request');
+    const req = capturedReqs[0]!;
+    // Native session id + resume flag are passed through to the provider.
+    assert.strictEqual(req.sessionId, 'conv-xyz', 'sessionId must be passed for the native path');
+    assert.strictEqual(req.resume, true, 'resume flag must be passed');
+    // History is NOT replayed into the prompt — the provider holds it server-side.
+    assert.ok(
+      !req.prompt.includes('CONVERSATION SO FAR'),
+      `native path must not replay history, got:\n${req.prompt}`,
+    );
+    assert.ok(
+      !req.prompt.includes('earlier answer'),
+      'native path must not contain the prior assistant content',
+    );
+  });
+
+  it('when nativeSession provider does NOT match the routed provider: falls back to history replay', async () => {
+    const capturedReqs: ProviderRequest[] = [];
+
+    const provider: Provider = {
+      id: 'claude',
+      async detect() {
+        return { id: 'claude', installed: true, version: '1.0.0', authenticated: true, binaryPath: '/x', availableModels: [] };
+      },
+      async *run(req: ProviderRequest, _signal: AbortSignal): AsyncIterable<ProviderEvent> {
+        capturedReqs.push(req);
+        yield { type: 'done', text: FINAL_TEXT, usage: FAKE_USAGE, raw: {} };
+      },
+    };
+
+    const priorHistory: SessionEntry[] = [
+      { timestamp: '2026-05-31T00:00:00.000Z', role: 'user', content: 'earlier question' },
+      { timestamp: '2026-05-31T00:01:00.000Z', role: 'assistant', content: 'earlier answer here', provider: 'claude' },
+    ];
+
+    const deps: OrchestrateDeps = {
+      providers: { claude: provider },
+      clock: makeFakeClock(),
+      session: makeFakeSession(),
+      ledger: makeFakeLedger(),
+      policy: DEFAULT_POLICY,
+      cwd: '/fake/cwd',
+      sandbox: 'workspace-write',
+      timeoutMs: 30_000,
+      history: priorHistory,
+      // Plan names a DIFFERENT provider than the one that will run (claude).
+      nativeSession: { provider: 'codex', sessionId: 'conv-xyz', resume: true },
+    };
+
+    await collectEvents(orchestrate('follow-up question', deps, new AbortController().signal));
+
+    const req = capturedReqs[0]!;
+    assert.strictEqual(req.sessionId, undefined, 'no sessionId when the plan provider does not match');
+    assert.ok(
+      req.prompt.includes('CONVERSATION SO FAR'),
+      'must fall back to history replay when the plan provider does not match',
+    );
+  });
+});

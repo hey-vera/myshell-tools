@@ -31,6 +31,7 @@ import { installProvider, installCommandFor } from '../providers/install.js';
 import type { Provider, ProviderId, SandboxLevel } from '../providers/port.js';
 import { listNativeSessions, importNativeSession } from '../providers/native-sessions.js';
 import { DEFAULT_POLICY, POLICY_PRESETS } from '../core/policy.js';
+import { planNativeSession } from '../core/native-session.js';
 import type { OutputSink } from './render.js';
 import { runTask } from './run.js';
 import { runLogin } from '../commands/login.js';
@@ -715,6 +716,9 @@ async function runModeSelect(
     onboarded: config.onboarded,
     setAsDefault: config.setAsDefault,
     ...(newMode !== undefined ? { mode: newMode } : {}),
+    // Preserve other prefs so changing mode doesn't silently reset them.
+    ...(config.autoUpdate === false ? { autoUpdate: false } : {}),
+    ...(config.nativeSessions === true ? { nativeSessions: true } : {}),
   };
 
   await saveConfig(updated);
@@ -742,6 +746,9 @@ async function toggleDefaultShell(
     onboarded: config.onboarded,
     setAsDefault,
     ...(config.mode !== undefined ? { mode: config.mode } : {}),
+    // Preserve other prefs so toggling default-shell doesn't silently reset them.
+    ...(config.autoUpdate === false ? { autoUpdate: false } : {}),
+    ...(config.nativeSessions === true ? { nativeSessions: true } : {}),
   };
   await saveConfig(updated);
   return updated;
@@ -759,6 +766,7 @@ async function runSettings(
     `  [1] Mode: ${cfg.mode ?? 'balanced'}`,
     `  [2] Set as default shell: ${cfg.setAsDefault ? 'on' : 'off'}`,
     `  [3] Auto-update: ${cfg.autoUpdate !== false ? 'on' : 'off'}`,
+    `  [4] Native sessions (experimental): ${cfg.nativeSessions === true ? 'on' : 'off'}`,
     '',
     '  [Enter] Back',
     '',
@@ -777,6 +785,8 @@ async function runSettings(
     mutableCtx.config = await toggleDefaultShell(mutableCtx.config, out);
   } else if (key === '3') {
     mutableCtx.config = await toggleAutoUpdate(mutableCtx.config, out);
+  } else if (key === '4') {
+    mutableCtx.config = await toggleNativeSessions(mutableCtx.config, out);
   }
   // anything else → back
 }
@@ -798,9 +808,33 @@ async function toggleAutoUpdate(config: AppConfig, out: OutputSink): Promise<App
     setAsDefault: config.setAsDefault,
     ...(config.mode !== undefined ? { mode: config.mode } : {}),
     ...(!enable ? { autoUpdate: false } : {}),
+    ...(config.nativeSessions === true ? { nativeSessions: true } : {}),
   };
   await saveConfig(updated);
   out.write(`Auto-update: ${enable ? 'on' : 'off'}\n`);
+  return updated;
+}
+
+/**
+ * Toggle the EXPERIMENTAL native-session preference and persist it.
+ *
+ * When on, conversations that stay on the same provider reuse that provider's
+ * native session (Claude `--session-id`/`--resume`) instead of replaying a
+ * compacted history block — better context fidelity and less re-sent context.
+ * Default OFF; live behavior should be verified with the gated integration test
+ * (`npm run test:integration`) before relying on it.
+ */
+async function toggleNativeSessions(config: AppConfig, out: OutputSink): Promise<AppConfig> {
+  const enable = config.nativeSessions !== true;
+  const updated: AppConfig = {
+    onboarded: config.onboarded,
+    setAsDefault: config.setAsDefault,
+    ...(config.mode !== undefined ? { mode: config.mode } : {}),
+    ...(config.autoUpdate === false ? { autoUpdate: false } : {}),
+    ...(enable ? { nativeSessions: true } : {}),
+  };
+  await saveConfig(updated);
+  out.write(`Native sessions (experimental): ${enable ? 'on' : 'off'}\n`);
   return updated;
 }
 
@@ -1296,6 +1330,15 @@ async function runChatLoop(
         if (mutableCtx.env.codex.authenticated) authenticatedProviders.push('codex');
         if (mutableCtx.env.opencode.authenticated) authenticatedProviders.push('opencode');
 
+        // EXPERIMENTAL native session plan (opt-in via config.nativeSessions).
+        // Pure decision; null when disabled. When present, orchestrate uses the
+        // provider's native session for matching tiers instead of replaying history.
+        const nativeSession = planNativeSession({
+          enabled: mutableCtx.config.nativeSessions === true,
+          conversationId: convId,
+          history: priorHistory,
+        });
+
         return {
           clock: ctx.clock,
           session: ctx.store.writer(convId),
@@ -1308,6 +1351,7 @@ async function runChatLoop(
           ...(priorHistory.length > 0 ? { history: priorHistory } : {}),
           ...(Object.keys(availableModels).length > 0 ? { availableModels } : {}),
           ...(authenticatedProviders.length > 0 ? { authenticatedProviders } : {}),
+          ...(nativeSession !== null ? { nativeSession } : {}),
         };
       };
 

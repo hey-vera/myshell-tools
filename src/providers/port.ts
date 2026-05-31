@@ -42,6 +42,15 @@ export interface ProviderRequest {
   readonly sandbox: SandboxLevel;
   /** Hard wall-clock timeout for the run. */
   readonly timeoutMs: number;
+  /**
+   * EXPERIMENTAL native session continuity (opt-in). When set, the adapter uses
+   * the provider's native session so prior context is carried server-side
+   * instead of replayed in the prompt. Claude: `--session-id <id>` to establish,
+   * `--resume <id>` to continue. Omitted → stateless one-shot (the default).
+   */
+  readonly sessionId?: string;
+  /** With sessionId: true continues an existing session, false establishes it. */
+  readonly resume?: boolean;
 }
 
 /**

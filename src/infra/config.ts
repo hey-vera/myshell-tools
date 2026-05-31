@@ -27,6 +27,14 @@ export interface AppConfig {
    * disable auto-update and show only the notification banner instead.
    */
   autoUpdate?: boolean;
+  /**
+   * EXPERIMENTAL (default off). When true, a conversation that stays on the same
+   * provider reuses that provider's native session (Claude `--session-id`/
+   * `--resume`) instead of replaying a compacted history block into each prompt
+   * — better context fidelity and less re-sent context. Scoped to Claude for
+   * now. Verify live behavior with `npm run test:integration` before relying on it.
+   */
+  nativeSessions?: boolean;
 }
 
 // ---------------------------------------------------------------------------

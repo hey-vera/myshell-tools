@@ -12,6 +12,7 @@
  */
 
 import type { Provider, ProviderId, SandboxLevel } from '../providers/port.js';
+import type { NativeSessionPlan } from './native-session.js';
 
 // ---------------------------------------------------------------------------
 // Classification
@@ -174,6 +175,17 @@ export interface OrchestrateDeps {
    * Only include providers whose `authenticated` flag is `true`; exactOptionalPropertyTypes is ON.
    */
   readonly authenticatedProviders?: readonly ProviderId[];
+  /**
+   * EXPERIMENTAL native session plan (opt-in via config.nativeSessions). When
+   * present AND a turn routes to the plan's provider, orchestrate skips the
+   * replayed history block and passes the native session id instead, so the
+   * provider carries prior context server-side. A turn that routes to any other
+   * provider ignores the plan and falls back to history replay.
+   *
+   * Computed by the caller (the conversation layer) — null/absent for one-shot
+   * runs and when the feature is disabled. See core/native-session.ts.
+   */
+  readonly nativeSession?: NativeSessionPlan;
 }
 
 /**
