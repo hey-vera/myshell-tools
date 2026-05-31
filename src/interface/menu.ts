@@ -276,6 +276,61 @@ export function renderConversationList(metas: ConversationMeta[], nowMs: number)
 }
 
 // ---------------------------------------------------------------------------
+// Ctrl+C escape model — pure helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Count how many timestamps in `times` fall within the half-open window
+ * `[now - windowMs, now]` (both endpoints inclusive).
+ *
+ * Pure — no I/O, no side effects, never throws.
+ *
+ * @param times    - Immutable array of epoch-ms timestamps (e.g. from ctx.clock.now()).
+ * @param now      - The current epoch-ms (e.g. from ctx.clock.now()).
+ * @param windowMs - Width of the sliding window in milliseconds (e.g. 1500).
+ * @returns Number of entries within the window.
+ */
+export function countRecentInterrupts(
+  times: readonly number[],
+  now: number,
+  windowMs: number,
+): number {
+  const cutoff = now - windowMs;
+  let count = 0;
+  for (const t of times) {
+    if (t >= cutoff && t <= now) count += 1;
+  }
+  return count;
+}
+
+/**
+ * Decide what action to take based on the number of recent Ctrl+C presses and
+ * whether a task is currently running.
+ *
+ * Rules:
+ *   count >= 3 → `'exit-app'`
+ *   count === 2 → `'to-menu'`
+ *   count === 1 && taskRunning → `'cancel-task'`
+ *   count === 1 && !taskRunning → `'hint'`
+ *   count <= 0  → `'hint'` (defensive)
+ *
+ * Pure — never throws, no I/O, no side effects.
+ *
+ * @param count       - Number of recent interrupt presses (from countRecentInterrupts).
+ * @param taskRunning - Whether a task is currently in-flight.
+ * @returns The action to take.
+ */
+export function interpretInterrupt(
+  count: number,
+  taskRunning: boolean,
+): 'cancel-task' | 'to-menu' | 'exit-app' | 'hint' {
+  if (count >= 3) return 'exit-app';
+  if (count === 2) return 'to-menu';
+  if (count === 1) return taskRunning ? 'cancel-task' : 'hint';
+  return 'hint';
+}
+
+// ---------------------------------------------------------------------------
 // Internal readline helpers
 // ---------------------------------------------------------------------------
 
@@ -727,10 +782,10 @@ async function runImportNative(
   mutableCtx: { config: AppConfig },
   out: OutputSink,
   readLine: () => Promise<string | null>,
-): Promise<void> {
+): Promise<'menu' | 'exit'> {
   out.write('\nImport from:\n  [1] Claude\n  [2] Codex\n\n> ');
   const choice = await readLine();
-  if (choice === null) return;
+  if (choice === null) return 'menu';
 
   let provider: ProviderId;
   if (choice === '1') {
@@ -739,14 +794,14 @@ async function runImportNative(
     provider = 'codex';
   } else {
     out.write('Cancelled.\n');
-    return;
+    return 'menu';
   }
 
   const sessions = await listNativeSessions(provider);
 
   if (sessions.length === 0) {
     out.write(`No ${provider} conversations found.\n`);
-    return;
+    return 'menu';
   }
 
   // Render a numbered picker
@@ -763,23 +818,24 @@ async function runImportNative(
   out.write('\nPick a conversation number (or Enter to cancel): ');
 
   const pick = await readLine();
-  if (pick === null || pick.length === 0) return;
+  if (pick === null || pick.length === 0) return 'menu';
 
   const num = parseInt(pick, 10);
   if (Number.isNaN(num) || num < 1 || num > sessions.length) {
     out.write('Invalid selection.\n');
-    return;
+    return 'menu';
   }
 
   const session = sessions[num - 1];
-  if (session === undefined) return;
+  if (session === undefined) return 'menu';
 
   const { id, imported } = await importNativeSession(session, ctx.store);
   const convTitle = session.title.length > 0 ? session.title : '(untitled)';
   out.write(`Imported ${imported} messages into a new conversation: "${convTitle}"\n`);
 
-  // Enter the chat loop for the newly imported conversation
-  await runChatLoop(ctx, mutableCtx, id, out, readLine);
+  // Enter the chat loop for the newly imported conversation.
+  // Return value propagates the 'exit' signal to the caller (startMenu).
+  return runChatLoop(ctx, mutableCtx, id, out, readLine);
 }
 
 // ---------------------------------------------------------------------------
@@ -831,13 +887,31 @@ async function runRawProviderSession(
 // Chat loop
 // ---------------------------------------------------------------------------
 
+/**
+ * Run the interactive chat loop for a single conversation.
+ *
+ * Returns `'menu'` when the user exits normally (/back, /exit, EOF, or 2×Ctrl+C)
+ * and `'exit'` when the user presses Ctrl+C three times within the 1 500 ms window,
+ * signalling that the entire app should quit.
+ *
+ * The SIGINT handler uses a press-counting model (window ~1 500 ms, timestamps from
+ * `ctx.clock.now()`):
+ *   1 press while a task runs  → cancel the task, stay in chat.
+ *   1 press at the prompt      → print a hint, stay in chat.
+ *   2 presses within the window → abort any running task, break to menu.
+ *   3 presses within the window → abort any running task, break and signal exit.
+ *
+ * The handler is registered on entry and removed in the `finally` block so it
+ * never leaks between chat sessions. NO process.exit() is called here; cli.ts
+ * owns process lifetime.
+ */
 async function runChatLoop(
   ctx: MenuContext,
   mutableCtx: { config: AppConfig },
   convId: string,
   out: OutputSink,
   readLine: () => Promise<string | null>,
-): Promise<void> {
+): Promise<'menu' | 'exit'> {
   // Print a short recap of the conversation (last entry) if history exists
   const history = await ctx.store.load(convId);
   if (history.length > 0) {
@@ -853,23 +927,84 @@ async function runChatLoop(
 
   let currentAc: AbortController | null = null;
 
-  // Handle SIGINT: cancel in-flight task or return to menu
+  // Interrupt timestamps — populated on each SIGINT; checked against the
+  // 1 500 ms sliding window. Using ctx.clock.now() (not Date.now) so tests
+  // can drive time with a fake clock.
+  const interruptTimes: number[] = [];
+  const INTERRUPT_WINDOW_MS = 1_500;
+
+  // The 'exit' signal is communicated from the SIGINT handler to the main
+  // loop via this flag (the handler can't break the outer while directly).
+  let shouldExit = false;
+
+  // Handle Ctrl+C with the press-counting model.
   const sigintHandler = (): void => {
-    if (currentAc !== null) {
-      currentAc.abort();
-      out.write('\n[warn] Task cancelled.\n');
+    const now = ctx.clock.now();
+    interruptTimes.push(now);
+    const count = countRecentInterrupts(interruptTimes, now, INTERRUPT_WINDOW_MS);
+    const action = interpretInterrupt(count, currentAc !== null);
+
+    if (action === 'cancel-task') {
+      currentAc?.abort();
       currentAc = null;
+      out.write('\n[warn] Task cancelled. (Ctrl+C again → menu, ×3 → exit)\n');
+    } else if (action === 'hint') {
+      out.write('\n[info] Ctrl+C again → back to menu, ×3 → exit to shell.\n');
+    } else if (action === 'to-menu') {
+      // Abort any running task, then tell the main loop to break back to menu.
+      if (currentAc !== null) {
+        currentAc.abort();
+        currentAc = null;
+      }
+      // Signal the main loop; the loop checks this flag after each await.
+      shouldExit = false;
+      // We can't directly break the loop from an event handler, so we set a
+      // flag and resolve any pending readLine by closing (the loop checks the
+      // flag). In practice the loop is either awaiting readLine() or runTask().
+      // For the readLine case the user typed nothing yet — we need to interrupt
+      // that await. We use a shared resolver pattern: see loopBreaker below.
+      loopBreaker?.('menu');
     } else {
-      out.write('\n[info] Use /back or /exit to return to the menu.\n');
+      // exit-app
+      if (currentAc !== null) {
+        currentAc.abort();
+        currentAc = null;
+      }
+      shouldExit = true;
+      loopBreaker?.('exit');
     }
   };
 
+  // loopBreaker lets the SIGINT handler resolve the loop-level promise so the
+  // `while (true)` can break immediately even when awaiting readLine().
+  let loopBreaker: ((result: 'menu' | 'exit') => void) | null = null;
+
   process.on('SIGINT', sigintHandler);
+
+  let loopResult: 'menu' | 'exit' = 'menu';
 
   try {
     while (true) {
       out.write('myshell-tools> ');
-      const line = await readLine();
+
+      // Race readLine() against a loopBreak signal from the SIGINT handler.
+      // When Ctrl+C fires (to-menu or exit-app), loopBreaker is called with the
+      // desired result, which wins the race and breaks the loop.
+      const line = await new Promise<string | null | 'menu' | 'exit'>((resolve) => {
+        loopBreaker = resolve;
+        readLine().then(resolve).catch(() => resolve(null));
+      });
+      loopBreaker = null;
+
+      // SIGINT-driven exit signals
+      if (line === 'menu') {
+        loopResult = 'menu';
+        break;
+      }
+      if (line === 'exit') {
+        loopResult = 'exit';
+        break;
+      }
 
       // EOF → exit the chat loop gracefully
       if (line === null) break;
@@ -931,10 +1066,20 @@ async function runChatLoop(
       currentAc = ac;
       await runTask(line, deps, out, ac.signal);
       currentAc = null;
+
+      // Check for a loopBreaker signal that fired during the task (e.g. 3×Ctrl+C
+      // while runTask was awaited — the abort fires and the flag is set).
+      if (shouldExit) {
+        loopResult = 'exit';
+        break;
+      }
     }
   } finally {
     process.removeListener('SIGINT', sigintHandler);
+    loopBreaker = null;
   }
+
+  return loopResult;
 }
 
 // ---------------------------------------------------------------------------
@@ -1137,7 +1282,8 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
         const firstMsg = await readLine();
         if (firstMsg !== null && firstMsg.length > 0) {
           const meta = await ctx.store.create(firstMsg);
-          await runChatLoop(ctx, mutableCtx, meta.id, out, readLine);
+          const chatResult = await runChatLoop(ctx, mutableCtx, meta.id, out, readLine);
+          if (chatResult === 'exit') break;
         }
         continue;
       }
@@ -1147,7 +1293,8 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
         const all = await ctx.store.list();
         const latest = all[0];
         if (latest !== undefined) {
-          await runChatLoop(ctx, mutableCtx, latest.id, out, readLine);
+          const chatResult = await runChatLoop(ctx, mutableCtx, latest.id, out, readLine);
+          if (chatResult === 'exit') break;
         } else {
           out.write('No conversations yet. Press n to start one.\n');
         }
@@ -1159,7 +1306,8 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
       if (!Number.isNaN(digit) && digit >= 1 && digit <= 9) {
         const target = metas[digit - 1];
         if (target !== undefined) {
-          await runChatLoop(ctx, mutableCtx, target.id, out, readLine);
+          const chatResult = await runChatLoop(ctx, mutableCtx, target.id, out, readLine);
+          if (chatResult === 'exit') break;
         } else {
           out.write(`No conversation at position ${digit}.\n`);
         }
@@ -1174,7 +1322,8 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
 
       // ---- [i] Import a native conversation -----------------------------------
       if (key === 'i') {
-        await runImportNative(ctx, mutableCtx, out, readLine);
+        const importResult = await runImportNative(ctx, mutableCtx, out, readLine);
+        if (importResult === 'exit') break;
         continue;
       }
 
