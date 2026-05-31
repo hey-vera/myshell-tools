@@ -65,9 +65,13 @@ export function formatCostReport(entries: LedgerEntry[], color = false): string[
   lines.push(divider(color));
 
   // ---- Summary ---------------------------------------------------------------
+  // The total is provider-reported where the provider supplies cost in its
+  // output (Claude, opencode step_finish), and estimated from list prices for
+  // providers that do not report cost (Codex). We therefore avoid claiming this
+  // is "as billed" — it may include estimates.
   lines.push(
-    `${label('Billed total', color)}: $${summary.totalUsd.toFixed(4)} ` +
-      `${dim('(as billed, incl. caching/discounts)', color)}`,
+    `${label('Total cost', color)}: $${summary.totalUsd.toFixed(4)} ` +
+      `${dim('(provider-reported where available, otherwise estimated from list prices)', color)}`,
   );
   lines.push(`${label('Total calls', color)}: ${summary.calls}`);
 

@@ -314,7 +314,7 @@ describe('renderHeaderLines', () => {
 
   // ---- opencode conditional rendering ----------------------------------------
 
-  it('shows opencode line (✅ ready) when opencode is installed', () => {
+  it('shows opencode line (✅ ready (free models)) when opencode is installed', () => {
     const envWithOpencode: EnvironmentStatus = {
       ...FAKE_ENV_BOTH_INSTALLED,
       opencode: makeProvider('opencode', { installed: true, version: '0.1.0', authenticated: true }),
@@ -326,6 +326,7 @@ describe('renderHeaderLines', () => {
     assert.ok(opencodeLine !== undefined, 'opencode line must appear when installed');
     assert.ok(opencodeLine.includes('✅'), 'opencode installed+authed → ✅');
     assert.ok(opencodeLine.includes('ready'), 'opencode line shows "ready"');
+    assert.ok(opencodeLine.includes('free models'), 'opencode line shows "free models" basis');
   });
 
   it('does NOT show opencode line when opencode is not installed', () => {

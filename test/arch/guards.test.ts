@@ -78,11 +78,12 @@ function stripCommentsAndStrings(src: string): string {
 describe("Purity guard — src/core/ must be pure orchestration", () => {
   const CORE_DIR = path.join(SRC, "core");
 
-  const FORBIDDEN_IMPORTS = ["child_process", "node:fs", "'fs'", '"fs"', "node:path", "'path'", '"path"'];
+  const FORBIDDEN_IMPORTS = ["child_process", "node:fs", "'fs'", '"fs"', "node:path", "'path'", '"path"', "node:os", "'os'", '"os"', "node:crypto", "'crypto'", '"crypto"'];
   const FORBIDDEN_PATTERNS: Array<{ label: string; re: RegExp }> = [
     { label: "console.log()", re: /console\.log\s*\(/ },
     { label: "console.error()", re: /console\.error\s*\(/ },
     { label: "Date.now()", re: /Date\.now\s*\(/ },
+    { label: "new Date(", re: /new\s+Date\s*\(/ },
     { label: "Math.random()", re: /Math\.random\s*\(/ },
   ];
 
@@ -226,23 +227,21 @@ describe("No-orphan guard — every src/ .ts file must participate in the import
     const rel = path.relative(ROOT, file);
     const basename = path.basename(file, ".ts");
 
-    // cli.ts is the root — it is never imported, so exempt it.
+    // cli.ts is the root entry point — it is never imported by anything else.
     if (basename === "cli") continue;
     // index files are also entry-like
     if (basename === "index") continue;
 
     it(`${rel} — must be imported by at least one other src/ file`, () => {
-      const src = read(file);
-      const hasOwnImports = /from\s+['"`](\.{1,2}\/[^'"`]+)['"`]/.test(src);
       const isImported = importedBasenames.has(basename);
 
-      // A file is orphaned if it neither imports anything from src/ nor is imported by anyone.
-      const orphaned = !hasOwnImports && !isImported;
-
+      // A file is orphaned if it is never imported by any other src/ file.
+      // Having its own imports is NOT sufficient — a file that only imports
+      // things but is never itself imported cannot be reached from the entry
+      // point and is effectively dead code.
       assert.ok(
-        !orphaned,
-        `${rel} appears to be an orphan: it has no imports from other src/ files ` +
-          "and is not imported by any other src/ file. " +
+        isImported,
+        `${rel} appears to be an orphan: it is not imported by any other src/ file. ` +
           "Either wire it into the dependency graph or remove it."
       );
     });

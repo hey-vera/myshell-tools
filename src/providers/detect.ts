@@ -291,7 +291,14 @@ async function detectOpencodeProvider(): Promise<ProviderStatus> {
         // opencode ships free models that need no credentials — always usable.
         authenticated: true,
         plan: null,
-        availableModels: ['opencode/deepseek-v4-flash-free'],
+        // All three free models covering the tiers used in pricing.ts (worker,
+        // ic, manager) so route() can select the appropriate tier without
+        // falling back to a model opencode may not actually advertise.
+        availableModels: [
+          'opencode/mimo-v2.5-free',       // worker tier
+          'opencode/deepseek-v4-flash-free', // ic tier
+          'opencode/big-pickle',             // manager tier
+        ],
       };
     }
   } catch {

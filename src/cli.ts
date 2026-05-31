@@ -11,7 +11,7 @@ import { execa } from 'execa';
 import { systemClock } from './infra/clock.js';
 import { createSessionWriter } from './infra/session.js';
 import { createLedger } from './infra/ledger.js';
-import { DEFAULT_POLICY } from './core/policy.js';
+import { DEFAULT_POLICY, POLICY_PRESETS } from './core/policy.js';
 import type { OrchestrateDeps } from './core/types.js';
 import type { OutputSink } from './interface/render.js';
 import { runTask } from './interface/run.js';
@@ -70,12 +70,13 @@ Examples:
 Repository: https://github.com/hey-vera/myshell-tools
 `;
 
-/** Build the orchestration dependencies (includes provider detection). */
-async function buildDeps(cwd: string): Promise<OrchestrateDeps> {
-  const [providers, env] = await Promise.all([
-    buildProviders(cwd),
-    detectEnvironment(),
-  ]);
+/** Build the orchestration dependencies from a pre-detected EnvironmentStatus. */
+function buildDeps(
+  cwd: string,
+  env: import('./providers/detect.js').EnvironmentStatus,
+  policy = DEFAULT_POLICY,
+): OrchestrateDeps {
+  const providers = buildProviders(cwd, env);
 
   // Populate advertised model lists from detection so route() can prefer a
   // model the provider CLI actually has. Only include installed providers.
@@ -101,7 +102,7 @@ async function buildDeps(cwd: string): Promise<OrchestrateDeps> {
     clock: systemClock,
     session: createSessionWriter({ cwd, id: systemClock.uuid() }),
     ledger: createLedger({ cwd }),
-    policy: DEFAULT_POLICY,
+    policy,
     providers,
     cwd,
     sandbox: 'workspace-write',
@@ -194,7 +195,9 @@ async function main(): Promise<void> {
       process.stderr.write('myshell-tools run: expected a task description\n');
       process.exit(1);
     }
-    const deps = await buildDeps(cwd);
+    const [env, config] = await Promise.all([detectEnvironment(), loadConfig()]);
+    const policy = POLICY_PRESETS[config.mode ?? 'balanced'];
+    const deps = buildDeps(cwd, env, policy);
     const result = await runTask(taskParts.join(' '), deps, out, new AbortController().signal);
     process.exit(result.code);
   }
@@ -203,11 +206,11 @@ async function main(): Promise<void> {
   if (args.length === 0) {
     const spinner = createSpinner(out);
     spinner.start('Detecting providers…');
-    const [providers, env, config] = await Promise.all([
-      buildProviders(cwd),
+    const [env, config] = await Promise.all([
       detectEnvironment(),
       loadConfig(),
     ]);
+    const providers = buildProviders(cwd, env);
     spinner.stop();
 
     const store = createFileConversationStore({ clock: systemClock });
@@ -259,7 +262,8 @@ async function main(): Promise<void> {
     out.write(banner(version, out.color) + '\n');
     const spinner = createSpinner(out);
     spinner.start('Detecting providers…');
-    const deps = await buildDeps(cwd);
+    const env = await detectEnvironment();
+    const deps = buildDeps(cwd, env);
     spinner.stop();
     out.write(welcome(deps, out.color) + '\n\n');
     await startRepl(deps, out);

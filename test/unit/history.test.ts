@@ -31,8 +31,8 @@ describe('compactHistory — empty / no input', () => {
 
   it('returns empty string for a single-element array with empty content', () => {
     const result = compactHistory([makeEntry('user', '')]);
-    // A single empty-content turn — still formats but may be blank after trim
-    assert.equal(typeof result, 'string');
+    // A single empty-content user turn formats as "User: " (label + empty content)
+    assert.equal(result, 'User: ');
   });
 
   it('never throws on edge-case inputs', () => {

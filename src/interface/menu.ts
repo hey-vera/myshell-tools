@@ -255,7 +255,8 @@ export function renderHeaderLines(env: EnvironmentStatus, _version: string): str
     const ps = env.opencode;
     const planSuffix = ps.plan != null ? ` (${ps.plan})` : '';
     if (ps.authenticated) {
-      lines.push(`✅ ${ps.id}: ready${planSuffix}`);
+      // Be explicit that "ready" is based on free models, not a credential probe.
+      lines.push(`✅ ${ps.id}: ready (free models)${planSuffix}`);
     } else {
       lines.push(`⚠️  ${ps.id}: not signed in${planSuffix}`);
     }

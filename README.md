@@ -4,7 +4,7 @@
 
 `myshell-tools` routes each task to the *cheapest* model likely to succeed, runs it on your real codebase, optionally has a **different vendor** review the result, and shows you exactly what it did and what it truly cost — with **no fabricated data, ever**.
 
-> **Status: `2.16.0` — honest, tested, and real.** Claude, Codex, and opencode (experimental) all work, provider auth is detected for real, and the tool notifies you when a newer version is available.
+> **Status: `2.17.0` — honest, tested, and real.** Claude, Codex, and opencode (experimental) all work, provider auth is detected for real, and the tool notifies you when a newer version is available.
 
 ---
 
@@ -92,11 +92,13 @@ The globally-installed CLI includes the **update notifier**: it checks the npm r
 
 Press `u` to install the update in-place (`npm install -g myshell-tools@latest`). No relaunch is forced — restart the CLI when you're ready.
 
-You can also enable **auto-update** so the CLI updates and relaunches itself silently at startup:
+You can also enable **auto-update** so the CLI updates and relaunches itself silently at startup.  Auto-update is **on by default** — the first-run prompt asks `Keep myshell-tools up to date automatically? (Y/n)` and defaults to yes.
 
-- During first-run setup: answer `y` to the `Keep myshell-tools up to date automatically? (y/N)` prompt.
-- In the control panel: `[s] Settings → [3] Auto-update: off → on`.
-- Or set `"autoUpdate": true` in `~/.myshell-tools/config.json`.
+To opt out:
+- During first-run setup: answer `n` to the `Keep myshell-tools up to date automatically? (Y/n)` prompt.
+- In the control panel: `[s] Settings → [3] Auto-update: on → off`.
+- Or set `"autoUpdate": false` in `~/.myshell-tools/config.json`.
+- Or set `MYSHELL_NO_UPDATE=1` in your environment to disable auto-update permanently without changing config.
 
 To update manually at any time:
 
@@ -204,7 +206,7 @@ classify ─▶ route(cheapest tier) ─▶ run ─▶ assess
 This is a ground‑up rebuild whose first principle is: **the tool never shows fabricated, mocked, or randomized data as if it were real.** It's enforced, not promised:
 
 - **Architecture guard tests** fail the build if the UI/command layers contain hardcoded "AI responses", fake metrics, or a digit‑then‑`%` literal; if the orchestration core touches the filesystem, clock, or RNG directly; or if any module other than the entry point can terminate the process.
-- **1000+ unit/architecture tests + 42 contract tests** (parsers pinned to *recorded real transcripts*), with `tsc --strict`, ESLint, and a clean `npm pack` checked in CI across Windows / macOS / Linux.
+- **An extensive unit + architecture-guard suite** (plus contract tests with parsers pinned to *recorded real transcripts*), with `tsc --strict`, ESLint, and a clean `npm pack` checked in CI across Windows / macOS / Linux.
 
 ---
 
@@ -236,24 +238,6 @@ npm test               # unit + architecture tests (requires Node ≥ 22)
 npm run test:contract  # parser contract tests vs recorded transcripts
 npm run build          # tsc → dist/
 ```
-
----
-
-## Status & roadmap
-
-Honest snapshot of `2.0.0-alpha.0`:
-
-| Area | State |
-| --- | --- |
-| Core routing + escalation + cross‑vendor review loop | ✅ implemented & unit‑proven |
-| Claude adapter | ✅ live, validated end‑to‑end on real models |
-| Codex adapter | ✅ built; auto‑activates once `codex` is installed + authed |
-| opencode adapter (experimental) | ✅ auto-detected; free models work without keys |
-| Routing prefers advertised models (never routes to unavailable model) | ✅ |
-| `doctor` / `cost` / REPL / streaming UI | ✅ |
-| Live cross‑vendor demonstration | ⏳ pending Codex auth |
-| Cross‑OS CI run | ⏳ pending a public remote |
-| npm publish | ⏳ alpha |
 
 ---
 

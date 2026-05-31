@@ -85,7 +85,13 @@ export function buildDoctorReport(
       lines.push(
         `  ${green('✓', color)} ${bold(ps.id, color)} — installed, version: ${versionStr}`,
       );
-      if (ps.authenticated) {
+      if (ps.id === 'opencode') {
+        // opencode auth was never probed — it is usable via free models without
+        // sign-in. Saying "signed in" would be dishonest.
+        lines.push(
+          `    ${label('auth', color)}: ${green('free models (no sign-in needed)', color)}`,
+        );
+      } else if (ps.authenticated) {
         const planLabel = ps.plan !== null ? ` (${ps.plan})` : '';
         lines.push(
           `    ${label('auth', color)}: ${green('signed in', color)}${planLabel}`,

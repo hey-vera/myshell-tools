@@ -5,7 +5,7 @@
 
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, readFile } from 'node:fs/promises';
+import { mkdtemp, rm, readFile, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -158,6 +158,35 @@ describe('atomicWrite', () => {
     const files = await readdir(dir);
     const tmps = files.filter((f) => f.startsWith('write-no-tmp.txt.tmp.'));
     assert.equal(tmps.length, 0);
+  });
+
+  it('creates file with correct content when mode is provided', async () => {
+    const filePath = join(dir, 'write-mode.txt');
+    await atomicWrite(filePath, 'mode-test', 0o600);
+    const content = await readFile(filePath, 'utf8');
+    assert.equal(content, 'mode-test');
+  });
+
+  // Skip on Windows — file mode bits are not enforced by the OS.
+  if (process.platform !== 'win32') {
+    it('respects the mode parameter — resulting file has exactly mode & 0o777', async () => {
+      const filePath = join(dir, 'write-mode-bits.txt');
+      await atomicWrite(filePath, 'secret', 0o600);
+      const st = await stat(filePath);
+      const actualMode = st.mode & 0o777;
+      assert.equal(
+        actualMode,
+        0o600,
+        `expected mode 0o600, got 0o${actualMode.toString(8)}`,
+      );
+    });
+  }
+
+  it('default behavior (no mode) still creates the file correctly', async () => {
+    const filePath = join(dir, 'write-default-mode.txt');
+    await atomicWrite(filePath, 'default-mode-content');
+    const content = await readFile(filePath, 'utf8');
+    assert.equal(content, 'default-mode-content');
   });
 });
 

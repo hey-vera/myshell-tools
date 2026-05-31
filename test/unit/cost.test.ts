@@ -216,3 +216,29 @@ describe('formatCostReport — plain text mode', () => {
     );
   });
 });
+
+// ---------------------------------------------------------------------------
+// formatCostReport — honest cost label (does not claim "as billed" for estimates)
+// ---------------------------------------------------------------------------
+
+describe('formatCostReport — honest total label', () => {
+  const entries: LedgerEntry[] = [
+    makeEntry({ model: 'claude-haiku-4-5', usd: 0.001, inputTokens: 100_000, outputTokens: 50_000 }),
+  ];
+
+  it('does not claim "as billed" when estimates may be included', () => {
+    const output = formatCostReport(entries, false).join('\n');
+    assert.ok(
+      !output.includes('as billed'),
+      `must not claim "as billed" — Codex costs are estimated:\n${output}`,
+    );
+  });
+
+  it('uses "Total cost" or "provider-reported" language to describe the total', () => {
+    const output = formatCostReport(entries, false).join('\n');
+    assert.ok(
+      output.includes('Total cost') || output.includes('provider-reported'),
+      `expected honest label in cost output:\n${output}`,
+    );
+  });
+});

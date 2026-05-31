@@ -1559,13 +1559,11 @@ describe("orchestrate — reviewPolicy:'critical-only' — high risk skips, crit
   });
 
   it("critical-risk task STILL triggers review with 'critical-only'", async () => {
-    // Use "delete all production data" → classify should produce critical risk.
-    // We force critical risk via needsReview is not needed here since we use
-    // a task known to produce critical risk from the classifier.
-    // Use a high-confidence envelope that would otherwise accept without review.
+    // "rotate the oauth client secret" matches CRITICAL_SIGNALS (oauth + secret)
+    // and reliably classifies as critical risk — no conditional branching needed.
     const icEnvelope =
       '{"confidence": 0.90, "escalate": false, "reason": "done", "needs_review": false}';
-    const icText = `Critical task done.\n${icEnvelope}`;
+    const icText = `OAuth secret rotated.\n${icEnvelope}`;
 
     let codexRunCount = 0;
     const claudeProvider: Provider = {
@@ -1600,27 +1598,33 @@ describe("orchestrate — reviewPolicy:'critical-only' — high risk skips, crit
       timeoutMs: 30_000,
     };
 
-    // "delete all production data" → critical risk
+    // "rotate the oauth client secret" → guaranteed critical risk via classifier
     const events = await collectEvents(
-      orchestrate('delete all production data without backup', deps, new AbortController().signal),
+      orchestrate('rotate the oauth client secret', deps, new AbortController().signal),
     );
 
-    // The task may or may not be classified as critical depending on classify().
-    // We check by looking at what happened:
+    // Verify the classifier actually produced critical (belt-and-suspenders)
     const classified = events.find((e) => e.type === 'classified');
     assert.ok(classified !== undefined && classified.type === 'classified');
-    if (classified.type === 'classified' && classified.classification.risk === 'critical') {
-      // If risk is critical, reviewer MUST have run
-      assert.ok(codexRunCount >= 1, 'codex reviewer must run for critical-risk with critical-only policy');
+    assert.equal(
+      classified.type === 'classified' ? classified.classification.risk : null,
+      'critical',
+      'Task must classify as critical risk — if this fails, update the task phrase to one that matches CRITICAL_SIGNALS',
+    );
 
-      const reviewByNotice = events.find(
-        (e) => e.type === 'notice' && e.message.includes('Review by'),
-      );
-      assert.ok(reviewByNotice !== undefined, 'Expected a "Review by" notice for critical risk');
-    } else {
-      // If the classifier didn't produce critical, skip assertion
-      // (test is still valid — it just verifies the routing logic for what the classifier says)
-      assert.ok(true, 'Classifier did not produce critical risk for this task — review skipping is correct');
+    // Reviewer MUST have run for critical-risk with critical-only policy
+    assert.ok(codexRunCount >= 1, 'codex reviewer must run for critical-risk with critical-only policy');
+
+    const reviewByNotice = events.find(
+      (e) => e.type === 'notice' && e.message.includes('Review by'),
+    );
+    assert.ok(reviewByNotice !== undefined, 'Expected a "Review by" notice for critical risk');
+
+    // Final must be success (reviewer approved)
+    const finalEv = events.find((e) => e.type === 'final');
+    assert.ok(finalEv !== undefined);
+    if (finalEv.type === 'final') {
+      assert.equal(finalEv.success, true);
     }
   });
 });

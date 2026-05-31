@@ -11,6 +11,21 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 - Cross-OS CI execution (requires a public remote).
 - First npm publish.
 
+## [2.17.0]
+
+### Security
+- Credentials file (~/.myshell-tools/credentials.json) is now created with mode 0600 and its directory 0700 from the first write (atomicWrite gained an optional mode), closing a brief world-readable window on shared systems.
+
+### Fixed
+- opencode now advertises a model per tier so routing never picks a model it does not have.
+- run (one-shot) now respects your Settings mode (cost-saver/balanced/quality-first) instead of always using the default policy.
+- Environment detection runs once per launch (was duplicated: 6 provider --version spawns, now 3).
+
+### Changed
+- Honest labels: opencode shows ready (free models) (not signed in); doctor shows free models (no sign-in needed); the cost total is labeled provider-reported where available, otherwise estimated from list prices (Codex costs are estimates).
+- README de-staled (auto-update default-on + (Y/n) + MYSHELL_NO_UPDATE documented; alpha roadmap table removed; brittle test-count claims replaced).
+- Architecture guards strengthened (no-orphan logic; core purity now also forbids new Date(/node:os/node:crypto) and two weak tests made assertive.
+
 ## [2.16.0]
 
 ### Fixed

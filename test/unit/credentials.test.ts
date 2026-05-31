@@ -8,7 +8,7 @@
 
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, mkdir, writeFile } from 'node:fs/promises';
+import { mkdtemp, rm, mkdir, writeFile, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
@@ -217,6 +217,38 @@ describe('saveClaudeToken + loadCredentials — round-trip', () => {
     );
   });
 });
+
+// ---------------------------------------------------------------------------
+// saveClaudeToken — file mode (0o600, POSIX only)
+// ---------------------------------------------------------------------------
+
+// Guard with process.platform so this suite is a no-op on Windows (where
+// POSIX mode bits are not enforced by the OS).
+if (process.platform !== 'win32') {
+  describe('saveClaudeToken — credentials file mode', () => {
+    let homeDir: string;
+
+    before(async () => {
+      homeDir = await mkdtemp(join(tmpdir(), `creds-mode-${randomUUID()}-`));
+    });
+
+    after(async () => {
+      await rm(homeDir, { recursive: true, force: true });
+    });
+
+    it('saved credentials.json has mode 0o600 (owner-read-only)', async () => {
+      await saveClaudeToken('sk-ant-oat01-modetest-TOKEN', homeDir);
+      const credPath = join(homeDir, '.myshell-tools', 'credentials.json');
+      const st = await stat(credPath);
+      const actualMode = st.mode & 0o777;
+      assert.equal(
+        actualMode,
+        0o600,
+        `expected credentials file mode 0o600, got 0o${actualMode.toString(8)}`,
+      );
+    });
+  });
+}
 
 // ---------------------------------------------------------------------------
 // clearClaudeToken

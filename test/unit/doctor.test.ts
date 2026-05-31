@@ -560,6 +560,46 @@ describe('runDoctor --fix — installed+unauthenticated provider answered n skip
 });
 
 // ---------------------------------------------------------------------------
+// buildDoctorReport — opencode auth label (honesty: "free models", not "signed in")
+// ---------------------------------------------------------------------------
+
+describe('buildDoctorReport — opencode installed shows honest auth label', () => {
+  const env = makeEnv(
+    { installed: false },
+    { installed: false },
+    { installed: true, version: '0.1.0', authenticated: true, binaryPath: 'opencode' },
+  );
+  const lines = buildDoctorReport(env, defaultExtras, false);
+  const output = lines.join('\n');
+
+  it('does not throw', () => {
+    assert.doesNotThrow(() => buildDoctorReport(env, defaultExtras, false));
+  });
+
+  it('shows "free models" auth label for opencode', () => {
+    assert.ok(
+      output.includes('free models'),
+      `expected "free models" in opencode auth line:\n${output}`,
+    );
+  });
+
+  it('does NOT say "signed in" for opencode', () => {
+    // opencode auth was never probed — claiming "signed in" would be dishonest.
+    assert.ok(
+      !output.includes('signed in'),
+      `must not claim "signed in" for opencode:\n${output}`,
+    );
+  });
+
+  it('includes "no sign-in needed" in opencode auth label', () => {
+    assert.ok(
+      output.includes('no sign-in needed'),
+      `expected "no sign-in needed" in opencode auth line:\n${output}`,
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
 // --fix mode: opencode not installed → install offered, but no sign-in prompt
 // ---------------------------------------------------------------------------
 

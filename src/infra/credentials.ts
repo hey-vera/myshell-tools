@@ -90,14 +90,17 @@ export async function saveClaudeToken(token: string, homeDir?: string): Promise<
   const dir = getCredentialsDir(home);
   const path = getCredentialsPath(home);
 
-  await mkdir(dir, { recursive: true });
+  // Create the directory with restrictive permissions (0o700) so it is never
+  // world-readable.  recursive:true is a no-op when it already exists.
+  await mkdir(dir, { recursive: true, mode: 0o700 });
 
   // Load existing credentials so we only replace the token key, preserving others.
   const existing = await loadCredentials(homeDir);
   const updated: Credentials = { ...existing, claudeOauthToken: token };
 
-  // atomicWrite uses rename — ensures no partial writes on crash.
-  await atomicWrite(path, JSON.stringify(updated, null, 2));
+  // atomicWrite with mode 0o600 guarantees the temp file is never more permissive
+  // than the final destination — no world-readable window before the rename.
+  await atomicWrite(path, JSON.stringify(updated, null, 2), 0o600);
 
   // Best-effort: restrict to owner-read-only. Silently ignored on Windows or
   // unusual filesystems where chmod is unavailable or unsupported.
