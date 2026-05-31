@@ -1371,6 +1371,7 @@ async function renderMainScreen(
   ctx: MenuContext,
   mutableCtx: { config: AppConfig; env: EnvironmentStatus },
   metas: ConversationMeta[],
+  spend: SpendSummary,
   out: OutputSink,
   updateInfo?: UpdateCheckResult,
   claudeTokenInfo?: ClaudeTokenStatus | null,
@@ -1402,9 +1403,10 @@ async function renderMainScreen(
     }
   }
 
-  // Budget line — real ledger data, never fabricated
-  const entries = await readLedger(ctx.cwd);
-  const spend = summarizeSpend(entries, ctx.clock.isoNow());
+  // Budget line — real ledger data, never fabricated. The SpendSummary is
+  // computed by the caller and cached across keystrokes (the ledger only
+  // changes when a task completes), so navigating the menu never re-parses the
+  // unbounded ledger.jsonl on every keypress.
   out.write('  ' + renderBudgetLine(spend, out.color) + '\n\n');
 
   // Recent conversations — separator() then list
@@ -1582,9 +1584,19 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
       claudeTokenInfo = claudeTokenStatus(capturedAt, Date.now());
     }
 
+    // Spend summary is cached and only recomputed when the ledger may have
+    // changed (after a task runs). Avoids re-reading the unbounded ledger.jsonl
+    // on every keystroke — the menu hot path stays O(1) in ledger size.
+    let spend = summarizeSpend(await readLedger(ctx.cwd), ctx.clock.isoNow());
+    let spendDirty = false;
+
     while (true) {
+      if (spendDirty) {
+        spend = summarizeSpend(await readLedger(ctx.cwd), ctx.clock.isoNow());
+        spendDirty = false;
+      }
       const metas = await ctx.store.list();
-      await renderMainScreen(ctx, mutableCtx, metas, out, updateInfo, claudeTokenInfo, runningUnderNpx);
+      await renderMainScreen(ctx, mutableCtx, metas, spend, out, updateInfo, claudeTokenInfo, runningUnderNpx);
 
       out.write('> ');
       const key = await readLine();
@@ -1606,6 +1618,7 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
         if (firstMsg !== null && firstMsg.length > 0) {
           const meta = await ctx.store.create(firstMsg);
           const chatResult = await runChatLoop(ctx, mutableCtx, meta.id, out, readLine, loginFn, detectEnvironmentFn);
+          spendDirty = true; // a task may have run — refresh the spend summary
           if (chatResult === 'exit') break;
         }
         continue;
@@ -1617,6 +1630,7 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
         const latest = all[0];
         if (latest !== undefined) {
           const chatResult = await runChatLoop(ctx, mutableCtx, latest.id, out, readLine, loginFn, detectEnvironmentFn);
+          spendDirty = true; // a task may have run — refresh the spend summary
           if (chatResult === 'exit') break;
         } else {
           out.write('No conversations yet. Press n to start one.\n');
@@ -1630,6 +1644,7 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
         const target = metas[digit - 1];
         if (target !== undefined) {
           const chatResult = await runChatLoop(ctx, mutableCtx, target.id, out, readLine, loginFn, detectEnvironmentFn);
+          spendDirty = true; // a task may have run — refresh the spend summary
           if (chatResult === 'exit') break;
         } else {
           out.write(`No conversation at position ${digit}.\n`);
@@ -1646,6 +1661,7 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
       // ---- [i] Import a native conversation -----------------------------------
       if (key === 'i') {
         const importResult = await runImportNative(ctx, mutableCtx, out, readLine, loginFn, detectEnvironmentFn);
+        spendDirty = true; // an imported session may run a task — refresh spend
         if (importResult === 'exit') break;
         continue;
       }

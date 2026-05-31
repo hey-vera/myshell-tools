@@ -19,6 +19,12 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 ### Changed
 - The update banner and `[u]` Update-now action appear **only when a newer version is genuinely available** (unchanged), and are now also gated on the update being able to persist (not under npx).
 
+### Performance
+- **Control-panel menu no longer re-parses the ledger on every keystroke.** The spend summary is computed once and cached, and only refreshed after a task actually runs (the only time the ledger changes). Previously each keypress re-read and re-parsed the unbounded `ledger.jsonl`; on an active ledger that was tens-to-hundreds of ms of avoidable latency per keystroke. The menu hot path is now O(1) in ledger size.
+
+### Added
+- **`doctor --fix` now offers to refresh an expiring Claude token.** When Claude is signed in and the stored `sk-ant-oat…` token is expired or inside the 14-day warning window, the fix pass offers a one-keypress re-login — closing the gap where the expiry was *reported* but never *actionable*.
+
 ### Why
 - Users running the convenience `npx` path were landing on a stale cached version (e.g. 2.8.0) and could not understand why "auto-update" never advanced them — npx ignores the global install our updater performs. The tool now names that situation and points to the durable fix instead of failing silently.
 

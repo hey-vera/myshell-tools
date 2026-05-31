@@ -200,6 +200,17 @@ export interface DoctorFixOpts {
    * Defaults to the real detectEnvironment from providers/detect.ts.
    */
   readonly detectEnvironment?: () => Promise<EnvironmentStatus>;
+  /**
+   * Load the Claude token capture timestamp (ISO 8601). Injected in tests to
+   * drive the token-expiry refresh prompt hermetically (no disk read).
+   * Defaults to the real loadClaudeTokenCapturedAt from infra/credentials.ts.
+   */
+  readonly loadClaudeTokenCapturedAt?: () => Promise<string | undefined>;
+  /**
+   * Current epoch-ms, used for deterministic token-expiry computation in tests.
+   * Defaults to Date.now().
+   */
+  readonly now?: () => number;
 }
 
 // ---------------------------------------------------------------------------
@@ -266,8 +277,20 @@ export async function runDoctor(out: OutputSink, opts?: DoctorFixOpts): Promise<
     rlClose = () => rl.close();
   }
 
+  const loadCapturedAtFn = opts.loadClaudeTokenCapturedAt ?? loadClaudeTokenCapturedAt;
+  const nowFn = opts.now ?? (() => Date.now());
+
   try {
-    await runFixPass(out, env, readLineFn, installProviderFn, loginFn, detectEnvironmentFn);
+    await runFixPass(
+      out,
+      env,
+      readLineFn,
+      installProviderFn,
+      loginFn,
+      detectEnvironmentFn,
+      loadCapturedAtFn,
+      nowFn,
+    );
   } finally {
     rlClose?.();
   }
@@ -297,6 +320,8 @@ async function runFixPass(
   installProviderFn: (id: 'claude' | 'codex' | 'opencode', out: OutputSink) => Promise<boolean>,
   loginFn: (out: OutputSink, providerArg?: string) => Promise<number>,
   detectEnvironmentFn: () => Promise<EnvironmentStatus>,
+  loadCapturedAtFn: () => Promise<string | undefined>,
+  nowFn: () => number,
 ): Promise<void> {
   const providers: Array<'claude' | 'codex' | 'opencode'> = ['claude', 'codex', 'opencode'];
 
@@ -341,6 +366,27 @@ async function runFixPass(
         await loginFn(out, id);
       } catch {
         out.write(red(`✗ Sign-in for ${id} did not complete.\n`, out.color));
+      }
+    }
+  }
+
+  // ---- Step 3b: offer a Claude token refresh when it is expiring -------------
+  // The sk-ant-oat… token from `claude setup-token` is ~1-year-lived. Proactively
+  // offer to refresh it when expired or inside the warning window so users aren't
+  // surprised by a mid-session auth failure (a real reported confusion).
+  if (env.claude.installed && env.claude.authenticated) {
+    const capturedAt = await loadCapturedAtFn().catch(() => undefined);
+    const tokenInfo = claudeTokenStatus(capturedAt, nowFn());
+    if (tokenInfo !== null && (tokenInfo.expired || tokenInfo.nearExpiry)) {
+      const when = tokenInfo.expired ? 'has expired' : `expires in ${tokenInfo.daysLeft} days`;
+      out.write(`\nYour Claude token ${when}. Refresh it now? (Y/n) `);
+      const ans = await readLine();
+      if (parseYesNo(ans, true)) {
+        try {
+          await loginFn(out, 'claude');
+        } catch {
+          out.write(red(`✗ Claude re-login did not complete.\n`, out.color));
+        }
       }
     }
   }

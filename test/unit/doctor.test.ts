@@ -799,3 +799,82 @@ describe('buildDoctorReport — no token line when claude is not signed in', () 
     assert.strictEqual(tokenLinePresent, false, 'no token line when not signed in');
   });
 });
+
+// ---------------------------------------------------------------------------
+// --fix mode: Claude token near-expiry → offers a refresh (re-login)
+// ---------------------------------------------------------------------------
+
+describe('runDoctor --fix — offers Claude token refresh when expiring', () => {
+  const FIXED_NOW = 1_900_000_000_000; // fixed epoch-ms for deterministic expiry
+  const DAY = 24 * 60 * 60 * 1000;
+
+  it('prompts to refresh and re-logs in when the token is near expiry and answered y', async () => {
+    const loginCalls: string[] = [];
+    const env = makeFullEnv({
+      claude: { installed: true, authenticated: true, version: '1.0.0', binaryPath: 'claude' },
+    });
+    // Captured 360 days ago → ~5 days left on a 365-day token → nearExpiry.
+    const capturedAt = new Date(FIXED_NOW - 360 * DAY).toISOString();
+
+    const { out, lines } = makeFakeOut();
+    await runDoctor(out, {
+      fix: true,
+      readLine: async () => 'y', // accept the refresh prompt
+      installProvider: async () => false,
+      login: async (_out, id) => { loginCalls.push(id ?? 'all'); return 0; },
+      detectEnvironment: async () => env,
+      loadClaudeTokenCapturedAt: async () => capturedAt,
+      now: () => FIXED_NOW,
+    });
+
+    const output = lines.join('');
+    assert.ok(/Refresh it now/.test(output), 'should prompt to refresh the expiring token');
+    assert.deepEqual(loginCalls, ['claude'], 'accepting the prompt should re-login claude');
+  });
+
+  it('does NOT prompt when the token is healthy (plenty of time left)', async () => {
+    const loginCalls: string[] = [];
+    const env = makeFullEnv({
+      claude: { installed: true, authenticated: true, version: '1.0.0', binaryPath: 'claude' },
+    });
+    // Captured 10 days ago → ~355 days left → healthy, no prompt.
+    const capturedAt = new Date(FIXED_NOW - 10 * DAY).toISOString();
+
+    const { out, lines } = makeFakeOut();
+    await runDoctor(out, {
+      fix: true,
+      readLine: async () => 'n',
+      installProvider: async () => false,
+      login: async (_out, id) => { loginCalls.push(id ?? 'all'); return 0; },
+      detectEnvironment: async () => env,
+      loadClaudeTokenCapturedAt: async () => capturedAt,
+      now: () => FIXED_NOW,
+    });
+
+    const output = lines.join('');
+    assert.ok(!/Refresh it now/.test(output), 'healthy token must not trigger a refresh prompt');
+    assert.deepEqual(loginCalls, [], 'no re-login for a healthy token');
+  });
+
+  it('does NOT prompt when no capture date is stored (unknown lifetime)', async () => {
+    const loginCalls: string[] = [];
+    const env = makeFullEnv({
+      claude: { installed: true, authenticated: true, version: '1.0.0', binaryPath: 'claude' },
+    });
+
+    const { out, lines } = makeFakeOut();
+    await runDoctor(out, {
+      fix: true,
+      readLine: async () => 'n',
+      installProvider: async () => false,
+      login: async (_out, id) => { loginCalls.push(id ?? 'all'); return 0; },
+      detectEnvironment: async () => env,
+      loadClaudeTokenCapturedAt: async () => undefined,
+      now: () => FIXED_NOW,
+    });
+
+    const output = lines.join('');
+    assert.ok(!/Refresh it now/.test(output), 'unknown capture date must not trigger a prompt');
+    assert.deepEqual(loginCalls, [], 'no re-login when lifetime is unknown');
+  });
+});
