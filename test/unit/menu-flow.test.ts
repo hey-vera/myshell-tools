@@ -739,6 +739,7 @@ describe('startMenu — first-run welcome: install prompt for missing provider',
   function makeFirstRunCtx(
     inputs: ReadonlyArray<string | null>,
     env: EnvironmentStatus = FAKE_ENV_CLAUDE_MISSING,
+    postOnboardEnv?: EnvironmentStatus,
   ): MenuContext {
     const clock = makeFakeClock();
     const store = makeStore(clock);
@@ -746,6 +747,10 @@ describe('startMenu — first-run welcome: install prompt for missing provider',
     const dir = join(tmpdir(), `menu-flow-first-${randomUUID()}`);
 
     const config: AppConfig = { onboarded: false, setAsDefault: false };
+
+    // Use the post-onboard env if provided, otherwise fall back to the same env.
+    // This prevents real `claude/codex/opencode --version` spawns after onboarding.
+    const resolvedPostOnboardEnv = postOnboardEnv ?? env;
 
     return {
       version: '2.0.0',
@@ -762,6 +767,8 @@ describe('startMenu — first-run welcome: install prompt for missing provider',
       // Inject no-op fakes so no real npm/claude/codex subprocesses are spawned
       installProvider: async () => true,
       login: async () => 0,
+      // Inject fake detectEnvironment so post-onboarding re-detect never spawns
+      detectEnvironment: async () => resolvedPostOnboardEnv,
     };
   }
 
@@ -1319,6 +1326,8 @@ describe('startMenu — first-run welcome: y to set-as-default writes the shell 
       // Inject no-op fakes so no real npm/claude/codex subprocesses are spawned
       installProvider: async () => true,
       login: async () => 0,
+      // Inject fake detectEnvironment so post-onboarding re-detect never spawns
+      detectEnvironment: async () => FAKE_ENV_BOTH_INSTALLED_AUTHED,
       // tempHome is set via process.env.HOME override below
     };
   }
@@ -1443,5 +1452,288 @@ describe('startMenu — first-run welcome: y to set-as-default writes the shell 
         'hook must NOT be written when user answers n',
       );
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// FLOW 9: first-run onboarding env refresh (BUG 1)
+// After onboarding, the first main screen must reflect the FRESH post-login env,
+// not the stale pre-login status that was passed in via ctx.env.
+// ---------------------------------------------------------------------------
+
+describe('startMenu — first-run: post-onboarding env refresh (BUG 1)', () => {
+  /**
+   * Env where codex is installed but NOT authenticated (stale/pre-login state).
+   * Passed as ctx.env so this is what the menu sees before onboarding.
+   */
+  const STALE_ENV: EnvironmentStatus = {
+    claude: {
+      id: 'claude',
+      installed: true,
+      version: '1.0.0',
+      authenticated: false,
+      plan: null,
+      binaryPath: 'claude',
+      availableModels: [],
+    },
+    codex: {
+      id: 'codex',
+      installed: false,
+      version: null,
+      authenticated: false,
+      plan: null,
+      binaryPath: null,
+      availableModels: [],
+    },
+    opencode: {
+      id: 'opencode',
+      installed: false,
+      version: null,
+      authenticated: false,
+      plan: null,
+      binaryPath: null,
+      availableModels: [],
+    },
+    hasAnyProvider: true,
+    platform: 'linux',
+  };
+
+  /**
+   * Fresh env returned after detectEnvironment() post-onboarding — claude is
+   * now authenticated (the user signed in during onboarding).
+   */
+  const FRESH_ENV: EnvironmentStatus = {
+    claude: {
+      id: 'claude',
+      installed: true,
+      version: '1.0.0',
+      authenticated: true,
+      plan: null,
+      binaryPath: 'claude',
+      availableModels: ['claude-opus-4'],
+    },
+    codex: {
+      id: 'codex',
+      installed: false,
+      version: null,
+      authenticated: false,
+      plan: null,
+      binaryPath: null,
+      availableModels: [],
+    },
+    opencode: {
+      id: 'opencode',
+      installed: false,
+      version: null,
+      authenticated: false,
+      plan: null,
+      binaryPath: null,
+      availableModels: [],
+    },
+    hasAnyProvider: true,
+    platform: 'linux',
+  };
+
+  it('first main screen shows FRESH status after onboarding signed in', async () => {
+    const clock = makeFakeClock();
+    const store = makeStore(clock);
+    const ledger = makeFakeLedger();
+    const dir = join(tmpdir(), `menu-onboard-fresh-${randomUUID()}`);
+
+    const config: AppConfig = { onboarded: false, setAsDefault: false };
+
+    // Welcome flow for STALE_ENV: claude is installed but unauthenticated.
+    // Inputs: sign-in prompt → 'y' (login fake called) → mode → Enter → default shell → n
+    // Then main menu → q
+    const ctx: MenuContext = {
+      version: '2.0.0',
+      clock,
+      ledger,
+      providers: { claude: makeFakeProvider() },
+      env: STALE_ENV,
+      store,
+      config,
+      cwd: dir,
+      sandbox: 'workspace-write',
+      timeoutMs: 5_000,
+      readLine: makeScriptedReader(['y', '', 'n', 'q']),
+      installProvider: async () => true,
+      login: async () => 0,
+      // detectEnvironment returns FRESH_ENV — simulates successful post-login detection
+      detectEnvironment: async () => FRESH_ENV,
+    };
+
+    const sink = makeSink();
+    await assert.doesNotReject(
+      () => startMenu(ctx, sink),
+      'onboarding with detectEnvironment injection should resolve cleanly',
+    );
+
+    // The main screen (after onboarding) must show ✅ claude: ready, not ⚠️ not signed in.
+    // The stale "not signed in" must NOT appear in the first main screen rendering.
+    // We split on the Setup header to find the post-onboarding content.
+    const afterSetup = sink.buf.split('Setup')[1] ?? sink.buf;
+    assert.ok(
+      afterSetup.includes('ready'),
+      `first main screen must show "ready" after onboarding refresh; got: ${afterSetup.slice(0, 400)}`,
+    );
+  });
+
+  it('no real detectEnvironment spawns (seam is honoured)', async () => {
+    // Count how many times the fake detectEnvironment was called — it must be
+    // called exactly once (the post-onboarding refresh), and the real one never runs.
+    const clock = makeFakeClock();
+    const store = makeStore(clock);
+    const ledger = makeFakeLedger();
+    const dir = join(tmpdir(), `menu-onboard-seam-${randomUUID()}`);
+
+    const config: AppConfig = { onboarded: false, setAsDefault: false };
+
+    let detectCalls = 0;
+    const ctx: MenuContext = {
+      version: '2.0.0',
+      clock,
+      ledger,
+      providers: { claude: makeFakeProvider() },
+      env: STALE_ENV,
+      store,
+      config,
+      cwd: dir,
+      sandbox: 'workspace-write',
+      timeoutMs: 5_000,
+      readLine: makeScriptedReader(['y', '', 'n', 'q']),
+      installProvider: async () => true,
+      login: async () => 0,
+      detectEnvironment: async () => {
+        detectCalls += 1;
+        return FRESH_ENV;
+      },
+    };
+
+    const sink = makeSink();
+    await startMenu(ctx, sink);
+
+    assert.equal(detectCalls, 1, 'detectEnvironment must be called exactly once after onboarding');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// FLOW 10: [o] opencode login — Auth section UX (BUG 2)
+// ---------------------------------------------------------------------------
+
+describe('startMenu — [o] opencode login in Auth section (BUG 2)', () => {
+  /** Env with opencode installed — the [o] entry should appear. */
+  const FAKE_ENV_OPENCODE_INSTALLED: EnvironmentStatus = {
+    ...FAKE_ENV,
+    opencode: {
+      id: 'opencode',
+      installed: true,
+      version: '0.1.0',
+      authenticated: true,
+      plan: null,
+      binaryPath: 'opencode',
+      availableModels: ['opencode/deepseek-v4-flash-free'],
+    },
+  };
+
+  it('Auth section shows [o] opencode login when opencode is installed', async () => {
+    const sink = makeSink();
+    const ctx = makeCtx({
+      env: FAKE_ENV_OPENCODE_INSTALLED,
+      readLine: makeScriptedReader(['q']),
+      detectEnvironment: async () => FAKE_ENV_OPENCODE_INSTALLED,
+    });
+
+    await startMenu(ctx, sink);
+
+    assert.ok(
+      sink.buf.includes('[o]'),
+      'menu must show [o] key when opencode is installed',
+    );
+    assert.ok(
+      sink.buf.toLowerCase().includes('opencode'),
+      'menu must mention opencode in Auth section when installed',
+    );
+  });
+
+  it('Auth section does NOT show [o] when opencode is not installed', async () => {
+    const sink = makeSink();
+    // FAKE_ENV has opencode not-installed
+    const ctx = makeCtx({
+      readLine: makeScriptedReader(['q']),
+      detectEnvironment: async () => FAKE_ENV,
+    });
+
+    await startMenu(ctx, sink);
+
+    // The [o] key must not appear in the Auth section
+    // (it may still appear in the [1-9] range label "1-9" but not as "[o]")
+    assert.ok(
+      !sink.buf.includes('[o]'),
+      '[o] must NOT appear in menu when opencode is not installed',
+    );
+  });
+
+  it('pressing o with opencode installed invokes login with "opencode"', async () => {
+    let loginCalled = false;
+    let loginArg: string | undefined;
+
+    const sink = makeSink();
+    const ctx = makeCtx({
+      env: FAKE_ENV_OPENCODE_INSTALLED,
+      readLine: makeScriptedReader(['o', 'q']),
+      login: async (_out, providerArg) => {
+        loginCalled = true;
+        loginArg = providerArg;
+        return 0;
+      },
+      detectEnvironment: async () => FAKE_ENV_OPENCODE_INSTALLED,
+    });
+
+    await assert.doesNotReject(
+      () => startMenu(ctx, sink),
+      'pressing o with opencode installed should not throw',
+    );
+
+    assert.equal(loginCalled, true, 'login fake must have been called');
+    assert.equal(loginArg, 'opencode', 'login must be called with "opencode"');
+  });
+
+  it('pressing o when opencode NOT installed falls through to "Unknown option"', async () => {
+    const sink = makeSink();
+    // FAKE_ENV has opencode not-installed → [o] handler should NOT fire
+    const ctx = makeCtx({
+      readLine: makeScriptedReader(['o', 'q']),
+      detectEnvironment: async () => FAKE_ENV,
+    });
+
+    await assert.doesNotReject(
+      () => startMenu(ctx, sink),
+      'pressing o without opencode installed should not throw',
+    );
+
+    assert.ok(
+      sink.buf.includes('Unknown option'),
+      '"Unknown option" must appear when o pressed without opencode installed',
+    );
+  });
+
+  it('pressing o does not spawn real subprocesses (login seam is honoured)', async () => {
+    let loginCallCount = 0;
+
+    const sink = makeSink();
+    const ctx = makeCtx({
+      env: FAKE_ENV_OPENCODE_INSTALLED,
+      readLine: makeScriptedReader(['o', 'q']),
+      login: async () => {
+        loginCallCount += 1;
+        return 0;
+      },
+      detectEnvironment: async () => FAKE_ENV_OPENCODE_INSTALLED,
+    });
+
+    await startMenu(ctx, sink);
+
+    assert.equal(loginCallCount, 1, 'login seam must be called exactly once for [o]');
   });
 });

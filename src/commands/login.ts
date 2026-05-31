@@ -13,22 +13,27 @@
  *   - 'code':   a no-localhost flow that works anywhere.
  *       · claude → `claude setup-token`: prints a link; the user signs in at
  *         claude.ai, copies the authorization code, and pastes it back here.
+ *         After the command exits, we prompt the user to paste the minted token
+ *         (sk-ant-oat…), persist it, and inject it into process.env so that
+ *         subsequent `claude auth status` and `claude -p …` calls see it.
  *       · codex  → `codex login --device-auth`: prints a URL + one-time code;
  *         the user authorizes their ChatGPT account on any device.
  *
  * When no method is forced, we auto-detect: headless/remote environments default
  * to 'code' (so the localhost trap is avoided), everything else to 'browser'.
  *
- * Security: myshell-tools never sees, handles, or stores raw credentials. Each
- * CLI manages its own tokens; we only trigger its login. (This is what keeps the
- * "use your subscription, no API keys" model honest.)
+ * Security: myshell-tools never stores raw API keys or passwords.  The Claude
+ * OAuth token (sk-ant-oat…) is captured only after the user explicitly pastes
+ * it and is stored in ~/.myshell-tools/credentials.json (mode 0o600).
  */
 
+import readline from 'node:readline';
 import { execa } from 'execa';
 import type { OutputSink } from '../interface/render.js';
 import type { ProviderId } from '../providers/port.js';
 import { detectProvider, getInstallCommand } from '../providers/detect.js';
 import { bold, dim, green, red } from '../ui/theme.js';
+import { extractClaudeToken, saveClaudeToken } from '../infra/credentials.js';
 
 /** Which sign-in flow to run. See module docstring. */
 export type LoginMethod = 'browser' | 'code';
@@ -37,10 +42,9 @@ export type LoginMethod = 'browser' | 'code';
 const LOGIN_COMMAND: Record<ProviderId, { readonly bin: string; readonly args: readonly string[] }> = {
   claude: { bin: 'claude', args: ['auth', 'login'] },
   codex: { bin: 'codex', args: ['login'] },
-  // opencode ships free models — no credentials required. `opencode auth login -p <provider>`
-  // is only needed for premium providers. We default to no-op by pointing at `auth list`
-  // so the user sees configured credentials without being forced through a login flow.
-  opencode: { bin: 'opencode', args: ['auth', 'list'] },
+  // opencode ships free models — no credentials required. `opencode auth login` adds
+  // a premium provider/subscription (e.g. anthropic, openai, or opencode-zen).
+  opencode: { bin: 'opencode', args: ['auth', 'login'] },
 };
 
 /**
@@ -71,12 +75,12 @@ const LOGIN_CODE_COMMAND: Record<
   },
   opencode: {
     bin: 'opencode',
-    args: ['auth', 'list'],
+    args: ['auth', 'login'],
     guidance:
-      'opencode ships free models with no credentials required.\n' +
-      '  To add a premium provider, run:\n' +
-      '    opencode auth login -p <provider> -m <method>\n' +
-      '  e.g. opencode auth login -p anthropic -m apikey',
+      'Free models need no login.\n' +
+      '  This starts `opencode auth login` to add a premium provider or subscription\n' +
+      '  (e.g. anthropic, openai, or opencode-zen).\n' +
+      '  myshell-tools never sees the credentials — opencode manages them.',
   },
 };
 
@@ -139,13 +143,16 @@ export function resolveLoginMethod(
  * when no argument is given). Returns 0 on success, 1 only for an invalid
  * argument — individual sign-in failures are reported but do not fail the command.
  *
- * @param opts.method - Force 'browser' or 'code'. When omitted, the method is
+ * @param opts.method   - Force 'browser' or 'code'. When omitted, the method is
  *   auto-detected from the environment via {@link resolveLoginMethod}.
+ * @param opts.readLine - Injected line-reader for the token-paste prompt (used
+ *   by the menu so it shares the single readline interface). When absent, a
+ *   temporary readline interface is created and immediately closed after one line.
  */
 export async function runLogin(
   out: OutputSink,
   providerArg?: string,
-  opts?: { method?: LoginMethod },
+  opts?: { method?: LoginMethod; readLine?: () => Promise<string | null> },
 ): Promise<number> {
   let targets: ProviderId[];
   if (providerArg !== undefined) {
@@ -185,6 +192,16 @@ export async function runLogin(
 
     if (result.exitCode === 0) {
       out.write(green(`✓ ${id} sign-in complete.\n`, out.color));
+
+      // --- Claude code-method token capture -----------------------------------
+      // `claude setup-token` mints a long-lived token (sk-ant-oat01-…) and PRINTS
+      // it to the terminal but does NOT persist it.  After the command exits we
+      // prompt the user to paste the token so we can store it and inject it into
+      // process.env — making `claude auth status` report loggedIn:true and making
+      // every subsequent `claude -p …` spawn work without manual env-var setup.
+      if (id === 'claude' && method === 'code') {
+        await captureClaudeToken(out, opts?.readLine);
+      }
     } else {
       out.write(
         red(`✗ ${id} sign-in did not complete (exit ${result.exitCode ?? 'unknown'}).\n`, out.color),
@@ -205,3 +222,98 @@ export async function runLogin(
 
   return 0;
 }
+
+// ---------------------------------------------------------------------------
+// Token capture helper (internal — exported for tests via credentials.ts)
+// ---------------------------------------------------------------------------
+
+/**
+ * Prompt the user to paste the token shown by `claude setup-token`, extract
+ * it, persist it, and inject it into `process.env.CLAUDE_CODE_OAUTH_TOKEN`.
+ *
+ * Uses the injected `readLine` when provided (menu shares its single readline
+ * interface). Otherwise creates a temporary readline interface, reads ONE line,
+ * and immediately closes it (so stdin is not held open).
+ *
+ * Never throws — a blank or invalid paste is reported as a dim advisory note.
+ */
+async function captureClaudeToken(
+  out: OutputSink,
+  readLine?: () => Promise<string | null>,
+): Promise<void> {
+  out.write(
+    '\nPaste the token shown above (starts with sk-ant-oat) and press Enter' +
+      ' — or leave blank to skip:\n> ',
+  );
+
+  let pasted: string | null;
+
+  if (readLine !== undefined) {
+    // Menu injected its own reader — use it directly, do NOT create a second
+    // readline interface (that would double-consume stdin).
+    pasted = await readLine();
+  } else {
+    // CLI direct path — create a temporary readline, read one line, close.
+    pasted = await readOneLineFromStdin();
+  }
+
+  const token = extractClaudeToken(pasted ?? '');
+
+  if (token !== null) {
+    try {
+      await saveClaudeToken(token);
+      process.env['CLAUDE_CODE_OAUTH_TOKEN'] = token;
+      out.write(green('✓ Claude token saved — claude is now ready.\n', out.color));
+    } catch {
+      out.write(
+        dim(
+          'Could not save token to disk — you can re-run `myshell-tools login claude --code` later.\n',
+          out.color,
+        ),
+      );
+    }
+  } else {
+    out.write(
+      dim(
+        'Token not captured. Re-run `myshell-tools login claude --code` and paste the\n' +
+          'sk-ant-oat… value (NOT an Anthropic API key starting with sk-ant-api).\n',
+        out.color,
+      ),
+    );
+  }
+}
+
+/**
+ * Create a temporary readline interface on process.stdin, read exactly one
+ * line, and close the interface. Returns the trimmed line or null on EOF.
+ *
+ * This is used only from the `myshell-tools login` direct CLI path where no
+ * shared readline interface exists.
+ */
+function readOneLineFromStdin(): Promise<string | null> {
+  return new Promise<string | null>((resolve) => {
+    const rl = readline.createInterface({
+      input: process.stdin,
+      output: process.stdout,
+      terminal: false,
+    });
+
+    let resolved = false;
+
+    rl.once('line', (raw: string) => {
+      resolved = true;
+      rl.close();
+      resolve(raw.trim());
+    });
+
+    rl.once('close', () => {
+      if (!resolved) {
+        resolved = true;
+        resolve(null);
+      }
+    });
+  });
+}
+
+// Re-export extractClaudeToken so test/unit/credentials.test.ts can import it
+// directly from credentials.ts (where it is defined). No re-export needed here.

@@ -34,6 +34,7 @@ import { DEFAULT_POLICY, POLICY_PRESETS } from '../core/policy.js';
 import type { OutputSink } from './render.js';
 import { runTask } from './run.js';
 import { runLogin } from '../commands/login.js';
+import type { LoginMethod } from '../commands/login.js';
 import { runDoctor } from '../commands/doctor.js';
 import { runCost } from '../commands/cost.js';
 import { runInstall } from '../commands/install.js';
@@ -72,8 +73,22 @@ export interface MenuContext {
    * Optional injected login function for testing. When provided, `startMenu`
    * uses this instead of the real `runLogin` from commands/login.ts, preventing
    * real `claude`/`codex login` subprocesses from spawning during tests.
+   *
+   * The third argument mirrors the `opts` parameter of `runLogin` so the menu
+   * can pass the shared `readLine` function for the token-paste prompt.
    */
-  readonly login?: (out: OutputSink, providerArg?: string) => Promise<number>;
+  readonly login?: (
+    out: OutputSink,
+    providerArg?: string,
+    opts?: { method?: LoginMethod; readLine?: () => Promise<string | null> },
+  ) => Promise<number>;
+  /**
+   * Optional injected detectEnvironment for testing. When provided, `startMenu`
+   * uses this instead of the real `detectEnvironment` from providers/detect.ts,
+   * preventing real `claude`/`codex`/`opencode --version` subprocesses from
+   * spawning during tests (e.g. after first-run onboarding or [j]/[k]/[o] login).
+   */
+  readonly detectEnvironment?: () => Promise<EnvironmentStatus>;
 }
 
 // ---------------------------------------------------------------------------
@@ -300,7 +315,11 @@ async function runWelcome(
   readLine: () => Promise<string | null>,
   mutableConfig: AppConfig,
   installProviderFn: (id: ProviderId, out: OutputSink) => Promise<boolean>,
-  loginFn: (out: OutputSink, providerArg?: string) => Promise<number>,
+  loginFn: (
+    out: OutputSink,
+    providerArg?: string,
+    opts?: { method?: LoginMethod; readLine?: () => Promise<string | null> },
+  ) => Promise<number>,
 ): Promise<AppConfig> {
   // Use the mutable env so re-detection after installs is visible downstream.
   let env = ctx.env;
@@ -352,7 +371,8 @@ async function runWelcome(
     if (!skip) {
       // loginFn auto-detects the right method (code in containers/SSH where the
       // localhost OAuth callback can't be reached, browser on a desktop).
-      await loginFn(out, id);
+      // Pass readLine so the claude token-paste prompt shares the menu's reader.
+      await loginFn(out, id, { readLine });
     }
   }
 
@@ -862,6 +882,15 @@ async function renderMainScreen(
   }
   out.write('\n');
 
+  // Auth section — conditionally include opencode login when opencode is installed.
+  const authEntries: Array<{ key: string; label: string; section: string }> = [
+    { key: 'j', label: 'Login Claude', section: 'Auth' },
+    { key: 'k', label: 'Login Codex', section: 'Auth' },
+  ];
+  if (mutableCtx.env.opencode.installed) {
+    authEntries.push({ key: 'o', label: 'Login / add subscription (opencode)', section: 'Auth' });
+  }
+
   // Menu — sectioned via menu()
   out.write(
     menu([
@@ -871,8 +900,7 @@ async function renderMainScreen(
       { key: 'e', label: 'Manage conversations', section: 'Conversations' },
       { key: 'i', label: 'Import a conversation', section: 'Conversations' },
       { key: 'r', label: 'Open a raw provider session', section: 'Conversations' },
-      { key: 'j', label: 'Login Claude', section: 'Auth' },
-      { key: 'k', label: 'Login Codex', section: 'Auth' },
+      ...authEntries,
       { key: 's', label: 'Settings', section: 'Options' },
       { key: 'd', label: 'Doctor', section: 'Options' },
       { key: '$', label: 'Cost', section: 'Options' },
@@ -905,6 +933,7 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
   // Resolve injected seams — use the real implementations when not provided.
   const installProviderFn = ctx.installProvider !== undefined ? ctx.installProvider : installProvider;
   const loginFn = ctx.login !== undefined ? ctx.login : runLogin;
+  const detectEnvironmentFn = ctx.detectEnvironment !== undefined ? ctx.detectEnvironment : detectEnvironment;
 
   // Build the readLine function — either injected (for tests) or backed by a
   // real readline interface driven by the event-driven LineReader queue.
@@ -941,6 +970,9 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
     // ---- A. First-run welcome -----------------------------------------------
     if (!mutableCtx.config.onboarded) {
       mutableCtx.config = await runWelcome(ctx, out, readLine, mutableCtx.config, installProviderFn, loginFn);
+      // Re-detect after onboarding so the first main screen shows the REAL post-login
+      // status (e.g. codex now "ready" if the user signed in during setup).
+      mutableCtx.env = await detectEnvironmentFn();
     }
 
     // ---- B. Main screen loop -------------------------------------------------
@@ -1017,16 +1049,26 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
       // ---- [j] Login Claude ---------------------------------------------------
       // loginFn auto-detects the right sign-in method (code in containers/SSH,
       // browser on a desktop). Force either with `myshell-tools login claude --code|--browser`.
+      // Pass readLine so the token-paste prompt shares the menu's single reader
+      // (avoids creating a second readline interface that would double-consume stdin).
       if (key === 'j') {
-        await loginFn(out, 'claude');
-        mutableCtx.env = await detectEnvironment();
+        await loginFn(out, 'claude', { readLine });
+        mutableCtx.env = await detectEnvironmentFn();
         continue;
       }
 
       // ---- [k] Login Codex ----------------------------------------------------
       if (key === 'k') {
         await loginFn(out, 'codex');
-        mutableCtx.env = await detectEnvironment();
+        mutableCtx.env = await detectEnvironmentFn();
+        continue;
+      }
+
+      // ---- [o] Login / add subscription (opencode) ----------------------------
+      // Only act when opencode is installed; if not, fall through to Unknown option.
+      if (key === 'o' && mutableCtx.env.opencode.installed) {
+        await loginFn(out, 'opencode');
+        mutableCtx.env = await detectEnvironmentFn();
         continue;
       }
 

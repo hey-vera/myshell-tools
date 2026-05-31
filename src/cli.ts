@@ -28,6 +28,7 @@ import { runInstall } from './commands/install.js';
 import { banner } from './ui/banner.js';
 import { createSpinner } from './ui/spinner.js';
 import { dim } from './ui/theme.js';
+import { applyStoredCredentials } from './infra/credentials.js';
 
 const require = createRequire(import.meta.url);
 const pkg = require('../package.json');
@@ -116,6 +117,11 @@ function welcome(deps: OrchestrateDeps, color: boolean): string {
 }
 
 async function main(): Promise<void> {
+  // Inject any previously-saved Claude OAuth token into process.env before any
+  // detection or provider spawn so `claude auth status` and `claude -p …` both
+  // see it without the user needing to export CLAUDE_CODE_OAUTH_TOKEN manually.
+  await applyStoredCredentials(process.env);
+
   const args = process.argv.slice(2);
 
   if (args.includes('--help') || args.includes('-h')) {
