@@ -11,6 +11,12 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 - Cross-OS CI execution (requires a public remote).
 - First npm publish.
 
+## [2.14.0]
+
+### Fixed
+- **Auth-aware routing**: the orchestrator now prefers providers that are actually **signed in**. Previously it routed by a fixed preference order regardless of auth, so an installed-but-signed-out provider (e.g. claude) would be tried first, fail with `Not logged in`, and escalate — even when other providers were ready. Now `route()` picks the first authenticated+available provider for the tier (falling back to a signed-out one only if none are authenticated, where failover + inline re-login take over). `authenticatedProviders` is threaded from detection through `OrchestrateDeps`.
+- **Honest login message**: the claude code-method no longer prints `✓ claude sign-in complete` when the token was not actually captured; the paste prompt reports the real outcome.
+
 ## [2.13.0]
 
 ### Added

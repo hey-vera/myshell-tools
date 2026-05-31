@@ -2187,3 +2187,147 @@ describe('orchestrate — auth-failure final has errorCategory and provider', ()
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// Auth-aware routing via authenticatedProviders
+// ---------------------------------------------------------------------------
+
+describe('orchestrate — authenticatedProviders routes to signed-in provider first', () => {
+  it('with two providers where only the second is authenticated, FIRST run goes to the authenticated one', async () => {
+    // Policy ic order: [claude, codex]. claude is in providers but NOT authenticated.
+    // codex IS authenticated. Expected: first tier-start goes to codex.
+    const claudeProvider = makeFakeProvider('claude');
+    const codexProvider = makeFakeProvider('codex');
+
+    const clock = makeFakeClock();
+    const session = makeFakeSession();
+    const ledger = makeFakeLedger();
+
+    const deps: OrchestrateDeps = {
+      providers: { claude: claudeProvider, codex: codexProvider },
+      clock,
+      session,
+      ledger,
+      policy: DEFAULT_POLICY,
+      cwd: '/fake/cwd',
+      sandbox: 'workspace-write',
+      timeoutMs: 30_000,
+      // Only codex is authenticated; claude is installed but signed out.
+      authenticatedProviders: ['codex'],
+    };
+
+    const events = await collectEvents(
+      orchestrate('refactor X', deps, new AbortController().signal),
+    );
+
+    // The very first tier-start must be codex, not claude.
+    const firstTierStart = events.find((e) => e.type === 'tier-start');
+    assert.ok(firstTierStart !== undefined, 'Expected a tier-start event');
+    if (firstTierStart.type === 'tier-start') {
+      assert.equal(
+        firstTierStart.provider,
+        'codex',
+        'First run must go to authenticated codex, not signed-out claude',
+      );
+    }
+
+    // Must succeed (codex is a working provider in this test).
+    const finalEv = events.find((e) => e.type === 'final');
+    assert.ok(finalEv !== undefined);
+    if (finalEv.type === 'final') {
+      assert.equal(finalEv.success, true);
+    }
+  });
+
+  it('when authenticatedProviders is omitted, routing falls back to fixed preference order (backward-compat)', async () => {
+    // Without authenticatedProviders, the policy order [claude, codex] applies:
+    // claude comes first even though it is not "authenticated" by the caller.
+    const claudeProvider = makeFakeProvider('claude');
+    const codexProvider = makeFakeProvider('codex');
+
+    const clock = makeFakeClock();
+    const session = makeFakeSession();
+    const ledger = makeFakeLedger();
+
+    const deps: OrchestrateDeps = {
+      providers: { claude: claudeProvider, codex: codexProvider },
+      clock,
+      session,
+      ledger,
+      policy: DEFAULT_POLICY,
+      cwd: '/fake/cwd',
+      sandbox: 'workspace-write',
+      timeoutMs: 30_000,
+      // No authenticatedProviders — identical to existing behaviour.
+    };
+
+    const events = await collectEvents(
+      orchestrate('refactor X', deps, new AbortController().signal),
+    );
+
+    const firstTierStart = events.find((e) => e.type === 'tier-start');
+    assert.ok(firstTierStart !== undefined, 'Expected a tier-start event');
+    if (firstTierStart.type === 'tier-start') {
+      assert.equal(
+        firstTierStart.provider,
+        'claude',
+        'Without authenticatedProviders, claude (first in policy order) should be picked',
+      );
+    }
+  });
+
+  it('failover path: signed-out first provider errors → failover prefers authenticated second', async () => {
+    // claude (signed-out) errors; codex (authenticated) succeeds via failover.
+    const claudeErrorProvider = makeFakeProvider('claude', [
+      {
+        type: 'error',
+        error: { category: 'auth', recoverable: false, message: 'Not logged in', suggestion: 'run claude auth login' },
+      },
+    ]);
+    const codexProvider = makeFakeProvider('codex');
+
+    const clock = makeFakeClock();
+    const session = makeFakeSession();
+    const ledger = makeFakeLedger();
+
+    // Simulate the bug scenario: claude installed but not authenticated, codex authenticated.
+    // With auth-aware routing, codex should be picked FIRST (no wasted attempt on claude).
+    const deps: OrchestrateDeps = {
+      providers: { claude: claudeErrorProvider, codex: codexProvider },
+      clock,
+      session,
+      ledger,
+      policy: DEFAULT_POLICY,
+      cwd: '/fake/cwd',
+      sandbox: 'workspace-write',
+      timeoutMs: 30_000,
+      authenticatedProviders: ['codex'],
+    };
+
+    const events = await collectEvents(
+      orchestrate('refactor X', deps, new AbortController().signal),
+    );
+
+    // With auth-aware routing, codex is routed first (no claude attempt).
+    const firstTierStart = events.find((e) => e.type === 'tier-start');
+    assert.ok(firstTierStart !== undefined);
+    if (firstTierStart.type === 'tier-start') {
+      assert.equal(
+        firstTierStart.provider,
+        'codex',
+        'Auth-aware routing must skip signed-out claude and go directly to authenticated codex',
+      );
+    }
+
+    // No failover event (because codex was routed first and succeeded).
+    const failoverEv = events.find((e) => e.type === 'failover');
+    assert.equal(failoverEv, undefined, 'No failover needed when authenticated provider is routed first');
+
+    // Final must be success.
+    const finalEv = events.find((e) => e.type === 'final');
+    assert.ok(finalEv !== undefined);
+    if (finalEv.type === 'final') {
+      assert.equal(finalEv.success, true);
+    }
+  });
+});

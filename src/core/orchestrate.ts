@@ -252,7 +252,7 @@ export async function* orchestrate(
     // route among only those vendors for this one iteration, then clear the pool.
     const routePool = failoverPool ?? available;
     failoverPool = null;
-    const decision = route(currentTier, routePool, deps.policy, deps.availableModels);
+    const decision = route(currentTier, routePool, deps.policy, deps.availableModels, deps.authenticatedProviders);
 
     // Record this provider as tried at this tier.
     let tierTried = triedByTier.get(currentTier);
@@ -396,7 +396,7 @@ export async function* orchestrate(
         // Failover to an untried vendor at the same tier.
         // Peek at what route() would pick from the remaining pool so we can
         // name the target provider in the failover event.
-        const nextDecision = route(currentTier, remaining, deps.policy, deps.availableModels);
+        const nextDecision = route(currentTier, remaining, deps.policy, deps.availableModels, deps.authenticatedProviders);
         yield {
           type: 'failover',
           from: decision.provider,
@@ -463,7 +463,7 @@ export async function* orchestrate(
         };
 
         // Route reviewer at manager tier
-        const reviewDecision = route('manager', [reviewerId], deps.policy, deps.availableModels);
+        const reviewDecision = route('manager', [reviewerId], deps.policy, deps.availableModels, deps.authenticatedProviders);
         const reviewPrompt = buildReviewPrompt(task, lastOutput);
 
         // Yield tier-start for review run

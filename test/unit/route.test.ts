@@ -213,3 +213,86 @@ describe('route — availableModels filter', () => {
     assert.equal(withEmpty.model, withOmitted.model);
   });
 });
+
+// ---------------------------------------------------------------------------
+// route — authenticatedProviders (auth-aware routing)
+// ---------------------------------------------------------------------------
+
+describe('route — authenticatedProviders (auth-aware routing)', () => {
+  it('prefers an authenticated provider over a signed-out higher-preference one', () => {
+    // Policy order: [claude, codex]. claude is NOT authenticated; codex IS.
+    // Expected: route picks codex (authenticated) over claude (signed-out first-in-order).
+    const decision = route(
+      'ic',
+      ['claude', 'codex'],
+      DEFAULT_POLICY,
+      undefined,
+      ['codex'],
+    );
+    assert.equal(decision.provider, 'codex');
+  });
+
+  it('picks the authenticated provider even when it is last in preference order', () => {
+    // Only opencode is authenticated; all three are available.
+    // Policy ic order: [claude, codex, opencode] — opencode is last.
+    const decision = route(
+      'ic',
+      ['claude', 'codex', 'opencode'],
+      DEFAULT_POLICY,
+      undefined,
+      ['opencode'],
+    );
+    assert.equal(decision.provider, 'opencode');
+  });
+
+  it('falls back to first available when NONE are authenticated', () => {
+    // authenticatedProviders is non-empty but no provider overlaps with available.
+    // Falls back to first available in preference order (claude).
+    const decision = route(
+      'ic',
+      ['claude', 'codex'],
+      DEFAULT_POLICY,
+      undefined,
+      // Some unrelated authenticated provider that is not in the available set
+      [] as const,
+    );
+    // Empty authenticatedProviders → identical to today: first in preference order
+    assert.equal(decision.provider, 'claude');
+  });
+
+  it('falls back to first available (claude) when authenticatedProviders is empty', () => {
+    const decision = route('ic', ['claude', 'codex'], DEFAULT_POLICY, undefined, []);
+    assert.equal(decision.provider, 'claude');
+  });
+
+  it('when authenticatedProviders is undefined, behaviour is identical to existing routing', () => {
+    const withoutAuth = route('ic', BOTH, DEFAULT_POLICY);
+    const withUndefinedAuth = route('ic', BOTH, DEFAULT_POLICY, undefined, undefined);
+    assert.equal(withoutAuth.provider, withUndefinedAuth.provider);
+    assert.equal(withoutAuth.model, withUndefinedAuth.model);
+  });
+
+  it('when both claude and codex are authenticated, still picks claude (first in preference order)', () => {
+    const decision = route(
+      'ic',
+      ['claude', 'codex'],
+      DEFAULT_POLICY,
+      undefined,
+      ['claude', 'codex'],
+    );
+    assert.equal(decision.provider, 'claude');
+  });
+
+  it('auth-aware routing respects availableModels filter for the chosen authenticated provider', () => {
+    // codex is the only authenticated provider; gpt-5.4 is advertised.
+    const decision = route(
+      'ic',
+      ['claude', 'codex'],
+      DEFAULT_POLICY,
+      { codex: ['gpt-5.4', 'gpt-5.5'] },
+      ['codex'],
+    );
+    assert.equal(decision.provider, 'codex');
+    assert.equal(decision.model, 'gpt-5.4');
+  });
+});

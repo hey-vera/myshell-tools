@@ -161,6 +161,19 @@ export interface OrchestrateDeps {
    * Only include providers that are installed; exactOptionalPropertyTypes is ON.
    */
   readonly availableModels?: Partial<Record<ProviderId, readonly string[]>>;
+  /**
+   * The set of provider IDs that are currently signed in (authenticated).
+   *
+   * When supplied and non-empty, route() prefers authenticated providers over
+   * signed-out ones within the same tier, preventing wasted attempts against
+   * providers that are installed but not logged in.
+   *
+   * When absent or empty → routing falls back to the existing fixed-preference-
+   * order behaviour (backward-compatible).
+   *
+   * Only include providers whose `authenticated` flag is `true`; exactOptionalPropertyTypes is ON.
+   */
+  readonly authenticatedProviders?: readonly ProviderId[];
 }
 
 /**

@@ -243,7 +243,8 @@ export async function runLogin(
           }
         } else {
           // Auto-capture found nothing — fall back to paste prompt.
-          out.write(green(`✓ ${id} sign-in complete.\n`, out.color));
+          // Do NOT print "sign-in complete" here: the paste prompt is the real
+          // outcome gate; captureClaudeTokenWithPaste reports success itself.
           await captureClaudeTokenWithPaste(out, opts?.readLine);
         }
       } else {

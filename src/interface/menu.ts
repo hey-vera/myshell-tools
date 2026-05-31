@@ -1130,6 +1130,14 @@ async function runChatLoop(
         menuAvailableModels['opencode'] = mutableCtx.env.opencode.availableModels;
       }
 
+      // Collect authenticated providers from the live env so route() prefers
+      // signed-in providers over signed-out ones. Uses mutableCtx.env so
+      // post-login re-detection is reflected without restart.
+      const menuAuthenticatedProviders: ProviderId[] = [];
+      if (mutableCtx.env.claude.authenticated) menuAuthenticatedProviders.push('claude');
+      if (mutableCtx.env.codex.authenticated) menuAuthenticatedProviders.push('codex');
+      if (mutableCtx.env.opencode.authenticated) menuAuthenticatedProviders.push('opencode');
+
       const deps: OrchestrateDeps = {
         clock: ctx.clock,
         session: ctx.store.writer(convId),
@@ -1141,6 +1149,7 @@ async function runChatLoop(
         timeoutMs: ctx.timeoutMs,
         ...(priorHistory.length > 0 ? { history: priorHistory } : {}),
         ...(Object.keys(menuAvailableModels).length > 0 ? { availableModels: menuAvailableModels } : {}),
+        ...(menuAuthenticatedProviders.length > 0 ? { authenticatedProviders: menuAuthenticatedProviders } : {}),
       };
 
       const ac = new AbortController();

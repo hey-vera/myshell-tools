@@ -90,6 +90,13 @@ async function buildDeps(cwd: string): Promise<OrchestrateDeps> {
     availableModels['opencode'] = env.opencode.availableModels;
   }
 
+  // Collect authenticated providers so route() can prefer signed-in providers
+  // over signed-out ones, preventing wasted attempts on unauthenticated installs.
+  const authenticatedProviders: import('./providers/port.js').ProviderId[] = [];
+  if (env.claude.authenticated) authenticatedProviders.push('claude');
+  if (env.codex.authenticated) authenticatedProviders.push('codex');
+  if (env.opencode.authenticated) authenticatedProviders.push('opencode');
+
   return {
     clock: systemClock,
     session: createSessionWriter({ cwd, id: systemClock.uuid() }),
@@ -100,6 +107,7 @@ async function buildDeps(cwd: string): Promise<OrchestrateDeps> {
     sandbox: 'workspace-write',
     timeoutMs: 120000,
     ...(Object.keys(availableModels).length > 0 ? { availableModels } : {}),
+    ...(authenticatedProviders.length > 0 ? { authenticatedProviders } : {}),
   };
 }
 
