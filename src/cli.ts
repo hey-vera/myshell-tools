@@ -30,6 +30,7 @@ import { runCost } from './commands/cost.js';
 import { runLogin } from './commands/login.js';
 import { runInstall } from './commands/install.js';
 import { banner } from './ui/banner.js';
+import { commandHelpText } from './ui/help.js';
 import { createSpinner } from './ui/spinner.js';
 import { dim } from './ui/theme.js';
 const require = createRequire(import.meta.url);
@@ -130,7 +131,10 @@ async function main(): Promise<void> {
   const args = process.argv.slice(2);
 
   if (args.includes('--help') || args.includes('-h')) {
-    process.stdout.write(HELP);
+    // Focused per-command help (e.g. `login --help`) when the first arg is a
+    // known command; otherwise the global command list.
+    const cmdHelp = args[0] !== undefined ? commandHelpText(args[0]) : null;
+    process.stdout.write(cmdHelp ?? HELP);
     process.exit(0);
   }
 
