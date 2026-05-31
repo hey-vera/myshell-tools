@@ -887,9 +887,9 @@ async function runManage(
     if (!Number.isNaN(num) && num >= 1 && num <= metas.length) {
       const conv = metas[num - 1];
       if (conv !== undefined) {
-        out.write(`Delete "${conv.title}"? (y/n) `);
+        out.write(`Delete "${conv.title}"? (y/N) `);
         const confirmAns = await readLine();
-        if ((confirmAns ?? '').toLowerCase() === 'y') {
+        if (parseYesNo(confirmAns, false)) {
           await ctx.store.remove(conv.id);
           out.write('Deleted.\n');
         }
@@ -1715,10 +1715,11 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
       // tests stay hermetic). If install succeeds, proceeds to sign in.
       if (key === 'o') {
         if (!mutableCtx.env.opencode.installed) {
-          out.write(`Install opencode (${installCommandFor('opencode').replace('npm install -g ', '')})? [Enter] yes · [n] no\n`);
-          out.write('> ');
+          out.write(`Install opencode (${installCommandFor('opencode').replace('npm install -g ', '')})? (Y/n) `);
           const ans = await readLine();
-          const skip = ans === null || ans.toLowerCase() === 'n' || ans.toLowerCase() === 'no';
+          // EOF (null) means no interactive user — never auto-install on a closed
+          // pipe. Otherwise honor the (Y/n) default-yes (Enter = install).
+          const skip = ans === null || !parseYesNo(ans, true);
           if (skip) {
             out.write(`[2mSkipped. You can install it later: ${installCommandFor('opencode')}[0m\n`);
             continue;
