@@ -153,10 +153,58 @@ describe('buildHookBlock — pure, no I/O', () => {
     );
   });
 
+  it('bash block contains command-exists guard for aliases', () => {
+    const block = buildHookBlock('bash');
+    assert.ok(
+      block.includes('command -v myshell-tools >/dev/null 2>&1'),
+      'bash block must guard aliases with command-exists check',
+    );
+  });
+
+  it("bash block defines alias cm='myshell-tools'", () => {
+    const block = buildHookBlock('bash');
+    assert.ok(
+      block.includes("alias cm='myshell-tools'"),
+      "bash block must define alias cm='myshell-tools'",
+    );
+  });
+
+  it("bash block defines alias mst='myshell-tools'", () => {
+    const block = buildHookBlock('bash');
+    assert.ok(
+      block.includes("alias mst='myshell-tools'"),
+      "bash block must define alias mst='myshell-tools'",
+    );
+  });
+
   it('zsh block is identical to bash block (POSIX syntax shared)', () => {
     const bashBlock = buildHookBlock('bash');
     const zshBlock = buildHookBlock('zsh');
     assert.equal(bashBlock, zshBlock, 'bash and zsh blocks must be identical');
+  });
+
+  it('zsh block contains command-exists guard for aliases', () => {
+    const block = buildHookBlock('zsh');
+    assert.ok(
+      block.includes('command -v myshell-tools >/dev/null 2>&1'),
+      'zsh block must guard aliases with command-exists check',
+    );
+  });
+
+  it("zsh block defines alias cm='myshell-tools'", () => {
+    const block = buildHookBlock('zsh');
+    assert.ok(
+      block.includes("alias cm='myshell-tools'"),
+      "zsh block must define alias cm='myshell-tools'",
+    );
+  });
+
+  it("zsh block defines alias mst='myshell-tools'", () => {
+    const block = buildHookBlock('zsh');
+    assert.ok(
+      block.includes("alias mst='myshell-tools'"),
+      "zsh block must define alias mst='myshell-tools'",
+    );
   });
 
   it('powershell block contains HOOK_BEGIN marker', () => {
@@ -198,6 +246,32 @@ describe('buildHookBlock — pure, no I/O', () => {
     assert.ok(
       block.includes('myshell-tools'),
       'powershell block must contain a call to myshell-tools',
+    );
+  });
+
+  it('powershell block contains Get-Command guard for alias functions', () => {
+    const block = buildHookBlock('powershell');
+    // There should be a second Get-Command check guarding the cm/mst functions
+    const matches = block.match(/Get-Command myshell-tools/g) ?? [];
+    assert.ok(
+      matches.length >= 2,
+      'powershell block must use Get-Command at least twice (launch guard + alias guard)',
+    );
+  });
+
+  it('powershell block defines function cm { myshell-tools @args }', () => {
+    const block = buildHookBlock('powershell');
+    assert.ok(
+      block.includes('function cm { myshell-tools @args }'),
+      'powershell block must define function cm',
+    );
+  });
+
+  it('powershell block defines function mst { myshell-tools @args }', () => {
+    const block = buildHookBlock('powershell');
+    assert.ok(
+      block.includes('function mst { myshell-tools @args }'),
+      'powershell block must define function mst',
     );
   });
 
@@ -243,6 +317,20 @@ describe('upsertHook — pure, no I/O', () => {
     const removed = upsertHook(withHook, 'bash', false);
     assert.ok(!removed.includes(HOOK_BEGIN), 'HOOK_BEGIN must be removed on uninstall');
     assert.ok(!removed.includes(HOOK_END), 'HOOK_END must be removed on uninstall');
+  });
+
+  it('removes alias definitions when uninstalling (aliases are inside the guarded block)', () => {
+    const withHook = upsertHook('', 'bash', true);
+    const removed = upsertHook(withHook, 'bash', false);
+    assert.ok(!removed.includes("alias cm="), 'alias cm must be removed on uninstall');
+    assert.ok(!removed.includes("alias mst="), 'alias mst must be removed on uninstall');
+  });
+
+  it('removes powershell alias functions when uninstalling', () => {
+    const withHook = upsertHook('', 'powershell', true);
+    const removed = upsertHook(withHook, 'powershell', false);
+    assert.ok(!removed.includes('function cm'), 'function cm must be removed on uninstall');
+    assert.ok(!removed.includes('function mst'), 'function mst must be removed on uninstall');
   });
 
   it('preserves surrounding content when removing the block', () => {
@@ -382,6 +470,17 @@ describe('runInstall — writes to temp HOME, not real HOME', () => {
       assert.ok(
         sink.buf.includes('.bashrc'),
         `output must mention .bashrc; got: ${sink.buf}`,
+      );
+    });
+  });
+
+  it('install output mentions the cm / mst shortcuts', async () => {
+    await withTempHome(async () => {
+      const sink = makeSink();
+      await runInstall(sink);
+      assert.ok(
+        sink.buf.includes('cm') && sink.buf.includes('mst'),
+        'output must mention the cm and mst shortcuts',
       );
     });
   });
