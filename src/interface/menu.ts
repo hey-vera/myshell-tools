@@ -125,6 +125,13 @@ export interface MenuContext {
    * trigger the real disk read via `loadClaudeTokenCapturedAt`.
    */
   readonly claudeTokenInfo?: ClaudeTokenStatus | null;
+  /**
+   * Optional override for npx-context detection (testing). When provided,
+   * `startMenu` uses this instead of inspecting `process.argv[1]`, so tests can
+   * drive the "running under npx" warning + auto-update suppression without a
+   * real npx cache path. Omit (undefined) to trigger the real detection.
+   */
+  readonly runningUnderNpx?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -233,6 +240,56 @@ export function relativeTime(thenMs: number, nowMs: number): string {
   if (hours < 24) return `${hours}h ago`;
   const days = Math.floor(diffMs / (24 * 60 * 60 * 1000));
   return `${days}d ago`;
+}
+
+/**
+ * Build the short version-status suffix shown next to the version number in the
+ * header title — so the user always knows, at a glance, whether they are current.
+ *
+ * Pure — no I/O. Returns a leading-space string ready to append to the title:
+ *   - update available + known latest → ` → 3.1.0 available`
+ *   - up to date (latest known, no update) → ` (latest)`
+ *   - check failed / offline (latest unknown) → `` (claim nothing)
+ *
+ * @param updateInfo - Result of the update check, or undefined when not run.
+ */
+export function versionStatusLabel(updateInfo?: UpdateCheckResult): string {
+  if (updateInfo === undefined) return '';
+  if (updateInfo.updateAvailable && updateInfo.latest !== null) {
+    return ` → ${updateInfo.latest} available`;
+  }
+  if (updateInfo.latest !== null) return ' (latest)';
+  return '';
+}
+
+/**
+ * Detect whether myshell-tools is running via `npx` rather than a global install.
+ *
+ * Pure — takes the running script path (process.argv[1]) and the environment.
+ * npx executes packages from a cache directory containing a `_npx` segment
+ * (e.g. ~/.npm/_npx/<hash>/node_modules/myshell-tools/dist/cli.js), so the
+ * presence of that segment in the script path is the reliable signal. Handles
+ * both POSIX and Windows separators. Never throws.
+ *
+ * Why it matters: self-update runs `npm install -g`, which an npx invocation
+ * will ignore on the next run (npx re-serves its own cache). So under npx we
+ * skip silent auto-update and instead tell the user to install globally.
+ *
+ * @param scriptPath - The running script path (typically process.argv[1]).
+ * @param env        - Environment to read npm_* hints from.
+ */
+export function isRunningUnderNpx(
+  scriptPath: string | undefined,
+  env: NodeJS.ProcessEnv,
+): boolean {
+  if (scriptPath !== undefined && (scriptPath.includes('/_npx/') || scriptPath.includes('\\_npx\\'))) {
+    return true;
+  }
+  const execpath = env['npm_execpath'];
+  if (execpath !== undefined && (execpath.includes('/_npx/') || execpath.includes('\\_npx\\'))) {
+    return true;
+  }
+  return false;
 }
 
 /**
@@ -1317,18 +1374,32 @@ async function renderMainScreen(
   out: OutputSink,
   updateInfo?: UpdateCheckResult,
   claudeTokenInfo?: ClaudeTokenStatus | null,
+  runningUnderNpx = false,
 ): Promise<void> {
   out.write('\n');
 
-  // Header box — always box(), 🧠 emoji, real provider data
+  // Header box — always box(), 🧠 emoji, real provider data.
+  // Title carries the live version status so the user always knows whether they
+  // are current: "(latest)" when up to date, "→ X.Y.Z available" when not.
   const headerLines = renderHeaderLines(mutableCtx.env, ctx.version, claudeTokenInfo ?? undefined);
-  out.write(box(`🧠 myshell-tools v${ctx.version}`, headerLines) + '\n\n');
+  const versionLabel = versionStatusLabel(updateInfo);
+  out.write(box(`🧠 myshell-tools v${ctx.version}${versionLabel}`, headerLines) + '\n\n');
 
-  // Update banner — only shown when a newer version is genuinely available
+  // Update banner — only shown when a newer version is genuinely available.
   if (updateInfo?.updateAvailable === true && updateInfo.latest !== null) {
-    out.write(
-      `  ▲ Update available: ${updateInfo.current} → ${updateInfo.latest}  (press u)\n\n`,
-    );
+    if (runningUnderNpx) {
+      // Self-update can't persist under npx (it re-serves its own cache next run).
+      // Be honest and point to the durable fix instead of a no-op "press u".
+      out.write(
+        `  ▲ Update available: ${updateInfo.current} → ${updateInfo.latest}\n` +
+        `    You're running via npx, so updates won't stick. Install globally to stay current:\n` +
+        `      npm install -g myshell-tools@latest\n\n`,
+      );
+    } else {
+      out.write(
+        `  ▲ Update available: ${updateInfo.current} → ${updateInfo.latest}  (press u)\n\n`,
+      );
+    }
   }
 
   // Budget line — real ledger data, never fabricated
@@ -1362,9 +1433,10 @@ async function renderMainScreen(
     { key: 'o', label: opencodeLabel, section: 'Auth' },
   ];
 
-  // [u] Update now — shown only when a newer version is actually available
+  // [u] Update now — shown only when a newer version is actually available AND
+  // an in-place self-update can persist (not under npx, where it would be a no-op).
   const updateEntry =
-    updateInfo?.updateAvailable === true && updateInfo.latest !== null
+    updateInfo?.updateAvailable === true && updateInfo.latest !== null && !runningUnderNpx
       ? [{ key: 'u', label: `Update now (→ ${updateInfo.latest})`, section: 'Options' }]
       : [];
 
@@ -1415,6 +1487,11 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
   const checkForUpdateFn = ctx.checkForUpdate;
   const updateSelfFn = ctx.updateSelf;
   const relaunchFn = ctx.relaunch;
+  // npx context: real detection from the running script path, or test override.
+  const runningUnderNpx =
+    ctx.runningUnderNpx !== undefined
+      ? ctx.runningUnderNpx
+      : isRunningUnderNpx(process.argv[1], process.env);
 
   // Build the readLine function — either injected (for tests) or backed by a
   // real readline interface driven by the event-driven LineReader queue.
@@ -1467,8 +1544,12 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
     // ---- Auto-update at launch (default ON) ----------------------------------
     // Guard: only runs once; requires both the update and relaunch seams to be wired.
     // Disabled when MYSHELL_NO_UPDATE is set in the environment or autoUpdate===false.
+    // Skipped under npx: `npm install -g` won't be picked up by the next npx run
+    // (it re-serves its own cache), so silently installing globally would surprise
+    // the user with no durable benefit. The main screen shows the install hint instead.
     if (
       autoUpdateEnabled(mutableCtx.config, process.env) &&
+      !runningUnderNpx &&
       updateInfo?.updateAvailable === true &&
       updateInfo.latest !== null &&
       updateSelfFn !== undefined
@@ -1503,7 +1584,7 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
 
     while (true) {
       const metas = await ctx.store.list();
-      await renderMainScreen(ctx, mutableCtx, metas, out, updateInfo, claudeTokenInfo);
+      await renderMainScreen(ctx, mutableCtx, metas, out, updateInfo, claudeTokenInfo, runningUnderNpx);
 
       out.write('> ');
       const key = await readLine();

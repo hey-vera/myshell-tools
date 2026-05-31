@@ -16,7 +16,10 @@ import {
   renderHeaderLines,
   renderConversationList,
   renderBudgetLine,
+  versionStatusLabel,
+  isRunningUnderNpx,
 } from '../../src/interface/menu.ts';
+import type { UpdateCheckResult } from '../../src/infra/update-check.ts';
 import type { EnvironmentStatus } from '../../src/providers/detect.ts';
 import type { ConversationMeta } from '../../src/infra/conversation-store.ts';
 import type { SpendSummary } from '../../src/infra/insights.ts';
@@ -630,5 +633,73 @@ describe('renderHeaderLines — token warning line shown only near-expiry or exp
     const lines = renderHeaderLines(envWithOpencode, '2.0.0', tokenInfo);
     // 3 provider lines + 1 token warning = 4
     assert.strictEqual(lines.length, 4, 'claude + codex + opencode + token warning = 4 lines');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// versionStatusLabel
+// ---------------------------------------------------------------------------
+
+describe('versionStatusLabel', () => {
+  const mk = (over: Partial<UpdateCheckResult>): UpdateCheckResult => ({
+    current: '3.0.0',
+    latest: '3.0.0',
+    updateAvailable: false,
+    ...over,
+  });
+
+  it('returns "(latest)" when up to date (latest known, no update)', () => {
+    assert.strictEqual(versionStatusLabel(mk({})), ' (latest)');
+  });
+
+  it('shows the newer version when an update is available', () => {
+    const label = versionStatusLabel(mk({ latest: '3.1.0', updateAvailable: true }));
+    assert.strictEqual(label, ' → 3.1.0 available');
+  });
+
+  it('claims nothing when the check did not run (undefined)', () => {
+    assert.strictEqual(versionStatusLabel(undefined), '');
+  });
+
+  it('claims nothing when latest is unknown (offline/failed)', () => {
+    assert.strictEqual(versionStatusLabel(mk({ latest: null })), '');
+  });
+
+  it('never fabricates a percentage and emits no ANSI', () => {
+    for (const info of [mk({}), mk({ latest: '4.0.0', updateAvailable: true })]) {
+      const label = versionStatusLabel(info);
+      assert.ok(!ANSI_RE.test(label), 'no ANSI in version label');
+      assert.ok(!/\d+%/.test(label), 'no digit-% literal in version label');
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// isRunningUnderNpx
+// ---------------------------------------------------------------------------
+
+describe('isRunningUnderNpx', () => {
+  it('detects a POSIX npx cache script path', () => {
+    const p = '/home/u/.npm/_npx/abc123/node_modules/myshell-tools/dist/cli.js';
+    assert.strictEqual(isRunningUnderNpx(p, {}), true);
+  });
+
+  it('detects a Windows npx cache script path', () => {
+    const p = 'C:\\Users\\u\\AppData\\npm-cache\\_npx\\abc\\node_modules\\myshell-tools\\dist\\cli.js';
+    assert.strictEqual(isRunningUnderNpx(p, {}), true);
+  });
+
+  it('detects npx via npm_execpath when the script path is clean', () => {
+    const env = { npm_execpath: '/home/u/.npm/_npx/abc/node_modules/npm/bin/npx-cli.js' };
+    assert.strictEqual(isRunningUnderNpx('/usr/lib/whatever.js', env), true);
+  });
+
+  it('returns false for a global install path', () => {
+    const p = '/usr/local/lib/node_modules/myshell-tools/dist/cli.js';
+    assert.strictEqual(isRunningUnderNpx(p, {}), false);
+  });
+
+  it('returns false when the script path is undefined and no env hint', () => {
+    assert.strictEqual(isRunningUnderNpx(undefined, {}), false);
   });
 });

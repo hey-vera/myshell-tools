@@ -4,7 +4,7 @@
 
 `myshell-tools` routes each task to the *cheapest* model likely to succeed, runs it on your real codebase, optionally has a **different vendor** review the result, and shows you exactly what it did and what it truly cost — with **no fabricated data, ever**.
 
-> **Status: `3.1.0` — honest, tested, and real.** Claude, Codex, and opencode (experimental) all work, provider auth is detected for real, and the tool notifies you when a newer version is available.
+> **Status: `3.2.0` — honest, tested, and real.** Claude, Codex, and opencode (experimental) all work, provider auth is detected for real, and the header always shows whether you're on the latest version (`(latest)` or `→ x.y.z available`).
 
 ---
 
@@ -75,7 +75,7 @@ You need **one** to start; install **both** claude and codex to unlock cross‑v
 
 ### `npx` vs. `npm install -g` — which to choose?
 
-`npx myshell-tools` is convenient for a one-off run but **caches the downloaded version** — subsequent invocations reuse the cache and **will not pick up new releases** automatically.
+`npx myshell-tools` is convenient for a one-off run but **caches the downloaded version** — subsequent invocations reuse the cache and **will not pick up new releases** automatically. The tool detects when it's running under npx and, if a newer version exists, tells you exactly that instead of pretending to self-update (a global install run from an npx process is ignored by the next `npx` invocation). If you're stuck on an old version via npx, clear the cache (`rm -rf ~/.npm/_npx`) or — better — install globally:
 
 For day-to-day use, a global install is recommended:
 

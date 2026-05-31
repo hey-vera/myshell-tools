@@ -9,7 +9,37 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 ### Pending
 - Live cross-vendor review demonstration (requires an authenticated Codex CLI).
 - Cross-OS CI execution (requires a public remote).
-- First npm publish.
+
+## [3.2.0]
+
+### Added
+- **Version status in the header** — the control-panel title now always tells you where you stand: `myshell-tools v3.2.0 (latest)` when current, or `myshell-tools v3.2.0 → 3.3.0 available` when a newer release exists. No more guessing whether you're up to date. (`versionStatusLabel`, pure + tested.)
+- **npx-awareness** — when run via `npx myshell-tools`, the tool now detects it (`isRunningUnderNpx`) and is honest about updates: instead of silently running a global install that the next `npx` invocation would ignore (npx re-serves its own cache), it shows `Install globally to stay current: npm install -g myshell-tools@latest`. Silent auto-update and the `[u]` key are suppressed under npx because they cannot persist there.
+
+### Changed
+- The update banner and `[u]` Update-now action appear **only when a newer version is genuinely available** (unchanged), and are now also gated on the update being able to persist (not under npx).
+
+### Why
+- Users running the convenience `npx` path were landing on a stale cached version (e.g. 2.8.0) and could not understand why "auto-update" never advanced them — npx ignores the global install our updater performs. The tool now names that situation and points to the durable fix instead of failing silently.
+
+## [3.1.0]
+
+### Added
+- **Claude token lifetime awareness** — `claude setup-token` mints an `sk-ant-oat…` token valid ~1 year; the tool now records when it was captured and surfaces the remaining lifetime. `doctor` shows `token: expires ~YYYY-MM-DD (NNN days left)`, and the control-panel header shows a concise warning only when the token is near expiry or already expired (`claudeTokenStatus`, pure + tested). No nagging when the token is healthy.
+
+## [3.0.0]
+
+### Added
+- **opencode contract test** — parser pinned to a recorded real `opencode run --format json` transcript.
+
+### Changed
+- **Wizard polish** — first-run prompts are simple `(y/n)` / `(Y/n)` instead of requiring the user to type `yes`.
+- **Chat feels like a chat** — the conversation prompt is a bare `> ` (not `myshell-tools>`).
+- **Claude token env-scoping** — the stored OAuth token is injected only into the provider child process env (and only when not already present), never globally exported.
+
+### Fixed
+- **Browser→code login retry** — when the browser/localhost OAuth flow can't work (containers/SSH), the login offers an interactive `--code` retry.
+- **Auth-aware routing** — `route()` prefers authenticated + available providers; auth errors short-circuit (no wasted failover/escalation).
 
 ## [2.17.0]
 
