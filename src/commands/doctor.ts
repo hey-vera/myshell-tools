@@ -16,14 +16,13 @@
  */
 
 import readline from 'node:readline';
-import { access, mkdir, writeFile, rm } from 'node:fs/promises';
-import { join } from 'node:path';
 import type { OutputSink } from '../interface/render.js';
 import type { EnvironmentStatus } from '../providers/detect.js';
 import { detectEnvironment, getInstallCommand } from '../providers/detect.js';
 import { installProvider } from '../providers/install.js';
 import { runLogin } from './login.js';
 import { isPricingStale } from '../infra/pricing.js';
+import { probeStateWritable } from '../infra/health.js';
 import { loadClaudeTokenCapturedAt, claudeTokenStatus } from '../infra/credentials.js';
 import type { ClaudeTokenStatus } from '../infra/credentials.js';
 import { parseYesNo } from '../interface/menu.js';
@@ -59,7 +58,7 @@ export function buildDoctorReport(
 ): string[] {
   const lines: string[] = [];
 
-  lines.push(bold('myshell-tools doctor', color));
+  lines.push(bold('myshell-tools — environment health', color));
   lines.push(divider(color));
 
   // ---- Platform & Node -------------------------------------------------------
@@ -153,26 +152,6 @@ export function buildDoctorReport(
 // I/O runner — called by cli.ts
 // ---------------------------------------------------------------------------
 
-/**
- * Probe the .myshell-tools directory for writability.
- *
- * Creates .myshell-tools/ if needed, writes a temp file, then removes it.
- * Returns true when successful, false on any I/O error.
- */
-async function probestateWritable(cwd: string): Promise<boolean> {
-  const stateDir = join(cwd, '.myshell-tools');
-  const probe = join(stateDir, '.doctor-probe');
-  try {
-    await mkdir(stateDir, { recursive: true });
-    await writeFile(probe, '');
-    await rm(probe, { force: true });
-    await access(stateDir);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 // ---------------------------------------------------------------------------
 // Fix-mode options (injectable seams for hermetic testing)
 // ---------------------------------------------------------------------------
@@ -235,7 +214,7 @@ export async function runDoctor(out: OutputSink, opts?: DoctorFixOpts): Promise<
   const loginFn = opts?.login ?? ((o, id) => runLogin(o, id));
 
   const env = await detectEnvironmentFn();
-  const stateWritable = await probestateWritable(process.cwd());
+  const stateWritable = await probeStateWritable(process.cwd());
 
   const extras: DoctorExtras = {
     nodeVersion: process.version,

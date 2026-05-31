@@ -42,6 +42,7 @@ import { box, separator, menu, prompt } from '../ui/tui.js';
 import type { UpdateCheckResult } from '../infra/update-check.js';
 import type { ClaudeTokenStatus } from '../infra/credentials.js';
 import { loadClaudeTokenCapturedAt, claudeTokenStatus } from '../infra/credentials.js';
+import type { HealthIssue } from '../infra/health.js';
 
 // ---------------------------------------------------------------------------
 // MenuContext
@@ -132,6 +133,14 @@ export interface MenuContext {
    * real npx cache path. Omit (undefined) to trigger the real detection.
    */
   readonly runningUnderNpx?: boolean;
+  /**
+   * Pre-computed environment health issues (Node version, state-dir writable,
+   * pricing staleness) surfaced automatically below the header — only when a
+   * problem exists. Computed once at startup by cli.ts (the diagnostics don't
+   * change in-session) so the user never has to run a separate health command.
+   * Omit/empty → nothing is shown.
+   */
+  readonly healthIssues?: readonly HealthIssue[];
 }
 
 // ---------------------------------------------------------------------------
@@ -1376,6 +1385,7 @@ async function renderMainScreen(
   updateInfo?: UpdateCheckResult,
   claudeTokenInfo?: ClaudeTokenStatus | null,
   runningUnderNpx = false,
+  healthIssues: readonly HealthIssue[] = [],
 ): Promise<void> {
   out.write('\n');
 
@@ -1402,6 +1412,15 @@ async function renderMainScreen(
       );
     }
   }
+
+  // Health issues — surfaced automatically, only when something is actually
+  // wrong (writable/Node/pricing). Silence means healthy; the user never runs a
+  // diagnostic command. Errors get ✗, warnings get ⚠️.
+  for (const issue of healthIssues) {
+    const marker = issue.severity === 'error' ? '✗' : '⚠️ ';
+    out.write(`  ${marker} ${issue.message}\n`);
+  }
+  if (healthIssues.length > 0) out.write('\n');
 
   // Budget line — real ledger data, never fabricated. The SpendSummary is
   // computed by the caller and cached across keystrokes (the ledger only
@@ -1596,7 +1615,7 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
         spendDirty = false;
       }
       const metas = await ctx.store.list();
-      await renderMainScreen(ctx, mutableCtx, metas, spend, out, updateInfo, claudeTokenInfo, runningUnderNpx);
+      await renderMainScreen(ctx, mutableCtx, metas, spend, out, updateInfo, claudeTokenInfo, runningUnderNpx, ctx.healthIssues ?? []);
 
       out.write('> ');
       const key = await readLine();

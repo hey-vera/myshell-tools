@@ -23,6 +23,8 @@ import { detectEnvironment } from './providers/detect.js';
 import { createFileConversationStore } from './infra/conversations.js';
 import { loadConfig } from './infra/config.js';
 import { checkForUpdate } from './infra/update-check.js';
+import { evaluateHealth, probeStateWritable } from './infra/health.js';
+import { isPricingStale } from './infra/pricing.js';
 import { runDoctor } from './commands/doctor.js';
 import { runCost } from './commands/cost.js';
 import { runLogin } from './commands/login.js';
@@ -51,9 +53,6 @@ Commands:
                     Add --code to use the no-localhost flow (paste a code for
                     claude, device code for codex) — best inside containers /
                     over SSH. Add --browser to force the localhost flow.
-  doctor [--fix]    Check provider installation, auth, and environment health.
-                    Add --fix to interactively install missing providers and
-                    sign in to unauthenticated ones.
   cost              Show real spend from the ledger with a per-model breakdown
   install           Write a guarded startup hook to your shell rc file so new
                     interactive shells launch myshell-tools automatically
@@ -164,7 +163,11 @@ async function main(): Promise<void> {
     process.exit(await runLogin(out, provider, method !== undefined ? { method } : undefined));
   }
 
-  if (args[0] === 'doctor') {
+  // Health check — surfaced automatically in the control panel, so this is no
+  // longer an advertised command. Kept as a hidden, scriptable entry point for
+  // support/CI; `status` and `check` are friendlier aliases for the old
+  // `doctor` name (which still works for muscle-memory / existing scripts).
+  if (args[0] === 'doctor' || args[0] === 'status' || args[0] === 'check') {
     const fix = args.includes('--fix');
     process.exit(await runDoctor(out, fix ? { fix: true } : undefined));
   }
@@ -199,12 +202,21 @@ async function main(): Promise<void> {
   if (args.length === 0) {
     const spinner = createSpinner(out);
     spinner.start('Detecting providers…');
-    const [env, config] = await Promise.all([
+    const [env, config, stateWritable] = await Promise.all([
       detectEnvironment(),
       loadConfig(),
+      probeStateWritable(cwd),
     ]);
     const providers = buildProviders(cwd, env);
     spinner.stop();
+
+    // Evaluate non-provider environment health once at startup. Surfaced in the
+    // menu only when a problem exists — the user never runs a health command.
+    const healthIssues = evaluateHealth({
+      nodeVersion: process.version,
+      stateWritable,
+      pricingStale: isPricingStale(),
+    });
 
     const store = createFileConversationStore({ clock: systemClock });
     const ledger = createLedger({ cwd });
@@ -220,6 +232,7 @@ async function main(): Promise<void> {
       cwd,
       sandbox: 'workspace-write',
       timeoutMs: 120000,
+      healthIssues,
       checkForUpdate: () => checkForUpdate({ currentVersion: version, now: Date.now() }),
       updateSelf: async (updateOut) => {
         try {

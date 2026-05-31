@@ -130,7 +130,6 @@ Commands:
   run <task...>   Run a one-shot task and exit
   repl            Plain line REPL (no menu)
   login [prov]    Sign in to a provider (claude or codex) via its own OAuth
-  doctor          Check providers, auth, environment
   cost            Show real spend + the cost-routing counterfactual
 
 Options:
@@ -153,10 +152,18 @@ Success — tier: worker, cost: $0.0124, attempts: 1, session: 0dbfe2e3-…
 
 The confidence (`100%`) is **parsed from the model's own structured reply**, not invented. The cost is the **CLI's own reported figure**, not an estimate.
 
-### Health check
+### Health — automatic, no command needed
+
+The control panel checks its own environment on every launch (Node version, whether the state directory is writable, pricing freshness) and shows a short, actionable warning **only when something is actually wrong**. When everything is fine, it stays quiet — you never run a "doctor" command.
+
+If you want the full report explicitly (handy for support threads or CI), it's still there as a hidden, scriptable command — `status`, `check`, or `doctor`:
 
 ```text
-$ myshell-tools doctor
+$ myshell-tools status
+myshell-tools — environment health
+Platform: linux
+Node:     v22.19.0
+...
 Providers
   ✓ claude — installed, version: 2.1.157 (Claude Code)
     auth: signed in (pro)

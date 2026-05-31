@@ -23,7 +23,11 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 - **Control-panel menu no longer re-parses the ledger on every keystroke.** The spend summary is computed once and cached, and only refreshed after a task actually runs (the only time the ledger changes). Previously each keypress re-read and re-parsed the unbounded `ledger.jsonl`; on an active ledger that was tens-to-hundreds of ms of avoidable latency per keystroke. The menu hot path is now O(1) in ledger size.
 
 ### Added
-- **`doctor --fix` now offers to refresh an expiring Claude token.** When Claude is signed in and the stored `sk-ant-oat…` token is expired or inside the 14-day warning window, the fix pass offers a one-keypress re-login — closing the gap where the expiry was *reported* but never *actionable*.
+- **Self-health, surfaced automatically — no command to run.** The control panel now evaluates its own environment at startup (Node version, state-directory writability, pricing-table staleness) and shows a short, actionable warning **only when something is actually wrong**. No problems → nothing shown. Pure `evaluateHealth` (fully unit-tested) + a one-shot `probeStateWritable`. The diagnostics that were already visible in the header (provider install/auth, Claude-token expiry) are not duplicated.
+- **`doctor --fix` offers to refresh an expiring Claude token.** When Claude is signed in and the stored `sk-ant-oat…` token is expired or inside the 14-day warning window, the fix pass offers a one-keypress re-login — closing the gap where the expiry was *reported* but never *actionable*.
+
+### Changed
+- **Retired the `doctor` name from the user-facing surface.** "Doctor" was borrowed jargon, and *requiring* a diagnostic command is itself friction — health now surfaces on its own (see above). The command still exists as a hidden, scriptable health check for support/CI, reachable as `status`, `check`, or `doctor` (the old name still works for muscle-memory and existing scripts); it's just no longer advertised in `--help`. Its report header now reads "environment health" rather than "doctor".
 
 ### Why
 - Users running the convenience `npx` path were landing on a stale cached version (e.g. 2.8.0) and could not understand why "auto-update" never advanced them — npx ignores the global install our updater performs. The tool now names that situation and points to the durable fix instead of failing silently.
