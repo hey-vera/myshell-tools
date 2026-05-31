@@ -13,9 +13,11 @@
  *   - 'code':   a no-localhost flow that works anywhere.
  *       · claude → `claude setup-token`: prints a link; the user signs in at
  *         claude.ai, copies the authorization code, and pastes it back here.
- *         After the command exits, we prompt the user to paste the minted token
- *         (sk-ant-oat…), persist it, and inject it into process.env so that
- *         subsequent `claude auth status` and `claude -p …` calls see it.
+ *         We TEE the output so we can scan it for the minted token
+ *         (sk-ant-oat…) automatically. If auto-capture finds the token, it is
+ *         persisted immediately with no user action required. Otherwise we fall
+ *         back to prompting the user to paste it (up to 3 retries, with helpful
+ *         warnings for blank or wrong-type inputs).
  *       · codex  → `codex login --device-auth`: prints a URL + one-time code;
  *         the user authorizes their ChatGPT account on any device.
  *
@@ -23,8 +25,9 @@
  * to 'code' (so the localhost trap is avoided), everything else to 'browser'.
  *
  * Security: myshell-tools never stores raw API keys or passwords.  The Claude
- * OAuth token (sk-ant-oat…) is captured only after the user explicitly pastes
- * it and is stored in ~/.myshell-tools/credentials.json (mode 0o600).
+ * OAuth token (sk-ant-oat…) is either auto-captured from the tee'd output or
+ * captured after the user explicitly pastes it, and is stored in
+ * ~/.myshell-tools/credentials.json (mode 0o600).
  */
 
 import readline from 'node:readline';
@@ -32,8 +35,13 @@ import { execa } from 'execa';
 import type { OutputSink } from '../interface/render.js';
 import type { ProviderId } from '../providers/port.js';
 import { detectProvider, getInstallCommand } from '../providers/detect.js';
-import { bold, dim, green, red } from '../ui/theme.js';
-import { extractClaudeToken, saveClaudeToken } from '../infra/credentials.js';
+import { bold, dim, green, red, yellow } from '../ui/theme.js';
+import {
+  classifyPastedSecret,
+  extractClaudeToken,
+  saveClaudeToken,
+  stripPastedSecretWrapper,
+} from '../infra/credentials.js';
 
 /** Which sign-in flow to run. See module docstring. */
 export type LoginMethod = 'browser' | 'code';
@@ -62,7 +70,8 @@ const LOGIN_CODE_COMMAND: Record<
       'A sign-in link will appear below.\n' +
       '  1. Open it in any browser and sign in at claude.ai.\n' +
       '  2. Copy the authorization code it shows you.\n' +
-      '  3. Paste the code back here at the prompt and press Enter.',
+      '  3. Paste the code back here at the prompt and press Enter.\n' +
+      '  We will capture the token automatically when possible.',
   },
   codex: {
     bin: 'codex',
@@ -178,29 +187,67 @@ export async function runLogin(
 
     // stdio:'inherit' hands the terminal to the provider CLI so its OAuth /
     // device / paste flow runs in place. reject:false so we report rather than throw.
+    //
+    // For the claude code method we use a special tee-capture approach: stdout
+    // and stderr are piped so we can scan for the token, but each line is also
+    // written verbatim to the real terminal so the user sees the flow live.
+    // stdin is still inherited so the user can interact (paste the auth code).
     let result;
-    if (method === 'code') {
+    let capturedOutput = '';
+
+    if (method === 'code' && id === 'claude') {
       const { bin, args, guidance } = LOGIN_CODE_COMMAND[id];
       out.write(bold(`\nSigning in to ${id} — code method (no localhost needed).\n`, out.color));
       out.write(dim(guidance + '\n', out.color));
-      result = await execa(bin, [...args], { stdio: 'inherit', reject: false });
+      capturedOutput = await runWithTeeCapture(bin, [...args]);
+      // We use a synthetic exit-code-0 result — tee-capture never throws, and
+      // we treat the flow as complete regardless of the subprocess exit code
+      // (the token presence is the real signal).
+      result = { exitCode: 0 } as const;
+    } else if (method === 'code') {
+      const { bin, args, guidance } = LOGIN_CODE_COMMAND[id];
+      out.write(bold(`\nSigning in to ${id} — code method (no localhost needed).\n`, out.color));
+      out.write(dim(guidance + '\n', out.color));
+      result = await execa(bin, [...args], { stdin: 'inherit', stdout: 'inherit', stderr: 'inherit', reject: false });
     } else {
       const { bin, args } = LOGIN_COMMAND[id];
       out.write(bold(`\nSigning in to ${id} — a browser window may open…\n`, out.color));
-      result = await execa(bin, [...args], { stdio: 'inherit', reject: false });
+      result = await execa(bin, [...args], { stdin: 'inherit', stdout: 'inherit', stderr: 'inherit', reject: false });
     }
 
     if (result.exitCode === 0) {
-      out.write(green(`✓ ${id} sign-in complete.\n`, out.color));
-
       // --- Claude code-method token capture -----------------------------------
       // `claude setup-token` mints a long-lived token (sk-ant-oat01-…) and PRINTS
-      // it to the terminal but does NOT persist it.  After the command exits we
-      // prompt the user to paste the token so we can store it and inject it into
-      // process.env — making `claude auth status` report loggedIn:true and making
-      // every subsequent `claude -p …` spawn work without manual env-var setup.
+      // it to the terminal. We tee'd the output above and scan it first.
+      // If auto-capture finds the token, we're done. Otherwise we fall back to
+      // the paste prompt (up to 3 retries) so the user can paste it manually.
       if (id === 'claude' && method === 'code') {
-        await captureClaudeToken(out, opts?.readLine);
+        const autoToken = extractClaudeToken(capturedOutput);
+        if (autoToken !== null) {
+          try {
+            await saveClaudeToken(autoToken);
+            process.env['CLAUDE_CODE_OAUTH_TOKEN'] = autoToken;
+            out.write(
+              green(
+                '✓ Claude token captured and saved — claude is now ready.\n',
+                out.color,
+              ),
+            );
+          } catch {
+            out.write(
+              dim(
+                'Could not save token to disk — re-run `myshell-tools login claude --code` later.\n',
+                out.color,
+              ),
+            );
+          }
+        } else {
+          // Auto-capture found nothing — fall back to paste prompt.
+          out.write(green(`✓ ${id} sign-in complete.\n`, out.color));
+          await captureClaudeTokenWithPaste(out, opts?.readLine);
+        }
+      } else {
+        out.write(green(`✓ ${id} sign-in complete.\n`, out.color));
       }
     } else {
       out.write(
@@ -224,62 +271,145 @@ export async function runLogin(
 }
 
 // ---------------------------------------------------------------------------
-// Token capture helper (internal — exported for tests via credentials.ts)
+// Tee-capture helper (internal)
+// ---------------------------------------------------------------------------
+
+/**
+ * Run a command with stdout and stderr piped (tee'd to the real terminal) and
+ * stdin inherited. Returns the accumulated stdout+stderr text, or an empty
+ * string on spawn failure. Never throws.
+ *
+ * Uses execa v9's `all: true` option to merge stdout+stderr into one stream,
+ * then iterates it via `subprocess.iterable({ from: 'all', preserveNewlines: true })`
+ * while mirroring each chunk to `process.stdout` so the user sees the output
+ * live. stdin is inherited so the user can interact (e.g. paste an auth code).
+ */
+async function runWithTeeCapture(bin: string, args: readonly string[]): Promise<string> {
+  try {
+    const subprocess = execa(bin, [...args], {
+      stdin: 'inherit',
+      stdout: 'pipe',
+      stderr: 'pipe',
+      all: true,
+      reject: false,
+      timeout: 300_000,
+    });
+
+    const chunks: string[] = [];
+
+    for await (const line of subprocess.iterable({ from: 'all', preserveNewlines: true })) {
+      const text = typeof line === 'string' ? line : String(line);
+      process.stdout.write(text);
+      chunks.push(text);
+    }
+
+    await subprocess; // wait for exit (already resolved by the iteration above)
+    return chunks.join('');
+  } catch {
+    // Spawn error or unexpected failure — return empty so the caller falls back
+    // to the paste prompt.
+    return '';
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Paste-fallback token capture helper (internal)
 // ---------------------------------------------------------------------------
 
 /**
  * Prompt the user to paste the token shown by `claude setup-token`, extract
  * it, persist it, and inject it into `process.env.CLAUDE_CODE_OAUTH_TOKEN`.
  *
+ * Retries up to 3 times:
+ *   - Blank input  → skip silently with a note.
+ *   - API key      → print a specific warning (that's sk-ant-api, not sk-ant-oat).
+ *   - Invalid      → warn and re-prompt.
+ *   - Valid token  → save and set env.
+ *
  * Uses the injected `readLine` when provided (menu shares its single readline
  * interface). Otherwise creates a temporary readline interface, reads ONE line,
  * and immediately closes it (so stdin is not held open).
  *
- * Never throws — a blank or invalid paste is reported as a dim advisory note.
+ * Never throws.
  */
-async function captureClaudeToken(
+async function captureClaudeTokenWithPaste(
   out: OutputSink,
   readLine?: () => Promise<string | null>,
 ): Promise<void> {
-  out.write(
-    '\nPaste the token shown above (starts with sk-ant-oat) and press Enter' +
-      ' — or leave blank to skip:\n> ',
-  );
+  const MAX_RETRIES = 3;
 
-  let pasted: string | null;
+  for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+    out.write(
+      `\nPaste the token shown above (starts with sk-ant-oat) and press Enter` +
+        ` — or leave blank to skip (attempt ${attempt}/${MAX_RETRIES}):\n> `,
+    );
 
-  if (readLine !== undefined) {
-    // Menu injected its own reader — use it directly, do NOT create a second
-    // readline interface (that would double-consume stdin).
-    pasted = await readLine();
-  } else {
-    // CLI direct path — create a temporary readline, read one line, close.
-    pasted = await readOneLineFromStdin();
-  }
+    let raw: string | null;
 
-  const token = extractClaudeToken(pasted ?? '');
+    if (readLine !== undefined) {
+      // Menu injected its own reader — use it directly, do NOT create a second
+      // readline interface (that would double-consume stdin).
+      raw = await readLine();
+    } else {
+      // CLI direct path — create a temporary readline, read one line, close.
+      raw = await readOneLineFromStdin();
+    }
 
-  if (token !== null) {
-    try {
-      await saveClaudeToken(token);
-      process.env['CLAUDE_CODE_OAUTH_TOKEN'] = token;
-      out.write(green('✓ Claude token saved — claude is now ready.\n', out.color));
-    } catch {
+    const normalised = stripPastedSecretWrapper(raw ?? '');
+
+    if (normalised === '') {
+      out.write(dim('Skipped — no token entered.\n', out.color));
+      return;
+    }
+
+    const kind = classifyPastedSecret(normalised);
+
+    if (kind === 'api-key') {
+      out.write(
+        yellow(
+          'That looks like an Anthropic API key (sk-ant-api…), not the setup-token\n' +
+            'OAuth token. Please paste the sk-ant-oat… value instead.\n',
+          out.color,
+        ),
+      );
+      continue;
+    }
+
+    const token = extractClaudeToken(normalised);
+
+    if (token !== null) {
+      try {
+        await saveClaudeToken(token);
+        process.env['CLAUDE_CODE_OAUTH_TOKEN'] = token;
+        out.write(green('✓ Claude token saved — claude is now ready.\n', out.color));
+      } catch {
+        out.write(
+          dim(
+            'Could not save token to disk — you can re-run `myshell-tools login claude --code` later.\n',
+            out.color,
+          ),
+        );
+      }
+      return;
+    }
+
+    // Not a recognised token format.
+    if (attempt < MAX_RETRIES) {
       out.write(
         dim(
-          'Could not save token to disk — you can re-run `myshell-tools login claude --code` later.\n',
+          'Token not recognised — expected sk-ant-oat… format. Please try again.\n',
+          out.color,
+        ),
+      );
+    } else {
+      out.write(
+        dim(
+          'Token not captured after 3 attempts. Re-run `myshell-tools login claude --code`\n' +
+            'and paste the sk-ant-oat… value (NOT an Anthropic API key starting with sk-ant-api).\n',
           out.color,
         ),
       );
     }
-  } else {
-    out.write(
-      dim(
-        'Token not captured. Re-run `myshell-tools login claude --code` and paste the\n' +
-          'sk-ant-oat… value (NOT an Anthropic API key starting with sk-ant-api).\n',
-        out.color,
-      ),
-    );
   }
 }
 

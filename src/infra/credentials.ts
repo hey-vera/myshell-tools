@@ -170,7 +170,7 @@ export async function applyStoredCredentials(
 }
 
 // ---------------------------------------------------------------------------
-// Pure token extraction helper
+// Pure token extraction and classification helpers
 // ---------------------------------------------------------------------------
 
 /**
@@ -191,5 +191,56 @@ export function extractClaudeToken(text: string): string | null {
     return match !== null && match[0] !== undefined ? match[0] : null;
   } catch {
     return null;
+  }
+}
+
+/**
+ * Strip surrounding whitespace and enclosing `"` or `'` quotes from a pasted
+ * string. Useful for normalising user-pasted tokens before extraction.
+ *
+ * Pure / never throws.
+ *
+ * @example
+ *   stripPastedSecretWrapper('"  sk-ant-oat01-abc  "') // → 'sk-ant-oat01-abc'
+ *   stripPastedSecretWrapper("'token'")               // → 'token'
+ *   stripPastedSecretWrapper('  plain  ')             // → 'plain'
+ */
+export function stripPastedSecretWrapper(raw: string): string {
+  try {
+    let s = raw.trim();
+    if (
+      (s.startsWith('"') && s.endsWith('"')) ||
+      (s.startsWith("'") && s.endsWith("'"))
+    ) {
+      s = s.slice(1, -1).trim();
+    }
+    return s;
+  } catch {
+    return raw;
+  }
+}
+
+/**
+ * Classify a pasted secret string into one of three categories:
+ *
+ * - `'oauth-token'` — starts with `sk-ant-oat` (the expected setup-token output).
+ * - `'api-key'`     — starts with `sk-ant-api` (a raw Anthropic API key, NOT what we want).
+ * - `'none'`        — neither; blank or unrecognised.
+ *
+ * Input is pre-normalised (trimmed, quotes stripped) by the caller.
+ * Pure / never throws.
+ *
+ * @example
+ *   classifyPastedSecret('sk-ant-oat01-abc-XYZ') // → 'oauth-token'
+ *   classifyPastedSecret('sk-ant-api03-abc-XYZ') // → 'api-key'
+ *   classifyPastedSecret('not-a-token')           // → 'none'
+ */
+export function classifyPastedSecret(s: string): 'oauth-token' | 'api-key' | 'none' {
+  try {
+    if (s.includes('sk-ant-oat')) return 'oauth-token';
+    if (s.includes('sk-ant-api')) return 'api-key';
+    return 'none';
+  } catch {
+    return 'none';
   }
 }

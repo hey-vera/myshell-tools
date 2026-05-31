@@ -19,6 +19,8 @@ import {
   clearClaudeToken,
   applyStoredCredentials,
   extractClaudeToken,
+  stripPastedSecretWrapper,
+  classifyPastedSecret,
 } from '../../src/infra/credentials.ts';
 
 // ---------------------------------------------------------------------------
@@ -328,5 +330,116 @@ describe('applyStoredCredentials — injects token when not already in env', () 
     } finally {
       await rm(corruptHome, { recursive: true, force: true });
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// stripPastedSecretWrapper — pure helper
+// ---------------------------------------------------------------------------
+
+describe('stripPastedSecretWrapper — strips whitespace and surrounding quotes', () => {
+  it('trims plain leading/trailing whitespace', () => {
+    assert.equal(stripPastedSecretWrapper('  hello  '), 'hello');
+  });
+
+  it('strips double quotes and trims inner whitespace', () => {
+    assert.equal(stripPastedSecretWrapper('"  sk-ant-oat01-abc  "'), 'sk-ant-oat01-abc');
+  });
+
+  it('strips single quotes', () => {
+    assert.equal(stripPastedSecretWrapper("'token'"), 'token');
+  });
+
+  it('returns the string unchanged when no quotes or extra whitespace', () => {
+    assert.equal(stripPastedSecretWrapper('sk-ant-oat01-abc-XYZ'), 'sk-ant-oat01-abc-XYZ');
+  });
+
+  it('returns empty string when input is whitespace only', () => {
+    assert.equal(stripPastedSecretWrapper('   '), '');
+  });
+
+  it('returns empty string for empty input', () => {
+    assert.equal(stripPastedSecretWrapper(''), '');
+  });
+
+  it('does NOT strip mismatched quotes (only outer pair counts)', () => {
+    // Opening " but no closing " — treat as plain string, just trim
+    assert.equal(stripPastedSecretWrapper('"no-closing-quote'), '"no-closing-quote');
+  });
+
+  it('does NOT strip when opening and closing quotes differ', () => {
+    assert.equal(stripPastedSecretWrapper(`"mixed'`), `"mixed'`);
+  });
+
+  it('handles a real token with surrounding double quotes', () => {
+    const raw = '"sk-ant-oat01-LONG_TOKEN_VALUE_HERE-MORE-CHARS"';
+    assert.equal(
+      stripPastedSecretWrapper(raw),
+      'sk-ant-oat01-LONG_TOKEN_VALUE_HERE-MORE-CHARS',
+    );
+  });
+
+  it('never throws on empty string', () => {
+    assert.doesNotThrow(() => stripPastedSecretWrapper(''));
+  });
+
+  it('never throws on unusual characters', () => {
+    assert.doesNotThrow(() => stripPastedSecretWrapper('\x00\x01\x02'));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// classifyPastedSecret — pure helper
+// ---------------------------------------------------------------------------
+
+describe('classifyPastedSecret — classifies OAuth tokens, API keys, and other strings', () => {
+  it('returns "oauth-token" for a string containing sk-ant-oat', () => {
+    assert.equal(classifyPastedSecret('sk-ant-oat01-abc-XYZ'), 'oauth-token');
+  });
+
+  it('returns "oauth-token" for sk-ant-oat embedded in longer output', () => {
+    assert.equal(
+      classifyPastedSecret('Your token: sk-ant-oat01-session-TOKENPART here'),
+      'oauth-token',
+    );
+  });
+
+  it('returns "api-key" for a string containing sk-ant-api', () => {
+    assert.equal(classifyPastedSecret('sk-ant-api03-abc-XYZ'), 'api-key');
+  });
+
+  it('returns "api-key" for sk-ant-api embedded in a description', () => {
+    assert.equal(classifyPastedSecret('API key: sk-ant-api01-somekey-ABC'), 'api-key');
+  });
+
+  it('returns "none" for an unrelated string', () => {
+    assert.equal(classifyPastedSecret('not-a-token'), 'none');
+  });
+
+  it('returns "none" for an empty string', () => {
+    assert.equal(classifyPastedSecret(''), 'none');
+  });
+
+  it('returns "none" for whitespace only', () => {
+    assert.equal(classifyPastedSecret('   '), 'none');
+  });
+
+  it('returns "none" for a partial prefix without the discriminating segment', () => {
+    // 'sk-ant-' alone — neither oat nor api
+    assert.equal(classifyPastedSecret('sk-ant-something-else'), 'none');
+  });
+
+  it('prefers "oauth-token" when oat appears before api in the string', () => {
+    // Extremely unlikely in practice, but the oat check wins because it is first.
+    const s = 'sk-ant-oat01-x sk-ant-api01-y';
+    assert.equal(classifyPastedSecret(s), 'oauth-token');
+  });
+
+  it('never throws on empty string', () => {
+    assert.doesNotThrow(() => classifyPastedSecret(''));
+  });
+
+  it('never throws on unusual characters', () => {
+    assert.doesNotThrow(() => classifyPastedSecret('\x00\x01\x02'));
   });
 });

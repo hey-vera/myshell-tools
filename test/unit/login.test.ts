@@ -4,11 +4,17 @@
  * Only the hermetic validation path is unit-tested. The interactive sign-in
  * (which spawns `claude auth login` / `codex login` with inherited stdio) is an
  * integration concern and is not exercised here.
+ *
+ * The tee-capture flow (runWithTeeCapture) is also an integration concern:
+ * it spawns a real subprocess and requires an interactive terminal. It is not
+ * exercised here. The pure helpers it depends on (extractClaudeToken,
+ * stripPastedSecretWrapper, classifyPastedSecret) are tested in credentials.test.ts.
  */
 
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { isProviderId, isHeadlessEnv, resolveLoginMethod, runLogin } from '../../src/commands/login.ts';
+import { extractClaudeToken, stripPastedSecretWrapper, classifyPastedSecret } from '../../src/infra/credentials.ts';
 
 describe('isProviderId', () => {
   it('accepts claude, codex, and opencode', () => {
@@ -118,5 +124,55 @@ describe('runLogin — invalid argument (hermetic, no spawn)', () => {
       buf.join('').toLowerCase().includes('unknown provider'),
       `expected an "unknown provider" message, got: ${buf.join('')}`,
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Pure paste-fallback helpers used by captureClaudeTokenWithPaste
+// (integration-tested via the helper exports from credentials.ts)
+// ---------------------------------------------------------------------------
+
+describe('paste-fallback: stripPastedSecretWrapper + extractClaudeToken — combined flow', () => {
+  it('extracts token from a double-quoted paste', () => {
+    const raw = '"sk-ant-oat01-abc-TOKENPART"';
+    const token = extractClaudeToken(stripPastedSecretWrapper(raw));
+    assert.equal(token, 'sk-ant-oat01-abc-TOKENPART');
+  });
+
+  it('extracts token from a single-quoted paste with surrounding spaces', () => {
+    const raw = "  'sk-ant-oat01-session-DATA'  ";
+    const token = extractClaudeToken(stripPastedSecretWrapper(raw));
+    assert.equal(token, 'sk-ant-oat01-session-DATA');
+  });
+
+  it('extracts token from a plain paste with surrounding whitespace', () => {
+    const raw = '   sk-ant-oat01-plain-TOKEN   ';
+    const token = extractClaudeToken(stripPastedSecretWrapper(raw));
+    assert.equal(token, 'sk-ant-oat01-plain-TOKEN');
+  });
+
+  it('returns null for a blank paste after stripping', () => {
+    const raw = '   ';
+    const token = extractClaudeToken(stripPastedSecretWrapper(raw));
+    assert.equal(token, null);
+  });
+});
+
+describe('paste-fallback: classifyPastedSecret — api-key vs oauth-token distinction', () => {
+  it('classifies a real sk-ant-api key as "api-key"', () => {
+    // Users sometimes paste their API key instead of the OAuth token.
+    assert.equal(classifyPastedSecret('sk-ant-api03-key-ABC'), 'api-key');
+  });
+
+  it('classifies the correct sk-ant-oat token as "oauth-token"', () => {
+    assert.equal(classifyPastedSecret('sk-ant-oat01-session-TOKEN'), 'oauth-token');
+  });
+
+  it('classifies an unrelated string as "none"', () => {
+    assert.equal(classifyPastedSecret('completely-wrong-value'), 'none');
+  });
+
+  it('classifies empty string as "none"', () => {
+    assert.equal(classifyPastedSecret(''), 'none');
   });
 });

@@ -28,7 +28,7 @@
  */
 
 import type { CoreEvent, OrchestrateDeps, Tier, Classification, Assessment, Policy } from './types.js';
-import type { CliError, Usage, ProviderRequest, ProviderId } from '../providers/port.js';
+import type { CliError, Usage, ProviderRequest, Provider, ProviderId } from '../providers/port.js';
 import { classify } from './classify.js';
 import { route } from './route.js';
 import { buildPrompt } from './prompt.js';
@@ -71,6 +71,68 @@ function shouldReview(
     classification.risk === 'critical' ||
     assessment.needsReview === true
   );
+}
+
+// ---------------------------------------------------------------------------
+// Private streaming helper
+// ---------------------------------------------------------------------------
+
+interface StreamOutcome {
+  finalText: string | undefined;
+  errored: CliError | undefined;
+  usage: Usage | undefined;
+  providerCostUsd: number | undefined;
+  canceled: boolean;
+  /** True only when the signal was already aborted before streaming started. */
+  canceledBeforeStream: boolean;
+}
+
+/**
+ * Stream a single provider run, yielding `{type:'provider-event', tier, event}`
+ * for every event, while accumulating `finalText`, `usage`, `providerCostUsd`,
+ * and `errored`.  Cancellation via `signal` is detected both before and after
+ * each event; on cancellation the generator returns immediately with
+ * `canceled: true` (no notice/final events — the caller emits those).
+ */
+async function* streamProvider(
+  provider: Provider,
+  req: ProviderRequest,
+  tier: Tier,
+  signal: AbortSignal,
+): AsyncGenerator<CoreEvent, StreamOutcome> {
+  let finalText: string | undefined;
+  let errored: CliError | undefined;
+  let usage: Usage | undefined;
+  let providerCostUsd: number | undefined;
+
+  // Pre-stream abort check
+  if (signal.aborted) {
+    return { finalText, errored, usage, providerCostUsd, canceled: true, canceledBeforeStream: true };
+  }
+
+  for await (const ev of provider.run(req, signal)) {
+    yield { type: 'provider-event', tier, event: ev };
+
+    if (ev.type === 'done') {
+      finalText = ev.text;
+      if (ev.usage !== undefined && usage === undefined) {
+        usage = ev.usage;
+      }
+      if (ev.costUsd !== undefined) {
+        providerCostUsd = ev.costUsd;
+      }
+    } else if (ev.type === 'error') {
+      errored = ev.error;
+    } else if (ev.type === 'usage' && usage === undefined) {
+      usage = ev.usage;
+    }
+
+    if (signal.aborted) {
+      return { finalText, errored, usage, providerCostUsd, canceled: true, canceledBeforeStream: false };
+    }
+  }
+
+  return { finalText, errored, usage, providerCostUsd, canceled: false, canceledBeforeStream: false };
 }
 
 // ---------------------------------------------------------------------------
@@ -206,18 +268,17 @@ export async function* orchestrate(
     };
     const start = deps.clock.now();
 
-    let finalText: string | undefined;
-    let errored: CliError | undefined;
-    let usage: Usage | undefined;
-    let providerCostUsd: number | undefined;
+    // --- Stream provider events ---
+    const outcome = yield* streamProvider(provider, req, decision.tier, signal);
 
-    // Check abort before entering the stream
-    if (signal.aborted) {
+    if (outcome.canceled) {
       yield { type: 'notice', level: 'warn', message: 'cancelled' };
       yield {
         type: 'final',
         success: false,
-        output: 'Task was cancelled before it started.',
+        output: outcome.canceledBeforeStream
+          ? 'Task was cancelled before it started.'
+          : 'Task was cancelled.',
         tier: decision.tier,
         totalCostUsd,
         sessionId: deps.session.id,
@@ -226,38 +287,7 @@ export async function* orchestrate(
       return;
     }
 
-    // --- Stream provider events ---
-    for await (const ev of provider.run(req, signal)) {
-      yield { type: 'provider-event', tier: decision.tier, event: ev };
-
-      if (ev.type === 'done') {
-        finalText = ev.text;
-        if (ev.usage !== undefined && usage === undefined) {
-          usage = ev.usage;
-        }
-        if (ev.costUsd !== undefined) {
-          providerCostUsd = ev.costUsd;
-        }
-      } else if (ev.type === 'error') {
-        errored = ev.error;
-      } else if (ev.type === 'usage' && usage === undefined) {
-        usage = ev.usage;
-      }
-
-      if (signal.aborted) {
-        yield { type: 'notice', level: 'warn', message: 'cancelled' };
-        yield {
-          type: 'final',
-          success: false,
-          output: 'Task was cancelled.',
-          tier: decision.tier,
-          totalCostUsd,
-          sessionId: deps.session.id,
-          attempts,
-        };
-        return;
-      }
-    }
+    const { finalText, errored, usage, providerCostUsd } = outcome;
 
     // --- Compute duration + cost ---
     const durationMs = deps.clock.now() - start;
@@ -395,13 +425,10 @@ export async function* orchestrate(
         };
         const reviewStart = deps.clock.now();
 
-        let reviewText: string | undefined;
-        let reviewErrored: CliError | undefined;
-        let reviewUsage: Usage | undefined;
-        let reviewProviderCostUsd: number | undefined;
+        // --- Stream reviewer events ---
+        const reviewOutcome = yield* streamProvider(reviewerProvider, reviewReq, 'manager', signal);
 
-        // Check abort before reviewer streaming
-        if (signal.aborted) {
+        if (reviewOutcome.canceled) {
           yield { type: 'notice', level: 'warn', message: 'cancelled' };
           yield {
             type: 'final',
@@ -415,46 +442,14 @@ export async function* orchestrate(
           return;
         }
 
-        for await (const rev of reviewerProvider.run(reviewReq, signal)) {
-          yield { type: 'provider-event', tier: 'manager', event: rev };
-
-          if (rev.type === 'done') {
-            reviewText = rev.text;
-            if (rev.usage !== undefined && reviewUsage === undefined) {
-              reviewUsage = rev.usage;
-            }
-            if (rev.costUsd !== undefined) {
-              reviewProviderCostUsd = rev.costUsd;
-            }
-          } else if (rev.type === 'error') {
-            reviewErrored = rev.error;
-          } else if (rev.type === 'usage' && reviewUsage === undefined) {
-            reviewUsage = rev.usage;
-          }
-
-          if (signal.aborted) {
-            yield { type: 'notice', level: 'warn', message: 'cancelled' };
-            yield {
-              type: 'final',
-              success: false,
-              output: 'Task was cancelled.',
-              tier: currentTier,
-              totalCostUsd,
-              sessionId: deps.session.id,
-              attempts,
-            };
-            return;
-          }
-        }
-
         const reviewDurationMs = deps.clock.now() - reviewStart;
-        const reviewSuccess = reviewErrored == null;
+        const reviewSuccess = reviewOutcome.errored == null;
 
         const reviewPricing = getModelPricing(reviewerId, reviewDecision.model);
         const reviewUsd =
-          reviewProviderCostUsd ??
-          (reviewUsage !== undefined && reviewPricing !== undefined
-            ? calculateCost(reviewUsage.inputTokens, reviewUsage.outputTokens, reviewPricing)
+          reviewOutcome.providerCostUsd ??
+          (reviewOutcome.usage !== undefined && reviewPricing !== undefined
+            ? calculateCost(reviewOutcome.usage.inputTokens, reviewOutcome.usage.outputTokens, reviewPricing)
             : 0);
         totalCostUsd += reviewUsd;
 
@@ -466,9 +461,9 @@ export async function* orchestrate(
           provider: reviewerId,
           model: reviewDecision.model,
           tier: 'manager',
-          inputTokens: reviewUsage?.inputTokens ?? 0,
-          outputTokens: reviewUsage?.outputTokens ?? 0,
-          cachedInputTokens: reviewUsage?.cachedInputTokens ?? 0,
+          inputTokens: reviewOutcome.usage?.inputTokens ?? 0,
+          outputTokens: reviewOutcome.usage?.outputTokens ?? 0,
+          cachedInputTokens: reviewOutcome.usage?.cachedInputTokens ?? 0,
           usd: reviewUsd,
           durationMs: reviewDurationMs,
           success: reviewSuccess,
@@ -485,7 +480,7 @@ export async function* orchestrate(
         };
 
         // Parse verdict and act on it
-        const verdict = parseReviewVerdict(reviewText ?? '');
+        const verdict = parseReviewVerdict(reviewOutcome.finalText ?? '');
 
         // Risk-indexed fail-open: when parsing failed (verdict.parsed === false)
         // AND the task is high/critical risk, do NOT silently auto-approve —
