@@ -10,14 +10,16 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 - Live cross-vendor review demonstration (requires an authenticated Codex CLI).
 - Cross-OS CI execution (requires a public remote).
 
-## [3.2.0]
+## [3.2.1]
 
 ### Fixed (first-run friction)
 - **Pasting the Claude token now works on the first try.** A long `sk-ant-oat…` token could arrive mangled — a stray space, surrounding quotes, terminal bracketed-paste escape markers, or a soft-wrap newline that split the value across what the terminal reports as several lines — and the capture would reject or truncate it. The paste is now aggressively normalised (`sanitizePastedToken`: strips ANSI/bracketed-paste escapes and quotes, then removes all internal whitespace — a real token contains none), and fragments that arrived split across lines are reassembled before extraction. Pure + unit-tested.
 - **Demystified the "valid for ~1 year / save it securely" message.** That wording comes from Claude's own `claude setup-token` screen, not us, and read as sketchy. The sign-in guidance now sets expectations up front: it's a normal long-lived sign-in for the claude CLI (not an API key, not a password), stored on *this machine only* in `~/.myshell-tools/credentials.json` (owner-read-only), used solely to run claude, and never uploaded.
 
 ### Changed (first-run UX)
-- **Single-keypress yes/no in the setup wizard.** On an interactive terminal you no longer type `y`/`n` then Enter: **Enter** accepts the `[Capitalized]` default, **y**/**n** decide instantly, any other key is ignored, and Ctrl-C still exits. Piped/non-TTY input (and the test suite) keep the exact line-based `(Y/n)` behaviour as a built-in fallback, so nothing scripted changes. Pure decision core `interpretYesNoKey` is unit-tested; the raw-mode reader restores the terminal and falls back to a line read on any hiccup so onboarding can never be left in a broken state.
+- **Single-keypress yes/no in the setup wizard.** On an interactive terminal you no longer type `y`/`n` then Enter: **Enter** accepts the `[Capitalized]` default, **y**/**n** decide instantly, any other key is ignored, and Ctrl-C still exits. Piped/non-TTY input (and the test suite) keep the exact line-based `(Y/n)` behaviour as a built-in fallback, so nothing scripted changes. Pure decision core `interpretYesNoKey` is unit-tested; the raw-mode reader (`readSingleKey`/`confirmViaKey`) is verified through an injected fake stream — listener detach/restore, raw-mode toggle, single-key resolution, the ignore loop, and echo — and falls back to a line read on any hiccup so onboarding can never be left in a broken state.
+
+## [3.2.0]
 
 ### Changed
 - **Tokens, not dollars, on the everyday UI.** myshell-tools drives your *subscription* CLIs (flat fee), so per-task dollar figures were misleading — they don't map to subscription billing and read as bloat. The control-panel status line and the live per-task output now show **real, measured token counts**; the always-on money meter ("Today: $… · session so far: $…") is gone. The `tier-done` and final-summary lines show tokens; the control-panel line shows tasks + tokens.
