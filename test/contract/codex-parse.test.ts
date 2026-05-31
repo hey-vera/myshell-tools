@@ -91,6 +91,15 @@ describe('createCodexParser — sample fixture (synthetic, schema-based)', () =>
     assert.equal(done.usage?.outputTokens, 7);
   });
 
+  it('done event carries the thread id captured from thread.started (native-session resume)', () => {
+    const done = events.find(
+      (e): e is Extract<ProviderEvent, { type: 'done' }> => e.type === 'done',
+    );
+    assert.ok(done !== undefined, 'expected a done event');
+    // The fixture's first line is {"type":"thread.started","thread_id":"thread-001"}.
+    assert.equal(done.sessionId, 'thread-001', 'done.sessionId should be the captured thread_id');
+  });
+
   it('done event has usage.cachedInputTokens === 10', () => {
     const done = events.find(
       (e): e is Extract<ProviderEvent, { type: 'done' }> => e.type === 'done',

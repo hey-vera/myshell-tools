@@ -108,6 +108,9 @@ function mapUsage(u: WireTurnUsage): Usage {
  */
 export function createCodexParser(): (line: string) => ProviderEvent[] {
   let accumulatedText = '';
+  // Captured from `thread.started` so the terminal `done` event can carry the
+  // Codex thread id — used to resume the native session on a later turn.
+  let threadId: string | undefined;
 
   return function parseCodexLine(line: string): ProviderEvent[] {
     const trimmed = line.trim();
@@ -126,9 +129,17 @@ export function createCodexParser(): (line: string) => ProviderEvent[] {
     const eventType = obj['type'];
 
     // -----------------------------------------------------------------------
-    // thread.started / turn.started — emit nothing
+    // thread.started — capture the thread id (for native-session resume).
+    // turn.started — emit nothing.
     // -----------------------------------------------------------------------
-    if (eventType === 'thread.started' || eventType === 'turn.started') {
+    if (eventType === 'thread.started') {
+      const tid = obj['thread_id'];
+      if (typeof tid === 'string' && tid.length > 0) {
+        threadId = tid;
+      }
+      return [];
+    }
+    if (eventType === 'turn.started') {
       return [];
     }
 
@@ -190,6 +201,7 @@ export function createCodexParser(): (line: string) => ProviderEvent[] {
           type: 'done',
           text: accumulatedText,
           usage,
+          ...(threadId !== undefined ? { sessionId: threadId } : {}),
           raw: parsed,
         },
       ];

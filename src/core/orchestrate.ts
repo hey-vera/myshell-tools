@@ -82,6 +82,8 @@ interface StreamOutcome {
   errored: CliError | undefined;
   usage: Usage | undefined;
   providerCostUsd: number | undefined;
+  /** Provider-assigned session/thread id captured from the `done` event, if any. */
+  sessionId: string | undefined;
   canceled: boolean;
   /** True only when the signal was already aborted before streaming started. */
   canceledBeforeStream: boolean;
@@ -104,10 +106,11 @@ async function* streamProvider(
   let errored: CliError | undefined;
   let usage: Usage | undefined;
   let providerCostUsd: number | undefined;
+  let sessionId: string | undefined;
 
   // Pre-stream abort check
   if (signal.aborted) {
-    return { finalText, errored, usage, providerCostUsd, canceled: true, canceledBeforeStream: true };
+    return { finalText, errored, usage, providerCostUsd, sessionId, canceled: true, canceledBeforeStream: true };
   }
 
   for await (const ev of provider.run(req, signal)) {
@@ -121,6 +124,9 @@ async function* streamProvider(
       if (ev.costUsd !== undefined) {
         providerCostUsd = ev.costUsd;
       }
+      if (ev.sessionId !== undefined && ev.sessionId.length > 0) {
+        sessionId = ev.sessionId;
+      }
     } else if (ev.type === 'error') {
       errored = ev.error;
     } else if (ev.type === 'usage' && usage === undefined) {
@@ -128,11 +134,11 @@ async function* streamProvider(
     }
 
     if (signal.aborted) {
-      return { finalText, errored, usage, providerCostUsd, canceled: true, canceledBeforeStream: false };
+      return { finalText, errored, usage, providerCostUsd, sessionId, canceled: true, canceledBeforeStream: false };
     }
   }
 
-  return { finalText, errored, usage, providerCostUsd, canceled: false, canceledBeforeStream: false };
+  return { finalText, errored, usage, providerCostUsd, sessionId, canceled: false, canceledBeforeStream: false };
 }
 
 // ---------------------------------------------------------------------------
@@ -274,11 +280,11 @@ export async function* orchestrate(
     }
 
     // --- Native session decision (EXPERIMENTAL, opt-in) ---
-    // Use native continuity only when a plan exists AND this tier routes to the
-    // plan's provider. Otherwise (different provider, or no plan) fall back to
-    // replaying the compacted history — so switching providers never loses context.
-    const useNative =
-      deps.nativeSession !== undefined && decision.provider === deps.nativeSession.provider;
+    // Use native continuity only when this tier's provider has a plan. Otherwise
+    // (no plan for this provider) fall back to replaying the compacted history —
+    // so switching providers never loses context.
+    const nativePlan = deps.nativeSession?.find((p) => p.provider === decision.provider);
+    const useNative = nativePlan !== undefined;
 
     // --- Build prompt (with optional reviewer feedback on retry + history context) ---
     // Bug 4 fix: inject managerNotes whenever defined, not just when currentTier === 'ic'.
@@ -301,8 +307,8 @@ export async function* orchestrate(
       cwd: deps.cwd,
       sandbox: deps.sandbox,
       timeoutMs: deps.timeoutMs,
-      ...(useNative && deps.nativeSession !== undefined
-        ? { sessionId: deps.nativeSession.sessionId, resume: deps.nativeSession.resume }
+      ...(nativePlan !== undefined
+        ? { sessionId: nativePlan.sessionId, resume: nativePlan.resume }
         : {}),
     };
     const start = deps.clock.now();
@@ -366,6 +372,8 @@ export async function* orchestrate(
     });
 
     // --- Append assistant session entry ---
+    // Persist the provider-assigned native session id (e.g. Codex thread id) so
+    // a later turn can resume it. Claude reports none (it reuses the conv id).
     await deps.session.append({
       timestamp: deps.clock.isoNow(),
       role: 'assistant',
@@ -376,6 +384,7 @@ export async function* orchestrate(
       confidence: assessment.confidence,
       costUsd: usd,
       durationMs,
+      ...(outcome.sessionId !== undefined ? { sessionId: outcome.sessionId } : {}),
     });
 
     // --- Yield tier-done ---

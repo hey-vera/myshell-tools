@@ -53,6 +53,24 @@ function runClaude(args: string[], prompt: string): Promise<string> {
   });
 }
 
+/** Run a command, deliver the prompt via stdin; resolve with stdout. */
+function runCli(cmd: string, args: string[], prompt: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(cmd, args, { stdio: ['pipe', 'pipe', 'pipe'] });
+    let out = '';
+    let err = '';
+    child.stdout.on('data', (d) => { out += String(d); });
+    child.stderr.on('data', (d) => { err += String(d); });
+    child.on('error', reject);
+    child.on('close', (code) => {
+      if (code === 0) resolve(out);
+      else reject(new Error(`${cmd} exited ${code}: ${err}`));
+    });
+    child.stdin.write(prompt);
+    child.stdin.end();
+  });
+}
+
 describe('Claude native session continuity (live, gated)', () => {
   it(
     'a resumed session remembers context from the prior turn',
@@ -78,6 +96,49 @@ describe('Claude native session continuity (live, gated)', () => {
         out,
         /PINEAPPLE/i,
         `Resumed session should recall the codeword from turn 1. Got:\n${out}`,
+      );
+    },
+  );
+});
+
+describe('Codex native session continuity (live, gated)', () => {
+  it(
+    'a resumed Codex thread remembers context from the prior turn',
+    { skip: ENABLED ? false : 'set MYSHELL_NATIVE_SESSION_E2E=1 (needs authenticated codex) to run' },
+    async () => {
+      // Turn 1: establish a thread and plant a fact. Capture the thread id from
+      // the JSON stream's thread.started event (this is exactly what codex-parse
+      // extracts and what myshell-tools persists for resume).
+      const turn1 = await runCli(
+        'codex',
+        ['exec', '--json', '--sandbox', 'read-only'],
+        'Remember this codeword for later: PINEAPPLE. Reply with just "ok".',
+      );
+      let threadId: string | undefined;
+      for (const line of turn1.split('\n')) {
+        const t = line.trim();
+        if (!t) continue;
+        try {
+          const o = JSON.parse(t) as { type?: string; thread_id?: string };
+          if (o.type === 'thread.started' && typeof o.thread_id === 'string') {
+            threadId = o.thread_id;
+            break;
+          }
+        } catch { /* ignore non-JSON lines */ }
+      }
+      assert.ok(threadId, `expected a thread id from codex thread.started. Got:\n${turn1}`);
+
+      // Turn 2: resume the SAME thread without repeating the codeword.
+      const out = await runCli(
+        'codex',
+        ['exec', 'resume', threadId!, '--json', '--sandbox', 'read-only'],
+        'What codeword did I ask you to remember? Reply with just the word.',
+      );
+
+      assert.match(
+        out,
+        /PINEAPPLE/i,
+        `Resumed Codex thread should recall the codeword from turn 1. Got:\n${out}`,
       );
     },
   );

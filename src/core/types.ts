@@ -72,6 +72,14 @@ export interface SessionEntry {
   readonly confidence?: number | null;
   readonly costUsd?: number;
   readonly durationMs?: number;
+  /**
+   * Provider-assigned native session/thread id for this turn, when the CLI
+   * reported one (e.g. Codex thread id). Persisted in the append-only log so a
+   * later turn can resume that provider's native session without a separate
+   * store. Absent for providers that don't surface an id (Claude uses the
+   * conversation id directly) or when native sessions are off.
+   */
+  readonly sessionId?: string;
 }
 
 export interface SessionWriter {
@@ -176,16 +184,17 @@ export interface OrchestrateDeps {
    */
   readonly authenticatedProviders?: readonly ProviderId[];
   /**
-   * EXPERIMENTAL native session plan (opt-in via config.nativeSessions). When
-   * present AND a turn routes to the plan's provider, orchestrate skips the
-   * replayed history block and passes the native session id instead, so the
-   * provider carries prior context server-side. A turn that routes to any other
-   * provider ignores the plan and falls back to history replay.
+   * EXPERIMENTAL native session plans (opt-in via config.nativeSessions), one
+   * per provider that has an active native session for this conversation. When
+   * a turn routes to a provider that has a plan, orchestrate skips the replayed
+   * history block and passes that provider's native session id instead, so the
+   * provider carries prior context server-side. A turn routing to a provider
+   * with no plan falls back to history replay (so switching providers is safe).
    *
-   * Computed by the caller (the conversation layer) — null/absent for one-shot
-   * runs and when the feature is disabled. See core/native-session.ts.
+   * Computed by the caller (the conversation layer) — absent for one-shot runs
+   * and when the feature is disabled. See core/native-session.ts.
    */
-  readonly nativeSession?: NativeSessionPlan;
+  readonly nativeSession?: readonly NativeSessionPlan[];
 }
 
 /**

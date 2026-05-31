@@ -74,6 +74,12 @@ export type ProviderEvent =
       /** Cost in USD as reported by the provider CLI, when available (preferred
        *  over estimating from the pricing table — it accounts for caching etc.). */
       readonly costUsd?: number;
+      /**
+       * Provider-assigned session/thread id, when the CLI reports one (e.g. Codex
+       * `thread.started.thread_id`). Captured so a later turn can resume the
+       * native session. Absent when the provider does not surface an id.
+       */
+      readonly sessionId?: string;
       readonly raw: unknown;
     }
   | { readonly type: 'error'; readonly error: CliError };

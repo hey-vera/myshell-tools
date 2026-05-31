@@ -1338,6 +1338,7 @@ async function runChatLoop(
           conversationId: convId,
           history: priorHistory,
         });
+        // planNativeSession returns [] when disabled / no conversation id.
 
         return {
           clock: ctx.clock,
@@ -1351,7 +1352,7 @@ async function runChatLoop(
           ...(priorHistory.length > 0 ? { history: priorHistory } : {}),
           ...(Object.keys(availableModels).length > 0 ? { availableModels } : {}),
           ...(authenticatedProviders.length > 0 ? { authenticatedProviders } : {}),
-          ...(nativeSession !== null ? { nativeSession } : {}),
+          ...(nativeSession.length > 0 ? { nativeSession } : {}),
         };
       };
 

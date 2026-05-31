@@ -2828,7 +2828,7 @@ describe('orchestrate — native session (EXPERIMENTAL) skips history and passes
       sandbox: 'workspace-write',
       timeoutMs: 30_000,
       history: priorHistory,
-      nativeSession: { provider: 'claude', sessionId: 'conv-xyz', resume: true },
+      nativeSession: [{ provider: 'claude', sessionId: 'conv-xyz', resume: true }],
     };
 
     await collectEvents(orchestrate('follow-up question', deps, new AbortController().signal));
@@ -2879,7 +2879,7 @@ describe('orchestrate — native session (EXPERIMENTAL) skips history and passes
       timeoutMs: 30_000,
       history: priorHistory,
       // Plan names a DIFFERENT provider than the one that will run (claude).
-      nativeSession: { provider: 'codex', sessionId: 'conv-xyz', resume: true },
+      nativeSession: [{ provider: 'codex', sessionId: 'conv-xyz', resume: true }],
     };
 
     await collectEvents(orchestrate('follow-up question', deps, new AbortController().signal));
@@ -2890,5 +2890,68 @@ describe('orchestrate — native session (EXPERIMENTAL) skips history and passes
       req.prompt.includes('CONVERSATION SO FAR'),
       'must fall back to history replay when the plan provider does not match',
     );
+  });
+});
+
+describe('orchestrate — captures a provider session id and persists it on the assistant turn', () => {
+  it('a Codex-style done.sessionId is written to the assistant SessionEntry (for later resume)', async () => {
+    const provider: Provider = {
+      id: 'codex',
+      async detect() {
+        return { id: 'codex', installed: true, version: '1.0.0', authenticated: true, binaryPath: '/x', availableModels: [] };
+      },
+      async *run(_req: ProviderRequest, _signal: AbortSignal): AsyncIterable<ProviderEvent> {
+        // Codex reports a thread id on the terminal done event.
+        yield { type: 'done', text: FINAL_TEXT, usage: FAKE_USAGE, sessionId: 'thread-777', raw: {} };
+      },
+    };
+
+    const session = makeFakeSession();
+    const deps: OrchestrateDeps = {
+      providers: { codex: provider },
+      clock: makeFakeClock(),
+      session,
+      ledger: makeFakeLedger(),
+      policy: DEFAULT_POLICY,
+      cwd: '/fake/cwd',
+      sandbox: 'workspace-write',
+      timeoutMs: 30_000,
+    };
+
+    await collectEvents(orchestrate('do something', deps, new AbortController().signal));
+
+    const assistant = session.entries.find((e) => e.role === 'assistant');
+    assert.ok(assistant !== undefined, 'expected an assistant entry');
+    assert.strictEqual(assistant.sessionId, 'thread-777', 'captured thread id must persist on the turn');
+  });
+
+  it('no sessionId is written when the provider reports none (e.g. Claude)', async () => {
+    const provider: Provider = {
+      id: 'claude',
+      async detect() {
+        return { id: 'claude', installed: true, version: '1.0.0', authenticated: true, binaryPath: '/x', availableModels: [] };
+      },
+      async *run(_req: ProviderRequest, _signal: AbortSignal): AsyncIterable<ProviderEvent> {
+        yield { type: 'done', text: FINAL_TEXT, usage: FAKE_USAGE, raw: {} };
+      },
+    };
+
+    const session = makeFakeSession();
+    const deps: OrchestrateDeps = {
+      providers: { claude: provider },
+      clock: makeFakeClock(),
+      session,
+      ledger: makeFakeLedger(),
+      policy: DEFAULT_POLICY,
+      cwd: '/fake/cwd',
+      sandbox: 'workspace-write',
+      timeoutMs: 30_000,
+    };
+
+    await collectEvents(orchestrate('do something', deps, new AbortController().signal));
+
+    const assistant = session.entries.find((e) => e.role === 'assistant');
+    assert.ok(assistant !== undefined, 'expected an assistant entry');
+    assert.strictEqual(assistant.sessionId, undefined, 'no sessionId when the provider reports none');
   });
 });

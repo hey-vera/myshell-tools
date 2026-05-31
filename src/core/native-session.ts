@@ -26,11 +26,11 @@ import type { ProviderId } from '../providers/port.js';
 import type { SessionEntry } from './types.js';
 
 export interface NativeSessionPlan {
-  /** The provider whose native session we intend to continue (Claude only). */
+  /** The provider whose native session this plan continues. */
   readonly provider: ProviderId;
-  /** Stable session id — the conversation id (a UUID Claude accepts). */
+  /** The native session/thread id to pass to that provider. */
   readonly sessionId: string;
-  /** true → continue an existing session (--resume); false → establish (--session-id). */
+  /** true → continue an existing session (--resume); false → establish it. */
   readonly resume: boolean;
 }
 
@@ -44,28 +44,52 @@ export interface PlanNativeSessionOpts {
 }
 
 /**
- * Decide whether to use Claude native session continuity for the next turn.
- *
- * Returns a plan only when enabled and a conversation id is present. `resume` is
- * true iff a prior Claude assistant turn already exists in this conversation
- * (so the session was established on an earlier turn); otherwise the next turn
- * establishes the session with our chosen id.
- *
- * Returns null when disabled or when no conversation id is available (e.g. the
- * one-shot `run` command), in which case orchestrate keeps the history-replay
- * behavior unchanged.
+ * Find the most recent persisted native session id for a provider in the
+ * conversation history (the id a prior turn captured from the provider CLI).
  */
-export function planNativeSession(opts: PlanNativeSessionOpts): NativeSessionPlan | null {
-  if (!opts.enabled) return null;
-  if (opts.conversationId.length === 0) return null;
+function latestSessionId(
+  history: readonly SessionEntry[],
+  provider: ProviderId,
+): string | undefined {
+  for (let i = history.length - 1; i >= 0; i--) {
+    const e = history[i];
+    if (e?.role === 'assistant' && e.provider === provider && e.sessionId !== undefined && e.sessionId.length > 0) {
+      return e.sessionId;
+    }
+  }
+  return undefined;
+}
 
-  const priorClaudeTurn = opts.history.some(
-    (e) => e.role === 'assistant' && e.provider === 'claude',
-  );
+/**
+ * Build the native-session plans for the next turn — one per provider that can
+ * continue a native session for this conversation.
+ *
+ * Two id models:
+ *  - Claude lets us CHOOSE the session id, so we use the conversation id
+ *    directly: establish it on the first Claude turn (`resume: false`), resume
+ *    it thereafter (`resume: true`).
+ *  - Codex GENERATES its own thread id, so we can only resume when a prior Codex
+ *    turn captured one (persisted on its SessionEntry). No captured id → no plan
+ *    (that turn establishes a fresh thread, captured for next time).
+ *
+ * Returns [] when disabled or no conversation id (e.g. the one-shot `run`).
+ * Orchestrate falls back to history replay for any provider without a plan.
+ */
+export function planNativeSession(opts: PlanNativeSessionOpts): NativeSessionPlan[] {
+  if (!opts.enabled) return [];
+  if (opts.conversationId.length === 0) return [];
 
-  return {
-    provider: 'claude',
-    sessionId: opts.conversationId,
-    resume: priorClaudeTurn,
-  };
+  const plans: NativeSessionPlan[] = [];
+
+  // Claude: we own the id (the conversation id). resume once established.
+  const priorClaude = opts.history.some((e) => e.role === 'assistant' && e.provider === 'claude');
+  plans.push({ provider: 'claude', sessionId: opts.conversationId, resume: priorClaude });
+
+  // Codex: resume only if a prior Codex turn captured a thread id.
+  const codexId = latestSessionId(opts.history, 'codex');
+  if (codexId !== undefined) {
+    plans.push({ provider: 'codex', sessionId: codexId, resume: true });
+  }
+
+  return plans;
 }
