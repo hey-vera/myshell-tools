@@ -22,6 +22,7 @@ import {
   applyStoredCredentials,
   extractClaudeToken,
   stripPastedSecretWrapper,
+  sanitizePastedToken,
   classifyPastedSecret,
   claudeTokenStatus,
   loadClaudeTokenCapturedAt,
@@ -564,6 +565,73 @@ describe('stripPastedSecretWrapper — strips whitespace and surrounding quotes'
 
   it('never throws on unusual characters', () => {
     assert.doesNotThrow(() => stripPastedSecretWrapper('\x00\x01\x02'));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// sanitizePastedToken — pure helper (whitespace/escape-proof token paste)
+// ---------------------------------------------------------------------------
+
+describe('sanitizePastedToken — reassembles a mangled token paste', () => {
+  it('leaves a clean token untouched', () => {
+    assert.equal(
+      sanitizePastedToken('sk-ant-oat01-abc-XYZ'),
+      'sk-ant-oat01-abc-XYZ',
+    );
+  });
+
+  it('trims surrounding whitespace and newlines', () => {
+    assert.equal(
+      sanitizePastedToken('  sk-ant-oat01-abc-XYZ\n'),
+      'sk-ant-oat01-abc-XYZ',
+    );
+  });
+
+  it('collapses an internal space (stray paste artifact)', () => {
+    assert.equal(
+      sanitizePastedToken('sk-ant-oat01-abc def-XYZ'),
+      'sk-ant-oat01-abcdef-XYZ',
+    );
+  });
+
+  it('rejoins a token that a soft-wrap split across two lines', () => {
+    // A terminal can break a long token with a newline mid-value; removing all
+    // whitespace stitches it back into the single contiguous secret.
+    assert.equal(
+      sanitizePastedToken('sk-ant-oat01-firsthalf\nsecondhalf-XYZ'),
+      'sk-ant-oat01-firsthalfsecondhalf-XYZ',
+    );
+  });
+
+  it('strips bracketed-paste escape markers some terminals wrap around a paste', () => {
+    assert.equal(
+      sanitizePastedToken('\x1b[200~sk-ant-oat01-abc-XYZ\x1b[201~'),
+      'sk-ant-oat01-abc-XYZ',
+    );
+  });
+
+  it('strips surrounding quotes as well', () => {
+    assert.equal(
+      sanitizePastedToken('"sk-ant-oat01-abc-XYZ"'),
+      'sk-ant-oat01-abc-XYZ',
+    );
+  });
+
+  it('a sanitized split paste extracts to the full token', () => {
+    // The end-to-end guarantee: sanitize → extract recovers the whole value
+    // even when the raw paste arrived broken.
+    const recovered = extractClaudeToken(
+      sanitizePastedToken('sk-ant-oat01-LONG\nVALUE_HERE-MORECHARS'),
+    );
+    assert.equal(recovered, 'sk-ant-oat01-LONGVALUE_HERE-MORECHARS');
+  });
+
+  it('returns empty string for whitespace-only input', () => {
+    assert.equal(sanitizePastedToken('   \n\t '), '');
+  });
+
+  it('never throws on unusual characters', () => {
+    assert.doesNotThrow(() => sanitizePastedToken('\x00\x01\x02'));
   });
 });
 

@@ -354,6 +354,41 @@ export function stripPastedSecretWrapper(raw: string): string {
 }
 
 /**
+ * Aggressively normalise a pasted Claude token so a direct copy works on the
+ * first try, regardless of how the terminal mangled it on the way in.
+ *
+ * A real `sk-ant-oat…` token contains NO whitespace, so we can safely:
+ *   1. Strip ANSI / bracketed-paste escape sequences (e.g. ESC[200~ … ESC[201~)
+ *      that some terminals wrap around pasted text.
+ *   2. Strip an enclosing pair of quotes and surrounding whitespace.
+ *   3. Remove ALL internal whitespace — this reassembles a token that a terminal
+ *      soft-wrap or a stray newline broke across what looks like multiple lines.
+ *
+ * This is intentionally more aggressive than {@link stripPastedSecretWrapper}
+ * (which preserves internal characters) because the input here is expected to be
+ * a single secret, not free-form prose. Pure / never throws.
+ *
+ * @example
+ *   sanitizePastedToken('sk-ant-oat01-abc def-XYZ')        // → 'sk-ant-oat01-abcdef-XYZ'
+ *   sanitizePastedToken('\x1b[200~sk-ant-oat01-x\x1b[201~') // → 'sk-ant-oat01-x'
+ */
+export function sanitizePastedToken(raw: string): string {
+  try {
+    // 1. Remove ANSI/bracketed-paste escape sequences (CSI: ESC [ … final-byte).
+    // eslint-disable-next-line no-control-regex
+    let s = raw.replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, '');
+    // 2. Strip surrounding quotes + outer whitespace (reuse the shared helper).
+    s = stripPastedSecretWrapper(s);
+    // 3. Collapse ALL internal whitespace — a token never contains any, so this
+    //    only ever rejoins a value the terminal split apart.
+    s = s.replace(/\s+/g, '');
+    return s;
+  } catch {
+    return raw;
+  }
+}
+
+/**
  * Classify a pasted secret string into one of three categories:
  *
  * - `'oauth-token'` — starts with `sk-ant-oat` (the expected setup-token output).

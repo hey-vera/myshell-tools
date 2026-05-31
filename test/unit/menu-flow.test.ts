@@ -21,8 +21,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 
-import { startMenu, defaultAliasHint, parseYesNo, autoUpdateEnabled } from '../../src/interface/menu.ts';
-import type { MenuContext } from '../../src/interface/menu.ts';
+import { EventEmitter } from 'node:events';
+import { startMenu, defaultAliasHint, parseYesNo, interpretYesNoKey, readSingleKey, confirmViaKey, autoUpdateEnabled } from '../../src/interface/menu.ts';
+import type { MenuContext, KeyInputStream } from '../../src/interface/menu.ts';
 import type { UpdateCheckResult } from '../../src/infra/update-check.ts';
 import type { OutputSink } from '../../src/interface/render.ts';
 import type { ConversationMeta, ConversationStore } from '../../src/infra/conversation-store.ts';
@@ -800,6 +801,142 @@ describe('parseYesNo', () => {
       assert.doesNotThrow(() => parseYesNo(input, true));
       assert.doesNotThrow(() => parseYesNo(input, false));
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// interpretYesNoKey — single-keypress decision core
+// ---------------------------------------------------------------------------
+
+describe('interpretYesNoKey — single-key yes/no', () => {
+  it('Enter (CR) accepts the default when defaultYes=true', () => {
+    assert.equal(interpretYesNoKey('\r', true), 'yes');
+  });
+
+  it('Enter (CR) accepts the default when defaultYes=false', () => {
+    assert.equal(interpretYesNoKey('\r', false), 'no');
+  });
+
+  it('Enter (LF) is treated the same as CR', () => {
+    assert.equal(interpretYesNoKey('\n', true), 'yes');
+    assert.equal(interpretYesNoKey('\n', false), 'no');
+  });
+
+  it('"y"/"Y" decide yes regardless of the default', () => {
+    assert.equal(interpretYesNoKey('y', false), 'yes');
+    assert.equal(interpretYesNoKey('Y', false), 'yes');
+  });
+
+  it('"n"/"N" decide no regardless of the default', () => {
+    assert.equal(interpretYesNoKey('n', true), 'no');
+    assert.equal(interpretYesNoKey('N', true), 'no');
+  });
+
+  it('Ctrl-C and Ctrl-D abort', () => {
+    assert.equal(interpretYesNoKey('\x03', true), 'abort');
+    assert.equal(interpretYesNoKey('\x04', false), 'abort');
+  });
+
+  it('any other key is ignored (do nothing, keep waiting)', () => {
+    for (const k of ['a', '1', ' ', '\t', 'q', '?']) {
+      assert.equal(interpretYesNoKey(k, true), 'ignore', `key ${JSON.stringify(k)}`);
+    }
+  });
+
+  it('never throws on unusual input', () => {
+    for (const k of ['', '\x1b', '\x1b[A', 'yy']) {
+      assert.doesNotThrow(() => interpretYesNoKey(k, true));
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// readSingleKey / confirmViaKey — raw-key reader, verified via a fake stream
+// ---------------------------------------------------------------------------
+
+/**
+ * A fake stdin that records raw-mode toggles and, each time the reader calls
+ * resume(), delivers the next queued key on a microtask (after the reader has
+ * attached its 'data' listener). Lets us exercise the real reader/confirm logic
+ * — listener detach/restore, single-key resolution, the ignore loop — without a
+ * real TTY. (Only the literal OS raw-byte delivery is Node's job, not ours.)
+ */
+class FakeKeyStream extends EventEmitter {
+  isRaw = false;
+  rawCalls: boolean[] = [];
+  private readonly queue: string[];
+  constructor(keys: string[]) {
+    super();
+    this.queue = [...keys];
+  }
+  setRawMode(mode: boolean): void {
+    this.isRaw = mode;
+    this.rawCalls.push(mode);
+  }
+  resume(): void {
+    queueMicrotask(() => {
+      const k = this.queue.shift();
+      if (k !== undefined) this.emit('data', Buffer.from(k, 'utf8'));
+    });
+  }
+}
+
+const asStream = (f: FakeKeyStream): KeyInputStream => f as unknown as KeyInputStream;
+
+describe('readSingleKey — single raw keypress', () => {
+  it('resolves with the pressed key', async () => {
+    const key = await readSingleKey(asStream(new FakeKeyStream(['y'])));
+    assert.equal(key, 'y');
+  });
+
+  it('enters raw mode then restores the previous raw flag', async () => {
+    const f = new FakeKeyStream(['n']);
+    await readSingleKey(asStream(f));
+    assert.deepEqual(f.rawCalls, [true, false], 'should set raw on, then restore to prior (false)');
+    assert.equal(f.isRaw, false);
+  });
+
+  it('restores pre-existing listeners and removes its own (no double-consume)', async () => {
+    const f = new FakeKeyStream(['x']);
+    const prior = (): void => {};
+    f.on('data', prior as (...a: never[]) => void);
+    await readSingleKey(asStream(f));
+    // The reader detached `prior` for the read, then restored exactly it.
+    assert.deepEqual(f.listeners('data'), [prior]);
+  });
+});
+
+describe('confirmViaKey — single-key yes/no over a fake stream', () => {
+  it('"y" resolves true', async () => {
+    const out = makeSink();
+    assert.equal(await confirmViaKey(out, false, asStream(new FakeKeyStream(['y']))), true);
+  });
+
+  it('"n" resolves false', async () => {
+    const out = makeSink();
+    assert.equal(await confirmViaKey(out, true, asStream(new FakeKeyStream(['n']))), false);
+  });
+
+  it('Enter accepts the default (true)', async () => {
+    const out = makeSink();
+    assert.equal(await confirmViaKey(out, true, asStream(new FakeKeyStream(['\r']))), true);
+  });
+
+  it('Enter accepts the default (false)', async () => {
+    const out = makeSink();
+    assert.equal(await confirmViaKey(out, false, asStream(new FakeKeyStream(['\r']))), false);
+  });
+
+  it('ignores other keys and keeps waiting until a decisive key', async () => {
+    const out = makeSink();
+    // 'q' and ' ' are ignored; 'y' decides.
+    assert.equal(await confirmViaKey(out, false, asStream(new FakeKeyStream(['q', ' ', 'y']))), true);
+  });
+
+  it('echoes the chosen letter (raw mode suppresses the terminal echo)', async () => {
+    const out = makeSink();
+    await confirmViaKey(out, true, asStream(new FakeKeyStream(['n'])));
+    assert.ok(out.buf.includes('n'), `expected the chosen letter echoed, got ${JSON.stringify(out.buf)}`);
   });
 });
 

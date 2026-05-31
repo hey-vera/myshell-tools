@@ -38,7 +38,7 @@ import {
   classifyPastedSecret,
   extractClaudeToken,
   saveClaudeToken,
-  stripPastedSecretWrapper,
+  sanitizePastedToken,
 } from '../infra/credentials.js';
 
 /** Which sign-in flow to run. See module docstring. */
@@ -68,7 +68,13 @@ const LOGIN_CODE_COMMAND: Record<
       'A sign-in link will appear below.\n' +
       '  1. Open it in any browser and sign in at claude.ai.\n' +
       '  2. Copy the token it shows you (starts with sk-ant-oat).\n' +
-      '  3. When prompted below, paste it here and press Enter.',
+      '  3. When prompted below, paste it here and press Enter.\n' +
+      '\n' +
+      "  Heads-up: Claude's own screen will say the token is good for ~a year and\n" +
+      '  to keep it safe — that is normal. It is just a long-lived sign-in for the\n' +
+      '  claude CLI (not an API key, not a password). myshell-tools stores it on\n' +
+      '  THIS machine only, in ~/.myshell-tools/credentials.json (owner-read-only),\n' +
+      '  and uses it solely to run claude. Nothing is uploaded anywhere.',
   },
   codex: {
     bin: 'codex',
@@ -169,6 +175,7 @@ async function runCodeMethodForProvider(
   out: OutputSink,
   id: ProviderId,
   readLine?: () => Promise<string | null>,
+  drainExtraLines?: () => string[],
 ): Promise<void> {
   const { bin, args, guidance } = LOGIN_CODE_COMMAND[id];
   out.write(bold(`\nSigning in to ${id} — code method (no localhost needed).\n`, out.color));
@@ -180,7 +187,7 @@ async function runCodeMethodForProvider(
       // `claude setup-token` ran with inherited stdio (so the native animation
       // rendered cleanly). Now prompt the user to paste the token it printed.
       // captureClaudeTokenWithPaste reports its own success/failure messages.
-      await captureClaudeTokenWithPaste(out, readLine);
+      await captureClaudeTokenWithPaste(out, readLine, drainExtraLines);
     } else {
       out.write(green(`✓ ${id} sign-in complete.\n`, out.color));
     }
@@ -214,7 +221,11 @@ async function runCodeMethodForProvider(
 export async function runLogin(
   out: OutputSink,
   providerArg?: string,
-  opts?: { method?: LoginMethod; readLine?: () => Promise<string | null> },
+  opts?: {
+    method?: LoginMethod;
+    readLine?: () => Promise<string | null>;
+    drainExtraLines?: () => string[];
+  },
 ): Promise<number> {
   let targets: ProviderId[];
   if (providerArg !== undefined) {
@@ -241,7 +252,7 @@ export async function runLogin(
     if (method === 'code') {
       // stdio:'inherit' hands the terminal to the provider CLI so its OAuth /
       // device / paste flow runs in place.
-      await runCodeMethodForProvider(out, id, opts?.readLine);
+      await runCodeMethodForProvider(out, id, opts?.readLine, opts?.drainExtraLines);
     } else {
       // Browser method
       const { bin, args } = LOGIN_COMMAND[id];
@@ -263,7 +274,7 @@ export async function runLogin(
           );
           const ans = await opts.readLine();
           if (shouldRetryWithCode(ans)) {
-            await runCodeMethodForProvider(out, id, opts.readLine);
+            await runCodeMethodForProvider(out, id, opts.readLine, opts.drainExtraLines);
           } else {
             out.write(
               dim(
@@ -313,6 +324,7 @@ export async function runLogin(
 async function captureClaudeTokenWithPaste(
   out: OutputSink,
   readLine?: () => Promise<string | null>,
+  drainExtraLines?: () => string[],
 ): Promise<void> {
   const MAX_RETRIES = 3;
 
@@ -333,7 +345,18 @@ async function captureClaudeTokenWithPaste(
       raw = await readOneLineFromStdin();
     }
 
-    const normalised = stripPastedSecretWrapper(raw ?? '');
+    // A long token can arrive split across several lines (terminal soft-wrap or
+    // a paste that contained newlines), which readline reports as separate
+    // events. Pull in any fragments that have already been buffered and stitch
+    // them onto the first line BEFORE sanitising — sanitizePastedToken drops the
+    // whitespace, so a value the terminal broke apart is reassembled intact.
+    let combined = raw ?? '';
+    if (drainExtraLines !== undefined) {
+      const extra = drainExtraLines();
+      if (extra.length > 0) combined += extra.join('');
+    }
+
+    const normalised = sanitizePastedToken(combined);
 
     if (normalised === '') {
       out.write(dim('Skipped — no token entered.\n', out.color));

@@ -85,8 +85,19 @@ export interface MenuContext {
   readonly login?: (
     out: OutputSink,
     providerArg?: string,
-    opts?: { method?: LoginMethod; readLine?: () => Promise<string | null> },
+    opts?: {
+      method?: LoginMethod;
+      readLine?: () => Promise<string | null>;
+      drainExtraLines?: () => string[];
+    },
   ) => Promise<number>;
+  /**
+   * Optional injected single-key confirm for testing. When provided, `startMenu`
+   * uses this instead of the raw-mode keypress reader, so tests can drive yes/no
+   * prompts deterministically without a TTY. Omit → the real reader is built
+   * (raw single-key on a TTY, line-mode fallback otherwise).
+   */
+  readonly confirm?: (defaultYes: boolean) => Promise<boolean>;
   /**
    * Optional injected detectEnvironment for testing. When provided, `startMenu`
    * uses this instead of the real `detectEnvironment` from providers/detect.ts,
@@ -170,6 +181,31 @@ export function parseYesNo(input: string | null, defaultYes: boolean): boolean {
   if (lower === 'y' || lower === 'yes') return true;
   if (lower === 'n' || lower === 'no') return false;
   return defaultYes;
+}
+
+/**
+ * Interpret a single raw keypress for a yes/no prompt that accepts one key
+ * (no Enter required).
+ *
+ *   - Enter (CR/LF)            → the default ('yes' when defaultYes, else 'no')
+ *   - 'y' / 'Y'                → 'yes'
+ *   - 'n' / 'N'                → 'no'
+ *   - Ctrl-C (ETX) / Ctrl-D (EOT) → 'abort' (caller should bail out)
+ *   - anything else            → 'ignore' (do nothing; keep waiting for a key)
+ *
+ * Pure / never throws. The I/O layer maps these verdicts onto behaviour; this
+ * function is the testable decision core.
+ */
+export function interpretYesNoKey(
+  key: string,
+  defaultYes: boolean,
+): 'yes' | 'no' | 'ignore' | 'abort' {
+  if (key === '\r' || key === '\n') return defaultYes ? 'yes' : 'no';
+  if (key === '\x03' || key === '\x04') return 'abort';
+  const lower = key.toLowerCase();
+  if (lower === 'y') return 'yes';
+  if (lower === 'n') return 'no';
+  return 'ignore';
 }
 
 /**
@@ -480,6 +516,12 @@ export function interpretInterrupt(
 interface LineReader {
   /** Resolve with the next line, or `null` on EOF (and for every call after). */
   nextLine(): Promise<string | null>;
+  /**
+   * Synchronously remove and return every line that has already been buffered
+   * (but not yet awaited). Used to reassemble a multi-line paste without
+   * blocking on lines that may never arrive.
+   */
+  drainBufferedNow(): string[];
   /** Close the underlying readline interface (idempotent). */
   close(): void;
 }
@@ -532,9 +574,150 @@ function createLineReader(rl: readline.Interface): LineReader {
         waiters.push(resolve);
       });
     },
+    drainBufferedNow(): string[] {
+      // Hand back everything currently buffered and clear it in one shot.
+      return buffered.splice(0, buffered.length);
+    },
     close(): void {
       rl.close();
     },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Single-key yes/no confirm (TTY) with a line-mode fallback
+// ---------------------------------------------------------------------------
+
+/** A yes/no confirm: resolves true for yes, false for no, honouring a default. */
+type Confirm = (defaultYes: boolean) => Promise<boolean>;
+
+/**
+ * The slice of `process.stdin` the single-key reader touches. Declaring it as a
+ * narrow interface (rather than `NodeJS.ReadStream`) lets tests inject a fake
+ * stream and verify the listener detach/restore + raw-mode toggling without a
+ * real TTY.
+ */
+export interface KeyInputStream {
+  isRaw?: boolean;
+  setRawMode?(mode: boolean): void;
+  resume(): void;
+  on(event: string, listener: (...args: never[]) => void): unknown;
+  removeListener(event: string, listener: (...args: never[]) => void): unknown;
+  removeAllListeners(event: string): unknown;
+  listeners(event: string): Array<(...args: never[]) => void>;
+}
+
+/**
+ * Read exactly one raw keypress from the TTY.
+ *
+ * The live `node:readline` interface is briefly detached (its `data`/`keypress`
+ * listeners are removed and restored afterwards) so the byte isn't ALSO consumed
+ * as line input or echoed. The previous raw-mode flag is always restored. On any
+ * failure the promise rejects so the caller can fall back to line mode.
+ *
+ * `stdin` is injectable for testing; in production it is `process.stdin`.
+ */
+export function readSingleKey(
+  stdin: KeyInputStream = process.stdin as unknown as KeyInputStream,
+): Promise<string> {
+  return new Promise<string>((resolve, reject) => {
+    const prevData = stdin.listeners('data');
+    const prevKeypress = stdin.listeners('keypress');
+    const wasRaw = stdin.isRaw === true;
+
+    const onData = (buf: Buffer): void => {
+      restore();
+      resolve(buf.toString('utf8'));
+    };
+
+    function restore(): void {
+      stdin.removeListener('data', onData as (...a: never[]) => void);
+      try {
+        if (typeof stdin.setRawMode === 'function') stdin.setRawMode(wasRaw);
+      } catch {
+        /* best-effort — never throw on mode restore */
+      }
+      for (const l of prevData) stdin.on('data', l);
+      for (const l of prevKeypress) stdin.on('keypress', l);
+    }
+
+    try {
+      // Detach readline's grip for the duration of this single read.
+      stdin.removeAllListeners('data');
+      stdin.removeAllListeners('keypress');
+      if (typeof stdin.setRawMode === 'function') stdin.setRawMode(true);
+      stdin.resume();
+      stdin.on('data', onData as (...a: never[]) => void);
+    } catch (err) {
+      restore();
+      reject(err instanceof Error ? err : new Error(String(err)));
+    }
+  });
+}
+
+/**
+ * Drive a single-key yes/no confirm on a TTY: Enter accepts the default, `y`/`n`
+ * decide immediately (no Enter), any other key is ignored, and Ctrl-C/Ctrl-D
+ * re-raise SIGINT to exit. The chosen letter is echoed (raw mode suppresses the
+ * terminal's own echo). Rejects if the raw read is unavailable so the caller can
+ * fall back to line mode.
+ *
+ * `stdin` is injectable for testing; in production it is `process.stdin`.
+ */
+export async function confirmViaKey(
+  out: OutputSink,
+  defaultYes: boolean,
+  stdin: KeyInputStream = process.stdin as unknown as KeyInputStream,
+): Promise<boolean> {
+  for (;;) {
+    const key = await readSingleKey(stdin);
+    const verdict = interpretYesNoKey(key, defaultYes);
+    if (verdict === 'ignore') continue;
+    if (verdict === 'abort') {
+      out.write('\n');
+      // Honour Ctrl-C: re-raise SIGINT so the process exits as expected.
+      process.kill(process.pid, 'SIGINT');
+      return defaultYes;
+    }
+    const yes = verdict === 'yes';
+    out.write((yes ? 'y' : 'n') + '\n');
+    return yes;
+  }
+}
+
+/**
+ * Build the {@link Confirm} used for yes/no prompts.
+ *
+ *   - `injected` (tests) wins.
+ *   - On a real interactive TTY → single-key reader (Enter = default, y/n decide
+ *     instantly, other keys ignored) with a line-mode fallback if it ever fails.
+ *   - Otherwise (piped input / tests / no setRawMode) → line read + parseYesNo,
+ *     so EOF and scripted `y`/`n`/blank lines keep working exactly as before.
+ */
+function makeConfirm(
+  out: OutputSink,
+  readLine: () => Promise<string | null>,
+  injected?: Confirm,
+): Confirm {
+  if (injected !== undefined) return injected;
+
+  const canRawKey =
+    out.isTty &&
+    process.stdin.isTTY === true &&
+    typeof process.stdin.setRawMode === 'function';
+
+  if (!canRawKey) {
+    return async (defaultYes: boolean): Promise<boolean> =>
+      parseYesNo(await readLine(), defaultYes);
+  }
+
+  return async (defaultYes: boolean): Promise<boolean> => {
+    try {
+      return await confirmViaKey(out, defaultYes);
+    } catch {
+      // Any raw-mode hiccup must never break onboarding — fall back to a line.
+      return parseYesNo(await readLine(), defaultYes);
+    }
   };
 }
 
@@ -546,12 +729,18 @@ async function runWelcome(
   ctx: MenuContext,
   out: OutputSink,
   readLine: () => Promise<string | null>,
+  confirm: Confirm,
+  drainExtraLines: (() => string[]) | undefined,
   mutableConfig: AppConfig,
   installProviderFn: (id: ProviderId, out: OutputSink) => Promise<boolean>,
   loginFn: (
     out: OutputSink,
     providerArg?: string,
-    opts?: { method?: LoginMethod; readLine?: () => Promise<string | null> },
+    opts?: {
+      method?: LoginMethod;
+      readLine?: () => Promise<string | null>;
+      drainExtraLines?: () => string[];
+    },
   ) => Promise<number>,
   detectEnvironmentFn: () => Promise<EnvironmentStatus>,
 ): Promise<AppConfig> {
@@ -562,7 +751,7 @@ async function runWelcome(
   out.write('\n' + box(`🧠 myshell-tools v${ctx.version} — Setup`, headerLines) + '\n\n');
 
   // ---- Orientation header --------------------------------------------------
-  out.write('Quick setup — a few questions, ~30 seconds. Press Enter to accept the [Capitalized] default.\n\n');
+  out.write('Quick setup — a few questions, ~30 seconds. Just press Enter for the [Capitalized] default, or tap y / n.\n\n');
 
   // ---- Offer to install any missing provider (claude / codex) --------------
   // Consent is required: we ask once per missing provider.
@@ -576,9 +765,8 @@ async function runWelcome(
 
     const pkg = id === 'claude' ? '@anthropic-ai/claude-code' : '@openai/codex';
     out.write(`Install ${id} (${pkg})? (Y/n) `);
-    const ans = await readLine();
 
-    if (parseYesNo(ans, true)) {
+    if (await confirm(true)) {
       const ok = await installProviderFn(id, out);
       if (ok) {
         didInstallAny = true;
@@ -597,8 +785,7 @@ async function runWelcome(
   // opencode defaults to NO — it is optional and users may prefer claude/codex only.
   if (!env.opencode.installed) {
     out.write('Add opencode? (optional — free models + more providers) (y/N) ');
-    const ans = await readLine();
-    if (parseYesNo(ans, false)) {
+    if (await confirm(false)) {
       const ok = await installProviderFn('opencode', out);
       if (ok) {
         // Re-detect so downstream sign-in logic sees the freshly installed opencode.
@@ -616,13 +803,13 @@ async function runWelcome(
     if (!ps.installed || ps.authenticated) continue;
 
     out.write(`\nSign in to ${id} now? (Y/n) `);
-    const ans = await readLine();
 
-    if (parseYesNo(ans, true)) {
+    if (await confirm(true)) {
       // loginFn auto-detects the right method (code in containers/SSH where the
       // localhost OAuth callback can't be reached, browser on a desktop).
-      // Pass readLine so the claude token-paste prompt shares the menu's reader.
-      await loginFn(out, id, { readLine });
+      // Pass readLine so the claude token-paste prompt shares the menu's reader,
+      // and drainExtraLines so a wrap-split token paste is reassembled.
+      await loginFn(out, id, { readLine, ...(drainExtraLines !== undefined ? { drainExtraLines } : {}) });
     }
   }
 
@@ -656,14 +843,11 @@ async function runWelcome(
 
   // Default is NO for set-as-default — require explicit 'y' to enable.
   out.write('Set myshell-tools as your default shell tool? (y/N) ');
-  const defaultAns = await readLine();
-
-  const setAsDefault = parseYesNo(defaultAns, false);
+  const setAsDefault = await confirm(false);
 
   // Default is YES for auto-update (recommended; user can opt out with n or via Settings).
   out.write('Keep myshell-tools up to date automatically? (Y/n) ');
-  const autoUpdateAns = await readLine();
-  const autoUpdate = parseYesNo(autoUpdateAns, true);
+  const autoUpdate = await confirm(true);
 
   const saved: AppConfig = {
     onboarded: true,
@@ -1589,6 +1773,15 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
     readLine = () => reader.nextLine();
   }
 
+  // Single-key yes/no confirm (Enter = default, y/n decide instantly on a TTY)
+  // with a line-mode fallback for piped input / tests.
+  const confirm = makeConfirm(out, readLine, ctx.confirm);
+  // Reassembles a token paste that arrived split across readline lines. Only the
+  // real lineReader can buffer extra fragments; the injected path returns none.
+  const readerForDrain = lineReader;
+  const drainExtraLines: (() => string[]) | undefined =
+    readerForDrain !== null ? () => readerForDrain.drainBufferedNow() : undefined;
+
   // Mutable local copy of config & env — updated as the user changes settings /
   // re-authenticates without mutating the immutable ctx parameter.
   const mutableCtx: { config: AppConfig; env: EnvironmentStatus } = {
@@ -1599,7 +1792,7 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
   try {
     // ---- A. First-run welcome -----------------------------------------------
     if (!mutableCtx.config.onboarded) {
-      mutableCtx.config = await runWelcome(ctx, out, readLine, mutableCtx.config, installProviderFn, loginFn, detectEnvironmentFn);
+      mutableCtx.config = await runWelcome(ctx, out, readLine, confirm, drainExtraLines, mutableCtx.config, installProviderFn, loginFn, detectEnvironmentFn);
       // Re-detect after onboarding so the first main screen shows the REAL post-login
       // status (e.g. codex now "ready" if the user signed in during setup).
       mutableCtx.env = await detectEnvironmentFn();
@@ -1748,7 +1941,7 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
       // Pass readLine so the token-paste prompt shares the menu's single reader
       // (avoids creating a second readline interface that would double-consume stdin).
       if (key === 'j') {
-        await loginFn(out, 'claude', { readLine });
+        await loginFn(out, 'claude', { readLine, ...(drainExtraLines !== undefined ? { drainExtraLines } : {}) });
         mutableCtx.env = await detectEnvironmentFn();
         continue;
       }
