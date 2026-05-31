@@ -23,7 +23,7 @@ import type { AppConfig } from '../infra/config.js';
 import { saveConfig } from '../infra/config.js';
 import type { ConversationMeta, ConversationStore } from '../infra/conversation-store.js';
 import { readLedger } from '../infra/ledger.js';
-import { summarizeSpend, formatUsd } from '../infra/insights.js';
+import { summarizeSpend, formatTokens } from '../infra/insights.js';
 import type { SpendSummary } from '../infra/insights.js';
 import type { EnvironmentStatus } from '../providers/detect.js';
 import { detectEnvironment, getInstallCommand } from '../providers/detect.js';
@@ -360,21 +360,27 @@ export function renderHeaderLines(
 }
 
 /**
- * Render the budget/spend status line shown beneath the provider header.
+ * Render the activity status line shown beneath the provider header.
  *
- * Uses real numbers only — all values come from the SpendSummary which is
- * derived from `readLedger`. No digit-% literals appear in this function; it
- * shows dollar amounts only.
+ * This is a SUBSCRIPTION tool, not an API-key tool — per-token dollar figures
+ * don't map to flat subscription billing and read as misleading bloat, so the
+ * always-on line shows REAL, measured signals only: task count and tokens. The
+ * estimated-dollar view lives on-demand in `myshell-tools cost`, clearly
+ * captioned there as an API-equivalent (not your actual bill).
+ *
+ * Uses real numbers only — all values come from the SpendSummary derived from
+ * `readLedger`. No digit-% literals appear here.
  *
  * @param spend - Output of summarizeSpend() over real ledger entries.
  * @param color - When false, no ANSI escape codes are emitted.
  */
 export function renderBudgetLine(spend: SpendSummary, _color: boolean): string {
   if (spend.calls === 0) {
-    return 'Today: ' + formatUsd(0) + ' · no runs yet';
+    return 'No runs yet — press n to start';
   }
-  const todayPart = 'Today: ' + formatUsd(spend.todayUsd) + ' · ' + String(spend.calls) + ' calls';
-  const totalPart = 'Total: ' + formatUsd(spend.totalUsd);
+  const taskWord = spend.calls === 1 ? 'task' : 'tasks';
+  const todayPart = 'Today: ' + String(spend.calls) + ' ' + taskWord + ' · ' + formatTokens(spend.todayTokens) + ' tokens';
+  const totalPart = formatTokens(spend.totalTokens) + ' tokens all-time';
   return todayPart + '   ·   ' + totalPart;
 }
 

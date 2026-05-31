@@ -199,7 +199,12 @@ export type CoreEvent =
       readonly tier: Tier;
       readonly success: boolean;
       readonly confidence: number | null;
+      /** Estimated USD — retained for the ledger and the on-demand `cost` view;
+       *  NOT shown on the hot path (this is a subscription tool, not API-billed). */
       readonly costUsd: number;
+      /** Real, measured token counts — the transparent primary signal shown live. */
+      readonly inputTokens: number;
+      readonly outputTokens: number;
       readonly durationMs: number;
     }
   | {

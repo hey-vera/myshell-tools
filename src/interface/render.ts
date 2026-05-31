@@ -12,6 +12,7 @@
 import type { CoreEvent } from '../core/types.js';
 import { bold, cyan, dim, green, red, yellow } from '../ui/theme.js';
 import { createSpinner } from '../ui/spinner.js';
+import { formatTokens } from '../infra/insights.js';
 
 // ---------------------------------------------------------------------------
 // OutputSink
@@ -57,7 +58,9 @@ export async function renderStream(
   const c = out.color;
 
   let finalEvent: Extract<CoreEvent, { type: 'final' }> | undefined;
-  let runningUsd = 0;
+  // Accumulate REAL tokens across tiers so the final summary shows a measured
+  // total instead of an estimated dollar figure (subscription tool, not API).
+  let runningTokens = 0;
 
   // Spinner is only used in TTY mode; we create one per tier-start and stop it
   // when the first real output arrives or when tier-done fires.
@@ -119,16 +122,17 @@ export async function renderStream(
 
       case 'tier-done': {
         stopSpinner();
-        runningUsd += ev.costUsd;
         const confidenceStr = renderConfidence(ev.confidence, c);
-        const costStr = `$${ev.costUsd.toFixed(4)}`;
-        const runningStr = `$${runningUsd.toFixed(4)}`;
+        // Tokens are real and measured; dollars are an API-equivalent estimate
+        // that doesn't map to subscription billing, so they live in `cost`, not here.
+        runningTokens += ev.inputTokens + ev.outputTokens;
+        const tokenStr = formatTokens(ev.inputTokens + ev.outputTokens);
         const successMark = ev.success ? green('✓', c) : red('✗', c);
         out.write(
           `\n${successMark} ${bold('tier done', c)} — ` +
           `confidence: ${confidenceStr}, ` +
-          `cost: ${costStr}, ` +
-          `duration: ${ev.durationMs}ms  ·  session so far: ${runningStr}\n`,
+          `${tokenStr} tokens, ` +
+          `duration: ${ev.durationMs}ms\n`,
         );
         break;
       }
@@ -161,11 +165,10 @@ export async function renderStream(
         const successLabel = ev.success
           ? bold(green('Success', c), c)
           : bold(red('Failed', c), c);
-        const costStr = `$${ev.totalCostUsd.toFixed(4)}`;
         out.write(
           `\n${successLabel} — ` +
           `tier: ${ev.tier}, ` +
-          `cost: ${costStr}, ` +
+          `${formatTokens(runningTokens)} tokens, ` +
           `attempts: ${ev.attempts}, ` +
           `session: ${ev.sessionId}\n`,
         );

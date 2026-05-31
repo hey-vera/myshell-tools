@@ -166,11 +166,12 @@ describe('runTask — happy path (provider available)', () => {
     assert.ok(joined.includes('run-test-session'), 'Should include the real session id');
   });
 
-  it('output contains a real cost (not zero, because usage was provided)', async () => {
+  it('output shows real tokens, not dollars (subscription tool)', async () => {
     await runTask('write unit tests', deps, sink, new AbortController().signal);
     const joined = sink.buf.join('');
-    // claude-sonnet-4-6: $3/1M in, $15/1M out; 1000 in + 500 out = $0.0105
-    assert.ok(joined.includes('$0.0105'), 'Should include the computed real cost');
+    // Provider usage: 1000 in + 500 out = 1500 tokens → "1.5k tokens".
+    assert.ok(joined.includes('1.5k tokens'), `Should show real token total, got:\n${joined}`);
+    assert.ok(!joined.includes('$'), `Hot path must show no dollar figure, got:\n${joined}`);
   });
 
   it('output contains confidence rendered as a computed number (from 0.75)', async () => {

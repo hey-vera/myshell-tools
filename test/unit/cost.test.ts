@@ -169,27 +169,22 @@ describe('formatCostReport — multi-entry across haiku and sonnet', () => {
     );
   });
 
-  it('flagship cost > actual cost (manager-tier is pricier than haiku/sonnet mix)', () => {
-    // Flagship is getCheapestForTier('manager') = claude-opus-4-7:
-    //   $5/M input + $25/M output
-    // Entry 1 (haiku): 500k in + 200k out  → $2.50 + $5.00  = $7.50
-    // Entry 2 (sonnet): 1M in + 300k out   → $5.00 + $7.50  = $12.50
-    // Entry 3 (haiku): 800k in + 150k out  → $4.00 + $3.75  = $7.75
-    // Flagship total: $27.75 >> $0.011 actual
-    const flagshipLine = lines.find((l) => l.includes('always-flagship'));
-    assert.ok(flagshipLine !== undefined, 'counterfactual line not found');
-    // The multiplier text should be present and mention "x more"
+  it('routing efficiency expresses savings as a billing-agnostic ratio', () => {
+    // Flagship is getCheapestForTier('manager'); a haiku/sonnet mix is far cheaper,
+    // so the routing-efficiency line reports a "~N× less" ratio than always-flagship.
+    const ratioLine = lines.find((l) => l.includes('× less'));
+    assert.ok(ratioLine !== undefined, 'routing-efficiency ratio line not found');
     assert.ok(
-      flagshipLine.includes('x more'),
-      `expected multiplier in counterfactual line: "${flagshipLine}"`,
+      ratioLine.includes('flagship'),
+      `expected the ratio framed against the flagship: "${ratioLine}"`,
     );
   });
 
-  it('multiplier is a sensible positive number (>> 1)', () => {
-    const flagshipLine = lines.find((l) => l.includes('x more')) ?? '';
-    // Extract the multiplier — it appears as e.g. "2522.7x more" in this test
-    const match = flagshipLine.match(/([\d.]+)x more/);
-    assert.ok(match !== null, `multiplier pattern not found in: "${flagshipLine}"`);
+  it('routing-efficiency multiplier is a sensible positive number (>> 1)', () => {
+    const ratioLine = lines.find((l) => l.includes('× less')) ?? '';
+    // Extract the multiplier — appears as e.g. "~2522.7× less"
+    const match = ratioLine.match(/([\d.]+)× less/);
+    assert.ok(match !== null, `multiplier pattern not found in: "${ratioLine}"`);
     const multiplier = parseFloat(match[1]);
     assert.ok(
       multiplier > 1,

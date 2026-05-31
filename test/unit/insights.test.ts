@@ -11,7 +11,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 
-import { summarizeSpend, providerHealth, formatUsd } from '../../src/infra/insights.ts';
+import { summarizeSpend, providerHealth, formatUsd, formatTokens } from '../../src/infra/insights.ts';
 import type { LedgerEntry } from '../../src/core/types.ts';
 
 // ---------------------------------------------------------------------------
@@ -78,7 +78,17 @@ describe('summarizeSpend', () => {
     assert.strictEqual(spend.todayUsd, 0);
     assert.strictEqual(spend.totalUsd, 0);
     assert.strictEqual(spend.calls, 0);
+    assert.strictEqual(spend.todayTokens, 0);
+    assert.strictEqual(spend.totalTokens, 0);
     assert.deepStrictEqual(spend.byProvider, {});
+  });
+
+  it('sums real tokens (input + output) for today and all-time', () => {
+    const today = makeEntry({ timestamp: NOW_ISO, inputTokens: 1000, outputTokens: 200 });
+    const yesterday = makeEntry({ timestamp: YESTERDAY_ISO, inputTokens: 500, outputTokens: 100 });
+    const spend = summarizeSpend([today, yesterday], NOW_ISO);
+    assert.strictEqual(spend.todayTokens, 1200, 'today = 1000 + 200');
+    assert.strictEqual(spend.totalTokens, 1800, 'all-time = 1200 + 600');
   });
 
   it('counts a single entry today correctly', () => {
@@ -308,6 +318,41 @@ describe('formatUsd', () => {
     const results = [formatUsd(0), formatUsd(0.0042), formatUsd(1.0)];
     for (const r of results) {
       assertNoForbidden(r, 'formatUsd');
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// formatTokens
+// ---------------------------------------------------------------------------
+
+describe('formatTokens', () => {
+  it('shows raw count below 1000', () => {
+    assert.strictEqual(formatTokens(0), '0');
+    assert.strictEqual(formatTokens(942), '942');
+  });
+
+  it('shows k with one decimal, dropping a trailing .0', () => {
+    assert.strictEqual(formatTokens(12_400), '12.4k');
+    assert.strictEqual(formatTokens(12_000), '12k');
+    assert.strictEqual(formatTokens(1500), '1.5k');
+  });
+
+  it('shows M for millions', () => {
+    assert.strictEqual(formatTokens(3_000_000), '3M');
+    assert.strictEqual(formatTokens(2_500_000), '2.5M');
+  });
+
+  it('clamps invalid / negative inputs to "0"', () => {
+    assert.strictEqual(formatTokens(-5), '0');
+    assert.strictEqual(formatTokens(Number.NaN), '0');
+  });
+
+  it('never contains a dollar sign or digit-% literal', () => {
+    for (const n of [0, 942, 12_400, 3_000_000]) {
+      const s = formatTokens(n);
+      assert.ok(!s.includes('$'), `formatTokens must not contain "$": "${s}"`);
+      assertNoDigitPercent(s, 'formatTokens');
     }
   });
 });

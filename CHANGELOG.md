@@ -12,6 +12,10 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## [3.2.0]
 
+### Changed
+- **Tokens, not dollars, on the everyday UI.** myshell-tools drives your *subscription* CLIs (flat fee), so per-task dollar figures were misleading — they don't map to subscription billing and read as bloat. The control-panel status line and the live per-task output now show **real, measured token counts**; the always-on money meter ("Today: $… · session so far: $…") is gone. The `tier-done` and final-summary lines show tokens; the control-panel line shows tasks + tokens.
+- **`cost` reframed as "usage & efficiency".** It now leads with real tokens (overall + per model) and a **billing-agnostic routing-efficiency ratio** ("routing picked cheaper-tier models — ~N× less than always-flagship"), which is honest under a subscription. The dollar estimate is demoted to a clearly-captioned section: **"Estimated cost — API-equivalent, not your subscription bill."** New pure `formatTokens` helper; `SpendSummary` gained `todayTokens`/`totalTokens`; the `tier-done` event carries real `inputTokens`/`outputTokens`.
+
 ### Added
 - **Version status in the header** — the control-panel title now always tells you where you stand: `myshell-tools v3.2.0 (latest)` when current, or `myshell-tools v3.2.0 → 3.3.0 available` when a newer release exists. No more guessing whether you're up to date. (`versionStatusLabel`, pure + tested.)
 - **npx-awareness** — when run via `npx myshell-tools`, the tool now detects it (`isRunningUnderNpx`) and is honest about updates: instead of silently running a global install that the next `npx` invocation would ignore (npx re-serves its own cache), it shows `Install globally to stay current: npm install -g myshell-tools@latest`. Silent auto-update and the `[u]` key are suppressed under npx because they cannot persist there.

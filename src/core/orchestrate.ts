@@ -374,6 +374,8 @@ export async function* orchestrate(
       success,
       confidence: assessment.confidence,
       costUsd: usd,
+      inputTokens: usage?.inputTokens ?? 0,
+      outputTokens: usage?.outputTokens ?? 0,
       durationMs,
     };
 
@@ -559,6 +561,8 @@ export async function* orchestrate(
           success: reviewSuccess,
           confidence: null,
           costUsd: reviewUsd,
+          inputTokens: reviewOutcome.usage?.inputTokens ?? 0,
+          outputTokens: reviewOutcome.usage?.outputTokens ?? 0,
           durationMs: reviewDurationMs,
         };
 

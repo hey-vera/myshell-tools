@@ -2,7 +2,7 @@
 
 **Hierarchical, multi-provider AI orchestration for your shell — over the CLIs you already use.**
 
-`myshell-tools` routes each task to the *cheapest* model likely to succeed, runs it on your real codebase, optionally has a **different vendor** review the result, and shows you exactly what it did and what it truly cost — with **no fabricated data, ever**.
+`myshell-tools` routes each task to the *cheapest* model likely to succeed, runs it on your real codebase, optionally has a **different vendor** review the result, and shows you exactly what it did and how many real tokens it used — with **no fabricated data, ever**.
 
 > **Status: `3.2.0` — honest, tested, and real.** Claude, Codex, and opencode (experimental) all work, provider auth is detected for real, and the header always shows whether you're on the latest version (`(latest)` or `→ x.y.z available`).
 
@@ -38,7 +38,7 @@ myshell-tools
 
 Using one frontier model for everything is wasteful (renaming a variable doesn't need Opus) and single‑model output has blind spots. `myshell-tools` addresses both, honestly:
 
-- **Cost‑aware routing** — trivial work goes to the cheap tier (Haiku / GPT‑5 mini), real implementation to the mid tier, hard calls to the flagship. You see the savings as a real number.
+- **Cost‑aware routing** — trivial work goes to the cheap tier (Haiku / GPT‑5 mini), real implementation to the mid tier, hard calls to the flagship. The efficiency shows up as a billing‑agnostic ratio (how many flagship tokens you avoided), not a dollar figure — because you're on a subscription, not metered API billing.
 - **Efficiency modes** — three policy presets control the cost/quality trade-off:
   - `cost-saver` — routes to the cheapest capable model for each tier; only runs the cross-vendor review pass on *critical*-risk tasks (not every IC call). An optional `maxCostUsd` cap halts further escalation/review once spend reaches the limit.
   - `balanced` — the default; routes intelligently and reviews high-risk work.
@@ -143,14 +143,13 @@ These are **actual, unedited** outputs (your costs/timings will differ):
 
 ```text
 $ myshell-tools run "what is 2 plus 2"
-Classified: worker tier, low risk — tier: worker keyword 'what is'; risk: defaulting to low
 ▶ WORKER (claude/claude-haiku-4-5) attempt 1
 2 plus 2 equals 4.
-✓ tier done — confidence: 100%, cost: $0.0124, duration: 5648ms
-Success — tier: worker, cost: $0.0124, attempts: 1, session: 0dbfe2e3-…
+✓ tier done — confidence: 100%, 312 tokens, duration: 5648ms
+Success — tier: worker, 312 tokens, attempts: 1, session: 0dbfe2e3-…
 ```
 
-The confidence (`100%`) is **parsed from the model's own structured reply**, not invented. The cost is the **CLI's own reported figure**, not an estimate.
+The confidence (`100%`) is **parsed from the model's own structured reply**, not invented. The token count is the **CLI's own reported usage** — real and measured. Because myshell-tools drives your *subscription* CLIs (not metered API keys), the hot path shows tokens, not dollars; a per-task dollar figure wouldn't map to flat subscription billing. If you want a rough API-equivalent cost estimate, it lives in `myshell-tools cost`.
 
 ### Health — automatic, no command needed
 
@@ -172,21 +171,25 @@ Providers
 Ready — at least one provider is available.
 ```
 
-### Cost & the routing counterfactual
+### Usage & efficiency (`cost`)
+
+This is a *subscription* tool, so the everyday UI shows **real, measured tokens** — never per-task dollars, which wouldn't map to flat subscription billing. The on-demand `cost` view leads with tokens and a **billing-agnostic routing-efficiency ratio**, then offers a clearly-captioned API-equivalent dollar estimate for anyone who wants the magnitude:
 
 ```text
 $ myshell-tools cost
-Billed total: $0.0125 (as billed, incl. caching/discounts)
-Total calls: 1
-Per-model breakdown
-  claude-haiku-4-5: 1 call, $0.0125
-Counterfactual — list price, token-for-token
-  Routed (models used): $0.0010
-  Always-flagship:      $0.0063
-  Routing saved you money: always-flagship would cost 6.3x more …
+myshell-tools — usage & efficiency
+Tasks run:   3
+Tokens used: 12.4k (real, measured)
+Per-model usage
+  claude-haiku-4-5: 2 tasks, 4.1k tokens
+  claude-sonnet-4-6: 1 task, 8.3k tokens
+Routing efficiency
+Routing picked cheaper-tier models where it could — ~6.3× less than sending every task to the flagship (claude-opus-4-7).
+Estimated cost  — API-equivalent, not your subscription bill
+If billed as API: ~$0.0125 (provider-reported where available, else estimated from list prices)
 ```
 
-The counterfactual is **apples‑to‑apples** (both routed and flagship priced the same way), and the *billed* total is shown separately and labeled — no mixing of cache‑adjusted and list prices.
+The **efficiency ratio is honest under a subscription** (it compares flagship tokens you avoided, not dollars you were charged). The dollar line is explicitly labeled an *API-equivalent estimate* — not your actual bill — because you pay a flat subscription, not per token.
 
 ---
 

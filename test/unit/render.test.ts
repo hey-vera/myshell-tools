@@ -65,6 +65,8 @@ describe('renderStream — happy path with confidence 0.8', () => {
         success: true,
         confidence: 0.8,
         costUsd: 0.0123,
+        inputTokens: 1200,
+        outputTokens: 300,
         durationMs: 1500,
       },
       {
@@ -95,8 +97,9 @@ describe('renderStream — happy path with confidence 0.8', () => {
     // Confidence rendered as computed percentage from 0.8
     assert.ok(joined.includes('80'), 'Should contain confidence 80 (from 0.8 * 100)');
 
-    // Cost rendered truthfully
-    assert.ok(joined.includes('$0.0123'), 'Should contain the real cost');
+    // Real, measured tokens rendered (subscription tool — no per-token $ on the hot path)
+    assert.ok(joined.includes('1.5k tokens'), `Should show real token total, got:\n${joined}`);
+    assert.ok(!joined.includes('$'), `Hot path must show NO dollar figure, got:\n${joined}`);
 
     // Session id rendered truthfully
     assert.ok(joined.includes('test-session-id-1'), 'Should contain the real sessionId');
@@ -439,11 +442,11 @@ describe('renderStream — no final event', () => {
 });
 
 // ---------------------------------------------------------------------------
-// 8. Running session cost accumulates across multiple tier-done events
+// 8. Per-tier token display + accumulated token total on the final line
 // ---------------------------------------------------------------------------
 
-describe('renderStream — running session cost meter', () => {
-  it('shows accumulating session so far totals on each tier-done line', async () => {
+describe('renderStream — token display (no dollar meter)', () => {
+  it('shows per-tier tokens and an accumulated token total on the final line', async () => {
     const sink = makeSink();
 
     const events: CoreEvent[] = [
@@ -453,6 +456,8 @@ describe('renderStream — running session cost meter', () => {
         success: true,
         confidence: 0.75,
         costUsd: 0.0050,
+        inputTokens: 1000,
+        outputTokens: 200, // 1.2k
         durationMs: 400,
       },
       {
@@ -461,6 +466,8 @@ describe('renderStream — running session cost meter', () => {
         success: true,
         confidence: 0.9,
         costUsd: 0.0073,
+        inputTokens: 2000,
+        outputTokens: 300, // 2.3k → total 3.5k
         durationMs: 900,
       },
       {
@@ -475,32 +482,21 @@ describe('renderStream — running session cost meter', () => {
     ];
 
     await renderStream(makeStream(events), sink);
-    const lines = sink.buf.join('').split('\n');
+    const buf = sink.buf.join('');
+    const lines = buf.split('\n');
 
-    // Find the two tier-done lines
     const tierDoneLines = lines.filter(l => l.includes('tier done'));
     assert.equal(tierDoneLines.length, 2, 'Should have two tier-done lines');
 
-    // First tier-done: session so far = $0.0050
-    assert.ok(
-      tierDoneLines[0].includes('session so far: $0.0050'),
-      `First tier-done must show session so far: $0.0050, got: ${tierDoneLines[0]}`,
-    );
+    // Each tier-done shows its own real token count.
+    assert.ok(tierDoneLines[0].includes('1.2k tokens'), `First tier-done tokens, got: ${tierDoneLines[0]}`);
+    assert.ok(tierDoneLines[1].includes('2.3k tokens'), `Second tier-done tokens, got: ${tierDoneLines[1]}`);
 
-    // Second tier-done: session so far = $0.0050 + $0.0073 = $0.0123
-    assert.ok(
-      tierDoneLines[1].includes('session so far: $0.0123'),
-      `Second tier-done must show session so far: $0.0123 (accumulated sum), got: ${tierDoneLines[1]}`,
-    );
+    // Final line shows the accumulated real total (1.2k + 2.3k = 3.5k), not dollars.
+    const finalLine = lines.find(l => l.includes('Success')) ?? '';
+    assert.ok(finalLine.includes('3.5k tokens'), `Final line must show accumulated tokens, got: ${finalLine}`);
 
-    // Per-tier cost on each line is still the individual cost, not the running total
-    assert.ok(
-      tierDoneLines[0].includes('cost: $0.0050'),
-      `First tier-done must still show per-tier cost: $0.0050, got: ${tierDoneLines[0]}`,
-    );
-    assert.ok(
-      tierDoneLines[1].includes('cost: $0.0073'),
-      `Second tier-done must still show per-tier cost: $0.0073, got: ${tierDoneLines[1]}`,
-    );
+    // Hard guarantee: no dollar figure anywhere on the hot path.
+    assert.ok(!buf.includes('$'), `Render output must contain no "$" figure, got:\n${buf}`);
   });
 });
