@@ -96,6 +96,30 @@ export interface MenuContext {
 // ---------------------------------------------------------------------------
 
 /**
+ * Parse a yes/no answer from a raw input line, with a configurable default.
+ *
+ * Accepts (case-insensitive, trimmed):
+ *   - `"y"` or `"yes"`           → true
+ *   - `"n"` or `"no"`            → false
+ *   - empty string or `null` (EOF) → `defaultYes`
+ *   - anything else              → `defaultYes` (lenient)
+ *
+ * Never throws.  Callers should display `(Y/n)` when `defaultYes` is true and
+ * `(y/N)` when `defaultYes` is false so the user knows which choice Enter gives.
+ *
+ * @param input      - The raw line from readLine(), or null on EOF.
+ * @param defaultYes - True if pressing Enter (or EOF) means yes.
+ * @returns True for yes, false for no.
+ */
+export function parseYesNo(input: string | null, defaultYes: boolean): boolean {
+  if (input === null || input.trim().length === 0) return defaultYes;
+  const lower = input.trim().toLowerCase();
+  if (lower === 'y' || lower === 'yes') return true;
+  if (lower === 'n' || lower === 'no') return false;
+  return defaultYes;
+}
+
+/**
  * Return the shell alias hint the user can add to their shell profile to make
  * `myshell-tools` the default command-line assistant.
  *
@@ -320,6 +344,7 @@ async function runWelcome(
     providerArg?: string,
     opts?: { method?: LoginMethod; readLine?: () => Promise<string | null> },
   ) => Promise<number>,
+  detectEnvironmentFn: () => Promise<EnvironmentStatus>,
 ): Promise<AppConfig> {
   // Use the mutable env so re-detection after installs is visible downstream.
   let env = ctx.env;
@@ -327,8 +352,9 @@ async function runWelcome(
   const headerLines = renderHeaderLines(env, ctx.version);
   out.write('\n' + box(`🧠 myshell-tools v${ctx.version} — Setup`, headerLines) + '\n\n');
 
-  // ---- Offer to install any missing provider --------------------------------
-  // Consent is required: we ask once per missing provider.  Enter = yes, n = skip.
+  // ---- Offer to install any missing provider (claude / codex) --------------
+  // Consent is required: we ask once per missing provider.
+  // Display: (Y/n) — default YES, so Enter installs; explicit n skips.
   const providers: ProviderId[] = ['claude', 'codex'];
   let didInstallAny = false;
 
@@ -337,13 +363,10 @@ async function runWelcome(
     if (ps.installed) continue;
 
     const pkg = id === 'claude' ? '@anthropic-ai/claude-code' : '@openai/codex';
-    out.write(`Install ${id} (${pkg})? [Enter] yes · [n] no\n`);
-    out.write('> ');
+    out.write(`Install ${id} (${pkg})? (Y/n) `);
     const ans = await readLine();
 
-    // EOF or 'n'/'no' → skip; anything else (including '') → yes
-    const skip = ans === null || ans.toLowerCase() === 'n' || ans.toLowerCase() === 'no';
-    if (!skip) {
+    if (parseYesNo(ans, true)) {
       const ok = await installProviderFn(id, out);
       if (ok) {
         didInstallAny = true;
@@ -355,20 +378,35 @@ async function runWelcome(
 
   // ---- Re-detect if anything was installed so sign-in offers are accurate --
   if (didInstallAny) {
-    env = await detectEnvironment();
+    env = await detectEnvironmentFn();
+  }
+
+  // ---- Offer opencode (optional, free models + more providers) -------------
+  // opencode defaults to NO — it is optional and users may prefer claude/codex only.
+  if (!env.opencode.installed) {
+    out.write('Add opencode? (optional — free models + more providers) (y/N) ');
+    const ans = await readLine();
+    if (parseYesNo(ans, false)) {
+      const ok = await installProviderFn('opencode', out);
+      if (ok) {
+        // Re-detect so downstream sign-in logic sees the freshly installed opencode.
+        env = await detectEnvironmentFn();
+      }
+    }
+    // No nag on skip — opencode is always discoverable via [o] in the main menu.
   }
 
   // ---- Offer sign-in for installed-but-unauthenticated providers -----------
+  // opencode reports authenticated:true when installed (free models, no keys needed),
+  // so it is never double-prompted here.
   for (const id of providers) {
     const ps = env[id];
     if (!ps.installed || ps.authenticated) continue;
 
-    out.write(`\nSign in to ${id} now? [Enter] yes · [n] no\n`);
-    out.write('> ');
+    out.write(`\nSign in to ${id} now? (Y/n) `);
     const ans = await readLine();
 
-    const skip = ans === null || ans.toLowerCase() === 'n' || ans.toLowerCase() === 'no';
-    if (!skip) {
+    if (parseYesNo(ans, true)) {
       // loginFn auto-detects the right method (code in containers/SSH where the
       // localhost OAuth callback can't be reached, browser on a desktop).
       // Pass readLine so the claude token-paste prompt shares the menu's reader.
@@ -401,11 +439,11 @@ async function runWelcome(
   }
   // [Enter] or anything else → fall through to save & go
 
-  out.write('Set myshell-tools as your default shell tool? (y/n) ');
+  // Default is NO for set-as-default — require explicit 'y' to enable.
+  out.write('Set myshell-tools as your default shell tool? (y/N) ');
   const defaultAns = await readLine();
 
-  // EOF before answer → treat as "no"
-  const setAsDefault = (defaultAns ?? '').toLowerCase() === 'y';
+  const setAsDefault = parseYesNo(defaultAns, false);
 
   const saved: AppConfig = {
     onboarded: true,
@@ -973,7 +1011,7 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
   try {
     // ---- A. First-run welcome -----------------------------------------------
     if (!mutableCtx.config.onboarded) {
-      mutableCtx.config = await runWelcome(ctx, out, readLine, mutableCtx.config, installProviderFn, loginFn);
+      mutableCtx.config = await runWelcome(ctx, out, readLine, mutableCtx.config, installProviderFn, loginFn, detectEnvironmentFn);
       // Re-detect after onboarding so the first main screen shows the REAL post-login
       // status (e.g. codex now "ready" if the user signed in during setup).
       mutableCtx.env = await detectEnvironmentFn();

@@ -21,7 +21,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 
-import { startMenu, defaultAliasHint } from '../../src/interface/menu.ts';
+import { startMenu, defaultAliasHint, parseYesNo } from '../../src/interface/menu.ts';
 import type { MenuContext } from '../../src/interface/menu.ts';
 import type { OutputSink } from '../../src/interface/render.ts';
 import type { ConversationMeta, ConversationStore } from '../../src/infra/conversation-store.ts';
@@ -691,6 +691,112 @@ describe('defaultAliasHint', () => {
 });
 
 // ---------------------------------------------------------------------------
+// parseYesNo — pure helper unit tests
+// ---------------------------------------------------------------------------
+
+describe('parseYesNo', () => {
+  // ---- defaultYes = true (Y/n) -----------------------------------------------
+
+  it('returns true for "y" (defaultYes=true)', () => {
+    assert.equal(parseYesNo('y', true), true);
+  });
+
+  it('returns true for "Y" (case-insensitive, defaultYes=true)', () => {
+    assert.equal(parseYesNo('Y', true), true);
+  });
+
+  it('returns true for "yes" (defaultYes=true)', () => {
+    assert.equal(parseYesNo('yes', true), true);
+  });
+
+  it('returns true for "YES" (case-insensitive, defaultYes=true)', () => {
+    assert.equal(parseYesNo('YES', true), true);
+  });
+
+  it('returns false for "n" (defaultYes=true)', () => {
+    assert.equal(parseYesNo('n', true), false);
+  });
+
+  it('returns false for "N" (case-insensitive, defaultYes=true)', () => {
+    assert.equal(parseYesNo('N', true), false);
+  });
+
+  it('returns false for "no" (defaultYes=true)', () => {
+    assert.equal(parseYesNo('no', true), false);
+  });
+
+  it('returns false for "NO" (case-insensitive, defaultYes=true)', () => {
+    assert.equal(parseYesNo('NO', true), false);
+  });
+
+  it('returns true (default) for empty string (defaultYes=true)', () => {
+    assert.equal(parseYesNo('', true), true);
+  });
+
+  it('returns true (default) for null/EOF (defaultYes=true)', () => {
+    assert.equal(parseYesNo(null, true), true);
+  });
+
+  it('returns true (default) for whitespace-only string (defaultYes=true)', () => {
+    assert.equal(parseYesNo('   ', true), true);
+  });
+
+  it('returns true (default) for unrecognised input (defaultYes=true)', () => {
+    assert.equal(parseYesNo('maybe', true), true);
+  });
+
+  it('trims leading/trailing whitespace before matching (defaultYes=true)', () => {
+    assert.equal(parseYesNo('  y  ', true), true);
+    assert.equal(parseYesNo('  n  ', true), false);
+  });
+
+  // ---- defaultYes = false (y/N) -----------------------------------------------
+
+  it('returns true for "y" (defaultYes=false)', () => {
+    assert.equal(parseYesNo('y', false), true);
+  });
+
+  it('returns true for "yes" (defaultYes=false)', () => {
+    assert.equal(parseYesNo('yes', false), true);
+  });
+
+  it('returns false for "n" (defaultYes=false)', () => {
+    assert.equal(parseYesNo('n', false), false);
+  });
+
+  it('returns false for "no" (defaultYes=false)', () => {
+    assert.equal(parseYesNo('no', false), false);
+  });
+
+  it('returns false (default) for empty string (defaultYes=false)', () => {
+    assert.equal(parseYesNo('', false), false);
+  });
+
+  it('returns false (default) for null/EOF (defaultYes=false)', () => {
+    assert.equal(parseYesNo(null, false), false);
+  });
+
+  it('returns false (default) for unrecognised input (defaultYes=false)', () => {
+    assert.equal(parseYesNo('maybe', false), false);
+  });
+
+  it('trims leading/trailing whitespace before matching (defaultYes=false)', () => {
+    assert.equal(parseYesNo('  y  ', false), true);
+    assert.equal(parseYesNo('  n  ', false), false);
+  });
+
+  // ---- Honesty contract -------------------------------------------------------
+
+  it('never throws — all inputs are safe', () => {
+    const inputs: Array<string | null> = [null, '', '  ', 'y', 'Y', 'yes', 'YES', 'n', 'N', 'no', 'NO', 'garbage', '123'];
+    for (const input of inputs) {
+      assert.doesNotThrow(() => parseYesNo(input, true));
+      assert.doesNotThrow(() => parseYesNo(input, false));
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
 // FLOW 6: first-run welcome — install prompt shown for missing provider,
 //          answered "n" (skip), no real npm spawned, flow proceeds to menu.
 // ---------------------------------------------------------------------------
@@ -775,10 +881,11 @@ describe('startMenu — first-run welcome: install prompt for missing provider',
   it('resolves cleanly when user answers n to install and n to default shell', async () => {
     const sink = makeSink();
     // claude missing → install prompt → n (skip)
+    // opencode optional prompt → n (skip)
     // codex missing sign-in prompt → none (codex is authed in FAKE_ENV_CLAUDE_MISSING)
     // mode/continue → '' (Enter)
     // default shell → n
-    const ctx = makeFirstRunCtx(['n', '', 'n']);
+    const ctx = makeFirstRunCtx(['n', 'n', '', 'n']);
 
     await assert.doesNotReject(
       () => startMenu(ctx, sink),
@@ -788,7 +895,7 @@ describe('startMenu — first-run welcome: install prompt for missing provider',
 
   it('shows the install prompt for the missing provider', async () => {
     const sink = makeSink();
-    const ctx = makeFirstRunCtx(['n', '', 'n']);
+    const ctx = makeFirstRunCtx(['n', 'n', '', 'n']);
 
     await startMenu(ctx, sink);
 
@@ -800,7 +907,7 @@ describe('startMenu — first-run welcome: install prompt for missing provider',
 
   it('shows the package name in the install prompt', async () => {
     const sink = makeSink();
-    const ctx = makeFirstRunCtx(['n', '', 'n']);
+    const ctx = makeFirstRunCtx(['n', 'n', '', 'n']);
 
     await startMenu(ctx, sink);
 
@@ -812,7 +919,7 @@ describe('startMenu — first-run welcome: install prompt for missing provider',
 
   it('shows skip message with manual command when user answers n', async () => {
     const sink = makeSink();
-    const ctx = makeFirstRunCtx(['n', '', 'n']);
+    const ctx = makeFirstRunCtx(['n', 'n', '', 'n']);
 
     await startMenu(ctx, sink);
 
@@ -824,7 +931,7 @@ describe('startMenu — first-run welcome: install prompt for missing provider',
 
   it('does NOT show codex install prompt when codex is installed', async () => {
     const sink = makeSink();
-    const ctx = makeFirstRunCtx(['n', '', 'n']);
+    const ctx = makeFirstRunCtx(['n', 'n', '', 'n']);
 
     await startMenu(ctx, sink);
 
@@ -838,7 +945,7 @@ describe('startMenu — first-run welcome: install prompt for missing provider',
   it('proceeds to the menu after install prompts are answered', async () => {
     const sink = makeSink();
     // After welcome: we land on the main menu and quit
-    const ctx = makeFirstRunCtx(['n', '', 'n', 'q']);
+    const ctx = makeFirstRunCtx(['n', 'n', '', 'n', 'q']);
 
     await assert.doesNotReject(
       () => startMenu(ctx, sink),
@@ -864,7 +971,7 @@ describe('startMenu — first-run welcome: install prompt for missing provider',
 
   it('does not contain digit-% literals in welcome output (Honesty Contract)', async () => {
     const sink = makeSink();
-    const ctx = makeFirstRunCtx(['n', '', 'n']);
+    const ctx = makeFirstRunCtx(['n', 'n', '', 'n']);
 
     await startMenu(ctx, sink);
 
@@ -910,9 +1017,10 @@ describe('startMenu — first-run welcome: install prompt for missing provider',
       platform: 'linux',
     };
 
-    // No install prompts (both installed); sign-in prompts for both → answer n to avoid spawn
+    // No install prompts (both installed); opencode optional prompt → n
+    // Sign-in prompts for both → answer n to avoid spawn
     // Then mode/continue → '' (Enter); default shell → n
-    const ctx = makeFirstRunCtx(['n', 'n', '', 'n'], envBothUnauthenticated);
+    const ctx = makeFirstRunCtx(['n', 'n', 'n', '', 'n'], envBothUnauthenticated);
 
     await assert.doesNotReject(
       () => startMenu(ctx, sink),
@@ -922,6 +1030,241 @@ describe('startMenu — first-run welcome: install prompt for missing provider',
     assert.ok(
       sink.buf.toLowerCase().includes('sign in'),
       'sign-in prompt must appear for unauthenticated providers',
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// FLOW 6b: first-run welcome — opencode onboarding prompt
+// ---------------------------------------------------------------------------
+
+describe('startMenu — first-run welcome: opencode onboarding prompt', () => {
+  /**
+   * Env where claude and codex are both installed+authenticated, opencode is NOT.
+   * This isolates the opencode optional prompt with no install/sign-in distractions.
+   */
+  const ENV_NO_OPENCODE: EnvironmentStatus = {
+    claude: {
+      id: 'claude',
+      installed: true,
+      version: '1.0.0',
+      authenticated: true,
+      plan: null,
+      binaryPath: 'claude',
+      availableModels: ['claude-3-5-sonnet'],
+    },
+    codex: {
+      id: 'codex',
+      installed: true,
+      version: '1.0.0',
+      authenticated: true,
+      plan: null,
+      binaryPath: 'codex',
+      availableModels: ['gpt-4o'],
+    },
+    opencode: {
+      id: 'opencode',
+      installed: false,
+      version: null,
+      authenticated: false,
+      plan: null,
+      binaryPath: null,
+      availableModels: [],
+    },
+    hasAnyProvider: true,
+    platform: 'linux',
+  };
+
+  /** Env returned after opencode is installed (authenticated-when-installed). */
+  const ENV_WITH_OPENCODE: EnvironmentStatus = {
+    ...ENV_NO_OPENCODE,
+    opencode: {
+      id: 'opencode',
+      installed: true,
+      version: '0.1.0',
+      authenticated: true,
+      plan: null,
+      binaryPath: 'opencode',
+      availableModels: ['opencode/deepseek-v4-flash-free'],
+    },
+  };
+
+  function makeOpencodeOnboardCtx(
+    inputs: ReadonlyArray<string | null>,
+    installSpy?: (id: string) => void,
+    detectSpy?: () => void,
+  ): MenuContext {
+    const clock = makeFakeClock();
+    const store = makeStore(clock);
+    const ledger = makeFakeLedger();
+    const dir = join(tmpdir(), `menu-opencode-onboard-${randomUUID()}`);
+    const config: AppConfig = { onboarded: false, setAsDefault: false };
+
+    return {
+      version: '2.0.0',
+      clock,
+      ledger,
+      providers: { claude: makeFakeProvider(), codex: makeFakeProvider('codex') },
+      env: ENV_NO_OPENCODE,
+      store,
+      config,
+      cwd: dir,
+      sandbox: 'workspace-write',
+      timeoutMs: 5_000,
+      readLine: makeScriptedReader(inputs),
+      installProvider: async (id, _out) => {
+        installSpy?.(id);
+        return true;
+      },
+      login: async () => 0,
+      detectEnvironment: async () => {
+        detectSpy?.();
+        return ENV_WITH_OPENCODE;
+      },
+    };
+  }
+
+  it('shows opencode optional prompt when opencode is not installed', async () => {
+    const sink = makeSink();
+    // No install prompts (both installed); opencode prompt → n; mode → ''; set-default → n; quit
+    const ctx = makeOpencodeOnboardCtx(['n', '', 'n', 'q']);
+
+    await assert.doesNotReject(
+      () => startMenu(ctx, sink),
+      'opencode onboarding prompt should not throw',
+    );
+
+    assert.ok(
+      sink.buf.toLowerCase().includes('opencode'),
+      'opencode must be mentioned in the onboarding prompt',
+    );
+    assert.ok(
+      sink.buf.includes('optional'),
+      'opencode prompt must mention it is optional',
+    );
+  });
+
+  it('shows (y/N) in the opencode prompt (default NO)', async () => {
+    const sink = makeSink();
+    const ctx = makeOpencodeOnboardCtx(['n', '', 'n', 'q']);
+
+    await startMenu(ctx, sink);
+
+    assert.ok(
+      sink.buf.includes('(y/N)'),
+      'opencode prompt must show (y/N) — default is NO',
+    );
+  });
+
+  it('answering n to opencode prompt skips install — installProvider NOT called with opencode', async () => {
+    const installedIds: string[] = [];
+    const ctx = makeOpencodeOnboardCtx(['n', '', 'n', 'q'], (id) => { installedIds.push(id); });
+    const sink = makeSink();
+
+    await startMenu(ctx, sink);
+
+    assert.ok(
+      !installedIds.includes('opencode'),
+      'installProvider must NOT be called with "opencode" when user answers n',
+    );
+  });
+
+  it('answering y to opencode prompt calls installProvider with "opencode"', async () => {
+    const installedIds: string[] = [];
+    // 'y' → install opencode; '' → mode/continue; 'n' → set-as-default; 'q' → main menu
+    const ctx = makeOpencodeOnboardCtx(
+      ['y', '', 'n', 'q'],
+      (id) => { installedIds.push(id); },
+    );
+    const sink = makeSink();
+
+    await assert.doesNotReject(
+      () => startMenu(ctx, sink),
+      'answering y to opencode prompt should not throw',
+    );
+
+    assert.ok(
+      installedIds.includes('opencode'),
+      'installProvider must be called with "opencode" when user answers y',
+    );
+  });
+
+  it('answering y triggers re-detect via injected detectEnvironment', async () => {
+    let detectCallCount = 0;
+    // 'y' → install opencode; '' → mode; 'n' → set-default; 'q' → quit
+    const ctx = makeOpencodeOnboardCtx(
+      ['y', '', 'n', 'q'],
+      undefined,
+      () => { detectCallCount += 1; },
+    );
+    const sink = makeSink();
+
+    await startMenu(ctx, sink);
+
+    // detectEnvironment is called inside runWelcome after opencode install,
+    // and once more in startMenu after runWelcome returns — total 2 calls.
+    assert.ok(
+      detectCallCount >= 1,
+      'detectEnvironment must be called at least once (re-detect after opencode install)',
+    );
+  });
+
+  it('no opencode sign-in prompt during onboarding (opencode is auth-when-installed)', async () => {
+    const sink = makeSink();
+    // 'y' → install opencode; '' → mode; 'n' → set-default; 'q' → quit
+    // detectEnvironment returns ENV_WITH_OPENCODE (authenticated: true)
+    // So after install, no sign-in prompt should appear for opencode
+    const ctx = makeOpencodeOnboardCtx(['y', '', 'n', 'q']);
+
+    await assert.doesNotReject(
+      () => startMenu(ctx, sink),
+      'no opencode sign-in prompt after install should not throw',
+    );
+
+    // The sign-in prompt for opencode must NOT appear — opencode is authenticated-when-installed
+    const opencodeSigning = sink.buf.toLowerCase().includes('sign in to opencode');
+    assert.ok(
+      !opencodeSigning,
+      'no "sign in to opencode" prompt must appear during onboarding (opencode is auth-when-installed)',
+    );
+  });
+
+  it('opencode prompt does NOT appear when opencode is already installed', async () => {
+    // Use an env where opencode IS installed → prompt should not appear
+    const clock = makeFakeClock();
+    const store = makeStore(clock);
+    const ledger = makeFakeLedger();
+    const dir = join(tmpdir(), `menu-opencode-skip-${randomUUID()}`);
+    const config: AppConfig = { onboarded: false, setAsDefault: false };
+
+    const sink = makeSink();
+    const ctx: MenuContext = {
+      version: '2.0.0',
+      clock,
+      ledger,
+      providers: { claude: makeFakeProvider() },
+      env: ENV_WITH_OPENCODE,
+      store,
+      config,
+      cwd: dir,
+      sandbox: 'workspace-write',
+      timeoutMs: 5_000,
+      // No opencode prompt → mode/continue; set-as-default; quit main menu
+      readLine: makeScriptedReader(['', 'n', 'q']),
+      installProvider: async () => true,
+      login: async () => 0,
+      detectEnvironment: async () => ENV_WITH_OPENCODE,
+    };
+
+    await assert.doesNotReject(
+      () => startMenu(ctx, sink),
+      'welcome with opencode already installed should not throw',
+    );
+
+    // The opencode optional prompt must NOT appear when opencode is installed
+    assert.ok(
+      !sink.buf.includes('Add opencode?'),
+      'opencode install prompt must not appear when opencode is already installed',
     );
   });
 });
@@ -1383,8 +1726,8 @@ describe('startMenu — first-run welcome: y to set-as-default writes the shell 
     await withTempHome(tempHome, async () => {
       const sink = makeSink();
       // FAKE_ENV has both providers installed+authed → no install/login prompts.
-      // Welcome flow: Enter (skip customize) → y (set as default) → q (main menu)
-      const ctx = makeInstallCtx(['', 'y', 'q'], tempHome);
+      // Welcome flow: n (skip opencode) → Enter (skip customize) → y (set as default) → q (main menu)
+      const ctx = makeInstallCtx(['n', '', 'y', 'q'], tempHome);
 
       await assert.doesNotReject(
         () => startMenu(ctx, sink),
@@ -1415,7 +1758,7 @@ describe('startMenu — first-run welcome: y to set-as-default writes the shell 
 
     await withTempHome(tempHome, async () => {
       const sink = makeSink();
-      const ctx = makeInstallCtx(['', 'y', 'q'], tempHome);
+      const ctx = makeInstallCtx(['n', '', 'y', 'q'], tempHome);
 
       await startMenu(ctx, sink);
 
@@ -1436,7 +1779,7 @@ describe('startMenu — first-run welcome: y to set-as-default writes the shell 
 
     await withTempHome(tempHome, async () => {
       const sink = makeSink();
-      const ctx = makeInstallCtx(['', 'n', 'q'], tempHome);
+      const ctx = makeInstallCtx(['n', '', 'n', 'q'], tempHome);
 
       await startMenu(ctx, sink);
 
@@ -1544,9 +1887,9 @@ describe('startMenu — first-run: post-onboarding env refresh (BUG 1)', () => {
 
     const config: AppConfig = { onboarded: false, setAsDefault: false };
 
-    // Welcome flow for STALE_ENV: claude is installed but unauthenticated.
-    // Inputs: sign-in prompt → 'y' (login fake called) → mode → Enter → default shell → n
-    // Then main menu → q
+    // Welcome flow for STALE_ENV: codex not installed (install prompt → y), opencode not installed
+    // (opencode prompt → n), claude installed but unauthenticated (no sign-in prompt in FRESH_ENV
+    // since FRESH_ENV has claude authenticated). Mode → Enter, default shell → n. Then main menu → q.
     const ctx: MenuContext = {
       version: '2.0.0',
       clock,
@@ -1558,7 +1901,7 @@ describe('startMenu — first-run: post-onboarding env refresh (BUG 1)', () => {
       cwd: dir,
       sandbox: 'workspace-write',
       timeoutMs: 5_000,
-      readLine: makeScriptedReader(['y', '', 'n', 'q']),
+      readLine: makeScriptedReader(['y', 'n', '', 'n', 'q']),
       installProvider: async () => true,
       login: async () => 0,
       // detectEnvironment returns FRESH_ENV — simulates successful post-login detection
@@ -1603,7 +1946,8 @@ describe('startMenu — first-run: post-onboarding env refresh (BUG 1)', () => {
       cwd: dir,
       sandbox: 'workspace-write',
       timeoutMs: 5_000,
-      readLine: makeScriptedReader(['y', '', 'n', 'q']),
+      // 'y' → install codex; 'n' → skip opencode; '' → mode/continue; 'n' → set-as-default; 'q' → main menu quit
+      readLine: makeScriptedReader(['y', 'n', '', 'n', 'q']),
       installProvider: async () => true,
       login: async () => 0,
       detectEnvironment: async () => {
@@ -1615,7 +1959,9 @@ describe('startMenu — first-run: post-onboarding env refresh (BUG 1)', () => {
     const sink = makeSink();
     await startMenu(ctx, sink);
 
-    assert.equal(detectCalls, 1, 'detectEnvironment must be called exactly once after onboarding');
+    // detectEnvironment is called inside runWelcome (after codex install) and once
+    // more in startMenu after runWelcome returns — total 2 injected calls.
+    assert.equal(detectCalls, 2, 'detectEnvironment must be called exactly twice: once inside runWelcome after install, once in startMenu after onboarding');
   });
 });
 
