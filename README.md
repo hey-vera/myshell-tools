@@ -186,11 +186,11 @@ Per-model usage
   claude-sonnet-4-6: 1 task, 8.3k tokens
 Routing efficiency
 Routing picked cheaper-tier models where it could — ~6.3× less than sending every task to the flagship (claude-opus-4-7).
-Estimated cost  — API-equivalent, not your subscription bill
-If billed as API: ~$0.0125 (provider-reported where available, else estimated from list prices)
+Estimated cost  — API-equivalent (list price), not your subscription bill
+Routed: ~$0.0020   ·   always-flagship: ~$0.0126
 ```
 
-The **efficiency ratio is honest under a subscription** (it compares flagship tokens you avoided, not dollars you were charged). The dollar line is explicitly labeled an *API-equivalent estimate* — not your actual bill — because you pay a flat subscription, not per token.
+The **efficiency ratio is honest under a subscription** (it compares flagship tokens you avoided, not dollars you were charged). The dollar figures are explicitly labeled an *API-equivalent estimate* — not your actual bill — and both use the **same basis** (list price × tokens), so "routed vs always-flagship" is apples-to-apples and internally consistent.
 
 ---
 

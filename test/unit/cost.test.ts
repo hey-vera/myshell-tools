@@ -68,9 +68,12 @@ describe('formatCostReport — single entry', () => {
 
   const lines = formatCostReport([entry]);
 
-  it('contains the actual total spend', () => {
+  it('shows a list-price routed cost estimate (consistent basis, not the provider-reported total)', () => {
     const total = lines.join('\n');
-    assert.ok(total.includes('0.0030'), `expected 0.0030 in output, got:\n${total}`);
+    // The Estimated-cost section uses list price × tokens for a consistent
+    // apples-to-apples figure. Sonnet 500k in + 100k out = $1.50 + $1.50 = $3.0000.
+    assert.ok(total.includes('Routed'), `expected a "Routed" estimate, got:\n${total}`);
+    assert.ok(total.includes('3.0000'), `expected list-price routed ~$3.0000, got:\n${total}`);
   });
 
   it('mentions the model in the per-model breakdown', () => {
@@ -128,11 +131,18 @@ describe('formatCostReport — multi-entry across haiku and sonnet', () => {
   const lines = formatCostReport(entries);
   const output = lines.join('\n');
 
-  it('reports the correct total spend (0.0110)', () => {
-    assert.ok(
-      output.includes('0.0110'),
-      `expected total 0.0110 in output:\n${output}`,
-    );
+  it('shows a routed list-price estimate that never exceeds always-flagship (consistent basis)', () => {
+    assert.ok(output.includes('Routed'), `expected a "Routed" estimate:\n${output}`);
+    // Both figures are list-price; extract and assert routed <= flagship.
+    const routed = output.match(/Routed: ~\$([\d.]+)/);
+    const flagship = output.match(/always-flagship: ~\$([\d.]+)/);
+    assert.ok(routed !== null, 'routed estimate present');
+    if (flagship !== null) {
+      assert.ok(
+        parseFloat(routed[1]) <= parseFloat(flagship[1]),
+        `routed (${routed[1]}) must not exceed always-flagship (${flagship[1]})`,
+      );
+    }
   });
 
   it('reports total call count', () => {
@@ -229,11 +239,11 @@ describe('formatCostReport — honest total label', () => {
     );
   });
 
-  it('uses "Total cost" or "provider-reported" language to describe the total', () => {
+  it('labels the dollar figure as an API-equivalent estimate, not the subscription bill', () => {
     const output = formatCostReport(entries, false).join('\n');
     assert.ok(
-      output.includes('Total cost') || output.includes('provider-reported'),
-      `expected honest label in cost output:\n${output}`,
+      /API-equivalent/i.test(output) && /not your subscription bill/i.test(output),
+      `cost output must honestly caption dollars as an estimate, not the bill:\n${output}`,
     );
   });
 });

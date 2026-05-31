@@ -112,18 +112,20 @@ export function formatCostReport(entries: LedgerEntry[], color = false): string[
 
   // ---- Estimated cost (API-equivalent, NOT your subscription bill) ----------
   // myshell-tools drives your SUBSCRIPTION CLIs — you pay a flat fee, not per
-  // token. These dollars are a rough "if this were metered API usage" estimate,
-  // shown for devs who want the magnitude; they are not what you are billed.
+  // token. This is a rough "if this were metered API usage" estimate, shown for
+  // devs who want the magnitude; it is not what you are billed. Both figures use
+  // the SAME basis (list price × tokens) so "routed vs always-flagship" is
+  // apples-to-apples and internally consistent (routed never exceeds flagship).
   lines.push(divider(color));
-  lines.push(bold('Estimated cost', color) + dim('  — API-equivalent, not your subscription bill', color));
-  lines.push(
-    `${label('If billed as API', color)}: ~$${summary.totalUsd.toFixed(4)} ` +
-      `${dim('(provider-reported where available, else estimated from list prices)', color)}`,
-  );
-  if (routedListUsd > 0 && flagshipListUsd > routedListUsd) {
-    lines.push(
-      `${dim(`At list price, always-flagship would be ~$${flagshipListUsd.toFixed(4)} vs ~$${routedListUsd.toFixed(4)} routed.`, color)}`,
-    );
+  lines.push(bold('Estimated cost', color) + dim('  — API-equivalent (list price), not your subscription bill', color));
+  if (routedListUsd > 0) {
+    let line = `${label('Routed', color)}: ~$${routedListUsd.toFixed(4)}`;
+    if (flagshipListUsd > routedListUsd) {
+      line += `   ·   ${dim(`always-flagship: ~$${flagshipListUsd.toFixed(4)}`, color)}`;
+    }
+    lines.push(line);
+  } else {
+    lines.push(dim('No priced models in the ledger — no estimate available.', color));
   }
 
   return lines;
