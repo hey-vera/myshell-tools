@@ -27,6 +27,63 @@ import { atomicWrite } from './atomic.js';
 
 export interface Credentials {
   claudeOauthToken?: string;
+  claudeTokenCapturedAt?: string;
+}
+
+// ---------------------------------------------------------------------------
+// Pure token-lifetime helper
+// ---------------------------------------------------------------------------
+
+export interface ClaudeTokenStatus {
+  /** ISO string of when the token was saved. */
+  readonly capturedAt: string;
+  /** ISO string of the computed expiry (capturedAt + lifetimeDays). */
+  readonly expiresAt: string;
+  /** Whole days remaining until expiry (floor). 0 when expiring today, negative when expired. */
+  readonly daysLeft: number;
+  /** True when daysLeft <= 0. */
+  readonly expired: boolean;
+  /** True when 0 < daysLeft <= warnWithinDays. */
+  readonly nearExpiry: boolean;
+}
+
+/**
+ * Compute token lifetime status from a stored ISO capture timestamp.
+ *
+ * Pure — no I/O, no Date.now() inside. Pass `nowMs` for deterministic testing.
+ * Never throws.
+ *
+ * @param capturedAtIso  - ISO string stored at save time, or undefined/null.
+ * @param nowMs          - Current epoch-ms (e.g. Date.now() from the caller).
+ * @param lifetimeDays   - Total token lifetime in days (default 365).
+ * @param warnWithinDays - Warn when this many days or fewer remain (default 14).
+ * @returns Status object, or null when capturedAtIso is missing or unparseable.
+ */
+export function claudeTokenStatus(
+  capturedAtIso: string | undefined,
+  nowMs: number,
+  lifetimeDays = 365,
+  warnWithinDays = 14,
+): ClaudeTokenStatus | null {
+  try {
+    if (capturedAtIso === undefined || capturedAtIso === null || capturedAtIso.length === 0) {
+      return null;
+    }
+    const capturedMs = new Date(capturedAtIso).getTime();
+    if (!Number.isFinite(capturedMs)) {
+      return null;
+    }
+    const lifetimeMs = lifetimeDays * 24 * 60 * 60 * 1000;
+    const expiresMs = capturedMs + lifetimeMs;
+    const expiresAt = new Date(expiresMs).toISOString();
+    const msLeft = expiresMs - nowMs;
+    const daysLeft = Math.floor(msLeft / (24 * 60 * 60 * 1000));
+    const expired = daysLeft <= 0;
+    const nearExpiry = !expired && daysLeft <= warnWithinDays;
+    return { capturedAt: capturedAtIso, expiresAt, daysLeft, expired, nearExpiry };
+  } catch {
+    return null;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -59,6 +116,9 @@ function parseCredentials(raw: string): Credentials {
     const result: Credentials = {};
     if (typeof obj['claudeOauthToken'] === 'string' && obj['claudeOauthToken'].length > 0) {
       result.claudeOauthToken = obj['claudeOauthToken'];
+    }
+    if (typeof obj['claudeTokenCapturedAt'] === 'string' && obj['claudeTokenCapturedAt'].length > 0) {
+      result.claudeTokenCapturedAt = obj['claudeTokenCapturedAt'];
     }
     return result;
   } catch {
@@ -133,6 +193,9 @@ export function claudeEnv(
 /**
  * Persist the Claude OAuth token atomically to
  * `~/.myshell-tools/credentials.json` with restrictive permissions (0o600).
+ *
+ * Records `claudeTokenCapturedAt` (ISO timestamp) so the token's age can be
+ * tracked for expiry warnings.
  */
 export async function saveClaudeToken(token: string, homeDir?: string): Promise<void> {
   const home = homeDir ?? homedir();
@@ -145,7 +208,11 @@ export async function saveClaudeToken(token: string, homeDir?: string): Promise<
 
   // Load existing credentials so we only replace the token key, preserving others.
   const existing = await loadCredentials(homeDir);
-  const updated: Credentials = { ...existing, claudeOauthToken: token };
+  const updated: Credentials = {
+    ...existing,
+    claudeOauthToken: token,
+    claudeTokenCapturedAt: new Date().toISOString(),
+  };
 
   // atomicWrite with mode 0o600 guarantees the temp file is never more permissive
   // than the final destination — no world-readable window before the rename.
@@ -157,6 +224,20 @@ export async function saveClaudeToken(token: string, homeDir?: string): Promise<
     await chmod(path, 0o600);
   } catch {
     // Cross-platform best-effort only — never throws
+  }
+}
+
+/**
+ * Load the ISO timestamp recorded when the Claude OAuth token was last saved.
+ * Returns `undefined` when no token has been saved, or when the stored value
+ * is missing from an older credential file. Never throws.
+ */
+export async function loadClaudeTokenCapturedAt(homeDir?: string): Promise<string | undefined> {
+  try {
+    const creds = await loadCredentials(homeDir);
+    return creds.claudeTokenCapturedAt;
+  } catch {
+    return undefined;
   }
 }
 

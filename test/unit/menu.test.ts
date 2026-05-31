@@ -20,6 +20,7 @@ import {
 import type { EnvironmentStatus } from '../../src/providers/detect.ts';
 import type { ConversationMeta } from '../../src/infra/conversation-store.ts';
 import type { SpendSummary } from '../../src/infra/insights.ts';
+import type { ClaudeTokenStatus } from '../../src/infra/credentials.ts';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -541,5 +542,93 @@ describe('renderBudgetLine', () => {
       const line = renderBudgetLine(spend, false);
       assertNoForbidden(line, 'renderBudgetLine');
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// renderHeaderLines — claudeToken param (token expiry warnings)
+// ---------------------------------------------------------------------------
+
+function makeClaudeTokenStatus(overrides: Partial<ClaudeTokenStatus>): ClaudeTokenStatus {
+  return {
+    capturedAt: '2026-01-01T00:00:00.000Z',
+    expiresAt: '2027-01-01T00:00:00.000Z',
+    daysLeft: 200,
+    expired: false,
+    nearExpiry: false,
+    ...overrides,
+  };
+}
+
+describe('renderHeaderLines — token warning line shown only near-expiry or expired', () => {
+  it('adds NO extra line when claudeToken is omitted (undefined)', () => {
+    const lines = renderHeaderLines(FAKE_ENV_BOTH_INSTALLED, '2.0.0');
+    assert.strictEqual(lines.length, 2, 'exactly 2 provider lines when no token info');
+  });
+
+  it('adds NO extra line when claudeToken is null', () => {
+    const lines = renderHeaderLines(FAKE_ENV_BOTH_INSTALLED, '2.0.0', null);
+    assert.strictEqual(lines.length, 2, 'exactly 2 provider lines when null');
+  });
+
+  it('adds NO extra line when token is healthy (not near expiry)', () => {
+    const tokenInfo = makeClaudeTokenStatus({ daysLeft: 200, expired: false, nearExpiry: false });
+    const lines = renderHeaderLines(FAKE_ENV_BOTH_INSTALLED, '2.0.0', tokenInfo);
+    assert.strictEqual(lines.length, 2, 'no warning line when healthy token');
+  });
+
+  it('adds a warning line when token is near-expiry', () => {
+    const tokenInfo = makeClaudeTokenStatus({ daysLeft: 10, expired: false, nearExpiry: true });
+    const lines = renderHeaderLines(FAKE_ENV_BOTH_INSTALLED, '2.0.0', tokenInfo);
+    assert.strictEqual(lines.length, 3, 'one extra warning line when near-expiry');
+    const warnLine = lines.find((l) => l.includes('token'));
+    assert.ok(warnLine !== undefined, 'warning line mentions "token"');
+    assert.ok(warnLine.includes('10'), 'warning line shows days remaining');
+  });
+
+  it('adds a warning line when token is expired', () => {
+    const tokenInfo = makeClaudeTokenStatus({ daysLeft: -5, expired: true, nearExpiry: false });
+    const lines = renderHeaderLines(FAKE_ENV_BOTH_INSTALLED, '2.0.0', tokenInfo);
+    assert.strictEqual(lines.length, 3, 'one extra warning line when expired');
+    const warnLine = lines.find((l) => l.includes('EXPIRED'));
+    assert.ok(warnLine !== undefined, 'warning line contains "EXPIRED"');
+  });
+
+  it('expired warning includes the login command', () => {
+    const tokenInfo = makeClaudeTokenStatus({ daysLeft: -1, expired: true, nearExpiry: false });
+    const lines = renderHeaderLines(FAKE_ENV_BOTH_INSTALLED, '2.0.0', tokenInfo);
+    const warnLine = lines.find((l) => l.includes('EXPIRED')) ?? '';
+    assert.ok(
+      warnLine.includes('myshell-tools login claude --code'),
+      `expected login command in expired warning: "${warnLine}"`,
+    );
+  });
+
+  it('near-expiry warning includes the login command', () => {
+    const tokenInfo = makeClaudeTokenStatus({ daysLeft: 7, expired: false, nearExpiry: true });
+    const lines = renderHeaderLines(FAKE_ENV_BOTH_INSTALLED, '2.0.0', tokenInfo);
+    const warnLine = lines.find((l) => l.includes('token')) ?? '';
+    assert.ok(
+      warnLine.includes('myshell-tools login claude --code'),
+      `expected login command in near-expiry warning: "${warnLine}"`,
+    );
+  });
+
+  it('warning line does not contain ANSI codes (pure string)', () => {
+    const tokenInfo = makeClaudeTokenStatus({ daysLeft: 5, expired: false, nearExpiry: true });
+    const lines = renderHeaderLines(FAKE_ENV_BOTH_INSTALLED, '2.0.0', tokenInfo);
+    const warnLine = lines[lines.length - 1] ?? '';
+    assert.ok(!ANSI_RE.test(warnLine), `warning line must not contain ANSI: "${warnLine}"`);
+  });
+
+  it('also adds warning line when opencode is installed (4th line total)', () => {
+    const envWithOpencode: EnvironmentStatus = {
+      ...FAKE_ENV_BOTH_INSTALLED,
+      opencode: makeProvider('opencode', { installed: true, version: '0.1.0', authenticated: true }),
+    };
+    const tokenInfo = makeClaudeTokenStatus({ daysLeft: 3, expired: false, nearExpiry: true });
+    const lines = renderHeaderLines(envWithOpencode, '2.0.0', tokenInfo);
+    // 3 provider lines + 1 token warning = 4
+    assert.strictEqual(lines.length, 4, 'claude + codex + opencode + token warning = 4 lines');
   });
 });

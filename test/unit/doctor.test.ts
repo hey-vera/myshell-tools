@@ -14,6 +14,7 @@ import type { EnvironmentStatus, ProviderStatus } from '../../src/providers/dete
 import type { DoctorExtras } from '../../src/commands/doctor.ts';
 import { buildDoctorReport, runDoctor } from '../../src/commands/doctor.ts';
 import type { OutputSink } from '../../src/interface/render.ts';
+import type { ClaudeTokenStatus } from '../../src/infra/credentials.ts';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -695,5 +696,106 @@ describe('runDoctor --fix — prints a final status summary after fix pass', () 
       output.includes('claude: installed, signed in'),
       `expected final status for claude in output:\n${output}`,
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// buildDoctorReport — claudeTokenInfo parameter
+// ---------------------------------------------------------------------------
+
+function makeTokenStatus(overrides: Partial<ClaudeTokenStatus>): ClaudeTokenStatus {
+  return {
+    capturedAt: '2026-01-01T00:00:00.000Z',
+    expiresAt: '2027-01-01T00:00:00.000Z',
+    daysLeft: 200,
+    expired: false,
+    nearExpiry: false,
+    ...overrides,
+  };
+}
+
+describe('buildDoctorReport — token line shown when claude signed in and capturedAt present', () => {
+  const env = makeEnv(
+    { installed: true, version: '1.0.0', authenticated: true, plan: null, binaryPath: 'claude' },
+  );
+
+  it('shows a token line with expiry date and days-left when healthy', () => {
+    const tokenInfo = makeTokenStatus({ daysLeft: 200, expired: false, nearExpiry: false });
+    const lines = buildDoctorReport(env, defaultExtras, false, tokenInfo);
+    const output = lines.join('\n');
+    assert.ok(
+      output.includes('token'),
+      `expected "token" line in output:\n${output}`,
+    );
+    assert.ok(
+      output.includes('200 days left'),
+      `expected "200 days left" in output:\n${output}`,
+    );
+  });
+
+  it('shows "expires soon" warning when nearExpiry is true', () => {
+    const tokenInfo = makeTokenStatus({ daysLeft: 10, expired: false, nearExpiry: true });
+    const lines = buildDoctorReport(env, defaultExtras, false, tokenInfo);
+    const output = lines.join('\n');
+    assert.ok(
+      output.includes('expires soon'),
+      `expected "expires soon" warning in output:\n${output}`,
+    );
+    assert.ok(
+      output.includes('10'),
+      `expected day count "10" in output:\n${output}`,
+    );
+  });
+
+  it('shows "EXPIRED" warning when expired is true', () => {
+    const tokenInfo = makeTokenStatus({ daysLeft: -5, expired: true, nearExpiry: false });
+    const lines = buildDoctorReport(env, defaultExtras, false, tokenInfo);
+    const output = lines.join('\n');
+    assert.ok(
+      output.includes('EXPIRED'),
+      `expected "EXPIRED" in output:\n${output}`,
+    );
+  });
+
+  it('EXPIRED line mentions the login command', () => {
+    const tokenInfo = makeTokenStatus({ daysLeft: -1, expired: true, nearExpiry: false });
+    const lines = buildDoctorReport(env, defaultExtras, false, tokenInfo);
+    const output = lines.join('\n');
+    assert.ok(
+      output.includes('myshell-tools login claude --code'),
+      `expected login command in EXPIRED output:\n${output}`,
+    );
+  });
+});
+
+describe('buildDoctorReport — no token line when claudeTokenInfo is null/undefined', () => {
+  const env = makeEnv(
+    { installed: true, version: '1.0.0', authenticated: true, plan: null, binaryPath: 'claude' },
+  );
+
+  it('no token line when claudeTokenInfo is null', () => {
+    const lines = buildDoctorReport(env, defaultExtras, false, null);
+    const output = lines.join('\n');
+    // Should not have a "token:" label line
+    const tokenLinePresent = lines.some((l) => /token\s*:/.test(l));
+    assert.strictEqual(tokenLinePresent, false, `no token line expected:\n${output}`);
+  });
+
+  it('no token line when claudeTokenInfo is omitted (undefined)', () => {
+    const lines = buildDoctorReport(env, defaultExtras, false);
+    const tokenLinePresent = lines.some((l) => /token\s*:/.test(l));
+    assert.strictEqual(tokenLinePresent, false, 'no token line expected when undefined');
+  });
+});
+
+describe('buildDoctorReport — no token line when claude is not signed in', () => {
+  it('no token line for unauthenticated claude even with tokenInfo', () => {
+    const env = makeEnv(
+      { installed: true, version: '1.0.0', authenticated: false, plan: null, binaryPath: 'claude' },
+    );
+    const tokenInfo = makeTokenStatus({ daysLeft: 5, expired: false, nearExpiry: true });
+    const lines = buildDoctorReport(env, defaultExtras, false, tokenInfo);
+    const tokenLinePresent = lines.some((l) => /token\s*:/.test(l));
+    assert.strictEqual(tokenLinePresent, false, 'no token line when not signed in');
   });
 });

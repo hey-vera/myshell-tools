@@ -40,6 +40,8 @@ import { runCost } from '../commands/cost.js';
 import { runInstall } from '../commands/install.js';
 import { box, separator, menu, prompt } from '../ui/tui.js';
 import type { UpdateCheckResult } from '../infra/update-check.js';
+import type { ClaudeTokenStatus } from '../infra/credentials.js';
+import { loadClaudeTokenCapturedAt, claudeTokenStatus } from '../infra/credentials.js';
 
 // ---------------------------------------------------------------------------
 // MenuContext
@@ -114,6 +116,15 @@ export interface MenuContext {
    * Used only for the opt-in auto-update path.
    */
   readonly relaunch?: () => Promise<number>;
+  /**
+   * Optional pre-computed Claude token lifetime status for testing. When provided,
+   * `startMenu` uses this instead of loading from disk, allowing tests to drive
+   * the token-expiry header warning without touching the filesystem.
+   *
+   * Pass `null` explicitly to suppress any token warning; omit (undefined) to
+   * trigger the real disk read via `loadClaudeTokenCapturedAt`.
+   */
+  readonly claudeTokenInfo?: ClaudeTokenStatus | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -233,8 +244,16 @@ export function relativeTime(thenMs: number, nowMs: number): string {
  *   ⚠️  when ps.installed && !ps.authenticated  (append " not signed in")
  *   ❌  when !ps.installed                       (append install command)
  * Plan label appended when ps.plan is non-null (e.g. " (Max x5)").
+ *
+ * @param claudeToken - Optional pre-computed token lifetime status. When the token
+ *   is near expiry or expired, ONE concise warning line is appended. Computed by
+ *   the caller (startMenu) so this function stays pure and I/O-free.
  */
-export function renderHeaderLines(env: EnvironmentStatus, _version: string): string[] {
+export function renderHeaderLines(
+  env: EnvironmentStatus,
+  _version: string,
+  claudeToken?: ReturnType<typeof claudeTokenStatus>,
+): string[] {
   const lines: string[] = [];
 
   for (const ps of [env.claude, env.codex]) {
@@ -259,6 +278,15 @@ export function renderHeaderLines(env: EnvironmentStatus, _version: string): str
       lines.push(`✅ ${ps.id}: ready (free models)${planSuffix}`);
     } else {
       lines.push(`⚠️  ${ps.id}: not signed in${planSuffix}`);
+    }
+  }
+
+  // Token expiry warning — only when near-expiry or expired (not on every launch).
+  if (claudeToken != null && (claudeToken.expired || claudeToken.nearExpiry)) {
+    if (claudeToken.expired) {
+      lines.push(`⚠️  claude token EXPIRED — run: myshell-tools login claude --code`);
+    } else {
+      lines.push(`⚠️  claude token expires in ${claudeToken.daysLeft} days — run: myshell-tools login claude --code`);
     }
   }
 
@@ -1288,11 +1316,12 @@ async function renderMainScreen(
   metas: ConversationMeta[],
   out: OutputSink,
   updateInfo?: UpdateCheckResult,
+  claudeTokenInfo?: ClaudeTokenStatus | null,
 ): Promise<void> {
   out.write('\n');
 
   // Header box — always box(), 🧠 emoji, real provider data
-  const headerLines = renderHeaderLines(mutableCtx.env, ctx.version);
+  const headerLines = renderHeaderLines(mutableCtx.env, ctx.version, claudeTokenInfo ?? undefined);
   out.write(box(`🧠 myshell-tools v${ctx.version}`, headerLines) + '\n\n');
 
   // Update banner — only shown when a newer version is genuinely available
@@ -1459,9 +1488,22 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
     }
 
     // ---- B. Main screen loop -------------------------------------------------
+    // Compute Claude token lifetime once per launch (real disk read, or injected
+    // value from ctx for tests). Passed to renderMainScreen so renderHeaderLines
+    // stays pure.
+    let claudeTokenInfo: ClaudeTokenStatus | null | undefined;
+    if (ctx.claudeTokenInfo !== undefined) {
+      // Injected by tests (including explicit null to suppress warning).
+      claudeTokenInfo = ctx.claudeTokenInfo;
+    } else {
+      // Real path: load from disk. Never throws; null when no capture date stored.
+      const capturedAt = await loadClaudeTokenCapturedAt().catch(() => undefined);
+      claudeTokenInfo = claudeTokenStatus(capturedAt, Date.now());
+    }
+
     while (true) {
       const metas = await ctx.store.list();
-      await renderMainScreen(ctx, mutableCtx, metas, out, updateInfo);
+      await renderMainScreen(ctx, mutableCtx, metas, out, updateInfo, claudeTokenInfo);
 
       out.write('> ');
       const key = await readLine();

@@ -24,6 +24,8 @@ import { detectEnvironment, getInstallCommand } from '../providers/detect.js';
 import { installProvider } from '../providers/install.js';
 import { runLogin } from './login.js';
 import { isPricingStale } from '../infra/pricing.js';
+import { loadClaudeTokenCapturedAt, claudeTokenStatus } from '../infra/credentials.js';
+import type { ClaudeTokenStatus } from '../infra/credentials.js';
 import { parseYesNo } from '../interface/menu.js';
 import { bold, green, red, yellow, dim, divider, label } from '../ui/theme.js';
 
@@ -44,14 +46,16 @@ export interface DoctorExtras {
  * Used by runDoctor after it collects the real data, and by unit tests with
  * hand-built inputs.
  *
- * @param env    - Full environment status (from detectEnvironment or a fake).
- * @param extras - Supplemental runtime info (node version, write probe, etc.).
- * @param color  - Whether to emit ANSI colour codes.
+ * @param env              - Full environment status (from detectEnvironment or a fake).
+ * @param extras           - Supplemental runtime info (node version, write probe, etc.).
+ * @param color            - Whether to emit ANSI colour codes.
+ * @param claudeTokenInfo  - Optional pre-computed token lifetime status (from claudeTokenStatus()).
  */
 export function buildDoctorReport(
   env: EnvironmentStatus,
   extras: DoctorExtras,
   color: boolean,
+  claudeTokenInfo?: ClaudeTokenStatus | null,
 ): string[] {
   const lines: string[] = [];
 
@@ -96,6 +100,25 @@ export function buildDoctorReport(
         lines.push(
           `    ${label('auth', color)}: ${green('signed in', color)}${planLabel}`,
         );
+        // Token lifetime line — only for claude, only when we have a captured-at date.
+        if (ps.id === 'claude' && claudeTokenInfo != null) {
+          const info = claudeTokenInfo;
+          if (info.expired) {
+            lines.push(
+              `    ${label('token', color)}: ${red('EXPIRED — run: myshell-tools login claude --code', color)}`,
+            );
+          } else if (info.nearExpiry) {
+            const expiryDate = info.expiresAt.slice(0, 10);
+            lines.push(
+              `    ${label('token', color)}: ${yellow(`expires soon (${info.daysLeft} days, ~${expiryDate}) — re-run login when convenient`, color)}`,
+            );
+          } else {
+            const expiryDate = info.expiresAt.slice(0, 10);
+            lines.push(
+              `    ${label('token', color)}: expires ~${expiryDate} (${info.daysLeft} days left)`,
+            );
+          }
+        }
       } else {
         lines.push(
           `    ${label('auth', color)}: ${yellow('not signed in', color)} — run: myshell-tools login`,
@@ -209,7 +232,14 @@ export async function runDoctor(out: OutputSink, opts?: DoctorFixOpts): Promise<
     pricingStale: isPricingStale(),
   };
 
-  const lines = buildDoctorReport(env, extras, out.color);
+  // Compute token lifetime info when claude is signed in and a capture date is stored.
+  let claudeTokenInfo: ClaudeTokenStatus | null | undefined;
+  if (env.claude.installed && env.claude.authenticated) {
+    const capturedAt = await loadClaudeTokenCapturedAt();
+    claudeTokenInfo = claudeTokenStatus(capturedAt, Date.now());
+  }
+
+  const lines = buildDoctorReport(env, extras, out.color, claudeTokenInfo);
   for (const line of lines) {
     out.write(line + '\n');
   }

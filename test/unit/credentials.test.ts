@@ -23,6 +23,8 @@ import {
   extractClaudeToken,
   stripPastedSecretWrapper,
   classifyPastedSecret,
+  claudeTokenStatus,
+  loadClaudeTokenCapturedAt,
 } from '../../src/infra/credentials.ts';
 
 // ---------------------------------------------------------------------------
@@ -435,11 +437,11 @@ describe('clearClaudeToken', () => {
     }
   });
 
-  it('loadCredentials returns {} after clearClaudeToken', async () => {
+  it('claudeOauthToken is undefined after clearClaudeToken', async () => {
     await saveClaudeToken('sk-ant-oat01-clear-VERIFY', homeDir);
     await clearClaudeToken(homeDir);
     const creds = await loadCredentials(homeDir);
-    assert.deepEqual(creds, {});
+    assert.equal(creds.claudeOauthToken, undefined);
   });
 });
 
@@ -625,5 +627,283 @@ describe('classifyPastedSecret — classifies OAuth tokens, API keys, and other 
 
   it('never throws on unusual characters', () => {
     assert.doesNotThrow(() => classifyPastedSecret('\x00\x01\x02'));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// claudeTokenStatus — pure helper
+// ---------------------------------------------------------------------------
+
+const MS_PER_DAY = 24 * 60 * 60 * 1000;
+
+describe('claudeTokenStatus — returns null for missing/invalid capturedAt', () => {
+  it('returns null for undefined', () => {
+    assert.equal(claudeTokenStatus(undefined, Date.now()), null);
+  });
+
+  it('returns null for empty string', () => {
+    assert.equal(claudeTokenStatus('', Date.now()), null);
+  });
+
+  it('returns null for a non-date string', () => {
+    assert.equal(claudeTokenStatus('not-a-date', Date.now()), null);
+  });
+
+  it('never throws on invalid input', () => {
+    assert.doesNotThrow(() => claudeTokenStatus(undefined, Date.now()));
+    assert.doesNotThrow(() => claudeTokenStatus('garbage!@#', Date.now()));
+  });
+});
+
+describe('claudeTokenStatus — fresh token (~365 days left)', () => {
+  // Token was saved "now"; nowMs is also "now" → 365 days left
+  it('daysLeft is 364 when savedAtMs === nowMs (floor of 365.0 - epsilon)', () => {
+    const nowMs = new Date('2026-01-01T00:00:00.000Z').getTime();
+    const capturedAt = new Date(nowMs).toISOString();
+    const status = claudeTokenStatus(capturedAt, nowMs);
+    assert.notEqual(status, null);
+    // At exactly nowMs, daysLeft = floor((capturedAt+365d - nowMs)/msPerDay) = floor(365) = 365
+    // but floating point means it is exactly 365.
+    assert.ok(status!.daysLeft >= 364 && status!.daysLeft <= 365, `daysLeft should be near 365, got ${status!.daysLeft}`);
+  });
+
+  it('expired is false for a fresh token', () => {
+    const nowMs = new Date('2026-01-01T00:00:00.000Z').getTime();
+    const capturedAt = new Date(nowMs).toISOString();
+    const status = claudeTokenStatus(capturedAt, nowMs);
+    assert.strictEqual(status!.expired, false);
+  });
+
+  it('nearExpiry is false for a fresh token', () => {
+    const nowMs = new Date('2026-01-01T00:00:00.000Z').getTime();
+    const capturedAt = new Date(nowMs).toISOString();
+    const status = claudeTokenStatus(capturedAt, nowMs);
+    assert.strictEqual(status!.nearExpiry, false);
+  });
+
+  it('capturedAt round-trips', () => {
+    const nowMs = new Date('2026-06-15T12:00:00.000Z').getTime();
+    const capturedAt = new Date(nowMs).toISOString();
+    const status = claudeTokenStatus(capturedAt, nowMs);
+    assert.equal(status!.capturedAt, capturedAt);
+  });
+
+  it('expiresAt is capturedAt + lifetimeDays', () => {
+    const capturedMs = new Date('2026-01-01T00:00:00.000Z').getTime();
+    const capturedAt = new Date(capturedMs).toISOString();
+    const nowMs = capturedMs; // same moment
+    const status = claudeTokenStatus(capturedAt, nowMs, 365);
+    const expectedExpiry = new Date(capturedMs + 365 * MS_PER_DAY).toISOString();
+    assert.equal(status!.expiresAt, expectedExpiry);
+  });
+});
+
+describe('claudeTokenStatus — 10 days left → nearExpiry true', () => {
+  it('nearExpiry is true when 10 days remain (within default warnWithinDays=14)', () => {
+    const capturedMs = new Date('2026-01-01T00:00:00.000Z').getTime();
+    const capturedAt = new Date(capturedMs).toISOString();
+    // Now is 355 days after capture → 10 days remain
+    const nowMs = capturedMs + 355 * MS_PER_DAY;
+    const status = claudeTokenStatus(capturedAt, nowMs);
+    assert.strictEqual(status!.nearExpiry, true);
+    assert.strictEqual(status!.expired, false);
+    assert.equal(status!.daysLeft, 10);
+  });
+
+  it('nearExpiry is false for exactly 15 days left (outside default warnWithinDays=14)', () => {
+    const capturedMs = new Date('2026-01-01T00:00:00.000Z').getTime();
+    const capturedAt = new Date(capturedMs).toISOString();
+    const nowMs = capturedMs + 350 * MS_PER_DAY; // 365 - 350 = 15 days left
+    const status = claudeTokenStatus(capturedAt, nowMs);
+    assert.strictEqual(status!.nearExpiry, false);
+    assert.equal(status!.daysLeft, 15);
+  });
+
+  it('nearExpiry is true for exactly 14 days left (boundary = warnWithinDays)', () => {
+    const capturedMs = new Date('2026-01-01T00:00:00.000Z').getTime();
+    const capturedAt = new Date(capturedMs).toISOString();
+    const nowMs = capturedMs + 351 * MS_PER_DAY; // 365 - 351 = 14 days left
+    const status = claudeTokenStatus(capturedAt, nowMs);
+    assert.strictEqual(status!.nearExpiry, true);
+    assert.equal(status!.daysLeft, 14);
+  });
+});
+
+describe('claudeTokenStatus — 0 or negative days left → expired true', () => {
+  it('expired is true when daysLeft is 0 (same day as expiry)', () => {
+    const capturedMs = new Date('2026-01-01T00:00:00.000Z').getTime();
+    const capturedAt = new Date(capturedMs).toISOString();
+    // now = capturedAt + 365 days → 0 days left (floor(0) = 0, expired = true)
+    const nowMs = capturedMs + 365 * MS_PER_DAY;
+    const status = claudeTokenStatus(capturedAt, nowMs);
+    assert.strictEqual(status!.expired, true);
+    assert.strictEqual(status!.nearExpiry, false);
+    assert.ok(status!.daysLeft <= 0);
+  });
+
+  it('expired is true when token is 1 year past expiry', () => {
+    const capturedMs = new Date('2024-01-01T00:00:00.000Z').getTime();
+    const capturedAt = new Date(capturedMs).toISOString();
+    const nowMs = capturedMs + 730 * MS_PER_DAY; // 2 years later
+    const status = claudeTokenStatus(capturedAt, nowMs);
+    assert.strictEqual(status!.expired, true);
+    assert.ok(status!.daysLeft < 0);
+  });
+
+  it('nearExpiry is false when expired', () => {
+    const capturedMs = new Date('2025-01-01T00:00:00.000Z').getTime();
+    const capturedAt = new Date(capturedMs).toISOString();
+    const nowMs = capturedMs + 400 * MS_PER_DAY;
+    const status = claudeTokenStatus(capturedAt, nowMs);
+    assert.strictEqual(status!.expired, true);
+    assert.strictEqual(status!.nearExpiry, false);
+  });
+});
+
+describe('claudeTokenStatus — custom lifetimeDays and warnWithinDays', () => {
+  it('respects custom lifetimeDays', () => {
+    const capturedMs = new Date('2026-01-01T00:00:00.000Z').getTime();
+    const capturedAt = new Date(capturedMs).toISOString();
+    // Custom 30-day lifetime; now is 29 days later → 1 day left
+    const nowMs = capturedMs + 29 * MS_PER_DAY;
+    const status = claudeTokenStatus(capturedAt, nowMs, 30, 7);
+    assert.equal(status!.daysLeft, 1);
+    assert.strictEqual(status!.nearExpiry, true); // within 7-day warn window
+  });
+
+  it('respects custom warnWithinDays', () => {
+    const capturedMs = new Date('2026-01-01T00:00:00.000Z').getTime();
+    const capturedAt = new Date(capturedMs).toISOString();
+    // 30 days lifetime, now is 10 days later → 20 days left
+    const nowMs = capturedMs + 10 * MS_PER_DAY;
+    // warnWithinDays=25 → 20 days left < 25 → nearExpiry = true
+    const status = claudeTokenStatus(capturedAt, nowMs, 30, 25);
+    assert.strictEqual(status!.nearExpiry, true);
+    // warnWithinDays=5 → 20 days left > 5 → nearExpiry = false
+    const status2 = claudeTokenStatus(capturedAt, nowMs, 30, 5);
+    assert.strictEqual(status2!.nearExpiry, false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// saveClaudeToken + loadClaudeTokenCapturedAt — round-trip
+// ---------------------------------------------------------------------------
+
+describe('saveClaudeToken — records claudeTokenCapturedAt', () => {
+  let homeDir: string;
+  let beforeSaveMs: number;
+  let afterSaveMs: number;
+
+  before(async () => {
+    homeDir = await mkdtemp(join(tmpdir(), `creds-capturedat-${randomUUID()}-`));
+    beforeSaveMs = Date.now();
+    await saveClaudeToken('sk-ant-oat01-capturedat-TOKEN', homeDir);
+    afterSaveMs = Date.now();
+  });
+
+  after(async () => {
+    await rm(homeDir, { recursive: true, force: true });
+  });
+
+  it('claudeTokenCapturedAt is present in stored credentials', async () => {
+    const creds = await loadCredentials(homeDir);
+    assert.ok(
+      typeof creds.claudeTokenCapturedAt === 'string' && creds.claudeTokenCapturedAt.length > 0,
+      'expected claudeTokenCapturedAt to be a non-empty string',
+    );
+  });
+
+  it('claudeTokenCapturedAt is a valid ISO date string', async () => {
+    const creds = await loadCredentials(homeDir);
+    const ms = new Date(creds.claudeTokenCapturedAt!).getTime();
+    assert.ok(Number.isFinite(ms), `expected valid ISO date, got "${creds.claudeTokenCapturedAt}"`);
+  });
+
+  it('claudeTokenCapturedAt timestamp falls within the save window', async () => {
+    const creds = await loadCredentials(homeDir);
+    const ms = new Date(creds.claudeTokenCapturedAt!).getTime();
+    assert.ok(
+      ms >= beforeSaveMs && ms <= afterSaveMs,
+      `capturedAt ${ms} should be between ${beforeSaveMs} and ${afterSaveMs}`,
+    );
+  });
+});
+
+describe('loadClaudeTokenCapturedAt — round-trip after saveClaudeToken', () => {
+  let homeDir: string;
+
+  before(async () => {
+    homeDir = await mkdtemp(join(tmpdir(), `creds-lctat-${randomUUID()}-`));
+    await saveClaudeToken('sk-ant-oat01-lctat-TOKEN', homeDir);
+  });
+
+  after(async () => {
+    await rm(homeDir, { recursive: true, force: true });
+  });
+
+  it('returns a string after save', async () => {
+    const val = await loadClaudeTokenCapturedAt(homeDir);
+    assert.ok(typeof val === 'string' && val.length > 0, 'expected a non-empty string');
+  });
+
+  it('returned string is a valid ISO date', async () => {
+    const val = await loadClaudeTokenCapturedAt(homeDir);
+    const ms = new Date(val!).getTime();
+    assert.ok(Number.isFinite(ms), `expected valid ISO date, got "${val}"`);
+  });
+
+  it('does not throw', async () => {
+    await assert.doesNotReject(() => loadClaudeTokenCapturedAt(homeDir));
+  });
+});
+
+describe('loadClaudeTokenCapturedAt — missing file returns undefined', () => {
+  let homeDir: string;
+
+  before(async () => {
+    homeDir = await mkdtemp(join(tmpdir(), `creds-lctat-missing-${randomUUID()}-`));
+  });
+
+  after(async () => {
+    await rm(homeDir, { recursive: true, force: true });
+  });
+
+  it('returns undefined when credentials file does not exist', async () => {
+    const val = await loadClaudeTokenCapturedAt(homeDir);
+    assert.equal(val, undefined);
+  });
+
+  it('does not throw when file is missing', async () => {
+    await assert.doesNotReject(() => loadClaudeTokenCapturedAt(homeDir));
+  });
+});
+
+describe('loadClaudeTokenCapturedAt — backward compat: old file without field', () => {
+  let homeDir: string;
+
+  before(async () => {
+    homeDir = await mkdtemp(join(tmpdir(), `creds-lctat-compat-${randomUUID()}-`));
+    // Write an old-style credentials file without claudeTokenCapturedAt
+    const dir = join(homeDir, '.myshell-tools');
+    await mkdir(dir, { recursive: true });
+    await writeFile(
+      join(dir, 'credentials.json'),
+      JSON.stringify({ claudeOauthToken: 'sk-ant-oat01-old-file-TOKEN' }),
+      'utf8',
+    );
+  });
+
+  after(async () => {
+    await rm(homeDir, { recursive: true, force: true });
+  });
+
+  it('returns undefined for old file without claudeTokenCapturedAt field', async () => {
+    const val = await loadClaudeTokenCapturedAt(homeDir);
+    assert.equal(val, undefined);
+  });
+
+  it('old token is still loadable (backward compat)', async () => {
+    const token = await loadClaudeToken(homeDir);
+    assert.equal(token, 'sk-ant-oat01-old-file-TOKEN');
   });
 });
