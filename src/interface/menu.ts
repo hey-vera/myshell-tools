@@ -779,9 +779,15 @@ async function runManage(
  */
 async function runImportNative(
   ctx: MenuContext,
-  mutableCtx: { config: AppConfig },
+  mutableCtx: { config: AppConfig; env: EnvironmentStatus },
   out: OutputSink,
   readLine: () => Promise<string | null>,
+  loginFn: (
+    out: OutputSink,
+    providerArg?: string,
+    opts?: { method?: LoginMethod; readLine?: () => Promise<string | null> },
+  ) => Promise<number>,
+  detectEnvironmentFn: () => Promise<EnvironmentStatus>,
 ): Promise<'menu' | 'exit'> {
   out.write('\nImport from:\n  [1] Claude\n  [2] Codex\n\n> ');
   const choice = await readLine();
@@ -835,7 +841,7 @@ async function runImportNative(
 
   // Enter the chat loop for the newly imported conversation.
   // Return value propagates the 'exit' signal to the caller (startMenu).
-  return runChatLoop(ctx, mutableCtx, id, out, readLine);
+  return runChatLoop(ctx, mutableCtx, id, out, readLine, loginFn, detectEnvironmentFn);
 }
 
 // ---------------------------------------------------------------------------
@@ -843,9 +849,38 @@ async function runImportNative(
 // ---------------------------------------------------------------------------
 
 /**
+ * Decide whether a raw-session SIGINT count warrants escaping back to the menu.
+ *
+ * Returns true when count >= 2 (rapid double Ctrl+C), false otherwise.
+ * A single press (count === 1) is left entirely to the child process — the
+ * terminal already delivers SIGINT to the whole foreground process group, so
+ * claude/codex/opencode handles its own cancel without interference from us.
+ *
+ * Pure — no I/O, no side effects, never throws.
+ *
+ * @param count - Number of recent Ctrl+C presses (from countRecentInterrupts).
+ * @returns True when the user should be returned to the myshell-tools menu.
+ */
+export function shouldEscapeRawSession(count: number): boolean {
+  return count >= 2;
+}
+
+/**
  * Launch the native `claude`, `codex`, or `opencode` interactive CLI directly
  * (stdio:inherit), so the user gets a raw provider session. The session is owned
  * by the native CLI (not by myshell-tools); we simply hand over the terminal and wait.
+ *
+ * On Unix, a best-effort "Ctrl+C twice → back to menu" escape is registered:
+ *   - A single Ctrl+C is left entirely to the child (the terminal delivers SIGINT
+ *     to the whole foreground group; we must NOT interfere with single presses).
+ *   - Two presses within 1 500 ms → SIGTERM the child and return to the menu.
+ * On Windows the SIGINT handler is NOT registered (process-group semantics differ
+ * and forced interception risks a broken console) — behaviour is exactly as today.
+ *
+ * The SIGINT listener is always removed in a finally block so it never leaks back
+ * to the menu loop. This is best-effort: forcibly terminating the child to return
+ * to the menu may leave the terminal in a non-ideal state; the existing
+ * "Returned from <bin>." message and menu re-render happen on return regardless.
  *
  * On exit (any exit code), control returns to the myshell-tools menu.
  */
@@ -877,9 +912,48 @@ async function runRawProviderSession(
 
   const bin = selected.bin;
   out.write(`\nLaunching ${bin} — press Ctrl+C or type /exit inside ${bin} to return.\n`);
+
+  // Best-effort escape hint (Unix only — on Windows we skip the handler).
+  if (process.platform !== 'win32') {
+    out.write('(Ctrl+C twice quickly → back to the myshell menu)\n');
+  }
+
   // stdio:'inherit' hands the terminal to the native CLI so its interactive
   // session runs in place. reject:false so we return to menu on any exit code.
-  await execa(bin, [], { stdio: 'inherit', reject: false });
+  const subprocess = execa(bin, [], { stdio: 'inherit', reject: false });
+
+  // Unix-only: register the rapid-double-Ctrl+C escape handler.
+  // On Windows: skip entirely — SIGINT/process-group semantics differ and
+  // forced interception risks a broken console. Behaviour is as before today.
+  if (process.platform !== 'win32') {
+    const INTERRUPT_WINDOW_MS = 1_500;
+    const interruptTimes: number[] = [];
+
+    const rawSigintHandler = (): void => {
+      const now = Date.now();
+      interruptTimes.push(now);
+      const count = countRecentInterrupts(interruptTimes, now, INTERRUPT_WINDOW_MS);
+
+      // count === 1: do nothing — let the single Ctrl+C reach the child via the
+      // terminal's foreground-group delivery. Do NOT kill or write anything here.
+      if (shouldEscapeRawSession(count)) {
+        // Rapid double press → user wants to return to the menu.
+        out.write('\n[info] Returning to menu…\n');
+        subprocess.kill('SIGTERM');
+      }
+    };
+
+    process.on('SIGINT', rawSigintHandler);
+    try {
+      await subprocess;
+    } finally {
+      process.removeListener('SIGINT', rawSigintHandler);
+    }
+  } else {
+    // Windows: no SIGINT handler — await the child normally.
+    await subprocess;
+  }
+
   out.write(`\nReturned from ${bin}.\n`);
 }
 
@@ -907,10 +981,16 @@ async function runRawProviderSession(
  */
 async function runChatLoop(
   ctx: MenuContext,
-  mutableCtx: { config: AppConfig },
+  mutableCtx: { config: AppConfig; env: EnvironmentStatus },
   convId: string,
   out: OutputSink,
   readLine: () => Promise<string | null>,
+  loginFn: (
+    out: OutputSink,
+    providerArg?: string,
+    opts?: { method?: LoginMethod; readLine?: () => Promise<string | null> },
+  ) => Promise<number>,
+  detectEnvironmentFn: () => Promise<EnvironmentStatus>,
 ): Promise<'menu' | 'exit'> {
   // Print a short recap of the conversation (last entry) if history exists
   const history = await ctx.store.load(convId);
@@ -1038,15 +1118,16 @@ async function runChatLoop(
       // Build per-provider advertised model sets from the live env so route()
       // can prefer a model the CLI actually advertises. Only include installed
       // providers (exactOptionalPropertyTypes is ON).
+      // Use mutableCtx.env (not ctx.env) so post-login re-detect is reflected.
       const menuAvailableModels: Partial<Record<ProviderId, readonly string[]>> = {};
-      if (ctx.env.claude.installed && ctx.env.claude.availableModels.length > 0) {
-        menuAvailableModels['claude'] = ctx.env.claude.availableModels;
+      if (mutableCtx.env.claude.installed && mutableCtx.env.claude.availableModels.length > 0) {
+        menuAvailableModels['claude'] = mutableCtx.env.claude.availableModels;
       }
-      if (ctx.env.codex.installed && ctx.env.codex.availableModels.length > 0) {
-        menuAvailableModels['codex'] = ctx.env.codex.availableModels;
+      if (mutableCtx.env.codex.installed && mutableCtx.env.codex.availableModels.length > 0) {
+        menuAvailableModels['codex'] = mutableCtx.env.codex.availableModels;
       }
-      if (ctx.env.opencode.installed && ctx.env.opencode.availableModels.length > 0) {
-        menuAvailableModels['opencode'] = ctx.env.opencode.availableModels;
+      if (mutableCtx.env.opencode.installed && mutableCtx.env.opencode.availableModels.length > 0) {
+        menuAvailableModels['opencode'] = mutableCtx.env.opencode.availableModels;
       }
 
       const deps: OrchestrateDeps = {
@@ -1064,7 +1145,7 @@ async function runChatLoop(
 
       const ac = new AbortController();
       currentAc = ac;
-      await runTask(line, deps, out, ac.signal);
+      const result = await runTask(line, deps, out, ac.signal);
       currentAc = null;
 
       // Check for a loopBreaker signal that fired during the task (e.g. 3×Ctrl+C
@@ -1072,6 +1153,40 @@ async function runChatLoop(
       if (shouldExit) {
         loopResult = 'exit';
         break;
+      }
+
+      // Inline re-login on auth failure: offer to sign in and retry once.
+      if (
+        result.final !== undefined &&
+        !result.final.success &&
+        result.final.errorCategory === 'auth' &&
+        result.final.provider !== undefined
+      ) {
+        const failingProvider = result.final.provider;
+        out.write(`\n[warn] ${failingProvider} isn't signed in.\n`);
+        out.write(`Sign in to ${failingProvider} now and retry? (Y/n) `);
+        const ans = await readLine();
+        if (parseYesNo(ans, true)) {
+          await loginFn(out, failingProvider, { readLine });
+          mutableCtx.env = await detectEnvironmentFn();
+          // Retry the same task once.
+          const retryAc = new AbortController();
+          currentAc = retryAc;
+          const retryResult = await runTask(line, deps, out, retryAc.signal);
+          currentAc = null;
+          if (shouldExit) {
+            loopResult = 'exit';
+            break;
+          }
+          // If still auth failure after retry, inform and continue to prompt.
+          if (
+            retryResult.final !== undefined &&
+            !retryResult.final.success &&
+            retryResult.final.errorCategory === 'auth'
+          ) {
+            out.write(`\n[warn] Still not signed in to ${failingProvider}. Returning to prompt.\n`);
+          }
+        }
       }
     }
   } finally {
@@ -1282,7 +1397,7 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
         const firstMsg = await readLine();
         if (firstMsg !== null && firstMsg.length > 0) {
           const meta = await ctx.store.create(firstMsg);
-          const chatResult = await runChatLoop(ctx, mutableCtx, meta.id, out, readLine);
+          const chatResult = await runChatLoop(ctx, mutableCtx, meta.id, out, readLine, loginFn, detectEnvironmentFn);
           if (chatResult === 'exit') break;
         }
         continue;
@@ -1293,7 +1408,7 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
         const all = await ctx.store.list();
         const latest = all[0];
         if (latest !== undefined) {
-          const chatResult = await runChatLoop(ctx, mutableCtx, latest.id, out, readLine);
+          const chatResult = await runChatLoop(ctx, mutableCtx, latest.id, out, readLine, loginFn, detectEnvironmentFn);
           if (chatResult === 'exit') break;
         } else {
           out.write('No conversations yet. Press n to start one.\n');
@@ -1306,7 +1421,7 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
       if (!Number.isNaN(digit) && digit >= 1 && digit <= 9) {
         const target = metas[digit - 1];
         if (target !== undefined) {
-          const chatResult = await runChatLoop(ctx, mutableCtx, target.id, out, readLine);
+          const chatResult = await runChatLoop(ctx, mutableCtx, target.id, out, readLine, loginFn, detectEnvironmentFn);
           if (chatResult === 'exit') break;
         } else {
           out.write(`No conversation at position ${digit}.\n`);
@@ -1322,7 +1437,7 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
 
       // ---- [i] Import a native conversation -----------------------------------
       if (key === 'i') {
-        const importResult = await runImportNative(ctx, mutableCtx, out, readLine);
+        const importResult = await runImportNative(ctx, mutableCtx, out, readLine, loginFn, detectEnvironmentFn);
         if (importResult === 'exit') break;
         continue;
       }

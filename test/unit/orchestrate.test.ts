@@ -1800,6 +1800,179 @@ describe('orchestrate — maxCostUsd budget cap stops escalation', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Cross-vendor failover on provider error
+// ---------------------------------------------------------------------------
+
+describe('orchestrate — cross-vendor failover on provider error', () => {
+  it('single-provider failure still escalates to manager (unchanged behaviour)', async () => {
+    // With only one provider, remaining is empty → escalate as before.
+    const errorEvents: ProviderEvent[] = [
+      {
+        type: 'error',
+        error: { category: 'network', recoverable: true, message: 'timeout', suggestion: 'retry' },
+      },
+    ];
+    const errorProvider = makeFakeProvider('claude', errorEvents);
+
+    const clock = makeFakeClock();
+    const session = makeFakeSession();
+    const ledger = makeFakeLedger();
+    const deps: OrchestrateDeps = {
+      providers: { claude: errorProvider },
+      clock,
+      session,
+      ledger,
+      policy: DEFAULT_POLICY,
+      cwd: '/fake/cwd',
+      sandbox: 'workspace-write',
+      timeoutMs: 30_000,
+    };
+
+    const events = await collectEvents(
+      orchestrate('refactor X', deps, new AbortController().signal),
+    );
+
+    // Must NOT emit a failover event (only one provider available).
+    const failoverEv = events.find((e) => e.type === 'failover');
+    assert.equal(failoverEv, undefined, 'No failover event when only one provider is available');
+
+    // Must emit an escalate event (IC → manager).
+    const escalateEv = events.find((e) => e.type === 'escalate');
+    assert.ok(escalateEv !== undefined, 'Expected an escalate event on single-provider failure');
+    if (escalateEv.type === 'escalate') {
+      assert.equal(escalateEv.from, 'ic');
+      assert.equal(escalateEv.to, 'manager');
+      assert.equal(escalateEv.reason, 'execution failure');
+    }
+
+    // Final must be failure.
+    const finalEv = events.find((e) => e.type === 'final');
+    assert.ok(finalEv !== undefined);
+    if (finalEv.type === 'final') {
+      assert.equal(finalEv.success, false);
+    }
+  });
+
+  it('two-provider setup: first provider errors → failover event to second, second succeeds', async () => {
+    const errorEvents: ProviderEvent[] = [
+      {
+        type: 'error',
+        error: { category: 'network', recoverable: true, message: 'connection reset', suggestion: 'retry' },
+      },
+    ];
+    const errorProvider = makeFakeProvider('claude', errorEvents);
+
+    // codex is the fallback and succeeds.
+    const successProvider = makeFakeProvider('codex');
+
+    const clock = makeFakeClock();
+    const session = makeFakeSession();
+    const ledger = makeFakeLedger();
+    const deps: OrchestrateDeps = {
+      providers: { claude: errorProvider, codex: successProvider },
+      clock,
+      session,
+      ledger,
+      policy: DEFAULT_POLICY,
+      cwd: '/fake/cwd',
+      sandbox: 'workspace-write',
+      timeoutMs: 30_000,
+    };
+
+    const events = await collectEvents(
+      orchestrate('refactor X', deps, new AbortController().signal),
+    );
+
+    // Must emit a failover event before any escalate.
+    const failoverEv = events.find((e) => e.type === 'failover');
+    assert.ok(failoverEv !== undefined, 'Expected a failover event when first provider errors');
+    if (failoverEv.type === 'failover') {
+      assert.equal(failoverEv.from, 'claude', 'Failover from: claude');
+      assert.equal(failoverEv.to, 'codex', 'Failover to: codex');
+      assert.equal(failoverEv.tier, 'ic', 'Failover at: ic tier');
+      assert.ok(typeof failoverEv.reason === 'string' && failoverEv.reason.length > 0, 'Failover has a reason');
+    }
+
+    // Must NOT emit an escalate event (second provider succeeded).
+    const escalateEv = events.find((e) => e.type === 'escalate');
+    assert.equal(escalateEv, undefined, 'No escalate event — failover to second provider succeeded');
+
+    // Failover event must appear before the second tier-start.
+    const failoverIdx = events.findIndex((e) => e.type === 'failover');
+    const tierStarts = events
+      .map((e, i) => (e.type === 'tier-start' ? i : -1))
+      .filter((i) => i >= 0);
+    assert.ok(tierStarts.length >= 2, 'Expected at least 2 tier-start events (IC attempt 1 + failover attempt)');
+    const secondTierStartIdx = tierStarts[1]!;
+    assert.ok(failoverIdx < secondTierStartIdx, 'failover event must precede the second tier-start');
+
+    // Final must be success (codex second attempt succeeded).
+    const finalEv = events.find((e) => e.type === 'final');
+    assert.ok(finalEv !== undefined);
+    if (finalEv.type === 'final') {
+      assert.equal(finalEv.success, true);
+    }
+  });
+
+  it('both vendors fail at IC tier → failover then escalate to manager', async () => {
+    // Both claude and codex emit an error.
+    const errorEvents: ProviderEvent[] = [
+      {
+        type: 'error',
+        error: { category: 'network', recoverable: true, message: 'timeout', suggestion: 'retry' },
+      },
+    ];
+    const errorProvider1 = makeFakeProvider('claude', errorEvents);
+    const errorProvider2 = makeFakeProvider('codex', errorEvents);
+
+    const clock = makeFakeClock();
+    const session = makeFakeSession();
+    const ledger = makeFakeLedger();
+    const deps: OrchestrateDeps = {
+      providers: { claude: errorProvider1, codex: errorProvider2 },
+      clock,
+      session,
+      ledger,
+      policy: DEFAULT_POLICY,
+      cwd: '/fake/cwd',
+      sandbox: 'workspace-write',
+      timeoutMs: 30_000,
+    };
+
+    const events = await collectEvents(
+      orchestrate('refactor X', deps, new AbortController().signal),
+    );
+
+    // Must emit a failover event (after first error, before second attempt).
+    const failoverEv = events.find((e) => e.type === 'failover');
+    assert.ok(failoverEv !== undefined, 'Expected a failover event after first provider error');
+    if (failoverEv.type === 'failover') {
+      assert.equal(failoverEv.tier, 'ic', 'Failover at IC tier');
+    }
+
+    // After both IC vendors fail, must escalate to manager.
+    const escalateEv = events.find((e) => e.type === 'escalate');
+    assert.ok(escalateEv !== undefined, 'Expected an escalate event after all IC vendors exhausted');
+    if (escalateEv.type === 'escalate') {
+      assert.equal(escalateEv.to, 'manager');
+      assert.equal(escalateEv.reason, 'execution failure');
+    }
+
+    // Verify ordering: failover must come before escalate.
+    const failoverIdx = events.findIndex((e) => e.type === 'failover');
+    const escalateIdx = events.findIndex((e) => e.type === 'escalate');
+    assert.ok(failoverIdx < escalateIdx, 'failover event must precede escalate event');
+
+    // Final must be failure (manager tier also had no successful provider run).
+    const finalEv = events.find((e) => e.type === 'final');
+    assert.ok(finalEv !== undefined);
+    if (finalEv.type === 'final') {
+      assert.equal(finalEv.success, false);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Default policy unchanged — no reviewPolicy / no maxCostUsd
 // ---------------------------------------------------------------------------
 
@@ -1858,6 +2031,159 @@ describe('orchestrate — default policy unchanged (no reviewPolicy / no maxCost
     assert.ok(finalEv !== undefined);
     if (finalEv.type === 'final') {
       assert.equal(finalEv.success, true);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Auth-failure final event — errorCategory and provider fields
+// ---------------------------------------------------------------------------
+
+describe('orchestrate — auth-failure final has errorCategory and provider', () => {
+  it('auth error from provider yields final with errorCategory:"auth" and correct provider', async () => {
+    const authErrorProvider = makeFakeProvider('claude', [
+      {
+        type: 'error',
+        error: {
+          category: 'auth',
+          recoverable: false,
+          message: 'authentication failed',
+          suggestion: 'run claude auth login',
+        },
+      },
+    ]);
+
+    const clock = makeFakeClock();
+    const session = makeFakeSession();
+    const ledger = makeFakeLedger();
+    const deps: OrchestrateDeps = {
+      providers: { claude: authErrorProvider },
+      clock,
+      session,
+      ledger,
+      policy: DEFAULT_POLICY,
+      cwd: '/fake/cwd',
+      sandbox: 'workspace-write',
+      timeoutMs: 30_000,
+    };
+
+    const events = await collectEvents(
+      orchestrate('refactor X', deps, new AbortController().signal),
+    );
+
+    const finalEv = events.find((e) => e.type === 'final');
+    assert.ok(finalEv !== undefined, 'Expected a final event');
+    if (finalEv.type === 'final') {
+      assert.equal(finalEv.success, false, 'Auth failure must yield success:false');
+      assert.equal(finalEv.errorCategory, 'auth', 'errorCategory must be "auth"');
+      assert.equal(finalEv.provider, 'claude', 'provider must be "claude"');
+    }
+  });
+
+  it('non-auth failure sets the actual error category (network)', async () => {
+    const networkErrorProvider = makeFakeProvider('claude', [
+      {
+        type: 'error',
+        error: {
+          category: 'network',
+          recoverable: true,
+          message: 'connection reset',
+          suggestion: 'retry',
+        },
+      },
+    ]);
+
+    const clock = makeFakeClock();
+    const session = makeFakeSession();
+    const ledger = makeFakeLedger();
+    const deps: OrchestrateDeps = {
+      providers: { claude: networkErrorProvider },
+      clock,
+      session,
+      ledger,
+      policy: DEFAULT_POLICY,
+      cwd: '/fake/cwd',
+      sandbox: 'workspace-write',
+      timeoutMs: 30_000,
+    };
+
+    const events = await collectEvents(
+      orchestrate('refactor X', deps, new AbortController().signal),
+    );
+
+    const finalEv = events.find((e) => e.type === 'final');
+    assert.ok(finalEv !== undefined, 'Expected a final event');
+    if (finalEv.type === 'final') {
+      assert.equal(finalEv.success, false, 'Network failure must yield success:false');
+      assert.equal(finalEv.errorCategory, 'network', 'errorCategory must be "network"');
+    }
+  });
+
+  it('successful final has no errorCategory', async () => {
+    const clock = makeFakeClock();
+    const session = makeFakeSession();
+    const ledger = makeFakeLedger();
+    const deps: OrchestrateDeps = {
+      providers: { claude: makeFakeProvider('claude') },
+      clock,
+      session,
+      ledger,
+      policy: DEFAULT_POLICY,
+      cwd: '/fake/cwd',
+      sandbox: 'workspace-write',
+      timeoutMs: 30_000,
+    };
+
+    const events = await collectEvents(
+      orchestrate('refactor X', deps, new AbortController().signal),
+    );
+
+    const finalEv = events.find((e) => e.type === 'final');
+    assert.ok(finalEv !== undefined, 'Expected a final event');
+    if (finalEv.type === 'final') {
+      assert.equal(finalEv.success, true);
+      assert.equal(finalEv.errorCategory, undefined, 'Successful final must NOT have errorCategory');
+      assert.equal(finalEv.provider, undefined, 'Successful final must NOT have provider');
+    }
+  });
+
+  it('auth error from codex provider records codex as the provider', async () => {
+    const authErrorProvider = makeFakeProvider('codex', [
+      {
+        type: 'error',
+        error: {
+          category: 'auth',
+          recoverable: false,
+          message: 'authentication failed',
+          suggestion: 'run codex login',
+        },
+      },
+    ]);
+
+    const clock = makeFakeClock();
+    const session = makeFakeSession();
+    const ledger = makeFakeLedger();
+    const deps: OrchestrateDeps = {
+      providers: { codex: authErrorProvider },
+      clock,
+      session,
+      ledger,
+      policy: DEFAULT_POLICY,
+      cwd: '/fake/cwd',
+      sandbox: 'workspace-write',
+      timeoutMs: 30_000,
+    };
+
+    const events = await collectEvents(
+      orchestrate('refactor X', deps, new AbortController().signal),
+    );
+
+    const finalEv = events.find((e) => e.type === 'final');
+    assert.ok(finalEv !== undefined, 'Expected a final event');
+    if (finalEv.type === 'final') {
+      assert.equal(finalEv.success, false, 'Auth failure must yield success:false');
+      assert.equal(finalEv.errorCategory, 'auth', 'errorCategory must be "auth"');
+      assert.equal(finalEv.provider, 'codex', 'provider must be "codex"');
     }
   });
 });

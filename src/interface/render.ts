@@ -57,6 +57,7 @@ export async function renderStream(
   const c = out.color;
 
   let finalEvent: Extract<CoreEvent, { type: 'final' }> | undefined;
+  let runningUsd = 0;
 
   // Spinner is only used in TTY mode; we create one per tier-start and stop it
   // when the first real output arrives or when tier-done fires.
@@ -114,14 +115,16 @@ export async function renderStream(
 
       case 'tier-done': {
         stopSpinner();
+        runningUsd += ev.costUsd;
         const confidenceStr = renderConfidence(ev.confidence, c);
         const costStr = `$${ev.costUsd.toFixed(4)}`;
+        const runningStr = `$${runningUsd.toFixed(4)}`;
         const successMark = ev.success ? green('✓', c) : red('✗', c);
         out.write(
           `\n${successMark} ${bold('tier done', c)} — ` +
           `confidence: ${confidenceStr}, ` +
           `cost: ${costStr}, ` +
-          `duration: ${ev.durationMs}ms\n`,
+          `duration: ${ev.durationMs}ms  ·  session so far: ${runningStr}\n`,
         );
         break;
       }
@@ -129,6 +132,13 @@ export async function renderStream(
       case 'escalate': {
         out.write(
           yellow(`↑ Escalating ${ev.from} → ${ev.to}: ${ev.reason}`, c) + `\n`,
+        );
+        break;
+      }
+
+      case 'failover': {
+        out.write(
+          yellow(`⇄ Failing over ${ev.from} → ${ev.to} (${ev.tier}): ${ev.reason}`, c) + `\n`,
         );
         break;
       }

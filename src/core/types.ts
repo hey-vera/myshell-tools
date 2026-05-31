@@ -196,6 +196,13 @@ export type CoreEvent =
       readonly reason: string;
     }
   | {
+      readonly type: 'failover';
+      readonly from: ProviderId;
+      readonly to: ProviderId;
+      readonly tier: Tier;
+      readonly reason: string;
+    }
+  | {
       readonly type: 'notice';
       readonly level: 'info' | 'warn' | 'error';
       readonly message: string;
@@ -208,4 +215,8 @@ export type CoreEvent =
       readonly totalCostUsd: number;
       readonly sessionId: string;
       readonly attempts: number;
+      /** Set on failing finals only: the error category that caused the failure. */
+      readonly errorCategory?: import('../providers/port.js').CliError['category'];
+      /** Set on failing finals only: the provider that was being used when failure occurred. */
+      readonly provider?: import('../providers/port.js').ProviderId;
     };

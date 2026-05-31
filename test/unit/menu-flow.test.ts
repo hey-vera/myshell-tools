@@ -2870,3 +2870,250 @@ describe('startMenu — update notifier: banner, [u], auto-update', () => {
     );
   });
 });
+
+// ---------------------------------------------------------------------------
+// FLOW AUTH: inline re-login on auth failure in the chat loop
+// ---------------------------------------------------------------------------
+
+describe('startMenu — chat loop inline re-login on auth failure', () => {
+  /**
+   * Build a provider that always emits an auth-category error.
+   */
+  function makeAuthFailProvider(id: 'claude' | 'codex' = 'claude'): Provider {
+    return {
+      id,
+      async detect() {
+        return {
+          id,
+          installed: true,
+          version: '1.0.0',
+          authenticated: false,
+          plan: null,
+          binaryPath: null,
+          availableModels: [],
+        };
+      },
+      async *run(_req: ProviderRequest, _signal: AbortSignal): AsyncIterable<ProviderEvent> {
+        yield {
+          type: 'error',
+          error: {
+            category: 'auth',
+            recoverable: false,
+            message: 'authentication failed',
+            suggestion: 'run claude auth login',
+          },
+        };
+      },
+    };
+  }
+
+  it('auth failure in chat loop prints [warn] provider is not signed in', async () => {
+    const clock = makeFakeClock();
+    const store = makeStore(clock);
+    const sink = makeSink();
+
+    // Use a provider that always fails with auth error so the final event
+    // has success:false and errorCategory:'auth'.
+    const authFailProvider = makeAuthFailProvider('claude');
+
+    const ctx = makeCtx(
+      {
+        providers: { claude: authFailProvider },
+        readLine: makeScriptedReader([
+          'n',          // new conversation
+          'my task',    // title / first message
+          'do work',    // task input
+          'n',          // no to re-login prompt (auth fail on retry too, so just skip)
+          '/exit',      // exit chat
+          'q',          // quit menu
+        ]),
+        login: async () => 0,
+        detectEnvironment: async () => FAKE_ENV,
+      },
+      clock,
+      store,
+    );
+
+    await assert.doesNotReject(
+      () => startMenu(ctx, sink),
+      'auth failure in chat loop should not throw',
+    );
+
+    assert.ok(
+      sink.buf.includes("isn't signed in") || sink.buf.toLowerCase().includes('signed in'),
+      'Must show "not signed in" warning when auth fails',
+    );
+  });
+
+  it('user answers y → login is called with the failing provider', async () => {
+    const clock = makeFakeClock();
+    const store = makeStore(clock);
+    const sink = makeSink();
+    const loginCalls: string[] = [];
+
+    // Use a provider that always fails with auth error so the final event
+    // consistently has success:false and errorCategory:'auth'.
+    const authFailProvider = makeAuthFailProvider('claude');
+
+    const ctx = makeCtx(
+      {
+        providers: { claude: authFailProvider },
+        readLine: makeScriptedReader([
+          'n', 'my task', 'do work', 'y', '/exit', 'q',
+        ]),
+        login: async (_out, providerArg) => {
+          loginCalls.push(providerArg ?? 'unknown');
+          return 0;
+        },
+        detectEnvironment: async () => FAKE_ENV,
+      },
+      clock,
+      store,
+    );
+
+    await startMenu(ctx, sink);
+
+    assert.ok(
+      loginCalls.includes('claude'),
+      'login must be called with "claude" when user answers y to re-login prompt',
+    );
+  });
+
+  it('user answers y → runTask is retried (provider called a second time)', async () => {
+    const clock = makeFakeClock();
+    const store = makeStore(clock);
+    const sink = makeSink();
+
+    let providerCallCount = 0;
+    const switchingProvider: Provider = {
+      id: 'claude',
+      async detect() {
+        return { id: 'claude', installed: true, version: '1.0.0', authenticated: false, plan: null, binaryPath: null, availableModels: [] };
+      },
+      async *run(_req: ProviderRequest, _signal: AbortSignal): AsyncIterable<ProviderEvent> {
+        providerCallCount++;
+        if (providerCallCount === 1) {
+          yield { type: 'error', error: { category: 'auth', recoverable: false, message: 'auth failed', suggestion: 'login' } };
+        } else {
+          const CONF = '{"confidence": 0.85, "escalate": false, "reason": "done", "needs_review": false}';
+          yield { type: 'done', text: `Done.\n${CONF}`, usage: FAKE_USAGE, raw: {} };
+        }
+      },
+    };
+
+    const ctx = makeCtx(
+      {
+        providers: { claude: switchingProvider },
+        readLine: makeScriptedReader([
+          'n', 'my task', 'do work', 'y', '/exit', 'q',
+        ]),
+        login: async () => 0,
+        detectEnvironment: async () => FAKE_ENV,
+      },
+      clock,
+      store,
+    );
+
+    await startMenu(ctx, sink);
+
+    // Provider was called: first attempt (IC = auth error) + escalation to manager
+    // (IC auth error → escalate → manager auth error) + retry first attempt (IC again)
+    // + retry manager again. So count >= 2 (at minimum the retry happened).
+    assert.ok(
+      providerCallCount >= 2,
+      `Provider must be called at least 2 times (original + retry); got ${providerCallCount}`,
+    );
+  });
+
+  it('user answers n → login is NOT called', async () => {
+    const clock = makeFakeClock();
+    const store = makeStore(clock);
+    const sink = makeSink();
+    let loginCallCount = 0;
+
+    const authFailProvider = makeAuthFailProvider('claude');
+
+    const ctx = makeCtx(
+      {
+        providers: { claude: authFailProvider },
+        readLine: makeScriptedReader([
+          'n', 'my task', 'do work', 'n', '/exit', 'q',
+        ]),
+        login: async () => {
+          loginCallCount++;
+          return 0;
+        },
+        detectEnvironment: async () => FAKE_ENV,
+      },
+      clock,
+      store,
+    );
+
+    await startMenu(ctx, sink);
+
+    assert.equal(loginCallCount, 0, 'login must NOT be called when user answers n');
+  });
+
+  it('user answers n → shows the re-login prompt but returns to prompt after no', async () => {
+    const clock = makeFakeClock();
+    const store = makeStore(clock);
+    const sink = makeSink();
+
+    const authFailProvider = makeAuthFailProvider('claude');
+
+    const ctx = makeCtx(
+      {
+        providers: { claude: authFailProvider },
+        readLine: makeScriptedReader([
+          'n', 'my task', 'do work', 'n', '/exit', 'q',
+        ]),
+        login: async () => 0,
+        detectEnvironment: async () => FAKE_ENV,
+      },
+      clock,
+      store,
+    );
+
+    await assert.doesNotReject(
+      () => startMenu(ctx, sink),
+      'answering n to re-login should not throw',
+    );
+
+    // Should have shown the re-login prompt
+    assert.ok(
+      sink.buf.includes('Sign in') || sink.buf.toLowerCase().includes('sign in'),
+      'Must show re-login prompt even when user answers n',
+    );
+  });
+
+  it('no real login subprocess spawned — login seam is honoured', async () => {
+    // This test verifies that the injected login seam is used (no real subprocess).
+    // If a real subprocess were spawned, it would hang or fail in CI.
+    const clock = makeFakeClock();
+    const store = makeStore(clock);
+    const sink = makeSink();
+    let loginSeamCalled = false;
+
+    // Use a provider that always fails with auth error so the final event
+    // has success:false and errorCategory:'auth' — guaranteeing login is triggered.
+    const authFailProvider = makeAuthFailProvider('claude');
+
+    const ctx = makeCtx(
+      {
+        providers: { claude: authFailProvider },
+        readLine: makeScriptedReader(['n', 'my task', 'do work', 'y', '/exit', 'q']),
+        login: async () => {
+          loginSeamCalled = true;
+          return 0;
+        },
+        detectEnvironment: async () => FAKE_ENV,
+      },
+      clock,
+      store,
+    );
+
+    await startMenu(ctx, sink);
+
+    assert.equal(loginSeamCalled, true, 'login seam must be called (not a real subprocess)');
+  });
+});

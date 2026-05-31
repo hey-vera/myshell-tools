@@ -7,10 +7,18 @@
  * can terminate the process appropriately.
  */
 
-import type { OrchestrateDeps } from '../core/types.js';
+import type { CoreEvent, OrchestrateDeps } from '../core/types.js';
 import { orchestrate } from '../core/orchestrate.js';
 import type { OutputSink } from './render.js';
 import { renderStream } from './render.js';
+
+/** Result returned by {@link runTask}. */
+export interface RunTaskResult {
+  /** Exit code: 0 on success, 1 on failure or error. */
+  readonly code: number;
+  /** The final CoreEvent, when one was emitted by orchestrate(). */
+  readonly final?: Extract<CoreEvent, { type: 'final' }>;
+}
 
 /**
  * Run a single task end-to-end, rendering every CoreEvent to the OutputSink.
@@ -19,20 +27,20 @@ import { renderStream } from './render.js';
  * @param deps   - Injected orchestration dependencies.
  * @param out    - Where rendered output is written.
  * @param signal - AbortSignal; abort to cancel the in-flight task.
- * @returns      0 on success, 1 on failure or error.
+ * @returns      { code, final } — code is 0 on success, 1 on failure or error.
  */
 export async function runTask(
   task: string,
   deps: OrchestrateDeps,
   out: OutputSink,
   signal: AbortSignal,
-): Promise<number> {
+): Promise<RunTaskResult> {
   try {
     const result = await renderStream(orchestrate(task, deps, signal), out);
-    return result.success ? 0 : 1;
+    return { code: result.success ? 0 : 1, ...(result.final !== undefined ? { final: result.final } : {}) };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     out.write(`[error] ${msg}\n`);
-    return 1;
+    return { code: 1 };
   }
 }

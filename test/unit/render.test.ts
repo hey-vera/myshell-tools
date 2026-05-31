@@ -292,6 +292,47 @@ describe('renderStream — escalate and notice events', () => {
 });
 
 // ---------------------------------------------------------------------------
+// 7. failover event renders provider names and reason from real data
+// ---------------------------------------------------------------------------
+
+describe('renderStream — failover event', () => {
+  it('renders failover with real from/to provider names, tier, and reason', async () => {
+    const sink = makeSink();
+
+    const events: CoreEvent[] = [
+      {
+        type: 'failover',
+        from: 'claude',
+        to: 'codex',
+        tier: 'ic',
+        reason: 'connection reset',
+      },
+      {
+        type: 'final',
+        success: true,
+        output: 'Done by codex.',
+        tier: 'ic',
+        totalCostUsd: 0.0050,
+        sessionId: 'failover-session',
+        attempts: 2,
+      },
+    ];
+
+    const result = await renderStream(makeStream(events), sink);
+    const joined = sink.buf.join('');
+
+    assert.equal(result.success, true);
+    // Real provider names must appear in the output.
+    assert.ok(joined.includes('claude'), 'Should contain the real from-provider name');
+    assert.ok(joined.includes('codex'), 'Should contain the real to-provider name');
+    // Real tier must appear.
+    assert.ok(joined.includes('ic'), 'Should contain the real tier');
+    // Real reason must appear verbatim.
+    assert.ok(joined.includes('connection reset'), 'Should contain the real failure reason');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // 6. No final event emitted → returns success:false
 // ---------------------------------------------------------------------------
 
@@ -310,5 +351,72 @@ describe('renderStream — no final event', () => {
     const result = await renderStream(makeStream(events), sink);
     assert.equal(result.success, false);
     assert.equal(result.final, undefined);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 8. Running session cost accumulates across multiple tier-done events
+// ---------------------------------------------------------------------------
+
+describe('renderStream — running session cost meter', () => {
+  it('shows accumulating session so far totals on each tier-done line', async () => {
+    const sink = makeSink();
+
+    const events: CoreEvent[] = [
+      {
+        type: 'tier-done',
+        tier: 'worker',
+        success: true,
+        confidence: 0.75,
+        costUsd: 0.0050,
+        durationMs: 400,
+      },
+      {
+        type: 'tier-done',
+        tier: 'ic',
+        success: true,
+        confidence: 0.9,
+        costUsd: 0.0073,
+        durationMs: 900,
+      },
+      {
+        type: 'final',
+        success: true,
+        output: 'Done.',
+        tier: 'ic',
+        totalCostUsd: 0.0123,
+        sessionId: 'session-meter-test',
+        attempts: 2,
+      },
+    ];
+
+    await renderStream(makeStream(events), sink);
+    const lines = sink.buf.join('').split('\n');
+
+    // Find the two tier-done lines
+    const tierDoneLines = lines.filter(l => l.includes('tier done'));
+    assert.equal(tierDoneLines.length, 2, 'Should have two tier-done lines');
+
+    // First tier-done: session so far = $0.0050
+    assert.ok(
+      tierDoneLines[0].includes('session so far: $0.0050'),
+      `First tier-done must show session so far: $0.0050, got: ${tierDoneLines[0]}`,
+    );
+
+    // Second tier-done: session so far = $0.0050 + $0.0073 = $0.0123
+    assert.ok(
+      tierDoneLines[1].includes('session so far: $0.0123'),
+      `Second tier-done must show session so far: $0.0123 (accumulated sum), got: ${tierDoneLines[1]}`,
+    );
+
+    // Per-tier cost on each line is still the individual cost, not the running total
+    assert.ok(
+      tierDoneLines[0].includes('cost: $0.0050'),
+      `First tier-done must still show per-tier cost: $0.0050, got: ${tierDoneLines[0]}`,
+    );
+    assert.ok(
+      tierDoneLines[1].includes('cost: $0.0073'),
+      `Second tier-done must still show per-tier cost: $0.0073, got: ${tierDoneLines[1]}`,
+    );
   });
 });

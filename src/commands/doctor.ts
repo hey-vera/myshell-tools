@@ -8,14 +8,23 @@
  * Honesty contract: authentication status is based on real CLI probes
  * (`claude auth status`, `codex login status`). Plan labels are only shown
  * when the CLI output clearly provides them; plan is never fabricated.
+ *
+ * --fix mode: after printing the normal report, prompts to install missing
+ * providers and sign in to installed-but-unauthenticated ones. All I/O seams
+ * (detectEnvironment, installProvider, login, readLine) are injectable so tests
+ * remain hermetic — no real npm/login/detect spawned in tests.
  */
 
+import readline from 'node:readline';
 import { access, mkdir, writeFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { OutputSink } from '../interface/render.js';
 import type { EnvironmentStatus } from '../providers/detect.js';
 import { detectEnvironment, getInstallCommand } from '../providers/detect.js';
+import { installProvider } from '../providers/install.js';
+import { runLogin } from './login.js';
 import { isPricingStale } from '../infra/pricing.js';
+import { parseYesNo } from '../interface/menu.js';
 import { bold, green, red, yellow, dim, divider, label } from '../ui/theme.js';
 
 // ---------------------------------------------------------------------------
@@ -135,14 +144,57 @@ async function probestateWritable(cwd: string): Promise<boolean> {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Fix-mode options (injectable seams for hermetic testing)
+// ---------------------------------------------------------------------------
+
+export interface DoctorFixOpts {
+  /** When true, run an interactive fix pass after the report. */
+  readonly fix?: boolean;
+  /**
+   * Read one line of user input. Used for Y/n prompts in fix mode.
+   * When absent, a temporary readline interface is created (real CLI path).
+   */
+  readonly readLine?: () => Promise<string | null>;
+  /**
+   * Install a provider. Injected in tests to avoid real npm spawns.
+   * Defaults to the real installProvider from providers/install.ts.
+   */
+  readonly installProvider?: (id: 'claude' | 'codex' | 'opencode', out: OutputSink) => Promise<boolean>;
+  /**
+   * Sign in to a provider. Injected in tests to avoid real login spawns.
+   * Defaults to the real runLogin from commands/login.ts.
+   */
+  readonly login?: (out: OutputSink, providerArg?: string) => Promise<number>;
+  /**
+   * Detect the environment. Injected in tests to avoid real spawns.
+   * Defaults to the real detectEnvironment from providers/detect.ts.
+   */
+  readonly detectEnvironment?: () => Promise<EnvironmentStatus>;
+}
+
+// ---------------------------------------------------------------------------
+// I/O runner — called by cli.ts
+// ---------------------------------------------------------------------------
+
 /**
  * Detect the environment, probe I/O, build the report, and write it to `out`.
  *
+ * When `opts.fix` is true, runs an interactive fix pass after the report:
+ * prompts to install missing providers, re-detects, then prompts to sign in
+ * to any installed-but-unauthenticated providers. All I/O seams are injectable
+ * via `opts` so tests stay hermetic.
+ *
  * Returns 0 when at least one provider is installed, 1 otherwise.
  * Never calls process.exit — that is handled exclusively by src/cli.ts.
+ * Never throws — any step failure is reported and the pass continues.
  */
-export async function runDoctor(out: OutputSink): Promise<number> {
-  const env = await detectEnvironment();
+export async function runDoctor(out: OutputSink, opts?: DoctorFixOpts): Promise<number> {
+  const detectEnvironmentFn = opts?.detectEnvironment ?? detectEnvironment;
+  const installProviderFn = opts?.installProvider ?? installProvider;
+  const loginFn = opts?.login ?? ((o, id) => runLogin(o, id));
+
+  const env = await detectEnvironmentFn();
   const stateWritable = await probestateWritable(process.cwd());
 
   const extras: DoctorExtras = {
@@ -156,5 +208,124 @@ export async function runDoctor(out: OutputSink): Promise<number> {
     out.write(line + '\n');
   }
 
-  return env.hasAnyProvider ? 0 : 1;
+  if (!opts?.fix) {
+    return env.hasAnyProvider ? 0 : 1;
+  }
+
+  // ---- Fix pass --------------------------------------------------------------
+  // Create a temporary readline if no readLine seam was injected (real CLI path).
+  let rlClose: (() => void) | undefined;
+  let readLineFn = opts.readLine;
+  if (readLineFn === undefined) {
+    const rl = readline.createInterface({
+      input: process.stdin,
+      output: process.stdout,
+      terminal: false,
+    });
+    readLineFn = () =>
+      new Promise<string | null>((resolve) => {
+        rl.once('line', (raw: string) => resolve(raw.trim()));
+        rl.once('close', () => resolve(null));
+      });
+    rlClose = () => rl.close();
+  }
+
+  try {
+    await runFixPass(out, env, readLineFn, installProviderFn, loginFn, detectEnvironmentFn);
+  } finally {
+    rlClose?.();
+  }
+
+  return 0;
+}
+
+// ---------------------------------------------------------------------------
+// Fix pass (internal — separated for clarity and testability)
+// ---------------------------------------------------------------------------
+
+/**
+ * Interactive fix pass:
+ *   1. Offer to install each missing provider (claude, codex, opencode).
+ *   2. Re-detect to pick up any newly installed ones.
+ *   3. Offer to sign in to each installed-but-unauthenticated provider.
+ *      (opencode is always authenticated when installed, so it is never
+ *       offered a sign-in prompt — that is by design, not an omission.)
+ *   4. Re-detect once more and print a brief final status line.
+ *
+ * Never throws — any step failure is caught and reported via `out`.
+ */
+async function runFixPass(
+  out: OutputSink,
+  initialEnv: EnvironmentStatus,
+  readLine: () => Promise<string | null>,
+  installProviderFn: (id: 'claude' | 'codex' | 'opencode', out: OutputSink) => Promise<boolean>,
+  loginFn: (out: OutputSink, providerArg?: string) => Promise<number>,
+  detectEnvironmentFn: () => Promise<EnvironmentStatus>,
+): Promise<void> {
+  const providers: Array<'claude' | 'codex' | 'opencode'> = ['claude', 'codex', 'opencode'];
+
+  // ---- Step 1: offer installs for missing providers -------------------------
+  const missingIds = providers.filter((id) => !initialEnv[id].installed);
+  let didInstallAny = false;
+
+  for (const id of missingIds) {
+    const pkg = getInstallCommand(id).replace('npm install -g ', '');
+    out.write(`\nInstall ${id} (${pkg})? (Y/n) `);
+    const ans = await readLine();
+    if (parseYesNo(ans, true)) {
+      try {
+        await installProviderFn(id, out);
+        didInstallAny = true;
+      } catch {
+        out.write(red(`✗ Install of ${id} failed.\n`, out.color));
+      }
+    }
+  }
+
+  // ---- Step 2: re-detect if anything was installed --------------------------
+  let env = initialEnv;
+  if (didInstallAny || missingIds.length > 0) {
+    try {
+      env = await detectEnvironmentFn();
+    } catch {
+      // If re-detection fails, continue with the original env — never throw.
+    }
+  }
+
+  // ---- Step 3: offer sign-in for installed-but-unauthenticated providers ----
+  // opencode.authenticated is always true when installed (free models, no creds
+  // needed) so it naturally won't appear here — the condition is honest.
+  const needsAuth = providers.filter((id) => env[id].installed && !env[id].authenticated);
+
+  for (const id of needsAuth) {
+    out.write(`\nSign in to ${id} now? (Y/n) `);
+    const ans = await readLine();
+    if (parseYesNo(ans, true)) {
+      try {
+        await loginFn(out, id);
+      } catch {
+        out.write(red(`✗ Sign-in for ${id} did not complete.\n`, out.color));
+      }
+    }
+  }
+
+  // ---- Step 4: final re-detect and brief summary ----------------------------
+  let finalEnv = env;
+  try {
+    finalEnv = await detectEnvironmentFn();
+  } catch {
+    // Best-effort — report from last known state if this fails.
+  }
+
+  out.write('\n');
+  for (const id of providers) {
+    const ps = finalEnv[id];
+    if (ps.installed && ps.authenticated) {
+      out.write(green(`✓ ${id}: installed, signed in.\n`, out.color));
+    } else if (ps.installed) {
+      out.write(yellow(`~ ${id}: installed, not signed in.\n`, out.color));
+    } else {
+      out.write(red(`✗ ${id}: not installed.\n`, out.color));
+    }
+  }
 }

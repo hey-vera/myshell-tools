@@ -209,6 +209,23 @@ export async function* orchestrate(
   let attempts = 0;
   let totalCostUsd = 0;
   let lastOutput = '';
+  /** Track the last error category across all attempts (for the failing final). */
+  let lastErroredCategory: import('../providers/port.js').CliError['category'] | undefined;
+  /** Track the last attempted provider (for the failing final). */
+  let lastAttemptedProvider: ProviderId | undefined;
+
+  /**
+   * Per-tier set of providers that have already been tried, used by the
+   * cross-vendor failover logic so we never retry the same provider twice
+   * within a tier on consecutive execution failures.
+   */
+  const triedByTier = new Map<Tier, Set<ProviderId>>();
+
+  /**
+   * When non-null, the next iteration must route among only these providers
+   * (the remaining untried vendors at the current tier).  Cleared after use.
+   */
+  let failoverPool: ProviderId[] | null = null;
 
   // Compute history context once per orchestrate() call (before the loop).
   // It is injected into the first-tier prompt to give stateless providers
@@ -231,7 +248,20 @@ export async function* orchestrate(
     attempts++;
 
     // --- Route for current tier ---
-    const decision = route(currentTier, available, deps.policy, deps.availableModels);
+    // When a failoverPool is set (previous failure, untried vendors remain),
+    // route among only those vendors for this one iteration, then clear the pool.
+    const routePool = failoverPool ?? available;
+    failoverPool = null;
+    const decision = route(currentTier, routePool, deps.policy, deps.availableModels);
+
+    // Record this provider as tried at this tier.
+    let tierTried = triedByTier.get(currentTier);
+    if (tierTried === undefined) {
+      tierTried = new Set();
+      triedByTier.set(currentTier, tierTried);
+    }
+    tierTried.add(decision.provider);
+    lastAttemptedProvider = decision.provider;
 
     const provider = deps.providers[decision.provider];
     if (provider === undefined) {
@@ -283,11 +313,17 @@ export async function* orchestrate(
         totalCostUsd,
         sessionId: deps.session.id,
         attempts,
+        ...(lastAttemptedProvider !== undefined ? { provider: lastAttemptedProvider } : {}),
       };
       return;
     }
 
     const { finalText, errored, usage, providerCostUsd } = outcome;
+
+    // Track last error for failing final event.
+    if (errored !== undefined) {
+      lastErroredCategory = errored.category;
+    }
 
     // --- Compute duration + cost ---
     const durationMs = deps.clock.now() - start;
@@ -349,8 +385,31 @@ export async function* orchestrate(
     // Decision tree
     // -----------------------------------------------------------------------
 
-    // 1) Provider failure → escalate to manager (or fail if already there)
+    // 1) Provider failure → try cross-vendor failover first; escalate only when
+    //    all vendors at this tier have been exhausted.
     if (!success) {
+      // Compute which providers haven't been tried at this tier yet.
+      const triedAtTier = triedByTier.get(currentTier) ?? new Set<ProviderId>();
+      const remaining = available.filter((id) => !triedAtTier.has(id));
+
+      if (remaining.length > 0) {
+        // Failover to an untried vendor at the same tier.
+        // Peek at what route() would pick from the remaining pool so we can
+        // name the target provider in the failover event.
+        const nextDecision = route(currentTier, remaining, deps.policy, deps.availableModels);
+        yield {
+          type: 'failover',
+          from: decision.provider,
+          to: nextDecision.provider,
+          tier: currentTier,
+          reason: errored?.message ?? 'execution failure',
+        };
+        // Signal the next iteration to route among only the remaining vendors.
+        failoverPool = remaining;
+        continue mainLoop;
+      }
+
+      // All vendors at this tier have been tried — escalate or break.
       if (currentTier !== 'manager') {
         yield { type: 'escalate', from: currentTier, to: 'manager', reason: 'execution failure' };
         currentTier = 'manager';
@@ -438,6 +497,7 @@ export async function* orchestrate(
             totalCostUsd,
             sessionId: deps.session.id,
             attempts,
+            ...(lastAttemptedProvider !== undefined ? { provider: lastAttemptedProvider } : {}),
           };
           return;
         }
@@ -513,6 +573,7 @@ export async function* orchestrate(
               totalCostUsd,
               sessionId: deps.session.id,
               attempts,
+              ...(lastAttemptedProvider !== undefined ? { provider: lastAttemptedProvider } : {}),
             };
             return;
           }
@@ -653,5 +714,7 @@ export async function* orchestrate(
     totalCostUsd,
     sessionId: deps.session.id,
     attempts,
+    ...(lastErroredCategory !== undefined ? { errorCategory: lastErroredCategory } : {}),
+    ...(lastAttemptedProvider !== undefined ? { provider: lastAttemptedProvider } : {}),
   };
 }

@@ -15,6 +15,7 @@ import assert from 'node:assert/strict';
 import {
   countRecentInterrupts,
   interpretInterrupt,
+  shouldEscapeRawSession,
 } from '../../src/interface/menu.ts';
 
 // ---------------------------------------------------------------------------
@@ -237,6 +238,66 @@ describe('interpretInterrupt', () => {
     assert.strictEqual(interpretInterrupt(2, true), 'to-menu');
     assert.strictEqual(interpretInterrupt(3, false), 'exit-app');
     assert.strictEqual(interpretInterrupt(3, true), 'exit-app');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// shouldEscapeRawSession
+// ---------------------------------------------------------------------------
+
+describe('shouldEscapeRawSession', () => {
+  // ---- Returns true for count >= 2 (escape to menu) -------------------------
+
+  it('returns true for count=2 (rapid double press)', () => {
+    assert.strictEqual(shouldEscapeRawSession(2), true);
+  });
+
+  it('returns true for count=3 (triple press)', () => {
+    assert.strictEqual(shouldEscapeRawSession(3), true);
+  });
+
+  it('returns true for count=10 (many presses)', () => {
+    assert.strictEqual(shouldEscapeRawSession(10), true);
+  });
+
+  // ---- Returns false for count < 2 (let child handle single press) ----------
+
+  it('returns false for count=1 (single press — must not interfere)', () => {
+    assert.strictEqual(shouldEscapeRawSession(1), false);
+  });
+
+  it('returns false for count=0 (no press — defensive)', () => {
+    assert.strictEqual(shouldEscapeRawSession(0), false);
+  });
+
+  it('returns false for negative count (defensive)', () => {
+    assert.strictEqual(shouldEscapeRawSession(-1), false);
+    assert.strictEqual(shouldEscapeRawSession(-100), false);
+  });
+
+  // ---- Never throws ----------------------------------------------------------
+
+  it('never throws for any count', () => {
+    const counts = [-100, -1, 0, 1, 2, 3, 4, 100, Number.MAX_SAFE_INTEGER];
+    for (const count of counts) {
+      assert.doesNotThrow(() => shouldEscapeRawSession(count));
+    }
+  });
+
+  // ---- Result is strictly boolean --------------------------------------------
+
+  it('always returns a strict boolean', () => {
+    for (const count of [-1, 0, 1, 2, 3]) {
+      const result = shouldEscapeRawSession(count);
+      assert.ok(result === true || result === false, `expected boolean, got ${String(result)}`);
+    }
+  });
+
+  // ---- Boundary at count=2 ---------------------------------------------------
+
+  it('count=1 is false and count=2 is true (boundary)', () => {
+    assert.strictEqual(shouldEscapeRawSession(1), false);
+    assert.strictEqual(shouldEscapeRawSession(2), true);
   });
 });
 

@@ -53,7 +53,9 @@ Commands:
                     Add --code to use the no-localhost flow (paste a code for
                     claude, device code for codex) — best inside containers /
                     over SSH. Add --browser to force the localhost flow.
-  doctor            Check provider installation, auth, and environment health
+  doctor [--fix]    Check provider installation, auth, and environment health.
+                    Add --fix to interactively install missing providers and
+                    sign in to unauthenticated ones.
   cost              Show real spend from the ledger with a per-model breakdown
   install           Write a guarded startup hook to your shell rc file so new
                     interactive shells launch myshell-tools automatically
@@ -161,7 +163,8 @@ async function main(): Promise<void> {
   }
 
   if (args[0] === 'doctor') {
-    process.exit(await runDoctor(out));
+    const fix = args.includes('--fix');
+    process.exit(await runDoctor(out, fix ? { fix: true } : undefined));
   }
 
   if (args[0] === 'cost') {
@@ -184,8 +187,8 @@ async function main(): Promise<void> {
       process.exit(1);
     }
     const deps = await buildDeps(cwd);
-    const code = await runTask(taskParts.join(' '), deps, out, new AbortController().signal);
-    process.exit(code);
+    const result = await runTask(taskParts.join(' '), deps, out, new AbortController().signal);
+    process.exit(result.code);
   }
 
   // ---- Interactive Menu (default — sessions-first control panel) ------------
