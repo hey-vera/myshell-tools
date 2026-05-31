@@ -882,14 +882,18 @@ async function renderMainScreen(
   }
   out.write('\n');
 
-  // Auth section — conditionally include opencode login when opencode is installed.
+  // Auth section — always include the opencode [o] entry so users can discover
+  // and connect opencode even before it is installed. Label parallels the other
+  // two providers; when opencode isn't installed yet, the handler offers to
+  // install it (with consent) before signing in.
+  const opencodeLabel = mutableCtx.env.opencode.installed
+    ? 'Login opencode'
+    : 'Login opencode (installs it first)';
   const authEntries: Array<{ key: string; label: string; section: string }> = [
     { key: 'j', label: 'Login Claude', section: 'Auth' },
     { key: 'k', label: 'Login Codex', section: 'Auth' },
+    { key: 'o', label: opencodeLabel, section: 'Auth' },
   ];
-  if (mutableCtx.env.opencode.installed) {
-    authEntries.push({ key: 'o', label: 'Login / add subscription (opencode)', section: 'Auth' });
-  }
 
   // Menu — sectioned via menu()
   out.write(
@@ -1064,9 +1068,28 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
         continue;
       }
 
-      // ---- [o] Login / add subscription (opencode) ----------------------------
-      // Only act when opencode is installed; if not, fall through to Unknown option.
-      if (key === 'o' && mutableCtx.env.opencode.installed) {
+      // ---- [o] Connect / Login opencode ---------------------------------------
+      // Always handles the key. When opencode is not yet installed, asks for
+      // consent then installs it (using the injected installProviderFn seam so
+      // tests stay hermetic). If install succeeds, proceeds to sign in.
+      if (key === 'o') {
+        if (!mutableCtx.env.opencode.installed) {
+          out.write(`Install opencode (${installCommandFor('opencode').replace('npm install -g ', '')})? [Enter] yes · [n] no\n`);
+          out.write('> ');
+          const ans = await readLine();
+          const skip = ans === null || ans.toLowerCase() === 'n' || ans.toLowerCase() === 'no';
+          if (skip) {
+            out.write(`[2mSkipped. You can install it later: ${installCommandFor('opencode')}[0m\n`);
+            continue;
+          }
+          const ok = await installProviderFn('opencode', out);
+          mutableCtx.env = await detectEnvironmentFn();
+          if (!ok || !mutableCtx.env.opencode.installed) {
+            out.write(`Install failed. Run it yourself: ${installCommandFor('opencode')}\n`);
+            continue;
+          }
+        }
+        // opencode is (now) installed — proceed to sign in
         await loginFn(out, 'opencode');
         mutableCtx.env = await detectEnvironmentFn();
         continue;

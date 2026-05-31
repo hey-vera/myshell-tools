@@ -1189,13 +1189,15 @@ describe('startMenu — [r] raw session picker: opencode visibility', () => {
       'raw session picker without opencode should not throw',
     );
 
-    // Picker should show [1] and [2] but NOT [3] in the raw-session section
-    // (the main menu uses [1-9] for conversations, so we verify no opencode
-    // appears inside the raw session prompt context)
-    const rawSessionSection = sink.buf.split('Open raw session')[1] ?? '';
+    // The raw session picker prompt itself (between "Open raw session with:" and the
+    // first "> " prompt) must NOT list opencode. We isolate just the picker lines by
+    // taking the text between the "Open raw session" marker and the first prompt "> ".
+    const afterRaw = sink.buf.split('Open raw session')[1] ?? '';
+    // Take only up to the first "> " so we don't pick up the re-rendered main menu
+    const pickerLines = afterRaw.split('\n> ')[0] ?? '';
     assert.ok(
-      !rawSessionSection.toLowerCase().includes('opencode'),
-      'opencode must not appear in raw session picker when not installed',
+      !pickerLines.toLowerCase().includes('opencode'),
+      'opencode must not appear in the raw session picker choices when not installed',
     );
   });
 
@@ -1618,11 +1620,16 @@ describe('startMenu — first-run: post-onboarding env refresh (BUG 1)', () => {
 });
 
 // ---------------------------------------------------------------------------
-// FLOW 10: [o] opencode login — Auth section UX (BUG 2)
+// FLOW 10: [o] opencode — Auth section discoverability (BUG 2 fix)
+//
+// [o] is now ALWAYS visible in the Auth section, regardless of whether opencode
+// is installed. When not installed, pressing [o] shows a consent prompt, then
+// calls installProvider (if consented), then calls login. When installed, it
+// goes straight to login. The label adapts to the install state.
 // ---------------------------------------------------------------------------
 
-describe('startMenu — [o] opencode login in Auth section (BUG 2)', () => {
-  /** Env with opencode installed — the [o] entry should appear. */
+describe('startMenu — [o] opencode discoverability in Auth section', () => {
+  /** Env with opencode installed and authenticated. */
   const FAKE_ENV_OPENCODE_INSTALLED: EnvironmentStatus = {
     ...FAKE_ENV,
     opencode: {
@@ -1636,7 +1643,43 @@ describe('startMenu — [o] opencode login in Auth section (BUG 2)', () => {
     },
   };
 
-  it('Auth section shows [o] opencode login when opencode is installed', async () => {
+  // ---- Label visibility (always present) ------------------------------------
+
+  it('Auth section shows [o] when opencode IS installed', async () => {
+    const sink = makeSink();
+    const ctx = makeCtx({
+      env: FAKE_ENV_OPENCODE_INSTALLED,
+      readLine: makeScriptedReader(['q']),
+      detectEnvironment: async () => FAKE_ENV_OPENCODE_INSTALLED,
+    });
+
+    await startMenu(ctx, sink);
+
+    assert.ok(sink.buf.includes('[o]'), 'menu must show [o] when opencode is installed');
+    assert.ok(sink.buf.toLowerCase().includes('opencode'), 'menu must mention opencode');
+  });
+
+  it('Auth section shows [o] even when opencode is NOT installed', async () => {
+    const sink = makeSink();
+    // FAKE_ENV has opencode not-installed — [o] must still appear
+    const ctx = makeCtx({
+      readLine: makeScriptedReader(['q']),
+      detectEnvironment: async () => FAKE_ENV,
+    });
+
+    await startMenu(ctx, sink);
+
+    assert.ok(
+      sink.buf.includes('[o]'),
+      '[o] must appear in menu even when opencode is not installed (discoverability)',
+    );
+    assert.ok(
+      sink.buf.toLowerCase().includes('opencode'),
+      'opencode must be mentioned in menu even when not installed',
+    );
+  });
+
+  it('label says "Login / add subscription" when opencode is installed', async () => {
     const sink = makeSink();
     const ctx = makeCtx({
       env: FAKE_ENV_OPENCODE_INSTALLED,
@@ -1647,18 +1690,13 @@ describe('startMenu — [o] opencode login in Auth section (BUG 2)', () => {
     await startMenu(ctx, sink);
 
     assert.ok(
-      sink.buf.includes('[o]'),
-      'menu must show [o] key when opencode is installed',
-    );
-    assert.ok(
-      sink.buf.toLowerCase().includes('opencode'),
-      'menu must mention opencode in Auth section when installed',
+      sink.buf.toLowerCase().includes('login') || sink.buf.toLowerCase().includes('subscription'),
+      'label must mention "login" or "subscription" when opencode is installed',
     );
   });
 
-  it('Auth section does NOT show [o] when opencode is not installed', async () => {
+  it('label says "Login opencode (installs it first)" when opencode is NOT installed', async () => {
     const sink = makeSink();
-    // FAKE_ENV has opencode not-installed
     const ctx = makeCtx({
       readLine: makeScriptedReader(['q']),
       detectEnvironment: async () => FAKE_ENV,
@@ -1666,13 +1704,13 @@ describe('startMenu — [o] opencode login in Auth section (BUG 2)', () => {
 
     await startMenu(ctx, sink);
 
-    // The [o] key must not appear in the Auth section
-    // (it may still appear in the [1-9] range label "1-9" but not as "[o]")
     assert.ok(
-      !sink.buf.includes('[o]'),
-      '[o] must NOT appear in menu when opencode is not installed',
+      sink.buf.toLowerCase().includes('login opencode') && sink.buf.toLowerCase().includes('installs it first'),
+      'label must read "Login opencode (installs it first)" when opencode is not installed',
     );
   });
+
+  // ---- Pressing [o] when opencode is ALREADY installed ----------------------
 
   it('pressing o with opencode installed invokes login with "opencode"', async () => {
     let loginCalled = false;
@@ -1699,22 +1737,20 @@ describe('startMenu — [o] opencode login in Auth section (BUG 2)', () => {
     assert.equal(loginArg, 'opencode', 'login must be called with "opencode"');
   });
 
-  it('pressing o when opencode NOT installed falls through to "Unknown option"', async () => {
+  it('pressing o with opencode installed does NOT show install consent prompt', async () => {
     const sink = makeSink();
-    // FAKE_ENV has opencode not-installed → [o] handler should NOT fire
     const ctx = makeCtx({
+      env: FAKE_ENV_OPENCODE_INSTALLED,
       readLine: makeScriptedReader(['o', 'q']),
-      detectEnvironment: async () => FAKE_ENV,
+      login: async () => 0,
+      detectEnvironment: async () => FAKE_ENV_OPENCODE_INSTALLED,
     });
 
-    await assert.doesNotReject(
-      () => startMenu(ctx, sink),
-      'pressing o without opencode installed should not throw',
-    );
+    await startMenu(ctx, sink);
 
     assert.ok(
-      sink.buf.includes('Unknown option'),
-      '"Unknown option" must appear when o pressed without opencode installed',
+      !sink.buf.includes('Install opencode'),
+      'no install consent prompt when opencode is already installed',
     );
   });
 
@@ -1735,5 +1771,186 @@ describe('startMenu — [o] opencode login in Auth section (BUG 2)', () => {
     await startMenu(ctx, sink);
 
     assert.equal(loginCallCount, 1, 'login seam must be called exactly once for [o]');
+  });
+
+  // ---- Pressing [o] when opencode is NOT installed — consent prompt ---------
+
+  it('pressing o when opencode NOT installed shows a consent prompt', async () => {
+    const sink = makeSink();
+    // Answer 'n' to skip install
+    const ctx = makeCtx({
+      readLine: makeScriptedReader(['o', 'n', 'q']),
+      detectEnvironment: async () => FAKE_ENV,
+    });
+
+    await assert.doesNotReject(
+      () => startMenu(ctx, sink),
+      'pressing o without opencode installed should not throw',
+    );
+
+    assert.ok(
+      sink.buf.includes('Install opencode'),
+      'consent prompt must appear when o pressed and opencode not installed',
+    );
+    assert.ok(
+      sink.buf.includes('opencode-ai'),
+      'consent prompt must mention the npm package name',
+    );
+  });
+
+  it('pressing o, NOT installed, answering n → skips install, does NOT call installProvider', async () => {
+    let installCalled = false;
+
+    const sink = makeSink();
+    const ctx = makeCtx({
+      readLine: makeScriptedReader(['o', 'n', 'q']),
+      installProvider: async () => {
+        installCalled = true;
+        return false;
+      },
+      detectEnvironment: async () => FAKE_ENV,
+    });
+
+    await startMenu(ctx, sink);
+
+    assert.equal(installCalled, false, 'installProvider must NOT be called when user answers n');
+  });
+
+  it('pressing o, NOT installed, answering n → does NOT call login', async () => {
+    let loginCalled = false;
+
+    const sink = makeSink();
+    const ctx = makeCtx({
+      readLine: makeScriptedReader(['o', 'n', 'q']),
+      login: async () => {
+        loginCalled = true;
+        return 0;
+      },
+      detectEnvironment: async () => FAKE_ENV,
+    });
+
+    await startMenu(ctx, sink);
+
+    assert.equal(loginCalled, false, 'login must NOT be called when user skips install');
+  });
+
+  it('pressing o, NOT installed, answering n → prints skip note with install command', async () => {
+    const sink = makeSink();
+    const ctx = makeCtx({
+      readLine: makeScriptedReader(['o', 'n', 'q']),
+      detectEnvironment: async () => FAKE_ENV,
+    });
+
+    await startMenu(ctx, sink);
+
+    assert.ok(
+      sink.buf.includes('Skipped') || sink.buf.toLowerCase().includes('install it later'),
+      'skip note must mention "Skipped" or "install it later"',
+    );
+    assert.ok(
+      sink.buf.includes('npm install -g opencode-ai'),
+      'skip note must include the exact install command',
+    );
+  });
+
+  it('pressing o, NOT installed, answering [Enter] (yes) → calls installProvider then login', async () => {
+    const calls: string[] = [];
+
+    // After install, detectEnvironment returns the "installed" env so login proceeds
+    const sink = makeSink();
+    const ctx = makeCtx({
+      readLine: makeScriptedReader(['o', '', 'q']),  // '' = Enter = yes
+      installProvider: async (_id) => {
+        calls.push('install:' + _id);
+        return true;
+      },
+      login: async (_out, providerArg) => {
+        calls.push('login:' + String(providerArg));
+        return 0;
+      },
+      detectEnvironment: async () => {
+        // After install: report opencode now installed so login proceeds
+        return FAKE_ENV_OPENCODE_INSTALLED;
+      },
+    });
+
+    await assert.doesNotReject(
+      () => startMenu(ctx, sink),
+      'o → yes to install → install+login should not throw',
+    );
+
+    assert.ok(calls.includes('install:opencode'), 'installProvider must be called with "opencode"');
+    assert.ok(calls.includes('login:opencode'), 'login must be called with "opencode" after install');
+    // install must happen before login
+    assert.ok(
+      calls.indexOf('install:opencode') < calls.indexOf('login:opencode'),
+      'installProvider must be called before login',
+    );
+  });
+
+  it('pressing o, NOT installed, EOF at consent → skips (same as n)', async () => {
+    let installCalled = false;
+    let loginCalled = false;
+
+    const sink = makeSink();
+    const ctx = makeCtx({
+      readLine: makeScriptedReader(['o', null]),  // EOF at consent prompt
+      installProvider: async () => {
+        installCalled = true;
+        return true;
+      },
+      login: async () => {
+        loginCalled = true;
+        return 0;
+      },
+      detectEnvironment: async () => FAKE_ENV,
+    });
+
+    await assert.doesNotReject(
+      () => startMenu(ctx, sink),
+      'EOF at consent prompt should not throw',
+    );
+
+    assert.equal(installCalled, false, 'installProvider must NOT be called on EOF consent');
+    assert.equal(loginCalled, false, 'login must NOT be called on EOF consent');
+  });
+
+  it('pressing o, NOT installed, install fails → does NOT call login', async () => {
+    let loginCalled = false;
+
+    const sink = makeSink();
+    const ctx = makeCtx({
+      readLine: makeScriptedReader(['o', '', 'q']),  // '' = Enter = yes
+      installProvider: async () => false,   // install reports failure
+      login: async () => {
+        loginCalled = true;
+        return 0;
+      },
+      // detectEnvironment still reports not-installed (confirming failure)
+      detectEnvironment: async () => FAKE_ENV,
+    });
+
+    await assert.doesNotReject(
+      () => startMenu(ctx, sink),
+      'install failure should not throw',
+    );
+
+    assert.equal(loginCalled, false, 'login must NOT be called when install fails');
+  });
+
+  it('pressing o, NOT installed, install fails → prints failure note', async () => {
+    const sink = makeSink();
+    const ctx = makeCtx({
+      readLine: makeScriptedReader(['o', '', 'q']),
+      installProvider: async () => false,
+      detectEnvironment: async () => FAKE_ENV,
+    });
+
+    await startMenu(ctx, sink);
+
+    assert.ok(
+      sink.buf.toLowerCase().includes('install failed') || sink.buf.toLowerCase().includes('run it yourself'),
+      'failure note must appear when install fails',
+    );
   });
 });
