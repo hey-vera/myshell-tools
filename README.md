@@ -4,7 +4,7 @@
 
 `myshell-tools` routes each task to the *cheapest* model likely to succeed, runs it on your real codebase, optionally has a **different vendor** review the result, and shows you exactly what it did and what it truly cost — with **no fabricated data, ever**.
 
-> **Status: `2.7.1` — honest, tested, and real.** Claude, Codex, and opencode (experimental) all work, and provider auth is detected for real.
+> **Status: `2.9.0` — honest, tested, and real.** Claude, Codex, and opencode (experimental) all work, provider auth is detected for real, and the tool notifies you when a newer version is available.
 
 ---
 
@@ -69,9 +69,40 @@ You need **one** to start; install **both** claude and codex to unlock cross‑v
 
 | Method | Command | Notes |
 |--------|---------|-------|
-| Zero-install (recommended) | `npx myshell-tools` | Fetches, runs, and offers to set up providers on first run |
-| Global install | `npm install -g myshell-tools` then `myshell-tools` | Faster on subsequent runs |
+| Zero-install (one-time) | `npx myshell-tools` | Fetches and runs; first-run setup included |
+| Global install (recommended for regular use) | `npm install -g myshell-tools` then `myshell-tools` | Fastest; gets the update notifier |
 | From source | See below | For development |
+
+### `npx` vs. `npm install -g` — which to choose?
+
+`npx myshell-tools` is convenient for a one-off run but **caches the downloaded version** — subsequent invocations reuse the cache and **will not pick up new releases** automatically.
+
+For day-to-day use, a global install is recommended:
+
+```bash
+npm install -g myshell-tools
+myshell-tools
+```
+
+The globally-installed CLI includes the **update notifier**: it checks the npm registry once per 24 hours (cached, non-blocking) and shows a banner in the control panel when a newer version is available:
+
+```
+▲ Update available: 2.9.0 → 3.0.0  (press u)
+```
+
+Press `u` to install the update in-place (`npm install -g myshell-tools@latest`). No relaunch is forced — restart the CLI when you're ready.
+
+You can also enable **auto-update** so the CLI updates and relaunches itself silently at startup:
+
+- During first-run setup: answer `y` to the `Keep myshell-tools up to date automatically? (y/N)` prompt.
+- In the control panel: `[s] Settings → [3] Auto-update: off → on`.
+- Or set `"autoUpdate": true` in `~/.myshell-tools/config.json`.
+
+To update manually at any time:
+
+```bash
+npm install -g myshell-tools@latest
+```
 
 ### From source
 

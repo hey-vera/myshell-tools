@@ -39,6 +39,7 @@ import { runDoctor } from '../commands/doctor.js';
 import { runCost } from '../commands/cost.js';
 import { runInstall } from '../commands/install.js';
 import { box, separator, menu, prompt } from '../ui/tui.js';
+import type { UpdateCheckResult } from '../infra/update-check.js';
 
 // ---------------------------------------------------------------------------
 // MenuContext
@@ -89,6 +90,30 @@ export interface MenuContext {
    * spawning during tests (e.g. after first-run onboarding or [j]/[k]/[o] login).
    */
   readonly detectEnvironment?: () => Promise<EnvironmentStatus>;
+  /**
+   * Optional injected update-check for testing. When provided, `startMenu` uses
+   * this instead of the real `checkForUpdate` from infra/update-check.ts,
+   * preventing real npm registry requests from being made during tests.
+   *
+   * Returns the update check result (current, latest, updateAvailable).
+   */
+  readonly checkForUpdate?: () => Promise<UpdateCheckResult>;
+  /**
+   * Optional injected self-update function for testing. When provided, `startMenu`
+   * uses this instead of the real `npm install -g myshell-tools@latest` subprocess.
+   *
+   * Returns true when the update succeeded (exit code 0), false otherwise.
+   * Never throws.
+   */
+  readonly updateSelf?: (out: OutputSink) => Promise<boolean>;
+  /**
+   * Optional injected relaunch function for testing. When provided, `startMenu`
+   * uses this instead of the real `execa('myshell-tools', …)` re-exec.
+   *
+   * Returns the exit code of the relaunched process (or 1 on spawn failure).
+   * Used only for the opt-in auto-update path.
+   */
+  readonly relaunch?: () => Promise<number>;
 }
 
 // ---------------------------------------------------------------------------
@@ -445,10 +470,16 @@ async function runWelcome(
 
   const setAsDefault = parseYesNo(defaultAns, false);
 
+  // Default is NO for auto-update — require explicit 'y' to enable.
+  out.write('Keep myshell-tools up to date automatically? (y/N) ');
+  const autoUpdateAns = await readLine();
+  const autoUpdate = parseYesNo(autoUpdateAns, false);
+
   const saved: AppConfig = {
     onboarded: true,
     setAsDefault,
     ...(updated.mode !== undefined ? { mode: updated.mode } : {}),
+    ...(autoUpdate ? { autoUpdate: true } : {}),
   };
 
   await saveConfig(saved);
@@ -538,6 +569,7 @@ async function runSettings(
     '',
     `  [1] Mode: ${cfg.mode ?? 'balanced'}`,
     `  [2] Set as default shell: ${cfg.setAsDefault ? 'on' : 'off'}`,
+    `  [3] Auto-update: ${cfg.autoUpdate === true ? 'on' : 'off'}`,
     '',
     '  [Enter] Back',
     '',
@@ -554,8 +586,27 @@ async function runSettings(
     mutableCtx.config = await runModeSelect(mutableCtx.config, out, readLine);
   } else if (key === '2') {
     mutableCtx.config = await toggleDefaultShell(mutableCtx.config, out);
+  } else if (key === '3') {
+    mutableCtx.config = await toggleAutoUpdate(mutableCtx.config, out);
   }
   // anything else → back
+}
+
+/**
+ * Toggle the auto-update preference and persist the updated config.
+ * Reports the new state so the user knows what changed.
+ */
+async function toggleAutoUpdate(config: AppConfig, out: OutputSink): Promise<AppConfig> {
+  const enable = config.autoUpdate !== true;
+  const updated: AppConfig = {
+    onboarded: config.onboarded,
+    setAsDefault: config.setAsDefault,
+    ...(config.mode !== undefined ? { mode: config.mode } : {}),
+    ...(enable ? { autoUpdate: true } : {}),
+  };
+  await saveConfig(updated);
+  out.write(`Auto-update: ${enable ? 'on' : 'off'}\n`);
+  return updated;
 }
 
 // ---------------------------------------------------------------------------
@@ -895,12 +946,20 @@ async function renderMainScreen(
   mutableCtx: { config: AppConfig; env: EnvironmentStatus },
   metas: ConversationMeta[],
   out: OutputSink,
+  updateInfo?: UpdateCheckResult,
 ): Promise<void> {
   out.write('\n');
 
   // Header box — always box(), 🧠 emoji, real provider data
   const headerLines = renderHeaderLines(mutableCtx.env, ctx.version);
   out.write(box(`🧠 myshell-tools v${ctx.version}`, headerLines) + '\n\n');
+
+  // Update banner — only shown when a newer version is genuinely available
+  if (updateInfo?.updateAvailable === true && updateInfo.latest !== null) {
+    out.write(
+      `  ▲ Update available: ${updateInfo.current} → ${updateInfo.latest}  (press u)\n\n`,
+    );
+  }
 
   // Budget line — real ledger data, never fabricated
   const entries = await readLedger(ctx.cwd);
@@ -933,6 +992,12 @@ async function renderMainScreen(
     { key: 'o', label: opencodeLabel, section: 'Auth' },
   ];
 
+  // [u] Update now — shown only when a newer version is actually available
+  const updateEntry =
+    updateInfo?.updateAvailable === true && updateInfo.latest !== null
+      ? [{ key: 'u', label: `Update now (→ ${updateInfo.latest})`, section: 'Options' }]
+      : [];
+
   // Menu — sectioned via menu()
   out.write(
     menu([
@@ -946,6 +1011,7 @@ async function renderMainScreen(
       { key: 's', label: 'Settings', section: 'Options' },
       { key: 'd', label: 'Doctor', section: 'Options' },
       { key: '$', label: 'Cost', section: 'Options' },
+      ...updateEntry,
       { key: 'q', label: 'Quit', section: 'Options' },
     ]) + '\n\n',
   );
@@ -976,6 +1042,9 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
   const installProviderFn = ctx.installProvider !== undefined ? ctx.installProvider : installProvider;
   const loginFn = ctx.login !== undefined ? ctx.login : runLogin;
   const detectEnvironmentFn = ctx.detectEnvironment !== undefined ? ctx.detectEnvironment : detectEnvironment;
+  const checkForUpdateFn = ctx.checkForUpdate;
+  const updateSelfFn = ctx.updateSelf;
+  const relaunchFn = ctx.relaunch;
 
   // Build the readLine function — either injected (for tests) or backed by a
   // real readline interface driven by the event-driven LineReader queue.
@@ -1017,10 +1086,37 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
       mutableCtx.env = await detectEnvironmentFn();
     }
 
+    // ---- Update check (once per launch, after onboarding) --------------------
+    // Fast path: uses the cache when fresh, so it never hangs.
+    // Injected seam allows tests to stay hermetic (no real npm registry calls).
+    let updateInfo: UpdateCheckResult | undefined;
+    if (checkForUpdateFn !== undefined) {
+      updateInfo = await checkForUpdateFn().catch(() => undefined);
+    }
+
+    // ---- Opt-in auto-update at launch ----------------------------------------
+    // Guard: only runs once; requires both the update and relaunch seams to be wired.
+    if (
+      mutableCtx.config.autoUpdate === true &&
+      updateInfo?.updateAvailable === true &&
+      updateInfo.latest !== null &&
+      updateSelfFn !== undefined
+    ) {
+      out.write(`▲ Auto-updating ${updateInfo.current} → ${updateInfo.latest}…\n`);
+      const ok = await updateSelfFn(out).catch(() => false);
+      if (ok) {
+        if (relaunchFn !== undefined) {
+          await relaunchFn().catch(() => 1);
+        }
+        return; // Relinquish control to the freshly-installed version.
+      }
+      out.write('Auto-update failed — continuing with current version.\n');
+    }
+
     // ---- B. Main screen loop -------------------------------------------------
     while (true) {
       const metas = await ctx.store.list();
-      await renderMainScreen(ctx, mutableCtx, metas, out);
+      await renderMainScreen(ctx, mutableCtx, metas, out, updateInfo);
 
       out.write('> ');
       const key = await readLine();
@@ -1130,6 +1226,18 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
         // opencode is (now) installed — proceed to sign in
         await loginFn(out, 'opencode');
         mutableCtx.env = await detectEnvironmentFn();
+        continue;
+      }
+
+      // ---- [u] Update now -----------------------------------------------------
+      // Only active when an update is actually available and the seam is wired.
+      if (key === 'u' && updateInfo?.updateAvailable === true && updateSelfFn !== undefined) {
+        const ok = await updateSelfFn(out).catch(() => false);
+        if (ok && updateInfo.latest !== null) {
+          out.write(`✓ Updated to ${updateInfo.latest} — restart myshell-tools to use it.\n`);
+        } else if (!ok) {
+          out.write('Update failed. Run: npm install -g myshell-tools@latest\n');
+        }
         continue;
       }
 

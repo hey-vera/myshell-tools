@@ -7,6 +7,7 @@
  */
 
 import { createRequire } from 'node:module';
+import { execa } from 'execa';
 import { systemClock } from './infra/clock.js';
 import { createSessionWriter } from './infra/session.js';
 import { createLedger } from './infra/ledger.js';
@@ -21,6 +22,7 @@ import { buildProviders } from './providers/registry.js';
 import { detectEnvironment } from './providers/detect.js';
 import { createFileConversationStore } from './infra/conversations.js';
 import { loadConfig } from './infra/config.js';
+import { checkForUpdate } from './infra/update-check.js';
 import { runDoctor } from './commands/doctor.js';
 import { runCost } from './commands/cost.js';
 import { runLogin } from './commands/login.js';
@@ -211,6 +213,30 @@ async function main(): Promise<void> {
       cwd,
       sandbox: 'workspace-write',
       timeoutMs: 120000,
+      checkForUpdate: () => checkForUpdate({ currentVersion: version, now: Date.now() }),
+      updateSelf: async (updateOut) => {
+        try {
+          const result = await execa('npm', ['install', '-g', 'myshell-tools@latest'], {
+            stdio: 'inherit',
+            reject: false,
+          });
+          return result.exitCode === 0;
+        } catch {
+          updateOut.write('Update failed — run: npm install -g myshell-tools@latest\n');
+          return false;
+        }
+      },
+      relaunch: async () => {
+        try {
+          const result = await execa('myshell-tools', process.argv.slice(2), {
+            stdio: 'inherit',
+            reject: false,
+          });
+          return result.exitCode ?? 0;
+        } catch {
+          return 1;
+        }
+      },
     };
 
     await startMenu(menuCtx, out);

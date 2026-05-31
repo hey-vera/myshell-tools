@@ -2,5 +2,5 @@
   "$schema": "https://unpkg.com/knip@5/schema.json",
   "entry": ["test/**/*.test.ts"],
   "project": ["src/**/*.ts"],
-  "ignoreBinaries": ["claude", "codex", "opencode"]
+  "ignoreBinaries": ["claude", "codex", "opencode", "myshell-tools"]
 }

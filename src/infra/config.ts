@@ -20,6 +20,12 @@ export interface AppConfig {
   setAsDefault: boolean;
   /** Active routing mode. Absent → use DEFAULT_POLICY (same as 'balanced'). */
   mode?: 'cost-saver' | 'balanced' | 'quality-first';
+  /**
+   * When true, myshell-tools automatically updates itself at startup when a
+   * newer version is available and relaunches the updated binary.
+   * When absent or false, only a notification banner is shown.
+   */
+  autoUpdate?: boolean;
 }
 
 // ---------------------------------------------------------------------------

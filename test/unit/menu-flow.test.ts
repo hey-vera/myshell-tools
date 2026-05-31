@@ -23,6 +23,7 @@ import { randomUUID } from 'node:crypto';
 
 import { startMenu, defaultAliasHint, parseYesNo } from '../../src/interface/menu.ts';
 import type { MenuContext } from '../../src/interface/menu.ts';
+import type { UpdateCheckResult } from '../../src/infra/update-check.ts';
 import type { OutputSink } from '../../src/interface/render.ts';
 import type { ConversationMeta, ConversationStore } from '../../src/infra/conversation-store.ts';
 import type {
@@ -314,6 +315,12 @@ function makeCtx(
     // Inject no-op fakes so no real npm/claude/codex subprocesses are spawned
     installProvider: async () => true,
     login: async () => 0,
+    // Inject a no-op update check so no real npm registry requests are made
+    checkForUpdate: async (): Promise<UpdateCheckResult> => ({
+      current: '2.0.0',
+      latest: null,
+      updateAvailable: false,
+    }),
     ...overrides,
   };
 }
@@ -875,6 +882,12 @@ describe('startMenu — first-run welcome: install prompt for missing provider',
       login: async () => 0,
       // Inject fake detectEnvironment so post-onboarding re-detect never spawns
       detectEnvironment: async () => resolvedPostOnboardEnv,
+      // Inject a no-op update check so no real npm registry requests are made
+      checkForUpdate: async (): Promise<UpdateCheckResult> => ({
+        current: '2.0.0',
+        latest: null,
+        updateAvailable: false,
+      }),
     };
   }
 
@@ -885,7 +898,8 @@ describe('startMenu — first-run welcome: install prompt for missing provider',
     // codex missing sign-in prompt → none (codex is authed in FAKE_ENV_CLAUDE_MISSING)
     // mode/continue → '' (Enter)
     // default shell → n
-    const ctx = makeFirstRunCtx(['n', 'n', '', 'n']);
+    // auto-update → n
+    const ctx = makeFirstRunCtx(['n', 'n', '', 'n', 'n']);
 
     await assert.doesNotReject(
       () => startMenu(ctx, sink),
@@ -895,7 +909,7 @@ describe('startMenu — first-run welcome: install prompt for missing provider',
 
   it('shows the install prompt for the missing provider', async () => {
     const sink = makeSink();
-    const ctx = makeFirstRunCtx(['n', 'n', '', 'n']);
+    const ctx = makeFirstRunCtx(['n', 'n', '', 'n', 'n']);
 
     await startMenu(ctx, sink);
 
@@ -907,7 +921,7 @@ describe('startMenu — first-run welcome: install prompt for missing provider',
 
   it('shows the package name in the install prompt', async () => {
     const sink = makeSink();
-    const ctx = makeFirstRunCtx(['n', 'n', '', 'n']);
+    const ctx = makeFirstRunCtx(['n', 'n', '', 'n', 'n']);
 
     await startMenu(ctx, sink);
 
@@ -919,7 +933,7 @@ describe('startMenu — first-run welcome: install prompt for missing provider',
 
   it('shows skip message with manual command when user answers n', async () => {
     const sink = makeSink();
-    const ctx = makeFirstRunCtx(['n', 'n', '', 'n']);
+    const ctx = makeFirstRunCtx(['n', 'n', '', 'n', 'n']);
 
     await startMenu(ctx, sink);
 
@@ -931,7 +945,7 @@ describe('startMenu — first-run welcome: install prompt for missing provider',
 
   it('does NOT show codex install prompt when codex is installed', async () => {
     const sink = makeSink();
-    const ctx = makeFirstRunCtx(['n', 'n', '', 'n']);
+    const ctx = makeFirstRunCtx(['n', 'n', '', 'n', 'n']);
 
     await startMenu(ctx, sink);
 
@@ -945,7 +959,7 @@ describe('startMenu — first-run welcome: install prompt for missing provider',
   it('proceeds to the menu after install prompts are answered', async () => {
     const sink = makeSink();
     // After welcome: we land on the main menu and quit
-    const ctx = makeFirstRunCtx(['n', 'n', '', 'n', 'q']);
+    const ctx = makeFirstRunCtx(['n', 'n', '', 'n', 'n', 'q']);
 
     await assert.doesNotReject(
       () => startMenu(ctx, sink),
@@ -971,7 +985,7 @@ describe('startMenu — first-run welcome: install prompt for missing provider',
 
   it('does not contain digit-% literals in welcome output (Honesty Contract)', async () => {
     const sink = makeSink();
-    const ctx = makeFirstRunCtx(['n', 'n', '', 'n']);
+    const ctx = makeFirstRunCtx(['n', 'n', '', 'n', 'n']);
 
     await startMenu(ctx, sink);
 
@@ -1019,8 +1033,8 @@ describe('startMenu — first-run welcome: install prompt for missing provider',
 
     // No install prompts (both installed); opencode optional prompt → n
     // Sign-in prompts for both → answer n to avoid spawn
-    // Then mode/continue → '' (Enter); default shell → n
-    const ctx = makeFirstRunCtx(['n', 'n', 'n', '', 'n'], envBothUnauthenticated);
+    // Then mode/continue → '' (Enter); default shell → n; auto-update → n
+    const ctx = makeFirstRunCtx(['n', 'n', 'n', '', 'n', 'n'], envBothUnauthenticated);
 
     await assert.doesNotReject(
       () => startMenu(ctx, sink),
@@ -1121,13 +1135,19 @@ describe('startMenu — first-run welcome: opencode onboarding prompt', () => {
         detectSpy?.();
         return ENV_WITH_OPENCODE;
       },
+      // Inject a no-op update check so no real npm registry requests are made
+      checkForUpdate: async (): Promise<UpdateCheckResult> => ({
+        current: '2.0.0',
+        latest: null,
+        updateAvailable: false,
+      }),
     };
   }
 
   it('shows opencode optional prompt when opencode is not installed', async () => {
     const sink = makeSink();
-    // No install prompts (both installed); opencode prompt → n; mode → ''; set-default → n; quit
-    const ctx = makeOpencodeOnboardCtx(['n', '', 'n', 'q']);
+    // No install prompts (both installed); opencode prompt → n; mode → ''; set-default → n; auto-update → n; quit
+    const ctx = makeOpencodeOnboardCtx(['n', '', 'n', 'n', 'q']);
 
     await assert.doesNotReject(
       () => startMenu(ctx, sink),
@@ -1146,7 +1166,7 @@ describe('startMenu — first-run welcome: opencode onboarding prompt', () => {
 
   it('shows (y/N) in the opencode prompt (default NO)', async () => {
     const sink = makeSink();
-    const ctx = makeOpencodeOnboardCtx(['n', '', 'n', 'q']);
+    const ctx = makeOpencodeOnboardCtx(['n', '', 'n', 'n', 'q']);
 
     await startMenu(ctx, sink);
 
@@ -1158,7 +1178,7 @@ describe('startMenu — first-run welcome: opencode onboarding prompt', () => {
 
   it('answering n to opencode prompt skips install — installProvider NOT called with opencode', async () => {
     const installedIds: string[] = [];
-    const ctx = makeOpencodeOnboardCtx(['n', '', 'n', 'q'], (id) => { installedIds.push(id); });
+    const ctx = makeOpencodeOnboardCtx(['n', '', 'n', 'n', 'q'], (id) => { installedIds.push(id); });
     const sink = makeSink();
 
     await startMenu(ctx, sink);
@@ -1171,9 +1191,9 @@ describe('startMenu — first-run welcome: opencode onboarding prompt', () => {
 
   it('answering y to opencode prompt calls installProvider with "opencode"', async () => {
     const installedIds: string[] = [];
-    // 'y' → install opencode; '' → mode/continue; 'n' → set-as-default; 'q' → main menu
+    // 'y' → install opencode; '' → mode/continue; 'n' → set-as-default; 'n' → auto-update; 'q' → main menu
     const ctx = makeOpencodeOnboardCtx(
-      ['y', '', 'n', 'q'],
+      ['y', '', 'n', 'n', 'q'],
       (id) => { installedIds.push(id); },
     );
     const sink = makeSink();
@@ -1191,9 +1211,9 @@ describe('startMenu — first-run welcome: opencode onboarding prompt', () => {
 
   it('answering y triggers re-detect via injected detectEnvironment', async () => {
     let detectCallCount = 0;
-    // 'y' → install opencode; '' → mode; 'n' → set-default; 'q' → quit
+    // 'y' → install opencode; '' → mode; 'n' → set-default; 'n' → auto-update; 'q' → quit
     const ctx = makeOpencodeOnboardCtx(
-      ['y', '', 'n', 'q'],
+      ['y', '', 'n', 'n', 'q'],
       undefined,
       () => { detectCallCount += 1; },
     );
@@ -1211,10 +1231,10 @@ describe('startMenu — first-run welcome: opencode onboarding prompt', () => {
 
   it('no opencode sign-in prompt during onboarding (opencode is auth-when-installed)', async () => {
     const sink = makeSink();
-    // 'y' → install opencode; '' → mode; 'n' → set-default; 'q' → quit
+    // 'y' → install opencode; '' → mode; 'n' → set-default; 'n' → auto-update; 'q' → quit
     // detectEnvironment returns ENV_WITH_OPENCODE (authenticated: true)
     // So after install, no sign-in prompt should appear for opencode
-    const ctx = makeOpencodeOnboardCtx(['y', '', 'n', 'q']);
+    const ctx = makeOpencodeOnboardCtx(['y', '', 'n', 'n', 'q']);
 
     await assert.doesNotReject(
       () => startMenu(ctx, sink),
@@ -1249,11 +1269,17 @@ describe('startMenu — first-run welcome: opencode onboarding prompt', () => {
       cwd: dir,
       sandbox: 'workspace-write',
       timeoutMs: 5_000,
-      // No opencode prompt → mode/continue; set-as-default; quit main menu
-      readLine: makeScriptedReader(['', 'n', 'q']),
+      // No opencode prompt → mode/continue; set-as-default; auto-update; quit main menu
+      readLine: makeScriptedReader(['', 'n', 'n', 'q']),
       installProvider: async () => true,
       login: async () => 0,
       detectEnvironment: async () => ENV_WITH_OPENCODE,
+      // Inject a no-op update check so no real npm registry requests are made
+      checkForUpdate: async (): Promise<UpdateCheckResult> => ({
+        current: '2.0.0',
+        latest: null,
+        updateAvailable: false,
+      }),
     };
 
     await assert.doesNotReject(
@@ -1673,6 +1699,12 @@ describe('startMenu — first-run welcome: y to set-as-default writes the shell 
       login: async () => 0,
       // Inject fake detectEnvironment so post-onboarding re-detect never spawns
       detectEnvironment: async () => FAKE_ENV_BOTH_INSTALLED_AUTHED,
+      // Inject a no-op update check so no real npm registry requests are made
+      checkForUpdate: async (): Promise<UpdateCheckResult> => ({
+        current: '2.0.0',
+        latest: null,
+        updateAvailable: false,
+      }),
       // tempHome is set via process.env.HOME override below
     };
   }
@@ -1726,8 +1758,8 @@ describe('startMenu — first-run welcome: y to set-as-default writes the shell 
     await withTempHome(tempHome, async () => {
       const sink = makeSink();
       // FAKE_ENV has both providers installed+authed → no install/login prompts.
-      // Welcome flow: n (skip opencode) → Enter (skip customize) → y (set as default) → q (main menu)
-      const ctx = makeInstallCtx(['n', '', 'y', 'q'], tempHome);
+      // Welcome flow: n (skip opencode) → Enter (skip customize) → y (set as default) → n (auto-update) → q (main menu)
+      const ctx = makeInstallCtx(['n', '', 'y', 'n', 'q'], tempHome);
 
       await assert.doesNotReject(
         () => startMenu(ctx, sink),
@@ -1758,7 +1790,7 @@ describe('startMenu — first-run welcome: y to set-as-default writes the shell 
 
     await withTempHome(tempHome, async () => {
       const sink = makeSink();
-      const ctx = makeInstallCtx(['n', '', 'y', 'q'], tempHome);
+      const ctx = makeInstallCtx(['n', '', 'y', 'n', 'q'], tempHome);
 
       await startMenu(ctx, sink);
 
@@ -1779,7 +1811,7 @@ describe('startMenu — first-run welcome: y to set-as-default writes the shell 
 
     await withTempHome(tempHome, async () => {
       const sink = makeSink();
-      const ctx = makeInstallCtx(['n', '', 'n', 'q'], tempHome);
+      const ctx = makeInstallCtx(['n', '', 'n', 'n', 'q'], tempHome);
 
       await startMenu(ctx, sink);
 
@@ -1901,11 +1933,17 @@ describe('startMenu — first-run: post-onboarding env refresh (BUG 1)', () => {
       cwd: dir,
       sandbox: 'workspace-write',
       timeoutMs: 5_000,
-      readLine: makeScriptedReader(['y', 'n', '', 'n', 'q']),
+      readLine: makeScriptedReader(['y', 'n', '', 'n', 'n', 'q']),
       installProvider: async () => true,
       login: async () => 0,
       // detectEnvironment returns FRESH_ENV — simulates successful post-login detection
       detectEnvironment: async () => FRESH_ENV,
+      // Inject a no-op update check so no real npm registry requests are made
+      checkForUpdate: async (): Promise<UpdateCheckResult> => ({
+        current: '2.0.0',
+        latest: null,
+        updateAvailable: false,
+      }),
     };
 
     const sink = makeSink();
@@ -1946,14 +1984,20 @@ describe('startMenu — first-run: post-onboarding env refresh (BUG 1)', () => {
       cwd: dir,
       sandbox: 'workspace-write',
       timeoutMs: 5_000,
-      // 'y' → install codex; 'n' → skip opencode; '' → mode/continue; 'n' → set-as-default; 'q' → main menu quit
-      readLine: makeScriptedReader(['y', 'n', '', 'n', 'q']),
+      // 'y' → install codex; 'n' → skip opencode; '' → mode/continue; 'n' → set-as-default; 'n' → auto-update; 'q' → main menu quit
+      readLine: makeScriptedReader(['y', 'n', '', 'n', 'n', 'q']),
       installProvider: async () => true,
       login: async () => 0,
       detectEnvironment: async () => {
         detectCalls += 1;
         return FRESH_ENV;
       },
+      // Inject a no-op update check so no real npm registry requests are made
+      checkForUpdate: async (): Promise<UpdateCheckResult> => ({
+        current: '2.0.0',
+        latest: null,
+        updateAvailable: false,
+      }),
     };
 
     const sink = makeSink();
@@ -2297,6 +2341,532 @@ describe('startMenu — [o] opencode discoverability in Auth section', () => {
     assert.ok(
       sink.buf.toLowerCase().includes('install failed') || sink.buf.toLowerCase().includes('run it yourself'),
       'failure note must appear when install fails',
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// FLOW 11: Update notifier — banner, [u] key, auto-update-at-launch
+// ---------------------------------------------------------------------------
+
+describe('startMenu — update notifier: banner, [u], auto-update', () => {
+  /** Build a ctx with an update available (or not). */
+  function makeUpdateCtx(
+    overrides: Partial<MenuContext> & { readLine: () => Promise<string | null> },
+    updateAvailable: boolean,
+    latest: string,
+  ): MenuContext {
+    const updateResult: UpdateCheckResult = updateAvailable
+      ? { current: '2.0.0', latest, updateAvailable: true }
+      : { current: '2.0.0', latest: null, updateAvailable: false };
+
+    return makeCtx({
+      checkForUpdate: async () => updateResult,
+      ...overrides,
+    });
+  }
+
+  // ---- Update banner visibility --------------------------------------------
+
+  it('banner appears when update is available', async () => {
+    const sink = makeSink();
+    const ctx = makeUpdateCtx(
+      { readLine: makeScriptedReader(['q']) },
+      true,
+      '3.0.0',
+    );
+
+    await startMenu(ctx, sink);
+
+    assert.ok(
+      sink.buf.includes('▲ Update available'),
+      'update banner must appear when updateAvailable is true',
+    );
+    assert.ok(
+      sink.buf.includes('2.0.0') && sink.buf.includes('3.0.0'),
+      'banner must show current → latest versions',
+    );
+    assert.ok(
+      sink.buf.includes('press u'),
+      'banner must include "(press u)" hint',
+    );
+  });
+
+  it('banner does NOT appear when no update is available', async () => {
+    const sink = makeSink();
+    const ctx = makeUpdateCtx(
+      { readLine: makeScriptedReader(['q']) },
+      false,
+      '1.0.0',
+    );
+
+    await startMenu(ctx, sink);
+
+    assert.ok(
+      !sink.buf.includes('▲ Update available'),
+      'update banner must NOT appear when no update is available',
+    );
+  });
+
+  // ---- [u] entry visibility -----------------------------------------------
+
+  it('[u] Update now entry is shown when update is available', async () => {
+    const sink = makeSink();
+    const ctx = makeUpdateCtx(
+      { readLine: makeScriptedReader(['q']) },
+      true,
+      '3.0.0',
+    );
+
+    await startMenu(ctx, sink);
+
+    assert.ok(
+      sink.buf.includes('[u]'),
+      '[u] entry must appear in menu when update is available',
+    );
+    assert.ok(
+      sink.buf.toLowerCase().includes('update now') || sink.buf.toLowerCase().includes('update'),
+      'menu must show an update option label',
+    );
+  });
+
+  it('[u] Update now entry is NOT shown when no update is available', async () => {
+    const sink = makeSink();
+    const ctx = makeUpdateCtx(
+      { readLine: makeScriptedReader(['q']) },
+      false,
+      '1.0.0',
+    );
+
+    await startMenu(ctx, sink);
+
+    // The [u] key should not appear in the menu (it is only shown when updateAvailable)
+    // Check specifically for the Options section [u] entry — [u] must not be in menu entries
+    assert.ok(
+      !sink.buf.includes('[u]'),
+      '[u] entry must NOT appear when no update is available',
+    );
+  });
+
+  // ---- Pressing [u] calls updateSelf --------------------------------------
+
+  it('pressing u calls the injected updateSelf fake', async () => {
+    let updateSelfCalled = false;
+
+    const sink = makeSink();
+    const ctx = makeUpdateCtx(
+      {
+        readLine: makeScriptedReader(['u', 'q']),
+        updateSelf: async (_out) => {
+          updateSelfCalled = true;
+          return true;
+        },
+      },
+      true,
+      '3.0.0',
+    );
+
+    await assert.doesNotReject(
+      () => startMenu(ctx, sink),
+      'pressing u should not throw',
+    );
+
+    assert.equal(updateSelfCalled, true, 'updateSelf must be called when u is pressed');
+  });
+
+  it('pressing u on success prints success message', async () => {
+    const sink = makeSink();
+    const ctx = makeUpdateCtx(
+      {
+        readLine: makeScriptedReader(['u', 'q']),
+        updateSelf: async () => true,
+      },
+      true,
+      '3.0.0',
+    );
+
+    await startMenu(ctx, sink);
+
+    assert.ok(
+      sink.buf.includes('✓ Updated to 3.0.0'),
+      'success message must include the target version',
+    );
+    assert.ok(
+      sink.buf.toLowerCase().includes('restart'),
+      'success message must mention restart',
+    );
+  });
+
+  it('pressing u on failure prints failure note', async () => {
+    const sink = makeSink();
+    const ctx = makeUpdateCtx(
+      {
+        readLine: makeScriptedReader(['u', 'q']),
+        updateSelf: async () => false,
+      },
+      true,
+      '3.0.0',
+    );
+
+    await startMenu(ctx, sink);
+
+    assert.ok(
+      sink.buf.toLowerCase().includes('update failed') || sink.buf.includes('npm install -g'),
+      'failure note must appear when update fails',
+    );
+  });
+
+  it('pressing u does NOT call relaunch (manual path is safe/no-relaunch)', async () => {
+    let relaunchCalled = false;
+
+    const sink = makeSink();
+    const ctx = makeUpdateCtx(
+      {
+        readLine: makeScriptedReader(['u', 'q']),
+        updateSelf: async () => true,
+        relaunch: async () => {
+          relaunchCalled = true;
+          return 0;
+        },
+      },
+      true,
+      '3.0.0',
+    );
+
+    await startMenu(ctx, sink);
+
+    assert.equal(relaunchCalled, false, 'relaunch must NOT be called from the manual [u] path');
+  });
+
+  it('pressing u with no update available is silently ignored', async () => {
+    let updateSelfCalled = false;
+
+    const sink = makeSink();
+    const ctx = makeUpdateCtx(
+      {
+        readLine: makeScriptedReader(['u', 'q']),
+        updateSelf: async () => {
+          updateSelfCalled = true;
+          return true;
+        },
+      },
+      false,  // no update available
+      '1.0.0',
+    );
+
+    await startMenu(ctx, sink);
+
+    assert.equal(updateSelfCalled, false, 'updateSelf must NOT be called when no update is available');
+  });
+
+  // ---- Auto-update at launch ----------------------------------------------
+
+  it('auto-update: calls updateSelf then relaunch when autoUpdate=true and update available', async () => {
+    const calls: string[] = [];
+
+    const clock = makeFakeClock();
+    const store = makeStore(clock);
+    const ledger = makeFakeLedger();
+    const dir = join(tmpdir(), `menu-autoupdate-${randomUUID()}`);
+    const config: AppConfig = { onboarded: true, setAsDefault: false, autoUpdate: true };
+
+    const ctx: MenuContext = {
+      version: '2.0.0',
+      clock,
+      ledger,
+      providers: { claude: makeFakeProvider() },
+      env: FAKE_ENV,
+      store,
+      config,
+      cwd: dir,
+      sandbox: 'workspace-write',
+      timeoutMs: 5_000,
+      readLine: makeScriptedReader([]),  // no input needed — auto-update returns immediately
+      installProvider: async () => true,
+      login: async () => 0,
+      checkForUpdate: async (): Promise<UpdateCheckResult> => ({
+        current: '2.0.0',
+        latest: '3.0.0',
+        updateAvailable: true,
+      }),
+      updateSelf: async (_out) => {
+        calls.push('updateSelf');
+        return true;
+      },
+      relaunch: async () => {
+        calls.push('relaunch');
+        return 0;
+      },
+    };
+
+    const sink = makeSink();
+    await assert.doesNotReject(
+      () => startMenu(ctx, sink),
+      'auto-update at launch must not throw',
+    );
+
+    assert.ok(calls.includes('updateSelf'), 'updateSelf must be called during auto-update');
+    assert.ok(calls.includes('relaunch'), 'relaunch must be called after successful updateSelf');
+    // updateSelf must be called before relaunch
+    assert.ok(
+      calls.indexOf('updateSelf') < calls.indexOf('relaunch'),
+      'updateSelf must be called before relaunch',
+    );
+  });
+
+  it('auto-update: does NOT relaunch when updateSelf fails', async () => {
+    let relaunchCalled = false;
+
+    const clock = makeFakeClock();
+    const store = makeStore(clock);
+    const ledger = makeFakeLedger();
+    const dir = join(tmpdir(), `menu-autoupdate-fail-${randomUUID()}`);
+    const config: AppConfig = { onboarded: true, setAsDefault: false, autoUpdate: true };
+
+    const ctx: MenuContext = {
+      version: '2.0.0',
+      clock,
+      ledger,
+      providers: { claude: makeFakeProvider() },
+      env: FAKE_ENV,
+      store,
+      config,
+      cwd: dir,
+      sandbox: 'workspace-write',
+      timeoutMs: 5_000,
+      readLine: makeScriptedReader(['q']),
+      installProvider: async () => true,
+      login: async () => 0,
+      checkForUpdate: async (): Promise<UpdateCheckResult> => ({
+        current: '2.0.0',
+        latest: '3.0.0',
+        updateAvailable: true,
+      }),
+      updateSelf: async () => false,  // update fails
+      relaunch: async () => {
+        relaunchCalled = true;
+        return 0;
+      },
+    };
+
+    const sink = makeSink();
+    await assert.doesNotReject(
+      () => startMenu(ctx, sink),
+      'failed auto-update must not throw',
+    );
+
+    assert.equal(relaunchCalled, false, 'relaunch must NOT be called when updateSelf fails');
+    // Should continue to menu normally
+    assert.ok(
+      sink.buf.includes('myshell-tools'),
+      'menu must be rendered after failed auto-update',
+    );
+  });
+
+  it('auto-update: does NOT run when autoUpdate is false', async () => {
+    let updateSelfCalled = false;
+
+    const clock = makeFakeClock();
+    const store = makeStore(clock);
+    const ledger = makeFakeLedger();
+    const dir = join(tmpdir(), `menu-no-autoupdate-${randomUUID()}`);
+    const config: AppConfig = { onboarded: true, setAsDefault: false };  // autoUpdate absent = false
+
+    const ctx: MenuContext = {
+      version: '2.0.0',
+      clock,
+      ledger,
+      providers: { claude: makeFakeProvider() },
+      env: FAKE_ENV,
+      store,
+      config,
+      cwd: dir,
+      sandbox: 'workspace-write',
+      timeoutMs: 5_000,
+      readLine: makeScriptedReader(['q']),
+      installProvider: async () => true,
+      login: async () => 0,
+      checkForUpdate: async (): Promise<UpdateCheckResult> => ({
+        current: '2.0.0',
+        latest: '3.0.0',
+        updateAvailable: true,
+      }),
+      updateSelf: async () => {
+        updateSelfCalled = true;
+        return true;
+      },
+    };
+
+    const sink = makeSink();
+    await startMenu(ctx, sink);
+
+    assert.equal(updateSelfCalled, false, 'updateSelf must NOT be called when autoUpdate is not true');
+    // Banner should still appear
+    assert.ok(
+      sink.buf.includes('▲ Update available'),
+      'update banner must still appear even when autoUpdate is off',
+    );
+  });
+
+  it('auto-update: prints the auto-update message before running', async () => {
+    const clock = makeFakeClock();
+    const store = makeStore(clock);
+    const ledger = makeFakeLedger();
+    const dir = join(tmpdir(), `menu-autoupdate-msg-${randomUUID()}`);
+    const config: AppConfig = { onboarded: true, setAsDefault: false, autoUpdate: true };
+
+    const ctx: MenuContext = {
+      version: '2.0.0',
+      clock,
+      ledger,
+      providers: { claude: makeFakeProvider() },
+      env: FAKE_ENV,
+      store,
+      config,
+      cwd: dir,
+      sandbox: 'workspace-write',
+      timeoutMs: 5_000,
+      readLine: makeScriptedReader([]),
+      installProvider: async () => true,
+      login: async () => 0,
+      checkForUpdate: async (): Promise<UpdateCheckResult> => ({
+        current: '2.0.0',
+        latest: '3.0.0',
+        updateAvailable: true,
+      }),
+      updateSelf: async () => true,
+      relaunch: async () => 0,
+    };
+
+    const sink = makeSink();
+    await startMenu(ctx, sink);
+
+    assert.ok(
+      sink.buf.includes('▲ Auto-updating'),
+      'must print auto-update message before running the update',
+    );
+    assert.ok(
+      sink.buf.includes('2.0.0') && sink.buf.includes('3.0.0'),
+      'auto-update message must include current → latest versions',
+    );
+  });
+
+  // ---- Settings toggle for autoUpdate -------------------------------------
+
+  it('[s] settings shows Auto-update toggle line', async () => {
+    const sink = makeSink();
+    const ctx = makeCtx({
+      readLine: makeScriptedReader(['s', '', 'q']),  // enter settings → Enter (back) → quit
+    });
+
+    await startMenu(ctx, sink);
+
+    assert.ok(
+      sink.buf.includes('[3]') && sink.buf.toLowerCase().includes('auto-update'),
+      'settings must show [3] Auto-update toggle',
+    );
+  });
+
+  it('[s] → [3] toggles autoUpdate from off to on', async () => {
+    const sink = makeSink();
+    const dir = join(tmpdir(), `menu-autoupdate-toggle-${randomUUID()}`);
+
+    // Override saveConfig to capture what is saved
+    // We test that "Auto-update: on" appears in the output after toggling
+    const ctx = makeCtx({
+      cwd: dir,
+      readLine: makeScriptedReader(['s', '3', 'q']),  // enter settings → [3] toggle → quit
+    });
+
+    await assert.doesNotReject(
+      () => startMenu(ctx, sink),
+      'toggling auto-update should not throw',
+    );
+
+    // After toggling from off (default) → on, the message "Auto-update: on" must appear
+    assert.ok(
+      sink.buf.includes('Auto-update: on') || sink.buf.includes('auto-update'),
+      'toggling must report the new auto-update state',
+    );
+  });
+
+  // ---- Wizard auto-update prompt ------------------------------------------
+
+  it('welcome wizard shows auto-update prompt after set-as-default', async () => {
+    // Build a first-run ctx inline (makeFirstRunCtx is scoped to another describe block)
+    const clock = makeFakeClock();
+    const store = makeStore(clock);
+    const ledger = makeFakeLedger();
+    const dir = join(tmpdir(), `menu-wizard-au-${randomUUID()}`);
+    const config: AppConfig = { onboarded: false, setAsDefault: false };
+    // Both providers installed+authed: no install prompts; opencode prompt → n; mode → ''; set-default → n; auto-update → n
+    const ctx: MenuContext = {
+      version: '2.0.0',
+      clock,
+      ledger,
+      providers: { claude: makeFakeProvider() },
+      env: FAKE_ENV,
+      store,
+      config,
+      cwd: dir,
+      sandbox: 'workspace-write',
+      timeoutMs: 5_000,
+      readLine: makeScriptedReader(['n', 'n', '', 'n', 'n']),
+      installProvider: async () => true,
+      login: async () => 0,
+      detectEnvironment: async () => FAKE_ENV,
+      checkForUpdate: async (): Promise<UpdateCheckResult> => ({
+        current: '2.0.0',
+        latest: null,
+        updateAvailable: false,
+      }),
+    };
+
+    const sink = makeSink();
+    await startMenu(ctx, sink);
+
+    assert.ok(
+      sink.buf.toLowerCase().includes('auto') ||
+        sink.buf.toLowerCase().includes('up to date'),
+      'wizard must show auto-update prompt',
+    );
+  });
+
+  it('welcome wizard auto-update prompt uses (y/N) — default NO', async () => {
+    const clock = makeFakeClock();
+    const store = makeStore(clock);
+    const ledger = makeFakeLedger();
+    const dir = join(tmpdir(), `menu-wizard-au2-${randomUUID()}`);
+    const config: AppConfig = { onboarded: false, setAsDefault: false };
+    const ctx: MenuContext = {
+      version: '2.0.0',
+      clock,
+      ledger,
+      providers: { claude: makeFakeProvider() },
+      env: FAKE_ENV,
+      store,
+      config,
+      cwd: dir,
+      sandbox: 'workspace-write',
+      timeoutMs: 5_000,
+      readLine: makeScriptedReader(['n', 'n', '', 'n', 'n']),
+      installProvider: async () => true,
+      login: async () => 0,
+      detectEnvironment: async () => FAKE_ENV,
+      checkForUpdate: async (): Promise<UpdateCheckResult> => ({
+        current: '2.0.0',
+        latest: null,
+        updateAvailable: false,
+      }),
+    };
+
+    const sink = makeSink();
+    await startMenu(ctx, sink);
+
+    // The auto-update prompt must use (y/N) convention — Enter → no
+    assert.ok(
+      sink.buf.includes('(y/N)'),
+      'auto-update prompt must use (y/N) — default is NO',
     );
   });
 });
