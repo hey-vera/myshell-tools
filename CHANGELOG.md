@@ -10,6 +10,12 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 - Live cross-vendor review demonstration (requires an authenticated Codex CLI).
 - Cross-OS CI execution (requires a public remote).
 
+## [3.2.2]
+
+### Fixed (the real cause of the first-paste failure)
+- **The Claude token paste now reaches `claude setup-token`'s prompt intact on the first try — for the right reason this time.** 3.2.1 hardened how a *captured* token string is cleaned up (trim, de-quote, rejoin soft-wraps), but the bytes were being lost *before* that code ever ran: the menu opens a `readline` over `process.stdin` (raw/flowing mode) for its entire lifetime, and when `claude setup-token` is spawned with inherited stdio, our readline and the child were **both draining the same TTY**. The user's first paste got split between the two consumers, so claude's code prompt saw garbage → error → the retry happened to land clean. That byte-race also explains tokens that "didn't save" (our own capture got a mangled value, so extraction found nothing to persist). Fix: the readline now **releases stdin** (`rl.pause()` + drop raw mode + pause the stream) for the entire duration of any inherited-stdio child — `claude setup-token`, the browser flow, the `--device-auth` flow — and takes it back afterward, so the child is the sole reader of the terminal. Wired through every login entry point (onboarding wizard, `[j]` Login Claude, and the in-chat auth-failure retry). The sanitizing from 3.2.1 stays as a second line of defence.
+  - **Verification:** the release/reacquire logic (`LineReader.suspend`/`resume`) is unit-tested over an injected fake readline + stdin — it pauses readline, drops raw mode only on a TTY, pauses then resumes the stream in the correct order, and never throws. The one thing only a live terminal can exercise — the OS actually delivering the pasted bytes to claude's prompt instead of ours — is environment-specific and can't run in the build sandbox; verify with a real `claude setup-token` paste and report back.
+
 ## [3.2.1]
 
 ### Fixed (first-run friction)

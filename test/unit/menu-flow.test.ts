@@ -22,7 +22,7 @@ import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 
 import { EventEmitter } from 'node:events';
-import { startMenu, defaultAliasHint, parseYesNo, interpretYesNoKey, readSingleKey, confirmViaKey, autoUpdateEnabled } from '../../src/interface/menu.ts';
+import { startMenu, defaultAliasHint, parseYesNo, interpretYesNoKey, readSingleKey, confirmViaKey, autoUpdateEnabled, createLineReader } from '../../src/interface/menu.ts';
 import type { MenuContext, KeyInputStream } from '../../src/interface/menu.ts';
 import type { UpdateCheckResult } from '../../src/infra/update-check.ts';
 import type { OutputSink } from '../../src/interface/render.ts';
@@ -937,6 +937,104 @@ describe('confirmViaKey — single-key yes/no over a fake stream', () => {
     const out = makeSink();
     await confirmViaKey(out, true, asStream(new FakeKeyStream(['n'])));
     assert.ok(out.buf.includes('n'), `expected the chosen letter echoed, got ${JSON.stringify(out.buf)}`);
+  });
+});
+
+/**
+ * Minimal readline.Interface stand-in: records pause/resume/close and accepts
+ * the line/close listeners createLineReader attaches at construction.
+ */
+class FakeReadline {
+  events: string[] = [];
+  on(_event: string, _fn: (...a: never[]) => void): this {
+    return this;
+  }
+  pause(): void {
+    this.events.push('rl.pause');
+  }
+  resume(): void {
+    this.events.push('rl.resume');
+  }
+  close(): void {
+    this.events.push('rl.close');
+  }
+}
+
+/** Records every stdin control call createLineReader's suspend/resume makes. */
+class FakeStdin {
+  isTTY: boolean;
+  isRaw = false;
+  calls: string[] = [];
+  constructor(isTTY: boolean) {
+    this.isTTY = isTTY;
+  }
+  setRawMode(mode: boolean): void {
+    this.isRaw = mode;
+    this.calls.push(`setRawMode:${mode}`);
+  }
+  pause(): void {
+    this.calls.push('pause');
+  }
+  resume(): void {
+    this.calls.push('resume');
+  }
+  // Unused by suspend/resume but required by the KeyInputStream surface.
+  on(): this {
+    return this;
+  }
+  removeListener(): this {
+    return this;
+  }
+  removeAllListeners(): this {
+    return this;
+  }
+  listeners(): Array<(...a: never[]) => void> {
+    return [];
+  }
+}
+
+describe('createLineReader — suspend/resume release stdin for an inherited child', () => {
+  // The byte-race fix: while `claude setup-token` owns the terminal, our
+  // readline must stop reading stdin. These prove the exact sequence.
+  const mkReader = (isTTY: boolean): { reader: ReturnType<typeof createLineReader>; rl: FakeReadline; stdin: FakeStdin } => {
+    const rl = new FakeReadline();
+    const stdin = new FakeStdin(isTTY);
+    const reader = createLineReader(
+      rl as unknown as Parameters<typeof createLineReader>[0],
+      stdin as unknown as KeyInputStream,
+    );
+    return { reader, rl, stdin };
+  };
+
+  it('suspend() on a TTY: pauses readline, drops raw mode, pauses stdin', () => {
+    const { reader, rl, stdin } = mkReader(true);
+    reader.suspend();
+    assert.deepEqual(rl.events, ['rl.pause']);
+    assert.deepEqual(stdin.calls, ['setRawMode:false', 'pause']);
+  });
+
+  it('resume() takes stdin back: resumes stdin then readline', () => {
+    const { reader, rl, stdin } = mkReader(true);
+    reader.suspend();
+    rl.events.length = 0;
+    stdin.calls.length = 0;
+    reader.resume();
+    assert.deepEqual(stdin.calls, ['resume']);
+    assert.deepEqual(rl.events, ['rl.resume']);
+  });
+
+  it('suspend() off a TTY: still pauses, but never toggles raw mode', () => {
+    const { reader, stdin } = mkReader(false);
+    reader.suspend();
+    assert.deepEqual(stdin.calls, ['pause'], 'no setRawMode when not a TTY');
+  });
+
+  it('suspend()/resume() never throw', () => {
+    const { reader } = mkReader(true);
+    assert.doesNotThrow(() => {
+      reader.suspend();
+      reader.resume();
+    });
   });
 });
 

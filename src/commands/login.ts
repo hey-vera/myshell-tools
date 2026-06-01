@@ -176,11 +176,22 @@ async function runCodeMethodForProvider(
   id: ProviderId,
   readLine?: () => Promise<string | null>,
   drainExtraLines?: () => string[],
+  suspendStdin?: () => () => void,
 ): Promise<void> {
   const { bin, args, guidance } = LOGIN_CODE_COMMAND[id];
   out.write(bold(`\nSigning in to ${id} — code method (no localhost needed).\n`, out.color));
   out.write(dim(guidance + '\n', out.color));
-  const result = await execa(bin, [...args], { stdin: 'inherit', stdout: 'inherit', stderr: 'inherit', reject: false });
+  // Release our readline's grip on stdin so the provider CLI (e.g. claude
+  // setup-token, which prompts for a pasted auth code) is the SOLE reader of
+  // the terminal. Without this, our readline and the child race for the same
+  // bytes and the first paste lands split/garbled on the child's prompt.
+  const resumeStdin = suspendStdin?.();
+  let result;
+  try {
+    result = await execa(bin, [...args], { stdin: 'inherit', stdout: 'inherit', stderr: 'inherit', reject: false });
+  } finally {
+    resumeStdin?.();
+  }
 
   if (result.exitCode === 0) {
     if (id === 'claude') {
@@ -225,6 +236,7 @@ export async function runLogin(
     method?: LoginMethod;
     readLine?: () => Promise<string | null>;
     drainExtraLines?: () => string[];
+    suspendStdin?: () => () => void;
   },
 ): Promise<number> {
   let targets: ProviderId[];
@@ -252,12 +264,18 @@ export async function runLogin(
     if (method === 'code') {
       // stdio:'inherit' hands the terminal to the provider CLI so its OAuth /
       // device / paste flow runs in place.
-      await runCodeMethodForProvider(out, id, opts?.readLine, opts?.drainExtraLines);
+      await runCodeMethodForProvider(out, id, opts?.readLine, opts?.drainExtraLines, opts?.suspendStdin);
     } else {
       // Browser method
       const { bin, args } = LOGIN_COMMAND[id];
       out.write(bold(`\nSigning in to ${id} — a browser window may open…\n`, out.color));
-      const result = await execa(bin, [...args], { stdin: 'inherit', stdout: 'inherit', stderr: 'inherit', reject: false });
+      const resumeStdin = opts?.suspendStdin?.();
+      let result;
+      try {
+        result = await execa(bin, [...args], { stdin: 'inherit', stdout: 'inherit', stderr: 'inherit', reject: false });
+      } finally {
+        resumeStdin?.();
+      }
 
       if (result.exitCode === 0) {
         out.write(green(`✓ ${id} sign-in complete.\n`, out.color));
@@ -274,7 +292,7 @@ export async function runLogin(
           );
           const ans = await opts.readLine();
           if (shouldRetryWithCode(ans)) {
-            await runCodeMethodForProvider(out, id, opts.readLine, opts.drainExtraLines);
+            await runCodeMethodForProvider(out, id, opts.readLine, opts.drainExtraLines, opts.suspendStdin);
           } else {
             out.write(
               dim(

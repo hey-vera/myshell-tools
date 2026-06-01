@@ -89,6 +89,7 @@ export interface MenuContext {
       method?: LoginMethod;
       readLine?: () => Promise<string | null>;
       drainExtraLines?: () => string[];
+      suspendStdin?: () => () => void;
     },
   ) => Promise<number>;
   /**
@@ -522,6 +523,16 @@ interface LineReader {
    * blocking on lines that may never arrive.
    */
   drainBufferedNow(): string[];
+  /**
+   * Stop consuming `process.stdin` so an inherited-stdio child process (e.g.
+   * `claude setup-token`) becomes the SOLE reader of the terminal. Without this,
+   * the readline interface and the child race for the same bytes and a pasted
+   * token lands split/garbled on the child's prompt (the classic "first paste
+   * fails, second works" bug). Idempotent.
+   */
+  suspend(): void;
+  /** Resume consuming stdin after a {@link suspend}. Idempotent. */
+  resume(): void;
   /** Close the underlying readline interface (idempotent). */
   close(): void;
 }
@@ -533,7 +544,10 @@ interface LineReader {
  * pipe-drain line loss); awaiters that arrive before a line block on a queued
  * resolver. On `close`, every pending and future awaiter resolves to `null`.
  */
-function createLineReader(rl: readline.Interface): LineReader {
+export function createLineReader(
+  rl: readline.Interface,
+  input: KeyInputStream = process.stdin as unknown as KeyInputStream,
+): LineReader {
   // Lines received but not yet consumed by a nextLine() caller.
   const buffered: string[] = [];
   // nextLine() callers waiting for a line that hasn't arrived yet.
@@ -578,6 +592,40 @@ function createLineReader(rl: readline.Interface): LineReader {
       // Hand back everything currently buffered and clear it in one shot.
       return buffered.splice(0, buffered.length);
     },
+    suspend(): void {
+      // Pause readline AND hand the raw TTY back to cooked mode + stop Node
+      // reading, so an inherited-stdio child owns stdin alone. Best-effort:
+      // every step is guarded so a non-TTY / test stream never throws.
+      try {
+        rl.pause();
+      } catch {
+        /* readline may already be paused/closed */
+      }
+      try {
+        if (input.isTTY === true && typeof input.setRawMode === 'function') input.setRawMode(false);
+      } catch {
+        /* setRawMode unsupported on this platform */
+      }
+      try {
+        input.pause();
+      } catch {
+        /* already paused */
+      }
+    },
+    resume(): void {
+      // Take stdin back. rl.resume() re-establishes raw/keypress handling in
+      // terminal mode, so we only need to un-pause the stream and the reader.
+      try {
+        input.resume();
+      } catch {
+        /* already flowing */
+      }
+      try {
+        rl.resume();
+      } catch {
+        /* readline may be closed */
+      }
+    },
     close(): void {
       rl.close();
     },
@@ -599,7 +647,9 @@ type Confirm = (defaultYes: boolean) => Promise<boolean>;
  */
 export interface KeyInputStream {
   isRaw?: boolean;
+  isTTY?: boolean;
   setRawMode?(mode: boolean): void;
+  pause(): void;
   resume(): void;
   on(event: string, listener: (...args: never[]) => void): unknown;
   removeListener(event: string, listener: (...args: never[]) => void): unknown;
@@ -731,6 +781,7 @@ async function runWelcome(
   readLine: () => Promise<string | null>,
   confirm: Confirm,
   drainExtraLines: (() => string[]) | undefined,
+  suspendStdin: (() => () => void) | undefined,
   mutableConfig: AppConfig,
   installProviderFn: (id: ProviderId, out: OutputSink) => Promise<boolean>,
   loginFn: (
@@ -740,6 +791,7 @@ async function runWelcome(
       method?: LoginMethod;
       readLine?: () => Promise<string | null>;
       drainExtraLines?: () => string[];
+      suspendStdin?: () => () => void;
     },
   ) => Promise<number>,
   detectEnvironmentFn: () => Promise<EnvironmentStatus>,
@@ -808,8 +860,13 @@ async function runWelcome(
       // loginFn auto-detects the right method (code in containers/SSH where the
       // localhost OAuth callback can't be reached, browser on a desktop).
       // Pass readLine so the claude token-paste prompt shares the menu's reader,
-      // and drainExtraLines so a wrap-split token paste is reassembled.
-      await loginFn(out, id, { readLine, ...(drainExtraLines !== undefined ? { drainExtraLines } : {}) });
+      // drainExtraLines so a wrap-split token paste is reassembled, and
+      // suspendStdin so claude setup-token owns the terminal alone (no byte race).
+      await loginFn(out, id, {
+        readLine,
+        ...(drainExtraLines !== undefined ? { drainExtraLines } : {}),
+        ...(suspendStdin !== undefined ? { suspendStdin } : {}),
+      });
     }
   }
 
@@ -1143,9 +1200,14 @@ async function runImportNative(
   loginFn: (
     out: OutputSink,
     providerArg?: string,
-    opts?: { method?: LoginMethod; readLine?: () => Promise<string | null> },
+    opts?: {
+      method?: LoginMethod;
+      readLine?: () => Promise<string | null>;
+      suspendStdin?: () => () => void;
+    },
   ) => Promise<number>,
   detectEnvironmentFn: () => Promise<EnvironmentStatus>,
+  suspendStdin?: () => () => void,
 ): Promise<'menu' | 'exit'> {
   out.write('\nImport from:\n  [1] Claude\n  [2] Codex\n\n> ');
   const choice = await readLine();
@@ -1199,7 +1261,7 @@ async function runImportNative(
 
   // Enter the chat loop for the newly imported conversation.
   // Return value propagates the 'exit' signal to the caller (startMenu).
-  return runChatLoop(ctx, mutableCtx, id, out, readLine, loginFn, detectEnvironmentFn);
+  return runChatLoop(ctx, mutableCtx, id, out, readLine, loginFn, detectEnvironmentFn, suspendStdin);
 }
 
 // ---------------------------------------------------------------------------
@@ -1346,9 +1408,14 @@ async function runChatLoop(
   loginFn: (
     out: OutputSink,
     providerArg?: string,
-    opts?: { method?: LoginMethod; readLine?: () => Promise<string | null> },
+    opts?: {
+      method?: LoginMethod;
+      readLine?: () => Promise<string | null>;
+      suspendStdin?: () => () => void;
+    },
   ) => Promise<number>,
   detectEnvironmentFn: () => Promise<EnvironmentStatus>,
+  suspendStdin?: () => () => void,
 ): Promise<'menu' | 'exit'> {
   // Print a short recap of the conversation (last entry) if history exists
   const history = await ctx.store.load(convId);
@@ -1570,7 +1637,10 @@ async function runChatLoop(
         out.write(`Sign in to ${failingProvider} now and retry? (Y/n) `);
         const ans = await readLine();
         if (parseYesNo(ans, true)) {
-          await loginFn(out, failingProvider, { readLine });
+          await loginFn(out, failingProvider, {
+            readLine,
+            ...(suspendStdin !== undefined ? { suspendStdin } : {}),
+          });
           // Bug 5 fix: re-detect with the freshly-authenticated env so the retry
           // deps reflect the now-signed-in provider (not the stale pre-login state).
           mutableCtx.env = await detectEnvironmentFn();
@@ -1781,6 +1851,17 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
   const readerForDrain = lineReader;
   const drainExtraLines: (() => string[]) | undefined =
     readerForDrain !== null ? () => readerForDrain.drainBufferedNow() : undefined;
+  // Lets the login flow release stdin while an inherited-stdio child (e.g.
+  // `claude setup-token`) owns the terminal, then take it back. Returns the
+  // resume callback. Only wired for the real reader — the injected/test path
+  // shares no stdin, so there is nothing to suspend.
+  const suspendStdin: (() => () => void) | undefined =
+    readerForDrain !== null
+      ? () => {
+          readerForDrain.suspend();
+          return () => readerForDrain.resume();
+        }
+      : undefined;
 
   // Mutable local copy of config & env — updated as the user changes settings /
   // re-authenticates without mutating the immutable ctx parameter.
@@ -1792,7 +1873,7 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
   try {
     // ---- A. First-run welcome -----------------------------------------------
     if (!mutableCtx.config.onboarded) {
-      mutableCtx.config = await runWelcome(ctx, out, readLine, confirm, drainExtraLines, mutableCtx.config, installProviderFn, loginFn, detectEnvironmentFn);
+      mutableCtx.config = await runWelcome(ctx, out, readLine, confirm, drainExtraLines, suspendStdin, mutableCtx.config, installProviderFn, loginFn, detectEnvironmentFn);
       // Re-detect after onboarding so the first main screen shows the REAL post-login
       // status (e.g. codex now "ready" if the user signed in during setup).
       mutableCtx.env = await detectEnvironmentFn();
@@ -1880,7 +1961,7 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
         const firstMsg = await readLine();
         if (firstMsg !== null && firstMsg.length > 0) {
           const meta = await ctx.store.create(firstMsg);
-          const chatResult = await runChatLoop(ctx, mutableCtx, meta.id, out, readLine, loginFn, detectEnvironmentFn);
+          const chatResult = await runChatLoop(ctx, mutableCtx, meta.id, out, readLine, loginFn, detectEnvironmentFn, suspendStdin);
           spendDirty = true; // a task may have run — refresh the spend summary
           if (chatResult === 'exit') break;
         }
@@ -1892,7 +1973,7 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
         const all = await ctx.store.list();
         const latest = all[0];
         if (latest !== undefined) {
-          const chatResult = await runChatLoop(ctx, mutableCtx, latest.id, out, readLine, loginFn, detectEnvironmentFn);
+          const chatResult = await runChatLoop(ctx, mutableCtx, latest.id, out, readLine, loginFn, detectEnvironmentFn, suspendStdin);
           spendDirty = true; // a task may have run — refresh the spend summary
           if (chatResult === 'exit') break;
         } else {
@@ -1906,7 +1987,7 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
       if (!Number.isNaN(digit) && digit >= 1 && digit <= 9) {
         const target = metas[digit - 1];
         if (target !== undefined) {
-          const chatResult = await runChatLoop(ctx, mutableCtx, target.id, out, readLine, loginFn, detectEnvironmentFn);
+          const chatResult = await runChatLoop(ctx, mutableCtx, target.id, out, readLine, loginFn, detectEnvironmentFn, suspendStdin);
           spendDirty = true; // a task may have run — refresh the spend summary
           if (chatResult === 'exit') break;
         } else {
@@ -1923,7 +2004,7 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
 
       // ---- [i] Import a native conversation -----------------------------------
       if (key === 'i') {
-        const importResult = await runImportNative(ctx, mutableCtx, out, readLine, loginFn, detectEnvironmentFn);
+        const importResult = await runImportNative(ctx, mutableCtx, out, readLine, loginFn, detectEnvironmentFn, suspendStdin);
         spendDirty = true; // an imported session may run a task — refresh spend
         if (importResult === 'exit') break;
         continue;
@@ -1941,7 +2022,11 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
       // Pass readLine so the token-paste prompt shares the menu's single reader
       // (avoids creating a second readline interface that would double-consume stdin).
       if (key === 'j') {
-        await loginFn(out, 'claude', { readLine, ...(drainExtraLines !== undefined ? { drainExtraLines } : {}) });
+        await loginFn(out, 'claude', {
+          readLine,
+          ...(drainExtraLines !== undefined ? { drainExtraLines } : {}),
+          ...(suspendStdin !== undefined ? { suspendStdin } : {}),
+        });
         mutableCtx.env = await detectEnvironmentFn();
         continue;
       }
