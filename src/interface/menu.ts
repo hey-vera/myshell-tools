@@ -88,7 +88,6 @@ export interface MenuContext {
     opts?: {
       method?: LoginMethod;
       readLine?: () => Promise<string | null>;
-      drainExtraLines?: () => string[];
       suspendStdin?: () => () => void;
     },
   ) => Promise<number>;
@@ -518,16 +517,10 @@ interface LineReader {
   /** Resolve with the next line, or `null` on EOF (and for every call after). */
   nextLine(): Promise<string | null>;
   /**
-   * Synchronously remove and return every line that has already been buffered
-   * (but not yet awaited). Used to reassemble a multi-line paste without
-   * blocking on lines that may never arrive.
-   */
-  drainBufferedNow(): string[];
-  /**
    * Stop consuming `process.stdin` so an inherited-stdio child process (e.g.
-   * `claude setup-token`) becomes the SOLE reader of the terminal. Without this,
+   * `claude auth login`) becomes the SOLE reader of the terminal. Without this,
    * the readline interface and the child race for the same bytes and a pasted
-   * token lands split/garbled on the child's prompt (the classic "first paste
+   * value lands split/garbled on the child's prompt (the classic "first paste
    * fails, second works" bug). Idempotent.
    */
   suspend(): void;
@@ -587,10 +580,6 @@ export function createLineReader(
       return new Promise<string | null>((resolve) => {
         waiters.push(resolve);
       });
-    },
-    drainBufferedNow(): string[] {
-      // Hand back everything currently buffered and clear it in one shot.
-      return buffered.splice(0, buffered.length);
     },
     suspend(): void {
       // Pause readline AND hand the raw TTY back to cooked mode + stop Node
@@ -780,7 +769,6 @@ async function runWelcome(
   out: OutputSink,
   readLine: () => Promise<string | null>,
   confirm: Confirm,
-  drainExtraLines: (() => string[]) | undefined,
   suspendStdin: (() => () => void) | undefined,
   mutableConfig: AppConfig,
   installProviderFn: (id: ProviderId, out: OutputSink) => Promise<boolean>,
@@ -790,7 +778,6 @@ async function runWelcome(
     opts?: {
       method?: LoginMethod;
       readLine?: () => Promise<string | null>;
-      drainExtraLines?: () => string[];
       suspendStdin?: () => () => void;
     },
   ) => Promise<number>,
@@ -859,12 +846,11 @@ async function runWelcome(
     if (await confirm(true)) {
       // loginFn auto-detects the right method (code in containers/SSH where the
       // localhost OAuth callback can't be reached, browser on a desktop).
-      // Pass readLine so the claude token-paste prompt shares the menu's reader,
-      // drainExtraLines so a wrap-split token paste is reassembled, and
-      // suspendStdin so claude setup-token owns the terminal alone (no byte race).
+      // Pass readLine so the browser-failed "retry with code?" prompt shares the
+      // menu's reader, and suspendStdin so the vendor CLI owns the terminal alone
+      // during its interactive sign-in (no paste byte-race).
       await loginFn(out, id, {
         readLine,
-        ...(drainExtraLines !== undefined ? { drainExtraLines } : {}),
         ...(suspendStdin !== undefined ? { suspendStdin } : {}),
       });
     }
@@ -1846,20 +1832,16 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
   // Single-key yes/no confirm (Enter = default, y/n decide instantly on a TTY)
   // with a line-mode fallback for piped input / tests.
   const confirm = makeConfirm(out, readLine, ctx.confirm);
-  // Reassembles a token paste that arrived split across readline lines. Only the
-  // real lineReader can buffer extra fragments; the injected path returns none.
-  const readerForDrain = lineReader;
-  const drainExtraLines: (() => string[]) | undefined =
-    readerForDrain !== null ? () => readerForDrain.drainBufferedNow() : undefined;
   // Lets the login flow release stdin while an inherited-stdio child (e.g.
-  // `claude setup-token`) owns the terminal, then take it back. Returns the
+  // `claude auth login`) owns the terminal, then take it back. Returns the
   // resume callback. Only wired for the real reader — the injected/test path
   // shares no stdin, so there is nothing to suspend.
+  const readerForSuspend = lineReader;
   const suspendStdin: (() => () => void) | undefined =
-    readerForDrain !== null
+    readerForSuspend !== null
       ? () => {
-          readerForDrain.suspend();
-          return () => readerForDrain.resume();
+          readerForSuspend.suspend();
+          return () => readerForSuspend.resume();
         }
       : undefined;
 
@@ -1873,7 +1855,7 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
   try {
     // ---- A. First-run welcome -----------------------------------------------
     if (!mutableCtx.config.onboarded) {
-      mutableCtx.config = await runWelcome(ctx, out, readLine, confirm, drainExtraLines, suspendStdin, mutableCtx.config, installProviderFn, loginFn, detectEnvironmentFn);
+      mutableCtx.config = await runWelcome(ctx, out, readLine, confirm, suspendStdin, mutableCtx.config, installProviderFn, loginFn, detectEnvironmentFn);
       // Re-detect after onboarding so the first main screen shows the REAL post-login
       // status (e.g. codex now "ready" if the user signed in during setup).
       mutableCtx.env = await detectEnvironmentFn();
@@ -2024,7 +2006,6 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
       if (key === 'j') {
         await loginFn(out, 'claude', {
           readLine,
-          ...(drainExtraLines !== undefined ? { drainExtraLines } : {}),
           ...(suspendStdin !== undefined ? { suspendStdin } : {}),
         });
         mutableCtx.env = await detectEnvironmentFn();

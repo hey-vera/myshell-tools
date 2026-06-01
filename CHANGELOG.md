@@ -10,6 +10,16 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 - Live cross-vendor review demonstration (requires an authenticated Codex CLI).
 - Cross-OS CI execution (requires a public remote).
 
+## [3.2.3]
+
+### Changed (Claude sign-in is now automatic — no token paste, no "1 year" message)
+- **Claude sign-in uses `claude auth login` instead of `claude setup-token`.** This is the fix for the whole cluster of first-run complaints: the awkward "now paste the token back here" step, the "your token is valid for ~1 year, store it securely" message that read as sketchy, and tokens that "didn't save". Root cause: `setup-token` is a **CI-only** command — it prints a one-year OAuth token to stdout and *deliberately saves nothing*, expecting you to copy it into a `CLAUDE_CODE_OAUTH_TOKEN` env var. We were (mis)using it for interactive sign-in, which forced us to capture the printed token by asking you to paste it back. `claude auth login` is the real sign-in: it opens a browser, or in a container/SSH/WSL2 shows a URL and a "paste code here" prompt, and **persists the credential itself** (macOS Keychain, or `~/.claude/.credentials.json` / `%USERPROFILE%\.claude\.credentials.json`). So now you just: open the link, sign in (paste the code straight into claude if asked), done — myshell-tools captures nothing, stores no token, and shows no scary message. When you later run a task, plain `claude` uses its own stored credential (auth precedence). Verified against the actual installed `claude` CLI (`auth login`, `auth status --json`) and the official auth docs, not assumptions.
+- **Auth detection unchanged and already correct** — it reads `claude auth status --json` (`loggedIn`), so a successful `auth login` immediately shows claude as "ready" with no token bookkeeping on our side.
+- **Migration for older installs:** after a successful claude sign-in we now **clear** any `sk-ant-oat…` token a previous `setup-token` flow left in `~/.myshell-tools/credentials.json`. A stale long-lived token takes precedence over your fresh subscription login and would silently shadow it once it expired (a known Claude Code footgun). `doctor`/`status` still offers to refresh a legacy token that's expiring, which now migrates you onto `auth login`.
+
+### Removed
+- The token paste-capture flow (`captureClaudeTokenWithPaste`) and its now-unused stdin-reassembly plumbing (`drainExtraLines`/`drainBufferedNow`). Nothing pastes a Claude token into myshell-tools anymore.
+
 ## [3.2.2]
 
 ### Fixed (the real cause of the first-paste failure)

@@ -11,35 +11,33 @@
  *     containers / over SSH (Replit, Codespaces, etc.) where localhost can't be
  *     reached from the user's browser.
  *   - 'code':   a no-localhost flow that works anywhere.
- *       · claude → `claude setup-token`: spawned with fully inherited stdio so
- *         the native spinner/animation renders cleanly. After the process exits
- *         successfully, the user is prompted to paste the token (sk-ant-oat…)
- *         back here (up to 3 retries, with helpful warnings for blank or
- *         wrong-type inputs).
+ *       · claude → `claude auth login`: spawned with inherited stdio. When the
+ *         localhost callback can't be reached it prints a URL and a "paste code
+ *         here" prompt; the user pastes the code straight into claude. Claude
+ *         persists the credential ITSELF (Keychain / ~/.claude/.credentials.json),
+ *         so there is nothing for us to capture, store, or re-paste. (We do NOT
+ *         use `claude setup-token` — that is a CI-only command that prints a
+ *         token to stdout and saves nothing, which forced an awkward paste-back
+ *         step and a "valid 1 year / keep it safe" message.)
  *       · codex  → `codex login --device-auth`: prints a URL + one-time code;
  *         the user authorizes their ChatGPT account on any device.
  *
  * When no method is forced, we auto-detect: headless/remote environments default
  * to 'code' (so the localhost trap is avoided), everything else to 'browser'.
  *
- * Security: myshell-tools never stores raw API keys or passwords.  The Claude
- * OAuth token (sk-ant-oat…) is captured after the user explicitly pastes it,
- * and is stored in ~/.myshell-tools/credentials.json (mode 0o600).
+ * Security: myshell-tools never stores raw API keys, tokens, or passwords. Each
+ * vendor CLI manages its own credentials; we only orchestrate their sign-in.
+ * After a successful claude sign-in we clear any token an OLDER setup-token flow
+ * may have left in our store, so it can't shadow claude's own fresh credential.
  */
 
-import readline from 'node:readline';
 import { execa } from 'execa';
 import type { OutputSink } from '../interface/render.js';
 import type { ProviderId } from '../providers/port.js';
 import { detectProvider, getInstallCommand } from '../providers/detect.js';
-import { bold, dim, green, red, yellow } from '../ui/theme.js';
+import { bold, dim, green, red } from '../ui/theme.js';
 import { parseYesNo } from '../interface/menu.js';
-import {
-  classifyPastedSecret,
-  extractClaudeToken,
-  saveClaudeToken,
-  sanitizePastedToken,
-} from '../infra/credentials.js';
+import { clearClaudeToken } from '../infra/credentials.js';
 
 /** Which sign-in flow to run. See module docstring. */
 export type LoginMethod = 'browser' | 'code';
@@ -63,18 +61,20 @@ const LOGIN_CODE_COMMAND: Record<
 > = {
   claude: {
     bin: 'claude',
-    args: ['setup-token'],
+    // `claude auth login` handles BOTH the browser flow and the no-localhost
+    // fallback (it prints a URL and a "paste code here" prompt when the local
+    // callback can't be reached — common in containers/SSH/WSL2), and it
+    // persists the credential itself. So there is nothing for us to capture or
+    // store — unlike `setup-token`, which only prints a token for CI env vars.
+    args: ['auth', 'login'],
     guidance:
       'A sign-in link will appear below.\n' +
       '  1. Open it in any browser and sign in at claude.ai.\n' +
-      '  2. Copy the token it shows you (starts with sk-ant-oat).\n' +
-      '  3. When prompted below, paste it here and press Enter.\n' +
+      "  2. If your browser shows a code instead of redirecting, paste it back\n" +
+      '     here when claude asks — that is the only paste, and it goes straight\n' +
+      '     to claude.\n' +
       '\n' +
-      "  Heads-up: Claude's own screen will say the token is good for ~a year and\n" +
-      '  to keep it safe — that is normal. It is just a long-lived sign-in for the\n' +
-      '  claude CLI (not an API key, not a password). myshell-tools stores it on\n' +
-      '  THIS machine only, in ~/.myshell-tools/credentials.json (owner-read-only),\n' +
-      '  and uses it solely to run claude. Nothing is uploaded anywhere.',
+      '  Claude saves the sign-in itself; there is nothing else to copy or store.',
   },
   codex: {
     bin: 'codex',
@@ -174,17 +174,16 @@ export function shouldRetryWithCode(answer: string | null): boolean {
 async function runCodeMethodForProvider(
   out: OutputSink,
   id: ProviderId,
-  readLine?: () => Promise<string | null>,
-  drainExtraLines?: () => string[],
   suspendStdin?: () => () => void,
 ): Promise<void> {
   const { bin, args, guidance } = LOGIN_CODE_COMMAND[id];
-  out.write(bold(`\nSigning in to ${id} — code method (no localhost needed).\n`, out.color));
+  out.write(bold(`\nSigning in to ${id} — no localhost needed.\n`, out.color));
   out.write(dim(guidance + '\n', out.color));
-  // Release our readline's grip on stdin so the provider CLI (e.g. claude
-  // setup-token, which prompts for a pasted auth code) is the SOLE reader of
-  // the terminal. Without this, our readline and the child race for the same
-  // bytes and the first paste lands split/garbled on the child's prompt.
+  // Release our readline's grip on stdin so the provider CLI is the SOLE reader
+  // of the terminal during its interactive sign-in (claude auth login prints a
+  // "paste code here" prompt when the localhost callback can't be reached;
+  // codex --device-auth waits on the same TTY). Without this, our readline and
+  // the child race for the same bytes and a pasted value lands split/garbled.
   const resumeStdin = suspendStdin?.();
   let result;
   try {
@@ -194,28 +193,26 @@ async function runCodeMethodForProvider(
   }
 
   if (result.exitCode === 0) {
-    if (id === 'claude') {
-      // `claude setup-token` ran with inherited stdio (so the native animation
-      // rendered cleanly). Now prompt the user to paste the token it printed.
-      // captureClaudeTokenWithPaste reports its own success/failure messages.
-      await captureClaudeTokenWithPaste(out, readLine, drainExtraLines);
-    } else {
-      out.write(green(`✓ ${id} sign-in complete.\n`, out.color));
-    }
+    if (id === 'claude') await finishClaudeSignIn(out);
+    else out.write(green(`✓ ${id} sign-in complete.\n`, out.color));
   } else {
-    if (id === 'claude') {
-      out.write(
-        red(
-          `✗ claude setup-token did not complete (exit ${result.exitCode ?? 'unknown'}). Run it manually: claude setup-token\n`,
-          out.color,
-        ),
-      );
-    } else {
-      out.write(
-        red(`✗ ${id} sign-in did not complete (exit ${result.exitCode ?? 'unknown'}).\n`, out.color),
-      );
-    }
+    out.write(
+      red(`✗ ${id} sign-in did not complete (exit ${result.exitCode ?? 'unknown'}).\n`, out.color),
+    );
   }
+}
+
+/**
+ * Finalise a successful `claude auth login`. Claude has already persisted its
+ * own credential (Keychain / ~/.claude/.credentials.json), so there is nothing
+ * for us to capture. We only clear any token a PREVIOUS `setup-token` flow left
+ * in our store: a stale `CLAUDE_CODE_OAUTH_TOKEN` takes precedence over the
+ * fresh subscription login and would silently shadow it once it expires.
+ * Never throws.
+ */
+async function finishClaudeSignIn(out: OutputSink): Promise<void> {
+  await clearClaudeToken();
+  out.write(green('✓ Claude sign-in complete — claude is ready.\n', out.color));
 }
 
 /**
@@ -225,9 +222,10 @@ async function runCodeMethodForProvider(
  *
  * @param opts.method   - Force 'browser' or 'code'. When omitted, the method is
  *   auto-detected from the environment via {@link resolveLoginMethod}.
- * @param opts.readLine - Injected line-reader for the token-paste prompt (used
- *   by the menu so it shares the single readline interface). When absent, a
- *   temporary readline interface is created and immediately closed after one line.
+ * @param opts.readLine - Injected line-reader the menu shares so the
+ *   browser-failed "retry with code?" prompt reuses the single readline interface.
+ * @param opts.suspendStdin - Releases our readline's grip on stdin while the
+ *   vendor CLI owns the terminal, then restores it (prevents a paste byte-race).
  */
 export async function runLogin(
   out: OutputSink,
@@ -235,7 +233,6 @@ export async function runLogin(
   opts?: {
     method?: LoginMethod;
     readLine?: () => Promise<string | null>;
-    drainExtraLines?: () => string[];
     suspendStdin?: () => () => void;
   },
 ): Promise<number> {
@@ -264,7 +261,7 @@ export async function runLogin(
     if (method === 'code') {
       // stdio:'inherit' hands the terminal to the provider CLI so its OAuth /
       // device / paste flow runs in place.
-      await runCodeMethodForProvider(out, id, opts?.readLine, opts?.drainExtraLines, opts?.suspendStdin);
+      await runCodeMethodForProvider(out, id, opts?.suspendStdin);
     } else {
       // Browser method
       const { bin, args } = LOGIN_COMMAND[id];
@@ -278,7 +275,8 @@ export async function runLogin(
       }
 
       if (result.exitCode === 0) {
-        out.write(green(`✓ ${id} sign-in complete.\n`, out.color));
+        if (id === 'claude') await finishClaudeSignIn(out);
+        else out.write(green(`✓ ${id} sign-in complete.\n`, out.color));
       } else {
         out.write(
           red(`✗ ${id} sign-in did not complete (exit ${result.exitCode ?? 'unknown'}).\n`, out.color),
@@ -292,7 +290,7 @@ export async function runLogin(
           );
           const ans = await opts.readLine();
           if (shouldRetryWithCode(ans)) {
-            await runCodeMethodForProvider(out, id, opts.readLine, opts.drainExtraLines, opts.suspendStdin);
+            await runCodeMethodForProvider(out, id, opts.suspendStdin);
           } else {
             out.write(
               dim(
@@ -318,151 +316,3 @@ export async function runLogin(
 
   return 0;
 }
-
-// ---------------------------------------------------------------------------
-// Paste token capture helper (internal)
-// ---------------------------------------------------------------------------
-
-/**
- * Prompt the user to paste the token shown by `claude setup-token`, extract
- * it, persist it, and inject it into `process.env.CLAUDE_CODE_OAUTH_TOKEN`.
- *
- * Retries up to 3 times:
- *   - Blank input  → skip silently with a note.
- *   - API key      → print a specific warning (that's sk-ant-api, not sk-ant-oat).
- *   - Invalid      → warn and re-prompt.
- *   - Valid token  → save and set env.
- *
- * Uses the injected `readLine` when provided (menu shares its single readline
- * interface). Otherwise creates a temporary readline interface, reads ONE line,
- * and immediately closes it (so stdin is not held open).
- *
- * Never throws.
- */
-async function captureClaudeTokenWithPaste(
-  out: OutputSink,
-  readLine?: () => Promise<string | null>,
-  drainExtraLines?: () => string[],
-): Promise<void> {
-  const MAX_RETRIES = 3;
-
-  for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
-    out.write(
-      `\nPaste the token shown above (starts with sk-ant-oat) and press Enter` +
-        ` — or leave blank to skip (attempt ${attempt}/${MAX_RETRIES}):\n> `,
-    );
-
-    let raw: string | null;
-
-    if (readLine !== undefined) {
-      // Menu injected its own reader — use it directly, do NOT create a second
-      // readline interface (that would double-consume stdin).
-      raw = await readLine();
-    } else {
-      // CLI direct path — create a temporary readline, read one line, close.
-      raw = await readOneLineFromStdin();
-    }
-
-    // A long token can arrive split across several lines (terminal soft-wrap or
-    // a paste that contained newlines), which readline reports as separate
-    // events. Pull in any fragments that have already been buffered and stitch
-    // them onto the first line BEFORE sanitising — sanitizePastedToken drops the
-    // whitespace, so a value the terminal broke apart is reassembled intact.
-    let combined = raw ?? '';
-    if (drainExtraLines !== undefined) {
-      const extra = drainExtraLines();
-      if (extra.length > 0) combined += extra.join('');
-    }
-
-    const normalised = sanitizePastedToken(combined);
-
-    if (normalised === '') {
-      out.write(dim('Skipped — no token entered.\n', out.color));
-      return;
-    }
-
-    const kind = classifyPastedSecret(normalised);
-
-    if (kind === 'api-key') {
-      out.write(
-        yellow(
-          'That looks like an Anthropic API key (sk-ant-api…), not the setup-token\n' +
-            'OAuth token. Please paste the sk-ant-oat… value instead.\n',
-          out.color,
-        ),
-      );
-      continue;
-    }
-
-    const token = extractClaudeToken(normalised);
-
-    if (token !== null) {
-      try {
-        await saveClaudeToken(token);
-        process.env['CLAUDE_CODE_OAUTH_TOKEN'] = token;
-        out.write(green('✓ Claude token saved — claude is now ready.\n', out.color));
-      } catch {
-        out.write(
-          dim(
-            'Could not save token to disk — you can re-run `myshell-tools login claude --code` later.\n',
-            out.color,
-          ),
-        );
-      }
-      return;
-    }
-
-    // Not a recognised token format.
-    if (attempt < MAX_RETRIES) {
-      out.write(
-        dim(
-          'Token not recognised — expected sk-ant-oat… format. Please try again.\n',
-          out.color,
-        ),
-      );
-    } else {
-      out.write(
-        dim(
-          'Token not captured after 3 attempts. Re-run `myshell-tools login claude --code`\n' +
-            'and paste the sk-ant-oat… value (NOT an Anthropic API key starting with sk-ant-api).\n',
-          out.color,
-        ),
-      );
-    }
-  }
-}
-
-/**
- * Create a temporary readline interface on process.stdin, read exactly one
- * line, and close the interface. Returns the trimmed line or null on EOF.
- *
- * This is used only from the `myshell-tools login` direct CLI path where no
- * shared readline interface exists.
- */
-function readOneLineFromStdin(): Promise<string | null> {
-  return new Promise<string | null>((resolve) => {
-    const rl = readline.createInterface({
-      input: process.stdin,
-      output: process.stdout,
-      terminal: false,
-    });
-
-    let resolved = false;
-
-    rl.once('line', (raw: string) => {
-      resolved = true;
-      rl.close();
-      resolve(raw.trim());
-    });
-
-    rl.once('close', () => {
-      if (!resolved) {
-        resolved = true;
-        resolve(null);
-      }
-    });
-  });
-}
-
-// Re-export extractClaudeToken so test/unit/credentials.test.ts can import it
-// directly from credentials.ts (where it is defined). No re-export needed here.

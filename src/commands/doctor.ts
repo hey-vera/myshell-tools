@@ -350,9 +350,12 @@ async function runFixPass(
   }
 
   // ---- Step 3b: offer a Claude token refresh when it is expiring -------------
-  // The sk-ant-oat… token from `claude setup-token` is ~1-year-lived. Proactively
-  // offer to refresh it when expired or inside the warning window so users aren't
-  // surprised by a mid-session auth failure (a real reported confusion).
+  // Only fires for users who still have a LEGACY sk-ant-oat… token in our store
+  // from an older `setup-token`-based sign-in (current sign-ins use `claude auth
+  // login`, which persists its own credential and stores nothing here, so
+  // claudeTokenStatus is null). Refreshing runs `claude auth login` and clears
+  // the stale token — migrating them off the old path so an expired token can't
+  // shadow their fresh subscription credential.
   if (env.claude.installed && env.claude.authenticated) {
     const capturedAt = await loadCapturedAtFn().catch(() => undefined);
     const tokenInfo = claudeTokenStatus(capturedAt, nowFn());

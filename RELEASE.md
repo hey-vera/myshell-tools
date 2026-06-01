@@ -1,6 +1,6 @@
 # Releasing myshell-tools
 
-The implementation for **3.2.2** is complete and green on the
+The implementation for **3.2.3** is complete and green on the
 `feat/opencode-efficiency-v2.6.0` branch. The steps below are the only ones that
 require a real environment (authenticated provider CLIs, your npm account) and so
 must be run from your local clone — not the build sandbox.
@@ -53,8 +53,8 @@ npm publish          # prepublishOnly re-runs clean+typecheck+lint+build
 ```
 
 `npm publish` will refuse if the version already exists, so bump
-`package.json`'s `version` first if 3.2.2 is ever taken. After publishing, the
-`latest` tag moves to 3.2.2 and the in-tool auto-update can reach
+`package.json`'s `version` first if 3.2.3 is ever taken. After publishing, the
+`latest` tag moves to 3.2.3 and the in-tool auto-update can reach
 existing users.
 
 ## 4. Push the branch / open a PR
@@ -68,7 +68,7 @@ git push origin feat/opencode-efficiency-v2.6.0
 
 ```bash
 npm install -g myshell-tools@latest
-myshell-tools --version   # expect 3.2.2
+myshell-tools --version   # expect 3.2.3
 ```
 
 If you had ever run it via `npx`, clear the stale cache so npx stops serving an
