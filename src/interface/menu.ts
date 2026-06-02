@@ -946,10 +946,60 @@ async function runModeSelect(
     // Preserve other prefs so changing mode doesn't silently reset them.
     ...(config.autoUpdate === false ? { autoUpdate: false } : {}),
     ...(config.nativeSessions === true ? { nativeSessions: true } : {}),
+    ...(config.verbosity !== undefined ? { verbosity: config.verbosity } : {}),
   };
 
   await saveConfig(updated);
   out.write(`Mode set to: ${newMode ?? 'balanced'}\n`);
+  return updated;
+}
+
+/**
+ * Choose the output-detail (verbosity) level and persist it.
+ *
+ *   quiet   → model prose + errors only (no status line)
+ *   normal  → clean conversation: prose, errors, one minimal completion line
+ *   verbose → everything (tool/reasoning lines + per-tier telemetry)
+ *
+ * Default is 'normal' (undefined counts as normal). Preserves all other config
+ * fields via conditional spread so changing detail doesn't reset other prefs.
+ */
+async function runVerbositySelect(
+  config: AppConfig,
+  out: OutputSink,
+  readLine: () => Promise<string | null>,
+): Promise<AppConfig> {
+  const current = config.verbosity ?? 'normal';
+  const settingsLines = [
+    '',
+    'Output detail:',
+    `  [1] quiet${current === 'quiet' ? ' (active)' : ''}`,
+    `  [2] normal${current === 'normal' ? ' (active)' : ''}`,
+    `  [3] verbose${current === 'verbose' ? ' (active)' : ''}`,
+    '',
+  ];
+  out.write('\n' + box('Settings', settingsLines) + '\n\n');
+
+  out.write('[1/2/3 to change, Enter to keep] ');
+  const key = await readLine();
+
+  // EOF / Enter → keep current
+  let newVerbosity = config.verbosity;
+  if (key === '1') newVerbosity = 'quiet';
+  else if (key === '2') newVerbosity = 'normal';
+  else if (key === '3') newVerbosity = 'verbose';
+
+  const updated: AppConfig = {
+    onboarded: config.onboarded,
+    setAsDefault: config.setAsDefault,
+    ...(config.mode !== undefined ? { mode: config.mode } : {}),
+    ...(config.autoUpdate === false ? { autoUpdate: false } : {}),
+    ...(config.nativeSessions === true ? { nativeSessions: true } : {}),
+    ...(newVerbosity !== undefined ? { verbosity: newVerbosity } : {}),
+  };
+
+  await saveConfig(updated);
+  out.write(`Output detail set to: ${newVerbosity ?? 'normal'}\n`);
   return updated;
 }
 
@@ -976,6 +1026,7 @@ async function toggleDefaultShell(
     // Preserve other prefs so toggling default-shell doesn't silently reset them.
     ...(config.autoUpdate === false ? { autoUpdate: false } : {}),
     ...(config.nativeSessions === true ? { nativeSessions: true } : {}),
+    ...(config.verbosity !== undefined ? { verbosity: config.verbosity } : {}),
   };
   await saveConfig(updated);
   return updated;
@@ -994,6 +1045,7 @@ async function runSettings(
     `  [2] Set as default shell: ${cfg.setAsDefault ? 'on' : 'off'}`,
     `  [3] Auto-update: ${cfg.autoUpdate !== false ? 'on' : 'off'}`,
     `  [4] Native sessions (experimental): ${cfg.nativeSessions === true ? 'on' : 'off'}`,
+    `  [5] Output detail: ${cfg.verbosity ?? 'normal'}`,
     '',
     '  [Enter] Back',
     '',
@@ -1014,6 +1066,8 @@ async function runSettings(
     mutableCtx.config = await toggleAutoUpdate(mutableCtx.config, out);
   } else if (key === '4') {
     mutableCtx.config = await toggleNativeSessions(mutableCtx.config, out);
+  } else if (key === '5') {
+    mutableCtx.config = await runVerbositySelect(mutableCtx.config, out, readLine);
   }
   // anything else → back
 }
@@ -1036,6 +1090,7 @@ async function toggleAutoUpdate(config: AppConfig, out: OutputSink): Promise<App
     ...(config.mode !== undefined ? { mode: config.mode } : {}),
     ...(!enable ? { autoUpdate: false } : {}),
     ...(config.nativeSessions === true ? { nativeSessions: true } : {}),
+    ...(config.verbosity !== undefined ? { verbosity: config.verbosity } : {}),
   };
   await saveConfig(updated);
   out.write(`Auto-update: ${enable ? 'on' : 'off'}\n`);
@@ -1059,6 +1114,7 @@ async function toggleNativeSessions(config: AppConfig, out: OutputSink): Promise
     ...(config.mode !== undefined ? { mode: config.mode } : {}),
     ...(config.autoUpdate === false ? { autoUpdate: false } : {}),
     ...(enable ? { nativeSessions: true } : {}),
+    ...(config.verbosity !== undefined ? { verbosity: config.verbosity } : {}),
   };
   await saveConfig(updated);
   out.write(`Native sessions (experimental): ${enable ? 'on' : 'off'}\n`);
@@ -1597,7 +1653,7 @@ async function runChatLoop(
 
       const ac = new AbortController();
       currentAc = ac;
-      const result = await runTask(line, deps, out, ac.signal);
+      const result = await runTask(line, deps, out, ac.signal, mutableCtx.config.verbosity ?? 'normal');
       currentAc = null;
 
       // Check for SIGINT-driven signals that fired while runTask was awaited.
@@ -1634,7 +1690,7 @@ async function runChatLoop(
           // Retry the same task once.
           const retryAc = new AbortController();
           currentAc = retryAc;
-          const retryResult = await runTask(line, retryDeps, out, retryAc.signal);
+          const retryResult = await runTask(line, retryDeps, out, retryAc.signal, mutableCtx.config.verbosity ?? 'normal');
           currentAc = null;
           if (shouldExit) {
             loopResult = 'exit';

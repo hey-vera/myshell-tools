@@ -155,19 +155,21 @@ describe('runTask — happy path (provider available)', () => {
   });
 
   it('output contains the real model id', async () => {
-    await runTask('write unit tests', deps, sink, new AbortController().signal);
+    // Model id is verbose-only chrome (tier-start line) — request verbose.
+    await runTask('write unit tests', deps, sink, new AbortController().signal, 'verbose');
     const joined = sink.buf.join('');
     assert.ok(joined.includes('claude-sonnet-4-6'), 'Should include the real model id');
   });
 
   it('output contains the real session id', async () => {
-    await runTask('write unit tests', deps, sink, new AbortController().signal);
+    // Session id appears on the verbose Success telemetry line.
+    await runTask('write unit tests', deps, sink, new AbortController().signal, 'verbose');
     const joined = sink.buf.join('');
     assert.ok(joined.includes('run-test-session'), 'Should include the real session id');
   });
 
   it('output shows real tokens, not dollars (subscription tool)', async () => {
-    await runTask('write unit tests', deps, sink, new AbortController().signal);
+    await runTask('write unit tests', deps, sink, new AbortController().signal, 'verbose');
     const joined = sink.buf.join('');
     // Provider usage: 1000 in + 500 out = 1500 tokens → "1.5k tokens".
     assert.ok(joined.includes('1.5k tokens'), `Should show real token total, got:\n${joined}`);
@@ -175,7 +177,8 @@ describe('runTask — happy path (provider available)', () => {
   });
 
   it('output contains confidence rendered as a computed number (from 0.75)', async () => {
-    await runTask('write unit tests', deps, sink, new AbortController().signal);
+    // Confidence is on the verbose tier-done telemetry line.
+    await runTask('write unit tests', deps, sink, new AbortController().signal, 'verbose');
     const joined = sink.buf.join('');
     // 0.75 * 100 = 75 — appears as "75" followed by "%"
     assert.ok(joined.includes('75'), 'Should include computed confidence value 75 (from 0.75)');

@@ -9,7 +9,7 @@
 
 import type { CoreEvent, OrchestrateDeps } from '../core/types.js';
 import { orchestrate } from '../core/orchestrate.js';
-import type { OutputSink } from './render.js';
+import type { OutputSink, Verbosity } from './render.js';
 import { renderStream } from './render.js';
 
 /** Result returned by {@link runTask}. */
@@ -27,6 +27,9 @@ export interface RunTaskResult {
  * @param deps   - Injected orchestration dependencies.
  * @param out    - Where rendered output is written.
  * @param signal - AbortSignal; abort to cancel the in-flight task.
+ * @param verbosity - How much status chrome to render. Optional; defaults to
+ *                    'normal' (clean conversation) so existing callers compile
+ *                    unchanged.
  * @returns      { code, final } — code is 0 on success, 1 on failure or error.
  */
 export async function runTask(
@@ -34,9 +37,10 @@ export async function runTask(
   deps: OrchestrateDeps,
   out: OutputSink,
   signal: AbortSignal,
+  verbosity: Verbosity = 'normal',
 ): Promise<RunTaskResult> {
   try {
-    const result = await renderStream(orchestrate(task, deps, signal), out);
+    const result = await renderStream(orchestrate(task, deps, signal), out, verbosity);
     return { code: result.success ? 0 : 1, ...(result.final !== undefined ? { final: result.final } : {}) };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
