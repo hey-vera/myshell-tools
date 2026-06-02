@@ -36,7 +36,12 @@ interface UpdateCache {
 // Constants
 // ---------------------------------------------------------------------------
 
-const TTL_MS_DEFAULT = 24 * 60 * 60 * 1000; // 24 hours
+const TTL_MS_DEFAULT = 3 * 60 * 60 * 1000; // 3h — bound the window a fresh release can go unseen.
+// When the cache says we are ALREADY on the latest version, that is exactly the
+// state a brand-new publish silently invalidates (the publishing dev re-runs and
+// the cache still insists they're current). Re-verify that state on a much
+// shorter clock so a release reaches users within minutes, not a day.
+const TTL_MS_WHEN_CURRENT = 20 * 60 * 1000; // 20 minutes
 const FETCH_TIMEOUT_MS = 1_500;
 
 // ---------------------------------------------------------------------------
@@ -202,10 +207,17 @@ export async function checkForUpdate(opts: CheckForUpdateOpts): Promise<UpdateCh
   try {
     // Check if we have a fresh cache
     const cache = await loadUpdateCache(homeDir);
-    if (cache !== null && now - cache.checkedAt < ttlMs) {
-      // Cache is fresh — use it without hitting the network
+    if (cache !== null) {
       const updateAvailable = isNewerVersion(cache.latest, currentVersion);
-      return { current: currentVersion, latest: cache.latest, updateAvailable };
+      // A cache that already knows about a pending update is trustworthy for the
+      // full TTL — re-asking npm won't teach us anything new. But a cache that
+      // says "you're current" is precisely the one a new publish invalidates, so
+      // re-check it far sooner. This is what closes the "just published, still
+      // says I'm on latest" blind spot.
+      const effectiveTtl = updateAvailable ? ttlMs : Math.min(ttlMs, TTL_MS_WHEN_CURRENT);
+      if (now - cache.checkedAt < effectiveTtl) {
+        return { current: currentVersion, latest: cache.latest, updateAvailable };
+      }
     }
 
     // Cache is stale or missing — fetch from the registry

@@ -199,6 +199,19 @@ async function main(): Promise<void> {
     const policy = POLICY_PRESETS[config.mode ?? 'balanced'];
     const deps = buildDeps(cwd, env, policy);
     const result = await runTask(taskParts.join(' '), deps, out, new AbortController().signal);
+    // Notify-only update nudge for the scripted / one-shot path. The interactive
+    // menu auto-updates, but `run` must NEVER swap the binary mid-task. Written
+    // to stderr and TTY-guarded so it can't corrupt piped stdout or spam CI logs.
+    if (process.stderr.isTTY === true) {
+      const upd = await checkForUpdate({ currentVersion: version, now: Date.now() }).catch(
+        () => undefined,
+      );
+      if (upd?.updateAvailable === true && upd.latest !== null) {
+        process.stderr.write(
+          `\n▲ myshell-tools ${upd.current} → ${upd.latest} available — npm install -g myshell-tools@latest\n`,
+        );
+      }
+    }
     process.exit(result.code);
   }
 

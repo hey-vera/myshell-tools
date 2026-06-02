@@ -1893,7 +1893,17 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
         }
         return; // Relinquish control to the freshly-installed version.
       }
-      out.write('Auto-update failed — continuing with current version.\n');
+      // Loud, actionable failure — never a silent "continuing on stale." The most
+      // common cause by far is a global-install permission error (EACCES). Give
+      // the exact copy-paste fixes; the update banner below stays up regardless,
+      // so the user is never left silently behind.
+      out.write(
+        `\n  ⚠️  Auto-update to ${updateInfo.latest} didn't complete.\n` +
+          `     This is usually a global-install permission issue. Fix it with one of:\n` +
+          `       npm install -g myshell-tools@latest\n` +
+          `       sudo npm install -g myshell-tools@latest      (macOS/Linux, if you saw EACCES)\n` +
+          `     Staying on ${updateInfo.current} for now.\n\n`,
+      );
     }
 
     // ---- B. Main screen loop -------------------------------------------------

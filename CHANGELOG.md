@@ -10,6 +10,13 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 - Live cross-vendor review demonstration (requires an authenticated Codex CLI).
 - Cross-OS CI execution (requires a public remote).
 
+## [3.3.0]
+
+### Changed (the update path is no longer "silently stale")
+- **Fresh releases now reach users in minutes, not up to a day.** The update check cached the npm "latest" version for a flat 24h, so right after a publish — including the publishing dev's own machine — myshell kept insisting you were current for up to 24 hours. Worse, an auto-updater exists, which gave false confidence that staying current was handled. Two-part fix in `update-check.ts`: the default re-check window drops to **3h**, and — the key change — a cache that says *"you're already on the latest"* (exactly the state a new publish invalidates) is re-verified on a **20-minute** clock instead of the full TTL. A cache that already knows about a pending update is still trusted for the full window (re-asking npm teaches it nothing). This is the actual reason a freshly-published fix appeared not to ship.
+- **`myshell run "…"` now surfaces updates too.** Previously only the interactive menu checked for updates; the scriptable one-shot path never did, so anyone aliasing or scripting `run` would never learn an update existed. It now prints a one-line nudge — **notify-only, on stderr, and only on a TTY** — so it can't corrupt piped stdout, spam CI logs, or (the un-polished move) swap the binary out from under a running task.
+- **Auto-update failures are loud and actionable.** A failed `npm install -g` (overwhelmingly a global-dir `EACCES` permission issue) used to print one vague line and silently continue on the stale version. It now explains the likely cause and gives the exact copy-paste fixes (plain and `sudo`), and the update banner stays up — so you are never left silently behind.
+
 ## [3.2.3]
 
 ### Changed (Claude sign-in is now automatic — no token paste, no "1 year" message)
