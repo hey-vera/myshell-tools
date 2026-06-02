@@ -68,12 +68,10 @@ describe('formatCostReport — single entry', () => {
 
   const lines = formatCostReport([entry]);
 
-  it('shows a list-price routed cost estimate (consistent basis, not the provider-reported total)', () => {
+  it('reports tokens as the unit and shows NO dollar figure (subscription, not API-billed)', () => {
     const total = lines.join('\n');
-    // The Estimated-cost section uses list price × tokens for a consistent
-    // apples-to-apples figure. Sonnet 500k in + 100k out = $1.50 + $1.50 = $3.0000.
-    assert.ok(total.includes('Routed'), `expected a "Routed" estimate, got:\n${total}`);
-    assert.ok(total.includes('3.0000'), `expected list-price routed ~$3.0000, got:\n${total}`);
+    assert.ok(total.includes('Tokens used'), `expected a token total, got:\n${total}`);
+    assert.ok(!/\$\d/.test(total), `must not show any dollar amount (subscription tool):\n${total}`);
   });
 
   it('mentions the model in the per-model breakdown', () => {
@@ -84,12 +82,9 @@ describe('formatCostReport — single entry', () => {
     );
   });
 
-  it('contains a counterfactual line', () => {
+  it('frames routing efficiency against the flagship (a ratio, not a dollar figure)', () => {
     const total = lines.join('\n');
-    assert.ok(
-      total.includes('always-flagship'),
-      `expected counterfactual line in output`,
-    );
+    assert.ok(/flagship/i.test(total), `expected a flagship-referenced efficiency line:\n${total}`);
   });
 });
 
@@ -131,18 +126,9 @@ describe('formatCostReport — multi-entry across haiku and sonnet', () => {
   const lines = formatCostReport(entries);
   const output = lines.join('\n');
 
-  it('shows a routed list-price estimate that never exceeds always-flagship (consistent basis)', () => {
-    assert.ok(output.includes('Routed'), `expected a "Routed" estimate:\n${output}`);
-    // Both figures are list-price; extract and assert routed <= flagship.
-    const routed = output.match(/Routed: ~\$([\d.]+)/);
-    const flagship = output.match(/always-flagship: ~\$([\d.]+)/);
-    assert.ok(routed !== null, 'routed estimate present');
-    if (flagship !== null) {
-      assert.ok(
-        parseFloat(routed[1]) <= parseFloat(flagship[1]),
-        `routed (${routed[1]}) must not exceed always-flagship (${flagship[1]})`,
-      );
-    }
+  it('shows NO dollar figures — tokens only (subscription, not API-billed)', () => {
+    assert.ok(!/\$\d/.test(output), `cost view must not display any dollar amount:\n${output}`);
+    assert.ok(output.includes('Tokens used'), 'shows a measured token total');
   });
 
   it('reports total call count', () => {
@@ -172,10 +158,10 @@ describe('formatCostReport — multi-entry across haiku and sonnet', () => {
     assert.ok(haikuLine.includes('2'), 'haiku line should show 2 calls');
   });
 
-  it('counterfactual line is present', () => {
+  it('routing-efficiency line references the flagship', () => {
     assert.ok(
-      output.includes('always-flagship'),
-      `expected counterfactual in output`,
+      /flagship/i.test(output),
+      `expected a flagship-referenced efficiency line:\n${output}`,
     );
   });
 
@@ -239,11 +225,8 @@ describe('formatCostReport — honest total label', () => {
     );
   });
 
-  it('labels the dollar figure as an API-equivalent estimate, not the subscription bill', () => {
+  it('shows tokens and never a dollar figure (honest for subscription auth)', () => {
     const output = formatCostReport(entries, false).join('\n');
-    assert.ok(
-      /API-equivalent/i.test(output) && /not your subscription bill/i.test(output),
-      `cost output must honestly caption dollars as an estimate, not the bill:\n${output}`,
-    );
+    assert.ok(!/\$\d/.test(output), `must not show any dollar amount:\n${output}`);
   });
 });

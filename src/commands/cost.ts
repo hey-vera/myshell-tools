@@ -110,24 +110,11 @@ export function formatCostReport(entries: LedgerEntry[], color = false): string[
     );
   }
 
-  // ---- Estimated cost (API-equivalent, NOT your subscription bill) ----------
-  // myshell-tools drives your SUBSCRIPTION CLIs — you pay a flat fee, not per
-  // token. This is a rough "if this were metered API usage" estimate, shown for
-  // devs who want the magnitude; it is not what you are billed. Both figures use
-  // the SAME basis (list price × tokens) so "routed vs always-flagship" is
-  // apples-to-apples and internally consistent (routed never exceeds flagship).
-  lines.push(divider(color));
-  lines.push(bold('Estimated cost', color) + dim('  — API-equivalent (list price), not your subscription bill', color));
-  if (routedListUsd > 0) {
-    let line = `${label('Routed', color)}: ~$${routedListUsd.toFixed(4)}`;
-    if (flagshipListUsd > routedListUsd) {
-      line += `   ·   ${dim(`always-flagship: ~$${flagshipListUsd.toFixed(4)}`, color)}`;
-    }
-    lines.push(line);
-  } else {
-    lines.push(dim('No priced models in the ledger — no estimate available.', color));
-  }
-
+  // No dollar figures. myshell-tools drives your SUBSCRIPTION CLIs — you pay a
+  // flat fee, not per token — so a "$x.xx" estimate would be fiction dressed as a
+  // bill. Tokens are the honest unit; the efficiency RATIO above is billing-
+  // agnostic. (List prices are still used INTERNALLY to compute that ratio, but
+  // never displayed as a cost.)
   return lines;
 }
 

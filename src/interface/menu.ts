@@ -1962,21 +1962,15 @@ async function runChatLoop(
           await ctx.store.rename(convId, goalText.length <= 80 ? goalText : goalText.slice(0, 80));
         }
 
-        const ceilings: GoalCeilings = {
-          maxIterations: DEFAULT_MAX_GOAL_ITERATIONS,
-          ...(policy.maxCostUsd !== undefined && policy.maxCostUsd !== null
-            ? { maxCostUsd: policy.maxCostUsd }
-            : {}),
-        };
+        // Turns are the honest bound on a subscription (no per-token bill to cap).
+        const ceilings: GoalCeilings = { maxIterations: DEFAULT_MAX_GOAL_ITERATIONS };
         out.write(
           dim(
-            `\n  Goal mode: working autonomously toward your goal (up to ${ceilings.maxIterations} turns` +
-              `${ceilings.maxCostUsd !== undefined ? `, ~$${ceilings.maxCostUsd.toFixed(2)} cap` : ''}). Esc to stop.\n\n`,
+            `\n  Goal mode: working autonomously toward your goal (up to ${ceilings.maxIterations} turns). Esc to stop.\n\n`,
             out.color,
           ),
         );
 
-        let costSoFarUsd = 0;
         let completed = 0;
         let goalBroke = false;
         for (let i = 0; i < ceilings.maxIterations; i++) {
@@ -1998,14 +1992,13 @@ async function runChatLoop(
           if (shouldExit) { loopResult = 'exit'; goalBroke = true; break; }
           if (shouldMenu) { loopResult = 'menu'; goalBroke = true; break; }
 
-          costSoFarUsd += turn.final?.totalCostUsd ?? 0;
           const signal = parseGoalSignal(turn.final?.output ?? '');
           const step = decideGoalNext({
             signal,
             lastSucceeded: turn.final?.success === true,
             completedIterations: completed,
             ceilings,
-            costSoFarUsd,
+            costSoFarUsd: 0, // no dollar ceiling on a subscription; turns bound the loop
           });
           if (step.action !== 'continue') {
             const mark = step.action === 'complete' ? '✓' : '■';
