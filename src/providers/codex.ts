@@ -62,14 +62,20 @@ function toSandboxArg(level: SandboxLevel): string {
  * construction — including the EXPERIMENTAL native-session resume form — is
  * unit-testable without spawning a real CLI.
  *
- * Default (one-shot / establish): `exec --json -m <model> --sandbox <level>`.
- * Resume (native session, opt-in): `exec resume <thread-id> --json -m <model>
- * --sandbox <level>` — Codex generates the thread id, so resume continues a
- * thread captured from a prior turn (see codex-parse `thread.started`). Prompt
- * is delivered via STDIN in both cases.
+ * Default (one-shot / establish): `exec --json -m <model> --sandbox <level>
+ * --skip-git-repo-check`.
+ * Resume (native session, opt-in): `exec resume <thread-id> …` — Codex generates
+ * the thread id, so resume continues a thread captured from a prior turn (see
+ * codex-parse `thread.started`). Prompt is delivered via STDIN in both cases.
+ *
+ * `--skip-git-repo-check` is REQUIRED: without it codex refuses to run unless the
+ * cwd is inside a git repo ("Not inside a trusted directory…"), so myshell-tools
+ * would fail for users invoking it outside a repo — claude has no such gate. The
+ * privilege boundary is the explicit `--sandbox <level>`, not the git check, so
+ * skipping it is safe. (Live audit: codex errored out in a non-repo cwd without it.)
  */
 export function buildCodexArgs(req: ProviderRequest): string[] {
-  const opts = ['--json', '-m', req.model, '--sandbox', toSandboxArg(req.sandbox)];
+  const opts = ['--json', '-m', req.model, '--sandbox', toSandboxArg(req.sandbox), '--skip-git-repo-check'];
   if (req.sessionId !== undefined && req.sessionId.length > 0 && req.resume === true) {
     return ['exec', 'resume', req.sessionId, ...opts];
   }

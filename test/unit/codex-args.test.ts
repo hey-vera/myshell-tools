@@ -23,7 +23,9 @@ function makeReq(overrides?: Partial<ProviderRequest>): ProviderRequest {
 describe('buildCodexArgs', () => {
   it('builds a one-shot `exec` by default (no resume)', () => {
     const args = buildCodexArgs(makeReq());
-    assert.deepEqual(args, ['exec', '--json', '-m', 'gpt-5-codex', '--sandbox', 'workspace-write']);
+    // --skip-git-repo-check lets codex run outside a git repo (claude has no such
+    // gate); the --sandbox level is the real privilege boundary.
+    assert.deepEqual(args, ['exec', '--json', '-m', 'gpt-5-codex', '--sandbox', 'workspace-write', '--skip-git-repo-check']);
     assert.ok(!args.includes('resume'), 'no resume subcommand by default');
   });
 
