@@ -136,6 +136,13 @@ export interface Policy {
    * `null` or `undefined` (the default) means no cap is applied.
    */
   readonly maxCostUsd?: number | null;
+  /**
+   * Hard ceiling on the tier a task may run at, regardless of how the message
+   * was classified. e.g. `'ic'` clamps a message classified `'manager'` down to
+   * `'ic'`, so a single soft keyword (e.g. "plan") can't launch the most
+   * expensive model on a low-risk chat. Absent → no ceiling (classifier wins).
+   */
+  readonly maxTier?: Tier;
 }
 
 // ---------------------------------------------------------------------------

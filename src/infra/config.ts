@@ -35,6 +35,20 @@ export interface AppConfig {
    * now. Verify live behavior with `npm run test:integration` before relying on it.
    */
   nativeSessions?: boolean;
+  /**
+   * Output verbosity for the chat TUI. Absent → 'normal' (a clean conversation:
+   * the model's prose and nothing else). 'quiet' additionally suppresses the
+   * per-turn status line; 'verbose' shows tool activity and per-tier telemetry
+   * for power users who want to see the orchestration. Only affects what the TUI
+   * prints — never what the model is asked to do.
+   */
+  verbosity?: 'quiet' | 'normal' | 'verbose';
+  /**
+   * Per-provider-call timeout in milliseconds. Absent → 120000 (2 min). Raise
+   * for large manager-tier tasks that legitimately need more wall-clock before
+   * being killed.
+   */
+  timeoutMs?: number;
 }
 
 // ---------------------------------------------------------------------------
