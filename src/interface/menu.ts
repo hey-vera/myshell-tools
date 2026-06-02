@@ -42,6 +42,7 @@ import { runCost } from '../commands/cost.js';
 import { runInstall } from '../commands/install.js';
 import { box, separator, menu } from '../ui/tui.js';
 import { dim, cyan } from '../ui/theme.js';
+import { makeRouteClassifier } from '../core/route-classifier.js';
 import type { UpdateCheckResult } from '../infra/update-check.js';
 import type { ClaudeTokenStatus } from '../infra/credentials.js';
 import { loadClaudeTokenCapturedAt, claudeTokenStatus } from '../infra/credentials.js';
@@ -1083,6 +1084,8 @@ async function runModeSelect(
     ...(config.autoUpdate === false ? { autoUpdate: false } : {}),
     ...(config.nativeSessions === true ? { nativeSessions: true } : {}),
     ...(config.verbosity !== undefined ? { verbosity: config.verbosity } : {}),
+    ...(config.timeoutMs !== undefined ? { timeoutMs: config.timeoutMs } : {}),
+    ...(config.smartRoute === true ? { smartRoute: true } : {}),
   };
 
   await saveConfig(updated);
@@ -1132,6 +1135,8 @@ async function runVerbositySelect(
     ...(config.autoUpdate === false ? { autoUpdate: false } : {}),
     ...(config.nativeSessions === true ? { nativeSessions: true } : {}),
     ...(newVerbosity !== undefined ? { verbosity: newVerbosity } : {}),
+    ...(config.timeoutMs !== undefined ? { timeoutMs: config.timeoutMs } : {}),
+    ...(config.smartRoute === true ? { smartRoute: true } : {}),
   };
 
   await saveConfig(updated);
@@ -1163,6 +1168,8 @@ async function toggleDefaultShell(
     ...(config.autoUpdate === false ? { autoUpdate: false } : {}),
     ...(config.nativeSessions === true ? { nativeSessions: true } : {}),
     ...(config.verbosity !== undefined ? { verbosity: config.verbosity } : {}),
+    ...(config.timeoutMs !== undefined ? { timeoutMs: config.timeoutMs } : {}),
+    ...(config.smartRoute === true ? { smartRoute: true } : {}),
   };
   await saveConfig(updated);
   return updated;
@@ -1182,6 +1189,7 @@ async function runSettings(
     `  [3] Auto-update: ${cfg.autoUpdate !== false ? 'on' : 'off'}`,
     `  [4] Native sessions (experimental): ${cfg.nativeSessions === true ? 'on' : 'off'}`,
     `  [5] Output detail: ${cfg.verbosity ?? 'normal'}`,
+    `  [6] Smart routing (experimental): ${cfg.smartRoute === true ? 'on' : 'off'}`,
     '',
     '  [Enter] Back',
     '',
@@ -1204,8 +1212,35 @@ async function runSettings(
     mutableCtx.config = await toggleNativeSessions(mutableCtx.config, out);
   } else if (key === '5') {
     mutableCtx.config = await runVerbositySelect(mutableCtx.config, out, readLine);
+  } else if (key === '6') {
+    mutableCtx.config = await toggleSmartRoute(mutableCtx.config, out);
   }
   // anything else → back
+}
+
+/**
+ * Toggle the EXPERIMENTAL smart-routing preference and persist it.
+ *
+ * When on, turns the keyword classifier can't route (no tier keyword matched)
+ * are handed to a cheap model that picks the tier; clear keyword turns still
+ * route instantly. Default OFF; live routing quality/latency should be validated
+ * before relying on it. See core/router.ts + core/route-classifier.ts.
+ */
+async function toggleSmartRoute(config: AppConfig, out: OutputSink): Promise<AppConfig> {
+  const enable = config.smartRoute !== true;
+  const updated: AppConfig = {
+    onboarded: config.onboarded,
+    setAsDefault: config.setAsDefault,
+    ...(config.mode !== undefined ? { mode: config.mode } : {}),
+    ...(config.autoUpdate === false ? { autoUpdate: false } : {}),
+    ...(config.nativeSessions === true ? { nativeSessions: true } : {}),
+    ...(config.verbosity !== undefined ? { verbosity: config.verbosity } : {}),
+    ...(config.timeoutMs !== undefined ? { timeoutMs: config.timeoutMs } : {}),
+    ...(enable ? { smartRoute: true } : {}),
+  };
+  await saveConfig(updated);
+  out.write(`Smart routing (experimental): ${enable ? 'on' : 'off'}\n`);
+  return updated;
 }
 
 /**
@@ -1227,6 +1262,8 @@ async function toggleAutoUpdate(config: AppConfig, out: OutputSink): Promise<App
     ...(!enable ? { autoUpdate: false } : {}),
     ...(config.nativeSessions === true ? { nativeSessions: true } : {}),
     ...(config.verbosity !== undefined ? { verbosity: config.verbosity } : {}),
+    ...(config.timeoutMs !== undefined ? { timeoutMs: config.timeoutMs } : {}),
+    ...(config.smartRoute === true ? { smartRoute: true } : {}),
   };
   await saveConfig(updated);
   out.write(`Auto-update: ${enable ? 'on' : 'off'}\n`);
@@ -1251,6 +1288,8 @@ async function toggleNativeSessions(config: AppConfig, out: OutputSink): Promise
     ...(config.autoUpdate === false ? { autoUpdate: false } : {}),
     ...(enable ? { nativeSessions: true } : {}),
     ...(config.verbosity !== undefined ? { verbosity: config.verbosity } : {}),
+    ...(config.timeoutMs !== undefined ? { timeoutMs: config.timeoutMs } : {}),
+    ...(config.smartRoute === true ? { smartRoute: true } : {}),
   };
   await saveConfig(updated);
   out.write(`Native sessions (experimental): ${enable ? 'on' : 'off'}\n`);
@@ -1862,6 +1901,22 @@ async function runChatLoop(
         });
         // planNativeSession returns [] when disabled / no conversation id.
 
+        // Smart routing (opt-in): on ambiguous turns, let a cheap model pick the
+        // tier. Capped at 20s so the worst-case fallback delay is bounded; the
+        // classifier always runs worker-tier read-only (see route-classifier.ts).
+        const ROUTER_TIMEOUT_MS = 20_000;
+        const routeClassifier =
+          mutableCtx.config.smartRoute === true
+            ? makeRouteClassifier({
+                providers: ctx.providers,
+                policy,
+                cwd: ctx.cwd,
+                timeoutMs: Math.min(ctx.timeoutMs, ROUTER_TIMEOUT_MS),
+                ...(Object.keys(availableModels).length > 0 ? { availableModels } : {}),
+                ...(authenticatedProviders.length > 0 ? { authenticatedProviders } : {}),
+              })
+            : undefined;
+
         return {
           clock: ctx.clock,
           session: ctx.store.writer(convId),
@@ -1875,6 +1930,7 @@ async function runChatLoop(
           ...(Object.keys(availableModels).length > 0 ? { availableModels } : {}),
           ...(authenticatedProviders.length > 0 ? { authenticatedProviders } : {}),
           ...(nativeSession.length > 0 ? { nativeSession } : {}),
+          ...(routeClassifier !== undefined ? { routeClassifier } : {}),
         };
       };
 

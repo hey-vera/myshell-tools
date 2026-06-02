@@ -49,6 +49,17 @@ export interface AppConfig {
    * being killed.
    */
   timeoutMs?: number;
+  /**
+   * EXPERIMENTAL (default off). When true, turns the deterministic keyword
+   * classifier can't route (no tier keyword matched — the ambiguous default) are
+   * handed to a cheap model that reads the message and picks the tier. Clear
+   * keyword turns still route instantly with no model call. Fixes the misrouting
+   * of complex-but-unkeyworded requests, at the cost of one short extra model run
+   * on ambiguous turns (graceful fallback to the rules on any failure/timeout).
+   * Live routing quality/latency is not yet verified — validate before relying on
+   * it. See core/router.ts + core/route-classifier.ts.
+   */
+  smartRoute?: boolean;
 }
 
 // ---------------------------------------------------------------------------
