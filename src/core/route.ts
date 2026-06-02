@@ -31,7 +31,7 @@ const TIER_RANK: Record<Tier, number> = {
  * AND escalation/review calls — e.g. under `balanced` (maxTier 'ic') a
  * `route('manager', ...)` request resolves an IC model (sonnet), never opus.
  */
-function clampTier(requested: Tier, ceiling: Tier | undefined): Tier {
+export function clampTier(requested: Tier, ceiling: Tier | undefined): Tier {
   if (ceiling === undefined) return requested;
   return TIER_RANK[requested] > TIER_RANK[ceiling] ? ceiling : requested;
 }

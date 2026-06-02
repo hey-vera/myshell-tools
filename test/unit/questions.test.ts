@@ -173,3 +173,20 @@ describe('formatAnswers', () => {
     assert.equal(formatAnswers(qs, {}), '');
   });
 });
+
+describe('parseQuestions — trailing-only (Major 3 regression)', () => {
+  const VALID =
+    '{"ask_user":{"questions":[{"id":"fw","prompt":"Which?","options":[{"label":"a"},{"label":"b"}],"multiSelect":false,"allowFreeText":true}]}}';
+
+  it('parses a TRAILING ask_user block', () => {
+    const r = parseQuestions('Here you go.\n' + VALID);
+    assert.ok(r !== null && r.questions.length === 1);
+  });
+
+  it('returns null when the ask_user block is NOT trailing (prose follows)', () => {
+    // e.g. the user asked "how does ask_user work?" and the model showed a sample
+    // block mid-answer — it must NOT be misread as a real question and pop a selector.
+    const r = parseQuestions(VALID + '\n\nThat is an example of the format.');
+    assert.equal(r, null);
+  });
+});

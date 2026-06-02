@@ -668,7 +668,7 @@ describe('orchestrate — low-confidence escalation', () => {
       clock,
       session,
       ledger,
-      policy: DEFAULT_POLICY,
+      policy: { ...DEFAULT_POLICY, maxTier: 'manager' }, // permit ic→manager escalation (this test verifies escalation mechanics, not the balanced ceiling)
       cwd: '/fake/cwd',
       sandbox: 'workspace-write',
       timeoutMs: 30_000,
@@ -696,6 +696,42 @@ describe('orchestrate — low-confidence escalation', () => {
     if (finalEv.type === 'final') {
       assert.equal(finalEv.success, true);
     }
+  });
+
+  it('(a2) balanced tier ceiling (maxTier ic) does NOT escalate ic→manager — accepts instead (Major 4 regression)', async () => {
+    // Same low-confidence IC output, but under the DEFAULT/balanced policy whose
+    // maxTier is 'ic'. Escalating would re-run the SAME (sonnet) model — a wasted
+    // attempt — so orchestrate must accept the IC result, not escalate.
+    const LOW_CONF_ENVELOPE =
+      '{"confidence": 0.3, "escalate": false, "reason": "not sure", "needs_review": false}';
+    let callCount = 0;
+    const provider: Provider = {
+      id: 'claude',
+      async detect() {
+        return { id: 'claude', installed: true, version: '1.0.0', authenticated: true, binaryPath: '/usr/bin/fake', availableModels: [] };
+      },
+      async *run(_req: ProviderRequest, _signal: AbortSignal): AsyncIterable<ProviderEvent> {
+        callCount++;
+        yield { type: 'done', text: `Some work.\n${LOW_CONF_ENVELOPE}`, usage: FAKE_USAGE, raw: {} };
+      },
+    };
+    const deps: OrchestrateDeps = {
+      providers: { claude: provider },
+      clock: makeFakeClock(),
+      session: makeFakeSession(),
+      ledger: makeFakeLedger(),
+      policy: DEFAULT_POLICY, // balanced — maxTier 'ic'
+      cwd: '/fake/cwd',
+      sandbox: 'workspace-write',
+      timeoutMs: 30_000,
+    };
+
+    const events = await collectEvents(orchestrate('refactor X', deps, new AbortController().signal));
+
+    assert.equal(callCount, 1, 'must NOT re-run a clamped (no-op) escalation');
+    assert.equal(events.find((e) => e.type === 'escalate'), undefined, 'must not emit an escalate event the ceiling negates');
+    const finalEv = events.find((e) => e.type === 'final');
+    assert.ok(finalEv !== undefined && finalEv.type === 'final' && finalEv.success === true, 'accepts the IC result');
   });
 });
 
@@ -1663,7 +1699,7 @@ describe('orchestrate — maxCostUsd budget cap stops escalation', () => {
       session: makeFakeSession(),
       ledger: makeFakeLedger(),
       // Budget of $0.001 will be exceeded after the first IC run (~$0.0105)
-      policy: { ...DEFAULT_POLICY, maxCostUsd: 0.001 },
+      policy: { ...DEFAULT_POLICY, maxCostUsd: 0.001, maxTier: 'manager' },
       cwd: '/fake/cwd',
       sandbox: 'workspace-write',
       timeoutMs: 30_000,
@@ -1721,7 +1757,7 @@ describe('orchestrate — maxCostUsd budget cap stops escalation', () => {
       clock: makeFakeClock(),
       session: makeFakeSession(),
       ledger: makeFakeLedger(),
-      policy: DEFAULT_POLICY, // no maxCostUsd — uncapped
+      policy: { ...DEFAULT_POLICY, maxTier: 'manager' }, // no maxCostUsd — uncapped; escalation permitted
       cwd: '/fake/cwd',
       sandbox: 'workspace-write',
       timeoutMs: 30_000,

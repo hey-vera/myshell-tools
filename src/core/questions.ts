@@ -26,7 +26,7 @@
  */
 
 import type { Question, QuestionOption, QuestionSet } from './types.js';
-import { lastJsonObjectWithKey } from './json-envelope.js';
+import { lastJsonObjectBoundsWithKey } from './json-envelope.js';
 
 // ---------------------------------------------------------------------------
 // Bounds
@@ -117,8 +117,15 @@ export function parseQuestions(text: string): QuestionSet | null {
   try {
     if (typeof text !== 'string' || text.length === 0) return null;
 
-    const block = lastJsonObjectWithKey(text, 'ask_user');
-    if (block === null) return null;
+    const match = lastJsonObjectBoundsWithKey(text, 'ask_user');
+    if (match === null) return null;
+    // Require the block to be TRAILING (the contract: its own line at the very
+    // end). This keeps detection in lockstep with the render-layer stripper,
+    // which only strips a trailing control block — so a mid-prose example (e.g.
+    // when the user asks "how does ask_user work?" and the model shows a sample)
+    // is NOT misread as a real question and never pops a bogus selector.
+    if (text.slice(match.end).trim().length !== 0) return null;
+    const block = match.value;
 
     const askUser = block['ask_user'];
     if (!isPlainObject(askUser)) return null;

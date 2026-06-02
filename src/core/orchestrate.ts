@@ -30,7 +30,7 @@
 import type { CoreEvent, OrchestrateDeps, Tier, Classification, Assessment, Policy } from './types.js';
 import type { CliError, Usage, ProviderRequest, Provider, ProviderId } from '../providers/port.js';
 import { classify } from './classify.js';
-import { route } from './route.js';
+import { route, clampTier } from './route.js';
 import { buildPrompt } from './prompt.js';
 import { assess } from './assess.js';
 import { parseQuestions } from './questions.js';
@@ -290,7 +290,11 @@ export async function* orchestrate(
     // --- Build prompt (with optional reviewer feedback on retry + history context) ---
     // Bug 4 fix: inject managerNotes whenever defined, not just when currentTier === 'ic'.
     // When using a native session, skip the replayed history — the provider holds it.
-    const prompt = buildPrompt(currentTier, task, managerNotes, useNative ? undefined : historyContext);
+    // Use decision.tier (the tier route() actually resolved, AFTER any maxTier
+    // clamp) — not the requested currentTier — so the persona prompt always
+    // matches the model that runs (e.g. balanced clamps manager→ic: we must use
+    // the IC persona on the sonnet model, never the manager persona).
+    const prompt = buildPrompt(decision.tier, task, managerNotes, useNative ? undefined : historyContext);
 
     // --- Yield tier-start ---
     yield {
@@ -743,6 +747,26 @@ export async function* orchestrate(
 
           // verdict === 'escalate'
           const escalateTo = nextTierUp(currentTier);
+          // Tier ceiling (maxTier) negates the escalation → the reviewer wants a
+          // higher tier than policy allows. Accept the current result rather than
+          // re-running the same clamped model. (cost-saver/balanced cap at 'ic'.)
+          if (escalateTo !== null && clampTier(escalateTo, deps.policy.maxTier) === currentTier) {
+            yield {
+              type: 'notice',
+              level: 'warn',
+              message: 'reviewer requested escalation but the policy tier ceiling is reached — accepting best result',
+            };
+            yield {
+              type: 'final',
+              success: true,
+              output: lastOutput,
+              tier: currentTier,
+              totalCostUsd,
+              sessionId: deps.session.id,
+              attempts,
+            };
+            return;
+          }
           if (escalateTo === null) {
             // Bug 2 fix: already at the top tier — reviewer requested escalation
             // but there is nowhere higher to go.  Yield an honest warn + failing
@@ -796,7 +820,14 @@ export async function* orchestrate(
       (assessment.confidence !== null && assessment.confidence < threshold);
 
     const nextTier = nextTierUp(currentTier);
-    if (needEsc && nextTier !== null) {
+    // A higher tier only helps if the policy ceiling (maxTier) would actually let
+    // it run a different model. Under balanced/cost-saver (maxTier 'ic'), route()
+    // clamps a 'manager' request back to 'ic', so escalating would re-run the SAME
+    // model — a wasted attempt and wrong (manager) persona. When the clamp negates
+    // the escalation, accept the current result instead of burning the attempt.
+    const escalationWouldRun =
+      nextTier !== null && clampTier(nextTier, deps.policy.maxTier) !== currentTier;
+    if (needEsc && escalationWouldRun) {
       // Budget cap: do not escalate to a new tier if we have spent the cap.
       if (budgetExceeded(totalCostUsd, deps.policy.maxCostUsd)) {
         yield {

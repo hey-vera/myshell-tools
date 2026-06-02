@@ -109,6 +109,17 @@ describe('compactHistory — confidence envelope stripping', () => {
     assert.ok(!result.includes('"confidence": 0.7'), 'Should strip envelope');
   });
 
+  it('strips a trailing ask_user block from replayed history (Major 1 regression)', () => {
+    // A question turn is persisted with its raw ask_user block; it must NOT be
+    // replayed into the next prompt as if it were conversational prose.
+    const content =
+      'Which test framework do you prefer?\n' +
+      '{"ask_user":{"questions":[{"id":"fw","prompt":"Which?","options":[{"label":"vitest"},{"label":"jest"}],"multiSelect":false,"allowFreeText":true}]}}';
+    const result = compactHistory([makeEntry('assistant', content)]);
+    assert.ok(result.includes('Which test framework'), 'Should keep the human-readable question text');
+    assert.ok(!result.includes('ask_user'), 'Should strip the raw ask_user JSON block');
+  });
+
   it('handles assistant content with no envelope gracefully', () => {
     const content = 'Just a plain response with no JSON at all.';
     const result = compactHistory([makeEntry('assistant', content)]);

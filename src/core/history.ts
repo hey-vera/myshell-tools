@@ -28,22 +28,36 @@ const TRUNCATION_MARKER = ' …[truncated]';
 // ---------------------------------------------------------------------------
 
 /**
- * Strip any trailing confidence-envelope JSON block from an assistant's content.
+ * Strip any trailing control-envelope JSON block from an assistant's content
+ * before it is replayed into a later prompt.
  *
- * The envelope is a trailing `{ ... }` object that contains `"confidence"`.
- * Uses {@link lastJsonObjectBoundsWithKey} to locate the last such block, then
- * removes it (and surrounding whitespace) from the content.
+ * Two control blocks live at the trailing edge of a response and are internal
+ * control-plane data, never conversational content:
+ *   - the confidence envelope (`{…"confidence"…}`), forced onto every response;
+ *   - the structured-question block (`{"ask_user":…}`), emitted when the model
+ *     needs a user decision.
+ * Either must be removed from replayed history — otherwise the model sees its
+ * own machine-control JSON as prior "conversation" and learns to treat it as
+ * normal prose (and it wastes tokens). Mirrors the render-layer stripper.
  *
  * Never throws — returns the original content on any parse failure.
  */
 function stripEnvelope(content: string): string {
   try {
-    const match = lastJsonObjectBoundsWithKey(content, 'confidence');
+    // Find whichever trailing control block starts earliest (only one should be
+    // present per turn, but scanning both is harmless and future-proof).
+    let match: { readonly start: number; readonly end: number } | null = null;
+    for (const key of ['confidence', 'ask_user']) {
+      const m = lastJsonObjectBoundsWithKey(content, key);
+      if (m !== null && content.slice(m.end).trim().length === 0) {
+        if (match === null || m.start < match.start) match = { start: m.start, end: m.end };
+      }
+    }
     if (match === null) {
       return content;
     }
 
-    // Remove the envelope and any leading whitespace/newline before it
+    // Remove the block and any leading whitespace/newline before it
     const before = content.slice(0, match.start).replace(/\s+$/, '');
     const after = content.slice(match.end).replace(/^\s+/, '');
 
