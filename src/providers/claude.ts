@@ -58,6 +58,31 @@ function toClaudeModelArg(model: string): string {
   return model;
 }
 
+// ---------------------------------------------------------------------------
+// Runaway fan-out safety rail
+// ---------------------------------------------------------------------------
+
+/**
+ * Global per-run dollar ceiling applied to EVERY `claude -p` invocation via the
+ * CLI's `--max-budget-usd <amount>` flag (verified from `claude -p --help`:
+ * "Maximum dollar amount to spend on API calls (only works with --print)").
+ *
+ * This is a last-resort backstop against the runaway-fan-out failure mode where
+ * a manager-tier task spawns 70+ tool calls and blows the wall-clock timeout —
+ * the model now self-halts once its own API spend crosses this line, before the
+ * SIGKILL path is reached.
+ *
+ * The verified Claude binary (v2.1.x) exposes NO `--max-turns` flag for headless
+ * `-p`; `--max-budget-usd` is the only built-in hard bound, so we use it.
+ *
+ * The ceiling is intentionally GENEROUS so that normal IC / worker runs never
+ * trip it — it only catches genuine runaways. Note: `ProviderRequest` carries no
+ * tier, so this adapter cannot scope the cap to manager-only; it is therefore a
+ * single global ceiling applied uniformly to every run. (If per-tier caps are
+ * ever wanted, the tier would have to be threaded onto ProviderRequest.)
+ */
+export const CLAUDE_MAX_BUDGET_USD = 25;
+
 /**
  * Map the abstract privilege ladder to Claude CLI permission flags. Pure.
  *
@@ -100,6 +125,11 @@ export function buildClaudeArgs(req: ProviderRequest): string[] {
     '--verbose',
     '--model',
     toClaudeModelArg(req.model),
+    // Runaway safety rail: a generous global spend ceiling so the model
+    // self-halts before a fan-out can blow past the wall-clock timeout. Applies
+    // to every run (ProviderRequest has no tier, so this can't be manager-only).
+    '--max-budget-usd',
+    String(CLAUDE_MAX_BUDGET_USD),
   ];
   if (req.sessionId !== undefined && req.sessionId.length > 0) {
     if (req.resume === true) {
@@ -178,7 +208,27 @@ export function createClaudeProvider(opts?: { bin?: string }): Provider {
       const result = await subprocess;
 
       if (!emittedTerminal) {
-        if (result.isCanceled) {
+        // A wall-clock timeout SIGKILLs the child before the Claude CLI can emit
+        // its terminal `result` event, so claude-parse.ts never produces usage or
+        // a done/error event. execa flags this with `result.timedOut === true`.
+        // Classify it explicitly as the recoverable `timeout` category (errors.ts)
+        // rather than letting the empty stderr fall through to `unknown`
+        // ("An unexpected error occurred."), which is both wrong and unactionable.
+        //
+        // NOTE on ordering: timedOut is checked BEFORE isCanceled. execa also sets
+        // isCanceled when a timeout fires, but a real timeout is the more specific,
+        // more actionable diagnosis, so it wins.
+        if (result.timedOut === true) {
+          const seconds = Math.round((req.timeoutMs ?? 0) / 1000);
+          const base = classifyError('timed out', 1); // → category 'timeout', recoverable
+          yield {
+            type: 'error',
+            error: {
+              ...base,
+              message: `Hit the ${seconds}-second limit before the model finished.`,
+            },
+          };
+        } else if (result.isCanceled) {
           yield {
             type: 'error',
             error: classifyError('cancelled', 1),

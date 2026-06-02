@@ -425,6 +425,53 @@ export async function* orchestrate(
         return;
       }
 
+      // Timeouts are terminal for THIS task: do NOT cross-vendor fail over and do
+      // NOT escalate the tier. Re-running the same (too-broad) task on another
+      // vendor at the same tier just doubles the wall-clock and the spend for the
+      // same likely-to-time-out work — exactly the runaway we are fixing. Stop
+      // here with an actionable notice. (Fast crashes and other recoverable
+      // errors keep the existing failover/escalation behaviour below.)
+      if (errored !== undefined && errored.category === 'timeout') {
+        // Honest-spend judgment call (Goal 3): a timeout SIGKILLs the child before
+        // the CLI emits its terminal usage/result, so claude-parse produces no
+        // usage. The LedgerEntry schema (types.ts) holds only numeric token/usd
+        // fields — it cannot represent "unknown". We do NOT fabricate a number:
+        // the ledger entry was recorded above with success:false and the real
+        // parsed usage (0 when none arrived before the kill). When nothing was
+        // parsed, the recorded $0 is NOT a real cost — the run very likely burned
+        // the user's subscription — so we surface that explicitly here rather than
+        // letting the UI render "0 tokens / $0 / free". When partial usage DID
+        // arrive before the kill, we trust it and make no unknown-spend claim.
+        const parsedNoUsage =
+          usage === undefined && providerCostUsd === undefined;
+        if (parsedNoUsage) {
+          yield {
+            type: 'notice',
+            level: 'warn',
+            message:
+              'Spend unknown — the process was killed before reporting usage; the recorded $0 is not a real cost (the run may still have consumed your subscription).',
+          };
+        }
+        yield {
+          type: 'notice',
+          level: 'warn',
+          message:
+            'Timed out before the model finished. Not retrying on another vendor (the same work would likely time out again and double the cost). The task may be too broad — narrow it, or raise the timeout in Settings.',
+        };
+        yield {
+          type: 'final',
+          success: false,
+          output: lastOutput,
+          tier: currentTier,
+          totalCostUsd,
+          sessionId: deps.session.id,
+          attempts,
+          errorCategory: 'timeout',
+          provider: decision.provider,
+        };
+        return;
+      }
+
       // Compute which providers haven't been tried at this tier yet.
       const triedAtTier = triedByTier.get(currentTier) ?? new Set<ProviderId>();
       const remaining = available.filter((id) => !triedAtTier.has(id));

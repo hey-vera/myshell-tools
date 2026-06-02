@@ -37,6 +37,18 @@ const require = createRequire(import.meta.url);
 const pkg = require('../package.json');
 const version: string = pkg.version as string;
 
+/** Default hard wall-clock timeout (ms) for a single provider run. */
+const DEFAULT_TIMEOUT_MS = 120000;
+
+/**
+ * Resolve the per-run wall-clock timeout from loaded config, falling back to the
+ * built-in default. Centralised so the menu path (and any future config-aware
+ * path) shares one source of truth instead of a scattered magic number.
+ */
+function resolveTimeoutMs(config: import('./infra/config.js').AppConfig): number {
+  return config.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+}
+
 const HELP = `\
 myshell-tools v${version}
 
@@ -73,6 +85,7 @@ function buildDeps(
   cwd: string,
   env: import('./providers/detect.js').EnvironmentStatus,
   policy = DEFAULT_POLICY,
+  timeoutMs: number = DEFAULT_TIMEOUT_MS,
 ): OrchestrateDeps {
   const providers = buildProviders(cwd, env);
 
@@ -104,7 +117,7 @@ function buildDeps(
     providers,
     cwd,
     sandbox: 'workspace-write',
-    timeoutMs: 120000,
+    timeoutMs,
     ...(Object.keys(availableModels).length > 0 ? { availableModels } : {}),
     ...(authenticatedProviders.length > 0 ? { authenticatedProviders } : {}),
   };
@@ -197,7 +210,7 @@ async function main(): Promise<void> {
     }
     const [env, config] = await Promise.all([detectEnvironment(), loadConfig()]);
     const policy = POLICY_PRESETS[config.mode ?? 'balanced'];
-    const deps = buildDeps(cwd, env, policy);
+    const deps = buildDeps(cwd, env, policy, resolveTimeoutMs(config));
     const result = await runTask(taskParts.join(' '), deps, out, new AbortController().signal);
     // Notify-only update nudge for the scripted / one-shot path. The interactive
     // menu auto-updates, but `run` must NEVER swap the binary mid-task. Written
@@ -248,7 +261,7 @@ async function main(): Promise<void> {
       config,
       cwd,
       sandbox: 'workspace-write',
-      timeoutMs: 120000,
+      timeoutMs: resolveTimeoutMs(config),
       healthIssues,
       checkForUpdate: () => checkForUpdate({ currentVersion: version, now: Date.now() }),
       updateSelf: async (updateOut) => {
@@ -286,6 +299,9 @@ async function main(): Promise<void> {
     const spinner = createSpinner(out);
     spinner.start('Detecting providers…');
     const env = await detectEnvironment();
+    // TODO: the repl path does not load AppConfig, so it uses the built-in
+    // DEFAULT_TIMEOUT_MS. If/when this path loads config, pass
+    // resolveTimeoutMs(config) here like the menu and run paths do.
     const deps = buildDeps(cwd, env);
     spinner.stop();
     out.write(welcome(deps, out.color) + '\n\n');

@@ -871,7 +871,7 @@ describe('orchestrate — totalCostUsd accumulation', () => {
       '{"verdict": "approve", "notes": "ok", "confidence": 0.95}';
 
     const icUsage: Usage = { inputTokens: 1000, outputTokens: 500 };    // claude-sonnet-4-6
-    const reviewUsage: Usage = { inputTokens: 500, outputTokens: 200 }; // codex gpt-5.5 (manager)
+    const reviewUsage: Usage = { inputTokens: 500, outputTokens: 200 }; // codex ic (gpt-5.2-codex) — balanced clamps the review to maxTier 'ic'
 
     const claudeProvider: Provider = {
       id: 'claude',
@@ -914,8 +914,11 @@ describe('orchestrate — totalCostUsd accumulation', () => {
     // Compute expected costs from pricing table
     // IC: claude-sonnet-4-6 → $3/1M input, $15/1M output
     const icCost = (1000 / 1_000_000) * 3 + (500 / 1_000_000) * 15;
-    // Review: codex manager (gpt-5.5) → $5/1M input, $30/1M output
-    const reviewCost = (500 / 1_000_000) * 5 + (200 / 1_000_000) * 30;
+    // Review: balanced (DEFAULT_POLICY) caps tier at 'ic' via maxTier, so the
+    // cross-vendor review runs codex's ic model (gpt-5.2-codex) → $1.75/1M input,
+    // $14/1M output — not the manager-tier gpt-5.5. This is the cost guardrail
+    // working: balanced never pays manager rates, even for a review.
+    const reviewCost = (500 / 1_000_000) * 1.75 + (200 / 1_000_000) * 14;
     const expectedTotal = icCost + reviewCost;
 
     const finalEv = events.find((e) => e.type === 'final');
@@ -2953,5 +2956,231 @@ describe('orchestrate — captures a provider session id and persists it on the 
     const assistant = session.entries.find((e) => e.role === 'assistant');
     assert.ok(assistant !== undefined, 'expected an assistant entry');
     assert.strictEqual(assistant.sessionId, undefined, 'no sessionId when the provider reports none');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Timeout handling — Goals 2 & 3 of the runaway-fan-out fix.
+//
+//  (a) A timeout does NOT cross-vendor fail over and does NOT escalate the tier
+//      (re-running the same too-broad task would just double time + cost).
+//  (b) A FAST CRASH (non-timeout recoverable error) STILL fails over — proving
+//      we special-cased only timeouts, not all failures.
+//  (c) A killed run that parsed NO usage emits the honest "spend unknown" notice
+//      and records a ledger entry with success:false (no fabricated number).
+//  (d) A killed run that DID parse partial usage records the real tokens and
+//      does NOT claim spend is unknown.
+// ---------------------------------------------------------------------------
+
+const TIMEOUT_ERROR: ProviderEvent = {
+  type: 'error',
+  error: {
+    category: 'timeout',
+    recoverable: true,
+    message: 'Hit the 30-second limit before the model finished.',
+    suggestion: 'Simplify the request or increase the timeout threshold and retry.',
+  },
+};
+
+describe('orchestrate — timeout does not fail over or escalate (Goal 2)', () => {
+  it('(a) a timeout stops with a notice — no failover, no escalate', async () => {
+    // claude (the IC provider for "refactor X") times out. codex is available as
+    // a would-be failover target. We must NOT switch to it.
+    let codexCalled = false;
+    const claudeProvider = makeFakeProvider('claude', [TIMEOUT_ERROR]);
+    const codexProvider: Provider = {
+      id: 'codex',
+      async detect() {
+        return { id: 'codex', installed: true, version: '1.0.0', authenticated: true, binaryPath: '/x', availableModels: [] };
+      },
+      async *run(_req: ProviderRequest, _signal: AbortSignal): AsyncIterable<ProviderEvent> {
+        codexCalled = true;
+        yield { type: 'done', text: FINAL_TEXT, usage: FAKE_USAGE, raw: {} };
+      },
+    };
+
+    const clock = makeFakeClock();
+    const session = makeFakeSession();
+    const ledger = makeFakeLedger();
+    const deps: OrchestrateDeps = {
+      providers: { claude: claudeProvider, codex: codexProvider },
+      clock,
+      session,
+      ledger,
+      policy: DEFAULT_POLICY,
+      cwd: '/fake/cwd',
+      sandbox: 'workspace-write',
+      timeoutMs: 30_000,
+    };
+
+    const events = await collectEvents(
+      orchestrate('refactor X', deps, new AbortController().signal),
+    );
+
+    // No failover, no escalate.
+    assert.equal(events.find((e) => e.type === 'failover'), undefined, 'a timeout must NOT fail over to another vendor');
+    assert.equal(events.find((e) => e.type === 'escalate'), undefined, 'a timeout must NOT escalate the tier');
+    assert.equal(codexCalled, false, 'the failover vendor must never run on a timeout');
+
+    // Only one tier-start (the timed-out IC run).
+    const tierStarts = events.filter((e) => e.type === 'tier-start');
+    assert.equal(tierStarts.length, 1, `expected exactly 1 tier-start, got ${tierStarts.length}`);
+
+    // Actionable notice mentioning too-broad / timeout settings.
+    const notice = events.find(
+      (e) => e.type === 'notice' && e.level === 'warn' && /too broad|raise the timeout|Settings/i.test(e.message),
+    );
+    assert.ok(notice !== undefined, 'expected an actionable timeout notice');
+
+    // Failing final tagged with the timeout category.
+    const finalEv = events.find((e) => e.type === 'final');
+    assert.ok(finalEv !== undefined && finalEv.type === 'final');
+    if (finalEv.type === 'final') {
+      assert.equal(finalEv.success, false);
+      assert.equal(finalEv.errorCategory, 'timeout');
+      assert.equal(finalEv.attempts, 1, 'should stop after the single timed-out attempt');
+    }
+  });
+});
+
+describe('orchestrate — a fast crash STILL fails over (Goal 2 boundary)', () => {
+  it('(b) a non-timeout recoverable error fails over to the other vendor', async () => {
+    let codexCalled = false;
+    // claude crashes fast with a network error (recoverable, not a timeout).
+    const claudeProvider = makeFakeProvider('claude', [
+      {
+        type: 'error',
+        error: { category: 'network', recoverable: true, message: 'connection reset', suggestion: 'retry' },
+      },
+    ]);
+    const codexProvider: Provider = {
+      id: 'codex',
+      async detect() {
+        return { id: 'codex', installed: true, version: '1.0.0', authenticated: true, binaryPath: '/x', availableModels: [] };
+      },
+      async *run(_req: ProviderRequest, _signal: AbortSignal): AsyncIterable<ProviderEvent> {
+        codexCalled = true;
+        yield { type: 'done', text: FINAL_TEXT, usage: FAKE_USAGE, raw: {} };
+      },
+    };
+
+    const clock = makeFakeClock();
+    const session = makeFakeSession();
+    const ledger = makeFakeLedger();
+    const deps: OrchestrateDeps = {
+      providers: { claude: claudeProvider, codex: codexProvider },
+      clock,
+      session,
+      ledger,
+      policy: DEFAULT_POLICY,
+      cwd: '/fake/cwd',
+      sandbox: 'workspace-write',
+      timeoutMs: 30_000,
+    };
+
+    const events = await collectEvents(
+      orchestrate('refactor X', deps, new AbortController().signal),
+    );
+
+    // A failover event MUST be emitted and the other vendor MUST run.
+    const failoverEv = events.find((e) => e.type === 'failover');
+    assert.ok(failoverEv !== undefined, 'a fast crash must still fail over');
+    if (failoverEv.type === 'failover') {
+      assert.equal(failoverEv.from, 'claude');
+      assert.equal(failoverEv.to, 'codex');
+    }
+    assert.equal(codexCalled, true, 'the failover vendor must run after a fast crash');
+  });
+});
+
+describe('orchestrate — honest spend on a killed run (Goal 3)', () => {
+  it('(c) killed run with NO usage: honest "spend unknown" notice + ledger success:false', async () => {
+    // A timeout SIGKILL: no usage/done parsed before the kill — only the error.
+    const claudeProvider = makeFakeProvider('claude', [TIMEOUT_ERROR]);
+
+    const clock = makeFakeClock();
+    const session = makeFakeSession();
+    const ledger = makeFakeLedger();
+    const deps: OrchestrateDeps = {
+      providers: { claude: claudeProvider },
+      clock,
+      session,
+      ledger,
+      policy: DEFAULT_POLICY,
+      cwd: '/fake/cwd',
+      sandbox: 'workspace-write',
+      timeoutMs: 30_000,
+    };
+
+    const events = await collectEvents(
+      orchestrate('refactor X', deps, new AbortController().signal),
+    );
+
+    // Honest "spend unknown" notice — the recorded $0 is NOT presented as free.
+    const unknownNotice = events.find(
+      (e) => e.type === 'notice' && e.level === 'warn' && /spend unknown/i.test(e.message),
+    );
+    assert.ok(unknownNotice !== undefined, 'expected an honest "spend unknown" notice on a killed run with no usage');
+    if (unknownNotice.type === 'notice') {
+      assert.match(unknownNotice.message, /not a real cost/i);
+    }
+
+    // Ledger entry recorded with success:false (we do not skip recording).
+    assert.equal(ledger.entries.length, 1, 'killed run must still be recorded in the ledger');
+    const entry = ledger.entries[0]!;
+    assert.equal(entry.success, false);
+    // No fabricated number: with no parsed usage the honest recorded values are 0.
+    assert.equal(entry.inputTokens, 0);
+    assert.equal(entry.outputTokens, 0);
+    assert.equal(entry.usd, 0);
+  });
+
+  it('(d) killed run WITH partial usage: records real tokens and does NOT claim unknown', async () => {
+    // Some usage WAS parsed (a standalone usage event arrived) before the kill.
+    const partialUsage: Usage = { inputTokens: 4321, outputTokens: 0 };
+    const claudeProvider = makeFakeProvider('claude', [
+      { type: 'usage', usage: partialUsage },
+      TIMEOUT_ERROR,
+    ]);
+
+    const clock = makeFakeClock();
+    const session = makeFakeSession();
+    const ledger = makeFakeLedger();
+    const deps: OrchestrateDeps = {
+      providers: { claude: claudeProvider },
+      clock,
+      session,
+      ledger,
+      policy: DEFAULT_POLICY,
+      cwd: '/fake/cwd',
+      sandbox: 'workspace-write',
+      timeoutMs: 30_000,
+    };
+
+    const events = await collectEvents(
+      orchestrate('refactor X', deps, new AbortController().signal),
+    );
+
+    // We must NOT claim spend is unknown when real usage was parsed.
+    const unknownNotice = events.find(
+      (e) => e.type === 'notice' && /spend unknown/i.test(e.message),
+    );
+    assert.equal(unknownNotice, undefined, 'must NOT claim "spend unknown" when partial usage was parsed');
+
+    // Ledger records the real measured tokens (success:false, not a crash hide).
+    assert.equal(ledger.entries.length, 1);
+    const entry = ledger.entries[0]!;
+    assert.equal(entry.success, false);
+    assert.equal(entry.inputTokens, 4321, 'real parsed input tokens must be recorded');
+    assert.equal(entry.outputTokens, 0);
+
+    // Still a failing final tagged timeout, still no failover.
+    assert.equal(events.find((e) => e.type === 'failover'), undefined);
+    const finalEv = events.find((e) => e.type === 'final');
+    assert.ok(finalEv !== undefined && finalEv.type === 'final');
+    if (finalEv.type === 'final') {
+      assert.equal(finalEv.success, false);
+      assert.equal(finalEv.errorCategory, 'timeout');
+    }
   });
 });

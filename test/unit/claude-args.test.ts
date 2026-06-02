@@ -23,7 +23,9 @@ function makeReq(overrides?: Partial<ProviderRequest>): ProviderRequest {
 describe('buildClaudeArgs', () => {
   it('builds the stateless one-shot args by default (no session flags)', () => {
     const args = buildClaudeArgs(makeReq());
-    assert.deepEqual(args, ['-p', '--output-format', 'stream-json', '--verbose', '--model', 'sonnet']);
+    // --max-budget-usd is a global runaway safety rail on every `claude -p` run
+    // (the CLI has no --max-turns), so it is part of the default arg set.
+    assert.deepEqual(args, ['-p', '--output-format', 'stream-json', '--verbose', '--model', 'sonnet', '--max-budget-usd', '25']);
     assert.ok(!args.includes('--session-id'), 'no --session-id when sessionId is unset');
     assert.ok(!args.includes('--resume'), 'no --resume when sessionId is unset');
   });
