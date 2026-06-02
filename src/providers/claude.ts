@@ -87,12 +87,18 @@ export const CLAUDE_MAX_BUDGET_USD = 25;
  * Map the abstract privilege ladder to Claude CLI permission flags. Pure.
  *
  *  - read-only       → remove mutation/execution tools (reads still allowed)
- *  - workspace-write → no flag (Claude's default headless behavior)
+ *  - workspace-write → --permission-mode acceptEdits (auto-accept file edits)
  *  - full-access     → --permission-mode bypassPermissions (explicit opt-in)
  *
- * Never emits `--dangerously-skip-permissions`. The mutation tool list uses the
- * stable Claude Code tool names (Write/Edit/NotebookEdit/Bash); unknown names
- * are harmless. `--disallowedTools` is variadic, so callers append it LAST.
+ * `acceptEdits` is REQUIRED, not optional: in headless `-p` mode Claude's default
+ * permission behaviour PROMPTS before every Write/Edit/Bash, and there is no human
+ * to approve — so the run deadlocks ("waiting for permission") and never mutates a
+ * file. (Live audit: a file-writing /goal spun for all 8 turns, writing nothing.)
+ * `acceptEdits` auto-accepts edits to the workspace — exactly the "workspace-write"
+ * contract — while staying short of the full `bypassPermissions` used by
+ * full-access. We never emit `--dangerously-skip-permissions`. The read-only
+ * mutation tool list uses the stable Claude Code tool names; `--disallowedTools`
+ * is variadic so callers append it LAST.
  */
 function claudeSandboxArgs(sandbox: SandboxLevel): string[] {
   switch (sandbox) {
@@ -102,7 +108,7 @@ function claudeSandboxArgs(sandbox: SandboxLevel): string[] {
       return ['--permission-mode', 'bypassPermissions'];
     case 'workspace-write':
     default:
-      return [];
+      return ['--permission-mode', 'acceptEdits'];
   }
 }
 

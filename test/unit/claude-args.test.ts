@@ -24,8 +24,10 @@ describe('buildClaudeArgs', () => {
   it('builds the stateless one-shot args by default (no session flags)', () => {
     const args = buildClaudeArgs(makeReq());
     // --max-budget-usd is a global runaway safety rail on every `claude -p` run
-    // (the CLI has no --max-turns), so it is part of the default arg set.
-    assert.deepEqual(args, ['-p', '--output-format', 'stream-json', '--verbose', '--model', 'sonnet', '--max-budget-usd', '25']);
+    // (the CLI has no --max-turns), so it is part of the default arg set. The
+    // default sandbox is workspace-write → --permission-mode acceptEdits (appended
+    // last), without which headless writes would deadlock on permission prompts.
+    assert.deepEqual(args, ['-p', '--output-format', 'stream-json', '--verbose', '--model', 'sonnet', '--max-budget-usd', '25', '--permission-mode', 'acceptEdits']);
     assert.ok(!args.includes('--session-id'), 'no --session-id when sessionId is unset');
     assert.ok(!args.includes('--resume'), 'no --resume when sessionId is unset');
   });
@@ -69,10 +71,15 @@ describe('buildClaudeArgs', () => {
     assert.ok(!args.includes('bypassPermissions'), 'read-only must not bypass permissions');
   });
 
-  it('workspace-write adds no permission flag (default headless behavior)', () => {
+  it('workspace-write uses --permission-mode acceptEdits (auto-accept edits, no deadlock)', () => {
+    // REQUIRED: headless `-p` otherwise prompts before every write and deadlocks
+    // (no human to approve), so autonomous file work never happens. acceptEdits
+    // auto-accepts workspace edits without the full bypassPermissions of full-access.
     const args = buildClaudeArgs(makeReq({ sandbox: 'workspace-write' }));
     assert.ok(!args.includes('--disallowedTools'), 'workspace-write must not restrict tools');
-    assert.ok(!args.includes('--permission-mode'), 'workspace-write must not set a permission mode');
+    const i = args.indexOf('--permission-mode');
+    assert.ok(i >= 0, 'workspace-write must set a permission mode');
+    assert.equal(args[i + 1], 'acceptEdits', 'workspace-write must use acceptEdits (not bypassPermissions)');
   });
 
   it('full-access opts into --permission-mode bypassPermissions (never --dangerously-skip-permissions)', () => {
