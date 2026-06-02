@@ -6,6 +6,10 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+- Cross-OS CI execution (requires a public remote).
+
+## [3.5.0]
+
 A "one chat — automatic, honest, partner-grade" reshape. The chat tunes itself to
 your subscription, talks like a real advisor, and can keep working on its own
 until a job is done — without commands to learn. All changes below are unit-/
@@ -44,6 +48,11 @@ dist-verified, and the major flows were verified against live models.
   cheap model instead of defaulting to the IC tier (fixes under-routing of
   complex-but-unkeyworded requests). ~5–10s on those turns only; clear turns stay
   instant. Calibrated live so it doesn't over-escalate trivial chat.
+- **opencode uses your own configured model.** As a subscription/free provider,
+  opencode now runs whatever model you've set up (a free opencode-zen model, or a
+  premium one you've added — e.g. Kimi K2); the adapter omits `-m` and the three
+  guessed model ids collapse to one honest `opencode` provider-default. "Just use
+  whatever opencode has" — no invented tier/price.
 
 ### Fixed (found via live audit)
 - **Autonomous file work was deadlocked.** `workspace-write` passed no permission
@@ -61,11 +70,6 @@ dist-verified, and the major flows were verified against live models.
   `setup-token` paste instructions were deprecated/misleading.
 - Backspace in cooked-mode after a child CLI; prose glued after a tool call;
   multi-line / scaffold-polluted conversation titles; the "thinking" indicator.
-
-### Pending
-- Cross-OS CI execution (requires a public remote).
-- opencode → Kimi K2 agent-swarm routing (needs a Kimi-capable provider configured
-  in opencode + a real tier/price mapping to verify; not shipped on guesses).
 
 ## [3.4.0]
 
