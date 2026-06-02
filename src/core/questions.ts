@@ -26,7 +26,7 @@
  */
 
 import type { Question, QuestionOption, QuestionSet } from './types.js';
-import { lastJsonObjectBoundsWithKey } from './json-envelope.js';
+import { lastJsonObjectBoundsWithKey, isTrailingNoise } from './json-envelope.js';
 
 // ---------------------------------------------------------------------------
 // Bounds
@@ -81,7 +81,11 @@ function parseQuestion(raw: unknown): Question | null {
     if (opt === null) return null; // any malformed option invalidates the question
     options.push(opt);
   }
-  if (options.length < MIN_OPTIONS || options.length > MAX_OPTIONS) return null;
+  if (options.length < MIN_OPTIONS) return null;
+  // Too FEW is a real defect (reject); too MANY is just the model overshooting
+  // (e.g. 4 choices + "Other") — clamp to the cap rather than discard the whole
+  // selector and leak raw JSON. allowFreeText already covers an "Other" path.
+  const capped = options.length > MAX_OPTIONS ? options.slice(0, MAX_OPTIONS) : options;
 
   // Booleans default to false when absent; reject non-boolean explicit values to
   // stay strict (the model is told to emit booleans).
@@ -90,7 +94,7 @@ function parseQuestion(raw: unknown): Question | null {
   const allowFreeText = coerceFlag(raw['allowFreeText']);
   if (allowFreeText === null) return null;
 
-  return { id, prompt, options, multiSelect, allowFreeText };
+  return { id, prompt, options: capped, multiSelect, allowFreeText };
 }
 
 /** Accept boolean or absent (→ false); reject anything else. */
@@ -124,7 +128,9 @@ export function parseQuestions(text: string): QuestionSet | null {
     // which only strips a trailing control block — so a mid-prose example (e.g.
     // when the user asks "how does ask_user work?" and the model shows a sample)
     // is NOT misread as a real question and never pops a bogus selector.
-    if (text.slice(match.end).trim().length !== 0) return null;
+    // "Trailing" tolerates a wrapping ```json … ``` fence (models often add one
+    // despite instructions) — only real content after the block disqualifies it.
+    if (!isTrailingNoise(text.slice(match.end))) return null;
     const block = match.value;
 
     const askUser = block['ask_user'];

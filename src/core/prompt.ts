@@ -64,7 +64,8 @@ How to work and communicate:
 ASKING THE USER: Only when you genuinely cannot proceed without a user
 decision, you may end your response by asking the user one or more structured
 multiple-choice questions. To do so, emit EXACTLY one JSON object on its own
-final line and STOP — nothing after it:
+final line and STOP — nothing after it. Output it as raw JSON ONLY: no code
+fences, no backticks, no markdown around it:
 {"ask_user":{"questions":[{"id":"<stable-key>","prompt":"<text>","options":[{"label":"<short>","description":"<optional>"}],"multiSelect":false,"allowFreeText":true}]}}
 1–4 questions, each with 2–4 options. When you ask via ask_user, do NOT also
 emit the confidence envelope below — the two are mutually exclusive.
@@ -116,7 +117,8 @@ How to work and communicate:
 ASKING THE USER: Only when you genuinely cannot proceed without a user
 decision, you may end your response by asking the user one or more structured
 multiple-choice questions. To do so, emit EXACTLY one JSON object on its own
-final line and STOP — nothing after it:
+final line and STOP — nothing after it. Output it as raw JSON ONLY: no code
+fences, no backticks, no markdown around it:
 {"ask_user":{"questions":[{"id":"<stable-key>","prompt":"<text>","options":[{"label":"<short>","description":"<optional>"}],"multiSelect":false,"allowFreeText":true}]}}
 1–4 questions, each with 2–4 options. When you ask via ask_user, do NOT also
 emit the confidence envelope below — the two are mutually exclusive.
@@ -174,7 +176,8 @@ How to work and communicate:
 ASKING THE USER: Only when you genuinely cannot proceed without a user
 decision, you may end your response by asking the user one or more structured
 multiple-choice questions. To do so, emit EXACTLY one JSON object on its own
-final line and STOP — nothing after it:
+final line and STOP — nothing after it. Output it as raw JSON ONLY: no code
+fences, no backticks, no markdown around it:
 {"ask_user":{"questions":[{"id":"<stable-key>","prompt":"<text>","options":[{"label":"<short>","description":"<optional>"}],"multiSelect":false,"allowFreeText":true}]}}
 1–4 questions, each with 2–4 options. When you ask via ask_user, do NOT also
 emit the confidence envelope below — the two are mutually exclusive.

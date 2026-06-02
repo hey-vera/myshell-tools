@@ -34,6 +34,27 @@ describe('parseQuestions — valid blocks', () => {
     assert.equal(q.allowFreeText, true);
   });
 
+  it('parses an envelope wrapped in a ```json code fence (models add one despite instructions)', () => {
+    const text =
+      "Let me ask first.\n```json\n" +
+      '{"ask_user":{"questions":[{"id":"db","prompt":"Which DB?","options":[{"label":"Postgres"},{"label":"SQLite"}],"multiSelect":false,"allowFreeText":true}]}}\n' +
+      '```';
+    const qs = parseQuestions(text);
+    assert.ok(qs !== null, 'a fenced trailing envelope must still parse (not leak as raw JSON)');
+    assert.equal(qs.questions[0]!.options.length, 2);
+  });
+
+  it('clamps an over-long option list to the cap instead of rejecting the whole selector', () => {
+    const text =
+      '{"ask_user":{"questions":[{"id":"lang","prompt":"Which?","options":[' +
+      '{"label":"Python"},{"label":"JS"},{"label":"Go"},{"label":"Rust"},{"label":"Other"}' +
+      '],"multiSelect":false,"allowFreeText":true}]}}';
+    const qs = parseQuestions(text);
+    assert.ok(qs !== null, '5 options should clamp, not discard the selector');
+    assert.equal(qs.questions[0]!.options.length, 4, 'clamped to MAX_OPTIONS');
+    assert.equal(qs.questions[0]!.options[0]!.label, 'Python');
+  });
+
   it('parses a multi-select question and defaults flags to false when absent', () => {
     const text =
       '{"ask_user":{"questions":[{"id":"langs","prompt":"Pick languages","options":[{"label":"ts"},{"label":"go"},{"label":"rust"}],"multiSelect":true}]}}';
@@ -85,10 +106,13 @@ describe('parseQuestions — bounds', () => {
     assert.equal(parseQuestions(text), null);
   });
 
-  it('rejects more than 4 options', () => {
+  it('clamps more than 4 options to the cap (keeps the selector, drops the extras)', () => {
     const opts = ['a', 'b', 'c', 'd', 'e'].map((l) => `{"label":"${l}"}`).join(',');
     const text = `{"ask_user":{"questions":[{"id":"x","prompt":"p","options":[${opts}],"multiSelect":false,"allowFreeText":false}]}}`;
-    assert.equal(parseQuestions(text), null);
+    const qs = parseQuestions(text);
+    assert.ok(qs !== null, 'an over-long option list clamps rather than discarding the selector');
+    assert.equal(qs.questions[0]!.options.length, 4);
+    assert.equal(qs.questions[0]!.options[3]!.label, 'd');
   });
 });
 

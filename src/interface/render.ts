@@ -22,7 +22,7 @@
 import type { CoreEvent } from '../core/types.js';
 import type { CliError, ErrorCategory } from '../providers/errors.js';
 import { classifyError, formatErrorMessage } from '../providers/errors.js';
-import { lastJsonObjectBoundsWithKey } from '../core/json-envelope.js';
+import { lastJsonObjectBoundsWithKey, isTrailingNoise } from '../core/json-envelope.js';
 import { bold, cyan, dim, green, red, yellow } from '../ui/theme.js';
 import { createSpinner } from '../ui/spinner.js';
 import { formatTokens } from '../infra/insights.js';
@@ -178,7 +178,9 @@ function trailingControlEnvelope(
   let best: { readonly start: number; readonly end: number } | null = null;
   for (const key of CONTROL_ENVELOPE_KEYS) {
     const m = lastJsonObjectBoundsWithKey(text, key);
-    if (m !== null && text.slice(m.end).trim().length === 0) {
+    // Tolerate a wrapping ```json … ``` fence after the object so a fenced
+    // envelope is still recognised as trailing and stripped (not leaked raw).
+    if (m !== null && isTrailingNoise(text.slice(m.end))) {
       if (best === null || m.start < best.start) {
         best = { start: m.start, end: m.end };
       }
@@ -268,8 +270,13 @@ class EnvelopeFilter {
       cutEnd = match.start;
     }
     if (cutEnd > this.flushed) {
-      // Trim trailing whitespace left by the (now-removed) envelope.
-      const tail = this.full.slice(this.flushed, cutEnd).replace(/\s+$/, '');
+      // Trim trailing whitespace AND a dangling ```json/``` fence-opener that the
+      // model put just before the (now-removed) envelope, so no orphan fence leaks.
+      const tail = this.full
+        .slice(this.flushed, cutEnd)
+        .replace(/\s+$/, '')
+        .replace(/(?:^|\n)[ \t]*```[a-zA-Z0-9]*[ \t]*$/, '')
+        .replace(/\s+$/, '');
       if (tail.length > 0) this.out.write(tail);
     }
     this.flushed = this.full.length;

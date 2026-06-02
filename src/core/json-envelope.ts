@@ -130,6 +130,18 @@ function scanLast(text: string, key: string): ScanMatch | null {
  * @param text - The text to scan (any string).
  * @param key  - The property key that must be present in the JSON object.
  */
+/**
+ * True when `s` contains only whitespace and/or markdown code-fence markers
+ * (``` or ```lang). This lets a trailing JSON envelope still count as "trailing"
+ * when the model wrapped it in a ```json … ``` block — a very common habit even
+ * when instructed otherwise. Used by the display filter and the question parser
+ * so a fenced envelope is still stripped/parsed instead of leaking as raw JSON.
+ * Never throws.
+ */
+export function isTrailingNoise(s: string): boolean {
+  return s.replace(/```[a-zA-Z0-9]*/g, '').trim().length === 0;
+}
+
 export function lastJsonObjectWithKey(
   text: string,
   key: string,
