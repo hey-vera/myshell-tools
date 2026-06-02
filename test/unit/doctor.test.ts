@@ -561,62 +561,51 @@ describe('runDoctor --fix — installed+unauthenticated provider answered n skip
 });
 
 // ---------------------------------------------------------------------------
-// buildDoctorReport — opencode auth label (honesty: "free models", not "signed in")
+// buildDoctorReport — opencode auth label reflects REAL credentials now
 // ---------------------------------------------------------------------------
 
-describe('buildDoctorReport — opencode installed shows honest auth label', () => {
-  const env = makeEnv(
-    { installed: false },
-    { installed: false },
-    { installed: true, version: '0.1.0', authenticated: true, binaryPath: 'opencode' },
-  );
-  const lines = buildDoctorReport(env, defaultExtras, false);
-  const output = lines.join('\n');
-
-  it('does not throw', () => {
-    assert.doesNotThrow(() => buildDoctorReport(env, defaultExtras, false));
+describe('buildDoctorReport — opencode auth label reflects real credentials', () => {
+  it('shows "signed in" for an authenticated opencode (real provider logged in)', () => {
+    const env = makeEnv(
+      { installed: false },
+      { installed: false },
+      { installed: true, version: '0.1.0', authenticated: true, binaryPath: 'opencode' },
+    );
+    const output = buildDoctorReport(env, defaultExtras, false).join('\n');
+    assert.ok(output.includes('signed in'), `expected "signed in":\n${output}`);
+    assert.ok(!output.includes('free models'), `must not claim "free models":\n${output}`);
   });
 
-  it('shows "free models" auth label for opencode', () => {
-    assert.ok(
-      output.includes('free models'),
-      `expected "free models" in opencode auth line:\n${output}`,
+  it('shows "not signed in" for an installed-but-unconfigured opencode (0 credentials)', () => {
+    const env = makeEnv(
+      { installed: false },
+      { installed: false },
+      { installed: true, version: '0.1.0', authenticated: false, binaryPath: 'opencode' },
     );
-  });
-
-  it('does NOT say "signed in" for opencode', () => {
-    // opencode auth was never probed — claiming "signed in" would be dishonest.
-    assert.ok(
-      !output.includes('signed in'),
-      `must not claim "signed in" for opencode:\n${output}`,
-    );
-  });
-
-  it('includes "no sign-in needed" in opencode auth label', () => {
-    assert.ok(
-      output.includes('no sign-in needed'),
-      `expected "no sign-in needed" in opencode auth line:\n${output}`,
-    );
+    const output = buildDoctorReport(env, defaultExtras, false).join('\n');
+    assert.ok(output.includes('not signed in'), `expected "not signed in":\n${output}`);
   });
 });
 
 // ---------------------------------------------------------------------------
-// --fix mode: opencode not installed → install offered, but no sign-in prompt
+// --fix mode: opencode installs but is unconfigured → sign-in IS offered now
 // ---------------------------------------------------------------------------
 
-describe('runDoctor --fix — opencode not installed: install offered, no sign-in prompted', () => {
-  it('offers install for opencode but does not prompt sign-in (opencode authed when installed)', async () => {
+describe('runDoctor --fix — opencode installed-but-unconfigured: sign-in offered', () => {
+  it('offers install AND sign-in for opencode (0 credentials → not authed → login prompt)', async () => {
     const installCalls: string[] = [];
     const loginCalls: string[] = [];
 
     const initialEnv = makeFullEnv({});
-    // After install: opencode appears installed AND authenticated (free models, no creds needed)
+    // After install opencode is present but has NO configured provider yet —
+    // authenticated:false, exactly the realistic bring-your-subscription state.
     const afterInstallEnv = makeFullEnv({
-      opencode: { installed: true, authenticated: true, version: '0.1.0', binaryPath: 'opencode' },
+      opencode: { installed: true, authenticated: false, version: '0.1.0', binaryPath: 'opencode' },
     });
 
-    // Answers: n (claude), n (codex), y (opencode install)
-    const answers = ['n', 'n', 'y'];
+    // Answers: n (claude install), n (codex install), y (opencode install),
+    // then y (sign in to opencode now?).
+    const answers = ['n', 'n', 'y', 'y'];
     let idx = 0;
     const readLine = async () => answers[idx++] ?? 'n';
 
@@ -636,7 +625,7 @@ describe('runDoctor --fix — opencode not installed: install offered, no sign-i
     });
 
     assert.deepEqual(installCalls, ['opencode'], 'install should have been offered and accepted for opencode');
-    assert.deepEqual(loginCalls, [], 'no login should have been offered — opencode is authed when installed');
+    assert.deepEqual(loginCalls, ['opencode'], 'sign-in should now be offered for an unconfigured opencode');
   });
 });
 

@@ -3898,15 +3898,16 @@ describe('startMenu — no-provider gate in chat loop', () => {
     }
   });
 
-  it('opencode installed counts as authenticated-when-installed (gate passes)', async () => {
-    // opencode installed + not authenticated → should still pass the gate
+  it('opencode installed but unconfigured (0 credentials) → gate FIRES', async () => {
+    // opencode installed + NOT authenticated (no provider logged in) → not usable
+    // for real work, so the no-provider gate must fire (no more installed=ready).
     const opencodeInstalledEnv: EnvironmentStatus = {
       ...NO_AUTH_ENV,
       opencode: {
         id: 'opencode',
         installed: true,
         version: '0.1.0',
-        authenticated: false,  // not explicitly authed, but installed = pass
+        authenticated: false,  // 0 credentials → not ready
         plan: null,
         binaryPath: 'opencode',
         availableModels: [],
@@ -3923,7 +3924,7 @@ describe('startMenu — no-provider gate in chat loop', () => {
         providers: {},
         readLine: makeScriptedReader([
           'n',
-          'do work',  // first message = task; should pass gate (opencode is installed)
+          'do work',  // first message = task; should be blocked by the gate
           '/exit',
           'q',
         ]),
@@ -3934,10 +3935,50 @@ describe('startMenu — no-provider gate in chat loop', () => {
 
     await assert.doesNotReject(() => startMenu(ctx, sink));
 
-    // Gate message must NOT appear when opencode is installed
+    assert.ok(
+      sink.buf.includes('No signed-in provider yet'),
+      'Gate must fire — an unconfigured opencode is not a usable provider',
+    );
+  });
+
+  it('opencode authenticated (real provider logged in) → gate passes', async () => {
+    const opencodeAuthedEnv: EnvironmentStatus = {
+      ...NO_AUTH_ENV,
+      opencode: {
+        id: 'opencode',
+        installed: true,
+        version: '0.1.0',
+        authenticated: true,  // a provider/subscription is configured
+        plan: null,
+        binaryPath: 'opencode',
+        availableModels: [],
+      },
+    };
+
+    const clock = makeFakeClock();
+    const store = makeStore(clock);
+    const sink = makeSink();
+
+    const ctx = makeCtx(
+      {
+        env: opencodeAuthedEnv,
+        providers: {},
+        readLine: makeScriptedReader([
+          'n',
+          'do work',
+          '/exit',
+          'q',
+        ]),
+      },
+      clock,
+      store,
+    );
+
+    await assert.doesNotReject(() => startMenu(ctx, sink));
+
     assert.ok(
       !sink.buf.includes('No signed-in provider yet'),
-      'Gate must not fire when opencode is installed (authenticated-when-installed)',
+      'Gate must not fire when opencode has a configured provider',
     );
   });
 });

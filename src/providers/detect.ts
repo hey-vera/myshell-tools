@@ -297,31 +297,74 @@ export async function detectProvider(
 // ---------------------------------------------------------------------------
 
 /**
- * Detect the opencode CLI. Returns installed:true + authenticated:true when the
- * binary is present, because opencode ships free models (e.g.
- * opencode/deepseek-v4-flash-free) that require no credentials — the binary is
- * immediately usable without any sign-in step.
+ * Parse `opencode auth list` into a real authentication verdict.
+ *
+ * opencode is only useful when the user has logged a real provider/subscription
+ * in (`opencode auth login`) — its credentials live in `auth.json` and the CLI
+ * prints a footer like "N credentials" (and "0 credentials" when none exist).
+ * Free zen models alone are NOT treated as "ready": a serious task routed to an
+ * opencode with zero credentials is doomed, so authenticated = at least one
+ * configured credential. Tolerant — returns 0 (not authenticated) on no match.
+ *
+ * @param stdout - stdout from `opencode auth list`.
+ * @param stderr - stderr from `opencode auth list` (opencode uses both).
+ */
+export function parseOpencodeAuth(
+  stdout: string,
+  stderr: string,
+): { authenticated: boolean; credentialCount: number } {
+  const hay = `${stdout}\n${stderr}`;
+  const matches = [...hay.matchAll(/(\d+)\s+credential/gi)];
+  const last = matches.at(-1);
+  const parsed = last ? Number.parseInt(last[1] ?? '0', 10) : 0;
+  const count = Number.isFinite(parsed) ? parsed : 0;
+  return { authenticated: count > 0, credentialCount: count };
+}
+
+/**
+ * Detect the opencode CLI. `installed` is true when `opencode --version`
+ * succeeds; `authenticated` reflects a REAL credential probe (`opencode auth
+ * list`) — true only when the user has logged a provider/subscription in. We do
+ * NOT treat the binary as authenticated-when-installed: opencode's free models
+ * can't do serious work, so the realistic flow is bring-your-own-subscription
+ * (e.g. a paid opencode/anthropic/openai login) → then it's ready.
  */
 async function detectOpencodeProvider(): Promise<ProviderStatus> {
   try {
+    const env = { ...process.env, ...replitPersistentEnv(process.env, process.cwd()) };
     const result = await execa('opencode', ['--version'], {
       reject: false,
       timeout: 10_000,
-      env: { ...process.env, ...replitPersistentEnv(process.env, process.cwd()) },
+      env,
     });
 
     if (result.exitCode === 0) {
+      // Binary present — now probe real auth state via configured credentials.
+      let authenticated = false;
+      try {
+        const authResult = await execa('opencode', ['auth', 'list'], {
+          reject: false,
+          timeout: 10_000,
+          env,
+        });
+        authenticated = parseOpencodeAuth(
+          typeof authResult.stdout === 'string' ? authResult.stdout : '',
+          typeof authResult.stderr === 'string' ? authResult.stderr : '',
+        ).authenticated;
+      } catch {
+        // Spawn failure — leave authenticated false (offer sign-in, don't pretend).
+      }
+
       return {
         id: 'opencode',
         installed: true,
         version: (result.stdout as string).trim(),
         binaryPath: 'opencode',
-        // opencode ships free models that need no credentials — always usable.
-        authenticated: true,
+        authenticated,
         plan: null,
-        // All three free models covering the tiers used in pricing.ts (worker,
-        // ic, manager) so route() can select the appropriate tier without
-        // falling back to a model opencode may not actually advertise.
+        // opencode runs with the model the USER configured (no -m pinned), so we
+        // expose tier labels only for route()'s tier selection; the real model is
+        // opencode's own default for the logged-in provider.
         availableModels: [
           'opencode/mimo-v2.5-free',       // worker tier
           'opencode/deepseek-v4-flash-free', // ic tier

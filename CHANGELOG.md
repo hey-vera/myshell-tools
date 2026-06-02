@@ -22,12 +22,20 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   spawned CLIs there (detection *and* execution) — one sign-in, remembered. Only
   redirects when the persistent dir actually holds creds, so it never breaks a
   working ephemeral login; harmless off Replit (the dirs won't exist).
-- **opencode remembers your own provider too.** opencode never shows "not signed
-  in" (it ships free models needing no login), but if you configure your *own*
-  provider/subscription (e.g. Kimi) that config lives in XDG dirs. Same fix points
-  opencode at the persistent workspace XDG dirs (`XDG_CONFIG_HOME` / `XDG_DATA_HOME`)
-  when present, so your configured provider survives restarts — gated on an actual
-  `.config/opencode` so it's a no-op until you've set one up.
+- **opencode auth is now a REAL credential probe — bring your own subscription.**
+  Previously opencode was reported "ready" the moment the binary was installed, on
+  the assumption its free models were enough. They aren't for real work. Detection
+  now runs `opencode auth list` and reports `authenticated` only when you've logged
+  a real provider/subscription in (`opencode auth login` → credentials in
+  `auth.json`). An unconfigured opencode shows *"not signed in — press [o] to add
+  your provider"*, is offered sign-in in onboarding/doctor, and no longer counts
+  toward the "any usable provider?" gate. Net: log your $10 opencode + $20 claude +
+  $20 codex subscriptions into the container once, and each is used only when it's
+  actually signed in.
+- **opencode remembers your own provider across restarts too.** Your configured
+  provider lives in XDG dirs; the same persistent-dir fix points opencode at the
+  workspace XDG dirs (`XDG_CONFIG_HOME` / `XDG_DATA_HOME`) when present, gated on an
+  actual `.config/opencode`, so one sign-in survives restarts.
 
 ### Changed
 - **Update check runs FIRST — before the first-run welcome.** On launch the version

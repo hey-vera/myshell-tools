@@ -46,8 +46,8 @@ export type LoginMethod = 'browser' | 'code';
 const LOGIN_COMMAND: Record<ProviderId, { readonly bin: string; readonly args: readonly string[] }> = {
   claude: { bin: 'claude', args: ['auth', 'login'] },
   codex: { bin: 'codex', args: ['login'] },
-  // opencode ships free models — no credentials required. `opencode auth login` adds
-  // a premium provider/subscription (e.g. anthropic, openai, or opencode-zen).
+  // `opencode auth login` logs in your provider/subscription (anthropic, openai,
+  // opencode-zen, …) — that's what makes opencode actually useful for real work.
   opencode: { bin: 'opencode', args: ['auth', 'login'] },
 };
 
@@ -96,9 +96,9 @@ const LOGIN_CODE_COMMAND: Record<
     bin: 'opencode',
     args: ['auth', 'login'],
     guidance:
-      'Free models need no login.\n' +
-      '  This starts `opencode auth login` to add a premium provider or subscription\n' +
-      '  (e.g. anthropic, openai, or opencode-zen).\n' +
+      'This starts `opencode auth login` to connect your provider or subscription\n' +
+      '  (e.g. anthropic, openai, or opencode-zen) — that is what makes opencode\n' +
+      '  ready for real work; its free models alone are not enough.\n' +
       '  myshell-tools never sees the credentials — opencode manages them.',
   },
 };

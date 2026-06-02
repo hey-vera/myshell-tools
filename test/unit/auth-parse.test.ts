@@ -12,6 +12,7 @@ import assert from 'node:assert/strict';
 import {
   parseClaudeAuth,
   parseCodexAuth,
+  parseOpencodeAuth,
   getInstallCommand,
 } from '../../src/providers/detect.ts';
 
@@ -251,10 +252,9 @@ describe('parseCodexAuth — empty stdout with exit code 0', () => {
 // ---------------------------------------------------------------------------
 
 /**
- * opencode has no auth parse function because it ships free models that need
- * no credentials. The detection contract is: installed → authenticated:true.
- * We test the supporting pure helpers (getInstallCommand) and document the
- * rationale in assertions.
+ * opencode authentication is probed for real via `opencode auth list` (see
+ * parseOpencodeAuth above): installed → authenticated only when ≥1 provider
+ * credential is configured. Here we test the supporting install-command helper.
  */
 
 describe('opencode — getInstallCommand returns the opencode-ai npm package', () => {
@@ -338,5 +338,46 @@ describe('opencode — detection rationale: installed implies authenticated (fre
     ];
     const uniqueCommands = new Set(commands);
     assert.equal(uniqueCommands.size, 3, 'all three install commands must be distinct');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// parseOpencodeAuth — real credential probe (`opencode auth list`)
+// ---------------------------------------------------------------------------
+
+describe('parseOpencodeAuth', () => {
+  it('not authenticated when zero credentials are configured', () => {
+    // Real captured footer from `opencode auth list` with nothing logged in.
+    const stdout = '┌  Credentials ~/.local/share/opencode/auth.json\n│\n└  0 credentials';
+    const r = parseOpencodeAuth(stdout, '');
+    assert.equal(r.authenticated, false);
+    assert.equal(r.credentialCount, 0);
+  });
+
+  it('authenticated when one or more credentials are configured', () => {
+    const stdout =
+      '┌  Credentials ~/.local/share/opencode/auth.json\n│\n│  anthropic  oauth\n│\n└  1 credential';
+    const r = parseOpencodeAuth(stdout, '');
+    assert.equal(r.authenticated, true);
+    assert.equal(r.credentialCount, 1);
+  });
+
+  it('counts multiple credentials (uses the footer total)', () => {
+    const stdout =
+      '┌  Credentials\n│  anthropic  oauth\n│  openai     api\n└  2 credentials';
+    const r = parseOpencodeAuth(stdout, '');
+    assert.equal(r.authenticated, true);
+    assert.equal(r.credentialCount, 2);
+  });
+
+  it('reads the count from stderr too (opencode uses both streams)', () => {
+    const r = parseOpencodeAuth('', '└  3 credentials');
+    assert.equal(r.authenticated, true);
+    assert.equal(r.credentialCount, 3);
+  });
+
+  it('defaults to NOT authenticated when output is empty / unrecognized (safe)', () => {
+    assert.equal(parseOpencodeAuth('', '').authenticated, false);
+    assert.equal(parseOpencodeAuth('garbage with no count', '').authenticated, false);
   });
 });

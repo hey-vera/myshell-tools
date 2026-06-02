@@ -88,13 +88,7 @@ export function buildDoctorReport(
       lines.push(
         `  ${green('✓', color)} ${bold(ps.id, color)} — installed, version: ${versionStr}`,
       );
-      if (ps.id === 'opencode') {
-        // opencode auth was never probed — it is usable via free models without
-        // sign-in. Saying "signed in" would be dishonest.
-        lines.push(
-          `    ${label('auth', color)}: ${green('free models (no sign-in needed)', color)}`,
-        );
-      } else if (ps.authenticated) {
+      if (ps.authenticated) {
         const planLabel = ps.plan !== null ? ` (${ps.plan})` : '';
         lines.push(
           `    ${label('auth', color)}: ${green('signed in', color)}${planLabel}`,
@@ -285,9 +279,9 @@ export async function runDoctor(out: OutputSink, opts?: DoctorFixOpts): Promise<
  * Interactive fix pass:
  *   1. Offer to install each missing provider (claude, codex, opencode).
  *   2. Re-detect to pick up any newly installed ones.
- *   3. Offer to sign in to each installed-but-unauthenticated provider.
- *      (opencode is always authenticated when installed, so it is never
- *       offered a sign-in prompt — that is by design, not an omission.)
+ *   3. Offer to sign in to each installed-but-unauthenticated provider —
+ *      including opencode, which is "ready" only once a real provider/
+ *      subscription is logged in via `opencode auth login`.
  *   4. Re-detect once more and print a brief final status line.
  *
  * Never throws — any step failure is caught and reported via `out`.
@@ -333,8 +327,9 @@ async function runFixPass(
   }
 
   // ---- Step 3: offer sign-in for installed-but-unauthenticated providers ----
-  // opencode.authenticated is always true when installed (free models, no creds
-  // needed) so it naturally won't appear here — the condition is honest.
+  // All three providers (opencode included) now report authenticated from a real
+  // credential probe, so an installed-but-unconfigured opencode correctly appears
+  // here and gets offered `opencode auth login`.
   const needsAuth = providers.filter((id) => env[id].installed && !env[id].authenticated);
 
   for (const id of needsAuth) {

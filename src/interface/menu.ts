@@ -502,15 +502,17 @@ export function renderHeaderLines(
   }
 
   // opencode: only show when installed (never nag users who only use claude/codex).
-  // opencode is authenticated-when-installed (free models, no credentials required).
+  // authenticated reflects a real credential probe (`opencode auth list`) — ready
+  // only when the user has logged a provider/subscription in. Free models alone
+  // are not "ready" (they can't do serious work), so an unconfigured opencode is
+  // shown as not signed in, with a hint to add a provider.
   if (env.opencode.installed) {
     const ps = env.opencode;
     const planSuffix = ps.plan != null ? ` (${ps.plan})` : '';
     if (ps.authenticated) {
-      // Be explicit that "ready" is based on free models, not a credential probe.
-      lines.push(`✅ ${ps.id}: ready (free models)${planSuffix}`);
+      lines.push(`✅ ${ps.id}: ready${planSuffix}`);
     } else {
-      lines.push(`⚠️  ${ps.id}: not signed in${planSuffix}`);
+      lines.push(`⚠️  ${ps.id}: not signed in — press [o] to add your provider${planSuffix}`);
     }
   }
 
@@ -975,8 +977,9 @@ async function runWelcome(
   }
 
   // ---- Offer sign-in for installed-but-unauthenticated providers -----------
-  // opencode reports authenticated:true when installed (free models, no keys needed),
-  // so it is never double-prompted here.
+  // opencode now reports authenticated from a real credential probe, so a freshly
+  // installed opencode (0 credentials) is offered sign-in here too — bring your
+  // subscription, log it in once, and it just works.
   for (const id of providers) {
     const ps = env[id];
     if (!ps.installed || ps.authenticated) continue;
@@ -1889,12 +1892,12 @@ async function runChatLoop(
 
       // ---- Bug 4 fix: no-provider gate ----------------------------------------
       // Check whether any provider is actually authenticated before dispatching a
-      // task that is doomed to fail.  opencode counts as authenticated-when-installed.
+      // task that is doomed to fail. opencode now reports authenticated only when a
+      // real provider/subscription is configured (no more installed-means-ready).
       const hasAuthenticatedProvider =
         mutableCtx.env.claude.authenticated ||
         mutableCtx.env.codex.authenticated ||
-        mutableCtx.env.opencode.authenticated ||
-        mutableCtx.env.opencode.installed;
+        mutableCtx.env.opencode.authenticated;
 
       if (!hasAuthenticatedProvider) {
         out.write(
