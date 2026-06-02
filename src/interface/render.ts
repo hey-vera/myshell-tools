@@ -137,6 +137,35 @@ function trailingOpenBraceIndex(text: string): number {
 const CONTROL_ENVELOPE_KEYS = ['confidence', 'ask_user'] as const;
 
 /**
+ * The opening signatures a trailing control envelope can have: `{` then optional
+ * whitespace then the quoted key. Used to decide whether a still-arriving trailing
+ * `{…` fragment could BECOME a control envelope (and so must be held back) or is
+ * just ordinary prose/code/JSON (and so should stream immediately).
+ */
+const CONTROL_ENVELOPE_OPENINGS = ['"confidence', '"ask_user'] as const;
+
+/**
+ * Given a trailing fragment that begins at an OPEN `{` (its `}` hasn't arrived),
+ * decide whether it could still grow into a control envelope. We compare what
+ * follows the `{` (after optional whitespace) against the control-key openings:
+ * it qualifies if the fragment is a prefix of an opening (still being typed) or
+ * already starts with one. A `{` followed by anything else — `{\n  const`,
+ * `{"name"`, `{1, 2` — is ordinary content and streams immediately, so prose
+ * and code never stall mid-token waiting for a brace to close.
+ *
+ * Never throws.
+ */
+function couldBeControlEnvelope(fragment: string): boolean {
+  if (fragment.length === 0 || fragment[0] !== '{') return false;
+  const after = fragment.slice(1).replace(/^\s+/, '');
+  if (after.length === 0) return true; // just opened — undecided, hold briefly
+  for (const opening of CONTROL_ENVELOPE_OPENINGS) {
+    if (opening.startsWith(after) || after.startsWith(opening)) return true;
+  }
+  return false;
+}
+
+/**
  * Find the bounds of the LAST trailing control envelope (keyed by any of
  * {@link CONTROL_ENVELOPE_KEYS}) in `text`, considering only a block whose match
  * is at the END (nothing but whitespace after it). Returns the match with the
@@ -208,8 +237,15 @@ class EnvelopeFilter {
    *  leak. See {@link push} for the two cases it guards. */
   private safeFlushBoundary(): number {
     let boundary = this.full.length;
+    // (a) Hold back a trailing OPEN-brace fragment ONLY if it could still grow
+    //     into a control envelope. A plain code/JSON/prose brace (`{\n const`,
+    //     `{"name"`, `the set {1,2`) streams immediately — so the response never
+    //     stalls mid-token waiting for a brace to close.
     const open = trailingOpenBraceIndex(this.full);
-    if (open !== -1 && open < boundary) boundary = open;
+    if (open !== -1 && open < boundary && couldBeControlEnvelope(this.full.slice(open))) {
+      boundary = open;
+    }
+    // (b) A complete trailing control envelope must also be held (flush strips it).
     const match = trailingControlEnvelope(this.full);
     if (match !== null && match.start < boundary) {
       boundary = match.start;
@@ -273,16 +309,28 @@ export async function renderStream(
   // can ever reach the user.
   const prose = new EnvelopeFilter(out);
 
-  // Spinner is only used in TTY mode; we create one per tier-start and stop it
-  // when the first real output arrives or when tier-done fires.
+  // Spinner is only used in TTY mode. It starts at tier-start and STAYS alive
+  // through tool/reasoning activity (showing a live step count + elapsed time) so
+  // a long, tool-heavy run never looks frozen. It stops only when real answer
+  // prose begins streaming, or when the tier finishes/errors.
   const spinner = createSpinner(out);
   let spinnerActive = false;
+  let workLabel = 'Thinking';
+  let stepCount = 0;
 
   function stopSpinner(): void {
     if (spinnerActive) {
       spinner.stop();
       spinnerActive = false;
     }
+  }
+
+  /** Reflect ongoing tool/reasoning activity in the spinner without spamming
+   *  lines — the "alive" feedback for normal mode. */
+  function noteWorkStep(): void {
+    if (!spinnerActive) return;
+    stepCount++;
+    spinner.update(`${workLabel}… ${stepCount} step${stepCount === 1 ? '' : 's'}`);
   }
 
   for await (const ev of events) {
@@ -307,9 +355,12 @@ export async function renderStream(
             `\n`,
           );
         }
-        // Start spinner while waiting for the first provider output.
+        // Reset per-tier work tracking and start the live indicator. In verbose
+        // mode the model/provider is shown; otherwise a clean "Thinking…".
+        stepCount = 0;
+        workLabel = isVerbose ? `${ev.tier} (${ev.provider}/${ev.model})` : 'Thinking';
         if (out.isTty) {
-          spinner.start(`${ev.tier} (${ev.provider}/${ev.model}) working…`);
+          spinner.start(`${workLabel}…`);
           spinnerActive = true;
         }
         break;
@@ -318,22 +369,27 @@ export async function renderStream(
       case 'provider-event': {
         const pe = ev.event;
         if (pe.type === 'text') {
-          // First real output — clear the spinner line.
+          // First real answer prose — clear the indicator and start streaming.
           stopSpinner();
           // Stream prose, holding back any trailing envelope fragment.
           prose.push(pe.delta);
         } else if (pe.type === 'tool') {
-          stopSpinner();
-          // Tool activity is control-plane noise — only in verbose mode.
           if (isVerbose) {
+            // Verbose: print each tool line (stop the spinner so it isn't clobbered).
+            stopSpinner();
             out.write(dim(`[tool] ${pe.name} ${pe.phase}`, c) + `\n`);
+          } else {
+            // Normal/quiet: keep the indicator alive and count the step, so a
+            // tool-heavy run shows life ("Thinking… 12 steps · 8s") instead of
+            // freezing on a dead line.
+            noteWorkStep();
           }
         } else if (pe.type === 'reasoning') {
-          stopSpinner();
-          // Reasoning deltas are internal — only in verbose mode.
           if (isVerbose) {
+            stopSpinner();
             out.write(dim(pe.delta, c));
           }
+          // Normal/quiet: reasoning is internal; keep the indicator spinning.
         }
         // 'usage', 'done', 'error' are handled via tier-done / final
         break;
@@ -380,6 +436,8 @@ export async function renderStream(
       }
 
       case 'notice': {
+        // Clear the live indicator before printing a notice so it isn't clobbered.
+        if (ev.level === 'error' || isVerbose) stopSpinner();
         // Errors are ALWAYS shown (every verbosity). Info/warn are chrome and
         // only surface in verbose mode.
         if (ev.level === 'error') {

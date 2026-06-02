@@ -91,12 +91,30 @@ function makeFakeLedger(): LedgerWriter & { entries: LedgerEntry[] } {
 // Fake session writer
 // ---------------------------------------------------------------------------
 
-function makeFakeSessionWriter(id: string): SessionWriter & { entries: SessionEntry[] } {
+function makeFakeSessionWriter(
+  id: string,
+  metas?: ConversationMeta[],
+): SessionWriter & { entries: SessionEntry[] } {
   const entries: SessionEntry[] = [];
   return {
     id,
     entries,
     async append(entry: SessionEntry): Promise<void> {
+      // Mirror the real store (conversations.ts:191-201): the FIRST user message
+      // derives the title when the conversation was created untitled. Without this
+      // the fake never reflects the silent title-derivation the new-chat flow now
+      // relies on (no up-front "name your chat" prompt).
+      if (metas !== undefined && entry.role === 'user' && entry.content) {
+        const hadUserMsg = entries.some((e) => e.role === 'user');
+        if (!hadUserMsg) {
+          const idx = metas.findIndex((m) => m.id === id);
+          const meta = idx >= 0 ? metas[idx] : undefined;
+          if (meta !== undefined && meta.title.trim().length === 0) {
+            const t = entry.content.trim();
+            metas[idx] = { ...meta, title: t.length <= 80 ? t : t.slice(0, 80) };
+          }
+        }
+      }
       entries.push(entry);
     },
   };
@@ -166,7 +184,7 @@ function makeStore(clock: Clock, initialMetas?: ConversationMeta[]): FakeConvers
     writer(id: string): SessionWriter {
       let w = writers.get(id);
       if (w === undefined) {
-        w = makeFakeSessionWriter(id);
+        w = makeFakeSessionWriter(id, metas);
         writers.set(id, w);
       }
       return w;
@@ -428,10 +446,10 @@ describe('startMenu — n → first-message → /exit → q', () => {
   });
 
   it('the session writer received the user message when a task is sent', async () => {
-    // After creating the conversation, we send a real task before /exit.
-    // The inputs are: 'n' (new conv) → 'My first task' (title) →
-    //   'do this task' (the actual task sent to orchestrate) → '/exit' → 'q'.
-    await run(['n', 'My first task', 'do this task', '/exit', 'q']);
+    // No up-front title prompt anymore: 'n' opens the chat directly and the FIRST
+    // line is the task sent to orchestrate. Inputs: 'n' (new conv) →
+    //   'do this task' (the task) → '/exit' → 'q'.
+    await run(['n', 'do this task', '/exit', 'q']);
     const metas = await store.list();
     const id = metas[0]?.id;
     assert.ok(id !== undefined, 'conversation id exists');
@@ -1013,14 +1031,26 @@ describe('createLineReader — suspend/resume release stdin for an inherited chi
     assert.deepEqual(stdin.calls, ['setRawMode:false', 'pause']);
   });
 
-  it('resume() takes stdin back: resumes stdin then readline', () => {
+  it('resume() takes stdin back: resumes stdin, readline, and restores raw mode', () => {
     const { reader, rl, stdin } = mkReader(true);
     reader.suspend();
     rl.events.length = 0;
     stdin.calls.length = 0;
     reader.resume();
-    assert.deepEqual(stdin.calls, ['resume']);
+    // Raw mode MUST be re-asserted after rl.resume() — a terminal readline only
+    // does its own line editing (backspace, arrows) in raw mode, and suspend()
+    // dropped it to cooked. Without the final setRawMode:true, the next prompt's
+    // Backspace emits stray bytes instead of erasing.
+    assert.deepEqual(stdin.calls, ['resume', 'setRawMode:true']);
     assert.deepEqual(rl.events, ['rl.resume']);
+  });
+
+  it('resume() off a TTY: resumes but never toggles raw mode', () => {
+    const { reader, stdin } = mkReader(false);
+    reader.suspend();
+    stdin.calls.length = 0;
+    reader.resume();
+    assert.deepEqual(stdin.calls, ['resume'], 'no setRawMode when not a TTY');
   });
 
   it('suspend() off a TTY: still pauses, but never toggles raw mode', () => {
@@ -3418,9 +3448,8 @@ describe('startMenu — chat loop inline re-login on auth failure', () => {
       {
         providers: { claude: authFailProvider },
         readLine: makeScriptedReader([
-          'n',          // new conversation
-          'my task',    // title / first message
-          'do work',    // task input
+          'n',          // new conversation → opens chat directly
+          'do work',    // first message = task → auth fails
           'n',          // no to re-login prompt (auth fail on retry too, so just skip)
           '/exit',      // exit chat
           'q',          // quit menu
@@ -3457,7 +3486,7 @@ describe('startMenu — chat loop inline re-login on auth failure', () => {
       {
         providers: { claude: authFailProvider },
         readLine: makeScriptedReader([
-          'n', 'my task', 'do work', 'y', '/exit', 'q',
+          'n', 'do work', 'y', '/exit', 'q',
         ]),
         login: async (_out, providerArg) => {
           loginCalls.push(providerArg ?? 'unknown');
@@ -3503,7 +3532,7 @@ describe('startMenu — chat loop inline re-login on auth failure', () => {
       {
         providers: { claude: switchingProvider },
         readLine: makeScriptedReader([
-          'n', 'my task', 'do work', 'y', '/exit', 'q',
+          'n', 'do work', 'y', '/exit', 'q',
         ]),
         login: async () => 0,
         detectEnvironment: async () => FAKE_ENV,
@@ -3535,7 +3564,7 @@ describe('startMenu — chat loop inline re-login on auth failure', () => {
       {
         providers: { claude: authFailProvider },
         readLine: makeScriptedReader([
-          'n', 'my task', 'do work', 'n', '/exit', 'q',
+          'n', 'do work', 'n', '/exit', 'q',
         ]),
         login: async () => {
           loginCallCount++;
@@ -3563,7 +3592,7 @@ describe('startMenu — chat loop inline re-login on auth failure', () => {
       {
         providers: { claude: authFailProvider },
         readLine: makeScriptedReader([
-          'n', 'my task', 'do work', 'n', '/exit', 'q',
+          'n', 'do work', 'n', '/exit', 'q',
         ]),
         login: async () => 0,
         detectEnvironment: async () => FAKE_ENV,
@@ -3599,7 +3628,7 @@ describe('startMenu — chat loop inline re-login on auth failure', () => {
     const ctx = makeCtx(
       {
         providers: { claude: authFailProvider },
-        readLine: makeScriptedReader(['n', 'my task', 'do work', 'y', '/exit', 'q']),
+        readLine: makeScriptedReader(['n', 'do work', 'y', '/exit', 'q']),
         login: async () => {
           loginSeamCalled = true;
           return 0;
@@ -3710,8 +3739,8 @@ describe('autoUpdateEnabled', () => {
 // FLOW 12: Chat prompt is plain "> " (not "myshell-tools> ")
 // ---------------------------------------------------------------------------
 
-describe('startMenu — chat loop prompt is plain "> "', () => {
-  it('chat prompt inside a conversation is plain "> " not "myshell-tools> "', async () => {
+describe('startMenu — chat loop prompt is a clean caret', () => {
+  it('chat prompt inside a conversation is a clean caret, not "myshell-tools> "', async () => {
     const clock = makeFakeClock();
     const store = makeStore(clock);
     const sink = makeSink();
@@ -3719,9 +3748,9 @@ describe('startMenu — chat loop prompt is plain "> "', () => {
     const ctx = makeCtx(
       {
         readLine: makeScriptedReader([
-          'n',       // new conversation
-          'My task', // title (becomes first message)
-          '/exit',   // exit chat loop without sending a task
+          'n',       // new conversation → opens chat directly
+          'My task', // first message (also derives the title)
+          '/exit',   // exit chat loop
           'q',       // quit menu
         ]),
       },
@@ -3731,16 +3760,14 @@ describe('startMenu — chat loop prompt is plain "> "', () => {
 
     await startMenu(ctx, sink);
 
-    // The chat prompt inside the loop must be plain ">"
-    // The main menu prompt is also "> " so we check both.
-    // Key: "myshell-tools> " must NOT appear anywhere in the output.
+    // The chat prompt is a clean chevron caret — never the noisy "myshell-tools> ".
     assert.ok(
       !sink.buf.includes('myshell-tools> '),
-      'Chat prompt must NOT be "myshell-tools> " — it should be plain "> "',
+      'Chat prompt must NOT be "myshell-tools> "',
     );
     assert.ok(
-      sink.buf.includes('> '),
-      'Chat prompt must be plain "> "',
+      sink.buf.includes('❯'),
+      'Chat prompt must be the clean "❯" caret',
     );
   });
 });
@@ -3794,9 +3821,8 @@ describe('startMenu — no-provider gate in chat loop', () => {
         env: NO_AUTH_ENV,
         providers: {},  // no providers installed
         readLine: makeScriptedReader([
-          'n',        // new conversation
-          'My task',  // title
-          'do work',  // attempted task — should be blocked
+          'n',        // new conversation → opens chat directly
+          'do work',  // first message = attempted task — should be blocked
           '/exit',    // exit chat
           'q',        // quit
         ]),
@@ -3847,9 +3873,8 @@ describe('startMenu — no-provider gate in chat loop', () => {
     const ctx = makeCtx(
       {
         readLine: makeScriptedReader([
-          'n',           // new conversation
-          'My task',     // title
-          'do work',     // task — should be dispatched (claude is authed)
+          'n',           // new conversation → opens chat directly
+          'do work',     // first message = task — should be dispatched (claude is authed)
           '/exit',       // exit chat
           'q',           // quit
         ]),
@@ -3906,8 +3931,7 @@ describe('startMenu — no-provider gate in chat loop', () => {
         providers: {},
         readLine: makeScriptedReader([
           'n',
-          'My task',
-          'do work',  // should pass gate (opencode is installed)
+          'do work',  // first message = task; should pass gate (opencode is installed)
           '/exit',
           'q',
         ]),
@@ -3979,9 +4003,8 @@ describe('startMenu — inline re-login uses refreshed auth (stale-deps fix)', (
       {
         providers: { claude: makeAuthThenOkProvider('claude') },
         readLine: makeScriptedReader([
-          'n',        // new conversation
-          'My task',  // title
-          'do work',  // task → auth fail → re-login prompt → y
+          'n',        // new conversation → opens chat directly
+          'do work',  // first message = task → auth fail → re-login prompt → y
           'y',        // yes to re-login
           '/exit',    // exit
           'q',        // quit
@@ -4017,7 +4040,7 @@ describe('startMenu — inline re-login uses refreshed auth (stale-deps fix)', (
       {
         providers: { claude: makeAuthThenOkProvider('claude') },
         readLine: makeScriptedReader([
-          'n', 'My task', 'do work', 'n', '/exit', 'q',
+          'n', 'do work', 'n', '/exit', 'q',
         ]),
         login: async () => 0,
         detectEnvironment: async () => FAKE_ENV,

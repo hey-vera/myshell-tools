@@ -67,14 +67,21 @@ const LOGIN_CODE_COMMAND: Record<
     // persists the credential itself. So there is nothing for us to capture or
     // store — unlike `setup-token`, which only prints a token for CI env vars.
     args: ['auth', 'login'],
+    // This guidance matches what `claude auth login` ACTUALLY does on a
+    // remote/container shell (verified against the claude binary's own prompts:
+    // "If the redirect page shows a connection error, paste the URL from your
+    // browser's address bar", e.g. http://localhost:<port>/callback?code=…&state=…).
+    // The localhost error after Authorize is expected here — the fix is to paste
+    // the full address-bar URL (which carries the code) back to claude.
     guidance:
-      'A sign-in link will appear below.\n' +
-      '  1. Open it in any browser and sign in at claude.ai.\n' +
-      "  2. If your browser shows a code instead of redirecting, paste it back\n" +
-      '     here when claude asks — that is the only paste, and it goes straight\n' +
-      '     to claude.\n' +
-      '\n' +
-      '  Claude saves the sign-in itself; there is nothing else to copy or store.',
+      'A sign-in link appears below — press Enter to open it (or copy it into any\n' +
+      '  browser), sign in at claude.ai, and click Authorize.\n' +
+      '  • This is a remote shell, so the page then tries to redirect to a localhost\n' +
+      "    address and your browser shows a \"can't be reached\" / connection error.\n" +
+      '    That is EXPECTED — nothing went wrong.\n' +
+      '  • When it does, copy the FULL URL from your browser\'s address bar (it\n' +
+      '    contains a `code=…` part) and paste it back here when claude asks.\n' +
+      '  Claude saves the sign-in itself — there is nothing else to copy or store.',
   },
   codex: {
     bin: 'codex',
@@ -266,6 +273,19 @@ export async function runLogin(
       // Browser method
       const { bin, args } = LOGIN_COMMAND[id];
       out.write(bold(`\nSigning in to ${id} — a browser window may open…\n`, out.color));
+      // Prime the user for the classic localhost trap BEFORE it happens, so a
+      // "can't be reached" redirect error reads as a known step, not a failure.
+      // claude itself accepts the pasted address-bar URL (which carries the code).
+      if (id === 'claude') {
+        out.write(
+          dim(
+            "  If, after you click Authorize, the page shows a localhost / \"can't be\n" +
+              '  reached" error, copy the full URL from your browser\'s address bar (it has\n' +
+              '  a `code=…` part) and paste it back here — claude will finish the sign-in.\n',
+            out.color,
+          ),
+        );
+      }
       const resumeStdin = opts?.suspendStdin?.();
       let result;
       try {

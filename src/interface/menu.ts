@@ -40,7 +40,8 @@ import type { LoginMethod } from '../commands/login.js';
 import { runDoctor } from '../commands/doctor.js';
 import { runCost } from '../commands/cost.js';
 import { runInstall } from '../commands/install.js';
-import { box, separator, menu, prompt } from '../ui/tui.js';
+import { box, separator, menu } from '../ui/tui.js';
+import { dim, cyan } from '../ui/theme.js';
 import type { UpdateCheckResult } from '../infra/update-check.js';
 import type { ClaudeTokenStatus } from '../infra/credentials.js';
 import { loadClaudeTokenCapturedAt, claudeTokenStatus } from '../infra/credentials.js';
@@ -727,8 +728,8 @@ export function createLineReader(
       }
     },
     resume(): void {
-      // Take stdin back. rl.resume() re-establishes raw/keypress handling in
-      // terminal mode, so we only need to un-pause the stream and the reader.
+      // Take stdin back. suspend() dropped the TTY to cooked mode and paused the
+      // stream so an inherited-stdio child could own stdin; now we reverse both.
       try {
         input.resume();
       } catch {
@@ -738,6 +739,16 @@ export function createLineReader(
         rl.resume();
       } catch {
         /* readline may be closed */
+      }
+      // Re-assert raw mode. A `terminal: true` readline does its own line editing
+      // (backspace, arrow keys, history) ONLY while stdin is in raw mode. suspend()
+      // set it to cooked, and rl.resume() does NOT restore it — so without this the
+      // next prompt's Backspace emits stray control bytes (e.g. ^?) instead of
+      // erasing a character. Mirror suspend()'s isTTY guard so non-TTY/tests no-op.
+      try {
+        if (input.isTTY === true && typeof input.setRawMode === 'function') input.setRawMode(true);
+      } catch {
+        /* setRawMode unsupported on this platform */
       }
     },
     close(): void {
@@ -1683,7 +1694,10 @@ async function runChatLoop(
     }
   }
 
-  out.write(prompt('task or /help', out.color) + '\n');
+  // One quiet orientation line on entry — NOT a per-turn label. Real chat shells
+  // (claude, gpt) don't relabel the prompt every turn; they show a clean caret and
+  // let you just type. Shown once; the caret below carries every turn after.
+  out.write(dim('Type a message and press Enter.  /help for commands · /back to leave\n', out.color));
 
   let currentAc: AbortController | null = null;
 
@@ -1743,7 +1757,9 @@ async function runChatLoop(
 
   try {
     while (true) {
-      out.write('> ');
+      // Clean caret — a colored chevron, no label. This is the partner-chat feel:
+      // the prompt is just an invitation to type, not an instruction.
+      out.write(cyan('❯ ', out.color));
 
       // Race readLine() against a loopBreak signal from the SIGINT handler.
       // When Ctrl+C fires (to-menu or exit-app), loopBreaker is called with the
@@ -1775,9 +1791,9 @@ async function runChatLoop(
 
       if (line === '/help') {
         out.write(
-          '  /back or /exit — return to main menu\n' +
-          '  /help          — show this help\n' +
-          '  <anything>     — run as a task in this conversation\n',
+          dim('  Just type to chat — I pick the right model for each message.\n', out.color) +
+          '  /back, /exit  — return to the main menu\n' +
+          '  /help         — show this help\n',
         );
         continue;
       }
@@ -2290,14 +2306,14 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
 
       // ---- [n] New conversation -----------------------------------------------
       if (key === 'n') {
-        out.write('First message (becomes the title): ');
-        const firstMsg = await readLine();
-        if (firstMsg !== null && firstMsg.length > 0) {
-          const meta = await ctx.store.create(firstMsg);
-          const chatResult = await runChatLoop(ctx, mutableCtx, meta.id, out, readLine, loginFn, detectEnvironmentFn, suspendStdin);
-          spendDirty = true; // a task may have run — refresh the spend summary
-          if (chatResult === 'exit') break;
-        }
+        // No up-front "name your chat" prompt — a real chat shell just opens and
+        // lets you type. The title is derived silently from the first user message
+        // (conversations.ts append()), so create an untitled conversation and drop
+        // straight into it.
+        const meta = await ctx.store.create('');
+        const chatResult = await runChatLoop(ctx, mutableCtx, meta.id, out, readLine, loginFn, detectEnvironmentFn, suspendStdin);
+        spendDirty = true; // a task may have run — refresh the spend summary
+        if (chatResult === 'exit') break;
         continue;
       }
 
