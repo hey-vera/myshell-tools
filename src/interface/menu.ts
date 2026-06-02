@@ -2216,7 +2216,23 @@ async function renderMainScreen(
   // computed by the caller and cached across keystrokes (the ledger only
   // changes when a task completes), so navigating the menu never re-parses the
   // unbounded ledger.jsonl on every keypress.
-  out.write('  ' + renderBudgetLine(spend, out.color) + '\n\n');
+  out.write('  ' + renderBudgetLine(spend, out.color) + '\n');
+
+  // Mode line — visible and one keystroke to change (no settings dive). Shows the
+  // effective mode: the user's explicit choice, else the subscription-derived auto
+  // default. This is the default for NEW chats; each chat can override its own.
+  {
+    const autoMode = defaultModeForPlan(mutableCtx.env.claude.plan);
+    const eff = mutableCtx.config.mode ?? autoMode;
+    out.write(
+      '  ' +
+        dim(
+          `Mode: ${modeLabel(eff)}${mutableCtx.config.mode === undefined ? ' (auto)' : ''}  ·  press m to change`,
+          out.color,
+        ) +
+        '\n\n',
+    );
+  }
 
   // Recent conversations — separator() then list
   out.write(separator('Recent Conversations') + '\n');
@@ -2568,6 +2584,13 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
         } else if (!ok) {
           out.write('Update failed. Run: npm install -g myshell-tools@latest\n');
         }
+        continue;
+      }
+
+      // ---- [m] Change mode (direct — no settings dive) ------------------------
+      if (key === 'm') {
+        const autoMode = defaultModeForPlan(mutableCtx.env.claude.plan);
+        mutableCtx.config = await runModeSelect(mutableCtx.config, out, readLine, autoMode);
         continue;
       }
 
