@@ -1757,8 +1757,19 @@ async function runChatLoop(
 
   // One quiet orientation line on entry — NOT a per-turn label. Real chat shells
   // (claude, gpt) don't relabel the prompt every turn; they show a clean caret and
-  // let you just type. Shown once; the caret below carries every turn after.
-  out.write(dim('Type a message and press Enter.  /help for commands · /back to leave\n', out.color));
+  // let you just type. Shown once; the caret below carries every turn after. The
+  // active mode is shown here too so it's always visible in-conversation.
+  {
+    const entryMode = modeLabel(
+      mutableCtx.config.mode ?? defaultModeForPlan(mutableCtx.env.claude.plan),
+    );
+    out.write(
+      dim(
+        `Type a message and press Enter.  Mode: ${entryMode} (/mode)  ·  /goal  ·  /help  ·  /back\n`,
+        out.color,
+      ),
+    );
+  }
 
   let currentAc: AbortController | null = null;
 
