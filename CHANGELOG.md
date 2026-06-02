@@ -6,9 +6,66 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+A "one chat — automatic, honest, partner-grade" reshape. The chat tunes itself to
+your subscription, talks like a real advisor, and can keep working on its own
+until a job is done — without commands to learn. All changes below are unit-/
+dist-verified, and the major flows were verified against live models.
+
+### Added
+- **Sustained autonomy without a command.** When a big task exceeds the per-turn
+  time limit, the chat offers *"keep working on it autonomously, step by step,
+  until it's done? (Y/n)"*; accept and it runs an autonomous loop on your original
+  task — one concrete step per turn — surviving per-turn timeouts and writing real
+  progress to disk. The model can also offer this naturally for big jobs (an
+  `ask_user` block with id `keep_going`). `/goal <text>` remains the explicit
+  trigger. Verified live (a multi-file auth system built across autonomous turns).
+- **Subscription-aware auto mode.** Routing mode now auto-detects from your
+  detected plan — Max → highest quality (opens the Opus/manager tier), else
+  Balanced — so you get the right firepower with zero configuration and no
+  "what subscriptions do you have?" interrogation. Verified live.
+- **Mode, surfaced and one-keystroke.** The active mode shows on the home screen
+  (`press m to change`), in the chat entry line, and via `/mode` in-chat — never a
+  settings dive. One global knob, changeable anywhere (drift-free).
+- **Advisor persona.** For a decision (tool/language/design) the chat forms an
+  opinion and recommends a clear winner, surfaces a strong option you may not have
+  considered, and asks only the one or two questions that change the answer —
+  never the easy/obvious default, never redundant questions.
+
+### Changed
+- **Tokens, not dollars.** myshell-tools drives subscription CLIs (flat fee, no
+  per-token bill), so the `$` cost estimate was fiction. The usage view is now
+  tokens + a billing-agnostic efficiency *ratio*; `/goal` is bounded by turns, not
+  a dollar cap; the home menu option is "Usage (tokens)".
+- **Modes reframed cost → quality.** `Efficient · Balanced · Max` (internal keys
+  unchanged). Quality is never capped by the knob — routing always escalates to
+  the strongest model when a turn needs it; the mode only tunes how eagerly it
+  reaches for the slower/stronger model.
+- **Smart routing on by default.** Ambiguous, keyword-less turns are routed by a
+  cheap model instead of defaulting to the IC tier (fixes under-routing of
+  complex-but-unkeyworded requests). ~5–10s on those turns only; clear turns stay
+  instant. Calibrated live so it doesn't over-escalate trivial chat.
+
+### Fixed (found via live audit)
+- **Autonomous file work was deadlocked.** `workspace-write` passed no permission
+  flag, so headless `claude -p` prompted before every write with no one to approve
+  — file-mutating tasks spun and wrote nothing. Now maps to `--permission-mode
+  acceptEdits`.
+- **Codex couldn't run outside a git repo** — adapter now passes
+  `--skip-git-repo-check`. Cross-vendor review (Claude IC ↔ Codex review) verified
+  live; the prior "codex bwrap fails here" note was stale.
+- **`ask_user` leaked raw JSON** when the model fenced it or sent >4 options — the
+  parser/stripper now tolerate trailing code fences and clamp option lists; the
+  selector renders cleanly.
+- **Claude OAuth guidance** rewritten to match the real `claude auth login` flow
+  (paste the address-bar URL on a localhost-callback error) — the old
+  `setup-token` paste instructions were deprecated/misleading.
+- Backspace in cooked-mode after a child CLI; prose glued after a tool call;
+  multi-line / scaffold-polluted conversation titles; the "thinking" indicator.
+
 ### Pending
-- Live cross-vendor review demonstration (requires an authenticated Codex CLI).
 - Cross-OS CI execution (requires a public remote).
+- opencode → Kimi K2 agent-swarm routing (needs a Kimi-capable provider configured
+  in opencode + a real tier/price mapping to verify; not shipped on guesses).
 
 ## [3.4.0]
 
