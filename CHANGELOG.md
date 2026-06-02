@@ -6,7 +6,19 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+### Pending
 - Cross-OS CI execution (requires a public remote).
+
+## [3.5.1]
+
+### Changed
+- **Update on launch now ASKS first — and shows the version.** The first thing on
+  startup is an update check; if one's available it prints `current → latest` and
+  asks *"Install it now? (Y/n)"* before installing — never a silent swap. Yes →
+  installs + relaunches; no → drops to the menu (press `u` anytime). Non-
+  interactive sessions never auto-install (no EOF-default). Power users who want
+  the old hands-off behaviour can set `autoUpdate: true` to install silently.
+  Settings label is now **"Update on launch"**.
 
 ## [3.5.0]
 

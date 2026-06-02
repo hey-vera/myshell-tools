@@ -3126,54 +3126,49 @@ describe('startMenu — update notifier: banner, [u], auto-update', () => {
     );
   });
 
-  it('auto-update: runs when autoUpdate is absent (default-on)', async () => {
-    const calls: string[] = [];
-
-    const clock = makeFakeClock();
-    const store = makeStore(clock);
-    const ledger = makeFakeLedger();
-    const dir = join(tmpdir(), `menu-autoupdate-absent-${randomUUID()}`);
-    // autoUpdate is absent → defaults to true (enabled)
-    // smartRoute:false keeps the fake-provider call sequence deterministic.
-    const config: AppConfig = { onboarded: true, setAsDefault: false, smartRoute: false };
-
-    const ctx: MenuContext = {
-      version: '2.0.0',
-      clock,
-      ledger,
-      providers: { claude: makeFakeProvider() },
-      env: FAKE_ENV,
-      store,
-      config,
-      cwd: dir,
-      sandbox: 'workspace-write',
-      timeoutMs: 5_000,
-      readLine: makeScriptedReader([]),
-      installProvider: async () => true,
-      login: async () => 0,
-      checkForUpdate: async (): Promise<UpdateCheckResult> => ({
-        current: '2.0.0',
-        latest: '3.0.0',
-        updateAvailable: true,
-      }),
-      updateSelf: async () => {
-        calls.push('updateSelf');
-        return true;
+  // Default behaviour (autoUpdate ABSENT): ASK at launch, don't silently install.
+  // Reuses makeUpdateCtx but overrides config to drop autoUpdate (= default), and
+  // wires updateSelf/relaunch to record calls.
+  const ttySink = (): OutputSink & { buf: string } => {
+    let buf = '';
+    return { get buf() { return buf; }, write: (s: string) => { buf += s; }, color: false, isTty: true };
+  };
+  const updateDefaultCtx = (answers: ReadonlyArray<string | null>, calls: string[]): MenuContext =>
+    makeUpdateCtx(
+      {
+        readLine: makeScriptedReader(answers),
+        config: { onboarded: true, setAsDefault: false, smartRoute: false }, // autoUpdate absent = default
+        updateSelf: async () => { calls.push('updateSelf'); return true; },
+        relaunch: async () => { calls.push('relaunch'); return 0; },
       },
-      relaunch: async () => {
-        calls.push('relaunch');
-        return 0;
-      },
-    };
-
-    const sink = makeSink();
-    await assert.doesNotReject(
-      () => startMenu(ctx, sink),
-      'auto-update with absent autoUpdate (default-on) must not throw',
+      true,
+      '3.0.0',
     );
 
-    assert.ok(calls.includes('updateSelf'), 'updateSelf must be called when autoUpdate is absent (default-on)');
-    assert.ok(calls.includes('relaunch'), 'relaunch must be called after successful updateSelf');
+  it('auto-update default: does NOT silently install in a non-interactive session', async () => {
+    const calls: string[] = [];
+    await assert.doesNotReject(() => startMenu(updateDefaultCtx([], calls), makeSink())); // isTty:false
+    assert.ok(
+      !calls.includes('updateSelf'),
+      'absent default must NOT auto-install when non-interactive (no EOF-default install)',
+    );
+  });
+
+  it('auto-update default: PROMPTS with the version and installs on "y"', async () => {
+    const calls: string[] = [];
+    const sink = ttySink();
+    await assert.doesNotReject(() => startMenu(updateDefaultCtx(['y'], calls), sink));
+    assert.ok(/Update available:.*2\.0\.0.*3\.0\.0/s.test(sink.buf), 'must show the from→to version');
+    assert.ok(/Install it now\?/.test(sink.buf), 'must ask before installing');
+    assert.ok(calls.includes('updateSelf') && calls.includes('relaunch'), 'on "y": installs + relaunches');
+  });
+
+  it('auto-update default: declining ("n") does not install and drops to the menu', async () => {
+    const calls: string[] = [];
+    const sink = ttySink();
+    await assert.doesNotReject(() => startMenu(updateDefaultCtx(['n', 'q'], calls), sink)); // decline, then quit
+    assert.ok(!calls.includes('updateSelf'), 'declining must not install');
+    assert.ok(/Staying on.*2\.0\.0/.test(sink.buf), 'shows the staying-on note');
   });
 
   it('auto-update: MYSHELL_NO_UPDATE env var prevents auto-update even when autoUpdate=true', async () => {
@@ -3276,7 +3271,7 @@ describe('startMenu — update notifier: banner, [u], auto-update', () => {
 
   // ---- Settings toggle for autoUpdate -------------------------------------
 
-  it('[s] settings shows Auto-update toggle line', async () => {
+  it('[s] settings shows the update-on-launch toggle line', async () => {
     const sink = makeSink();
     const ctx = makeCtx({
       readLine: makeScriptedReader(['s', '', 'q']),  // enter settings → Enter (back) → quit
@@ -3285,8 +3280,8 @@ describe('startMenu — update notifier: banner, [u], auto-update', () => {
     await startMenu(ctx, sink);
 
     assert.ok(
-      sink.buf.includes('[3]') && sink.buf.toLowerCase().includes('auto-update'),
-      'settings must show [3] Auto-update toggle',
+      sink.buf.includes('[3]') && sink.buf.toLowerCase().includes('update on launch'),
+      'settings must show [3] Update on launch toggle',
     );
   });
 
@@ -3306,10 +3301,10 @@ describe('startMenu — update notifier: banner, [u], auto-update', () => {
       'toggling auto-update should not throw',
     );
 
-    // Toggling from on (default) → off, the message "Auto-update: off" must appear
+    // Toggling from on (default) → off, the message "Update on launch: off" must appear
     assert.ok(
-      sink.buf.includes('Auto-update: off') || sink.buf.includes('auto-update'),
-      'toggling must report the new auto-update state',
+      sink.buf.includes('Update on launch: off') || sink.buf.includes('Update on launch'),
+      'toggling must report the new update-on-launch state',
     );
   });
 
@@ -3349,9 +3344,9 @@ describe('startMenu — update notifier: banner, [u], auto-update', () => {
     await startMenu(ctx, sink);
 
     assert.ok(
-      sink.buf.toLowerCase().includes('auto') ||
-        sink.buf.toLowerCase().includes('up to date'),
-      'wizard must show auto-update prompt',
+      sink.buf.toLowerCase().includes('check for updates') ||
+        sink.buf.toLowerCase().includes('update'),
+      'wizard must show the update-at-launch prompt',
     );
   });
 

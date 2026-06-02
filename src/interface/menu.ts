@@ -1032,8 +1032,9 @@ async function runWelcome(
   out.write('Set myshell-tools as your default shell tool? (y/N) ');
   const setAsDefault = await confirm(false);
 
-  // Default is YES for auto-update (recommended; user can opt out with n or via Settings).
-  out.write('Keep myshell-tools up to date automatically? (Y/n) ');
+  // Default is YES: check for updates at launch and OFFER to install (we ask
+  // first — never a silent swap). Opt out with n or via Settings.
+  out.write('Check for updates at launch (I\'ll show the version and ask first)? (Y/n) ');
   const autoUpdate = await confirm(true);
 
   const saved: AppConfig = {
@@ -1204,7 +1205,7 @@ async function runSettings(
     '',
     `  [1] Mode: ${modeLabel(effMode)}${cfg.mode === undefined ? ' (auto)' : ''}`,
     `  [2] Set as default shell: ${cfg.setAsDefault ? 'on' : 'off'}`,
-    `  [3] Auto-update: ${cfg.autoUpdate !== false ? 'on' : 'off'}`,
+    `  [3] Update on launch: ${cfg.autoUpdate !== false ? 'on' : 'off'}`,
     `  [4] Native sessions (experimental): ${cfg.nativeSessions === true ? 'on' : 'off'}`,
     `  [5] Output detail: ${cfg.verbosity ?? 'normal'}`,
     `  [6] Smart routing: ${cfg.smartRoute !== false ? 'on' : 'off'}`,
@@ -1288,7 +1289,7 @@ async function toggleAutoUpdate(config: AppConfig, out: OutputSink): Promise<App
     ...(config.smartRoute === false ? { smartRoute: false } : {}),
   };
   await saveConfig(updated);
-  out.write(`Auto-update: ${enable ? 'on' : 'off'}\n`);
+  out.write(`Update on launch: ${enable ? 'on' : 'off'}\n`);
   return updated;
 }
 
@@ -2454,12 +2455,14 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
       updateInfo = await checkForUpdateFn().catch(() => undefined);
     }
 
-    // ---- Auto-update at launch (default ON) ----------------------------------
-    // Guard: only runs once; requires both the update and relaunch seams to be wired.
-    // Disabled when MYSHELL_NO_UPDATE is set in the environment or autoUpdate===false.
-    // Skipped under npx: `npm install -g` won't be picked up by the next npx run
-    // (it re-serves its own cache), so silently installing globally would surprise
-    // the user with no durable benefit. The main screen shows the install hint instead.
+    // ---- Update at launch — check first, then ASK (clean: show the version) --
+    // The first thing each launch is an update check. If one is available we tell
+    // you the version and ASK before installing — never a silent swap. Power users
+    // who never want the prompt can set `autoUpdate: true` to install silently.
+    // Skipped under npx (a global install won't be picked up by the next npx run),
+    // when updates are off (autoUpdate:false / MYSHELL_NO_UPDATE), and on
+    // non-interactive sessions (we never auto-install on an EOF — the menu's
+    // banner shows instead).
     if (
       autoUpdateEnabled(mutableCtx.config, process.env) &&
       !runningUnderNpx &&
@@ -2467,28 +2470,43 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
       updateInfo.latest !== null &&
       updateSelfFn !== undefined
     ) {
-      out.write(
-        `▲ Auto-updating ${updateInfo.current} → ${updateInfo.latest}…` +
-        `  (disable: Settings → Auto-update, or MYSHELL_NO_UPDATE=1)\n`,
-      );
-      const ok = await updateSelfFn(out).catch(() => false);
-      if (ok) {
-        if (relaunchFn !== undefined) {
-          await relaunchFn().catch(() => 1);
+      const fromV = updateInfo.current;
+      const toV = updateInfo.latest;
+      const doUpdate = updateSelfFn;
+      // Install + relaunch; returns true when startMenu should hand off to the new
+      // version, false on failure (with an actionable message).
+      const install = async (): Promise<boolean> => {
+        const ok = await doUpdate(out).catch(() => false);
+        if (ok) {
+          if (relaunchFn !== undefined) await relaunchFn().catch(() => 1);
+          return true;
         }
-        return; // Relinquish control to the freshly-installed version.
+        out.write(
+          `\n  ⚠️  Update to ${toV} didn't complete.\n` +
+            `     This is usually a global-install permission issue. Fix it with one of:\n` +
+            `       npm install -g myshell-tools@latest\n` +
+            `       sudo npm install -g myshell-tools@latest      (macOS/Linux, if you saw EACCES)\n` +
+            `     Staying on ${fromV} for now.\n\n`,
+        );
+        return false;
+      };
+
+      if (mutableCtx.config.autoUpdate === true) {
+        // Power-user opt-in: install automatically, no prompt.
+        out.write(`▲ Auto-updating ${fromV} → ${toV}…  (disable: Settings → Update on launch)\n`);
+        if (await install()) return; // handed off to the freshly-installed version
+      } else if (out.isTty) {
+        // DEFAULT, interactive: name the version and ask.
+        out.write(`\n▲ Update available: ${bold(fromV, out.color)} → ${bold(toV, out.color)}\n`);
+        out.write('  Install it now? (Y/n) ');
+        if (await confirm(true)) {
+          out.write(`  Updating to ${toV}…\n`);
+          if (await install()) return;
+        } else {
+          out.write(dim(`  Staying on ${fromV}. (Press u in the menu to update anytime.)\n\n`, out.color));
+        }
       }
-      // Loud, actionable failure — never a silent "continuing on stale." The most
-      // common cause by far is a global-install permission error (EACCES). Give
-      // the exact copy-paste fixes; the update banner below stays up regardless,
-      // so the user is never left silently behind.
-      out.write(
-        `\n  ⚠️  Auto-update to ${updateInfo.latest} didn't complete.\n` +
-          `     This is usually a global-install permission issue. Fix it with one of:\n` +
-          `       npm install -g myshell-tools@latest\n` +
-          `       sudo npm install -g myshell-tools@latest      (macOS/Linux, if you saw EACCES)\n` +
-          `     Staying on ${updateInfo.current} for now.\n\n`,
-      );
+      // else: default + non-interactive → skip; the menu's update banner remains.
     }
 
     // ---- B. Main screen loop -------------------------------------------------
