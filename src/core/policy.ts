@@ -65,7 +65,51 @@ export const DEFAULT_POLICY: Policy = {
  * enforced by orchestrate()'s budget guard. The dollar figures are defensible
  * round ceilings, not measured precision.
  */
-export const POLICY_PRESETS: Record<'cost-saver' | 'balanced' | 'quality-first', Policy> = {
+export type Mode = 'cost-saver' | 'balanced' | 'quality-first';
+
+/**
+ * User-facing labels — framed around the quality↔speed spectrum, NOT cost
+ * (myshell-tools drives subscriptions, so "cost" is the wrong axis). The internal
+ * keys stay stable so persisted configs and route() are untouched.
+ */
+const MODE_LABEL: Record<Mode, string> = {
+  'cost-saver': 'Efficient',
+  'balanced': 'Balanced',
+  'quality-first': 'Max',
+};
+
+/**
+ * One-line descriptions. The crucial point in every mode: quality is never
+ * sacrificed — routing always escalates to the strongest model when a turn needs
+ * it (the floor is the architecture, not the knob). The mode only tunes how
+ * EAGERLY it reaches for the slower/stronger model above that floor.
+ */
+export const MODE_DESC: Record<Mode, string> = {
+  'cost-saver': 'lean & fast — lightest model that fits, escalates to the best when a turn needs it',
+  'balanced': 'sensible middle — reaches for the strong model on the harder turns',
+  'quality-first': 'best answers — always reaches for the strongest model; slower, never capped',
+};
+
+export function modeLabel(mode: Mode): string {
+  return MODE_LABEL[mode];
+}
+
+/**
+ * Pick a sensible default mode from the detected subscription plan, so a new user
+ * gets the right firepower WITHOUT being asked. Big plan (Max) → the top of the
+ * knob; everything else → balanced; unknown/none → balanced (safe). Pure;
+ * case-insensitive substring match on the plan string (e.g. claude's
+ * `subscriptionType`).
+ */
+export function defaultModeForPlan(plan: string | null | undefined): Mode {
+  if (plan === null || plan === undefined) return 'balanced';
+  const p = plan.toLowerCase();
+  if (p.includes('max')) return 'quality-first';
+  if (p.includes('free')) return 'cost-saver';
+  return 'balanced';
+}
+
+export const POLICY_PRESETS: Record<Mode, Policy> = {
   'cost-saver': {
     maxAttempts: 4,
     // Tightest tier ceiling: never leave the IC tier. cost-saver should never

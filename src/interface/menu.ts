@@ -33,7 +33,8 @@ import { detectEnvironment, getInstallCommand } from '../providers/detect.js';
 import { installProvider, installCommandFor } from '../providers/install.js';
 import type { Provider, ProviderId, SandboxLevel } from '../providers/port.js';
 import { listNativeSessions, importNativeSession } from '../providers/native-sessions.js';
-import { DEFAULT_POLICY, POLICY_PRESETS } from '../core/policy.js';
+import { POLICY_PRESETS, modeLabel, defaultModeForPlan, MODE_DESC } from '../core/policy.js';
+import type { Mode } from '../core/policy.js';
 import { planNativeSession } from '../core/native-session.js';
 import type { OutputSink } from './render.js';
 import { runTask } from './run.js';
@@ -996,8 +997,12 @@ async function runWelcome(
   }
 
   // ---- Mode selection — single collapsed prompt ----------------------------
-  // Accepts 1/2/3 directly; Enter (or empty) keeps current default (balanced).
-  out.write('\nMode — [1] cost-saver  [2] balanced (default)  [3] quality-first  (Enter = balanced): ');
+  // Accepts 1/2/3 directly; Enter keeps the auto default (derived from your plan).
+  // Quality is never capped in any mode — this only tunes how eagerly we reach
+  // for the strongest model.
+  out.write(
+    `\nMode — [1] ${modeLabel('cost-saver')}  [2] ${modeLabel('balanced')}  [3] ${modeLabel('quality-first')}  (Enter = auto from your subscription): `,
+  );
   const modeKey = await readLine();
 
   // EOF during setup — save bare onboarded config and return
@@ -1057,14 +1062,22 @@ async function runModeSelect(
   config: AppConfig,
   out: OutputSink,
   readLine: () => Promise<string | null>,
+  autoMode: Mode = 'balanced',
 ): Promise<AppConfig> {
-  const currentMode = config.mode ?? 'balanced';
+  // Effective mode = explicit choice, else the subscription-derived auto default.
+  const effective = config.mode ?? autoMode;
+  const mark = (m: Mode): string => (effective === m ? '  ‹active›' : '');
   const settingsLines = [
     '',
-    'Mode:',
-    `  [1] cost-saver${currentMode === 'cost-saver' ? ' (active)' : ''}`,
-    `  [2] balanced${currentMode === 'balanced' ? ' (active)' : ''}`,
-    `  [3] quality-first${currentMode === 'quality-first' ? ' (active)' : ''}`,
+    'Mode — how eagerly to reach for the strongest model.',
+    dim('Quality is never capped: routing always escalates to the best model when a turn needs it.', out.color),
+    '',
+    `  [1] ${modeLabel('cost-saver')} — ${MODE_DESC['cost-saver']}${mark('cost-saver')}`,
+    `  [2] ${modeLabel('balanced')} — ${MODE_DESC['balanced']}${mark('balanced')}`,
+    `  [3] ${modeLabel('quality-first')} — ${MODE_DESC['quality-first']}${mark('quality-first')}`,
+    config.mode === undefined
+      ? dim(`  (auto: ${modeLabel(autoMode)} — from your subscription; pick a number to pin it)`, out.color)
+      : '',
     '',
   ];
   out.write('\n' + box('Settings', settingsLines) + '\n\n');
@@ -1091,7 +1104,7 @@ async function runModeSelect(
   };
 
   await saveConfig(updated);
-  out.write(`Mode set to: ${newMode ?? 'balanced'}\n`);
+  out.write(`Mode: ${modeLabel(newMode ?? autoMode)}${newMode === undefined ? ' (auto)' : ''}\n`);
   return updated;
 }
 
@@ -1179,14 +1192,16 @@ async function toggleDefaultShell(
 
 async function runSettings(
   _ctx: MenuContext,
-  mutableCtx: { config: AppConfig },
+  mutableCtx: { config: AppConfig; env: EnvironmentStatus },
   out: OutputSink,
   readLine: () => Promise<string | null>,
 ): Promise<void> {
   const cfg = mutableCtx.config;
+  const autoMode = defaultModeForPlan(mutableCtx.env.claude.plan);
+  const effMode = cfg.mode ?? autoMode;
   const settingsLines = [
     '',
-    `  [1] Mode: ${cfg.mode ?? 'balanced'}`,
+    `  [1] Mode: ${modeLabel(effMode)}${cfg.mode === undefined ? ' (auto)' : ''}`,
     `  [2] Set as default shell: ${cfg.setAsDefault ? 'on' : 'off'}`,
     `  [3] Auto-update: ${cfg.autoUpdate !== false ? 'on' : 'off'}`,
     `  [4] Native sessions (experimental): ${cfg.nativeSessions === true ? 'on' : 'off'}`,
@@ -1205,7 +1220,7 @@ async function runSettings(
   if (key === null || key.length === 0) return;
 
   if (key === '1') {
-    mutableCtx.config = await runModeSelect(mutableCtx.config, out, readLine);
+    mutableCtx.config = await runModeSelect(mutableCtx.config, out, readLine, autoMode);
   } else if (key === '2') {
     mutableCtx.config = await toggleDefaultShell(mutableCtx.config, out);
   } else if (key === '3') {
@@ -1844,10 +1859,11 @@ async function runChatLoop(
         continue;
       }
 
-      const policy =
-        mutableCtx.config.mode !== undefined
-          ? POLICY_PRESETS[mutableCtx.config.mode]
-          : DEFAULT_POLICY;
+      // Effective mode: the user's explicit choice, else auto-detected from their
+      // subscription plan (Max → top of the knob, etc.) — no interrogation.
+      const effectiveMode: Mode =
+        mutableCtx.config.mode ?? defaultModeForPlan(mutableCtx.env.claude.plan);
+      const policy = POLICY_PRESETS[effectiveMode];
 
       // ---- Bug 4 fix: no-provider gate ----------------------------------------
       // Check whether any provider is actually authenticated before dispatching a

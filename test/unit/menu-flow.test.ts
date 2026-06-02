@@ -1359,22 +1359,14 @@ describe('startMenu — first-run welcome: install prompt for missing provider',
 
     await startMenu(ctx, sink);
 
-    // The single collapsed prompt must list all three modes and a default
+    // The single collapsed prompt must list all three modes (quality-framed
+    // labels) and an auto default.
+    assert.ok(sink.buf.includes('Efficient'), 'mode prompt must mention Efficient');
+    assert.ok(sink.buf.includes('Balanced'), 'mode prompt must mention Balanced');
+    assert.ok(sink.buf.includes('Max'), 'mode prompt must mention Max');
     assert.ok(
-      sink.buf.includes('cost-saver'),
-      'mode prompt must mention cost-saver',
-    );
-    assert.ok(
-      sink.buf.includes('balanced'),
-      'mode prompt must mention balanced',
-    );
-    assert.ok(
-      sink.buf.includes('quality-first'),
-      'mode prompt must mention quality-first',
-    );
-    assert.ok(
-      sink.buf.includes('Enter = balanced'),
-      'mode prompt must show Enter = balanced default',
+      sink.buf.includes('Enter = auto'),
+      'mode prompt must show the auto (subscription-derived) default',
     );
   });
 
