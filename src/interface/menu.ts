@@ -1087,7 +1087,7 @@ async function runModeSelect(
     ...(config.nativeSessions === true ? { nativeSessions: true } : {}),
     ...(config.verbosity !== undefined ? { verbosity: config.verbosity } : {}),
     ...(config.timeoutMs !== undefined ? { timeoutMs: config.timeoutMs } : {}),
-    ...(config.smartRoute === true ? { smartRoute: true } : {}),
+    ...(config.smartRoute === false ? { smartRoute: false } : {}),
   };
 
   await saveConfig(updated);
@@ -1138,7 +1138,7 @@ async function runVerbositySelect(
     ...(config.nativeSessions === true ? { nativeSessions: true } : {}),
     ...(newVerbosity !== undefined ? { verbosity: newVerbosity } : {}),
     ...(config.timeoutMs !== undefined ? { timeoutMs: config.timeoutMs } : {}),
-    ...(config.smartRoute === true ? { smartRoute: true } : {}),
+    ...(config.smartRoute === false ? { smartRoute: false } : {}),
   };
 
   await saveConfig(updated);
@@ -1171,7 +1171,7 @@ async function toggleDefaultShell(
     ...(config.nativeSessions === true ? { nativeSessions: true } : {}),
     ...(config.verbosity !== undefined ? { verbosity: config.verbosity } : {}),
     ...(config.timeoutMs !== undefined ? { timeoutMs: config.timeoutMs } : {}),
-    ...(config.smartRoute === true ? { smartRoute: true } : {}),
+    ...(config.smartRoute === false ? { smartRoute: false } : {}),
   };
   await saveConfig(updated);
   return updated;
@@ -1191,7 +1191,7 @@ async function runSettings(
     `  [3] Auto-update: ${cfg.autoUpdate !== false ? 'on' : 'off'}`,
     `  [4] Native sessions (experimental): ${cfg.nativeSessions === true ? 'on' : 'off'}`,
     `  [5] Output detail: ${cfg.verbosity ?? 'normal'}`,
-    `  [6] Smart routing (experimental): ${cfg.smartRoute === true ? 'on' : 'off'}`,
+    `  [6] Smart routing: ${cfg.smartRoute !== false ? 'on' : 'off'}`,
     '',
     '  [Enter] Back',
     '',
@@ -1221,15 +1221,18 @@ async function runSettings(
 }
 
 /**
- * Toggle the EXPERIMENTAL smart-routing preference and persist it.
+ * Toggle smart routing and persist it.
  *
- * When on, turns the keyword classifier can't route (no tier keyword matched)
- * are handed to a cheap model that picks the tier; clear keyword turns still
- * route instantly. Default OFF; live routing quality/latency should be validated
- * before relying on it. See core/router.ts + core/route-classifier.ts.
+ * When on (the DEFAULT), turns the keyword classifier can't route (no tier
+ * keyword matched) are handed to a cheap model that picks the tier; clear keyword
+ * turns still route instantly with no model call. It adds ~5-10s on those
+ * ambiguous turns only (a worker-tier classification spawn), so it can be turned
+ * off here. See core/router.ts + core/route-classifier.ts.
  */
 async function toggleSmartRoute(config: AppConfig, out: OutputSink): Promise<AppConfig> {
-  const enable = config.smartRoute !== true;
+  // Default-on: enabled unless explicitly false (mirrors auto-update).
+  const currentlyEnabled = config.smartRoute !== false;
+  const enable = !currentlyEnabled;
   const updated: AppConfig = {
     onboarded: config.onboarded,
     setAsDefault: config.setAsDefault,
@@ -1238,10 +1241,11 @@ async function toggleSmartRoute(config: AppConfig, out: OutputSink): Promise<App
     ...(config.nativeSessions === true ? { nativeSessions: true } : {}),
     ...(config.verbosity !== undefined ? { verbosity: config.verbosity } : {}),
     ...(config.timeoutMs !== undefined ? { timeoutMs: config.timeoutMs } : {}),
-    ...(enable ? { smartRoute: true } : {}),
+    // Persist only the explicit-OFF; absent means default-on.
+    ...(!enable ? { smartRoute: false } : {}),
   };
   await saveConfig(updated);
-  out.write(`Smart routing (experimental): ${enable ? 'on' : 'off'}\n`);
+  out.write(`Smart routing: ${enable ? 'on' : 'off'}\n`);
   return updated;
 }
 
@@ -1265,7 +1269,7 @@ async function toggleAutoUpdate(config: AppConfig, out: OutputSink): Promise<App
     ...(config.nativeSessions === true ? { nativeSessions: true } : {}),
     ...(config.verbosity !== undefined ? { verbosity: config.verbosity } : {}),
     ...(config.timeoutMs !== undefined ? { timeoutMs: config.timeoutMs } : {}),
-    ...(config.smartRoute === true ? { smartRoute: true } : {}),
+    ...(config.smartRoute === false ? { smartRoute: false } : {}),
   };
   await saveConfig(updated);
   out.write(`Auto-update: ${enable ? 'on' : 'off'}\n`);
@@ -1291,7 +1295,7 @@ async function toggleNativeSessions(config: AppConfig, out: OutputSink): Promise
     ...(enable ? { nativeSessions: true } : {}),
     ...(config.verbosity !== undefined ? { verbosity: config.verbosity } : {}),
     ...(config.timeoutMs !== undefined ? { timeoutMs: config.timeoutMs } : {}),
-    ...(config.smartRoute === true ? { smartRoute: true } : {}),
+    ...(config.smartRoute === false ? { smartRoute: false } : {}),
   };
   await saveConfig(updated);
   out.write(`Native sessions (experimental): ${enable ? 'on' : 'off'}\n`);
@@ -1910,7 +1914,7 @@ async function runChatLoop(
         // classifier always runs worker-tier read-only (see route-classifier.ts).
         const ROUTER_TIMEOUT_MS = 20_000;
         const routeClassifier =
-          mutableCtx.config.smartRoute === true
+          mutableCtx.config.smartRoute !== false
             ? makeRouteClassifier({
                 providers: ctx.providers,
                 policy,

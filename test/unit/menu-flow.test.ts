@@ -318,7 +318,11 @@ function makeCtx(
   const l = ledger ?? makeFakeLedger();
   const dir = cwd ?? join(tmpdir(), `menu-flow-${randomUUID()}`);
 
-  const config: AppConfig = { onboarded: true, setAsDefault: false };
+  // smartRoute defaults ON in production, but these flows drive FAKE providers
+  // (not a real router), so disable it here to keep the per-turn provider-call
+  // sequence deterministic. Smart routing is covered by router.test.ts +
+  // route-classifier.test.ts and verified live.
+  const config: AppConfig = { onboarded: true, setAsDefault: false, smartRoute: false };
 
   return {
     version: '2.0.0',
@@ -3138,7 +3142,8 @@ describe('startMenu — update notifier: banner, [u], auto-update', () => {
     const ledger = makeFakeLedger();
     const dir = join(tmpdir(), `menu-autoupdate-absent-${randomUUID()}`);
     // autoUpdate is absent → defaults to true (enabled)
-    const config: AppConfig = { onboarded: true, setAsDefault: false };
+    // smartRoute:false keeps the fake-provider call sequence deterministic.
+    const config: AppConfig = { onboarded: true, setAsDefault: false, smartRoute: false };
 
     const ctx: MenuContext = {
       version: '2.0.0',
