@@ -22,7 +22,7 @@ import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 
 import { EventEmitter } from 'node:events';
-import { startMenu, defaultAliasHint, parseYesNo, interpretYesNoKey, readSingleKey, confirmViaKey, autoUpdateEnabled, createLineReader } from '../../src/interface/menu.ts';
+import { startMenu, defaultAliasHint, parseYesNo, interpretYesNoKey, readSingleKey, confirmViaKey, autoUpdateEnabled, createLineReader, completeSlash, CHAT_SLASH_COMMANDS } from '../../src/interface/menu.ts';
 import type { MenuContext, KeyInputStream } from '../../src/interface/menu.ts';
 import type { UpdateCheckResult } from '../../src/infra/update-check.ts';
 import type { OutputSink } from '../../src/interface/render.ts';
@@ -4032,5 +4032,44 @@ describe('startMenu — inline re-login uses refreshed auth (stale-deps fix)', (
       sink.buf.includes('claude') && sink.buf.toLowerCase().includes('sign in'),
       'Re-login prompt must mention the failing provider (claude)',
     );
+  });
+});
+
+describe('completeSlash — Tab-completion for the chat prompt', () => {
+  it('returns all chat commands for a bare slash', () => {
+    const [hits, line] = completeSlash('/');
+    assert.deepEqual(hits, [...CHAT_SLASH_COMMANDS]);
+    assert.equal(line, '/');
+  });
+
+  it('completes a unique prefix', () => {
+    const [hits] = completeSlash('/ba');
+    assert.deepEqual(hits, ['/back']);
+  });
+
+  it('matches multiple commands sharing a prefix', () => {
+    // '/' + 'h' → only /help; '/e' → only /exit; verify filtering is by prefix
+    assert.deepEqual(completeSlash('/h')[0], ['/help']);
+    assert.deepEqual(completeSlash('/e')[0], ['/exit']);
+  });
+
+  it('is a no-op (no hits) on non-slash prose so plain text is never mangled', () => {
+    const [hits, line] = completeSlash('refactor the auth module');
+    assert.deepEqual(hits, []);
+    assert.equal(line, 'refactor the auth module');
+  });
+
+  it('returns no hits for an unknown slash command', () => {
+    assert.deepEqual(completeSlash('/zzz')[0], []);
+  });
+
+  it('honors a custom command set (repl)', () => {
+    const [hits] = completeSlash('/q', ['/help', '/exit', '/quit']);
+    assert.deepEqual(hits, ['/quit']);
+  });
+
+  it('never throws on odd input', () => {
+    assert.doesNotThrow(() => completeSlash(''));
+    assert.doesNotThrow(() => completeSlash('/'));
   });
 });

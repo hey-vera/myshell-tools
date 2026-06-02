@@ -209,6 +209,35 @@ export function interpretYesNoKey(
 }
 
 /**
+ * The slash-commands available at the chat prompt. Tab-completion offers these;
+ * keep in sync with the dispatch in runChatLoop (/back, /exit, /help).
+ */
+export const CHAT_SLASH_COMMANDS: readonly string[] = ['/help', '/back', '/exit'];
+
+/**
+ * Pure completer for a readline `completer` option, scoped to slash-commands.
+ *
+ * Returns `[hits, line]` per the Node readline contract. Only fires for a line
+ * that starts with `/` (the chat prompt is otherwise free-form prose, where
+ * shell-style completion would corrupt sentences), and only when there is more
+ * than one candidate or a genuine prefix to extend — so pressing Tab on plain
+ * text is a harmless no-op. Never throws.
+ *
+ * @param line     the current input line (substring up to the cursor)
+ * @param commands the candidate command set (defaults to the chat commands)
+ */
+export function completeSlash(
+  line: string,
+  commands: readonly string[] = CHAT_SLASH_COMMANDS,
+): [string[], string] {
+  if (!line.startsWith('/')) return [[], line];
+  const hits = commands.filter((c) => c.startsWith(line));
+  // Return all commands as the candidate list when the bare `/` is typed, so
+  // readline lists them; otherwise the filtered prefix matches.
+  return [hits.length > 0 ? hits : [], line];
+}
+
+/**
  * Decide whether auto-update is enabled for this launch.
  *
  * Auto-update is considered ENABLED when:
@@ -1878,6 +1907,9 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
       input: process.stdin,
       output: process.stdout,
       terminal: out.isTty,
+      // Tab-completes slash-commands at the chat prompt. Dormant on non-`/`
+      // input and ignored entirely when `terminal` is false (piped/test input).
+      completer: (line: string) => completeSlash(line),
     });
     lineReader = createLineReader(rl);
     const reader = lineReader;
