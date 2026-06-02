@@ -183,11 +183,20 @@ describe('classify — critical risk requires no confidence fabrication', () => 
   });
 });
 
-describe('classify — priority: manager beats worker when both keywords present', () => {
-  it('"review and search the codebase" → tier=manager (manager wins)', () => {
+describe('classify — manager corroboration: a lone soft signal does NOT win', () => {
+  it('"review and search the codebase" → tier=worker (lone soft "review" → not manager; "search" → worker)', () => {
+    // UPDATED for the manager-corroboration fix. "review" is a lone SOFT manager
+    // signal, which is no longer sufficient to force manager. With a worker
+    // signal ("search") present, this routes to worker. (Previously expected
+    // manager via the lone-keyword tie-break — that was the overtrigger bug.)
     const result = classify('review and search the codebase');
-    // Manager pattern is tested first and has highest tie-break priority
-    assert.equal(result.tier, 'manager');
+    assert.equal(result.tier, 'worker', `rationale: ${result.rationale}`);
+  });
+
+  it('"review and design the codebase" → tier=manager (TWO distinct soft signals corroborate)', () => {
+    // review + design = 2 distinct soft manager signals → manager qualifies.
+    const result = classify('review and design the codebase');
+    assert.equal(result.tier, 'manager', `rationale: ${result.rationale}`);
   });
 });
 
@@ -373,10 +382,15 @@ describe('classify — ic tier comprehensive', () => {
 describe('classify — manager tier comprehensive', () => {
   const managerCases: Row[] = [
     {
+      // UPDATED for the manager-corroboration fix: "plan" is now a SOFT manager
+      // signal and "migration" (without "large") is not a manager signal at all,
+      // so this lone soft signal no longer forces manager — it routes to ic.
+      // (Previously expected manager; that encoded the lone-keyword overtrigger.)
+      // "migration" still drives risk=high via the risk cascade.
       task: 'plan the migration from REST to GraphQL',
-      tier: 'manager',
+      tier: 'ic',
       risk: 'high',
-      note: 'manager keyword "plan"; high keyword "migration"',
+      note: 'lone soft manager keyword "plan" → ic (needs ≥2 soft or a strong signal); high keyword "migration"',
     },
     {
       task: 'evaluate the trade-offs between Redis and Memcached',
@@ -550,19 +564,26 @@ describe('classify — low risk (no signals)', () => {
 // ---------------------------------------------------------------------------
 
 describe('classify — tie-break: manager wins over ic and worker', () => {
-  it('"review and search the codebase" → manager (manager > worker on tie)', () => {
-    const result = classify('review and search the codebase');
+  it('"review and design the codebase" → manager (2 distinct soft signals corroborate)', () => {
+    // UPDATED: was "review and search the codebase" → manager via lone-keyword
+    // tie-break. Manager now needs corroboration; review+design (2 soft) qualifies.
+    const result = classify('review and design the codebase');
     assert.equal(result.tier, 'manager');
   });
 
-  it('"review and implement the design" → manager (manager > ic on tie)', () => {
+  it('"review and implement the design" → manager (review + design = 2 distinct soft signals)', () => {
+    // review (soft) + design (soft) = 2 distinct soft signals → manager qualifies,
+    // and manager outranks the ic signal "implement".
     const result = classify('review and implement the design');
     assert.equal(result.tier, 'manager');
   });
 
-  it('"plan and build the new feature" → manager (manager > ic on tie)', () => {
+  it('"plan and build the new feature" → ic (lone soft "plan" → not manager; ic signal "build" wins)', () => {
+    // UPDATED for the manager-corroboration fix: "plan" alone is a lone soft
+    // signal and no longer forces manager; the ic signal "build" makes this ic.
+    // (Previously expected manager via lone-keyword tie-break.)
     const result = classify('plan and build the new feature');
-    assert.equal(result.tier, 'manager');
+    assert.equal(result.tier, 'ic', `rationale: ${result.rationale}`);
   });
 });
 
@@ -845,5 +866,79 @@ describe('classify — manager new signals (tradeoff, which approach, should we,
 
   it('"define the end-to-end testing strategy" → manager', () => {
     assert.equal(classify('define the end-to-end testing strategy').tier, 'manager');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Manager corroboration rule (anti-overtrigger): a lone soft keyword must NOT
+// force the most expensive manager tier on a conversational message.
+// ---------------------------------------------------------------------------
+
+describe('classify — manager corroboration rule', () => {
+  // --- The exact user-reported bug message: lone "plan" must NOT → manager. ---
+  it('"let me know your plan before committing... research 2010 youtube" → ic (NOT manager)', () => {
+    const result = classify(
+      'let me know your plan before committing the change, then research 2010 youtube',
+    );
+    assert.equal(
+      result.tier,
+      'ic',
+      `Lone soft signal "plan" must not force manager. rationale: ${result.rationale}`,
+    );
+    // "research" must NOT trip the worker "search" signal (word boundary).
+    assert.notEqual(result.tier, 'worker', `rationale: ${result.rationale}`);
+  });
+
+  // --- Lone soft signals → ic ---
+  const loneSoftConversational = [
+    'can you review this for me',
+    'let me know your plan before we start',
+    'i think the design feels off, thoughts?',
+    'this seems complex, can you help',
+    'please assess this when you get a chance',
+  ];
+  for (const task of loneSoftConversational) {
+    it(`lone soft signal: "${task}" → ic (not manager)`, () => {
+      const result = classify(task);
+      assert.equal(result.tier, 'ic', `rationale: ${result.rationale}`);
+    });
+  }
+
+  // --- A single STRONG structural signal → manager ---
+  const strongSingles = [
+    'audit the codebase',
+    'threat model this',
+    'rethink the architecture',
+    'should we migrate now',
+    'what is the high-level strategy',
+    'compare approaches for caching',
+  ];
+  for (const task of strongSingles) {
+    it(`single strong signal: "${task}" → manager`, () => {
+      const result = classify(task);
+      assert.equal(result.tier, 'manager', `rationale: ${result.rationale}`);
+    });
+  }
+
+  // --- Two DISTINCT soft signals → manager ---
+  it('"review and design this module" → manager (2 distinct soft signals)', () => {
+    assert.equal(classify('review and design this module').tier, 'manager');
+  });
+
+  it('"assess the complexity of this" → manager (assess + complex = 2 soft)', () => {
+    assert.equal(classify('assess the complexity of this').tier, 'manager');
+  });
+
+  // --- Repeating ONE soft word must NOT fake corroboration (de-dup) ---
+  it('"review the review of the review" → ic (one distinct soft signal, repeated)', () => {
+    // scoreSignals counts each distinct pattern once, so repetition can't reach 2.
+    const result = classify('review the review of the review');
+    assert.equal(result.tier, 'ic', `rationale: ${result.rationale}`);
+  });
+
+  // --- A real architecture/audit request → manager (sanity) ---
+  it('"audit the authentication architecture across the codebase" → manager', () => {
+    const result = classify('audit the authentication architecture across the codebase');
+    assert.equal(result.tier, 'manager', `rationale: ${result.rationale}`);
   });
 });

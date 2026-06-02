@@ -14,9 +14,36 @@ import type { ProviderId } from '../providers/port.js';
 import { getCheapestForTier } from '../infra/pricing.js';
 
 /**
+ * Ordinal rank of each tier, cheapest → most expensive. Used to clamp a
+ * requested tier DOWN to a policy ceiling (`policy.maxTier`).
+ */
+const TIER_RANK: Record<Tier, number> = {
+  worker: 0,
+  ic: 1,
+  manager: 2,
+};
+
+/**
+ * Clamp `requested` down to `ceiling` when a ceiling is set. This ONLY lowers
+ * the tier (never raises it): if the requested tier already sits at or below the
+ * ceiling it is returned unchanged. `undefined` ceiling → no clamp (classifier
+ * / caller wins). This is the single chokepoint that caps both initial routing
+ * AND escalation/review calls — e.g. under `balanced` (maxTier 'ic') a
+ * `route('manager', ...)` request resolves an IC model (sonnet), never opus.
+ */
+function clampTier(requested: Tier, ceiling: Tier | undefined): Tier {
+  if (ceiling === undefined) return requested;
+  return TIER_RANK[requested] > TIER_RANK[ceiling] ? ceiling : requested;
+}
+
+/**
  * Resolve a {@link RouteDecision} for the given tier.
  *
  * Algorithm:
+ *  0. Clamp the requested `tier` DOWN to `policy.maxTier` when set (only lowers,
+ *     never raises; undefined = no cap). This is the single chokepoint that caps
+ *     initial routing AND escalation/review calls, so e.g. under `balanced`
+ *     (maxTier 'ic') a manager request resolves an IC model, not opus.
  *  1. Walk `policy.providerOrderByTier[tier]` in preference order.
  *  2. When `authenticatedProviders` is supplied and non-empty, prefer the FIRST
  *     provider that is both in `available` AND in `authenticatedProviders`.
@@ -60,6 +87,13 @@ export function route(
       `route: no providers available for tier "${tier}" — start at least one provider`,
     );
   }
+
+  // Clamp the requested tier down to the policy ceiling BEFORE model resolution.
+  // From here on, `tier` is the *effective* tier: provider preference order,
+  // model selection, and the returned RouteDecision.tier all use the clamped
+  // value, so the decision stays internally consistent (an IC model is reported
+  // as tier 'ic', never as a 'manager' decision running a sonnet model).
+  tier = clampTier(tier, policy.maxTier);
 
   const preferredOrder = policy.providerOrderByTier[tier];
   const hasAuthInfo =

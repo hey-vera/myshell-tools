@@ -12,7 +12,20 @@
  *
  * Each tier has a list of keyword patterns. The text is matched against all
  * three lists and a score (count of matches) is accumulated per tier.
- * Tie-break is deterministic: manager > ic > worker.
+ *
+ * Manager corroboration rule (anti-overtrigger): a *lone* soft manager keyword
+ * (e.g. "plan", "review", "design") in an otherwise conversational message must
+ * NOT force the most expensive manager tier. Manager is only chosen when there
+ * is real structural evidence of high-level work:
+ *   - a STRONG structural signal is present (audit / threat model / architecture
+ *     / "across the codebase|system" / large migration / end-to-end / "high-level"
+ *     / "compare approaches" / strategy), OR
+ *   - at least TWO DISTINCT soft manager signals match (de-duplicated, so
+ *     repeating one word can't fake corroboration).
+ * A single soft manager signal alone routes to `ic`, not `manager`. This is the
+ * fix for "let me know your plan ..." (lone "plan") landing on opus.
+ *
+ * Tie-break (after the manager gate above): manager > ic > worker.
  * Default when nothing matches: ic.
  *
  * # Risk model
@@ -29,21 +42,15 @@ import type { Classification, Tier, Risk } from './types.js';
 // ---------------------------------------------------------------------------
 
 /**
- * Manager-tier signals: review/planning/architecture/audit tasks that require
- * high-level judgment across the codebase or system.
+ * STRONG (structural) manager signals: each one on its own is strong evidence
+ * of genuine high-level / cross-cutting work that warrants the manager tier.
+ * A single strong signal is enough to select `manager`.
  */
-const MANAGER_SIGNALS: readonly RegExp[] = [
-  /\breview\b/i,
-  /\bplan\b/i,
-  /\bdesign\b/i,
+const MANAGER_STRONG_SIGNALS: readonly RegExp[] = [
   /\barchitect(?:ure)?\b/i,
   /\baudit\b/i,
-  /\bsecurity\b/i,
   /\bthreat\s+model\b/i,
-  /\bevaluate\b/i,
-  /\bassess\b/i,
   /\bcompare\s+approaches?\b/i,
-  /\btrade[-\s]?offs?\b/i,
   /\bwhich\s+approach\b/i,
   /\bshould\s+we\b/i,
   /\bstrategy\b/i,
@@ -51,8 +58,34 @@ const MANAGER_SIGNALS: readonly RegExp[] = [
   /\bacross\s+the\s+(?:codebase|system)\b/i,
   /\bend[-\s]to[-\s]end\b/i,
   /\blarge\s+migration\b/i,
+];
+
+/**
+ * SOFT manager signals: planning / review / evaluation words that often appear
+ * in ordinary conversational messages ("let me know your plan", "can you review
+ * this"). On their own these are NOT sufficient — a LONE soft signal routes to
+ * `ic`. Manager requires ≥2 DISTINCT soft signals (de-duplicated) OR at least
+ * one strong signal. This prevents a single word like "plan" from launching the
+ * most expensive model on a low-risk chat message.
+ */
+const MANAGER_SOFT_SIGNALS: readonly RegExp[] = [
+  /\breview\b/i,
+  /\bplan\b/i,
+  /\bdesign\b/i,
+  /\bsecurity\b/i,
+  /\bevaluate\b/i,
+  /\bassess\b/i,
+  /\btrade[-\s]?offs?\b/i,
   /\bcomplex(?:ity)?\b/i,
   /\bcomplicated\b/i,
+];
+
+/**
+ * Union used only for rationale reporting (names every manager keyword matched).
+ */
+const MANAGER_SIGNALS: readonly RegExp[] = [
+  ...MANAGER_STRONG_SIGNALS,
+  ...MANAGER_SOFT_SIGNALS,
 ];
 
 /**
@@ -225,19 +258,30 @@ export function classify(task: string): Classification {
   }
 
   // --- Tier scoring ---
-  const managerMatches = scoreSignals(task, MANAGER_SIGNALS);
+  // Manager requires corroboration (see header): a lone soft keyword (plan /
+  // review / design / ...) is NOT enough. We split the manager signals into
+  // STRONG (structural — one suffices) and SOFT (need ≥2 distinct). The
+  // de-duplicated soft count means repeating one word can't fake corroboration,
+  // because scoreSignals already counts each distinct pattern at most once.
+  const managerStrongMatches = scoreSignals(task, MANAGER_STRONG_SIGNALS);
+  const managerSoftMatches = scoreSignals(task, MANAGER_SOFT_SIGNALS);
+  const managerMatches = scoreSignals(task, MANAGER_SIGNALS); // for rationale only
   const icMatches = scoreSignals(task, IC_SIGNALS);
   const workerMatches = scoreSignals(task, WORKER_SIGNALS);
 
-  const managerScore = managerMatches.length;
   const icScore = icMatches.length;
   const workerScore = workerMatches.length;
+
+  // Manager qualifies only with real evidence: any strong signal, or ≥2 distinct
+  // soft signals. A single soft signal alone does NOT reach manager.
+  const managerQualifies =
+    managerStrongMatches.length > 0 || managerSoftMatches.length >= 2;
 
   let tier: Tier;
   let tierSignals: readonly string[];
 
-  if (managerScore > 0 && managerScore >= icScore && managerScore >= workerScore) {
-    // Manager wins (or ties with any other tier — manager has highest priority)
+  if (managerQualifies) {
+    // Manager wins (highest priority) — corroborated by structural evidence.
     tier = 'manager';
     tierSignals = managerMatches;
   } else if (icScore > 0 && icScore >= workerScore) {

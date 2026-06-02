@@ -6,8 +6,18 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { route } from '../../src/core/route.ts';
-import { DEFAULT_POLICY } from '../../src/core/policy.ts';
+import { DEFAULT_POLICY, POLICY_PRESETS } from '../../src/core/policy.ts';
 import type { ProviderId } from '../../src/providers/port.ts';
+import type { Tier, Policy } from '../../src/core/types.ts';
+
+// quality-first opens the manager tier (maxTier 'manager'); use it to verify
+// manager-tier model resolution now that DEFAULT_POLICY/balanced clamps to 'ic'.
+const MANAGER_OK_POLICY: Policy = POLICY_PRESETS['quality-first'];
+// A policy with NO tier ceiling — exercises the original (unclamped) routing.
+const NO_CAP_POLICY: Policy = (() => {
+  const { maxTier: _omit, ...rest } = DEFAULT_POLICY;
+  return rest;
+})();
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -88,22 +98,28 @@ describe('route — worker tier', () => {
 // ---------------------------------------------------------------------------
 
 describe('route — manager tier', () => {
-  it('claude-only → claude manager model (claude-opus-4-7)', () => {
-    const decision = route('manager', CLAUDE_ONLY, DEFAULT_POLICY);
+  // NOTE: these assert manager-tier MODEL RESOLUTION, so they now use
+  // MANAGER_OK_POLICY (quality-first, maxTier 'manager'). Under DEFAULT_POLICY /
+  // balanced (maxTier 'ic') a manager request is intentionally clamped to ic —
+  // see the "route — maxTier clamp" suite below. Previously these passed
+  // DEFAULT_POLICY and expected opus/gpt-5.5; that encoded the pre-clamp bug
+  // where balanced auto-ran the most expensive model.
+  it('claude-only → claude manager model (claude-opus-4-7) under a manager-allowed policy', () => {
+    const decision = route('manager', CLAUDE_ONLY, MANAGER_OK_POLICY);
     assert.equal(decision.tier, 'manager');
     assert.equal(decision.provider, 'claude');
     assert.equal(decision.model, 'claude-opus-4-7');
   });
 
-  it('codex-only → codex manager model (gpt-5.5)', () => {
-    const decision = route('manager', CODEX_ONLY, DEFAULT_POLICY);
+  it('codex-only → codex manager model (gpt-5.5) under a manager-allowed policy', () => {
+    const decision = route('manager', CODEX_ONLY, MANAGER_OK_POLICY);
     assert.equal(decision.tier, 'manager');
     assert.equal(decision.provider, 'codex');
     assert.equal(decision.model, 'gpt-5.5');
   });
 
-  it('both available → claude first (per policy order)', () => {
-    const decision = route('manager', BOTH, DEFAULT_POLICY);
+  it('both available → claude first (per policy order) under a manager-allowed policy', () => {
+    const decision = route('manager', BOTH, MANAGER_OK_POLICY);
     assert.equal(decision.provider, 'claude');
   });
 
@@ -166,7 +182,8 @@ describe('route — opencode-only provider', () => {
   });
 
   it('manager tier with opencode-only returns a valid opencode decision (does not throw)', () => {
-    const decision = route('manager', OPENCODE_ONLY, DEFAULT_POLICY);
+    // Use a manager-allowed policy: DEFAULT_POLICY now clamps manager → ic.
+    const decision = route('manager', OPENCODE_ONLY, MANAGER_OK_POLICY);
     assert.equal(decision.tier, 'manager');
     assert.equal(decision.provider, 'opencode');
     assert.ok(decision.model.length > 0, 'model should be non-empty');
@@ -294,5 +311,76 @@ describe('route — authenticatedProviders (auth-aware routing)', () => {
     );
     assert.equal(decision.provider, 'codex');
     assert.equal(decision.model, 'gpt-5.4');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// route — maxTier clamp (cost ceiling on the routing chokepoint)
+// ---------------------------------------------------------------------------
+
+describe('route — maxTier clamp', () => {
+  it('balanced clamps a manager request DOWN to ic (sonnet, NOT opus) for claude', () => {
+    // This is the core user-facing fix: balanced must never auto-run opus.
+    const decision = route('manager', CLAUDE_ONLY, DEFAULT_POLICY);
+    assert.equal(decision.tier, 'ic', 'tier must be clamped to ic');
+    assert.equal(decision.provider, 'claude');
+    assert.equal(decision.model, 'claude-sonnet-4-6');
+    assert.notEqual(decision.model, 'claude-opus-4-7', 'must NOT route to opus under balanced');
+  });
+
+  it('balanced clamps a manager request DOWN to ic for codex (not gpt-5.5)', () => {
+    const decision = route('manager', CODEX_ONLY, DEFAULT_POLICY);
+    assert.equal(decision.tier, 'ic');
+    assert.equal(decision.provider, 'codex');
+    // cheapest codex ic model
+    assert.equal(decision.model, 'gpt-5.2-codex');
+    assert.notEqual(decision.model, 'gpt-5.5');
+  });
+
+  it('cost-saver clamps a manager request DOWN to ic', () => {
+    const decision = route('manager', CLAUDE_ONLY, POLICY_PRESETS['cost-saver']);
+    assert.equal(decision.tier, 'ic');
+    assert.equal(decision.model, 'claude-sonnet-4-6');
+  });
+
+  it('quality-first does NOT clamp manager (maxTier manager) → opus', () => {
+    const decision = route('manager', CLAUDE_ONLY, POLICY_PRESETS['quality-first']);
+    assert.equal(decision.tier, 'manager');
+    assert.equal(decision.model, 'claude-opus-4-7');
+  });
+
+  it('clamp only LOWERS: a worker/ic request is unaffected by a higher ceiling', () => {
+    // ic request under balanced (ceiling ic) stays ic.
+    const ic = route('ic', CLAUDE_ONLY, DEFAULT_POLICY);
+    assert.equal(ic.tier, 'ic');
+    assert.equal(ic.model, 'claude-sonnet-4-6');
+    // worker request under balanced (ceiling ic) stays worker (never raised to ic).
+    const worker = route('worker', CLAUDE_ONLY, DEFAULT_POLICY);
+    assert.equal(worker.tier, 'worker');
+    assert.equal(worker.model, 'claude-haiku-4-5');
+  });
+
+  it('undefined maxTier → no clamp (manager request resolves manager model)', () => {
+    const decision = route('manager', CLAUDE_ONLY, NO_CAP_POLICY);
+    assert.equal(decision.tier, 'manager');
+    assert.equal(decision.model, 'claude-opus-4-7');
+  });
+
+  it('clamp respects an arbitrary ceiling: manager request, worker ceiling → worker', () => {
+    const workerCeiling: Policy = { ...NO_CAP_POLICY, maxTier: 'worker' as Tier };
+    const decision = route('manager', CLAUDE_ONLY, workerCeiling);
+    assert.equal(decision.tier, 'worker');
+    assert.equal(decision.model, 'claude-haiku-4-5');
+  });
+
+  it('clamp applies to the escalation/review chokepoint too: route("manager", ...) under balanced never reaches opus regardless of caller', () => {
+    // orchestrate() escalation and review both call route('manager', ...); this
+    // single clamp covers them all.
+    for (const pool of [CLAUDE_ONLY, CODEX_ONLY, BOTH]) {
+      const decision = route('manager', pool, DEFAULT_POLICY);
+      assert.notEqual(decision.model, 'claude-opus-4-7');
+      assert.notEqual(decision.model, 'gpt-5.5');
+      assert.equal(decision.tier, 'ic');
+    }
   });
 });
