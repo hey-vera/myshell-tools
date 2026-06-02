@@ -318,6 +318,13 @@ export async function renderStream(
   let workLabel = 'Thinking';
   let stepCount = 0;
 
+  // Whether any answer prose has streamed yet, and whether a tool call has
+  // interrupted it since the last text delta. When prose resumes after a tool
+  // call we insert a line break so the model's two segments aren't glued
+  // together ("…before answering.The directory is empty…").
+  let proseStarted = false;
+  let toolSinceProse = false;
+
   function stopSpinner(): void {
     if (spinnerActive) {
       spinner.stop();
@@ -371,6 +378,12 @@ export async function renderStream(
         if (pe.type === 'text') {
           // First real answer prose — clear the indicator and start streaming.
           stopSpinner();
+          // If a tool call interrupted the prose, break the line so the resumed
+          // text isn't glued onto the previous sentence. Only between segments —
+          // never before the very first delta.
+          if (toolSinceProse && proseStarted) prose.push('\n');
+          toolSinceProse = false;
+          proseStarted = true;
           // Stream prose, holding back any trailing envelope fragment.
           prose.push(pe.delta);
         } else if (pe.type === 'tool') {
@@ -381,8 +394,10 @@ export async function renderStream(
           } else {
             // Normal/quiet: keep the indicator alive and count the step, so a
             // tool-heavy run shows life ("Thinking… 12 steps · 8s") instead of
-            // freezing on a dead line.
+            // freezing on a dead line. Mark that prose (if any) was interrupted so
+            // the next text delta starts on a fresh line.
             noteWorkStep();
+            toolSinceProse = true;
           }
         } else if (pe.type === 'reasoning') {
           if (isVerbose) {
