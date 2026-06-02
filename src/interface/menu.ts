@@ -2017,6 +2017,19 @@ async function runChatLoop(
           if (shouldExit) { loopResult = 'exit'; return true; }
           if (shouldMenu) { loopResult = 'menu'; return true; }
 
+          // A per-turn TIMEOUT isn't a hard failure here — a big goal legitimately
+          // needs many turns, and a single long step shouldn't abort the whole run.
+          // Keep chunking (bounded by the turn ceiling); next turn picks up where
+          // this one left off via replayed history.
+          if (
+            turn.final?.success !== true &&
+            turn.final?.errorCategory === 'timeout' &&
+            completed < ceilings.maxIterations
+          ) {
+            out.write(dim('  (that step ran long — continuing with the next piece)\n', out.color));
+            continue;
+          }
+
           const step = decideGoalNext({
             signal: parseGoalSignal(turn.final?.output ?? ''),
             lastSucceeded: turn.final?.success === true,
