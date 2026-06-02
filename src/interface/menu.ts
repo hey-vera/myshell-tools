@@ -2300,7 +2300,7 @@ async function renderMainScreen(
       ...authEntries,
       { key: 's', label: 'Settings', section: 'Options' },
       { key: 'd', label: 'Doctor', section: 'Options' },
-      { key: '$', label: 'Cost', section: 'Options' },
+      { key: '$', label: 'Usage (tokens)', section: 'Options' },
       ...updateEntry,
       { key: 'q', label: 'Quit', section: 'Options' },
     ]) + '\n\n',
