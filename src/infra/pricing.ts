@@ -119,43 +119,37 @@ export const PRICING_TABLE: PricingTable = {
     },
 
     // ---- opencode ----------------------------------------------------------
-    // opencode ships free models whose real cost is reported at runtime via the
-    // step_finish `cost` field in JSONL output (see opencode.ts). The zero-cost
-    // entries below exist solely for model SELECTION by getCheapestForTier/route
-    // when opencode is the only available provider. They must NOT displace
-    // claude/codex in the pricing sort when those providers are also available,
-    // because opencode's cost=0 entries would always win. The route() function
-    // respects providerOrderByTier (opencode last) before falling back to the
-    // pricing table, so this zero-cost sentinel is safe.
+    // opencode is a subscription/free provider: it uses whatever model the USER
+    // has configured (a free opencode-zen model, or a premium one they've added —
+    // e.g. Kimi K2). So we don't pin a specific model; the adapter omits `-m` and
+    // opencode runs its own configured default (see opencode.ts). These entries
+    // exist only so getCheapestForTier/route can SELECT opencode at any tier; the
+    // single `opencode` model id reflects "opencode's own model", and cost is flat
+    // (subscription) — the $0 placeholder never displaces claude/codex because
+    // route() honours providerOrderByTier (opencode last) before the pricing sort.
     {
       provider: 'opencode',
-      model: 'opencode/mimo-v2.5-free',
-      aliases: ['mimo-v2.5-free', 'opencode-worker'],
+      model: 'opencode',
+      aliases: ['opencode-worker', 'mimo-v2.5-free'],
       tier: 'worker',
-      // Real cost is reported at runtime by opencode's step_finish event.
-      // Zero here is a placeholder for model selection only — not for billing.
-      inputPer1M: 0,
-      outputPer1M: 0,
-      contextWindow: 32_000,
-    },
-    {
-      provider: 'opencode',
-      model: 'opencode/deepseek-v4-flash-free',
-      aliases: ['deepseek-v4-flash-free', 'opencode-free'],
-      tier: 'ic',
-      // Real cost is reported at runtime by opencode's step_finish event.
-      // Zero here is a placeholder for model selection only — not for billing.
       inputPer1M: 0,
       outputPer1M: 0,
       contextWindow: 128_000,
     },
     {
       provider: 'opencode',
-      model: 'opencode/big-pickle',
-      aliases: ['big-pickle', 'opencode-manager'],
+      model: 'opencode',
+      aliases: ['opencode-ic', 'deepseek-v4-flash-free'],
+      tier: 'ic',
+      inputPer1M: 0,
+      outputPer1M: 0,
+      contextWindow: 128_000,
+    },
+    {
+      provider: 'opencode',
+      model: 'opencode',
+      aliases: ['opencode-manager', 'big-pickle'],
       tier: 'manager',
-      // Real cost is reported at runtime by opencode's step_finish event.
-      // Zero here is a placeholder for model selection only — not for billing.
       inputPer1M: 0,
       outputPer1M: 0,
       contextWindow: 128_000,

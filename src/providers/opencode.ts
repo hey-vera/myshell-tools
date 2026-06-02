@@ -60,13 +60,12 @@ export function createOpencodeProvider(opts?: { bin?: string }): Provider {
     },
 
     async *run(req: ProviderRequest, signal: AbortSignal): AsyncIterable<ProviderEvent> {
-      const args = [
-        'run',
-        '--format',
-        'json',
-        '-m',
-        req.model,
-      ];
+      // No `-m`: opencode is a subscription/free provider, so we let it use the
+      // model the USER configured (a free opencode-zen model, or a premium one
+      // they've added — e.g. Kimi K2). "Just use whatever opencode has." req.model
+      // is the routing label ('opencode'); the actual model is opencode's own
+      // default, which is exactly what the user wants here.
+      const args = ['run', '--format', 'json'];
 
       // Spawn with reject:false so we always get the result object (never throws).
       // cancelSignal wires our AbortSignal directly to execa's termination path.

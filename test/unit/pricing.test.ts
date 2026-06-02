@@ -249,13 +249,14 @@ describe('getCheapestForTier', () => {
     );
   });
 
-  it('opencode/mimo-v2.5-free is the cheapest worker overall (zero-cost sentinel)', () => {
-    // opencode free models use inputPer1M=0 as a sentinel — real cost comes from
-    // step_finish events at runtime. They win the raw sort intentionally; route()
-    // keeps them last via providerOrderByTier so they don't displace claude/codex
-    // when those are available.
+  it('opencode (provider default) is the cheapest worker overall (zero-cost sentinel)', () => {
+    // opencode is a subscription/free provider — a single 'opencode' model id
+    // means "opencode's own configured model" (the adapter omits -m). inputPer1M=0
+    // is a flat-cost sentinel; it wins the raw sort intentionally, but route()
+    // keeps opencode last via providerOrderByTier so it doesn't displace
+    // claude/codex when those are available.
     const cheapest = getCheapestForTier('worker');
-    assert.equal(cheapest.model, 'opencode/mimo-v2.5-free');
+    assert.equal(cheapest.model, 'opencode');
     assert.equal(cheapest.inputPer1M, 0);
   });
 
