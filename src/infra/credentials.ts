@@ -17,6 +17,7 @@
  */
 
 import { mkdir, readFile, chmod } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { atomicWrite } from './atomic.js';
@@ -176,6 +177,39 @@ export async function loadClaudeToken(homeDir?: string): Promise<string | null> 
  *
  * Pure / never throws.
  */
+/**
+ * Replit (and replit-tools) persist the claude/codex login in workspace dirs and
+ * point the CLIs at them via `CLAUDE_CONFIG_DIR` / `CODEX_HOME`. Those vars are set
+ * inside agent sessions but NOT always in a plain shell — so a plainly-launched
+ * `myshell-tools` would spawn claude/codex against the EPHEMERAL `~/.claude` /
+ * `~/.codex` and miss the durable login ("not signed in" despite a one-time
+ * sign-in). This returns the env vars to ADD so the spawned CLI finds the
+ * persistent login — exactly how replit-tools makes one sign-in stick.
+ *
+ * Only redirects when the var isn't already set AND the persistent dir actually
+ * holds creds, so it can never break a working ephemeral login by pointing at an
+ * empty dir. Harmless off Replit (the dirs won't exist). Never throws.
+ *
+ * @param baseEnv - The env to read existing CLAUDE_CONFIG_DIR / CODEX_HOME from.
+ * @param cwd     - The workspace dir to resolve `.replit-tools/*` against.
+ */
+export function replitPersistentEnv(baseEnv: NodeJS.ProcessEnv, cwd: string): NodeJS.ProcessEnv {
+  const add: NodeJS.ProcessEnv = {};
+  try {
+    if (baseEnv['CLAUDE_CONFIG_DIR'] === undefined) {
+      const dir = join(cwd, '.replit-tools', '.claude-persistent');
+      if (existsSync(join(dir, '.credentials.json'))) add['CLAUDE_CONFIG_DIR'] = dir;
+    }
+    if (baseEnv['CODEX_HOME'] === undefined) {
+      const dir = join(cwd, '.replit-tools', '.codex-persistent');
+      if (existsSync(join(dir, 'auth.json'))) add['CODEX_HOME'] = dir;
+    }
+  } catch {
+    // Best-effort — never throw on env resolution.
+  }
+  return add;
+}
+
 export function claudeEnv(
   baseEnv: NodeJS.ProcessEnv,
   token: string | null,

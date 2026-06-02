@@ -16,7 +16,7 @@
  */
 
 import { execa } from 'execa';
-import { loadClaudeToken, claudeEnv } from '../infra/credentials.js';
+import { loadClaudeToken, claudeEnv, replitPersistentEnv } from '../infra/credentials.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -179,7 +179,12 @@ export async function detectProvider(
     let claudeChildEnv: NodeJS.ProcessEnv = process.env;
     try {
       const token = await loadClaudeToken();
-      claudeChildEnv = claudeEnv(process.env, token);
+      // Point claude at the Replit-persistent config dir when present so detection
+      // sees the one-time sign-in that survives restarts (matches replit-tools).
+      claudeChildEnv = {
+        ...claudeEnv(process.env, token),
+        ...replitPersistentEnv(process.env, process.cwd()),
+      };
     } catch {
       // Never throw — detection must be robust
     }
@@ -237,9 +242,16 @@ export async function detectProvider(
 
   // codex: run `codex --version` to probe installation, then `codex login status`
   try {
+    // Point codex at the Replit-persistent CODEX_HOME when present so detection
+    // sees the one-time sign-in that survives restarts (matches replit-tools).
+    const codexChildEnv: NodeJS.ProcessEnv = {
+      ...process.env,
+      ...replitPersistentEnv(process.env, process.cwd()),
+    };
     const result = await execa('codex', ['--version'], {
       reject: false,
       timeout: 10_000,
+      env: codexChildEnv,
     });
 
     if (result.exitCode === 0) {
@@ -251,6 +263,7 @@ export async function detectProvider(
         const authResult = await execa('codex', ['login', 'status'], {
           reject: false,
           timeout: 10_000,
+          env: codexChildEnv,
         });
         const parsed = parseCodexAuth(
           typeof authResult.stdout === 'string' ? authResult.stdout : '',

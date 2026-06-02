@@ -2439,17 +2439,13 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
   };
 
   try {
-    // ---- A. First-run welcome -----------------------------------------------
-    if (!mutableCtx.config.onboarded) {
-      mutableCtx.config = await runWelcome(ctx, out, readLine, confirm, suspendStdin, mutableCtx.config, installProviderFn, loginFn, detectEnvironmentFn);
-      // Re-detect after onboarding so the first main screen shows the REAL post-login
-      // status (e.g. codex now "ready" if the user signed in during setup).
-      mutableCtx.env = await detectEnvironmentFn();
-    }
-
-    // ---- Update check (once per launch, after onboarding) --------------------
-    // Fast path: uses the cache when fresh, so it never hangs.
-    // Injected seam allows tests to stay hermetic (no real npm registry calls).
+    // ---- Update check FIRST (before onboarding) -----------------------------
+    // The very first thing each launch is "are you on the latest?" — the explicit
+    // ask. On a fresh install of the latest there's nothing to offer, so we fall
+    // through to first-run setup; on an outdated install we offer the update up
+    // front so you set up on the newest version.
+    // Fast path: uses the cache when fresh, so it never hangs. Injected seam keeps
+    // tests hermetic (no real npm registry calls).
     let updateInfo: UpdateCheckResult | undefined;
     if (checkForUpdateFn !== undefined) {
       updateInfo = await checkForUpdateFn().catch(() => undefined);
@@ -2507,6 +2503,14 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
         }
       }
       // else: default + non-interactive → skip; the menu's update banner remains.
+    }
+
+    // ---- First-run welcome (AFTER the update check) -------------------------
+    if (!mutableCtx.config.onboarded) {
+      mutableCtx.config = await runWelcome(ctx, out, readLine, confirm, suspendStdin, mutableCtx.config, installProviderFn, loginFn, detectEnvironmentFn);
+      // Re-detect after onboarding so the first main screen shows the REAL post-login
+      // status (e.g. codex now "ready" if the user signed in during setup).
+      mutableCtx.env = await detectEnvironmentFn();
     }
 
     // ---- B. Main screen loop -------------------------------------------------

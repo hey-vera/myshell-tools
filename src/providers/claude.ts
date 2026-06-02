@@ -36,7 +36,7 @@ import type { ProviderStatus } from './detect.js';
 import { detectProvider } from './detect.js';
 import { classifyError } from './errors.js';
 import { parseClaudeLine } from './claude-parse.js';
-import { loadClaudeToken, claudeEnv } from '../infra/credentials.js';
+import { loadClaudeToken, claudeEnv, replitPersistentEnv } from '../infra/credentials.js';
 
 // ---------------------------------------------------------------------------
 // Model alias mapping
@@ -175,7 +175,12 @@ export function createClaudeProvider(opts?: { bin?: string }): Provider {
       let childEnv: NodeJS.ProcessEnv = process.env;
       try {
         const token = await loadClaudeToken();
-        childEnv = claudeEnv(process.env, token);
+        // Also point claude at the Replit-persistent config dir when present so a
+        // plainly-launched run finds the durable one-time sign-in (replit-tools).
+        childEnv = {
+          ...claudeEnv(process.env, token),
+          ...replitPersistentEnv(process.env, req.cwd),
+        };
       } catch {
         // Never throw — fall back to the unmodified env
       }

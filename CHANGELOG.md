@@ -9,6 +9,25 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 ### Pending
 - Cross-OS CI execution (requires a public remote).
 
+## [3.5.2]
+
+### Fixed
+- **Recognises the one-time sign-in that survives container restarts (Replit).**
+  Replit (and replit-tools) keep the `claude`/`codex` login in persistent workspace
+  dirs and point the CLIs at them via `CLAUDE_CONFIG_DIR` / `CODEX_HOME`. Those vars
+  are set inside agent sessions but not always in a plain shell — so a plainly-
+  launched `myshell-tools` spawned the CLIs against the *ephemeral* `~/.claude` /
+  `~/.codex` and reported *"not signed in"* despite a valid sign-in. myshell now
+  detects `.replit-tools/.claude-persistent` / `.codex-persistent` and points the
+  spawned CLIs there (detection *and* execution) — one sign-in, remembered. Only
+  redirects when the persistent dir actually holds creds, so it never breaks a
+  working ephemeral login; harmless off Replit (the dirs won't exist).
+
+### Changed
+- **Update check runs FIRST — before the first-run welcome.** On launch the version
+  check now happens ahead of onboarding, so a fresh install offers the latest
+  version before walking you through setup.
+
 ## [3.5.1]
 
 ### Changed

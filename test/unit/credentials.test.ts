@@ -26,7 +26,66 @@ import {
   classifyPastedSecret,
   claudeTokenStatus,
   loadClaudeTokenCapturedAt,
+  replitPersistentEnv,
 } from '../../src/infra/credentials.ts';
+
+// ---------------------------------------------------------------------------
+// replitPersistentEnv — point claude/codex at the Replit-persistent login
+// ---------------------------------------------------------------------------
+
+describe('replitPersistentEnv', () => {
+  let dir = '';
+
+  before(async () => {
+    dir = await mkdtemp(join(tmpdir(), `myshell-replit-${randomUUID()}-`));
+  });
+
+  after(async () => {
+    if (dir) await rm(dir, { recursive: true, force: true });
+  });
+
+  it('returns {} when no .replit-tools persistent dirs exist', () => {
+    const add = replitPersistentEnv({}, dir);
+    assert.deepEqual(add, {});
+  });
+
+  it('sets CLAUDE_CONFIG_DIR when the persistent dir holds .credentials.json', async () => {
+    const claudeDir = join(dir, '.replit-tools', '.claude-persistent');
+    await mkdir(claudeDir, { recursive: true });
+    await writeFile(join(claudeDir, '.credentials.json'), '{}', 'utf8');
+    const add = replitPersistentEnv({}, dir);
+    assert.equal(add['CLAUDE_CONFIG_DIR'], claudeDir);
+  });
+
+  it('sets CODEX_HOME when the persistent dir holds auth.json', async () => {
+    const codexDir = join(dir, '.replit-tools', '.codex-persistent');
+    await mkdir(codexDir, { recursive: true });
+    await writeFile(join(codexDir, 'auth.json'), '{}', 'utf8');
+    const add = replitPersistentEnv({}, dir);
+    assert.equal(add['CODEX_HOME'], codexDir);
+  });
+
+  it('never overrides an already-set CLAUDE_CONFIG_DIR / CODEX_HOME', () => {
+    const add = replitPersistentEnv(
+      { CLAUDE_CONFIG_DIR: '/already/set', CODEX_HOME: '/also/set' },
+      dir,
+    );
+    assert.equal(add['CLAUDE_CONFIG_DIR'], undefined);
+    assert.equal(add['CODEX_HOME'], undefined);
+  });
+
+  it('does NOT redirect to an empty persistent dir (no creds → no-op, never breaks ephemeral login)', async () => {
+    const emptyDir = await mkdtemp(join(tmpdir(), `myshell-empty-${randomUUID()}-`));
+    await mkdir(join(emptyDir, '.replit-tools', '.claude-persistent'), { recursive: true });
+    const add = replitPersistentEnv({}, emptyDir);
+    assert.equal(add['CLAUDE_CONFIG_DIR'], undefined);
+    await rm(emptyDir, { recursive: true, force: true });
+  });
+
+  it('never throws on a nonexistent cwd', () => {
+    assert.doesNotThrow(() => replitPersistentEnv({}, '/no/such/path/at/all'));
+  });
+});
 
 // ---------------------------------------------------------------------------
 // claudeEnv — pure helper (no I/O)

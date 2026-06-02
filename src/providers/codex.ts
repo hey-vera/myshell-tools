@@ -34,6 +34,7 @@ import type { ProviderStatus } from './detect.js';
 import { detectProvider } from './detect.js';
 import { classifyError } from './errors.js';
 import { createCodexParser } from './codex-parse.js';
+import { replitPersistentEnv } from '../infra/credentials.js';
 
 // ---------------------------------------------------------------------------
 // Sandbox argument mapping
@@ -104,6 +105,13 @@ export function createCodexProvider(opts?: { bin?: string }): Provider {
     async *run(req: ProviderRequest, signal: AbortSignal): AsyncIterable<ProviderEvent> {
       const args = buildCodexArgs(req);
 
+      // Point codex at the Replit-persistent CODEX_HOME when present so a plainly-
+      // launched run finds the durable one-time sign-in (matches replit-tools).
+      const childEnv: NodeJS.ProcessEnv = {
+        ...process.env,
+        ...replitPersistentEnv(process.env, req.cwd),
+      };
+
       // Spawn with reject:false so we always get the result object (never throws).
       // cancelSignal wires our AbortSignal directly to execa's termination path.
       const subprocess = execa(bin, args, {
@@ -112,6 +120,7 @@ export function createCodexProvider(opts?: { bin?: string }): Provider {
         cancelSignal: signal,
         timeout: req.timeoutMs,
         reject: false,
+        env: childEnv,
       });
 
       // One parser instance per run — holds the accumulated text closure.
