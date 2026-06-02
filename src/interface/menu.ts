@@ -1950,6 +1950,14 @@ async function runChatLoop(
           continue;
         }
 
+        // Give a fresh conversation a CLEAN title (the goal text) before the loop,
+        // so the scaffolded per-turn prompt (buildGoalTask) doesn't become the
+        // title. Only when still untitled — never clobber an existing chat's title.
+        const goalMeta = (await ctx.store.list()).find((m) => m.id === convId);
+        if (goalMeta !== undefined && goalMeta.title.trim().length === 0) {
+          await ctx.store.rename(convId, goalText.length <= 80 ? goalText : goalText.slice(0, 80));
+        }
+
         const ceilings: GoalCeilings = {
           maxIterations: DEFAULT_MAX_GOAL_ITERATIONS,
           ...(policy.maxCostUsd !== undefined && policy.maxCostUsd !== null

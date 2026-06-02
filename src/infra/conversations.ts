@@ -82,7 +82,9 @@ async function writeIndex(homeDir: string, index: ConversationMeta[]): Promise<v
 const MAX_TITLE_LEN = 80;
 
 function deriveTitle(content: string): string {
-  const trimmed = content.trim();
+  // Collapse ALL internal whitespace (incl. newlines) to single spaces so a
+  // multi-line first message can't render as a broken multi-line menu entry.
+  const trimmed = content.trim().replace(/\s+/g, ' ');
   return trimmed.length <= MAX_TITLE_LEN ? trimmed : trimmed.slice(0, MAX_TITLE_LEN);
 }
 
@@ -188,13 +190,16 @@ export function createFileConversationStore(opts: {
             const updatedAt = clock.isoNow();
             const messageCount = existing.messageCount + 1;
 
-            // If this is a user message and the title is still the placeholder,
-            // use the message content as the title (first user message wins).
+            // If this is the first user message AND the conversation is still
+            // untitled, derive the title from it. Only when EMPTY — an explicitly
+            // set title (e.g. a /goal run names itself with the clean goal text)
+            // must not be clobbered. (The old `|| title === existing.title` clause
+            // was always true, so it overwrote any pre-set title.)
             let title = existing.title;
             if (
               entry.role === 'user' &&
               entry.content &&
-              (title.trim().length === 0 || title === existing.title) &&
+              title.trim().length === 0 &&
               existing.messageCount === 0
             ) {
               title = deriveTitle(entry.content);
