@@ -20,6 +20,46 @@ export interface AppConfig {
   setAsDefault: boolean;
   /** Active routing mode. Absent → use DEFAULT_POLICY (same as 'balanced'). */
   mode?: 'cost-saver' | 'balanced' | 'quality-first';
+  /**
+   * When true or absent (default), myshell-tools automatically updates itself
+   * at startup when a newer version is available and relaunches the updated
+   * binary.  Set to false (or `MYSHELL_NO_UPDATE=1` in the environment) to
+   * disable auto-update and show only the notification banner instead.
+   */
+  autoUpdate?: boolean;
+  /**
+   * EXPERIMENTAL (default off). When true, a conversation that stays on the same
+   * provider reuses that provider's native session (Claude `--session-id`/
+   * `--resume`) instead of replaying a compacted history block into each prompt
+   * — better context fidelity and less re-sent context. Scoped to Claude for
+   * now. Verify live behavior with `npm run test:integration` before relying on it.
+   */
+  nativeSessions?: boolean;
+  /**
+   * Output verbosity for the chat TUI. Absent → 'normal' (a clean conversation:
+   * the model's prose and nothing else). 'quiet' additionally suppresses the
+   * per-turn status line; 'verbose' shows tool activity and per-tier telemetry
+   * for power users who want to see the orchestration. Only affects what the TUI
+   * prints — never what the model is asked to do.
+   */
+  verbosity?: 'quiet' | 'normal' | 'verbose';
+  /**
+   * Per-provider-call timeout in milliseconds. Absent → 120000 (2 min). Raise
+   * for large manager-tier tasks that legitimately need more wall-clock before
+   * being killed.
+   */
+  timeoutMs?: number;
+  /**
+   * Smart routing. ON by default (absent or true = on); set false to disable.
+   * When on, turns the deterministic keyword classifier can't route (no tier
+   * keyword matched — the ambiguous default) are handed to a cheap worker-tier
+   * model that reads the message and picks the tier. Clear keyword turns still
+   * route instantly with no model call. Fixes the misrouting of
+   * complex-but-unkeyworded requests; costs ~5-10s on ambiguous turns only (a
+   * worker classification spawn), with graceful fallback to the rules on any
+   * failure/timeout. See core/router.ts + core/route-classifier.ts.
+   */
+  smartRoute?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -29,6 +69,7 @@ export interface AppConfig {
 const DEFAULTS: AppConfig = {
   onboarded: false,
   setAsDefault: false,
+  autoUpdate: true,
 };
 
 // ---------------------------------------------------------------------------

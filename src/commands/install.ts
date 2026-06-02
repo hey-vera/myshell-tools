@@ -76,6 +76,11 @@ export function detectShellTarget(
  * For bash/zsh: uses POSIX `[ -t 1 ]` TTY guard and env-var opt-out.
  * For powershell: uses `$Host.UI.RawUI` TTY check and equivalent env guards.
  *
+ * Also defines convenience aliases (`cm` and `mst`) for myshell-tools so the
+ * control panel is reachable from any shell prompt after first launch.  The
+ * aliases are guarded by a command-exists check so they are harmless on shells
+ * where myshell-tools is not installed.
+ *
  * Pure function — returns a string, never does I/O.
  */
 export function buildHookBlock(kind: ShellKind): string {
@@ -86,6 +91,11 @@ export function buildHookBlock(kind: ShellKind): string {
       `if [ -t 1 ] && [ -z "$MYSHELL_LOADED" ] && [ -z "$MYSHELL_SKIP" ]; then\n` +
       `  export MYSHELL_LOADED=1\n` +
       `  command -v myshell-tools >/dev/null 2>&1 && myshell-tools\n` +
+      `fi\n` +
+      `# Convenience aliases: cm / mst → myshell-tools (control menu)\n` +
+      `if command -v myshell-tools >/dev/null 2>&1; then\n` +
+      `  alias cm='myshell-tools'\n` +
+      `  alias mst='myshell-tools'\n` +
       `fi\n` +
       `${HOOK_END}`
     );
@@ -98,6 +108,11 @@ export function buildHookBlock(kind: ShellKind): string {
     `if ($null -eq $env:MYSHELL_LOADED -and $null -eq $env:MYSHELL_SKIP) {\n` +
     `  $env:MYSHELL_LOADED = '1'\n` +
     `  if (Get-Command myshell-tools -ErrorAction SilentlyContinue) { myshell-tools }\n` +
+    `}\n` +
+    `# Convenience functions: cm / mst → myshell-tools (control menu)\n` +
+    `if (Get-Command myshell-tools -ErrorAction SilentlyContinue) {\n` +
+    `  function cm { myshell-tools @args }\n` +
+    `  function mst { myshell-tools @args }\n` +
     `}\n` +
     `${HOOK_END}`
   );
@@ -207,6 +222,7 @@ export async function runInstall(
   if (enable) {
     out.write(`[info] Shell hook installed in: ${rcPath}\n`);
     out.write(`[info] New interactive shells will launch myshell-tools automatically.\n`);
+    out.write(`[info] Shortcuts available in new shells: cm / mst (both run myshell-tools).\n`);
     out.write(`[info] Opt out any time: export MYSHELL_SKIP=1 (bash/zsh) or $env:MYSHELL_SKIP='1' (PowerShell)\n`);
     out.write(`[info] To reverse: myshell-tools uninstall\n`);
   } else {

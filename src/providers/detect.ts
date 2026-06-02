@@ -7,18 +7,23 @@
  * then `claude auth status` to probe real authentication state.
  * Codex detection is REAL: spawns `codex --version` to probe installation,
  * then `codex login status` to probe real authentication state.
+ * Opencode detection is REAL: spawns `opencode --version` to probe installation.
+ * Opencode is authenticated:true when installed because it ships free models
+ * (e.g. opencode/deepseek-v4-flash-free) that require no credentials — the
+ * honest statement is "usable immediately without credentials".
  *
  * Plan labels are only set when clearly present in CLI output — never fabricated.
  */
 
 import { execa } from 'execa';
+import { loadClaudeToken, claudeEnv } from '../infra/credentials.js';
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
 export interface ProviderStatus {
-  readonly id: 'claude' | 'codex';
+  readonly id: 'claude' | 'codex' | 'opencode';
   readonly installed: boolean;
   readonly version: string | null;
   readonly authenticated: boolean;
@@ -30,6 +35,7 @@ export interface ProviderStatus {
 export interface EnvironmentStatus {
   readonly claude: ProviderStatus;
   readonly codex: ProviderStatus;
+  readonly opencode: ProviderStatus;
   readonly hasAnyProvider: boolean;
   readonly platform: NodeJS.Platform;
 }
@@ -38,7 +44,7 @@ export interface EnvironmentStatus {
 // Internal factory
 // ---------------------------------------------------------------------------
 
-function notDetected(id: 'claude' | 'codex'): ProviderStatus {
+function notDetected(id: 'claude' | 'codex' | 'opencode'): ProviderStatus {
   return {
     id,
     installed: false,
@@ -155,15 +161,34 @@ export function parseCodexAuth(
  * `codex login status` does not expose subscription information.
  * On spawn failure of the status command, falls back gracefully: installed
  * remains true, authenticated false, plan null.
+ *
+ * For 'opencode': runs `opencode --version` to confirm the binary is present.
+ * When installed, authenticated is always true because opencode ships free
+ * models (e.g. opencode/deepseek-v4-flash-free) that require no credentials —
+ * a fresh install is immediately usable without any sign-in step.
+ * Plan is always null (opencode does not expose a subscription tier in
+ * `opencode --version` output).
  */
 export async function detectProvider(
-  id: 'claude' | 'codex',
+  id: 'claude' | 'codex' | 'opencode',
 ): Promise<ProviderStatus> {
   if (id === 'claude') {
+    // Load the stored token once so both the version probe and the auth probe
+    // see it — but never inject it into the global process.env.
+    // Fall back to process.env unchanged if loading fails.
+    let claudeChildEnv: NodeJS.ProcessEnv = process.env;
+    try {
+      const token = await loadClaudeToken();
+      claudeChildEnv = claudeEnv(process.env, token);
+    } catch {
+      // Never throw — detection must be robust
+    }
+
     try {
       const result = await execa('claude', ['--version'], {
         reject: false,
         timeout: 10_000,
+        env: claudeChildEnv,
       });
 
       if (result.exitCode === 0) {
@@ -175,6 +200,7 @@ export async function detectProvider(
           const authResult = await execa('claude', ['auth', 'status'], {
             reject: false,
             timeout: 10_000,
+            env: claudeChildEnv,
           });
           const parsed = parseClaudeAuth(
             typeof authResult.stdout === 'string' ? authResult.stdout : '',
@@ -202,6 +228,11 @@ export async function detectProvider(
     }
 
     return notDetected('claude');
+  }
+
+  // opencode: delegate to the dedicated helper.
+  if (id === 'opencode') {
+    return detectOpencodeProvider();
   }
 
   // codex: run `codex --version` to probe installation, then `codex login status`
@@ -248,21 +279,66 @@ export async function detectProvider(
   return notDetected('codex');
 }
 
+// ---------------------------------------------------------------------------
+// opencode detection (private helper — called by detectProvider)
+// ---------------------------------------------------------------------------
+
 /**
- * Detect the full environment — both providers — in parallel.
+ * Detect the opencode CLI. Returns installed:true + authenticated:true when the
+ * binary is present, because opencode ships free models (e.g.
+ * opencode/deepseek-v4-flash-free) that require no credentials — the binary is
+ * immediately usable without any sign-in step.
+ */
+async function detectOpencodeProvider(): Promise<ProviderStatus> {
+  try {
+    const result = await execa('opencode', ['--version'], {
+      reject: false,
+      timeout: 10_000,
+    });
+
+    if (result.exitCode === 0) {
+      return {
+        id: 'opencode',
+        installed: true,
+        version: (result.stdout as string).trim(),
+        binaryPath: 'opencode',
+        // opencode ships free models that need no credentials — always usable.
+        authenticated: true,
+        plan: null,
+        // All three free models covering the tiers used in pricing.ts (worker,
+        // ic, manager) so route() can select the appropriate tier without
+        // falling back to a model opencode may not actually advertise.
+        availableModels: [
+          'opencode/mimo-v2.5-free',       // worker tier
+          'opencode/deepseek-v4-flash-free', // ic tier
+          'opencode/big-pickle',             // manager tier
+        ],
+      };
+    }
+  } catch {
+    // Binary not found or spawn error — fall through to notDetected
+  }
+
+  return notDetected('opencode');
+}
+
+/**
+ * Detect the full environment — all three providers — in parallel.
  *
- * Stub: delegates to detectProvider for each provider ID.
+ * Delegates to detectProvider for each provider ID.
  */
 export async function detectEnvironment(): Promise<EnvironmentStatus> {
-  const [claude, codex] = await Promise.all([
+  const [claude, codex, opencode] = await Promise.all([
     detectProvider('claude'),
     detectProvider('codex'),
+    detectProvider('opencode'),
   ]);
 
   return {
     claude,
     codex,
-    hasAnyProvider: claude.installed || codex.installed,
+    opencode,
+    hasAnyProvider: claude.installed || codex.installed || opencode.installed,
     platform: process.platform,
   };
 }
@@ -270,11 +346,13 @@ export async function detectEnvironment(): Promise<EnvironmentStatus> {
 /**
  * Return the shell command a user should run to install the given provider.
  */
-export function getInstallCommand(id: 'claude' | 'codex'): string {
+export function getInstallCommand(id: 'claude' | 'codex' | 'opencode'): string {
   switch (id) {
     case 'claude':
       return 'npm install -g @anthropic-ai/claude-code';
     case 'codex':
       return 'npm install -g @openai/codex';
+    case 'opencode':
+      return 'npm install -g opencode-ai';
   }
 }

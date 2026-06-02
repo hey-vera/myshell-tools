@@ -7,10 +7,11 @@
  */
 
 import { createRequire } from 'node:module';
+import { execa } from 'execa';
 import { systemClock } from './infra/clock.js';
 import { createSessionWriter } from './infra/session.js';
 import { createLedger } from './infra/ledger.js';
-import { DEFAULT_POLICY } from './core/policy.js';
+import { DEFAULT_POLICY, POLICY_PRESETS } from './core/policy.js';
 import type { OrchestrateDeps } from './core/types.js';
 import type { OutputSink } from './interface/render.js';
 import { runTask } from './interface/run.js';
@@ -21,17 +22,32 @@ import { buildProviders } from './providers/registry.js';
 import { detectEnvironment } from './providers/detect.js';
 import { createFileConversationStore } from './infra/conversations.js';
 import { loadConfig } from './infra/config.js';
+import { checkForUpdate } from './infra/update-check.js';
+import { evaluateHealth, probeStateWritable } from './infra/health.js';
+import { isPricingStale } from './infra/pricing.js';
 import { runDoctor } from './commands/doctor.js';
 import { runCost } from './commands/cost.js';
 import { runLogin } from './commands/login.js';
 import { runInstall } from './commands/install.js';
 import { banner } from './ui/banner.js';
+import { commandHelpText } from './ui/help.js';
 import { createSpinner } from './ui/spinner.js';
 import { dim } from './ui/theme.js';
-
 const require = createRequire(import.meta.url);
 const pkg = require('../package.json');
 const version: string = pkg.version as string;
+
+/** Default hard wall-clock timeout (ms) for a single provider run. */
+const DEFAULT_TIMEOUT_MS = 120000;
+
+/**
+ * Resolve the per-run wall-clock timeout from loaded config, falling back to the
+ * built-in default. Centralised so the menu path (and any future config-aware
+ * path) shares one source of truth instead of a scattered magic number.
+ */
+function resolveTimeoutMs(config: import('./infra/config.js').AppConfig): number {
+  return config.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+}
 
 const HELP = `\
 myshell-tools v${version}
@@ -46,8 +62,10 @@ Commands:
   (none)            Open the interactive control panel (default)
   run <task...>     Run a one-shot task and exit
   repl              Start the plain line REPL (no menu)
-  login [provider]  Sign in to a provider (claude or codex) via its own OAuth
-  doctor            Check provider installation, auth, and environment health
+  login [provider]  Sign in to a provider (claude or codex) via its own OAuth.
+                    Add --code to use the no-localhost flow (paste a code for
+                    claude, device code for codex) — best inside containers /
+                    over SSH. Add --browser to force the localhost flow.
   cost              Show real spend from the ledger with a per-model breakdown
   install           Write a guarded startup hook to your shell rc file so new
                     interactive shells launch myshell-tools automatically
@@ -57,21 +75,51 @@ Examples:
   myshell-tools                                 # open the control panel
   myshell-tools run "refactor the auth module"
   myshell-tools login
+  myshell-tools login codex --code              # device-code sign-in (no localhost)
 
 Repository: https://github.com/hey-vera/myshell-tools
 `;
 
-/** Build the orchestration dependencies (includes provider detection). */
-async function buildDeps(cwd: string): Promise<OrchestrateDeps> {
+/** Build the orchestration dependencies from a pre-detected EnvironmentStatus. */
+function buildDeps(
+  cwd: string,
+  env: import('./providers/detect.js').EnvironmentStatus,
+  policy = DEFAULT_POLICY,
+  timeoutMs: number = DEFAULT_TIMEOUT_MS,
+): OrchestrateDeps {
+  const providers = buildProviders(cwd, env);
+
+  // Populate advertised model lists from detection so route() can prefer a
+  // model the provider CLI actually has. Only include installed providers.
+  const availableModels: Partial<Record<import('./providers/port.js').ProviderId, readonly string[]>> = {};
+  if (env.claude.installed && env.claude.availableModels.length > 0) {
+    availableModels['claude'] = env.claude.availableModels;
+  }
+  if (env.codex.installed && env.codex.availableModels.length > 0) {
+    availableModels['codex'] = env.codex.availableModels;
+  }
+  if (env.opencode.installed && env.opencode.availableModels.length > 0) {
+    availableModels['opencode'] = env.opencode.availableModels;
+  }
+
+  // Collect authenticated providers so route() can prefer signed-in providers
+  // over signed-out ones, preventing wasted attempts on unauthenticated installs.
+  const authenticatedProviders: import('./providers/port.js').ProviderId[] = [];
+  if (env.claude.authenticated) authenticatedProviders.push('claude');
+  if (env.codex.authenticated) authenticatedProviders.push('codex');
+  if (env.opencode.authenticated) authenticatedProviders.push('opencode');
+
   return {
     clock: systemClock,
     session: createSessionWriter({ cwd, id: systemClock.uuid() }),
     ledger: createLedger({ cwd }),
-    policy: DEFAULT_POLICY,
-    providers: await buildProviders(cwd),
+    policy,
+    providers,
     cwd,
     sandbox: 'workspace-write',
-    timeoutMs: 120000,
+    timeoutMs,
+    ...(Object.keys(availableModels).length > 0 ? { availableModels } : {}),
+    ...(authenticatedProviders.length > 0 ? { authenticatedProviders } : {}),
   };
 }
 
@@ -96,7 +144,10 @@ async function main(): Promise<void> {
   const args = process.argv.slice(2);
 
   if (args.includes('--help') || args.includes('-h')) {
-    process.stdout.write(HELP);
+    // Focused per-command help (e.g. `login --help`) when the first arg is a
+    // known command; otherwise the global command list.
+    const cmdHelp = args[0] !== undefined ? commandHelpText(args[0]) : null;
+    process.stdout.write(cmdHelp ?? HELP);
     process.exit(0);
   }
 
@@ -116,11 +167,26 @@ async function main(): Promise<void> {
 
   // ---- Commands that do NOT need provider detection --------------------------
   if (args[0] === 'login') {
-    process.exit(await runLogin(out, args[1]));
+    const rest = args.slice(1);
+    // --code / --device → no-localhost paste/device flow; --browser → force the
+    // localhost flow. Omitted → auto-detect (headless envs default to code).
+    const method =
+      rest.includes('--code') || rest.includes('--device')
+        ? ('code' as const)
+        : rest.includes('--browser')
+          ? ('browser' as const)
+          : undefined;
+    const provider = rest.find((a) => !a.startsWith('-'));
+    process.exit(await runLogin(out, provider, method !== undefined ? { method } : undefined));
   }
 
-  if (args[0] === 'doctor') {
-    process.exit(await runDoctor(out));
+  // Health check — surfaced automatically in the control panel, so this is no
+  // longer an advertised command. Kept as a hidden, scriptable entry point for
+  // support/CI; `status` and `check` are friendlier aliases for the old
+  // `doctor` name (which still works for muscle-memory / existing scripts).
+  if (args[0] === 'doctor' || args[0] === 'status' || args[0] === 'check') {
+    const fix = args.includes('--fix');
+    process.exit(await runDoctor(out, fix ? { fix: true } : undefined));
   }
 
   if (args[0] === 'cost') {
@@ -142,21 +208,45 @@ async function main(): Promise<void> {
       process.stderr.write('myshell-tools run: expected a task description\n');
       process.exit(1);
     }
-    const deps = await buildDeps(cwd);
-    const code = await runTask(taskParts.join(' '), deps, out, new AbortController().signal);
-    process.exit(code);
+    const [env, config] = await Promise.all([detectEnvironment(), loadConfig()]);
+    const policy = POLICY_PRESETS[config.mode ?? 'balanced'];
+    const deps = buildDeps(cwd, env, policy, resolveTimeoutMs(config));
+    const result = await runTask(taskParts.join(' '), deps, out, new AbortController().signal);
+    // Notify-only update nudge for the scripted / one-shot path. The interactive
+    // menu auto-updates, but `run` must NEVER swap the binary mid-task. Written
+    // to stderr and TTY-guarded so it can't corrupt piped stdout or spam CI logs.
+    if (process.stderr.isTTY === true) {
+      const upd = await checkForUpdate({ currentVersion: version, now: Date.now() }).catch(
+        () => undefined,
+      );
+      if (upd?.updateAvailable === true && upd.latest !== null) {
+        process.stderr.write(
+          `\n▲ myshell-tools ${upd.current} → ${upd.latest} available — npm install -g myshell-tools@latest\n`,
+        );
+      }
+    }
+    process.exit(result.code);
   }
 
   // ---- Interactive Menu (default — sessions-first control panel) ------------
   if (args.length === 0) {
     const spinner = createSpinner(out);
     spinner.start('Detecting providers…');
-    const [providers, env, config] = await Promise.all([
-      buildProviders(cwd),
+    const [env, config, stateWritable] = await Promise.all([
       detectEnvironment(),
       loadConfig(),
+      probeStateWritable(cwd),
     ]);
+    const providers = buildProviders(cwd, env);
     spinner.stop();
+
+    // Evaluate non-provider environment health once at startup. Surfaced in the
+    // menu only when a problem exists — the user never runs a health command.
+    const healthIssues = evaluateHealth({
+      nodeVersion: process.version,
+      stateWritable,
+      pricingStale: isPricingStale(),
+    });
 
     const store = createFileConversationStore({ clock: systemClock });
     const ledger = createLedger({ cwd });
@@ -171,7 +261,32 @@ async function main(): Promise<void> {
       config,
       cwd,
       sandbox: 'workspace-write',
-      timeoutMs: 120000,
+      timeoutMs: resolveTimeoutMs(config),
+      healthIssues,
+      checkForUpdate: () => checkForUpdate({ currentVersion: version, now: Date.now() }),
+      updateSelf: async (updateOut) => {
+        try {
+          const result = await execa('npm', ['install', '-g', 'myshell-tools@latest'], {
+            stdio: 'inherit',
+            reject: false,
+          });
+          return result.exitCode === 0;
+        } catch {
+          updateOut.write('Update failed — run: npm install -g myshell-tools@latest\n');
+          return false;
+        }
+      },
+      relaunch: async () => {
+        try {
+          const result = await execa('myshell-tools', process.argv.slice(2), {
+            stdio: 'inherit',
+            reject: false,
+          });
+          return result.exitCode ?? 0;
+        } catch {
+          return 1;
+        }
+      },
     };
 
     await startMenu(menuCtx, out);
@@ -183,7 +298,11 @@ async function main(): Promise<void> {
     out.write(banner(version, out.color) + '\n');
     const spinner = createSpinner(out);
     spinner.start('Detecting providers…');
-    const deps = await buildDeps(cwd);
+    const env = await detectEnvironment();
+    // TODO: the repl path does not load AppConfig, so it uses the built-in
+    // DEFAULT_TIMEOUT_MS. If/when this path loads config, pass
+    // resolveTimeoutMs(config) here like the menu and run paths do.
+    const deps = buildDeps(cwd, env);
     spinner.stop();
     out.write(welcome(deps, out.color) + '\n\n');
     await startRepl(deps, out);

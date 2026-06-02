@@ -12,6 +12,7 @@
  */
 
 import type { Provider, ProviderId, SandboxLevel } from '../providers/port.js';
+import type { NativeSessionPlan } from './native-session.js';
 
 // ---------------------------------------------------------------------------
 // Classification
@@ -19,6 +20,41 @@ import type { Provider, ProviderId, SandboxLevel } from '../providers/port.js';
 
 export type Tier = 'worker' | 'ic' | 'manager';
 export type Risk = 'low' | 'medium' | 'high' | 'critical';
+
+// ---------------------------------------------------------------------------
+// Structured user questions (assistant → user elicitation)
+// ---------------------------------------------------------------------------
+
+/**
+ * A single selectable option for a {@link Question}. `label` is the short
+ * machine/display value; `description` is optional human context.
+ */
+export interface QuestionOption {
+  readonly label: string;
+  readonly description?: string;
+}
+
+/**
+ * A single multiple-choice question the assistant asks the user, mirroring
+ * Claude Code's AskUserQuestion / MCP elicitation but transported in TEXT (the
+ * model emits an `ask_user` JSON block; the orchestrator detects it; the TUI
+ * renders a selector; the user's choice is fed back as the next turn).
+ *
+ * Flat, primitive-only by design (bounds enforced in questions.ts): 1–4
+ * questions per set, each with 2–4 options.
+ */
+export interface Question {
+  readonly id: string;
+  readonly prompt: string;
+  readonly options: readonly QuestionOption[];
+  readonly multiSelect: boolean;
+  readonly allowFreeText: boolean;
+}
+
+/** An ordered set of {@link Question}s the assistant asks in one turn. */
+export interface QuestionSet {
+  readonly questions: readonly Question[];
+}
 
 export interface Classification {
   readonly tier: Tier;
@@ -71,6 +107,14 @@ export interface SessionEntry {
   readonly confidence?: number | null;
   readonly costUsd?: number;
   readonly durationMs?: number;
+  /**
+   * Provider-assigned native session/thread id for this turn, when the CLI
+   * reported one (e.g. Codex thread id). Persisted in the append-only log so a
+   * later turn can resume that provider's native session without a separate
+   * store. Absent for providers that don't surface an id (Claude uses the
+   * conversation id directly) or when native sessions are off.
+   */
+  readonly sessionId?: string;
 }
 
 export interface SessionWriter {
@@ -108,6 +152,32 @@ export interface Policy {
   readonly escalateBelowConfidence: Record<Risk, number>;
   /** Ordered provider preference per tier; route() honours availability. */
   readonly providerOrderByTier: Record<Tier, readonly ProviderId[]>;
+  /**
+   * Controls when cross-vendor review runs automatically.
+   *
+   * - `'auto'`          : review when risk is high/critical OR the model sets needsReview
+   *                       (current default behaviour).
+   * - `'critical-only'` : review only when risk is `critical` (or needsReview AND critical).
+   * - `'off'`           : never trigger an automatic cross-vendor review.
+   *
+   * Omitting the field is equivalent to `'auto'` (backward-compatible).
+   */
+  readonly reviewPolicy?: 'auto' | 'critical-only' | 'off';
+  /**
+   * Per-task cost budget cap in USD.  When `totalCostUsd` reaches or exceeds
+   * this value, orchestrate() stops spending (no new escalation, no new review)
+   * and accepts the best result produced so far.
+   *
+   * `null` or `undefined` (the default) means no cap is applied.
+   */
+  readonly maxCostUsd?: number | null;
+  /**
+   * Hard ceiling on the tier a task may run at, regardless of how the message
+   * was classified. e.g. `'ic'` clamps a message classified `'manager'` down to
+   * `'ic'`, so a single soft keyword (e.g. "plan") can't launch the most
+   * expensive model on a low-risk chat. Absent → no ceiling (classifier wins).
+   */
+  readonly maxTier?: Tier;
 }
 
 // ---------------------------------------------------------------------------
@@ -124,6 +194,64 @@ export interface OrchestrateDeps {
   readonly cwd: string;
   readonly sandbox: SandboxLevel;
   readonly timeoutMs: number;
+  /**
+   * Prior conversation history for context continuity. When provided, the most
+   * recent turns are compacted and injected into the first provider prompt so
+   * stateless one-shot providers (claude -p / codex exec) have multi-turn
+   * awareness. Leave undefined for fresh (one-shot) sessions.
+   */
+  readonly history?: readonly SessionEntry[];
+  /**
+   * Advertised model lists from provider detection, keyed by provider id.
+   * When supplied, route() restricts candidates to models that the provider CLI
+   * actually advertises, preventing the CLI from routing to a model it cannot run.
+   *
+   * Absence (undefined) or an empty list for a provider → fall back to the
+   * standard cheapest-for-tier pricing-table behaviour (backward-compatible).
+   *
+   * Only include providers that are installed; exactOptionalPropertyTypes is ON.
+   */
+  readonly availableModels?: Partial<Record<ProviderId, readonly string[]>>;
+  /**
+   * The set of provider IDs that are currently signed in (authenticated).
+   *
+   * When supplied and non-empty, route() prefers authenticated providers over
+   * signed-out ones within the same tier, preventing wasted attempts against
+   * providers that are installed but not logged in.
+   *
+   * When absent or empty → routing falls back to the existing fixed-preference-
+   * order behaviour (backward-compatible).
+   *
+   * Only include providers whose `authenticated` flag is `true`; exactOptionalPropertyTypes is ON.
+   */
+  readonly authenticatedProviders?: readonly ProviderId[];
+  /**
+   * EXPERIMENTAL native session plans (opt-in via config.nativeSessions), one
+   * per provider that has an active native session for this conversation. When
+   * a turn routes to a provider that has a plan, orchestrate skips the replayed
+   * history block and passes that provider's native session id instead, so the
+   * provider carries prior context server-side. A turn routing to a provider
+   * with no plan falls back to history replay (so switching providers is safe).
+   *
+   * Computed by the caller (the conversation layer) — absent for one-shot runs
+   * and when the feature is disabled. See core/native-session.ts.
+   */
+  readonly nativeSession?: readonly NativeSessionPlan[];
+  /**
+   * Optional model-brained route classifier. When wired, orchestrate consults it
+   * ONLY on turns the deterministic keyword classifier couldn't route (no tier
+   * evidence — see core/router.ts), and falls back to the rules on any failure or
+   * timeout (returns null). Absent → routing is purely deterministic, identical
+   * to the pre-router behaviour. The infra layer builds this from the cheapest
+   * available provider so the routing decision itself stays cheap.
+   *
+   * Typed inline (not imported from router.ts) to keep types.ts a leaf module;
+   * structurally identical to router.ts's ModelClassifier.
+   */
+  readonly routeClassifier?: (
+    task: string,
+    signal: AbortSignal,
+  ) => Promise<{ readonly tier: Tier; readonly plan: boolean; readonly reason: string } | null>;
 }
 
 /**
@@ -149,13 +277,25 @@ export type CoreEvent =
       readonly tier: Tier;
       readonly success: boolean;
       readonly confidence: number | null;
+      /** Estimated USD — retained for the ledger and the on-demand `cost` view;
+       *  NOT shown on the hot path (this is a subscription tool, not API-billed). */
       readonly costUsd: number;
+      /** Real, measured token counts — the transparent primary signal shown live. */
+      readonly inputTokens: number;
+      readonly outputTokens: number;
       readonly durationMs: number;
     }
   | {
       readonly type: 'escalate';
       readonly from: Tier;
       readonly to: Tier;
+      readonly reason: string;
+    }
+  | {
+      readonly type: 'failover';
+      readonly from: ProviderId;
+      readonly to: ProviderId;
+      readonly tier: Tier;
       readonly reason: string;
     }
   | {
@@ -171,4 +311,17 @@ export type CoreEvent =
       readonly totalCostUsd: number;
       readonly sessionId: string;
       readonly attempts: number;
+      /** Set on failing finals only: the error category that caused the failure. */
+      readonly errorCategory?: import('../providers/port.js').CliError['category'];
+      /** Set on failing finals only: the provider that was being used when failure occurred. */
+      readonly provider?: import('../providers/port.js').ProviderId;
+      /**
+       * Set when the model ended its turn by asking the user one or more
+       * structured questions (an `ask_user` block) instead of completing work.
+       * The interface layer renders a selector for these and feeds the answer
+       * back as the next turn in the same conversation. When present the turn is
+       * a complete success that needs a reply — NOT low-confidence work — so
+       * orchestrate does not escalate or review. Absent for normal turns.
+       */
+      readonly questions?: QuestionSet;
     };

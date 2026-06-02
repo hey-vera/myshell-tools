@@ -2,9 +2,9 @@
 
 **Hierarchical, multi-provider AI orchestration for your shell — over the CLIs you already use.**
 
-`myshell-tools` routes each task to the *cheapest* model likely to succeed, runs it on your real codebase, optionally has a **different vendor** review the result, and shows you exactly what it did and what it truly cost — with **no fabricated data, ever**.
+`myshell-tools` routes each task to the *cheapest* model likely to succeed, runs it on your real codebase, optionally has a **different vendor** review the result, and shows you exactly what it did and how many real tokens it used — with **no fabricated data, ever**.
 
-> **Status: `2.1.0` — honest, tested, and real.** Both the Claude and Codex paths work, and provider auth is detected for real.
+> **Status: `3.2.0` — honest, tested, and real.** Claude, Codex, and opencode (experimental) all work, provider auth is detected for real, and the header always shows whether you're on the latest version (`(latest)` or `→ x.y.z available`).
 
 ---
 
@@ -38,21 +38,33 @@ myshell-tools
 
 Using one frontier model for everything is wasteful (renaming a variable doesn't need Opus) and single‑model output has blind spots. `myshell-tools` addresses both, honestly:
 
-- **Cost‑aware routing** — trivial work goes to the cheap tier (Haiku / GPT‑5 mini), real implementation to the mid tier, hard calls to the flagship. You see the savings as a real number.
-- **Cross‑vendor adversarial review** — for high‑risk work, a *different vendor* checks the first model's output (Codex reviewing Claude, or vice‑versa). Different families, different blind spots.
-- **Subscription, not metering** — it drives the **Claude Code** and **Codex** CLIs you already pay for. No API keys, no per‑token bill.
+- **Cost‑aware routing** — trivial work goes to the cheap tier (Haiku / GPT‑5 mini), real implementation to the mid tier, hard calls to the flagship. The efficiency shows up as a billing‑agnostic ratio (how many flagship tokens you avoided), not a dollar figure — because you're on a subscription, not metered API billing.
+- **One quality knob — `Efficient · Balanced · Max`** — controls how eagerly the chat reaches for the strongest model. Quality is *never* capped by the knob: routing always escalates to the best model when a turn genuinely needs it; the mode only tunes the speed/firepower trade-off above that floor. **The default auto-detects from your subscription** (a Max plan opens the Opus tier automatically; smaller plans stay Balanced) — no configuration, no interrogation. Change it on the home screen (`m`), in-chat (`/mode`), or in Settings; it's one global knob, changeable anywhere.
+  - `Efficient` — lightest model that fits; escalates only when a turn needs it; reviews cross-vendor on *critical*-risk tasks only.
+  - `Balanced` — sensible middle; reaches for the strong model on the harder turns.
+  - `Max` — always reaches for the strongest model and reviews high/critical work; best answers, slower, never capped.
+- **Keeps going until it's done** — ask for something big and the chat just does it; if a job is too large for a single turn, it offers to *keep working autonomously, step by step, until it's done* — you say "yes", no command to learn (or start it explicitly with `/goal <text>`). Bounded by a turn ceiling and Esc, and it survives per-turn timeouts so a multi-file build actually completes across turns.
+- **A real advisor, not an order-taker** — for a decision (language, library, design) it forms an opinion and recommends a clear winner, surfaces a strong option you may not have considered, and asks only the one or two questions that actually change the answer.
+- **Cross‑vendor adversarial review** — a *different vendor* checks the first model's output (Codex reviewing Claude, or vice‑versa). Different families, different blind spots. Review gating depends on mode; see the quality knob above.
+- **Multi-turn context continuity** — follow-up messages carry real context. Prior conversation turns are compacted into a bounded history block (~6 k chars, most recent 12 turns) and replayed to the model, so it actually knows what was said earlier. Confidence envelopes are stripped before replay to save tokens.
+- **Native session continuity** *(experimental, opt-in, default off)* — when enabled, a conversation that stays on one provider reuses that provider's *native* session instead of replaying the history block, for better fidelity and less re-sent context. **Claude** uses a session id we choose (the conversation id); **Codex** has its generated thread id captured (from `thread.started`), persisted on the turn, and resumed via `codex exec resume`. Falls back to history replay automatically when a turn routes to a provider without an active session. Because the live behavior depends on your CLI, it ships off with a gated verification test covering both providers — `MYSHELL_NATIVE_SESSION_E2E=1 npm run test:integration` — and you enable it (Settings → Native sessions) only after it passes on your setup.
+- **Container / SSH sign-in** — `myshell-tools login` auto-detects headless and cloud-IDE environments (Replit, Codespaces, Gitpod, SSH sessions) and switches to a no-localhost sign-in flow automatically. Force either flow with `--code` or `--browser`. For Claude it runs `claude auth login` (claude saves its own credential — nothing for us to store); if the browser shows a localhost / "can't be reached" error after you click Authorize, copy the **full URL from the address bar** (it contains the sign-in code) and paste it back when claude asks. For Codex, a device-code flow is used.
+- **opencode provider (experimental)** — auto-detected; works instantly with free hosted models (no keys). As a subscription/free provider it **uses whatever model you've configured in opencode** (a free opencode-zen model, or a premium one you've added — e.g. **Kimi K2**); myshell-tools doesn't pin a model for it, so "just use whatever opencode has" works out of the box. `[o]` is always visible in the Auth section: it installs `opencode-ai` (with consent) if missing, then runs `opencode auth login`. Route to it explicitly or let the policy fall back to it automatically.
+- **Routing prefers advertised models** — detection passes each provider's actual model list to `route()`, which picks the cheapest model the CLI *actually has*, not just the cheapest in the pricing table. Falls back gracefully if the advertised list doesn't match any pricing entry.
+- **Subscription, not metering** — it drives the **Claude Code**, **Codex**, and **opencode** CLIs you already use. No API keys, no per‑token bill for the free path.
 - **Honest by construction** — every number on screen traces to a real measurement. A suite of *architecture tests* makes fabricated/mock output literally unmergeable.
 
 ---
 
 ## Requirements
 
-- **Node.js ≥ 20** (the CLI itself; tests require Node ≥ 22).
+- **Node.js ≥ 20** for the compiled CLI (`dist/`). **Node ≥ 22** is required to run the test suite (see Development below).
 - At least one provider CLI.  `npx myshell-tools` will **offer to install** them for you on first run — or you can install manually:
-  - **Claude Code** — `npm install -g @anthropic-ai/claude-code`, then sign in when prompted.
-  - **Codex** — `npm install -g @openai/codex`, then `codex login`.
+  - **Claude Code** — `npm install -g @anthropic-ai/claude-code`, then sign in when prompted. In containers or over SSH, run `myshell-tools login claude --code`: it runs `claude auth login` and shows a sign-in link; if the page errors on a localhost redirect after you authorize, copy the full address-bar URL (it carries the code) and paste it back when claude asks. Claude persists its own credential — myshell-tools stores nothing.
+  - **Codex** — `npm install -g @openai/codex`. In containers or over SSH, run `myshell-tools login codex --code` for a device-code flow (no localhost callback needed).
+  - **opencode** *(experimental, optional)* — auto-detected when the `opencode` CLI is installed. Works immediately with free hosted models (no keys). `[o]` is **always available** in the control-panel Auth section: if opencode is not yet installed, selecting it asks for consent and runs `npm install -g opencode-ai`, then runs `opencode auth login` to add a premium provider or subscription — myshell-tools never handles the credentials. Appears in the control-panel header and raw-session picker only when installed.
 
-You need **one** to start; install **both** to unlock cross‑vendor review.
+You need **one** to start; install **both** claude and codex to unlock cross‑vendor review.
 
 ---
 
@@ -60,9 +72,42 @@ You need **one** to start; install **both** to unlock cross‑vendor review.
 
 | Method | Command | Notes |
 |--------|---------|-------|
-| Zero-install (recommended) | `npx myshell-tools` | Fetches, runs, and offers to set up providers on first run |
-| Global install | `npm install -g myshell-tools` then `myshell-tools` | Faster on subsequent runs |
+| Zero-install (one-time) | `npx myshell-tools` | Fetches and runs; first-run setup included |
+| Global install (recommended for regular use) | `npm install -g myshell-tools` then `myshell-tools` | Fastest; gets the update notifier |
 | From source | See below | For development |
+
+### `npx` vs. `npm install -g` — which to choose?
+
+`npx myshell-tools` is convenient for a one-off run but **caches the downloaded version** — subsequent invocations reuse the cache and **will not pick up new releases** automatically. The tool detects when it's running under npx and, if a newer version exists, tells you exactly that instead of pretending to self-update (a global install run from an npx process is ignored by the next `npx` invocation). If you're stuck on an old version via npx, clear the cache (`rm -rf ~/.npm/_npx`) or — better — install globally:
+
+For day-to-day use, a global install is recommended:
+
+```bash
+npm install -g myshell-tools
+myshell-tools
+```
+
+The globally-installed CLI includes the **update notifier**: it checks the npm registry once per 24 hours (cached, non-blocking) and shows a banner in the control panel when a newer version is available:
+
+```
+▲ Update available: 2.9.0 → 3.0.0  (press u)
+```
+
+Press `u` to install the update in-place (`npm install -g myshell-tools@latest`). No relaunch is forced — restart the CLI when you're ready.
+
+You can also enable **auto-update** so the CLI updates and relaunches itself silently at startup.  Auto-update is **on by default** — the first-run prompt asks `Keep myshell-tools up to date automatically? (Y/n)` and defaults to yes.
+
+To opt out:
+- During first-run setup: answer `n` to the `Keep myshell-tools up to date automatically? (Y/n)` prompt.
+- In the control panel: `[s] Settings → [3] Auto-update: on → off`.
+- Or set `"autoUpdate": false` in `~/.myshell-tools/config.json`.
+- Or set `MYSHELL_NO_UPDATE=1` in your environment to disable auto-update permanently without changing config.
+
+To update manually at any time:
+
+```bash
+npm install -g myshell-tools@latest
+```
 
 ### From source
 
@@ -88,7 +133,6 @@ Commands:
   run <task...>   Run a one-shot task and exit
   repl            Plain line REPL (no menu)
   login [prov]    Sign in to a provider (claude or codex) via its own OAuth
-  doctor          Check providers, auth, environment
   cost            Show real spend + the cost-routing counterfactual
 
 Options:
@@ -102,19 +146,26 @@ These are **actual, unedited** outputs (your costs/timings will differ):
 
 ```text
 $ myshell-tools run "what is 2 plus 2"
-Classified: worker tier, low risk — tier: worker keyword 'what is'; risk: defaulting to low
 ▶ WORKER (claude/claude-haiku-4-5) attempt 1
 2 plus 2 equals 4.
-✓ tier done — confidence: 100%, cost: $0.0124, duration: 5648ms
-Success — tier: worker, cost: $0.0124, attempts: 1, session: 0dbfe2e3-…
+✓ tier done — confidence: 100%, 312 tokens, duration: 5648ms
+Success — tier: worker, 312 tokens, attempts: 1, session: 0dbfe2e3-…
 ```
 
-The confidence (`100%`) is **parsed from the model's own structured reply**, not invented. The cost is the **CLI's own reported figure**, not an estimate.
+The confidence (`100%`) is **parsed from the model's own structured reply**, not invented. The token count is the **CLI's own reported usage** — real and measured. Because myshell-tools drives your *subscription* CLIs (not metered API keys), the hot path shows tokens, not dollars; a per-task dollar figure wouldn't map to flat subscription billing. If you want a rough API-equivalent cost estimate, it lives in `myshell-tools cost`.
 
-### Health check
+### Health — automatic, no command needed
+
+The control panel checks its own environment on every launch (Node version, whether the state directory is writable, pricing freshness) and shows a short, actionable warning **only when something is actually wrong**. When everything is fine, it stays quiet — you never run a "doctor" command.
+
+If you want the full report explicitly (handy for support threads or CI), it's still there as a hidden, scriptable command — `status`, `check`, or `doctor`:
 
 ```text
-$ myshell-tools doctor
+$ myshell-tools status
+myshell-tools — environment health
+Platform: linux
+Node:     v22.19.0
+...
 Providers
   ✓ claude — installed, version: 2.1.157 (Claude Code)
     auth: signed in (pro)
@@ -123,21 +174,25 @@ Providers
 Ready — at least one provider is available.
 ```
 
-### Cost & the routing counterfactual
+### Usage & efficiency (`cost`)
+
+This is a *subscription* tool, so the everyday UI shows **real, measured tokens** — never per-task dollars, which wouldn't map to flat subscription billing. The on-demand `cost` view leads with tokens and a **billing-agnostic routing-efficiency ratio**, then offers a clearly-captioned API-equivalent dollar estimate for anyone who wants the magnitude:
 
 ```text
 $ myshell-tools cost
-Billed total: $0.0125 (as billed, incl. caching/discounts)
-Total calls: 1
-Per-model breakdown
-  claude-haiku-4-5: 1 call, $0.0125
-Counterfactual — list price, token-for-token
-  Routed (models used): $0.0010
-  Always-flagship:      $0.0063
-  Routing saved you money: always-flagship would cost 6.3x more …
+myshell-tools — usage & efficiency
+Tasks run:   3
+Tokens used: 12.4k (real, measured)
+Per-model usage
+  claude-haiku-4-5: 2 tasks, 4.1k tokens
+  claude-sonnet-4-6: 1 task, 8.3k tokens
+Routing efficiency
+Routing picked cheaper-tier models where it could — ~6.3× less than sending every task to the flagship (claude-opus-4-7).
+Estimated cost  — API-equivalent (list price), not your subscription bill
+Routed: ~$0.0020   ·   always-flagship: ~$0.0126
 ```
 
-The counterfactual is **apples‑to‑apples** (both routed and flagship priced the same way), and the *billed* total is shown separately and labeled — no mixing of cache‑adjusted and list prices.
+The **efficiency ratio is honest under a subscription** (it compares flagship tokens you avoided, not dollars you were charged). The dollar figures are explicitly labeled an *API-equivalent estimate* — not your actual bill — and both use the **same basis** (list price × tokens), so "routed vs always-flagship" is apples-to-apples and internally consistent.
 
 ---
 
@@ -164,7 +219,7 @@ classify ─▶ route(cheapest tier) ─▶ run ─▶ assess
 This is a ground‑up rebuild whose first principle is: **the tool never shows fabricated, mocked, or randomized data as if it were real.** It's enforced, not promised:
 
 - **Architecture guard tests** fail the build if the UI/command layers contain hardcoded "AI responses", fake metrics, or a digit‑then‑`%` literal; if the orchestration core touches the filesystem, clock, or RNG directly; or if any module other than the entry point can terminate the process.
-- **513 unit/architecture tests + 42 contract tests** (parsers pinned to *recorded real transcripts*), with `tsc --strict`, ESLint, and a clean `npm pack` checked in CI across Windows / macOS / Linux.
+- **An extensive unit + architecture-guard suite** (plus contract tests with parsers pinned to *recorded real transcripts*), with `tsc --strict`, ESLint, and a clean `npm pack` checked in CI across Windows / macOS / Linux.
 
 ---
 
@@ -184,29 +239,18 @@ Hexagonal / ports‑and‑adapters:
 
 ## Development
 
+**Node ≥ 22 is required to run the test suite.** `npm test` uses
+`node --experimental-strip-types` (native TypeScript stripping, available from
+Node 22+). The compiled runtime (`dist/`) supports Node ≥ 20, so
+`package.json` `engines` is left at `>=20`.
+
 ```bash
-npm run typecheck   # tsc --strict, 0 errors
-npm run lint        # ESLint (typescript-eslint strict)
-npm test            # unit + architecture tests
+npm run typecheck      # tsc --strict, 0 errors
+npm run lint           # ESLint (typescript-eslint strict)
+npm test               # unit + architecture tests (requires Node ≥ 22)
 npm run test:contract  # parser contract tests vs recorded transcripts
-npm run build       # → dist/
+npm run build          # tsc → dist/
 ```
-
----
-
-## Status & roadmap
-
-Honest snapshot of `2.0.0-alpha.0`:
-
-| Area | State |
-| --- | --- |
-| Core routing + escalation + cross‑vendor review loop | ✅ implemented & unit‑proven |
-| Claude adapter | ✅ live, validated end‑to‑end on real models |
-| Codex adapter | ✅ built; auto‑activates once `codex` is installed + authed |
-| `doctor` / `cost` / REPL / streaming UI | ✅ |
-| Live cross‑vendor demonstration | ⏳ pending Codex auth |
-| Cross‑OS CI run | ⏳ pending a public remote |
-| npm publish | ⏳ alpha |
 
 ---
 

@@ -24,6 +24,11 @@ export interface SpendSummary {
   readonly totalUsd: number;
   /** Total number of ledger entries (calls). */
   readonly calls: number;
+  /** Real tokens (input + output) used today (UTC). The transparent primary
+   *  signal — measured, not an estimate, unlike the USD figures. */
+  readonly todayTokens: number;
+  /** Real tokens (input + output) used across all time. */
+  readonly totalTokens: number;
   /** Per-provider breakdown keyed by ProviderId string. */
   readonly byProvider: Record<string, { readonly usd: number; readonly calls: number }>;
 }
@@ -42,13 +47,18 @@ export function summarizeSpend(entries: LedgerEntry[], nowIso: string): SpendSum
 
   let todayUsd = 0;
   let totalUsd = 0;
+  let todayTokens = 0;
+  let totalTokens = 0;
   const byProvider: Record<string, { usd: number; calls: number }> = {};
 
   for (const entry of entries) {
     totalUsd += entry.usd;
+    const entryTokens = entry.inputTokens + entry.outputTokens;
+    totalTokens += entryTokens;
 
     if (entry.timestamp.slice(0, 10) === todayDate) {
       todayUsd += entry.usd;
+      todayTokens += entryTokens;
     }
 
     const existing = byProvider[entry.provider];
@@ -64,6 +74,8 @@ export function summarizeSpend(entries: LedgerEntry[], nowIso: string): SpendSum
     todayUsd,
     totalUsd,
     calls: entries.length,
+    todayTokens,
+    totalTokens,
     byProvider,
   };
 }
@@ -141,4 +153,28 @@ export function providerHealth(entries: LedgerEntry[]): ProviderHealth[] {
  */
 export function formatUsd(n: number): string {
   return '$' + n.toFixed(4);
+}
+
+// ---------------------------------------------------------------------------
+// formatTokens
+// ---------------------------------------------------------------------------
+
+/**
+ * Format a token count compactly: 942 → "942", 12_400 → "12.4k", 3_000_000 → "3M".
+ *
+ * Tokens are REAL measured values (unlike the USD estimates), so this is the
+ * primary live signal. Pure; never throws. Negative/NaN inputs clamp to "0".
+ *
+ * @param n - Token count.
+ */
+export function formatTokens(n: number): string {
+  if (!Number.isFinite(n) || n <= 0) return '0';
+  if (n < 1000) return String(Math.round(n));
+  if (n < 1_000_000) {
+    const k = n / 1000;
+    // One decimal, but drop a trailing ".0" (12000 → "12k", 12400 → "12.4k").
+    return (Number.isInteger(k) ? String(k) : k.toFixed(1)) + 'k';
+  }
+  const m = n / 1_000_000;
+  return (Number.isInteger(m) ? String(m) : m.toFixed(1)) + 'M';
 }

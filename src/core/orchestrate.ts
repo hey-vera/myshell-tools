@@ -27,26 +27,119 @@
  *  - No process.exit() — only src/cli.ts may terminate the process
  */
 
-import type { CoreEvent, OrchestrateDeps, Tier, Classification, Assessment } from './types.js';
-import type { CliError, Usage, ProviderRequest, ProviderId } from '../providers/port.js';
-import { classify } from './classify.js';
-import { route } from './route.js';
+import type { CoreEvent, OrchestrateDeps, Tier, Classification, Assessment, Policy } from './types.js';
+import type { CliError, Usage, ProviderRequest, Provider, ProviderId } from '../providers/port.js';
+import { decideRoute } from './router.js';
+import { route, clampTier } from './route.js';
 import { buildPrompt } from './prompt.js';
 import { assess } from './assess.js';
+import { parseQuestions } from './questions.js';
+import { compactHistory } from './history.js';
 import { getModelPricing, calculateCost } from '../infra/pricing.js';
 import { nextTierUp, pickReviewer } from './escalate.js';
 import { buildReviewPrompt, parseReviewVerdict } from './review.js';
+import { budgetExceeded } from './budget.js';
 
 // ---------------------------------------------------------------------------
-// Pure helper: should this IC output be cross-vendor reviewed?
+// Pure helper: should this output be cross-vendor reviewed?
 // ---------------------------------------------------------------------------
 
-function shouldReview(classification: Classification, assessment: Assessment): boolean {
+/**
+ * Decides whether a cross-vendor review should be triggered, given the task
+ * classification, assessment signals, and the active review policy.
+ *
+ * @param classification - Task classification (tier + risk).
+ * @param assessment     - Model self-assessment (confidence, escalate, needsReview).
+ * @param reviewPolicy   - Policy field; `undefined` is treated as `'auto'` for
+ *                         backward compatibility.
+ */
+function shouldReview(
+  classification: Classification,
+  assessment: Assessment,
+  reviewPolicy: Policy['reviewPolicy'],
+): boolean {
+  // 'off' — never auto-review.
+  if (reviewPolicy === 'off') return false;
+
+  // 'critical-only' — review only when risk is critical.
+  if (reviewPolicy === 'critical-only') {
+    return classification.risk === 'critical';
+  }
+
+  // 'auto' (or undefined, treated as 'auto') — original behaviour.
   return (
     classification.risk === 'high' ||
     classification.risk === 'critical' ||
     assessment.needsReview === true
   );
+}
+
+// ---------------------------------------------------------------------------
+// Private streaming helper
+// ---------------------------------------------------------------------------
+
+interface StreamOutcome {
+  finalText: string | undefined;
+  errored: CliError | undefined;
+  usage: Usage | undefined;
+  providerCostUsd: number | undefined;
+  /** Provider-assigned session/thread id captured from the `done` event, if any. */
+  sessionId: string | undefined;
+  canceled: boolean;
+  /** True only when the signal was already aborted before streaming started. */
+  canceledBeforeStream: boolean;
+}
+
+/**
+ * Stream a single provider run, yielding `{type:'provider-event', tier, event}`
+ * for every event, while accumulating `finalText`, `usage`, `providerCostUsd`,
+ * and `errored`.  Cancellation via `signal` is detected both before and after
+ * each event; on cancellation the generator returns immediately with
+ * `canceled: true` (no notice/final events — the caller emits those).
+ */
+async function* streamProvider(
+  provider: Provider,
+  req: ProviderRequest,
+  tier: Tier,
+  signal: AbortSignal,
+): AsyncGenerator<CoreEvent, StreamOutcome> {
+  let finalText: string | undefined;
+  let errored: CliError | undefined;
+  let usage: Usage | undefined;
+  let providerCostUsd: number | undefined;
+  let sessionId: string | undefined;
+
+  // Pre-stream abort check
+  if (signal.aborted) {
+    return { finalText, errored, usage, providerCostUsd, sessionId, canceled: true, canceledBeforeStream: true };
+  }
+
+  for await (const ev of provider.run(req, signal)) {
+    yield { type: 'provider-event', tier, event: ev };
+
+    if (ev.type === 'done') {
+      finalText = ev.text;
+      if (ev.usage !== undefined && usage === undefined) {
+        usage = ev.usage;
+      }
+      if (ev.costUsd !== undefined) {
+        providerCostUsd = ev.costUsd;
+      }
+      if (ev.sessionId !== undefined && ev.sessionId.length > 0) {
+        sessionId = ev.sessionId;
+      }
+    } else if (ev.type === 'error') {
+      errored = ev.error;
+    } else if (ev.type === 'usage' && usage === undefined) {
+      usage = ev.usage;
+    }
+
+    if (signal.aborted) {
+      return { finalText, errored, usage, providerCostUsd, sessionId, canceled: true, canceledBeforeStream: false };
+    }
+  }
+
+  return { finalText, errored, usage, providerCostUsd, sessionId, canceled: false, canceledBeforeStream: false };
 }
 
 // ---------------------------------------------------------------------------
@@ -71,9 +164,20 @@ export async function* orchestrate(
   signal: AbortSignal,
 ): AsyncGenerator<CoreEvent> {
   // -------------------------------------------------------------------------
-  // (a) Classify the task
+  // (a) Decide the route. Deterministic rules first; the model-brained router
+  //     (core/router.ts) only arbitrates turns the keyword classifier couldn't
+  //     route, and only when deps.routeClassifier is wired. decision.plan is
+  //     reserved for plan-first mode (Phase C).
   // -------------------------------------------------------------------------
-  const classification = classify(task);
+  const decision = await decideRoute(task, {
+    ...(deps.routeClassifier !== undefined ? { classifier: deps.routeClassifier } : {}),
+    signal,
+  });
+  const classification: Classification = {
+    tier: decision.tier,
+    risk: decision.risk,
+    rationale: decision.rationale,
+  };
   yield { type: 'classified', classification };
 
   // -------------------------------------------------------------------------
@@ -123,6 +227,31 @@ export async function* orchestrate(
   let attempts = 0;
   let totalCostUsd = 0;
   let lastOutput = '';
+  /** Track the last error category across all attempts (for the failing final). */
+  let lastErroredCategory: import('../providers/port.js').CliError['category'] | undefined;
+  /** Track the last attempted provider (for the failing final). */
+  let lastAttemptedProvider: ProviderId | undefined;
+
+  /**
+   * Per-tier set of providers that have already been tried, used by the
+   * cross-vendor failover logic so we never retry the same provider twice
+   * within a tier on consecutive execution failures.
+   */
+  const triedByTier = new Map<Tier, Set<ProviderId>>();
+
+  /**
+   * When non-null, the next iteration must route among only these providers
+   * (the remaining untried vendors at the current tier).  Cleared after use.
+   */
+  let failoverPool: ProviderId[] | null = null;
+
+  // Compute history context once per orchestrate() call (before the loop).
+  // It is injected into the first-tier prompt to give stateless providers
+  // multi-turn context; the history does NOT grow during the loop.
+  const historyContext =
+    deps.history !== undefined && deps.history.length > 0
+      ? compactHistory(deps.history)
+      : undefined;
   /**
    * Track which attempt indices have already been reviewed so that re-runs
    * (e.g. after a revise verdict) are not reviewed a second time and we
@@ -137,7 +266,20 @@ export async function* orchestrate(
     attempts++;
 
     // --- Route for current tier ---
-    const decision = route(currentTier, available, deps.policy);
+    // When a failoverPool is set (previous failure, untried vendors remain),
+    // route among only those vendors for this one iteration, then clear the pool.
+    const routePool = failoverPool ?? available;
+    failoverPool = null;
+    const decision = route(currentTier, routePool, deps.policy, deps.availableModels, deps.authenticatedProviders);
+
+    // Record this provider as tried at this tier.
+    let tierTried = triedByTier.get(currentTier);
+    if (tierTried === undefined) {
+      tierTried = new Set();
+      triedByTier.set(currentTier, tierTried);
+    }
+    tierTried.add(decision.provider);
+    lastAttemptedProvider = decision.provider;
 
     const provider = deps.providers[decision.provider];
     if (provider === undefined) {
@@ -149,11 +291,21 @@ export async function* orchestrate(
       break mainLoop;
     }
 
-    // --- Build prompt (with optional reviewer feedback on IC retry) ---
-    const prompt =
-      currentTier === 'ic' && managerNotes !== undefined
-        ? buildPrompt(currentTier, task, managerNotes)
-        : buildPrompt(currentTier, task);
+    // --- Native session decision (EXPERIMENTAL, opt-in) ---
+    // Use native continuity only when this tier's provider has a plan. Otherwise
+    // (no plan for this provider) fall back to replaying the compacted history —
+    // so switching providers never loses context.
+    const nativePlan = deps.nativeSession?.find((p) => p.provider === decision.provider);
+    const useNative = nativePlan !== undefined;
+
+    // --- Build prompt (with optional reviewer feedback on retry + history context) ---
+    // Bug 4 fix: inject managerNotes whenever defined, not just when currentTier === 'ic'.
+    // When using a native session, skip the replayed history — the provider holds it.
+    // Use decision.tier (the tier route() actually resolved, AFTER any maxTier
+    // clamp) — not the requested currentTier — so the persona prompt always
+    // matches the model that runs (e.g. balanced clamps manager→ic: we must use
+    // the IC persona on the sonnet model, never the manager persona).
+    const prompt = buildPrompt(decision.tier, task, managerNotes, useNative ? undefined : historyContext);
 
     // --- Yield tier-start ---
     yield {
@@ -171,60 +323,37 @@ export async function* orchestrate(
       cwd: deps.cwd,
       sandbox: deps.sandbox,
       timeoutMs: deps.timeoutMs,
+      ...(nativePlan !== undefined
+        ? { sessionId: nativePlan.sessionId, resume: nativePlan.resume }
+        : {}),
     };
     const start = deps.clock.now();
 
-    let finalText: string | undefined;
-    let errored: CliError | undefined;
-    let usage: Usage | undefined;
-    let providerCostUsd: number | undefined;
+    // --- Stream provider events ---
+    const outcome = yield* streamProvider(provider, req, decision.tier, signal);
 
-    // Check abort before entering the stream
-    if (signal.aborted) {
+    if (outcome.canceled) {
       yield { type: 'notice', level: 'warn', message: 'cancelled' };
       yield {
         type: 'final',
         success: false,
-        output: 'Task was cancelled before it started.',
+        output: outcome.canceledBeforeStream
+          ? 'Task was cancelled before it started.'
+          : 'Task was cancelled.',
         tier: decision.tier,
         totalCostUsd,
         sessionId: deps.session.id,
         attempts,
+        ...(lastAttemptedProvider !== undefined ? { provider: lastAttemptedProvider } : {}),
       };
       return;
     }
 
-    // --- Stream provider events ---
-    for await (const ev of provider.run(req, signal)) {
-      yield { type: 'provider-event', tier: decision.tier, event: ev };
+    const { finalText, errored, usage, providerCostUsd } = outcome;
 
-      if (ev.type === 'done') {
-        finalText = ev.text;
-        if (ev.usage !== undefined && usage === undefined) {
-          usage = ev.usage;
-        }
-        if (ev.costUsd !== undefined) {
-          providerCostUsd = ev.costUsd;
-        }
-      } else if (ev.type === 'error') {
-        errored = ev.error;
-      } else if (ev.type === 'usage' && usage === undefined) {
-        usage = ev.usage;
-      }
-
-      if (signal.aborted) {
-        yield { type: 'notice', level: 'warn', message: 'cancelled' };
-        yield {
-          type: 'final',
-          success: false,
-          output: 'Task was cancelled.',
-          tier: decision.tier,
-          totalCostUsd,
-          sessionId: deps.session.id,
-          attempts,
-        };
-        return;
-      }
+    // Track last error for failing final event.
+    if (errored !== undefined) {
+      lastErroredCategory = errored.category;
     }
 
     // --- Compute duration + cost ---
@@ -259,6 +388,8 @@ export async function* orchestrate(
     });
 
     // --- Append assistant session entry ---
+    // Persist the provider-assigned native session id (e.g. Codex thread id) so
+    // a later turn can resume it. Claude reports none (it reuses the conv id).
     await deps.session.append({
       timestamp: deps.clock.isoNow(),
       role: 'assistant',
@@ -269,6 +400,7 @@ export async function* orchestrate(
       confidence: assessment.confidence,
       costUsd: usd,
       durationMs,
+      ...(outcome.sessionId !== undefined ? { sessionId: outcome.sessionId } : {}),
     });
 
     // --- Yield tier-done ---
@@ -278,17 +410,139 @@ export async function* orchestrate(
       success,
       confidence: assessment.confidence,
       costUsd: usd,
+      inputTokens: usage?.inputTokens ?? 0,
+      outputTokens: usage?.outputTokens ?? 0,
       durationMs,
     };
 
     lastOutput = finalText ?? (errored?.message ?? '');
 
     // -----------------------------------------------------------------------
+    // 0) Structured question short-circuit (ask_user)
+    // -----------------------------------------------------------------------
+    // If the model ended its turn by asking the user a structured question
+    // instead of completing work, that is a COMPLETE turn that needs a reply —
+    // not low-confidence work. Yield a successful final carrying the questions
+    // and return WITHOUT escalating or reviewing. The confidence envelope is
+    // ignored for this turn (the two are mutually exclusive per prompt.ts).
+    if (success) {
+      const questions = parseQuestions(finalText ?? '');
+      if (questions !== null) {
+        yield {
+          type: 'final',
+          success: true,
+          output: lastOutput,
+          tier: currentTier,
+          totalCostUsd,
+          sessionId: deps.session.id,
+          attempts,
+          questions,
+        };
+        return;
+      }
+    }
+
+    // -----------------------------------------------------------------------
     // Decision tree
     // -----------------------------------------------------------------------
 
-    // 1) Provider failure → escalate to manager (or fail if already there)
+    // 1) Provider failure → try cross-vendor failover first; escalate only when
+    //    all vendors at this tier have been exhausted.
     if (!success) {
+      // Bug 1 fix: auth errors are terminal — a missing credential cannot be
+      // fixed by switching provider or escalating tier.  Short-circuit now.
+      if (errored !== undefined && errored.category === 'auth') {
+        yield {
+          type: 'final',
+          success: false,
+          output: lastOutput,
+          tier: currentTier,
+          totalCostUsd,
+          sessionId: deps.session.id,
+          attempts,
+          errorCategory: 'auth',
+          provider: decision.provider,
+        };
+        return;
+      }
+
+      // Timeouts are terminal for THIS task: do NOT cross-vendor fail over and do
+      // NOT escalate the tier. Re-running the same (too-broad) task on another
+      // vendor at the same tier just doubles the wall-clock and the spend for the
+      // same likely-to-time-out work — exactly the runaway we are fixing. Stop
+      // here with an actionable notice. (Fast crashes and other recoverable
+      // errors keep the existing failover/escalation behaviour below.)
+      if (errored !== undefined && errored.category === 'timeout') {
+        // Honest-spend judgment call (Goal 3): a timeout SIGKILLs the child before
+        // the CLI emits its terminal usage/result, so claude-parse produces no
+        // usage. The LedgerEntry schema (types.ts) holds only numeric token/usd
+        // fields — it cannot represent "unknown". We do NOT fabricate a number:
+        // the ledger entry was recorded above with success:false and the real
+        // parsed usage (0 when none arrived before the kill). When nothing was
+        // parsed, the recorded $0 is NOT a real cost — the run very likely burned
+        // the user's subscription — so we surface that explicitly here rather than
+        // letting the UI render "0 tokens / $0 / free". When partial usage DID
+        // arrive before the kill, we trust it and make no unknown-spend claim.
+        const parsedNoUsage =
+          usage === undefined && providerCostUsd === undefined;
+        if (parsedNoUsage) {
+          yield {
+            type: 'notice',
+            level: 'warn',
+            message:
+              'Spend unknown — the process was killed before reporting usage; the recorded $0 is not a real cost (the run may still have consumed your subscription).',
+          };
+        }
+        yield {
+          type: 'notice',
+          level: 'warn',
+          message:
+            'Timed out before the model finished. Not retrying on another vendor (the same work would likely time out again and double the cost). The task may be too broad — narrow it, or raise the timeout in Settings.',
+        };
+        yield {
+          type: 'final',
+          success: false,
+          output: lastOutput,
+          tier: currentTier,
+          totalCostUsd,
+          sessionId: deps.session.id,
+          attempts,
+          errorCategory: 'timeout',
+          provider: decision.provider,
+        };
+        return;
+      }
+
+      // Compute which providers haven't been tried at this tier yet.
+      const triedAtTier = triedByTier.get(currentTier) ?? new Set<ProviderId>();
+      const remaining = available.filter((id) => !triedAtTier.has(id));
+
+      if (remaining.length > 0) {
+        // Failover to an untried vendor at the same tier only when there is
+        // still room for another attempt.
+        // Bug 3 fix: only emit the failover event when another iteration can
+        // actually execute — i.e., when attempts < maxAttempts.  At the ceiling
+        // the next loop condition (attempts < maxAttempts) would be false, so the
+        // promised failover run would never happen; don't mislead the caller.
+        if (attempts < deps.policy.maxAttempts) {
+          // Peek at what route() would pick from the remaining pool so we can
+          // name the target provider in the failover event.
+          const nextDecision = route(currentTier, remaining, deps.policy, deps.availableModels, deps.authenticatedProviders);
+          yield {
+            type: 'failover',
+            from: decision.provider,
+            to: nextDecision.provider,
+            tier: currentTier,
+            reason: errored?.message ?? 'execution failure',
+          };
+          // Signal the next iteration to route among only the remaining vendors.
+          failoverPool = remaining;
+          continue mainLoop;
+        }
+        // Reached maxAttempts with untried vendors — fall through to escalate/break.
+      }
+
+      // All vendors at this tier have been tried (or maxAttempts reached) — escalate or break.
       if (currentTier !== 'manager') {
         yield { type: 'escalate', from: currentTier, to: 'manager', reason: 'execution failure' };
         currentTier = 'manager';
@@ -302,7 +556,30 @@ export async function* orchestrate(
     //    Guard: each attempt is reviewed at most once (prevents infinite loops).
     //    Guard: skip review if the only available reviewer is the same vendor
     //           (cross-vendor review is required; same-vendor-only → skip).
-    if (shouldReview(classification, assessment) && !reviewedAttempts.has(attempts)) {
+    //    Guard: skip review when budget is exhausted (gating new spend only).
+    if (
+      shouldReview(classification, assessment, deps.policy.reviewPolicy) &&
+      !reviewedAttempts.has(attempts)
+    ) {
+      // Budget cap: do not start a review run if we have already spent the cap.
+      if (budgetExceeded(totalCostUsd, deps.policy.maxCostUsd)) {
+        yield {
+          type: 'notice',
+          level: 'warn',
+          message: 'cost budget reached — accepting best result so far',
+        };
+        yield {
+          type: 'final',
+          success: true,
+          output: lastOutput,
+          tier: currentTier,
+          totalCostUsd,
+          sessionId: deps.session.id,
+          attempts,
+        };
+        return;
+      }
+
       const reviewerId = pickReviewer(available, decision.provider);
       // Only proceed with a DIFFERENT-vendor reviewer (cross-vendor requirement).
       const reviewerProvider =
@@ -319,7 +596,7 @@ export async function* orchestrate(
         };
 
         // Route reviewer at manager tier
-        const reviewDecision = route('manager', [reviewerId], deps.policy);
+        const reviewDecision = route('manager', [reviewerId], deps.policy, deps.availableModels, deps.authenticatedProviders);
         const reviewPrompt = buildReviewPrompt(task, lastOutput);
 
         // Yield tier-start for review run
@@ -340,13 +617,10 @@ export async function* orchestrate(
         };
         const reviewStart = deps.clock.now();
 
-        let reviewText: string | undefined;
-        let reviewErrored: CliError | undefined;
-        let reviewUsage: Usage | undefined;
-        let reviewProviderCostUsd: number | undefined;
+        // --- Stream reviewer events ---
+        const reviewOutcome = yield* streamProvider(reviewerProvider, reviewReq, 'manager', signal);
 
-        // Check abort before reviewer streaming
-        if (signal.aborted) {
+        if (reviewOutcome.canceled) {
           yield { type: 'notice', level: 'warn', message: 'cancelled' };
           yield {
             type: 'final',
@@ -356,50 +630,19 @@ export async function* orchestrate(
             totalCostUsd,
             sessionId: deps.session.id,
             attempts,
+            ...(lastAttemptedProvider !== undefined ? { provider: lastAttemptedProvider } : {}),
           };
           return;
         }
 
-        for await (const rev of reviewerProvider.run(reviewReq, signal)) {
-          yield { type: 'provider-event', tier: 'manager', event: rev };
-
-          if (rev.type === 'done') {
-            reviewText = rev.text;
-            if (rev.usage !== undefined && reviewUsage === undefined) {
-              reviewUsage = rev.usage;
-            }
-            if (rev.costUsd !== undefined) {
-              reviewProviderCostUsd = rev.costUsd;
-            }
-          } else if (rev.type === 'error') {
-            reviewErrored = rev.error;
-          } else if (rev.type === 'usage' && reviewUsage === undefined) {
-            reviewUsage = rev.usage;
-          }
-
-          if (signal.aborted) {
-            yield { type: 'notice', level: 'warn', message: 'cancelled' };
-            yield {
-              type: 'final',
-              success: false,
-              output: 'Task was cancelled.',
-              tier: currentTier,
-              totalCostUsd,
-              sessionId: deps.session.id,
-              attempts,
-            };
-            return;
-          }
-        }
-
         const reviewDurationMs = deps.clock.now() - reviewStart;
-        const reviewSuccess = reviewErrored == null;
+        const reviewSuccess = reviewOutcome.errored == null;
 
         const reviewPricing = getModelPricing(reviewerId, reviewDecision.model);
         const reviewUsd =
-          reviewProviderCostUsd ??
-          (reviewUsage !== undefined && reviewPricing !== undefined
-            ? calculateCost(reviewUsage.inputTokens, reviewUsage.outputTokens, reviewPricing)
+          reviewOutcome.providerCostUsd ??
+          (reviewOutcome.usage !== undefined && reviewPricing !== undefined
+            ? calculateCost(reviewOutcome.usage.inputTokens, reviewOutcome.usage.outputTokens, reviewPricing)
             : 0);
         totalCostUsd += reviewUsd;
 
@@ -411,9 +654,9 @@ export async function* orchestrate(
           provider: reviewerId,
           model: reviewDecision.model,
           tier: 'manager',
-          inputTokens: reviewUsage?.inputTokens ?? 0,
-          outputTokens: reviewUsage?.outputTokens ?? 0,
-          cachedInputTokens: reviewUsage?.cachedInputTokens ?? 0,
+          inputTokens: reviewOutcome.usage?.inputTokens ?? 0,
+          outputTokens: reviewOutcome.usage?.outputTokens ?? 0,
+          cachedInputTokens: reviewOutcome.usage?.cachedInputTokens ?? 0,
           usd: reviewUsd,
           durationMs: reviewDurationMs,
           success: reviewSuccess,
@@ -426,11 +669,13 @@ export async function* orchestrate(
           success: reviewSuccess,
           confidence: null,
           costUsd: reviewUsd,
+          inputTokens: reviewOutcome.usage?.inputTokens ?? 0,
+          outputTokens: reviewOutcome.usage?.outputTokens ?? 0,
           durationMs: reviewDurationMs,
         };
 
         // Parse verdict and act on it
-        const verdict = parseReviewVerdict(reviewText ?? '');
+        const verdict = parseReviewVerdict(reviewOutcome.finalText ?? '');
 
         // Risk-indexed fail-open: when parsing failed (verdict.parsed === false)
         // AND the task is high/critical risk, do NOT silently auto-approve —
@@ -463,6 +708,7 @@ export async function* orchestrate(
               totalCostUsd,
               sessionId: deps.session.id,
               attempts,
+              ...(lastAttemptedProvider !== undefined ? { provider: lastAttemptedProvider } : {}),
             };
             return;
           }
@@ -487,6 +733,24 @@ export async function* orchestrate(
           }
 
           if (verdict.verdict === 'revise') {
+            // Budget cap: do not retry current tier if we have spent the cap.
+            if (budgetExceeded(totalCostUsd, deps.policy.maxCostUsd)) {
+              yield {
+                type: 'notice',
+                level: 'warn',
+                message: 'cost budget reached — accepting best result so far',
+              };
+              yield {
+                type: 'final',
+                success: true,
+                output: lastOutput,
+                tier: currentTier,
+                totalCostUsd,
+                sessionId: deps.session.id,
+                attempts,
+              };
+              return;
+            }
             // Retry current tier with reviewer's notes
             managerNotes = verdict.notes;
             continue mainLoop;
@@ -494,10 +758,67 @@ export async function* orchestrate(
 
           // verdict === 'escalate'
           const escalateTo = nextTierUp(currentTier);
-          if (escalateTo !== null) {
-            yield { type: 'escalate', from: currentTier, to: escalateTo, reason: 'reviewer escalation' };
-            currentTier = escalateTo;
+          // Tier ceiling (maxTier) negates the escalation → the reviewer wants a
+          // higher tier than policy allows. Accept the current result rather than
+          // re-running the same clamped model. (cost-saver/balanced cap at 'ic'.)
+          if (escalateTo !== null && clampTier(escalateTo, deps.policy.maxTier) === currentTier) {
+            yield {
+              type: 'notice',
+              level: 'warn',
+              message: 'reviewer requested escalation but the policy tier ceiling is reached — accepting best result',
+            };
+            yield {
+              type: 'final',
+              success: true,
+              output: lastOutput,
+              tier: currentTier,
+              totalCostUsd,
+              sessionId: deps.session.id,
+              attempts,
+            };
+            return;
           }
+          if (escalateTo === null) {
+            // Bug 2 fix: already at the top tier — reviewer requested escalation
+            // but there is nowhere higher to go.  Yield an honest warn + failing
+            // final instead of silently looping until maxAttempts.
+            yield {
+              type: 'notice',
+              level: 'warn',
+              message: 'reviewer requested escalation but already at the top tier — accepting best result',
+            };
+            yield {
+              type: 'final',
+              success: false,
+              output: lastOutput,
+              tier: currentTier,
+              totalCostUsd,
+              sessionId: deps.session.id,
+              attempts,
+              ...(lastAttemptedProvider !== undefined ? { provider: lastAttemptedProvider } : {}),
+            };
+            return;
+          }
+          // Budget cap: do not escalate to a new tier if we have spent the cap.
+          if (budgetExceeded(totalCostUsd, deps.policy.maxCostUsd)) {
+            yield {
+              type: 'notice',
+              level: 'warn',
+              message: 'cost budget reached — accepting best result so far',
+            };
+            yield {
+              type: 'final',
+              success: true,
+              output: lastOutput,
+              tier: currentTier,
+              totalCostUsd,
+              sessionId: deps.session.id,
+              attempts,
+            };
+            return;
+          }
+          yield { type: 'escalate', from: currentTier, to: escalateTo, reason: 'reviewer escalation' };
+          currentTier = escalateTo;
           continue mainLoop;
         }
       }
@@ -510,7 +831,33 @@ export async function* orchestrate(
       (assessment.confidence !== null && assessment.confidence < threshold);
 
     const nextTier = nextTierUp(currentTier);
-    if (needEsc && nextTier !== null) {
+    // A higher tier only helps if the policy ceiling (maxTier) would actually let
+    // it run a different model. Under balanced/cost-saver (maxTier 'ic'), route()
+    // clamps a 'manager' request back to 'ic', so escalating would re-run the SAME
+    // model — a wasted attempt and wrong (manager) persona. When the clamp negates
+    // the escalation, accept the current result instead of burning the attempt.
+    const escalationWouldRun =
+      nextTier !== null && clampTier(nextTier, deps.policy.maxTier) !== currentTier;
+    if (needEsc && escalationWouldRun) {
+      // Budget cap: do not escalate to a new tier if we have spent the cap.
+      if (budgetExceeded(totalCostUsd, deps.policy.maxCostUsd)) {
+        yield {
+          type: 'notice',
+          level: 'warn',
+          message: 'cost budget reached — accepting best result so far',
+        };
+        yield {
+          type: 'final',
+          success: true,
+          output: lastOutput,
+          tier: currentTier,
+          totalCostUsd,
+          sessionId: deps.session.id,
+          attempts,
+        };
+        return;
+      }
+
       const escalateReason =
         assessment.reason !== 'model provided no reason' &&
         assessment.reason !== 'no confidence envelope'
@@ -548,5 +895,7 @@ export async function* orchestrate(
     totalCostUsd,
     sessionId: deps.session.id,
     attempts,
+    ...(lastErroredCategory !== undefined ? { errorCategory: lastErroredCategory } : {}),
+    ...(lastAttemptedProvider !== undefined ? { provider: lastAttemptedProvider } : {}),
   };
 }

@@ -131,9 +131,21 @@ describe('runTask — happy path (provider available)', () => {
     sink = makeSink();
   });
 
-  it('returns 0 on successful task completion', async () => {
-    const code = await runTask('write unit tests', deps, sink, new AbortController().signal);
-    assert.equal(code, 0, 'Should return exit code 0 on success');
+  it('returns { code: 0 } on successful task completion', async () => {
+    const result = await runTask('write unit tests', deps, sink, new AbortController().signal);
+    assert.equal(result.code, 0, 'Should return code 0 on success');
+  });
+
+  it('returns final event on success', async () => {
+    const result = await runTask('write unit tests', deps, sink, new AbortController().signal);
+    assert.ok(result.final !== undefined, 'final should be present on success');
+    assert.equal(result.final.success, true, 'final.success should be true');
+  });
+
+  it('successful final has no errorCategory', async () => {
+    const result = await runTask('write unit tests', deps, sink, new AbortController().signal);
+    assert.ok(result.final !== undefined);
+    assert.equal(result.final.errorCategory, undefined, 'successful final must not have errorCategory');
   });
 
   it('output contains the real streamed text delta', async () => {
@@ -143,26 +155,30 @@ describe('runTask — happy path (provider available)', () => {
   });
 
   it('output contains the real model id', async () => {
-    await runTask('write unit tests', deps, sink, new AbortController().signal);
+    // Model id is verbose-only chrome (tier-start line) — request verbose.
+    await runTask('write unit tests', deps, sink, new AbortController().signal, 'verbose');
     const joined = sink.buf.join('');
     assert.ok(joined.includes('claude-sonnet-4-6'), 'Should include the real model id');
   });
 
   it('output contains the real session id', async () => {
-    await runTask('write unit tests', deps, sink, new AbortController().signal);
+    // Session id appears on the verbose Success telemetry line.
+    await runTask('write unit tests', deps, sink, new AbortController().signal, 'verbose');
     const joined = sink.buf.join('');
     assert.ok(joined.includes('run-test-session'), 'Should include the real session id');
   });
 
-  it('output contains a real cost (not zero, because usage was provided)', async () => {
-    await runTask('write unit tests', deps, sink, new AbortController().signal);
+  it('output shows real tokens, not dollars (subscription tool)', async () => {
+    await runTask('write unit tests', deps, sink, new AbortController().signal, 'verbose');
     const joined = sink.buf.join('');
-    // claude-sonnet-4-6: $3/1M in, $15/1M out; 1000 in + 500 out = $0.0105
-    assert.ok(joined.includes('$0.0105'), 'Should include the computed real cost');
+    // Provider usage: 1000 in + 500 out = 1500 tokens → "1.5k tokens".
+    assert.ok(joined.includes('1.5k tokens'), `Should show real token total, got:\n${joined}`);
+    assert.ok(!joined.includes('$'), `Hot path must show no dollar figure, got:\n${joined}`);
   });
 
   it('output contains confidence rendered as a computed number (from 0.75)', async () => {
-    await runTask('write unit tests', deps, sink, new AbortController().signal);
+    // Confidence is on the verbose tier-done telemetry line.
+    await runTask('write unit tests', deps, sink, new AbortController().signal, 'verbose');
     const joined = sink.buf.join('');
     // 0.75 * 100 = 75 — appears as "75" followed by "%"
     assert.ok(joined.includes('75'), 'Should include computed confidence value 75 (from 0.75)');
@@ -180,7 +196,7 @@ describe('runTask — no providers (honest failure)', () => {
     sink = makeSink();
   });
 
-  it('returns 1 when no providers are configured', async () => {
+  it('returns { code: 1 } when no providers are configured', async () => {
     const deps: OrchestrateDeps = {
       providers: {},
       clock: makeFakeClock(),
@@ -192,8 +208,25 @@ describe('runTask — no providers (honest failure)', () => {
       timeoutMs: 30_000,
     };
 
-    const code = await runTask('do something', deps, sink, new AbortController().signal);
-    assert.equal(code, 1, 'Should return exit code 1 when no providers are available');
+    const result = await runTask('do something', deps, sink, new AbortController().signal);
+    assert.equal(result.code, 1, 'Should return code 1 when no providers are available');
+  });
+
+  it('returns final event on failure', async () => {
+    const deps: OrchestrateDeps = {
+      providers: {},
+      clock: makeFakeClock(),
+      session: makeFakeSession('no-provider-session'),
+      ledger: makeFakeLedger(),
+      policy: DEFAULT_POLICY,
+      cwd: '/fake/cwd',
+      sandbox: 'workspace-write',
+      timeoutMs: 30_000,
+    };
+
+    const result = await runTask('do something', deps, sink, new AbortController().signal);
+    assert.ok(result.final !== undefined, 'final should be present on failure');
+    assert.equal(result.final.success, false, 'final.success should be false');
   });
 
   it('output honestly states that no providers are available', async () => {
@@ -291,8 +324,8 @@ describe('runTask — error propagation', () => {
       timeoutMs: 30_000,
     };
 
-    const code = await runTask('crash task', deps, sink, new AbortController().signal);
-    assert.equal(code, 1, 'Should return exit code 1 when an error is thrown');
+    const result = await runTask('crash task', deps, sink, new AbortController().signal);
+    assert.equal(result.code, 1, 'Should return code 1 when an error is thrown');
 
     const joined = sink.buf.join('');
     assert.ok(joined.includes('provider exploded'), 'Should include the real error message');
@@ -320,7 +353,7 @@ describe('runTask — abort signal', () => {
       timeoutMs: 30_000,
     };
 
-    const code = await runTask('cancel me', deps, sink, controller.signal);
-    assert.equal(code, 1, 'Should return exit code 1 when task is cancelled');
+    const result = await runTask('cancel me', deps, sink, controller.signal);
+    assert.equal(result.code, 1, 'Should return code 1 when task is cancelled');
   });
 });

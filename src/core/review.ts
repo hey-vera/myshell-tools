@@ -11,6 +11,8 @@
  * Pure module: no I/O, no time, no randomness.
  */
 
+import { lastJsonObjectWithKey } from './json-envelope.js';
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -101,58 +103,6 @@ const VALID_VERDICTS = new Set<string>(['approve', 'revise', 'escalate']);
 const FAIL_OPEN: ReviewVerdict = { verdict: 'approve', notes: '', confidence: null, parsed: false };
 
 /**
- * Attempt to extract the last JSON object from `text` that contains a `verdict` key.
- * Returns null if no valid envelope is found.
- */
-function extractVerdictEnvelope(text: string): RawVerdict | null {
-  const candidates: RawVerdict[] = [];
-
-  let i = 0;
-  while (i < text.length) {
-    const start = text.indexOf('{', i);
-    if (start === -1) break;
-
-    let depth = 0;
-    let j = start;
-    let foundClose = false;
-    while (j < text.length) {
-      if (text[j] === '{') {
-        depth++;
-      } else if (text[j] === '}') {
-        depth--;
-        if (depth === 0) {
-          foundClose = true;
-          break;
-        }
-      }
-      j++;
-    }
-
-    if (foundClose) {
-      const candidate = text.slice(start, j + 1);
-      try {
-        const parsed: unknown = JSON.parse(candidate);
-        if (
-          parsed !== null &&
-          typeof parsed === 'object' &&
-          !Array.isArray(parsed) &&
-          'verdict' in (parsed as object)
-        ) {
-          candidates.push(parsed as RawVerdict);
-        }
-      } catch {
-        // Not valid JSON — skip
-      }
-    }
-
-    i = start + 1;
-  }
-
-  if (candidates.length === 0) return null;
-  return candidates[candidates.length - 1] ?? null;
-}
-
-/**
  * Robustly parse the trailing JSON verdict envelope from a reviewer's output.
  *
  * Fail-open contract: if the envelope is absent or malformed, returns
@@ -167,7 +117,7 @@ export function parseReviewVerdict(output: string): ReviewVerdict {
 
   let envelope: RawVerdict | null;
   try {
-    envelope = extractVerdictEnvelope(output);
+    envelope = lastJsonObjectWithKey(output, 'verdict') as RawVerdict | null;
   } catch {
     return FAIL_OPEN;
   }

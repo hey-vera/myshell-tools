@@ -129,3 +129,86 @@ describe('POLICY_PRESETS — honesty contract', () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// POLICY_PRESETS — reviewPolicy field
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// POLICY_PRESETS — maxTier ceiling (cost guard against auto-running manager)
+// ---------------------------------------------------------------------------
+
+describe('POLICY_PRESETS — maxTier ceiling', () => {
+  it("cost-saver has maxTier:'ic' (never runs the manager model)", () => {
+    assert.equal(POLICY_PRESETS['cost-saver'].maxTier, 'ic');
+  });
+
+  it("balanced / DEFAULT_POLICY has maxTier:'ic' (manager is an explicit opt-in, not a default)", () => {
+    assert.equal(POLICY_PRESETS['balanced'].maxTier, 'ic');
+    assert.equal(DEFAULT_POLICY.maxTier, 'ic');
+  });
+
+  it("quality-first has maxTier:'manager' (opens the manager tier)", () => {
+    assert.equal(POLICY_PRESETS['quality-first'].maxTier, 'manager');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// POLICY_PRESETS — maxCostUsd budget guard (round, documented per-preset)
+// ---------------------------------------------------------------------------
+
+describe('POLICY_PRESETS — maxCostUsd budget guard', () => {
+  it('cost-saver caps at $0.50', () => {
+    assert.equal(POLICY_PRESETS['cost-saver'].maxCostUsd, 0.5);
+  });
+
+  it('balanced / DEFAULT_POLICY caps at $2.00', () => {
+    assert.equal(POLICY_PRESETS['balanced'].maxCostUsd, 2.0);
+    assert.equal(DEFAULT_POLICY.maxCostUsd, 2.0);
+  });
+
+  it('quality-first has no cap (null)', () => {
+    assert.equal(POLICY_PRESETS['quality-first'].maxCostUsd, null);
+  });
+
+  it('cost-saver budget is strictly below balanced (cheaper preset = tighter cap)', () => {
+    const cs = POLICY_PRESETS['cost-saver'].maxCostUsd;
+    const bal = POLICY_PRESETS['balanced'].maxCostUsd;
+    assert.ok(typeof cs === 'number' && typeof bal === 'number');
+    assert.ok((cs as number) < (bal as number), `cost-saver ${cs} must be < balanced ${bal}`);
+  });
+});
+
+describe('POLICY_PRESETS — reviewPolicy field', () => {
+  it("cost-saver has reviewPolicy:'critical-only'", () => {
+    assert.equal(
+      POLICY_PRESETS['cost-saver'].reviewPolicy,
+      'critical-only',
+      "cost-saver preset must have reviewPolicy:'critical-only' to reduce spend",
+    );
+  });
+
+  it("balanced has reviewPolicy:'auto' (via DEFAULT_POLICY)", () => {
+    assert.equal(
+      POLICY_PRESETS['balanced'].reviewPolicy,
+      'auto',
+      "balanced preset must have reviewPolicy:'auto'",
+    );
+  });
+
+  it("quality-first has reviewPolicy:'auto'", () => {
+    assert.equal(
+      POLICY_PRESETS['quality-first'].reviewPolicy,
+      'auto',
+      "quality-first preset must have reviewPolicy:'auto'",
+    );
+  });
+
+  it('DEFAULT_POLICY has reviewPolicy explicitly set to auto', () => {
+    assert.equal(
+      DEFAULT_POLICY.reviewPolicy,
+      'auto',
+      "DEFAULT_POLICY must have reviewPolicy:'auto'",
+    );
+  });
+});

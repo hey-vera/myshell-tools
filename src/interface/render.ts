@@ -7,11 +7,25 @@
  *
  * Honesty Contract: confidence is rendered as a computed percentage or the
  * literal word "unrated" when null. No digit-% literals appear in this file.
+ *
+ * Two cross-cutting concerns live here:
+ *   1. The confidence ENVELOPE (the trailing `{"confidence":…}` JSON that
+ *      prompt.ts forces onto every response) is internal control-plane data and
+ *      must NEVER be shown to the user. Model prose arrives only via streamed
+ *      `text` deltas, so we buffer the trailing fragment that could be the
+ *      start of an envelope and strip it before flushing at the terminal event.
+ *   2. VERBOSITY gating — `normal` (default) shows a clean conversation (prose +
+ *      errors), `quiet` shows prose + errors only, `verbose` shows everything
+ *      (tool lines, reasoning, per-tier telemetry).
  */
 
 import type { CoreEvent } from '../core/types.js';
+import type { CliError, ErrorCategory } from '../providers/errors.js';
+import { classifyError, formatErrorMessage } from '../providers/errors.js';
+import { lastJsonObjectBoundsWithKey, isTrailingNoise } from '../core/json-envelope.js';
 import { bold, cyan, dim, green, red, yellow } from '../ui/theme.js';
 import { createSpinner } from '../ui/spinner.js';
+import { formatTokens } from '../infra/insights.js';
 
 // ---------------------------------------------------------------------------
 // OutputSink
@@ -22,6 +36,9 @@ export interface OutputSink {
   readonly color: boolean;
   readonly isTty: boolean;
 }
+
+/** How much status/telemetry chrome to show alongside model prose. */
+export type Verbosity = 'quiet' | 'normal' | 'verbose';
 
 // ---------------------------------------------------------------------------
 // Internal helpers
@@ -41,6 +58,231 @@ function renderConfidence(confidence: number | null, color: boolean): string {
   return red(str, color);
 }
 
+/**
+ * Reconstruct a {@link CliError} for a known {@link ErrorCategory} by feeding
+ * `classifyError` a probe string that deterministically maps to that category.
+ * This REUSES the existing classification + descriptor tables in errors.ts
+ * rather than duplicating the per-category messages/suggestions here.
+ *
+ * Returns null for the 'unknown' category — there's no actionable suggestion
+ * worth surfacing beyond the raw message the caller already shows.
+ */
+function cliErrorForCategory(category: ErrorCategory): CliError | null {
+  const PROBES: Record<ErrorCategory, { stderr: string; exit: number }> = {
+    auth: { stderr: 'authentication failed', exit: 1 },
+    'rate-limit': { stderr: 'rate limit exceeded', exit: 1 },
+    timeout: { stderr: 'request timed out', exit: 1 },
+    network: { stderr: 'network error', exit: 1 },
+    model: { stderr: 'model not found', exit: 1 },
+    permission: { stderr: 'permission denied', exit: 126 },
+    unknown: { stderr: '', exit: 1 },
+  };
+  const probe = PROBES[category];
+  const err = classifyError(probe.stderr, probe.exit);
+  // Guard: only return it when the probe actually produced the intended
+  // category — otherwise the suggestion would be misleading.
+  return err.category === category && category !== 'unknown' ? err : null;
+}
+
+/**
+ * Find the index of the trailing OPEN `{` — i.e. the position of a `{` whose
+ * matching `}` has not (yet) arrived, scanning from end-of-text back. Returns
+ * -1 when every brace is balanced (nothing is "open" at the tail).
+ *
+ * String-aware so braces inside quoted JSON strings don't affect depth. This is
+ * the earliest point a still-arriving trailing envelope could begin; a balanced
+ * `{…}` followed by more text is inline content and is NOT held back.
+ *
+ * Never throws.
+ */
+function trailingOpenBraceIndex(text: string): number {
+  let depth = 0;
+  let openIndex = -1;
+  let inString = false;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (inString) {
+      if (ch === '\\') {
+        i++; // skip the escaped char
+      } else if (ch === '"') {
+        inString = false;
+      }
+      continue;
+    }
+    if (ch === '"') {
+      inString = true;
+    } else if (ch === '{') {
+      if (depth === 0) openIndex = i;
+      depth++;
+    } else if (ch === '}') {
+      if (depth > 0) depth--;
+      if (depth === 0) openIndex = -1;
+    }
+  }
+  return depth > 0 ? openIndex : -1;
+}
+
+/**
+ * The trailing control-envelope keys this filter strips from DISPLAY. Both are
+ * trailing `{ … }` JSON objects that are control-plane data, never user-facing:
+ *   - `confidence` : the self-assessment envelope prompt.ts forces onto every
+ *                    normal response.
+ *   - `ask_user`   : the structured-question block (questions.ts) the model
+ *                    emits instead, when it needs a user decision. The selector
+ *                    renders the questions from the parsed CoreEvent — the raw
+ *                    JSON must never leak into the prose, same class of bug.
+ * The two are mutually exclusive per turn, but scanning for both is harmless and
+ * future-proof.
+ */
+const CONTROL_ENVELOPE_KEYS = ['confidence', 'ask_user'] as const;
+
+/**
+ * The opening signatures a trailing control envelope can have: `{` then optional
+ * whitespace then the quoted key. Used to decide whether a still-arriving trailing
+ * `{…` fragment could BECOME a control envelope (and so must be held back) or is
+ * just ordinary prose/code/JSON (and so should stream immediately).
+ */
+const CONTROL_ENVELOPE_OPENINGS = ['"confidence', '"ask_user'] as const;
+
+/**
+ * Given a trailing fragment that begins at an OPEN `{` (its `}` hasn't arrived),
+ * decide whether it could still grow into a control envelope. We compare what
+ * follows the `{` (after optional whitespace) against the control-key openings:
+ * it qualifies if the fragment is a prefix of an opening (still being typed) or
+ * already starts with one. A `{` followed by anything else — `{\n  const`,
+ * `{"name"`, `{1, 2` — is ordinary content and streams immediately, so prose
+ * and code never stall mid-token waiting for a brace to close.
+ *
+ * Never throws.
+ */
+function couldBeControlEnvelope(fragment: string): boolean {
+  if (fragment.length === 0 || fragment[0] !== '{') return false;
+  const after = fragment.slice(1).replace(/^\s+/, '');
+  if (after.length === 0) return true; // just opened — undecided, hold briefly
+  for (const opening of CONTROL_ENVELOPE_OPENINGS) {
+    if (opening.startsWith(after) || after.startsWith(opening)) return true;
+  }
+  return false;
+}
+
+/**
+ * Find the bounds of the LAST trailing control envelope (keyed by any of
+ * {@link CONTROL_ENVELOPE_KEYS}) in `text`, considering only a block whose match
+ * is at the END (nothing but whitespace after it). Returns the match with the
+ * EARLIEST start among the keyed candidates so the whole trailing block is cut.
+ * Returns null when none is present. Never throws.
+ */
+function trailingControlEnvelope(
+  text: string,
+): { readonly start: number; readonly end: number } | null {
+  let best: { readonly start: number; readonly end: number } | null = null;
+  for (const key of CONTROL_ENVELOPE_KEYS) {
+    const m = lastJsonObjectBoundsWithKey(text, key);
+    // Tolerate a wrapping ```json … ``` fence after the object so a fenced
+    // envelope is still recognised as trailing and stripped (not leaked raw).
+    if (m !== null && isTrailingNoise(text.slice(m.end))) {
+      if (best === null || m.start < best.start) {
+        best = { start: m.start, end: m.end };
+      }
+    }
+  }
+  return best;
+}
+
+/**
+ * A streaming writer that holds back any trailing fragment of model prose that
+ * could be the start of a control envelope, then strips the envelope at the
+ * terminal event.
+ *
+ * The envelope is a trailing `{ … }` JSON object containing one of the control
+ * keys (`confidence` for the self-assessment envelope, or `ask_user` for the
+ * structured-question block). It arrives at the very end of the `text` delta
+ * stream and may be split across the last few deltas. To avoid leaking a
+ * half-arrived envelope, we hold back only the trailing OPEN-brace fragment (a
+ * `{…` whose `}` hasn't arrived yet); a balanced `{…}` with text after it is
+ * inline content and streams normally. At the terminal event we run the
+ * brace-aware `lastJsonObjectBoundsWithKey` scanner (the same one history.ts
+ * uses) to excise a genuine trailing envelope before flushing the remainder.
+ */
+class EnvelopeFilter {
+  private full = '';
+  private flushed = 0;
+  private readonly out: OutputSink;
+
+  // NOTE: a plain field assignment, NOT a constructor parameter property
+  // (`constructor(private out)`) — the test runner strips types in strip-only
+  // mode, which rejects parameter properties even though tsc accepts them.
+  constructor(out: OutputSink) {
+    this.out = out;
+  }
+
+  /** Accept the next streamed prose delta, flushing everything that cannot be
+   *  part of a trailing envelope. */
+  push(delta: string): void {
+    this.full += delta;
+    // The safe-to-flush boundary is whichever comes FIRST of:
+    //   (a) a trailing OPEN-brace fragment (a `{…` whose `}` hasn't arrived) —
+    //       it could grow into the envelope, so never flush past it; and
+    //   (b) the start of an already-complete trailing control envelope
+    //       (balanced `{…confidence…}` or `{…ask_user…}` with only whitespace
+    //       after) — flushing it would leak the block before the terminal
+    //       flush() can strip it.
+    // A balanced `{…}` with real prose after it is inline content and streams.
+    const safeUpto = this.safeFlushBoundary();
+    if (safeUpto > this.flushed) {
+      this.out.write(this.full.slice(this.flushed, safeUpto));
+      this.flushed = safeUpto;
+    }
+  }
+
+  /** The index up to which `full` may be flushed without risking an envelope
+   *  leak. See {@link push} for the two cases it guards. */
+  private safeFlushBoundary(): number {
+    let boundary = this.full.length;
+    // (a) Hold back a trailing OPEN-brace fragment ONLY if it could still grow
+    //     into a control envelope. A plain code/JSON/prose brace (`{\n const`,
+    //     `{"name"`, `the set {1,2`) streams immediately — so the response never
+    //     stalls mid-token waiting for a brace to close.
+    const open = trailingOpenBraceIndex(this.full);
+    if (open !== -1 && open < boundary && couldBeControlEnvelope(this.full.slice(open))) {
+      boundary = open;
+    }
+    // (b) A complete trailing control envelope must also be held (flush strips it).
+    const match = trailingControlEnvelope(this.full);
+    if (match !== null && match.start < boundary) {
+      boundary = match.start;
+    }
+    return boundary;
+  }
+
+  /** Flush any held-back tail, excising ONLY a confirmed trailing control
+   *  envelope first. Idempotent.
+   *
+   *  Unlike the streaming boundary, at the terminal event we know no more text
+   *  is coming, so a trailing OPEN `{` that is NOT a control envelope is just
+   *  legitimate prose (e.g. "the set {1, 2") and must be shown — we only cut a
+   *  genuine, complete, trailing `{…confidence…}` / `{…ask_user…}` block. */
+  flush(): void {
+    if (this.flushed >= this.full.length) return;
+    const match = trailingControlEnvelope(this.full);
+    let cutEnd = this.full.length;
+    if (match !== null) {
+      cutEnd = match.start;
+    }
+    if (cutEnd > this.flushed) {
+      // Trim trailing whitespace AND a dangling ```json/``` fence-opener that the
+      // model put just before the (now-removed) envelope, so no orphan fence leaks.
+      const tail = this.full
+        .slice(this.flushed, cutEnd)
+        .replace(/\s+$/, '')
+        .replace(/(?:^|\n)[ \t]*```[a-zA-Z0-9]*[ \t]*$/, '')
+        .replace(/\s+$/, '');
+      if (tail.length > 0) this.out.write(tail);
+    }
+    this.flushed = this.full.length;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // renderStream
 // ---------------------------------------------------------------------------
@@ -49,19 +291,46 @@ function renderConfidence(confidence: number | null, color: boolean): string {
  * Iterate events from orchestrate() and write a human-readable, truthful
  * transcript to the OutputSink. Returns the success flag and the final event
  * once the stream is exhausted.
+ *
+ * @param events    - The CoreEvent stream from orchestrate().
+ * @param out       - Where rendered output is written.
+ * @param verbosity - How much status chrome to show. Defaults to 'normal' so
+ *                    callers that don't thread it through still compile and get
+ *                    the clean conversation view.
  */
 export async function renderStream(
   events: AsyncIterable<CoreEvent>,
   out: OutputSink,
+  verbosity: Verbosity = 'normal',
 ): Promise<{ success: boolean; final?: Extract<CoreEvent, { type: 'final' }> }> {
   const c = out.color;
+  const isVerbose = verbosity === 'verbose';
+  const isQuiet = verbosity === 'quiet';
 
   let finalEvent: Extract<CoreEvent, { type: 'final' }> | undefined;
+  // Accumulate REAL tokens across tiers so the final summary shows a measured
+  // total instead of an estimated dollar figure (subscription tool, not API).
+  let runningTokens = 0;
 
-  // Spinner is only used in TTY mode; we create one per tier-start and stop it
-  // when the first real output arrives or when tier-done fires.
+  // Buffers model prose and strips the trailing confidence envelope before it
+  // can ever reach the user.
+  const prose = new EnvelopeFilter(out);
+
+  // Spinner is only used in TTY mode. It starts at tier-start and STAYS alive
+  // through tool/reasoning activity (showing a live step count + elapsed time) so
+  // a long, tool-heavy run never looks frozen. It stops only when real answer
+  // prose begins streaming, or when the tier finishes/errors.
   const spinner = createSpinner(out);
   let spinnerActive = false;
+  let workLabel = 'Thinking';
+  let stepCount = 0;
+
+  // Whether any answer prose has streamed yet, and whether a tool call has
+  // interrupted it since the last text delta. When prose resumes after a tool
+  // call we insert a line break so the model's two segments aren't glued
+  // together ("…before answering.The directory is empty…").
+  let proseStarted = false;
+  let toolSinceProse = false;
 
   function stopSpinner(): void {
     if (spinnerActive) {
@@ -70,25 +339,42 @@ export async function renderStream(
     }
   }
 
+  /** Reflect ongoing tool/reasoning activity in the spinner without spamming
+   *  lines — the "alive" feedback for normal mode. */
+  function noteWorkStep(): void {
+    if (!spinnerActive) return;
+    stepCount++;
+    spinner.update(`${workLabel}… ${stepCount} step${stepCount === 1 ? '' : 's'}`);
+  }
+
   for await (const ev of events) {
     switch (ev.type) {
       case 'classified': {
-        const cl = ev.classification;
-        out.write(
-          cyan(`Classified: ${cl.tier} tier, ${cl.risk} risk`, c) +
-          ` — ${cl.rationale}\n`,
-        );
+        // Only emit the classifier metadata line in debug mode — it's useful for
+        // development but clutters the chat experience for regular users.
+        if (process.env['MYSHELL_DEBUG']) {
+          const cl = ev.classification;
+          out.write(
+            cyan(`Classified: ${cl.tier} tier, ${cl.risk} risk`, c) +
+            ` — ${cl.rationale}\n`,
+          );
+        }
         break;
       }
 
       case 'tier-start': {
-        out.write(
-          bold(`▶ ${ev.tier.toUpperCase()} (${ev.provider}/${ev.model}) attempt ${ev.attempt}`, c) +
-          `\n`,
-        );
-        // Start spinner while waiting for the first provider output.
+        if (isVerbose) {
+          out.write(
+            dim(`▶ ${ev.tier} (${ev.provider}/${ev.model})`, c) +
+            `\n`,
+          );
+        }
+        // Reset per-tier work tracking and start the live indicator. In verbose
+        // mode the model/provider is shown; otherwise a clean "Thinking…".
+        stepCount = 0;
+        workLabel = isVerbose ? `${ev.tier} (${ev.provider}/${ev.model})` : 'Thinking';
         if (out.isTty) {
-          spinner.start(`${ev.tier.toUpperCase()} (${ev.provider}/${ev.model}) working…`);
+          spinner.start(`${workLabel}…`);
           spinnerActive = true;
         }
         break;
@@ -97,16 +383,35 @@ export async function renderStream(
       case 'provider-event': {
         const pe = ev.event;
         if (pe.type === 'text') {
-          // First real output — clear the spinner line.
+          // First real answer prose — clear the indicator and start streaming.
           stopSpinner();
-          // Stream the real model output verbatim.
-          out.write(pe.delta);
+          // If a tool call interrupted the prose, break the line so the resumed
+          // text isn't glued onto the previous sentence. Only between segments —
+          // never before the very first delta.
+          if (toolSinceProse && proseStarted) prose.push('\n');
+          toolSinceProse = false;
+          proseStarted = true;
+          // Stream prose, holding back any trailing envelope fragment.
+          prose.push(pe.delta);
         } else if (pe.type === 'tool') {
-          stopSpinner();
-          out.write(dim(`[tool] ${pe.name} ${pe.phase}`, c) + `\n`);
+          if (isVerbose) {
+            // Verbose: print each tool line (stop the spinner so it isn't clobbered).
+            stopSpinner();
+            out.write(dim(`[tool] ${pe.name} ${pe.phase}`, c) + `\n`);
+          } else {
+            // Normal/quiet: keep the indicator alive and count the step, so a
+            // tool-heavy run shows life ("Thinking… 12 steps · 8s") instead of
+            // freezing on a dead line. Mark that prose (if any) was interrupted so
+            // the next text delta starts on a fresh line.
+            noteWorkStep();
+            toolSinceProse = true;
+          }
         } else if (pe.type === 'reasoning') {
-          stopSpinner();
-          out.write(dim(pe.delta, c));
+          if (isVerbose) {
+            stopSpinner();
+            out.write(dim(pe.delta, c));
+          }
+          // Normal/quiet: reasoning is internal; keep the indicator spinning.
         }
         // 'usage', 'done', 'error' are handled via tier-done / final
         break;
@@ -114,54 +419,118 @@ export async function renderStream(
 
       case 'tier-done': {
         stopSpinner();
-        const confidenceStr = renderConfidence(ev.confidence, c);
-        const costStr = `$${ev.costUsd.toFixed(4)}`;
-        const successMark = ev.success ? green('✓', c) : red('✗', c);
-        out.write(
-          `\n${successMark} ${bold('tier done', c)} — ` +
-          `confidence: ${confidenceStr}, ` +
-          `cost: ${costStr}, ` +
-          `duration: ${ev.durationMs}ms\n`,
-        );
+        // Tokens are real and measured; dollars are an API-equivalent estimate
+        // that doesn't map to subscription billing, so they live in `cost`, not here.
+        runningTokens += ev.inputTokens + ev.outputTokens;
+        // Per-tier telemetry is verbose-only chrome.
+        if (isVerbose) {
+          const confidenceStr = renderConfidence(ev.confidence, c);
+          const tokenStr = formatTokens(ev.inputTokens + ev.outputTokens);
+          const successMark = ev.success ? green('✓', c) : red('✗', c);
+          out.write(
+            `\n${successMark} ${bold('tier done', c)} — ` +
+            `confidence: ${confidenceStr}, ` +
+            `${tokenStr} tokens, ` +
+            `duration: ${ev.durationMs}ms\n`,
+          );
+        }
         break;
       }
 
       case 'escalate': {
-        out.write(
-          yellow(`↑ Escalating ${ev.from} → ${ev.to}: ${ev.reason}`, c) + `\n`,
-        );
+        // Escalation is internal routing — verbose-only.
+        if (isVerbose) {
+          out.write(
+            yellow(`↑ Escalating ${ev.from} → ${ev.to}: ${ev.reason}`, c) + `\n`,
+          );
+        }
+        break;
+      }
+
+      case 'failover': {
+        // Failover is internal routing — verbose-only.
+        if (isVerbose) {
+          out.write(
+            yellow(`⇄ Failing over ${ev.from} → ${ev.to} (${ev.tier}): ${ev.reason}`, c) + `\n`,
+          );
+        }
         break;
       }
 
       case 'notice': {
-        const prefix =
-          ev.level === 'error' ? red('[error]', c) :
-          ev.level === 'warn'  ? yellow('[warn]', c) :
-          dim('[info]', c);
-        out.write(`${prefix} ${ev.message}\n`);
+        // Clear the live indicator before printing a notice so it isn't clobbered.
+        if (ev.level === 'error' || isVerbose) stopSpinner();
+        // Errors are ALWAYS shown (every verbosity). Info/warn are chrome and
+        // only surface in verbose mode.
+        if (ev.level === 'error') {
+          out.write(`${red('[error]', c)} ${ev.message}\n`);
+        } else if (isVerbose) {
+          const prefix = ev.level === 'warn' ? yellow('[warn]', c) : dim('[info]', c);
+          out.write(`${prefix} ${ev.message}\n`);
+        }
         break;
       }
 
       case 'final': {
         finalEvent = ev;
-        const successLabel = ev.success
-          ? bold(green('Success', c), c)
-          : bold(red('Failed', c), c);
-        const costStr = `$${ev.totalCostUsd.toFixed(4)}`;
-        out.write(
-          `\n${successLabel} — ` +
-          `tier: ${ev.tier}, ` +
-          `cost: ${costStr}, ` +
-          `attempts: ${ev.attempts}, ` +
-          `session: ${ev.sessionId}\n`,
-        );
+        stopSpinner();
+        // Flush any held-back prose (envelope already stripped) before the
+        // completion/error line so the conversation reads in order.
+        prose.flush();
+
+        if (!ev.success) {
+          // Surface an ACTIONABLE error in every verbosity mode: the bare
+          // category message plus the suggestion from formatErrorMessage().
+          if (ev.errorCategory !== undefined) {
+            const cliErr = cliErrorForCategory(ev.errorCategory);
+            if (cliErr !== null) {
+              out.write(`\n${red(formatErrorMessage(cliErr, ev.provider), c)}\n`);
+            }
+          }
+          if (!isQuiet) {
+            out.write(
+              `\n${bold(red('Failed', c), c)} — ` +
+              `tier: ${ev.tier}, ` +
+              `${formatTokens(runningTokens)} tokens, ` +
+              `attempts: ${ev.attempts}, ` +
+              `session: ${ev.sessionId}\n`,
+            );
+          }
+          break;
+        }
+
+        // A turn that ends in a structured question is a complete success that
+        // needs a REPLY, not finished work. Suppress the normal completion line
+        // entirely; the caller inspects `final.questions` and drives a selector
+        // (renderStream returns `{ success, final }`). The prose (the model's
+        // lead-in before the ask_user block, already stripped above) has been
+        // flushed; printing "✓ done" here would read as if the task were over.
+        if (ev.questions !== undefined) {
+          break;
+        }
+
+        // Success: a single minimal completion line in normal/verbose; nothing
+        // in quiet.
+        if (isVerbose) {
+          out.write(
+            `\n${bold(green('Success', c), c)} — ` +
+            `tier: ${ev.tier}, ` +
+            `${formatTokens(runningTokens)} tokens, ` +
+            `attempts: ${ev.attempts}, ` +
+            `session: ${ev.sessionId}\n`,
+          );
+        } else if (!isQuiet) {
+          out.write(`\n${dim(`✓ done (${formatTokens(runningTokens)} tokens)`, c)}\n`);
+        }
         break;
       }
     }
   }
 
-  // Safety: ensure spinner is stopped if stream ended without a terminal event.
+  // Safety: ensure the spinner is stopped and any buffered prose is flushed if
+  // the stream ended without a terminal event.
   stopSpinner();
+  prose.flush();
 
   if (finalEvent !== undefined) {
     return { success: finalEvent.success, final: finalEvent };

@@ -65,6 +65,8 @@ describe('renderStream — happy path with confidence 0.8', () => {
         success: true,
         confidence: 0.8,
         costUsd: 0.0123,
+        inputTokens: 1200,
+        outputTokens: 300,
         durationMs: 1500,
       },
       {
@@ -78,7 +80,7 @@ describe('renderStream — happy path with confidence 0.8', () => {
       },
     ];
 
-    const result = await renderStream(makeStream(events), sink);
+    const result = await renderStream(makeStream(events), sink, 'verbose');
     const joined = sink.buf.join('');
 
     // Return value
@@ -95,21 +97,106 @@ describe('renderStream — happy path with confidence 0.8', () => {
     // Confidence rendered as computed percentage from 0.8
     assert.ok(joined.includes('80'), 'Should contain confidence 80 (from 0.8 * 100)');
 
-    // Cost rendered truthfully
-    assert.ok(joined.includes('$0.0123'), 'Should contain the real cost');
+    // Real, measured tokens rendered (subscription tool — no per-token $ on the hot path)
+    assert.ok(joined.includes('1.5k tokens'), `Should show real token total, got:\n${joined}`);
+    assert.ok(!joined.includes('$'), `Hot path must show NO dollar figure, got:\n${joined}`);
 
     // Session id rendered truthfully
     assert.ok(joined.includes('test-session-id-1'), 'Should contain the real sessionId');
 
-    // Classification details present
-    assert.ok(joined.includes('ic'), 'Should contain tier name');
-    assert.ok(joined.includes('medium'), 'Should contain risk level');
-    assert.ok(joined.includes('requires IC judgment'), 'Should contain the rationale');
+    // Classification details NOT present by default (MYSHELL_DEBUG is not set)
+    // Tier name still appears from tier-start/tier-done lines
+    assert.ok(joined.includes('ic'), 'Should contain tier name (from tier-start/tier-done)');
+
+    // The 'Classified:' line must NOT appear without MYSHELL_DEBUG
+    assert.ok(
+      !joined.includes('Classified:'),
+      'Classified line must be suppressed by default (no MYSHELL_DEBUG)',
+    );
 
     // No forbidden mock substrings (honesty guard)
     const forbidden = ['JWT', 'Authentication bug', 'Found', 'relevant files', 'sess-abc', '8m 23s', '12 exchanges'];
     for (const f of forbidden) {
       assert.ok(!joined.includes(f), `Output must not contain forbidden mock string: "${f}"`);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 1b. Classified line appears when MYSHELL_DEBUG is set
+// ---------------------------------------------------------------------------
+
+describe('renderStream — classified line with MYSHELL_DEBUG', () => {
+  it('emits "Classified:" line when MYSHELL_DEBUG is set', async () => {
+    const origDebug = process.env['MYSHELL_DEBUG'];
+    process.env['MYSHELL_DEBUG'] = '1';
+    try {
+      const sink = makeSink();
+      const events: CoreEvent[] = [
+        {
+          type: 'classified',
+          classification: { tier: 'ic', risk: 'medium', rationale: 'requires IC judgment' },
+        },
+        {
+          type: 'final',
+          success: true,
+          output: '',
+          tier: 'ic',
+          totalCostUsd: 0,
+          sessionId: 'debug-session',
+          attempts: 1,
+        },
+      ];
+
+      await renderStream(makeStream(events), sink);
+      const joined = sink.buf.join('');
+
+      assert.ok(
+        joined.includes('Classified:'),
+        'Classified line must appear when MYSHELL_DEBUG is set',
+      );
+      assert.ok(joined.includes('requires IC judgment'), 'Rationale must appear when MYSHELL_DEBUG is set');
+    } finally {
+      if (origDebug !== undefined) {
+        process.env['MYSHELL_DEBUG'] = origDebug;
+      } else {
+        delete process.env['MYSHELL_DEBUG'];
+      }
+    }
+  });
+
+  it('does NOT emit "Classified:" line when MYSHELL_DEBUG is unset', async () => {
+    const origDebug = process.env['MYSHELL_DEBUG'];
+    delete process.env['MYSHELL_DEBUG'];
+    try {
+      const sink = makeSink();
+      const events: CoreEvent[] = [
+        {
+          type: 'classified',
+          classification: { tier: 'worker', risk: 'low', rationale: 'simple task' },
+        },
+        {
+          type: 'final',
+          success: true,
+          output: '',
+          tier: 'worker',
+          totalCostUsd: 0,
+          sessionId: 'nodebug-session',
+          attempts: 1,
+        },
+      ];
+
+      await renderStream(makeStream(events), sink);
+      const joined = sink.buf.join('');
+
+      assert.ok(
+        !joined.includes('Classified:'),
+        'Classified line must be absent when MYSHELL_DEBUG is not set',
+      );
+    } finally {
+      if (origDebug !== undefined) {
+        process.env['MYSHELL_DEBUG'] = origDebug;
+      }
     }
   });
 });
@@ -146,7 +233,7 @@ describe('renderStream — confidence null', () => {
       },
     ];
 
-    const result = await renderStream(makeStream(events), sink);
+    const result = await renderStream(makeStream(events), sink, 'verbose');
     const joined = sink.buf.join('');
 
     assert.equal(result.success, true);
@@ -241,7 +328,7 @@ describe('renderStream — tool and reasoning events', () => {
       },
     ];
 
-    const result = await renderStream(makeStream(events), sink);
+    const result = await renderStream(makeStream(events), sink, 'verbose');
     const joined = sink.buf.join('');
 
     assert.equal(result.success, true);
@@ -282,12 +369,53 @@ describe('renderStream — escalate and notice events', () => {
       },
     ];
 
-    const result = await renderStream(makeStream(events), sink);
+    const result = await renderStream(makeStream(events), sink, 'verbose');
     const joined = sink.buf.join('');
 
     assert.equal(result.success, false);
     assert.ok(joined.includes('confidence below threshold'), 'Should render real escalation reason');
     assert.ok(joined.includes('provider latency is high'), 'Should render real notice message');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 7. failover event renders provider names and reason from real data
+// ---------------------------------------------------------------------------
+
+describe('renderStream — failover event', () => {
+  it('renders failover with real from/to provider names, tier, and reason', async () => {
+    const sink = makeSink();
+
+    const events: CoreEvent[] = [
+      {
+        type: 'failover',
+        from: 'claude',
+        to: 'codex',
+        tier: 'ic',
+        reason: 'connection reset',
+      },
+      {
+        type: 'final',
+        success: true,
+        output: 'Done by codex.',
+        tier: 'ic',
+        totalCostUsd: 0.0050,
+        sessionId: 'failover-session',
+        attempts: 2,
+      },
+    ];
+
+    const result = await renderStream(makeStream(events), sink, 'verbose');
+    const joined = sink.buf.join('');
+
+    assert.equal(result.success, true);
+    // Real provider names must appear in the output.
+    assert.ok(joined.includes('claude'), 'Should contain the real from-provider name');
+    assert.ok(joined.includes('codex'), 'Should contain the real to-provider name');
+    // Real tier must appear.
+    assert.ok(joined.includes('ic'), 'Should contain the real tier');
+    // Real reason must appear verbatim.
+    assert.ok(joined.includes('connection reset'), 'Should contain the real failure reason');
   });
 });
 
@@ -310,5 +438,383 @@ describe('renderStream — no final event', () => {
     const result = await renderStream(makeStream(events), sink);
     assert.equal(result.success, false);
     assert.equal(result.final, undefined);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 8. Per-tier token display + accumulated token total on the final line
+// ---------------------------------------------------------------------------
+
+describe('renderStream — token display (no dollar meter)', () => {
+  it('shows per-tier tokens and an accumulated token total on the final line', async () => {
+    const sink = makeSink();
+
+    const events: CoreEvent[] = [
+      {
+        type: 'tier-done',
+        tier: 'worker',
+        success: true,
+        confidence: 0.75,
+        costUsd: 0.0050,
+        inputTokens: 1000,
+        outputTokens: 200, // 1.2k
+        durationMs: 400,
+      },
+      {
+        type: 'tier-done',
+        tier: 'ic',
+        success: true,
+        confidence: 0.9,
+        costUsd: 0.0073,
+        inputTokens: 2000,
+        outputTokens: 300, // 2.3k → total 3.5k
+        durationMs: 900,
+      },
+      {
+        type: 'final',
+        success: true,
+        output: 'Done.',
+        tier: 'ic',
+        totalCostUsd: 0.0123,
+        sessionId: 'session-meter-test',
+        attempts: 2,
+      },
+    ];
+
+    await renderStream(makeStream(events), sink, 'verbose');
+    const buf = sink.buf.join('');
+    const lines = buf.split('\n');
+
+    const tierDoneLines = lines.filter(l => l.includes('tier done'));
+    assert.equal(tierDoneLines.length, 2, 'Should have two tier-done lines');
+
+    // Each tier-done shows its own real token count.
+    assert.ok(tierDoneLines[0].includes('1.2k tokens'), `First tier-done tokens, got: ${tierDoneLines[0]}`);
+    assert.ok(tierDoneLines[1].includes('2.3k tokens'), `Second tier-done tokens, got: ${tierDoneLines[1]}`);
+
+    // Final line shows the accumulated real total (1.2k + 2.3k = 3.5k), not dollars.
+    const finalLine = lines.find(l => l.includes('Success')) ?? '';
+    assert.ok(finalLine.includes('3.5k tokens'), `Final line must show accumulated tokens, got: ${finalLine}`);
+
+    // Hard guarantee: no dollar figure anywhere on the hot path.
+    assert.ok(!buf.includes('$'), `Render output must contain no "$" figure, got:\n${buf}`);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 9. Envelope stripping — the confidence envelope must NEVER reach the user
+// ---------------------------------------------------------------------------
+
+/** Build a minimal text→final stream with the given prose deltas. */
+function textStream(deltas: string[]): CoreEvent[] {
+  const evs: CoreEvent[] = deltas.map((delta) => ({
+    type: 'provider-event' as const,
+    tier: 'ic' as const,
+    event: { type: 'text' as const, delta },
+  }));
+  evs.push({
+    type: 'final',
+    success: true,
+    output: deltas.join(''),
+    tier: 'ic',
+    totalCostUsd: 0,
+    sessionId: 'env-session',
+    attempts: 1,
+  });
+  return evs;
+}
+
+describe('renderStream — confidence envelope stripping', () => {
+  const ENVELOPE = '{"confidence": 0.9, "escalate": false, "reason": "ok", "needs_review": false}';
+
+  it('strips a trailing envelope that arrives in a single delta', async () => {
+    const sink = makeSink();
+    const events = textStream([`Here is the answer.\n${ENVELOPE}`]);
+    await renderStream(makeStream(events), sink);
+    const joined = sink.buf.join('');
+
+    assert.ok(joined.includes('Here is the answer.'), 'Prose must survive');
+    assert.ok(!joined.includes('"confidence"'), 'Envelope JSON must NOT be shown');
+    assert.ok(!joined.includes('needs_review'), 'No envelope key should leak');
+  });
+
+  it('strips a trailing envelope SPLIT across multiple deltas', async () => {
+    const sink = makeSink();
+    // Split the envelope across several deltas, with prose preceding it.
+    const events = textStream([
+      'Refactored the ',
+      'module.\n',
+      '{"confidence": 0.7,',
+      ' "escalate": true,',
+      ' "reason": "needs a look",',
+      ' "needs_review": true}',
+    ]);
+    await renderStream(makeStream(events), sink);
+    const joined = sink.buf.join('');
+
+    assert.ok(joined.includes('Refactored the module.'), 'Prose must stream fully');
+    assert.ok(!joined.includes('"confidence"'), 'Split envelope must NOT leak');
+    assert.ok(!joined.includes('"reason"'), 'No envelope fragment may leak');
+    assert.ok(!joined.includes('needs_review'), 'No envelope fragment may leak');
+  });
+
+  it('streams a response with NO envelope completely unchanged', async () => {
+    const sink = makeSink();
+    const prose = 'The build succeeded and all tests passed.';
+    const events = textStream([prose]);
+    await renderStream(makeStream(events), sink);
+    const joined = sink.buf.join('');
+
+    assert.ok(joined.includes(prose), 'Plain prose must be shown verbatim');
+  });
+
+  it('does NOT strip a non-trailing {…} that merely mentions confidence', async () => {
+    const sink = makeSink();
+    // A JSON object containing the word "confidence" in the MIDDLE of prose,
+    // followed by more text — this is real content, not the trailing envelope.
+    const inline = '{"confidence": 0.5}';
+    const events = textStream([
+      `Consider this config ${inline} which sets the confidence threshold.`,
+    ]);
+    await renderStream(makeStream(events), sink);
+    const joined = sink.buf.join('');
+
+    assert.ok(joined.includes(inline), 'Non-trailing JSON object must NOT be stripped');
+    assert.ok(
+      joined.includes('which sets the confidence threshold.'),
+      'Trailing prose after the inline object must be shown',
+    );
+  });
+
+  it('strips the envelope even when text deltas continue after it (last wins)', async () => {
+    const sink = makeSink();
+    // Defensive: a non-trailing object earlier, then a genuine trailing envelope.
+    const events = textStream([
+      'Use {"mode":"fast"} for speed.\n',
+      '{"confidence": 0.95, "escalate": false, "reason": "done", "needs_review": false}',
+    ]);
+    await renderStream(makeStream(events), sink);
+    const joined = sink.buf.join('');
+
+    assert.ok(joined.includes('{"mode":"fast"}'), 'Earlier non-envelope object stays');
+    assert.ok(!joined.includes('"confidence"'), 'Trailing envelope is stripped');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 10. Verbosity gating — tool/telemetry chrome hidden by default; errors always
+// ---------------------------------------------------------------------------
+
+describe('renderStream — verbosity gating', () => {
+  const toolEvents: CoreEvent[] = [
+    {
+      type: 'tier-start',
+      tier: 'ic',
+      provider: 'claude',
+      model: 'claude-sonnet-4-6',
+      attempt: 1,
+    },
+    {
+      type: 'provider-event',
+      tier: 'ic',
+      event: { type: 'tool', name: 'read_file', phase: 'start' },
+    },
+    {
+      type: 'provider-event',
+      tier: 'ic',
+      event: { type: 'reasoning', delta: 'thinking hard' },
+    },
+    {
+      type: 'provider-event',
+      tier: 'ic',
+      event: { type: 'text', delta: 'The answer.' },
+    },
+    {
+      type: 'tier-done',
+      tier: 'ic',
+      success: true,
+      confidence: 0.9,
+      costUsd: 0,
+      inputTokens: 10,
+      outputTokens: 5,
+      durationMs: 100,
+    },
+    {
+      type: 'final',
+      success: true,
+      output: 'The answer.',
+      tier: 'ic',
+      totalCostUsd: 0,
+      sessionId: 'verb-session',
+      attempts: 1,
+    },
+  ];
+
+  it('verbose shows tool lines, reasoning, and tier telemetry', async () => {
+    const sink = makeSink();
+    await renderStream(makeStream(toolEvents), sink, 'verbose');
+    const joined = sink.buf.join('');
+
+    assert.ok(joined.includes('[tool]'), 'verbose shows [tool] lines');
+    assert.ok(joined.includes('read_file'), 'verbose shows tool name');
+    assert.ok(joined.includes('thinking hard'), 'verbose shows reasoning');
+    assert.ok(joined.includes('tier done'), 'verbose shows tier telemetry');
+    assert.ok(joined.includes('The answer.'), 'prose always shown');
+  });
+
+  it('normal (default) hides tool lines, reasoning, and tier telemetry but shows prose', async () => {
+    const sink = makeSink();
+    await renderStream(makeStream(toolEvents), sink); // default normal
+    const joined = sink.buf.join('');
+
+    assert.ok(!joined.includes('[tool]'), 'normal hides [tool] lines');
+    assert.ok(!joined.includes('thinking hard'), 'normal hides reasoning');
+    assert.ok(!joined.includes('tier done'), 'normal hides tier telemetry');
+    assert.ok(joined.includes('The answer.'), 'normal shows prose');
+  });
+
+  it('quiet hides tool lines and the completion status line', async () => {
+    const sink = makeSink();
+    await renderStream(makeStream(toolEvents), sink, 'quiet');
+    const joined = sink.buf.join('');
+
+    assert.ok(!joined.includes('[tool]'), 'quiet hides [tool] lines');
+    assert.ok(!joined.includes('thinking hard'), 'quiet hides reasoning');
+    assert.ok(!joined.includes('tier done'), 'quiet hides tier telemetry');
+    assert.ok(!joined.includes('done ('), 'quiet hides the completion status line');
+    assert.ok(joined.includes('The answer.'), 'quiet still shows prose');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 11. Actionable errors — suggestion rendered on failure in EVERY verbosity
+// ---------------------------------------------------------------------------
+
+describe('renderStream — actionable error suggestion', () => {
+  function failStream(): CoreEvent[] {
+    return [
+      {
+        type: 'final',
+        success: false,
+        output: 'auth failed',
+        tier: 'ic',
+        totalCostUsd: 0,
+        sessionId: 'fail-session',
+        attempts: 1,
+        errorCategory: 'auth',
+        provider: 'claude',
+      },
+    ];
+  }
+
+  for (const verbosity of ['quiet', 'normal', 'verbose'] as const) {
+    it(`shows the error suggestion in ${verbosity} mode`, async () => {
+      const sink = makeSink();
+      await renderStream(makeStream(failStream()), sink, verbosity);
+      const joined = sink.buf.join('');
+
+      // formatErrorMessage() output includes a "Suggestion:" line and the
+      // category-specific actionable text (re-authenticate).
+      assert.ok(joined.includes('Suggestion:'), `${verbosity}: suggestion line shown`);
+      assert.ok(
+        joined.toLowerCase().includes('re-authenticate'),
+        `${verbosity}: actionable auth suggestion shown`,
+      );
+      // Provider name is woven into the formatted error label.
+      assert.ok(joined.includes('CLAUDE'), `${verbosity}: provider name in error label`);
+    });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// 12. ask_user envelope stripping + suppressed completion line on questions
+// ---------------------------------------------------------------------------
+
+describe('renderStream — ask_user block stripping', () => {
+  const ASK_USER =
+    '{"ask_user":{"questions":[{"id":"framework","prompt":"Which?","options":[{"label":"vitest"},{"label":"jest"}],"multiSelect":false,"allowFreeText":true}]}}';
+  const QUESTIONS = {
+    questions: [
+      {
+        id: 'framework',
+        prompt: 'Which?',
+        options: [{ label: 'vitest' }, { label: 'jest' }],
+        multiSelect: false,
+        allowFreeText: true,
+      },
+    ],
+  } as const;
+
+  /** A text→final stream whose final carries `questions` (an ask_user turn). */
+  function askStream(deltas: string[]): CoreEvent[] {
+    const evs: CoreEvent[] = deltas.map((delta) => ({
+      type: 'provider-event' as const,
+      tier: 'ic' as const,
+      event: { type: 'text' as const, delta },
+    }));
+    evs.push({
+      type: 'final',
+      success: true,
+      output: deltas.join(''),
+      tier: 'ic',
+      totalCostUsd: 0,
+      sessionId: 'ask-session',
+      attempts: 1,
+      questions: QUESTIONS,
+    });
+    return evs;
+  }
+
+  it('strips a trailing ask_user block from display (single delta)', async () => {
+    const sink = makeSink();
+    await renderStream(makeStream(askStream([`I need a decision.\n${ASK_USER}`])), sink);
+    const joined = sink.buf.join('');
+    assert.ok(joined.includes('I need a decision.'), 'lead-in prose must survive');
+    assert.ok(!joined.includes('ask_user'), 'the ask_user block must NOT be shown');
+    assert.ok(!joined.includes('"questions"'), 'no block fragment may leak');
+  });
+
+  it('strips an ask_user block SPLIT across deltas', async () => {
+    const sink = makeSink();
+    await renderStream(
+      makeStream(
+        askStream([
+          'Pick a ',
+          'framework.\n',
+          '{"ask_user":{"questions":[',
+          '{"id":"framework","prompt":"Which?",',
+          '"options":[{"label":"vitest"},{"label":"jest"}],',
+          '"multiSelect":false,"allowFreeText":true}]}}',
+        ]),
+      ),
+      sink,
+    );
+    const joined = sink.buf.join('');
+    assert.ok(joined.includes('Pick a framework.'), 'prose streams fully');
+    assert.ok(!joined.includes('ask_user'), 'split block must NOT leak');
+    assert.ok(!joined.includes('allowFreeText'), 'no fragment may leak');
+  });
+
+  it('does NOT print the normal completion line on a question turn', async () => {
+    const sink = makeSink();
+    const result = await renderStream(
+      makeStream(askStream([`Need input.\n${ASK_USER}`])),
+      sink,
+      'verbose',
+    );
+    const joined = sink.buf.join('');
+    assert.ok(!joined.includes('Success'), 'no Success line for a question turn');
+    assert.ok(!joined.includes('✓ done'), 'no done line for a question turn');
+    // The final is surfaced so the caller can drive the selector.
+    assert.ok(result.final !== undefined && result.final.questions !== undefined);
+  });
+
+  it('still strips the confidence envelope on a normal turn (regression)', async () => {
+    const sink = makeSink();
+    const ENVELOPE = '{"confidence": 0.9, "escalate": false, "reason": "ok", "needs_review": false}';
+    await renderStream(makeStream(textStream([`All set.\n${ENVELOPE}`])), sink);
+    const joined = sink.buf.join('');
+    assert.ok(joined.includes('All set.'), 'prose survives');
+    assert.ok(!joined.includes('"confidence"'), 'confidence envelope still stripped');
   });
 });

@@ -22,6 +22,7 @@
 import type { LedgerEntry } from '../core/types.js';
 import type { OutputSink } from '../interface/render.js';
 import { readLedger, summarizeLedger } from '../infra/ledger.js';
+import { formatTokens } from '../infra/insights.js';
 import { getCheapestForTier, calculateCost, getModelPricing } from '../infra/pricing.js';
 import { bold, dim, cyan, divider, label } from '../ui/theme.js';
 
@@ -37,18 +38,28 @@ import { bold, dim, cyan, divider, label } from '../ui/theme.js';
  */
 export function formatCostReport(entries: LedgerEntry[], color = false): string[] {
   if (entries.length === 0) {
-    return ['No usage recorded yet — run a task first.'];
+    return ['No usage recorded yet. Run a task first, e.g.  myshell-tools run "summarize this repo"'];
   }
 
   const summary = summarizeLedger(entries);
-  const flagship = getCheapestForTier('manager');
+  // Counterfactual uses the flagship from paid providers only (claude/codex).
+  // opencode's zero-cost sentinel entries must not suppress the counterfactual
+  // by making the "flagship" appear free.
+  const flagship = getCheapestForTier('manager', ['claude', 'codex']);
 
   // Apples-to-apples: price BOTH the models actually used AND the flagship on the
   // SAME basis (list price × tokens). We do NOT compare the billed total (which
   // includes caching/discounts) against a list-price flagship estimate.
+  // Also accumulate REAL token totals (overall + per model) — the honest signal.
   let routedListUsd = 0;
   let flagshipListUsd = 0;
+  let totalTokens = 0;
+  const tokensByModel: Record<string, number> = {};
   for (const entry of entries) {
+    const entryTokens = entry.inputTokens + entry.outputTokens;
+    totalTokens += entryTokens;
+    tokensByModel[entry.model] = (tokensByModel[entry.model] ?? 0) + entryTokens;
+
     const entryPricing = getModelPricing(entry.provider, entry.model);
     if (entryPricing) {
       routedListUsd += calculateCost(entry.inputTokens, entry.outputTokens, entryPricing);
@@ -58,55 +69,52 @@ export function formatCostReport(entries: LedgerEntry[], color = false): string[
 
   const lines: string[] = [];
 
-  lines.push(bold('myshell-tools cost', color));
+  lines.push(bold('myshell-tools — usage & efficiency', color));
   lines.push(divider(color));
 
-  // ---- Summary ---------------------------------------------------------------
-  lines.push(
-    `${label('Billed total', color)}: $${summary.totalUsd.toFixed(4)} ` +
-      `${dim('(as billed, incl. caching/discounts)', color)}`,
-  );
-  lines.push(`${label('Total calls', color)}: ${summary.calls}`);
+  // ---- Usage (REAL, measured) -----------------------------------------------
+  // Tokens are measured, not estimated — the trustworthy primary figure.
+  lines.push(`${label('Tasks run', color)}:   ${summary.calls}`);
+  lines.push(`${label('Tokens used', color)}: ${formatTokens(totalTokens)} ${dim('(real, measured)', color)}`);
 
   lines.push(divider(color));
-
-  // ---- Per-model breakdown ---------------------------------------------------
-  lines.push(bold('Per-model breakdown', color));
+  lines.push(bold('Per-model usage', color));
   for (const [model, ms] of Object.entries(summary.byModel)) {
-    const callStr = ms.calls === 1 ? '1 call' : `${ms.calls} calls`;
+    const callStr = ms.calls === 1 ? '1 task' : `${ms.calls} tasks`;
     lines.push(
-      `  ${cyan(model, color)}: ${callStr}, $${ms.usd.toFixed(4)}`,
+      `  ${cyan(model, color)}: ${callStr}, ${formatTokens(tokensByModel[model] ?? 0)} tokens`,
     );
   }
 
   lines.push(divider(color));
 
-  // ---- Counterfactual (list-price, token-for-token, apples-to-apples) --------
-  const flagshipLabel = `${flagship.model} (${flagship.tier} tier)`;
-  lines.push(bold('Counterfactual — list price, token-for-token', color));
-  lines.push(
-    `${dim('Flagship model', color)}: ${flagshipLabel}` +
-      `  ${dim(`($${flagship.inputPer1M}/M in, $${flagship.outputPer1M}/M out)`, color)}`,
-  );
-  lines.push(`${label('Routed (models used)', color)}: $${routedListUsd.toFixed(4)}`);
-  lines.push(`${label('Always-flagship', color)}:      $${flagshipListUsd.toFixed(4)}`);
-
+  // ---- Routing efficiency (billing-agnostic ratio) --------------------------
+  // The savings RATIO is honest regardless of billing model: it compares how
+  // many flagship tokens you avoided by routing to cheaper tiers. This is the
+  // value-prop number, and it holds true on a subscription too.
+  lines.push(bold('Routing efficiency', color));
   if (routedListUsd > 0 && flagshipListUsd > routedListUsd) {
     const multiplier = flagshipListUsd / routedListUsd;
     lines.push(
-      `Routing saved you money: always-flagship would cost ${multiplier.toFixed(1)}x more ` +
-        `($${flagshipListUsd.toFixed(4)} vs $${routedListUsd.toFixed(4)} at list price).`,
+      `Routing picked cheaper-tier models where it could — ` +
+        `${cyan(`~${multiplier.toFixed(1)}× less`, color)} than sending every task to ` +
+        `the flagship (${flagship.model}).`,
     );
   } else if (routedListUsd > 0) {
     lines.push(
-      'Every call already used a flagship-tier (or pricier) model — no routing savings to show.',
+      dim('Every task already used a flagship-tier (or pricier) model — no routing savings to show.', color),
     );
   } else {
     lines.push(
-      dim('No priced models in the ledger — cannot compute a list-price comparison.', color),
+      dim('No priced models in the ledger — cannot compute a routing comparison.', color),
     );
   }
 
+  // No dollar figures. myshell-tools drives your SUBSCRIPTION CLIs — you pay a
+  // flat fee, not per token — so a "$x.xx" estimate would be fiction dressed as a
+  // bill. Tokens are the honest unit; the efficiency RATIO above is billing-
+  // agnostic. (List prices are still used INTERNALLY to compute that ratio, but
+  // never displayed as a cost.)
   return lines;
 }
 

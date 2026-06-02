@@ -154,11 +154,21 @@ export async function withLock<T>(
 /**
  * Atomically write `data` to `filePath` using a tmp-file + rename strategy.
  * The tmp file lives in the same directory to avoid cross-device rename issues.
+ *
+ * @param filePath - Destination path.
+ * @param data     - Content to write.
+ * @param mode     - Optional file permission mode (e.g. 0o600). When provided,
+ *                   the temp file is created with this mode so it is never more
+ *                   permissive than `mode` — even before the final rename.
+ *                   When omitted, the temp file inherits the process umask
+ *                   (default behaviour, unchanged from before).
  */
-export async function atomicWrite(filePath: string, data: string): Promise<void> {
+export async function atomicWrite(filePath: string, data: string, mode?: number): Promise<void> {
   const tmp = `${filePath}.tmp.${tmpSuffix()}`;
   try {
-    const fh = await open(tmp, 'w');
+    // When a mode is requested, open with that mode from the start so the temp
+    // file is never world-readable even for the brief window before rename.
+    const fh = mode !== undefined ? await open(tmp, 'w', mode) : await open(tmp, 'w');
     try {
       await fh.writeFile(data);
     } finally {

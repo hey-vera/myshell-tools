@@ -6,27 +6,31 @@
  * on `installed`, NOT `authenticated`, because auth is only truly known at
  * call time and errors render honestly via classifyError().
  *
- * With both Claude and Codex installed, `deps.providers` will have entries for
- * both — which automatically activates cross-vendor review in the orchestrator.
+ * With multiple providers installed, `deps.providers` will have entries for
+ * each — which automatically activates cross-vendor review in the orchestrator.
  */
 
 import type { Provider, ProviderId } from './port.js';
-import { detectEnvironment } from './detect.js';
+import type { EnvironmentStatus } from './detect.js';
 import { createClaudeProvider } from './claude.js';
 import { createCodexProvider } from './codex.js';
+import { createOpencodeProvider } from './opencode.js';
 
 /**
- * Discover which providers are available in the current environment and build
- * the provider map for OrchestrateDeps.
+ * Build the provider map for OrchestrateDeps from an already-detected
+ * EnvironmentStatus.  The caller is responsible for running detectEnvironment()
+ * once and passing the result here — this avoids a second round of
+ * `--version` spawns when the caller already holds the detection result.
  *
  * @param _cwd - Working directory (used by real adapters to locate project-
  *               level config; may be forwarded to adapters in a future phase).
- * @returns     A (possibly empty) map of available providers.
+ * @param env  - The environment status produced by detectEnvironment().
+ * @returns      A (possibly empty) map of available providers.
  */
-export async function buildProviders(
+export function buildProviders(
   _cwd: string,
-): Promise<Partial<Record<ProviderId, Provider>>> {
-  const env = await detectEnvironment();
+  env: EnvironmentStatus,
+): Partial<Record<ProviderId, Provider>> {
   const providers: Partial<Record<ProviderId, Provider>> = {};
 
   if (env.claude.installed) {
@@ -35,6 +39,10 @@ export async function buildProviders(
 
   if (env.codex.installed) {
     providers.codex = createCodexProvider();
+  }
+
+  if (env.opencode.installed) {
+    providers.opencode = createOpencodeProvider();
   }
 
   return providers;

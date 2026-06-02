@@ -668,7 +668,7 @@ describe('orchestrate — low-confidence escalation', () => {
       clock,
       session,
       ledger,
-      policy: DEFAULT_POLICY,
+      policy: { ...DEFAULT_POLICY, maxTier: 'manager' }, // permit ic→manager escalation (this test verifies escalation mechanics, not the balanced ceiling)
       cwd: '/fake/cwd',
       sandbox: 'workspace-write',
       timeoutMs: 30_000,
@@ -696,6 +696,42 @@ describe('orchestrate — low-confidence escalation', () => {
     if (finalEv.type === 'final') {
       assert.equal(finalEv.success, true);
     }
+  });
+
+  it('(a2) balanced tier ceiling (maxTier ic) does NOT escalate ic→manager — accepts instead (Major 4 regression)', async () => {
+    // Same low-confidence IC output, but under the DEFAULT/balanced policy whose
+    // maxTier is 'ic'. Escalating would re-run the SAME (sonnet) model — a wasted
+    // attempt — so orchestrate must accept the IC result, not escalate.
+    const LOW_CONF_ENVELOPE =
+      '{"confidence": 0.3, "escalate": false, "reason": "not sure", "needs_review": false}';
+    let callCount = 0;
+    const provider: Provider = {
+      id: 'claude',
+      async detect() {
+        return { id: 'claude', installed: true, version: '1.0.0', authenticated: true, binaryPath: '/usr/bin/fake', availableModels: [] };
+      },
+      async *run(_req: ProviderRequest, _signal: AbortSignal): AsyncIterable<ProviderEvent> {
+        callCount++;
+        yield { type: 'done', text: `Some work.\n${LOW_CONF_ENVELOPE}`, usage: FAKE_USAGE, raw: {} };
+      },
+    };
+    const deps: OrchestrateDeps = {
+      providers: { claude: provider },
+      clock: makeFakeClock(),
+      session: makeFakeSession(),
+      ledger: makeFakeLedger(),
+      policy: DEFAULT_POLICY, // balanced — maxTier 'ic'
+      cwd: '/fake/cwd',
+      sandbox: 'workspace-write',
+      timeoutMs: 30_000,
+    };
+
+    const events = await collectEvents(orchestrate('refactor X', deps, new AbortController().signal));
+
+    assert.equal(callCount, 1, 'must NOT re-run a clamped (no-op) escalation');
+    assert.equal(events.find((e) => e.type === 'escalate'), undefined, 'must not emit an escalate event the ceiling negates');
+    const finalEv = events.find((e) => e.type === 'final');
+    assert.ok(finalEv !== undefined && finalEv.type === 'final' && finalEv.success === true, 'accepts the IC result');
   });
 });
 
@@ -871,7 +907,7 @@ describe('orchestrate — totalCostUsd accumulation', () => {
       '{"verdict": "approve", "notes": "ok", "confidence": 0.95}';
 
     const icUsage: Usage = { inputTokens: 1000, outputTokens: 500 };    // claude-sonnet-4-6
-    const reviewUsage: Usage = { inputTokens: 500, outputTokens: 200 }; // codex gpt-5.5 (manager)
+    const reviewUsage: Usage = { inputTokens: 500, outputTokens: 200 }; // codex ic (gpt-5.2-codex) — balanced clamps the review to maxTier 'ic'
 
     const claudeProvider: Provider = {
       id: 'claude',
@@ -914,8 +950,11 @@ describe('orchestrate — totalCostUsd accumulation', () => {
     // Compute expected costs from pricing table
     // IC: claude-sonnet-4-6 → $3/1M input, $15/1M output
     const icCost = (1000 / 1_000_000) * 3 + (500 / 1_000_000) * 15;
-    // Review: codex manager (gpt-5.5) → $5/1M input, $30/1M output
-    const reviewCost = (500 / 1_000_000) * 5 + (200 / 1_000_000) * 30;
+    // Review: balanced (DEFAULT_POLICY) caps tier at 'ic' via maxTier, so the
+    // cross-vendor review runs codex's ic model (gpt-5.2-codex) → $1.75/1M input,
+    // $14/1M output — not the manager-tier gpt-5.5. This is the cost guardrail
+    // working: balanced never pays manager rates, even for a review.
+    const reviewCost = (500 / 1_000_000) * 1.75 + (200 / 1_000_000) * 14;
     const expectedTotal = icCost + reviewCost;
 
     const finalEv = events.find((e) => e.type === 'final');
@@ -1252,5 +1291,2000 @@ describe('orchestrate — FIX 4: manager-tier critical work gets reviewed', () =
     if (finalEv.type === 'final') {
       assert.equal(finalEv.success, true);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// (h) History context — prompt injection when deps.history is supplied
+// ---------------------------------------------------------------------------
+
+describe('orchestrate — history context injection', () => {
+  it('prompt CONTAINS compacted prior history when deps.history is supplied', async () => {
+    const capturedPrompts: string[] = [];
+
+    const historyCapturingProvider: Provider = {
+      id: 'claude',
+      async detect() {
+        return {
+          id: 'claude',
+          installed: true,
+          version: '1.0.0',
+          authenticated: true,
+          binaryPath: '/usr/bin/fake',
+          availableModels: [],
+        };
+      },
+      async *run(req: ProviderRequest, _signal: AbortSignal): AsyncIterable<ProviderEvent> {
+        capturedPrompts.push(req.prompt);
+        yield { type: 'done', text: FINAL_TEXT, usage: FAKE_USAGE, raw: {} };
+      },
+    };
+
+    const clock = makeFakeClock();
+    const session = makeFakeSession();
+    const ledger = makeFakeLedger();
+
+    const priorHistory: SessionEntry[] = [
+      {
+        timestamp: '2024-01-01T00:00:00.000Z',
+        role: 'user',
+        content: 'what does the config module do?',
+      },
+      {
+        timestamp: '2024-01-01T00:01:00.000Z',
+        role: 'assistant',
+        content: 'It loads configuration from disk.\n{"confidence": 0.9, "escalate": false, "reason": "done", "needs_review": false}',
+      },
+    ];
+
+    const deps: OrchestrateDeps = {
+      providers: { claude: historyCapturingProvider },
+      clock,
+      session,
+      ledger,
+      policy: DEFAULT_POLICY,
+      cwd: '/fake/cwd',
+      sandbox: 'workspace-write',
+      timeoutMs: 30_000,
+      history: priorHistory,
+    };
+
+    await collectEvents(orchestrate('now refactor it', deps, new AbortController().signal));
+
+    assert.ok(capturedPrompts.length >= 1, 'Expected at least one captured prompt');
+    const prompt = capturedPrompts[0] ?? '';
+
+    // Should include prior user turn
+    assert.ok(
+      prompt.includes('what does the config module do?'),
+      'Prompt should contain prior user message',
+    );
+    // Should include prior assistant content (stripped of envelope)
+    assert.ok(
+      prompt.includes('It loads configuration from disk.'),
+      'Prompt should contain prior assistant content',
+    );
+    // Envelope should be stripped from replayed assistant turn
+    assert.ok(
+      !prompt.includes('"confidence": 0.9'),
+      'Confidence envelope should be stripped from replayed assistant content',
+    );
+    // Should include the CONVERSATION SO FAR section header
+    assert.ok(
+      prompt.includes('CONVERSATION SO FAR'),
+      'Prompt should include CONVERSATION SO FAR section',
+    );
+  });
+
+  it('prompt does NOT include CONVERSATION SO FAR when deps.history is undefined', async () => {
+    const capturedPrompts: string[] = [];
+
+    const historyCapturingProvider: Provider = {
+      id: 'claude',
+      async detect() {
+        return {
+          id: 'claude',
+          installed: true,
+          version: '1.0.0',
+          authenticated: true,
+          binaryPath: '/usr/bin/fake',
+          availableModels: [],
+        };
+      },
+      async *run(req: ProviderRequest, _signal: AbortSignal): AsyncIterable<ProviderEvent> {
+        capturedPrompts.push(req.prompt);
+        yield { type: 'done', text: FINAL_TEXT, usage: FAKE_USAGE, raw: {} };
+      },
+    };
+
+    const clock = makeFakeClock();
+    const session = makeFakeSession();
+    const ledger = makeFakeLedger();
+
+    const deps: OrchestrateDeps = {
+      providers: { claude: historyCapturingProvider },
+      clock,
+      session,
+      ledger,
+      policy: DEFAULT_POLICY,
+      cwd: '/fake/cwd',
+      sandbox: 'workspace-write',
+      timeoutMs: 30_000,
+      // No history field
+    };
+
+    await collectEvents(orchestrate('refactor X', deps, new AbortController().signal));
+
+    assert.ok(capturedPrompts.length >= 1, 'Expected at least one captured prompt');
+    const prompt = capturedPrompts[0] ?? '';
+
+    assert.ok(
+      !prompt.includes('CONVERSATION SO FAR'),
+      'Prompt should NOT contain CONVERSATION SO FAR when history is absent',
+    );
+  });
+
+  it('prompt does NOT include CONVERSATION SO FAR when deps.history is an empty array', async () => {
+    const capturedPrompts: string[] = [];
+
+    const historyCapturingProvider: Provider = {
+      id: 'claude',
+      async detect() {
+        return {
+          id: 'claude',
+          installed: true,
+          version: '1.0.0',
+          authenticated: true,
+          binaryPath: '/usr/bin/fake',
+          availableModels: [],
+        };
+      },
+      async *run(req: ProviderRequest, _signal: AbortSignal): AsyncIterable<ProviderEvent> {
+        capturedPrompts.push(req.prompt);
+        yield { type: 'done', text: FINAL_TEXT, usage: FAKE_USAGE, raw: {} };
+      },
+    };
+
+    const clock = makeFakeClock();
+    const session = makeFakeSession();
+    const ledger = makeFakeLedger();
+
+    const deps: OrchestrateDeps = {
+      providers: { claude: historyCapturingProvider },
+      clock,
+      session,
+      ledger,
+      policy: DEFAULT_POLICY,
+      cwd: '/fake/cwd',
+      sandbox: 'workspace-write',
+      timeoutMs: 30_000,
+      history: [],
+    };
+
+    await collectEvents(orchestrate('refactor X', deps, new AbortController().signal));
+
+    assert.ok(capturedPrompts.length >= 1, 'Expected at least one captured prompt');
+    const prompt = capturedPrompts[0] ?? '';
+
+    assert.ok(
+      !prompt.includes('CONVERSATION SO FAR'),
+      'Prompt should NOT contain CONVERSATION SO FAR when history is empty',
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Feature A — reviewPolicy gating
+// ---------------------------------------------------------------------------
+
+describe("orchestrate — reviewPolicy:'off' suppresses cross-vendor review", () => {
+  it("high-risk task does NOT trigger a reviewer run when reviewPolicy is 'off'", async () => {
+    // "payment" keyword → high risk
+    const icEnvelope =
+      '{"confidence": 0.85, "escalate": false, "reason": "done", "needs_review": false}';
+    const icText = `Payment code implemented.\n${icEnvelope}`;
+
+    let codexRunCount = 0;
+    const claudeProvider: Provider = {
+      id: 'claude',
+      async detect() {
+        return { id: 'claude', installed: true, version: '1.0.0', authenticated: true, binaryPath: '/usr/bin/fake', availableModels: [] };
+      },
+      async *run(_req: ProviderRequest, _signal: AbortSignal): AsyncIterable<ProviderEvent> {
+        yield { type: 'done', text: icText, usage: FAKE_USAGE, raw: {} };
+      },
+    };
+
+    const codexProvider: Provider = {
+      id: 'codex',
+      async detect() {
+        return { id: 'codex', installed: true, version: '1.0.0', authenticated: true, binaryPath: '/usr/bin/fake', availableModels: [] };
+      },
+      async *run(_req: ProviderRequest, _signal: AbortSignal): AsyncIterable<ProviderEvent> {
+        codexRunCount++;
+        yield { type: 'done', text: '{"verdict": "approve", "notes": "ok", "confidence": 0.9}', usage: { inputTokens: 100, outputTokens: 50 }, raw: {} };
+      },
+    };
+
+    const deps: OrchestrateDeps = {
+      providers: { claude: claudeProvider, codex: codexProvider },
+      clock: makeFakeClock(),
+      session: makeFakeSession(),
+      ledger: makeFakeLedger(),
+      policy: { ...DEFAULT_POLICY, reviewPolicy: 'off' },
+      cwd: '/fake/cwd',
+      sandbox: 'workspace-write',
+      timeoutMs: 30_000,
+    };
+
+    const events = await collectEvents(
+      orchestrate('implement payment handler', deps, new AbortController().signal),
+    );
+
+    // codex reviewer must NOT have run
+    assert.equal(codexRunCount, 0, 'codex reviewer must not run when reviewPolicy is off');
+
+    // No "Review by" notice
+    const reviewByNotice = events.find(
+      (e) => e.type === 'notice' && e.message.includes('Review by'),
+    );
+    assert.equal(reviewByNotice, undefined, 'No review notice must appear when reviewPolicy is off');
+
+    // Task must still succeed (skipping review ≠ failure)
+    const finalEv = events.find((e) => e.type === 'final');
+    assert.ok(finalEv !== undefined);
+    if (finalEv.type === 'final') {
+      assert.equal(finalEv.success, true);
+    }
+
+    // No second tier-start from reviewer (only IC tier-start)
+    const tierStarts = events.filter((e) => e.type === 'tier-start');
+    assert.equal(tierStarts.length, 1, 'Only one tier-start (no reviewer run) when reviewPolicy is off');
+  });
+});
+
+describe("orchestrate — reviewPolicy:'critical-only' — high risk skips, critical reviews", () => {
+  it("high-risk task does NOT trigger review with 'critical-only'", async () => {
+    // "payment" → high risk
+    const icEnvelope =
+      '{"confidence": 0.85, "escalate": false, "reason": "done", "needs_review": false}';
+    const icText = `Payment code implemented.\n${icEnvelope}`;
+
+    let codexRunCount = 0;
+    const claudeProvider: Provider = {
+      id: 'claude',
+      async detect() {
+        return { id: 'claude', installed: true, version: '1.0.0', authenticated: true, binaryPath: '/usr/bin/fake', availableModels: [] };
+      },
+      async *run(_req: ProviderRequest, _signal: AbortSignal): AsyncIterable<ProviderEvent> {
+        yield { type: 'done', text: icText, usage: FAKE_USAGE, raw: {} };
+      },
+    };
+
+    const codexProvider: Provider = {
+      id: 'codex',
+      async detect() {
+        return { id: 'codex', installed: true, version: '1.0.0', authenticated: true, binaryPath: '/usr/bin/fake', availableModels: [] };
+      },
+      async *run(_req: ProviderRequest, _signal: AbortSignal): AsyncIterable<ProviderEvent> {
+        codexRunCount++;
+        yield { type: 'done', text: '{"verdict": "approve", "notes": "ok", "confidence": 0.9}', usage: { inputTokens: 100, outputTokens: 50 }, raw: {} };
+      },
+    };
+
+    const deps: OrchestrateDeps = {
+      providers: { claude: claudeProvider, codex: codexProvider },
+      clock: makeFakeClock(),
+      session: makeFakeSession(),
+      ledger: makeFakeLedger(),
+      policy: { ...DEFAULT_POLICY, reviewPolicy: 'critical-only' },
+      cwd: '/fake/cwd',
+      sandbox: 'workspace-write',
+      timeoutMs: 30_000,
+    };
+
+    // "payment" → high risk (not critical) — review must be skipped
+    const events = await collectEvents(
+      orchestrate('implement payment handler', deps, new AbortController().signal),
+    );
+
+    assert.equal(codexRunCount, 0, 'codex reviewer must not run for high-risk with critical-only policy');
+
+    const finalEv = events.find((e) => e.type === 'final');
+    assert.ok(finalEv !== undefined);
+    if (finalEv.type === 'final') {
+      assert.equal(finalEv.success, true);
+    }
+  });
+
+  it("critical-risk task STILL triggers review with 'critical-only'", async () => {
+    // "rotate the oauth client secret" matches CRITICAL_SIGNALS (oauth + secret)
+    // and reliably classifies as critical risk — no conditional branching needed.
+    const icEnvelope =
+      '{"confidence": 0.90, "escalate": false, "reason": "done", "needs_review": false}';
+    const icText = `OAuth secret rotated.\n${icEnvelope}`;
+
+    let codexRunCount = 0;
+    const claudeProvider: Provider = {
+      id: 'claude',
+      async detect() {
+        return { id: 'claude', installed: true, version: '1.0.0', authenticated: true, binaryPath: '/usr/bin/fake', availableModels: [] };
+      },
+      async *run(_req: ProviderRequest, _signal: AbortSignal): AsyncIterable<ProviderEvent> {
+        yield { type: 'done', text: icText, usage: FAKE_USAGE, raw: {} };
+      },
+    };
+
+    const codexProvider: Provider = {
+      id: 'codex',
+      async detect() {
+        return { id: 'codex', installed: true, version: '1.0.0', authenticated: true, binaryPath: '/usr/bin/fake', availableModels: [] };
+      },
+      async *run(_req: ProviderRequest, _signal: AbortSignal): AsyncIterable<ProviderEvent> {
+        codexRunCount++;
+        yield { type: 'done', text: '{"verdict": "approve", "notes": "looks good", "confidence": 0.95}', usage: { inputTokens: 200, outputTokens: 100 }, raw: {} };
+      },
+    };
+
+    const deps: OrchestrateDeps = {
+      providers: { claude: claudeProvider, codex: codexProvider },
+      clock: makeFakeClock(),
+      session: makeFakeSession(),
+      ledger: makeFakeLedger(),
+      policy: { ...DEFAULT_POLICY, reviewPolicy: 'critical-only' },
+      cwd: '/fake/cwd',
+      sandbox: 'workspace-write',
+      timeoutMs: 30_000,
+    };
+
+    // "rotate the oauth client secret" → guaranteed critical risk via classifier
+    const events = await collectEvents(
+      orchestrate('rotate the oauth client secret', deps, new AbortController().signal),
+    );
+
+    // Verify the classifier actually produced critical (belt-and-suspenders)
+    const classified = events.find((e) => e.type === 'classified');
+    assert.ok(classified !== undefined && classified.type === 'classified');
+    assert.equal(
+      classified.type === 'classified' ? classified.classification.risk : null,
+      'critical',
+      'Task must classify as critical risk — if this fails, update the task phrase to one that matches CRITICAL_SIGNALS',
+    );
+
+    // Reviewer MUST have run for critical-risk with critical-only policy
+    assert.ok(codexRunCount >= 1, 'codex reviewer must run for critical-risk with critical-only policy');
+
+    const reviewByNotice = events.find(
+      (e) => e.type === 'notice' && e.message.includes('Review by'),
+    );
+    assert.ok(reviewByNotice !== undefined, 'Expected a "Review by" notice for critical risk');
+
+    // Final must be success (reviewer approved)
+    const finalEv = events.find((e) => e.type === 'final');
+    assert.ok(finalEv !== undefined);
+    if (finalEv.type === 'final') {
+      assert.equal(finalEv.success, true);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Feature B — maxCostUsd budget cap
+// ---------------------------------------------------------------------------
+
+describe('orchestrate — maxCostUsd budget cap stops escalation', () => {
+  it('budget exceeded before escalation → emits budget notice + success final instead of escalating', async () => {
+    // Set a very low budget so it's exceeded after the first IC run.
+    // IC run costs ~$0.0105 (1000 input + 500 output on claude-sonnet-4-6).
+    // Set budget to $0.005 so it's already exceeded after the IC completes.
+    const LOW_CONF_ENVELOPE =
+      '{"confidence": 0.3, "escalate": false, "reason": "not sure", "needs_review": false}';
+    const lowConfText = `I did some work.\n${LOW_CONF_ENVELOPE}`;
+
+    let callCount = 0;
+    const smartProvider: Provider = {
+      id: 'claude',
+      async detect() {
+        return { id: 'claude', installed: true, version: '1.0.0', authenticated: true, binaryPath: '/usr/bin/fake', availableModels: [] };
+      },
+      async *run(_req: ProviderRequest, _signal: AbortSignal): AsyncIterable<ProviderEvent> {
+        callCount++;
+        yield { type: 'done', text: lowConfText, usage: FAKE_USAGE, raw: {} };
+      },
+    };
+
+    const deps: OrchestrateDeps = {
+      providers: { claude: smartProvider },
+      clock: makeFakeClock(),
+      session: makeFakeSession(),
+      ledger: makeFakeLedger(),
+      // Budget of $0.001 will be exceeded after the first IC run (~$0.0105)
+      policy: { ...DEFAULT_POLICY, maxCostUsd: 0.001, maxTier: 'manager' },
+      cwd: '/fake/cwd',
+      sandbox: 'workspace-write',
+      timeoutMs: 30_000,
+    };
+
+    const events = await collectEvents(
+      orchestrate('refactor X', deps, new AbortController().signal),
+    );
+
+    // Budget notice must have been emitted
+    const budgetNotice = events.find(
+      (e) => e.type === 'notice' && e.level === 'warn' && e.message.includes('cost budget reached'),
+    );
+    assert.ok(budgetNotice !== undefined, 'Expected a budget-reached warn notice');
+
+    // Must NOT have escalated (only 1 provider call)
+    assert.equal(callCount, 1, 'Provider must only be called once when budget is exceeded');
+
+    // No escalate event
+    const escalateEv = events.find((e) => e.type === 'escalate');
+    assert.equal(escalateEv, undefined, 'Must not escalate when budget is exceeded');
+
+    // Final must be success:true (budget cap = accept best, not fail)
+    const finalEv = events.find((e) => e.type === 'final');
+    assert.ok(finalEv !== undefined);
+    if (finalEv.type === 'final') {
+      assert.equal(finalEv.success, true, 'Budget cap must yield success:true (accepted best result)');
+    }
+  });
+
+  it('no budget cap (maxCostUsd absent) behaves exactly as before (escalation proceeds)', async () => {
+    // Same low-confidence scenario, but with no budget cap — escalation must happen.
+    const LOW_CONF_ENVELOPE =
+      '{"confidence": 0.3, "escalate": false, "reason": "not sure", "needs_review": false}';
+    const HIGH_CONF_ENVELOPE =
+      '{"confidence": 0.92, "escalate": false, "reason": "manager done", "needs_review": false}';
+
+    let callCount = 0;
+    const smartProvider: Provider = {
+      id: 'claude',
+      async detect() {
+        return { id: 'claude', installed: true, version: '1.0.0', authenticated: true, binaryPath: '/usr/bin/fake', availableModels: [] };
+      },
+      async *run(_req: ProviderRequest, _signal: AbortSignal): AsyncIterable<ProviderEvent> {
+        callCount++;
+        const text = callCount === 1
+          ? `I did some work.\n${LOW_CONF_ENVELOPE}`
+          : `Manager reviewed.\n${HIGH_CONF_ENVELOPE}`;
+        yield { type: 'done', text, usage: FAKE_USAGE, raw: {} };
+      },
+    };
+
+    const deps: OrchestrateDeps = {
+      providers: { claude: smartProvider },
+      clock: makeFakeClock(),
+      session: makeFakeSession(),
+      ledger: makeFakeLedger(),
+      policy: { ...DEFAULT_POLICY, maxTier: 'manager' }, // no maxCostUsd — uncapped; escalation permitted
+      cwd: '/fake/cwd',
+      sandbox: 'workspace-write',
+      timeoutMs: 30_000,
+    };
+
+    const events = await collectEvents(
+      orchestrate('refactor X', deps, new AbortController().signal),
+    );
+
+    // Escalation must have occurred (2 provider calls)
+    assert.ok(callCount >= 2, `Expected ≥2 provider calls without budget cap, got ${callCount}`);
+
+    const escalateEv = events.find((e) => e.type === 'escalate');
+    assert.ok(escalateEv !== undefined, 'Expected an escalate event when no budget cap');
+
+    const budgetNotice = events.find(
+      (e) => e.type === 'notice' && e.level === 'warn' && e.message.includes('cost budget reached'),
+    );
+    assert.equal(budgetNotice, undefined, 'Must not emit budget notice when maxCostUsd is absent');
+  });
+
+  it('budget exceeded before cross-vendor review → emits budget notice + success final instead of reviewing', async () => {
+    // "payment" → high risk → review would normally be triggered.
+    // Set a budget so low it's exceeded after IC completes, before review starts.
+    const icEnvelope =
+      '{"confidence": 0.85, "escalate": false, "reason": "done", "needs_review": false}';
+    const icText = `Payment code implemented.\n${icEnvelope}`;
+
+    let codexRunCount = 0;
+    const claudeProvider: Provider = {
+      id: 'claude',
+      async detect() {
+        return { id: 'claude', installed: true, version: '1.0.0', authenticated: true, binaryPath: '/usr/bin/fake', availableModels: [] };
+      },
+      async *run(_req: ProviderRequest, _signal: AbortSignal): AsyncIterable<ProviderEvent> {
+        yield { type: 'done', text: icText, usage: FAKE_USAGE, raw: {} };
+      },
+    };
+
+    const codexProvider: Provider = {
+      id: 'codex',
+      async detect() {
+        return { id: 'codex', installed: true, version: '1.0.0', authenticated: true, binaryPath: '/usr/bin/fake', availableModels: [] };
+      },
+      async *run(_req: ProviderRequest, _signal: AbortSignal): AsyncIterable<ProviderEvent> {
+        codexRunCount++;
+        yield { type: 'done', text: '{"verdict": "approve", "notes": "ok", "confidence": 0.9}', usage: { inputTokens: 100, outputTokens: 50 }, raw: {} };
+      },
+    };
+
+    const deps: OrchestrateDeps = {
+      providers: { claude: claudeProvider, codex: codexProvider },
+      clock: makeFakeClock(),
+      session: makeFakeSession(),
+      ledger: makeFakeLedger(),
+      // Budget exceeded after the IC run (~$0.0105), before review ($0.001 threshold)
+      policy: { ...DEFAULT_POLICY, maxCostUsd: 0.001 },
+      cwd: '/fake/cwd',
+      sandbox: 'workspace-write',
+      timeoutMs: 30_000,
+    };
+
+    const events = await collectEvents(
+      orchestrate('implement payment handler', deps, new AbortController().signal),
+    );
+
+    // Budget notice must have been emitted
+    const budgetNotice = events.find(
+      (e) => e.type === 'notice' && e.level === 'warn' && e.message.includes('cost budget reached'),
+    );
+    assert.ok(budgetNotice !== undefined, 'Expected a budget-reached warn notice');
+
+    // Codex reviewer must NOT have run
+    assert.equal(codexRunCount, 0, 'codex reviewer must not run when budget is exceeded before review');
+
+    // Final must be success:true
+    const finalEv = events.find((e) => e.type === 'final');
+    assert.ok(finalEv !== undefined);
+    if (finalEv.type === 'final') {
+      assert.equal(finalEv.success, true, 'Budget cap must yield success:true');
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Cross-vendor failover on provider error
+// ---------------------------------------------------------------------------
+
+describe('orchestrate — cross-vendor failover on provider error', () => {
+  it('single-provider failure still escalates to manager (unchanged behaviour)', async () => {
+    // With only one provider, remaining is empty → escalate as before.
+    const errorEvents: ProviderEvent[] = [
+      {
+        type: 'error',
+        error: { category: 'network', recoverable: true, message: 'timeout', suggestion: 'retry' },
+      },
+    ];
+    const errorProvider = makeFakeProvider('claude', errorEvents);
+
+    const clock = makeFakeClock();
+    const session = makeFakeSession();
+    const ledger = makeFakeLedger();
+    const deps: OrchestrateDeps = {
+      providers: { claude: errorProvider },
+      clock,
+      session,
+      ledger,
+      policy: DEFAULT_POLICY,
+      cwd: '/fake/cwd',
+      sandbox: 'workspace-write',
+      timeoutMs: 30_000,
+    };
+
+    const events = await collectEvents(
+      orchestrate('refactor X', deps, new AbortController().signal),
+    );
+
+    // Must NOT emit a failover event (only one provider available).
+    const failoverEv = events.find((e) => e.type === 'failover');
+    assert.equal(failoverEv, undefined, 'No failover event when only one provider is available');
+
+    // Must emit an escalate event (IC → manager).
+    const escalateEv = events.find((e) => e.type === 'escalate');
+    assert.ok(escalateEv !== undefined, 'Expected an escalate event on single-provider failure');
+    if (escalateEv.type === 'escalate') {
+      assert.equal(escalateEv.from, 'ic');
+      assert.equal(escalateEv.to, 'manager');
+      assert.equal(escalateEv.reason, 'execution failure');
+    }
+
+    // Final must be failure.
+    const finalEv = events.find((e) => e.type === 'final');
+    assert.ok(finalEv !== undefined);
+    if (finalEv.type === 'final') {
+      assert.equal(finalEv.success, false);
+    }
+  });
+
+  it('two-provider setup: first provider errors → failover event to second, second succeeds', async () => {
+    const errorEvents: ProviderEvent[] = [
+      {
+        type: 'error',
+        error: { category: 'network', recoverable: true, message: 'connection reset', suggestion: 'retry' },
+      },
+    ];
+    const errorProvider = makeFakeProvider('claude', errorEvents);
+
+    // codex is the fallback and succeeds.
+    const successProvider = makeFakeProvider('codex');
+
+    const clock = makeFakeClock();
+    const session = makeFakeSession();
+    const ledger = makeFakeLedger();
+    const deps: OrchestrateDeps = {
+      providers: { claude: errorProvider, codex: successProvider },
+      clock,
+      session,
+      ledger,
+      policy: DEFAULT_POLICY,
+      cwd: '/fake/cwd',
+      sandbox: 'workspace-write',
+      timeoutMs: 30_000,
+    };
+
+    const events = await collectEvents(
+      orchestrate('refactor X', deps, new AbortController().signal),
+    );
+
+    // Must emit a failover event before any escalate.
+    const failoverEv = events.find((e) => e.type === 'failover');
+    assert.ok(failoverEv !== undefined, 'Expected a failover event when first provider errors');
+    if (failoverEv.type === 'failover') {
+      assert.equal(failoverEv.from, 'claude', 'Failover from: claude');
+      assert.equal(failoverEv.to, 'codex', 'Failover to: codex');
+      assert.equal(failoverEv.tier, 'ic', 'Failover at: ic tier');
+      assert.ok(typeof failoverEv.reason === 'string' && failoverEv.reason.length > 0, 'Failover has a reason');
+    }
+
+    // Must NOT emit an escalate event (second provider succeeded).
+    const escalateEv = events.find((e) => e.type === 'escalate');
+    assert.equal(escalateEv, undefined, 'No escalate event — failover to second provider succeeded');
+
+    // Failover event must appear before the second tier-start.
+    const failoverIdx = events.findIndex((e) => e.type === 'failover');
+    const tierStarts = events
+      .map((e, i) => (e.type === 'tier-start' ? i : -1))
+      .filter((i) => i >= 0);
+    assert.ok(tierStarts.length >= 2, 'Expected at least 2 tier-start events (IC attempt 1 + failover attempt)');
+    const secondTierStartIdx = tierStarts[1]!;
+    assert.ok(failoverIdx < secondTierStartIdx, 'failover event must precede the second tier-start');
+
+    // Final must be success (codex second attempt succeeded).
+    const finalEv = events.find((e) => e.type === 'final');
+    assert.ok(finalEv !== undefined);
+    if (finalEv.type === 'final') {
+      assert.equal(finalEv.success, true);
+    }
+  });
+
+  it('both vendors fail at IC tier → failover then escalate to manager', async () => {
+    // Both claude and codex emit an error.
+    const errorEvents: ProviderEvent[] = [
+      {
+        type: 'error',
+        error: { category: 'network', recoverable: true, message: 'timeout', suggestion: 'retry' },
+      },
+    ];
+    const errorProvider1 = makeFakeProvider('claude', errorEvents);
+    const errorProvider2 = makeFakeProvider('codex', errorEvents);
+
+    const clock = makeFakeClock();
+    const session = makeFakeSession();
+    const ledger = makeFakeLedger();
+    const deps: OrchestrateDeps = {
+      providers: { claude: errorProvider1, codex: errorProvider2 },
+      clock,
+      session,
+      ledger,
+      policy: DEFAULT_POLICY,
+      cwd: '/fake/cwd',
+      sandbox: 'workspace-write',
+      timeoutMs: 30_000,
+    };
+
+    const events = await collectEvents(
+      orchestrate('refactor X', deps, new AbortController().signal),
+    );
+
+    // Must emit a failover event (after first error, before second attempt).
+    const failoverEv = events.find((e) => e.type === 'failover');
+    assert.ok(failoverEv !== undefined, 'Expected a failover event after first provider error');
+    if (failoverEv.type === 'failover') {
+      assert.equal(failoverEv.tier, 'ic', 'Failover at IC tier');
+    }
+
+    // After both IC vendors fail, must escalate to manager.
+    const escalateEv = events.find((e) => e.type === 'escalate');
+    assert.ok(escalateEv !== undefined, 'Expected an escalate event after all IC vendors exhausted');
+    if (escalateEv.type === 'escalate') {
+      assert.equal(escalateEv.to, 'manager');
+      assert.equal(escalateEv.reason, 'execution failure');
+    }
+
+    // Verify ordering: failover must come before escalate.
+    const failoverIdx = events.findIndex((e) => e.type === 'failover');
+    const escalateIdx = events.findIndex((e) => e.type === 'escalate');
+    assert.ok(failoverIdx < escalateIdx, 'failover event must precede escalate event');
+
+    // Final must be failure (manager tier also had no successful provider run).
+    const finalEv = events.find((e) => e.type === 'final');
+    assert.ok(finalEv !== undefined);
+    if (finalEv.type === 'final') {
+      assert.equal(finalEv.success, false);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Default policy unchanged — no reviewPolicy / no maxCostUsd
+// ---------------------------------------------------------------------------
+
+describe('orchestrate — default policy unchanged (no reviewPolicy / no maxCostUsd)', () => {
+  it('high-risk task with default policy still triggers cross-vendor review', async () => {
+    const icEnvelope =
+      '{"confidence": 0.85, "escalate": false, "reason": "done", "needs_review": false}';
+    const icText = `Payment code implemented.\n${icEnvelope}`;
+
+    let codexRunCount = 0;
+    const claudeProvider: Provider = {
+      id: 'claude',
+      async detect() {
+        return { id: 'claude', installed: true, version: '1.0.0', authenticated: true, binaryPath: '/usr/bin/fake', availableModels: [] };
+      },
+      async *run(_req: ProviderRequest, _signal: AbortSignal): AsyncIterable<ProviderEvent> {
+        yield { type: 'done', text: icText, usage: FAKE_USAGE, raw: {} };
+      },
+    };
+
+    const codexProvider: Provider = {
+      id: 'codex',
+      async detect() {
+        return { id: 'codex', installed: true, version: '1.0.0', authenticated: true, binaryPath: '/usr/bin/fake', availableModels: [] };
+      },
+      async *run(_req: ProviderRequest, _signal: AbortSignal): AsyncIterable<ProviderEvent> {
+        codexRunCount++;
+        yield { type: 'done', text: '{"verdict": "approve", "notes": "ok", "confidence": 0.9}', usage: { inputTokens: 100, outputTokens: 50 }, raw: {} };
+      },
+    };
+
+    const deps: OrchestrateDeps = {
+      providers: { claude: claudeProvider, codex: codexProvider },
+      clock: makeFakeClock(),
+      session: makeFakeSession(),
+      ledger: makeFakeLedger(),
+      policy: DEFAULT_POLICY, // reviewPolicy:'auto', no maxCostUsd
+      cwd: '/fake/cwd',
+      sandbox: 'workspace-write',
+      timeoutMs: 30_000,
+    };
+
+    const events = await collectEvents(
+      orchestrate('implement payment handler', deps, new AbortController().signal),
+    );
+
+    // Default policy must still trigger review for high risk
+    assert.ok(codexRunCount >= 1, 'Default policy must trigger cross-vendor review for high risk');
+
+    const budgetNotice = events.find(
+      (e) => e.type === 'notice' && e.level === 'warn' && e.message.includes('cost budget reached'),
+    );
+    assert.equal(budgetNotice, undefined, 'No budget notice must appear with default policy (uncapped)');
+
+    const finalEv = events.find((e) => e.type === 'final');
+    assert.ok(finalEv !== undefined);
+    if (finalEv.type === 'final') {
+      assert.equal(finalEv.success, true);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Auth-failure final event — errorCategory and provider fields
+// ---------------------------------------------------------------------------
+
+describe('orchestrate — auth-failure final has errorCategory and provider', () => {
+  it('auth error from provider yields final with errorCategory:"auth" and correct provider', async () => {
+    const authErrorProvider = makeFakeProvider('claude', [
+      {
+        type: 'error',
+        error: {
+          category: 'auth',
+          recoverable: false,
+          message: 'authentication failed',
+          suggestion: 'run claude auth login',
+        },
+      },
+    ]);
+
+    const clock = makeFakeClock();
+    const session = makeFakeSession();
+    const ledger = makeFakeLedger();
+    const deps: OrchestrateDeps = {
+      providers: { claude: authErrorProvider },
+      clock,
+      session,
+      ledger,
+      policy: DEFAULT_POLICY,
+      cwd: '/fake/cwd',
+      sandbox: 'workspace-write',
+      timeoutMs: 30_000,
+    };
+
+    const events = await collectEvents(
+      orchestrate('refactor X', deps, new AbortController().signal),
+    );
+
+    const finalEv = events.find((e) => e.type === 'final');
+    assert.ok(finalEv !== undefined, 'Expected a final event');
+    if (finalEv.type === 'final') {
+      assert.equal(finalEv.success, false, 'Auth failure must yield success:false');
+      assert.equal(finalEv.errorCategory, 'auth', 'errorCategory must be "auth"');
+      assert.equal(finalEv.provider, 'claude', 'provider must be "claude"');
+    }
+  });
+
+  it('non-auth failure sets the actual error category (network)', async () => {
+    const networkErrorProvider = makeFakeProvider('claude', [
+      {
+        type: 'error',
+        error: {
+          category: 'network',
+          recoverable: true,
+          message: 'connection reset',
+          suggestion: 'retry',
+        },
+      },
+    ]);
+
+    const clock = makeFakeClock();
+    const session = makeFakeSession();
+    const ledger = makeFakeLedger();
+    const deps: OrchestrateDeps = {
+      providers: { claude: networkErrorProvider },
+      clock,
+      session,
+      ledger,
+      policy: DEFAULT_POLICY,
+      cwd: '/fake/cwd',
+      sandbox: 'workspace-write',
+      timeoutMs: 30_000,
+    };
+
+    const events = await collectEvents(
+      orchestrate('refactor X', deps, new AbortController().signal),
+    );
+
+    const finalEv = events.find((e) => e.type === 'final');
+    assert.ok(finalEv !== undefined, 'Expected a final event');
+    if (finalEv.type === 'final') {
+      assert.equal(finalEv.success, false, 'Network failure must yield success:false');
+      assert.equal(finalEv.errorCategory, 'network', 'errorCategory must be "network"');
+    }
+  });
+
+  it('successful final has no errorCategory', async () => {
+    const clock = makeFakeClock();
+    const session = makeFakeSession();
+    const ledger = makeFakeLedger();
+    const deps: OrchestrateDeps = {
+      providers: { claude: makeFakeProvider('claude') },
+      clock,
+      session,
+      ledger,
+      policy: DEFAULT_POLICY,
+      cwd: '/fake/cwd',
+      sandbox: 'workspace-write',
+      timeoutMs: 30_000,
+    };
+
+    const events = await collectEvents(
+      orchestrate('refactor X', deps, new AbortController().signal),
+    );
+
+    const finalEv = events.find((e) => e.type === 'final');
+    assert.ok(finalEv !== undefined, 'Expected a final event');
+    if (finalEv.type === 'final') {
+      assert.equal(finalEv.success, true);
+      assert.equal(finalEv.errorCategory, undefined, 'Successful final must NOT have errorCategory');
+      assert.equal(finalEv.provider, undefined, 'Successful final must NOT have provider');
+    }
+  });
+
+  it('auth error from codex provider records codex as the provider', async () => {
+    const authErrorProvider = makeFakeProvider('codex', [
+      {
+        type: 'error',
+        error: {
+          category: 'auth',
+          recoverable: false,
+          message: 'authentication failed',
+          suggestion: 'run codex login',
+        },
+      },
+    ]);
+
+    const clock = makeFakeClock();
+    const session = makeFakeSession();
+    const ledger = makeFakeLedger();
+    const deps: OrchestrateDeps = {
+      providers: { codex: authErrorProvider },
+      clock,
+      session,
+      ledger,
+      policy: DEFAULT_POLICY,
+      cwd: '/fake/cwd',
+      sandbox: 'workspace-write',
+      timeoutMs: 30_000,
+    };
+
+    const events = await collectEvents(
+      orchestrate('refactor X', deps, new AbortController().signal),
+    );
+
+    const finalEv = events.find((e) => e.type === 'final');
+    assert.ok(finalEv !== undefined, 'Expected a final event');
+    if (finalEv.type === 'final') {
+      assert.equal(finalEv.success, false, 'Auth failure must yield success:false');
+      assert.equal(finalEv.errorCategory, 'auth', 'errorCategory must be "auth"');
+      assert.equal(finalEv.provider, 'codex', 'provider must be "codex"');
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Auth-aware routing via authenticatedProviders
+// ---------------------------------------------------------------------------
+
+describe('orchestrate — authenticatedProviders routes to signed-in provider first', () => {
+  it('with two providers where only the second is authenticated, FIRST run goes to the authenticated one', async () => {
+    // Policy ic order: [claude, codex]. claude is in providers but NOT authenticated.
+    // codex IS authenticated. Expected: first tier-start goes to codex.
+    const claudeProvider = makeFakeProvider('claude');
+    const codexProvider = makeFakeProvider('codex');
+
+    const clock = makeFakeClock();
+    const session = makeFakeSession();
+    const ledger = makeFakeLedger();
+
+    const deps: OrchestrateDeps = {
+      providers: { claude: claudeProvider, codex: codexProvider },
+      clock,
+      session,
+      ledger,
+      policy: DEFAULT_POLICY,
+      cwd: '/fake/cwd',
+      sandbox: 'workspace-write',
+      timeoutMs: 30_000,
+      // Only codex is authenticated; claude is installed but signed out.
+      authenticatedProviders: ['codex'],
+    };
+
+    const events = await collectEvents(
+      orchestrate('refactor X', deps, new AbortController().signal),
+    );
+
+    // The very first tier-start must be codex, not claude.
+    const firstTierStart = events.find((e) => e.type === 'tier-start');
+    assert.ok(firstTierStart !== undefined, 'Expected a tier-start event');
+    if (firstTierStart.type === 'tier-start') {
+      assert.equal(
+        firstTierStart.provider,
+        'codex',
+        'First run must go to authenticated codex, not signed-out claude',
+      );
+    }
+
+    // Must succeed (codex is a working provider in this test).
+    const finalEv = events.find((e) => e.type === 'final');
+    assert.ok(finalEv !== undefined);
+    if (finalEv.type === 'final') {
+      assert.equal(finalEv.success, true);
+    }
+  });
+
+  it('when authenticatedProviders is omitted, routing falls back to fixed preference order (backward-compat)', async () => {
+    // Without authenticatedProviders, the policy order [claude, codex] applies:
+    // claude comes first even though it is not "authenticated" by the caller.
+    const claudeProvider = makeFakeProvider('claude');
+    const codexProvider = makeFakeProvider('codex');
+
+    const clock = makeFakeClock();
+    const session = makeFakeSession();
+    const ledger = makeFakeLedger();
+
+    const deps: OrchestrateDeps = {
+      providers: { claude: claudeProvider, codex: codexProvider },
+      clock,
+      session,
+      ledger,
+      policy: DEFAULT_POLICY,
+      cwd: '/fake/cwd',
+      sandbox: 'workspace-write',
+      timeoutMs: 30_000,
+      // No authenticatedProviders — identical to existing behaviour.
+    };
+
+    const events = await collectEvents(
+      orchestrate('refactor X', deps, new AbortController().signal),
+    );
+
+    const firstTierStart = events.find((e) => e.type === 'tier-start');
+    assert.ok(firstTierStart !== undefined, 'Expected a tier-start event');
+    if (firstTierStart.type === 'tier-start') {
+      assert.equal(
+        firstTierStart.provider,
+        'claude',
+        'Without authenticatedProviders, claude (first in policy order) should be picked',
+      );
+    }
+  });
+
+  it('failover path: signed-out first provider errors → failover prefers authenticated second', async () => {
+    // claude (signed-out) errors; codex (authenticated) succeeds via failover.
+    const claudeErrorProvider = makeFakeProvider('claude', [
+      {
+        type: 'error',
+        error: { category: 'auth', recoverable: false, message: 'Not logged in', suggestion: 'run claude auth login' },
+      },
+    ]);
+    const codexProvider = makeFakeProvider('codex');
+
+    const clock = makeFakeClock();
+    const session = makeFakeSession();
+    const ledger = makeFakeLedger();
+
+    // Simulate the bug scenario: claude installed but not authenticated, codex authenticated.
+    // With auth-aware routing, codex should be picked FIRST (no wasted attempt on claude).
+    const deps: OrchestrateDeps = {
+      providers: { claude: claudeErrorProvider, codex: codexProvider },
+      clock,
+      session,
+      ledger,
+      policy: DEFAULT_POLICY,
+      cwd: '/fake/cwd',
+      sandbox: 'workspace-write',
+      timeoutMs: 30_000,
+      authenticatedProviders: ['codex'],
+    };
+
+    const events = await collectEvents(
+      orchestrate('refactor X', deps, new AbortController().signal),
+    );
+
+    // With auth-aware routing, codex is routed first (no claude attempt).
+    const firstTierStart = events.find((e) => e.type === 'tier-start');
+    assert.ok(firstTierStart !== undefined);
+    if (firstTierStart.type === 'tier-start') {
+      assert.equal(
+        firstTierStart.provider,
+        'codex',
+        'Auth-aware routing must skip signed-out claude and go directly to authenticated codex',
+      );
+    }
+
+    // No failover event (because codex was routed first and succeeded).
+    const failoverEv = events.find((e) => e.type === 'failover');
+    assert.equal(failoverEv, undefined, 'No failover needed when authenticated provider is routed first');
+
+    // Final must be success.
+    const finalEv = events.find((e) => e.type === 'final');
+    assert.ok(finalEv !== undefined);
+    if (finalEv.type === 'final') {
+      assert.equal(finalEv.success, true);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Bug 1 fix: Auth errors short-circuit — no failover, no escalation
+// ---------------------------------------------------------------------------
+
+describe('orchestrate — Bug 1 fix: auth error short-circuits immediately', () => {
+  it('auth error from single provider: single attempt, final.errorCategory:auth, NO failover/escalate', async () => {
+    const authErrorProvider = makeFakeProvider('claude', [
+      {
+        type: 'error',
+        error: {
+          category: 'auth',
+          recoverable: false,
+          message: 'authentication failed',
+          suggestion: 'run claude auth login',
+        },
+      },
+    ]);
+
+    const clock = makeFakeClock();
+    const session = makeFakeSession();
+    const ledger = makeFakeLedger();
+    const deps: OrchestrateDeps = {
+      providers: { claude: authErrorProvider },
+      clock,
+      session,
+      ledger,
+      policy: DEFAULT_POLICY,
+      cwd: '/fake/cwd',
+      sandbox: 'workspace-write',
+      timeoutMs: 30_000,
+    };
+
+    const events = await collectEvents(
+      orchestrate('refactor X', deps, new AbortController().signal),
+    );
+
+    // Only 1 tier-start (no escalation to manager, no retry)
+    const tierStarts = events.filter((e) => e.type === 'tier-start');
+    assert.equal(tierStarts.length, 1, 'Auth error must cause exactly 1 attempt (no retry/escalation)');
+
+    // No failover event
+    const failoverEv = events.find((e) => e.type === 'failover');
+    assert.equal(failoverEv, undefined, 'Auth error must NOT emit a failover event');
+
+    // No escalate event
+    const escalateEv = events.find((e) => e.type === 'escalate');
+    assert.equal(escalateEv, undefined, 'Auth error must NOT emit an escalate event');
+
+    // Final must be failure with errorCategory:'auth' and correct provider
+    const finalEv = events.find((e) => e.type === 'final');
+    assert.ok(finalEv !== undefined, 'Expected a final event');
+    if (finalEv.type === 'final') {
+      assert.equal(finalEv.success, false, 'Auth failure final must have success:false');
+      assert.equal(finalEv.errorCategory, 'auth', 'Auth failure final must have errorCategory:"auth"');
+      assert.equal(finalEv.provider, 'claude', 'Auth failure final must record the failing provider');
+      assert.equal(finalEv.attempts, 1, 'Auth failure must record exactly 1 attempt');
+    }
+  });
+
+  it('auth error with two providers: still short-circuits — second provider never tried', async () => {
+    let codexRunCount = 0;
+    const authErrorProvider = makeFakeProvider('claude', [
+      {
+        type: 'error',
+        error: {
+          category: 'auth',
+          recoverable: false,
+          message: 'authentication failed',
+          suggestion: 'run claude auth login',
+        },
+      },
+    ]);
+    const codexProvider: Provider = {
+      id: 'codex',
+      async detect() {
+        return { id: 'codex', installed: true, version: '1.0.0', authenticated: true, binaryPath: '/x', availableModels: [] };
+      },
+      async *run(_req: ProviderRequest, _signal: AbortSignal): AsyncIterable<ProviderEvent> {
+        codexRunCount++;
+        yield { type: 'done', text: FINAL_TEXT, usage: FAKE_USAGE, raw: {} };
+      },
+    };
+
+    const deps: OrchestrateDeps = {
+      providers: { claude: authErrorProvider, codex: codexProvider },
+      clock: makeFakeClock(),
+      session: makeFakeSession(),
+      ledger: makeFakeLedger(),
+      policy: DEFAULT_POLICY,
+      cwd: '/fake/cwd',
+      sandbox: 'workspace-write',
+      timeoutMs: 30_000,
+    };
+
+    const events = await collectEvents(
+      orchestrate('refactor X', deps, new AbortController().signal),
+    );
+
+    // Codex must never have run (auth error = no failover)
+    assert.equal(codexRunCount, 0, 'Auth error must not trigger failover to second provider');
+
+    // No failover event
+    const failoverEv = events.find((e) => e.type === 'failover');
+    assert.equal(failoverEv, undefined, 'No failover event must be emitted on auth error');
+
+    // Final must be auth failure
+    const finalEv = events.find((e) => e.type === 'final');
+    assert.ok(finalEv !== undefined);
+    if (finalEv.type === 'final') {
+      assert.equal(finalEv.success, false);
+      assert.equal(finalEv.errorCategory, 'auth');
+      assert.equal(finalEv.provider, 'claude');
+    }
+  });
+
+  it('non-auth error (network) still uses existing failover/escalate behaviour', async () => {
+    // Regression: make sure network errors still failover as before
+    const networkErrorProvider = makeFakeProvider('claude', [
+      {
+        type: 'error',
+        error: {
+          category: 'network',
+          recoverable: true,
+          message: 'timeout',
+          suggestion: 'retry',
+        },
+      },
+    ]);
+
+    const deps: OrchestrateDeps = {
+      providers: { claude: networkErrorProvider },
+      clock: makeFakeClock(),
+      session: makeFakeSession(),
+      ledger: makeFakeLedger(),
+      policy: DEFAULT_POLICY,
+      cwd: '/fake/cwd',
+      sandbox: 'workspace-write',
+      timeoutMs: 30_000,
+    };
+
+    const events = await collectEvents(
+      orchestrate('refactor X', deps, new AbortController().signal),
+    );
+
+    // Network error with single provider → escalate (not short-circuit)
+    const escalateEv = events.find((e) => e.type === 'escalate');
+    assert.ok(escalateEv !== undefined, 'Network error must still trigger escalation');
+
+    const finalEv = events.find((e) => e.type === 'final');
+    assert.ok(finalEv !== undefined);
+    if (finalEv.type === 'final') {
+      assert.equal(finalEv.success, false);
+      assert.equal(finalEv.errorCategory, 'network', 'errorCategory must be "network" for network errors');
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Bug 2 fix: Reviewer escalate verdict at manager tier → emits notice + final
+// ---------------------------------------------------------------------------
+
+describe('orchestrate — Bug 2 fix: reviewer escalate at manager tier emits final (no infinite loop)', () => {
+  it('reviewer returns escalate at manager tier: emits warn notice + final(success:false), no loop', async () => {
+    // Task classified at manager tier with needsReview so review fires immediately.
+    // We force classification to manager + high risk by using "needsReview:true"
+    // so the review path is triggered regardless of classification tier.
+    // The reviewer returns "escalate", but currentTier is already manager.
+    // Bug 2 fix: must emit a warn notice + final(success:false) and stop.
+
+    const managerEnvelope =
+      '{"confidence": 0.85, "escalate": false, "reason": "done", "needs_review": true}';
+    const managerText = `Manager work done.\n${managerEnvelope}`;
+
+    // Reviewer always returns "escalate"
+    const reviewEscalateText = '{"verdict": "escalate", "notes": "needs senior review", "confidence": 0.5}';
+
+    let claudeCallCount = 0;
+    const claudeProvider: Provider = {
+      id: 'claude',
+      async detect() {
+        return { id: 'claude', installed: true, version: '1.0.0', authenticated: true, binaryPath: '/x', availableModels: [] };
+      },
+      async *run(_req: ProviderRequest, _signal: AbortSignal): AsyncIterable<ProviderEvent> {
+        claudeCallCount++;
+        yield { type: 'done', text: managerText, usage: FAKE_USAGE, raw: {} };
+      },
+    };
+
+    const codexProvider: Provider = {
+      id: 'codex',
+      async detect() {
+        return { id: 'codex', installed: true, version: '1.0.0', authenticated: true, binaryPath: '/x', availableModels: [] };
+      },
+      async *run(_req: ProviderRequest, _signal: AbortSignal): AsyncIterable<ProviderEvent> {
+        yield { type: 'done', text: reviewEscalateText, usage: { inputTokens: 200, outputTokens: 100 }, raw: {} };
+      },
+    };
+
+    const deps: OrchestrateDeps = {
+      providers: { claude: claudeProvider, codex: codexProvider },
+      clock: makeFakeClock(),
+      session: makeFakeSession(),
+      ledger: makeFakeLedger(),
+      policy: { ...DEFAULT_POLICY, maxAttempts: 10 }, // generous cap to detect loop
+      cwd: '/fake/cwd',
+      sandbox: 'workspace-write',
+      timeoutMs: 30_000,
+    };
+
+    // Use a task that gets classified at manager tier + needsReview triggers review
+    const events = await collectEvents(
+      orchestrate('audit the auth flow', deps, new AbortController().signal),
+    );
+
+    // Must emit the warn notice about top-tier escalation
+    const warnNotice = events.find(
+      (e) => e.type === 'notice' && e.level === 'warn' && e.message.includes('top tier'),
+    );
+    assert.ok(warnNotice !== undefined, 'Expected a warn notice about already being at top tier');
+
+    // Must emit final(success:false)
+    const finalEv = events.find((e) => e.type === 'final');
+    assert.ok(finalEv !== undefined, 'Expected a final event');
+    if (finalEv.type === 'final') {
+      assert.equal(finalEv.success, false, 'Must be failure when reviewer requests escalation at top tier');
+    }
+
+    // Claude (the worker) must have been called at most once — not looping
+    assert.ok(claudeCallCount <= 2, `Claude must not loop excessively; was called ${claudeCallCount} times`);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Bug 3 fix: No misleading failover event at maxAttempts boundary
+// ---------------------------------------------------------------------------
+
+describe('orchestrate — Bug 3 fix: no misleading failover event at maxAttempts ceiling', () => {
+  it('when maxAttempts=1, a failure with untried providers emits NO failover event', async () => {
+    // With maxAttempts=1: the first (and only) attempt fails.
+    // There is a second provider (codex) untried, but there is no room for another attempt.
+    // Bug 3 fix: must NOT emit a failover event because codex would never actually run.
+    let codexRunCount = 0;
+    const claudeErrorProvider = makeFakeProvider('claude', [
+      {
+        type: 'error',
+        error: {
+          category: 'network',
+          recoverable: true,
+          message: 'timeout',
+          suggestion: 'retry',
+        },
+      },
+    ]);
+    const codexProvider: Provider = {
+      id: 'codex',
+      async detect() {
+        return { id: 'codex', installed: true, version: '1.0.0', authenticated: true, binaryPath: '/x', availableModels: [] };
+      },
+      async *run(_req: ProviderRequest, _signal: AbortSignal): AsyncIterable<ProviderEvent> {
+        codexRunCount++;
+        yield { type: 'done', text: FINAL_TEXT, usage: FAKE_USAGE, raw: {} };
+      },
+    };
+
+    const deps: OrchestrateDeps = {
+      providers: { claude: claudeErrorProvider, codex: codexProvider },
+      clock: makeFakeClock(),
+      session: makeFakeSession(),
+      ledger: makeFakeLedger(),
+      policy: { ...DEFAULT_POLICY, maxAttempts: 1 },
+      cwd: '/fake/cwd',
+      sandbox: 'workspace-write',
+      timeoutMs: 30_000,
+    };
+
+    const events = await collectEvents(
+      orchestrate('refactor X', deps, new AbortController().signal),
+    );
+
+    // Codex must never have actually run (no room for another attempt)
+    assert.equal(codexRunCount, 0, 'Codex must never run when maxAttempts=1');
+
+    // No misleading failover event
+    const failoverEv = events.find((e) => e.type === 'failover');
+    assert.equal(failoverEv, undefined, 'Must NOT emit a failover event when no room for another attempt');
+
+    // Must still emit a final
+    const finalEv = events.find((e) => e.type === 'final');
+    assert.ok(finalEv !== undefined, 'Expected a final event');
+    if (finalEv.type === 'final') {
+      assert.equal(finalEv.success, false, 'Must be a failure final');
+    }
+  });
+
+  it('when maxAttempts=2 with two providers, failover IS emitted (room exists for 2nd attempt)', async () => {
+    // Regression: when there IS room, failover must still be emitted as before.
+    const claudeErrorProvider = makeFakeProvider('claude', [
+      {
+        type: 'error',
+        error: { category: 'network', recoverable: true, message: 'timeout', suggestion: 'retry' },
+      },
+    ]);
+    const codexProvider = makeFakeProvider('codex');
+
+    const deps: OrchestrateDeps = {
+      providers: { claude: claudeErrorProvider, codex: codexProvider },
+      clock: makeFakeClock(),
+      session: makeFakeSession(),
+      ledger: makeFakeLedger(),
+      policy: { ...DEFAULT_POLICY, maxAttempts: 2 },
+      cwd: '/fake/cwd',
+      sandbox: 'workspace-write',
+      timeoutMs: 30_000,
+    };
+
+    const events = await collectEvents(
+      orchestrate('refactor X', deps, new AbortController().signal),
+    );
+
+    // Failover MUST be emitted when there is room for another attempt
+    const failoverEv = events.find((e) => e.type === 'failover');
+    assert.ok(failoverEv !== undefined, 'Failover must be emitted when another attempt is possible');
+
+    // Final must be success (codex succeeded on second attempt)
+    const finalEv = events.find((e) => e.type === 'final');
+    assert.ok(finalEv !== undefined);
+    if (finalEv.type === 'final') {
+      assert.equal(finalEv.success, true, 'Second provider (codex) must succeed');
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Bug 4 fix: revise verdict injects notes at any tier (not just IC)
+// ---------------------------------------------------------------------------
+
+describe('orchestrate — Bug 4 fix: revise verdict injects reviewer notes at any tier', () => {
+  it('revise at IC tier: retry prompt contains the reviewer notes', async () => {
+    // Classic case — still works after the fix.
+    const icEnvelope =
+      '{"confidence": 0.85, "escalate": false, "reason": "done", "needs_review": false}';
+
+    const capturedPrompts: string[] = [];
+    let icCallCount = 0;
+
+    const claudeProvider: Provider = {
+      id: 'claude',
+      async detect() {
+        return { id: 'claude', installed: true, version: '1.0.0', authenticated: true, binaryPath: '/x', availableModels: [] };
+      },
+      async *run(req: ProviderRequest, _signal: AbortSignal): AsyncIterable<ProviderEvent> {
+        icCallCount++;
+        capturedPrompts.push(req.prompt);
+        const text = `Payment code attempt ${icCallCount}.\n${icEnvelope}`;
+        yield { type: 'done', text, usage: FAKE_USAGE, raw: {} };
+      },
+    };
+
+    let reviewCallCount = 0;
+    const codexProvider: Provider = {
+      id: 'codex',
+      async detect() {
+        return { id: 'codex', installed: true, version: '1.0.0', authenticated: true, binaryPath: '/x', availableModels: [] };
+      },
+      async *run(_req: ProviderRequest, _signal: AbortSignal): AsyncIterable<ProviderEvent> {
+        reviewCallCount++;
+        const text =
+          reviewCallCount === 1
+            ? '{"verdict": "revise", "notes": "NOTES_FROM_REVIEWER: add validation", "confidence": 0.7}'
+            : '{"verdict": "approve", "notes": "fixed", "confidence": 0.95}';
+        yield { type: 'done', text, usage: { inputTokens: 200, outputTokens: 100 }, raw: {} };
+      },
+    };
+
+    const deps: OrchestrateDeps = {
+      providers: { claude: claudeProvider, codex: codexProvider },
+      clock: makeFakeClock(),
+      session: makeFakeSession(),
+      ledger: makeFakeLedger(),
+      policy: DEFAULT_POLICY,
+      cwd: '/fake/cwd',
+      sandbox: 'workspace-write',
+      timeoutMs: 30_000,
+    };
+
+    await collectEvents(
+      orchestrate('implement payment handler', deps, new AbortController().signal),
+    );
+
+    // The second IC prompt must contain the reviewer notes
+    assert.ok(capturedPrompts.length >= 2, 'Expected at least 2 IC prompts (initial + retry)');
+    const retryPrompt = capturedPrompts[1] ?? '';
+    assert.ok(
+      retryPrompt.includes('NOTES_FROM_REVIEWER'),
+      'Retry prompt at IC tier must contain the reviewer notes',
+    );
+  });
+
+  it('revise at manager tier: retry prompt also contains the reviewer notes', async () => {
+    // The worker (manager tier directly) gets a revise → retry must have notes.
+    // We force classification to manager tier by using a high-confidence manager envelope
+    // but inject needsReview:true so review fires.
+    const managerEnvelope =
+      '{"confidence": 0.85, "escalate": false, "reason": "done", "needs_review": true}';
+
+    const capturedPrompts: string[] = [];
+    let claudeCallCount = 0;
+
+    const claudeProvider: Provider = {
+      id: 'claude',
+      async detect() {
+        return { id: 'claude', installed: true, version: '1.0.0', authenticated: true, binaryPath: '/x', availableModels: [] };
+      },
+      async *run(req: ProviderRequest, _signal: AbortSignal): AsyncIterable<ProviderEvent> {
+        claudeCallCount++;
+        capturedPrompts.push(req.prompt);
+        yield { type: 'done', text: `Attempt ${claudeCallCount}.\n${managerEnvelope}`, usage: FAKE_USAGE, raw: {} };
+      },
+    };
+
+    let reviewCallCount = 0;
+    const codexProvider: Provider = {
+      id: 'codex',
+      async detect() {
+        return { id: 'codex', installed: true, version: '1.0.0', authenticated: true, binaryPath: '/x', availableModels: [] };
+      },
+      async *run(_req: ProviderRequest, _signal: AbortSignal): AsyncIterable<ProviderEvent> {
+        reviewCallCount++;
+        const text =
+          reviewCallCount === 1
+            ? '{"verdict": "revise", "notes": "MANAGER_REVIEW_NOTES: tighten error handling", "confidence": 0.65}'
+            : '{"verdict": "approve", "notes": "good now", "confidence": 0.9}';
+        yield { type: 'done', text, usage: { inputTokens: 200, outputTokens: 100 }, raw: {} };
+      },
+    };
+
+    const deps: OrchestrateDeps = {
+      providers: { claude: claudeProvider, codex: codexProvider },
+      clock: makeFakeClock(),
+      session: makeFakeSession(),
+      ledger: makeFakeLedger(),
+      policy: DEFAULT_POLICY,
+      cwd: '/fake/cwd',
+      sandbox: 'workspace-write',
+      timeoutMs: 30_000,
+    };
+
+    // Use a task that is reviewed (needsReview:true in envelope ensures review path)
+    await collectEvents(
+      orchestrate('audit the auth flow', deps, new AbortController().signal),
+    );
+
+    // The second claude call must receive a prompt containing the reviewer notes
+    assert.ok(capturedPrompts.length >= 2, `Expected ≥2 claude calls (initial + retry after revise), got ${capturedPrompts.length}`);
+    const retryPrompt = capturedPrompts[1] ?? '';
+    assert.ok(
+      retryPrompt.includes('MANAGER_REVIEW_NOTES'),
+      `Retry prompt at manager tier must contain the reviewer notes. Got: ${retryPrompt.slice(0, 200)}`,
+    );
+  });
+});
+
+describe('orchestrate — native session (EXPERIMENTAL) skips history and passes session id', () => {
+  it('when nativeSession matches the routed provider: no history replay, sessionId passed', async () => {
+    const capturedReqs: ProviderRequest[] = [];
+
+    const provider: Provider = {
+      id: 'claude',
+      async detect() {
+        return { id: 'claude', installed: true, version: '1.0.0', authenticated: true, binaryPath: '/x', availableModels: [] };
+      },
+      async *run(req: ProviderRequest, _signal: AbortSignal): AsyncIterable<ProviderEvent> {
+        capturedReqs.push(req);
+        yield { type: 'done', text: FINAL_TEXT, usage: FAKE_USAGE, raw: {} };
+      },
+    };
+
+    const priorHistory: SessionEntry[] = [
+      { timestamp: '2026-05-31T00:00:00.000Z', role: 'user', content: 'earlier question about the parser' },
+      { timestamp: '2026-05-31T00:01:00.000Z', role: 'assistant', content: 'earlier answer', provider: 'claude' },
+    ];
+
+    const deps: OrchestrateDeps = {
+      providers: { claude: provider },
+      clock: makeFakeClock(),
+      session: makeFakeSession(),
+      ledger: makeFakeLedger(),
+      policy: DEFAULT_POLICY,
+      cwd: '/fake/cwd',
+      sandbox: 'workspace-write',
+      timeoutMs: 30_000,
+      history: priorHistory,
+      nativeSession: [{ provider: 'claude', sessionId: 'conv-xyz', resume: true }],
+    };
+
+    await collectEvents(orchestrate('follow-up question', deps, new AbortController().signal));
+
+    assert.ok(capturedReqs.length >= 1, 'expected a captured request');
+    const req = capturedReqs[0]!;
+    // Native session id + resume flag are passed through to the provider.
+    assert.strictEqual(req.sessionId, 'conv-xyz', 'sessionId must be passed for the native path');
+    assert.strictEqual(req.resume, true, 'resume flag must be passed');
+    // History is NOT replayed into the prompt — the provider holds it server-side.
+    assert.ok(
+      !req.prompt.includes('CONVERSATION SO FAR'),
+      `native path must not replay history, got:\n${req.prompt}`,
+    );
+    assert.ok(
+      !req.prompt.includes('earlier answer'),
+      'native path must not contain the prior assistant content',
+    );
+  });
+
+  it('when nativeSession provider does NOT match the routed provider: falls back to history replay', async () => {
+    const capturedReqs: ProviderRequest[] = [];
+
+    const provider: Provider = {
+      id: 'claude',
+      async detect() {
+        return { id: 'claude', installed: true, version: '1.0.0', authenticated: true, binaryPath: '/x', availableModels: [] };
+      },
+      async *run(req: ProviderRequest, _signal: AbortSignal): AsyncIterable<ProviderEvent> {
+        capturedReqs.push(req);
+        yield { type: 'done', text: FINAL_TEXT, usage: FAKE_USAGE, raw: {} };
+      },
+    };
+
+    const priorHistory: SessionEntry[] = [
+      { timestamp: '2026-05-31T00:00:00.000Z', role: 'user', content: 'earlier question' },
+      { timestamp: '2026-05-31T00:01:00.000Z', role: 'assistant', content: 'earlier answer here', provider: 'claude' },
+    ];
+
+    const deps: OrchestrateDeps = {
+      providers: { claude: provider },
+      clock: makeFakeClock(),
+      session: makeFakeSession(),
+      ledger: makeFakeLedger(),
+      policy: DEFAULT_POLICY,
+      cwd: '/fake/cwd',
+      sandbox: 'workspace-write',
+      timeoutMs: 30_000,
+      history: priorHistory,
+      // Plan names a DIFFERENT provider than the one that will run (claude).
+      nativeSession: [{ provider: 'codex', sessionId: 'conv-xyz', resume: true }],
+    };
+
+    await collectEvents(orchestrate('follow-up question', deps, new AbortController().signal));
+
+    const req = capturedReqs[0]!;
+    assert.strictEqual(req.sessionId, undefined, 'no sessionId when the plan provider does not match');
+    assert.ok(
+      req.prompt.includes('CONVERSATION SO FAR'),
+      'must fall back to history replay when the plan provider does not match',
+    );
+  });
+});
+
+describe('orchestrate — captures a provider session id and persists it on the assistant turn', () => {
+  it('a Codex-style done.sessionId is written to the assistant SessionEntry (for later resume)', async () => {
+    const provider: Provider = {
+      id: 'codex',
+      async detect() {
+        return { id: 'codex', installed: true, version: '1.0.0', authenticated: true, binaryPath: '/x', availableModels: [] };
+      },
+      async *run(_req: ProviderRequest, _signal: AbortSignal): AsyncIterable<ProviderEvent> {
+        // Codex reports a thread id on the terminal done event.
+        yield { type: 'done', text: FINAL_TEXT, usage: FAKE_USAGE, sessionId: 'thread-777', raw: {} };
+      },
+    };
+
+    const session = makeFakeSession();
+    const deps: OrchestrateDeps = {
+      providers: { codex: provider },
+      clock: makeFakeClock(),
+      session,
+      ledger: makeFakeLedger(),
+      policy: DEFAULT_POLICY,
+      cwd: '/fake/cwd',
+      sandbox: 'workspace-write',
+      timeoutMs: 30_000,
+    };
+
+    await collectEvents(orchestrate('do something', deps, new AbortController().signal));
+
+    const assistant = session.entries.find((e) => e.role === 'assistant');
+    assert.ok(assistant !== undefined, 'expected an assistant entry');
+    assert.strictEqual(assistant.sessionId, 'thread-777', 'captured thread id must persist on the turn');
+  });
+
+  it('no sessionId is written when the provider reports none (e.g. Claude)', async () => {
+    const provider: Provider = {
+      id: 'claude',
+      async detect() {
+        return { id: 'claude', installed: true, version: '1.0.0', authenticated: true, binaryPath: '/x', availableModels: [] };
+      },
+      async *run(_req: ProviderRequest, _signal: AbortSignal): AsyncIterable<ProviderEvent> {
+        yield { type: 'done', text: FINAL_TEXT, usage: FAKE_USAGE, raw: {} };
+      },
+    };
+
+    const session = makeFakeSession();
+    const deps: OrchestrateDeps = {
+      providers: { claude: provider },
+      clock: makeFakeClock(),
+      session,
+      ledger: makeFakeLedger(),
+      policy: DEFAULT_POLICY,
+      cwd: '/fake/cwd',
+      sandbox: 'workspace-write',
+      timeoutMs: 30_000,
+    };
+
+    await collectEvents(orchestrate('do something', deps, new AbortController().signal));
+
+    const assistant = session.entries.find((e) => e.role === 'assistant');
+    assert.ok(assistant !== undefined, 'expected an assistant entry');
+    assert.strictEqual(assistant.sessionId, undefined, 'no sessionId when the provider reports none');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Timeout handling — Goals 2 & 3 of the runaway-fan-out fix.
+//
+//  (a) A timeout does NOT cross-vendor fail over and does NOT escalate the tier
+//      (re-running the same too-broad task would just double time + cost).
+//  (b) A FAST CRASH (non-timeout recoverable error) STILL fails over — proving
+//      we special-cased only timeouts, not all failures.
+//  (c) A killed run that parsed NO usage emits the honest "spend unknown" notice
+//      and records a ledger entry with success:false (no fabricated number).
+//  (d) A killed run that DID parse partial usage records the real tokens and
+//      does NOT claim spend is unknown.
+// ---------------------------------------------------------------------------
+
+const TIMEOUT_ERROR: ProviderEvent = {
+  type: 'error',
+  error: {
+    category: 'timeout',
+    recoverable: true,
+    message: 'Hit the 30-second limit before the model finished.',
+    suggestion: 'Simplify the request or increase the timeout threshold and retry.',
+  },
+};
+
+describe('orchestrate — timeout does not fail over or escalate (Goal 2)', () => {
+  it('(a) a timeout stops with a notice — no failover, no escalate', async () => {
+    // claude (the IC provider for "refactor X") times out. codex is available as
+    // a would-be failover target. We must NOT switch to it.
+    let codexCalled = false;
+    const claudeProvider = makeFakeProvider('claude', [TIMEOUT_ERROR]);
+    const codexProvider: Provider = {
+      id: 'codex',
+      async detect() {
+        return { id: 'codex', installed: true, version: '1.0.0', authenticated: true, binaryPath: '/x', availableModels: [] };
+      },
+      async *run(_req: ProviderRequest, _signal: AbortSignal): AsyncIterable<ProviderEvent> {
+        codexCalled = true;
+        yield { type: 'done', text: FINAL_TEXT, usage: FAKE_USAGE, raw: {} };
+      },
+    };
+
+    const clock = makeFakeClock();
+    const session = makeFakeSession();
+    const ledger = makeFakeLedger();
+    const deps: OrchestrateDeps = {
+      providers: { claude: claudeProvider, codex: codexProvider },
+      clock,
+      session,
+      ledger,
+      policy: DEFAULT_POLICY,
+      cwd: '/fake/cwd',
+      sandbox: 'workspace-write',
+      timeoutMs: 30_000,
+    };
+
+    const events = await collectEvents(
+      orchestrate('refactor X', deps, new AbortController().signal),
+    );
+
+    // No failover, no escalate.
+    assert.equal(events.find((e) => e.type === 'failover'), undefined, 'a timeout must NOT fail over to another vendor');
+    assert.equal(events.find((e) => e.type === 'escalate'), undefined, 'a timeout must NOT escalate the tier');
+    assert.equal(codexCalled, false, 'the failover vendor must never run on a timeout');
+
+    // Only one tier-start (the timed-out IC run).
+    const tierStarts = events.filter((e) => e.type === 'tier-start');
+    assert.equal(tierStarts.length, 1, `expected exactly 1 tier-start, got ${tierStarts.length}`);
+
+    // Actionable notice mentioning too-broad / timeout settings.
+    const notice = events.find(
+      (e) => e.type === 'notice' && e.level === 'warn' && /too broad|raise the timeout|Settings/i.test(e.message),
+    );
+    assert.ok(notice !== undefined, 'expected an actionable timeout notice');
+
+    // Failing final tagged with the timeout category.
+    const finalEv = events.find((e) => e.type === 'final');
+    assert.ok(finalEv !== undefined && finalEv.type === 'final');
+    if (finalEv.type === 'final') {
+      assert.equal(finalEv.success, false);
+      assert.equal(finalEv.errorCategory, 'timeout');
+      assert.equal(finalEv.attempts, 1, 'should stop after the single timed-out attempt');
+    }
+  });
+});
+
+describe('orchestrate — a fast crash STILL fails over (Goal 2 boundary)', () => {
+  it('(b) a non-timeout recoverable error fails over to the other vendor', async () => {
+    let codexCalled = false;
+    // claude crashes fast with a network error (recoverable, not a timeout).
+    const claudeProvider = makeFakeProvider('claude', [
+      {
+        type: 'error',
+        error: { category: 'network', recoverable: true, message: 'connection reset', suggestion: 'retry' },
+      },
+    ]);
+    const codexProvider: Provider = {
+      id: 'codex',
+      async detect() {
+        return { id: 'codex', installed: true, version: '1.0.0', authenticated: true, binaryPath: '/x', availableModels: [] };
+      },
+      async *run(_req: ProviderRequest, _signal: AbortSignal): AsyncIterable<ProviderEvent> {
+        codexCalled = true;
+        yield { type: 'done', text: FINAL_TEXT, usage: FAKE_USAGE, raw: {} };
+      },
+    };
+
+    const clock = makeFakeClock();
+    const session = makeFakeSession();
+    const ledger = makeFakeLedger();
+    const deps: OrchestrateDeps = {
+      providers: { claude: claudeProvider, codex: codexProvider },
+      clock,
+      session,
+      ledger,
+      policy: DEFAULT_POLICY,
+      cwd: '/fake/cwd',
+      sandbox: 'workspace-write',
+      timeoutMs: 30_000,
+    };
+
+    const events = await collectEvents(
+      orchestrate('refactor X', deps, new AbortController().signal),
+    );
+
+    // A failover event MUST be emitted and the other vendor MUST run.
+    const failoverEv = events.find((e) => e.type === 'failover');
+    assert.ok(failoverEv !== undefined, 'a fast crash must still fail over');
+    if (failoverEv.type === 'failover') {
+      assert.equal(failoverEv.from, 'claude');
+      assert.equal(failoverEv.to, 'codex');
+    }
+    assert.equal(codexCalled, true, 'the failover vendor must run after a fast crash');
+  });
+});
+
+describe('orchestrate — honest spend on a killed run (Goal 3)', () => {
+  it('(c) killed run with NO usage: honest "spend unknown" notice + ledger success:false', async () => {
+    // A timeout SIGKILL: no usage/done parsed before the kill — only the error.
+    const claudeProvider = makeFakeProvider('claude', [TIMEOUT_ERROR]);
+
+    const clock = makeFakeClock();
+    const session = makeFakeSession();
+    const ledger = makeFakeLedger();
+    const deps: OrchestrateDeps = {
+      providers: { claude: claudeProvider },
+      clock,
+      session,
+      ledger,
+      policy: DEFAULT_POLICY,
+      cwd: '/fake/cwd',
+      sandbox: 'workspace-write',
+      timeoutMs: 30_000,
+    };
+
+    const events = await collectEvents(
+      orchestrate('refactor X', deps, new AbortController().signal),
+    );
+
+    // Honest "spend unknown" notice — the recorded $0 is NOT presented as free.
+    const unknownNotice = events.find(
+      (e) => e.type === 'notice' && e.level === 'warn' && /spend unknown/i.test(e.message),
+    );
+    assert.ok(unknownNotice !== undefined, 'expected an honest "spend unknown" notice on a killed run with no usage');
+    if (unknownNotice.type === 'notice') {
+      assert.match(unknownNotice.message, /not a real cost/i);
+    }
+
+    // Ledger entry recorded with success:false (we do not skip recording).
+    assert.equal(ledger.entries.length, 1, 'killed run must still be recorded in the ledger');
+    const entry = ledger.entries[0]!;
+    assert.equal(entry.success, false);
+    // No fabricated number: with no parsed usage the honest recorded values are 0.
+    assert.equal(entry.inputTokens, 0);
+    assert.equal(entry.outputTokens, 0);
+    assert.equal(entry.usd, 0);
+  });
+
+  it('(d) killed run WITH partial usage: records real tokens and does NOT claim unknown', async () => {
+    // Some usage WAS parsed (a standalone usage event arrived) before the kill.
+    const partialUsage: Usage = { inputTokens: 4321, outputTokens: 0 };
+    const claudeProvider = makeFakeProvider('claude', [
+      { type: 'usage', usage: partialUsage },
+      TIMEOUT_ERROR,
+    ]);
+
+    const clock = makeFakeClock();
+    const session = makeFakeSession();
+    const ledger = makeFakeLedger();
+    const deps: OrchestrateDeps = {
+      providers: { claude: claudeProvider },
+      clock,
+      session,
+      ledger,
+      policy: DEFAULT_POLICY,
+      cwd: '/fake/cwd',
+      sandbox: 'workspace-write',
+      timeoutMs: 30_000,
+    };
+
+    const events = await collectEvents(
+      orchestrate('refactor X', deps, new AbortController().signal),
+    );
+
+    // We must NOT claim spend is unknown when real usage was parsed.
+    const unknownNotice = events.find(
+      (e) => e.type === 'notice' && /spend unknown/i.test(e.message),
+    );
+    assert.equal(unknownNotice, undefined, 'must NOT claim "spend unknown" when partial usage was parsed');
+
+    // Ledger records the real measured tokens (success:false, not a crash hide).
+    assert.equal(ledger.entries.length, 1);
+    const entry = ledger.entries[0]!;
+    assert.equal(entry.success, false);
+    assert.equal(entry.inputTokens, 4321, 'real parsed input tokens must be recorded');
+    assert.equal(entry.outputTokens, 0);
+
+    // Still a failing final tagged timeout, still no failover.
+    assert.equal(events.find((e) => e.type === 'failover'), undefined);
+    const finalEv = events.find((e) => e.type === 'final');
+    assert.ok(finalEv !== undefined && finalEv.type === 'final');
+    if (finalEv.type === 'final') {
+      assert.equal(finalEv.success, false);
+      assert.equal(finalEv.errorCategory, 'timeout');
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Structured-question short-circuit (ask_user)
+// ---------------------------------------------------------------------------
+
+describe('orchestrate — ask_user short-circuit', () => {
+  const ASK_USER =
+    '{"ask_user":{"questions":[{"id":"framework","prompt":"Which framework?","options":[{"label":"vitest"},{"label":"jest"}],"multiSelect":false,"allowFreeText":true}]}}';
+  const ASK_TEXT = `I need a decision before I proceed.\n${ASK_USER}`;
+
+  function makeAskDeps(): {
+    deps: OrchestrateDeps;
+    session: ReturnType<typeof makeFakeSession>;
+    ledger: ReturnType<typeof makeFakeLedger>;
+  } {
+    const session = makeFakeSession();
+    const ledger = makeFakeLedger();
+    const askProvider = makeFakeProvider('claude', [
+      { type: 'text', delta: 'I need a decision before I proceed.\n' },
+      { type: 'done', text: ASK_TEXT, usage: FAKE_USAGE, raw: {} },
+    ]);
+    const deps: OrchestrateDeps = {
+      providers: { claude: askProvider },
+      clock: makeFakeClock(),
+      session,
+      ledger,
+      policy: DEFAULT_POLICY,
+      cwd: '/fake/cwd',
+      sandbox: 'workspace-write',
+      timeoutMs: 30_000,
+    };
+    return { deps, session, ledger };
+  }
+
+  it('yields a successful final carrying the parsed questions', async () => {
+    const { deps } = makeAskDeps();
+    const events = await collectEvents(
+      orchestrate('set up tests', deps, new AbortController().signal),
+    );
+    const final = events.find((e) => e.type === 'final');
+    assert.ok(final !== undefined && final.type === 'final');
+    if (final.type === 'final') {
+      assert.equal(final.success, true);
+      assert.ok(final.questions !== undefined, 'final must carry questions');
+      assert.equal(final.questions.questions.length, 1);
+      assert.equal(final.questions.questions[0]!.id, 'framework');
+    }
+  });
+
+  it('does NOT escalate or review when a question is asked', async () => {
+    const { deps } = makeAskDeps();
+    const events = await collectEvents(
+      orchestrate('set up tests', deps, new AbortController().signal),
+    );
+    assert.equal(events.find((e) => e.type === 'escalate'), undefined, 'no escalate');
+    // No second tier-start (which a review or escalation would trigger).
+    const tierStarts = events.filter((e) => e.type === 'tier-start');
+    assert.equal(tierStarts.length, 1, 'exactly one tier ran (no review/escalation)');
+  });
+
+  it('persists the assistant question turn so the answer turn can replay it', async () => {
+    const { deps, session } = makeAskDeps();
+    await collectEvents(orchestrate('set up tests', deps, new AbortController().signal));
+    const assistant = session.entries.find((e) => e.role === 'assistant');
+    assert.ok(assistant !== undefined, 'assistant turn persisted');
+    assert.ok(assistant!.content.includes('ask_user'), 'persisted content carries the block for replay');
   });
 });

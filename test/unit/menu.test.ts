@@ -16,10 +16,17 @@ import {
   renderHeaderLines,
   renderConversationList,
   renderBudgetLine,
+  versionStatusLabel,
+  isRunningUnderNpx,
+  interpretQuestionAnswer,
+  FREE_TEXT_SENTINEL,
 } from '../../src/interface/menu.ts';
+import type { Question } from '../../src/core/types.ts';
+import type { UpdateCheckResult } from '../../src/infra/update-check.ts';
 import type { EnvironmentStatus } from '../../src/providers/detect.ts';
 import type { ConversationMeta } from '../../src/infra/conversation-store.ts';
 import type { SpendSummary } from '../../src/infra/insights.ts';
+import type { ClaudeTokenStatus } from '../../src/infra/credentials.ts';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -66,7 +73,7 @@ function assertNoDigitPercent(output: string, label: string): void {
 type ProviderStatusWithPlan = EnvironmentStatus['claude'] & { readonly plan?: string | null };
 
 function makeProvider(
-  id: 'claude' | 'codex',
+  id: 'claude' | 'codex' | 'opencode',
   opts: {
     installed: boolean;
     version?: string | null;
@@ -85,9 +92,13 @@ function makeProvider(
   } as ProviderStatusWithPlan;
 }
 
+/** Canonical not-installed opencode status used as a default in fake envs. */
+const OPENCODE_NOT_INSTALLED = makeProvider('opencode', { installed: false });
+
 const FAKE_ENV_BOTH_INSTALLED: EnvironmentStatus = {
   claude: makeProvider('claude', { installed: true, version: '1.2.3', authenticated: true }),
   codex: makeProvider('codex', { installed: true, version: '4.5.6', authenticated: true }),
+  opencode: OPENCODE_NOT_INSTALLED,
   hasAnyProvider: true,
   platform: 'linux',
 };
@@ -95,6 +106,7 @@ const FAKE_ENV_BOTH_INSTALLED: EnvironmentStatus = {
 const FAKE_ENV_NONE_INSTALLED: EnvironmentStatus = {
   claude: makeProvider('claude', { installed: false }),
   codex: makeProvider('codex', { installed: false }),
+  opencode: OPENCODE_NOT_INSTALLED,
   hasAnyProvider: false,
   platform: 'linux',
 };
@@ -102,6 +114,7 @@ const FAKE_ENV_NONE_INSTALLED: EnvironmentStatus = {
 const FAKE_ENV_MIXED: EnvironmentStatus = {
   claude: makeProvider('claude', { installed: true, version: '2.0.0', authenticated: true }),
   codex: makeProvider('codex', { installed: false }),
+  opencode: OPENCODE_NOT_INSTALLED,
   hasAnyProvider: true,
   platform: 'win32',
 };
@@ -110,6 +123,7 @@ const FAKE_ENV_MIXED: EnvironmentStatus = {
 const FAKE_ENV_INSTALLED_NOT_AUTHED: EnvironmentStatus = {
   claude: makeProvider('claude', { installed: true, version: '1.0.0', authenticated: false }),
   codex: makeProvider('codex', { installed: true, version: '4.0.0', authenticated: true }),
+  opencode: OPENCODE_NOT_INSTALLED,
   hasAnyProvider: true,
   platform: 'linux',
 };
@@ -118,6 +132,7 @@ const FAKE_ENV_INSTALLED_NOT_AUTHED: EnvironmentStatus = {
 const FAKE_ENV_WITH_PLANS: EnvironmentStatus = {
   claude: makeProvider('claude', { installed: true, version: '1.0.0', authenticated: true, plan: 'Max x5' }),
   codex: makeProvider('codex', { installed: true, version: '4.0.0', authenticated: true, plan: 'Plus' }),
+  opencode: OPENCODE_NOT_INSTALLED,
   hasAnyProvider: true,
   platform: 'linux',
 };
@@ -126,6 +141,7 @@ const FAKE_ENV_WITH_PLANS: EnvironmentStatus = {
 const FAKE_ENV_NO_PLAN: EnvironmentStatus = {
   claude: makeProvider('claude', { installed: true, version: '1.0.0', authenticated: true, plan: null }),
   codex: makeProvider('codex', { installed: true, version: '4.0.0', authenticated: true, plan: null }),
+  opencode: OPENCODE_NOT_INSTALLED,
   hasAnyProvider: true,
   platform: 'linux',
 };
@@ -302,6 +318,51 @@ describe('renderHeaderLines', () => {
       assertNoDigitPercent(line, 'renderHeaderLines');
     }
   });
+
+  // ---- opencode conditional rendering ----------------------------------------
+
+  it('shows opencode line (✅ ready (free models)) when opencode is installed', () => {
+    const envWithOpencode: EnvironmentStatus = {
+      ...FAKE_ENV_BOTH_INSTALLED,
+      opencode: makeProvider('opencode', { installed: true, version: '0.1.0', authenticated: true }),
+    };
+    const lines = renderHeaderLines(envWithOpencode, '2.0.0');
+    // Should now be 3 lines: claude, codex, opencode
+    assert.strictEqual(lines.length, 3);
+    const opencodeLine = lines.find((l) => l.includes('opencode'));
+    assert.ok(opencodeLine !== undefined, 'opencode line must appear when installed');
+    assert.ok(opencodeLine.includes('✅'), 'opencode installed+authed → ✅');
+    assert.ok(opencodeLine.includes('ready'), 'opencode line shows "ready"');
+    assert.ok(opencodeLine.includes('free models'), 'opencode line shows "free models" basis');
+  });
+
+  it('does NOT show opencode line when opencode is not installed', () => {
+    // All existing fixtures have opencode not-installed — verify no nag line.
+    const lines = renderHeaderLines(FAKE_ENV_BOTH_INSTALLED, '2.0.0');
+    assert.strictEqual(lines.length, 2, 'only claude+codex lines when opencode not installed');
+    const opencodeLine = lines.find((l) => l.includes('opencode'));
+    assert.ok(opencodeLine === undefined, 'no opencode line when not installed');
+  });
+
+  it('existing header assertions unchanged when opencode is not installed', () => {
+    // Regression: existing tests (2 lines, ✅ claude, ✅ codex) must still hold.
+    const lines = renderHeaderLines(FAKE_ENV_BOTH_INSTALLED, '2.0.0');
+    assert.strictEqual(lines.length, 2);
+    assert.ok(lines.some((l) => l.includes('✅') && l.includes('claude')));
+    assert.ok(lines.some((l) => l.includes('✅') && l.includes('codex')));
+  });
+
+  it('shows ⚠️ for opencode installed but not authenticated', () => {
+    const envWithUnauthOpencode: EnvironmentStatus = {
+      ...FAKE_ENV_BOTH_INSTALLED,
+      opencode: makeProvider('opencode', { installed: true, version: '0.1.0', authenticated: false }),
+    };
+    const lines = renderHeaderLines(envWithUnauthOpencode, '2.0.0');
+    const opencodeLine = lines.find((l) => l.includes('opencode'));
+    assert.ok(opencodeLine !== undefined, 'opencode line must appear when installed');
+    assert.ok(opencodeLine.includes('⚠'), 'opencode installed but not authed → ⚠️');
+    assert.ok(opencodeLine.includes('not signed in'), 'includes "not signed in"');
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -420,46 +481,48 @@ describe('renderBudgetLine', () => {
       todayUsd: 0,
       totalUsd: 0,
       calls: 0,
+      todayTokens: 0,
+      totalTokens: 0,
       byProvider: {},
       ...overrides,
     };
   }
 
-  it('shows "no runs yet" when calls is 0', () => {
+  it('shows a "no runs yet" prompt when calls is 0', () => {
     const line = renderBudgetLine(makeSpend({ calls: 0 }), false);
-    assert.ok(line.includes('no runs yet'), `expected "no runs yet" in: "${line}"`);
+    assert.ok(line.toLowerCase().includes('no runs yet'), `expected "no runs yet" in: "${line}"`);
   });
 
-  it('shows $0.0000 for todayUsd when calls is 0', () => {
-    const line = renderBudgetLine(makeSpend({ calls: 0 }), false);
-    assert.ok(line.includes('$0.0000'), `expected "$0.0000" in: "${line}"`);
+  it('shows NO dollar figure (subscription tool — tokens only)', () => {
+    const cases = [
+      makeSpend({ calls: 0 }),
+      makeSpend({ calls: 3, todayTokens: 12400, totalTokens: 89000 }),
+    ];
+    for (const spend of cases) {
+      const line = renderBudgetLine(spend, false);
+      assert.ok(!line.includes('$'), `budget line must not contain a "$" figure: "${line}"`);
+    }
   });
 
-  it('shows real today and total values when calls > 0', () => {
-    const spend = makeSpend({ todayUsd: 0.0124, totalUsd: 0.0890, calls: 3 });
+  it('shows real token totals when calls > 0', () => {
+    const spend = makeSpend({ calls: 3, todayTokens: 12400, totalTokens: 89000 });
     const line = renderBudgetLine(spend, false);
-    assert.ok(line.includes('$0.0124'), `expected "$0.0124" in: "${line}"`);
-    assert.ok(line.includes('$0.0890'), `expected "$0.0890" in: "${line}"`);
+    assert.ok(line.includes('12.4k'), `expected today tokens "12.4k" in: "${line}"`);
+    assert.ok(line.includes('89k'), `expected all-time tokens "89k" in: "${line}"`);
   });
 
-  it('shows the call count when calls > 0', () => {
-    const spend = makeSpend({ todayUsd: 0.0050, totalUsd: 0.0050, calls: 3 });
-    const line = renderBudgetLine(spend, false);
-    assert.ok(line.includes('3 calls'), `expected "3 calls" in: "${line}"`);
+  it('shows the task count (singular/plural) when calls > 0', () => {
+    assert.ok(renderBudgetLine(makeSpend({ calls: 3, todayTokens: 100 }), false).includes('3 tasks'));
+    assert.ok(renderBudgetLine(makeSpend({ calls: 1, todayTokens: 100 }), false).includes('1 task'));
   });
 
-  it('includes "Today:" prefix', () => {
-    const line = renderBudgetLine(makeSpend({ calls: 1, todayUsd: 0.0010, totalUsd: 0.0010 }), false);
+  it('includes "Today:" prefix when calls > 0', () => {
+    const line = renderBudgetLine(makeSpend({ calls: 1, todayTokens: 100, totalTokens: 100 }), false);
     assert.ok(line.startsWith('Today:'), `expected "Today:" prefix in: "${line}"`);
   });
 
-  it('includes "Total:" label when calls > 0', () => {
-    const line = renderBudgetLine(makeSpend({ calls: 2, todayUsd: 0.0020, totalUsd: 0.0030 }), false);
-    assert.ok(line.includes('Total:'), `expected "Total:" in: "${line}"`);
-  });
-
   it('color=false → no ANSI codes', () => {
-    const line = renderBudgetLine(makeSpend({ calls: 1, todayUsd: 0.001, totalUsd: 0.001 }), false);
+    const line = renderBudgetLine(makeSpend({ calls: 1, todayTokens: 100, totalTokens: 100 }), false);
     assert.ok(
       !ANSI_RE.test(line),
       `renderBudgetLine(color=false) must not contain ANSI codes: "${line}"`,
@@ -469,8 +532,8 @@ describe('renderBudgetLine', () => {
   it('does not contain a digit-% literal', () => {
     const cases = [
       makeSpend({ calls: 0 }),
-      makeSpend({ calls: 1, todayUsd: 0.0010, totalUsd: 0.0010 }),
-      makeSpend({ calls: 99, todayUsd: 0.9999, totalUsd: 1.2345 }),
+      makeSpend({ calls: 1, todayTokens: 100, totalTokens: 100 }),
+      makeSpend({ calls: 99, todayTokens: 999999, totalTokens: 1234567 }),
     ];
     for (const spend of cases) {
       const line = renderBudgetLine(spend, false);
@@ -481,11 +544,241 @@ describe('renderBudgetLine', () => {
   it('does not contain forbidden substrings', () => {
     const cases = [
       makeSpend({ calls: 0 }),
-      makeSpend({ calls: 1, todayUsd: 0.0010, totalUsd: 0.0010 }),
+      makeSpend({ calls: 1, todayTokens: 100, totalTokens: 100 }),
     ];
     for (const spend of cases) {
       const line = renderBudgetLine(spend, false);
       assertNoForbidden(line, 'renderBudgetLine');
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// renderHeaderLines — claudeToken param (token expiry warnings)
+// ---------------------------------------------------------------------------
+
+function makeClaudeTokenStatus(overrides: Partial<ClaudeTokenStatus>): ClaudeTokenStatus {
+  return {
+    capturedAt: '2026-01-01T00:00:00.000Z',
+    expiresAt: '2027-01-01T00:00:00.000Z',
+    daysLeft: 200,
+    expired: false,
+    nearExpiry: false,
+    ...overrides,
+  };
+}
+
+describe('renderHeaderLines — token warning line shown only near-expiry or expired', () => {
+  it('adds NO extra line when claudeToken is omitted (undefined)', () => {
+    const lines = renderHeaderLines(FAKE_ENV_BOTH_INSTALLED, '2.0.0');
+    assert.strictEqual(lines.length, 2, 'exactly 2 provider lines when no token info');
+  });
+
+  it('adds NO extra line when claudeToken is null', () => {
+    const lines = renderHeaderLines(FAKE_ENV_BOTH_INSTALLED, '2.0.0', null);
+    assert.strictEqual(lines.length, 2, 'exactly 2 provider lines when null');
+  });
+
+  it('adds NO extra line when token is healthy (not near expiry)', () => {
+    const tokenInfo = makeClaudeTokenStatus({ daysLeft: 200, expired: false, nearExpiry: false });
+    const lines = renderHeaderLines(FAKE_ENV_BOTH_INSTALLED, '2.0.0', tokenInfo);
+    assert.strictEqual(lines.length, 2, 'no warning line when healthy token');
+  });
+
+  it('adds a warning line when token is near-expiry', () => {
+    const tokenInfo = makeClaudeTokenStatus({ daysLeft: 10, expired: false, nearExpiry: true });
+    const lines = renderHeaderLines(FAKE_ENV_BOTH_INSTALLED, '2.0.0', tokenInfo);
+    assert.strictEqual(lines.length, 3, 'one extra warning line when near-expiry');
+    const warnLine = lines.find((l) => l.includes('token'));
+    assert.ok(warnLine !== undefined, 'warning line mentions "token"');
+    assert.ok(warnLine.includes('10'), 'warning line shows days remaining');
+  });
+
+  it('adds a warning line when token is expired', () => {
+    const tokenInfo = makeClaudeTokenStatus({ daysLeft: -5, expired: true, nearExpiry: false });
+    const lines = renderHeaderLines(FAKE_ENV_BOTH_INSTALLED, '2.0.0', tokenInfo);
+    assert.strictEqual(lines.length, 3, 'one extra warning line when expired');
+    const warnLine = lines.find((l) => l.includes('EXPIRED'));
+    assert.ok(warnLine !== undefined, 'warning line contains "EXPIRED"');
+  });
+
+  it('expired warning includes the login command', () => {
+    const tokenInfo = makeClaudeTokenStatus({ daysLeft: -1, expired: true, nearExpiry: false });
+    const lines = renderHeaderLines(FAKE_ENV_BOTH_INSTALLED, '2.0.0', tokenInfo);
+    const warnLine = lines.find((l) => l.includes('EXPIRED')) ?? '';
+    assert.ok(
+      warnLine.includes('myshell-tools login claude --code'),
+      `expected login command in expired warning: "${warnLine}"`,
+    );
+  });
+
+  it('near-expiry warning includes the login command', () => {
+    const tokenInfo = makeClaudeTokenStatus({ daysLeft: 7, expired: false, nearExpiry: true });
+    const lines = renderHeaderLines(FAKE_ENV_BOTH_INSTALLED, '2.0.0', tokenInfo);
+    const warnLine = lines.find((l) => l.includes('token')) ?? '';
+    assert.ok(
+      warnLine.includes('myshell-tools login claude --code'),
+      `expected login command in near-expiry warning: "${warnLine}"`,
+    );
+  });
+
+  it('warning line does not contain ANSI codes (pure string)', () => {
+    const tokenInfo = makeClaudeTokenStatus({ daysLeft: 5, expired: false, nearExpiry: true });
+    const lines = renderHeaderLines(FAKE_ENV_BOTH_INSTALLED, '2.0.0', tokenInfo);
+    const warnLine = lines[lines.length - 1] ?? '';
+    assert.ok(!ANSI_RE.test(warnLine), `warning line must not contain ANSI: "${warnLine}"`);
+  });
+
+  it('also adds warning line when opencode is installed (4th line total)', () => {
+    const envWithOpencode: EnvironmentStatus = {
+      ...FAKE_ENV_BOTH_INSTALLED,
+      opencode: makeProvider('opencode', { installed: true, version: '0.1.0', authenticated: true }),
+    };
+    const tokenInfo = makeClaudeTokenStatus({ daysLeft: 3, expired: false, nearExpiry: true });
+    const lines = renderHeaderLines(envWithOpencode, '2.0.0', tokenInfo);
+    // 3 provider lines + 1 token warning = 4
+    assert.strictEqual(lines.length, 4, 'claude + codex + opencode + token warning = 4 lines');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// versionStatusLabel
+// ---------------------------------------------------------------------------
+
+describe('versionStatusLabel', () => {
+  const mk = (over: Partial<UpdateCheckResult>): UpdateCheckResult => ({
+    current: '3.0.0',
+    latest: '3.0.0',
+    updateAvailable: false,
+    ...over,
+  });
+
+  it('returns "(latest)" when up to date (latest known, no update)', () => {
+    assert.strictEqual(versionStatusLabel(mk({})), ' (latest)');
+  });
+
+  it('shows the newer version when an update is available', () => {
+    const label = versionStatusLabel(mk({ latest: '3.1.0', updateAvailable: true }));
+    assert.strictEqual(label, ' → 3.1.0 available');
+  });
+
+  it('claims nothing when the check did not run (undefined)', () => {
+    assert.strictEqual(versionStatusLabel(undefined), '');
+  });
+
+  it('claims nothing when latest is unknown (offline/failed)', () => {
+    assert.strictEqual(versionStatusLabel(mk({ latest: null })), '');
+  });
+
+  it('never fabricates a percentage and emits no ANSI', () => {
+    for (const info of [mk({}), mk({ latest: '4.0.0', updateAvailable: true })]) {
+      const label = versionStatusLabel(info);
+      assert.ok(!ANSI_RE.test(label), 'no ANSI in version label');
+      assert.ok(!/\d+%/.test(label), 'no digit-% literal in version label');
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// isRunningUnderNpx
+// ---------------------------------------------------------------------------
+
+describe('isRunningUnderNpx', () => {
+  it('detects a POSIX npx cache script path', () => {
+    const p = '/home/u/.npm/_npx/abc123/node_modules/myshell-tools/dist/cli.js';
+    assert.strictEqual(isRunningUnderNpx(p, {}), true);
+  });
+
+  it('detects a Windows npx cache script path', () => {
+    const p = 'C:\\Users\\u\\AppData\\npm-cache\\_npx\\abc\\node_modules\\myshell-tools\\dist\\cli.js';
+    assert.strictEqual(isRunningUnderNpx(p, {}), true);
+  });
+
+  it('detects npx via npm_execpath when the script path is clean', () => {
+    const env = { npm_execpath: '/home/u/.npm/_npx/abc/node_modules/npm/bin/npx-cli.js' };
+    assert.strictEqual(isRunningUnderNpx('/usr/lib/whatever.js', env), true);
+  });
+
+  it('returns false for a global install path', () => {
+    const p = '/usr/local/lib/node_modules/myshell-tools/dist/cli.js';
+    assert.strictEqual(isRunningUnderNpx(p, {}), false);
+  });
+
+  it('returns false when the script path is undefined and no env hint', () => {
+    assert.strictEqual(isRunningUnderNpx(undefined, {}), false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// interpretQuestionAnswer — pure decision core for the question selector
+// ---------------------------------------------------------------------------
+
+describe('interpretQuestionAnswer', () => {
+  const single: Question = {
+    id: 'framework',
+    prompt: 'Which framework?',
+    options: [{ label: 'vitest' }, { label: 'jest' }, { label: 'mocha' }],
+    multiSelect: false,
+    allowFreeText: true,
+  };
+  const multi: Question = {
+    id: 'langs',
+    prompt: 'Pick languages',
+    options: [{ label: 'ts' }, { label: 'go' }, { label: 'rust' }],
+    multiSelect: true,
+    allowFreeText: false,
+  };
+  const noFree: Question = {
+    id: 'yn',
+    prompt: 'Yes or no?',
+    options: [{ label: 'yes' }, { label: 'no' }],
+    multiSelect: false,
+    allowFreeText: false,
+  };
+
+  it('maps a digit to the option label (single-select)', () => {
+    assert.deepEqual(interpretQuestionAnswer('1', single), { kind: 'answer', text: 'vitest' });
+    assert.deepEqual(interpretQuestionAnswer('2', single), { kind: 'answer', text: 'jest' });
+  });
+
+  it('comma multi-select returns distinct labels in order', () => {
+    assert.deepEqual(interpretQuestionAnswer('1,3', multi), { kind: 'answer', text: 'ts, rust' });
+    assert.deepEqual(interpretQuestionAnswer('3 1 3', multi), { kind: 'answer', text: 'rust, ts' });
+  });
+
+  it('accepts free text directly when allowed', () => {
+    assert.deepEqual(interpretQuestionAnswer('playwright', single), {
+      kind: 'answer',
+      text: 'playwright',
+    });
+  });
+
+  it('rejects free text when not allowed → retry', () => {
+    assert.deepEqual(interpretQuestionAnswer('maybe', noFree), { kind: 'retry' });
+  });
+
+  it('treats the "type your own" sentinel index as the free-text marker', () => {
+    // options.length (3) + 1 = 4
+    assert.deepEqual(interpretQuestionAnswer('4', single), {
+      kind: 'answer',
+      text: FREE_TEXT_SENTINEL,
+    });
+  });
+
+  it('cancels on null (EOF), blank line, and Ctrl-C/Ctrl-D bytes', () => {
+    assert.deepEqual(interpretQuestionAnswer(null, single), { kind: 'cancel' });
+    assert.deepEqual(interpretQuestionAnswer('   ', single), { kind: 'cancel' });
+    assert.deepEqual(interpretQuestionAnswer('\x03', single), { kind: 'cancel' });
+    assert.deepEqual(interpretQuestionAnswer('\x04', single), { kind: 'cancel' });
+  });
+
+  it('retries on an out-of-range numeric selection', () => {
+    assert.deepEqual(interpretQuestionAnswer('9', noFree), { kind: 'retry' });
+  });
+
+  it('never throws on adversarial input', () => {
+    for (const i of ['', '0', '-1', ',,,', '1,abc', '99']) {
+      assert.doesNotThrow(() => interpretQuestionAnswer(i, multi));
     }
   });
 });
