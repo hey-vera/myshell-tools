@@ -8,7 +8,7 @@
 
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { parseQuestions, formatAnswers } from '../../src/core/questions.ts';
+import { parseQuestions, formatAnswers, isKeepGoingOffer } from '../../src/core/questions.ts';
 import type { QuestionSet } from '../../src/core/types.ts';
 
 // ---------------------------------------------------------------------------
@@ -212,5 +212,38 @@ describe('parseQuestions — trailing-only (Major 3 regression)', () => {
     // block mid-answer — it must NOT be misread as a real question and pop a selector.
     const r = parseQuestions(VALID + '\n\nThat is an example of the format.');
     assert.equal(r, null);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// isKeepGoingOffer — the autonomy-offer detector (reserved id 'keep_going')
+// ---------------------------------------------------------------------------
+
+describe('isKeepGoingOffer', () => {
+  it('true for a single question with id "keep_going"', () => {
+    const qs = parseQuestions(
+      '{"ask_user":{"questions":[{"id":"keep_going","prompt":"Keep going?","options":[{"label":"Yes"},{"label":"No"}],"multiSelect":false,"allowFreeText":false}]}}',
+    );
+    assert.ok(qs !== null);
+    assert.equal(isKeepGoingOffer(qs), true);
+  });
+
+  it('false for an ordinary question (different id)', () => {
+    const qs = parseQuestions(
+      '{"ask_user":{"questions":[{"id":"framework","prompt":"Which?","options":[{"label":"vitest"},{"label":"jest"}],"multiSelect":false,"allowFreeText":false}]}}',
+    );
+    assert.ok(qs !== null);
+    assert.equal(isKeepGoingOffer(qs), false);
+  });
+
+  it('false when keep_going is bundled with other questions (not a clean offer)', () => {
+    const qs = parseQuestions(
+      '{"ask_user":{"questions":[' +
+        '{"id":"keep_going","prompt":"Keep going?","options":[{"label":"Yes"},{"label":"No"}],"multiSelect":false,"allowFreeText":false},' +
+        '{"id":"other","prompt":"Which?","options":[{"label":"a"},{"label":"b"}],"multiSelect":false,"allowFreeText":false}' +
+        ']}}',
+    );
+    assert.ok(qs !== null);
+    assert.equal(isKeepGoingOffer(qs), false);
   });
 });

@@ -153,6 +153,22 @@ export function parseQuestions(text: string): QuestionSet | null {
   }
 }
 
+/**
+ * Reserved ask_user question id the model uses to OFFER autonomous continuation
+ * of a large multi-step job (see prompt.ts — the literal must match). The chat
+ * intercepts this specific offer and, on acceptance, runs the goal loop on the
+ * original task — so sustained autonomy needs no command from the user.
+ */
+const KEEP_GOING_QUESTION_ID = 'keep_going';
+
+/**
+ * True when a parsed question set is the model's autonomy offer (a single
+ * question whose id is {@link KEEP_GOING_QUESTION_ID}). Pure; never throws.
+ */
+export function isKeepGoingOffer(qs: QuestionSet): boolean {
+  return qs.questions.length === 1 && qs.questions[0]?.id === KEEP_GOING_QUESTION_ID;
+}
+
 // ---------------------------------------------------------------------------
 // Answer formatting (deterministic next-turn text)
 // ---------------------------------------------------------------------------

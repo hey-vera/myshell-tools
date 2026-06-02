@@ -21,7 +21,7 @@ import { execa } from 'execa';
 import type { Clock, LedgerWriter, OrchestrateDeps, Question, QuestionSet, SessionEntry } from '../core/types.js';
 import { buildGoalTask, parseGoalSignal, decideGoalNext, DEFAULT_MAX_GOAL_ITERATIONS } from '../core/goal.js';
 import type { GoalCeilings } from '../core/goal.js';
-import { formatAnswers } from '../core/questions.js';
+import { formatAnswers, isKeepGoingOffer } from '../core/questions.js';
 import type { AppConfig } from '../infra/config.js';
 import { saveConfig } from '../infra/config.js';
 import type { ConversationMeta, ConversationStore } from '../infra/conversation-store.js';
@@ -1979,37 +1979,27 @@ async function runChatLoop(
         };
       };
 
-      // ---- /goal — autonomous loop until the model reports completion ---------
-      // Runs turns toward a goal, reloading history each turn so the model sees
-      // its own prior progress, bounded by hard ceilings (turns + optional cost)
-      // and Esc. The completion signal is a plain-text marker (core/goal.ts), so
-      // nothing on the orchestrate hot path changes.
-      if (line.startsWith('/goal')) {
-        const goalText = line.slice('/goal'.length).trim();
-        if (goalText.length === 0) {
-          out.write(dim('  Usage: /goal <what you want achieved> — I work autonomously until it\'s done (Esc to stop).\n', out.color));
-          continue;
-        }
-
-        // Give a fresh conversation a CLEAN title (the goal text) before the loop,
-        // so the scaffolded per-turn prompt (buildGoalTask) doesn't become the
-        // title. Only when still untitled — never clobber an existing chat's title.
-        const goalMeta = (await ctx.store.list()).find((m) => m.id === convId);
-        if (goalMeta !== undefined && goalMeta.title.trim().length === 0) {
+      // Autonomous goal loop — shared by /goal AND by accepting the model's
+      // in-chat "keep going?" offer. Runs turns toward `goalText`, reloading
+      // history each turn so the model sees its own progress, bounded by a turn
+      // ceiling and Esc. Returns true when the outer chat loop should break
+      // (Ctrl+C → menu/exit). Closes over the per-turn buildDeps + the shared
+      // currentAc/shouldExit/shouldMenu/loopResult flags.
+      const runGoalLoop = async (goalText: string): Promise<boolean> => {
+        // Title a still-untitled conversation from the goal (no-op if already set).
+        const gMeta = (await ctx.store.list()).find((m) => m.id === convId);
+        if (gMeta !== undefined && gMeta.title.trim().length === 0) {
           await ctx.store.rename(convId, goalText.length <= 80 ? goalText : goalText.slice(0, 80));
         }
-
         // Turns are the honest bound on a subscription (no per-token bill to cap).
         const ceilings: GoalCeilings = { maxIterations: DEFAULT_MAX_GOAL_ITERATIONS };
         out.write(
           dim(
-            `\n  Goal mode: working autonomously toward your goal (up to ${ceilings.maxIterations} turns). Esc to stop.\n\n`,
+            `\n  Working autonomously until it's done (up to ${ceilings.maxIterations} turns). Esc to stop.\n\n`,
             out.color,
           ),
         );
-
         let completed = 0;
-        let goalBroke = false;
         for (let i = 0; i < ceilings.maxIterations; i++) {
           out.write(dim(`  — turn ${i + 1}/${ceilings.maxIterations} —\n`, out.color));
           const goalDeps = buildDeps(await ctx.store.load(convId));
@@ -2024,14 +2014,11 @@ async function runChatLoop(
           );
           currentAc = null;
           completed = i + 1;
+          if (shouldExit) { loopResult = 'exit'; return true; }
+          if (shouldMenu) { loopResult = 'menu'; return true; }
 
-          // Esc / Ctrl+C during the turn → stop the goal run (and honour exit/menu).
-          if (shouldExit) { loopResult = 'exit'; goalBroke = true; break; }
-          if (shouldMenu) { loopResult = 'menu'; goalBroke = true; break; }
-
-          const signal = parseGoalSignal(turn.final?.output ?? '');
           const step = decideGoalNext({
-            signal,
+            signal: parseGoalSignal(turn.final?.output ?? ''),
             lastSucceeded: turn.final?.success === true,
             completedIterations: completed,
             ceilings,
@@ -2043,7 +2030,17 @@ async function runChatLoop(
             break;
           }
         }
-        if (goalBroke) break;
+        return false;
+      };
+
+      // ---- /goal — explicit autonomous loop -----------------------------------
+      if (line.startsWith('/goal')) {
+        const goalText = line.slice('/goal'.length).trim();
+        if (goalText.length === 0) {
+          out.write(dim('  Usage: /goal <what you want achieved> — I work autonomously until it\'s done (Esc to stop).\n', out.color));
+          continue;
+        }
+        if (await runGoalLoop(goalText)) break;
         continue;
       }
 
@@ -2107,6 +2104,22 @@ async function runChatLoop(
             out.write(`\n[warn] Still not signed in to ${failingProvider}. Returning to prompt.\n`);
           }
         }
+      }
+
+      // ---- Natural autonomy: accept the model's "keep going?" offer -----------
+      // For a big multi-step job the model does a first chunk and offers to finish
+      // autonomously via an ask_user block with id 'keep_going' (see prompt.ts).
+      // Render it as a clean confirm; on yes, run the autonomous goal loop on the
+      // ORIGINAL task — so sustained work needs no command. Handled BEFORE the
+      // generic selector so the offer isn't shown as a numbered list.
+      if (result.final?.questions !== undefined && isKeepGoingOffer(result.final.questions)) {
+        out.write('\n  ' + dim("I can keep working on this autonomously until it's done.", out.color) + '\n');
+        out.write('  Keep going? (Y/n) ');
+        const ans = await readLine();
+        if (parseYesNo(ans, true)) {
+          if (await runGoalLoop(line)) break;
+        }
+        continue;
       }
 
       // ---- Structured-question turns (ask_user) -------------------------------
