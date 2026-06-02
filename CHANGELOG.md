@@ -9,6 +9,17 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 ### Pending
 - Live cross-vendor review demonstration (requires an authenticated Codex CLI).
 - Cross-OS CI execution (requires a public remote).
+- Tab-to-autocomplete for slash-commands and in-chat multiple-choice questions (designed, not yet built).
+
+## [3.4.0]
+
+### Changed (the chat now behaves like a professional partner, not a router)
+This release is a response to a live-use audit that rated the experience "pretty poor." Four root causes, all fixed:
+
+- **Output hygiene — the chat no longer leaks its own control plane.** Every model response was told to append a `{"confidence":…,"escalate":…}` envelope and the renderer printed it *verbatim*, so users saw raw JSON after every answer — plus an unconditional `[tool] … start` wall and per-turn telemetry. The renderer now buffers the prose tail and strips the trailing envelope (reusing the brace-aware scanner) so it never reaches the user, and a new **verbosity setting** (`quiet`/`normal`/`verbose`, default `normal`, in Settings) gates tool/telemetry chrome. Failed runs now show the actionable error *suggestion* (`formatErrorMessage`, previously dead code) instead of a bare two-word message.
+- **Routing/cost guardrail — "balanced" can no longer burn opus on a chat message.** A single soft keyword like "plan" forced the `manager` tier → `claude-opus-4-7`, even in balanced mode. Classification now requires a strong structural signal **or** ≥2 distinct soft signals before choosing manager (a lone soft word → `ic`). `Policy.maxTier` is enforced as a clamp in `route()`: **cost-saver and balanced cap at `ic`** (never auto-run opus), **quality-first** allows manager. The dead `maxCostUsd` budget guard now has real per-preset values ($0.50 / $2.00 / uncapped).
+- **Partner persona + proactive research.** The tier prompts were pure ticket-closers ("do not pad responses"). All three now carry a senior-engineering-partner voice — warm, explains tradeoffs, asks when genuinely ambiguous — with an explicit "warmth is not length" guard so concise stays the default. They also research with judgment: proactively grounding uncertain/time-sensitive facts via web tools and skipping the obvious, so **you never have to tell it to look something up**.
+- **Timeouts are no longer treated as crashes.** A manager run that blew the flat 120s limit was SIGKILL'd, recorded as **0 tokens / $0** (despite burning real subscription quota), then blindly cross-vendor re-run on the other provider. Now: a timeout is classified as `timeout` (not "unexpected error"); orchestrate **stops with actionable guidance instead of failing over**; a killed run with no usage emits an explicit *"spend unknown"* notice rather than implying it was free; every `claude -p` run carries `--max-budget-usd 25` as a runaway rail (the CLI has no `--max-turns`); and the per-run timeout is configurable via `config.timeoutMs`.
 
 ## [3.3.0]
 
