@@ -9,9 +9,12 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 ### Pending
 - Live cross-vendor review demonstration (requires an authenticated Codex CLI).
 - Cross-OS CI execution (requires a public remote).
-- Tab-to-autocomplete for slash-commands and in-chat multiple-choice questions (designed, not yet built).
 
 ## [3.4.0]
+
+### Added
+- **Tab-autocomplete for slash-commands.** At the chat prompt (and the REPL) pressing Tab completes `/help`, `/back`, `/exit` (chat) or `/help`, `/exit`, `/quit` (repl). Fires only on `/`-prefixed input so free-form prose is never mangled, and is inert on piped/non-TTY input.
+- **In-chat multiple-choice questions.** The assistant can now ask you a structured question mid-conversation — choose a numbered option, multi-select, or type your own — instead of guessing when it's genuinely blocked. Modeled on Claude Code's AskUserQuestion / MCP elicitation, transported in text (the model emits an `ask_user` block; the TUI renders a selector; your answer becomes the next turn). The raw block never leaks into the transcript, and consecutive auto-asked turns are capped at 3 so it can't loop. Also: the tier prompts now research proactively when facts are uncertain or time-sensitive — you never have to tell it to look something up.
 
 ### Changed (the chat now behaves like a professional partner, not a router)
 This release is a response to a live-use audit that rated the experience "pretty poor." Four root causes, all fixed:
