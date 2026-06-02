@@ -65,13 +65,36 @@ describe('replitPersistentEnv', () => {
     assert.equal(add['CODEX_HOME'], codexDir);
   });
 
-  it('never overrides an already-set CLAUDE_CONFIG_DIR / CODEX_HOME', () => {
+  it('sets XDG_CONFIG_HOME / XDG_DATA_HOME when opencode config dirs exist', async () => {
+    await mkdir(join(dir, '.config', 'opencode'), { recursive: true });
+    await mkdir(join(dir, '.local', 'share', 'opencode'), { recursive: true });
+    const add = replitPersistentEnv({}, dir);
+    assert.equal(add['XDG_CONFIG_HOME'], join(dir, '.config'));
+    assert.equal(add['XDG_DATA_HOME'], join(dir, '.local', 'share'));
+  });
+
+  it('never overrides an already-set CLAUDE_CONFIG_DIR / CODEX_HOME / XDG_*', () => {
     const add = replitPersistentEnv(
-      { CLAUDE_CONFIG_DIR: '/already/set', CODEX_HOME: '/also/set' },
+      {
+        CLAUDE_CONFIG_DIR: '/already/set',
+        CODEX_HOME: '/also/set',
+        XDG_CONFIG_HOME: '/xdg/cfg',
+        XDG_DATA_HOME: '/xdg/data',
+      },
       dir,
     );
     assert.equal(add['CLAUDE_CONFIG_DIR'], undefined);
     assert.equal(add['CODEX_HOME'], undefined);
+    assert.equal(add['XDG_CONFIG_HOME'], undefined);
+    assert.equal(add['XDG_DATA_HOME'], undefined);
+  });
+
+  it('does NOT set XDG dirs when .config exists but has no opencode subdir', async () => {
+    const bareDir = await mkdtemp(join(tmpdir(), `myshell-bare-${randomUUID()}-`));
+    await mkdir(join(bareDir, '.config'), { recursive: true });
+    const add = replitPersistentEnv({}, bareDir);
+    assert.equal(add['XDG_CONFIG_HOME'], undefined);
+    await rm(bareDir, { recursive: true, force: true });
   });
 
   it('does NOT redirect to an empty persistent dir (no creds → no-op, never breaks ephemeral login)', async () => {

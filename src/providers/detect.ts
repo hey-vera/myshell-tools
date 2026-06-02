@@ -307,6 +307,7 @@ async function detectOpencodeProvider(): Promise<ProviderStatus> {
     const result = await execa('opencode', ['--version'], {
       reject: false,
       timeout: 10_000,
+      env: { ...process.env, ...replitPersistentEnv(process.env, process.cwd()) },
     });
 
     if (result.exitCode === 0) {

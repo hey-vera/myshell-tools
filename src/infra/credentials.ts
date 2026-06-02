@@ -204,6 +204,17 @@ export function replitPersistentEnv(baseEnv: NodeJS.ProcessEnv, cwd: string): No
       const dir = join(cwd, '.replit-tools', '.codex-persistent');
       if (existsSync(join(dir, 'auth.json'))) add['CODEX_HOME'] = dir;
     }
+    // opencode keeps its config (your own provider/subscription — Kimi etc.) in
+    // XDG dirs. On Replit those point at the persistent workspace; a plain shell
+    // may lack them → opencode reads ephemeral ~/.config and forgets your setup.
+    if (baseEnv['XDG_CONFIG_HOME'] === undefined) {
+      const cfg = join(cwd, '.config');
+      if (existsSync(join(cfg, 'opencode'))) add['XDG_CONFIG_HOME'] = cfg;
+    }
+    if (baseEnv['XDG_DATA_HOME'] === undefined) {
+      const data = join(cwd, '.local', 'share');
+      if (existsSync(join(data, 'opencode'))) add['XDG_DATA_HOME'] = data;
+    }
   } catch {
     // Best-effort — never throw on env resolution.
   }

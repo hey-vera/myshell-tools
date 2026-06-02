@@ -39,6 +39,7 @@ import type { ProviderStatus } from './detect.js';
 import { detectProvider } from './detect.js';
 import { classifyError } from './errors.js';
 import { createOpencodeParser } from './opencode-parse.js';
+import { replitPersistentEnv } from '../infra/credentials.js';
 
 // ---------------------------------------------------------------------------
 // Factory
@@ -67,6 +68,13 @@ export function createOpencodeProvider(opts?: { bin?: string }): Provider {
       // default, which is exactly what the user wants here.
       const args = ['run', '--format', 'json'];
 
+      // Point opencode at the Replit-persistent XDG dirs when present so your own
+      // configured provider/subscription (Kimi etc.) is remembered across restarts.
+      const childEnv: NodeJS.ProcessEnv = {
+        ...process.env,
+        ...replitPersistentEnv(process.env, req.cwd),
+      };
+
       // Spawn with reject:false so we always get the result object (never throws).
       // cancelSignal wires our AbortSignal directly to execa's termination path.
       // Prompt is delivered via STDIN (input:), never as an argv argument.
@@ -76,6 +84,7 @@ export function createOpencodeProvider(opts?: { bin?: string }): Provider {
         cancelSignal: signal,
         timeout: req.timeoutMs,
         reject: false,
+        env: childEnv,
       });
 
       // One parser instance per run — holds the accumulated text/usage/cost closure.
