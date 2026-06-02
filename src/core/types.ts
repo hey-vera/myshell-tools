@@ -237,6 +237,21 @@ export interface OrchestrateDeps {
    * and when the feature is disabled. See core/native-session.ts.
    */
   readonly nativeSession?: readonly NativeSessionPlan[];
+  /**
+   * Optional model-brained route classifier. When wired, orchestrate consults it
+   * ONLY on turns the deterministic keyword classifier couldn't route (no tier
+   * evidence — see core/router.ts), and falls back to the rules on any failure or
+   * timeout (returns null). Absent → routing is purely deterministic, identical
+   * to the pre-router behaviour. The infra layer builds this from the cheapest
+   * available provider so the routing decision itself stays cheap.
+   *
+   * Typed inline (not imported from router.ts) to keep types.ts a leaf module;
+   * structurally identical to router.ts's ModelClassifier.
+   */
+  readonly routeClassifier?: (
+    task: string,
+    signal: AbortSignal,
+  ) => Promise<{ readonly tier: Tier; readonly plan: boolean; readonly reason: string } | null>;
 }
 
 /**

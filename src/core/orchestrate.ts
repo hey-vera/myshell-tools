@@ -29,7 +29,7 @@
 
 import type { CoreEvent, OrchestrateDeps, Tier, Classification, Assessment, Policy } from './types.js';
 import type { CliError, Usage, ProviderRequest, Provider, ProviderId } from '../providers/port.js';
-import { classify } from './classify.js';
+import { decideRoute } from './router.js';
 import { route, clampTier } from './route.js';
 import { buildPrompt } from './prompt.js';
 import { assess } from './assess.js';
@@ -164,9 +164,20 @@ export async function* orchestrate(
   signal: AbortSignal,
 ): AsyncGenerator<CoreEvent> {
   // -------------------------------------------------------------------------
-  // (a) Classify the task
+  // (a) Decide the route. Deterministic rules first; the model-brained router
+  //     (core/router.ts) only arbitrates turns the keyword classifier couldn't
+  //     route, and only when deps.routeClassifier is wired. decision.plan is
+  //     reserved for plan-first mode (Phase C).
   // -------------------------------------------------------------------------
-  const classification = classify(task);
+  const decision = await decideRoute(task, {
+    ...(deps.routeClassifier !== undefined ? { classifier: deps.routeClassifier } : {}),
+    signal,
+  });
+  const classification: Classification = {
+    tier: decision.tier,
+    risk: decision.risk,
+    rationale: decision.rationale,
+  };
   yield { type: 'classified', classification };
 
   // -------------------------------------------------------------------------

@@ -238,6 +238,27 @@ function scoreSignals(text: string, signals: readonly RegExp[]): readonly string
 // ---------------------------------------------------------------------------
 
 /**
+ * True when {@link classify} had real keyword evidence for its tier choice —
+ * i.e. at least one manager/ic/worker signal matched the task. False means the
+ * classifier fell back to the `ic` default with NO signal at all.
+ *
+ * This is the seam the model-brained router uses (core/router.ts): a turn with
+ * keyword evidence is routed deterministically (free, instant); a turn with no
+ * evidence is the ambiguous case — a complex request phrased without a trigger
+ * word — where consulting a cheap model adds real value. Pure, never throws.
+ *
+ * @param task - The raw task description from the user.
+ */
+export function hasTierEvidence(task: string): boolean {
+  if (!task || task.trim().length === 0) return false;
+  return (
+    scoreSignals(task, MANAGER_SIGNALS).length > 0 ||
+    scoreSignals(task, IC_SIGNALS).length > 0 ||
+    scoreSignals(task, WORKER_SIGNALS).length > 0
+  );
+}
+
+/**
  * Classify a free-text `task` string into a {@link Classification}.
  *
  * Tier: multi-signal scoring; tie-break manager > ic > worker; default ic.
