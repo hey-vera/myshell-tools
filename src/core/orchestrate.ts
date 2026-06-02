@@ -33,6 +33,7 @@ import { classify } from './classify.js';
 import { route } from './route.js';
 import { buildPrompt } from './prompt.js';
 import { assess } from './assess.js';
+import { parseQuestions } from './questions.js';
 import { compactHistory } from './history.js';
 import { getModelPricing, calculateCost } from '../infra/pricing.js';
 import { nextTierUp, pickReviewer } from './escalate.js';
@@ -400,6 +401,31 @@ export async function* orchestrate(
     };
 
     lastOutput = finalText ?? (errored?.message ?? '');
+
+    // -----------------------------------------------------------------------
+    // 0) Structured question short-circuit (ask_user)
+    // -----------------------------------------------------------------------
+    // If the model ended its turn by asking the user a structured question
+    // instead of completing work, that is a COMPLETE turn that needs a reply —
+    // not low-confidence work. Yield a successful final carrying the questions
+    // and return WITHOUT escalating or reviewing. The confidence envelope is
+    // ignored for this turn (the two are mutually exclusive per prompt.ts).
+    if (success) {
+      const questions = parseQuestions(finalText ?? '');
+      if (questions !== null) {
+        yield {
+          type: 'final',
+          success: true,
+          output: lastOutput,
+          tier: currentTier,
+          totalCostUsd,
+          sessionId: deps.session.id,
+          attempts,
+          questions,
+        };
+        return;
+      }
+    }
 
     // -----------------------------------------------------------------------
     // Decision tree

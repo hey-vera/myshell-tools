@@ -3184,3 +3184,71 @@ describe('orchestrate — honest spend on a killed run (Goal 3)', () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// Structured-question short-circuit (ask_user)
+// ---------------------------------------------------------------------------
+
+describe('orchestrate — ask_user short-circuit', () => {
+  const ASK_USER =
+    '{"ask_user":{"questions":[{"id":"framework","prompt":"Which framework?","options":[{"label":"vitest"},{"label":"jest"}],"multiSelect":false,"allowFreeText":true}]}}';
+  const ASK_TEXT = `I need a decision before I proceed.\n${ASK_USER}`;
+
+  function makeAskDeps(): {
+    deps: OrchestrateDeps;
+    session: ReturnType<typeof makeFakeSession>;
+    ledger: ReturnType<typeof makeFakeLedger>;
+  } {
+    const session = makeFakeSession();
+    const ledger = makeFakeLedger();
+    const askProvider = makeFakeProvider('claude', [
+      { type: 'text', delta: 'I need a decision before I proceed.\n' },
+      { type: 'done', text: ASK_TEXT, usage: FAKE_USAGE, raw: {} },
+    ]);
+    const deps: OrchestrateDeps = {
+      providers: { claude: askProvider },
+      clock: makeFakeClock(),
+      session,
+      ledger,
+      policy: DEFAULT_POLICY,
+      cwd: '/fake/cwd',
+      sandbox: 'workspace-write',
+      timeoutMs: 30_000,
+    };
+    return { deps, session, ledger };
+  }
+
+  it('yields a successful final carrying the parsed questions', async () => {
+    const { deps } = makeAskDeps();
+    const events = await collectEvents(
+      orchestrate('set up tests', deps, new AbortController().signal),
+    );
+    const final = events.find((e) => e.type === 'final');
+    assert.ok(final !== undefined && final.type === 'final');
+    if (final.type === 'final') {
+      assert.equal(final.success, true);
+      assert.ok(final.questions !== undefined, 'final must carry questions');
+      assert.equal(final.questions.questions.length, 1);
+      assert.equal(final.questions.questions[0]!.id, 'framework');
+    }
+  });
+
+  it('does NOT escalate or review when a question is asked', async () => {
+    const { deps } = makeAskDeps();
+    const events = await collectEvents(
+      orchestrate('set up tests', deps, new AbortController().signal),
+    );
+    assert.equal(events.find((e) => e.type === 'escalate'), undefined, 'no escalate');
+    // No second tier-start (which a review or escalation would trigger).
+    const tierStarts = events.filter((e) => e.type === 'tier-start');
+    assert.equal(tierStarts.length, 1, 'exactly one tier ran (no review/escalation)');
+  });
+
+  it('persists the assistant question turn so the answer turn can replay it', async () => {
+    const { deps, session } = makeAskDeps();
+    await collectEvents(orchestrate('set up tests', deps, new AbortController().signal));
+    const assistant = session.entries.find((e) => e.role === 'assistant');
+    assert.ok(assistant !== undefined, 'assistant turn persisted');
+    assert.ok(assistant!.content.includes('ask_user'), 'persisted content carries the block for replay');
+  });
+});

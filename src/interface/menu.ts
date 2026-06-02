@@ -18,7 +18,8 @@
 
 import readline from 'node:readline';
 import { execa } from 'execa';
-import type { Clock, LedgerWriter, OrchestrateDeps } from '../core/types.js';
+import type { Clock, LedgerWriter, OrchestrateDeps, Question, QuestionSet } from '../core/types.js';
+import { formatAnswers } from '../core/questions.js';
 import type { AppConfig } from '../infra/config.js';
 import { saveConfig } from '../infra/config.js';
 import type { ConversationMeta, ConversationStore } from '../infra/conversation-store.js';
@@ -207,6 +208,101 @@ export function interpretYesNoKey(
   if (lower === 'n') return 'no';
   return 'ignore';
 }
+
+/**
+ * The result of interpreting a user's raw answer to a single structured
+ * question (the testable decision core for the question selector):
+ *   - `{ kind: 'answer', text }` — a resolved answer string (one or more option
+ *     labels joined by ', ', or free text) to feed back as the next turn.
+ *   - `{ kind: 'cancel' }` — EOF/blank/Ctrl-C: skip this question.
+ *   - `{ kind: 'retry' }` — the input made no valid selection; re-prompt.
+ */
+export type QuestionVerdict =
+  | { readonly kind: 'answer'; readonly text: string }
+  | { readonly kind: 'cancel' }
+  | { readonly kind: 'retry' };
+
+/**
+ * Interpret a raw answer line for a single {@link Question} (pure decision core
+ * used by the TTY and non-TTY selector paths alike).
+ *
+ * Selection rules (1-based indices match the rendered `[1] … [2] …` menu):
+ *   - `null` (EOF) or empty/whitespace line → `cancel`.
+ *   - Ctrl-C / Ctrl-D control bytes        → `cancel`.
+ *   - A "type your own" sentinel index (options.length + 1) when `allowFreeText`
+ *     is signalled by a non-empty `freeText` argument → that free text as the
+ *     answer (the I/O layer collects the free text after the user picks it).
+ *   - Single-select: the first valid index → that option's label.
+ *   - Multi-select: comma/space-separated indices → the distinct labels in the
+ *     order given, joined by ', '. Any wholly invalid set → `retry`.
+ *   - Free text directly typed (non-numeric) when `allowFreeText` → that text.
+ *   - Otherwise → `retry`.
+ *
+ * Pure / never throws.
+ *
+ * @param input    - The raw line from the reader, or null on EOF.
+ * @param question - The question being answered (options + flags).
+ */
+export function interpretQuestionAnswer(
+  input: string | null,
+  question: Question,
+): QuestionVerdict {
+  if (input === null) return { kind: 'cancel' };
+  // Control bytes (Ctrl-C / Ctrl-D) → cancel.
+  if (input.includes('\x03') || input.includes('\x04')) return { kind: 'cancel' };
+  const trimmed = input.trim();
+  if (trimmed.length === 0) return { kind: 'cancel' };
+
+  const optionCount = question.options.length;
+  const freeTextIndex = optionCount + 1; // the "[N] type your own" slot
+
+  // Parse the line into 1-based indices (comma or whitespace separated).
+  const tokens = trimmed.split(/[\s,]+/).filter((t) => t.length > 0);
+  const allNumeric = tokens.length > 0 && tokens.every((t) => /^\d+$/.test(t));
+
+  if (allNumeric) {
+    const indices = tokens.map((t) => parseInt(t, 10));
+
+    // "type your own" sentinel — only meaningful when free text is allowed.
+    if (question.allowFreeText && indices.length === 1 && indices[0] === freeTextIndex) {
+      // The I/O layer must collect the actual free text; signal via retry-free
+      // is unnecessary — instead we return cancel here is wrong. We surface a
+      // dedicated marker the caller recognises.
+      return { kind: 'answer', text: FREE_TEXT_SENTINEL };
+    }
+
+    const valid = indices.filter((i) => i >= 1 && i <= optionCount);
+    if (valid.length === 0) return { kind: 'retry' };
+
+    if (!question.multiSelect) {
+      const first = valid[0];
+      const label = first !== undefined ? question.options[first - 1]?.label : undefined;
+      return label !== undefined ? { kind: 'answer', text: label } : { kind: 'retry' };
+    }
+
+    // Multi-select: distinct labels in the order given.
+    const labels: string[] = [];
+    for (const i of valid) {
+      const label = question.options[i - 1]?.label;
+      if (label !== undefined && !labels.includes(label)) labels.push(label);
+    }
+    return labels.length > 0 ? { kind: 'answer', text: labels.join(', ') } : { kind: 'retry' };
+  }
+
+  // Non-numeric input: treat as free text when the question allows it.
+  if (question.allowFreeText) {
+    return { kind: 'answer', text: trimmed };
+  }
+
+  return { kind: 'retry' };
+}
+
+/**
+ * Sentinel returned by {@link interpretQuestionAnswer} when the user picked the
+ * "type your own" option by its index; the I/O layer then collects the actual
+ * free-text line. Kept internal to the selector contract.
+ */
+export const FREE_TEXT_SENTINEL = '\x00__FREE_TEXT__\x00';
 
 /**
  * The slash-commands available at the chat prompt. Tab-completion offers these;
@@ -1470,6 +1566,94 @@ async function runRawProviderSession(
  * never leaks between chat sessions. NO process.exit() is called here; cli.ts
  * owns process lifetime.
  */
+
+// ---------------------------------------------------------------------------
+// Structured-question selector
+// ---------------------------------------------------------------------------
+
+/**
+ * Maximum number of consecutive question turns the selector will auto-resubmit
+ * before handing control back to the human prompt. Prevents a model that keeps
+ * asking from looping forever without the user ever typing.
+ */
+const MAX_CONSECUTIVE_QUESTION_TURNS = 3;
+
+/**
+ * Render a {@link QuestionSet} and collect the user's answers, returning the
+ * deterministic next-turn text (via {@link formatAnswers}) to resubmit into the
+ * same conversation, or `null` when the user cancelled every question (submit
+ * nothing → return to the prompt).
+ *
+ * Behaviour (mirrors the existing numbered pickers in runImportNative/runManage):
+ *   - For each question, print the prompt + numbered options
+ *     (`[1] label — description`), plus an `[N] type your own` line when the
+ *     question allows free text.
+ *   - Read a full line via `readLine` and parse it through the pure decision
+ *     core {@link interpretQuestionAnswer}. On the TTY this line comes from the
+ *     same readline reader the chat prompt uses; in tests an injected readLine
+ *     drives it deterministically (mirrors confirmViaKey's line fallback).
+ *   - `retry` re-prompts the same question; `cancel` (EOF/blank/Ctrl-C) skips
+ *     this question and submits nothing for it.
+ *   - When the user picks "type your own", a follow-up line is read for the
+ *     free text.
+ *
+ * The reader (and thus its EOF/Ctrl-C semantics) is injected, so this is
+ * testable without a TTY.
+ */
+async function runQuestionSelector(
+  questions: QuestionSet,
+  out: OutputSink,
+  readLine: () => Promise<string | null>,
+): Promise<string | null> {
+  const answers: Record<string, string> = {};
+
+  for (const q of questions.questions) {
+    out.write(`\n${q.prompt}\n`);
+    for (let i = 0; i < q.options.length; i++) {
+      const opt = q.options[i];
+      if (opt === undefined) continue;
+      const desc = opt.description !== undefined ? ` — ${opt.description}` : '';
+      out.write(`  [${i + 1}] ${opt.label}${desc}\n`);
+    }
+    const freeTextIndex = q.options.length + 1;
+    if (q.allowFreeText) {
+      out.write(`  [${freeTextIndex}] type your own\n`);
+    }
+    const hint = q.multiSelect
+      ? 'Pick one or more (comma-separated), or Enter to skip: '
+      : 'Pick one, or Enter to skip: ';
+
+    // Re-prompt on `retry`; resolve on `answer`/`cancel`.
+    for (;;) {
+      out.write(hint);
+      const line = await readLine();
+      const verdict = interpretQuestionAnswer(line, q);
+
+      if (verdict.kind === 'cancel') break; // skip this question
+      if (verdict.kind === 'retry') {
+        out.write('  (please pick a listed number or type your own)\n');
+        continue;
+      }
+
+      // answer
+      if (verdict.text === FREE_TEXT_SENTINEL) {
+        out.write('Type your answer: ');
+        const free = await readLine();
+        const freeTrimmed = (free ?? '').trim();
+        if (freeTrimmed.length > 0) {
+          answers[q.id] = freeTrimmed;
+        }
+        break;
+      }
+      answers[q.id] = verdict.text;
+      break;
+    }
+  }
+
+  const next = formatAnswers(questions, answers);
+  return next.length > 0 ? next : null;
+}
+
 async function runChatLoop(
   ctx: MenuContext,
   mutableCtx: { config: AppConfig; env: EnvironmentStatus },
@@ -1738,6 +1922,75 @@ async function runChatLoop(
             out.write(`\n[warn] Still not signed in to ${failingProvider}. Returning to prompt.\n`);
           }
         }
+      }
+
+      // ---- Structured-question turns (ask_user) -------------------------------
+      // When the model ended its turn by asking the user a structured question,
+      // render the selector, build the deterministic answer line, and resubmit
+      // it into the SAME conversation so history replay carries the question +
+      // answer forward. The answer turn may itself end in another question; we
+      // cap consecutive auto-resubmitted question turns at
+      // MAX_CONSECUTIVE_QUESTION_TURNS so a model that keeps asking can't loop
+      // forever without the human ever typing.
+      let pending = result.final;
+      let questionTurns = 0;
+      while (
+        pending !== undefined &&
+        pending.success &&
+        pending.questions !== undefined &&
+        questionTurns < MAX_CONSECUTIVE_QUESTION_TURNS
+      ) {
+        const answerLine = await runQuestionSelector(pending.questions, out, readLine);
+        // Cancelled every question → submit nothing, return to the prompt.
+        if (answerLine === null) break;
+
+        questionTurns++;
+
+        // Reload history (the question turn was persisted by orchestrate) and
+        // rebuild deps so the answer turn replays the full thread.
+        const answerHistory = await ctx.store.load(convId);
+        const answerDeps: OrchestrateDeps = {
+          ...buildDeps(),
+          ...(answerHistory.length > 0 ? { history: answerHistory } : {}),
+        };
+
+        const answerAc = new AbortController();
+        currentAc = answerAc;
+        const answerResult = await runTask(
+          answerLine,
+          answerDeps,
+          out,
+          answerAc.signal,
+          mutableCtx.config.verbosity ?? 'normal',
+        );
+        currentAc = null;
+
+        if (shouldExit) {
+          loopResult = 'exit';
+          break;
+        }
+        if (shouldMenu) {
+          loopResult = 'menu';
+          break;
+        }
+
+        pending = answerResult.final;
+      }
+      if (shouldExit) {
+        loopResult = 'exit';
+        break;
+      }
+      if (shouldMenu) {
+        loopResult = 'menu';
+        break;
+      }
+      if (
+        questionTurns >= MAX_CONSECUTIVE_QUESTION_TURNS &&
+        pending?.questions !== undefined
+      ) {
+        out.write(
+          '\n[info] The assistant is still asking questions — over to you. Type a reply or /back.\n',
+        );
       }
     }
   } finally {

@@ -725,3 +725,96 @@ describe('renderStream — actionable error suggestion', () => {
     });
   }
 });
+
+// ---------------------------------------------------------------------------
+// 12. ask_user envelope stripping + suppressed completion line on questions
+// ---------------------------------------------------------------------------
+
+describe('renderStream — ask_user block stripping', () => {
+  const ASK_USER =
+    '{"ask_user":{"questions":[{"id":"framework","prompt":"Which?","options":[{"label":"vitest"},{"label":"jest"}],"multiSelect":false,"allowFreeText":true}]}}';
+  const QUESTIONS = {
+    questions: [
+      {
+        id: 'framework',
+        prompt: 'Which?',
+        options: [{ label: 'vitest' }, { label: 'jest' }],
+        multiSelect: false,
+        allowFreeText: true,
+      },
+    ],
+  } as const;
+
+  /** A text→final stream whose final carries `questions` (an ask_user turn). */
+  function askStream(deltas: string[]): CoreEvent[] {
+    const evs: CoreEvent[] = deltas.map((delta) => ({
+      type: 'provider-event' as const,
+      tier: 'ic' as const,
+      event: { type: 'text' as const, delta },
+    }));
+    evs.push({
+      type: 'final',
+      success: true,
+      output: deltas.join(''),
+      tier: 'ic',
+      totalCostUsd: 0,
+      sessionId: 'ask-session',
+      attempts: 1,
+      questions: QUESTIONS,
+    });
+    return evs;
+  }
+
+  it('strips a trailing ask_user block from display (single delta)', async () => {
+    const sink = makeSink();
+    await renderStream(makeStream(askStream([`I need a decision.\n${ASK_USER}`])), sink);
+    const joined = sink.buf.join('');
+    assert.ok(joined.includes('I need a decision.'), 'lead-in prose must survive');
+    assert.ok(!joined.includes('ask_user'), 'the ask_user block must NOT be shown');
+    assert.ok(!joined.includes('"questions"'), 'no block fragment may leak');
+  });
+
+  it('strips an ask_user block SPLIT across deltas', async () => {
+    const sink = makeSink();
+    await renderStream(
+      makeStream(
+        askStream([
+          'Pick a ',
+          'framework.\n',
+          '{"ask_user":{"questions":[',
+          '{"id":"framework","prompt":"Which?",',
+          '"options":[{"label":"vitest"},{"label":"jest"}],',
+          '"multiSelect":false,"allowFreeText":true}]}}',
+        ]),
+      ),
+      sink,
+    );
+    const joined = sink.buf.join('');
+    assert.ok(joined.includes('Pick a framework.'), 'prose streams fully');
+    assert.ok(!joined.includes('ask_user'), 'split block must NOT leak');
+    assert.ok(!joined.includes('allowFreeText'), 'no fragment may leak');
+  });
+
+  it('does NOT print the normal completion line on a question turn', async () => {
+    const sink = makeSink();
+    const result = await renderStream(
+      makeStream(askStream([`Need input.\n${ASK_USER}`])),
+      sink,
+      'verbose',
+    );
+    const joined = sink.buf.join('');
+    assert.ok(!joined.includes('Success'), 'no Success line for a question turn');
+    assert.ok(!joined.includes('✓ done'), 'no done line for a question turn');
+    // The final is surfaced so the caller can drive the selector.
+    assert.ok(result.final !== undefined && result.final.questions !== undefined);
+  });
+
+  it('still strips the confidence envelope on a normal turn (regression)', async () => {
+    const sink = makeSink();
+    const ENVELOPE = '{"confidence": 0.9, "escalate": false, "reason": "ok", "needs_review": false}';
+    await renderStream(makeStream(textStream([`All set.\n${ENVELOPE}`])), sink);
+    const joined = sink.buf.join('');
+    assert.ok(joined.includes('All set.'), 'prose survives');
+    assert.ok(!joined.includes('"confidence"'), 'confidence envelope still stripped');
+  });
+});

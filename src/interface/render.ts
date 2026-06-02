@@ -123,18 +123,55 @@ function trailingOpenBraceIndex(text: string): number {
 }
 
 /**
+ * The trailing control-envelope keys this filter strips from DISPLAY. Both are
+ * trailing `{ … }` JSON objects that are control-plane data, never user-facing:
+ *   - `confidence` : the self-assessment envelope prompt.ts forces onto every
+ *                    normal response.
+ *   - `ask_user`   : the structured-question block (questions.ts) the model
+ *                    emits instead, when it needs a user decision. The selector
+ *                    renders the questions from the parsed CoreEvent — the raw
+ *                    JSON must never leak into the prose, same class of bug.
+ * The two are mutually exclusive per turn, but scanning for both is harmless and
+ * future-proof.
+ */
+const CONTROL_ENVELOPE_KEYS = ['confidence', 'ask_user'] as const;
+
+/**
+ * Find the bounds of the LAST trailing control envelope (keyed by any of
+ * {@link CONTROL_ENVELOPE_KEYS}) in `text`, considering only a block whose match
+ * is at the END (nothing but whitespace after it). Returns the match with the
+ * EARLIEST start among the keyed candidates so the whole trailing block is cut.
+ * Returns null when none is present. Never throws.
+ */
+function trailingControlEnvelope(
+  text: string,
+): { readonly start: number; readonly end: number } | null {
+  let best: { readonly start: number; readonly end: number } | null = null;
+  for (const key of CONTROL_ENVELOPE_KEYS) {
+    const m = lastJsonObjectBoundsWithKey(text, key);
+    if (m !== null && text.slice(m.end).trim().length === 0) {
+      if (best === null || m.start < best.start) {
+        best = { start: m.start, end: m.end };
+      }
+    }
+  }
+  return best;
+}
+
+/**
  * A streaming writer that holds back any trailing fragment of model prose that
- * could be the start of the confidence envelope, then strips the envelope at
- * the terminal event.
+ * could be the start of a control envelope, then strips the envelope at the
+ * terminal event.
  *
- * The envelope is a trailing `{ … }` JSON object containing `"confidence"`. It
- * arrives at the very end of the `text` delta stream and may be split across
- * the last few deltas. To avoid leaking a half-arrived envelope, we hold back
- * only the trailing OPEN-brace fragment (a `{…` whose `}` hasn't arrived yet);
- * a balanced `{…}` with text after it is inline content and streams normally.
- * At the terminal event we run the brace-aware `lastJsonObjectBoundsWithKey`
- * scanner (the same one history.ts uses) to excise a genuine trailing envelope
- * before flushing the remainder.
+ * The envelope is a trailing `{ … }` JSON object containing one of the control
+ * keys (`confidence` for the self-assessment envelope, or `ask_user` for the
+ * structured-question block). It arrives at the very end of the `text` delta
+ * stream and may be split across the last few deltas. To avoid leaking a
+ * half-arrived envelope, we hold back only the trailing OPEN-brace fragment (a
+ * `{…` whose `}` hasn't arrived yet); a balanced `{…}` with text after it is
+ * inline content and streams normally. At the terminal event we run the
+ * brace-aware `lastJsonObjectBoundsWithKey` scanner (the same one history.ts
+ * uses) to excise a genuine trailing envelope before flushing the remainder.
  */
 class EnvelopeFilter {
   private full = '';
@@ -155,9 +192,10 @@ class EnvelopeFilter {
     // The safe-to-flush boundary is whichever comes FIRST of:
     //   (a) a trailing OPEN-brace fragment (a `{…` whose `}` hasn't arrived) —
     //       it could grow into the envelope, so never flush past it; and
-    //   (b) the start of an already-complete trailing confidence envelope
-    //       (balanced `{…confidence…}` with only whitespace after) — flushing
-    //       it would leak the envelope before the terminal flush() can strip it.
+    //   (b) the start of an already-complete trailing control envelope
+    //       (balanced `{…confidence…}` or `{…ask_user…}` with only whitespace
+    //       after) — flushing it would leak the block before the terminal
+    //       flush() can strip it.
     // A balanced `{…}` with real prose after it is inline content and streams.
     const safeUpto = this.safeFlushBoundary();
     if (safeUpto > this.flushed) {
@@ -172,29 +210,25 @@ class EnvelopeFilter {
     let boundary = this.full.length;
     const open = trailingOpenBraceIndex(this.full);
     if (open !== -1 && open < boundary) boundary = open;
-    const match = lastJsonObjectBoundsWithKey(this.full, 'confidence');
-    if (
-      match !== null &&
-      this.full.slice(match.end).trim().length === 0 &&
-      match.start < boundary
-    ) {
+    const match = trailingControlEnvelope(this.full);
+    if (match !== null && match.start < boundary) {
       boundary = match.start;
     }
     return boundary;
   }
 
-  /** Flush any held-back tail, excising ONLY a confirmed trailing confidence
+  /** Flush any held-back tail, excising ONLY a confirmed trailing control
    *  envelope first. Idempotent.
    *
    *  Unlike the streaming boundary, at the terminal event we know no more text
-   *  is coming, so a trailing OPEN `{` that is NOT a confidence envelope is just
+   *  is coming, so a trailing OPEN `{` that is NOT a control envelope is just
    *  legitimate prose (e.g. "the set {1, 2") and must be shown — we only cut a
-   *  genuine, complete, trailing `{…confidence…}` block. */
+   *  genuine, complete, trailing `{…confidence…}` / `{…ask_user…}` block. */
   flush(): void {
     if (this.flushed >= this.full.length) return;
-    const match = lastJsonObjectBoundsWithKey(this.full, 'confidence');
+    const match = trailingControlEnvelope(this.full);
     let cutEnd = this.full.length;
-    if (match !== null && this.full.slice(match.end).trim().length === 0) {
+    if (match !== null) {
       cutEnd = match.start;
     }
     if (cutEnd > this.flushed) {
@@ -382,6 +416,16 @@ export async function renderStream(
               `session: ${ev.sessionId}\n`,
             );
           }
+          break;
+        }
+
+        // A turn that ends in a structured question is a complete success that
+        // needs a REPLY, not finished work. Suppress the normal completion line
+        // entirely; the caller inspects `final.questions` and drives a selector
+        // (renderStream returns `{ success, final }`). The prose (the model's
+        // lead-in before the ask_user block, already stripped above) has been
+        // flushed; printing "✓ done" here would read as if the task were over.
+        if (ev.questions !== undefined) {
           break;
         }
 

@@ -21,6 +21,41 @@ import type { NativeSessionPlan } from './native-session.js';
 export type Tier = 'worker' | 'ic' | 'manager';
 export type Risk = 'low' | 'medium' | 'high' | 'critical';
 
+// ---------------------------------------------------------------------------
+// Structured user questions (assistant → user elicitation)
+// ---------------------------------------------------------------------------
+
+/**
+ * A single selectable option for a {@link Question}. `label` is the short
+ * machine/display value; `description` is optional human context.
+ */
+export interface QuestionOption {
+  readonly label: string;
+  readonly description?: string;
+}
+
+/**
+ * A single multiple-choice question the assistant asks the user, mirroring
+ * Claude Code's AskUserQuestion / MCP elicitation but transported in TEXT (the
+ * model emits an `ask_user` JSON block; the orchestrator detects it; the TUI
+ * renders a selector; the user's choice is fed back as the next turn).
+ *
+ * Flat, primitive-only by design (bounds enforced in questions.ts): 1–4
+ * questions per set, each with 2–4 options.
+ */
+export interface Question {
+  readonly id: string;
+  readonly prompt: string;
+  readonly options: readonly QuestionOption[];
+  readonly multiSelect: boolean;
+  readonly allowFreeText: boolean;
+}
+
+/** An ordered set of {@link Question}s the assistant asks in one turn. */
+export interface QuestionSet {
+  readonly questions: readonly Question[];
+}
+
 export interface Classification {
   readonly tier: Tier;
   readonly risk: Risk;
@@ -265,4 +300,13 @@ export type CoreEvent =
       readonly errorCategory?: import('../providers/port.js').CliError['category'];
       /** Set on failing finals only: the provider that was being used when failure occurred. */
       readonly provider?: import('../providers/port.js').ProviderId;
+      /**
+       * Set when the model ended its turn by asking the user one or more
+       * structured questions (an `ask_user` block) instead of completing work.
+       * The interface layer renders a selector for these and feeds the answer
+       * back as the next turn in the same conversation. When present the turn is
+       * a complete success that needs a reply — NOT low-confidence work — so
+       * orchestrate does not escalate or review. Absent for normal turns.
+       */
+      readonly questions?: QuestionSet;
     };

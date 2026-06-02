@@ -18,7 +18,10 @@ import {
   renderBudgetLine,
   versionStatusLabel,
   isRunningUnderNpx,
+  interpretQuestionAnswer,
+  FREE_TEXT_SENTINEL,
 } from '../../src/interface/menu.ts';
+import type { Question } from '../../src/core/types.ts';
 import type { UpdateCheckResult } from '../../src/infra/update-check.ts';
 import type { EnvironmentStatus } from '../../src/providers/detect.ts';
 import type { ConversationMeta } from '../../src/infra/conversation-store.ts';
@@ -703,5 +706,79 @@ describe('isRunningUnderNpx', () => {
 
   it('returns false when the script path is undefined and no env hint', () => {
     assert.strictEqual(isRunningUnderNpx(undefined, {}), false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// interpretQuestionAnswer — pure decision core for the question selector
+// ---------------------------------------------------------------------------
+
+describe('interpretQuestionAnswer', () => {
+  const single: Question = {
+    id: 'framework',
+    prompt: 'Which framework?',
+    options: [{ label: 'vitest' }, { label: 'jest' }, { label: 'mocha' }],
+    multiSelect: false,
+    allowFreeText: true,
+  };
+  const multi: Question = {
+    id: 'langs',
+    prompt: 'Pick languages',
+    options: [{ label: 'ts' }, { label: 'go' }, { label: 'rust' }],
+    multiSelect: true,
+    allowFreeText: false,
+  };
+  const noFree: Question = {
+    id: 'yn',
+    prompt: 'Yes or no?',
+    options: [{ label: 'yes' }, { label: 'no' }],
+    multiSelect: false,
+    allowFreeText: false,
+  };
+
+  it('maps a digit to the option label (single-select)', () => {
+    assert.deepEqual(interpretQuestionAnswer('1', single), { kind: 'answer', text: 'vitest' });
+    assert.deepEqual(interpretQuestionAnswer('2', single), { kind: 'answer', text: 'jest' });
+  });
+
+  it('comma multi-select returns distinct labels in order', () => {
+    assert.deepEqual(interpretQuestionAnswer('1,3', multi), { kind: 'answer', text: 'ts, rust' });
+    assert.deepEqual(interpretQuestionAnswer('3 1 3', multi), { kind: 'answer', text: 'rust, ts' });
+  });
+
+  it('accepts free text directly when allowed', () => {
+    assert.deepEqual(interpretQuestionAnswer('playwright', single), {
+      kind: 'answer',
+      text: 'playwright',
+    });
+  });
+
+  it('rejects free text when not allowed → retry', () => {
+    assert.deepEqual(interpretQuestionAnswer('maybe', noFree), { kind: 'retry' });
+  });
+
+  it('treats the "type your own" sentinel index as the free-text marker', () => {
+    // options.length (3) + 1 = 4
+    assert.deepEqual(interpretQuestionAnswer('4', single), {
+      kind: 'answer',
+      text: FREE_TEXT_SENTINEL,
+    });
+  });
+
+  it('cancels on null (EOF), blank line, and Ctrl-C/Ctrl-D bytes', () => {
+    assert.deepEqual(interpretQuestionAnswer(null, single), { kind: 'cancel' });
+    assert.deepEqual(interpretQuestionAnswer('   ', single), { kind: 'cancel' });
+    assert.deepEqual(interpretQuestionAnswer('\x03', single), { kind: 'cancel' });
+    assert.deepEqual(interpretQuestionAnswer('\x04', single), { kind: 'cancel' });
+  });
+
+  it('retries on an out-of-range numeric selection', () => {
+    assert.deepEqual(interpretQuestionAnswer('9', noFree), { kind: 'retry' });
+  });
+
+  it('never throws on adversarial input', () => {
+    for (const i of ['', '0', '-1', ',,,', '1,abc', '99']) {
+      assert.doesNotThrow(() => interpretQuestionAnswer(i, multi));
+    }
   });
 });
