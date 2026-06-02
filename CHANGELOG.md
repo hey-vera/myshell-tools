@@ -9,6 +9,26 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 ### Pending
 - Cross-OS CI execution (requires a public remote).
 
+## [3.5.3]
+
+### Fixed
+- **claude sign-in guidance now matches reality — no more phantom localhost error.**
+  The old guidance told you to expect a localhost "can't be reached" error and to
+  paste the full address-bar *URL* back. Verified against claude 2.1.158, that's
+  simply not what happens: `claude auth login` uses an out-of-band **code** flow
+  (`redirect_uri=https://platform.claude.com/oauth/code/callback`, not localhost).
+  It prints a sign-in link, you authorize, the page shows a short **code**, and you
+  paste that code at claude's "Paste code here" prompt — no localhost, no error
+  page. Guidance rewritten to describe exactly that. (We still use `claude auth
+  login`, not `setup-token`: per the docs setup-token only prints a 1-year token
+  you must export yourself and does not persist — it would leave claude unsigned-in
+  or force us to store a token.)
+
+### Changed
+- **Yes/No prompts now show that Enter picks the default.** Every confirm prompt
+  appends `[Enter=Y]` (default-yes) or `[Enter=N]` (default-no) beside the `(Y/n)`
+  / `(y/N)`, so it's obvious you can just press Enter instead of typing y/n.
+
 ## [3.5.2]
 
 ### Fixed

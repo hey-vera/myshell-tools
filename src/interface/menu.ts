@@ -945,7 +945,7 @@ async function runWelcome(
     if (ps.installed) continue;
 
     const pkg = id === 'claude' ? '@anthropic-ai/claude-code' : '@openai/codex';
-    out.write(`Install ${id} (${pkg})? (Y/n) `);
+    out.write(`Install ${id} (${pkg})? (Y/n) [Enter=Y] `);
 
     if (await confirm(true)) {
       const ok = await installProviderFn(id, out);
@@ -965,7 +965,7 @@ async function runWelcome(
   // ---- Offer opencode (optional, free models + more providers) -------------
   // opencode defaults to NO — it is optional and users may prefer claude/codex only.
   if (!env.opencode.installed) {
-    out.write('Add opencode? (optional — free models + more providers) (y/N) ');
+    out.write('Add opencode? (optional — bring your own provider/subscription) (y/N) [Enter=N] ');
     if (await confirm(false)) {
       const ok = await installProviderFn('opencode', out);
       if (ok) {
@@ -984,7 +984,7 @@ async function runWelcome(
     const ps = env[id];
     if (!ps.installed || ps.authenticated) continue;
 
-    out.write(`\nSign in to ${id} now? (Y/n) `);
+    out.write(`\nSign in to ${id} now? (Y/n) [Enter=Y] `);
 
     if (await confirm(true)) {
       // loginFn auto-detects the right method (code in containers/SSH where the
@@ -1032,12 +1032,12 @@ async function runWelcome(
   };
 
   // Default is NO for set-as-default — require explicit 'y' to enable.
-  out.write('Set myshell-tools as your default shell tool? (y/N) ');
+  out.write('Set myshell-tools as your default shell tool? (y/N) [Enter=N] ');
   const setAsDefault = await confirm(false);
 
   // Default is YES: check for updates at launch and OFFER to install (we ask
   // first — never a silent swap). Opt out with n or via Settings.
-  out.write('Check for updates at launch (I\'ll show the version and ask first)? (Y/n) ');
+  out.write('Check for updates at launch (I\'ll show the version and ask first)? (Y/n) [Enter=Y] ');
   const autoUpdate = await confirm(true);
 
   const saved: AppConfig = {
@@ -1411,7 +1411,7 @@ async function runManage(
     if (!Number.isNaN(num) && num >= 1 && num <= metas.length) {
       const conv = metas[num - 1];
       if (conv !== undefined) {
-        out.write(`Delete "${conv.title}"? (y/N) `);
+        out.write(`Delete "${conv.title}"? (y/N) [Enter=N] `);
         const confirmAns = await readLine();
         if (parseYesNo(confirmAns, false)) {
           await ctx.store.remove(conv.id);
@@ -2088,7 +2088,7 @@ async function runChatLoop(
       ) {
         const failingProvider = result.final.provider;
         out.write(`\n[warn] ${failingProvider} isn't signed in.\n`);
-        out.write(`Sign in to ${failingProvider} now and retry? (Y/n) `);
+        out.write(`Sign in to ${failingProvider} now and retry? (Y/n) [Enter=Y] `);
         const ans = await readLine();
         if (parseYesNo(ans, true)) {
           await loginFn(out, failingProvider, {
@@ -2135,7 +2135,7 @@ async function runChatLoop(
         result.final.errorCategory === 'timeout'
       ) {
         out.write('\n  ' + dim("That's a big one — it ran past the time limit for a single turn.", out.color) + '\n');
-        out.write("  Keep working on it autonomously, step by step, until it's done? (Y/n) ");
+        out.write("  Keep working on it autonomously, step by step, until it's done? (Y/n) [Enter=Y] ");
         const ans = await readLine();
         if (parseYesNo(ans, true)) {
           if (await runGoalLoop(line)) break;
@@ -2151,7 +2151,7 @@ async function runChatLoop(
       // generic selector so the offer isn't shown as a numbered list.
       if (result.final?.questions !== undefined && isKeepGoingOffer(result.final.questions)) {
         out.write('\n  ' + dim("I can keep working on this autonomously until it's done.", out.color) + '\n');
-        out.write('  Keep going? (Y/n) ');
+        out.write('  Keep going? (Y/n) [Enter=Y] ');
         const ans = await readLine();
         if (parseYesNo(ans, true)) {
           if (await runGoalLoop(line)) break;
@@ -2497,7 +2497,7 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
       } else if (out.isTty) {
         // DEFAULT, interactive: name the version and ask.
         out.write(`\n▲ Update available: ${bold(fromV, out.color)} → ${bold(toV, out.color)}\n`);
-        out.write('  Install it now? (Y/n) ');
+        out.write('  Install it now? (Y/n) [Enter=Y] ');
         if (await confirm(true)) {
           out.write(`  Updating to ${toV}…\n`);
           if (await install()) return;
@@ -2645,7 +2645,7 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
       // tests stay hermetic). If install succeeds, proceeds to sign in.
       if (key === 'o') {
         if (!mutableCtx.env.opencode.installed) {
-          out.write(`Install opencode (${installCommandFor('opencode').replace('npm install -g ', '')})? (Y/n) `);
+          out.write(`Install opencode (${installCommandFor('opencode').replace('npm install -g ', '')})? (Y/n) [Enter=Y] `);
           const ans = await readLine();
           // EOF (null) means no interactive user — never auto-install on a closed
           // pipe. Otherwise honor the (Y/n) default-yes (Enter = install).

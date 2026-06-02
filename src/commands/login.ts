@@ -6,24 +6,27 @@
  * terminal so the browser/device sign-in works in place.
  *
  * Two sign-in methods:
- *   - 'browser': the provider's default flow, which spins up a localhost
- *     callback server and opens a browser. Great on a laptop; FAILS inside
- *     containers / over SSH (Replit, Codespaces, etc.) where localhost can't be
- *     reached from the user's browser.
- *   - 'code':   a no-localhost flow that works anywhere.
- *       · claude → `claude auth login`: spawned with inherited stdio. When the
- *         localhost callback can't be reached it prints a URL and a "paste code
- *         here" prompt; the user pastes the code straight into claude. Claude
- *         persists the credential ITSELF (Keychain / ~/.claude/.credentials.json),
- *         so there is nothing for us to capture, store, or re-paste. (We do NOT
- *         use `claude setup-token` — that is a CI-only command that prints a
- *         token to stdout and saves nothing, which forced an awkward paste-back
- *         step and a "valid 1 year / keep it safe" message.)
+ *   - 'browser': the provider's default flow — opens a browser locally. Great on
+ *     a laptop.
+ *   - 'code':   the same vendor sign-in, but with guidance tuned for a remote
+ *     shell where no local browser opens.
+ *       · claude → `claude auth login`: spawned with inherited stdio. Verified
+ *         against claude 2.1.158: it uses an OOB *code* flow, NOT a localhost
+ *         callback — it prints "Opening browser to sign in…", an authorize URL
+ *         (redirect_uri=https://platform.claude.com/oauth/code/callback), then
+ *         "Paste code here if prompted >". The user opens the URL, authorizes,
+ *         the page shows a short code, and they paste THAT code back. There is no
+ *         localhost redirect and no "can't be reached" error. Claude persists the
+ *         credential ITSELF (Keychain / ~/.claude/.credentials.json), so there is
+ *         nothing for us to capture or store. (We do NOT use `claude setup-token`
+ *         — per the docs that prints a 1-year token to stdout that you must
+ *         `export CLAUDE_CODE_OAUTH_TOKEN=…` yourself; it does not persist, so it
+ *         would either leave claude unauthenticated or force us to store a token.)
  *       · codex  → `codex login --device-auth`: prints a URL + one-time code;
  *         the user authorizes their ChatGPT account on any device.
  *
  * When no method is forced, we auto-detect: headless/remote environments default
- * to 'code' (so the localhost trap is avoided), everything else to 'browser'.
+ * to 'code' (so the guidance matches a no-local-browser shell), else 'browser'.
  *
  * Security: myshell-tools never stores raw API keys, tokens, or passwords. Each
  * vendor CLI manages its own credentials; we only orchestrate their sign-in.
@@ -61,27 +64,20 @@ const LOGIN_CODE_COMMAND: Record<
 > = {
   claude: {
     bin: 'claude',
-    // `claude auth login` handles BOTH the browser flow and the no-localhost
-    // fallback (it prints a URL and a "paste code here" prompt when the local
-    // callback can't be reached — common in containers/SSH/WSL2), and it
-    // persists the credential itself. So there is nothing for us to capture or
-    // store — unlike `setup-token`, which only prints a token for CI env vars.
+    // `claude auth login` uses an OOB code flow (verified against claude 2.1.158):
+    // it prints an authorize URL whose redirect is a real web page
+    // (platform.claude.com/oauth/code/callback) — NOT a localhost callback — then
+    // a "Paste code here if prompted >" prompt. No localhost, no connection error.
+    // It persists the credential itself, so we capture/store nothing.
     args: ['auth', 'login'],
-    // This guidance matches what `claude auth login` ACTUALLY does on a
-    // remote/container shell (verified against the claude binary's own prompts:
-    // "If the redirect page shows a connection error, paste the URL from your
-    // browser's address bar", e.g. http://localhost:<port>/callback?code=…&state=…).
-    // The localhost error after Authorize is expected here — the fix is to paste
-    // the full address-bar URL (which carries the code) back to claude.
     guidance:
-      'A sign-in link appears below — press Enter to open it (or copy it into any\n' +
-      '  browser), sign in at claude.ai, and click Authorize.\n' +
-      '  • This is a remote shell, so the page then tries to redirect to a localhost\n' +
-      "    address and your browser shows a \"can't be reached\" / connection error.\n" +
-      '    That is EXPECTED — nothing went wrong.\n' +
-      '  • When it does, copy the FULL URL from your browser\'s address bar (it\n' +
-      '    contains a `code=…` part) and paste it back here when claude asks.\n' +
-      '  Claude saves the sign-in itself — there is nothing else to copy or store.',
+      'claude will print a sign-in link just below (starting "Opening browser to\n' +
+      '  sign in…"). Open that link in any browser, sign in at claude.com, and click\n' +
+      '  Authorize.\n' +
+      '  • The page then shows a short code — copy it.\n' +
+      '  • Paste that code back here at claude\'s "Paste code here" prompt.\n' +
+      '  There is no localhost step and no error page — just the code. Claude saves\n' +
+      '  the sign-in itself; there is nothing else to copy or store.',
   },
   codex: {
     bin: 'codex',
@@ -188,9 +184,9 @@ async function runCodeMethodForProvider(
   out.write(dim(guidance + '\n', out.color));
   // Release our readline's grip on stdin so the provider CLI is the SOLE reader
   // of the terminal during its interactive sign-in (claude auth login prints a
-  // "paste code here" prompt when the localhost callback can't be reached;
-  // codex --device-auth waits on the same TTY). Without this, our readline and
-  // the child race for the same bytes and a pasted value lands split/garbled.
+  // "Paste code here" prompt for its OOB code flow; codex --device-auth waits on
+  // the same TTY). Without this, our readline and the child race for the same
+  // bytes and a pasted value lands split/garbled.
   const resumeStdin = suspendStdin?.();
   let result;
   try {
