@@ -177,3 +177,172 @@ describe('buildPrompt — historyContext', () => {
     assert.ok(result.includes('check auth'), 'Should include prior context');
   });
 });
+
+// ---------------------------------------------------------------------------
+// Envelope instruction integrity (must remain exact + last)
+// ---------------------------------------------------------------------------
+
+// The exact key list, in order, that the assess() parser depends on.
+const ENVELOPE_LINE =
+  '{"confidence": <0.0-1.0>, "escalate": <true|false>, "reason": "<one sentence>", "needs_review": <true|false>}';
+
+const TIERS = ['worker', 'ic', 'manager'] as const;
+
+describe('buildPrompt — confidence envelope instruction is preserved exactly', () => {
+  for (const tier of TIERS) {
+    it(`${tier}: contains the exact envelope JSON object with keys in order`, () => {
+      // Build without a task suffix interfering: the envelope appears in the
+      // system block, which is followed only by the Task section.
+      const result = buildPrompt(tier, '');
+      assert.ok(
+        result.includes(ENVELOPE_LINE),
+        `${tier} prompt must contain the exact envelope line with confidence/escalate/reason/needs_review in order`,
+      );
+    });
+
+    it(`${tier}: retains the "append ... on its own line ... no trailing text" instruction`, () => {
+      const result = buildPrompt(tier, '');
+      assert.ok(
+        result.includes('append EXACTLY the following JSON object on'),
+        `${tier} prompt must keep the "append EXACTLY ... JSON object" instruction`,
+      );
+      assert.ok(
+        result.includes('no trailing text after it'),
+        `${tier} prompt must keep the "no trailing text after it" instruction`,
+      );
+    });
+
+    it(`${tier}: persona/research text appears ABOVE the envelope instruction`, () => {
+      const result = buildPrompt(tier, '');
+      const personaIdx = result.indexOf('senior engineering partner');
+      const researchIdx = result.indexOf('Research with good senior judgment');
+      const appendIdx = result.indexOf('append EXACTLY the following JSON object');
+      assert.ok(personaIdx >= 0 && personaIdx < appendIdx, `${tier}: persona must precede envelope`);
+      assert.ok(researchIdx >= 0 && researchIdx < appendIdx, `${tier}: research must precede envelope`);
+    });
+
+    it(`${tier}: envelope line is the last meaningful line of the system block`, () => {
+      // The system block ends right before the Task separator. Within that
+      // block, the envelope line must be the final templated JSON line and
+      // nothing must follow it on its own line except the trailing guidance
+      // about how to set the fields (which is not "trailing text after" the
+      // appended envelope at runtime — it is instruction to the model).
+      // Concretely: nothing in the system block comes after the envelope JSON
+      // except the field-setting guidance, and the envelope JSON must appear
+      // before the "---" task separator.
+      const result = buildPrompt(tier, 'SOME_TASK_SENTINEL');
+      const envelopeIdx = result.indexOf(ENVELOPE_LINE);
+      const separatorIdx = result.indexOf('\n\n---\n\nTask:');
+      assert.ok(envelopeIdx >= 0, `${tier}: envelope present`);
+      assert.ok(separatorIdx > envelopeIdx, `${tier}: envelope appears within the system block, before Task`);
+    });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Partner persona / tone
+// ---------------------------------------------------------------------------
+
+describe('buildPrompt — partner persona and warmth-not-length', () => {
+  for (const tier of TIERS) {
+    it(`${tier}: frames the model as a senior engineering partner`, () => {
+      const result = buildPrompt(tier, '');
+      assert.ok(
+        result.includes('senior engineering partner'),
+        `${tier} prompt should describe a senior engineering partner persona`,
+      );
+    });
+
+    it(`${tier}: includes "partner, not a robot" tone guidance`, () => {
+      const result = buildPrompt(tier, '');
+      assert.ok(
+        result.includes('partner, not a robot'),
+        `${tier} prompt should include partner-not-a-robot tone language`,
+      );
+    });
+
+    it(`${tier}: includes "Warmth is not length" guidance`, () => {
+      const result = buildPrompt(tier, '');
+      assert.ok(
+        result.includes('Warmth is not length'),
+        `${tier} prompt should state that warmth is not length`,
+      );
+      assert.ok(
+        result.includes('never pad'),
+        `${tier} prompt should still instruct never to pad`,
+      );
+    });
+
+    it(`${tier}: includes brief-clarifying-question guidance`, () => {
+      const result = buildPrompt(tier, '');
+      assert.ok(
+        result.includes('clarifying question'),
+        `${tier} prompt should tell the model to ask a brief clarifying question when ambiguous`,
+      );
+    });
+  }
+
+  it('worker: the old robotic line is gone', () => {
+    const result = buildPrompt('worker', '');
+    assert.ok(
+      !result.includes('Do not pad responses with unnecessary explanation'),
+      'The old robotic worker line must be removed',
+    );
+    assert.ok(
+      !result.includes('precise, efficient worker-tier assistant'),
+      'The old robotic worker self-description must be removed',
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Proactive, judicious research judgment
+// ---------------------------------------------------------------------------
+
+describe('buildPrompt — proactive research judgment', () => {
+  for (const tier of TIERS) {
+    it(`${tier}: instructs proactive research grounded in good senior judgment`, () => {
+      const result = buildPrompt(tier, '');
+      assert.ok(
+        result.includes('Research with good senior judgment'),
+        `${tier} prompt should frame research as good senior judgment`,
+      );
+      assert.ok(
+        result.includes('proactively use the available'),
+        `${tier} prompt should tell the model to proactively use web research/tools`,
+      );
+      assert.ok(
+        result.includes("current best practice"),
+        `${tier} prompt should cite verifiable/time-sensitive triggers like current best practice`,
+      );
+      assert.ok(
+        result.includes('briefly note what you checked'),
+        `${tier} prompt should tell the model to say what it checked`,
+      );
+    });
+
+    it(`${tier}: warns against over-researching the obvious / in-context facts`, () => {
+      const result = buildPrompt(tier, '');
+      assert.ok(
+        result.includes('do NOT research the obvious or anything already in context'),
+        `${tier} prompt should warn against over-researching`,
+      );
+      assert.ok(
+        result.includes('over-researching wastes time and tokens'),
+        `${tier} prompt should note over-researching wastes time and tokens`,
+      );
+      assert.ok(
+        result.includes('Research only when it materially'),
+        `${tier} prompt should scope research to when it materially improves correctness`,
+      );
+    });
+
+    it(`${tier}: tells the model the user should never have to ask it to look things up`, () => {
+      const result = buildPrompt(tier, '');
+      assert.ok(
+        result.includes('should never have to tell'),
+        `${tier} prompt should state the user should never have to tell it to look something up`,
+      );
+    });
+  }
+});
