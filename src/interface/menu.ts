@@ -2106,6 +2106,26 @@ async function runChatLoop(
         }
       }
 
+      // ---- Big task hit the per-turn time limit → offer autonomous chunking ---
+      // A single huge ask can blow the per-turn timeout (e.g. "build the whole
+      // auth system now"). The autonomous goal loop does ONE concrete step per
+      // turn, so it makes real progress instead of failing. This is the RELIABLE
+      // trigger — a deterministic timeout signal, not dependent on the model
+      // choosing to offer.
+      if (
+        result.final !== undefined &&
+        !result.final.success &&
+        result.final.errorCategory === 'timeout'
+      ) {
+        out.write('\n  ' + dim("That's a big one — it ran past the time limit for a single turn.", out.color) + '\n');
+        out.write("  Keep working on it autonomously, step by step, until it's done? (Y/n) ");
+        const ans = await readLine();
+        if (parseYesNo(ans, true)) {
+          if (await runGoalLoop(line)) break;
+        }
+        continue;
+      }
+
       // ---- Natural autonomy: accept the model's "keep going?" offer -----------
       // For a big multi-step job the model does a first chunk and offers to finish
       // autonomously via an ask_user block with id 'keep_going' (see prompt.ts).
