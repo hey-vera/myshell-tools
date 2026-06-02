@@ -18,7 +18,9 @@
 
 import readline from 'node:readline';
 import { execa } from 'execa';
-import type { Clock, LedgerWriter, OrchestrateDeps, Question, QuestionSet } from '../core/types.js';
+import type { Clock, LedgerWriter, OrchestrateDeps, Question, QuestionSet, SessionEntry } from '../core/types.js';
+import { buildGoalTask, parseGoalSignal, decideGoalNext, DEFAULT_MAX_GOAL_ITERATIONS } from '../core/goal.js';
+import type { GoalCeilings } from '../core/goal.js';
 import { formatAnswers } from '../core/questions.js';
 import type { AppConfig } from '../infra/config.js';
 import { saveConfig } from '../infra/config.js';
@@ -1831,6 +1833,7 @@ async function runChatLoop(
       if (line === '/help') {
         out.write(
           dim('  Just type to chat — I pick the right model for each message.\n', out.color) +
+          '  /goal <text>  — work autonomously until the goal is done (Esc to stop)\n' +
           '  /back, /exit  — return to the main menu\n' +
           '  /help         — show this help\n',
         );
@@ -1866,8 +1869,9 @@ async function runChatLoop(
 
       // ---- Build deps from the live mutableCtx.env ----------------------------
       // This helper is inlined as a function so it can be called again after
-      // inline re-login with the refreshed env (bug 5 fix: no stale auth state).
-      const buildDeps = (): OrchestrateDeps => {
+      // inline re-login with the refreshed env (bug 5 fix: no stale auth state),
+      // and re-called with fresh history each turn of a /goal run.
+      const buildDeps = (hist: readonly SessionEntry[]): OrchestrateDeps => {
         // Build per-provider advertised model sets from the live env so route()
         // can prefer a model the CLI actually advertises. Only include installed
         // providers (exactOptionalPropertyTypes is ON).
@@ -1897,7 +1901,7 @@ async function runChatLoop(
         const nativeSession = planNativeSession({
           enabled: mutableCtx.config.nativeSessions === true,
           conversationId: convId,
-          history: priorHistory,
+          history: hist,
         });
         // planNativeSession returns [] when disabled / no conversation id.
 
@@ -1926,7 +1930,7 @@ async function runChatLoop(
           cwd: ctx.cwd,
           sandbox: ctx.sandbox,
           timeoutMs: ctx.timeoutMs,
-          ...(priorHistory.length > 0 ? { history: priorHistory } : {}),
+          ...(hist.length > 0 ? { history: hist } : {}),
           ...(Object.keys(availableModels).length > 0 ? { availableModels } : {}),
           ...(authenticatedProviders.length > 0 ? { authenticatedProviders } : {}),
           ...(nativeSession.length > 0 ? { nativeSession } : {}),
@@ -1934,7 +1938,74 @@ async function runChatLoop(
         };
       };
 
-      const deps = buildDeps();
+      // ---- /goal — autonomous loop until the model reports completion ---------
+      // Runs turns toward a goal, reloading history each turn so the model sees
+      // its own prior progress, bounded by hard ceilings (turns + optional cost)
+      // and Esc. The completion signal is a plain-text marker (core/goal.ts), so
+      // nothing on the orchestrate hot path changes.
+      if (line.startsWith('/goal')) {
+        const goalText = line.slice('/goal'.length).trim();
+        if (goalText.length === 0) {
+          out.write(dim('  Usage: /goal <what you want achieved> — I work autonomously until it\'s done (Esc to stop).\n', out.color));
+          continue;
+        }
+
+        const ceilings: GoalCeilings = {
+          maxIterations: DEFAULT_MAX_GOAL_ITERATIONS,
+          ...(policy.maxCostUsd !== undefined && policy.maxCostUsd !== null
+            ? { maxCostUsd: policy.maxCostUsd }
+            : {}),
+        };
+        out.write(
+          dim(
+            `\n  Goal mode: working autonomously toward your goal (up to ${ceilings.maxIterations} turns` +
+              `${ceilings.maxCostUsd !== undefined ? `, ~$${ceilings.maxCostUsd.toFixed(2)} cap` : ''}). Esc to stop.\n\n`,
+            out.color,
+          ),
+        );
+
+        let costSoFarUsd = 0;
+        let completed = 0;
+        let goalBroke = false;
+        for (let i = 0; i < ceilings.maxIterations; i++) {
+          out.write(dim(`  — turn ${i + 1}/${ceilings.maxIterations} —\n`, out.color));
+          const goalDeps = buildDeps(await ctx.store.load(convId));
+          const goalAc = new AbortController();
+          currentAc = goalAc;
+          const turn = await runTask(
+            buildGoalTask(goalText, i),
+            goalDeps,
+            out,
+            goalAc.signal,
+            mutableCtx.config.verbosity ?? 'normal',
+          );
+          currentAc = null;
+          completed = i + 1;
+
+          // Esc / Ctrl+C during the turn → stop the goal run (and honour exit/menu).
+          if (shouldExit) { loopResult = 'exit'; goalBroke = true; break; }
+          if (shouldMenu) { loopResult = 'menu'; goalBroke = true; break; }
+
+          costSoFarUsd += turn.final?.totalCostUsd ?? 0;
+          const signal = parseGoalSignal(turn.final?.output ?? '');
+          const step = decideGoalNext({
+            signal,
+            lastSucceeded: turn.final?.success === true,
+            completedIterations: completed,
+            ceilings,
+            costSoFarUsd,
+          });
+          if (step.action !== 'continue') {
+            const mark = step.action === 'complete' ? '✓' : '■';
+            out.write(dim(`\n  ${mark} ${step.reason}.\n`, out.color));
+            break;
+          }
+        }
+        if (goalBroke) break;
+        continue;
+      }
+
+      const deps = buildDeps(priorHistory);
 
       const ac = new AbortController();
       currentAc = ac;
@@ -1971,7 +2042,7 @@ async function runChatLoop(
           // Bug 5 fix: re-detect with the freshly-authenticated env so the retry
           // deps reflect the now-signed-in provider (not the stale pre-login state).
           mutableCtx.env = await detectEnvironmentFn();
-          const retryDeps = buildDeps();
+          const retryDeps = buildDeps(await ctx.store.load(convId));
           // Retry the same task once.
           const retryAc = new AbortController();
           currentAc = retryAc;
@@ -2021,10 +2092,7 @@ async function runChatLoop(
         // Reload history (the question turn was persisted by orchestrate) and
         // rebuild deps so the answer turn replays the full thread.
         const answerHistory = await ctx.store.load(convId);
-        const answerDeps: OrchestrateDeps = {
-          ...buildDeps(),
-          ...(answerHistory.length > 0 ? { history: answerHistory } : {}),
-        };
+        const answerDeps: OrchestrateDeps = buildDeps(answerHistory);
 
         const answerAc = new AbortController();
         currentAc = answerAc;
