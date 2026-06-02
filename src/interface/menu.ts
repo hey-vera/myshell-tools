@@ -44,7 +44,7 @@ import { runDoctor } from '../commands/doctor.js';
 import { runCost } from '../commands/cost.js';
 import { runInstall } from '../commands/install.js';
 import { box, separator, menu } from '../ui/tui.js';
-import { dim, cyan } from '../ui/theme.js';
+import { dim, cyan, bold } from '../ui/theme.js';
 import { makeRouteClassifier } from '../core/route-classifier.js';
 import type { UpdateCheckResult } from '../infra/update-check.js';
 import type { ClaudeTokenStatus } from '../infra/credentials.js';
@@ -1067,20 +1067,21 @@ async function runModeSelect(
   // Effective mode = explicit choice, else the subscription-derived auto default.
   const effective = config.mode ?? autoMode;
   const mark = (m: Mode): string => (effective === m ? '  ‹active›' : '');
-  const settingsLines = [
+  // Plain lines (NOT box()) — the descriptions are long and would overflow a
+  // fixed-width box border.
+  const lines = [
     '',
-    'Mode — how eagerly to reach for the strongest model.',
+    bold('Mode — how eagerly to reach for the strongest model', out.color),
     dim('Quality is never capped: routing always escalates to the best model when a turn needs it.', out.color),
     '',
-    `  [1] ${modeLabel('cost-saver')} — ${MODE_DESC['cost-saver']}${mark('cost-saver')}`,
-    `  [2] ${modeLabel('balanced')} — ${MODE_DESC['balanced']}${mark('balanced')}`,
-    `  [3] ${modeLabel('quality-first')} — ${MODE_DESC['quality-first']}${mark('quality-first')}`,
+    `  [1] ${bold(modeLabel('cost-saver'), out.color)} — ${MODE_DESC['cost-saver']}${mark('cost-saver')}`,
+    `  [2] ${bold(modeLabel('balanced'), out.color)} — ${MODE_DESC['balanced']}${mark('balanced')}`,
+    `  [3] ${bold(modeLabel('quality-first'), out.color)} — ${MODE_DESC['quality-first']}${mark('quality-first')}`,
     config.mode === undefined
       ? dim(`  (auto: ${modeLabel(autoMode)} — from your subscription; pick a number to pin it)`, out.color)
       : '',
-    '',
   ];
-  out.write('\n' + box('Settings', settingsLines) + '\n\n');
+  out.write('\n' + lines.filter((l) => l !== '').join('\n') + '\n\n');
 
   out.write('[1/2/3 to change, Enter to keep] ');
   const key = await readLine();
@@ -1853,9 +1854,18 @@ async function runChatLoop(
         out.write(
           dim('  Just type to chat — I pick the right model for each message.\n', out.color) +
           '  /goal <text>  — work autonomously until the goal is done (Esc to stop)\n' +
+          '  /mode         — quality vs speed (Efficient / Balanced / Max)\n' +
           '  /back, /exit  — return to the main menu\n' +
           '  /help         — show this help\n',
         );
+        continue;
+      }
+
+      // Change the (single, global) mode from inside the chat — same knob as the
+      // home [m], so there is one source of truth and never a global/per-chat drift.
+      if (line === '/mode') {
+        const autoMode = defaultModeForPlan(mutableCtx.env.claude.plan);
+        mutableCtx.config = await runModeSelect(mutableCtx.config, out, readLine, autoMode);
         continue;
       }
 
