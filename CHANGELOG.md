@@ -9,7 +9,7 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 ### Pending
 - Cross-OS CI execution (requires a public remote).
 
-## [3.5.5]
+## [3.6.0]
 
 ### Fixed
 - **myshell's own state now persists on Replit (onboarding, conversations, config,
