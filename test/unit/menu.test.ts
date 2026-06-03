@@ -247,31 +247,30 @@ describe('renderHeaderLines', () => {
     assert.strictEqual(lines.length, 2);
   });
 
-  it('shows ✅ for installed providers', () => {
+  it('shows "ready" for installed providers', () => {
     const lines = renderHeaderLines(FAKE_ENV_BOTH_INSTALLED, '2.0.0');
-    assert.ok(lines.some((l) => l.includes('✅') && l.includes('claude')));
-    assert.ok(lines.some((l) => l.includes('✅') && l.includes('codex')));
+    assert.ok(lines.some((l) => l.includes('ready') && l.includes('claude')));
+    assert.ok(lines.some((l) => l.includes('ready') && l.includes('codex')));
   });
 
-  it('shows ❌ for not-installed providers', () => {
+  it('shows "not installed" for not-installed providers', () => {
     const lines = renderHeaderLines(FAKE_ENV_NONE_INSTALLED, '2.0.0');
-    assert.ok(lines.some((l) => l.includes('❌') && l.includes('claude')));
-    assert.ok(lines.some((l) => l.includes('❌') && l.includes('codex')));
+    assert.ok(lines.some((l) => l.includes('not installed') && l.includes('claude')));
+    assert.ok(lines.some((l) => l.includes('not installed') && l.includes('codex')));
   });
 
-  it('shows ✅ claude and ❌ codex for mixed env', () => {
+  it('shows "ready" for claude and "not installed" for codex in mixed env', () => {
     const lines = renderHeaderLines(FAKE_ENV_MIXED, '2.0.0');
     const claudeLine = lines.find((l) => l.includes('claude'));
     const codexLine = lines.find((l) => l.includes('codex'));
-    assert.ok(claudeLine?.includes('✅'), 'claude installed + authed → ✅');
-    assert.ok(codexLine?.includes('❌'), 'codex not installed → ❌');
+    assert.ok(claudeLine?.includes('ready'), 'claude installed + authed → ready');
+    assert.ok(codexLine?.includes('not installed'), 'codex not installed → not installed');
   });
 
-  it('shows ⚠️ for installed-but-not-authenticated provider', () => {
+  it('shows "not signed in" for installed-but-not-authenticated provider', () => {
     const lines = renderHeaderLines(FAKE_ENV_INSTALLED_NOT_AUTHED, '2.0.0');
     const claudeLine = lines.find((l) => l.includes('claude'));
-    assert.ok(claudeLine?.includes('⚠'), 'installed but not authed → ⚠️');
-    assert.ok(claudeLine?.includes('not signed in'), 'includes "not signed in"');
+    assert.ok(claudeLine?.includes('not signed in'), 'installed but not authed → not signed in');
   });
 
   it('appends plan label when ps.plan is non-null', () => {
@@ -321,7 +320,7 @@ describe('renderHeaderLines', () => {
 
   // ---- opencode conditional rendering ----------------------------------------
 
-  it('shows opencode line (✅ ready) when opencode is installed AND authenticated', () => {
+  it('shows opencode line (ready) when opencode is installed AND authenticated', () => {
     const envWithOpencode: EnvironmentStatus = {
       ...FAKE_ENV_BOTH_INSTALLED,
       opencode: makeProvider('opencode', { installed: true, version: '0.1.0', authenticated: true }),
@@ -331,8 +330,7 @@ describe('renderHeaderLines', () => {
     assert.strictEqual(lines.length, 3);
     const opencodeLine = lines.find((l) => l.includes('opencode'));
     assert.ok(opencodeLine !== undefined, 'opencode line must appear when installed');
-    assert.ok(opencodeLine.includes('✅'), 'opencode installed+authed → ✅');
-    assert.ok(opencodeLine.includes('ready'), 'opencode line shows "ready"');
+    assert.ok(opencodeLine.includes('ready'), 'opencode installed+authed → ready');
     assert.ok(!opencodeLine.includes('free models'), 'no longer claims "free models" — real auth now');
   });
 
@@ -345,14 +343,14 @@ describe('renderHeaderLines', () => {
   });
 
   it('existing header assertions unchanged when opencode is not installed', () => {
-    // Regression: existing tests (2 lines, ✅ claude, ✅ codex) must still hold.
+    // Regression: existing tests (2 lines, "ready" claude, "ready" codex) must still hold.
     const lines = renderHeaderLines(FAKE_ENV_BOTH_INSTALLED, '2.0.0');
     assert.strictEqual(lines.length, 2);
-    assert.ok(lines.some((l) => l.includes('✅') && l.includes('claude')));
-    assert.ok(lines.some((l) => l.includes('✅') && l.includes('codex')));
+    assert.ok(lines.some((l) => l.includes('ready') && l.includes('claude')));
+    assert.ok(lines.some((l) => l.includes('ready') && l.includes('codex')));
   });
 
-  it('shows ⚠️ for opencode installed but not authenticated', () => {
+  it('shows "not signed in" for opencode installed but not authenticated', () => {
     const envWithUnauthOpencode: EnvironmentStatus = {
       ...FAKE_ENV_BOTH_INSTALLED,
       opencode: makeProvider('opencode', { installed: true, version: '0.1.0', authenticated: false }),
@@ -360,8 +358,7 @@ describe('renderHeaderLines', () => {
     const lines = renderHeaderLines(envWithUnauthOpencode, '2.0.0');
     const opencodeLine = lines.find((l) => l.includes('opencode'));
     assert.ok(opencodeLine !== undefined, 'opencode line must appear when installed');
-    assert.ok(opencodeLine.includes('⚠'), 'opencode installed but not authed → ⚠️');
-    assert.ok(opencodeLine.includes('not signed in'), 'includes "not signed in"');
+    assert.ok(opencodeLine.includes('not signed in'), 'opencode installed but not authed → not signed in');
   });
 });
 

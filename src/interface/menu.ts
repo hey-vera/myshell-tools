@@ -537,11 +537,11 @@ export function renderHeaderLines(
     const planSuffix = ps.plan != null ? ` (${ps.plan})` : '';
 
     if (!ps.installed) {
-      lines.push(`❌ ${ps.id}: not installed — ${getInstallCommand(ps.id)}`);
+      lines.push(`${ps.id}: not installed — ${getInstallCommand(ps.id)}`);
     } else if (ps.authenticated) {
-      lines.push(`✅ ${ps.id}: ready${planSuffix}`);
+      lines.push(`${ps.id}: ready${planSuffix}`);
     } else {
-      lines.push(`⚠️  ${ps.id}: not signed in${planSuffix}`);
+      lines.push(`${ps.id}: not signed in${planSuffix}`);
     }
   }
 
@@ -554,20 +554,20 @@ export function renderHeaderLines(
     const ps = env.opencode;
     const planSuffix = ps.plan != null ? ` (${ps.plan})` : '';
     if (ps.authenticated) {
-      lines.push(`✅ ${ps.id}: ready${planSuffix}`);
+      lines.push(`${ps.id}: ready${planSuffix}`);
     } else {
       // Concise status only — the [o] action lives in the menu below, so repeating
       // it here is redundant (and overflowed the box).
-      lines.push(`⚠️  ${ps.id}: not signed in${planSuffix}`);
+      lines.push(`${ps.id}: not signed in${planSuffix}`);
     }
   }
 
   // Token expiry warning — only when near-expiry or expired (not on every launch).
   if (claudeToken != null && (claudeToken.expired || claudeToken.nearExpiry)) {
     if (claudeToken.expired) {
-      lines.push(`⚠️  claude token EXPIRED — run: myshell-tools login claude --code`);
+      lines.push(`claude token EXPIRED — run: myshell-tools login claude --code`);
     } else {
-      lines.push(`⚠️  claude token expires in ${claudeToken.daysLeft} days — run: myshell-tools login claude --code`);
+      lines.push(`claude token expires in ${claudeToken.daysLeft} days — run: myshell-tools login claude --code`);
     }
   }
 
@@ -1058,7 +1058,7 @@ async function runWelcome(
   let env = ctx.env;
 
   const headerLines = renderHeaderLines(env, ctx.version);
-  out.write('\n' + box(`🧠 myshell-tools v${ctx.version} — Setup`, headerLines) + '\n\n');
+  out.write('\n' + box(`myshell-tools v${ctx.version} — Setup`, headerLines) + '\n\n');
 
   // ---- Orientation header --------------------------------------------------
   out.write('Quick setup — a few questions, ~30 seconds. Press Enter for the default (marked (enter)), or y / n.\n\n');
@@ -2391,12 +2391,12 @@ async function renderMainScreen(
 ): Promise<void> {
   out.write('\n');
 
-  // Header box — always box(), 🧠 emoji, real provider data.
+  // Header box — always box(), real provider data.
   // Title carries the live version status so the user always knows whether they
   // are current: "(latest)" when up to date, "→ X.Y.Z available" when not.
   const headerLines = renderHeaderLines(mutableCtx.env, ctx.version, claudeTokenInfo ?? undefined);
   const versionLabel = versionStatusLabel(updateInfo);
-  out.write(box(`🧠 myshell-tools v${ctx.version}${versionLabel}`, headerLines) + '\n\n');
+  out.write(box(`myshell-tools v${ctx.version}${versionLabel}`, headerLines) + '\n\n');
 
   // Update banner — only shown when a newer version is genuinely available.
   if (updateInfo?.updateAvailable === true && updateInfo.latest !== null) {
