@@ -276,7 +276,7 @@ export function panel(
 
   // Top border with title
   if (title.length > 0) {
-    const remaining = Math.max(0, innerW - title.length - 3);
+    const remaining = Math.max(0, innerW - visibleLength(title) - 3);
     const topLeft  = ansiDim(ROUNDED.tl + ROUNDED.h + ' ', color);
     const titleStr = ansiCyan(title, color);
     const topRight = ansiDim(' ' + ROUNDED.h.repeat(remaining) + ROUNDED.tr, color);
@@ -288,8 +288,8 @@ export function panel(
   // Content lines
   const contentLines = typeof content === 'string' ? content.split('\n') : content;
   for (const line of contentLines) {
-    const stripped = stripAnsi(line);
-    const paddingW = Math.max(0, innerW - stripped.length - 1);
+    // visibleLength (not .length) so emoji/wide chars don't misalign the border.
+    const paddingW = Math.max(0, innerW - visibleLength(line) - 1);
     rows.push(
       ansiDim(ROUNDED.v, color) +
       ' ' + line + ' '.repeat(paddingW) +
