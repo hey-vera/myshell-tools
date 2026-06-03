@@ -189,11 +189,14 @@ export function resolveClaudeCredsPath(
  * endpoint. Returns null on any non-OK / malformed / timed-out response. The
  * token is sent ONLY to the official endpoint and never logged. Never throws.
  */
-async function fetchRefreshedToken(refreshToken: string): Promise<RefreshResponse | null> {
+export async function fetchRefreshedToken(
+  refreshToken: string,
+  endpoint: string = CLAUDE_OAUTH_TOKEN_ENDPOINT,
+): Promise<RefreshResponse | null> {
   const ac = new AbortController();
   const timer = setTimeout(() => { ac.abort(); }, FETCH_TIMEOUT_MS);
   try {
-    const res = await fetch(CLAUDE_OAUTH_TOKEN_ENDPOINT, {
+    const res = await fetch(endpoint, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({

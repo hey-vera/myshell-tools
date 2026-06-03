@@ -5,12 +5,17 @@ import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+import { createServer, type Server } from 'node:http';
+import { once } from 'node:events';
+import type { AddressInfo } from 'node:net';
+
 import {
   parseClaudeOauth,
   oauthRefreshDecision,
   applyRefreshToCreds,
   resolveClaudeCredsPath,
   refreshClaudeOauthIfNeeded,
+  fetchRefreshedToken,
   type ClaudeOauth,
   type RefreshResponse,
 } from '../../src/infra/claude-oauth-refresh.ts';
@@ -211,5 +216,109 @@ describe('refreshClaudeOauthIfNeeded', () => {
     let markerAge = -1;
     try { markerAge = (await stat(join(home, '.myshell-tools', '.claude-refresh-failed'))).mtimeMs; } catch { markerAge = -1; }
     assert.equal(markerAge, -1, 'cooldown marker cleared after a successful refresh');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// fetchRefreshedToken — REAL network path against a local HTTP server
+// (validates fetch → parse end-to-end, not a mock fetcher)
+// ---------------------------------------------------------------------------
+
+describe('fetchRefreshedToken (live local server)', () => {
+  /** Start a one-shot HTTP server that replies with `status` + `body`. */
+  const serve = async (
+    status: number,
+    body: string,
+    capture?: (received: { method: string; contentType: string; body: string }) => void,
+  ): Promise<{ url: string; server: Server }> => {
+    const server = createServer((req, res) => {
+      let raw = '';
+      req.on('data', (c) => { raw += c; });
+      req.on('end', () => {
+        capture?.({ method: req.method ?? '', contentType: req.headers['content-type'] ?? '', body: raw });
+        res.writeHead(status, { 'Content-Type': 'application/json' });
+        res.end(body);
+      });
+    });
+    server.listen(0, '127.0.0.1');
+    await once(server, 'listening');
+    const port = (server.address() as AddressInfo).port;
+    return { url: `http://127.0.0.1:${port}`, server };
+  };
+
+  it('POSTs the refresh token and parses a real JSON token response', async () => {
+    let received: { method: string; contentType: string; body: string } | undefined;
+    const { url, server } = await serve(
+      200,
+      JSON.stringify({ access_token: 'new-access', refresh_token: 'new-refresh', expires_in: 3600 }),
+      (r) => { received = r; },
+    );
+    try {
+      const resp = await fetchRefreshedToken('the-refresh-token', url);
+      assert.deepEqual(resp, { accessToken: 'new-access', refreshToken: 'new-refresh', expiresInSec: 3600 });
+      // The real request carried the grant + token as JSON.
+      assert.equal(received?.method, 'POST');
+      assert.match(received?.contentType ?? '', /application\/json/);
+      const sent = JSON.parse(received?.body ?? '{}') as Record<string, unknown>;
+      assert.equal(sent['grant_type'], 'refresh_token');
+      assert.equal(sent['refresh_token'], 'the-refresh-token');
+      assert.equal(typeof sent['client_id'], 'string');
+    } finally {
+      server.close();
+    }
+  });
+
+  it('returns null on a non-OK status', async () => {
+    const { url, server } = await serve(401, JSON.stringify({ error: 'invalid_grant' }));
+    try {
+      assert.equal(await fetchRefreshedToken('x', url), null);
+    } finally {
+      server.close();
+    }
+  });
+
+  it('returns null on malformed JSON', async () => {
+    const { url, server } = await serve(200, 'not json at all');
+    try {
+      assert.equal(await fetchRefreshedToken('x', url), null);
+    } finally {
+      server.close();
+    }
+  });
+
+  it('returns null when access_token is missing', async () => {
+    const { url, server } = await serve(200, JSON.stringify({ expires_in: 3600 }));
+    try {
+      assert.equal(await fetchRefreshedToken('x', url), null);
+    } finally {
+      server.close();
+    }
+  });
+
+  it('end-to-end: refreshClaudeOauthIfNeeded uses the real fetch to rewrite creds', async () => {
+    const { url, server } = await serve(
+      200,
+      JSON.stringify({ access_token: 'fresh-acc', refresh_token: 'fresh-ref', expires_in: 7200 }),
+    );
+    const home = await mkdtemp(join(tmpdir(), 'oauth-e2e-'));
+    const credsPath = join(home, '.credentials.json');
+    await writeFile(
+      credsPath,
+      JSON.stringify({ claudeAiOauth: { accessToken: 'old', refreshToken: 'r', expiresAt: NOW - HOUR } }),
+      'utf8',
+    );
+    try {
+      const r = await refreshClaudeOauthIfNeeded({
+        home, credsPath, nowMs: NOW,
+        fetcher: (rt) => fetchRefreshedToken(rt, url), // the REAL client, real server
+      });
+      assert.equal(r.action, 'refreshed');
+      const written = JSON.parse(await readFile(credsPath, 'utf8')) as Record<string, unknown>;
+      const oauth = written['claudeAiOauth'] as Record<string, unknown>;
+      assert.equal(oauth['accessToken'], 'fresh-acc');
+      assert.equal(oauth['expiresAt'], NOW + 7200 * 1000);
+    } finally {
+      server.close();
+    }
   });
 });
