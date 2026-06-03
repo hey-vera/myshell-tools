@@ -11,6 +11,18 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## [3.5.5]
 
+### Added
+- **Claude stays signed in across restarts (OAuth auto-refresh).** At launch,
+  myshell now refreshes Claude's OAuth token *in place* if it's expired or within
+  2h of it — exchanging the stored refresh token for a fresh one at Anthropic's own
+  endpoint and writing it back to Claude's `.credentials.json`. So a container
+  that's been idle past the token's lifetime comes back already signed in instead
+  of forcing a re-login. It's best-effort and safe: a no-op when the token is still
+  valid, ≤5s and only when actually near expiry, backs up the credentials file
+  before writing (restores on any failure), and backs off for 1h after a failed
+  attempt so it never hammers the endpoint or wedges startup. The token is only
+  ever sent to Anthropic and never copied into myshell's own store.
+
 ### Changed
 - **Single-key main menu — no Enter.** On a real terminal the main menu now acts
   the instant you press a key (`c`, `n`, `j`, a digit, …) instead of making you

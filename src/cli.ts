@@ -23,6 +23,9 @@ import { detectEnvironment } from './providers/detect.js';
 import { createFileConversationStore } from './infra/conversations.js';
 import { loadConfig } from './infra/config.js';
 import { checkForUpdate } from './infra/update-check.js';
+import { refreshClaudeOauthIfNeeded } from './infra/claude-oauth-refresh.js';
+import { replitPersistentEnv } from './infra/credentials.js';
+import { dim as dimText } from './ui/theme.js';
 import { evaluateHealth, probeStateWritable } from './infra/health.js';
 import { isPricingStale } from './infra/pricing.js';
 import { runDoctor } from './commands/doctor.js';
@@ -164,6 +167,26 @@ async function main(): Promise<void> {
     color: process.stdout.isTTY === true && !process.env['NO_COLOR'],
     isTty: process.stdout.isTTY === true,
   };
+
+  // ---- Keep Claude signed in across restarts ---------------------------------
+  // Refresh Claude's OAuth token IN PLACE if it's expired or close to it, BEFORE
+  // detecting providers, so detection (and any spawned claude) sees a fresh token
+  // — this is what makes "sign in once, the container just remembers" hold even
+  // after the access token would otherwise have lapsed. Best-effort: a no-op
+  // (valid/no-creds) in the common case, a ≤5s network call only when actually
+  // near expiry, never throws, never blocks a command from running.
+  {
+    const refreshEnv = { ...process.env, ...replitPersistentEnv(process.env, cwd) };
+    const r = await refreshClaudeOauthIfNeeded({ env: refreshEnv, cwd }).catch(() => undefined);
+    if (r?.action === 'refreshed' && out.isTty) {
+      out.write(
+        dimText(
+          `✓ Claude session kept alive (refreshed${r.hoursLeft !== undefined ? `, ~${r.hoursLeft}h left` : ''}).\n`,
+          out.color,
+        ),
+      );
+    }
+  }
 
   // ---- Commands that do NOT need provider detection --------------------------
   if (args[0] === 'login') {
