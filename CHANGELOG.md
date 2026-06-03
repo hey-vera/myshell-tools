@@ -12,6 +12,12 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 ## [3.6.0]
 
 ### Fixed
+- **Autonomous-run control markers no longer leak into the chat.** During a `/goal`
+  run the model emits a `GOAL_COMPLETE` / `GOAL_CONTINUE: …` status line that myshell
+  parses internally — but it was showing up verbatim in the transcript. The streaming
+  renderer now strips a trailing goal marker the same way it already strips the
+  confidence envelope (only the trailing line; an ordinary sentence that merely starts
+  with `GOAL_` is left alone). Removes a class of leaked-control-token noise.
 - **myshell's own state now persists on Replit (onboarding, conversations, config,
   update cache).** myshell kept its state under `~/.myshell-tools/`, but on Replit
   the home dir is wiped on every container restart (only the workspace survives) —

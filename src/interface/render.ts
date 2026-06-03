@@ -189,6 +189,40 @@ function trailingControlEnvelope(
   return best;
 }
 
+// Trailing autonomous-goal control markers. These mirror core/goal.ts's
+// COMPLETE_MARKER / CONTINUE_MARKER: the model writes one on its own line at the
+// very END of a `/goal` turn to signal status. Like the confidence envelope, it's
+// a control token, not prose — so it must never leak into the visible transcript.
+const GOAL_MARKER_TOKENS = ['GOAL_COMPLETE', 'GOAL_CONTINUE'] as const;
+
+/**
+ * Start index of a trailing goal-marker region (the final line, plus its leading
+ * newline so no orphan blank line remains), or -1 when the last line isn't a goal
+ * marker. Also matches a PARTIAL prefix still being streamed (e.g. `GOAL_CON`) so
+ * push() can hold it back until it either completes (→ stripped) or diverges into
+ * real prose (→ released). Only ever inspects the LAST line, so a mid-prose
+ * mention is never touched. Pure / never throws.
+ */
+function trailingGoalMarkerStart(text: string): number {
+  try {
+    const nl = text.lastIndexOf('\n');
+    const lineStart = nl + 1; // 0 when there is no newline
+    const line = text.slice(lineStart).replace(/^[ \t]+/, '');
+    if (line.length === 0) return -1;
+    const tok = line.match(/^GOAL_[A-Z]*/)?.[0];
+    if (tok === undefined) return -1;
+    // The leading token must be one of the markers, a prefix of one (still being
+    // typed), or a full marker with a trailing `:`/text (the CONTINUE case).
+    const isMarkerOrPrefix = GOAL_MARKER_TOKENS.some(
+      (mk) => mk === tok || mk.startsWith(tok) || tok.startsWith(mk),
+    );
+    if (!isMarkerOrPrefix) return -1;
+    return nl >= 0 ? nl : 0;
+  } catch {
+    return -1;
+  }
+}
+
 /**
  * A streaming writer that holds back any trailing fragment of model prose that
  * could be the start of a control envelope, then strips the envelope at the
@@ -252,6 +286,12 @@ class EnvelopeFilter {
     if (match !== null && match.start < boundary) {
       boundary = match.start;
     }
+    // (c) A trailing goal-control marker line (or a prefix still streaming) is held
+    //     so it never leaks; flush() strips a confirmed one and releases a non-marker.
+    const goal = trailingGoalMarkerStart(this.full);
+    if (goal !== -1 && goal < boundary) {
+      boundary = goal;
+    }
     return boundary;
   }
 
@@ -268,6 +308,17 @@ class EnvelopeFilter {
     let cutEnd = this.full.length;
     if (match !== null) {
       cutEnd = match.start;
+    }
+    // Also cut a confirmed trailing goal-control marker line. We only strip it when
+    // the last line is genuinely a GOAL_COMPLETE / GOAL_CONTINUE marker (the regex
+    // requires the full token), so a non-marker prefix that was briefly held back is
+    // released here as normal prose.
+    const goalStart = trailingGoalMarkerStart(this.full);
+    if (goalStart !== -1 && goalStart < cutEnd) {
+      const lastLine = this.full.slice(this.full.lastIndexOf('\n', cutEnd - 1) + 1, cutEnd).trim();
+      if (/^GOAL_(COMPLETE|CONTINUE)\b/.test(lastLine)) {
+        cutEnd = goalStart;
+      }
     }
     if (cutEnd > this.flushed) {
       // Trim trailing whitespace AND a dangling ```json/``` fence-opener that the

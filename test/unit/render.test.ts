@@ -389,6 +389,54 @@ describe('renderStream — live working indicator (TTY)', () => {
 });
 
 // ---------------------------------------------------------------------------
+// 4c. trailing /goal control markers are stripped (never leak into the chat)
+// ---------------------------------------------------------------------------
+
+describe('renderStream — strips trailing GOAL_ control markers', () => {
+  const runProse = async (deltas: string[]): Promise<string> => {
+    const sink = makeSink();
+    const events: CoreEvent[] = [
+      { type: 'tier-start', tier: 'ic', provider: 'claude', model: 'claude-sonnet-4-6' },
+      ...deltas.map((delta) => ({ type: 'provider-event' as const, tier: 'ic' as const, event: { type: 'text' as const, delta } })),
+      { type: 'final', success: true, output: deltas.join(''), tier: 'ic', totalCostUsd: 0, sessionId: 's', attempts: 1 },
+    ];
+    await renderStream(makeStream(events), sink, 'normal');
+    return sink.buf.join('');
+  };
+
+  it('strips a trailing GOAL_CONTINUE marker but keeps the prose', async () => {
+    const out = await runProse(['Did the thing.\n', 'GOAL_CONTINUE: do the next thing']);
+    assert.ok(out.includes('Did the thing.'), 'real prose is shown');
+    assert.ok(!out.includes('GOAL_CONTINUE'), 'the control marker must not leak');
+    assert.ok(!out.includes('do the next thing'), 'the marker payload must not leak');
+  });
+
+  it('strips a trailing GOAL_COMPLETE marker', async () => {
+    const out = await runProse(['All done and verified.\n', 'GOAL_COMPLETE']);
+    assert.ok(out.includes('All done and verified.'));
+    assert.ok(!out.includes('GOAL_COMPLETE'));
+  });
+
+  it('strips a marker split across deltas', async () => {
+    const out = await runProse(['Progress made.\n', 'GOAL_CO', 'NTINUE: keep going']);
+    assert.ok(out.includes('Progress made.'));
+    assert.ok(!out.includes('GOAL_CONTINUE'));
+    assert.ok(!out.includes('keep going'));
+  });
+
+  it('does NOT strip a non-marker line that merely starts with GOAL_', async () => {
+    const out = await runProse(['The GOAL_CRITERIA were all met.']);
+    assert.ok(out.includes('GOAL_CRITERIA were all met'), 'ordinary prose beginning with GOAL_ is kept');
+  });
+
+  it('does NOT strip a GOAL_ mention that is not the trailing line', async () => {
+    const out = await runProse(['GOAL_CONTINUE appeared mid-text here.\nBut this is the real ending.']);
+    assert.ok(out.includes('But this is the real ending.'));
+    assert.ok(out.includes('GOAL_CONTINUE appeared mid-text'), 'only the trailing line is a control marker');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // 5. escalate + notice events render their real messages
 // ---------------------------------------------------------------------------
 
