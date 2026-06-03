@@ -71,13 +71,15 @@ const LOGIN_CODE_COMMAND: Record<
     // It persists the credential itself, so we capture/store nothing.
     args: ['auth', 'login'],
     guidance:
-      'claude will print a sign-in link just below (starting "Opening browser to\n' +
-      '  sign in…"). Open that link in any browser, sign in at claude.com, and click\n' +
-      '  Authorize.\n' +
-      '  • The page then shows a short code — copy it.\n' +
-      '  • Paste that code back here at claude\'s "Paste code here" prompt.\n' +
-      '  There is no localhost step and no error page — just the code. Claude saves\n' +
-      '  the sign-in itself; there is nothing else to copy or store.',
+      'claude prints a sign-in link just below (after "Opening browser to sign in…").\n' +
+      '  Open it in any browser, sign in at claude.com, and click Authorize. Then:\n' +
+      '  • The page shows a box labelled "Authentication code" / "Paste this into\n' +
+      '    Claude Code:" — that is the value you need.\n' +
+      '  • Copy the WHOLE value end to end (it is long). A partial copy is the usual\n' +
+      '    cause of claude\'s "make sure the full code was copied" error.\n' +
+      '  • Paste it back here at claude\'s "Paste code here if prompted >" prompt.\n' +
+      '  No localhost step, no error page. Claude saves the sign-in itself — nothing\n' +
+      '  else for you to copy or store.',
   },
   codex: {
     bin: 'codex',

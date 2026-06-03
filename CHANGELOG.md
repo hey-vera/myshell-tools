@@ -9,6 +9,18 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 ### Pending
 - Cross-OS CI execution (requires a public remote).
 
+## [3.5.4]
+
+### Fixed
+- **claude sign-in guidance now names the exact thing to look for.** After you
+  authorize at claude.com, the page shows a box labelled **"Authentication code"**
+  / **"Paste this into Claude Code:"** — the old guidance just said "a short code",
+  so users weren't sure what to copy. The guidance now names that label and stresses
+  copying the **whole** value end to end: a partial copy is the usual cause of
+  claude's own `Invalid code. Please make sure the full code was copied.` error.
+  No behaviour change — claude still runs its own OOB code flow and persists the
+  credential itself; this is purely clearer instructions.
+
 ## [3.5.3]
 
 ### Added
