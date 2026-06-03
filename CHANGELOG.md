@@ -11,6 +11,16 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## [3.6.3]
 
+### Changed
+- **Claude sign-in now uses `claude /login` (the interactive TUI) instead of the
+  bare `claude auth login` subcommand.** The subcommand skipped Claude's
+  login-method selector (subscription / Console / 3rd-party) and used a fragile
+  "Paste code here >" prompt that kept rejecting a correctly-copied code ("Invalid
+  code. Please make sure the full code was copied."). `claude /login` shows the
+  selector and handles the paste in Claude's own input box — the flow that actually
+  works in remote/Replit shells. After signing in you exit claude (`/exit` or
+  Ctrl+C) and myshell continues; success is confirmed by a real credential probe.
+
 ### Fixed
 - **myshell now recognizes an existing Claude sign-in it previously missed.** Auth
   detection relied solely on spawning `claude auth status` (10s timeout). During the

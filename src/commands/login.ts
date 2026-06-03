@@ -10,18 +10,18 @@
  *     a laptop.
  *   - 'code':   the same vendor sign-in, but with guidance tuned for a remote
  *     shell where no local browser opens.
- *       · claude → `claude auth login`: spawned with inherited stdio. Verified
- *         against claude 2.1.158: it uses an OOB *code* flow, NOT a localhost
- *         callback — it prints "Opening browser to sign in…", an authorize URL
- *         (redirect_uri=https://platform.claude.com/oauth/code/callback), then
- *         "Paste code here if prompted >". The user opens the URL, authorizes,
- *         the page shows a short code, and they paste THAT code back. There is no
- *         localhost redirect and no "can't be reached" error. Claude persists the
- *         credential ITSELF (Keychain / ~/.claude/.credentials.json), so there is
- *         nothing for us to capture or store. (We do NOT use `claude setup-token`
- *         — per the docs that prints a 1-year token to stdout that you must
- *         `export CLAUDE_CODE_OAUTH_TOKEN=…` yourself; it does not persist, so it
- *         would either leave claude unauthenticated or force us to store a token.)
+ *       · claude → `claude /login`: launches claude's interactive TUI sign-in
+ *         screen (with method selector: subscription / Console / 3rd-party).
+ *         The user picks an option, follows the in-TUI prompts (open the link,
+ *         authorize, paste the code into claude's own input box — which handles
+ *         the paste robustly), and then exits claude (`/exit` or Ctrl+C) to
+ *         return here. Claude persists the credential ITSELF
+ *         (Keychain / ~/.claude/.credentials.json), so there is nothing for us
+ *         to capture or store. (We do NOT use `claude setup-token` — per the
+ *         docs that prints a 1-year token to stdout that you must
+ *         `export CLAUDE_CODE_OAUTH_TOKEN=…` yourself; it does not persist, so
+ *         it would either leave claude unauthenticated or force us to store a
+ *         token.)
  *       · codex  → `codex login --device-auth`: prints a URL + one-time code;
  *         the user authorizes their ChatGPT account on any device.
  *
@@ -47,7 +47,7 @@ export type LoginMethod = 'browser' | 'code';
 
 /** Each provider's default (browser/localhost) sign-in command. */
 const LOGIN_COMMAND: Record<ProviderId, { readonly bin: string; readonly args: readonly string[] }> = {
-  claude: { bin: 'claude', args: ['auth', 'login'] },
+  claude: { bin: 'claude', args: ['/login'] },
   codex: { bin: 'codex', args: ['login'] },
   // `opencode auth login` logs in your provider/subscription (anthropic, openai,
   // opencode-zen, …) — that's what makes opencode actually useful for real work.
@@ -64,21 +64,21 @@ const LOGIN_CODE_COMMAND: Record<
 > = {
   claude: {
     bin: 'claude',
-    // `claude auth login` uses an OOB code flow (verified against claude 2.1.158):
-    // it prints an authorize URL whose redirect is a real web page
-    // (platform.claude.com/oauth/code/callback) — NOT a localhost callback — then
-    // a "Paste code here if prompted >" prompt. No localhost, no connection error.
-    // It persists the credential itself, so we capture/store nothing.
-    args: ['auth', 'login'],
+    // We launch `claude /login` — the interactive TUI sign-in — for a robust,
+    // selector-driven flow. It shows a method picker (subscription / Console /
+    // 3rd-party), then guides the user through the browser-authorize + paste
+    // steps in claude's own input box (which handles the paste correctly).
+    // When sign-in is complete, the user exits claude (/exit or Ctrl+C / Esc)
+    // to return here. Claude persists its own credential; we capture nothing.
+    args: ['/login'],
     guidance:
-      'A sign-in link appears just below. Open it in any browser, authorize at\n' +
-      '  claude.com, copy the code the page shows (there is a one-click Copy button),\n' +
-      '  and paste it at claude\'s prompt below. No localhost — claude saves the\n' +
-      '  sign-in itself.\n' +
-      '  If it says "Invalid code", the code is single-use and short-lived: authorize\n' +
-      '  and paste promptly, and don\'t reuse a code from an earlier attempt. (You can\n' +
-      '  also just run `claude /login` yourself — myshell picks up the sign-in\n' +
-      '  automatically.)',
+      'claude opens its sign-in screen — choose "Claude account with subscription"\n' +
+      '  (option 1) unless you use Console/Bedrock/Vertex.\n' +
+      '  Follow the prompt: open the link it shows, authorize in your browser, and\n' +
+      '  paste the code into claude\'s box. (This is claude\'s own screen, so the\n' +
+      '  paste works.)\n' +
+      '  IMPORTANT: when it says you\'re signed in, leave claude to come back here\n' +
+      '  — type /exit or press Ctrl+C / Esc. myshell then continues.',
   },
   codex: {
     bin: 'codex',

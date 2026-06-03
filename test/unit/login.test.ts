@@ -2,7 +2,7 @@
  * Unit tests for src/commands/login.ts
  *
  * Only the hermetic validation path is unit-tested. The interactive sign-in
- * (which spawns `claude auth login` / `codex login` with inherited stdio) is an
+ * (which spawns `claude /login` / `codex login` with inherited stdio) is an
  * integration concern and is not exercised here.
  *
  * The tee-capture flow (runWithTeeCapture) is also an integration concern:
