@@ -13,6 +13,7 @@ import {
   parseClaudeAuth,
   parseCodexAuth,
   parseOpencodeAuth,
+  parseOpencodeModels,
   getInstallCommand,
 } from '../../src/providers/detect.ts';
 
@@ -379,5 +380,34 @@ describe('parseOpencodeAuth', () => {
   it('defaults to NOT authenticated when output is empty / unrecognized (safe)', () => {
     assert.equal(parseOpencodeAuth('', '').authenticated, false);
     assert.equal(parseOpencodeAuth('garbage with no count', '').authenticated, false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// parseOpencodeModels — the user's real available `provider/model` list
+// ---------------------------------------------------------------------------
+
+describe('parseOpencodeModels', () => {
+  it('parses one provider/model id per line (live free roster shape)', () => {
+    const stdout =
+      'opencode/big-pickle\nopencode/deepseek-v4-flash-free\nopencode/mimo-v2.5-free\n';
+    assert.deepEqual(parseOpencodeModels(stdout), [
+      'opencode/big-pickle',
+      'opencode/deepseek-v4-flash-free',
+      'opencode/mimo-v2.5-free',
+    ]);
+  });
+
+  it('keeps opencode-go/* ids and ignores blank/banner lines', () => {
+    const stdout = '\n  Models\n\nopencode-go/kimi-k2.6\nopencode-go/glm-5.1\n';
+    assert.deepEqual(parseOpencodeModels(stdout), [
+      'opencode-go/kimi-k2.6',
+      'opencode-go/glm-5.1',
+    ]);
+  });
+
+  it('returns [] for empty / non-model output (never throws)', () => {
+    assert.deepEqual(parseOpencodeModels(''), []);
+    assert.deepEqual(parseOpencodeModels('no models configured'), []);
   });
 });

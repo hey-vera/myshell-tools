@@ -12,6 +12,7 @@
 import type { Tier, RouteDecision, Policy } from './types.js';
 import type { ProviderId } from '../providers/port.js';
 import { getCheapestForTier } from '../infra/pricing.js';
+import { selectOpencodeModel } from './opencode-model.js';
 
 /**
  * Ordinal rank of each tier, cheapest → most expensive. Used to clamp a
@@ -109,6 +110,16 @@ export function route(
       providerAllowed !== undefined && providerAllowed.length > 0
         ? providerAllowed
         : undefined;
+    // opencode: which models are usable is entirely the user's connected set
+    // (free models, OpenCode Go subscription, or Zen credits). Pick the best of
+    // their REAL available models for this tier instead of a pricing placeholder,
+    // so `opencode run -m` uses a model they actually have. Fail-safe: when no
+    // usable model is found, fall through to pricing (the adapter then omits -m
+    // and lets opencode use its own configured default).
+    if (id === 'opencode') {
+      const picked = selectOpencodeModel(tier, allowedSet);
+      if (picked !== undefined) return { tier, provider: id, model: picked };
+    }
     const pricing = getCheapestForTier(tier, [id], allowedSet);
     return { tier, provider: id, model: pricing.model };
   }

@@ -119,14 +119,14 @@ export const PRICING_TABLE: PricingTable = {
     },
 
     // ---- opencode ----------------------------------------------------------
-    // opencode is a subscription/free provider: it uses whatever model the USER
-    // has configured (a free opencode-zen model, or a premium one they've added —
-    // e.g. Kimi K2). So we don't pin a specific model; the adapter omits `-m` and
-    // opencode runs its own configured default (see opencode.ts). These entries
-    // exist only so getCheapestForTier/route can SELECT opencode at any tier; the
-    // single `opencode` model id reflects "opencode's own model", and cost is flat
-    // (subscription) — the $0 placeholder never displaces claude/codex because
-    // route() honours providerOrderByTier (opencode last) before the pricing sort.
+    // opencode is a multi-provider subscription/credits agent. The router picks a
+    // CONCRETE per-tier model from the user's REAL `opencode models` list via
+    // selectOpencodeModel (see core/route.ts + core/opencode-model.ts), so these
+    // entries are only the FAIL-SAFE: when detection returns no models, route()
+    // falls back here and the adapter omits -m (opencode uses its own default).
+    // The `opencode` model id is a placeholder and cost is flat ($0, subscription);
+    // it never displaces claude/codex because route() honours providerOrderByTier
+    // (opencode last) before the pricing sort.
     {
       provider: 'opencode',
       model: 'opencode',

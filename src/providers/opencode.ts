@@ -11,10 +11,11 @@
  *  for all SandboxLevel values, which is conservative and appropriate.
  *
  * Authentication note:
- *  opencode ships free models (e.g. opencode/deepseek-v4-flash-free) that need
- *  no credentials. When installed, authenticated is always reported as true by
- *  detectProvider (see detect.ts). Premium providers require `opencode auth
- *  login -p <provider>`, but that is outside the scope of this adapter.
+ *  authenticated reflects a REAL credential probe (`opencode auth list`) — a
+ *  user must connect a provider/subscription (OpenCode Go, Zen, or another) for
+ *  serious work; see detect.ts. The model passed to `-m` is the best of the
+ *  user's REAL available models for the routed tier (selectOpencodeModel); when
+ *  none was resolved we omit -m and opencode uses its own configured default.
  *
  * Stream termination:
  *  opencode emits NO single terminal "done" line — the stdout stream simply ends
@@ -61,12 +62,16 @@ export function createOpencodeProvider(opts?: { bin?: string }): Provider {
     },
 
     async *run(req: ProviderRequest, signal: AbortSignal): AsyncIterable<ProviderEvent> {
-      // No `-m`: opencode is a subscription/free provider, so we let it use the
-      // model the USER configured (a free opencode-zen model, or a premium one
-      // they've added — e.g. Kimi K2). "Just use whatever opencode has." req.model
-      // is the routing label ('opencode'); the actual model is opencode's own
-      // default, which is exactly what the user wants here.
+      // Pass `-m <provider/model>` when the router resolved a real opencode model
+      // for this tier (selectOpencodeModel picks the best of the user's REAL
+      // available models — free, OpenCode Go, or Zen). A real id contains a slash
+      // (e.g. `opencode-go/kimi-k2.6`); the `'opencode'` pricing placeholder does
+      // not. Fail-safe: when no concrete model was resolved we omit -m and let
+      // opencode use its own configured default — never spawn an invalid -m.
       const args = ['run', '--format', 'json'];
+      if (req.model.includes('/')) {
+        args.push('-m', req.model);
+      }
 
       // Point opencode at the Replit-persistent XDG dirs when present so your own
       // configured provider/subscription (Kimi etc.) is remembered across restarts.

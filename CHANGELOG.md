@@ -11,6 +11,18 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## [3.5.3]
 
+### Added
+- **opencode now uses the BEST model per tier from what you actually have.**
+  Previously myshell ran `opencode run` with no `-m`, so even with an OpenCode Go
+  subscription (Kimi/GLM/DeepSeek/…) or Zen credits, opencode fell through to a
+  weak free model unless you'd configured a default yourself. Now detection reads
+  your **real** model list (`opencode models`) and the router maps worker/ic/
+  manager → the strongest model you have access to, passing `-m provider/model`.
+  Model ids are never hardcoded (your set depends on what you've connected), and
+  it's fail-safe: if no usable model is resolved it omits `-m` and lets opencode
+  use its own default. (OpenCode Go models are `opencode-go/*`; Zen are
+  `opencode/*` — both are detected automatically.)
+
 ### Fixed
 - **No more "dead pause" between sign-ins in the setup wizard.** After signing
   into claude, the next provider's prompt (codex) appeared to hang — nothing

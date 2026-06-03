@@ -322,6 +322,23 @@ export function parseOpencodeAuth(
 }
 
 /**
+ * Parse `opencode models` output into a list of `provider/model` ids.
+ *
+ * The command prints one model id per line (e.g. `opencode/deepseek-v4-flash-free`,
+ * `opencode-go/kimi-k2.6`). We keep only lines that look like a provider/model id
+ * (contain a slash, no whitespace) so banner/blank lines are ignored. Tolerant —
+ * returns [] on empty/garbage input. Never throws.
+ *
+ * @param stdout - stdout from `opencode models`.
+ */
+export function parseOpencodeModels(stdout: string): string[] {
+  return stdout
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => /^[\w.-]+\/[\w./:-]+$/.test(line));
+}
+
+/**
  * Detect the opencode CLI. `installed` is true when `opencode --version`
  * succeeds; `authenticated` reflects a REAL credential probe (`opencode auth
  * list`) — true only when the user has logged a provider/subscription in. We do
@@ -355,6 +372,25 @@ async function detectOpencodeProvider(): Promise<ProviderStatus> {
         // Spawn failure — leave authenticated false (offer sign-in, don't pretend).
       }
 
+      // Probe the user's REAL available models (`opencode models`) so the router
+      // can pick the best one per tier and pass it to `opencode run -m`. The set
+      // depends entirely on what they've connected (free models, OpenCode Go, or
+      // Zen credits) — never hardcode it. Best-effort: empty on failure, which
+      // makes the adapter omit -m and use opencode's own default.
+      let availableModels: string[] = [];
+      try {
+        const modelsResult = await execa('opencode', ['models'], {
+          reject: false,
+          timeout: 10_000,
+          env,
+        });
+        availableModels = parseOpencodeModels(
+          typeof modelsResult.stdout === 'string' ? modelsResult.stdout : '',
+        );
+      } catch {
+        // Spawn failure — leave availableModels empty (adapter falls back to -m omitted).
+      }
+
       return {
         id: 'opencode',
         installed: true,
@@ -362,14 +398,7 @@ async function detectOpencodeProvider(): Promise<ProviderStatus> {
         binaryPath: 'opencode',
         authenticated,
         plan: null,
-        // opencode runs with the model the USER configured (no -m pinned), so we
-        // expose tier labels only for route()'s tier selection; the real model is
-        // opencode's own default for the logged-in provider.
-        availableModels: [
-          'opencode/mimo-v2.5-free',       // worker tier
-          'opencode/deepseek-v4-flash-free', // ic tier
-          'opencode/big-pickle',             // manager tier
-        ],
+        availableModels,
       };
     }
   } catch {
