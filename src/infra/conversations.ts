@@ -8,11 +8,12 @@
  */
 
 import { mkdir, readFile, unlink } from 'node:fs/promises';
-import { homedir } from 'node:os';
 import { join } from 'node:path';
 import type { Clock, SessionEntry, SessionWriter } from '../core/types.js';
 import type { ConversationMeta, ConversationStore } from './conversation-store.js';
 import { atomicAppendJSONL, atomicWrite, withLock } from './atomic.js';
+import { defaultStateHome } from './state-dir.js';
+import { archiveConversation } from './session-mirror.js';
 
 // ---------------------------------------------------------------------------
 // Path helpers (local — conversations dir lives in homeDir, not cwd)
@@ -101,7 +102,7 @@ export function createFileConversationStore(opts: {
   clock: Clock;
 }): ConversationStore {
   const { clock } = opts;
-  const home = opts.homeDir ?? homedir();
+  const home = opts.homeDir ?? defaultStateHome();
 
   return {
     // -----------------------------------------------------------------------
@@ -253,6 +254,10 @@ export function createFileConversationStore(opts: {
     // remove
     // -----------------------------------------------------------------------
     async remove(id: string): Promise<void> {
+      // Preserve the conversation in the append-only archive BEFORE unlinking, so
+      // a delete is recoverable (the archive only ever grows). Best-effort.
+      await archiveConversation(id, home);
+
       // Best-effort delete of message file
       try {
         await unlink(getMessagePath(home, id));

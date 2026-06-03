@@ -7,9 +7,9 @@
  */
 
 import { mkdir, readFile } from 'node:fs/promises';
-import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { atomicWrite } from './atomic.js';
+import { defaultStateHome } from './state-dir.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -93,7 +93,7 @@ function getConfigPath(homeDir: string): string {
  * values so unknown/corrupt files never throw and new keys are always present.
  */
 export async function loadConfig(homeDir?: string): Promise<AppConfig> {
-  const home = homeDir ?? homedir();
+  const home = homeDir ?? defaultStateHome();
   let raw: string;
   try {
     raw = await readFile(getConfigPath(home), 'utf8');
@@ -117,7 +117,7 @@ export async function loadConfig(homeDir?: string): Promise<AppConfig> {
  * if it does not exist.
  */
 export async function saveConfig(config: AppConfig, homeDir?: string): Promise<void> {
-  const home = homeDir ?? homedir();
+  const home = homeDir ?? defaultStateHome();
   await mkdir(getConfigDir(home), { recursive: true });
   await atomicWrite(getConfigPath(home), JSON.stringify(config, null, 2));
 }

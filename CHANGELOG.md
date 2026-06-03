@@ -11,7 +11,22 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## [3.5.5]
 
+### Fixed
+- **myshell's own state now persists on Replit (onboarding, conversations, config,
+  update cache).** myshell kept its state under `~/.myshell-tools/`, but on Replit
+  the home dir is wiped on every container restart (only the workspace survives) —
+  so onboarding never stuck and chat history vanished. State is now anchored to the
+  persistent workspace on Replit (co-located with the cost ledger, which already
+  lived there), and left under `~` everywhere else. Sign in / set up once and it
+  sticks.
+
 ### Added
+- **Conversations are backed up to an append-only archive.** A grow-only mirror
+  under `.session-archive/` keeps every conversation log; a file is copied only
+  when the live one is larger and the archive is never trimmed. So a deleted
+  conversation (archived just before the delete) or a truncated/corrupted log is
+  still recoverable. Best-effort and silent — synced at launch and right before any
+  delete.
 - **Claude stays signed in across restarts (OAuth auto-refresh).** At launch,
   myshell now refreshes Claude's OAuth token *in place* if it's expired or within
   2h of it — exchanging the stored refresh token for a fresh one at Anthropic's own

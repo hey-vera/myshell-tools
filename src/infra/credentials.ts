@@ -18,9 +18,9 @@
 
 import { mkdir, readFile, chmod } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
-import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { atomicWrite } from './atomic.js';
+import { defaultStateHome } from './state-dir.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -135,7 +135,7 @@ function parseCredentials(raw: string): Credentials {
  * Load stored credentials. Never throws — missing or corrupt files return `{}`.
  */
 export async function loadCredentials(homeDir?: string): Promise<Credentials> {
-  const home = homeDir ?? homedir();
+  const home = homeDir ?? defaultStateHome();
   try {
     const raw = await readFile(getCredentialsPath(home), 'utf8');
     return parseCredentials(raw);
@@ -243,7 +243,7 @@ export function claudeEnv(
  * tracked for expiry warnings.
  */
 export async function saveClaudeToken(token: string, homeDir?: string): Promise<void> {
-  const home = homeDir ?? homedir();
+  const home = homeDir ?? defaultStateHome();
   const dir = getCredentialsDir(home);
   const path = getCredentialsPath(home);
 
@@ -293,7 +293,7 @@ export async function loadClaudeTokenCapturedAt(homeDir?: string): Promise<strin
  */
 export async function clearClaudeToken(homeDir?: string): Promise<void> {
   try {
-    const home = homeDir ?? homedir();
+    const home = homeDir ?? defaultStateHome();
     const dir = getCredentialsDir(home);
     const path = getCredentialsPath(home);
 

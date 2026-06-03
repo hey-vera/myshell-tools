@@ -13,7 +13,7 @@
  */
 
 import { mkdir, readFile } from 'node:fs/promises';
-import { homedir } from 'node:os';
+import { defaultStateHome } from './state-dir.js';
 import { join } from 'node:path';
 import { atomicWrite } from './atomic.js';
 
@@ -70,7 +70,7 @@ function getCachePath(homeDir: string): string {
  * Never throws.
  */
 export async function loadUpdateCache(homeDir?: string): Promise<UpdateCache | null> {
-  const home = homeDir ?? homedir();
+  const home = homeDir ?? defaultStateHome();
   try {
     const raw = await readFile(getCachePath(home), 'utf8');
     const parsed = JSON.parse(raw) as unknown;
@@ -99,7 +99,7 @@ export async function saveUpdateCache(
   now: number,
   homeDir?: string,
 ): Promise<void> {
-  const home = homeDir ?? homedir();
+  const home = homeDir ?? defaultStateHome();
   try {
     await mkdir(getCacheDir(home), { recursive: true });
     const cache: UpdateCache = { checkedAt: now, latest };

@@ -24,6 +24,7 @@ import { createFileConversationStore } from './infra/conversations.js';
 import { loadConfig } from './infra/config.js';
 import { checkForUpdate } from './infra/update-check.js';
 import { refreshClaudeOauthIfNeeded } from './infra/claude-oauth-refresh.js';
+import { syncConversationMirror } from './infra/session-mirror.js';
 import { replitPersistentEnv } from './infra/credentials.js';
 import { dim as dimText } from './ui/theme.js';
 import { evaluateHealth, probeStateWritable } from './infra/health.js';
@@ -187,6 +188,11 @@ async function main(): Promise<void> {
       );
     }
   }
+
+  // ---- Back up conversations into the append-only archive --------------------
+  // Grow-only mirror so a deleted/corrupted conversation is still recoverable.
+  // Best-effort, fast (a stat per file, copy only when grown), never throws.
+  await syncConversationMirror().catch(() => undefined);
 
   // ---- Commands that do NOT need provider detection --------------------------
   if (args[0] === 'login') {
