@@ -92,10 +92,13 @@ const LOGIN_CODE_COMMAND: Record<
     bin: 'opencode',
     args: ['auth', 'login'],
     guidance:
-      'This starts `opencode auth login` to connect your provider or subscription\n' +
-      '  (e.g. anthropic, openai, or opencode-zen) — that is what makes opencode\n' +
-      '  ready for real work; its free models alone are not enough.\n' +
-      '  myshell-tools never sees the credentials — opencode manages them.',
+      'This starts `opencode auth login` — opencode is multi-provider, so it shows\n' +
+      '  a list. Pick the one you pay for:\n' +
+      '  • OpenCode Go ($10/mo subscription — Kimi, GLM, DeepSeek, Qwen…): select\n' +
+      '    "opencode" and paste the API key from your OpenCode account.\n' +
+      '  • Or a provider you have (anthropic, openai, …) / OpenCode Zen credits.\n' +
+      '  myshell then auto-picks the best model you have per task. Free models alone\n' +
+      '  are not enough. myshell never sees the credentials — opencode manages them.',
   },
 };
 
