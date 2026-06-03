@@ -928,6 +928,47 @@ export async function confirmViaKey(
 }
 
 /**
+ * Read the user's main-menu choice. On a real interactive TTY this resolves on a
+ * SINGLE keypress — press `c`/`n`/`j`/a digit and it fires immediately, no Enter
+ * (matching the muscle memory of session managers like DATA Tools). The pressed
+ * key is echoed (raw mode suppresses the terminal's own echo). Falls back to a
+ * full line read when stdin isn't a raw-capable TTY (pipes, tests), so scripted
+ * input keeps working exactly as before.
+ *
+ * Returns:
+ *   - the chosen key (a single lower-cased char) to act on,
+ *   - `''` for Enter / arrow keys / other no-ops (caller just re-renders),
+ *   - `null` for Ctrl-C / Ctrl-D / EOF (caller exits).
+ *
+ * `stdin` is injectable for testing.
+ */
+export async function readMenuKey(
+  out: OutputSink,
+  readLine: () => Promise<string | null>,
+  stdin: KeyInputStream = process.stdin as unknown as KeyInputStream,
+): Promise<string | null> {
+  const canRawKey =
+    out.isTty && stdin.isTTY === true && typeof stdin.setRawMode === 'function';
+  if (!canRawKey) return readLine();
+  try {
+    const raw = await readSingleKey(stdin);
+    if (raw === '\x03' || raw === '\x04') return null; // Ctrl-C / Ctrl-D → exit
+    if (raw === '\r' || raw === '\n') return ''; // bare Enter → no-op (re-render)
+    // Only a single printable char is a menu choice; ignore escape sequences
+    // (arrow keys arrive as multi-byte '\x1b[A' and must not echo or match).
+    if (raw.length === 1 && raw >= ' ') {
+      const choice = raw.toLowerCase();
+      out.write(choice + '\n'); // echo — raw mode suppressed the terminal's echo
+      return choice;
+    }
+    return '';
+  } catch {
+    // Raw read unavailable → fall back to a line so the menu never wedges.
+    return readLine();
+  }
+}
+
+/**
  * Build the {@link Confirm} used for yes/no prompts.
  *
  *   - `injected` (tests) wins.
@@ -2617,11 +2658,18 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
       await renderMainScreen(ctx, mutableCtx, metas, spend, out, updateInfo, claudeTokenInfo, runningUnderNpx, ctx.healthIssues ?? []);
 
       out.write('> ');
-      const key = await readLine();
+      // Single keypress on a real TTY (press the letter, no Enter); line read in
+      // pipes/tests. '' = Enter/no-op → re-render; null = Ctrl-C/EOF → exit.
+      const key = await readMenuKey(out, readLine);
 
       // ---- EOF / close — exit gracefully (FIX 1: no ERR_USE_AFTER_CLOSE) ----
       if (key === null) {
         break;
+      }
+
+      // ---- Enter / no-op key → just re-render the menu ------------------------
+      if (key === '') {
+        continue;
       }
 
       // ---- [q] Quit -----------------------------------------------------------

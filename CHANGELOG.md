@@ -12,6 +12,11 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 ## [3.5.5]
 
 ### Changed
+- **Single-key main menu — no Enter.** On a real terminal the main menu now acts
+  the instant you press a key (`c`, `n`, `j`, a digit, …) instead of making you
+  type the letter and then press Enter. Case-insensitive, your shortcuts are
+  unchanged, Ctrl-C exits, and it transparently falls back to line input when
+  stdin is piped (scripts/tests behave exactly as before).
 - **Clearer, consistent yes/no prompts.** The clunky `(y(enter) / n)` / `(y/N)`
   wording is replaced everywhere with `yes (enter) / no`, where the dimmed
   `(enter)` always marks the default. One rule across the whole app: **Enter (or

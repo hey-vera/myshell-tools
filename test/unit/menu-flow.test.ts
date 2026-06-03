@@ -22,7 +22,7 @@ import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 
 import { EventEmitter } from 'node:events';
-import { startMenu, defaultAliasHint, parseYesNo, interpretYesNoKey, yesNoHint, readSingleKey, confirmViaKey, autoUpdateEnabled, createLineReader, completeSlash, CHAT_SLASH_COMMANDS } from '../../src/interface/menu.ts';
+import { startMenu, defaultAliasHint, parseYesNo, interpretYesNoKey, yesNoHint, readSingleKey, readMenuKey, confirmViaKey, autoUpdateEnabled, createLineReader, completeSlash, CHAT_SLASH_COMMANDS } from '../../src/interface/menu.ts';
 import type { MenuContext, KeyInputStream } from '../../src/interface/menu.ts';
 import type { UpdateCheckResult } from '../../src/infra/update-check.ts';
 import type { OutputSink } from '../../src/interface/render.ts';
@@ -995,6 +995,51 @@ describe('confirmViaKey — single-key yes/no over a fake stream', () => {
       await confirmViaKey(out, true, asStream(new FakeKeyStream(['\n', 'n'])), true),
       false,
     );
+  });
+});
+
+describe('readMenuKey — single-key main-menu choice', () => {
+  // A TTY-capable fake: FakeKeyStream + isTTY so canRawKey is true.
+  const ttyStream = (keys: string[]): KeyInputStream => {
+    const f = new FakeKeyStream(keys);
+    (f as unknown as { isTTY: boolean }).isTTY = true;
+    return asStream(f);
+  };
+  const ttySink = (): OutputSink & { buf: string } => {
+    let buf = '';
+    return { get buf() { return buf; }, write: (s: string) => { buf += s; }, color: false, isTty: true };
+  };
+  const neverLine = async (): Promise<string | null> => {
+    throw new Error('readLine must not be called on the raw-key path');
+  };
+
+  it('resolves on a single keypress (no Enter) and echoes it', async () => {
+    const out = ttySink();
+    assert.equal(await readMenuKey(out, neverLine, ttyStream(['c'])), 'c');
+    assert.ok(out.buf.includes('c\n'), 'the pressed key must be echoed');
+  });
+
+  it('lower-cases the choice so C and c both pick [c]', async () => {
+    assert.equal(await readMenuKey(ttySink(), neverLine, ttyStream(['C'])), 'c');
+  });
+
+  it('Enter is a no-op ("") — caller just re-renders', async () => {
+    assert.equal(await readMenuKey(ttySink(), neverLine, ttyStream(['\r'])), '');
+  });
+
+  it('Ctrl-C / Ctrl-D resolve null (exit)', async () => {
+    assert.equal(await readMenuKey(ttySink(), neverLine, ttyStream(['\x03'])), null);
+    assert.equal(await readMenuKey(ttySink(), neverLine, ttyStream(['\x04'])), null);
+  });
+
+  it('ignores escape sequences (arrow keys) as no-ops', async () => {
+    assert.equal(await readMenuKey(ttySink(), neverLine, ttyStream(['\x1b[A'])), '');
+  });
+
+  it('falls back to a line read when stdin is not a raw TTY', async () => {
+    const out = makeSink(); // isTty:false
+    const f = new FakeKeyStream([]); // not a TTY (no isTTY)
+    assert.equal(await readMenuKey(out, async () => 'n', asStream(f)), 'n');
   });
 });
 
