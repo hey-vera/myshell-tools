@@ -35,7 +35,7 @@ export function commandHelpText(command: string): string | null {
         '',
         'Examples:',
         '  myshell-tools login                 # prompt for provider, auto-detect method',
-        '  myshell-tools login claude --code   # paste the sk-ant-oat… token',
+        '  myshell-tools login claude --code   # paste the code claude shows after you authorize',
         '  myshell-tools login codex --code    # device-code flow (no localhost)',
       ].join('\n') + '\n';
 

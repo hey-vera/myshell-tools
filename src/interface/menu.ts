@@ -2446,8 +2446,9 @@ async function renderMainScreen(
     );
   }
 
-  // Recent conversations — separator() then list
-  out.write(separator('Recent Conversations') + '\n');
+  // Recent conversations — separator() then list. Header is just "Recent" so it
+  // doesn't repeat the "Conversations" action header that follows.
+  out.write(separator('Recent') + '\n');
   const nowMs = ctx.clock.now();
   const convLines = renderConversationList(metas, nowMs);
   if (convLines.length === 0) {
@@ -2482,12 +2483,13 @@ async function renderMainScreen(
   // Menu — sectioned via menu()
   out.write(
     menu([
-      { key: 'c', label: 'Continue last conversation', section: 'Conversations' },
-      { key: 'n', label: 'New conversation', section: 'Conversations' },
-      { key: '1-9', label: 'Resume numbered conversation', section: 'Conversations' },
-      { key: 'e', label: 'Manage conversations', section: 'Conversations' },
+      // Under the "Conversations" header, so items don't repeat the noun.
+      { key: 'c', label: 'Continue last', section: 'Conversations' },
+      { key: 'n', label: 'New', section: 'Conversations' },
+      { key: '1-9', label: 'Resume numbered', section: 'Conversations' },
+      { key: 'e', label: 'Manage', section: 'Conversations' },
       { key: 'i', label: 'Resume a Claude/Codex session', section: 'Conversations' },
-      { key: 'r', label: 'Open a raw provider session', section: 'Conversations' },
+      { key: 'r', label: 'Raw provider session', section: 'Conversations' },
       ...authEntries,
       { key: 's', label: 'Settings', section: 'Options' },
       { key: 'd', label: 'Doctor', section: 'Options' },
