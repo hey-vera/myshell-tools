@@ -9,7 +9,7 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 ### Pending
 - Cross-OS CI execution (requires a public remote).
 
-## [3.6.3]
+## [3.6.4]
 
 ### Changed
 - **Claude sign-in now uses `claude /login` (the interactive TUI) instead of the
@@ -20,6 +20,8 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   selector and handles the paste in Claude's own input box — the flow that actually
   works in remote/Replit shells. After signing in you exit claude (`/exit` or
   Ctrl+C) and myshell continues; success is confirmed by a real credential probe.
+
+## [3.6.3]
 
 ### Fixed
 - **myshell now recognizes an existing Claude sign-in it previously missed.** Auth
