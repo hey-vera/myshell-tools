@@ -1185,6 +1185,36 @@ describe('createLineReader — suspend/resume release stdin for an inherited chi
       reader.resume();
     });
   });
+
+  it('suspend() DRAINS buffered stdin so a leftover keystroke cannot leak into the child', () => {
+    // A stdin that has bytes still buffered (e.g. a stray Enter pressed after the
+    // single-key `y` confirm). suspend() must pull them out via read() until empty,
+    // BEFORE the inherited child (`claude auth login`) reads fd0 — otherwise claude
+    // reads the leftover as a premature empty submit → "Invalid code".
+    const rl = new FakeReadline();
+    class DrainableStdin extends FakeStdin {
+      queue: Array<string | null> = ['\n', null]; // one leftover line, then empty
+      reads: Array<string | null> = [];
+      read(): string | null {
+        const v = this.queue.length > 0 ? (this.queue.shift() ?? null) : null;
+        this.reads.push(v);
+        return v;
+      }
+    }
+    const stdin = new DrainableStdin(true);
+    const reader = createLineReader(
+      rl as unknown as Parameters<typeof createLineReader>[0],
+      stdin as unknown as KeyInputStream,
+    );
+
+    reader.suspend();
+
+    // read() was called until it returned null — the leftover '\n' was consumed.
+    assert.deepEqual(stdin.reads, ['\n', null], 'must read until the buffer is empty');
+    assert.equal(stdin.queue.length, 0, 'stdin buffer is fully drained before the handoff');
+    // And the control sequence is unchanged: cooked mode then pause.
+    assert.deepEqual(stdin.calls, ['setRawMode:false', 'pause']);
+  });
 });
 
 // ---------------------------------------------------------------------------
