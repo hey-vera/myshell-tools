@@ -9,6 +9,27 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 ### Pending
 - Cross-OS CI execution (requires a public remote).
 
+## [3.6.2]
+
+### Fixed
+- **Clean, aligned status boxes.** Lines longer than the box width (the provider
+  status lines, install commands, token-expiry notice) overflowed and broke the
+  right border. `box()` is now adaptive — it grows to fit the longest line (min 56,
+  cap 70 columns) so the border always aligns, and truncates anything past the cap
+  with an ellipsis so no content can push past it. Emoji/wide characters are counted
+  at their true display width. `panel()` got the same fix.
+
+### Changed
+- **Less redundant wording across the UI.** The menu had two adjacent "Conversations"
+  headers and repeated the noun in every item under it → now a "Recent" list plus
+  terse actions (Continue last / New / Resume numbered / Manage / Raw provider
+  session). Dropped the redundant "— press [o] to add your provider" from the
+  opencode status line (the menu already shows `[o]`), the "press n to start one"
+  hint, filler like "you can run it yourself" and "now", and a stale help example
+  referencing the dead `sk-ant-oat…` token.
+- **Menu label "Doctor" → "Diagnose".** Says what it does instead of borrowed jargon
+  (the CLI command names `doctor` / `status` / `check` are unchanged).
+
 ## [3.6.1]
 
 ### Fixed
