@@ -331,6 +331,22 @@ export async function renderStream(
   // together ("…before answering.The directory is empty…").
   let proseStarted = false;
   let toolSinceProse = false;
+  // Bytes of answer prose streamed in the current tier, so the live indicator can
+  // show a Claude-style "↓ ~N tokens" readout. It's a measured estimate (≈4 chars/
+  // token) shown only while working — marked with ~; the tier-done / final summary
+  // reports the REAL measured token count, so no fabricated figure ever persists.
+  let streamedChars = 0;
+
+  /** Compose the live indicator label: work verb, step count, and the streamed
+   *  token estimate when any prose has arrived. */
+  function spinnerLabel(): string {
+    const steps = `${stepCount} step${stepCount === 1 ? '' : 's'}`;
+    if (streamedChars > 0) {
+      const approxTok = formatTokens(Math.ceil(streamedChars / 4));
+      return `${workLabel}… ${steps} · ↓ ~${approxTok} tokens`;
+    }
+    return `${workLabel}… ${steps}`;
+  }
 
   function stopSpinner(): void {
     if (spinnerActive) {
@@ -339,12 +355,24 @@ export async function renderStream(
     }
   }
 
-  /** Reflect ongoing tool/reasoning activity in the spinner without spamming
-   *  lines — the "alive" feedback for normal mode. */
+  /** Ensure the live indicator is on and showing the current label. Restarts it
+   *  if it was stopped when answer prose began — so a tool/reasoning phase that
+   *  runs AFTER an answer doesn't leave a dead, frozen-looking line. */
+  function ensureAlive(): void {
+    if (!out.isTty) return;
+    if (!spinnerActive) {
+      spinner.start(spinnerLabel());
+      spinnerActive = true;
+    } else {
+      spinner.update(spinnerLabel());
+    }
+  }
+
+  /** Reflect ongoing tool activity in the indicator (counts a step) without
+   *  spamming lines — the "still working" feedback for normal mode. */
   function noteWorkStep(): void {
-    if (!spinnerActive) return;
     stepCount++;
-    spinner.update(`${workLabel}… ${stepCount} step${stepCount === 1 ? '' : 's'}`);
+    ensureAlive();
   }
 
   for await (const ev of events) {
@@ -372,6 +400,7 @@ export async function renderStream(
         // Reset per-tier work tracking and start the live indicator. In verbose
         // mode the model/provider is shown; otherwise a clean "Thinking…".
         stepCount = 0;
+        streamedChars = 0;
         workLabel = isVerbose ? `${ev.tier} (${ev.provider}/${ev.model})` : 'Thinking';
         if (out.isTty) {
           spinner.start(`${workLabel}…`);
@@ -391,6 +420,9 @@ export async function renderStream(
           if (toolSinceProse && proseStarted) prose.push('\n');
           toolSinceProse = false;
           proseStarted = true;
+          // Measure streamed prose so a later tool phase's indicator can show the
+          // running "↓ ~N tokens" readout (real bytes; ~4 chars/token estimate).
+          streamedChars += pe.delta.length;
           // Stream prose, holding back any trailing envelope fragment.
           prose.push(pe.delta);
         } else if (pe.type === 'tool') {
@@ -410,8 +442,11 @@ export async function renderStream(
           if (isVerbose) {
             stopSpinner();
             out.write(dim(pe.delta, c));
+          } else {
+            // Normal/quiet: reasoning is internal — don't print it, but keep (or
+            // revive) the live indicator so a long thinking phase shows life.
+            ensureAlive();
           }
-          // Normal/quiet: reasoning is internal; keep the indicator spinning.
         }
         // 'usage', 'done', 'error' are handled via tier-done / final
         break;

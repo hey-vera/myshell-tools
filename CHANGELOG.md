@@ -38,6 +38,15 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   attempt so it never hammers the endpoint or wedges startup. The token is only
   ever sent to Anthropic and never copied into myshell's own store.
 
+### Added
+- **Live "still working" readout with a token counter.** The working indicator now
+  shows a streamed-token estimate alongside the step count and elapsed time
+  (`Thinking… 3 steps · ↓ ~1.2k tokens · 14s`), Claude-Code-style, so a long turn
+  visibly *moves* instead of looking frozen. The `~` marks it as a live estimate
+  (≈4 chars/token); the end-of-turn summary still reports the real measured tokens.
+  It also revives after an answer when a tool/reasoning phase runs next, so a
+  post-answer step no longer leaves a dead, frozen-looking line.
+
 ### Changed
 - **Resume a Claude or Codex session from one numbered list.** The old `[i]` import
   made you pick a provider first, then a session. Now `[i]` shows a single merged

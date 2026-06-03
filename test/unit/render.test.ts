@@ -339,6 +339,56 @@ describe('renderStream — tool and reasoning events', () => {
 });
 
 // ---------------------------------------------------------------------------
+// 4b. live working indicator — token readout + post-prose revival (TTY)
+// ---------------------------------------------------------------------------
+
+describe('renderStream — live working indicator (TTY)', () => {
+  /** A TTY sink so the live indicator (spinner) actually paints its label. */
+  function makeTtySink(): OutputSink & { buf: string[] } {
+    const buf: string[] = [];
+    return { buf, write: (s: string) => { buf.push(s); }, color: false, isTty: true };
+  }
+
+  it('shows a "↓ ~N tokens" readout and revives after prose for a post-answer tool phase', async () => {
+    const sink = makeTtySink();
+    const longProse = 'x'.repeat(400); // ≈100 tokens at 4 chars/token
+
+    const events: CoreEvent[] = [
+      { type: 'tier-start', tier: 'ic', provider: 'claude', model: 'claude-sonnet-4-6' },
+      // Answer prose streams (stops the spinner, accumulates streamed bytes).
+      { type: 'provider-event', tier: 'ic', event: { type: 'text', delta: longProse } },
+      // A tool runs AFTER the answer — the indicator must revive (not a dead line)
+      // and now carry the streamed-token readout.
+      { type: 'provider-event', tier: 'ic', event: { type: 'tool', name: 'read_file', phase: 'start' } },
+      { type: 'final', success: true, output: longProse, tier: 'ic', totalCostUsd: 0, sessionId: 's', attempts: 1 },
+    ];
+
+    const result = await renderStream(makeStream(events), sink, 'normal');
+    const joined = sink.buf.join('');
+
+    assert.equal(result.success, true);
+    assert.ok(joined.includes('↓ ~'), 'live indicator must show a streamed-token readout');
+    assert.ok(joined.includes('tokens'), 'readout is labelled in tokens');
+    assert.ok(/1 step/.test(joined), 'post-prose tool phase counts a step (indicator revived)');
+  });
+
+  it('does not fabricate a token readout before any prose has streamed', async () => {
+    const sink = makeTtySink();
+    const events: CoreEvent[] = [
+      { type: 'tier-start', tier: 'ic', provider: 'claude', model: 'claude-sonnet-4-6' },
+      // A tool fires before any answer text → steps shown, but no token figure.
+      { type: 'provider-event', tier: 'ic', event: { type: 'tool', name: 'read_file', phase: 'start' } },
+      { type: 'final', success: true, output: '', tier: 'ic', totalCostUsd: 0, sessionId: 's', attempts: 1 },
+    ];
+
+    await renderStream(makeStream(events), sink, 'normal');
+    const joined = sink.buf.join('');
+    assert.ok(/1 step/.test(joined), 'still shows the step counter');
+    assert.ok(!joined.includes('↓ ~'), 'no token readout until prose actually streams');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // 5. escalate + notice events render their real messages
 // ---------------------------------------------------------------------------
 
