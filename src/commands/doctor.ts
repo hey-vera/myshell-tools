@@ -333,7 +333,7 @@ async function runFixPass(
   const needsAuth = providers.filter((id) => env[id].installed && !env[id].authenticated);
 
   for (const id of needsAuth) {
-    out.write(`\nSign in to ${id} now? ${yesNoHint('yes', out.color)} `);
+    out.write(`\nSign in to ${id}? ${yesNoHint('yes', out.color)} `);
     const ans = await readLine();
     if (parseYesNo(ans, true)) {
       try {

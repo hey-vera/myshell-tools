@@ -1061,7 +1061,7 @@ async function runWelcome(
   out.write('\n' + box(`🧠 myshell-tools v${ctx.version} — Setup`, headerLines) + '\n\n');
 
   // ---- Orientation header --------------------------------------------------
-  out.write('Quick setup — a few questions, ~30 seconds. Enter takes the default (the side marked (enter)); or press y / n.\n\n');
+  out.write('Quick setup — a few questions, ~30 seconds. Press Enter for the default (marked (enter)), or y / n.\n\n');
 
   // ---- Offer to install any missing provider (claude / codex) --------------
   // Consent is required: we ask once per missing provider.
@@ -1082,7 +1082,7 @@ async function runWelcome(
         didInstallAny = true;
       }
     } else {
-      out.write(`Skipping ${id} install. You can run it yourself: ${installCommandFor(id)}\n`);
+      out.write(`Skipping ${id} install. Install later: ${installCommandFor(id)}\n`);
     }
   }
 
@@ -1114,7 +1114,7 @@ async function runWelcome(
     const ps = env[id];
     if (!ps.installed || ps.authenticated) continue;
 
-    out.write(`\nSign in to ${id} now? ${yesNoHint('yes', out.color)} `);
+    out.write(`\nSign in to ${id}? ${yesNoHint('yes', out.color)} `);
 
     if (await confirm(true)) {
       // loginFn auto-detects the right method (code in containers/SSH where the
@@ -2452,7 +2452,7 @@ async function renderMainScreen(
   const nowMs = ctx.clock.now();
   const convLines = renderConversationList(metas, nowMs);
   if (convLines.length === 0) {
-    out.write('  (no conversations yet — press n to start one)\n');
+    out.write('  (no conversations yet)\n');
   } else {
     for (const line of convLines) {
       out.write(`  ${line}\n`);
