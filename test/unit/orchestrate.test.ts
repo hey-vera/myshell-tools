@@ -479,6 +479,48 @@ describe('orchestrate — provider emits error', () => {
 
     assert.ok(types.includes('final'));
   });
+
+  it('does NOT fail over to an installed-but-signed-out provider', async () => {
+    // claude (signed in) always fails; codex is installed but NOT authenticated.
+    // Failover must skip codex (it would just fail "not signed in") and escalate
+    // within claude instead — and codex must never be invoked.
+    const errorEvents: ProviderEvent[] = [
+      { type: 'error', error: { category: 'network', recoverable: true, message: 'timeout', suggestion: 'retry' } },
+    ];
+    const claudeProvider = makeFakeProvider('claude', errorEvents);
+    let codexInvoked = false;
+    const codexProvider: Provider = {
+      id: 'codex',
+      async detect() {
+        return { id: 'codex', installed: true, version: '1.0.0', authenticated: false, binaryPath: '/usr/bin/fake', availableModels: [] };
+      },
+      async *run(_req: ProviderRequest, _signal: AbortSignal): AsyncIterable<ProviderEvent> {
+        codexInvoked = true;
+        yield { type: 'done', text: 'should never run', usage: FAKE_USAGE, raw: {} };
+      },
+    };
+
+    const deps: OrchestrateDeps = {
+      providers: { claude: claudeProvider, codex: codexProvider },
+      clock: makeFakeClock(),
+      session: makeFakeSession(),
+      ledger: makeFakeLedger(),
+      policy: DEFAULT_POLICY,
+      cwd: '/fake/cwd',
+      sandbox: 'workspace-write',
+      timeoutMs: 30_000,
+      authenticatedProviders: ['claude'],
+    };
+
+    const events = await collectEvents(orchestrate('refactor X', deps, new AbortController().signal));
+
+    const failoverToCodex = events.find((e) => e.type === 'failover' && e.to === 'codex');
+    assert.equal(failoverToCodex, undefined, 'must not fail over to a signed-out provider');
+    assert.equal(codexInvoked, false, 'a signed-out provider must never be invoked');
+    const finalEv = events.find((e) => e.type === 'final');
+    assert.ok(finalEv !== undefined && finalEv.type === 'final' && finalEv.success === false,
+      'still terminates with a failing final (escalated within the signed-in provider)');
+  });
 });
 
 // ---------------------------------------------------------------------------

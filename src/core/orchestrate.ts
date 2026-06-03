@@ -515,7 +515,17 @@ export async function* orchestrate(
 
       // Compute which providers haven't been tried at this tier yet.
       const triedAtTier = triedByTier.get(currentTier) ?? new Set<ProviderId>();
-      const remaining = available.filter((id) => !triedAtTier.has(id));
+      let remaining = available.filter((id) => !triedAtTier.has(id));
+      // Don't fail over to a provider that isn't signed in — it would just fail
+      // again with "not signed in" and burn an attempt. When we have real auth
+      // info, restrict the failover pool to authenticated providers; if that
+      // leaves nothing, we escalate/stop instead of attempting a doomed vendor.
+      // (When auth info is absent/empty we keep the prior behaviour and try an
+      // untried vendor anyway — auth may have changed since detection.)
+      const authedProviders = deps.authenticatedProviders;
+      if (authedProviders !== undefined && authedProviders.length > 0) {
+        remaining = remaining.filter((id) => authedProviders.includes(id));
+      }
 
       if (remaining.length > 0) {
         // Failover to an untried vendor at the same tier only when there is

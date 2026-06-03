@@ -12,6 +12,13 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 ## [3.6.2]
 
 ### Fixed
+- **Failover no longer wastes an attempt on a signed-out provider.** When several
+  providers are installed but only one is signed in, a failed turn could "fail over"
+  to an installed-but-signed-out provider — a doomed attempt that just reports "not
+  signed in". Failover is now restricted to authenticated providers (when auth is
+  known), so it escalates within the signed-in provider instead. Verified end-to-end:
+  a single connected provider routes every tier correctly, and failure escalates
+  in-place to a clean `final` rather than attempting an unusable vendor.
 - **Clean, aligned status boxes.** Lines longer than the box width (the provider
   status lines, install commands, token-expiry notice) overflowed and broke the
   right border. `box()` is now adaptive — it grows to fit the longest line (min 56,
