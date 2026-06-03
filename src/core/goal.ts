@@ -69,6 +69,40 @@ export function buildGoalTask(goal: string, iteration: number): string {
 }
 
 /**
+ * Format the live progress panel shown each turn of an autonomous goal run.
+ * Every figure is REAL and measured — turn index, wall-clock elapsed, and tokens
+ * actually recorded in the ledger for THIS run (no estimates, no fabrication) —
+ * so the user can watch overall progress move without it ever looking frozen.
+ *
+ * Example: `turn 3/8 · 6m 12s · 42.1k tokens this goal`. Pure / never throws.
+ */
+export function formatGoalProgress(opts: {
+  readonly turn: number; // 1-based
+  readonly maxTurns: number;
+  readonly elapsedMs: number;
+  readonly tokensThisRun: number;
+}): string {
+  const fmtDur = (ms: number): string => {
+    const s = Math.max(0, Math.floor(ms / 1000));
+    if (s < 60) return `${s}s`;
+    const m = Math.floor(s / 60);
+    if (m < 60) {
+      const rem = s % 60;
+      return rem > 0 ? `${m}m ${rem}s` : `${m}m`;
+    }
+    const h = Math.floor(m / 60);
+    const mm = m % 60;
+    return mm > 0 ? `${h}h ${mm}m` : `${h}h`;
+  };
+  const fmtTok = (n: number): string => {
+    if (n < 1000) return `${Math.max(0, Math.floor(n))}`;
+    if (n < 1_000_000) return `${(n / 1000).toFixed(1)}k`;
+    return `${(n / 1_000_000).toFixed(1)}M`;
+  };
+  return `turn ${opts.turn}/${opts.maxTurns} · ${fmtDur(opts.elapsedMs)} · ${fmtTok(opts.tokensThisRun)} tokens this goal`;
+}
+
+/**
  * Parse the completion signal from a model reply. Returns 'complete' only on a
  * clear completion marker; anything ambiguous or absent returns 'continue' (the
  * ceilings, not a guess, decide when to stop). Never throws.

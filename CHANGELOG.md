@@ -39,6 +39,13 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   ever sent to Anthropic and never copied into myshell's own store.
 
 ### Added
+- **Live progress panel for autonomous (`/goal`) runs.** Each turn now shows a
+  real, measured progress line — `▸ turn 3/8 · 6m 12s · 42.1k tokens this goal` —
+  so you can watch overall progress move across a long autonomous run, not just
+  the current turn. Every figure is measured (turn index, wall-clock elapsed, and
+  tokens recorded in the ledger for this run) — no estimates, nothing fabricated.
+  (myshell works sequentially toward a goal, so this is the honest equivalent of a
+  "tasks in progress" view — it never claims a step is done that isn't.)
 - **Live "still working" readout with a token counter.** The working indicator now
   shows a streamed-token estimate alongside the step count and elapsed time
   (`Thinking… 3 steps · ↓ ~1.2k tokens · 14s`), Claude-Code-style, so a long turn

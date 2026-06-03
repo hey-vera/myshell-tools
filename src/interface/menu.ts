@@ -19,7 +19,7 @@
 import readline from 'node:readline';
 import { execa } from 'execa';
 import type { Clock, LedgerWriter, OrchestrateDeps, Question, QuestionSet, SessionEntry } from '../core/types.js';
-import { buildGoalTask, parseGoalSignal, decideGoalNext, DEFAULT_MAX_GOAL_ITERATIONS } from '../core/goal.js';
+import { buildGoalTask, parseGoalSignal, decideGoalNext, formatGoalProgress, DEFAULT_MAX_GOAL_ITERATIONS } from '../core/goal.js';
 import type { GoalCeilings } from '../core/goal.js';
 import { formatAnswers, isKeepGoingOffer } from '../core/questions.js';
 import type { AppConfig } from '../infra/config.js';
@@ -2107,9 +2107,26 @@ async function runChatLoop(
             out.color,
           ),
         );
+        // Baseline for the live progress panel: wall-clock start + the ledger's
+        // token total before this run, so each turn can show REAL turn/elapsed/
+        // tokens-this-goal (never an estimate).
+        const goalStartMs = ctx.clock.now();
+        const baseTokens = summarizeSpend(await readLedger(ctx.cwd), ctx.clock.isoNow()).totalTokens;
         let completed = 0;
         for (let i = 0; i < ceilings.maxIterations; i++) {
-          out.write(dim(`  — turn ${i + 1}/${ceilings.maxIterations} —\n`, out.color));
+          const tokensThisRun =
+            summarizeSpend(await readLedger(ctx.cwd), ctx.clock.isoNow()).totalTokens - baseTokens;
+          out.write(
+            dim(
+              `  ▸ ${formatGoalProgress({
+                turn: i + 1,
+                maxTurns: ceilings.maxIterations,
+                elapsedMs: ctx.clock.now() - goalStartMs,
+                tokensThisRun,
+              })}\n`,
+              out.color,
+            ),
+          );
           const goalDeps = buildDeps(await ctx.store.load(convId));
           const goalAc = new AbortController();
           currentAc = goalAc;

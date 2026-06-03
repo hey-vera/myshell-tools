@@ -9,6 +9,7 @@ import {
   buildGoalTask,
   parseGoalSignal,
   decideGoalNext,
+  formatGoalProgress,
   DEFAULT_MAX_GOAL_ITERATIONS,
 } from '../../src/core/goal.ts';
 
@@ -95,5 +96,39 @@ describe('decideGoalNext', () => {
 
   it('exposes a sane default iteration ceiling', () => {
     assert.ok(DEFAULT_MAX_GOAL_ITERATIONS >= 3 && DEFAULT_MAX_GOAL_ITERATIONS <= 25);
+  });
+});
+
+describe('formatGoalProgress', () => {
+  it('shows turn, elapsed (seconds), and tokens', () => {
+    assert.equal(
+      formatGoalProgress({ turn: 1, maxTurns: 8, elapsedMs: 12_000, tokensThisRun: 0 }),
+      'turn 1/8 · 12s · 0 tokens this goal',
+    );
+  });
+
+  it('formats minutes+seconds and k tokens', () => {
+    assert.equal(
+      formatGoalProgress({ turn: 3, maxTurns: 8, elapsedMs: 372_000, tokensThisRun: 42_100 }),
+      'turn 3/8 · 6m 12s · 42.1k tokens this goal',
+    );
+  });
+
+  it('formats whole minutes (no trailing seconds) and hours', () => {
+    assert.equal(
+      formatGoalProgress({ turn: 2, maxTurns: 5, elapsedMs: 120_000, tokensThisRun: 1_500_000 }),
+      'turn 2/5 · 2m · 1.5M tokens this goal',
+    );
+    assert.equal(
+      formatGoalProgress({ turn: 9, maxTurns: 9, elapsedMs: 3_660_000, tokensThisRun: 500 }),
+      'turn 9/9 · 1h 1m · 500 tokens this goal',
+    );
+  });
+
+  it('never produces negative figures', () => {
+    assert.equal(
+      formatGoalProgress({ turn: 1, maxTurns: 1, elapsedMs: -5, tokensThisRun: -10 }),
+      'turn 1/1 · 0s · 0 tokens this goal',
+    );
   });
 });
