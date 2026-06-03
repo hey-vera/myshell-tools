@@ -25,9 +25,9 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   or force us to store a token.)
 
 ### Changed
-- **Yes/No prompts now show that Enter picks the default.** Every confirm prompt
-  appends `[Enter=Y]` (default-yes) or `[Enter=N]` (default-no) beside the `(Y/n)`
-  / `(y/N)`, so it's obvious you can just press Enter instead of typing y/n.
+- **Default-yes prompts show that Enter = yes.** Yes-default confirms now read
+  `(y(enter) / n)` so it's obvious pressing Enter is the same as `y`. Default-no
+  prompts stay `(y/N)` (the capital marks the default) — no `enter` hint there.
 
 ## [3.5.2]
 

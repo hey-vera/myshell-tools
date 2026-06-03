@@ -3383,10 +3383,10 @@ describe('startMenu — update notifier: banner, [u], auto-update', () => {
     const sink = makeSink();
     await startMenu(ctx, sink);
 
-    // The auto-update prompt must use (Y/n) convention — Enter → yes (recommended)
+    // The auto-update prompt must mark Enter → yes (default-yes): "(y(enter) / n)"
     assert.ok(
-      sink.buf.includes('(Y/n)'),
-      'auto-update prompt must use (Y/n) — default is YES (recommended)',
+      sink.buf.includes('y(enter) / n'),
+      'auto-update prompt must show y(enter) / n — Enter selects yes (recommended)',
     );
   });
 });
