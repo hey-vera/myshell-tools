@@ -12,6 +12,14 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 ## [3.5.3]
 
 ### Fixed
+- **No more "dead pause" between sign-ins in the setup wizard.** After signing
+  into claude, the next provider's prompt (codex) appeared to hang — nothing
+  happened until you pressed Enter to nudge it. Root cause: once `claude auth
+  login` (inherited stdio) handed the terminal back, a bare `resume()` left the
+  TTY read handle dormant, so the next keypress didn't register until Enter woke
+  the stream. `resume()` now re-primes the TTY (cycles raw mode off→on) and drops
+  any leftover line the child buffered, so the wizard flows straight to the next
+  step.
 - **claude sign-in guidance now matches reality — no more phantom localhost error.**
   The old guidance told you to expect a localhost "can't be reached" error and to
   paste the full address-bar *URL* back. Verified against claude 2.1.158, that's

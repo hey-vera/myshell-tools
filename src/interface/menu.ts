@@ -734,8 +734,28 @@ export function createLineReader(
       }
     },
     resume(): void {
-      // Take stdin back. suspend() dropped the TTY to cooked mode and paused the
-      // stream so an inherited-stdio child could own stdin; now we reverse both.
+      // Take stdin back after an inherited-stdio child (e.g. `claude auth login`)
+      // owned the terminal. Two things must happen, or the NEXT prompt "dead-
+      // pauses": it's written but the reader doesn't wake until the user presses
+      // Enter to nudge the stream.
+      //
+      // 1. Drop any line the child left buffered — typically the trailing Enter
+      //    the user pressed to submit a pasted code — so it can't bleed into or
+      //    desync the next prompt.
+      buffered.length = 0;
+      // 2. Re-PRIME the TTY. A bare `input.resume()` is not enough: after a child
+      //    held fd0, the tty read handle is left dormant and the next keypress
+      //    won't emit 'data' until Enter kicks it. Cycling raw mode off→on forces
+      //    libuv to re-arm the read handle. This also restores the raw mode a
+      //    `terminal: true` readline needs for line editing (suspend() set cooked).
+      try {
+        if (input.isTTY === true && typeof input.setRawMode === 'function') {
+          input.setRawMode(false);
+          input.setRawMode(true);
+        }
+      } catch {
+        /* setRawMode unsupported on this platform */
+      }
       try {
         input.resume();
       } catch {
@@ -745,16 +765,6 @@ export function createLineReader(
         rl.resume();
       } catch {
         /* readline may be closed */
-      }
-      // Re-assert raw mode. A `terminal: true` readline does its own line editing
-      // (backspace, arrow keys, history) ONLY while stdin is in raw mode. suspend()
-      // set it to cooked, and rl.resume() does NOT restore it — so without this the
-      // next prompt's Backspace emits stray control bytes (e.g. ^?) instead of
-      // erasing a character. Mirror suspend()'s isTTY guard so non-TTY/tests no-op.
-      try {
-        if (input.isTTY === true && typeof input.setRawMode === 'function') input.setRawMode(true);
-      } catch {
-        /* setRawMode unsupported on this platform */
       }
     },
     close(): void {

@@ -1016,8 +1016,9 @@ class FakeStdin {
 }
 
 describe('createLineReader — suspend/resume release stdin for an inherited child', () => {
-  // The byte-race fix: while `claude setup-token` owns the terminal, our
-  // readline must stop reading stdin. These prove the exact sequence.
+  // The byte-race fix: while `claude auth login` owns the terminal, our readline
+  // must stop reading stdin (and re-prime it cleanly on the way back). These
+  // prove the exact suspend/resume sequence.
   const mkReader = (isTTY: boolean): { reader: ReturnType<typeof createLineReader>; rl: FakeReadline; stdin: FakeStdin } => {
     const rl = new FakeReadline();
     const stdin = new FakeStdin(isTTY);
@@ -1041,11 +1042,12 @@ describe('createLineReader — suspend/resume release stdin for an inherited chi
     rl.events.length = 0;
     stdin.calls.length = 0;
     reader.resume();
-    // Raw mode MUST be re-asserted after rl.resume() — a terminal readline only
-    // does its own line editing (backspace, arrows) in raw mode, and suspend()
-    // dropped it to cooked. Without the final setRawMode:true, the next prompt's
-    // Backspace emits stray bytes instead of erasing.
-    assert.deepEqual(stdin.calls, ['resume', 'setRawMode:true']);
+    // After an inherited-stdio child, a bare resume() leaves the TTY read handle
+    // dormant (the next prompt "dead-pauses" until Enter nudges it). resume() now
+    // re-primes by cycling raw mode off→on (re-arms the handle AND restores the
+    // raw mode a terminal readline needs for line editing) BEFORE resuming the
+    // stream and readline.
+    assert.deepEqual(stdin.calls, ['setRawMode:false', 'setRawMode:true', 'resume']);
     assert.deepEqual(rl.events, ['rl.resume']);
   });
 
