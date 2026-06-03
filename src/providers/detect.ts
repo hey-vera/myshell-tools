@@ -15,8 +15,13 @@
  * Plan labels are only set when clearly present in CLI output — never fabricated.
  */
 
+import { readFile } from 'node:fs/promises';
 import { execa } from 'execa';
 import { loadClaudeToken, claudeEnv, replitPersistentEnv } from '../infra/credentials.js';
+import {
+  parseClaudeOauth,
+  resolveClaudeCredsPath,
+} from '../infra/claude-oauth-refresh.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -144,6 +149,36 @@ export function parseCodexAuth(
   return { authenticated, plan: null };
 }
 
+/**
+ * Fallback auth signal from the on-disk credentials file. True when the file
+ * holds a usable Claude credential — a non-expired OAuth token (expiresAt in
+ * the future, or absent) or an API key — even if `claude auth status` couldn't
+ * confirm it (e.g. it timed out during launch-time update churn). Pure; never throws.
+ */
+export function credentialFileIndicatesAuth(rawCredsJson: string, nowMs: number): boolean {
+  try {
+    const parsed = JSON.parse(rawCredsJson) as unknown;
+    if (typeof parsed !== 'object' || parsed === null) return false;
+    const obj = parsed as Record<string, unknown>;
+
+    // API key path
+    if (typeof obj['primaryApiKey'] === 'string' && obj['primaryApiKey'].length > 0) {
+      return true;
+    }
+
+    // OAuth path
+    const oauth = parseClaudeOauth(rawCredsJson);
+    if (oauth !== null) {
+      // Accept when expiresAt is absent or in the future
+      return oauth.expiresAt === null || oauth.expiresAt > nowMs;
+    }
+
+    return false;
+  } catch {
+    return false;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
@@ -216,6 +251,21 @@ export async function detectProvider(
           plan = parsed.plan;
         } catch {
           // Spawn failure — leave authenticated false, plan null
+        }
+
+        // Credential-file fallback: if the spawn didn't confirm auth (timed out
+        // or failed), check the on-disk credentials file as a best-effort signal.
+        if (!authenticated) {
+          try {
+            const credsPath = resolveClaudeCredsPath(claudeChildEnv, process.cwd());
+            const raw = await readFile(credsPath, 'utf8');
+            if (credentialFileIndicatesAuth(raw, Date.now())) {
+              authenticated = true;
+              // Leave plan as-is (null) — we can't determine plan from the file alone.
+            }
+          } catch {
+            // File missing or unreadable — leave authenticated false
+          }
         }
 
         return {

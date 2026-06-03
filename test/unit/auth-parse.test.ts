@@ -15,6 +15,7 @@ import {
   parseOpencodeAuth,
   parseOpencodeModels,
   getInstallCommand,
+  credentialFileIndicatesAuth,
 } from '../../src/providers/detect.ts';
 
 // ---------------------------------------------------------------------------
@@ -409,5 +410,68 @@ describe('parseOpencodeModels', () => {
   it('returns [] for empty / non-model output (never throws)', () => {
     assert.deepEqual(parseOpencodeModels(''), []);
     assert.deepEqual(parseOpencodeModels('no models configured'), []);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// credentialFileIndicatesAuth — on-disk credential fallback
+// ---------------------------------------------------------------------------
+
+describe('credentialFileIndicatesAuth', () => {
+  // Fixed reference point used across all tests in this suite.
+  const NOW_MS = 1_700_000_000_000; // 2023-11-14T22:13:20.000Z
+  const ONE_HOUR_MS = 60 * 60 * 1000;
+
+  it('non-expired oauth token (expiresAt = nowMs + 1 hour) → true', () => {
+    const raw = JSON.stringify({
+      claudeAiOauth: {
+        accessToken: 'tok_valid',
+        refreshToken: 'ref_tok',
+        expiresAt: NOW_MS + ONE_HOUR_MS,
+      },
+    });
+    assert.equal(credentialFileIndicatesAuth(raw, NOW_MS), true);
+  });
+
+  it('expired oauth token (expiresAt = nowMs - 1 hour) → false', () => {
+    const raw = JSON.stringify({
+      claudeAiOauth: {
+        accessToken: 'tok_expired',
+        refreshToken: 'ref_tok',
+        expiresAt: NOW_MS - ONE_HOUR_MS,
+      },
+    });
+    assert.equal(credentialFileIndicatesAuth(raw, NOW_MS), false);
+  });
+
+  it('expiresAt null but accessToken present → true', () => {
+    const raw = JSON.stringify({
+      claudeAiOauth: {
+        accessToken: 'tok_no_expiry',
+        refreshToken: null,
+        expiresAt: null,
+      },
+    });
+    assert.equal(credentialFileIndicatesAuth(raw, NOW_MS), true);
+  });
+
+  it('primaryApiKey present → true', () => {
+    const raw = JSON.stringify({
+      primaryApiKey: 'sk-ant-api03-somekey',
+    });
+    assert.equal(credentialFileIndicatesAuth(raw, NOW_MS), true);
+  });
+
+  it('empty string → false', () => {
+    assert.equal(credentialFileIndicatesAuth('', NOW_MS), false);
+  });
+
+  it('garbage / non-JSON input → false (never throws)', () => {
+    assert.doesNotThrow(() => credentialFileIndicatesAuth('not json %%%', NOW_MS));
+    assert.equal(credentialFileIndicatesAuth('not json %%%', NOW_MS), false);
+  });
+
+  it('empty object {} → false', () => {
+    assert.equal(credentialFileIndicatesAuth('{}', NOW_MS), false);
   });
 });

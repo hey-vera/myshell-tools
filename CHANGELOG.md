@@ -9,6 +9,23 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 ### Pending
 - Cross-OS CI execution (requires a public remote).
 
+## [3.6.3]
+
+### Fixed
+- **myshell now recognizes an existing Claude sign-in it previously missed.** Auth
+  detection relied solely on spawning `claude auth status` (10s timeout). During the
+  launch-time churn (myshell's own npm self-update plus background `claude install` /
+  `codex update`) that spawn can transiently fail, so myshell wrongly showed "claude:
+  not signed in" — and pushed you into a sign-in you didn't need — even though you
+  were signed in. Detection now falls back to the on-disk credential: if the spawn
+  doesn't confirm auth but a valid (non-expired) token or API key is present in
+  `.credentials.json`, you're correctly shown as signed in.
+- **Emoji-free, perfectly-aligned status boxes.** Emoji (⚠️ especially) render at
+  terminal-dependent widths no calculation can predict, so the right border drifted
+  in some terminals. All emoji were removed from inside bordered boxes (the title and
+  the per-provider status markers); the status text carries the meaning and the
+  borders now align everywhere.
+
 ## [3.6.2]
 
 ### Fixed
