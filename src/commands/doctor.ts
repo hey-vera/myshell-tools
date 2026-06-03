@@ -25,7 +25,7 @@ import { isPricingStale } from '../infra/pricing.js';
 import { probeStateWritable } from '../infra/health.js';
 import { loadClaudeTokenCapturedAt, claudeTokenStatus } from '../infra/credentials.js';
 import type { ClaudeTokenStatus } from '../infra/credentials.js';
-import { parseYesNo } from '../interface/menu.js';
+import { parseYesNo, yesNoHint } from '../interface/menu.js';
 import { bold, green, red, yellow, dim, divider, label } from '../ui/theme.js';
 
 // ---------------------------------------------------------------------------
@@ -304,7 +304,7 @@ async function runFixPass(
 
   for (const id of missingIds) {
     const pkg = getInstallCommand(id).replace('npm install -g ', '');
-    out.write(`\nInstall ${id} (${pkg})? (Y/n) `);
+    out.write(`\nInstall ${id} (${pkg})? ${yesNoHint('yes', out.color)} `);
     const ans = await readLine();
     if (parseYesNo(ans, true)) {
       try {
@@ -333,7 +333,7 @@ async function runFixPass(
   const needsAuth = providers.filter((id) => env[id].installed && !env[id].authenticated);
 
   for (const id of needsAuth) {
-    out.write(`\nSign in to ${id} now? (Y/n) `);
+    out.write(`\nSign in to ${id} now? ${yesNoHint('yes', out.color)} `);
     const ans = await readLine();
     if (parseYesNo(ans, true)) {
       try {
@@ -356,7 +356,7 @@ async function runFixPass(
     const tokenInfo = claudeTokenStatus(capturedAt, nowFn());
     if (tokenInfo !== null && (tokenInfo.expired || tokenInfo.nearExpiry)) {
       const when = tokenInfo.expired ? 'has expired' : `expires in ${tokenInfo.daysLeft} days`;
-      out.write(`\nYour Claude token ${when}. Refresh it now? (Y/n) `);
+      out.write(`\nYour Claude token ${when}. Refresh it now? ${yesNoHint('yes', out.color)} `);
       const ans = await readLine();
       if (parseYesNo(ans, true)) {
         try {

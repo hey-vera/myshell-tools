@@ -11,6 +11,18 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## [3.5.5]
 
+### Changed
+- **Clearer, consistent yes/no prompts.** The clunky `(y(enter) / n)` / `(y/N)`
+  wording is replaced everywhere with `yes (enter) / no`, where the dimmed
+  `(enter)` always marks the default. One rule across the whole app: **Enter (or
+  `y`) means yes** — no more flipping between default-yes and default-no prompts to
+  second-guess. The previously default-NO prompts ("Add opencode?", "Set as default
+  shell tool?") now default to yes like the rest of setup.
+- **Sensitive actions use a strict confirm.** Deleting a conversation now shows
+  `yes (y) / no (n)` and has **no Enter default** — you must consciously press `y`
+  or `n`, so a reflexive Enter can never delete. (Ctrl-C still aborts; an explicit
+  `n`, Enter, or anything else cancels.)
+
 ### Fixed
 - **A freshly published version is now seen on the very next launch.** The launch
   update-check trusts a "you're on the latest" verdict before re-asking npm; that

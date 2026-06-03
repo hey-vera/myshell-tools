@@ -22,7 +22,7 @@ import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 
 import { EventEmitter } from 'node:events';
-import { startMenu, defaultAliasHint, parseYesNo, interpretYesNoKey, readSingleKey, confirmViaKey, autoUpdateEnabled, createLineReader, completeSlash, CHAT_SLASH_COMMANDS } from '../../src/interface/menu.ts';
+import { startMenu, defaultAliasHint, parseYesNo, interpretYesNoKey, yesNoHint, readSingleKey, confirmViaKey, autoUpdateEnabled, createLineReader, completeSlash, CHAT_SLASH_COMMANDS } from '../../src/interface/menu.ts';
 import type { MenuContext, KeyInputStream } from '../../src/interface/menu.ts';
 import type { UpdateCheckResult } from '../../src/infra/update-check.ts';
 import type { OutputSink } from '../../src/interface/render.ts';
@@ -870,6 +870,25 @@ describe('interpretYesNoKey — single-key yes/no', () => {
       assert.doesNotThrow(() => interpretYesNoKey(k, true));
     }
   });
+
+  // ---- strict mode (requireExplicit) — sensitive/destructive prompts --------
+
+  it('strict: Enter is ignored (no default) — must press y or n', () => {
+    assert.equal(interpretYesNoKey('\r', true, true), 'ignore');
+    assert.equal(interpretYesNoKey('\n', false, true), 'ignore');
+  });
+
+  it('strict: y / n still decide explicitly', () => {
+    assert.equal(interpretYesNoKey('y', false, true), 'yes');
+    assert.equal(interpretYesNoKey('Y', true, true), 'yes');
+    assert.equal(interpretYesNoKey('n', true, true), 'no');
+    assert.equal(interpretYesNoKey('N', false, true), 'no');
+  });
+
+  it('strict: Ctrl-C still aborts; other keys still ignored', () => {
+    assert.equal(interpretYesNoKey('\x03', true, true), 'abort');
+    assert.equal(interpretYesNoKey('a', true, true), 'ignore');
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -959,6 +978,55 @@ describe('confirmViaKey — single-key yes/no over a fake stream', () => {
     const out = makeSink();
     await confirmViaKey(out, true, asStream(new FakeKeyStream(['n'])));
     assert.ok(out.buf.includes('n'), `expected the chosen letter echoed, got ${JSON.stringify(out.buf)}`);
+  });
+
+  it('strict: ignores Enter (no default), resolves only on an explicit y', async () => {
+    const out = makeSink();
+    // Two Enters are ignored (no default in strict mode); the y decides.
+    assert.equal(
+      await confirmViaKey(out, false, asStream(new FakeKeyStream(['\r', '\r', 'y'])), true),
+      true,
+    );
+  });
+
+  it('strict: an explicit n cancels', async () => {
+    const out = makeSink();
+    assert.equal(
+      await confirmViaKey(out, true, asStream(new FakeKeyStream(['\n', 'n'])), true),
+      false,
+    );
+  });
+});
+
+describe('yesNoHint — confirm prompt wording', () => {
+  it('default-yes shows "yes (enter) / no"', () => {
+    assert.equal(yesNoHint('yes', false), 'yes (enter) / no');
+  });
+
+  it('strict shows "yes (y) / no (n)" — no Enter shortcut', () => {
+    assert.equal(yesNoHint('strict', false), 'yes (y) / no (n)');
+  });
+
+  it('dims the key cue when color is on (words stay plain)', () => {
+    const s = yesNoHint('yes', true);
+    assert.ok(s.includes('\x1b[2m(enter)\x1b[0m'), 'the (enter) cue must be dimmed');
+    assert.ok(s.startsWith('yes '), 'the word "yes" stays plain');
+  });
+});
+
+describe('parseYesNo — strict mode (requireExplicit)', () => {
+  it('only an explicit y/yes confirms', () => {
+    assert.equal(parseYesNo('y', false, true), true);
+    assert.equal(parseYesNo('yes', false, true), true);
+    assert.equal(parseYesNo('YES', false, true), true);
+  });
+
+  it('Enter / EOF / blank / typo all cancel (no default-yes leak)', () => {
+    assert.equal(parseYesNo('', true, true), false);
+    assert.equal(parseYesNo(null, true, true), false);
+    assert.equal(parseYesNo('   ', true, true), false);
+    assert.equal(parseYesNo('maybe', true, true), false);
+    assert.equal(parseYesNo('n', true, true), false);
   });
 });
 
@@ -1340,16 +1408,16 @@ describe('startMenu — first-run welcome: install prompt for missing provider',
     );
   });
 
-  it('orientation header mentions the [Capitalized] default convention', async () => {
+  it('orientation header explains the (enter) default convention', async () => {
     const sink = makeSink();
     const ctx = makeFirstRunCtx(['n', 'n', '', 'n', 'n']);
 
     await startMenu(ctx, sink);
 
-    // The header must reference the capitalized-default convention
+    // The header must explain that the side marked (enter) is the default.
     assert.ok(
-      sink.buf.includes('Capitalized') || sink.buf.includes('capitalized'),
-      'orientation header must reference the [Capitalized] default convention',
+      sink.buf.includes('(enter)'),
+      'orientation header must reference the (enter) default convention',
     );
   });
 
@@ -1555,15 +1623,15 @@ describe('startMenu — first-run welcome: opencode onboarding prompt', () => {
     );
   });
 
-  it('shows (y/N) in the opencode prompt (default NO)', async () => {
+  it('shows yes (enter) / no in the opencode prompt (default YES, consistent)', async () => {
     const sink = makeSink();
     const ctx = makeOpencodeOnboardCtx(['n', '', 'n', 'n', 'q']);
 
     await startMenu(ctx, sink);
 
     assert.ok(
-      sink.buf.includes('(y/N)'),
-      'opencode prompt must show (y/N) — default is NO',
+      sink.buf.includes('yes (enter) / no'),
+      'opencode prompt must show yes (enter) / no — Enter = yes, consistent with the install prompts',
     );
   });
 
@@ -3385,10 +3453,10 @@ describe('startMenu — update notifier: banner, [u], auto-update', () => {
     const sink = makeSink();
     await startMenu(ctx, sink);
 
-    // The auto-update prompt must mark Enter → yes (default-yes): "(y(enter) / n)"
+    // The auto-update prompt must mark Enter → yes (default-yes): "yes (enter) / no"
     assert.ok(
-      sink.buf.includes('y(enter) / n'),
-      'auto-update prompt must show y(enter) / n — Enter selects yes (recommended)',
+      sink.buf.includes('yes (enter) / no'),
+      'auto-update prompt must show yes (enter) / no — Enter selects yes (recommended)',
     );
   });
 });

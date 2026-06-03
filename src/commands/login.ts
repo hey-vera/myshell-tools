@@ -39,7 +39,7 @@ import type { OutputSink } from '../interface/render.js';
 import type { ProviderId } from '../providers/port.js';
 import { detectProvider, getInstallCommand } from '../providers/detect.js';
 import { bold, dim, green, red } from '../ui/theme.js';
-import { parseYesNo } from '../interface/menu.js';
+import { parseYesNo, yesNoHint } from '../interface/menu.js';
 import { clearClaudeToken } from '../infra/credentials.js';
 
 /** Which sign-in flow to run. See module docstring. */
@@ -307,7 +307,7 @@ export async function runLogin(
         // using the no-localhost code method. Otherwise print the manual hint.
         if (opts?.readLine !== undefined) {
           out.write(
-            `Browser sign-in failed. Try the no-localhost code method now? (Y/n) `,
+            `Browser sign-in failed. Try the no-localhost code method now? ${yesNoHint('yes', out.color)} `,
           );
           const ans = await opts.readLine();
           if (shouldRetryWithCode(ans)) {

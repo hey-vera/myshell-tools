@@ -103,7 +103,10 @@ export interface MenuContext {
    * prompts deterministically without a TTY. Omit → the real reader is built
    * (raw single-key on a TTY, line-mode fallback otherwise).
    */
-  readonly confirm?: (defaultYes: boolean) => Promise<boolean>;
+  readonly confirm?: (
+    defaultYes: boolean,
+    opts?: { requireExplicit?: boolean },
+  ) => Promise<boolean>;
   /**
    * Optional injected detectEnvironment for testing. When provided, `startMenu`
    * uses this instead of the real `detectEnvironment` from providers/detect.ts,
@@ -174,16 +177,30 @@ export interface MenuContext {
  *   - empty string or `null` (EOF) → `defaultYes`
  *   - anything else              → `defaultYes` (lenient)
  *
- * Never throws.  Callers should display `(Y/n)` when `defaultYes` is true and
- * `(y/N)` when `defaultYes` is false so the user knows which choice Enter gives.
+ * Never throws.  Callers render the hint via {@link yesNoHint}: `yes (enter) / no`
+ * for a default-yes prompt, `yes (y) / no (n)` for a strict one.
  *
- * @param input      - The raw line from readLine(), or null on EOF.
- * @param defaultYes - True if pressing Enter (or EOF) means yes.
+ * Strict mode (`requireExplicit`): for destructive/sensitive actions, ONLY an
+ * explicit yes counts — Enter, EOF, and anything else cancel. This is the
+ * line-mode (piped/test) twin of the strict single-key path, so a bare Enter can
+ * never confirm a delete.
+ *
+ * @param input           - The raw line from readLine(), or null on EOF.
+ * @param defaultYes      - True if pressing Enter (or EOF) means yes (ignored when strict).
+ * @param requireExplicit - True to require an explicit `y`/`yes`; everything else is no.
  * @returns True for yes, false for no.
  */
-export function parseYesNo(input: string | null, defaultYes: boolean): boolean {
-  if (input === null || input.trim().length === 0) return defaultYes;
-  const lower = input.trim().toLowerCase();
+export function parseYesNo(
+  input: string | null,
+  defaultYes: boolean,
+  requireExplicit = false,
+): boolean {
+  const lower = (input ?? '').trim().toLowerCase();
+  if (requireExplicit) {
+    // Strict: only an explicit yes confirms; Enter/EOF/typos all cancel.
+    return lower === 'y' || lower === 'yes';
+  }
+  if (input === null || lower.length === 0) return defaultYes;
   if (lower === 'y' || lower === 'yes') return true;
   if (lower === 'n' || lower === 'no') return false;
   return defaultYes;
@@ -193,11 +210,15 @@ export function parseYesNo(input: string | null, defaultYes: boolean): boolean {
  * Interpret a single raw keypress for a yes/no prompt that accepts one key
  * (no Enter required).
  *
- *   - Enter (CR/LF)            → the default ('yes' when defaultYes, else 'no')
  *   - 'y' / 'Y'                → 'yes'
  *   - 'n' / 'N'                → 'no'
  *   - Ctrl-C (ETX) / Ctrl-D (EOT) → 'abort' (caller should bail out)
+ *   - Enter (CR/LF)            → the default ('yes'/'no'), or 'ignore' when strict
  *   - anything else            → 'ignore' (do nothing; keep waiting for a key)
+ *
+ * Strict mode (`requireExplicit`): for destructive/sensitive actions there is NO
+ * Enter default — Enter (and every key but y/n/Ctrl-C) is ignored, so the user
+ * must consciously press `y` or `n`. A reflexive Enter can't confirm a delete.
  *
  * Pure / never throws. The I/O layer maps these verdicts onto behaviour; this
  * function is the testable decision core.
@@ -205,13 +226,35 @@ export function parseYesNo(input: string | null, defaultYes: boolean): boolean {
 export function interpretYesNoKey(
   key: string,
   defaultYes: boolean,
+  requireExplicit = false,
 ): 'yes' | 'no' | 'ignore' | 'abort' {
-  if (key === '\r' || key === '\n') return defaultYes ? 'yes' : 'no';
   if (key === '\x03' || key === '\x04') return 'abort';
   const lower = key.toLowerCase();
   if (lower === 'y') return 'yes';
   if (lower === 'n') return 'no';
+  if (key === '\r' || key === '\n') {
+    return requireExplicit ? 'ignore' : defaultYes ? 'yes' : 'no';
+  }
   return 'ignore';
+}
+
+/**
+ * Render the trailing yes/no hint for a confirm prompt. The key cue is dimmed so
+ * the eye lands on the words `yes` / `no`, not the annotation. Two shapes:
+ *
+ *   - `'yes'`    → default-yes: Enter or `y` confirms.   →  `yes (enter) / no`
+ *   - `'strict'` → no default (sensitive/destructive):   →  `yes (y) / no (n)`
+ *                  the user must press `y` or `n`; Enter does nothing.
+ *
+ * One predictable rule for the whole app — Enter means yes everywhere, except a
+ * strict prompt has no Enter shortcut at all — so there's never a silent
+ * default-no to second-guess.
+ */
+export function yesNoHint(mode: 'yes' | 'strict', color: boolean): string {
+  const d = (s: string): string => dim(s, color);
+  return mode === 'strict'
+    ? `yes ${d('(y)')} / no ${d('(n)')}`
+    : `yes ${d('(enter)')} / no`;
 }
 
 /**
@@ -778,7 +821,10 @@ export function createLineReader(
 // ---------------------------------------------------------------------------
 
 /** A yes/no confirm: resolves true for yes, false for no, honouring a default. */
-type Confirm = (defaultYes: boolean) => Promise<boolean>;
+type Confirm = (
+  defaultYes: boolean,
+  opts?: { requireExplicit?: boolean },
+) => Promise<boolean>;
 
 /**
  * The slice of `process.stdin` the single-key reader touches. Declaring it as a
@@ -853,16 +899,21 @@ export function readSingleKey(
  * terminal's own echo). Rejects if the raw read is unavailable so the caller can
  * fall back to line mode.
  *
+ * When `requireExplicit` is set (strict / destructive prompts) there is no Enter
+ * default — Enter and every key but y/n/Ctrl-C is ignored, so the user must
+ * deliberately press `y` or `n`.
+ *
  * `stdin` is injectable for testing; in production it is `process.stdin`.
  */
 export async function confirmViaKey(
   out: OutputSink,
   defaultYes: boolean,
   stdin: KeyInputStream = process.stdin as unknown as KeyInputStream,
+  requireExplicit = false,
 ): Promise<boolean> {
   for (;;) {
     const key = await readSingleKey(stdin);
-    const verdict = interpretYesNoKey(key, defaultYes);
+    const verdict = interpretYesNoKey(key, defaultYes, requireExplicit);
     if (verdict === 'ignore') continue;
     if (verdict === 'abort') {
       out.write('\n');
@@ -898,16 +949,22 @@ function makeConfirm(
     typeof process.stdin.setRawMode === 'function';
 
   if (!canRawKey) {
-    return async (defaultYes: boolean): Promise<boolean> =>
-      parseYesNo(await readLine(), defaultYes);
+    return async (defaultYes: boolean, opts?: { requireExplicit?: boolean }): Promise<boolean> =>
+      parseYesNo(await readLine(), defaultYes, opts?.requireExplicit ?? false);
   }
 
-  return async (defaultYes: boolean): Promise<boolean> => {
+  return async (defaultYes: boolean, opts?: { requireExplicit?: boolean }): Promise<boolean> => {
+    const requireExplicit = opts?.requireExplicit ?? false;
     try {
-      return await confirmViaKey(out, defaultYes);
+      return await confirmViaKey(
+        out,
+        defaultYes,
+        process.stdin as unknown as KeyInputStream,
+        requireExplicit,
+      );
     } catch {
       // Any raw-mode hiccup must never break onboarding — fall back to a line.
-      return parseYesNo(await readLine(), defaultYes);
+      return parseYesNo(await readLine(), defaultYes, requireExplicit);
     }
   };
 }
@@ -942,7 +999,7 @@ async function runWelcome(
   out.write('\n' + box(`🧠 myshell-tools v${ctx.version} — Setup`, headerLines) + '\n\n');
 
   // ---- Orientation header --------------------------------------------------
-  out.write('Quick setup — a few questions, ~30 seconds. Just press Enter for the [Capitalized] default, or tap y / n.\n\n');
+  out.write('Quick setup — a few questions, ~30 seconds. Enter takes the default (the side marked (enter)); or press y / n.\n\n');
 
   // ---- Offer to install any missing provider (claude / codex) --------------
   // Consent is required: we ask once per missing provider.
@@ -955,7 +1012,7 @@ async function runWelcome(
     if (ps.installed) continue;
 
     const pkg = id === 'claude' ? '@anthropic-ai/claude-code' : '@openai/codex';
-    out.write(`Install ${id} (${pkg})? (y(enter) / n) `);
+    out.write(`Install ${id} (${pkg})? ${yesNoHint('yes', out.color)} `);
 
     if (await confirm(true)) {
       const ok = await installProviderFn(id, out);
@@ -973,10 +1030,11 @@ async function runWelcome(
   }
 
   // ---- Offer opencode (optional, free models + more providers) -------------
-  // opencode defaults to NO — it is optional and users may prefer claude/codex only.
+  // Enter = yes, consistent with the claude/codex install prompts above (adding a
+  // CLI is additive and easily removed). Decline with n.
   if (!env.opencode.installed) {
-    out.write('Add opencode? (optional — bring your own provider/subscription) (y/N) ');
-    if (await confirm(false)) {
+    out.write(`Add opencode? (optional — bring your own provider/subscription) ${yesNoHint('yes', out.color)} `);
+    if (await confirm(true)) {
       const ok = await installProviderFn('opencode', out);
       if (ok) {
         // Re-detect so downstream sign-in logic sees the freshly installed opencode.
@@ -994,7 +1052,7 @@ async function runWelcome(
     const ps = env[id];
     if (!ps.installed || ps.authenticated) continue;
 
-    out.write(`\nSign in to ${id} now? (y(enter) / n) `);
+    out.write(`\nSign in to ${id} now? ${yesNoHint('yes', out.color)} `);
 
     if (await confirm(true)) {
       // loginFn auto-detects the right method (code in containers/SSH where the
@@ -1041,13 +1099,13 @@ async function runWelcome(
     ...(newMode !== undefined ? { mode: newMode } : {}),
   };
 
-  // Default is NO for set-as-default — require explicit 'y' to enable.
-  out.write('Set myshell-tools as your default shell tool? (y/N) ');
-  const setAsDefault = await confirm(false);
+  // Enter = yes (consistent with the rest of setup). Reversible later via Settings.
+  out.write(`Set myshell-tools as your default shell tool? ${yesNoHint('yes', out.color)} `);
+  const setAsDefault = await confirm(true);
 
   // Default is YES: check for updates at launch and OFFER to install (we ask
   // first — never a silent swap). Opt out with n or via Settings.
-  out.write('Check for updates at launch (I\'ll show the version and ask first)? (y(enter) / n) ');
+  out.write(`Check for updates at launch (I'll show the version and ask first)? ${yesNoHint('yes', out.color)} `);
   const autoUpdate = await confirm(true);
 
   const saved: AppConfig = {
@@ -1421,11 +1479,15 @@ async function runManage(
     if (!Number.isNaN(num) && num >= 1 && num <= metas.length) {
       const conv = metas[num - 1];
       if (conv !== undefined) {
-        out.write(`Delete "${conv.title}"? (y/N) `);
+        // Strict confirm: deletion is irreversible, so there is NO Enter default —
+        // only an explicit 'y' removes the conversation (a reflexive Enter cancels).
+        out.write(`Delete "${conv.title}"? ${yesNoHint('strict', out.color)} `);
         const confirmAns = await readLine();
-        if (parseYesNo(confirmAns, false)) {
+        if (parseYesNo(confirmAns, false, true)) {
           await ctx.store.remove(conv.id);
           out.write('Deleted.\n');
+        } else {
+          out.write('Cancelled.\n');
         }
       }
     }
@@ -2098,7 +2160,7 @@ async function runChatLoop(
       ) {
         const failingProvider = result.final.provider;
         out.write(`\n[warn] ${failingProvider} isn't signed in.\n`);
-        out.write(`Sign in to ${failingProvider} now and retry? (y(enter) / n) `);
+        out.write(`Sign in to ${failingProvider} now and retry? ${yesNoHint('yes', out.color)} `);
         const ans = await readLine();
         if (parseYesNo(ans, true)) {
           await loginFn(out, failingProvider, {
@@ -2145,7 +2207,7 @@ async function runChatLoop(
         result.final.errorCategory === 'timeout'
       ) {
         out.write('\n  ' + dim("That's a big one — it ran past the time limit for a single turn.", out.color) + '\n');
-        out.write("  Keep working on it autonomously, step by step, until it's done? (y(enter) / n) ");
+        out.write(`  Keep working on it autonomously, step by step, until it's done? ${yesNoHint('yes', out.color)} `);
         const ans = await readLine();
         if (parseYesNo(ans, true)) {
           if (await runGoalLoop(line)) break;
@@ -2161,7 +2223,7 @@ async function runChatLoop(
       // generic selector so the offer isn't shown as a numbered list.
       if (result.final?.questions !== undefined && isKeepGoingOffer(result.final.questions)) {
         out.write('\n  ' + dim("I can keep working on this autonomously until it's done.", out.color) + '\n');
-        out.write('  Keep going? (y(enter) / n) ');
+        out.write(`  Keep going? ${yesNoHint('yes', out.color)} `);
         const ans = await readLine();
         if (parseYesNo(ans, true)) {
           if (await runGoalLoop(line)) break;
@@ -2507,7 +2569,7 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
       } else if (out.isTty) {
         // DEFAULT, interactive: name the version and ask.
         out.write(`\n▲ Update available: ${bold(fromV, out.color)} → ${bold(toV, out.color)}\n`);
-        out.write('  Install it now? (y(enter) / n) ');
+        out.write(`  Install it now? ${yesNoHint('yes', out.color)} `);
         if (await confirm(true)) {
           out.write(`  Updating to ${toV}…\n`);
           if (await install()) return;
@@ -2655,7 +2717,7 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
       // tests stay hermetic). If install succeeds, proceeds to sign in.
       if (key === 'o') {
         if (!mutableCtx.env.opencode.installed) {
-          out.write(`Install opencode (${installCommandFor('opencode').replace('npm install -g ', '')})? (y(enter) / n) `);
+          out.write(`Install opencode (${installCommandFor('opencode').replace('npm install -g ', '')})? ${yesNoHint('yes', out.color)} `);
           const ans = await readLine();
           // EOF (null) means no interactive user — never auto-install on a closed
           // pipe. Otherwise honor the (Y/n) default-yes (Enter = install).
