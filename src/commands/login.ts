@@ -71,15 +71,14 @@ const LOGIN_CODE_COMMAND: Record<
     // It persists the credential itself, so we capture/store nothing.
     args: ['auth', 'login'],
     guidance:
-      'claude prints a sign-in link just below (after "Opening browser to sign in…").\n' +
-      '  Open it in any browser, sign in at claude.com, and click Authorize. Then:\n' +
-      '  • The page shows a box labelled "Authentication code" / "Paste this into\n' +
-      '    Claude Code:" — that is the value you need.\n' +
-      '  • Copy the WHOLE value end to end (it is long). A partial copy is the usual\n' +
-      '    cause of claude\'s "make sure the full code was copied" error.\n' +
-      '  • Paste it back here at claude\'s "Paste code here if prompted >" prompt.\n' +
-      '  No localhost step, no error page. Claude saves the sign-in itself — nothing\n' +
-      '  else for you to copy or store.',
+      'A sign-in link appears just below. Open it in any browser, authorize at\n' +
+      '  claude.com, copy the code the page shows (there is a one-click Copy button),\n' +
+      '  and paste it at claude\'s prompt below. No localhost — claude saves the\n' +
+      '  sign-in itself.\n' +
+      '  If it says "Invalid code", the code is single-use and short-lived: authorize\n' +
+      '  and paste promptly, and don\'t reuse a code from an earlier attempt. (You can\n' +
+      '  also just run `claude /login` yourself — myshell picks up the sign-in\n' +
+      '  automatically.)',
   },
   codex: {
     bin: 'codex',

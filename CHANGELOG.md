@@ -9,6 +9,20 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 ### Pending
 - Cross-OS CI execution (requires a public remote).
 
+## [3.6.1]
+
+### Fixed
+- **claude sign-in: drain stdin before handing off, and honest guidance.** A stray
+  keystroke left in the buffer before the handoff (e.g. an Enter pressed out of
+  habit right after the single-key `y` confirm) was read by `claude auth login` as
+  a premature empty submit — surfacing as "Invalid code. Please make sure the full
+  code was copied." even when the pasted code was correct. myshell now drains any
+  buffered stdin before giving the terminal to claude. The guidance was also
+  rewritten to match reality: it no longer blames a "partial copy" (the claude page
+  has a one-click Copy button) and no longer over-quotes a prompt; it explains the
+  real failure mode (the code is single-use and short-lived) and notes you can run
+  `claude /login` directly — myshell now picks up that sign-in automatically.
+
 ## [3.6.0]
 
 ### Fixed
