@@ -256,18 +256,31 @@ export function deriveTitle(entries: SessionEntry[]): string {
 // Directory layout
 // ---------------------------------------------------------------------------
 
-/** Return the directories to scan for a given provider, under homeDir. */
-function nativeDirs(provider: ProviderId, homeDir: string): string[] {
+/**
+ * Resolve a provider's config base dir. Honours `CLAUDE_CONFIG_DIR` / `CODEX_HOME`
+ * (set by Replit/bashrc or our own replitPersistentEnv) so we find sessions in the
+ * PERSISTENT workspace dir, not just the ephemeral `~/.claude` / `~/.codex`.
+ */
+function providerBaseDir(
+  provider: ProviderId,
+  homeDir: string,
+  env?: NodeJS.ProcessEnv,
+): string {
   if (provider === 'claude') {
-    return [
-      join(homeDir, '.claude', 'projects'),
-      join(homeDir, '.claude', 'sessions'),
-    ];
+    const cfg = env?.['CLAUDE_CONFIG_DIR'];
+    return cfg !== undefined && cfg.length > 0 ? cfg : join(homeDir, '.claude');
   }
-  return [
-    join(homeDir, '.codex', 'archived_sessions'),
-    join(homeDir, '.codex', 'sessions'),
-  ];
+  const codex = env?.['CODEX_HOME'];
+  return codex !== undefined && codex.length > 0 ? codex : join(homeDir, '.codex');
+}
+
+/** Return the directories to scan for a given provider. */
+function nativeDirs(provider: ProviderId, homeDir: string, env?: NodeJS.ProcessEnv): string[] {
+  const base = providerBaseDir(provider, homeDir, env);
+  if (provider === 'claude') {
+    return [join(base, 'projects'), join(base, 'sessions')];
+  }
+  return [join(base, 'archived_sessions'), join(base, 'sessions')];
 }
 
 /** True when a filename looks like a native session file for the given provider. */
@@ -290,11 +303,11 @@ function isNativeFile(provider: ProviderId, name: string): boolean {
  */
 export async function listNativeSessions(
   provider: ProviderId,
-  opts?: { homeDir?: string; limit?: number },
+  opts?: { homeDir?: string; limit?: number; env?: NodeJS.ProcessEnv },
 ): Promise<NativeSession[]> {
   const home = opts?.homeDir ?? homedir();
   const limit = opts?.limit ?? 12;
-  const dirs = nativeDirs(provider, home);
+  const dirs = nativeDirs(provider, home, opts?.env);
 
   // Collect candidate files across all directories
   const candidates: Array<{ file: string; mtimeMs: number }> = [];
@@ -402,4 +415,42 @@ export async function importNativeSession(
   }
 
   return { id: meta.id, imported: entries.length };
+}
+
+// ---------------------------------------------------------------------------
+// listRecentNativeSessions — merged claude + codex, newest first
+// ---------------------------------------------------------------------------
+
+/**
+ * List recent native sessions across BOTH claude and codex, merged and sorted by
+ * recency (newest first), capped at `limit`. This powers the single numbered
+ * "resume a Claude/Codex session" picker — one list, press a number, no
+ * pick-the-provider-first step (mirrors DATA Tools' cross-tool resume).
+ *
+ * Only scans providers in `providers` (default both). Honours
+ * CLAUDE_CONFIG_DIR/CODEX_HOME via `opts.env`. Returns [] when nothing is found.
+ * Never throws.
+ */
+export async function listRecentNativeSessions(opts?: {
+  homeDir?: string;
+  env?: NodeJS.ProcessEnv;
+  limit?: number;
+  providers?: readonly ProviderId[];
+}): Promise<NativeSession[]> {
+  const limit = opts?.limit ?? 9;
+  const providers = opts?.providers ?? (['claude', 'codex'] as const);
+  const perProvider: { homeDir?: string; env?: NodeJS.ProcessEnv; limit: number } = {
+    limit,
+    ...(opts?.homeDir !== undefined ? { homeDir: opts.homeDir } : {}),
+    ...(opts?.env !== undefined ? { env: opts.env } : {}),
+  };
+
+  const lists = await Promise.all(
+    providers.map((p) => listNativeSessions(p, perProvider).catch(() => [] as NativeSession[])),
+  );
+
+  return lists
+    .flat()
+    .sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : a.updatedAt > b.updatedAt ? -1 : 0))
+    .slice(0, limit);
 }

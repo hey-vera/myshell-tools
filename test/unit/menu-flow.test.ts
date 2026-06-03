@@ -1861,15 +1861,17 @@ describe('startMenu — [i] import a native conversation', () => {
     );
   });
 
-  it('[i] → invalid provider choice → "Cancelled" → back to menu', async () => {
+  it('[i] → Enter at the picker cancels back to the menu', async () => {
+    // The merged cross-tool picker has no "pick provider first" step anymore:
+    // [i] shows one numbered list (or a no-sessions message); Enter cancels.
     const sink = makeSink();
     const clock = makeFakeClock();
     const store = makeStore(clock);
     const ctx = makeCtx(
       {
         readLine: makeScriptedReader([
-          'i',    // import
-          '9',    // invalid provider choice
+          'i',    // resume a Claude/Codex session
+          '',     // Enter → cancel (or no-sessions → already back at menu)
           'q',    // quit
         ]),
       },
@@ -1879,9 +1881,8 @@ describe('startMenu — [i] import a native conversation', () => {
 
     await assert.doesNotReject(
       () => startMenu(ctx, sink),
-      'invalid provider choice should not throw',
+      'cancelling the resume picker should not throw',
     );
-    assert.ok(sink.buf.includes('Cancelled'), '"Cancelled" shown for invalid provider');
   });
 
   it('[i] with a real temp homeDir containing a Claude session → imports and enters chat', async () => {
@@ -1915,14 +1916,17 @@ describe('startMenu — [i] import a native conversation', () => {
     // The critical invariant is clean exit
   });
 
-  it('menu renders [i] Import option in output', async () => {
+  it('menu renders the [i] resume-a-Claude/Codex-session option', async () => {
     const sink = makeSink();
     const ctx = makeCtx({ readLine: makeScriptedReader(['q']) });
 
     await startMenu(ctx, sink);
 
     assert.ok(sink.buf.includes('[i]'), 'menu should show [i] key');
-    assert.ok(sink.buf.toLowerCase().includes('import'), 'menu should mention import');
+    assert.ok(
+      sink.buf.toLowerCase().includes('claude/codex'),
+      'menu should mention resuming a Claude/Codex session',
+    );
   });
 
   it('menu renders [r] raw provider session option in output', async () => {

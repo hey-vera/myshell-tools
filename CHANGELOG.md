@@ -39,6 +39,13 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   ever sent to Anthropic and never copied into myshell's own store.
 
 ### Changed
+- **Resume a Claude or Codex session from one numbered list.** The old `[i]` import
+  made you pick a provider first, then a session. Now `[i]` shows a single merged
+  list of your recent Claude *and* Codex sessions (newest first, each tagged), and
+  a number resumes it straight into a myshell conversation — so your existing CLI
+  history is one keypress away (mirrors DATA Tools' cross-tool resume). It now also
+  finds sessions in the persistent `CLAUDE_CONFIG_DIR` / `CODEX_HOME` dirs, not just
+  `~/.claude` / `~/.codex`.
 - **Single-key main menu — no Enter.** On a real terminal the main menu now acts
   the instant you press a key (`c`, `n`, `j`, a digit, …) instead of making you
   type the letter and then press Enter. Case-insensitive, your shortcuts are

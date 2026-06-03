@@ -25,6 +25,7 @@ import {
   parseClaudeSession,
   parseCodexSession,
   listNativeSessions,
+  listRecentNativeSessions,
   importNativeSession,
   deriveTitle,
 } from '../../src/providers/native-sessions.ts';
@@ -736,5 +737,82 @@ describe('importNativeSession', () => {
     assert.equal(entries[0]?.content, 'Codex import test');
     assert.equal(entries[1]?.role, 'assistant');
     assert.equal(entries[1]?.content, 'Codex response');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// listRecentNativeSessions — merged claude + codex, config-dir aware
+// ---------------------------------------------------------------------------
+
+describe('listRecentNativeSessions', () => {
+  it('merges claude + codex sessions, newest first, capped at limit', async () => {
+    const home = await mkdtemp(join(tmpdir(), `native-merged-${randomUUID()}-`));
+    try {
+      const claudeDir = join(home, '.claude', 'projects', 'p');
+      const codexDir = join(home, '.codex', 'archived_sessions');
+      await mkdir(claudeDir, { recursive: true });
+      await mkdir(codexDir, { recursive: true });
+
+      await writeFile(
+        join(claudeDir, 'c1.jsonl'),
+        JSON.stringify({ type: 'user', timestamp: '2024-01-01T00:00:00.000Z', message: { role: 'user', content: 'claude old' } }),
+        'utf8',
+      );
+      await new Promise((r) => setTimeout(r, 20));
+      await writeFile(
+        join(codexDir, 'rollout-x.jsonl'),
+        [
+          JSON.stringify({ type: 'session_meta', timestamp: '2024-06-01T00:00:00.000Z', payload: { id: 'cx', timestamp: '2024-06-01T00:00:00.000Z', cwd: '/x' } }),
+          JSON.stringify({ type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'codex newer' }] } }),
+        ].join('\n'),
+        'utf8',
+      );
+
+      const merged = await listRecentNativeSessions({ homeDir: home, limit: 9 });
+      assert.equal(merged.length, 2);
+      // Newest (codex, written last → larger mtime) comes first.
+      assert.equal(merged[0]?.provider, 'codex');
+      assert.equal(merged[1]?.provider, 'claude');
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
+  it('honours CLAUDE_CONFIG_DIR (finds sessions in the persistent dir, not ~/.claude)', async () => {
+    const home = await mkdtemp(join(tmpdir(), `native-cfg-${randomUUID()}-`));
+    const cfg = await mkdtemp(join(tmpdir(), `native-cfgdir-${randomUUID()}-`));
+    try {
+      // Nothing under ~/.claude; the real session lives under CLAUDE_CONFIG_DIR.
+      const projDir = join(cfg, 'projects', 'p');
+      await mkdir(projDir, { recursive: true });
+      await writeFile(
+        join(projDir, 's.jsonl'),
+        JSON.stringify({ type: 'user', timestamp: '2024-01-01T00:00:00.000Z', message: { role: 'user', content: 'persistent session' } }),
+        'utf8',
+      );
+
+      const withoutEnv = await listRecentNativeSessions({ homeDir: home, providers: ['claude'] });
+      assert.equal(withoutEnv.length, 0, 'not found under ~/.claude');
+
+      const withEnv = await listRecentNativeSessions({
+        homeDir: home,
+        providers: ['claude'],
+        env: { CLAUDE_CONFIG_DIR: cfg },
+      });
+      assert.equal(withEnv.length, 1, 'found via CLAUDE_CONFIG_DIR');
+      assert.equal(withEnv[0]?.title, 'persistent session');
+    } finally {
+      await rm(home, { recursive: true, force: true });
+      await rm(cfg, { recursive: true, force: true });
+    }
+  });
+
+  it('returns [] when nothing exists (never throws)', async () => {
+    const home = await mkdtemp(join(tmpdir(), `native-none-${randomUUID()}-`));
+    try {
+      assert.deepEqual(await listRecentNativeSessions({ homeDir: home }), []);
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
   });
 });

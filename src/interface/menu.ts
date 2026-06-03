@@ -32,7 +32,8 @@ import type { EnvironmentStatus } from '../providers/detect.js';
 import { detectEnvironment, getInstallCommand } from '../providers/detect.js';
 import { installProvider, installCommandFor } from '../providers/install.js';
 import type { Provider, ProviderId, SandboxLevel } from '../providers/port.js';
-import { listNativeSessions, importNativeSession } from '../providers/native-sessions.js';
+import { listRecentNativeSessions, importNativeSession } from '../providers/native-sessions.js';
+import { replitPersistentEnv } from '../infra/credentials.js';
 import { POLICY_PRESETS, modeLabel, defaultModeForPlan, MODE_DESC } from '../core/policy.js';
 import type { Mode } from '../core/policy.js';
 import { planNativeSession } from '../core/native-session.js';
@@ -1541,12 +1542,15 @@ async function runManage(
 // ---------------------------------------------------------------------------
 
 /**
- * Ask the user which provider to import from, list its native sessions, let the
- * user pick one, then import it into a new myshell-tools conversation and enter
- * the chat loop for that conversation.
+ * Show ONE merged, numbered list of recent Claude AND Codex sessions (newest
+ * first, each tagged with its tool), let the user pick a number, then bring that
+ * session into myshell — import its history into a new conversation and drop into
+ * the chat loop so it continues under myshell's orchestration. No
+ * pick-the-provider-first step (mirrors DATA Tools' cross-tool instant resume).
  *
- * Follows the injected `readLine` seam so it is fully testable without TTY.
- * Never modifies the native CLI's files.
+ * Resolves CLAUDE_CONFIG_DIR/CODEX_HOME (incl. the Replit-persistent dirs) so it
+ * finds your real sessions. Follows the injected `readLine` seam so it is fully
+ * testable without a TTY. Never modifies the native CLI's files.
  */
 async function runImportNative(
   ctx: MenuContext,
@@ -1565,44 +1569,31 @@ async function runImportNative(
   detectEnvironmentFn: () => Promise<EnvironmentStatus>,
   suspendStdin?: () => () => void,
 ): Promise<'menu' | 'exit'> {
-  out.write('\nImport from:\n  [1] Claude\n  [2] Codex\n\n> ');
-  const choice = await readLine();
-  if (choice === null) return 'menu';
-
-  let provider: ProviderId;
-  if (choice === '1') {
-    provider = 'claude';
-  } else if (choice === '2') {
-    provider = 'codex';
-  } else {
-    out.write('Cancelled.\n');
-    return 'menu';
-  }
-
-  const sessions = await listNativeSessions(provider);
+  const env = { ...process.env, ...replitPersistentEnv(process.env, ctx.cwd) };
+  const sessions = await listRecentNativeSessions({ env, limit: 9 });
 
   if (sessions.length === 0) {
-    out.write(`No ${provider} conversations found.\n`);
+    out.write('\nNo Claude or Codex sessions found to resume.\n');
     return 'menu';
   }
 
-  // Render a numbered picker
+  // One merged, numbered list — newest first, each tagged claude/codex.
   const nowMs = ctx.clock.now();
-  out.write('\n' + separator(`${provider} conversations`) + '\n');
+  out.write('\n' + separator('Resume a Claude / Codex session') + '\n');
   for (let idx = 0; idx < sessions.length; idx++) {
     const s = sessions[idx];
     if (s === undefined) continue;
-    const thenMs = new Date(s.updatedAt).getTime();
-    const rel = relativeTime(thenMs, nowMs);
+    const rel = relativeTime(new Date(s.updatedAt).getTime(), nowMs);
+    const tag = s.provider === 'codex' ? 'codex' : 'claude';
     const titleDisplay = s.title.length > 0 ? s.title : '(untitled)';
-    out.write(`  [${idx + 1}] ${rel}  ${titleDisplay}  (${s.messageCount} msgs)\n`);
+    out.write(`  [${idx + 1}] ${tag.padEnd(6)} ${rel.padEnd(8)} ${titleDisplay}  (${s.messageCount} msgs)\n`);
   }
-  out.write('\nPick a conversation number (or Enter to cancel): ');
+  out.write('\nPick a number to resume (or Enter to cancel): ');
 
   const pick = await readLine();
-  if (pick === null || pick.length === 0) return 'menu';
+  if (pick === null || pick.trim().length === 0) return 'menu';
 
-  const num = parseInt(pick, 10);
+  const num = parseInt(pick.trim(), 10);
   if (Number.isNaN(num) || num < 1 || num > sessions.length) {
     out.write('Invalid selection.\n');
     return 'menu';
@@ -1613,7 +1604,7 @@ async function runImportNative(
 
   const { id, imported } = await importNativeSession(session, ctx.store);
   const convTitle = session.title.length > 0 ? session.title : '(untitled)';
-  out.write(`Imported ${imported} messages into a new conversation: "${convTitle}"\n`);
+  out.write(`Resuming ${session.provider} session "${convTitle}" (${imported} messages)…\n`);
 
   // Enter the chat loop for the newly imported conversation.
   // Return value propagates the 'exit' signal to the caller (startMenu).
@@ -2458,7 +2449,7 @@ async function renderMainScreen(
       { key: 'n', label: 'New conversation', section: 'Conversations' },
       { key: '1-9', label: 'Resume numbered conversation', section: 'Conversations' },
       { key: 'e', label: 'Manage conversations', section: 'Conversations' },
-      { key: 'i', label: 'Import a conversation', section: 'Conversations' },
+      { key: 'i', label: 'Resume a Claude/Codex session', section: 'Conversations' },
       { key: 'r', label: 'Open a raw provider session', section: 'Conversations' },
       ...authEntries,
       { key: 's', label: 'Settings', section: 'Options' },
