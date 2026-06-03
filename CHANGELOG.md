@@ -20,6 +20,13 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   claude's own `Invalid code. Please make sure the full code was copied.` error.
   No behaviour change — claude still runs its own OOB code flow and persists the
   credential itself; this is purely clearer instructions.
+- **A freshly published version is now seen on the very next launch.** The launch
+  update-check trusts a "you're on the latest" verdict before re-asking npm; that
+  window was 20 minutes, so right after `npm publish` the CLI could keep insisting
+  you were current. Tightened to 30s — long enough to dedupe a rapid double-launch
+  (and avoid an update→relaunch re-check loop), short enough that a new release is
+  offered on the next run. A known *pending* update is still trusted for the full
+  TTL (re-asking npm when we already know an update exists changes nothing).
 
 ## [3.5.3]
 

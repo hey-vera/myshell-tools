@@ -39,9 +39,14 @@ interface UpdateCache {
 const TTL_MS_DEFAULT = 3 * 60 * 60 * 1000; // 3h — bound the window a fresh release can go unseen.
 // When the cache says we are ALREADY on the latest version, that is exactly the
 // state a brand-new publish silently invalidates (the publishing dev re-runs and
-// the cache still insists they're current). Re-verify that state on a much
-// shorter clock so a release reaches users within minutes, not a day.
-const TTL_MS_WHEN_CURRENT = 20 * 60 * 1000; // 20 minutes
+// the cache still insists they're current). Re-verify that state on a very short
+// clock so a release is seen on the NEXT launch — the publisher's mental model is
+// "npm publish, re-run, get offered the update," and a 20min cache broke that.
+// 30s is just long enough to dedupe a rapid double-launch (and prevent an
+// update→relaunch→re-check loop), short enough that a fresh publish is caught
+// immediately. A known PENDING update still uses the full TTL (re-asking npm
+// when we already know an update exists teaches us nothing).
+const TTL_MS_WHEN_CURRENT = 30 * 1000; // 30 seconds
 const FETCH_TIMEOUT_MS = 1_500;
 
 // ---------------------------------------------------------------------------
@@ -212,8 +217,8 @@ export async function checkForUpdate(opts: CheckForUpdateOpts): Promise<UpdateCh
       // A cache that already knows about a pending update is trustworthy for the
       // full TTL — re-asking npm won't teach us anything new. But a cache that
       // says "you're current" is precisely the one a new publish invalidates, so
-      // re-check it far sooner. This is what closes the "just published, still
-      // says I'm on latest" blind spot.
+      // re-check it on the 30s clock. This is what closes the "just published,
+      // re-ran, but it still says I'm on the latest" blind spot.
       const effectiveTtl = updateAvailable ? ttlMs : Math.min(ttlMs, TTL_MS_WHEN_CURRENT);
       if (now - cache.checkedAt < effectiveTtl) {
         return { current: currentVersion, latest: cache.latest, updateAvailable };

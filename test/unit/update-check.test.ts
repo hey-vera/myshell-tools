@@ -399,19 +399,20 @@ describe('checkForUpdate', () => {
   // ---- Short re-check clock when we appear current ------------------------
   // The blind spot we are closing: a cache that says "you're on the latest" is
   // exactly what a brand-new publish invalidates. We re-verify that state on a
-  // 20min clock instead of the full TTL.
+  // 30s clock instead of the full TTL, so a fresh publish is seen on the NEXT run.
 
   it('re-checks soon when the cache says we are already on the latest (closes the just-published blind spot)', async () => {
     const homeDir = join(tmpdir(), `uc-check-current-recheck-${randomUUID()}`);
     const now = 1_700_000_000_000;
-    // Cache written 40min ago saying latest === current (we appeared up to date).
-    await saveUpdateCache('3.0.0', now - 40 * 60 * 1000, homeDir);
+    // Cache written 2min ago saying latest === current (we appeared up to date).
+    // 2min is well past the 30s "current" clock, so we must re-verify against npm.
+    await saveUpdateCache('3.0.0', now - 2 * 60 * 1000, homeDir);
 
     let fetchCalled = false;
     const result = await checkForUpdate({
       currentVersion: '3.0.0',
       now,
-      homeDir, // default TTL, but the "appear current" path uses the 20min clock
+      homeDir, // default TTL, but the "appear current" path uses the 30s clock
       fetchLatest: async () => {
         fetchCalled = true;
         return '3.1.0';
@@ -426,7 +427,7 @@ describe('checkForUpdate', () => {
   it('still trusts a very recent "current" cache (no fetch within the short clock)', async () => {
     const homeDir = join(tmpdir(), `uc-check-current-fresh-${randomUUID()}`);
     const now = 1_700_000_000_000;
-    await saveUpdateCache('3.0.0', now - 5 * 60 * 1000, homeDir); // 5min ago
+    await saveUpdateCache('3.0.0', now - 10 * 1000, homeDir); // 10s ago — within the 30s clock
 
     let fetchCalled = false;
     const result = await checkForUpdate({
@@ -439,7 +440,7 @@ describe('checkForUpdate', () => {
       },
     });
 
-    assert.equal(fetchCalled, false, 'a 5min-old "current" cache is within the short clock');
+    assert.equal(fetchCalled, false, 'a 10s-old "current" cache is within the short clock');
     assert.equal(result.updateAvailable, false);
   });
 
