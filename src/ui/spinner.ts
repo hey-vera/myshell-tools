@@ -29,6 +29,10 @@ const TICKS_PER_SECOND = Math.round(1000 / FRAME_INTERVAL_MS);
 export interface Spinner {
   /** Display the spinner with the given text (resets the elapsed timer). */
   start(text: string): void;
+  /** Re-arm the animation after a stop() WITHOUT resetting the elapsed timer —
+   *  so a single logical operation that pauses the indicator (e.g. to stream an
+   *  answer) and then resumes it keeps one continuous, honest elapsed count. */
+  resume(text: string): void;
   /** Change the label WITHOUT resetting the elapsed timer or animation. */
   update(text: string): void;
   /** Stop the spinner and clear the line (TTY) or do nothing (non-TTY). */
@@ -78,6 +82,29 @@ export function createSpinner(out: OutputSink): Spinner {
       frameIndex = 0;
       tickCount = 0;
 
+      if (out.isTty) {
+        paint();
+        timer = setInterval(() => {
+          frameIndex = (frameIndex + 1) % FRAMES.length;
+          tickCount++;
+          paint();
+        }, FRAME_INTERVAL_MS);
+      } else {
+        out.write(`${text}\n`);
+      }
+    },
+
+    resume(text: string): void {
+      // Already running → just relabel (keeps the timer going).
+      if (active) {
+        label = text;
+        if (out.isTty) paint();
+        return;
+      }
+      // Re-arm WITHOUT touching tickCount/frameIndex, so the elapsed counter
+      // continues from where stop() left it rather than restarting at 0s.
+      active = true;
+      label = text;
       if (out.isTty) {
         paint();
         timer = setInterval(() => {

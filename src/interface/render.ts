@@ -412,7 +412,9 @@ export async function renderStream(
   function ensureAlive(): void {
     if (!out.isTty) return;
     if (!spinnerActive) {
-      spinner.start(spinnerLabel());
+      // resume(), not start(): a tier that streamed an answer and then runs more
+      // tools keeps ONE continuous elapsed count instead of restarting at 0s.
+      spinner.resume(spinnerLabel());
       spinnerActive = true;
     } else {
       spinner.update(spinnerLabel());
