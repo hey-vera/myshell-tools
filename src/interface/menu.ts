@@ -556,7 +556,9 @@ export function renderHeaderLines(
     if (ps.authenticated) {
       lines.push(`✅ ${ps.id}: ready${planSuffix}`);
     } else {
-      lines.push(`⚠️  ${ps.id}: not signed in — press [o] to add your provider${planSuffix}`);
+      // Concise status only — the [o] action lives in the menu below, so repeating
+      // it here is redundant (and overflowed the box).
+      lines.push(`⚠️  ${ps.id}: not signed in${planSuffix}`);
     }
   }
 

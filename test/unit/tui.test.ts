@@ -22,6 +22,7 @@ import assert from 'node:assert/strict';
 import {
   stripAnsi,
   visibleLength,
+  truncateToWidth,
   pad,
   box,
   bar,
@@ -141,6 +142,21 @@ describe('pad', () => {
 // box
 // ---------------------------------------------------------------------------
 
+describe('truncateToWidth', () => {
+  it('returns the string unchanged when it fits', () => {
+    assert.equal(truncateToWidth('hello', 10), 'hello');
+  });
+  it('truncates with an ellipsis to the column budget', () => {
+    const t = truncateToWidth('abcdefghij', 5);
+    assert.equal(visibleLength(t), 5, 'truncated result occupies exactly the budget');
+    assert.ok(t.endsWith('…'), 'ends with an ellipsis');
+  });
+  it('counts an emoji as 2 columns when truncating', () => {
+    // '🟢' is width 2; budget 3 → emoji (2) + ellipsis (1).
+    assert.equal(truncateToWidth('🟢🟢🟢', 3), '🟢…');
+  });
+});
+
 describe('box', () => {
   it('contains the title text', () => {
     const out = box('My Title', ['line one']);
@@ -183,6 +199,27 @@ describe('box', () => {
     const narrowLen = visibleLength(narrow.split('\n')[0] ?? '');
     const wideLen   = visibleLength(wide.split('\n')[0] ?? '');
     assert.ok(wideLen > narrowLen, 'wider width option must produce wider box');
+  });
+
+  it('keeps every row aligned even when a line is far too long (truncates, never overflows)', () => {
+    // Regression: an over-long status line used to jam the right border. Now the
+    // box truncates to its cap and ALL rows stay exactly equal width.
+    const longLine = 'opencode: not signed in — press [o] to add your provider and more and more';
+    const out = box('🧠 myshell-tools v9.9.9 — Setup', ['⚠️  claude: not signed in', longLine]);
+    const lengths = out.split('\n').map((r) => visibleLength(r));
+    const first = lengths[0];
+    for (let i = 1; i < lengths.length; i++) {
+      assert.strictEqual(lengths[i], first, `row ${i} width ${String(lengths[i])} != ${String(first)}`);
+    }
+  });
+
+  it('grows to fit a long line (up to the cap) rather than truncating prematurely', () => {
+    const shortBox = box('T', ['x']);
+    const longBox = box('T', ['a line that is comfortably longer than the 56-column default width here']);
+    assert.ok(
+      visibleLength(longBox.split('\n')[0] ?? '') > visibleLength(shortBox.split('\n')[0] ?? ''),
+      'a long line should widen the box (adaptive), not just truncate',
+    );
   });
 
   it('all rows have equal visibleLength when body lines contain ⚠️ (variation selector)', () => {

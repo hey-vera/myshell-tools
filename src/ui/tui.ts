@@ -66,27 +66,47 @@ export function stripAnsi(s: string): string {
  * as a single 2-column glyph in terminals — not 4 columns. Treating the
  * variation selector as zero-width keeps box borders aligned.
  */
+/** Display columns a single code point occupies: 0 (variation selector),
+ *  2 (emoji / wide symbol), or 1 (everything else). */
+function charWidthOf(cp: number): number {
+  if (cp >= 0xfe00 && cp <= 0xfe0f) return 0; // variation selectors (zero-width)
+  if (
+    (cp >= 0x1f300 && cp <= 0x1faff) || // Misc symbols & emoji
+    (cp >= 0x2600 && cp <= 0x27bf) || // Misc symbols
+    (cp >= 0x1f1e0 && cp <= 0x1f1ff) || // Regional indicator (flags)
+    cp === 0x20e3 // Combining enclosing keycap
+  ) {
+    return 2;
+  }
+  return 1;
+}
+
 export function visibleLength(s: string): number {
   const plain = stripAnsi(String(s));
   let len = 0;
-  for (const ch of plain) {
-    const cp = ch.codePointAt(0) ?? 0;
-    // Variation selectors are zero-width modifiers — skip them entirely.
-    if (cp >= 0xfe00 && cp <= 0xfe0f) {
-      continue;
-    }
-    if (
-      (cp >= 0x1f300 && cp <= 0x1faff) ||  // Misc symbols & emoji
-      (cp >= 0x2600  && cp <= 0x27bf)  ||  // Misc symbols
-      (cp >= 0x1f1e0 && cp <= 0x1f1ff) ||  // Regional indicator (flags)
-      cp === 0x20e3                         // Combining enclosing keycap
-    ) {
-      len += 2;
-    } else {
-      len += 1;
-    }
-  }
+  for (const ch of plain) len += charWidthOf(ch.codePointAt(0) ?? 0);
   return len;
+}
+
+/**
+ * Truncate `s` so it occupies at most `maxWidth` display columns, appending an
+ * ellipsis when it had to cut. Emoji-aware (uses the same column rules as
+ * {@link visibleLength}). Returns the original string untouched when it fits.
+ * Used by box() as a safety net so an over-long line can never break the border.
+ */
+export function truncateToWidth(s: string, maxWidth: number): string {
+  if (visibleLength(s) <= maxWidth) return String(s);
+  if (maxWidth <= 1) return '…';
+  const plain = stripAnsi(String(s));
+  let out = '';
+  let w = 0;
+  for (const ch of plain) {
+    const cw = charWidthOf(ch.codePointAt(0) ?? 0);
+    if (w + cw > maxWidth - 1) break; // leave one column for the ellipsis
+    out += ch;
+    w += cw;
+  }
+  return out + '…';
 }
 
 /**
@@ -112,17 +132,26 @@ export function pad(s: string, width: number): string {
 export function box(
   title: string,
   lines: string[] = [],
-  opts?: { width?: number },
+  opts?: { width?: number; maxWidth?: number },
 ): string {
-  const inner = opts?.width ?? 56;
+  // Adaptive width: grow to fit the longest line so the right border always
+  // aligns, but never below `width` (default 56) nor above `maxWidth` (default
+  // 70). Anything still longer than the cap is truncated with an ellipsis, so no
+  // content can ever push past the border. `inner` is the text width (excluding
+  // the 2-space indent); `total` is the full cell width per row.
+  const minInner = opts?.width ?? 56;
+  const maxInner = opts?.maxWidth ?? 70;
+  const contentMax = Math.max(visibleLength(title), 0, ...lines.map((l) => visibleLength(l)));
+  const inner = Math.max(minInner, Math.min(maxInner, contentMax));
   const total = inner + 2;
 
   const top     = DOUBLE.tl + DOUBLE.h.repeat(total) + DOUBLE.tr;
   const mid     = DOUBLE.ts + DOUBLE.h.repeat(total) + DOUBLE.te;
   const bottom  = DOUBLE.bl + DOUBLE.h.repeat(total) + DOUBLE.br;
 
-  const titleRow = DOUBLE.v + pad('  ' + title, total) + DOUBLE.v;
-  const bodyRows = lines.map(line => DOUBLE.v + pad('  ' + line, total) + DOUBLE.v);
+  const fit = (text: string): string => pad('  ' + truncateToWidth(text, inner), total);
+  const titleRow = DOUBLE.v + fit(title) + DOUBLE.v;
+  const bodyRows = lines.map((line) => DOUBLE.v + fit(line) + DOUBLE.v);
 
   return [top, titleRow, mid, ...bodyRows, bottom].join('\n');
 }
