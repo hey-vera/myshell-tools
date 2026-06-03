@@ -1186,22 +1186,21 @@ describe('createLineReader — suspend/resume release stdin for an inherited chi
     });
   });
 
-  it('suspend() DRAINS buffered stdin so a leftover keystroke cannot leak into the child', () => {
-    // A stdin that has bytes still buffered (e.g. a stray Enter pressed after the
-    // single-key `y` confirm). suspend() must pull them out via read() until empty,
-    // BEFORE the inherited child (`claude auth login`) reads fd0 — otherwise claude
-    // reads the leftover as a premature empty submit → "Invalid code".
+  it('suspend() does NOT call stdin.read() — no pending-read race with the inherited child', () => {
+    // Regression: a read()-based "drain" here left a pending libuv read on fd0 that
+    // competed with the inherited child (claude), siphoning off the first chunk of a
+    // paste so the code reached claude split/truncated ("Invalid code" / paste in the
+    // wrong spot in its TUI). suspend() must only pause — never read() — so the child
+    // owns fd0 cleanly.
     const rl = new FakeReadline();
-    class DrainableStdin extends FakeStdin {
-      queue: Array<string | null> = ['\n', null]; // one leftover line, then empty
-      reads: Array<string | null> = [];
+    class ReadTrackingStdin extends FakeStdin {
+      reads = 0;
       read(): string | null {
-        const v = this.queue.length > 0 ? (this.queue.shift() ?? null) : null;
-        this.reads.push(v);
-        return v;
+        this.reads++;
+        return null;
       }
     }
-    const stdin = new DrainableStdin(true);
+    const stdin = new ReadTrackingStdin(true);
     const reader = createLineReader(
       rl as unknown as Parameters<typeof createLineReader>[0],
       stdin as unknown as KeyInputStream,
@@ -1209,10 +1208,7 @@ describe('createLineReader — suspend/resume release stdin for an inherited chi
 
     reader.suspend();
 
-    // read() was called until it returned null — the leftover '\n' was consumed.
-    assert.deepEqual(stdin.reads, ['\n', null], 'must read until the buffer is empty');
-    assert.equal(stdin.queue.length, 0, 'stdin buffer is fully drained before the handoff');
-    // And the control sequence is unchanged: cooked mode then pause.
+    assert.equal(stdin.reads, 0, 'suspend() must not call stdin.read()');
     assert.deepEqual(stdin.calls, ['setRawMode:false', 'pause']);
   });
 });

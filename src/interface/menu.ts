@@ -773,24 +773,14 @@ export function createLineReader(
       } catch {
         /* setRawMode unsupported on this platform */
       }
-      // Drop any line we'd already buffered (e.g. a stray Enter the user pressed
-      // after the single-key 'y') so it can't reach the child.
+      // Drop any line we'd already buffered (e.g. a stray Enter) so it can't bleed
+      // into the next prompt after the child exits.
       buffered.length = 0;
-      // Drain any bytes still sitting in stdin's read buffer BEFORE handing fd0 to
-      // an inherited child. Otherwise a leftover keystroke (a habitual Enter after
-      // the single-key confirm) is read by `claude auth login` as a premature, empty
-      // submit — which surfaces as "Invalid code. Please make sure the full code was
-      // copied." even on an otherwise-correct paste. Best-effort; guarded so a
-      // non-TTY / fake test stream never breaks.
-      try {
-        const readable = input as unknown as { read?: () => unknown };
-        if (typeof readable.read === 'function') {
-          let guard = 0;
-          while (readable.read() !== null && guard < 10_000) guard++;
-        }
-      } catch {
-        /* best-effort drain */
-      }
+      // NOTE: we deliberately do NOT call stdin.read() to "drain" here. On a TTY,
+      // read() can leave a pending libuv read on fd0 that competes with the
+      // inherited child — siphoning off the first chunk of a paste so it reaches
+      // the child split/truncated (seen as claude's "Invalid code" / a paste
+      // landing in the wrong spot in its TUI). Just pause; the child owns fd0.
       try {
         input.pause();
       } catch {

@@ -9,6 +9,18 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 ### Pending
 - Cross-OS CI execution (requires a public remote).
 
+## [3.6.5]
+
+### Fixed
+- **Pasting the sign-in code now lands in the right place.** When handing the
+  terminal to an interactive child (claude's `/login` TUI, `codex login`), myshell
+  used to "drain" stdin by calling `read()` in a loop first. On a TTY that left a
+  pending read on fd0 that competed with the child, siphoning off the first chunk
+  of a paste — so the code reached claude split/truncated, showing as "Invalid
+  code" (old subcommand) or the paste landing in the wrong spot inside the `/login`
+  TUI. The drain is removed; myshell now just pauses and lets the child own the
+  terminal, so a pasted code arrives whole.
+
 ## [3.6.4]
 
 ### Changed
