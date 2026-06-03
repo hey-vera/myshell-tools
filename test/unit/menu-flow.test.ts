@@ -1052,6 +1052,10 @@ describe('yesNoHint — confirm prompt wording', () => {
     assert.equal(yesNoHint('strict', false), 'yes (y) / no (n)');
   });
 
+  it('default-no (opt-in) shows "yes / no (enter)" — Enter declines', () => {
+    assert.equal(yesNoHint('no', false), 'yes / no (enter)');
+  });
+
   it('dims the key cue when color is on (words stay plain)', () => {
     const s = yesNoHint('yes', true);
     assert.ok(s.includes('\x1b[2m(enter)\x1b[0m'), 'the (enter) cue must be dimmed');
@@ -1298,6 +1302,10 @@ describe('startMenu — first-run welcome: install prompt for missing provider',
         latest: null,
         updateAvailable: false,
       }),
+      // Stub isHookInstalled so the set-default prompt still appears — prevents the
+      // real ~/.bashrc (which may already contain the hook) from silently skipping
+      // the prompt and desyncing scripted readers.
+      isHookInstalled: async () => false,
     };
   }
 
@@ -1671,6 +1679,8 @@ describe('startMenu — first-run welcome: opencode onboarding prompt', () => {
         latest: null,
         updateAvailable: false,
       }),
+      // Stub isHookInstalled so the set-default prompt still appears (see makeFirstRunCtx)
+      isHookInstalled: async () => false,
     };
   }
 
@@ -1811,6 +1821,8 @@ describe('startMenu — first-run welcome: opencode onboarding prompt', () => {
         latest: null,
         updateAvailable: false,
       }),
+      // Stub isHookInstalled so the set-default prompt still appears (see makeFirstRunCtx)
+      isHookInstalled: async () => false,
     };
 
     await assert.doesNotReject(
@@ -2240,6 +2252,8 @@ describe('startMenu — first-run welcome: y to set-as-default writes the shell 
         latest: null,
         updateAvailable: false,
       }),
+      // Stub isHookInstalled so the set-default prompt still appears (see makeFirstRunCtx)
+      isHookInstalled: async () => false,
       // tempHome is set via process.env.HOME override below
     };
   }
@@ -2480,6 +2494,8 @@ describe('startMenu — first-run: post-onboarding env refresh (BUG 1)', () => {
         latest: null,
         updateAvailable: false,
       }),
+      // Stub isHookInstalled so the set-default prompt still appears (see makeFirstRunCtx)
+      isHookInstalled: async () => false,
     };
 
     const sink = makeSink();
@@ -2534,6 +2550,8 @@ describe('startMenu — first-run: post-onboarding env refresh (BUG 1)', () => {
         latest: null,
         updateAvailable: false,
       }),
+      // Stub isHookInstalled so the set-default prompt still appears (see makeFirstRunCtx)
+      isHookInstalled: async () => false,
     };
 
     const sink = makeSink();
@@ -3483,6 +3501,8 @@ describe('startMenu — update notifier: banner, [u], auto-update', () => {
         latest: null,
         updateAvailable: false,
       }),
+      // Stub isHookInstalled so the set-default prompt still appears (see makeFirstRunCtx)
+      isHookInstalled: async () => false,
     };
 
     const sink = makeSink();
@@ -3523,6 +3543,8 @@ describe('startMenu — update notifier: banner, [u], auto-update', () => {
         latest: null,
         updateAvailable: false,
       }),
+      // Stub isHookInstalled so the set-default prompt still appears (see makeFirstRunCtx)
+      isHookInstalled: async () => false,
     };
 
     const sink = makeSink();
@@ -4272,5 +4294,138 @@ describe('completeSlash — Tab-completion for the chat prompt', () => {
   it('never throws on odd input', () => {
     assert.doesNotThrow(() => completeSlash(''));
     assert.doesNotThrow(() => completeSlash('/'));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// FLOW — isHookInstalled already true → set-default prompt is skipped
+// ---------------------------------------------------------------------------
+
+describe('startMenu — first-run: hook already installed → skips set-default prompt', () => {
+  /**
+   * Env where both providers are installed and authenticated so no install or
+   * sign-in prompts appear. We can isolate exactly the set-default step.
+   */
+  const ENV_BOTH_AUTHED: EnvironmentStatus = {
+    claude: {
+      id: 'claude',
+      installed: true,
+      version: '1.0.0',
+      authenticated: true,
+      plan: null,
+      binaryPath: 'claude',
+      availableModels: ['claude-opus-4'],
+    },
+    codex: {
+      id: 'codex',
+      installed: true,
+      version: '1.0.0',
+      authenticated: true,
+      plan: null,
+      binaryPath: 'codex',
+      availableModels: ['gpt-4o'],
+    },
+    opencode: {
+      id: 'opencode',
+      installed: false,
+      version: null,
+      authenticated: false,
+      plan: null,
+      binaryPath: null,
+      availableModels: [],
+    },
+    hasAnyProvider: true,
+    platform: 'linux',
+  };
+
+  it('shows "Already set as your default shell tool" and skips the prompt when hook is installed', async () => {
+    const clock = makeFakeClock();
+    const store = makeStore(clock);
+    const ledger = makeFakeLedger();
+    const dir = join(tmpdir(), `menu-hook-skip-${randomUUID()}`);
+    const config: AppConfig = { onboarded: false, setAsDefault: false };
+
+    const sink = makeSink();
+    const ctx: MenuContext = {
+      version: '2.0.0',
+      clock,
+      ledger,
+      providers: { claude: makeFakeProvider(), codex: makeFakeProvider('codex') },
+      env: ENV_BOTH_AUTHED,
+      store,
+      config,
+      cwd: dir,
+      sandbox: 'workspace-write',
+      timeoutMs: 5_000,
+      // Hook already installed → set-default prompt is SKIPPED.
+      // Remaining prompts: opencode → n, mode → '' (Enter), auto-update → n, then main menu → q.
+      // The set-default prompt answer is intentionally absent.
+      readLine: makeScriptedReader(['n', '', 'n', 'q']),
+      installProvider: async () => true,
+      login: async () => 0,
+      detectEnvironment: async () => ENV_BOTH_AUTHED,
+      checkForUpdate: async (): Promise<UpdateCheckResult> => ({
+        current: '2.0.0',
+        latest: null,
+        updateAvailable: false,
+      }),
+      // Hook is already installed — the prompt must be skipped
+      isHookInstalled: async () => true,
+    };
+
+    await assert.doesNotReject(
+      () => startMenu(ctx, sink),
+      'welcome with hook already installed should resolve cleanly',
+    );
+
+    assert.ok(
+      sink.buf.includes('Already set as your default shell tool'),
+      'output must include the already-installed confirmation message',
+    );
+    assert.ok(
+      !sink.buf.includes('Set myshell-tools as your default shell tool?'),
+      'the set-default prompt must NOT appear when the hook is already installed',
+    );
+  });
+
+  it('does not call runInstall when hook is already installed (no duplicate output)', async () => {
+    const clock = makeFakeClock();
+    const store = makeStore(clock);
+    const ledger = makeFakeLedger();
+    const dir = join(tmpdir(), `menu-hook-noinstall-${randomUUID()}`);
+    const config: AppConfig = { onboarded: false, setAsDefault: false };
+
+    const sink = makeSink();
+    const ctx: MenuContext = {
+      version: '2.0.0',
+      clock,
+      ledger,
+      providers: { claude: makeFakeProvider(), codex: makeFakeProvider('codex') },
+      env: ENV_BOTH_AUTHED,
+      store,
+      config,
+      cwd: dir,
+      sandbox: 'workspace-write',
+      timeoutMs: 5_000,
+      readLine: makeScriptedReader(['n', '', 'n', 'q']),
+      installProvider: async () => true,
+      login: async () => 0,
+      detectEnvironment: async () => ENV_BOTH_AUTHED,
+      checkForUpdate: async (): Promise<UpdateCheckResult> => ({
+        current: '2.0.0',
+        latest: null,
+        updateAvailable: false,
+      }),
+      isHookInstalled: async () => true,
+    };
+
+    await startMenu(ctx, sink);
+
+    // runInstall is NOT re-run when hook is already present, so its [info] lines
+    // about "Shell hook installed in:" must NOT appear in the output.
+    assert.ok(
+      !sink.buf.includes('Shell hook installed in:'),
+      'runInstall must NOT fire when the hook is already installed',
+    );
   });
 });

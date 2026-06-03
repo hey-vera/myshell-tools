@@ -9,6 +9,17 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 ### Pending
 - Cross-OS CI execution (requires a public remote).
 
+## [3.6.6]
+
+### Changed
+- **Onboarding never forces myshell as your default shell.** The "Set myshell-tools
+  as your default shell tool?" step is now opt-IN (default No): it edits your shell
+  startup and can collide with another launcher you already use, so we won't do it on
+  a reflexive Enter — you choose it explicitly (`y`).
+- **Onboarding detects when it's already your default and skips the question.** A
+  quick "Checking your shell setup…" spinner, then a `✓ Already set as your default
+  shell tool.` checkmark instead of re-asking — and it won't re-run the installer.
+
 ## [3.6.5]
 
 ### Fixed

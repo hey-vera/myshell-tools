@@ -19,6 +19,7 @@ import {
   buildHookBlock,
   upsertHook,
   runInstall,
+  isHookInstalled,
   HOOK_BEGIN,
   HOOK_END,
 } from '../../src/commands/install.ts';
@@ -607,5 +608,102 @@ describe('installCommandFor — pure helper, no I/O', () => {
       installCommandFor('opencode'),
       'install commands must differ between providers',
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// isHookInstalled — never-throwing async detector
+// ---------------------------------------------------------------------------
+
+describe('isHookInstalled — async detector, never throws', () => {
+  /**
+   * Like the runInstall withTempHome helper but scoped here so it is accessible
+   * to the isHookInstalled describe block (the runInstall one is function-scoped
+   * to its own describe).
+   */
+  async function withTempHomeForHook<T>(
+    fn: (tempHome: string) => Promise<T>,
+  ): Promise<T> {
+    const tempHome = join(tmpdir(), `hook-detect-${randomUUID()}`);
+    await mkdir(tempHome, { recursive: true });
+
+    const origHome = process.env['HOME'];
+    const origShell = process.env['SHELL'];
+    const origPlatform = process.platform;
+
+    process.env['HOME'] = tempHome;
+    process.env['SHELL'] = '/bin/bash';
+    Object.defineProperty(process, 'platform', { value: 'linux', configurable: true });
+
+    try {
+      return await fn(tempHome);
+    } finally {
+      if (origHome !== undefined) {
+        process.env['HOME'] = origHome;
+      } else {
+        delete process.env['HOME'];
+      }
+      if (origShell !== undefined) {
+        process.env['SHELL'] = origShell;
+      } else {
+        delete process.env['SHELL'];
+      }
+      Object.defineProperty(process, 'platform', { value: origPlatform, configurable: true });
+    }
+  }
+
+  it('returns true when HOOK_BEGIN is present in the rc file', async () => {
+    await withTempHomeForHook(async (tempHome) => {
+      // Write the hook to the rc file first (process.env.HOME now points at tempHome)
+      await runInstall(makeSink());
+
+      const env = fakeEnv({ home: tempHome, shell: '/bin/bash' });
+      const result = await isHookInstalled(env, 'linux');
+      assert.equal(result, true, 'isHookInstalled must return true when hook is present');
+    });
+  });
+
+  it('returns false when HOOK_BEGIN is absent from the rc file', async () => {
+    await withTempHomeForHook(async (tempHome) => {
+      // Write a plain rc file without the hook
+      const { writeFile } = await import('node:fs/promises');
+      await writeFile(join(tempHome, '.bashrc'), '# plain bashrc\nexport PATH="$HOME/bin:$PATH"\n');
+
+      const env = fakeEnv({ home: tempHome, shell: '/bin/bash' });
+      const result = await isHookInstalled(env, 'linux');
+      assert.equal(result, false, 'isHookInstalled must return false when hook is absent');
+    });
+  });
+
+  it('returns false when the rc file does not exist (missing file)', async () => {
+    await withTempHomeForHook(async (tempHome) => {
+      // No rc file written — the file doesn't exist
+      const env = fakeEnv({ home: tempHome, shell: '/bin/bash' });
+      const result = await isHookInstalled(env, 'linux');
+      assert.equal(result, false, 'isHookInstalled must return false for a missing rc file');
+    });
+  });
+
+  it('never throws — always returns a boolean', async () => {
+    // Even with a nonsense HOME path that can't be read
+    const env = fakeEnv({ home: '/this/path/does/not/exist', shell: '/bin/bash' });
+    await assert.doesNotReject(
+      () => isHookInstalled(env, 'linux'),
+      'isHookInstalled must never throw',
+    );
+    const result = await isHookInstalled(env, 'linux');
+    assert.equal(typeof result, 'boolean', 'result must always be a boolean');
+  });
+
+  it('returns false after uninstalling the hook', async () => {
+    await withTempHomeForHook(async (tempHome) => {
+      // Install, then uninstall
+      await runInstall(makeSink());
+      await runInstall(makeSink(), { uninstall: true });
+
+      const env = fakeEnv({ home: tempHome, shell: '/bin/bash' });
+      const result = await isHookInstalled(env, 'linux');
+      assert.equal(result, false, 'isHookInstalled must return false after uninstall');
+    });
   });
 });

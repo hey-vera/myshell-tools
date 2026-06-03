@@ -167,6 +167,29 @@ function escapeRegExp(s: string): string {
 }
 
 // ---------------------------------------------------------------------------
+// isHookInstalled — never-throwing detector
+// ---------------------------------------------------------------------------
+
+/**
+ * True when the myshell-tools shell hook is already present in the user's rc file.
+ *
+ * Never throws: a missing file, unreadable path, or any other I/O error simply
+ * returns false.
+ */
+export async function isHookInstalled(
+  env: NodeJS.ProcessEnv,
+  platform: NodeJS.Platform,
+): Promise<boolean> {
+  try {
+    const { path } = detectShellTarget(env, platform);
+    const content = await readFile(path, 'utf8');
+    return content.includes(HOOK_BEGIN);
+  } catch {
+    return false;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // runInstall — I/O runner
 // ---------------------------------------------------------------------------
 

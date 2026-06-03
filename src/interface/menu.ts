@@ -43,9 +43,10 @@ import { runLogin } from '../commands/login.js';
 import type { LoginMethod } from '../commands/login.js';
 import { runDoctor } from '../commands/doctor.js';
 import { runCost } from '../commands/cost.js';
-import { runInstall } from '../commands/install.js';
+import { runInstall, isHookInstalled } from '../commands/install.js';
 import { box, separator, menu } from '../ui/tui.js';
-import { dim, cyan, bold } from '../ui/theme.js';
+import { dim, cyan, bold, green } from '../ui/theme.js';
+import { createSpinner } from '../ui/spinner.js';
 import { makeRouteClassifier } from '../core/route-classifier.js';
 import type { UpdateCheckResult } from '../infra/update-check.js';
 import type { ClaudeTokenStatus } from '../infra/credentials.js';
@@ -163,6 +164,15 @@ export interface MenuContext {
    * Omit/empty → nothing is shown.
    */
   readonly healthIssues?: readonly HealthIssue[];
+  /**
+   * Optional injected hook-presence check for testing. When provided, `startMenu`
+   * uses this instead of the real `isHookInstalled` from commands/install.ts,
+   * preventing real rc-file reads during tests (which would find the real hook
+   * on a developer machine and desync scripted readers).
+   *
+   * Defaults to the real check: `() => isHookInstalled(process.env, process.platform)`.
+   */
+  readonly isHookInstalled?: () => Promise<boolean>;
 }
 
 // ---------------------------------------------------------------------------
@@ -241,21 +251,22 @@ export function interpretYesNoKey(
 
 /**
  * Render the trailing yes/no hint for a confirm prompt. The key cue is dimmed so
- * the eye lands on the words `yes` / `no`, not the annotation. Two shapes:
+ * the eye lands on the words `yes` / `no`, not the annotation. Three shapes:
  *
  *   - `'yes'`    → default-yes: Enter or `y` confirms.   →  `yes (enter) / no`
+ *   - `'no'`     → default-no (opt-in): Enter declines.  →  `yes / no (enter)`
  *   - `'strict'` → no default (sensitive/destructive):   →  `yes (y) / no (n)`
  *                  the user must press `y` or `n`; Enter does nothing.
  *
- * One predictable rule for the whole app — Enter means yes everywhere, except a
- * strict prompt has no Enter shortcut at all — so there's never a silent
- * default-no to second-guess.
+ * Enter means yes for the helpful, reversible defaults; the few invasive/opt-in
+ * choices use `'no'` so we never change the user's environment on a reflexive
+ * Enter; destructive actions use `'strict'`.
  */
-export function yesNoHint(mode: 'yes' | 'strict', color: boolean): string {
+export function yesNoHint(mode: 'yes' | 'no' | 'strict', color: boolean): string {
   const d = (s: string): string => dim(s, color);
-  return mode === 'strict'
-    ? `yes ${d('(y)')} / no ${d('(n)')}`
-    : `yes ${d('(enter)')} / no`;
+  if (mode === 'strict') return `yes ${d('(y)')} / no ${d('(n)')}`;
+  if (mode === 'no') return `yes / no ${d('(enter)')}`;
+  return `yes ${d('(enter)')} / no`;
 }
 
 /**
@@ -1151,9 +1162,24 @@ async function runWelcome(
     ...(newMode !== undefined ? { mode: newMode } : {}),
   };
 
-  // Enter = yes (consistent with the rest of setup). Reversible later via Settings.
-  out.write(`Set myshell-tools as your default shell tool? ${yesNoHint('yes', out.color)} `);
-  const setAsDefault = await confirm(true);
+  // Detect whether we're already the default shell BEFORE asking — show a quick
+  // spinner, then a checkmark if so (no redundant prompt).
+  const checkHook = ctx.isHookInstalled ?? (() => isHookInstalled(process.env, process.platform));
+  const spinner = createSpinner(out);
+  spinner.start('Checking your shell setup…');
+  const alreadyDefault = await checkHook().catch(() => false);
+  spinner.stop();
+  let setAsDefault: boolean;
+  if (alreadyDefault) {
+    out.write(green('✓ Already set as your default shell tool.\n', out.color));
+    setAsDefault = true;
+  } else {
+    // Opt-IN (default NO): making myshell your default shell hook edits your shell
+    // startup and can collide with another launcher you already use, so we never
+    // do it on a reflexive Enter — you have to choose it explicitly.
+    out.write(`Set myshell-tools as your default shell tool? (optional) ${yesNoHint('no', out.color)} `);
+    setAsDefault = await confirm(false);
+  }
 
   // Default is YES: check for updates at launch and OFFER to install (we ask
   // first — never a silent swap). Opt out with n or via Settings.
@@ -1171,7 +1197,8 @@ async function runWelcome(
 
   // When the user opts in, actually write the shell startup hook (real install,
   // not just a hint). runInstall reports what it wrote and how to reverse.
-  if (setAsDefault) {
+  // Skip re-running the installer when the hook is already present.
+  if (setAsDefault && !alreadyDefault) {
     await runInstall(out);
   }
 
