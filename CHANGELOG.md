@@ -22,6 +22,11 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   has a one-click Copy button) and no longer over-quotes a prompt; it explains the
   real failure mode (the code is single-use and short-lived) and notes you can run
   `claude /login` directly — myshell now picks up that sign-in automatically.
+- **Sign-in now verifies real auth instead of trusting the exit code.** `claude auth
+  login` can exit 0 even when the pasted code was rejected, so myshell would wrongly
+  report success. It now re-probes credentials after the attempt and, when you're
+  still not signed in, says so plainly and points to the fix (re-authorize promptly,
+  or `claude /login` directly). Self-correcting rather than silently "complete".
 
 ## [3.6.0]
 

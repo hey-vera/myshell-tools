@@ -192,20 +192,41 @@ async function runCodeMethodForProvider(
   // the same TTY). Without this, our readline and the child race for the same
   // bytes and a pasted value lands split/garbled.
   const resumeStdin = suspendStdin?.();
-  let result;
   try {
-    result = await execa(bin, [...args], { stdin: 'inherit', stdout: 'inherit', stderr: 'inherit', reject: false });
+    // Run the vendor sign-in interactively. We intentionally ignore the exit code
+    // (it's unreliable — see below) and verify via a real credential probe instead.
+    await execa(bin, [...args], { stdin: 'inherit', stdout: 'inherit', stderr: 'inherit', reject: false });
   } finally {
     resumeStdin?.();
   }
 
-  if (result.exitCode === 0) {
+  // Verify with a REAL credential probe rather than trusting the exit code:
+  // `claude auth login` can exit 0 even when the pasted code was rejected, so the
+  // only honest "are you signed in?" answer is to re-detect. This makes the flow
+  // self-correcting — a failed paste is reported as such, with the next step.
+  const status = await detectProvider(id).catch(() => null);
+  if (status?.authenticated === true) {
     if (id === 'claude') await finishClaudeSignIn(out);
     else out.write(green(`✓ ${id} sign-in complete.\n`, out.color));
-  } else {
+    return;
+  }
+
+  // Not authenticated. Be specific for claude's OOB "Invalid code" failure and
+  // point at the guaranteed fallback (a direct `claude /login` that myshell then
+  // picks up via the persistent credentials dir).
+  out.write(red(`✗ ${id} is still not signed in.\n`, out.color));
+  if (id === 'claude') {
     out.write(
-      red(`✗ ${id} sign-in did not complete (exit ${result.exitCode ?? 'unknown'}).\n`, out.color),
+      dim(
+        '  If claude said "Invalid code": that code is single-use and short-lived —\n' +
+          '  re-run this and authorize + paste promptly (press only y at the prompt,\n' +
+          '  no extra Enter). Or sign in directly with `claude /login`; myshell reads\n' +
+          '  that sign-in automatically.\n',
+        out.color,
+      ),
     );
+  } else {
+    out.write(dim(`  Re-run \`myshell-tools login ${id}\` to try again.\n`, out.color));
   }
 }
 
