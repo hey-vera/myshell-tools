@@ -41,6 +41,7 @@ import { getModelPricing, calculateCost } from '../infra/pricing.js';
 import { nextTierUp, pickReviewer } from './escalate.js';
 import { buildReviewPrompt, parseReviewVerdict } from './review.js';
 import { planPanel, runPanel } from './ensemble.js';
+import { planHedge, runHedged } from './hedge.js';
 
 // ---------------------------------------------------------------------------
 // Pure helper: should this output be cross-vendor reviewed?
@@ -240,6 +241,31 @@ export async function* orchestrate(
   });
   if (panelPlan !== null) {
     yield* runPanel(task, deps, panelPlan, signal, historyContext);
+    return;
+  }
+
+  // -------------------------------------------------------------------------
+  // (c3) Latency-Hedged Escalation (EXPERIMENTAL, opt-in, default OFF).
+  //      Only considered when NO panel formed (panel takes precedence). planHedge()
+  //      returns null unless deps.policy.hedgePolicy === 'on' AND a delay port
+  //      (deps.sleep) is injected AND the turn is high/critical risk AND the
+  //      flagship is admittable AND the turn isn't already at manager AND ≥1
+  //      provider is authenticated. When it returns a plan we delegate the ENTIRE
+  //      turn to the hedge executor and return — runHedged owns the user/assistant
+  //      session appends, ledger records, and the streamed answer, so the sequential
+  //      code below (including the single user append in (d)) never runs for this
+  //      turn. Because hedgePolicy defaults to 'off', planHedge returns null on
+  //      every existing path → ZERO behaviour change. We branch BEFORE (d) so the
+  //      user message is appended exactly once (by runHedged).
+  const hedgePlan = planHedge({
+    hedgePolicy: deps.policy.hedgePolicy,
+    classification,
+    policy: deps.policy,
+    authenticatedProviders: deps.authenticatedProviders ?? [],
+    hasSleep: deps.sleep !== undefined,
+  });
+  if (hedgePlan !== null) {
+    yield* runHedged(task, deps, hedgePlan, signal, historyContext);
     return;
   }
 

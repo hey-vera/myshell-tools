@@ -1372,6 +1372,7 @@ async function runModeSelect(
     ...(config.smartRoute === false ? { smartRoute: false } : {}),
     ...(config.panel === true ? { panel: true } : {}),
     ...(config.learnRouting === true ? { learnRouting: true } : {}),
+    ...(config.hedge === true ? { hedge: true } : {}),
   };
 
   await saveConfig(updated);
@@ -1425,6 +1426,7 @@ async function runVerbositySelect(
     ...(config.smartRoute === false ? { smartRoute: false } : {}),
     ...(config.panel === true ? { panel: true } : {}),
     ...(config.learnRouting === true ? { learnRouting: true } : {}),
+    ...(config.hedge === true ? { hedge: true } : {}),
   };
 
   await saveConfig(updated);
@@ -1460,6 +1462,7 @@ async function toggleDefaultShell(
     ...(config.smartRoute === false ? { smartRoute: false } : {}),
     ...(config.panel === true ? { panel: true } : {}),
     ...(config.learnRouting === true ? { learnRouting: true } : {}),
+    ...(config.hedge === true ? { hedge: true } : {}),
   };
   await saveConfig(updated);
   return updated;
@@ -1484,6 +1487,7 @@ async function runSettings(
     `  [6] Smart routing: ${cfg.smartRoute !== false ? 'on' : 'off'}`,
     `  [7] Panel (experimental): ${cfg.panel === true ? 'on' : 'off'}`,
     `  [8] Learned routing (experimental): ${cfg.learnRouting === true ? 'on' : 'off'}`,
+    `  [9] Hedged escalation (experimental): ${cfg.hedge === true ? 'on' : 'off'}`,
     '',
     '  [Enter] Back',
     '',
@@ -1512,6 +1516,8 @@ async function runSettings(
     mutableCtx.config = await togglePanel(mutableCtx.config, out);
   } else if (key === '8') {
     mutableCtx.config = await toggleLearnRouting(mutableCtx.config, out);
+  } else if (key === '9') {
+    mutableCtx.config = await toggleHedge(mutableCtx.config, out);
   }
   // anything else → back
 }
@@ -1541,6 +1547,7 @@ async function toggleSmartRoute(config: AppConfig, out: OutputSink): Promise<App
     ...(!enable ? { smartRoute: false } : {}),
     ...(config.panel === true ? { panel: true } : {}),
     ...(config.learnRouting === true ? { learnRouting: true } : {}),
+    ...(config.hedge === true ? { hedge: true } : {}),
   };
   await saveConfig(updated);
   out.write(`Smart routing: ${enable ? 'on' : 'off'}\n`);
@@ -1570,6 +1577,7 @@ async function toggleAutoUpdate(config: AppConfig, out: OutputSink): Promise<App
     ...(config.smartRoute === false ? { smartRoute: false } : {}),
     ...(config.panel === true ? { panel: true } : {}),
     ...(config.learnRouting === true ? { learnRouting: true } : {}),
+    ...(config.hedge === true ? { hedge: true } : {}),
   };
   await saveConfig(updated);
   out.write(`Update on launch: ${enable ? 'on' : 'off'}\n`);
@@ -1598,6 +1606,7 @@ async function toggleNativeSessions(config: AppConfig, out: OutputSink): Promise
     ...(config.smartRoute === false ? { smartRoute: false } : {}),
     ...(config.panel === true ? { panel: true } : {}),
     ...(config.learnRouting === true ? { learnRouting: true } : {}),
+    ...(config.hedge === true ? { hedge: true } : {}),
   };
   await saveConfig(updated);
   out.write(`Native sessions (experimental): ${enable ? 'on' : 'off'}\n`);
@@ -1625,9 +1634,39 @@ async function togglePanel(config: AppConfig, out: OutputSink): Promise<AppConfi
     ...(config.smartRoute === false ? { smartRoute: false } : {}),
     ...(enable ? { panel: true } : {}),
     ...(config.learnRouting === true ? { learnRouting: true } : {}),
+    ...(config.hedge === true ? { hedge: true } : {}),
   };
   await saveConfig(updated);
   out.write(`Panel (experimental): ${enable ? 'on' : 'off'}\n`);
+  return updated;
+}
+
+/**
+ * Toggle the EXPERIMENTAL Latency-Hedged Escalation and persist it.
+ *
+ * When on, high/critical-risk turns hedge against latency: if the cheap primary
+ * attempt is slow, a flagship attempt is started IN PARALLEL and whichever
+ * finishes first with adequate confidence wins (the slower branch is cancelled).
+ * Flat-rate makes the cancelled branch free in dollars — it spends quota to buy
+ * wall-clock. Needs ≥1 signed-in provider. Default OFF.
+ */
+async function toggleHedge(config: AppConfig, out: OutputSink): Promise<AppConfig> {
+  const enable = config.hedge !== true;
+  const updated: AppConfig = {
+    onboarded: config.onboarded,
+    setAsDefault: config.setAsDefault,
+    ...(config.mode !== undefined ? { mode: config.mode } : {}),
+    ...(config.autoUpdate === false ? { autoUpdate: false } : {}),
+    ...(config.nativeSessions === true ? { nativeSessions: true } : {}),
+    ...(config.verbosity !== undefined ? { verbosity: config.verbosity } : {}),
+    ...(config.timeoutMs !== undefined ? { timeoutMs: config.timeoutMs } : {}),
+    ...(config.smartRoute === false ? { smartRoute: false } : {}),
+    ...(config.panel === true ? { panel: true } : {}),
+    ...(config.learnRouting === true ? { learnRouting: true } : {}),
+    ...(enable ? { hedge: true } : {}),
+  };
+  await saveConfig(updated);
+  out.write(`Hedged escalation (experimental): ${enable ? 'on' : 'off'}\n`);
   return updated;
 }
 
@@ -1651,6 +1690,7 @@ async function toggleLearnRouting(config: AppConfig, out: OutputSink): Promise<A
     ...(config.smartRoute === false ? { smartRoute: false } : {}),
     ...(config.panel === true ? { panel: true } : {}),
     ...(enable ? { learnRouting: true } : {}),
+    ...(config.hedge === true ? { hedge: true } : {}),
   };
   await saveConfig(updated);
   out.write(`Learned routing (experimental): ${enable ? 'on' : 'off'}\n`);
@@ -2288,10 +2328,12 @@ async function runChatLoop(
         mutableCtx.config.mode ?? resolveAutoMode(mutableCtx.env);
       // EXPERIMENTAL: opt-in Parallel Subscription Panel (config.panel) maps to
       // policy.panelPolicy 'hard-turns'. Absent/false → unchanged sequential
-      // behaviour (panelPolicy stays absent → 'off').
+      // behaviour (panelPolicy stays absent → 'off'). Opt-in Latency-Hedged
+      // Escalation (config.hedge) maps to policy.hedgePolicy 'on' (absent → 'off').
       const policy = {
         ...POLICY_PRESETS[effectiveMode],
         ...(mutableCtx.config.panel === true ? { panelPolicy: 'hard-turns' as const } : {}),
+        ...(mutableCtx.config.hedge === true ? { hedgePolicy: 'on' as const } : {}),
       };
 
       // ---- Bug 4 fix: no-provider gate ----------------------------------------
@@ -2404,6 +2446,13 @@ async function runChatLoop(
           ...(nativeSession.length > 0 ? { nativeSession } : {}),
           ...(routeClassifier !== undefined ? { routeClassifier } : {}),
           ...(Object.keys(learnedProviderOrder).length > 0 ? { learnedProviderOrder } : {}),
+          // Latency-Hedged Escalation needs an injected delay port (so its timing
+          // stays out of the pure core). Provide a setTimeout-based impl only when
+          // hedging is enabled — when off, the dep is absent and planHedge returns
+          // null, so the sequential path is unchanged.
+          ...(mutableCtx.config.hedge === true
+            ? { sleep: (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms)) }
+            : {}),
         };
       };
 

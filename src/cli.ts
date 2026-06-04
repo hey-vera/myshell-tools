@@ -95,6 +95,11 @@ function buildDeps(
   learnedProviderOrder?: Partial<
     Record<import('./core/types.js').Tier, readonly import('./providers/port.js').ProviderId[]>
   >,
+  // Inject a delay port only when Latency-Hedged Escalation is enabled (policy
+  // hedgePolicy 'on'); absent → planHedge returns null and the sequential path
+  // runs unchanged. setTimeout-based real impl (the pure core never calls it
+  // directly). See core/hedge.ts.
+  sleep?: (ms: number) => Promise<void>,
 ): OrchestrateDeps {
   const providers = buildProviders(cwd, env);
 
@@ -140,6 +145,7 @@ function buildDeps(
     ...(learnedProviderOrder !== undefined && Object.keys(learnedProviderOrder).length > 0
       ? { learnedProviderOrder }
       : {}),
+    ...(sleep !== undefined ? { sleep } : {}),
   };
 }
 
@@ -262,9 +268,11 @@ async function main(): Promise<void> {
     );
     // EXPERIMENTAL: opt-in Parallel Subscription Panel (config.panel) maps to
     // policy.panelPolicy 'hard-turns'. Absent/false → unchanged sequential path.
+    // Opt-in Latency-Hedged Escalation (config.hedge) maps to hedgePolicy 'on'.
     const policy = {
       ...POLICY_PRESETS[resolvedMode],
       ...(config.panel === true ? { panelPolicy: 'hard-turns' as const } : {}),
+      ...(config.hedge === true ? { hedgePolicy: 'on' as const } : {}),
     };
     // EXPERIMENTAL Local Outcome Learner (opt-in via config.learnRouting;
     // default off → not read, no field, routing unchanged). Read the ledger once
@@ -285,7 +293,14 @@ async function main(): Promise<void> {
       }
       if (Object.keys(learned).length > 0) learnedProviderOrder = learned;
     }
-    const deps = buildDeps(cwd, env, policy, resolveTimeoutMs(config), learnedProviderOrder);
+    const deps = buildDeps(
+      cwd,
+      env,
+      policy,
+      resolveTimeoutMs(config),
+      learnedProviderOrder,
+      config.hedge === true ? (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms)) : undefined,
+    );
     const result = await runTask(taskParts.join(' '), deps, out, new AbortController().signal);
     // Notify-only update nudge for the scripted / one-shot path. The interactive
     // menu auto-updates, but `run` must NEVER swap the binary mid-task. Written

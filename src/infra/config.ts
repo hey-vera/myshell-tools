@@ -48,6 +48,17 @@ export interface AppConfig {
    */
   panel?: boolean;
   /**
+   * EXPERIMENTAL Latency-Hedged Escalation (default off). When true, high/
+   * critical-risk turns that are likely to escalate hedge against latency: if the
+   * cheap primary attempt is slow, a flagship attempt is started IN PARALLEL and
+   * whichever finishes first with adequate confidence wins (the loser is
+   * cancelled). Maps to policy `hedgePolicy: 'on'`. Uniquely a subscription-first
+   * move: the cancelled branch costs $0 in dollars on a flat-rate plan — it spends
+   * quota to buy wall-clock. Needs a delay port (provided by the wiring) and ≥1
+   * signed-in provider. See core/hedge.ts.
+   */
+  hedge?: boolean;
+  /**
    * Output verbosity for the chat TUI. Absent → 'normal' (a clean conversation:
    * the model's prose and nothing else). 'quiet' additionally suppresses the
    * per-turn status line; 'verbose' shows tool activity and per-tier telemetry

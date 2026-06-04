@@ -9,6 +9,30 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 ### Pending
 - Cross-OS CI execution (requires a public remote).
 
+## [3.10.0]
+
+### Added
+- **Latency-Hedged Escalation (EXPERIMENTAL, opt-in, default OFF).** The sequential
+  engine waits for a cheap-tier attempt to finish and be judged low-confidence before
+  it starts a stronger escalation — so a slow weak attempt serially delays the strong
+  one. Hedging hides that latency: on a high/critical-risk turn, if the primary attempt
+  is still running after a short delay, it speculatively starts a flagship attempt in
+  parallel and takes whichever finishes first with adequate confidence, cancelling the
+  slower branch. This is uniquely a subscription-first trade: the cancelled branch costs
+  **$0 in dollars** (the budget is quota + the cancelled run), so it deliberately spends
+  quota to buy wall-clock — something a per-token-billed tool would never do.
+  - New pure `core/hedge.ts`: `planHedge` (gates on hedge-on + injected delay port +
+    high/critical risk + flagship admittable + not-already-manager) and the `runHedged`
+    executor (isolated, like the Panel; exactly one final per path; aborts the loser;
+    ledgers every run with real measured usage; honest notices — never claims
+    cancellation "saved quota" unless the speculative truly never started).
+  - Deterministic by construction: the delay is an **injected** `OrchestrateDeps.sleep`
+    port, so the hedge's timing is fully testable (16 unit tests cover primary-fast,
+    primary-slow-speculative-wins, primary-slow-primary-wins, and abort).
+  - `Policy` gains `hedgePolicy` (`off`|`on`) + `hedgeDelayMs` (default 4000). Enable via
+    Settings → `[9] Hedged escalation (experimental)`. Default off → `planHedge` returns
+    null on every turn → **zero behaviour change**.
+
 ## [3.9.2]
 
 ### Changed

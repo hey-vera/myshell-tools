@@ -228,6 +228,35 @@ export interface Policy {
    * Absent → 2. Ignored when `panelPolicy` is `'off'`.
    */
   readonly maxPanelProviders?: number;
+
+  /**
+   * EXPERIMENTAL — Latency-Hedged Escalation. The sequential engine waits for a
+   * cheap-tier attempt to finish (and be judged low-confidence) BEFORE it starts
+   * a stronger escalation, so a slow weak attempt serially delays the strong one.
+   * Hedging hides that latency: when the primary attempt is SLOW, it speculatively
+   * starts a flagship attempt IN PARALLEL and takes whichever finishes first with
+   * adequate confidence, cancelling the loser.
+   *
+   * - `'off'` : never hedge (default; the sequential engine runs unchanged).
+   * - `'on'`  : on the turns likely to escalate (high/critical risk, flagship
+   *             admittable), speculatively start the flagship if the primary is
+   *             slow.
+   *
+   * Subscription-first rationale: on a flat-rate plan the wasted (cancelled)
+   * branch costs $0 in dollars — the only budget is quota + the cancelled run —
+   * so hedging SPENDS quota to buy wall-clock. Absent → `'off'`. Hedging only
+   * happens when {@link OrchestrateDeps.sleep} is injected (the delay port).
+   * See core/hedge.ts.
+   */
+  readonly hedgePolicy?: 'off' | 'on';
+
+  /**
+   * Under `'on'` hedging, how long the primary attempt may run before the
+   * speculative flagship is started in parallel (the latency the user is willing
+   * to wait before spending quota on a hedge). Absent → 4000 (4s). Ignored when
+   * `hedgePolicy` is `'off'` or `OrchestrateDeps.sleep` is absent.
+   */
+  readonly hedgeDelayMs?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -336,6 +365,17 @@ export interface OrchestrateDeps {
    * for one-shot runs / when the feature is off) → routing is unchanged.
    */
   readonly learnedProviderOrder?: Partial<Record<Tier, readonly ProviderId[]>>;
+  /**
+   * Injected delay port for Latency-Hedged Escalation (core/hedge.ts). Resolves
+   * after roughly `ms` milliseconds. Injected (rather than calling setTimeout
+   * directly) so the core stays pure AND so hedging's timing is deterministically
+   * testable: the real wiring provides a setTimeout-based impl, while tests
+   * provide a controllable one (e.g. a never-resolving promise to force "primary
+   * finishes first", or an immediately-resolving one to force "delay elapses
+   * first"). Absent → hedging cannot run (planHedge returns null), so the
+   * sequential path is used. See Policy.hedgePolicy.
+   */
+  readonly sleep?: (ms: number) => Promise<void>;
 }
 
 /**

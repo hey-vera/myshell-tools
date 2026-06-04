@@ -3435,6 +3435,84 @@ describe('orchestrate — panel delegation (panelPolicy)', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Latency-Hedged Escalation (EXPERIMENTAL) — delegation from orchestrate()
+// ---------------------------------------------------------------------------
+
+describe('orchestrate — hedge delegation (hedgePolicy)', () => {
+  it("hedgePolicy 'on' + sleep + high-risk task + admittable policy delegates to the hedge", async () => {
+    const icEnvelope =
+      '{"confidence": 0.9, "escalate": false, "reason": "done", "needs_review": false}';
+    const deps: OrchestrateDeps = {
+      providers: {
+        claude: makeFakeProvider('claude', [
+          { type: 'done', text: `Claude answer.\n${icEnvelope}`, usage: FAKE_USAGE, raw: {} },
+        ]),
+        codex: makeFakeProvider('codex', [
+          { type: 'done', text: `Codex answer.\n${icEnvelope}`, usage: FAKE_USAGE, raw: {} },
+        ]),
+      },
+      clock: makeFakeClock(),
+      session: makeFakeSession(),
+      ledger: makeFakeLedger(),
+      // 'payment' → high risk; always-eligible admits the flagship; sleep present.
+      policy: { ...DEFAULT_POLICY, hedgePolicy: 'on', flagshipAdmission: 'always-eligible' },
+      cwd: '/fake/cwd',
+      sandbox: 'workspace-write',
+      timeoutMs: 30_000,
+      authenticatedProviders: ['claude', 'codex'],
+      // Never resolves → the primary always wins the race (adequate, in time).
+      sleep: () => new Promise<void>(() => {}),
+    };
+
+    const events = await collectEvents(
+      orchestrate('implement payment handler', deps, new AbortController().signal),
+    );
+
+    const hedgeNotice = events.find(
+      (e) => e.type === 'notice' && e.message.startsWith('hedge:'),
+    );
+    assert.ok(hedgeNotice !== undefined, 'expected a hedge notice (turn delegated to the hedge)');
+
+    const finalEv = events.find((e) => e.type === 'final');
+    assert.ok(finalEv !== undefined && finalEv.type === 'final' && finalEv.success === true);
+  });
+
+  it('default policy (hedge off) does NOT hedge — zero behaviour change', async () => {
+    const icEnvelope =
+      '{"confidence": 0.9, "escalate": false, "reason": "done", "needs_review": false}';
+    const deps: OrchestrateDeps = {
+      providers: {
+        claude: makeFakeProvider('claude', [
+          { type: 'done', text: `Claude answer.\n${icEnvelope}`, usage: FAKE_USAGE, raw: {} },
+        ]),
+        codex: makeFakeProvider('codex', [
+          { type: 'done', text: `Codex answer.\n${icEnvelope}`, usage: FAKE_USAGE, raw: {} },
+        ]),
+      },
+      clock: makeFakeClock(),
+      session: makeFakeSession(),
+      ledger: makeFakeLedger(),
+      policy: DEFAULT_POLICY, // hedgePolicy absent → 'off'
+      cwd: '/fake/cwd',
+      sandbox: 'workspace-write',
+      timeoutMs: 30_000,
+      authenticatedProviders: ['claude', 'codex'],
+      // Even with sleep present, hedge stays off when hedgePolicy is absent.
+      sleep: () => Promise.resolve(),
+    };
+
+    const events = await collectEvents(
+      orchestrate('implement payment handler', deps, new AbortController().signal),
+    );
+
+    const hedgeNotice = events.find(
+      (e) => e.type === 'notice' && e.message.startsWith('hedge:'),
+    );
+    assert.equal(hedgeNotice, undefined, 'no hedge must run when hedgePolicy is off');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Local Outcome Learner — learnedProviderOrder threads into routing
 // ---------------------------------------------------------------------------
 
