@@ -37,6 +37,15 @@ export interface FlagshipContext {
   readonly policy: Policy;
   /** Observed plan per provider (from classifyPlan). Absent → no plan signal. */
   readonly planInfos?: Partial<Record<ProviderId, PlanInfo>>;
+  /**
+   * Providers actually eligible to run this manager step (authenticated AND not in
+   * cooldown — the conversation layer's already-filtered preference list). When
+   * present, the free-plan veto considers ONLY these providers' plans, so a cooled-
+   * down or signed-out `free` provider can't veto a manager run that would actually
+   * go to a different, non-free (or unknown-plan) provider. Absent → consider all
+   * providers in planInfos (backward-compatible).
+   */
+  readonly candidateProviders?: readonly ProviderId[];
   /** How many manager attempts this turn has already used (quota guard). */
   readonly flagshipAttemptsThisTurn: number;
   readonly trigger: FlagshipTrigger;
@@ -145,8 +154,15 @@ export function authorizeTier(ctx: FlagshipContext): FlagshipDecision {
   }
 
   // Observed-free-plan veto: never fabricate a plan, but when every plan we can
-  // actually see is `free`, don't auto-burn a tight quota on the flagship.
-  const observed = Object.values(ctx.planInfos ?? {}).filter(
+  // actually see is `free`, don't auto-burn a tight quota on the flagship. Scope to
+  // the eligible candidate providers (post auth/cooldown filtering) when known, so a
+  // cooled-down or signed-out free provider can't veto a route to a different one.
+  const planInfos = ctx.planInfos ?? {};
+  const candidatePlans =
+    ctx.candidateProviders !== undefined
+      ? ctx.candidateProviders.map((id) => planInfos[id])
+      : Object.values(planInfos);
+  const observed = candidatePlans.filter(
     (p): p is PlanInfo => p !== undefined && p.confidence === 'observed',
   );
   if (observed.length > 0 && observed.every((p) => p.tier === 'free')) {

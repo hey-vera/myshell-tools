@@ -18,6 +18,12 @@ export interface RunTaskResult {
   readonly code: number;
   /** The final CoreEvent, when one was emitted by orchestrate(). */
   readonly final?: Extract<CoreEvent, { type: 'final' }>;
+  /**
+   * Providers that hit a rate-limit at any point during the run (even when a
+   * failover later rescued the turn into success). The conversation layer cools
+   * these down for the next turn. Empty when none were throttled.
+   */
+  readonly rateLimitedProviders?: readonly import('../providers/port.js').ProviderId[];
 }
 
 /**
@@ -41,7 +47,13 @@ export async function runTask(
 ): Promise<RunTaskResult> {
   try {
     const result = await renderStream(orchestrate(task, deps, signal), out, verbosity);
-    return { code: result.success ? 0 : 1, ...(result.final !== undefined ? { final: result.final } : {}) };
+    return {
+      code: result.success ? 0 : 1,
+      ...(result.final !== undefined ? { final: result.final } : {}),
+      ...(result.rateLimitedProviders.length > 0
+        ? { rateLimitedProviders: result.rateLimitedProviders }
+        : {}),
+    };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     out.write(`[error] ${msg}\n`);

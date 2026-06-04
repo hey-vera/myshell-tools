@@ -32,7 +32,7 @@ import type { CliError, Usage, ProviderRequest, Provider, ProviderId } from '../
 import { decideRoute } from './router.js';
 import { route, clampTier } from './route.js';
 import { authorizeTier } from './flagship.js';
-import type { FlagshipTrigger } from './flagship.js';
+import type { FlagshipTrigger, FlagshipDecision } from './flagship.js';
 import { buildPrompt } from './prompt.js';
 import { assess } from './assess.js';
 import { parseQuestions } from './questions.js';
@@ -268,9 +268,11 @@ export async function* orchestrate(
   /**
    * Adaptive flagship admission for a manager request at the current decision
    * point. Closes over the live `currentTier` and `flagshipAttemptsThisTurn`.
-   * Returns whether manager is authorized for the given trigger + assessment.
+   * Returns the full decision (tier + allowed + reason) so callers can surface an
+   * honest notice on denial. Scopes the free-plan veto to the eligible
+   * (authenticated, cooldown-filtered) candidate providers.
    */
-  const managerAdmitted = (trigger: FlagshipTrigger, assessmentArg?: Assessment): boolean =>
+  const admitManager = (trigger: FlagshipTrigger, assessmentArg?: Assessment): FlagshipDecision =>
     authorizeTier({
       requestedTier: 'manager',
       currentTier,
@@ -278,15 +280,19 @@ export async function* orchestrate(
       ...(assessmentArg !== undefined ? { assessment: assessmentArg } : {}),
       policy: deps.policy,
       ...(deps.planInfos !== undefined ? { planInfos: deps.planInfos } : {}),
+      ...(deps.authenticatedProviders !== undefined
+        ? { candidateProviders: deps.authenticatedProviders }
+        : {}),
       flagshipAttemptsThisTurn,
       trigger,
-    }).allowed;
+    });
 
   // Adaptive flagship admission on the INITIAL route: a manager-classified turn
   // only starts on the flagship when the turn justifies it (high/critical risk, or
   // Max mode). Otherwise drop to IC — never open manager-first off a soft
-  // classification. (Earned escalations later in the loop are gated separately.)
-  if (currentTier === 'manager' && !managerAdmitted('initial')) {
+  // classification. (The actual manager run is counted at the route below; earned
+  // escalations later in the loop are gated separately.)
+  if (currentTier === 'manager' && !admitManager('initial').allowed) {
     currentTier = 'ic';
   }
 
@@ -579,8 +585,10 @@ export async function* orchestrate(
         // promised failover run would never happen; don't mislead the caller.
         if (attempts < deps.policy.maxAttempts) {
           // Peek at what route() would pick from the remaining pool so we can
-          // name the target provider in the failover event.
-          const nextDecision = route(currentTier, remaining, deps.policy, deps.availableModels, deps.authenticatedProviders);
+          // name the target provider in the failover event. Use the SAME effective
+          // policy as the actual run (manager ceiling lifted when authorized), so
+          // the previewed target matches what the next iteration really routes.
+          const nextDecision = route(currentTier, remaining, effPolicy, deps.availableModels, deps.authenticatedProviders);
           yield {
             type: 'failover',
             from: decision.provider,
@@ -601,7 +609,7 @@ export async function* orchestrate(
       // case fall back to the static ceiling (clampTier) — preserving the prior
       // effective behaviour (e.g. Efficient worker→ic).
       if (currentTier !== 'manager') {
-        const target: Tier = managerAdmitted('failure')
+        const target: Tier = admitManager('failure').allowed
           ? 'manager'
           : clampTier('manager', deps.policy.maxTier);
         if (target === currentTier) {
@@ -623,7 +631,15 @@ export async function* orchestrate(
       shouldReview(classification, assessment, deps.policy.reviewPolicy) &&
       !reviewedAttempts.has(attempts)
     ) {
-      const reviewerId = pickReviewer(available, decision.provider);
+      // Pick the reviewer from AUTHENTICATED (and, since the conversation layer
+      // already cooldown-filters that list, un-throttled) providers when we know
+      // them — never route a review to a signed-out or cooled-down vendor. Falls
+      // back to all available providers only when auth state is unknown.
+      const reviewerPool =
+        deps.authenticatedProviders !== undefined && deps.authenticatedProviders.length > 0
+          ? available.filter((id) => (deps.authenticatedProviders as readonly ProviderId[]).includes(id))
+          : available;
+      const reviewerId = pickReviewer(reviewerPool, decision.provider);
       // Only proceed with a DIFFERENT-vendor reviewer (cross-vendor requirement).
       const reviewerProvider =
         reviewerId !== null && reviewerId !== decision.provider
@@ -638,14 +654,30 @@ export async function* orchestrate(
           message: `Review by ${reviewerId} (cross-vendor)`,
         };
 
-        // Route reviewer at manager tier
-        const reviewDecision = route('manager', [reviewerId], deps.policy, deps.availableModels, deps.authenticatedProviders);
+        // Route the reviewer at the flagship tier — through the SAME adaptive
+        // admission gate as every other manager step, so it isn't a back door.
+        // When admitted (e.g. high/critical risk, which is exactly when review
+        // fires), lift the ceiling so the reviewer runs the strong model; when
+        // denied, route() clamps it to the policy ceiling. Either way we use the
+        // RESOLVED reviewDecision.tier everywhere below — never a hard-coded
+        // 'manager' — so events/ledger never claim a tier the model didn't run.
+        // Note: the review is gated through admission for honest labelling and the
+        // never-auto / free-plan cases, but it does NOT consume the per-turn
+        // flagship ESCALATION budget — review is a distinct, separately-bounded
+        // mechanism (once per attempt, cross-vendor required). Counting it here
+        // would let a high-risk review starve the task's own escalation pass.
+        const reviewAdmission = admitManager('review', assessment);
+        const reviewPolicy: Policy = reviewAdmission.allowed
+          ? { ...deps.policy, maxTier: 'manager' }
+          : deps.policy;
+        const reviewDecision = route('manager', [reviewerId], reviewPolicy, deps.availableModels, deps.authenticatedProviders);
+        const reviewTier = reviewDecision.tier;
         const reviewPrompt = buildReviewPrompt(task, lastOutput);
 
         // Yield tier-start for review run
         yield {
           type: 'tier-start',
-          tier: 'manager' as Tier,
+          tier: reviewTier,
           provider: reviewerId,
           model: reviewDecision.model,
           attempt: attempts,
@@ -661,7 +693,7 @@ export async function* orchestrate(
         const reviewStart = deps.clock.now();
 
         // --- Stream reviewer events ---
-        const reviewOutcome = yield* streamProvider(reviewerProvider, reviewReq, 'manager', signal);
+        const reviewOutcome = yield* streamProvider(reviewerProvider, reviewReq, reviewTier, signal);
 
         if (reviewOutcome.canceled) {
           yield { type: 'notice', level: 'warn', message: 'cancelled' };
@@ -696,7 +728,7 @@ export async function* orchestrate(
           taskId: deps.clock.uuid(),
           provider: reviewerId,
           model: reviewDecision.model,
-          tier: 'manager',
+          tier: reviewTier,
           inputTokens: reviewOutcome.usage?.inputTokens ?? 0,
           outputTokens: reviewOutcome.usage?.outputTokens ?? 0,
           cachedInputTokens: reviewOutcome.usage?.cachedInputTokens ?? 0,
@@ -708,7 +740,7 @@ export async function* orchestrate(
         // Yield tier-done for reviewer
         yield {
           type: 'tier-done',
-          tier: 'manager' as Tier,
+          tier: reviewTier,
           success: reviewSuccess,
           confidence: null,
           costUsd: reviewUsd,
@@ -729,7 +761,7 @@ export async function* orchestrate(
           // (high/critical risk justifies it under adaptive; a free-plan veto or spent
           // attempt budget can still deny). When denied, fall through to the honest
           // "inconclusive — not auto-approving" failing final rather than escalating.
-          if (currentTier !== 'manager' && managerAdmitted('review', assessment)) {
+          if (currentTier !== 'manager' && admitManager('review', assessment).allowed) {
             yield {
               type: 'notice',
               level: 'warn',
@@ -792,7 +824,7 @@ export async function* orchestrate(
           // attempt budget spent). Accept the current result rather than re-running
           // the same model. (Escalation to 'ic' is always allowed.)
           const reviewEscalateBlocked =
-            escalateTo === 'manager' ? !managerAdmitted('review', assessment) : false;
+            escalateTo === 'manager' ? !admitManager('review', assessment).allowed : false;
           if (escalateTo !== null && reviewEscalateBlocked) {
             yield {
               type: 'notice',
@@ -850,9 +882,11 @@ export async function* orchestrate(
     // under Balanced this confidence trigger is justified, but a free-plan veto or a
     // spent attempt budget can still deny it. Escalation to 'ic' (from worker) is
     // always allowed; the static clamp guards that legacy case.
+    const confAdmission: FlagshipDecision | null =
+      nextTier === 'manager' ? admitManager('confidence', assessment) : null;
     const escalateTo: Tier | null =
       nextTier === 'manager'
-        ? managerAdmitted('confidence', assessment)
+        ? confAdmission?.allowed
           ? 'manager'
           : null
         : nextTier !== null && clampTier(nextTier, deps.policy.maxTier) !== currentTier
@@ -874,7 +908,19 @@ export async function* orchestrate(
       continue mainLoop;
     }
 
-    // 4) Accept — everything checks out
+    // Honest notice: the turn WANTED to escalate to the flagship (low confidence /
+    // escalate signal) but adaptive admission denied it (Efficient, free-plan veto,
+    // or the per-turn flagship budget is spent). Surface why, so a low-confidence
+    // result isn't silently accepted as if it were fully trusted.
+    if (needEsc && confAdmission !== null && !confAdmission.allowed) {
+      yield {
+        type: 'notice',
+        level: 'warn',
+        message: `accepting best available result — ${confAdmission.reason}`,
+      };
+    }
+
+    // 4) Accept — everything checks out (or the flagship was warranted but denied)
     yield {
       type: 'final',
       success: true,

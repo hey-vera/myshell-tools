@@ -171,6 +171,32 @@ describe('authorizeTier — Balanced plan veto (Honesty Contract)', () => {
     );
     assert.equal(d.allowed, true);
   });
+
+  it('does NOT veto when the free provider is OUTSIDE the candidate set (cooled/signed-out)', () => {
+    // claude is free but not a candidate (e.g. cooled down); codex (the candidate)
+    // reports no plan → the veto must not fire on claude's free plan.
+    const d = authorizeTier(
+      ctx({
+        policy: BALANCED,
+        classification: classification('high'),
+        planInfos: { claude: planInfo('free'), codex: planInfo('unknown', 'none') },
+        candidateProviders: ['codex'],
+      }),
+    );
+    assert.equal(d.allowed, true);
+  });
+
+  it('vetoes when the free provider IS the only candidate', () => {
+    const d = authorizeTier(
+      ctx({
+        policy: BALANCED,
+        classification: classification('high'),
+        planInfos: { claude: planInfo('free'), codex: planInfo('max') },
+        candidateProviders: ['claude'],
+      }),
+    );
+    assert.equal(d.allowed, false);
+  });
 });
 
 describe('authorizeTier — maxTier fallback (policies predating flagshipAdmission)', () => {

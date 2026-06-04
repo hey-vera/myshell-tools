@@ -20,6 +20,7 @@
  */
 
 import type { CoreEvent } from '../core/types.js';
+import type { ProviderId } from '../providers/port.js';
 import type { CliError, ErrorCategory } from '../providers/errors.js';
 import { classifyError, formatErrorMessage } from '../providers/errors.js';
 import { lastJsonObjectBoundsWithKey, isTrailingNoise } from '../core/json-envelope.js';
@@ -353,12 +354,22 @@ export async function renderStream(
   events: AsyncIterable<CoreEvent>,
   out: OutputSink,
   verbosity: Verbosity = 'normal',
-): Promise<{ success: boolean; final?: Extract<CoreEvent, { type: 'final' }> }> {
+): Promise<{
+  success: boolean;
+  final?: Extract<CoreEvent, { type: 'final' }>;
+  rateLimitedProviders: readonly ProviderId[];
+}> {
   const c = out.color;
   const isVerbose = verbosity === 'verbose';
   const isQuiet = verbosity === 'quiet';
 
   let finalEvent: Extract<CoreEvent, { type: 'final' }> | undefined;
+  // Providers that hit a rate-limit (429 / quota) at ANY point this run — even when
+  // a later failover rescued the turn into a success final. The conversation layer
+  // uses this to cool those providers down for the next turn (a success final's
+  // errorCategory alone would miss the failed-then-recovered provider).
+  const rateLimitedProviders = new Set<ProviderId>();
+  let currentProvider: ProviderId | undefined;
   // Accumulate REAL tokens across tiers so the final summary shows a measured
   // total instead of an estimated dollar figure (subscription tool, not API).
   let runningTokens = 0;
@@ -454,6 +465,7 @@ export async function renderStream(
         // mode the model/provider is shown; otherwise a clean "Thinking…".
         stepCount = 0;
         streamedChars = 0;
+        currentProvider = ev.provider;
         workLabel = isVerbose ? `${ev.tier} (${ev.provider}/${ev.model})` : 'Thinking';
         if (out.isTty) {
           spinner.start(`${workLabel}…`);
@@ -500,8 +512,12 @@ export async function renderStream(
             // revive) the live indicator so a long thinking phase shows life.
             ensureAlive();
           }
+        } else if (pe.type === 'error' && pe.error.category === 'rate-limit' && currentProvider !== undefined) {
+          // Remember a 429 against the running provider so the conversation layer
+          // can cool it down next turn — even if failover later rescues this run.
+          rateLimitedProviders.add(currentProvider);
         }
-        // 'usage', 'done', 'error' are handled via tier-done / final
+        // 'usage', 'done' are handled via tier-done / final
         break;
       }
 
@@ -620,8 +636,9 @@ export async function renderStream(
   stopSpinner();
   prose.flush();
 
+  const rl = [...rateLimitedProviders];
   if (finalEvent !== undefined) {
-    return { success: finalEvent.success, final: finalEvent };
+    return { success: finalEvent.success, final: finalEvent, rateLimitedProviders: rl };
   }
-  return { success: false };
+  return { success: false, rateLimitedProviders: rl };
 }

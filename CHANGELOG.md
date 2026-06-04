@@ -9,6 +9,30 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 ### Pending
 - Cross-OS CI execution (requires a public remote).
 
+## [3.7.2]
+
+### Fixed
+Hardening from a comprehensive GPT-5.5 audit of the adaptive-admission system:
+- **Critical — cross-vendor review no longer bypasses flagship admission or mislabels
+  the tier.** The reviewer was routed with the static policy, so under Balanced/Efficient
+  it ran an IC model while every event/ledger entry claimed `'manager'`. The review now
+  goes through the same `authorizeTier` gate and uses the *resolved* tier everywhere —
+  a high-risk review is honestly admitted to (and labelled) the flagship; a denied one
+  runs and is labelled `'ic'`. It does not consume the per-turn escalation budget.
+- **Cooldown now survives a rescued failover.** A provider that hit a 429 and was then
+  rescued by failover into a success is still cooled down next turn (collected from the
+  event stream, not just the final's error category).
+- **Reviewer is chosen only from authenticated (and cooldown-filtered) providers** — no
+  more routing a review to a signed-out or throttled vendor; review is skipped honestly
+  when no eligible cross-vendor reviewer exists.
+- **Free-plan veto is scoped to eligible candidate providers**, so a cooled-down or
+  signed-out `free` provider can't veto a flagship route that would actually go to a
+  different (non-free / unknown-plan) provider.
+- **Honest notice when a warranted escalation is denied** (Efficient, free-plan veto, or
+  spent flagship budget) instead of silently accepting a low-confidence result.
+- Failover preview uses the same effective policy as the real route (correct target
+  name); corrected stale `maxTier` comment.
+
 ## [3.7.1]
 
 ### Removed

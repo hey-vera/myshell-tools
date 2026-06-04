@@ -9,7 +9,7 @@
 import { describe, it, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { orchestrate } from '../../src/core/orchestrate.ts';
-import { DEFAULT_POLICY } from '../../src/core/policy.ts';
+import { DEFAULT_POLICY, POLICY_PRESETS } from '../../src/core/policy.ts';
 import type {
   Clock,
   SessionWriter,
@@ -908,6 +908,128 @@ describe('orchestrate — cross-vendor review (high risk)', () => {
   });
 
   // -------------------------------------------------------------------------
+  // (b2) Review goes through flagship admission and is labelled HONESTLY:
+  //      admitted (Balanced high-risk) → reviewer runs at 'manager'; denied
+  //      (Efficient never-auto) → reviewer runs at 'ic', never mislabelled manager.
+  // -------------------------------------------------------------------------
+
+  it('(b2) high-risk review runs at manager under Balanced, ic under Efficient — never mislabelled', async () => {
+    const icEnvelope =
+      '{"confidence": 0.85, "escalate": false, "reason": "done", "needs_review": false}';
+    const reviewApprove =
+      'Looks good.\n{"verdict": "approve", "notes": "ok", "confidence": 0.9}';
+    const makeProviders = (): Record<string, Provider> => ({
+      claude: {
+        id: 'claude',
+        async detect() {
+          return { id: 'claude', installed: true, version: '1.0.0', authenticated: true, binaryPath: '/f', availableModels: [] };
+        },
+        async *run() {
+          yield { type: 'done', text: `Payment code.\n${icEnvelope}`, usage: FAKE_USAGE, raw: {} };
+        },
+      },
+      codex: {
+        id: 'codex',
+        async detect() {
+          return { id: 'codex', installed: true, version: '1.0.0', authenticated: true, binaryPath: '/f', availableModels: [] };
+        },
+        async *run() {
+          yield { type: 'done', text: reviewApprove, usage: { inputTokens: 100, outputTokens: 50 }, raw: {} };
+        },
+      },
+    });
+    const baseDeps = (policy: typeof DEFAULT_POLICY): OrchestrateDeps => ({
+      providers: makeProviders(),
+      clock: makeFakeClock(),
+      session: makeFakeSession(),
+      ledger: makeFakeLedger(),
+      policy,
+      authenticatedProviders: ['claude', 'codex'],
+      cwd: '/fake/cwd',
+      sandbox: 'workspace-write',
+      timeoutMs: 30_000,
+    });
+
+    // Balanced (adaptive): high-risk review is admitted → reviewer tier-start is 'manager'.
+    const balEvents = await collectEvents(
+      orchestrate('implement payment handler', baseDeps(DEFAULT_POLICY), new AbortController().signal),
+    );
+    const balReviewStart = balEvents.find((e) => e.type === 'tier-start' && e.provider === 'codex');
+    assert.ok(balReviewStart !== undefined && balReviewStart.type === 'tier-start');
+    if (balReviewStart.type === 'tier-start') {
+      assert.equal(balReviewStart.tier, 'manager', 'Balanced high-risk review must run at the flagship tier');
+    }
+
+    // never-auto admission: review is denied the flagship → reviewer runs at 'ic',
+    // and must NOT be mislabelled 'manager' anywhere. (Use cost-saver's never-auto
+    // admission but with reviewPolicy 'auto' so the high-risk review still fires —
+    // cost-saver's own 'critical-only' policy wouldn't review a merely high-risk task.)
+    const neverAutoReviewing = { ...POLICY_PRESETS['cost-saver'], reviewPolicy: 'auto' as const };
+    const effEvents = await collectEvents(
+      orchestrate('implement payment handler', baseDeps(neverAutoReviewing), new AbortController().signal),
+    );
+    const effReviewStart = effEvents.find((e) => e.type === 'tier-start' && e.provider === 'codex');
+    assert.ok(effReviewStart !== undefined && effReviewStart.type === 'tier-start');
+    if (effReviewStart.type === 'tier-start') {
+      assert.equal(effReviewStart.tier, 'ic', 'Efficient review must NOT be admitted to the flagship');
+    }
+    // No event or ledger entry for the codex reviewer may claim 'manager' under Efficient.
+    const effManagerCodex = effEvents.some(
+      (e) => e.type === 'tier-start' && e.provider === 'codex' && e.tier === 'manager',
+    );
+    assert.equal(effManagerCodex, false, 'Efficient must never label the ic reviewer as manager');
+  });
+
+  it('(b3) does NOT route a review to a signed-out cross-vendor provider', async () => {
+    // codex is installed but NOT authenticated → it must not be picked as reviewer.
+    // With no authenticated cross-vendor reviewer, review is skipped (honest).
+    const icEnvelope =
+      '{"confidence": 0.85, "escalate": false, "reason": "done", "needs_review": false}';
+    let codexRuns = 0;
+    const deps: OrchestrateDeps = {
+      providers: {
+        claude: {
+          id: 'claude',
+          async detect() {
+            return { id: 'claude', installed: true, version: '1', authenticated: true, binaryPath: '/f', availableModels: [] };
+          },
+          async *run() {
+            yield { type: 'done', text: `Payment.\n${icEnvelope}`, usage: FAKE_USAGE, raw: {} };
+          },
+        },
+        codex: {
+          id: 'codex',
+          async detect() {
+            return { id: 'codex', installed: true, version: '1', authenticated: false, binaryPath: '/f', availableModels: [] };
+          },
+          async *run() {
+            codexRuns++;
+            yield { type: 'done', text: 'review', usage: FAKE_USAGE, raw: {} };
+          },
+        },
+      },
+      clock: makeFakeClock(),
+      session: makeFakeSession(),
+      ledger: makeFakeLedger(),
+      policy: DEFAULT_POLICY,
+      authenticatedProviders: ['claude'], // codex signed out
+      cwd: '/fake/cwd',
+      sandbox: 'workspace-write',
+      timeoutMs: 30_000,
+    };
+
+    const events = await collectEvents(
+      orchestrate('implement payment handler', deps, new AbortController().signal),
+    );
+
+    assert.equal(codexRuns, 0, 'signed-out codex must never run as reviewer');
+    const reviewNotice = events.find(
+      (e) => e.type === 'notice' && e.type === 'notice' && e.message.includes('cross-vendor'),
+    );
+    assert.equal(reviewNotice, undefined, 'no cross-vendor review when the only other vendor is signed out');
+  });
+
+  // -------------------------------------------------------------------------
   // (c) Reviewer returns revise → IC retried with managerNotes
   // -------------------------------------------------------------------------
 
@@ -995,7 +1117,7 @@ describe('orchestrate — totalCostUsd accumulation', () => {
       '{"verdict": "approve", "notes": "ok", "confidence": 0.95}';
 
     const icUsage: Usage = { inputTokens: 1000, outputTokens: 500 };    // claude-sonnet-4-6
-    const reviewUsage: Usage = { inputTokens: 500, outputTokens: 200 }; // codex ic (gpt-5.2-codex) — balanced clamps the review to maxTier 'ic'
+    const reviewUsage: Usage = { inputTokens: 500, outputTokens: 200 }; // codex manager (gpt-5.5) — high-risk review is admitted to the flagship under adaptive Balanced
 
     const claudeProvider: Provider = {
       id: 'claude',
@@ -1038,11 +1160,12 @@ describe('orchestrate — totalCostUsd accumulation', () => {
     // Compute expected costs from pricing table
     // IC: claude-sonnet-4-6 → $3/1M input, $15/1M output
     const icCost = (1000 / 1_000_000) * 3 + (500 / 1_000_000) * 15;
-    // Review: balanced (DEFAULT_POLICY) caps tier at 'ic' via maxTier, so the
-    // cross-vendor review runs codex's ic model (gpt-5.2-codex) → $1.75/1M input,
-    // $14/1M output — not the manager-tier gpt-5.5. This is the cost guardrail
-    // working: balanced never pays manager rates, even for a review.
-    const reviewCost = (500 / 1_000_000) * 1.75 + (200 / 1_000_000) * 14;
+    // Review: under adaptive Balanced, a high-risk ('payment') task ADMITS the
+    // cross-vendor review to the flagship, so the reviewer runs codex's manager
+    // model (gpt-5.5) → $5/1M input, $30/1M output. (Adaptive admission, not a
+    // static ic clamp: high-risk work is reviewed by the strong model, honestly
+    // labelled 'manager'.)
+    const reviewCost = (500 / 1_000_000) * 5 + (200 / 1_000_000) * 30;
     const expectedTotal = icCost + reviewCost;
 
     const finalEv = events.find((e) => e.type === 'final');

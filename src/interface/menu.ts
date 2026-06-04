@@ -2092,30 +2092,45 @@ async function runChatLoop(
   // across turns. Filtered (never to empty) in buildDeps via availableAfterCooldown.
   const providerCooldownUntil = new Map<ProviderId, number>();
 
-  // Record a rate-limit cooldown from a turn's final event, when applicable.
-  // No-op for success, non-rate-limit failures, or finals without a provider.
-  const noteRateLimit = (final: Extract<CoreEvent, { type: 'final' }> | undefined): void => {
+  // Record rate-limit cooldowns from a completed turn. Cools down EVERY provider
+  // that hit a 429 during the run (result.rateLimitedProviders) — including one
+  // that failed but was rescued by failover into a success final — plus the final
+  // failing provider as a fallback. No-op when nothing was throttled.
+  const noteRateLimit = (result: {
+    final?: Extract<CoreEvent, { type: 'final' }>;
+    rateLimitedProviders?: readonly ProviderId[];
+  }): void => {
+    const throttled = new Set<ProviderId>(result.rateLimitedProviders ?? []);
+    const final = result.final;
     if (
       final !== undefined &&
       !final.success &&
       final.errorCategory === 'rate-limit' &&
       final.provider !== undefined
     ) {
-      // Only announce on FIRST entry into cooldown — refreshing an already-active
+      throttled.add(final.provider);
+    }
+    if (throttled.size === 0) return;
+
+    const now = ctx.clock.now();
+    const newlyCooled: ProviderId[] = [];
+    for (const id of throttled) {
+      // Only announce providers entering cooldown fresh — refreshing an active
       // cooldown (e.g. a repeat 429 within a goal loop) must not spam the notice.
-      const alreadyCooling = (providerCooldownUntil.get(final.provider) ?? 0) > ctx.clock.now();
-      providerCooldownUntil.set(final.provider, cooldownExpiry(ctx.clock.now()));
-      // Be legible: if another provider is signed in, say we'll lean on it.
-      const others = [mutableCtx.env.claude, mutableCtx.env.codex, mutableCtx.env.opencode]
-        .filter((p) => p.authenticated && p.id !== final.provider);
-      if (!alreadyCooling && others.length > 0) {
-        out.write(
-          dim(
-            `  (${final.provider} is rate-limited — preferring your other provider${others.length > 1 ? 's' : ''} for a few minutes)\n`,
-            out.color,
-          ),
-        );
-      }
+      if ((providerCooldownUntil.get(id) ?? 0) <= now) newlyCooled.push(id);
+      providerCooldownUntil.set(id, cooldownExpiry(now));
+    }
+    // Be legible: if another signed-in provider can absorb the load, say so.
+    const others = [mutableCtx.env.claude, mutableCtx.env.codex, mutableCtx.env.opencode].filter(
+      (p) => p.authenticated && !throttled.has(p.id),
+    );
+    if (newlyCooled.length > 0 && others.length > 0) {
+      out.write(
+        dim(
+          `  (${newlyCooled.join(', ')} rate-limited — preferring your other provider${others.length > 1 ? 's' : ''} for a few minutes)\n`,
+          out.color,
+        ),
+      );
     }
   };
 
@@ -2345,7 +2360,7 @@ async function runChatLoop(
             mutableCtx.config.verbosity ?? 'normal',
           );
           currentAc = null;
-          noteRateLimit(turn.final);
+          noteRateLimit(turn);
           completed = i + 1;
           if (shouldExit) { loopResult = 'exit'; return true; }
           if (shouldMenu) { loopResult = 'menu'; return true; }
@@ -2396,7 +2411,7 @@ async function runChatLoop(
       currentAc = ac;
       const result = await runTask(line, deps, out, ac.signal, mutableCtx.config.verbosity ?? 'normal');
       currentAc = null;
-      noteRateLimit(result.final);
+      noteRateLimit(result);
 
       // Check for SIGINT-driven signals that fired while runTask was awaited.
       if (shouldExit) {

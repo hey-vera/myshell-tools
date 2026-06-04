@@ -11,11 +11,13 @@ import type { Policy } from './types.js';
 export const DEFAULT_POLICY: Policy = {
   maxAttempts: 3,
 
-  // Tier ceiling — retained as route()'s final safety net. The PRIMARY control
-  // for manager access is now flagshipAdmission (below): balanced is 'adaptive',
-  // earning a single manager pass when a turn proves it needs it rather than being
-  // hard-capped at 'ic'. (maxTier is flipped to 'manager' in lockstep with the
-  // orchestrate wiring so authorizeTier — not clampTier — becomes the gate.)
+  // Tier ceiling — retained as route()'s final safety net only. The PRIMARY
+  // control for manager access is flagshipAdmission (below): balanced is
+  // 'adaptive', earning a single manager pass when a turn proves it needs it.
+  // This value stays 'ic'; orchestrate lifts the ceiling to 'manager' for a
+  // specific route ONLY after authorizeTier admits it (see admitManager / the
+  // effPolicy in the main loop and the review path), so clampTier never negates
+  // an admitted escalation yet still guards un-admitted manager requests.
   maxTier: 'ic',
 
   // Adaptive flagship admission: balanced earns ONE manager-tier attempt per turn

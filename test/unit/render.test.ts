@@ -293,6 +293,51 @@ describe('renderStream — final success:false', () => {
   });
 });
 
+describe('renderStream — rate-limit collection (cooldown signal survives failover)', () => {
+  it('captures a provider that hit a 429 even when failover rescues the turn into success', async () => {
+    const sink = makeSink();
+
+    const events: CoreEvent[] = [
+      { type: 'tier-start', tier: 'ic', provider: 'claude', model: 'sonnet', attempt: 1 },
+      {
+        type: 'provider-event',
+        tier: 'ic',
+        event: { type: 'error', error: { category: 'rate-limit', recoverable: true, message: '429 too many requests', suggestion: 'wait and retry' } },
+      },
+      { type: 'failover', from: 'claude', to: 'codex', tier: 'ic', reason: 'rate limit' },
+      { type: 'tier-start', tier: 'ic', provider: 'codex', model: 'gpt-5.4', attempt: 2 },
+      { type: 'provider-event', tier: 'ic', event: { type: 'text', delta: 'Done.' } },
+      {
+        type: 'final',
+        success: true, // failover rescued the turn
+        output: 'Done.',
+        tier: 'ic',
+        totalCostUsd: 0,
+        sessionId: 'rl-session',
+        attempts: 2,
+      },
+    ];
+
+    const result = await renderStream(makeStream(events), sink);
+
+    assert.equal(result.success, true, 'turn succeeded via failover');
+    // …but claude's 429 must still be captured for cooldown, attributed to claude
+    // (the provider that was running when the error fired), not codex.
+    assert.deepEqual([...result.rateLimitedProviders], ['claude']);
+  });
+
+  it('returns an empty rate-limit set on a clean run', async () => {
+    const sink = makeSink();
+    const events: CoreEvent[] = [
+      { type: 'tier-start', tier: 'ic', provider: 'claude', model: 'sonnet', attempt: 1 },
+      { type: 'provider-event', tier: 'ic', event: { type: 'text', delta: 'Hi.' } },
+      { type: 'final', success: true, output: 'Hi.', tier: 'ic', totalCostUsd: 0, sessionId: 's', attempts: 1 },
+    ];
+    const result = await renderStream(makeStream(events), sink);
+    assert.equal(result.rateLimitedProviders.length, 0);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // 4. tool and reasoning provider-events render correctly
 // ---------------------------------------------------------------------------
