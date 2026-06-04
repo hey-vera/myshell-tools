@@ -109,6 +109,31 @@ export function defaultModeForPlan(plan: string | null | undefined): Mode {
   return 'balanced';
 }
 
+/**
+ * Auto-resolve the mode from the plans of ALL authenticated providers (strongest
+ * signal wins). Pure. `plans` is the list of plan strings for providers that are
+ * authenticated (null for providers whose CLI does not expose a plan, e.g. codex/
+ * opencode today). Rules:
+ *   - any non-null plan includes 'max'  -> 'quality-first'
+ *   - no non-null plans at all          -> 'balanced'   (no signal)
+ *   - every non-null plan includes 'free' -> 'cost-saver'
+ *   - otherwise                          -> 'balanced'
+ */
+export function autoModeForPlans(plans: ReadonlyArray<string | null>): Mode {
+  const nonNull = plans.filter((p): p is string => p !== null);
+
+  // Any plan includes 'max' → quality-first
+  if (nonNull.some((p) => p.toLowerCase().includes('max'))) return 'quality-first';
+
+  // No non-null plans → balanced (no signal)
+  if (nonNull.length === 0) return 'balanced';
+
+  // Every non-null plan includes 'free' → cost-saver
+  if (nonNull.every((p) => p.toLowerCase().includes('free'))) return 'cost-saver';
+
+  return 'balanced';
+}
+
 export const POLICY_PRESETS: Record<Mode, Policy> = {
   'cost-saver': {
     maxAttempts: 4,

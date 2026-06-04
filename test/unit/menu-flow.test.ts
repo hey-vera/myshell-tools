@@ -4429,3 +4429,169 @@ describe('startMenu — first-run: hook already installed → skips set-default 
     );
   });
 });
+
+// ---------------------------------------------------------------------------
+// FLOW: Auto mode — settings [4] Auto selection and display
+// ---------------------------------------------------------------------------
+
+describe('startMenu — mode settings [4] Auto', () => {
+  /**
+   * Build a MenuContext with a pinned mode and drive through s → 1 → 4 → q.
+   * After the run the output buffer should confirm mode was reset to auto.
+   */
+  it('selecting [4] Auto in mode settings resets mode to auto (output says "(auto)")', async () => {
+    const clock = makeFakeClock();
+    const store = makeStore(clock);
+    const sink = makeSink();
+
+    // Start with a pinned mode so we can verify it's cleared.
+    const config: AppConfig = { onboarded: true, setAsDefault: false, mode: 'quality-first', smartRoute: false };
+
+    const ctx = makeCtx(
+      {
+        config,
+        readLine: makeScriptedReader([
+          's',   // settings
+          '1',   // mode select
+          '4',   // auto
+          '',    // Enter back from settings
+          'q',   // quit
+        ]),
+      },
+      clock,
+      store,
+    );
+
+    await assert.doesNotReject(
+      () => startMenu(ctx, sink),
+      'selecting [4] Auto in mode settings should not throw',
+    );
+
+    // After pressing 4, runModeSelect writes "Mode: <label> (auto)" to confirm.
+    assert.ok(
+      sink.buf.includes('(auto)'),
+      'output must contain "(auto)" after selecting [4] Auto',
+    );
+  });
+
+  it('[4] Auto option appears in the mode settings screen', async () => {
+    const clock = makeFakeClock();
+    const store = makeStore(clock);
+    const sink = makeSink();
+
+    const config: AppConfig = { onboarded: true, setAsDefault: false, mode: 'balanced', smartRoute: false };
+
+    const ctx = makeCtx(
+      {
+        config,
+        readLine: makeScriptedReader([
+          's',   // settings
+          '1',   // mode select → shows mode screen
+          '',    // Enter → keep current (no change)
+          '',    // Enter → back from settings
+          'q',   // quit
+        ]),
+      },
+      clock,
+      store,
+    );
+
+    await assert.doesNotReject(() => startMenu(ctx, sink));
+
+    // The mode select screen must list [4] Auto
+    assert.ok(
+      sink.buf.includes('[4]') && sink.buf.toLowerCase().includes('auto'),
+      `mode select screen must show [4] Auto option; got: ${sink.buf.slice(0, 800)}`,
+    );
+  });
+
+  it('when mode is unset (auto), main screen shows "(auto)" in mode line', async () => {
+    const clock = makeFakeClock();
+    const store = makeStore(clock);
+    const sink = makeSink();
+
+    // No pinned mode → auto
+    const config: AppConfig = { onboarded: true, setAsDefault: false, smartRoute: false };
+
+    const ctx = makeCtx(
+      {
+        config,
+        readLine: makeScriptedReader(['q']),
+      },
+      clock,
+      store,
+    );
+
+    await assert.doesNotReject(() => startMenu(ctx, sink));
+
+    // The main screen mode line must show the auto indicator
+    assert.ok(
+      sink.buf.includes('(auto)'),
+      'main screen mode line must show "(auto)" when mode is unset',
+    );
+  });
+
+  it('when mode is pinned, main screen does NOT show "(auto)"', async () => {
+    const clock = makeFakeClock();
+    const store = makeStore(clock);
+    const sink = makeSink();
+
+    // Pinned mode
+    const config: AppConfig = { onboarded: true, setAsDefault: false, mode: 'balanced', smartRoute: false };
+
+    const ctx = makeCtx(
+      {
+        config,
+        readLine: makeScriptedReader(['q']),
+      },
+      clock,
+      store,
+    );
+
+    await assert.doesNotReject(() => startMenu(ctx, sink));
+
+    // "(auto)" should NOT appear when mode is explicitly pinned
+    assert.ok(
+      !sink.buf.includes('(auto)'),
+      'main screen must NOT show "(auto)" when mode is explicitly pinned',
+    );
+  });
+
+  it('when claude plan is max, auto-resolved mode is shown as Max in main screen', async () => {
+    const clock = makeFakeClock();
+    const store = makeStore(clock);
+    const sink = makeSink();
+
+    // No pinned mode → auto; claude plan is 'claude max' → quality-first → "Max"
+    const config: AppConfig = { onboarded: true, setAsDefault: false, smartRoute: false };
+    const envWithMax: EnvironmentStatus = {
+      ...FAKE_ENV,
+      claude: {
+        ...FAKE_ENV.claude,
+        plan: 'claude max',
+      },
+    };
+
+    const ctx = makeCtx(
+      {
+        config,
+        env: envWithMax,
+        readLine: makeScriptedReader(['q']),
+      },
+      clock,
+      store,
+    );
+
+    await startMenu(ctx, sink);
+
+    // Mode line should show Max (auto · Claude claude max) or just Max (auto)
+    assert.ok(
+      sink.buf.includes('Max'),
+      'main screen must show Max when claude plan is max and mode is auto',
+    );
+    assert.ok(
+      sink.buf.includes('(auto'),
+      'main screen must include the auto indicator when mode is unset',
+    );
+  });
+});

@@ -9,6 +9,23 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 ### Pending
 - Cross-OS CI execution (requires a public remote).
 
+## [3.6.7]
+
+### Added
+- **Auto is now a real, first-class quality mode — and the default.** Auto detection
+  from your subscription already existed but was invisible and one-way (an unset
+  config you could only escape by hand-editing JSON). Now it's a selectable `[4] Auto`
+  in the mode screen you can always snap back to, it's marked `‹active›` when on, and
+  it shows what it resolved to (e.g. `Mode: Max (auto · Claude max)`).
+
+### Changed
+- **Auto considers ALL authenticated providers, not just Claude.** Auto now gathers
+  the plan from every signed-in provider and takes the strongest signal (any `max`
+  plan → Max mode; only `free` plans → Efficient; otherwise Balanced). Today only the
+  Claude CLI reports a `subscriptionType`; Codex and opencode expose no plan, so they
+  contribute nothing until their CLIs do — auto reads whatever each CLI actually
+  reports and never invents a plan.
+
 ## [3.6.6]
 
 ### Changed

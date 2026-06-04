@@ -34,7 +34,7 @@ import { installProvider, installCommandFor } from '../providers/install.js';
 import type { Provider, ProviderId, SandboxLevel } from '../providers/port.js';
 import { listRecentNativeSessions, importNativeSession } from '../providers/native-sessions.js';
 import { replitPersistentEnv } from '../infra/credentials.js';
-import { POLICY_PRESETS, modeLabel, defaultModeForPlan, MODE_DESC } from '../core/policy.js';
+import { POLICY_PRESETS, modeLabel, autoModeForPlans, MODE_DESC } from '../core/policy.js';
 import type { Mode } from '../core/policy.js';
 import { planNativeSession } from '../core/native-session.js';
 import type { OutputSink } from './render.js';
@@ -52,6 +52,45 @@ import type { UpdateCheckResult } from '../infra/update-check.js';
 import type { ClaudeTokenStatus } from '../infra/credentials.js';
 import { loadClaudeTokenCapturedAt, claudeTokenStatus } from '../infra/credentials.js';
 import type { HealthIssue } from '../infra/health.js';
+
+// ---------------------------------------------------------------------------
+// Auto-mode helpers (multi-provider)
+// ---------------------------------------------------------------------------
+
+/**
+ * Resolve the auto mode across ALL authenticated providers. Gathers the plan
+ * strings for every authenticated provider and delegates to autoModeForPlans.
+ * Replaces the old single-provider `defaultModeForPlan(env.claude.plan)` call
+ * so Codex and opencode subscriptions are included in the decision.
+ */
+function resolveAutoMode(env: EnvironmentStatus): Mode {
+  const plans = [env.claude, env.codex, env.opencode]
+    .filter((p) => p.authenticated)
+    .map((p) => p.plan);
+  return autoModeForPlans(plans);
+}
+
+/**
+ * Short human-readable reason string for the status line when auto is active.
+ * If any authenticated provider plan includes 'max', returns
+ * "auto · <ProviderLabel> <Plan>" for the first such provider.
+ * Otherwise returns "auto".
+ */
+function autoModeReason(env: EnvironmentStatus): string {
+  const PROVIDER_LABEL: Record<string, string> = {
+    claude: 'Claude',
+    codex: 'Codex',
+    opencode: 'OpenCode',
+  };
+  const providers = [env.claude, env.codex, env.opencode];
+  for (const p of providers) {
+    if (p.authenticated && p.plan !== null && p.plan.toLowerCase().includes('max')) {
+      const label = PROVIDER_LABEL[p.id] ?? p.id;
+      return `auto · ${label} ${p.plan}`;
+    }
+  }
+  return 'auto';
+}
 
 // ---------------------------------------------------------------------------
 // MenuContext
@@ -1217,7 +1256,11 @@ async function runModeSelect(
 ): Promise<AppConfig> {
   // Effective mode = explicit choice, else the subscription-derived auto default.
   const effective = config.mode ?? autoMode;
-  const mark = (m: Mode): string => (effective === m ? '  ‹active›' : '');
+  const mark = (m: Mode): string => (effective === m && config.mode !== undefined ? '  ‹active›' : '');
+  const autoActive = config.mode === undefined;
+  const autoEntry = autoActive
+    ? `  [4] Auto — picks from your subscriptions (now: ${modeLabel(autoMode)})  ‹active›`
+    : `  [4] Auto — picks from your subscriptions`;
   // Plain lines (NOT box()) — the descriptions are long and would overflow a
   // fixed-width box border.
   const lines = [
@@ -1228,13 +1271,11 @@ async function runModeSelect(
     `  [1] ${bold(modeLabel('cost-saver'), out.color)} — ${MODE_DESC['cost-saver']}${mark('cost-saver')}`,
     `  [2] ${bold(modeLabel('balanced'), out.color)} — ${MODE_DESC['balanced']}${mark('balanced')}`,
     `  [3] ${bold(modeLabel('quality-first'), out.color)} — ${MODE_DESC['quality-first']}${mark('quality-first')}`,
-    config.mode === undefined
-      ? dim(`  (auto: ${modeLabel(autoMode)} — from your subscription; pick a number to pin it)`, out.color)
-      : '',
+    autoActive ? autoEntry : dim(autoEntry, out.color),
   ];
   out.write('\n' + lines.filter((l) => l !== '').join('\n') + '\n\n');
 
-  out.write('[1/2/3 to change, Enter to keep] ');
+  out.write('[1/2/3/4 to change, Enter to keep] ');
   const key = await readLine();
 
   // EOF → keep current mode
@@ -1242,6 +1283,7 @@ async function runModeSelect(
   if (key === '1') newMode = 'cost-saver';
   else if (key === '2') newMode = 'balanced';
   else if (key === '3') newMode = 'quality-first';
+  else if (key === '4') newMode = undefined; // clear pin → auto
 
   const updated: AppConfig = {
     onboarded: config.onboarded,
@@ -1349,7 +1391,7 @@ async function runSettings(
   readLine: () => Promise<string | null>,
 ): Promise<void> {
   const cfg = mutableCtx.config;
-  const autoMode = defaultModeForPlan(mutableCtx.env.claude.plan);
+  const autoMode = resolveAutoMode(mutableCtx.env);
   const effMode = cfg.mode ?? autoMode;
   const settingsLines = [
     '',
@@ -1906,7 +1948,7 @@ async function runChatLoop(
   // active mode is shown here too so it's always visible in-conversation.
   {
     const entryMode = modeLabel(
-      mutableCtx.config.mode ?? defaultModeForPlan(mutableCtx.env.claude.plan),
+      mutableCtx.config.mode ?? resolveAutoMode(mutableCtx.env),
     );
     out.write(
       dim(
@@ -2020,7 +2062,7 @@ async function runChatLoop(
       // Change the (single, global) mode from inside the chat — same knob as the
       // home [m], so there is one source of truth and never a global/per-chat drift.
       if (line === '/mode') {
-        const autoMode = defaultModeForPlan(mutableCtx.env.claude.plan);
+        const autoMode = resolveAutoMode(mutableCtx.env);
         mutableCtx.config = await runModeSelect(mutableCtx.config, out, readLine, autoMode);
         continue;
       }
@@ -2028,7 +2070,7 @@ async function runChatLoop(
       // Effective mode: the user's explicit choice, else auto-detected from their
       // subscription plan (Max → top of the knob, etc.) — no interrogation.
       const effectiveMode: Mode =
-        mutableCtx.config.mode ?? defaultModeForPlan(mutableCtx.env.claude.plan);
+        mutableCtx.config.mode ?? resolveAutoMode(mutableCtx.env);
       const policy = POLICY_PRESETS[effectiveMode];
 
       // ---- Bug 4 fix: no-provider gate ----------------------------------------
@@ -2451,12 +2493,15 @@ async function renderMainScreen(
   // effective mode: the user's explicit choice, else the subscription-derived auto
   // default. This is the default for NEW chats; each chat can override its own.
   {
-    const autoMode = defaultModeForPlan(mutableCtx.env.claude.plan);
+    const autoMode = resolveAutoMode(mutableCtx.env);
     const eff = mutableCtx.config.mode ?? autoMode;
+    const autoSuffix = mutableCtx.config.mode === undefined
+      ? ` (${autoModeReason(mutableCtx.env)})`
+      : '';
     out.write(
       '  ' +
         dim(
-          `Mode: ${modeLabel(eff)}${mutableCtx.config.mode === undefined ? ' (auto)' : ''}  ·  press m to change`,
+          `Mode: ${modeLabel(eff)}${autoSuffix}  ·  press m to change`,
           out.color,
         ) +
         '\n\n',
@@ -2848,7 +2893,7 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
 
       // ---- [m] Change mode (direct — no settings dive) ------------------------
       if (key === 'm') {
-        const autoMode = defaultModeForPlan(mutableCtx.env.claude.plan);
+        const autoMode = resolveAutoMode(mutableCtx.env);
         mutableCtx.config = await runModeSelect(mutableCtx.config, out, readLine, autoMode);
         continue;
       }

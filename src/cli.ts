@@ -11,7 +11,7 @@ import { execa } from 'execa';
 import { systemClock } from './infra/clock.js';
 import { createSessionWriter } from './infra/session.js';
 import { createLedger } from './infra/ledger.js';
-import { DEFAULT_POLICY, POLICY_PRESETS } from './core/policy.js';
+import { DEFAULT_POLICY, POLICY_PRESETS, autoModeForPlans } from './core/policy.js';
 import type { OrchestrateDeps } from './core/types.js';
 import type { OutputSink } from './interface/render.js';
 import { runTask } from './interface/run.js';
@@ -238,7 +238,13 @@ async function main(): Promise<void> {
       process.exit(1);
     }
     const [env, config] = await Promise.all([detectEnvironment(), loadConfig()]);
-    const policy = POLICY_PRESETS[config.mode ?? 'balanced'];
+    // Resolve mode across all authenticated providers when mode is unset (auto).
+    const resolvedMode = config.mode ?? autoModeForPlans(
+      [env.claude, env.codex, env.opencode]
+        .filter((p) => p.authenticated)
+        .map((p) => p.plan),
+    );
+    const policy = POLICY_PRESETS[resolvedMode];
     const deps = buildDeps(cwd, env, policy, resolveTimeoutMs(config));
     const result = await runTask(taskParts.join(' '), deps, out, new AbortController().signal);
     // Notify-only update nudge for the scripted / one-shot path. The interactive
