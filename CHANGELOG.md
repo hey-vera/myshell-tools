@@ -9,6 +9,28 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 ### Pending
 - Cross-OS CI execution (requires a public remote).
 
+## [3.10.4]
+
+### Fixed
+A self-directed audit of the menu's input/terminal handling closed the remaining issues
+of the single-keypress / inherited-stdio class:
+- **`readSingleKey` could hang** if stdin closed/ended mid-read (raw mode + listeners left
+  attached). It now handles `end`/`close`/`error` (idempotent restore) and rejects so the
+  caller falls back to line mode.
+- **More inherited-stdio spawns now suspend the parent reader**: onboarding provider
+  installs, the `[o]` opencode install+login, the `[u]` manual update, and every
+  `doctor --fix` install/login/refresh action — so the child owns the terminal and the
+  menu's single-key input is intact on return.
+- **`doctor --fix`** switched its leak-prone per-prompt readline to the shared reader
+  lifecycle (no stale `close` listeners).
+
+### Changed
+- **More single-keypress, fewer Enters**: the `[e] Manage` action picker and the raw-session
+  provider picker now act on one keypress; the chat-loop yes/no prompts (auth-retry,
+  big-task→autonomous, keep-going) and the delete confirm and the login "retry with code?"
+  prompt now use the shared single-key confirm. Text entry (chat, tags, rename, numbered
+  picks, token paste) stays line-based.
+
 ## [3.10.3]
 
 ### Fixed

@@ -979,6 +979,16 @@ describe('readSingleKey — single raw keypress', () => {
     // The reader detached `prior` for the read, then restored exactly it.
     assert.deepEqual(f.listeners('data'), [prior]);
   });
+
+  it('rejects and restores raw mode if stdin closes before a key arrives', async () => {
+    const f = new FakeKeyStream([]);
+    const promise = readSingleKey(asStream(f));
+    queueMicrotask(() => f.emit('close'));
+    await assert.rejects(promise, /stdin closed/);
+    assert.deepEqual(f.rawCalls, [true, false], 'raw mode must be restored on close');
+    assert.equal(f.listenerCount('data'), 0, 'reader data listener must be removed on close');
+    assert.equal(f.listenerCount('close'), 0, 'reader close listener must be removed on close');
+  });
 });
 
 describe('confirmViaKey — single-key yes/no over a fake stream', () => {
@@ -1074,6 +1084,14 @@ describe('readMenuKey — single-key main-menu choice', () => {
     const out = makeSink(); // isTty:false
     const f = new FakeKeyStream([]); // not a TTY (no isTTY)
     assert.equal(await readMenuKey(out, async () => 'n', asStream(f)), 'n');
+  });
+
+  it('falls back to a line read if the raw-key stream closes', async () => {
+    const out = ttySink();
+    const f = new FakeKeyStream([]);
+    (f as unknown as { isTTY: boolean }).isTTY = true;
+    queueMicrotask(() => f.emit('close'));
+    assert.equal(await readMenuKey(out, async () => 'q', asStream(f)), 'q');
   });
 });
 
@@ -2693,14 +2711,21 @@ describe('startMenu — [o] opencode discoverability in Auth section', () => {
   it('pressing o with opencode installed invokes login with "opencode"', async () => {
     let loginCalled = false;
     let loginArg: string | undefined;
+    let sharedReadLinePassed = false;
+    let sharedConfirmPassed = false;
 
+    const readLine = makeScriptedReader(['o', 'q']);
+    const confirm = async (): Promise<boolean> => true;
     const sink = makeSink();
     const ctx = makeCtx({
       env: FAKE_ENV_OPENCODE_INSTALLED,
-      readLine: makeScriptedReader(['o', 'q']),
-      login: async (_out, providerArg) => {
+      readLine,
+      confirm,
+      login: async (_out, providerArg, opts) => {
         loginCalled = true;
         loginArg = providerArg;
+        sharedReadLinePassed = opts?.readLine === readLine;
+        sharedConfirmPassed = opts?.confirm === confirm;
         return 0;
       },
       detectEnvironment: async () => FAKE_ENV_OPENCODE_INSTALLED,
@@ -2713,6 +2738,8 @@ describe('startMenu — [o] opencode discoverability in Auth section', () => {
 
     assert.equal(loginCalled, true, 'login fake must have been called');
     assert.equal(loginArg, 'opencode', 'login must be called with "opencode"');
+    assert.equal(sharedReadLinePassed, true, 'opencode login must receive the shared menu reader');
+    assert.equal(sharedConfirmPassed, true, 'opencode login must receive the shared menu confirm');
   });
 
   it('pressing o with opencode installed does NOT show install consent prompt', async () => {

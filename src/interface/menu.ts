@@ -208,6 +208,7 @@ export interface MenuContext {
       method?: LoginMethod;
       readLine?: () => Promise<string | null>;
       suspendStdin?: () => () => void;
+      confirm?: Confirm;
     },
   ) => Promise<number>;
   /**
@@ -994,14 +995,28 @@ export function readSingleKey(
     const prevData = stdin.listeners('data');
     const prevKeypress = stdin.listeners('keypress');
     const wasRaw = stdin.isRaw === true;
+    let settled = false;
 
     const onData = (buf: Buffer): void => {
       restore();
       resolve(buf.toString('utf8'));
     };
+    const onClose = (): void => {
+      restore();
+      reject(new Error('stdin closed while waiting for a keypress'));
+    };
+    const onError = (err: Error): void => {
+      restore();
+      reject(err);
+    };
 
     function restore(): void {
+      if (settled) return;
+      settled = true;
       stdin.removeListener('data', onData as (...a: never[]) => void);
+      stdin.removeListener('end', onClose as (...a: never[]) => void);
+      stdin.removeListener('close', onClose as (...a: never[]) => void);
+      stdin.removeListener('error', onError as (...a: never[]) => void);
       try {
         if (typeof stdin.setRawMode === 'function') stdin.setRawMode(wasRaw);
       } catch {
@@ -1018,6 +1033,9 @@ export function readSingleKey(
       if (typeof stdin.setRawMode === 'function') stdin.setRawMode(true);
       stdin.resume();
       stdin.on('data', onData as (...a: never[]) => void);
+      stdin.on('end', onClose as (...a: never[]) => void);
+      stdin.on('close', onClose as (...a: never[]) => void);
+      stdin.on('error', onError as (...a: never[]) => void);
     } catch (err) {
       restore();
       reject(err instanceof Error ? err : new Error(String(err)));
@@ -1162,6 +1180,7 @@ async function runWelcome(
       method?: LoginMethod;
       readLine?: () => Promise<string | null>;
       suspendStdin?: () => () => void;
+      confirm?: Confirm;
     },
   ) => Promise<number>,
   detectEnvironmentFn: () => Promise<EnvironmentStatus>,
@@ -1189,7 +1208,13 @@ async function runWelcome(
     out.write(`Install ${id} (${pkg})? ${yesNoHint('yes', out.color)} `);
 
     if (await confirm(true)) {
-      const ok = await installProviderFn(id, out);
+      const resumeStdin = suspendStdin?.();
+      let ok = false;
+      try {
+        ok = await installProviderFn(id, out);
+      } finally {
+        resumeStdin?.();
+      }
       if (ok) {
         didInstallAny = true;
       }
@@ -1209,7 +1234,13 @@ async function runWelcome(
   if (!env.opencode.installed) {
     out.write(`Add opencode? (optional — bring your own provider/subscription) ${yesNoHint('yes', out.color)} `);
     if (await confirm(true)) {
-      const ok = await installProviderFn('opencode', out);
+      const resumeStdin = suspendStdin?.();
+      let ok = false;
+      try {
+        ok = await installProviderFn('opencode', out);
+      } finally {
+        resumeStdin?.();
+      }
       if (ok) {
         // Re-detect so downstream sign-in logic sees the freshly installed opencode.
         env = await detectEnvironmentFn();
@@ -1236,6 +1267,7 @@ async function runWelcome(
       // during its interactive sign-in (no paste byte-race).
       await loginFn(out, id, {
         readLine,
+        confirm,
         ...(suspendStdin !== undefined ? { suspendStdin } : {}),
       });
     }
@@ -1705,6 +1737,7 @@ async function runManage(
   ctx: MenuContext,
   out: OutputSink,
   readLine: () => Promise<string | null>,
+  confirm: Confirm,
 ): Promise<void> {
   // Inner helper to re-fetch and re-render the conversation list.
   async function renderList(): Promise<ConversationMeta[]> {
@@ -1731,10 +1764,11 @@ async function runManage(
   metas = await renderList();
 
   out.write('> ');
-  const key = await readLine();
+  const key = await readMenuKey(out, readLine);
 
   // EOF → treat as back
   if (key === null) return;
+  if (key.length === 0) return;
 
   if (key === 'p') {
     out.write('Pin/unpin conversation number: ');
@@ -1789,8 +1823,7 @@ async function runManage(
         // Strict confirm: deletion is irreversible, so there is NO Enter default —
         // only an explicit 'y' removes the conversation (a reflexive Enter cancels).
         out.write(`Delete "${conv.title}"? ${yesNoHint('strict', out.color)} `);
-        const confirmAns = await readLine();
-        if (parseYesNo(confirmAns, false, true)) {
+        if (await confirm(false, { requireExplicit: true })) {
           await ctx.store.remove(conv.id);
           out.write('Deleted.\n');
         } else {
@@ -1829,9 +1862,11 @@ async function runImportNative(
       method?: LoginMethod;
       readLine?: () => Promise<string | null>;
       suspendStdin?: () => () => void;
+      confirm?: Confirm;
     },
   ) => Promise<number>,
   detectEnvironmentFn: () => Promise<EnvironmentStatus>,
+  confirm: Confirm,
   suspendStdin?: () => () => void,
 ): Promise<'menu' | 'exit'> {
   const env = { ...process.env, ...replitPersistentEnv(process.env, ctx.cwd) };
@@ -1873,7 +1908,7 @@ async function runImportNative(
 
   // Enter the chat loop for the newly imported conversation.
   // Return value propagates the 'exit' signal to the caller (startMenu).
-  return runChatLoop(ctx, mutableCtx, id, out, readLine, loginFn, detectEnvironmentFn, suspendStdin);
+  return runChatLoop(ctx, mutableCtx, id, out, readLine, loginFn, detectEnvironmentFn, confirm, suspendStdin);
 }
 
 // ---------------------------------------------------------------------------
@@ -1933,8 +1968,9 @@ async function runRawProviderSession(
 
   const choiceLines = choices.map((c, i) => `  [${i + 1}] ${c.label}`).join('\n');
   out.write(`\nOpen raw session with:\n${choiceLines}\n\n> `);
-  const choice = await readLine();
+  const choice = await readMenuKey(out, readLine);
   if (choice === null) return;
+  if (choice.length === 0) return;
 
   const idx = parseInt(choice, 10) - 1;
   const selected = choices[idx];
@@ -2120,9 +2156,11 @@ async function runChatLoop(
       method?: LoginMethod;
       readLine?: () => Promise<string | null>;
       suspendStdin?: () => () => void;
+      confirm?: Confirm;
     },
   ) => Promise<number>,
   detectEnvironmentFn: () => Promise<EnvironmentStatus>,
+  confirm: Confirm,
   suspendStdin?: () => () => void,
 ): Promise<'menu' | 'exit'> {
   // Print a short recap of the conversation (last entry) if history exists
@@ -2589,10 +2627,10 @@ async function runChatLoop(
         const failingProvider = result.final.provider;
         out.write(`\n[warn] ${failingProvider} isn't signed in.\n`);
         out.write(`Sign in to ${failingProvider} now and retry? ${yesNoHint('yes', out.color)} `);
-        const ans = await readLine();
-        if (parseYesNo(ans, true)) {
+        if (await confirm(true)) {
           await loginFn(out, failingProvider, {
             readLine,
+            confirm,
             ...(suspendStdin !== undefined ? { suspendStdin } : {}),
           });
           // Bug 5 fix: re-detect with the freshly-authenticated env so the retry
@@ -2636,8 +2674,7 @@ async function runChatLoop(
       ) {
         out.write('\n  ' + dim("That's a big one — it ran past the time limit for a single turn.", out.color) + '\n');
         out.write(`  Keep working on it autonomously, step by step, until it's done? ${yesNoHint('yes', out.color)} `);
-        const ans = await readLine();
-        if (parseYesNo(ans, true)) {
+        if (await confirm(true)) {
           if (await runGoalLoop(line)) break;
         }
         continue;
@@ -2652,8 +2689,7 @@ async function runChatLoop(
       if (result.final?.questions !== undefined && isKeepGoingOffer(result.final.questions)) {
         out.write('\n  ' + dim("I can keep working on this autonomously until it's done.", out.color) + '\n');
         out.write(`  Keep going? ${yesNoHint('yes', out.color)} `);
-        const ans = await readLine();
-        if (parseYesNo(ans, true)) {
+        if (await confirm(true)) {
           if (await runGoalLoop(line)) break;
         }
         continue;
@@ -3086,7 +3122,7 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
         // (conversations.ts append()), so create an untitled conversation and drop
         // straight into it.
         const meta = await ctx.store.create('');
-        const chatResult = await runChatLoop(ctx, mutableCtx, meta.id, out, readLine, loginFn, detectEnvironmentFn, suspendStdin);
+        const chatResult = await runChatLoop(ctx, mutableCtx, meta.id, out, readLine, loginFn, detectEnvironmentFn, confirm, suspendStdin);
         spendDirty = true; // a task may have run — refresh the spend summary
         if (chatResult === 'exit') break;
         continue;
@@ -3097,7 +3133,7 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
         const all = await ctx.store.list();
         const latest = all[0];
         if (latest !== undefined) {
-          const chatResult = await runChatLoop(ctx, mutableCtx, latest.id, out, readLine, loginFn, detectEnvironmentFn, suspendStdin);
+          const chatResult = await runChatLoop(ctx, mutableCtx, latest.id, out, readLine, loginFn, detectEnvironmentFn, confirm, suspendStdin);
           spendDirty = true; // a task may have run — refresh the spend summary
           if (chatResult === 'exit') break;
         } else {
@@ -3111,7 +3147,7 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
       if (!Number.isNaN(digit) && digit >= 1 && digit <= 9) {
         const target = metas[digit - 1];
         if (target !== undefined) {
-          const chatResult = await runChatLoop(ctx, mutableCtx, target.id, out, readLine, loginFn, detectEnvironmentFn, suspendStdin);
+          const chatResult = await runChatLoop(ctx, mutableCtx, target.id, out, readLine, loginFn, detectEnvironmentFn, confirm, suspendStdin);
           spendDirty = true; // a task may have run — refresh the spend summary
           if (chatResult === 'exit') break;
         } else {
@@ -3122,13 +3158,13 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
 
       // ---- [e] Manage conversations -------------------------------------------
       if (key === 'e') {
-        await runManage(ctx, out, readLine);
+        await runManage(ctx, out, readLine, confirm);
         continue;
       }
 
       // ---- [i] Import a native conversation -----------------------------------
       if (key === 'i') {
-        const importResult = await runImportNative(ctx, mutableCtx, out, readLine, loginFn, detectEnvironmentFn, suspendStdin);
+        const importResult = await runImportNative(ctx, mutableCtx, out, readLine, loginFn, detectEnvironmentFn, confirm, suspendStdin);
         spendDirty = true; // an imported session may run a task — refresh spend
         if (importResult === 'exit') break;
         continue;
@@ -3148,6 +3184,7 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
       if (key === 'j') {
         await loginFn(out, 'claude', {
           readLine,
+          confirm,
           ...(suspendStdin !== undefined ? { suspendStdin } : {}),
         });
         mutableCtx.env = await detectEnvironmentFn();
@@ -3157,6 +3194,8 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
       // ---- [k] Login Codex ----------------------------------------------------
       if (key === 'k') {
         await loginFn(out, 'codex', {
+          readLine,
+          confirm,
           ...(suspendStdin !== undefined ? { suspendStdin } : {}),
         });
         mutableCtx.env = await detectEnvironmentFn();
@@ -3170,15 +3209,26 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
       if (key === 'o') {
         if (!mutableCtx.env.opencode.installed) {
           out.write(`Install opencode (${installCommandFor('opencode').replace('npm install -g ', '')})? ${yesNoHint('yes', out.color)} `);
-          const ans = await readLine();
-          // EOF (null) means no interactive user — never auto-install on a closed
-          // pipe. Otherwise honor the (Y/n) default-yes (Enter = install).
-          const skip = ans === null || !parseYesNo(ans, true);
-          if (skip) {
+          // Preserve the install-safety rule from the line-mode path: EOF means
+          // there is no interactive user, so never auto-install on a closed pipe.
+          const canRawConfirm =
+            out.isTty &&
+            process.stdin.isTTY === true &&
+            typeof process.stdin.setRawMode === 'function';
+          const shouldInstall = canRawConfirm
+            ? await confirm(true)
+            : (() => readLine().then((ans) => ans !== null && parseYesNo(ans, true)))();
+          if (!(await shouldInstall)) {
             out.write(`[2mSkipped. You can install it later: ${installCommandFor('opencode')}[0m\n`);
             continue;
           }
-          const ok = await installProviderFn('opencode', out);
+          const resumeStdin = suspendStdin?.();
+          let ok = false;
+          try {
+            ok = await installProviderFn('opencode', out);
+          } finally {
+            resumeStdin?.();
+          }
           mutableCtx.env = await detectEnvironmentFn();
           if (!ok || !mutableCtx.env.opencode.installed) {
             out.write(`Install failed. Run it yourself: ${installCommandFor('opencode')}\n`);
@@ -3186,7 +3236,11 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
           }
         }
         // opencode is (now) installed — proceed to sign in
-        await loginFn(out, 'opencode');
+        await loginFn(out, 'opencode', {
+          readLine,
+          confirm,
+          ...(suspendStdin !== undefined ? { suspendStdin } : {}),
+        });
         mutableCtx.env = await detectEnvironmentFn();
         continue;
       }
@@ -3194,7 +3248,13 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
       // ---- [u] Update now -----------------------------------------------------
       // Only active when an update is actually available and the seam is wired.
       if (key === 'u' && updateInfo?.updateAvailable === true && updateSelfFn !== undefined) {
-        const ok = await updateSelfFn(out).catch(() => false);
+        const resumeStdin = suspendStdin?.();
+        let ok = false;
+        try {
+          ok = await updateSelfFn(out).catch(() => false);
+        } finally {
+          resumeStdin?.();
+        }
         if (ok && updateInfo.latest !== null) {
           out.write(`✓ Updated to ${updateInfo.latest} — restart myshell-tools to use it.\n`);
         } else if (!ok) {

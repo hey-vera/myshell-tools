@@ -262,6 +262,7 @@ export async function runLogin(
     method?: LoginMethod;
     readLine?: () => Promise<string | null>;
     suspendStdin?: () => () => void;
+    confirm?: (defaultYes: boolean, opts?: { requireExplicit?: boolean }) => Promise<boolean>;
   },
 ): Promise<number> {
   let targets: ProviderId[];
@@ -329,8 +330,11 @@ export async function runLogin(
           out.write(
             `Browser sign-in failed. Try the no-localhost code method now? ${yesNoHint('yes', out.color)} `,
           );
-          const ans = await opts.readLine();
-          if (shouldRetryWithCode(ans)) {
+          const retryWithCode =
+            opts.confirm !== undefined
+              ? await opts.confirm(true)
+              : shouldRetryWithCode(await opts.readLine());
+          if (retryWithCode) {
             await runCodeMethodForProvider(out, id, opts.suspendStdin);
           } else {
             out.write(

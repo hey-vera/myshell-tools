@@ -25,7 +25,7 @@ import { isPricingStale } from '../infra/pricing.js';
 import { probeStateWritable } from '../infra/health.js';
 import { loadClaudeTokenCapturedAt, claudeTokenStatus } from '../infra/credentials.js';
 import type { ClaudeTokenStatus } from '../infra/credentials.js';
-import { parseYesNo, yesNoHint } from '../interface/menu.js';
+import { createLineReader, parseYesNo, yesNoHint } from '../interface/menu.js';
 import { bold, green, red, yellow, dim, divider, label } from '../ui/theme.js';
 
 // ---------------------------------------------------------------------------
@@ -236,18 +236,20 @@ export async function runDoctor(out: OutputSink, opts?: DoctorFixOpts): Promise<
   // Create a temporary readline if no readLine seam was injected (real CLI path).
   let rlClose: (() => void) | undefined;
   let readLineFn = opts.readLine;
+  let suspendStdin: (() => () => void) | undefined;
   if (readLineFn === undefined) {
     const rl = readline.createInterface({
       input: process.stdin,
       output: process.stdout,
-      terminal: false,
+      terminal: process.stdout.isTTY === true,
     });
-    readLineFn = () =>
-      new Promise<string | null>((resolve) => {
-        rl.once('line', (raw: string) => resolve(raw.trim()));
-        rl.once('close', () => resolve(null));
-      });
-    rlClose = () => rl.close();
+    const lineReader = createLineReader(rl);
+    readLineFn = () => lineReader.nextLine();
+    suspendStdin = () => {
+      lineReader.suspend();
+      return () => lineReader.resume();
+    };
+    rlClose = () => lineReader.close();
   }
 
   const loadCapturedAtFn = opts.loadClaudeTokenCapturedAt ?? loadClaudeTokenCapturedAt;
@@ -263,6 +265,7 @@ export async function runDoctor(out: OutputSink, opts?: DoctorFixOpts): Promise<
       detectEnvironmentFn,
       loadCapturedAtFn,
       nowFn,
+      suspendStdin,
     );
   } finally {
     rlClose?.();
@@ -295,6 +298,7 @@ async function runFixPass(
   detectEnvironmentFn: () => Promise<EnvironmentStatus>,
   loadCapturedAtFn: () => Promise<string | undefined>,
   nowFn: () => number,
+  suspendStdin?: () => () => void,
 ): Promise<void> {
   const providers: Array<'claude' | 'codex' | 'opencode'> = ['claude', 'codex', 'opencode'];
 
@@ -307,11 +311,14 @@ async function runFixPass(
     out.write(`\nInstall ${id} (${pkg})? ${yesNoHint('yes', out.color)} `);
     const ans = await readLine();
     if (parseYesNo(ans, true)) {
+      const resumeStdin = suspendStdin?.();
       try {
         await installProviderFn(id, out);
         didInstallAny = true;
       } catch {
         out.write(red(`✗ Install of ${id} failed.\n`, out.color));
+      } finally {
+        resumeStdin?.();
       }
     }
   }
@@ -336,10 +343,13 @@ async function runFixPass(
     out.write(`\nSign in to ${id}? ${yesNoHint('yes', out.color)} `);
     const ans = await readLine();
     if (parseYesNo(ans, true)) {
+      const resumeStdin = suspendStdin?.();
       try {
         await loginFn(out, id);
       } catch {
         out.write(red(`✗ Sign-in for ${id} did not complete.\n`, out.color));
+      } finally {
+        resumeStdin?.();
       }
     }
   }
@@ -359,10 +369,13 @@ async function runFixPass(
       out.write(`\nYour Claude token ${when}. Refresh it now? ${yesNoHint('yes', out.color)} `);
       const ans = await readLine();
       if (parseYesNo(ans, true)) {
+        const resumeStdin = suspendStdin?.();
         try {
           await loginFn(out, 'claude');
         } catch {
           out.write(red(`✗ Claude re-login did not complete.\n`, out.color));
+        } finally {
+          resumeStdin?.();
         }
       }
     }
