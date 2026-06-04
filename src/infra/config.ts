@@ -72,6 +72,18 @@ export interface AppConfig {
    * failure/timeout. See core/router.ts + core/route-classifier.ts.
    */
   smartRoute?: boolean;
+  /**
+   * EXPERIMENTAL Local Outcome Learner (default off). When true, myshell-tools
+   * reads THIS user's own ledger once at the start of a chat session and learns,
+   * per tier, which signed-in provider has historically performed best (by
+   * observed success rate, then latency). That learned order is then tried first
+   * when routing each turn, so a provider that actually finishes your work fastest
+   * gets preferred over the static default order. Observed-only: derived purely
+   * from recorded outcomes (success + duration) — never plan/quota/tokens, and
+   * never fabricated. Absent/false → routing is unchanged. See
+   * core/routing-memory.ts.
+   */
+  learnRouting?: boolean;
 }
 
 // ---------------------------------------------------------------------------

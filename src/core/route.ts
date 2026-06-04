@@ -70,11 +70,24 @@ export function clampTier(requested: Tier, ceiling: Tier | undefined): Tier {
  *   - When supplied and non-empty → authenticated+available providers are
  *     preferred over signed-out+available ones within the policy order.
  *
+ * The `preferredOrder` parameter is additive/opt-in (the Local Outcome Learner):
+ *   - When absent or empty → behaviour is IDENTICAL to today (no change).
+ *   - When supplied and non-empty → this LEARNED order is tried FIRST, using the
+ *     SAME auth-aware logic (prefer the first provider that is in `available`
+ *     AND, when auth info is present, in `authenticatedProviders`). Only when the
+ *     learned order yields no eligible provider does route() fall back to
+ *     `policy.providerOrderByTier`. The learned order never expands the candidate
+ *     set (a provider must still be in `available`), so it can only REORDER which
+ *     reachable provider wins — never route to an unreachable one.
+ *
  * @param tier                   - The orchestration tier to route.
  * @param available              - Provider IDs that are currently reachable.
  * @param policy                 - Active routing policy (from `DEFAULT_POLICY` or overrides).
  * @param availableModels        - Optional per-provider advertised model sets from detection.
  * @param authenticatedProviders - Optional set of provider IDs known to be signed in.
+ * @param preferredOrder         - Optional learned, observed-only provider order
+ *                                 (for the clamped tier) to try before the static
+ *                                 policy order. Absent/empty → no effect.
  */
 export function route(
   tier: Tier,
@@ -82,6 +95,7 @@ export function route(
   policy: Policy,
   availableModels?: Partial<Record<ProviderId, readonly string[]>>,
   authenticatedProviders?: readonly ProviderId[],
+  preferredOrder?: readonly ProviderId[],
 ): RouteDecision {
   if (available.length === 0) {
     throw new Error(
@@ -96,7 +110,7 @@ export function route(
   // as tier 'ic', never as a 'manager' decision running a sonnet model).
   tier = clampTier(tier, policy.maxTier);
 
-  const preferredOrder = policy.providerOrderByTier[tier];
+  const preferredOrder_policy = policy.providerOrderByTier[tier];
   const hasAuthInfo =
     authenticatedProviders !== undefined && authenticatedProviders.length > 0;
 
@@ -124,27 +138,43 @@ export function route(
     return { tier, provider: id, model: pricing.model };
   }
 
-  // Auth-aware pass: when authenticatedProviders is supplied and non-empty,
-  // walk the preferred order and pick the first provider that is both available
-  // AND authenticated.  This prevents wasting an attempt on a signed-out provider
-  // when a ready one exists later in the preference order.
+  // Order in which we consult provider-preference lists: the LEARNED order first
+  // (when supplied and non-empty — the Local Outcome Learner), then the static
+  // policy order. Each list is walked auth-aware then first-available, so the
+  // learned order can only REORDER among reachable providers; it never strands
+  // routing (an empty/non-eligible learned list simply falls through to policy).
+  const learnedOrder =
+    preferredOrder !== undefined && preferredOrder.length > 0 ? preferredOrder : undefined;
+  const candidateOrders: ReadonlyArray<readonly ProviderId[]> =
+    learnedOrder !== undefined ? [learnedOrder, preferredOrder_policy] : [preferredOrder_policy];
+
+  // Auth-aware pass: when authenticatedProviders is supplied and non-empty, prefer
+  // the first provider that is both available AND authenticated. We try the
+  // learned order's authenticated match BEFORE the policy order's, so a learned
+  // preference wins when it is eligible. This prevents wasting an attempt on a
+  // signed-out provider when a ready one exists later in a preference order.
   if (hasAuthInfo) {
-    for (const preferred of preferredOrder) {
-      if (
-        available.includes(preferred) &&
-        (authenticatedProviders as readonly ProviderId[]).includes(preferred)
-      ) {
-        return decisionFor(preferred);
+    for (const order of candidateOrders) {
+      for (const preferred of order) {
+        if (
+          available.includes(preferred) &&
+          (authenticatedProviders as readonly ProviderId[]).includes(preferred)
+        ) {
+          return decisionFor(preferred);
+        }
       }
     }
-    // No authenticated+available match found — fall through to the standard
-    // first-available pass below (signed-out provider as last resort).
+    // No authenticated+available match found in any order — fall through to the
+    // standard first-available pass below (signed-out provider as last resort).
   }
 
-  // Standard pass: walk the preferred order and pick the first available provider.
-  for (const preferred of preferredOrder) {
-    if (available.includes(preferred)) {
-      return decisionFor(preferred);
+  // Standard pass: walk each preference order (learned first) and pick the first
+  // available provider.
+  for (const order of candidateOrders) {
+    for (const preferred of order) {
+      if (available.includes(preferred)) {
+        return decisionFor(preferred);
+      }
     }
   }
 

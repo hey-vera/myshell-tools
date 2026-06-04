@@ -18,7 +18,7 @@
 
 import readline from 'node:readline';
 import { execa } from 'execa';
-import type { Clock, CoreEvent, LedgerWriter, OrchestrateDeps, Question, QuestionSet, SessionEntry } from '../core/types.js';
+import type { Clock, CoreEvent, LedgerWriter, OrchestrateDeps, Question, QuestionSet, SessionEntry, Tier } from '../core/types.js';
 import { buildGoalTask, parseGoalSignal, decideGoalNext, formatGoalProgress, DEFAULT_MAX_GOAL_ITERATIONS } from '../core/goal.js';
 import type { GoalCeilings } from '../core/goal.js';
 import { formatAnswers, isKeepGoingOffer } from '../core/questions.js';
@@ -47,6 +47,7 @@ import type { PlanInfo } from '../core/policy.js';
 import type { Mode } from '../core/policy.js';
 import { planNativeSession } from '../core/native-session.js';
 import { availableAfterCooldown, cooldownExpiry } from '../core/cooldown.js';
+import { learnProviderOrder } from '../core/routing-memory.js';
 import type { OutputSink } from './render.js';
 import { runTask } from './run.js';
 import { runLogin } from '../commands/login.js';
@@ -2032,6 +2033,25 @@ async function runChatLoop(
     );
   }
 
+  // EXPERIMENTAL Local Outcome Learner (opt-in via config.learnRouting; default
+  // off → this whole block is skipped, zero behaviour change). Read the ledger
+  // ONCE here, before the chat loop, and learn a per-tier provider-preference
+  // order from this user's own recorded outcomes. We compute it once per chat
+  // session (not per turn) so a long ledger isn't re-read every message; the
+  // closure below spreads it into deps. We pre-filter to the most recent 500
+  // entries so stale history doesn't dominate, then learn each tier
+  // independently (omitting tiers with insufficient signal → learnProviderOrder
+  // returns null). Observed-only; never fabricated.
+  const learnedProviderOrder: Partial<Record<Tier, readonly ProviderId[]>> = {};
+  if (mutableCtx.config.learnRouting === true) {
+    const allEntries = await readLedger(ctx.cwd);
+    const recent = allEntries.slice(-500);
+    for (const tier of ['worker', 'ic', 'manager'] as const) {
+      const order = learnProviderOrder(recent, tier);
+      if (order !== null) learnedProviderOrder[tier] = order;
+    }
+  }
+
   let currentAc: AbortController | null = null;
 
   // Interrupt timestamps — populated on each SIGINT; checked against the
@@ -2312,6 +2332,7 @@ async function runChatLoop(
           ...(Object.keys(planInfos).length > 0 ? { planInfos } : {}),
           ...(nativeSession.length > 0 ? { nativeSession } : {}),
           ...(routeClassifier !== undefined ? { routeClassifier } : {}),
+          ...(Object.keys(learnedProviderOrder).length > 0 ? { learnedProviderOrder } : {}),
         };
       };
 

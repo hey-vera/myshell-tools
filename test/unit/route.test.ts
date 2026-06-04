@@ -384,3 +384,68 @@ describe('route — maxTier clamp', () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// Learned preferred order (Local Outcome Learner)
+// ---------------------------------------------------------------------------
+
+describe('route — learned preferredOrder', () => {
+  it('honours the learned order first: codex preferred over the static claude-first order', () => {
+    // Static policy order is claude-first; with BOTH available, route() normally
+    // picks claude. A learned order [codex, claude] must flip it to codex.
+    const decision = route('ic', BOTH, DEFAULT_POLICY, undefined, undefined, ['codex', 'claude']);
+    assert.equal(decision.provider, 'codex');
+  });
+
+  it('prefers a learned provider that is available AND authenticated', () => {
+    // Both authenticated; learned order prefers codex → codex wins (auth-aware).
+    const decision = route(
+      'ic',
+      BOTH,
+      DEFAULT_POLICY,
+      undefined,
+      ['claude', 'codex'], // authenticatedProviders
+      ['codex', 'claude'], // learned order
+    );
+    assert.equal(decision.provider, 'codex');
+  });
+
+  it('falls back to the static order when the learned order has no eligible provider', () => {
+    // Learned order names only opencode, which is NOT available → fall back to the
+    // static order (claude first) among the available pool.
+    const decision = route('ic', BOTH, DEFAULT_POLICY, undefined, undefined, ['opencode']);
+    assert.equal(decision.provider, 'claude');
+  });
+
+  it('learned order never expands the candidate set (only available providers win)', () => {
+    // Only codex available; learned order prefers claude (unreachable) → codex.
+    const decision = route('ic', CODEX_ONLY, DEFAULT_POLICY, undefined, undefined, ['claude', 'codex']);
+    assert.equal(decision.provider, 'codex');
+  });
+
+  it('a learned provider that is available but NOT authenticated is skipped for an authenticated one', () => {
+    // Learned prefers codex, but only claude is authenticated → claude wins
+    // (auth-aware: the learned order respects authentication).
+    const decision = route(
+      'ic',
+      BOTH,
+      DEFAULT_POLICY,
+      undefined,
+      ['claude'], // only claude authenticated
+      ['codex', 'claude'], // learned prefers codex
+    );
+    assert.equal(decision.provider, 'claude');
+  });
+
+  it('absent preferredOrder → behaviour is UNCHANGED (static order wins)', () => {
+    const withUndef = route('ic', BOTH, DEFAULT_POLICY, undefined, undefined, undefined);
+    const baseline = route('ic', BOTH, DEFAULT_POLICY);
+    assert.equal(withUndef.provider, baseline.provider);
+    assert.equal(withUndef.provider, 'claude');
+  });
+
+  it('empty preferredOrder → behaviour is UNCHANGED (static order wins)', () => {
+    const withEmpty = route('ic', BOTH, DEFAULT_POLICY, undefined, undefined, []);
+    assert.equal(withEmpty.provider, 'claude');
+  });
+});

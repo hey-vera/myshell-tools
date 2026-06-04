@@ -3433,3 +3433,58 @@ describe('orchestrate — panel delegation (panelPolicy)', () => {
     assert.equal(panelNotice, undefined, 'low-risk turn must not form a panel under hard-turns');
   });
 });
+
+// ---------------------------------------------------------------------------
+// Local Outcome Learner — learnedProviderOrder threads into routing
+// ---------------------------------------------------------------------------
+
+describe('orchestrate — learnedProviderOrder (Local Outcome Learner)', () => {
+  it('routes a turn to the learned-preferred provider over the static order', async () => {
+    // Static policy order is claude-first; both providers authenticated. A learned
+    // ic order [codex, claude] must flip the first tier-start to codex.
+    const deps: OrchestrateDeps = {
+      providers: { claude: makeFakeProvider('claude'), codex: makeFakeProvider('codex') },
+      clock: makeFakeClock(),
+      session: makeFakeSession(),
+      ledger: makeFakeLedger(),
+      policy: DEFAULT_POLICY,
+      cwd: '/fake/cwd',
+      sandbox: 'workspace-write',
+      timeoutMs: 30_000,
+      authenticatedProviders: ['claude', 'codex'],
+      learnedProviderOrder: { ic: ['codex', 'claude'] },
+    };
+
+    const events = await collectEvents(
+      orchestrate('refactor X', deps, new AbortController().signal),
+    );
+    const tierStart = events.find((e) => e.type === 'tier-start');
+    assert.ok(tierStart !== undefined && tierStart.type === 'tier-start');
+    if (tierStart.type === 'tier-start') {
+      assert.equal(tierStart.provider, 'codex', 'learned order should route to codex first');
+    }
+  });
+
+  it('absent learnedProviderOrder → unchanged (static claude-first order wins)', async () => {
+    const deps: OrchestrateDeps = {
+      providers: { claude: makeFakeProvider('claude'), codex: makeFakeProvider('codex') },
+      clock: makeFakeClock(),
+      session: makeFakeSession(),
+      ledger: makeFakeLedger(),
+      policy: DEFAULT_POLICY,
+      cwd: '/fake/cwd',
+      sandbox: 'workspace-write',
+      timeoutMs: 30_000,
+      authenticatedProviders: ['claude', 'codex'],
+    };
+
+    const events = await collectEvents(
+      orchestrate('refactor X', deps, new AbortController().signal),
+    );
+    const tierStart = events.find((e) => e.type === 'tier-start');
+    assert.ok(tierStart !== undefined && tierStart.type === 'tier-start');
+    if (tierStart.type === 'tier-start') {
+      assert.equal(tierStart.provider, 'claude', 'without a learned order, the static order wins');
+    }
+  });
+});

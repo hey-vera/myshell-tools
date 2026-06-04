@@ -52,6 +52,12 @@ export function makeRouteClassifier(deps: RouteClassifierDeps): ModelClassifier 
     let provider: Provider | undefined;
     let model: string;
     try {
+      // Deliberately NOT threading the learned provider order here: this call
+      // only picks the cheapest provider to run the tiny worker-tier routing
+      // prompt (a cost-discipline decision about classifying a turn, not about
+      // doing the user's work). The learned order biases the WORK routes in
+      // orchestrate()/ensemble(); applying it to the throwaway classifier run
+      // would add no value and `RouteClassifierDeps` intentionally omits it.
       const decision = route(
         ROUTER_TIER,
         pool,

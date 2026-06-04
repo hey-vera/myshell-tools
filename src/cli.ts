@@ -10,7 +10,8 @@ import { createRequire } from 'node:module';
 import { execa } from 'execa';
 import { systemClock } from './infra/clock.js';
 import { createSessionWriter } from './infra/session.js';
-import { createLedger } from './infra/ledger.js';
+import { createLedger, readLedger } from './infra/ledger.js';
+import { learnProviderOrder } from './core/routing-memory.js';
 import { DEFAULT_POLICY, POLICY_PRESETS, autoModeForPlans, classifyPlan } from './core/policy.js';
 import type { PlanInfo } from './core/policy.js';
 import type { OrchestrateDeps } from './core/types.js';
@@ -91,6 +92,9 @@ function buildDeps(
   env: import('./providers/detect.js').EnvironmentStatus,
   policy = DEFAULT_POLICY,
   timeoutMs: number = DEFAULT_TIMEOUT_MS,
+  learnedProviderOrder?: Partial<
+    Record<import('./core/types.js').Tier, readonly import('./providers/port.js').ProviderId[]>
+  >,
 ): OrchestrateDeps {
   const providers = buildProviders(cwd, env);
 
@@ -133,6 +137,9 @@ function buildDeps(
     ...(Object.keys(availableModels).length > 0 ? { availableModels } : {}),
     ...(authenticatedProviders.length > 0 ? { authenticatedProviders } : {}),
     ...(Object.keys(planInfos).length > 0 ? { planInfos } : {}),
+    ...(learnedProviderOrder !== undefined && Object.keys(learnedProviderOrder).length > 0
+      ? { learnedProviderOrder }
+      : {}),
   };
 }
 
@@ -259,7 +266,26 @@ async function main(): Promise<void> {
       ...POLICY_PRESETS[resolvedMode],
       ...(config.panel === true ? { panelPolicy: 'hard-turns' as const } : {}),
     };
-    const deps = buildDeps(cwd, env, policy, resolveTimeoutMs(config));
+    // EXPERIMENTAL Local Outcome Learner (opt-in via config.learnRouting;
+    // default off → not read, no field, routing unchanged). Read the ledger once
+    // and learn a per-tier provider order from this user's own recorded outcomes
+    // (observed-only: success + duration). Pre-filter to the most recent 500
+    // entries so stale history doesn't dominate.
+    let learnedProviderOrder:
+      | Partial<Record<import('./core/types.js').Tier, readonly import('./providers/port.js').ProviderId[]>>
+      | undefined;
+    if (config.learnRouting === true) {
+      const recent = (await readLedger(cwd)).slice(-500);
+      const learned: Partial<
+        Record<import('./core/types.js').Tier, readonly import('./providers/port.js').ProviderId[]>
+      > = {};
+      for (const tier of ['worker', 'ic', 'manager'] as const) {
+        const order = learnProviderOrder(recent, tier);
+        if (order !== null) learned[tier] = order;
+      }
+      if (Object.keys(learned).length > 0) learnedProviderOrder = learned;
+    }
+    const deps = buildDeps(cwd, env, policy, resolveTimeoutMs(config), learnedProviderOrder);
     const result = await runTask(taskParts.join(' '), deps, out, new AbortController().signal);
     // Notify-only update nudge for the scripted / one-shot path. The interactive
     // menu auto-updates, but `run` must NEVER swap the binary mid-task. Written

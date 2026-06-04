@@ -341,7 +341,19 @@ export async function* orchestrate(
     // for this resolve. For worker/ic, the static policy (and its maxTier) applies.
     const effPolicy: Policy =
       currentTier === 'manager' ? { ...deps.policy, maxTier: 'manager' } : deps.policy;
-    const decision = route(currentTier, routePool, effPolicy, deps.availableModels, deps.authenticatedProviders);
+    // Learned, observed-only provider order for the tier we're routing (the
+    // Local Outcome Learner). Absent → routing is unchanged. We key on
+    // currentTier (the requested tier); route() applies it after its own clamp,
+    // and an entry for a tier the run clamps away simply finds no eligible match
+    // and falls through to the static order.
+    const decision = route(
+      currentTier,
+      routePool,
+      effPolicy,
+      deps.availableModels,
+      deps.authenticatedProviders,
+      deps.learnedProviderOrder?.[currentTier],
+    );
 
     // Count a flagship attempt the moment the run resolves to the manager tier
     // (the quota guard read by subsequent admission decisions this turn).
@@ -616,7 +628,14 @@ export async function* orchestrate(
           // name the target provider in the failover event. Use the SAME effective
           // policy as the actual run (manager ceiling lifted when authorized), so
           // the previewed target matches what the next iteration really routes.
-          const nextDecision = route(currentTier, remaining, effPolicy, deps.availableModels, deps.authenticatedProviders);
+          const nextDecision = route(
+            currentTier,
+            remaining,
+            effPolicy,
+            deps.availableModels,
+            deps.authenticatedProviders,
+            deps.learnedProviderOrder?.[currentTier],
+          );
           yield {
             type: 'failover',
             from: decision.provider,
@@ -698,7 +717,17 @@ export async function* orchestrate(
         const reviewPolicy: Policy = reviewAdmission.allowed
           ? { ...deps.policy, maxTier: 'manager' }
           : deps.policy;
-        const reviewDecision = route('manager', [reviewerId], reviewPolicy, deps.availableModels, deps.authenticatedProviders);
+        // The reviewer pool is a single provider, so the learned order can only
+        // confirm it (never reorder a one-element pool) — passed for consistency
+        // so every route() call site threads the same learned snapshot.
+        const reviewDecision = route(
+          'manager',
+          [reviewerId],
+          reviewPolicy,
+          deps.availableModels,
+          deps.authenticatedProviders,
+          deps.learnedProviderOrder?.['manager'],
+        );
         const reviewTier = reviewDecision.tier;
         const reviewPrompt = buildReviewPrompt(task, lastOutput);
 

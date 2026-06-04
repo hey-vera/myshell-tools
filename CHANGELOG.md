@@ -9,6 +9,26 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 ### Pending
 - Cross-OS CI execution (requires a public remote).
 
+## [3.9.0]
+
+### Added
+- **Local Outcome Learner — learned routing from your own ledger (EXPERIMENTAL, opt-in,
+  default OFF).** When several providers are signed in, the honest question on a flat-rate
+  plan isn't "which is cheapest per token" (there's no per-token bill) but "which one
+  actually finishes my work, fastest" — and the only ground truth is your own recorded
+  outcomes. New pure `core/routing-memory.ts` (`learnProviderOrder` / `computeTierStats`)
+  ranks providers per tier by observed **success rate** (tie-break: lower **latency**, then
+  id), using ONLY the `success` flag and `durationMs` — never usd/tokens, never inferred
+  plan/quota. It requires real signal (≥3 runs/provider and ≥2 qualifying providers) before
+  it reorders anything; otherwise it returns null and routing is unchanged.
+  - `route()` gained an optional learned `preferredOrder` consulted *before* the static
+    order (auth-aware, and it can only reorder *reachable* providers — never strand or
+    expand the candidate set). `OrchestrateDeps.learnedProviderOrder` carries the per-tier
+    snapshot; orchestrate + the panel thread it into every `route()` call.
+  - Opt in with `learnRouting: true` in config. The conversation layer reads the ledger
+    once per session (last 500 entries) and learns each tier. With the flag off (default),
+    nothing is read and routing is byte-for-byte unchanged.
+
 ## [3.8.0]
 
 ### Added

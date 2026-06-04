@@ -320,6 +320,22 @@ export interface OrchestrateDeps {
       }
     >
   >;
+  /**
+   * EXPERIMENTAL learned provider-preference order per tier (opt-in via
+   * config.learnRouting; default absent). An immutable snapshot computed ONCE by
+   * the conversation layer from THIS user's own ledger (core/routing-memory.ts):
+   * for each tier, the providers ranked by observed success rate then latency.
+   *
+   * When present for a tier, route() tries that order FIRST (still auth-aware:
+   * it prefers the first learned provider that is available AND, when auth info
+   * is present, authenticated), falling back to the static `providerOrderByTier`
+   * only when the learned order yields no eligible provider.
+   *
+   * OBSERVED-ONLY: derived purely from recorded outcomes (success + duration) —
+   * never from plan/quota/tokens, and never fabricated. Absent (the default, and
+   * for one-shot runs / when the feature is off) → routing is unchanged.
+   */
+  readonly learnedProviderOrder?: Partial<Record<Tier, readonly ProviderId[]>>;
 }
 
 /**

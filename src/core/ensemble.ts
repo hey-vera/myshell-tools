@@ -295,6 +295,10 @@ async function runCandidate(
     deps.policy,
     deps.availableModels,
     deps.authenticatedProviders,
+    // Single-provider pool: the learned order can only confirm this candidate
+    // (it cannot reorder a one-element pool, and each candidate is fixed by the
+    // panel plan). Passed for consistency so every route() call threads it.
+    deps.learnedProviderOrder?.[plan.tier],
   );
   const provider = deps.providers[candidate];
   const start = deps.clock.now();
@@ -439,6 +443,7 @@ export async function* runPanel(
       deps.policy,
       deps.availableModels,
       deps.authenticatedProviders,
+      deps.learnedProviderOrder?.[plan.tier],
     );
     candidateModels.set(candidate, d.model);
     attempts++;
@@ -551,6 +556,7 @@ export async function* runPanel(
     deps.policy,
     deps.availableModels,
     deps.authenticatedProviders,
+    deps.learnedProviderOrder?.[plan.tier],
   );
   const synthPrompt = buildPanelSynthesisPrompt(
     task,
