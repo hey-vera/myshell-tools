@@ -1248,7 +1248,7 @@ async function runWelcome(
   out.write(
     `\nMode — [1] ${modeLabel('cost-saver')}  [2] ${modeLabel('balanced')}  [3] ${modeLabel('quality-first')}  (Enter = auto from your subscription): `,
   );
-  const modeKey = await readLine();
+  const modeKey = await readMenuKey(out, readLine);
 
   // EOF during setup — save bare onboarded config and return
   if (modeKey === null) {
@@ -1351,9 +1351,9 @@ async function runModeSelect(
   out.write('\n' + lines.filter((l) => l !== '').join('\n') + '\n\n');
 
   out.write('[1/2/3/4 to change, Enter to keep] ');
-  const key = await readLine();
+  const key = await readMenuKey(out, readLine);
 
-  // EOF → keep current mode
+  // EOF / Enter → keep current mode
   let newMode = config.mode;
   if (key === '1') newMode = 'cost-saver';
   else if (key === '2') newMode = 'balanced';
@@ -1407,7 +1407,7 @@ async function runVerbositySelect(
   out.write('\n' + box('Settings', settingsLines) + '\n\n');
 
   out.write('[1/2/3 to change, Enter to keep] ');
-  const key = await readLine();
+  const key = await readMenuKey(out, readLine);
 
   // EOF / Enter → keep current
   let newVerbosity = config.verbosity;
@@ -1495,7 +1495,7 @@ async function runSettings(
   out.write('\n' + box('Settings', settingsLines) + '\n\n');
 
   out.write('> ');
-  const key = await readLine();
+  const key = await readMenuKey(out, readLine);
 
   // EOF or Enter → back, no change
   if (key === null || key.length === 0) return;

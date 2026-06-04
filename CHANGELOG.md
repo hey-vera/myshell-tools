@@ -9,6 +9,15 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 ### Pending
 - Cross-OS CI execution (requires a public remote).
 
+## [3.10.2]
+
+### Changed
+- **Single-keypress everywhere in the menu.** The Settings screen, the mode picker,
+  the onboarding mode prompt, and the verbosity picker were still line-buffered (you
+  had to press a digit *then Enter*). They now use the same single-key reader as the
+  home menu, so one keypress acts immediately (Enter still = keep/back, and the
+  line-mode fallback for pipes/non-TTY is unchanged).
+
 ## [3.10.1]
 
 ### Fixed
