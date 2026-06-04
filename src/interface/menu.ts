@@ -1920,6 +1920,7 @@ async function runRawProviderSession(
   out: OutputSink,
   readLine: () => Promise<string | null>,
   env: EnvironmentStatus,
+  suspendStdin?: () => () => void,
 ): Promise<void> {
   // Build the choice list dynamically: opencode only when installed.
   const choices: Array<{ label: string; bin: string }> = [
@@ -1952,38 +1953,45 @@ async function runRawProviderSession(
 
   // stdio:'inherit' hands the terminal to the native CLI so its interactive
   // session runs in place. reject:false so we return to menu on any exit code.
-  const subprocess = execa(bin, [], { stdio: 'inherit', reject: false });
+  // Suspend the menu reader so it cannot race the inherited-stdio child for keys.
+  const resumeStdin = suspendStdin?.();
+  try {
+    const subprocess = execa(bin, [], { stdio: 'inherit', reject: false });
 
-  // Unix-only: register the rapid-double-Ctrl+C escape handler.
-  // On Windows: skip entirely — SIGINT/process-group semantics differ and
-  // forced interception risks a broken console. Behaviour is as before today.
-  if (process.platform !== 'win32') {
-    const INTERRUPT_WINDOW_MS = 1_500;
-    const interruptTimes: number[] = [];
+    // Unix-only: register the rapid-double-Ctrl+C escape handler.
+    // On Windows: skip entirely — SIGINT/process-group semantics differ and
+    // forced interception risks a broken console. Behaviour is as before today.
+    if (process.platform !== 'win32') {
+      const INTERRUPT_WINDOW_MS = 1_500;
+      const interruptTimes: number[] = [];
 
-    const rawSigintHandler = (): void => {
-      const now = Date.now();
-      interruptTimes.push(now);
-      const count = countRecentInterrupts(interruptTimes, now, INTERRUPT_WINDOW_MS);
+      const rawSigintHandler = (): void => {
+        const now = Date.now();
+        interruptTimes.push(now);
+        const count = countRecentInterrupts(interruptTimes, now, INTERRUPT_WINDOW_MS);
 
-      // count === 1: do nothing — let the single Ctrl+C reach the child via the
-      // terminal's foreground-group delivery. Do NOT kill or write anything here.
-      if (shouldEscapeRawSession(count)) {
-        // Rapid double press → user wants to return to the menu.
-        out.write('\n[info] Returning to menu…\n');
-        subprocess.kill('SIGTERM');
+        // count === 1: do nothing — let the single Ctrl+C reach the child via the
+        // terminal's foreground-group delivery. Do NOT kill or write anything here.
+        if (shouldEscapeRawSession(count)) {
+          // Rapid double press → user wants to return to the menu.
+          out.write('\n[info] Returning to menu…\n');
+          subprocess.kill('SIGTERM');
+        }
+      };
+
+      process.on('SIGINT', rawSigintHandler);
+      try {
+        await subprocess;
+      } finally {
+        process.removeListener('SIGINT', rawSigintHandler);
       }
-    };
-
-    process.on('SIGINT', rawSigintHandler);
-    try {
+    } else {
+      // Windows: no SIGINT handler — await the child normally.
       await subprocess;
-    } finally {
-      process.removeListener('SIGINT', rawSigintHandler);
     }
-  } else {
-    // Windows: no SIGINT handler — await the child normally.
-    await subprocess;
+  } finally {
+    // Resume the menu reader only after the inherited child and SIGINT handler are gone.
+    resumeStdin?.();
   }
 
   out.write(`\nReturned from ${bin}.\n`);
@@ -3128,7 +3136,7 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
 
       // ---- [r] Open a raw provider session ------------------------------------
       if (key === 'r') {
-        await runRawProviderSession(out, readLine, mutableCtx.env);
+        await runRawProviderSession(out, readLine, mutableCtx.env, suspendStdin);
         continue;
       }
 
@@ -3148,7 +3156,9 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
 
       // ---- [k] Login Codex ----------------------------------------------------
       if (key === 'k') {
-        await loginFn(out, 'codex');
+        await loginFn(out, 'codex', {
+          ...(suspendStdin !== undefined ? { suspendStdin } : {}),
+        });
         mutableCtx.env = await detectEnvironmentFn();
         continue;
       }

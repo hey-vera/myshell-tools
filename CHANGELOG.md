@@ -9,6 +9,18 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 ### Pending
 - Cross-OS CI execution (requires a public remote).
 
+## [3.10.3]
+
+### Fixed
+- **Two more inherited-stdio stdin races fixed (same class as 3.10.1).** When the menu
+  hands the terminal to a native CLI via inherited stdio, the parent's line reader must
+  be suspended or it races the child for keystrokes. Two spots missed it: the **raw
+  provider session** (`[r]`) and **Codex login** (`[k]`) — Claude login already
+  suspended correctly. Both now suspend the parent's stdin for the duration and resume
+  after the child (and the raw session's SIGINT handler) is fully torn down, so the
+  native session owns the terminal cleanly and the menu's single-key input is intact on
+  return.
+
 ## [3.10.2]
 
 ### Changed
