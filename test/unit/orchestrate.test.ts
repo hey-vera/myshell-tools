@@ -1757,180 +1757,6 @@ describe("orchestrate — reviewPolicy:'critical-only' — high risk skips, crit
 });
 
 // ---------------------------------------------------------------------------
-// Feature B — maxCostUsd budget cap
-// ---------------------------------------------------------------------------
-
-describe('orchestrate — maxCostUsd budget cap stops escalation', () => {
-  it('budget exceeded before escalation → emits budget notice + success final instead of escalating', async () => {
-    // Set a very low budget so it's exceeded after the first IC run.
-    // IC run costs ~$0.0105 (1000 input + 500 output on claude-sonnet-4-6).
-    // Set budget to $0.005 so it's already exceeded after the IC completes.
-    const LOW_CONF_ENVELOPE =
-      '{"confidence": 0.3, "escalate": false, "reason": "not sure", "needs_review": false}';
-    const lowConfText = `I did some work.\n${LOW_CONF_ENVELOPE}`;
-
-    let callCount = 0;
-    const smartProvider: Provider = {
-      id: 'claude',
-      async detect() {
-        return { id: 'claude', installed: true, version: '1.0.0', authenticated: true, binaryPath: '/usr/bin/fake', availableModels: [] };
-      },
-      async *run(_req: ProviderRequest, _signal: AbortSignal): AsyncIterable<ProviderEvent> {
-        callCount++;
-        yield { type: 'done', text: lowConfText, usage: FAKE_USAGE, raw: {} };
-      },
-    };
-
-    const deps: OrchestrateDeps = {
-      providers: { claude: smartProvider },
-      clock: makeFakeClock(),
-      session: makeFakeSession(),
-      ledger: makeFakeLedger(),
-      // Budget of $0.001 will be exceeded after the first IC run (~$0.0105)
-      policy: { ...DEFAULT_POLICY, maxCostUsd: 0.001, maxTier: 'manager' },
-      cwd: '/fake/cwd',
-      sandbox: 'workspace-write',
-      timeoutMs: 30_000,
-    };
-
-    const events = await collectEvents(
-      orchestrate('refactor X', deps, new AbortController().signal),
-    );
-
-    // Budget notice must have been emitted
-    const budgetNotice = events.find(
-      (e) => e.type === 'notice' && e.level === 'warn' && e.message.includes('cost budget reached'),
-    );
-    assert.ok(budgetNotice !== undefined, 'Expected a budget-reached warn notice');
-
-    // Must NOT have escalated (only 1 provider call)
-    assert.equal(callCount, 1, 'Provider must only be called once when budget is exceeded');
-
-    // No escalate event
-    const escalateEv = events.find((e) => e.type === 'escalate');
-    assert.equal(escalateEv, undefined, 'Must not escalate when budget is exceeded');
-
-    // Final must be success:true (budget cap = accept best, not fail)
-    const finalEv = events.find((e) => e.type === 'final');
-    assert.ok(finalEv !== undefined);
-    if (finalEv.type === 'final') {
-      assert.equal(finalEv.success, true, 'Budget cap must yield success:true (accepted best result)');
-    }
-  });
-
-  it('no budget cap (maxCostUsd absent) behaves exactly as before (escalation proceeds)', async () => {
-    // Same low-confidence scenario, but with no budget cap — escalation must happen.
-    const LOW_CONF_ENVELOPE =
-      '{"confidence": 0.3, "escalate": false, "reason": "not sure", "needs_review": false}';
-    const HIGH_CONF_ENVELOPE =
-      '{"confidence": 0.92, "escalate": false, "reason": "manager done", "needs_review": false}';
-
-    let callCount = 0;
-    const smartProvider: Provider = {
-      id: 'claude',
-      async detect() {
-        return { id: 'claude', installed: true, version: '1.0.0', authenticated: true, binaryPath: '/usr/bin/fake', availableModels: [] };
-      },
-      async *run(_req: ProviderRequest, _signal: AbortSignal): AsyncIterable<ProviderEvent> {
-        callCount++;
-        const text = callCount === 1
-          ? `I did some work.\n${LOW_CONF_ENVELOPE}`
-          : `Manager reviewed.\n${HIGH_CONF_ENVELOPE}`;
-        yield { type: 'done', text, usage: FAKE_USAGE, raw: {} };
-      },
-    };
-
-    const deps: OrchestrateDeps = {
-      providers: { claude: smartProvider },
-      clock: makeFakeClock(),
-      session: makeFakeSession(),
-      ledger: makeFakeLedger(),
-      policy: { ...DEFAULT_POLICY, maxTier: 'manager' }, // no maxCostUsd — uncapped; escalation permitted
-      cwd: '/fake/cwd',
-      sandbox: 'workspace-write',
-      timeoutMs: 30_000,
-    };
-
-    const events = await collectEvents(
-      orchestrate('refactor X', deps, new AbortController().signal),
-    );
-
-    // Escalation must have occurred (2 provider calls)
-    assert.ok(callCount >= 2, `Expected ≥2 provider calls without budget cap, got ${callCount}`);
-
-    const escalateEv = events.find((e) => e.type === 'escalate');
-    assert.ok(escalateEv !== undefined, 'Expected an escalate event when no budget cap');
-
-    const budgetNotice = events.find(
-      (e) => e.type === 'notice' && e.level === 'warn' && e.message.includes('cost budget reached'),
-    );
-    assert.equal(budgetNotice, undefined, 'Must not emit budget notice when maxCostUsd is absent');
-  });
-
-  it('budget exceeded before cross-vendor review → emits budget notice + success final instead of reviewing', async () => {
-    // "payment" → high risk → review would normally be triggered.
-    // Set a budget so low it's exceeded after IC completes, before review starts.
-    const icEnvelope =
-      '{"confidence": 0.85, "escalate": false, "reason": "done", "needs_review": false}';
-    const icText = `Payment code implemented.\n${icEnvelope}`;
-
-    let codexRunCount = 0;
-    const claudeProvider: Provider = {
-      id: 'claude',
-      async detect() {
-        return { id: 'claude', installed: true, version: '1.0.0', authenticated: true, binaryPath: '/usr/bin/fake', availableModels: [] };
-      },
-      async *run(_req: ProviderRequest, _signal: AbortSignal): AsyncIterable<ProviderEvent> {
-        yield { type: 'done', text: icText, usage: FAKE_USAGE, raw: {} };
-      },
-    };
-
-    const codexProvider: Provider = {
-      id: 'codex',
-      async detect() {
-        return { id: 'codex', installed: true, version: '1.0.0', authenticated: true, binaryPath: '/usr/bin/fake', availableModels: [] };
-      },
-      async *run(_req: ProviderRequest, _signal: AbortSignal): AsyncIterable<ProviderEvent> {
-        codexRunCount++;
-        yield { type: 'done', text: '{"verdict": "approve", "notes": "ok", "confidence": 0.9}', usage: { inputTokens: 100, outputTokens: 50 }, raw: {} };
-      },
-    };
-
-    const deps: OrchestrateDeps = {
-      providers: { claude: claudeProvider, codex: codexProvider },
-      clock: makeFakeClock(),
-      session: makeFakeSession(),
-      ledger: makeFakeLedger(),
-      // Budget exceeded after the IC run (~$0.0105), before review ($0.001 threshold)
-      policy: { ...DEFAULT_POLICY, maxCostUsd: 0.001 },
-      cwd: '/fake/cwd',
-      sandbox: 'workspace-write',
-      timeoutMs: 30_000,
-    };
-
-    const events = await collectEvents(
-      orchestrate('implement payment handler', deps, new AbortController().signal),
-    );
-
-    // Budget notice must have been emitted
-    const budgetNotice = events.find(
-      (e) => e.type === 'notice' && e.level === 'warn' && e.message.includes('cost budget reached'),
-    );
-    assert.ok(budgetNotice !== undefined, 'Expected a budget-reached warn notice');
-
-    // Codex reviewer must NOT have run
-    assert.equal(codexRunCount, 0, 'codex reviewer must not run when budget is exceeded before review');
-
-    // Final must be success:true
-    const finalEv = events.find((e) => e.type === 'final');
-    assert.ok(finalEv !== undefined);
-    if (finalEv.type === 'final') {
-      assert.equal(finalEv.success, true, 'Budget cap must yield success:true');
-    }
-  });
-});
-
-// ---------------------------------------------------------------------------
 // Cross-vendor failover on provider error
 // ---------------------------------------------------------------------------
 
@@ -2104,10 +1930,10 @@ describe('orchestrate — cross-vendor failover on provider error', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Default policy unchanged — no reviewPolicy / no maxCostUsd
+// Default policy — review still fires; the retired budget guard emits no notice
 // ---------------------------------------------------------------------------
 
-describe('orchestrate — default policy unchanged (no reviewPolicy / no maxCostUsd)', () => {
+describe('orchestrate — default policy: review fires, no budget notice (guard retired)', () => {
   it('high-risk task with default policy still triggers cross-vendor review', async () => {
     const icEnvelope =
       '{"confidence": 0.85, "escalate": false, "reason": "done", "needs_review": false}';
@@ -2153,10 +1979,12 @@ describe('orchestrate — default policy unchanged (no reviewPolicy / no maxCost
     // Default policy must still trigger review for high risk
     assert.ok(codexRunCount >= 1, 'Default policy must trigger cross-vendor review for high risk');
 
+    // The dollar budget guard is retired (fiction on a flat-rate subscription), so
+    // a 'cost budget reached' notice must never appear.
     const budgetNotice = events.find(
       (e) => e.type === 'notice' && e.level === 'warn' && e.message.includes('cost budget reached'),
     );
-    assert.equal(budgetNotice, undefined, 'No budget notice must appear with default policy (uncapped)');
+    assert.equal(budgetNotice, undefined, 'retired budget guard must emit no cost-budget notice');
 
     const finalEv = events.find((e) => e.type === 'final');
     assert.ok(finalEv !== undefined);

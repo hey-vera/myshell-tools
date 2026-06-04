@@ -164,14 +164,6 @@ export interface Policy {
    */
   readonly reviewPolicy?: 'auto' | 'critical-only' | 'off';
   /**
-   * Per-task cost budget cap in USD.  When `totalCostUsd` reaches or exceeds
-   * this value, orchestrate() stops spending (no new escalation, no new review)
-   * and accepts the best result produced so far.
-   *
-   * `null` or `undefined` (the default) means no cap is applied.
-   */
-  readonly maxCostUsd?: number | null;
-  /**
    * Hard ceiling on the tier a task may run at, regardless of how the message
    * was classified. e.g. `'ic'` clamps a message classified `'manager'` down to
    * `'ic'`, so a single soft keyword (e.g. "plan") can't launch the most

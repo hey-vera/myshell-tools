@@ -7,10 +7,11 @@
  * then `claude auth status` to probe real authentication state.
  * Codex detection is REAL: spawns `codex --version` to probe installation,
  * then `codex login status` to probe real authentication state.
- * Opencode detection is REAL: spawns `opencode --version` to probe installation.
- * Opencode is authenticated:true when installed because it ships free models
- * (e.g. opencode/deepseek-v4-flash-free) that require no credentials — the
- * honest statement is "usable immediately without credentials".
+ * Opencode detection is REAL: spawns `opencode --version` to probe installation,
+ * then `opencode auth list` to probe real authentication state. Opencode is
+ * authenticated ONLY when at least one provider/subscription credential is
+ * configured (its free models alone can't do serious work, so a zero-credential
+ * install is treated as not-ready). See detectOpencodeProvider / parseOpencodeAuth.
  *
  * Plan labels are only set when clearly present in CLI output — never fabricated.
  */
@@ -197,12 +198,11 @@ export function credentialFileIndicatesAuth(rawCredsJson: string, nowMs: number)
  * On spawn failure of the status command, falls back gracefully: installed
  * remains true, authenticated false, plan null.
  *
- * For 'opencode': runs `opencode --version` to confirm the binary is present.
- * When installed, authenticated is always true because opencode ships free
- * models (e.g. opencode/deepseek-v4-flash-free) that require no credentials —
- * a fresh install is immediately usable without any sign-in step.
- * Plan is always null (opencode does not expose a subscription tier in
- * `opencode --version` output).
+ * For 'opencode': runs `opencode --version` to confirm the binary is present,
+ * then delegates to detectOpencodeProvider, which probes `opencode auth list`.
+ * authenticated is true ONLY when at least one credential is configured — the
+ * free models alone are not treated as ready (a serious task routed to a zero-
+ * credential opencode is doomed). Plan is always null (opencode exposes no tier).
  */
 export async function detectProvider(
   id: 'claude' | 'codex' | 'opencode',

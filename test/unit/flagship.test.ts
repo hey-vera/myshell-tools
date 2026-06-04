@@ -178,7 +178,6 @@ describe('authorizeTier — maxTier fallback (policies predating flagshipAdmissi
   // setting it to undefined) — these model a config that predates the new field.
   const legacyBase: Policy = {
     maxAttempts: 3,
-    maxCostUsd: 2.0,
     escalateBelowConfidence: { low: 0.4, medium: 0.5, high: 0.7, critical: 0.8 },
     providerOrderByTier: { worker: ['claude'], ic: ['claude'], manager: ['claude'] },
     reviewPolicy: 'auto',

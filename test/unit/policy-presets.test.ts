@@ -154,28 +154,33 @@ describe('POLICY_PRESETS — maxTier ceiling', () => {
 });
 
 // ---------------------------------------------------------------------------
-// POLICY_PRESETS — maxCostUsd budget guard (round, documented per-preset)
+// POLICY_PRESETS — flagship admission (replaces the retired maxCostUsd guard)
 // ---------------------------------------------------------------------------
 
-describe('POLICY_PRESETS — maxCostUsd budget guard', () => {
-  it('cost-saver caps at $0.50', () => {
-    assert.equal(POLICY_PRESETS['cost-saver'].maxCostUsd, 0.5);
+describe('POLICY_PRESETS — flagshipAdmission', () => {
+  it("cost-saver is 'never-auto' (and never spends a flagship attempt)", () => {
+    assert.equal(POLICY_PRESETS['cost-saver'].flagshipAdmission, 'never-auto');
+    assert.equal(POLICY_PRESETS['cost-saver'].maxFlagshipAttemptsPerTurn, 0);
   });
 
-  it('balanced / DEFAULT_POLICY caps at $2.00', () => {
-    assert.equal(POLICY_PRESETS['balanced'].maxCostUsd, 2.0);
-    assert.equal(DEFAULT_POLICY.maxCostUsd, 2.0);
+  it("balanced / DEFAULT_POLICY is 'adaptive' with one flagship pass per turn", () => {
+    assert.equal(POLICY_PRESETS['balanced'].flagshipAdmission, 'adaptive');
+    assert.equal(DEFAULT_POLICY.flagshipAdmission, 'adaptive');
+    assert.equal(DEFAULT_POLICY.maxFlagshipAttemptsPerTurn, 1);
   });
 
-  it('quality-first has no cap (null)', () => {
-    assert.equal(POLICY_PRESETS['quality-first'].maxCostUsd, null);
+  it("quality-first is 'always-eligible'", () => {
+    assert.equal(POLICY_PRESETS['quality-first'].flagshipAdmission, 'always-eligible');
   });
 
-  it('cost-saver budget is strictly below balanced (cheaper preset = tighter cap)', () => {
-    const cs = POLICY_PRESETS['cost-saver'].maxCostUsd;
-    const bal = POLICY_PRESETS['balanced'].maxCostUsd;
-    assert.ok(typeof cs === 'number' && typeof bal === 'number');
-    assert.ok((cs as number) < (bal as number), `cost-saver ${cs} must be < balanced ${bal}`);
+  it('the dollar budget guard is retired — no preset carries maxCostUsd', () => {
+    for (const mode of ['cost-saver', 'balanced', 'quality-first'] as const) {
+      assert.equal(
+        'maxCostUsd' in POLICY_PRESETS[mode],
+        false,
+        `${mode} must not carry the retired maxCostUsd field`,
+      );
+    }
   });
 });
 

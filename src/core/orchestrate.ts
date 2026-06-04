@@ -40,7 +40,6 @@ import { compactHistory } from './history.js';
 import { getModelPricing, calculateCost } from '../infra/pricing.js';
 import { nextTierUp, pickReviewer } from './escalate.js';
 import { buildReviewPrompt, parseReviewVerdict } from './review.js';
-import { budgetExceeded } from './budget.js';
 
 // ---------------------------------------------------------------------------
 // Pure helper: should this output be cross-vendor reviewed?
@@ -620,30 +619,10 @@ export async function* orchestrate(
     //    Guard: each attempt is reviewed at most once (prevents infinite loops).
     //    Guard: skip review if the only available reviewer is the same vendor
     //           (cross-vendor review is required; same-vendor-only → skip).
-    //    Guard: skip review when budget is exhausted (gating new spend only).
     if (
       shouldReview(classification, assessment, deps.policy.reviewPolicy) &&
       !reviewedAttempts.has(attempts)
     ) {
-      // Budget cap: do not start a review run if we have already spent the cap.
-      if (budgetExceeded(totalCostUsd, deps.policy.maxCostUsd)) {
-        yield {
-          type: 'notice',
-          level: 'warn',
-          message: 'cost budget reached — accepting best result so far',
-        };
-        yield {
-          type: 'final',
-          success: true,
-          output: lastOutput,
-          tier: currentTier,
-          totalCostUsd,
-          sessionId: deps.session.id,
-          attempts,
-        };
-        return;
-      }
-
       const reviewerId = pickReviewer(available, decision.provider);
       // Only proceed with a DIFFERENT-vendor reviewer (cross-vendor requirement).
       const reviewerProvider =
@@ -801,24 +780,6 @@ export async function* orchestrate(
           }
 
           if (verdict.verdict === 'revise') {
-            // Budget cap: do not retry current tier if we have spent the cap.
-            if (budgetExceeded(totalCostUsd, deps.policy.maxCostUsd)) {
-              yield {
-                type: 'notice',
-                level: 'warn',
-                message: 'cost budget reached — accepting best result so far',
-              };
-              yield {
-                type: 'final',
-                success: true,
-                output: lastOutput,
-                tier: currentTier,
-                totalCostUsd,
-                sessionId: deps.session.id,
-                attempts,
-              };
-              return;
-            }
             // Retry current tier with reviewer's notes
             managerNotes = verdict.notes;
             continue mainLoop;
@@ -870,24 +831,6 @@ export async function* orchestrate(
             };
             return;
           }
-          // Budget cap: do not escalate to a new tier if we have spent the cap.
-          if (budgetExceeded(totalCostUsd, deps.policy.maxCostUsd)) {
-            yield {
-              type: 'notice',
-              level: 'warn',
-              message: 'cost budget reached — accepting best result so far',
-            };
-            yield {
-              type: 'final',
-              success: true,
-              output: lastOutput,
-              tier: currentTier,
-              totalCostUsd,
-              sessionId: deps.session.id,
-              attempts,
-            };
-            return;
-          }
           yield { type: 'escalate', from: currentTier, to: escalateTo, reason: 'reviewer escalation' };
           currentTier = escalateTo;
           continue mainLoop;
@@ -916,25 +859,6 @@ export async function* orchestrate(
           ? nextTier
           : null;
     if (needEsc && escalateTo !== null) {
-      // Budget cap: do not escalate to a new tier if we have spent the cap.
-      if (budgetExceeded(totalCostUsd, deps.policy.maxCostUsd)) {
-        yield {
-          type: 'notice',
-          level: 'warn',
-          message: 'cost budget reached — accepting best result so far',
-        };
-        yield {
-          type: 'final',
-          success: true,
-          output: lastOutput,
-          tier: currentTier,
-          totalCostUsd,
-          sessionId: deps.session.id,
-          attempts,
-        };
-        return;
-      }
-
       const escalateReason =
         assessment.reason !== 'model provided no reason' &&
         assessment.reason !== 'no confidence envelope'

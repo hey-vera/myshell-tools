@@ -8,8 +8,21 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ### Pending
 - Cross-OS CI execution (requires a public remote).
-- Retire `maxCostUsd` as an orchestration guard (fiction on a flat-rate subscription;
-  keep only for ledger/report views) — follow-up from the adaptive-admission design.
+
+## [3.7.1]
+
+### Removed
+- **Retired the `maxCostUsd` dollar budget guard.** On a flat-rate subscription a USD
+  cap is fiction (the GPT-5.5 design review flagged it), and `maxAttempts` already
+  bounds the loop against runaway. Removed the four budget gates from `orchestrate.ts`,
+  deleted `src/core/budget.ts`, and dropped the `Policy.maxCostUsd` field and its preset
+  values. The real scarce resource (rate-limit headroom) is handled by the per-session
+  cooldown and the adaptive free-plan veto, not a dollar number.
+
+### Fixed
+- Corrected the stale `detect.ts` doc comments that claimed opencode is "authenticated
+  when installed because free models need no credentials" — the implementation requires
+  at least one configured credential (`opencode auth list`), which the comments now match.
 
 ## [3.7.0]
 

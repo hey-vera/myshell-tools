@@ -24,12 +24,6 @@ export const DEFAULT_POLICY: Policy = {
   flagshipAdmission: 'adaptive',
   maxFlagshipAttemptsPerTurn: 1,
 
-  // Per-task USD budget guard. DEPRECATED as an orchestration control — on a
-  // flat-rate subscription this dollar figure is fiction (see CHANGELOG/tokens-not-
-  // dollars). Retained only so historical ledger/report views keep a number; the
-  // budget guard is being retired from the escalation path.
-  maxCostUsd: 2.0,
-
   // Higher-risk work demands higher confidence before we accept it; below the
   // threshold we escalate to a higher tier (or, later, a cross-vendor review).
   escalateBelowConfidence: {
@@ -66,9 +60,11 @@ export const DEFAULT_POLICY: Policy = {
  * - quality-first: lowers escalation thresholds so it escalates sooner and reviews
  *                  more. flagshipAdmission 'always-eligible' — manager whenever asked.
  *
- * maxTier is enforced by route() (the single clamp chokepoint); maxCostUsd is
- * enforced by orchestrate()'s budget guard. The dollar figures are defensible
- * round ceilings, not measured precision.
+ * Manager-tier access is governed by flagshipAdmission (core/flagship.ts), with
+ * maxTier kept only as route()'s clamp safety net. There is no dollar budget guard:
+ * on a flat-rate subscription a USD cap is fiction, and maxAttempts already bounds
+ * the loop. The real scarce resource (rate-limit headroom) is handled per-session
+ * by the cooldown (core/cooldown.ts) and the free-plan veto in flagship admission.
  */
 export type Mode = 'cost-saver' | 'balanced' | 'quality-first';
 
@@ -243,8 +239,6 @@ export const POLICY_PRESETS: Record<Mode, Policy> = {
     maxTier: 'ic',
     flagshipAdmission: 'never-auto',
     maxFlagshipAttemptsPerTurn: 0,
-    // Smallest budget guard — a defensible round ceiling, not measured precision.
-    maxCostUsd: 0.5,
     escalateBelowConfidence: {
       low: 0.2,
       medium: 0.3,
@@ -268,9 +262,6 @@ export const POLICY_PRESETS: Record<Mode, Policy> = {
     // (and reviewing with) the most capable model is the intended behaviour.
     maxTier: 'manager',
     flagshipAdmission: 'always-eligible',
-    // No budget cap: quality-first prioritises quality over token cost, so the
-    // budget guard is disabled (null = no cap).
-    maxCostUsd: null,
     escalateBelowConfidence: {
       low: 0.6,
       medium: 0.7,
