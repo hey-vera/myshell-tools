@@ -269,7 +269,8 @@ async function runAttempt(
       events.push({ type: 'provider-event', tier: decision.tier, event: ev });
       if (ev.type === 'done') {
         finalText = ev.text;
-        if (ev.usage !== undefined && usage === undefined) usage = ev.usage;
+        // done.usage is the authoritative accumulated total.
+        if (ev.usage !== undefined) usage = ev.usage;
         if (ev.costUsd !== undefined) providerCostUsd = ev.costUsd;
       } else if (ev.type === 'error') {
         errored = ev.error;

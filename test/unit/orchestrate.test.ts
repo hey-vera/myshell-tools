@@ -612,6 +612,66 @@ describe('orchestrate — usage from usage event', () => {
     const expectedUsd = (2000 / 1_000_000) * 3 + (1000 / 1_000_000) * 15;
     assert.ok(Math.abs(entry.usd - expectedUsd) < 1e-9);
   });
+
+  it('uses done.usage as the authoritative total when an earlier usage event exists', async () => {
+    const stepUsage: Usage = { inputTokens: 100, outputTokens: 50 };
+    const doneUsage: Usage = { inputTokens: 300, outputTokens: 120 };
+    const providerWithStepAndDoneUsage = makeFakeProvider('claude', [
+      { type: 'text', delta: 'Result text\n' },
+      { type: 'usage', usage: stepUsage },
+      { type: 'done', text: `Result text\n${CONFIDENCE_ENVELOPE}`, usage: doneUsage, raw: {} },
+    ]);
+
+    const clock = makeFakeClock();
+    const session = makeFakeSession();
+    const ledger = makeFakeLedger();
+    const deps: OrchestrateDeps = {
+      providers: { claude: providerWithStepAndDoneUsage },
+      clock,
+      session,
+      ledger,
+      policy: DEFAULT_POLICY,
+      cwd: '/fake/cwd',
+      sandbox: 'workspace-write',
+      timeoutMs: 30_000,
+    };
+
+    await collectEvents(orchestrate('refactor X', deps, new AbortController().signal));
+
+    assert.equal(ledger.entries.length, 1);
+    const entry = ledger.entries[0]!;
+    assert.equal(entry.inputTokens, 300);
+    assert.equal(entry.outputTokens, 120);
+  });
+
+  it('records done.usage when no earlier usage event exists', async () => {
+    const doneUsage: Usage = { inputTokens: 300, outputTokens: 120 };
+    const providerWithDoneUsageOnly = makeFakeProvider('claude', [
+      { type: 'text', delta: 'Result text\n' },
+      { type: 'done', text: `Result text\n${CONFIDENCE_ENVELOPE}`, usage: doneUsage, raw: {} },
+    ]);
+
+    const clock = makeFakeClock();
+    const session = makeFakeSession();
+    const ledger = makeFakeLedger();
+    const deps: OrchestrateDeps = {
+      providers: { claude: providerWithDoneUsageOnly },
+      clock,
+      session,
+      ledger,
+      policy: DEFAULT_POLICY,
+      cwd: '/fake/cwd',
+      sandbox: 'workspace-write',
+      timeoutMs: 30_000,
+    };
+
+    await collectEvents(orchestrate('refactor X', deps, new AbortController().signal));
+
+    assert.equal(ledger.entries.length, 1);
+    const entry = ledger.entries[0]!;
+    assert.equal(entry.inputTokens, 300);
+    assert.equal(entry.outputTokens, 120);
+  });
 });
 
 // ---------------------------------------------------------------------------

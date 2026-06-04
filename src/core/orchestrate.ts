@@ -151,7 +151,8 @@ async function* streamProvider(
 
     if (ev.type === 'done') {
       finalText = ev.text;
-      if (ev.usage !== undefined && usage === undefined) {
+      // done.usage is the authoritative accumulated total.
+      if (ev.usage !== undefined) {
         usage = ev.usage;
       }
       if (ev.costUsd !== undefined) {
@@ -196,7 +197,8 @@ async function collectProviderRun(
   for await (const ev of provider.run(req, signal)) {
     if (ev.type === 'done') {
       finalText = ev.text;
-      if (ev.usage !== undefined && usage === undefined) {
+      // done.usage is the authoritative accumulated total.
+      if (ev.usage !== undefined) {
         usage = ev.usage;
       }
       if (ev.costUsd !== undefined) {

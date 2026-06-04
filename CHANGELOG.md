@@ -10,6 +10,16 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 - Cross-OS CI execution (requires a public remote).
 - opencode native-session continuity (`run --session`) — feature add, needs live opencode verification.
 
+## [3.10.13]
+
+### Fixed
+- **Accurate token accounting for multi-step opencode runs.** opencode emits per-step
+  `usage` events plus a terminal `done` whose usage is the accumulated total, but the
+  stream consumers used "first usage wins" — so the ledger recorded only the first
+  step's tokens. `done.usage` is now authoritative (overrides earlier per-step usage)
+  across all five consumers (orchestrate, panel, hedge). No-op for Claude/Codex (their
+  `done.usage` matches the usage emitted alongside it).
+
 ## [3.10.12]
 
 ### Fixed
