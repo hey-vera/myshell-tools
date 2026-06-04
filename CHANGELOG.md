@@ -9,6 +9,20 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 ### Pending
 - Cross-OS CI execution (requires a public remote).
 
+## [3.9.1]
+
+### Added
+- **The Panel and Learned Routing are now first-class Settings toggles** ([7] Panel,
+  [8] Learned routing), so the two experimental engine upgrades are visible and
+  reversible from the UI instead of hand-edited JSON — matching the "visible, not
+  buried in config" philosophy used for Mode and Native sessions.
+
+### Fixed
+- **Settings toggles no longer drop your experimental flags.** Each toggle rebuilds the
+  config object field-by-field, and the new `panel` / `learnRouting` flags weren't
+  carried — so changing any setting silently reset them. Every Settings rebuild site now
+  preserves both (and a regression test asserts toggling one setting keeps the others).
+
 ## [3.9.0]
 
 ### Added

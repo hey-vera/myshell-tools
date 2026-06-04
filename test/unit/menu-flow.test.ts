@@ -37,6 +37,40 @@ import type {
 import type { Provider, ProviderRequest, ProviderEvent, Usage } from '../../src/providers/port.ts';
 import type { EnvironmentStatus } from '../../src/providers/detect.ts';
 import type { AppConfig } from '../../src/infra/config.ts';
+import { loadConfig } from '../../src/infra/config.ts';
+import { resolveStateHome } from '../../src/infra/state-dir.ts';
+import { homedir } from 'node:os';
+
+/**
+ * Run `fn` with the app state home forced to `home`: HOME is overridden and the
+ * Replit env vars are cleared so `defaultStateHome()` (used by menu's saveConfig,
+ * which takes no explicit homeDir) resolves to `home`. Restores env after.
+ */
+async function withStateHome<T>(home: string, fn: () => Promise<T>): Promise<T> {
+  const keys = ['HOME', 'REPL_ID', 'REPLIT_DEV_DOMAIN'] as const;
+  const orig = new Map(keys.map((k) => [k, process.env[k]] as const));
+  const restore = (k: string, v: string | undefined): void => {
+    if (v !== undefined) process.env[k] = v;
+    else Reflect.deleteProperty(process.env, k);
+  };
+  process.env['HOME'] = home;
+  restore('REPL_ID', undefined);
+  restore('REPLIT_DEV_DOMAIN', undefined);
+  try {
+    return await fn();
+  } finally {
+    for (const [k, v] of orig) restore(k, v);
+  }
+}
+
+/**
+ * Read the config back the same way production resolves its state home (with the
+ * env that `withStateHome` installed), so persistence assertions match what the
+ * menu's saveConfig actually wrote.
+ */
+async function readPersistedConfig(): Promise<AppConfig> {
+  return loadConfig(resolveStateHome(process.env, process.cwd(), homedir()));
+}
 
 // ---------------------------------------------------------------------------
 // Scripted readLine helper
@@ -3469,6 +3503,148 @@ describe('startMenu — update notifier: banner, [u], auto-update', () => {
       sink.buf.includes('Update on launch: off') || sink.buf.includes('Update on launch'),
       'toggling must report the new update-on-launch state',
     );
+  });
+
+  // ---- Settings toggles for the experimental flags (panel / learnRouting) --
+
+  it('[s] settings shows the [7] Panel and [8] Learned routing toggle lines', async () => {
+    const sink = makeSink();
+    const ctx = makeCtx({
+      readLine: makeScriptedReader(['s', '', 'q']),  // settings → Enter (back) → quit
+    });
+
+    await startMenu(ctx, sink);
+
+    assert.ok(
+      sink.buf.includes('[7]') && sink.buf.toLowerCase().includes('panel'),
+      'settings must show the [7] Panel (experimental) toggle line',
+    );
+    assert.ok(
+      sink.buf.includes('[8]') && sink.buf.toLowerCase().includes('learned routing'),
+      'settings must show the [8] Learned routing (experimental) toggle line',
+    );
+  });
+
+  it('[s] → [7] toggles panel ON and persists it', async () => {
+    const sink = makeSink();
+    const dir = join(tmpdir(), `menu-panel-toggle-${randomUUID()}`);
+    const config: AppConfig = { onboarded: true, setAsDefault: false, smartRoute: false };
+    const ctx = makeCtx({
+      config,
+      cwd: dir,
+      readLine: makeScriptedReader(['s', '7', 'q']),  // settings → [7] toggle → quit
+    });
+
+    const persisted = await withStateHome(dir, async () => {
+      await assert.doesNotReject(() => startMenu(ctx, sink));
+      return readPersistedConfig();
+    });
+
+    assert.ok(
+      sink.buf.includes('Panel (experimental): on'),
+      'toggling [7] must report panel on',
+    );
+    assert.equal(persisted.panel, true, 'panel must be persisted as true');
+  });
+
+  it('[s] → [8] toggles learnRouting ON and persists it', async () => {
+    const sink = makeSink();
+    const dir = join(tmpdir(), `menu-learnrouting-toggle-${randomUUID()}`);
+    const config: AppConfig = { onboarded: true, setAsDefault: false, smartRoute: false };
+    const ctx = makeCtx({
+      config,
+      cwd: dir,
+      readLine: makeScriptedReader(['s', '8', 'q']),  // settings → [8] toggle → quit
+    });
+
+    const persisted = await withStateHome(dir, async () => {
+      await assert.doesNotReject(() => startMenu(ctx, sink));
+      return readPersistedConfig();
+    });
+
+    assert.ok(
+      sink.buf.includes('Learned routing (experimental): on'),
+      'toggling [8] must report learned routing on',
+    );
+    assert.equal(persisted.learnRouting, true, 'learnRouting must be persisted as true');
+  });
+
+  // The bug this guards against: rebuilding the config for ANY toggle used to
+  // drop unrelated experimental flags. Start with panel + learnRouting ON, flip
+  // a DIFFERENT setting, and assert both survive.
+  it('[s] → [4] native-sessions toggle PRESERVES panel and learnRouting', async () => {
+    const sink = makeSink();
+    const dir = join(tmpdir(), `menu-preserve-toggle-${randomUUID()}`);
+    const config: AppConfig = {
+      onboarded: true,
+      setAsDefault: false,
+      smartRoute: false,
+      panel: true,
+      learnRouting: true,
+    };
+    const ctx = makeCtx({
+      config,
+      cwd: dir,
+      readLine: makeScriptedReader(['s', '4', 'q']),  // settings → [4] native sessions → quit
+    });
+
+    const persisted = await withStateHome(dir, async () => {
+      await assert.doesNotReject(() => startMenu(ctx, sink));
+      return readPersistedConfig();
+    });
+
+    assert.equal(persisted.panel, true, 'toggling native sessions must NOT drop panel');
+    assert.equal(persisted.learnRouting, true, 'toggling native sessions must NOT drop learnRouting');
+    assert.equal(persisted.nativeSessions, true, 'native sessions should now be on');
+  });
+
+  it('[s] → [6] smart-routing toggle PRESERVES panel and learnRouting', async () => {
+    const sink = makeSink();
+    const dir = join(tmpdir(), `menu-preserve-smartroute-${randomUUID()}`);
+    const config: AppConfig = {
+      onboarded: true,
+      setAsDefault: false,
+      smartRoute: false,
+      panel: true,
+      learnRouting: true,
+    };
+    const ctx = makeCtx({
+      config,
+      cwd: dir,
+      readLine: makeScriptedReader(['s', '6', 'q']),  // settings → [6] smart routing → quit
+    });
+
+    const persisted = await withStateHome(dir, async () => {
+      await assert.doesNotReject(() => startMenu(ctx, sink));
+      return readPersistedConfig();
+    });
+
+    assert.equal(persisted.panel, true, 'toggling smart routing must NOT drop panel');
+    assert.equal(persisted.learnRouting, true, 'toggling smart routing must NOT drop learnRouting');
+  });
+
+  it('toggling panel PRESERVES learnRouting (and vice-versa)', async () => {
+    const sink = makeSink();
+    const dir = join(tmpdir(), `menu-preserve-cross-${randomUUID()}`);
+    const config: AppConfig = {
+      onboarded: true,
+      setAsDefault: false,
+      smartRoute: false,
+      learnRouting: true,
+    };
+    const ctx = makeCtx({
+      config,
+      cwd: dir,
+      readLine: makeScriptedReader(['s', '7', 'q']),  // settings → [7] panel → quit
+    });
+
+    const persisted = await withStateHome(dir, async () => {
+      await assert.doesNotReject(() => startMenu(ctx, sink));
+      return readPersistedConfig();
+    });
+
+    assert.equal(persisted.panel, true, 'panel must turn on');
+    assert.equal(persisted.learnRouting, true, 'toggling panel must NOT drop learnRouting');
   });
 
   // ---- Wizard auto-update prompt ------------------------------------------

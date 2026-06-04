@@ -1370,6 +1370,8 @@ async function runModeSelect(
     ...(config.verbosity !== undefined ? { verbosity: config.verbosity } : {}),
     ...(config.timeoutMs !== undefined ? { timeoutMs: config.timeoutMs } : {}),
     ...(config.smartRoute === false ? { smartRoute: false } : {}),
+    ...(config.panel === true ? { panel: true } : {}),
+    ...(config.learnRouting === true ? { learnRouting: true } : {}),
   };
 
   await saveConfig(updated);
@@ -1421,6 +1423,8 @@ async function runVerbositySelect(
     ...(newVerbosity !== undefined ? { verbosity: newVerbosity } : {}),
     ...(config.timeoutMs !== undefined ? { timeoutMs: config.timeoutMs } : {}),
     ...(config.smartRoute === false ? { smartRoute: false } : {}),
+    ...(config.panel === true ? { panel: true } : {}),
+    ...(config.learnRouting === true ? { learnRouting: true } : {}),
   };
 
   await saveConfig(updated);
@@ -1454,6 +1458,8 @@ async function toggleDefaultShell(
     ...(config.verbosity !== undefined ? { verbosity: config.verbosity } : {}),
     ...(config.timeoutMs !== undefined ? { timeoutMs: config.timeoutMs } : {}),
     ...(config.smartRoute === false ? { smartRoute: false } : {}),
+    ...(config.panel === true ? { panel: true } : {}),
+    ...(config.learnRouting === true ? { learnRouting: true } : {}),
   };
   await saveConfig(updated);
   return updated;
@@ -1476,6 +1482,8 @@ async function runSettings(
     `  [4] Native sessions (experimental): ${cfg.nativeSessions === true ? 'on' : 'off'}`,
     `  [5] Output detail: ${cfg.verbosity ?? 'normal'}`,
     `  [6] Smart routing: ${cfg.smartRoute !== false ? 'on' : 'off'}`,
+    `  [7] Panel (experimental): ${cfg.panel === true ? 'on' : 'off'}`,
+    `  [8] Learned routing (experimental): ${cfg.learnRouting === true ? 'on' : 'off'}`,
     '',
     '  [Enter] Back',
     '',
@@ -1500,6 +1508,10 @@ async function runSettings(
     mutableCtx.config = await runVerbositySelect(mutableCtx.config, out, readLine);
   } else if (key === '6') {
     mutableCtx.config = await toggleSmartRoute(mutableCtx.config, out);
+  } else if (key === '7') {
+    mutableCtx.config = await togglePanel(mutableCtx.config, out);
+  } else if (key === '8') {
+    mutableCtx.config = await toggleLearnRouting(mutableCtx.config, out);
   }
   // anything else → back
 }
@@ -1527,6 +1539,8 @@ async function toggleSmartRoute(config: AppConfig, out: OutputSink): Promise<App
     ...(config.timeoutMs !== undefined ? { timeoutMs: config.timeoutMs } : {}),
     // Persist only the explicit-OFF; absent means default-on.
     ...(!enable ? { smartRoute: false } : {}),
+    ...(config.panel === true ? { panel: true } : {}),
+    ...(config.learnRouting === true ? { learnRouting: true } : {}),
   };
   await saveConfig(updated);
   out.write(`Smart routing: ${enable ? 'on' : 'off'}\n`);
@@ -1554,6 +1568,8 @@ async function toggleAutoUpdate(config: AppConfig, out: OutputSink): Promise<App
     ...(config.verbosity !== undefined ? { verbosity: config.verbosity } : {}),
     ...(config.timeoutMs !== undefined ? { timeoutMs: config.timeoutMs } : {}),
     ...(config.smartRoute === false ? { smartRoute: false } : {}),
+    ...(config.panel === true ? { panel: true } : {}),
+    ...(config.learnRouting === true ? { learnRouting: true } : {}),
   };
   await saveConfig(updated);
   out.write(`Update on launch: ${enable ? 'on' : 'off'}\n`);
@@ -1580,9 +1596,64 @@ async function toggleNativeSessions(config: AppConfig, out: OutputSink): Promise
     ...(config.verbosity !== undefined ? { verbosity: config.verbosity } : {}),
     ...(config.timeoutMs !== undefined ? { timeoutMs: config.timeoutMs } : {}),
     ...(config.smartRoute === false ? { smartRoute: false } : {}),
+    ...(config.panel === true ? { panel: true } : {}),
+    ...(config.learnRouting === true ? { learnRouting: true } : {}),
   };
   await saveConfig(updated);
   out.write(`Native sessions (experimental): ${enable ? 'on' : 'off'}\n`);
+  return updated;
+}
+
+/**
+ * Toggle the EXPERIMENTAL Parallel Subscription Panel and persist it.
+ *
+ * When on, high/critical-risk turns run as a CONCURRENT panel of your signed-in
+ * providers, then a cross-vendor synthesizer reconciles their answers into one.
+ * Flat-rate makes the extra concurrent runs free in dollars — the cost is quota
+ * + latency. Needs ≥2 signed-in providers to do anything. Default OFF.
+ */
+async function togglePanel(config: AppConfig, out: OutputSink): Promise<AppConfig> {
+  const enable = config.panel !== true;
+  const updated: AppConfig = {
+    onboarded: config.onboarded,
+    setAsDefault: config.setAsDefault,
+    ...(config.mode !== undefined ? { mode: config.mode } : {}),
+    ...(config.autoUpdate === false ? { autoUpdate: false } : {}),
+    ...(config.nativeSessions === true ? { nativeSessions: true } : {}),
+    ...(config.verbosity !== undefined ? { verbosity: config.verbosity } : {}),
+    ...(config.timeoutMs !== undefined ? { timeoutMs: config.timeoutMs } : {}),
+    ...(config.smartRoute === false ? { smartRoute: false } : {}),
+    ...(enable ? { panel: true } : {}),
+    ...(config.learnRouting === true ? { learnRouting: true } : {}),
+  };
+  await saveConfig(updated);
+  out.write(`Panel (experimental): ${enable ? 'on' : 'off'}\n`);
+  return updated;
+}
+
+/**
+ * Toggle the EXPERIMENTAL Local Outcome Learner and persist it.
+ *
+ * When on, routing learns from YOUR ledger which provider finishes your work
+ * best per tier (observed success rate, tie-broken by latency) and prefers it.
+ * Observed-only; needs real history before it changes anything. Default OFF.
+ */
+async function toggleLearnRouting(config: AppConfig, out: OutputSink): Promise<AppConfig> {
+  const enable = config.learnRouting !== true;
+  const updated: AppConfig = {
+    onboarded: config.onboarded,
+    setAsDefault: config.setAsDefault,
+    ...(config.mode !== undefined ? { mode: config.mode } : {}),
+    ...(config.autoUpdate === false ? { autoUpdate: false } : {}),
+    ...(config.nativeSessions === true ? { nativeSessions: true } : {}),
+    ...(config.verbosity !== undefined ? { verbosity: config.verbosity } : {}),
+    ...(config.timeoutMs !== undefined ? { timeoutMs: config.timeoutMs } : {}),
+    ...(config.smartRoute === false ? { smartRoute: false } : {}),
+    ...(config.panel === true ? { panel: true } : {}),
+    ...(enable ? { learnRouting: true } : {}),
+  };
+  await saveConfig(updated);
+  out.write(`Learned routing (experimental): ${enable ? 'on' : 'off'}\n`);
   return updated;
 }
 
