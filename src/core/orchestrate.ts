@@ -199,7 +199,7 @@ export async function* orchestrate(
       level: 'error',
       message:
         'No providers are available. Install and authenticate at least one provider ' +
-        '(claude or codex) and try again.',
+        '(claude, codex, or opencode) and try again.',
     };
     yield {
       type: 'final',

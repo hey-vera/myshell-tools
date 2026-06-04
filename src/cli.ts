@@ -68,7 +68,7 @@ Commands:
   (none)            Open the interactive control panel (default)
   run <task...>     Run a one-shot task and exit
   repl              Start the plain line REPL (no menu)
-  login [provider]  Sign in to a provider (claude or codex) via its own OAuth.
+  login [provider]  Sign in to a provider (claude, codex, or opencode) via its own OAuth.
                     Add --code to use the no-localhost flow (paste a code for
                     claude, device code for codex) — best inside containers /
                     over SSH. Add --browser to force the localhost flow.

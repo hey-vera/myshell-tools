@@ -9,6 +9,14 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 ### Pending
 - Cross-OS CI execution (requires a public remote).
 
+## [3.10.7]
+
+### Fixed
+- **Help and the no-providers error now mention opencode.** The `login` help line and
+  the "no providers available" error said "claude or codex", omitting the fully-supported
+  opencode. Both now say "claude, codex, or opencode". (Native-session resume copy stays
+  claude/codex-only — that feature genuinely is.)
+
 ## [3.10.6]
 
 ### Fixed
