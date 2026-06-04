@@ -9,6 +9,17 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 ### Pending
 - Cross-OS CI execution (requires a public remote).
 
+## [3.9.2]
+
+### Changed
+- **The Panel synthesizer now earns the flagship tier on hard turns.** The synthesizer
+  is the final decision-maker over the candidates' answers, so on a high/critical-risk
+  panel it's now admitted to the strongest model (via the same adaptive `authorizeTier`
+  gate the cross-vendor reviewer uses) instead of adjudicating at the candidates' tier.
+  A low-risk `always`-panel synthesizer stays at the classification tier — it never
+  opens the flagship off a soft classification. (Surfaced by the live verification run,
+  where a critical-risk panel synthesized at the IC tier.)
+
 ## [3.9.1]
 
 ### Added

@@ -40,6 +40,7 @@ import type { ProviderId } from '../providers/port.js';
 import { route } from './route.js';
 import { getModelPricing, calculateCost } from '../infra/pricing.js';
 import { assess } from './assess.js';
+import { authorizeTier } from './flagship.js';
 
 // ---------------------------------------------------------------------------
 // Plan
@@ -56,6 +57,14 @@ export interface PanelPlan {
   readonly candidates: readonly ProviderId[];
   /** The provider that reconciles the candidate answers into the final one. */
   readonly synthesizer: ProviderId;
+  /**
+   * The task classification (risk/tier) for this turn. Threaded in so runPanel
+   * can gate the SYNTHESIZER through adaptive flagship admission — the
+   * synthesizer is the final decision-maker on the user's hardest turns, so it
+   * earns the manager tier exactly like orchestrate's cross-vendor reviewer.
+   * Candidates stay at `tier` (diversity is their job).
+   */
+  readonly classification: Classification;
 }
 
 /**
@@ -107,7 +116,7 @@ export function planPanel(opts: {
   // Deterministic synthesizer: the first candidate adjudicates all outputs.
   const synthesizer = candidates[0] as ProviderId;
 
-  return { tier, candidates, synthesizer };
+  return { tier, candidates, synthesizer, classification };
 }
 
 // ---------------------------------------------------------------------------
@@ -550,12 +559,60 @@ export async function* runPanel(
   }
 
   // --- Synthesizer: stream its adjudication live as the user-facing answer. ---
+  // The synthesizer is the FINAL decision-maker on the user's hardest turns, so
+  // it earns the flagship (manager) tier when warranted — exactly like the
+  // cross-vendor reviewer in orchestrate.ts. Gate it through adaptive admission.
+  //
+  // Trigger note: orchestrate's reviewer uses trigger 'review' because review
+  // there is ALREADY risk-gated upstream by shouldReview() — by the time
+  // admitManager('review') runs, the turn has been judged hard, so 'review' (an
+  // EARNED trigger) is unconditionally justified. The panel has NO such upstream
+  // risk gate: the synthesizer ALWAYS runs, so an earned 'review' trigger would
+  // open the flagship on EVERY panel turn (incl. a low-risk 'always' panel),
+  // which is exactly the "never open manager-first off a soft classification"
+  // behaviour the gate exists to prevent. We therefore use trigger 'initial' —
+  // the one trigger that must justify itself via risk/confidence — so the
+  // synthesizer earns the flagship only on a high/critical-risk turn (which is
+  // when 'hard-turns' panels fire) and stays at plan.tier on a low-risk 'always'
+  // panel. This matches the spec's stated semantics ("on a low-risk 'always'
+  // panel, admission denies — low risk, not justified") and its required tests;
+  // it deviates from the spec's literal `trigger: 'review'` precisely because the
+  // panel lacks the upstream risk gate that makes 'review' safe in orchestrate.
+  //
+  // The panel doesn't track an escalation budget — the synthesizer is a single
+  // adjudication — so flagshipAttemptsThisTurn is 0. Candidates stay at
+  // plan.tier (diversity is their job; N concurrent flagship runs would be
+  // needlessly quota-heavy).
+  const synthAdmission = authorizeTier({
+    requestedTier: 'manager',
+    currentTier: plan.tier,
+    classification: plan.classification,
+    policy: deps.policy,
+    ...(deps.planInfos !== undefined ? { planInfos: deps.planInfos } : {}),
+    ...(deps.authenticatedProviders !== undefined
+      ? { candidateProviders: deps.authenticatedProviders }
+      : {}),
+    flagshipAttemptsThisTurn: 0,
+    trigger: 'initial',
+  });
+  // When admitted, lift the static maxTier ceiling to 'manager' so route() won't
+  // clamp the synthesizer back down; otherwise route with the policy as-is
+  // (clamped as usual). Use the RESOLVED synthDecision.tier everywhere
+  // downstream so events/ledger never claim a tier the model didn't run.
+  const synthPolicy: Policy = synthAdmission.allowed
+    ? { ...deps.policy, maxTier: 'manager' }
+    : deps.policy;
   const synthDecision = route(
-    plan.tier,
+    synthAdmission.allowed ? 'manager' : plan.tier,
     [plan.synthesizer],
-    deps.policy,
+    synthPolicy,
     deps.availableModels,
     deps.authenticatedProviders,
+    // The synthesizer pool is a single fixed provider, so the learned order can
+    // only confirm it (it cannot reorder a one-element pool). Key it on
+    // plan.tier's learned snapshot — a reasonable, stable choice (the panel's
+    // resolved-classification tier); passed for consistency with every other
+    // route() call site.
     deps.learnedProviderOrder?.[plan.tier],
   );
   const synthPrompt = buildPanelSynthesisPrompt(
@@ -651,7 +708,9 @@ export async function* runPanel(
       type: 'final',
       success: false,
       output: synthText,
-      tier: plan.tier,
+      // The synthesizer produced (failed at) this answer — report its RESOLVED
+      // tier so the final never claims a tier the model didn't run.
+      tier: synthDecision.tier,
       totalCostUsd,
       sessionId: deps.session.id,
       attempts,
@@ -680,7 +739,9 @@ export async function* runPanel(
     type: 'final',
     success: true,
     output: synthText,
-    tier: plan.tier,
+    // The user-facing answer is the synthesizer's, produced at its RESOLVED
+    // tier — report that, never a tier the model didn't run.
+    tier: synthDecision.tier,
     totalCostUsd,
     sessionId: deps.session.id,
     attempts,

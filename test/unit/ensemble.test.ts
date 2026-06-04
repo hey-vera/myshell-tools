@@ -189,6 +189,9 @@ describe('planPanel — composition', () => {
     assert.ok(plan !== null);
     assert.equal(plan.synthesizer, 'codex');
     assert.equal(plan.tier, 'manager');
+    // The plan threads the task classification through so runPanel can gate the
+    // synthesizer's flagship admission.
+    assert.deepEqual(plan.classification, LOW);
   });
 
   it('is deterministic for identical inputs', () => {
@@ -345,7 +348,12 @@ function panelDeps(providers: Partial<Record<ProviderId, Provider>>): {
   };
 }
 
-const PLAN: PanelPlan = { tier: 'ic', candidates: ['claude', 'codex'], synthesizer: 'claude' };
+const PLAN: PanelPlan = {
+  tier: 'ic',
+  candidates: ['claude', 'codex'],
+  synthesizer: 'claude',
+  classification: HIGH,
+};
 
 // ---------------------------------------------------------------------------
 // Integration: runPanel
@@ -420,6 +428,73 @@ describe('runPanel — happy path', () => {
     const events = await collect(runPanel('hard task', deps, PLAN, new AbortController().signal));
     const notice = events.find((e) => e.type === 'notice' && e.message.includes('Panel'));
     assert.ok(notice !== undefined, 'expected a Panel notice');
+  });
+});
+
+describe('runPanel — synthesizer flagship admission', () => {
+  // The LAST tier-start is the synthesizer's run (candidate starts come first,
+  // before the concurrent await; the synthesizer starts after). Its `tier` is the
+  // RESOLVED tier the synthesizer actually routes at.
+  const synthStart = (events: CoreEvent[]) => {
+    const starts = events.filter((e) => e.type === 'tier-start');
+    return starts[starts.length - 1];
+  };
+
+  it('admits the synthesizer to manager on a CRITICAL-risk panel (adaptive policy)', async () => {
+    // CRITICAL risk + adaptive admission (DEFAULT_POLICY/balanced) → the
+    // synthesizer (the final decision-maker) earns the flagship tier.
+    const { deps } = panelDeps({
+      claude: makeProvider('claude', 'A'),
+      codex: makeProvider('codex', 'B'),
+    });
+    const plan: PanelPlan = { ...PLAN, classification: CRIT };
+    const events = await collect(runPanel('hard task', deps, plan, new AbortController().signal));
+    const last = synthStart(events);
+    assert.ok(last !== undefined && last.type === 'tier-start');
+    if (last.type === 'tier-start') {
+      assert.equal(last.provider, plan.synthesizer);
+      assert.equal(last.tier, 'manager', 'synthesizer should be admitted to the flagship on a critical turn');
+    }
+    // The user-facing success final reports the synthesizer's resolved tier.
+    const final = events.find((e) => e.type === 'final');
+    assert.ok(final !== undefined && final.type === 'final');
+    if (final.type === 'final') assert.equal(final.tier, 'manager');
+  });
+
+  it('admits the synthesizer to manager when admission is always-eligible (Max)', async () => {
+    const { deps } = panelDeps({
+      claude: makeProvider('claude', 'A'),
+      codex: makeProvider('codex', 'B'),
+    });
+    deps.policy = { ...deps.policy, flagshipAdmission: 'always-eligible' };
+    // Even a LOW-risk turn is admitted under always-eligible (Max).
+    const plan: PanelPlan = { ...PLAN, classification: LOW };
+    const events = await collect(runPanel('hard task', deps, plan, new AbortController().signal));
+    const last = synthStart(events);
+    assert.ok(last !== undefined && last.type === 'tier-start');
+    if (last.type === 'tier-start') assert.equal(last.tier, 'manager');
+  });
+
+  it('keeps the synthesizer at plan.tier on a LOW-risk panel under adaptive (denied)', async () => {
+    // 'always' panel, LOW risk, adaptive admission → not justified → denied → the
+    // synthesizer stays at plan.tier ('ic'). Honest: we never open manager-first
+    // off a soft classification.
+    const { deps } = panelDeps({
+      claude: makeProvider('claude', 'A'),
+      codex: makeProvider('codex', 'B'),
+    });
+    deps.policy = { ...deps.policy, panelPolicy: 'always' };
+    const plan: PanelPlan = { ...PLAN, tier: 'ic', classification: LOW };
+    const events = await collect(runPanel('hard task', deps, plan, new AbortController().signal));
+    const last = synthStart(events);
+    assert.ok(last !== undefined && last.type === 'tier-start');
+    if (last.type === 'tier-start') {
+      assert.equal(last.provider, plan.synthesizer);
+      assert.equal(last.tier, 'ic', 'low-risk adaptive turn must not auto-open the flagship for the synthesizer');
+    }
+    const final = events.find((e) => e.type === 'final');
+    assert.ok(final !== undefined && final.type === 'final');
+    if (final.type === 'final') assert.equal(final.tier, 'ic');
   });
 });
 
