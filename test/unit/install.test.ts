@@ -12,7 +12,7 @@ import assert from 'node:assert/strict';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { mkdir, readFile } from 'node:fs/promises';
+import { chmod, lstat, mkdir, readFile, stat, symlink, writeFile } from 'node:fs/promises';
 
 import {
   detectShellTarget,
@@ -98,6 +98,13 @@ describe('detectShellTarget — pure, no I/O', () => {
     const result = detectShellTarget(env, 'linux');
     assert.equal(result.kind, 'bash');
     assert.equal(result.path, '/home/testuser/.bashrc');
+  });
+
+  it('returns fish + fish config path when SHELL contains fish', () => {
+    const env = fakeEnv({ home: '/home/testuser', shell: '/usr/bin/fish' });
+    const result = detectShellTarget(env, 'linux');
+    assert.equal(result.kind, 'fish');
+    assert.equal(result.path, '/home/testuser/.config/fish/config.fish');
   });
 
   it('win32 result uses USERPROFILE, not HOME', () => {
@@ -334,6 +341,31 @@ describe('upsertHook — pure, no I/O', () => {
     assert.ok(!removed.includes('function mst'), 'function mst must be removed on uninstall');
   });
 
+  it('aborts on malformed markers instead of removing across user content', () => {
+    const malformed = `${HOOK_BEGIN}\n# user line that must not be crossed\n${buildHookBlock('bash')}\n`;
+    assert.throws(
+      () => upsertHook(malformed, 'bash', false),
+      /malformed/,
+      'orphan begin above a clean block must be treated as malformed',
+    );
+  });
+
+  it('aborts install upsert when existing markers are malformed', () => {
+    const malformed = `${HOOK_BEGIN}\n# no matching managed block\n`;
+    assert.throws(
+      () => upsertHook(malformed, 'bash', true),
+      /malformed/,
+      'install must not append around malformed existing markers',
+    );
+  });
+
+  it('install then uninstall leaves normal rc bytes unchanged', () => {
+    const before = '# normal rc\nexport PATH="$HOME/bin:$PATH"';
+    const installed = upsertHook(before, 'bash', true);
+    const removed = upsertHook(installed, 'bash', false);
+    assert.equal(removed, before, 'round-trip must preserve original bytes');
+  });
+
   it('preserves surrounding content when removing the block', () => {
     const before = '# before the hook\n';
     const after = '# after the hook\n';
@@ -374,6 +406,7 @@ describe('runInstall — writes to temp HOME, not real HOME', () => {
    */
   async function withTempHome<T>(
     fn: (tempHome: string) => Promise<T>,
+    opts?: { shell?: string },
   ): Promise<T> {
     const tempHome = join(tmpdir(), `install-test-${randomUUID()}`);
     await mkdir(tempHome, { recursive: true });
@@ -382,9 +415,9 @@ describe('runInstall — writes to temp HOME, not real HOME', () => {
     const origShell = process.env['SHELL'];
     const origPlatform = process.platform;
 
-    // Override HOME and SHELL to point at temp dir + bash
+    // Override HOME and SHELL to point at temp dir + requested shell
     process.env['HOME'] = tempHome;
-    process.env['SHELL'] = '/bin/bash';
+    process.env['SHELL'] = opts?.shell ?? '/bin/bash';
 
     // Override platform to linux so we hit bash path
     Object.defineProperty(process, 'platform', {
@@ -460,6 +493,108 @@ describe('runInstall — writes to temp HOME, not real HOME', () => {
       assert.ok(!afterUninstall.includes(HOOK_BEGIN), 'hook must be removed after uninstall');
       assert.ok(!afterUninstall.includes(HOOK_END), 'HOOK_END must be removed after uninstall');
     });
+  });
+
+  it('installs through a symlinked ~/.bashrc without replacing the symlink and preserves mode', async () => {
+    await withTempHome(async (tempHome) => {
+      const rcPath = join(tempHome, '.bashrc');
+      const dotfilesDir = join(tempHome, 'dotfiles');
+      const realRcPath = join(dotfilesDir, 'bashrc');
+      await mkdir(dotfilesDir, { recursive: true });
+      await writeFile(realRcPath, '# managed by dotfiles\n');
+      await chmod(realRcPath, 0o600);
+      await symlink(realRcPath, rcPath);
+
+      const code = await runInstall(makeSink());
+      assert.equal(code, 0, 'install through symlink should succeed');
+
+      const linkStat = await lstat(rcPath);
+      assert.equal(linkStat.isSymbolicLink(), true, 'rc path must remain a symlink');
+
+      const content = await readFile(realRcPath, 'utf8');
+      assert.ok(content.includes(HOOK_BEGIN), 'real symlink target must receive hook');
+
+      const targetMode = (await stat(realRcPath)).mode & 0o777;
+      assert.equal(targetMode, 0o600, 'existing rc mode must be preserved');
+    });
+  });
+
+  it('refuses a dangling symlinked ~/.bashrc and prints the manual hook', async () => {
+    await withTempHome(async (tempHome) => {
+      const rcPath = join(tempHome, '.bashrc');
+      await symlink(join(tempHome, 'missing-bashrc'), rcPath);
+
+      const sink = makeSink();
+      const code = await runInstall(sink);
+      assert.equal(code, 1, 'dangling symlink should be refused');
+      assert.ok(sink.buf.includes('Refusing to replace the symlink'), 'output must refuse clobbering');
+      assert.ok(sink.buf.includes(HOOK_BEGIN), 'output must include the manual hook snippet');
+
+      const linkStat = await lstat(rcPath);
+      assert.equal(linkStat.isSymbolicLink(), true, 'dangling rc path must remain a symlink');
+    });
+  });
+
+  it('uninstall aborts on malformed markers and leaves user lines untouched', async () => {
+    await withTempHome(async (tempHome) => {
+      const rcPath = join(tempHome, '.bashrc');
+      const malformed = `${HOOK_BEGIN}\n# unrelated user line\n${buildHookBlock('bash')}\n`;
+      await writeFile(rcPath, malformed);
+
+      const sink = makeSink();
+      const code = await runInstall(sink, { uninstall: true });
+      assert.equal(code, 1, 'uninstall should refuse malformed markers');
+      assert.ok(sink.buf.includes('malformed'), 'output must explain malformed markers');
+
+      const after = await readFile(rcPath, 'utf8');
+      assert.equal(after, malformed, 'malformed rc must be left byte-identical');
+      assert.ok(after.includes('# unrelated user line'), 'user line must not be deleted');
+    });
+  });
+
+  it('clean managed block uninstall removes exactly the installed block', async () => {
+    await withTempHome(async (tempHome) => {
+      const rcPath = join(tempHome, '.bashrc');
+      const before = '# before hook\nexport TEST=1\n';
+      await writeFile(rcPath, upsertHook(before, 'bash', true));
+
+      const code = await runInstall(makeSink(), { uninstall: true });
+      assert.equal(code, 0, 'clean uninstall should succeed');
+
+      const after = await readFile(rcPath, 'utf8');
+      assert.equal(after, before, 'only the managed block should be removed');
+    });
+  });
+
+  it('install then uninstall on a normal rc leaves it byte-identical', async () => {
+    await withTempHome(async (tempHome) => {
+      const rcPath = join(tempHome, '.bashrc');
+      const before = '# normal rc\nexport PATH="$HOME/bin:$PATH"';
+      await writeFile(rcPath, before);
+
+      assert.equal(await runInstall(makeSink()), 0, 'install should succeed');
+      assert.equal(await runInstall(makeSink(), { uninstall: true }), 0, 'uninstall should succeed');
+
+      const after = await readFile(rcPath, 'utf8');
+      assert.equal(after, before, 'install/uninstall round-trip must preserve bytes');
+    });
+  });
+
+  it('fish shell refuses install and does not touch ~/.bashrc', async () => {
+    await withTempHome(async (tempHome) => {
+      const bashRcPath = join(tempHome, '.bashrc');
+      const before = '# existing bash rc\n';
+      await writeFile(bashRcPath, before);
+
+      const sink = makeSink();
+      const code = await runInstall(sink);
+      assert.equal(code, 1, 'fish install should refuse');
+      assert.ok(sink.buf.includes('fish is not supported'), 'output must name fish refusal');
+      assert.ok(sink.buf.includes(HOOK_BEGIN), 'output must include manual hook guidance');
+
+      const after = await readFile(bashRcPath, 'utf8');
+      assert.equal(after, before, '~/.bashrc must not be touched for fish');
+    }, { shell: '/usr/bin/fish' });
   });
 
   it('install output mentions the rc file path', async () => {

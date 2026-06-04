@@ -14,7 +14,7 @@
  *   - No digit-% literals.
  */
 
-import { mkdir, readFile } from 'node:fs/promises';
+import { chmod, lstat, mkdir, readFile, realpath, stat } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { atomicWrite } from '../infra/atomic.js';
 import type { OutputSink } from '../interface/render.js';
@@ -24,6 +24,7 @@ import type { OutputSink } from '../interface/render.js';
 // ---------------------------------------------------------------------------
 
 export type ShellKind = 'bash' | 'zsh' | 'powershell';
+type DetectShellKind = ShellKind | 'fish';
 
 // ---------------------------------------------------------------------------
 // Hook markers
@@ -47,7 +48,7 @@ export const HOOK_END = '# <<< myshell-tools <<<';
 export function detectShellTarget(
   env: NodeJS.ProcessEnv,
   platform: NodeJS.Platform,
-): { kind: ShellKind; path: string } {
+): { kind: DetectShellKind; path: string } {
   if (platform === 'win32') {
     const userProfile = env['USERPROFILE'] ?? 'C:\\Users\\Default';
     return {
@@ -61,6 +62,10 @@ export function detectShellTarget(
 
   if (shell.includes('zsh')) {
     return { kind: 'zsh', path: `${home}/.zshrc` };
+  }
+
+  if (shell.includes('fish')) {
+    return { kind: 'fish', path: `${home}/.config/fish/config.fish` };
   }
 
   return { kind: 'bash', path: `${home}/.bashrc` };
@@ -118,6 +123,23 @@ export function buildHookBlock(kind: ShellKind): string {
   );
 }
 
+function buildFishManualHookBlock(): string {
+  return (
+    `${HOOK_BEGIN}\n` +
+    `# Launch myshell-tools on new interactive shells. Opt out: set -gx MYSHELL_SKIP 1\n` +
+    `if status is-interactive; and test -z "$MYSHELL_LOADED"; and test -z "$MYSHELL_SKIP"\n` +
+    `  set -gx MYSHELL_LOADED 1\n` +
+    `  command -q myshell-tools; and myshell-tools\n` +
+    `end\n` +
+    `# Convenience aliases: cm / mst -> myshell-tools (control menu)\n` +
+    `if command -q myshell-tools\n` +
+    `  alias cm='myshell-tools'\n` +
+    `  alias mst='myshell-tools'\n` +
+    `end\n` +
+    `${HOOK_END}`
+  );
+}
+
 // ---------------------------------------------------------------------------
 // upsertHook — PURE
 // ---------------------------------------------------------------------------
@@ -134,36 +156,194 @@ export function buildHookBlock(kind: ShellKind): string {
  * Pure function — takes and returns strings, never does I/O.
  */
 export function upsertHook(existing: string, kind: ShellKind, enable: boolean): string {
-  // Strip any existing block (including surrounding blank lines we added).
-  // The pattern handles: optional leading \n, BEGIN marker, anything, END marker,
-  // optional trailing \n — all removed in one pass.
-  const stripped = existing
-    .replace(
-      new RegExp(
-        `\n?${escapeRegExp(HOOK_BEGIN)}[\\s\\S]*?${escapeRegExp(HOOK_END)}\n?`,
-        'g',
-      ),
-      '',
-    )
-    .trimEnd();
+  const block = buildHookBlock(kind);
+  const blockLines = splitLines(block + '\n');
+  const existingLines = splitLines(existing);
+  const found = findManagedHookBlock(existingLines, blockLines);
 
   if (!enable) {
-    // Return stripped content. Preserve trailing newline when content exists.
-    return stripped.length > 0 ? stripped + '\n' : '';
+    if (found === undefined) return existing;
+    return removeManagedHookBlock(existingLines, found);
   }
 
-  const block = buildHookBlock(kind);
-  // Separate from existing content with a blank line if there is any.
-  const separator = stripped.length > 0 ? '\n\n' : '';
-  return stripped + separator + block + '\n';
+  if (found !== undefined) {
+    return [
+      ...existingLines.slice(0, found.start),
+      ...blockLines,
+      ...existingLines.slice(found.end),
+    ].join('');
+  }
+
+  const separator = existing.length > 0 ? '\n' : '';
+  return existing + separator + block + '\n';
 }
 
 // ---------------------------------------------------------------------------
 // Internal helper
 // ---------------------------------------------------------------------------
 
-function escapeRegExp(s: string): string {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+class MalformedHookError extends Error {
+  constructor() {
+    super(
+      `myshell-tools hook markers look malformed. Remove the block manually by deleting only the lines from "${HOOK_BEGIN}" through "${HOOK_END}", then rerun this command.`,
+    );
+    this.name = 'MalformedHookError';
+  }
+}
+
+class RcSymlinkResolveError extends Error {
+  readonly rcPath: string;
+
+  constructor(rcPath: string, cause: unknown) {
+    super(
+      `${rcPath} is a symlink, but its target could not be resolved: ${cause instanceof Error ? cause.message : String(cause)}`,
+    );
+    this.rcPath = rcPath;
+    this.name = 'RcSymlinkResolveError';
+  }
+}
+
+interface ManagedHookBlock {
+  readonly start: number;
+  readonly end: number;
+}
+
+interface RcWriteTarget {
+  readonly writePath: string;
+  readonly existed: boolean;
+  readonly mode: number;
+  readonly resolvedFromSymlink: boolean;
+}
+
+const NEW_RC_MODE = 0o600;
+
+function splitLines(content: string): string[] {
+  const lines: string[] = [];
+  let start = 0;
+
+  while (start < content.length) {
+    const newline = content.indexOf('\n', start);
+    if (newline === -1) {
+      lines.push(content.slice(start));
+      break;
+    }
+    lines.push(content.slice(start, newline + 1));
+    start = newline + 1;
+  }
+
+  return lines;
+}
+
+function lineWithoutEnding(line: string): string {
+  const withoutNewline = line.endsWith('\n') ? line.slice(0, -1) : line;
+  return withoutNewline.endsWith('\r') ? withoutNewline.slice(0, -1) : withoutNewline;
+}
+
+function isHookBeginLine(line: string): boolean {
+  return lineWithoutEnding(line) === HOOK_BEGIN;
+}
+
+function isHookEndLine(line: string): boolean {
+  return lineWithoutEnding(line) === HOOK_END;
+}
+
+function isBlankLine(line: string): boolean {
+  return line === '\n';
+}
+
+function findManagedHookBlock(lines: readonly string[], blockLines: readonly string[]): ManagedHookBlock | undefined {
+  let found: ManagedHookBlock | undefined;
+
+  for (let index = 0; index < lines.length; index++) {
+    const line = lines[index];
+    if (line === undefined) continue;
+
+    if (isHookEndLine(line)) {
+      throw new MalformedHookError();
+    }
+
+    if (!isHookBeginLine(line)) continue;
+
+    const end = index + blockLines.length;
+    const candidate = lines.slice(index, end);
+    if (candidate.length !== blockLines.length || !linesMatch(candidate, blockLines)) {
+      throw new MalformedHookError();
+    }
+
+    if (found !== undefined) {
+      throw new MalformedHookError();
+    }
+
+    found = { start: index, end };
+    index = end - 1;
+  }
+
+  return found;
+}
+
+function linesMatch(a: readonly string[], b: readonly string[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let index = 0; index < a.length; index++) {
+    if (a[index] !== b[index]) return false;
+  }
+  return true;
+}
+
+function removeManagedHookBlock(lines: readonly string[], block: ManagedHookBlock): string {
+  if (block.start > 0 && isBlankLine(lines[block.start - 1] ?? '')) {
+    return [...lines.slice(0, block.start - 1), ...lines.slice(block.end)].join('');
+  }
+
+  if (block.start > 0) {
+    const previous = lines[block.start - 1];
+    if (previous?.endsWith('\n') === true) {
+      return [
+        ...lines.slice(0, block.start - 1),
+        previous.slice(0, -1),
+        ...lines.slice(block.end),
+      ].join('');
+    }
+  }
+
+  return [...lines.slice(0, block.start), ...lines.slice(block.end)].join('');
+}
+
+async function resolveRcWriteTarget(rcPath: string): Promise<RcWriteTarget> {
+  let initialStat;
+  try {
+    initialStat = await lstat(rcPath);
+  } catch (err) {
+    const nodeErr = err as NodeJS.ErrnoException;
+    if (nodeErr.code !== 'ENOENT') throw err;
+    // New rc files are private by default because shell rc files can hold secrets.
+    return { writePath: rcPath, existed: false, mode: NEW_RC_MODE, resolvedFromSymlink: false };
+  }
+
+  if (!initialStat.isSymbolicLink()) {
+    const targetStat = await stat(rcPath);
+    return {
+      writePath: rcPath,
+      existed: true,
+      mode: targetStat.mode & 0o7777,
+      resolvedFromSymlink: false,
+    };
+  }
+
+  let resolved;
+  let targetStat;
+  try {
+    resolved = await realpath(rcPath);
+    targetStat = await stat(resolved);
+  } catch (err) {
+    throw new RcSymlinkResolveError(rcPath, err);
+  }
+
+  return {
+    writePath: resolved,
+    existed: true,
+    mode: targetStat.mode & 0o7777,
+    resolvedFromSymlink: true,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -211,45 +391,86 @@ export async function runInstall(
   const enable = !(opts?.uninstall ?? false);
   const { kind, path: rcPath } = detectShellTarget(process.env, process.platform);
 
-  // Read existing content (treat missing file as empty).
-  let existing = '';
-  try {
-    existing = await readFile(rcPath, 'utf8');
-  } catch (err) {
-    const nodeErr = err as NodeJS.ErrnoException;
-    if (nodeErr.code !== 'ENOENT') {
-      out.write(`[error] Could not read ${rcPath}: ${nodeErr.message}\n`);
-      return 1;
-    }
-    // File doesn't exist yet — fine, we'll create it on write.
+  if (kind === 'fish') {
+    out.write(`[error] fish is not supported by myshell-tools install yet.\n`);
+    out.write(`[info] Refusing to write a bash hook for a fish shell.\n`);
+    out.write(`[info] Closest manual fish guidance for ${rcPath}:\n`);
+    out.write(buildFishManualHookBlock() + '\n');
+    return 1;
   }
 
-  const updated = upsertHook(existing, kind, enable);
+  let target: RcWriteTarget;
+  try {
+    target = await resolveRcWriteTarget(rcPath);
+  } catch (err) {
+    if (err instanceof RcSymlinkResolveError) {
+      out.write(`[error] ${err.message}\n`);
+      out.write(`[error] Refusing to replace the symlink.\n`);
+      out.write(`[info] Add this hook manually to the real rc file:\n`);
+      out.write(buildHookBlock(kind) + '\n');
+      return 1;
+    }
+
+    const nodeErr = err as NodeJS.ErrnoException;
+    out.write(`[error] Could not inspect ${rcPath}: ${nodeErr.message}\n`);
+    return 1;
+  }
+
+  // Read existing content (treat missing file as empty).
+  let existing = '';
+  if (target.existed) {
+    try {
+      existing = await readFile(target.writePath, 'utf8');
+    } catch (err) {
+      const nodeErr = err as NodeJS.ErrnoException;
+      out.write(`[error] Could not read ${target.writePath}: ${nodeErr.message}\n`);
+      return 1;
+    }
+  }
+
+  let updated;
+  try {
+    updated = upsertHook(existing, kind, enable);
+  } catch (err) {
+    if (err instanceof MalformedHookError) {
+      out.write(`[error] ${err.message}\n`);
+      out.write(`[info] Markers to look for: ${HOOK_BEGIN} / ${HOOK_END}\n`);
+      return 1;
+    }
+    throw err;
+  }
 
   // If uninstalling and the block wasn't present, report and return cleanly.
-  if (!enable && updated === (existing.trimEnd().length > 0 ? existing.trimEnd() + '\n' : existing)) {
+  if (!enable && updated === existing) {
     out.write(`[info] No myshell-tools hook found in ${rcPath} — nothing to remove.\n`);
     return 0;
   }
 
   // Write atomically — create parent dir if needed.
   try {
-    await mkdir(dirname(rcPath), { recursive: true });
-    await atomicWrite(rcPath, updated);
+    await mkdir(dirname(target.writePath), { recursive: true });
+    await atomicWrite(target.writePath, updated, target.mode);
+    await chmod(target.writePath, target.mode);
   } catch (err) {
     const nodeErr = err as NodeJS.ErrnoException;
-    out.write(`[error] Could not write ${rcPath}: ${nodeErr.message}\n`);
+    out.write(`[error] Could not write ${target.writePath}: ${nodeErr.message}\n`);
     return 1;
   }
 
   if (enable) {
     out.write(`[info] Shell hook installed in: ${rcPath}\n`);
+    if (target.resolvedFromSymlink) {
+      out.write(`[info] Preserved symlink and wrote resolved target: ${target.writePath}\n`);
+    }
     out.write(`[info] New interactive shells will launch myshell-tools automatically.\n`);
     out.write(`[info] Shortcuts available in new shells: cm / mst (both run myshell-tools).\n`);
     out.write(`[info] Opt out any time: export MYSHELL_SKIP=1 (bash/zsh) or $env:MYSHELL_SKIP='1' (PowerShell)\n`);
     out.write(`[info] To reverse: myshell-tools uninstall\n`);
   } else {
     out.write(`[info] Shell hook removed from: ${rcPath}\n`);
+    if (target.resolvedFromSymlink) {
+      out.write(`[info] Preserved symlink and wrote resolved target: ${target.writePath}\n`);
+    }
     out.write(`[info] myshell-tools will no longer auto-launch in new shells.\n`);
   }
 

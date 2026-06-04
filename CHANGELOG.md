@@ -8,9 +8,28 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ### Pending
 - Cross-OS CI execution (requires a public remote).
-- Installer: fish-shell + PowerShell-Core profile support; PowerShell interactive guard;
-  don't overwrite an existing `cm`/`mst` alias — deferred (niche shells / minor).
+- Installer: PowerShell-Core profile support + PowerShell interactive guard; don't
+  overwrite an existing `cm`/`mst` alias — deferred (niche / minor).
 - update-check: use semver precedence for prerelease→stable (no prereleases shipped today).
+
+## [3.10.20]
+
+### Fixed
+Shell-rc install/uninstall hook safety (`myshell-tools install`/`uninstall` edits your
+shell startup file):
+- **Symlinked rc files and file permissions are respected.** Writing the hook used a
+  temp+rename that replaced a symlinked `~/.bashrc`/`~/.zshrc` with a regular file
+  (breaking dotfiles-repo setups) and could loosen a `0600` rc to `0644`. It now resolves
+  a symlink and writes the real target (keeping the link), preserves the existing file
+  mode, creates a new rc as `0600` (rc files can hold secrets), and refuses (with the
+  manual snippet) rather than clobber an unresolvable symlink.
+- **Uninstall can't delete unrelated lines.** A regex removed everything between the first
+  begin marker and the next end marker, so an orphan/malformed marker from a prior edit
+  could take your own rc lines with it. It now parses line-by-line and removes only a
+  complete, exactly-matching managed block; on malformed/orphan/nested/duplicate markers
+  it aborts without writing and tells you to remove the block manually.
+- **fish users aren't given a broken bash hook.** A `fish` `$SHELL` fell through and wrote
+  `~/.bashrc`; it now refuses and prints fish-correct manual guidance instead.
 
 ## [3.10.19]
 
