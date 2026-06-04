@@ -768,6 +768,79 @@ describe('renderStream — confidence envelope stripping', () => {
     assert.ok(joined.includes('{"mode":"fast"}'), 'Earlier non-envelope object stays');
     assert.ok(!joined.includes('"confidence"'), 'Trailing envelope is stripped');
   });
+
+  it('strips a superseded attempt envelope at tier-done before the next attempt streams', async () => {
+    const sink = makeSink();
+    const events: CoreEvent[] = [
+      {
+        type: 'tier-start',
+        tier: 'ic',
+        provider: 'claude',
+        model: 'claude-sonnet-4-6',
+        attempt: 1,
+      },
+      {
+        type: 'provider-event',
+        tier: 'ic',
+        event: { type: 'text', delta: 'Draft answer' },
+      },
+      {
+        type: 'provider-event',
+        tier: 'ic',
+        event: { type: 'text', delta: '{"confidence": 0.4, "escalate": true' },
+      },
+      {
+        type: 'tier-done',
+        tier: 'ic',
+        success: true,
+        confidence: 0.4,
+        costUsd: 0,
+        inputTokens: 100,
+        outputTokens: 50,
+        durationMs: 10,
+      },
+      {
+        type: 'tier-start',
+        tier: 'manager',
+        provider: 'codex',
+        model: 'gpt-5.5',
+        attempt: 2,
+      },
+      {
+        type: 'provider-event',
+        tier: 'manager',
+        event: { type: 'text', delta: 'Final answer.\n{"verdict": "approve"}' },
+      },
+      {
+        type: 'tier-done',
+        tier: 'manager',
+        success: true,
+        confidence: 0.9,
+        costUsd: 0,
+        inputTokens: 120,
+        outputTokens: 60,
+        durationMs: 20,
+      },
+      {
+        type: 'final',
+        success: true,
+        output: 'Final answer.',
+        tier: 'manager',
+        totalCostUsd: 0,
+        sessionId: 'attempt-boundary-session',
+        attempts: 2,
+      },
+    ];
+
+    await renderStream(makeStream(events), sink);
+    const joined = sink.buf.join('');
+
+    assert.ok(joined.includes('Draft answer'), 'Superseded attempt prose may be shown');
+    assert.ok(joined.includes('Final answer.'), 'Accepted attempt prose must be shown');
+    assert.ok(!joined.includes('{"confidence"'), 'Attempt-1 control envelope fragment must not leak');
+    assert.ok(!joined.includes('"verdict"'), 'Trailing verdict envelope must not leak');
+    assert.ok(!joined.includes('answerFinal'), 'Attempts must not glue together mid-token');
+  });
 });
 
 // ---------------------------------------------------------------------------

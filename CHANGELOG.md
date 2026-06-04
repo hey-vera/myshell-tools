@@ -9,6 +9,19 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 ### Pending
 - Cross-OS CI execution (requires a public remote).
 
+## [3.10.10]
+
+### Fixed
+- **No internal/reviewer output or raw control-JSON ever leaks into the transcript.** Two
+  fixes: (1) the cross-vendor reviewer run is now consumed internally
+  (`collectProviderRun`) instead of streamed, so the reviewer's critique and its raw
+  `{"verdict":…}` JSON never reach the user (its tier telemetry, ledger entry, verdict
+  parsing, and "Review by/verdict" notices are unchanged); (2) the renderer now finalizes
+  each attempt's prose at the tier boundary — stripping a completed attempt's trailing
+  control envelope (`confidence`/`ask_user`/`verdict`) instead of raw-dumping it when the
+  next attempt streams, and inserting a break so escalated attempts don't glue together.
+  The common single-attempt answer still streams live and envelope-clean.
+
 ## [3.10.9]
 
 ### Fixed

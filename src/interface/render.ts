@@ -132,10 +132,12 @@ function trailingOpenBraceIndex(text: string): number {
  *                    emits instead, when it needs a user decision. The selector
  *                    renders the questions from the parsed CoreEvent — the raw
  *                    JSON must never leak into the prose, same class of bug.
- * The two are mutually exclusive per turn, but scanning for both is harmless and
+ *   - `verdict`    : the cross-vendor review verdict envelope. Review output is
+ *                    internal, but the renderer strips it defensively too.
+ * These are mutually exclusive per turn, but scanning for all is harmless and
  * future-proof.
  */
-const CONTROL_ENVELOPE_KEYS = ['confidence', 'ask_user'] as const;
+const CONTROL_ENVELOPE_KEYS = ['confidence', 'ask_user', 'verdict'] as const;
 
 /**
  * The opening signatures a trailing control envelope can have: `{` then optional
@@ -143,7 +145,7 @@ const CONTROL_ENVELOPE_KEYS = ['confidence', 'ask_user'] as const;
  * `{…` fragment could BECOME a control envelope (and so must be held back) or is
  * just ordinary prose/code/JSON (and so should stream immediately).
  */
-const CONTROL_ENVELOPE_OPENINGS = ['"confidence', '"ask_user'] as const;
+const CONTROL_ENVELOPE_OPENINGS = ['"confidence', '"ask_user', '"verdict'] as const;
 
 /**
  * Given a trailing fragment that begins at an OPEN `{` (its `}` hasn't arrived),
@@ -296,19 +298,36 @@ class EnvelopeFilter {
     return boundary;
   }
 
-  /** Flush any held-back tail, excising ONLY a confirmed trailing control
-   *  envelope first. Idempotent.
-   *
-   *  Unlike the streaming boundary, at the terminal event we know no more text
-   *  is coming, so a trailing OPEN `{` that is NOT a control envelope is just
-   *  legitimate prose (e.g. "the set {1, 2") and must be shown — we only cut a
-   *  genuine, complete, trailing `{…confidence…}` / `{…ask_user…}` block. */
+  /** Flush at the final stream end. Idempotent. */
   flush(): void {
+    this.flushInternal(false);
+  }
+
+  /** Flush at a tier boundary and reset the attempt-local control tail. */
+  finishAttempt(): void {
+    this.flushInternal(true);
+  }
+
+  /** Flush any held-back tail, excising control data first.
+   *
+   *  At final stream end a trailing OPEN `{` that is NOT a complete control
+   *  envelope is legitimate prose (e.g. "the set {1, 2") and must be shown. At
+   *  tier boundaries, an unfinished trailing fragment that could still be a
+   *  control envelope belongs to that completed attempt, so it is stripped
+   *  instead of being raw-dumped or carried into the next attempt. */
+  private flushInternal(stripOpenControlFragment: boolean): void {
     if (this.flushed >= this.full.length) return;
     const match = trailingControlEnvelope(this.full);
     let cutEnd = this.full.length;
     if (match !== null) {
       cutEnd = match.start;
+    }
+    if (stripOpenControlFragment) {
+      const beforeCut = this.full.slice(0, cutEnd);
+      const open = trailingOpenBraceIndex(beforeCut);
+      if (open !== -1 && couldBeControlEnvelope(beforeCut.slice(open))) {
+        cutEnd = open;
+      }
     }
     // Also cut a confirmed trailing goal-control marker line. We only strip it when
     // the last line is genuinely a GOAL_COMPLETE / GOAL_CONTINUE marker (the regex
@@ -376,7 +395,7 @@ export async function renderStream(
 
   // Buffers model prose and strips the trailing confidence envelope before it
   // can ever reach the user.
-  const prose = new EnvelopeFilter(out);
+  let prose = new EnvelopeFilter(out);
 
   // Spinner is only used in TTY mode. It starts at tier-start and STAYS alive
   // through tool/reasoning activity (showing a live step count + elapsed time) so
@@ -393,6 +412,8 @@ export async function renderStream(
   // together ("…before answering.The directory is empty…").
   let proseStarted = false;
   let toolSinceProse = false;
+  let attemptHadProse = false;
+  let breakBeforeNextProse = false;
   // Bytes of answer prose streamed in the current tier, so the live indicator can
   // show a Claude-style "↓ ~N tokens" readout. It's a measured estimate (≈4 chars/
   // token) shown only while working — marked with ~; the tier-done / final summary
@@ -465,6 +486,7 @@ export async function renderStream(
         // mode the model/provider is shown; otherwise a clean "Thinking…".
         stepCount = 0;
         streamedChars = 0;
+        attemptHadProse = false;
         currentProvider = ev.provider;
         workLabel = isVerbose ? `${ev.tier} (${ev.provider}/${ev.model})` : 'Thinking';
         if (out.isTty) {
@@ -482,9 +504,12 @@ export async function renderStream(
           // If a tool call interrupted the prose, break the line so the resumed
           // text isn't glued onto the previous sentence. Only between segments —
           // never before the very first delta.
+          if (breakBeforeNextProse && proseStarted) prose.push('\n');
+          breakBeforeNextProse = false;
           if (toolSinceProse && proseStarted) prose.push('\n');
           toolSinceProse = false;
           proseStarted = true;
+          attemptHadProse = true;
           // Measure streamed prose so a later tool phase's indicator can show the
           // running "↓ ~N tokens" readout (real bytes; ~4 chars/token estimate).
           streamedChars += pe.delta.length;
@@ -523,6 +548,13 @@ export async function renderStream(
 
       case 'tier-done': {
         stopSpinner();
+        prose.finishAttempt();
+        prose = new EnvelopeFilter(out);
+        if (attemptHadProse) {
+          breakBeforeNextProse = true;
+        }
+        attemptHadProse = false;
+        toolSinceProse = false;
         // Tokens are real and measured; dollars are an API-equivalent estimate
         // that doesn't map to subscription billing, so they live in `cost`, not here.
         runningTokens += ev.inputTokens + ev.outputTokens;

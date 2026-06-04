@@ -855,6 +855,8 @@ describe('orchestrate — cross-vendor review (high risk)', () => {
         return { id: 'codex', installed: true, version: '1.0.0', authenticated: true, binaryPath: '/usr/bin/fake', availableModels: [] };
       },
       async *run(_req: ProviderRequest, _signal: AbortSignal): AsyncIterable<ProviderEvent> {
+        yield { type: 'text', delta: 'INTERNAL REVIEW: this critique must stay hidden.\n' };
+        yield { type: 'text', delta: '{"verdict": "approve", "notes": "raw streamed verdict must stay hidden"}' };
         yield { type: 'done', text: reviewApproveText, usage: { inputTokens: 500, outputTokens: 200 }, raw: {} };
       },
     };
@@ -883,6 +885,15 @@ describe('orchestrate — cross-vendor review (high risk)', () => {
       (e) => e.type === 'tier-start' && e.tier === 'manager',
     );
     assert.ok(managerTierStarts.length >= 1, 'Expected a manager-tier tier-start for review run');
+    const reviewStartIndex = events.findIndex(
+      (e) => e.type === 'tier-start' && e.provider === 'codex',
+    );
+    assert.ok(reviewStartIndex >= 0, 'Expected a codex tier-start for review run');
+    assert.equal(
+      events[reviewStartIndex + 1]?.type,
+      'tier-done',
+      'Reviewer run must emit tier telemetry without surfacing provider text events',
+    );
 
     // Must have notice events about the review
     const noticeEvents = events.filter((e) => e.type === 'notice');
@@ -899,6 +910,13 @@ describe('orchestrate — cross-vendor review (high risk)', () => {
     if (verdictNotice.type === 'notice') {
       assert.ok(verdictNotice.message.includes('approve'), 'Expected approve verdict in notice');
     }
+
+    const providerText = events
+      .filter((e) => e.type === 'provider-event' && e.event.type === 'text')
+      .map((e) => e.type === 'provider-event' && e.event.type === 'text' ? e.event.delta : '')
+      .join('');
+    assert.ok(!providerText.includes('INTERNAL REVIEW'), 'Reviewer critique text must not be surfaced');
+    assert.ok(!providerText.includes('"verdict"'), 'Reviewer verdict JSON must not be surfaced as text');
 
     // Final must be success
     const finalEv = events.find((e) => e.type === 'final');

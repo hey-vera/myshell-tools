@@ -145,6 +145,51 @@ async function* streamProvider(
   return { finalText, errored, usage, providerCostUsd, sessionId, canceled: false, canceledBeforeStream: false };
 }
 
+/**
+ * Consume a provider run for terminal data only. Internal control-plane runs
+ * such as cross-vendor review must not stream their prose to the renderer.
+ */
+async function collectProviderRun(
+  provider: Provider,
+  req: ProviderRequest,
+  signal: AbortSignal,
+): Promise<StreamOutcome> {
+  let finalText: string | undefined;
+  let errored: CliError | undefined;
+  let usage: Usage | undefined;
+  let providerCostUsd: number | undefined;
+  let sessionId: string | undefined;
+
+  if (signal.aborted) {
+    return { finalText, errored, usage, providerCostUsd, sessionId, canceled: true, canceledBeforeStream: true };
+  }
+
+  for await (const ev of provider.run(req, signal)) {
+    if (ev.type === 'done') {
+      finalText = ev.text;
+      if (ev.usage !== undefined && usage === undefined) {
+        usage = ev.usage;
+      }
+      if (ev.costUsd !== undefined) {
+        providerCostUsd = ev.costUsd;
+      }
+      if (ev.sessionId !== undefined && ev.sessionId.length > 0) {
+        sessionId = ev.sessionId;
+      }
+    } else if (ev.type === 'error') {
+      errored = ev.error;
+    } else if (ev.type === 'usage' && usage === undefined) {
+      usage = ev.usage;
+    }
+
+    if (signal.aborted) {
+      return { finalText, errored, usage, providerCostUsd, sessionId, canceled: true, canceledBeforeStream: false };
+    }
+  }
+
+  return { finalText, errored, usage, providerCostUsd, sessionId, canceled: false, canceledBeforeStream: false };
+}
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
@@ -776,8 +821,8 @@ export async function* orchestrate(
         };
         const reviewStart = deps.clock.now();
 
-        // --- Stream reviewer events ---
-        const reviewOutcome = yield* streamProvider(reviewerProvider, reviewReq, reviewTier, signal);
+        // --- Consume reviewer events without surfacing internal prose ---
+        const reviewOutcome = await collectProviderRun(reviewerProvider, reviewReq, signal);
 
         if (reviewOutcome.canceled) {
           yield { type: 'notice', level: 'warn', message: 'cancelled' };
