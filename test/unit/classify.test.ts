@@ -513,6 +513,92 @@ describe('classify — high risk signals', () => {
   }
 });
 
+describe('classify — plural risk signals', () => {
+  const criticalCases = [
+    ['rotate API keys and credentials', 'api keys + credentials'],
+    ['update auth cookies', 'auth + cookies'],
+    ['invalidate active sessions', 'sessions'],
+    ['rotate secrets and tokens', 'secrets + tokens'],
+    ['reset passwords and certificates', 'passwords + certificates'],
+    ['replace private keys in the signer', 'private keys'],
+    ['revoke jwts issued yesterday', 'jwts'],
+  ] as const;
+
+  for (const [task, signal] of criticalCases) {
+    it(`"${task}" → risk=critical (plural signal: ${signal})`, () => {
+      const result = classify(task);
+      assert.equal(result.risk, 'critical', `rationale: ${result.rationale}`);
+    });
+  }
+
+  const criticalSingularCases = [
+    'rotate the API key and credential',
+    'update the auth cookie',
+    'invalidate the active session',
+    'rotate the secret and token',
+    'reset the password and certificate',
+    'replace the private key in the signer',
+    'revoke the jwt issued yesterday',
+  ];
+
+  for (const task of criticalSingularCases) {
+    it(`"${task}" → risk=critical (singular still matches)`, () => {
+      const result = classify(task);
+      assert.equal(result.risk, 'critical', `rationale: ${result.rationale}`);
+    });
+  }
+
+  const highCases = [
+    ['fix payments permissions', 'payments + permissions'],
+    ['run the db migrations', 'db migrations'],
+    ['run the database migrations', 'database migrations'],
+    ['apply schema changes', 'schema'],
+    ['review upcoming deployments', 'deployments'],
+    ['check release rollbacks', 'releases + rollbacks'],
+    ['review failed logins', 'logins'],
+  ] as const;
+
+  for (const [task, signal] of highCases) {
+    it(`"${task}" → risk=high (plural signal: ${signal})`, () => {
+      const result = classify(task);
+      assert.equal(result.risk, 'high', `rationale: ${result.rationale}`);
+    });
+  }
+
+  const highSingularCases = [
+    'fix a payment permission',
+    'run the db migration',
+    'run the database migration',
+    'apply a schema change',
+    'review the deployment',
+    'check the release rollback',
+    'review a failed login',
+  ];
+
+  for (const task of highSingularCases) {
+    it(`"${task}" → risk=high (singular still matches)`, () => {
+      const result = classify(task);
+      assert.equal(result.risk, 'high', `rationale: ${result.rationale}`);
+    });
+  }
+
+  const benignCases = [
+    'ask the secretary to organize notes',
+    'tokenize the parser input',
+    'review schematic diagrams',
+    'discuss permissionless blockchains',
+    'read about deploymental history',
+  ];
+
+  for (const task of benignCases) {
+    it(`"${task}" does not hit critical/high via partial plural matching`, () => {
+      const result = classify(task);
+      assert.notEqual(result.risk, 'critical', `rationale: ${result.rationale}`);
+      assert.notEqual(result.risk, 'high', `rationale: ${result.rationale}`);
+    });
+  }
+});
+
 describe('classify — medium risk signals', () => {
   const mediumCases = [
     { task: 'add a lint rule for trailing commas', signal: 'lint' },

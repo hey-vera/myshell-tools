@@ -9,6 +9,27 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 ### Pending
 - Cross-OS CI execution (requires a public remote).
 - opencode native-session continuity (`run --session`) — feature add, needs live opencode verification.
+- Reconcile Codex advertised models (detect.ts) with the pricing table and current vendor
+  model IDs — deferred: needs live verification of what the `codex` CLI actually exposes.
+
+## [3.10.17]
+
+### Fixed
+- **Plural risk words now trigger review/escalation.** The risk classifier's signals were
+  mostly singular, so "rotate API keys and credentials", "fix payments permissions", "run
+  the db migrations", "schema changes", etc. could classify as low risk — skipping the
+  high/critical cross-vendor review and using looser acceptance thresholds. The
+  critical/high signal patterns are now plural-safe (`credentials?`, `api[-\s]?keys?`,
+  `payments?`, `permissions?`, `migrations?`, `schemas?`, …).
+- **Ambiguous "design/plan"-style tasks reach the smart router.** A lone soft manager
+  keyword falsely counted as routing evidence, so the model-brained tier classifier was
+  skipped and the task defaulted to IC. `hasTierEvidence` now uses the same
+  "manager qualifies" rule as the classifier (strong signal or ≥2 soft), so a genuinely
+  ambiguous task (e.g. "design a multi-tenant billing system") now consults the smart
+  router instead of silently routing IC.
+- **Routing fallback honors advertised models.** The rare "no preferred provider
+  available" fallback bypassed the `availableModels` filter and could return an
+  unadvertised model; it now goes through the normal provider model-selection path.
 - Per-conversation append/remove lock (a delete racing an append from two concurrent
   processes on the same conversation) — low single-user likelihood; deferred as a
   larger, deadlock-sensitive change.

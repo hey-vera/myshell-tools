@@ -179,11 +179,8 @@ export function route(
   }
 
   // None of the policy-preferred providers are available; fall back to the
-  // globally cheapest model across all available providers.
+  // globally cheapest provider, then apply the normal provider-specific model
+  // selection so advertised-model filters and opencode handling are preserved.
   const fallback = getCheapestForTier(tier, available);
-  return {
-    tier,
-    provider: fallback.provider as ProviderId,
-    model: fallback.model,
-  };
+  return decisionFor(fallback.provider as ProviderId);
 }

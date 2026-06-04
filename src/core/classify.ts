@@ -154,19 +154,19 @@ const IC_SIGNALS: readonly RegExp[] = [
  */
 const CRITICAL_SIGNALS: readonly RegExp[] = [
   /\bauth(?:entication|orization)?\b/i,
-  /\bcredential\b/i,
-  /\bsecret\b/i,
-  /\bpassword\b/i,
-  /\btoken\b/i,
-  /\bapi[-\s]?key\b/i,
-  /\bprivate[-\s]?key\b/i,
+  /\bcredentials?\b/i,
+  /\bsecrets?\b/i,
+  /\bpasswords?\b/i,
+  /\btokens?\b/i,
+  /\bapi[-\s]?keys?\b/i,
+  /\bprivate[-\s]?keys?\b/i,
   /\bencrypt(?:ion|ed)?\b/i,
-  /\bcertificate\b/i,
+  /\bcertificates?\b/i,
   /\boauth\b/i,
-  /\bvault\b/i,
-  /\bsession\b/i,
-  /\bcookie\b/i,
-  /\bjwt\b/i,
+  /\bvaults?\b/i,
+  /\bsessions?\b/i,
+  /\bcookies?\b/i,
+  /\bjwts?\b/i,
   /\.env\b/i,
 ];
 
@@ -175,25 +175,25 @@ const CRITICAL_SIGNALS: readonly RegExp[] = [
  * production infrastructure.
  */
 const HIGH_SIGNALS: readonly RegExp[] = [
-  /\blogin\b/i,
-  /\bpayment\b/i,
+  /\blogins?\b/i,
+  /\bpayments?\b/i,
   /\bbilling\b/i,
-  /\bdeploy(?:ment)?\b/i,
-  /\bmigration\b/i,
+  /\bdeploy(?:ments?)?\b/i,
+  /\bmigrations?\b/i,
   /\bci\/cd\b/i,
-  /\bpermission\b/i,
-  /\bschema\b/i,
+  /\bpermissions?\b/i,
+  /\bschemas?\b/i,
   /\bproduction\b/i,
   /\bprod\b/i,
-  /\brelease\b/i,
-  /\brollback\b/i,
+  /\breleases?\b/i,
+  /\brollbacks?\b/i,
   /\binfra(?:structure)?\b/i,
   /\bterraform\b/i,
   /\bkubernetes\b/i,
   /\bk8s\b/i,
   /\bdocker\b/i,
-  /\bdb\s+migration\b/i,
-  /\bdatabase\s+migration\b/i,
+  /\bdb\s+migrations?\b/i,
+  /\bdatabase\s+migrations?\b/i,
 ];
 
 /**
@@ -233,14 +233,40 @@ function scoreSignals(text: string, signals: readonly RegExp[]): readonly string
   return matched;
 }
 
+interface TierSignalScores {
+  readonly managerStrongMatches: readonly string[];
+  readonly managerSoftMatches: readonly string[];
+  readonly managerMatches: readonly string[];
+  readonly icMatches: readonly string[];
+  readonly workerMatches: readonly string[];
+  readonly managerQualifies: boolean;
+}
+
+function scoreTierSignals(task: string): TierSignalScores {
+  const managerStrongMatches = scoreSignals(task, MANAGER_STRONG_SIGNALS);
+  const managerSoftMatches = scoreSignals(task, MANAGER_SOFT_SIGNALS);
+  return {
+    managerStrongMatches,
+    managerSoftMatches,
+    managerMatches: scoreSignals(task, MANAGER_SIGNALS),
+    icMatches: scoreSignals(task, IC_SIGNALS),
+    workerMatches: scoreSignals(task, WORKER_SIGNALS),
+    // Manager qualifies only with real evidence: any strong signal, or ≥2 distinct
+    // soft signals. A single soft signal alone does NOT reach manager.
+    managerQualifies:
+      managerStrongMatches.length > 0 || managerSoftMatches.length >= 2,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
 /**
  * True when {@link classify} had real keyword evidence for its tier choice —
- * i.e. at least one manager/ic/worker signal matched the task. False means the
- * classifier fell back to the `ic` default with NO signal at all.
+ * i.e. a manager signal qualified under the same corroboration rule used by
+ * classify(), or at least one ic/worker signal matched the task. False means the
+ * classifier fell back to the `ic` default without a tier-determining signal.
  *
  * This is the seam the model-brained router uses (core/router.ts): a turn with
  * keyword evidence is routed deterministically (free, instant); a turn with no
@@ -251,10 +277,11 @@ function scoreSignals(text: string, signals: readonly RegExp[]): readonly string
  */
 export function hasTierEvidence(task: string): boolean {
   if (!task || task.trim().length === 0) return false;
+  const signals = scoreTierSignals(task);
   return (
-    scoreSignals(task, MANAGER_SIGNALS).length > 0 ||
-    scoreSignals(task, IC_SIGNALS).length > 0 ||
-    scoreSignals(task, WORKER_SIGNALS).length > 0
+    signals.managerQualifies ||
+    signals.icMatches.length > 0 ||
+    signals.workerMatches.length > 0
   );
 }
 
@@ -284,19 +311,15 @@ export function classify(task: string): Classification {
   // STRONG (structural — one suffices) and SOFT (need ≥2 distinct). The
   // de-duplicated soft count means repeating one word can't fake corroboration,
   // because scoreSignals already counts each distinct pattern at most once.
-  const managerStrongMatches = scoreSignals(task, MANAGER_STRONG_SIGNALS);
-  const managerSoftMatches = scoreSignals(task, MANAGER_SOFT_SIGNALS);
-  const managerMatches = scoreSignals(task, MANAGER_SIGNALS); // for rationale only
-  const icMatches = scoreSignals(task, IC_SIGNALS);
-  const workerMatches = scoreSignals(task, WORKER_SIGNALS);
+  const {
+    managerMatches,
+    icMatches,
+    workerMatches,
+    managerQualifies,
+  } = scoreTierSignals(task);
 
   const icScore = icMatches.length;
   const workerScore = workerMatches.length;
-
-  // Manager qualifies only with real evidence: any strong signal, or ≥2 distinct
-  // soft signals. A single soft signal alone does NOT reach manager.
-  const managerQualifies =
-    managerStrongMatches.length > 0 || managerSoftMatches.length >= 2;
 
   let tier: Tier;
   let tierSignals: readonly string[];

@@ -229,6 +229,22 @@ describe('route — availableModels filter', () => {
     const withOmitted = route('ic', CLAUDE_ONLY, DEFAULT_POLICY);
     assert.equal(withEmpty.model, withOmitted.model);
   });
+
+  it('fallback for a non-preferred provider still honours its advertised models', () => {
+    const customPolicy: Policy = {
+      ...DEFAULT_POLICY,
+      providerOrderByTier: {
+        ...DEFAULT_POLICY.providerOrderByTier,
+        ic: ['claude'] as readonly ProviderId[],
+      },
+    };
+    const decision = route('ic', ['codex'], customPolicy, {
+      codex: ['gpt-5.4'],
+    });
+    assert.equal(decision.provider, 'codex');
+    assert.equal(decision.model, 'gpt-5.4');
+    assert.notEqual(decision.model, 'gpt-5.2-codex');
+  });
 });
 
 // ---------------------------------------------------------------------------

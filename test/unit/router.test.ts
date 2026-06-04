@@ -10,7 +10,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { hasTierEvidence } from '../../src/core/classify.ts';
+import { classify, hasTierEvidence } from '../../src/core/classify.ts';
 import {
   buildRouterPrompt,
   parseModelRoute,
@@ -39,6 +39,33 @@ describe('hasTierEvidence', () => {
   it('false when no tier keyword matches (the ambiguous case)', () => {
     assert.equal(hasTierEvidence('the thing is being weird again'), false);
     assert.equal(hasTierEvidence('it broke after lunch, halp'), false);
+  });
+
+  it('false for a lone soft manager keyword with no ic/worker signal', () => {
+    assert.equal(hasTierEvidence('design a multi-tenant billing system'), false);
+    assert.equal(hasTierEvidence('plan the new onboarding flow'), false);
+    assert.equal(hasTierEvidence('review this when you can'), false);
+  });
+
+  it('true when manager evidence qualifies by strong or two soft signals', () => {
+    assert.equal(hasTierEvidence('audit the billing flow'), true);
+    assert.equal(hasTierEvidence('review and design the billing flow'), true);
+  });
+
+  it('true for ic and worker signals', () => {
+    assert.equal(hasTierEvidence('fix the billing form'), true);
+    assert.equal(hasTierEvidence('find the billing form'), true);
+  });
+
+  it('matches classify manager qualification for lone soft, strong, and two-soft cases', () => {
+    assert.equal(classify('design a multi-tenant billing system').tier, 'ic');
+    assert.equal(hasTierEvidence('design a multi-tenant billing system'), false);
+
+    assert.equal(classify('audit the billing system').tier, 'manager');
+    assert.equal(hasTierEvidence('audit the billing system'), true);
+
+    assert.equal(classify('review and design the billing system').tier, 'manager');
+    assert.equal(hasTierEvidence('review and design the billing system'), true);
   });
 });
 
