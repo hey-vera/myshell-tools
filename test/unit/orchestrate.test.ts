@@ -425,6 +425,9 @@ describe('orchestrate — provider emits error', () => {
     // So the ledger gets 2 failed entries (one for IC, one for manager).
     assert.ok(ledger.entries.length >= 1, 'Expected at least 1 ledger entry');
     assert.equal(ledger.entries[0]?.success, false);
+
+    const assistantEntries = session.entries.filter((e) => e.role === 'assistant');
+    assert.equal(assistantEntries.length, 0, 'failed attempts must not persist assistant error messages');
   });
 
   it('(d) provider failure escalates to manager then emits final(success:false)', async () => {
@@ -476,6 +479,11 @@ describe('orchestrate — provider emits error', () => {
     if (finalEv.type === 'final') {
       assert.equal(finalEv.success, false);
     }
+
+    const assistantEntries = session.entries.filter((e) => e.role === 'assistant');
+    assert.equal(assistantEntries.length, 0, 'all-attempts-error turn must not persist an assistant entry');
+    assert.equal(session.entries.length, 1, 'failed turn keeps only the user entry in conversation history');
+    assert.equal(session.entries[0]?.role, 'user');
 
     assert.ok(types.includes('final'));
   });
@@ -739,6 +747,16 @@ describe('orchestrate — low-confidence escalation', () => {
     if (finalEv.type === 'final') {
       assert.equal(finalEv.success, true);
     }
+
+    const assistantEntries = session.entries.filter((e) => e.role === 'assistant');
+    assert.equal(assistantEntries.length, 1, 'only the accepted manager answer is persisted');
+    const assistant = assistantEntries[0]!;
+    assert.equal(assistant.content, managerText);
+    assert.equal(assistant.tier, 'manager');
+    assert.equal(assistant.provider, 'claude');
+    assert.equal(assistant.model, 'claude-opus-4-7');
+    assert.equal(assistant.confidence, 0.92);
+    assert.ok(!assistant.content.includes('I did some work.'), 'superseded IC draft must not be persisted');
   });
 
   it('(a2) balanced (adaptive) EARNS one manager pass on a low-confidence turn', async () => {
@@ -1119,6 +1137,10 @@ describe('orchestrate — cross-vendor review (high risk)', () => {
     if (finalEv.type === 'final') {
       assert.equal(finalEv.success, true);
     }
+
+    const assistantEntries = session.entries.filter((e) => e.role === 'assistant');
+    assert.equal(assistantEntries.length, 1, 'review-rejected draft must not be persisted');
+    assert.equal(assistantEntries[0]?.content, `Payment code attempt 2.\n${icEnvelope}`);
   });
 });
 
@@ -3017,8 +3039,17 @@ describe('orchestrate — captures a provider session id and persists it on the 
 
     await collectEvents(orchestrate('do something', deps, new AbortController().signal));
 
-    const assistant = session.entries.find((e) => e.role === 'assistant');
-    assert.ok(assistant !== undefined, 'expected an assistant entry');
+    assert.equal(session.entries.length, 2, 'single-attempt success persists one user and one assistant entry');
+    assert.equal(session.entries[0]?.role, 'user');
+    const assistant = session.entries[1]!;
+    assert.equal(assistant.role, 'assistant');
+    assert.equal(assistant.content, FINAL_TEXT);
+    assert.equal(assistant.tier, 'ic');
+    assert.equal(assistant.provider, 'codex');
+    assert.equal(assistant.model, 'gpt-5.2-codex');
+    assert.equal(assistant.confidence, 0.88);
+    assert.ok(assistant.costUsd !== undefined && assistant.costUsd > 0);
+    assert.equal(assistant.durationMs, 0);
     assert.strictEqual(assistant.sessionId, 'thread-777', 'captured thread id must persist on the turn');
   });
 

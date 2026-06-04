@@ -9,6 +9,20 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 ### Pending
 - Cross-OS CI execution (requires a public remote).
 
+## [3.10.11]
+
+### Fixed
+- **Multi-turn history keeps only the accepted answer.** The sequential orchestrator
+  appended an assistant entry after *every* provider attempt — before it knew whether
+  that attempt would fail over, escalate, time out, or be rejected by review — so failed
+  attempts' error messages and superseded lower-tier drafts were replayed as context on
+  later turns (and in `/goal`). It now persists exactly one assistant entry per
+  successful turn: the accepted answer (with its tier/provider/model/confidence and
+  native session id for resume), at the four acceptance points. Failed/inconclusive/
+  cancelled turns persist no assistant entry. The ledger still records every attempt
+  (cost/usage unchanged) — this only cleans the conversation history. Brings the
+  sequential engine in line with the Panel/Hedge executors, which already did this.
+
 ## [3.10.10]
 
 ### Fixed

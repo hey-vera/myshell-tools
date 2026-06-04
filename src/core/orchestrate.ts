@@ -93,6 +93,35 @@ interface StreamOutcome {
   canceledBeforeStream: boolean;
 }
 
+interface AcceptedRunSessionData {
+  readonly content: string;
+  readonly tier: Tier;
+  readonly provider: ProviderId;
+  readonly model: string;
+  readonly confidence: number | null;
+  readonly costUsd: number;
+  readonly durationMs: number;
+  readonly sessionId?: string;
+}
+
+async function appendAcceptedAssistant(
+  deps: OrchestrateDeps,
+  run: AcceptedRunSessionData,
+): Promise<void> {
+  await deps.session.append({
+    timestamp: deps.clock.isoNow(),
+    role: 'assistant',
+    content: run.content,
+    tier: run.tier,
+    provider: run.provider,
+    model: run.model,
+    confidence: run.confidence,
+    costUsd: run.costUsd,
+    durationMs: run.durationMs,
+    ...(run.sessionId !== undefined ? { sessionId: run.sessionId } : {}),
+  });
+}
+
 /**
  * Stream a single provider run, yielding `{type:'provider-event', tier, event}`
  * for every event, while accumulating `finalText`, `usage`, `providerCostUsd`,
@@ -331,6 +360,7 @@ export async function* orchestrate(
   let attempts = 0;
   let totalCostUsd = 0;
   let lastOutput = '';
+  let acceptedRun: AcceptedRunSessionData | undefined;
   /** Track the last error category across all attempts (for the failing final). */
   let lastErroredCategory: import('../providers/port.js').CliError['category'] | undefined;
   /** Track the last attempted provider (for the failing final). */
@@ -548,22 +578,6 @@ export async function* orchestrate(
       success,
     });
 
-    // --- Append assistant session entry ---
-    // Persist the provider-assigned native session id (e.g. Codex thread id) so
-    // a later turn can resume it. Claude reports none (it reuses the conv id).
-    await deps.session.append({
-      timestamp: deps.clock.isoNow(),
-      role: 'assistant',
-      content: finalText ?? (errored?.message ?? ''),
-      tier: decision.tier,
-      provider: decision.provider,
-      model: decision.model,
-      confidence: assessment.confidence,
-      costUsd: usd,
-      durationMs,
-      ...(outcome.sessionId !== undefined ? { sessionId: outcome.sessionId } : {}),
-    });
-
     // --- Yield tier-done ---
     yield {
       type: 'tier-done',
@@ -577,6 +591,18 @@ export async function* orchestrate(
     };
 
     lastOutput = finalText ?? (errored?.message ?? '');
+    if (success) {
+      acceptedRun = {
+        content: lastOutput,
+        tier: decision.tier,
+        provider: decision.provider,
+        model: decision.model,
+        confidence: assessment.confidence,
+        costUsd: usd,
+        durationMs,
+        ...(outcome.sessionId !== undefined ? { sessionId: outcome.sessionId } : {}),
+      };
+    }
 
     // -----------------------------------------------------------------------
     // 0) Structured question short-circuit (ask_user)
@@ -589,6 +615,10 @@ export async function* orchestrate(
     if (success) {
       const questions = parseQuestions(finalText ?? '');
       if (questions !== null) {
+        if (acceptedRun === undefined) {
+          throw new Error('orchestrate invariant violated: question final without accepted run');
+        }
+        await appendAcceptedAssistant(deps, acceptedRun);
         yield {
           type: 'final',
           success: true,
@@ -929,6 +959,10 @@ export async function* orchestrate(
           };
 
           if (verdict.verdict === 'approve') {
+            if (acceptedRun === undefined) {
+              throw new Error('orchestrate invariant violated: approved final without accepted run');
+            }
+            await appendAcceptedAssistant(deps, acceptedRun);
             yield {
               type: 'final',
               success: true,
@@ -961,6 +995,10 @@ export async function* orchestrate(
               level: 'warn',
               message: 'reviewer requested escalation but the policy tier ceiling is reached — accepting best result',
             };
+            if (acceptedRun === undefined) {
+              throw new Error('orchestrate invariant violated: ceiling-accepted final without accepted run');
+            }
+            await appendAcceptedAssistant(deps, acceptedRun);
             yield {
               type: 'final',
               success: true,
@@ -1051,6 +1089,10 @@ export async function* orchestrate(
     }
 
     // 4) Accept — everything checks out (or the flagship was warranted but denied)
+    if (acceptedRun === undefined) {
+      throw new Error('orchestrate invariant violated: successful final without accepted run');
+    }
+    await appendAcceptedAssistant(deps, acceptedRun);
     yield {
       type: 'final',
       success: true,
