@@ -2972,19 +2972,29 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
       // Install + relaunch; returns true when startMenu should hand off to the new
       // version, false on failure (with an actionable message).
       const install = async (): Promise<boolean> => {
-        const ok = await doUpdate(out).catch(() => false);
-        if (ok) {
-          if (relaunchFn !== undefined) await relaunchFn().catch(() => 1);
-          return true;
+        // Release the parent's stdin/readline so the npm child AND the relaunched
+        // child own the TTY alone — otherwise the parent's reader races the relaunched
+        // process for keypresses and the new menu falls back to line mode (needs Enter).
+        // Mirrors the login flow, which suspends stdin before any inherited-stdio child.
+        const resumeStdin = suspendStdin?.();
+        try {
+          const ok = await doUpdate(out).catch(() => false);
+          if (ok) {
+            if (relaunchFn !== undefined) await relaunchFn().catch(() => 1);
+            return true;
+          }
+          out.write(
+            `\n  ⚠️  Update to ${toV} didn't complete.\n` +
+              `     This is usually a global-install permission issue. Fix it with one of:\n` +
+              `       npm install -g myshell-tools@latest\n` +
+              `       sudo npm install -g myshell-tools@latest      (macOS/Linux, if you saw EACCES)\n` +
+              `     Staying on ${fromV} for now.\n\n`,
+          );
+          return false;
+        } finally {
+          // Restore the parent's reader on any path (esp. update failure → back to menu).
+          resumeStdin?.();
         }
-        out.write(
-          `\n  ⚠️  Update to ${toV} didn't complete.\n` +
-            `     This is usually a global-install permission issue. Fix it with one of:\n` +
-            `       npm install -g myshell-tools@latest\n` +
-            `       sudo npm install -g myshell-tools@latest      (macOS/Linux, if you saw EACCES)\n` +
-            `     Staying on ${fromV} for now.\n\n`,
-        );
-        return false;
       };
 
       if (mutableCtx.config.autoUpdate === true) {

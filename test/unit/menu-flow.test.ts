@@ -3229,6 +3229,55 @@ describe('startMenu — update notifier: banner, [u], auto-update', () => {
     );
   });
 
+  it('auto-update: completes update and relaunch handoff with injected reader', async () => {
+    const calls: string[] = [];
+
+    const clock = makeFakeClock();
+    const store = makeStore(clock);
+    const ledger = makeFakeLedger();
+    const dir = join(tmpdir(), `menu-autoupdate-handoff-${randomUUID()}`);
+    const config: AppConfig = { onboarded: true, setAsDefault: false, autoUpdate: true };
+
+    const ctx: MenuContext = {
+      version: '2.0.0',
+      clock,
+      ledger,
+      providers: { claude: makeFakeProvider() },
+      env: FAKE_ENV,
+      store,
+      config,
+      cwd: dir,
+      sandbox: 'workspace-write',
+      timeoutMs: 5_000,
+      // Injected readers do not create a real LineReader, so suspendStdin is
+      // undefined in this harness. This still locks the no-op path: auto-update
+      // must install, relaunch, and return cleanly without waiting for menu input.
+      readLine: makeScriptedReader([]),
+      installProvider: async () => true,
+      login: async () => 0,
+      checkForUpdate: async (): Promise<UpdateCheckResult> => ({
+        current: '2.0.0',
+        latest: '3.0.0',
+        updateAvailable: true,
+      }),
+      updateSelf: async () => {
+        calls.push('updateSelf');
+        return true;
+      },
+      relaunch: async () => {
+        calls.push('relaunch');
+        return 0;
+      },
+    };
+
+    await assert.doesNotReject(
+      () => startMenu(ctx, makeSink()),
+      'auto-update relaunch handoff must not throw',
+    );
+
+    assert.deepEqual(calls, ['updateSelf', 'relaunch']);
+  });
+
   it('auto-update: does NOT relaunch when updateSelf fails', async () => {
     let relaunchCalled = false;
 

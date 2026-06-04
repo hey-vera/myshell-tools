@@ -9,6 +9,19 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 ### Pending
 - Cross-OS CI execution (requires a public remote).
 
+## [3.10.1]
+
+### Fixed
+- **Single-keypress menu works after an auto-update relaunch.** When the tool
+  auto-updated on launch and re-launched itself, the home menu fell back to
+  line-mode (you had to press a key *then Enter*) instead of acting on one
+  keypress. Cause: the update/relaunch step spawned the new process with inherited
+  stdio but never suspended the parent's readline, so the parent raced the
+  relaunched process for stdin and its single-key reader lost. The update +
+  relaunch now suspend the parent's stdin first (the same pattern the login flow
+  already uses before handing the terminal to an inherited-stdio child), so the
+  relaunched menu owns the TTY and one keypress acts immediately.
+
 ## [3.10.0]
 
 ### Added
