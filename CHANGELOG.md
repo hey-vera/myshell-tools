@@ -9,6 +9,23 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 ### Pending
 - Cross-OS CI execution (requires a public remote).
 
+## [3.10.5]
+
+### Fixed
+- **First-time login now persists on Replit (you stay signed in across restarts).** On
+  Replit the container home is ephemeral, and the login flow spawned the vendor CLI with
+  no env override — so first-time `claude /login` / `codex login` / `opencode auth`
+  wrote credentials to the default home (`~/.claude`, …) which Replit wipes on restart,
+  leaving you "not signed in" again. (The existing persistent-dir resolver only kicked
+  in once credentials already existed — a chicken-and-egg that never helped the *first*
+  login.) New `loginPersistentEnv` creates the workspace-persistent credential dirs and
+  points the vendor CLI at them *before* login — but ONLY on Replit (`isReplit`), never
+  overriding an already-set `CLAUDE_CONFIG_DIR`/`CODEX_HOME`/XDG var, and using the exact
+  paths detection reads. On a normal machine it's a no-op (vendor CLIs keep their default
+  homes). It only directs *where* the CLI writes its own credentials — it never reads,
+  copies, or logs credential contents (the post-login verification runs the CLI's own
+  status check against the scoped home with credential-file reads disabled).
+
 ## [3.10.4]
 
 ### Fixed

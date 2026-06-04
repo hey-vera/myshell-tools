@@ -17,10 +17,10 @@
  */
 
 import { mkdir, readFile, chmod } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
+import { existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { atomicWrite } from './atomic.js';
-import { defaultStateHome } from './state-dir.js';
+import { defaultStateHome, isReplit } from './state-dir.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -97,6 +97,22 @@ function getCredentialsDir(home: string): string {
 
 function getCredentialsPath(home: string): string {
   return join(getCredentialsDir(home), 'credentials.json');
+}
+
+function replitClaudeConfigDir(cwd: string): string {
+  return join(cwd, '.replit-tools', '.claude-persistent');
+}
+
+function replitCodexHome(cwd: string): string {
+  return join(cwd, '.replit-tools', '.codex-persistent');
+}
+
+function replitOpencodeConfigHome(cwd: string): string {
+  return join(cwd, '.config');
+}
+
+function replitOpencodeDataHome(cwd: string): string {
+  return join(cwd, '.local', 'share');
 }
 
 // ---------------------------------------------------------------------------
@@ -197,23 +213,76 @@ export function replitPersistentEnv(baseEnv: NodeJS.ProcessEnv, cwd: string): No
   const add: NodeJS.ProcessEnv = {};
   try {
     if (baseEnv['CLAUDE_CONFIG_DIR'] === undefined) {
-      const dir = join(cwd, '.replit-tools', '.claude-persistent');
+      const dir = replitClaudeConfigDir(cwd);
       if (existsSync(join(dir, '.credentials.json'))) add['CLAUDE_CONFIG_DIR'] = dir;
     }
     if (baseEnv['CODEX_HOME'] === undefined) {
-      const dir = join(cwd, '.replit-tools', '.codex-persistent');
+      const dir = replitCodexHome(cwd);
       if (existsSync(join(dir, 'auth.json'))) add['CODEX_HOME'] = dir;
     }
     // opencode keeps its config (your own provider/subscription — Kimi etc.) in
     // XDG dirs. On Replit those point at the persistent workspace; a plain shell
     // may lack them → opencode reads ephemeral ~/.config and forgets your setup.
     if (baseEnv['XDG_CONFIG_HOME'] === undefined) {
-      const cfg = join(cwd, '.config');
+      const cfg = replitOpencodeConfigHome(cwd);
       if (existsSync(join(cfg, 'opencode'))) add['XDG_CONFIG_HOME'] = cfg;
     }
     if (baseEnv['XDG_DATA_HOME'] === undefined) {
-      const data = join(cwd, '.local', 'share');
+      const data = replitOpencodeDataHome(cwd);
       if (existsSync(join(data, 'opencode'))) add['XDG_DATA_HOME'] = data;
+    }
+  } catch {
+    // Best-effort — never throw on env resolution.
+  }
+  return add;
+}
+
+/**
+ * Build the env additions for a provider login on Replit, where the container
+ * home is ephemeral and first-time credentials must be written under the
+ * workspace. Unlike `replitPersistentEnv`, this login-time resolver creates the
+ * target dirs and points the provider CLI there before credentials exist.
+ *
+ * Only redirects on Replit, never overrides an already-set env var, and never
+ * reads or copies credential contents. Off Replit it returns `{}` so vendor CLIs
+ * keep using their normal default homes.
+ *
+ * @param baseEnv   - The env to read Replit and existing config vars from.
+ * @param cwd       - The workspace dir to resolve persistent dirs against.
+ * @param providers - Providers whose login dirs should be prepared.
+ */
+export function loginPersistentEnv(
+  baseEnv: NodeJS.ProcessEnv,
+  cwd: string,
+  providers: readonly ('claude' | 'codex' | 'opencode')[],
+): NodeJS.ProcessEnv {
+  const add: NodeJS.ProcessEnv = {};
+  try {
+    if (!isReplit(baseEnv)) return add;
+
+    if (providers.includes('claude') && baseEnv['CLAUDE_CONFIG_DIR'] === undefined) {
+      const dir = replitClaudeConfigDir(cwd);
+      mkdirSync(dir, { recursive: true, mode: 0o700 });
+      add['CLAUDE_CONFIG_DIR'] = dir;
+    }
+
+    if (providers.includes('codex') && baseEnv['CODEX_HOME'] === undefined) {
+      const dir = replitCodexHome(cwd);
+      mkdirSync(dir, { recursive: true, mode: 0o700 });
+      add['CODEX_HOME'] = dir;
+    }
+
+    if (providers.includes('opencode')) {
+      if (baseEnv['XDG_CONFIG_HOME'] === undefined) {
+        const cfg = replitOpencodeConfigHome(cwd);
+        mkdirSync(cfg, { recursive: true, mode: 0o700 });
+        add['XDG_CONFIG_HOME'] = cfg;
+      }
+      if (baseEnv['XDG_DATA_HOME'] === undefined) {
+        const data = replitOpencodeDataHome(cwd);
+        mkdirSync(data, { recursive: true, mode: 0o700 });
+        add['XDG_DATA_HOME'] = data;
+      }
     }
   } catch {
     // Best-effort — never throw on env resolution.

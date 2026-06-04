@@ -206,19 +206,30 @@ export function credentialFileIndicatesAuth(rawCredsJson: string, nowMs: number)
  */
 export async function detectProvider(
   id: 'claude' | 'codex' | 'opencode',
+  opts: {
+    env?: NodeJS.ProcessEnv;
+    cwd?: string;
+    credentialFileFallback?: boolean;
+    storedCredentialInjection?: boolean;
+  } = {},
 ): Promise<ProviderStatus> {
+  const baseEnv = opts.env ?? process.env;
+  const cwd = opts.cwd ?? process.cwd();
+  const credentialFileFallback = opts.credentialFileFallback ?? true;
+  const storedCredentialInjection = opts.storedCredentialInjection ?? true;
+
   if (id === 'claude') {
     // Load the stored token once so both the version probe and the auth probe
     // see it — but never inject it into the global process.env.
     // Fall back to process.env unchanged if loading fails.
-    let claudeChildEnv: NodeJS.ProcessEnv = process.env;
+    let claudeChildEnv: NodeJS.ProcessEnv = baseEnv;
     try {
-      const token = await loadClaudeToken();
+      const token = storedCredentialInjection ? await loadClaudeToken() : null;
       // Point claude at the Replit-persistent config dir when present so detection
       // sees the one-time sign-in that survives restarts (matches replit-tools).
       claudeChildEnv = {
-        ...claudeEnv(process.env, token),
-        ...replitPersistentEnv(process.env, process.cwd()),
+        ...claudeEnv(baseEnv, token),
+        ...replitPersistentEnv(baseEnv, cwd),
       };
     } catch {
       // Never throw — detection must be robust
@@ -255,9 +266,9 @@ export async function detectProvider(
 
         // Credential-file fallback: if the spawn didn't confirm auth (timed out
         // or failed), check the on-disk credentials file as a best-effort signal.
-        if (!authenticated) {
+        if (!authenticated && credentialFileFallback) {
           try {
-            const credsPath = resolveClaudeCredsPath(claudeChildEnv, process.cwd());
+            const credsPath = resolveClaudeCredsPath(claudeChildEnv, cwd);
             const raw = await readFile(credsPath, 'utf8');
             if (credentialFileIndicatesAuth(raw, Date.now())) {
               authenticated = true;
@@ -287,7 +298,7 @@ export async function detectProvider(
 
   // opencode: delegate to the dedicated helper.
   if (id === 'opencode') {
-    return detectOpencodeProvider();
+    return detectOpencodeProvider(baseEnv, cwd);
   }
 
   // codex: run `codex --version` to probe installation, then `codex login status`
@@ -295,8 +306,8 @@ export async function detectProvider(
     // Point codex at the Replit-persistent CODEX_HOME when present so detection
     // sees the one-time sign-in that survives restarts (matches replit-tools).
     const codexChildEnv: NodeJS.ProcessEnv = {
-      ...process.env,
-      ...replitPersistentEnv(process.env, process.cwd()),
+      ...baseEnv,
+      ...replitPersistentEnv(baseEnv, cwd),
     };
     const result = await execa('codex', ['--version'], {
       reject: false,
@@ -396,9 +407,12 @@ export function parseOpencodeModels(stdout: string): string[] {
  * can't do serious work, so the realistic flow is bring-your-own-subscription
  * (e.g. a paid opencode/anthropic/openai login) → then it's ready.
  */
-async function detectOpencodeProvider(): Promise<ProviderStatus> {
+async function detectOpencodeProvider(
+  baseEnv: NodeJS.ProcessEnv = process.env,
+  cwd: string = process.cwd(),
+): Promise<ProviderStatus> {
   try {
-    const env = { ...process.env, ...replitPersistentEnv(process.env, process.cwd()) };
+    const env = { ...baseEnv, ...replitPersistentEnv(baseEnv, cwd) };
     const result = await execa('opencode', ['--version'], {
       reject: false,
       timeout: 10_000,

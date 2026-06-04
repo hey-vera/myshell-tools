@@ -8,6 +8,7 @@
 
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
+import { existsSync } from 'node:fs';
 import { mkdtemp, rm, mkdir, writeFile, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -27,6 +28,7 @@ import {
   claudeTokenStatus,
   loadClaudeTokenCapturedAt,
   replitPersistentEnv,
+  loginPersistentEnv,
 } from '../../src/infra/credentials.ts';
 
 // ---------------------------------------------------------------------------
@@ -107,6 +109,91 @@ describe('replitPersistentEnv', () => {
 
   it('never throws on a nonexistent cwd', () => {
     assert.doesNotThrow(() => replitPersistentEnv({}, '/no/such/path/at/all'));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// loginPersistentEnv — prepare Replit-persistent dirs before first login
+// ---------------------------------------------------------------------------
+
+describe('loginPersistentEnv', () => {
+  it('on Replit returns Claude/Codex/opencode env vars and creates their dirs', async () => {
+    const dir = await mkdtemp(join(tmpdir(), `myshell-login-replit-${randomUUID()}-`));
+    try {
+      const add = loginPersistentEnv({ REPL_ID: 'abc123' }, dir, ['claude', 'codex', 'opencode']);
+
+      const claudeDir = join(dir, '.replit-tools', '.claude-persistent');
+      const codexDir = join(dir, '.replit-tools', '.codex-persistent');
+      const opencodeCfg = join(dir, '.config');
+      const opencodeData = join(dir, '.local', 'share');
+
+      assert.equal(add['CLAUDE_CONFIG_DIR'], claudeDir);
+      assert.equal(add['CODEX_HOME'], codexDir);
+      assert.equal(add['XDG_CONFIG_HOME'], opencodeCfg);
+      assert.equal(add['XDG_DATA_HOME'], opencodeData);
+      assert.equal(existsSync(claudeDir), true);
+      assert.equal(existsSync(codexDir), true);
+      assert.equal(existsSync(opencodeCfg), true);
+      assert.equal(existsSync(opencodeData), true);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('creates only the targeted provider dirs', async () => {
+    const dir = await mkdtemp(join(tmpdir(), `myshell-login-minimal-${randomUUID()}-`));
+    try {
+      const add = loginPersistentEnv({ REPL_ID: 'abc123' }, dir, ['claude']);
+
+      assert.equal(add['CLAUDE_CONFIG_DIR'], join(dir, '.replit-tools', '.claude-persistent'));
+      assert.equal(add['CODEX_HOME'], undefined);
+      assert.equal(add['XDG_CONFIG_HOME'], undefined);
+      assert.equal(add['XDG_DATA_HOME'], undefined);
+      assert.equal(existsSync(join(dir, '.replit-tools', '.claude-persistent')), true);
+      assert.equal(existsSync(join(dir, '.replit-tools', '.codex-persistent')), false);
+      assert.equal(existsSync(join(dir, '.config')), false);
+      assert.equal(existsSync(join(dir, '.local', 'share')), false);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('off Replit returns no overrides and creates no persistent dirs', async () => {
+    const dir = await mkdtemp(join(tmpdir(), `myshell-login-local-${randomUUID()}-`));
+    try {
+      const add = loginPersistentEnv({}, dir, ['claude', 'codex', 'opencode']);
+
+      assert.deepEqual(add, {});
+      assert.equal(existsSync(join(dir, '.replit-tools')), false);
+      assert.equal(existsSync(join(dir, '.config')), false);
+      assert.equal(existsSync(join(dir, '.local', 'share')), false);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('preserves already-set env vars and does not create default dirs for them', async () => {
+    const dir = await mkdtemp(join(tmpdir(), `myshell-login-preserve-${randomUUID()}-`));
+    try {
+      const add = loginPersistentEnv(
+        {
+          REPLIT_DEV_DOMAIN: 'example.replit.dev',
+          CLAUDE_CONFIG_DIR: '/custom/claude',
+          CODEX_HOME: '/custom/codex',
+          XDG_CONFIG_HOME: '/custom/config',
+          XDG_DATA_HOME: '/custom/data',
+        },
+        dir,
+        ['claude', 'codex', 'opencode'],
+      );
+
+      assert.deepEqual(add, {});
+      assert.equal(existsSync(join(dir, '.replit-tools')), false);
+      assert.equal(existsSync(join(dir, '.config')), false);
+      assert.equal(existsSync(join(dir, '.local', 'share')), false);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 });
 

@@ -40,7 +40,7 @@ import type { ProviderId } from '../providers/port.js';
 import { detectProvider, getInstallCommand } from '../providers/detect.js';
 import { bold, dim, green, red } from '../ui/theme.js';
 import { parseYesNo, yesNoHint } from '../interface/menu.js';
-import { clearClaudeToken } from '../infra/credentials.js';
+import { clearClaudeToken, loginPersistentEnv } from '../infra/credentials.js';
 
 /** Which sign-in flow to run. See module docstring. */
 export type LoginMethod = 'browser' | 'code';
@@ -184,6 +184,8 @@ async function runCodeMethodForProvider(
   suspendStdin?: () => () => void,
 ): Promise<void> {
   const { bin, args, guidance } = LOGIN_CODE_COMMAND[id];
+  const cwd = process.cwd();
+  const childEnv = { ...process.env, ...loginPersistentEnv(process.env, cwd, [id]) };
   out.write(bold(`\nSigning in to ${id} — no localhost needed.\n`, out.color));
   out.write(dim(guidance + '\n', out.color));
   // Release our readline's grip on stdin so the provider CLI is the SOLE reader
@@ -195,7 +197,13 @@ async function runCodeMethodForProvider(
   try {
     // Run the vendor sign-in interactively. We intentionally ignore the exit code
     // (it's unreliable — see below) and verify via a real credential probe instead.
-    await execa(bin, [...args], { stdin: 'inherit', stdout: 'inherit', stderr: 'inherit', reject: false });
+    await execa(bin, [...args], {
+      stdin: 'inherit',
+      stdout: 'inherit',
+      stderr: 'inherit',
+      reject: false,
+      env: childEnv,
+    });
   } finally {
     resumeStdin?.();
   }
@@ -204,7 +212,12 @@ async function runCodeMethodForProvider(
   // `claude auth login` can exit 0 even when the pasted code was rejected, so the
   // only honest "are you signed in?" answer is to re-detect. This makes the flow
   // self-correcting — a failed paste is reported as such, with the next step.
-  const status = await detectProvider(id).catch(() => null);
+  const status = await detectProvider(id, {
+    env: childEnv,
+    cwd,
+    credentialFileFallback: false,
+    storedCredentialInjection: false,
+  }).catch(() => null);
   if (status?.authenticated === true) {
     if (id === 'claude') await finishClaudeSignIn(out);
     else out.write(green(`✓ ${id} sign-in complete.\n`, out.color));
@@ -294,6 +307,8 @@ export async function runLogin(
     } else {
       // Browser method
       const { bin, args } = LOGIN_COMMAND[id];
+      const cwd = process.cwd();
+      const childEnv = { ...process.env, ...loginPersistentEnv(process.env, cwd, [id]) };
       out.write(bold(`\nSigning in to ${id} — a browser window may open…\n`, out.color));
       // Prime the user for the classic localhost trap BEFORE it happens, so a
       // "can't be reached" redirect error reads as a known step, not a failure.
@@ -311,7 +326,13 @@ export async function runLogin(
       const resumeStdin = opts?.suspendStdin?.();
       let result;
       try {
-        result = await execa(bin, [...args], { stdin: 'inherit', stdout: 'inherit', stderr: 'inherit', reject: false });
+        result = await execa(bin, [...args], {
+          stdin: 'inherit',
+          stdout: 'inherit',
+          stderr: 'inherit',
+          reject: false,
+          env: childEnv,
+        });
       } finally {
         resumeStdin?.();
       }
