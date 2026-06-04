@@ -9,6 +9,20 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 ### Pending
 - Cross-OS CI execution (requires a public remote).
 
+## [3.6.10]
+
+### Changed
+- **Cleaner auto status line.** The always-visible mode line now summarises only the
+  plans actually reported (`Mode: Max (auto · 2 Max, 1 Pro)`) and stays clean
+  (`Mode: Balanced (auto)`) when no provider reports a plan — instead of nagging
+  "no plan reported" on every screen. The full per-provider story (including who
+  reported nothing) still lives on the mode screen's "Auto detected" breakdown.
+
+### Fixed
+- The rate-limit cooldown notice no longer repeats when an already-cooling provider
+  hits another 429 (e.g. across iterations of an autonomous goal loop) — it announces
+  only on first entry into cooldown.
+
 ## [3.6.9]
 
 ### Added

@@ -4536,12 +4536,17 @@ describe('startMenu — mode settings [4] Auto', () => {
 
     await assert.doesNotReject(() => startMenu(ctx, sink));
 
-    // The main screen mode line must show the auto indicator. The suffix now
-    // carries the detected-plan reason (e.g. "(auto · no plan reported)" or
-    // "(auto · 1 Max)"), so assert on the "(auto" indicator, not the bare "(auto)".
+    // The main screen mode line must show the auto indicator. With no provider
+    // reporting a plan (FAKE_ENV claude plan=null), the compact main line stays
+    // clean — just "(auto)", NOT a nagging "no plan reported" (that detail lives
+    // on the mode screen's breakdown, not the always-visible status line).
     assert.ok(
       sink.buf.includes('(auto'),
       'main screen mode line must show the "(auto…" indicator when mode is unset',
+    );
+    assert.ok(
+      !sink.buf.includes('(auto · no plan reported)'),
+      'compact main-line reason must not nag "no plan reported" when there is no signal',
     );
   });
 

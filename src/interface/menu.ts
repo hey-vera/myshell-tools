@@ -107,13 +107,17 @@ function resolveAutoMode(env: EnvironmentStatus): Mode {
 }
 
 /**
- * Short human-readable reason for the status line when auto is active. Accounts
- * for the FULL set of authenticated plans, not just the first match —
- * e.g. "auto · 2 Max, 1 Pro" or "auto · Pro · 1 reported no plan". Honest about
- * what was not reported.
+ * Compact reason for the MAIN status line when auto is active. Summarises only
+ * the OBSERVED plans (e.g. "auto · 2 Max, 1 Pro"); when no provider reported a
+ * plan it stays clean ("auto") rather than nagging "no plan reported" on every
+ * screen — the full per-provider story (including who reported nothing) lives on
+ * the mode screen's "Auto detected" breakdown, not here.
  */
 function autoModeReason(env: EnvironmentStatus): string {
-  return `auto · ${describePlanSet(authedProviderPlans(env).map((p) => p.info))}`;
+  const observed = authedProviderPlans(env)
+    .map((p) => p.info)
+    .filter((i) => i.confidence === 'observed');
+  return observed.length === 0 ? 'auto' : `auto · ${describePlanSet(observed)}`;
 }
 
 /**
@@ -2097,11 +2101,14 @@ async function runChatLoop(
       final.errorCategory === 'rate-limit' &&
       final.provider !== undefined
     ) {
+      // Only announce on FIRST entry into cooldown — refreshing an already-active
+      // cooldown (e.g. a repeat 429 within a goal loop) must not spam the notice.
+      const alreadyCooling = (providerCooldownUntil.get(final.provider) ?? 0) > ctx.clock.now();
       providerCooldownUntil.set(final.provider, cooldownExpiry(ctx.clock.now()));
       // Be legible: if another provider is signed in, say we'll lean on it.
       const others = [mutableCtx.env.claude, mutableCtx.env.codex, mutableCtx.env.opencode]
         .filter((p) => p.authenticated && p.id !== final.provider);
-      if (others.length > 0) {
+      if (!alreadyCooling && others.length > 0) {
         out.write(
           dim(
             `  (${final.provider} is rate-limited — preferring your other provider${others.length > 1 ? 's' : ''} for a few minutes)\n`,
