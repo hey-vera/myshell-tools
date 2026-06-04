@@ -107,6 +107,10 @@ function resolveAutoMode(env: EnvironmentStatus): Mode {
   return autoModeForPlanInfos(authedProviderPlans(env).map((p) => p.info));
 }
 
+function hasAuthenticatedProvider(env: EnvironmentStatus): boolean {
+  return env.claude.authenticated || env.codex.authenticated || env.opencode.authenticated;
+}
+
 /**
  * Compact reason for the MAIN status line when auto is active. Summarises only
  * the OBSERVED plans (e.g. "auto · 2 Max, 1 Pro"); when no provider reported a
@@ -1161,6 +1165,60 @@ function makeConfirm(
   };
 }
 
+async function promptForAuthBeforeChat(
+  out: OutputSink,
+  readLine: () => Promise<string | null>,
+  mutableCtx: { config: AppConfig; env: EnvironmentStatus },
+  loginFn: (
+    out: OutputSink,
+    providerArg?: string,
+    opts?: {
+      method?: LoginMethod;
+      readLine?: () => Promise<string | null>;
+      suspendStdin?: () => () => void;
+      confirm?: Confirm;
+    },
+  ) => Promise<number>,
+  detectEnvironmentFn: () => Promise<EnvironmentStatus>,
+  confirm: Confirm,
+  suspendStdin?: () => () => void,
+): Promise<boolean> {
+  if (hasAuthenticatedProvider(mutableCtx.env)) return true;
+
+  const choices: Array<{ key: 'j' | 'k' | 'o'; id: ProviderId; label: string }> = [];
+  if (mutableCtx.env.claude.installed) choices.push({ key: 'j', id: 'claude', label: 'Claude' });
+  if (mutableCtx.env.codex.installed) choices.push({ key: 'k', id: 'codex', label: 'Codex' });
+  if (mutableCtx.env.opencode.installed) choices.push({ key: 'o', id: 'opencode', label: 'opencode' });
+
+  if (choices.length === 0) {
+    out.write('\nNo provider signed in yet, and no provider is installed. Install one from the Auth section first.\n');
+    return false;
+  }
+
+  const choiceText = choices.map((c) => `[${c.key}] ${c.label}`).join('  ');
+  out.write(`\nNo provider signed in yet. Sign in now? ${choiceText}  [Enter] back\n> `);
+  const key = await readMenuKey(out, readLine);
+  if (key === null || key.length === 0) return false;
+
+  const choice = choices.find((c) => c.key === key);
+  if (choice === undefined) {
+    out.write('Cancelled.\n');
+    return false;
+  }
+
+  await loginFn(out, choice.id, {
+    readLine,
+    confirm,
+    ...(suspendStdin !== undefined ? { suspendStdin } : {}),
+  });
+  mutableCtx.env = await detectEnvironmentFn();
+
+  if (hasAuthenticatedProvider(mutableCtx.env)) return true;
+
+  out.write('No provider is signed in yet. Returning to menu.\n');
+  return false;
+}
+
 // ---------------------------------------------------------------------------
 // Welcome screen (first run)
 // ---------------------------------------------------------------------------
@@ -1253,7 +1311,7 @@ async function runWelcome(
   // opencode now reports authenticated from a real credential probe, so a freshly
   // installed opencode (0 credentials) is offered sign-in here too — bring your
   // subscription, log it in once, and it just works.
-  for (const id of providers) {
+  for (const id of ['claude', 'codex', 'opencode'] as const) {
     const ps = env[id];
     if (!ps.installed || ps.authenticated) continue;
 
@@ -1957,13 +2015,16 @@ async function runRawProviderSession(
   env: EnvironmentStatus,
   suspendStdin?: () => () => void,
 ): Promise<void> {
-  // Build the choice list dynamically: opencode only when installed.
-  const choices: Array<{ label: string; bin: string }> = [
-    { label: 'Claude', bin: 'claude' },
-    { label: 'Codex', bin: 'codex' },
-  ];
-  if (env.opencode.installed) {
-    choices.push({ label: 'opencode', bin: 'opencode' });
+  const choices: Array<{ label: string; bin: string }> = [];
+  for (const ps of [env.claude, env.codex, env.opencode]) {
+    if (!ps.installed) continue;
+    const label = ps.id === 'claude' ? 'Claude' : ps.id === 'codex' ? 'Codex' : 'opencode';
+    choices.push({ label, bin: ps.binaryPath ?? ps.id });
+  }
+
+  if (choices.length === 0) {
+    out.write('\nNo provider CLI is installed yet. Install one from the Auth section or run: myshell-tools doctor --fix\n');
+    return;
   }
 
   const choiceLines = choices.map((c, i) => `  [${i + 1}] ${c.label}`).join('\n');
@@ -2386,14 +2447,9 @@ async function runChatLoop(
       // Check whether any provider is actually authenticated before dispatching a
       // task that is doomed to fail. opencode now reports authenticated only when a
       // real provider/subscription is configured (no more installed-means-ready).
-      const hasAuthenticatedProvider =
-        mutableCtx.env.claude.authenticated ||
-        mutableCtx.env.codex.authenticated ||
-        mutableCtx.env.opencode.authenticated;
-
-      if (!hasAuthenticatedProvider) {
+      if (!hasAuthenticatedProvider(mutableCtx.env)) {
         out.write(
-          '\n[info] No signed-in provider yet — press Ctrl+C to go back, then [j] Claude / [k] Codex / [o] opencode to sign in.\n',
+          '\n[info] No signed-in provider yet — type /back or press Ctrl+C twice to return, then [j] Claude / [k] Codex / [o] opencode to sign in.\n',
         );
         continue;
       }
@@ -3117,6 +3173,9 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
 
       // ---- [n] New conversation -----------------------------------------------
       if (key === 'n') {
+        if (!(await promptForAuthBeforeChat(out, readLine, mutableCtx, loginFn, detectEnvironmentFn, confirm, suspendStdin))) {
+          continue;
+        }
         // No up-front "name your chat" prompt — a real chat shell just opens and
         // lets you type. The title is derived silently from the first user message
         // (conversations.ts append()), so create an untitled conversation and drop
@@ -3133,6 +3192,9 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
         const all = await ctx.store.list();
         const latest = all[0];
         if (latest !== undefined) {
+          if (!(await promptForAuthBeforeChat(out, readLine, mutableCtx, loginFn, detectEnvironmentFn, confirm, suspendStdin))) {
+            continue;
+          }
           const chatResult = await runChatLoop(ctx, mutableCtx, latest.id, out, readLine, loginFn, detectEnvironmentFn, confirm, suspendStdin);
           spendDirty = true; // a task may have run — refresh the spend summary
           if (chatResult === 'exit') break;
@@ -3147,6 +3209,9 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
       if (!Number.isNaN(digit) && digit >= 1 && digit <= 9) {
         const target = metas[digit - 1];
         if (target !== undefined) {
+          if (!(await promptForAuthBeforeChat(out, readLine, mutableCtx, loginFn, detectEnvironmentFn, confirm, suspendStdin))) {
+            continue;
+          }
           const chatResult = await runChatLoop(ctx, mutableCtx, target.id, out, readLine, loginFn, detectEnvironmentFn, confirm, suspendStdin);
           spendDirty = true; // a task may have run — refresh the spend summary
           if (chatResult === 'exit') break;

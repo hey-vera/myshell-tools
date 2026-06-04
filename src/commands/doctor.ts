@@ -130,8 +130,13 @@ export function buildDoctorReport(
   lines.push(divider(color));
 
   // ---- Overall status --------------------------------------------------------
-  if (env.hasAnyProvider) {
+  if (hasAuthenticatedProvider(env)) {
     lines.push(green('Ready — at least one provider is available.', color));
+  } else if (env.hasAnyProvider) {
+    lines.push(
+      yellow('Not ready — providers are installed but none are signed in.', color) +
+        ' Run: myshell-tools login',
+    );
   } else {
     lines.push(
       red('No providers found.', color) +
@@ -140,6 +145,10 @@ export function buildDoctorReport(
   }
 
   return lines;
+}
+
+function hasAuthenticatedProvider(env: EnvironmentStatus): boolean {
+  return env.claude.authenticated || env.codex.authenticated || env.opencode.authenticated;
 }
 
 // ---------------------------------------------------------------------------
@@ -198,7 +207,7 @@ export interface DoctorFixOpts {
  * to any installed-but-unauthenticated providers. All I/O seams are injectable
  * via `opts` so tests stay hermetic.
  *
- * Returns 0 when at least one provider is installed, 1 otherwise.
+ * Returns 0 when at least one provider is authenticated, 1 otherwise.
  * Never calls process.exit — that is handled exclusively by src/cli.ts.
  * Never throws — any step failure is reported and the pass continues.
  */
@@ -229,7 +238,7 @@ export async function runDoctor(out: OutputSink, opts?: DoctorFixOpts): Promise<
   }
 
   if (!opts?.fix) {
-    return env.hasAnyProvider ? 0 : 1;
+    return hasAuthenticatedProvider(env) ? 0 : 1;
   }
 
   // ---- Fix pass --------------------------------------------------------------
@@ -256,7 +265,7 @@ export async function runDoctor(out: OutputSink, opts?: DoctorFixOpts): Promise<
   const nowFn = opts.now ?? (() => Date.now());
 
   try {
-    await runFixPass(
+    const finalEnv = await runFixPass(
       out,
       env,
       readLineFn,
@@ -267,11 +276,10 @@ export async function runDoctor(out: OutputSink, opts?: DoctorFixOpts): Promise<
       nowFn,
       suspendStdin,
     );
+    return hasAuthenticatedProvider(finalEnv) ? 0 : 1;
   } finally {
     rlClose?.();
   }
-
-  return 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -299,7 +307,7 @@ async function runFixPass(
   loadCapturedAtFn: () => Promise<string | undefined>,
   nowFn: () => number,
   suspendStdin?: () => () => void,
-): Promise<void> {
+): Promise<EnvironmentStatus> {
   const providers: Array<'claude' | 'codex' | 'opencode'> = ['claude', 'codex', 'opencode'];
 
   // ---- Step 1: offer installs for missing providers -------------------------
@@ -400,4 +408,5 @@ async function runFixPass(
       out.write(red(`✗ ${id}: not installed.\n`, out.color));
     }
   }
+  return finalEnv;
 }

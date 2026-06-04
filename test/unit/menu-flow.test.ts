@@ -1679,14 +1679,14 @@ describe('startMenu — first-run welcome: opencode onboarding prompt', () => {
     platform: 'linux',
   };
 
-  /** Env returned after opencode is installed (authenticated-when-installed). */
+  /** Env returned after opencode is installed but not yet configured. */
   const ENV_WITH_OPENCODE: EnvironmentStatus = {
     ...ENV_NO_OPENCODE,
     opencode: {
       id: 'opencode',
       installed: true,
       version: '0.1.0',
-      authenticated: true,
+      authenticated: false,
       plan: null,
       binaryPath: 'opencode',
       availableModels: ['opencode/deepseek-v4-flash-free'],
@@ -1784,9 +1784,9 @@ describe('startMenu — first-run welcome: opencode onboarding prompt', () => {
 
   it('answering y to opencode prompt calls installProvider with "opencode"', async () => {
     const installedIds: string[] = [];
-    // 'y' → install opencode; '' → mode (Enter = balanced); 'n' → set-as-default; 'n' → auto-update; 'q' → main menu
+    // 'y' → install opencode; 'n' → skip sign-in; '' → mode; 'n' → set-default; 'n' → auto-update; 'q' → main menu
     const ctx = makeOpencodeOnboardCtx(
-      ['y', '', 'n', 'n', 'q'],
+      ['y', 'n', '', 'n', 'n', 'q'],
       (id) => { installedIds.push(id); },
     );
     const sink = makeSink();
@@ -1804,9 +1804,9 @@ describe('startMenu — first-run welcome: opencode onboarding prompt', () => {
 
   it('answering y triggers re-detect via injected detectEnvironment', async () => {
     let detectCallCount = 0;
-    // 'y' → install opencode; '' → mode (Enter = balanced); 'n' → set-default; 'n' → auto-update; 'q' → quit
+    // 'y' → install opencode; 'n' → skip sign-in; '' → mode; 'n' → set-default; 'n' → auto-update; 'q' → quit
     const ctx = makeOpencodeOnboardCtx(
-      ['y', '', 'n', 'n', 'q'],
+      ['y', 'n', '', 'n', 'n', 'q'],
       undefined,
       () => { detectCallCount += 1; },
     );
@@ -1822,24 +1822,27 @@ describe('startMenu — first-run welcome: opencode onboarding prompt', () => {
     );
   });
 
-  it('no opencode sign-in prompt during onboarding (opencode is auth-when-installed)', async () => {
+  it('offers opencode sign-in during onboarding after install', async () => {
     const sink = makeSink();
-    // 'y' → install opencode; '' → mode (Enter = balanced); 'n' → set-default; 'n' → auto-update; 'q' → quit
-    // detectEnvironment returns ENV_WITH_OPENCODE (authenticated: true)
-    // So after install, no sign-in prompt should appear for opencode
-    const ctx = makeOpencodeOnboardCtx(['y', '', 'n', 'n', 'q']);
+    const loginCalls: string[] = [];
+    const ctx = {
+      ...makeOpencodeOnboardCtx(['y', 'y', '', 'n', 'n', 'q']),
+      login: async (_out: OutputSink, providerArg?: string) => {
+        loginCalls.push(providerArg ?? 'all');
+        return 0;
+      },
+    };
 
     await assert.doesNotReject(
       () => startMenu(ctx, sink),
-      'no opencode sign-in prompt after install should not throw',
+      'opencode sign-in prompt after install should not throw',
     );
 
-    // The sign-in prompt for opencode must NOT appear — opencode is authenticated-when-installed
-    const opencodeSigning = sink.buf.toLowerCase().includes('sign in to opencode');
     assert.ok(
-      !opencodeSigning,
-      'no "sign in to opencode" prompt must appear during onboarding (opencode is auth-when-installed)',
+      sink.buf.toLowerCase().includes('sign in to opencode'),
+      'onboarding must offer sign-in for newly installed unconfigured opencode',
     );
+    assert.deepEqual(loginCalls, ['opencode'], 'sign-in prompt must call login for opencode when accepted');
   });
 
   it('opencode prompt does NOT appear when opencode is already installed', async () => {
@@ -1862,8 +1865,8 @@ describe('startMenu — first-run welcome: opencode onboarding prompt', () => {
       cwd: dir,
       sandbox: 'workspace-write',
       timeoutMs: 5_000,
-      // No opencode prompt → mode (Enter = balanced); set-as-default; auto-update; quit main menu
-      readLine: makeScriptedReader(['', 'n', 'n', 'q']),
+      // No opencode install prompt; opencode is installed but unsigned, so skip sign-in, then mode/default/update/quit.
+      readLine: makeScriptedReader(['n', '', 'n', 'n', 'q']),
       installProvider: async () => true,
       login: async () => 0,
       detectEnvironment: async () => ENV_WITH_OPENCODE,
@@ -2100,9 +2103,18 @@ describe('startMenu — [i] import a native conversation', () => {
 // ---------------------------------------------------------------------------
 
 describe('startMenu — [r] raw session picker: opencode visibility', () => {
-  /** Env where opencode IS installed (authenticated-when-installed). */
+  /** Env where all raw-session providers are installed. */
   const FAKE_ENV_WITH_OPENCODE: EnvironmentStatus = {
     ...FAKE_ENV,
+    codex: {
+      id: 'codex',
+      installed: true,
+      version: '1.0.0',
+      authenticated: true,
+      plan: null,
+      binaryPath: 'codex',
+      availableModels: ['gpt-4o'],
+    },
     opencode: {
       id: 'opencode',
       installed: true,
@@ -2167,6 +2179,10 @@ describe('startMenu — [r] raw session picker: opencode visibility', () => {
       !pickerLines.toLowerCase().includes('opencode'),
       'opencode must not appear in the raw session picker choices when not installed',
     );
+    assert.ok(
+      !pickerLines.toLowerCase().includes('codex'),
+      'codex must not appear in the raw session picker choices when not installed',
+    );
   });
 
   it('[r] with opencode installed → picker lists [1] Claude [2] Codex [3] opencode', async () => {
@@ -2198,9 +2214,7 @@ describe('startMenu — [r] raw session picker: opencode visibility', () => {
       'picker must show [3] opencode when installed');
   });
 
-  it('[r] → select [2] (Codex) when opencode not installed → Cancelled (no spawn)', async () => {
-    // With opencode NOT installed: [1]=Claude, [2]=Codex. Selecting [2] launches codex.
-    // Since codex isn't present in CI either, reject:false means clean return.
+  it('[r] → invalid choice when only Claude is installed → Cancelled (no spawn)', async () => {
     const sink = makeSink();
     const ctx = makeCtx(
       {
@@ -2217,6 +2231,59 @@ describe('startMenu — [r] raw session picker: opencode visibility', () => {
       'selecting invalid option must not throw',
     );
     assert.ok(sink.buf.includes('Cancelled'), '"Cancelled" shown for out-of-range choice');
+  });
+
+  it('[r] with no installed providers prints an actionable message instead of launching', async () => {
+    const sink = makeSink();
+    const noInstalledEnv: EnvironmentStatus = {
+      claude: {
+        id: 'claude',
+        installed: false,
+        version: null,
+        authenticated: false,
+        plan: null,
+        binaryPath: null,
+        availableModels: [],
+      },
+      codex: {
+        id: 'codex',
+        installed: false,
+        version: null,
+        authenticated: false,
+        plan: null,
+        binaryPath: null,
+        availableModels: [],
+      },
+      opencode: {
+        id: 'opencode',
+        installed: false,
+        version: null,
+        authenticated: false,
+        plan: null,
+        binaryPath: null,
+        availableModels: [],
+      },
+      hasAnyProvider: false,
+      platform: 'linux',
+    };
+    const ctx = makeCtx(
+      {
+        env: noInstalledEnv,
+        readLine: makeScriptedReader([
+          'r',
+          'q',
+        ]),
+      },
+    );
+
+    await assert.doesNotReject(
+      () => startMenu(ctx, sink),
+      'raw picker with no installed providers should not throw',
+    );
+    assert.ok(
+      sink.buf.includes('No provider CLI is installed yet'),
+      'raw picker must print an actionable no-installed-providers message',
+    );
   });
 });
 
@@ -4222,7 +4289,70 @@ describe('startMenu — no-provider gate in chat loop', () => {
     platform: 'linux',
   };
 
-  it('prints no-provider message and does NOT dispatch task when no provider is authed', async () => {
+  it('prompts before opening a new chat and signs in via the injected login flow', async () => {
+    const installedUnauthedEnv: EnvironmentStatus = {
+      ...NO_AUTH_ENV,
+      claude: {
+        id: 'claude',
+        installed: true,
+        version: '1.0.0',
+        authenticated: false,
+        plan: null,
+        binaryPath: 'claude',
+        availableModels: ['model-a'],
+      },
+      hasAnyProvider: true,
+    };
+    const afterLoginEnv: EnvironmentStatus = {
+      ...installedUnauthedEnv,
+      claude: {
+        ...installedUnauthedEnv.claude,
+        authenticated: true,
+      },
+    };
+    const clock = makeFakeClock();
+    const store = makeStore(clock);
+    const sink = makeSink();
+    const loginCalls: string[] = [];
+
+    const ctx = makeCtx(
+      {
+        env: installedUnauthedEnv,
+        providers: { claude: makeFakeProvider() },
+        readLine: makeScriptedReader([
+          'n',        // new conversation → auth prompt first
+          'j',        // sign in to Claude
+          'do work',  // proceeds into chat after re-detect
+          '/exit',    // exit chat
+          'q',        // quit
+        ]),
+        login: async (_out, providerArg) => {
+          loginCalls.push(providerArg ?? 'all');
+          return 0;
+        },
+        detectEnvironment: async () => afterLoginEnv,
+      },
+      clock,
+      store,
+    );
+
+    await startMenu(ctx, sink);
+
+    assert.ok(
+      sink.buf.includes('No provider signed in yet'),
+      'Must prompt before opening chat when no provider is authenticated',
+    );
+    assert.deepEqual(loginCalls, ['claude'], 'inline auth prompt must call login for the selected provider');
+
+    const metas = await store.list();
+    const id = metas[0]?.id;
+    assert.ok(id !== undefined, 'conversation is created after successful inline sign-in');
+    const w = store._writers.get(id);
+    const userEntry = w?.entries.find((e) => e.role === 'user' && e.content === 'do work');
+    assert.ok(userEntry !== undefined, 'task is dispatched after re-detect reports an authenticated provider');
+  });
+
+  it('does not create a new conversation when no provider is installed', async () => {
     const clock = makeFakeClock();
     const store = makeStore(clock);
     const sink = makeSink();
@@ -4230,49 +4360,23 @@ describe('startMenu — no-provider gate in chat loop', () => {
     const ctx = makeCtx(
       {
         env: NO_AUTH_ENV,
-        providers: {},  // no providers installed
+        providers: {},
         readLine: makeScriptedReader([
-          'n',        // new conversation → opens chat directly
-          'do work',  // first message = attempted task — should be blocked
-          '/exit',    // exit chat
-          'q',        // quit
+          'n',
+          'q',
         ]),
-        // Spy: if runTask were called the provider run() would be invoked
-        // We detect this by checking if the fake provider was called.
-        // Since providers: {} the orchestrator won't find any anyway;
-        // the gate fires first.
       },
       clock,
       store,
     );
 
-    // Track writer entries to confirm no task was dispatched
     await startMenu(ctx, sink);
 
-    // The gate message must appear
     assert.ok(
-      sink.buf.includes('No signed-in provider yet'),
-      'Must print no-provider gate message when no provider is authenticated',
+      sink.buf.includes('No provider signed in yet, and no provider is installed'),
+      'No-installed path must explain that installation is needed first',
     );
-    // The gate message must mention how to sign in
-    assert.ok(
-      sink.buf.toLowerCase().includes('sign in'),
-      'Gate message must guide user toward signing in',
-    );
-
-    // No task should have been written to the session
-    const metas = await store.list();
-    if (metas.length > 0 && metas[0] !== undefined) {
-      const w = store._writers.get(metas[0].id);
-      // If writer exists, it should have no entries (no task was dispatched)
-      if (w !== undefined) {
-        const userEntry = w.entries.find((e) => e.role === 'user' && e.content === 'do work');
-        assert.ok(
-          userEntry === undefined,
-          'No user entry for the blocked task should exist in the session',
-        );
-      }
-    }
+    assert.equal((await store.list()).length, 0, 'no conversation should be created before auth is possible');
   });
 
   it('dispatches task normally when at least one provider is authenticated', async () => {
@@ -4317,7 +4421,7 @@ describe('startMenu — no-provider gate in chat loop', () => {
     }
   });
 
-  it('opencode installed but unconfigured (0 credentials) → gate FIRES', async () => {
+  it('opencode installed but unconfigured (0 credentials) → pre-chat auth prompt fires', async () => {
     // opencode installed + NOT authenticated (no provider logged in) → not usable
     // for real work, so the no-provider gate must fire (no more installed=ready).
     const opencodeInstalledEnv: EnvironmentStatus = {
@@ -4343,8 +4447,7 @@ describe('startMenu — no-provider gate in chat loop', () => {
         providers: {},
         readLine: makeScriptedReader([
           'n',
-          'do work',  // first message = task; should be blocked by the gate
-          '/exit',
+          '',         // back from the inline auth prompt
           'q',
         ]),
       },
@@ -4355,8 +4458,8 @@ describe('startMenu — no-provider gate in chat loop', () => {
     await assert.doesNotReject(() => startMenu(ctx, sink));
 
     assert.ok(
-      sink.buf.includes('No signed-in provider yet'),
-      'Gate must fire — an unconfigured opencode is not a usable provider',
+      sink.buf.includes('No provider signed in yet'),
+      'Pre-chat prompt must fire — an unconfigured opencode is not a usable provider',
     );
   });
 

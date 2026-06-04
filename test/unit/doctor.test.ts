@@ -214,6 +214,11 @@ describe('buildDoctorReport — claude installed but not signed in', () => {
     );
   });
 
+  it('does not report Ready when installed but not signed in', () => {
+    assert.ok(!output.includes('Ready'), `expected no Ready status in output:\n${output}`);
+    assert.ok(output.includes('Not ready'), `expected Not ready status in output:\n${output}`);
+  });
+
   it('does not show "signed in" without "not"', () => {
     // Ensure we see "not signed in" and not just "signed in" (positive)
     const signedInIdx = output.indexOf('signed in');
@@ -655,6 +660,23 @@ describe('runDoctor without fix — identical to original behavior', () => {
     assert.deepEqual(loginCalls, [], 'login must not be called without --fix');
     const output = lines.join('');
     assert.ok(output.includes('No providers found'), 'should include normal report text');
+  });
+
+  it('returns 1 when providers are installed but none are authenticated', async () => {
+    const env = makeFullEnv({
+      claude: { installed: true, authenticated: false, version: '1.0.0', binaryPath: 'claude' },
+      codex: { installed: true, authenticated: false, version: '1.0.0', binaryPath: 'codex' },
+    });
+
+    const { out, lines } = makeFakeOut();
+    const code = await runDoctor(out, {
+      detectEnvironment: async () => env,
+    });
+
+    const output = lines.join('');
+    assert.equal(code, 1, 'installed-but-unauthenticated providers are not ready');
+    assert.ok(!output.includes('Ready'), `should not print Ready:\n${output}`);
+    assert.ok(output.includes('Not ready'), `should print actionable not-ready status:\n${output}`);
   });
 });
 

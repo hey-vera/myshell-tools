@@ -9,6 +9,28 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 ### Pending
 - Cross-OS CI execution (requires a public remote).
 
+## [3.10.6]
+
+### Fixed
+- **No more dead-end when nothing is signed in.** Opening a chat (`[n]`/`[c]`/numbered)
+  with no authenticated provider now shows an inline sign-in picker first — `[j] Claude
+  [k] Codex [o] opencode [Enter] back` (installed providers only) — runs login, re-detects,
+  and enters the chat only if you're now signed in. The old gate copy ("press Ctrl+C to
+  go back", which actually needs two presses) is corrected to "type /back or press Ctrl+C
+  twice".
+- **`doctor` is honest about readiness.** It reported "Ready" when a provider was merely
+  *installed*; now "Ready" (and the exit code) require at least one *authenticated*
+  provider. Installed-but-signed-out shows "Not ready — providers are installed but none
+  are signed in. Run: myshell-tools login", and `doctor --fix` re-evaluates after its
+  sign-in actions.
+- **Raw provider session lists only installed CLIs.** It used to always list Claude/Codex
+  and could spawn a missing binary (throwing out of the menu); it now lists installed
+  providers only (using their detected path) and prints an actionable message if none are
+  installed.
+- **Onboarding offers opencode sign-in.** The first-run sign-in step only iterated
+  Claude/Codex; a user who added opencode landed on the menu still signed out. It now
+  offers opencode sign-in after install too.
+
 ## [3.10.5]
 
 ### Fixed
