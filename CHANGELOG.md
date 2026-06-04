@@ -8,6 +8,34 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ### Pending
 - Cross-OS CI execution (requires a public remote).
+- Retire `maxCostUsd` as an orchestration guard (fiction on a flat-rate subscription;
+  keep only for ledger/report views) — follow-up from the adaptive-admission design.
+
+## [3.7.0]
+
+### Added
+- **Adaptive flagship admission — Balanced now reaches the strongest model when a turn
+  earns it.** Designed in an adversarial review by GPT-5.5 (Codex CLI) against the real
+  codebase. The static `maxTier` ceiling encoded API-billing logic ("manager is
+  expensive") that doesn't apply to a flat-rate subscription — the real scarce resource
+  is quota/rate-limit headroom. Manager access is now an adaptive per-turn decision
+  (`src/core/flagship.ts::authorizeTier`, pure):
+  - **Efficient** (`never-auto`) — never auto-opens the flagship.
+  - **Balanced** (`adaptive`) — earns ONE flagship pass per turn when the turn proves it
+    needs one (high/critical risk, low confidence, a reviewer escalation, or an
+    execution failure), **vetoed on an observed `free` plan** to preserve tight quota.
+    Previously Balanced was hard-capped at the mid tier and could never reach the
+    flagship — the mode most users land on now delivers "the right model for the task".
+  - **Max** (`always-eligible`) — opens the flagship whenever a turn asks.
+- Observed plan classification (`classifyPlan`) is now passed into orchestration
+  (`OrchestrateDeps.planInfos`) so the free-plan veto uses real signal — never fabricated
+  (providers whose CLI reports no plan classify to `confidence: 'none'` and don't veto).
+
+### Changed
+- `Policy` gains `flagshipAdmission` and `maxFlagshipAttemptsPerTurn`; `maxTier` is now a
+  deprecated route() safety net (admission derives from it when `flagshipAdmission` is
+  absent, so older configs behave unchanged). Mode descriptions / README / mode-screen
+  copy updated again to state the adaptive behaviour honestly.
 
 ## [3.6.11]
 

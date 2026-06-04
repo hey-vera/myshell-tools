@@ -1242,8 +1242,8 @@ async function runWelcome(
 
   // ---- Mode selection — single collapsed prompt ----------------------------
   // Accepts 1/2/3 directly; Enter keeps the auto default (derived from your plan).
-  // Each mode escalates to its OWN ceiling when a turn needs it; the ceiling rises
-  // with the mode (only Max opens the strongest model — see MODE_DESC / maxTier).
+  // flagshipAdmission governs the strongest model: Efficient never auto-opens it,
+  // Balanced earns one pass per turn when warranted, Max opens it on demand.
   out.write(
     `\nMode — [1] ${modeLabel('cost-saver')}  [2] ${modeLabel('balanced')}  [3] ${modeLabel('quality-first')}  (Enter = auto from your subscription): `,
   );
@@ -1337,8 +1337,8 @@ async function runModeSelect(
   // fixed-width box border.
   const lines = [
     '',
-    bold('Mode — how high routing is allowed to reach', out.color),
-    dim('Within a mode the router escalates as turns need it; higher modes reach stronger models. Only Max opens the most powerful (and priciest) one.', out.color),
+    bold('Mode — how readily routing reaches the strongest model', out.color),
+    dim('Efficient never auto-opens it; Balanced earns one pass when a turn proves it needs it; Max opens it whenever asked.', out.color),
     '',
     `  [1] ${bold(modeLabel('cost-saver'), out.color)} — ${MODE_DESC['cost-saver']}${mark('cost-saver')}`,
     `  [2] ${bold(modeLabel('balanced'), out.color)} — ${MODE_DESC['balanced']}${mark('balanced')}`,
@@ -2241,6 +2241,15 @@ async function runChatLoop(
           ctx.clock.now(),
         );
 
+        // Observed plan classification per authenticated provider — an immutable
+        // snapshot for adaptive flagship admission (core/flagship.ts), which vetoes
+        // auto-opening the flagship on an observed `free` plan. Never fabricated:
+        // providers whose CLI reports no plan classify to confidence 'none'.
+        const planInfos: Partial<Record<ProviderId, PlanInfo>> = {};
+        for (const p of [mutableCtx.env.claude, mutableCtx.env.codex, mutableCtx.env.opencode]) {
+          if (p.authenticated) planInfos[p.id] = classifyPlan(p.plan);
+        }
+
         // EXPERIMENTAL native session plan (opt-in via config.nativeSessions).
         // Pure decision; null when disabled. When present, orchestrate uses the
         // provider's native session for matching tiers instead of replaying history.
@@ -2279,6 +2288,7 @@ async function runChatLoop(
           ...(hist.length > 0 ? { history: hist } : {}),
           ...(Object.keys(availableModels).length > 0 ? { availableModels } : {}),
           ...(authenticatedProviders.length > 0 ? { authenticatedProviders } : {}),
+          ...(Object.keys(planInfos).length > 0 ? { planInfos } : {}),
           ...(nativeSession.length > 0 ? { nativeSession } : {}),
           ...(routeClassifier !== undefined ? { routeClassifier } : {}),
         };

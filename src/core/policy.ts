@@ -11,18 +11,23 @@ import type { Policy } from './types.js';
 export const DEFAULT_POLICY: Policy = {
   maxAttempts: 3,
 
-  // Hard tier ceiling. balanced must NOT auto-launch the manager tier (opus /
-  // gpt-5.5) off a soft classification — running the most expensive model is an
-  // explicit user choice, not a default. Clamping to 'ic' means a message that
-  // classifies as 'manager' still runs at most the IC model (sonnet) under
-  // balanced; escalation/review calls are clamped at the same chokepoint
-  // (route()). quality-first is the preset that opens the manager tier.
+  // Tier ceiling — retained as route()'s final safety net. The PRIMARY control
+  // for manager access is now flagshipAdmission (below): balanced is 'adaptive',
+  // earning a single manager pass when a turn proves it needs it rather than being
+  // hard-capped at 'ic'. (maxTier is flipped to 'manager' in lockstep with the
+  // orchestrate wiring so authorizeTier — not clampTier — becomes the gate.)
   maxTier: 'ic',
 
-  // Per-task USD budget guard. A defensible round ceiling (not measured
-  // precision): balanced should comfortably cover normal IC work while still
-  // stopping a runaway loop. orchestrate() stops spending once totalCostUsd
-  // reaches this.
+  // Adaptive flagship admission: balanced earns ONE manager-tier attempt per turn
+  // when justified (high/critical risk, low confidence, or a reviewer escalation),
+  // vetoed for an observed free plan. See core/flagship.ts::authorizeTier.
+  flagshipAdmission: 'adaptive',
+  maxFlagshipAttemptsPerTurn: 1,
+
+  // Per-task USD budget guard. DEPRECATED as an orchestration control — on a
+  // flat-rate subscription this dollar figure is fiction (see CHANGELOG/tokens-not-
+  // dollars). Retained only so historical ledger/report views keep a number; the
+  // budget guard is being retired from the escalation path.
   maxCostUsd: 2.0,
 
   // Higher-risk work demands higher confidence before we accept it; below the
@@ -53,13 +58,13 @@ export const DEFAULT_POLICY: Policy = {
  * Named policy presets selectable from the Settings screen.
  *
  * - cost-saver   : raises escalation thresholds so it rarely escalates; stays
- *                  on cheaper worker/IC tiers as long as possible.
- *                  maxTier 'ic' (never manager), maxCostUsd $0.50.
+ *                  on cheaper worker/IC tiers. flagshipAdmission 'never-auto' —
+ *                  never auto-opens the flagship (manager) model.
  * - balanced     : identical to DEFAULT_POLICY; good for most work.
- *                  maxTier 'ic' (manager is an explicit ask), maxCostUsd $2.00.
- * - quality-first: lowers escalation thresholds so it escalates sooner and
- *                  reviews more; prioritises quality over token cost.
- *                  maxTier 'manager' (opens the manager tier), no cost cap.
+ *                  flagshipAdmission 'adaptive' — earns one manager pass per turn
+ *                  when a turn proves it needs it (vetoed on an observed free plan).
+ * - quality-first: lowers escalation thresholds so it escalates sooner and reviews
+ *                  more. flagshipAdmission 'always-eligible' — manager whenever asked.
  *
  * maxTier is enforced by route() (the single clamp chokepoint); maxCostUsd is
  * enforced by orchestrate()'s budget guard. The dollar figures are defensible
@@ -79,18 +84,20 @@ const MODE_LABEL: Record<Mode, string> = {
 };
 
 /**
- * One-line descriptions, framed around how high each mode lets routing reach.
- * Within a mode the architecture still escalates to that mode's CEILING when a
- * turn needs it — but the ceiling differs by mode: Efficient and Balanced top out
- * below the strongest model, and only Max opens it. Launching the most powerful
- * (and priciest) model is a deliberate choice, not a silent default — see the
- * maxTier reasoning in DEFAULT_POLICY. (Honest copy: earlier wording claimed every
- * mode "always escalates to the strongest model", which the maxTier clamp on
- * cost-saver/balanced makes false.)
+ * One-line descriptions, framed around how readily each mode reaches the flagship
+ * (strongest) model — governed by flagshipAdmission, not a static ceiling:
+ *   - Efficient never auto-opens the flagship;
+ *   - Balanced EARNS a single flagship pass on a turn that proves it needs one
+ *     (high/critical risk, low confidence, reviewer escalation), vetoed on an
+ *     observed free plan;
+ *   - Max opens the flagship whenever a turn asks for it.
+ * (Honest copy: earlier wording claimed every mode "always escalates to the
+ * strongest model" — false under the old maxTier clamp — and a later revision
+ * over-corrected to "reserved for Max", which adaptive Balanced now makes false.)
  */
 export const MODE_DESC: Record<Mode, string> = {
   'cost-saver': 'lean & fast — stays on the lighter models, escalating among them only when a turn needs it (won\'t open the top model)',
-  'balanced': 'sensible middle — escalates to the mid-tier model on harder turns; the strongest model stays reserved for Max',
+  'balanced': 'sensible middle — earns one pass at the strongest model on a turn that proves it needs it (high-risk or low-confidence); otherwise stays mid-tier',
   'quality-first': 'best answers — opens and reaches for the strongest model on hard turns; slower, never capped',
 };
 
@@ -231,8 +238,11 @@ export const POLICY_PRESETS: Record<Mode, Policy> = {
   'cost-saver': {
     maxAttempts: 4,
     // Tightest tier ceiling: never leave the IC tier. cost-saver should never
-    // run the manager model at all.
+    // run the manager model at all. (maxTier retained as a route() safety net;
+    // flagshipAdmission 'never-auto' is the primary control.)
     maxTier: 'ic',
+    flagshipAdmission: 'never-auto',
+    maxFlagshipAttemptsPerTurn: 0,
     // Smallest budget guard — a defensible round ceiling, not measured precision.
     maxCostUsd: 0.5,
     escalateBelowConfidence: {
@@ -257,6 +267,7 @@ export const POLICY_PRESETS: Record<Mode, Policy> = {
     // Opens the manager tier — quality-first is the preset where escalating to
     // (and reviewing with) the most capable model is the intended behaviour.
     maxTier: 'manager',
+    flagshipAdmission: 'always-eligible',
     // No budget cap: quality-first prioritises quality over token cost, so the
     // budget guard is disabled (null = no cap).
     maxCostUsd: null,

@@ -740,11 +740,56 @@ describe('orchestrate — low-confidence escalation', () => {
     }
   });
 
-  it('(a2) balanced tier ceiling (maxTier ic) does NOT escalate ic→manager — accepts instead (Major 4 regression)', async () => {
-    // Same low-confidence IC output, but under the DEFAULT/balanced policy whose
-    // maxTier is 'ic'. Escalating would re-run the SAME (sonnet) model — a wasted
-    // attempt — so orchestrate must accept the IC result, not escalate.
-    const LOW_CONF_ENVELOPE =
+  it('(a2) balanced (adaptive) EARNS one manager pass on a low-confidence turn', async () => {
+    // Adaptive flagship admission (GPT-5.5 design): under Balanced, a low-confidence
+    // IC result is an earned trigger, so orchestrate escalates ic→manager exactly
+    // once (bounded by maxFlagshipAttemptsPerTurn). The manager result is confident,
+    // breaking the loop. (This replaces the old maxTier-'ic' ceiling guard, which
+    // the adaptive model intentionally supersedes.)
+    const LOW_CONF =
+      '{"confidence": 0.3, "escalate": false, "reason": "not sure", "needs_review": false}';
+    const HIGH_CONF =
+      '{"confidence": 0.92, "escalate": false, "reason": "manager done", "needs_review": false}';
+    let callCount = 0;
+    const provider: Provider = {
+      id: 'claude',
+      async detect() {
+        return { id: 'claude', installed: true, version: '1.0.0', authenticated: true, binaryPath: '/usr/bin/fake', availableModels: [] };
+      },
+      async *run(_req: ProviderRequest, _signal: AbortSignal): AsyncIterable<ProviderEvent> {
+        callCount++;
+        const text = callCount === 1 ? `Some work.\n${LOW_CONF}` : `Manager pass.\n${HIGH_CONF}`;
+        yield { type: 'done', text, usage: FAKE_USAGE, raw: {} };
+      },
+    };
+    const deps: OrchestrateDeps = {
+      providers: { claude: provider },
+      clock: makeFakeClock(),
+      session: makeFakeSession(),
+      ledger: makeFakeLedger(),
+      policy: DEFAULT_POLICY, // balanced — flagshipAdmission 'adaptive'
+      cwd: '/fake/cwd',
+      sandbox: 'workspace-write',
+      timeoutMs: 30_000,
+    };
+
+    const events = await collectEvents(orchestrate('refactor X', deps, new AbortController().signal));
+
+    const escalateEv = events.find((e) => e.type === 'escalate');
+    assert.ok(escalateEv !== undefined && escalateEv.type === 'escalate', 'balanced must earn a manager escalation');
+    assert.equal(escalateEv.from, 'ic');
+    assert.equal(escalateEv.to, 'manager');
+    assert.equal(callCount, 2, 'exactly one manager pass (ic + manager)');
+    const finalEv = events.find((e) => e.type === 'final');
+    assert.ok(finalEv !== undefined && finalEv.type === 'final' && finalEv.success === true);
+    if (finalEv.type === 'final') assert.equal(finalEv.tier, 'manager');
+  });
+
+  it('(a3) balanced VETOES the manager pass when the only observed plan is free', async () => {
+    // Honesty/quota guard: with an observed `free` plan, adaptive admission denies
+    // the auto manager escalation (preserve tight quota) — orchestrate accepts the
+    // IC result instead of escalating.
+    const LOW_CONF =
       '{"confidence": 0.3, "escalate": false, "reason": "not sure", "needs_review": false}';
     let callCount = 0;
     const provider: Provider = {
@@ -754,7 +799,7 @@ describe('orchestrate — low-confidence escalation', () => {
       },
       async *run(_req: ProviderRequest, _signal: AbortSignal): AsyncIterable<ProviderEvent> {
         callCount++;
-        yield { type: 'done', text: `Some work.\n${LOW_CONF_ENVELOPE}`, usage: FAKE_USAGE, raw: {} };
+        yield { type: 'done', text: `Some work.\n${LOW_CONF}`, usage: FAKE_USAGE, raw: {} };
       },
     };
     const deps: OrchestrateDeps = {
@@ -762,7 +807,8 @@ describe('orchestrate — low-confidence escalation', () => {
       clock: makeFakeClock(),
       session: makeFakeSession(),
       ledger: makeFakeLedger(),
-      policy: DEFAULT_POLICY, // balanced — maxTier 'ic'
+      policy: DEFAULT_POLICY, // balanced — adaptive
+      planInfos: { claude: { raw: 'free', tier: 'free', confidence: 'observed' } },
       cwd: '/fake/cwd',
       sandbox: 'workspace-write',
       timeoutMs: 30_000,
@@ -770,8 +816,8 @@ describe('orchestrate — low-confidence escalation', () => {
 
     const events = await collectEvents(orchestrate('refactor X', deps, new AbortController().signal));
 
-    assert.equal(callCount, 1, 'must NOT re-run a clamped (no-op) escalation');
-    assert.equal(events.find((e) => e.type === 'escalate'), undefined, 'must not emit an escalate event the ceiling negates');
+    assert.equal(callCount, 1, 'free-plan veto: must NOT escalate to manager');
+    assert.equal(events.find((e) => e.type === 'escalate'), undefined, 'no escalate event under the free-plan veto');
     const finalEv = events.find((e) => e.type === 'final');
     assert.ok(finalEv !== undefined && finalEv.type === 'final' && finalEv.success === true, 'accepts the IC result');
   });

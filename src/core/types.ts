@@ -176,8 +176,41 @@ export interface Policy {
    * was classified. e.g. `'ic'` clamps a message classified `'manager'` down to
    * `'ic'`, so a single soft keyword (e.g. "plan") can't launch the most
    * expensive model on a low-risk chat. Absent → no ceiling (classifier wins).
+   *
+   * @deprecated Superseded by {@link flagshipAdmission} as the primary control
+   *   for manager-tier access. Retained as a compatibility fallback: when
+   *   `flagshipAdmission` is absent, authorizeTier() derives it from this field
+   *   (`'ic'` → `'never-auto'`, `'manager'`/absent → `'always-eligible'`).
+   *   route()'s clampTier still honours it as a final safety net.
    */
   readonly maxTier?: Tier;
+
+  /**
+   * Flagship (manager-tier) admission posture — the modern replacement for the
+   * static {@link maxTier} ceiling. On a flat-rate subscription the scarce
+   * resource is quota/rate-limit headroom, not dollars, so manager access is an
+   * adaptive per-turn decision (see core/flagship.ts::authorizeTier), not a fixed
+   * cap.
+   *
+   * - `'never-auto'`      : never auto-open manager (Efficient). The user can
+   *                         still pick Max explicitly.
+   * - `'adaptive'`        : earn manager when the turn proves it needs it — high/
+   *                         critical risk, low confidence, or a reviewer escalation —
+   *                         bounded by {@link maxFlagshipAttemptsPerTurn} and vetoed
+   *                         for an observed `free` plan (Balanced).
+   * - `'always-eligible'` : manager allowed whenever classification/escalation asks
+   *                         for it (Max).
+   *
+   * Absent → derived from {@link maxTier} for backward compatibility.
+   */
+  readonly flagshipAdmission?: 'never-auto' | 'adaptive' | 'always-eligible';
+
+  /**
+   * Under `'adaptive'` admission, the maximum number of manager-tier attempts a
+   * single turn may earn (quota guard). Absent → 1. Ignored for the other
+   * admission postures.
+   */
+  readonly maxFlagshipAttemptsPerTurn?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -252,6 +285,24 @@ export interface OrchestrateDeps {
     task: string,
     signal: AbortSignal,
   ) => Promise<{ readonly tier: Tier; readonly plan: boolean; readonly reason: string } | null>;
+  /**
+   * Observed plan classification per provider (from classifyPlan), supplied by
+   * the conversation layer as an immutable snapshot. Consulted by the adaptive
+   * flagship-admission gate (core/flagship.ts) to veto auto-opening the flagship
+   * when the only observed plan is `free` (quota preservation). Absent → no plan
+   * signal, so the veto never fires (we never fabricate a plan). The value type is
+   * `PlanInfo` from core/policy.ts; typed structurally here to keep types.ts a leaf.
+   */
+  readonly planInfos?: Partial<
+    Record<
+      ProviderId,
+      {
+        readonly raw: string | null;
+        readonly tier: 'max' | 'pro' | 'free' | 'unknown';
+        readonly confidence: 'observed' | 'inferred' | 'none';
+      }
+    >
+  >;
 }
 
 /**

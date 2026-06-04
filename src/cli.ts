@@ -11,7 +11,8 @@ import { execa } from 'execa';
 import { systemClock } from './infra/clock.js';
 import { createSessionWriter } from './infra/session.js';
 import { createLedger } from './infra/ledger.js';
-import { DEFAULT_POLICY, POLICY_PRESETS, autoModeForPlans } from './core/policy.js';
+import { DEFAULT_POLICY, POLICY_PRESETS, autoModeForPlans, classifyPlan } from './core/policy.js';
+import type { PlanInfo } from './core/policy.js';
 import type { OrchestrateDeps } from './core/types.js';
 import type { OutputSink } from './interface/render.js';
 import { runTask } from './interface/run.js';
@@ -113,6 +114,13 @@ function buildDeps(
   if (env.codex.authenticated) authenticatedProviders.push('codex');
   if (env.opencode.authenticated) authenticatedProviders.push('opencode');
 
+  // Observed plan per authenticated provider — snapshot for adaptive flagship
+  // admission (free-plan veto). Never fabricated (null plan → confidence 'none').
+  const planInfos: Partial<Record<import('./providers/port.js').ProviderId, PlanInfo>> = {};
+  if (env.claude.authenticated) planInfos['claude'] = classifyPlan(env.claude.plan);
+  if (env.codex.authenticated) planInfos['codex'] = classifyPlan(env.codex.plan);
+  if (env.opencode.authenticated) planInfos['opencode'] = classifyPlan(env.opencode.plan);
+
   return {
     clock: systemClock,
     session: createSessionWriter({ cwd, id: systemClock.uuid() }),
@@ -124,6 +132,7 @@ function buildDeps(
     timeoutMs,
     ...(Object.keys(availableModels).length > 0 ? { availableModels } : {}),
     ...(authenticatedProviders.length > 0 ? { authenticatedProviders } : {}),
+    ...(Object.keys(planInfos).length > 0 ? { planInfos } : {}),
   };
 }
 

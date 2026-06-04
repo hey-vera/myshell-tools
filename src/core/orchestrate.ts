@@ -31,6 +31,8 @@ import type { CoreEvent, OrchestrateDeps, Tier, Classification, Assessment, Poli
 import type { CliError, Usage, ProviderRequest, Provider, ProviderId } from '../providers/port.js';
 import { decideRoute } from './router.js';
 import { route, clampTier } from './route.js';
+import { authorizeTier } from './flagship.js';
+import type { FlagshipTrigger } from './flagship.js';
 import { buildPrompt } from './prompt.js';
 import { assess } from './assess.js';
 import { parseQuestions } from './questions.js';
@@ -231,6 +233,11 @@ export async function* orchestrate(
   let lastErroredCategory: import('../providers/port.js').CliError['category'] | undefined;
   /** Track the last attempted provider (for the failing final). */
   let lastAttemptedProvider: ProviderId | undefined;
+  /**
+   * Manager-tier attempts used this turn — the quota guard for adaptive flagship
+   * admission (Balanced earns a bounded number of flagship passes per turn).
+   */
+  let flagshipAttemptsThisTurn = 0;
 
   /**
    * Per-tier set of providers that have already been tried, used by the
@@ -259,6 +266,31 @@ export async function* orchestrate(
    */
   const reviewedAttempts = new Set<number>();
 
+  /**
+   * Adaptive flagship admission for a manager request at the current decision
+   * point. Closes over the live `currentTier` and `flagshipAttemptsThisTurn`.
+   * Returns whether manager is authorized for the given trigger + assessment.
+   */
+  const managerAdmitted = (trigger: FlagshipTrigger, assessmentArg?: Assessment): boolean =>
+    authorizeTier({
+      requestedTier: 'manager',
+      currentTier,
+      classification,
+      ...(assessmentArg !== undefined ? { assessment: assessmentArg } : {}),
+      policy: deps.policy,
+      ...(deps.planInfos !== undefined ? { planInfos: deps.planInfos } : {}),
+      flagshipAttemptsThisTurn,
+      trigger,
+    }).allowed;
+
+  // Adaptive flagship admission on the INITIAL route: a manager-classified turn
+  // only starts on the flagship when the turn justifies it (high/critical risk, or
+  // Max mode). Otherwise drop to IC — never open manager-first off a soft
+  // classification. (Earned escalations later in the loop are gated separately.)
+  if (currentTier === 'manager' && !managerAdmitted('initial')) {
+    currentTier = 'ic';
+  }
+
   // -------------------------------------------------------------------------
   // (f) Main orchestration loop
   // -------------------------------------------------------------------------
@@ -270,7 +302,19 @@ export async function* orchestrate(
     // route among only those vendors for this one iteration, then clear the pool.
     const routePool = failoverPool ?? available;
     failoverPool = null;
-    const decision = route(currentTier, routePool, deps.policy, deps.availableModels, deps.authenticatedProviders);
+    // When currentTier is 'manager' we have ALREADY passed adaptive admission
+    // (initial gate or an earned escalation gate), so route() must not re-clamp it
+    // back down via the static maxTier safety net — lift the ceiling to 'manager'
+    // for this resolve. For worker/ic, the static policy (and its maxTier) applies.
+    const effPolicy: Policy =
+      currentTier === 'manager' ? { ...deps.policy, maxTier: 'manager' } : deps.policy;
+    const decision = route(currentTier, routePool, effPolicy, deps.availableModels, deps.authenticatedProviders);
+
+    // Count a flagship attempt the moment the run resolves to the manager tier
+    // (the quota guard read by subsequent admission decisions this turn).
+    if (decision.tier === 'manager') {
+      flagshipAttemptsThisTurn++;
+    }
 
     // Record this provider as tried at this tier.
     let tierTried = triedByTier.get(currentTier);
@@ -553,9 +597,19 @@ export async function* orchestrate(
       }
 
       // All vendors at this tier have been tried (or maxAttempts reached) — escalate or break.
+      // Adaptive admission: a failure escalation to the flagship is an EARNED
+      // trigger, but Efficient (never-auto) and a free-plan veto deny it; in that
+      // case fall back to the static ceiling (clampTier) — preserving the prior
+      // effective behaviour (e.g. Efficient worker→ic).
       if (currentTier !== 'manager') {
-        yield { type: 'escalate', from: currentTier, to: 'manager', reason: 'execution failure' };
-        currentTier = 'manager';
+        const target: Tier = managerAdmitted('failure')
+          ? 'manager'
+          : clampTier('manager', deps.policy.maxTier);
+        if (target === currentTier) {
+          break mainLoop; // ceiling reached — cannot escalate further
+        }
+        yield { type: 'escalate', from: currentTier, to: target, reason: 'execution failure' };
+        currentTier = target;
         continue mainLoop;
       } else {
         break mainLoop; // already at manager; emit failing final below
@@ -692,7 +746,11 @@ export async function* orchestrate(
         // escalate (or warn if already at manager) rather than letting
         // unparseable output pass as approved.
         if (!verdict.parsed && (classification.risk === 'high' || classification.risk === 'critical')) {
-          if (currentTier !== 'manager') {
+          // Escalate to the flagship to adjudicate — but only if admission allows it
+          // (high/critical risk justifies it under adaptive; a free-plan veto or spent
+          // attempt budget can still deny). When denied, fall through to the honest
+          // "inconclusive — not auto-approving" failing final rather than escalating.
+          if (currentTier !== 'manager' && managerAdmitted('review', assessment)) {
             yield {
               type: 'notice',
               level: 'warn',
@@ -768,10 +826,13 @@ export async function* orchestrate(
 
           // verdict === 'escalate'
           const escalateTo = nextTierUp(currentTier);
-          // Tier ceiling (maxTier) negates the escalation → the reviewer wants a
-          // higher tier than policy allows. Accept the current result rather than
-          // re-running the same clamped model. (cost-saver/balanced cap at 'ic'.)
-          if (escalateTo !== null && clampTier(escalateTo, deps.policy.maxTier) === currentTier) {
+          // Adaptive admission negates a flagship escalation the reviewer asked for
+          // when this mode/turn doesn't admit manager (Efficient, free-plan veto, or
+          // attempt budget spent). Accept the current result rather than re-running
+          // the same model. (Escalation to 'ic' is always allowed.)
+          const reviewEscalateBlocked =
+            escalateTo === 'manager' ? !managerAdmitted('review', assessment) : false;
+          if (escalateTo !== null && reviewEscalateBlocked) {
             yield {
               type: 'notice',
               level: 'warn',
@@ -841,14 +902,20 @@ export async function* orchestrate(
       (assessment.confidence !== null && assessment.confidence < threshold);
 
     const nextTier = nextTierUp(currentTier);
-    // A higher tier only helps if the policy ceiling (maxTier) would actually let
-    // it run a different model. Under balanced/cost-saver (maxTier 'ic'), route()
-    // clamps a 'manager' request back to 'ic', so escalating would re-run the SAME
-    // model — a wasted attempt and wrong (manager) persona. When the clamp negates
-    // the escalation, accept the current result instead of burning the attempt.
-    const escalationWouldRun =
-      nextTier !== null && clampTier(nextTier, deps.policy.maxTier) !== currentTier;
-    if (needEsc && escalationWouldRun) {
+    // The tier we'd actually escalate to, or null if escalation wouldn't change the
+    // running model. For a flagship (manager) step, adaptive admission decides:
+    // under Balanced this confidence trigger is justified, but a free-plan veto or a
+    // spent attempt budget can still deny it. Escalation to 'ic' (from worker) is
+    // always allowed; the static clamp guards that legacy case.
+    const escalateTo: Tier | null =
+      nextTier === 'manager'
+        ? managerAdmitted('confidence', assessment)
+          ? 'manager'
+          : null
+        : nextTier !== null && clampTier(nextTier, deps.policy.maxTier) !== currentTier
+          ? nextTier
+          : null;
+    if (needEsc && escalateTo !== null) {
       // Budget cap: do not escalate to a new tier if we have spent the cap.
       if (budgetExceeded(totalCostUsd, deps.policy.maxCostUsd)) {
         yield {
@@ -876,10 +943,10 @@ export async function* orchestrate(
       yield {
         type: 'escalate',
         from: currentTier,
-        to: nextTier,
+        to: escalateTo,
         reason: escalateReason,
       };
-      currentTier = nextTier;
+      currentTier = escalateTo;
       continue mainLoop;
     }
 
