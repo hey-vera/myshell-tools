@@ -10,6 +10,21 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 - Cross-OS CI execution (requires a public remote).
 - opencode native-session continuity (`run --session`) — feature add, needs live opencode verification.
 
+## [3.10.14]
+
+### Fixed
+- **A corrupt conversations index no longer wipes your conversations.** Previously a
+  torn/partial `index.json` was treated like an empty store, so the next `create()`
+  overwrote it with just the new conversation — orphaning every prior one. Now a corrupt
+  index is detected (vs a genuinely-absent one), preserved as `index.json.corrupt`, and
+  **rebuilt from the on-disk message logs** (titles/timestamps recovered), with a one-line
+  `[warn]`. Every mutating op recovers first, so it can never clobber prior conversations.
+- **Malformed records can't poison summaries or resume.** The JSONL readers (ledger,
+  session, conversation messages) skipped invalid *JSON* but accepted syntactically-valid
+  wrong-shape records (`null`, `{}`, `{"usd":"x"}`), which could crash spend summaries
+  (`timestamp.slice`) or resume (`content.slice`). They now validate each record's shape
+  with runtime type guards and skip bad ones.
+
 ## [3.10.13]
 
 ### Fixed

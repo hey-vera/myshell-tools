@@ -10,6 +10,7 @@
 import { mkdir, readFile } from 'node:fs/promises';
 import type { SessionEntry, SessionWriter } from '../core/types.js';
 import { atomicAppendJSONL } from './atomic.js';
+import { isSessionEntry } from './jsonl-guards.js';
 import { getSessionsDir, getSessionFile } from './paths.js';
 
 /**
@@ -54,7 +55,8 @@ export async function readSession(cwd: string): Promise<SessionEntry[]> {
     const trimmed = line.trim();
     if (trimmed.length === 0) continue;
     try {
-      entries.push(JSON.parse(trimmed) as SessionEntry);
+      const parsed = JSON.parse(trimmed);
+      if (isSessionEntry(parsed)) entries.push(parsed);
     } catch {
       // Skip malformed lines
     }

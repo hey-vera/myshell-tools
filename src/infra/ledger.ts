@@ -9,6 +9,7 @@
 import { mkdir, readFile } from 'node:fs/promises';
 import type { LedgerEntry, LedgerWriter } from '../core/types.js';
 import { atomicAppendJSONL } from './atomic.js';
+import { isLedgerEntry } from './jsonl-guards.js';
 import { getStateDir, getLedgerFile } from './paths.js';
 
 /**
@@ -50,7 +51,8 @@ export async function readLedger(cwd: string): Promise<LedgerEntry[]> {
     const trimmed = line.trim();
     if (trimmed.length === 0) continue;
     try {
-      entries.push(JSON.parse(trimmed) as LedgerEntry);
+      const parsed = JSON.parse(trimmed);
+      if (isLedgerEntry(parsed)) entries.push(parsed);
     } catch {
       // Skip malformed lines
     }

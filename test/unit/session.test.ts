@@ -108,6 +108,27 @@ describe('createSessionWriter — append and readSession', () => {
     assert.equal(entries[1]?.content, 'another valid entry');
   });
 
+  it('readSession skips valid JSON records with the wrong shape', async () => {
+    const cwd = join(dir, 'wrong-shape-lines');
+
+    const writer = createSessionWriter({ cwd, id: randomUUID() });
+    await writer.append(makeEntry({ content: 'valid entry' }));
+
+    await appendFile(
+      getSessionFile(cwd),
+      ['null', '{}', '{"timestamp":123,"role":"user","content":"bad"}', '123', ''].join('\n'),
+      'utf8',
+    );
+
+    await writer.append(makeEntry({ role: 'assistant', content: 'another valid entry' }));
+
+    const entries = await readSession(cwd);
+    assert.equal(entries.length, 2);
+    assert.equal(entries[0]?.content, 'valid entry');
+    assert.equal(entries[1]?.content, 'another valid entry');
+    assert.doesNotThrow(() => entries.at(-1)?.content.slice(0, 10));
+  });
+
   it('appended entries preserve optional fields like tier and model', async () => {
     const cwd = join(dir, 'optional-fields');
     const writer = createSessionWriter({ cwd, id: randomUUID() });

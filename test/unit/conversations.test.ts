@@ -5,7 +5,7 @@
 
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, writeFile, mkdir } from 'node:fs/promises';
+import { appendFile, mkdtemp, readFile, rm, writeFile, mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
@@ -494,17 +494,104 @@ describe('createFileConversationStore — resilience', () => {
     }
   });
 
-  it('list returns [] when index.json is corrupt JSON (no throw)', async () => {
+  it('recovers a corrupt index from message files and create does not drop them', async () => {
     const home2 = await mkdtemp(join(tmpdir(), `conv-corrupt-${randomUUID()}-`));
     try {
       const convDir = join(home2, '.myshell-tools', 'conversations');
       await mkdir(convDir, { recursive: true });
-      await writeFile(join(convDir, 'index.json'), 'NOT VALID JSON', 'utf8');
+      await writeFile(join(convDir, 'index.json'), '{ broken', 'utf8');
+      await writeFile(
+        join(convDir, 'existing-id.jsonl'),
+        [
+          JSON.stringify({
+            timestamp: '2024-02-01T00:00:00.000Z',
+            role: 'system',
+            content: 'system seed',
+          }),
+          JSON.stringify({
+            timestamp: '2024-02-01T00:00:01.000Z',
+            role: 'user',
+            content: 'Recover this conversation from messages',
+          }),
+          JSON.stringify({
+            timestamp: '2024-02-01T00:00:02.000Z',
+            role: 'assistant',
+            content: 'Recovered.',
+          }),
+          '',
+        ].join('\n'),
+        'utf8',
+      );
+
+      const warnings: string[] = [];
+      const clock = makeFakeClock();
+      const store = createFileConversationStore({
+        homeDir: home2,
+        clock,
+        onWarning: (message) => warnings.push(message),
+      });
+      const list = await store.list();
+      assert.equal(list.length, 1);
+      assert.equal(list[0]?.id, 'existing-id');
+      assert.equal(list[0]?.title, 'Recover this conversation from messages');
+      assert.equal(list[0]?.createdAt, '2024-02-01T00:00:00.000Z');
+      assert.equal(list[0]?.updatedAt, '2024-02-01T00:00:02.000Z');
+      assert.equal(list[0]?.messageCount, 3);
+      assert.equal(list[0]?.pinned, false);
+      assert.equal(list[0]?.category, null);
+      assert.equal(await readFile(join(convDir, 'index.json.corrupt'), 'utf8'), '{ broken');
+      assert.equal(warnings.length, 1);
+      assert.match(warnings[0] ?? '', /Recovered conversations index/);
+
+      await store.create('New conversation');
+      const afterCreate = await store.list();
+      assert.equal(afterCreate.length, 2);
+      assert.ok(afterCreate.some((m) => m.id === 'existing-id'));
+      assert.ok(afterCreate.some((m) => m.title === 'New conversation'));
+    } finally {
+      await rm(home2, { recursive: true, force: true });
+    }
+  });
+
+  it('recovers a non-array index object instead of treating it as empty', async () => {
+    const home2 = await mkdtemp(join(tmpdir(), `conv-object-index-${randomUUID()}-`));
+    try {
+      const convDir = join(home2, '.myshell-tools', 'conversations');
+      await mkdir(convDir, { recursive: true });
+      await writeFile(join(convDir, 'index.json'), '{"not":"an array"}', 'utf8');
+      await writeFile(
+        join(convDir, 'object-id.jsonl'),
+        `${JSON.stringify({
+          timestamp: '2024-03-01T00:00:00.000Z',
+          role: 'user',
+          content: 'Object index recovery',
+        })}\n`,
+        'utf8',
+      );
 
       const clock = makeFakeClock();
       const store = createFileConversationStore({ homeDir: home2, clock });
       const list = await store.list();
-      assert.deepEqual(list, []);
+      assert.equal(list.length, 1);
+      assert.equal(list[0]?.id, 'object-id');
+      assert.equal(list[0]?.title, 'Object index recovery');
+      assert.equal(await readFile(join(convDir, 'index.json.corrupt'), 'utf8'), '{"not":"an array"}');
+    } finally {
+      await rm(home2, { recursive: true, force: true });
+    }
+  });
+
+  it('missing index remains an empty store and normal create works', async () => {
+    const home2 = await mkdtemp(join(tmpdir(), `conv-enoent-create-${randomUUID()}-`));
+    try {
+      const clock = makeFakeClock('2024-06-01T10:00:00.000Z');
+      const store = createFileConversationStore({ homeDir: home2, clock });
+      assert.deepEqual(await store.list(), []);
+
+      await store.create('First conversation');
+      const list = await store.list();
+      assert.equal(list.length, 1);
+      assert.equal(list[0]?.title, 'First conversation');
     } finally {
       await rm(home2, { recursive: true, force: true });
     }
@@ -520,7 +607,6 @@ describe('createFileConversationStore — resilience', () => {
       await w.append(makeEntry({ content: 'valid line' }));
 
       // Inject corrupt line directly
-      const { appendFile } = await import('node:fs/promises');
       const convDir = join(home2, '.myshell-tools', 'conversations');
       await appendFile(join(convDir, `${meta.id}.jsonl`), 'NOT JSON\n', 'utf8');
 
@@ -530,6 +616,36 @@ describe('createFileConversationStore — resilience', () => {
       assert.equal(entries.length, 2);
       assert.equal(entries[0]?.content, 'valid line');
       assert.equal(entries[1]?.content, 'another valid');
+    } finally {
+      await rm(home2, { recursive: true, force: true });
+    }
+  });
+
+  it('load skips valid JSON lines with the wrong shape', async () => {
+    const home2 = await mkdtemp(join(tmpdir(), `conv-wrong-shape-${randomUUID()}-`));
+    try {
+      const clock = makeFakeClock();
+      const store = createFileConversationStore({ homeDir: home2, clock });
+      const meta = await store.create('Wrong shape test');
+      const w = store.writer(meta.id);
+      await w.append(makeEntry({ content: 'valid before' }));
+
+      const convDir = join(home2, '.myshell-tools', 'conversations');
+      await appendFile(
+        join(convDir, `${meta.id}.jsonl`),
+        ['null', '{}', '{"timestamp":123,"role":"user","content":"bad"}', '123', ''].join('\n'),
+        'utf8',
+      );
+
+      await w.append(makeEntry({ content: 'valid after' }));
+
+      const entries = await store.load(meta.id);
+      assert.equal(entries.length, 2);
+      assert.equal(entries[0]?.content, 'valid before');
+      assert.equal(entries[1]?.content, 'valid after');
+      assert.doesNotThrow(() => {
+        for (const entry of entries) entry.content.slice(0, 5);
+      });
     } finally {
       await rm(home2, { recursive: true, force: true });
     }

@@ -3,15 +3,17 @@
  *
  * Storage layout under <homeDir>/.myshell-tools/conversations/:
  *   index.json       — JSON array of ConversationMeta, newest first
+ *   index.json.corrupt — last corrupt index preserved during recovery
  *   index.json.lock  — advisory lock for concurrent index mutations
  *   <id>.jsonl       — one SessionEntry per line (append-only message log)
  */
 
-import { mkdir, readFile, unlink } from 'node:fs/promises';
+import { mkdir, readFile, readdir, rename, stat, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { Clock, SessionEntry, SessionWriter } from '../core/types.js';
 import type { ConversationMeta, ConversationStore } from './conversation-store.js';
 import { atomicAppendJSONL, atomicWrite, withLock } from './atomic.js';
+import { isConversationMessage } from './jsonl-guards.js';
 import { defaultStateHome } from './state-dir.js';
 import { archiveConversation } from './session-mirror.js';
 
@@ -27,6 +29,10 @@ function getIndexPath(homeDir: string): string {
   return join(getConversationsDir(homeDir), 'index.json');
 }
 
+function getCorruptIndexPath(homeDir: string): string {
+  return join(getConversationsDir(homeDir), 'index.json.corrupt');
+}
+
 function getIndexLockPath(homeDir: string): string {
   return join(getConversationsDir(homeDir), 'index.json.lock');
 }
@@ -38,6 +44,13 @@ function getMessagePath(homeDir: string, id: string): string {
 // ---------------------------------------------------------------------------
 // Internal index helpers
 // ---------------------------------------------------------------------------
+
+type ConversationStoreWarning = (message: string) => void;
+
+type IndexReadResult =
+  | { readonly kind: 'ok'; readonly index: ConversationMeta[] }
+  | { readonly kind: 'absent' }
+  | { readonly kind: 'corrupt'; readonly reason: string };
 
 async function ensureDir(homeDir: string): Promise<void> {
   await mkdir(getConversationsDir(homeDir), { recursive: true });
@@ -61,19 +74,46 @@ function normaliseMeta(raw: unknown): ConversationMeta {
   };
 }
 
-async function readIndex(homeDir: string): Promise<ConversationMeta[]> {
+async function readIndexFile(homeDir: string): Promise<IndexReadResult> {
   try {
     const raw = await readFile(getIndexPath(homeDir), 'utf8');
     const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return [];
-    return parsed.map(normaliseMeta);
-  } catch {
-    return [];
+    if (!Array.isArray(parsed)) {
+      return { kind: 'corrupt', reason: 'index.json is not an array' };
+    }
+    return { kind: 'ok', index: parsed.map(normaliseMeta) };
+  } catch (err) {
+    const nodeErr = err as NodeJS.ErrnoException;
+    if (nodeErr.code === 'ENOENT') return { kind: 'absent' };
+    return {
+      kind: 'corrupt',
+      reason: err instanceof SyntaxError ? 'index.json is invalid JSON' : 'index.json is unreadable',
+    };
   }
 }
 
 async function writeIndex(homeDir: string, index: ConversationMeta[]): Promise<void> {
   await atomicWrite(getIndexPath(homeDir), JSON.stringify(index, null, 2));
+}
+
+function parseMessageLines(raw: string): SessionEntry[] {
+  const entries: SessionEntry[] = [];
+  for (const line of raw.split('\n')) {
+    const trimmed = line.trim();
+    if (trimmed.length === 0) continue;
+    try {
+      const parsed = JSON.parse(trimmed);
+      if (isConversationMessage(parsed)) entries.push(parsed);
+    } catch {
+      // Skip malformed lines
+    }
+  }
+  return entries;
+}
+
+async function loadMessageFile(path: string): Promise<SessionEntry[]> {
+  const raw = await readFile(path, 'utf8');
+  return parseMessageLines(raw);
 }
 
 // ---------------------------------------------------------------------------
@@ -89,6 +129,91 @@ function deriveTitle(content: string): string {
   return trimmed.length <= MAX_TITLE_LEN ? trimmed : trimmed.slice(0, MAX_TITLE_LEN);
 }
 
+function metaFromMessages(
+  id: string,
+  entries: readonly SessionEntry[],
+  fallbackIso: string,
+): ConversationMeta {
+  const first = entries[0];
+  const last = entries[entries.length - 1];
+  const firstUser = entries.find((entry) => entry.role === 'user');
+  return {
+    id,
+    title: firstUser === undefined ? '' : deriveTitle(firstUser.content),
+    createdAt: first?.timestamp ?? fallbackIso,
+    updatedAt: last?.timestamp ?? fallbackIso,
+    messageCount: entries.length,
+    pinned: false,
+    category: null,
+  };
+}
+
+async function rebuildIndexFromMessages(homeDir: string): Promise<ConversationMeta[]> {
+  const dir = getConversationsDir(homeDir);
+  const files = await readdir(dir, { withFileTypes: true });
+  const rebuilt: ConversationMeta[] = [];
+
+  for (const file of files) {
+    if (!file.isFile() || !file.name.endsWith('.jsonl')) continue;
+    const id = file.name.slice(0, -'.jsonl'.length);
+    const path = join(dir, file.name);
+    try {
+      const [messages, st] = await Promise.all([loadMessageFile(path), stat(path)]);
+      rebuilt.push(metaFromMessages(id, messages, st.mtime.toISOString()));
+    } catch {
+      // Best-effort: a single unreadable message log must not block the others.
+    }
+  }
+
+  return rebuilt.sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1));
+}
+
+async function preserveCorruptIndex(homeDir: string): Promise<string> {
+  const corruptPath = getCorruptIndexPath(homeDir);
+  try {
+    await rename(getIndexPath(homeDir), corruptPath);
+  } catch (err) {
+    const nodeErr = err as NodeJS.ErrnoException;
+    if (nodeErr.code !== 'ENOENT') throw err;
+  }
+  return corruptPath;
+}
+
+async function recoverIndex(
+  homeDir: string,
+  reason: string,
+  onWarning: ConversationStoreWarning | undefined,
+): Promise<ConversationMeta[]> {
+  const corruptPath = await preserveCorruptIndex(homeDir);
+  const rebuilt = await rebuildIndexFromMessages(homeDir);
+  await writeIndex(homeDir, rebuilt);
+  onWarning?.(
+    `Recovered conversations index (${reason}); rebuilt ${rebuilt.length} conversation(s), preserved original at ${corruptPath}.`,
+  );
+  return rebuilt;
+}
+
+async function readIndexLocked(
+  homeDir: string,
+  onWarning: ConversationStoreWarning | undefined,
+): Promise<ConversationMeta[]> {
+  const result = await readIndexFile(homeDir);
+  if (result.kind === 'ok') return result.index;
+  if (result.kind === 'absent') return [];
+  return recoverIndex(homeDir, result.reason, onWarning);
+}
+
+async function readIndex(
+  homeDir: string,
+  onWarning: ConversationStoreWarning | undefined,
+): Promise<ConversationMeta[]> {
+  const result = await readIndexFile(homeDir);
+  if (result.kind === 'ok') return result.index;
+  if (result.kind === 'absent') return [];
+
+  return withLock(getIndexLockPath(homeDir), async () => readIndexLocked(homeDir, onWarning));
+}
+
 // ---------------------------------------------------------------------------
 // Factory
 // ---------------------------------------------------------------------------
@@ -100,8 +225,10 @@ function deriveTitle(content: string): string {
 export function createFileConversationStore(opts: {
   homeDir?: string;
   clock: Clock;
+  onWarning?: ConversationStoreWarning;
 }): ConversationStore {
   const { clock } = opts;
+  const onWarning = opts.onWarning;
   const home = opts.homeDir ?? defaultStateHome();
 
   return {
@@ -109,7 +236,7 @@ export function createFileConversationStore(opts: {
     // list
     // -----------------------------------------------------------------------
     async list(): Promise<ConversationMeta[]> {
-      const index = await readIndex(home);
+      const index = await readIndex(home, onWarning);
       return [...index].sort((a, b) => {
         // Pinned items always come before unpinned
         if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
@@ -136,7 +263,7 @@ export function createFileConversationStore(opts: {
       };
 
       await withLock(getIndexLockPath(home), async () => {
-        const index = await readIndex(home);
+        const index = await readIndexLocked(home, onWarning);
         await writeIndex(home, [meta, ...index]);
       });
 
@@ -156,17 +283,7 @@ export function createFileConversationStore(opts: {
         throw err;
       }
 
-      const entries: SessionEntry[] = [];
-      for (const line of raw.split('\n')) {
-        const trimmed = line.trim();
-        if (trimmed.length === 0) continue;
-        try {
-          entries.push(JSON.parse(trimmed) as SessionEntry);
-        } catch {
-          // Skip malformed lines
-        }
-      }
-      return entries;
+      return parseMessageLines(raw);
     },
 
     // -----------------------------------------------------------------------
@@ -182,7 +299,7 @@ export function createFileConversationStore(opts: {
 
           // Update index under lock
           await withLock(getIndexLockPath(home), async () => {
-            const index = await readIndex(home);
+            const index = await readIndexLocked(home, onWarning);
             const idx = index.findIndex((m) => m.id === id);
             if (idx === -1) return;
 
@@ -229,7 +346,7 @@ export function createFileConversationStore(opts: {
     // -----------------------------------------------------------------------
     async rename(id: string, title: string): Promise<void> {
       await withLock(getIndexLockPath(home), async () => {
-        const index = await readIndex(home);
+        const index = await readIndexLocked(home, onWarning);
         const idx = index.findIndex((m) => m.id === id);
         if (idx === -1) return;
 
@@ -267,7 +384,7 @@ export function createFileConversationStore(opts: {
 
       // Remove from index under lock
       await withLock(getIndexLockPath(home), async () => {
-        const index = await readIndex(home);
+        const index = await readIndexLocked(home, onWarning);
         const filtered = index.filter((m) => m.id !== id);
         if (filtered.length === index.length) return; // not found, no-op
         await writeIndex(home, filtered);
@@ -280,7 +397,7 @@ export function createFileConversationStore(opts: {
     async setPinned(id: string, pinned: boolean): Promise<void> {
       await ensureDir(home);
       await withLock(getIndexLockPath(home), async () => {
-        const index = await readIndex(home);
+        const index = await readIndexLocked(home, onWarning);
         const idx = index.findIndex((m) => m.id === id);
         if (idx === -1) return; // no-op if missing
 
@@ -307,7 +424,7 @@ export function createFileConversationStore(opts: {
     async setCategory(id: string, category: string | null): Promise<void> {
       await ensureDir(home);
       await withLock(getIndexLockPath(home), async () => {
-        const index = await readIndex(home);
+        const index = await readIndexLocked(home, onWarning);
         const idx = index.findIndex((m) => m.id === id);
         if (idx === -1) return; // no-op if missing
 

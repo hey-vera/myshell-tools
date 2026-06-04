@@ -11,6 +11,7 @@ import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 
 import { createLedger, readLedger, summarizeLedger } from '../../src/infra/ledger.ts';
+import { summarizeSpend } from '../../src/infra/insights.ts';
 import { getLedgerFile } from '../../src/infra/paths.ts';
 import type { LedgerEntry } from '../../src/core/types.ts';
 
@@ -104,6 +105,33 @@ describe('createLedger — record and readLedger', () => {
     assert.equal(entries.length, 2);
     assert.equal(entries[0]?.model, 'model-a');
     assert.equal(entries[1]?.model, 'model-b');
+  });
+
+  it('readLedger skips valid JSON records with the wrong shape', async () => {
+    const cwd = join(dir, 'wrong-shape');
+    const ledger = createLedger({ cwd });
+
+    const valid = makeEntry({ model: 'model-valid', usd: 0.03 });
+    await ledger.record(valid);
+
+    await appendFile(
+      getLedgerFile(cwd),
+      [
+        'null',
+        '{}',
+        '{"usd":"x"}',
+        '{"timestamp":123,"provider":"claude","model":"bad","tier":"ic","inputTokens":1,"outputTokens":1,"cachedInputTokens":0,"usd":1,"durationMs":1,"success":true}',
+        '123',
+        '',
+      ].join('\n'),
+      'utf8',
+    );
+
+    const entries = await readLedger(cwd);
+    assert.equal(entries.length, 1);
+    assert.equal(entries[0]?.model, 'model-valid');
+    assert.doesNotThrow(() => summarizeSpend(entries, new Date().toISOString()));
+    assert.equal(summarizeSpend(entries, new Date().toISOString()).calls, 1);
   });
 
   it('preserves all LedgerEntry fields round-trip', async () => {

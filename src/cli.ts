@@ -338,7 +338,12 @@ async function main(): Promise<void> {
       pricingStale: isPricingStale(),
     });
 
-    const store = createFileConversationStore({ clock: systemClock });
+    const store = createFileConversationStore({
+      clock: systemClock,
+      onWarning: (message) => {
+        out.write(`\n[warn] ${message}\n`);
+      },
+    });
     const ledger = createLedger({ cwd });
 
     const menuCtx: MenuContext = {
