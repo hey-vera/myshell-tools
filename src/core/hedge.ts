@@ -401,6 +401,7 @@ export async function* runHedged(
       totalCostUsd,
       sessionId: deps.session.id,
       attempts,
+      ...(signal.aborted ? { canceled: true } : {}),
     };
     return;
   }
@@ -484,6 +485,7 @@ export async function* runHedged(
           totalCostUsd,
           sessionId: deps.session.id,
           attempts,
+          ...(signal.aborted ? { canceled: true } : {}),
         };
         return;
       }
@@ -529,6 +531,7 @@ export async function* runHedged(
           totalCostUsd,
           sessionId: deps.session.id,
           attempts,
+          ...(signal.aborted ? { canceled: true } : {}),
         };
         return;
       }
@@ -587,6 +590,7 @@ export async function* runHedged(
         totalCostUsd,
         sessionId: deps.session.id,
         attempts,
+        ...(signal.aborted ? { canceled: true } : {}),
       };
       return;
     }
@@ -712,6 +716,7 @@ async function* finalAndAppend(
       totalCostUsd,
       sessionId: deps.session.id,
       attempts,
+      ...(run.canceled ? { canceled: true } : {}),
       ...(run.errored !== undefined ? { errorCategory: run.errored.category } : {}),
       provider: run.provider,
     };

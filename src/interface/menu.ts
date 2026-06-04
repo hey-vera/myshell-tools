@@ -2413,7 +2413,7 @@ async function runChatLoop(
       if (line === '/help') {
         out.write(
           dim('  Just type to chat — I pick the right model for each message.\n', out.color) +
-          '  /goal <text>  — work autonomously until the goal is done (Esc to stop)\n' +
+          '  /goal <text>  — work autonomously until the goal is done (Ctrl+C to stop)\n' +
           '  /mode         — quality vs speed (Efficient / Balanced / Max)\n' +
           '  /back, /exit  — return to the main menu\n' +
           '  /help         — show this help\n',
@@ -2574,7 +2574,7 @@ async function runChatLoop(
         const ceilings: GoalCeilings = { maxIterations: DEFAULT_MAX_GOAL_ITERATIONS };
         out.write(
           dim(
-            `\n  Working autonomously until it's done (up to ${ceilings.maxIterations} turns). Esc to stop.\n\n`,
+            `\n  Working autonomously until it's done (up to ${ceilings.maxIterations} turns). Ctrl+C to stop.\n\n`,
             out.color,
           ),
         );
@@ -2647,7 +2647,7 @@ async function runChatLoop(
       if (line.startsWith('/goal')) {
         const goalText = line.slice('/goal'.length).trim();
         if (goalText.length === 0) {
-          out.write(dim('  Usage: /goal <what you want achieved> — I work autonomously until it\'s done (Esc to stop).\n', out.color));
+          out.write(dim('  Usage: /goal <what you want achieved> — I work autonomously until it\'s done (Ctrl+C to stop).\n', out.color));
           continue;
         }
         if (await runGoalLoop(goalText)) break;

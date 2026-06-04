@@ -582,6 +582,13 @@ export async function renderStream(
         // completion/error line so the conversation reads in order.
         prose.flush();
 
+        if (ev.canceled === true) {
+          if (!isQuiet) {
+            out.write(`\n${dim('■ Cancelled', c)}\n`);
+          }
+          break;
+        }
+
         if (!ev.success) {
           // Surface an ACTIONABLE error in every verbosity mode: the bare
           // category message plus the suggestion from formatErrorMessage().

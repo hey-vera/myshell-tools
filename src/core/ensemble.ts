@@ -432,6 +432,7 @@ export async function* runPanel(
       totalCostUsd,
       sessionId: deps.session.id,
       attempts,
+      ...(signal.aborted ? { canceled: true } : {}),
     };
     return;
   }
@@ -530,6 +531,7 @@ export async function* runPanel(
       totalCostUsd,
       sessionId: deps.session.id,
       attempts,
+      ...(signal.aborted ? { canceled: true } : {}),
     };
     return;
   }
@@ -656,6 +658,7 @@ export async function* runPanel(
       totalCostUsd,
       sessionId: deps.session.id,
       attempts,
+      ...(synthOutcome.canceled ? { canceled: true } : {}),
     };
     return;
   }

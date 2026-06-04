@@ -560,6 +560,7 @@ describe('orchestrate — abort signal', () => {
     assert.ok(finalEv !== undefined);
     if (finalEv.type === 'final') {
       assert.equal(finalEv.success, false);
+      assert.equal(finalEv.canceled, true);
     }
   });
 });

@@ -546,5 +546,8 @@ describe('runPanel — abort', () => {
     assert.ok(notice !== undefined && /cancel/i.test(notice.message));
     const final = events.find((e) => e.type === 'final');
     assert.ok(final !== undefined && final.type === 'final' && final.success === false);
+    if (final.type === 'final') {
+      assert.equal(final.canceled, true);
+    }
   });
 });

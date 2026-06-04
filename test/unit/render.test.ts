@@ -291,6 +291,32 @@ describe('renderStream — final success:false', () => {
     // Session id still rendered
     assert.ok(joined.includes('test-session-id-3'), 'Should contain the real sessionId even on failure');
   });
+
+  it('renders canceled finals calmly without the failure summary', async () => {
+    const sink = makeSink();
+
+    const events: CoreEvent[] = [
+      {
+        type: 'final',
+        success: false,
+        output: 'Task was cancelled.',
+        tier: 'ic',
+        totalCostUsd: 0,
+        sessionId: 'cancel-session',
+        attempts: 1,
+        canceled: true,
+      },
+    ];
+
+    const result = await renderStream(makeStream(events), sink);
+    const joined = sink.buf.join('');
+
+    assert.equal(result.success, false);
+    assert.ok(result.final !== undefined && result.final.canceled === true);
+    assert.ok(joined.includes('■ Cancelled'), `Should render a calm cancelled line, got:\n${joined}`);
+    assert.ok(!joined.includes('Failed'), `Cancellation must not render the failure summary, got:\n${joined}`);
+    assert.ok(!joined.includes('cancel-session'), 'Cancellation must skip failure telemetry');
+  });
 });
 
 describe('renderStream — rate-limit collection (cooldown signal survives failover)', () => {

@@ -51,10 +51,9 @@ export async function startRepl(deps: OrchestrateDeps, out: OutputSink): Promise
 
     rl.on('SIGINT', () => {
       if (currentAc !== null) {
-        // Task in flight — abort it, keep the REPL alive.
+        // Task in flight — abort it. The runTask settled handler owns re-prompting
+        // so late renderer output cannot appear after a fresh prompt.
         currentAc.abort();
-        out.write('\n[warn] Task cancelled.\n');
-        rl.prompt();
       } else {
         // Idle — close and resolve.
         out.write('\n');

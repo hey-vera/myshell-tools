@@ -435,6 +435,8 @@ export type CoreEvent =
       readonly totalCostUsd: number;
       readonly sessionId: string;
       readonly attempts: number;
+      /** Set on user-initiated cancellation finals so renderers do not present it as an error. */
+      readonly canceled?: boolean;
       /** Set on failing finals only: the error category that caused the failure. */
       readonly errorCategory?: import('../providers/port.js').CliError['category'];
       /** Set on failing finals only: the provider that was being used when failure occurred. */

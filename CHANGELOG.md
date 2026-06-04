@@ -9,6 +9,17 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 ### Pending
 - Cross-OS CI execution (requires a public remote).
 
+## [3.10.9]
+
+### Fixed
+- **Ctrl-C reads as a clean "Cancelled", not an error.** A user-initiated cancel emitted
+  a generic `final(success:false)` and rendered the red "Failed — …" summary; cancellation
+  finals now carry a `canceled` flag and render a calm "■ Cancelled" with no failure
+  telemetry. In the plain REPL, Ctrl-C no longer re-prompts before the run settles (late
+  output could appear after a fresh prompt).
+- **`/goal` "stop" hint matches reality.** It said "Esc to stop", but only Ctrl-C is wired
+  (Escape did nothing); the copy now says "Ctrl+C to stop".
+
 ## [3.10.8]
 
 ### Fixed

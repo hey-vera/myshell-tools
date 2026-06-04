@@ -450,6 +450,9 @@ describe('runHedged — abort', () => {
     const finals = events.filter((e) => e.type === 'final');
     assert.equal(finals.length, 1);
     assert.ok(finals[0]?.type === 'final' && finals[0].success === false);
+    if (finals[0]?.type === 'final') {
+      assert.equal(finals[0].canceled, true);
+    }
   });
 
   it('caller aborts mid-race → cancelled + failing final, both branches aborted', async () => {
@@ -474,6 +477,9 @@ describe('runHedged — abort', () => {
     const finals = events.filter((e) => e.type === 'final');
     assert.equal(finals.length, 1, 'exactly one final even on abort');
     assert.ok(finals[0]?.type === 'final' && finals[0].success === false);
+    if (finals[0]?.type === 'final') {
+      assert.equal(finals[0].canceled, true);
+    }
     assert.ok(
       events.some((e) => e.type === 'notice' && e.level === 'warn' && /cancel/i.test(e.message)),
       'expected a cancelled notice',

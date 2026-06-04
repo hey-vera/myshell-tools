@@ -459,6 +459,7 @@ export async function* orchestrate(
         totalCostUsd,
         sessionId: deps.session.id,
         attempts,
+        ...(outcome.canceled ? { canceled: true } : {}),
         ...(lastAttemptedProvider !== undefined ? { provider: lastAttemptedProvider } : {}),
       };
       return;
@@ -788,6 +789,7 @@ export async function* orchestrate(
             totalCostUsd,
             sessionId: deps.session.id,
             attempts,
+            ...(reviewOutcome.canceled ? { canceled: true } : {}),
             ...(lastAttemptedProvider !== undefined ? { provider: lastAttemptedProvider } : {}),
           };
           return;
