@@ -9,6 +9,18 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 ### Pending
 - Cross-OS CI execution (requires a public remote).
 
+## [3.6.9]
+
+### Added
+- **Multi-plan capacity: route around a rate-limited provider.** When a turn fails
+  with a rate-limit (HTTP 429 / "quota exceeded") on a provider, that provider is put
+  in a short per-conversation cooldown (5 min) so the NEXT turn prefers an un-throttled
+  signed-in provider. This is where having a second subscription actually pays off —
+  the load shifts instead of stalling. Orchestration already failed over *within* a
+  task; this carries that memory *across* turns. It only de-prioritises and never
+  strands you: if every signed-in provider is cooling down, the full set is used. When
+  another provider is available you get a one-line note explaining the switch.
+
 ## [3.6.8]
 
 ### Added

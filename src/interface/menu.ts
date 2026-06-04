@@ -18,7 +18,7 @@
 
 import readline from 'node:readline';
 import { execa } from 'execa';
-import type { Clock, LedgerWriter, OrchestrateDeps, Question, QuestionSet, SessionEntry } from '../core/types.js';
+import type { Clock, CoreEvent, LedgerWriter, OrchestrateDeps, Question, QuestionSet, SessionEntry } from '../core/types.js';
 import { buildGoalTask, parseGoalSignal, decideGoalNext, formatGoalProgress, DEFAULT_MAX_GOAL_ITERATIONS } from '../core/goal.js';
 import type { GoalCeilings } from '../core/goal.js';
 import { formatAnswers, isKeepGoingOffer } from '../core/questions.js';
@@ -46,6 +46,7 @@ import {
 import type { PlanInfo } from '../core/policy.js';
 import type { Mode } from '../core/policy.js';
 import { planNativeSession } from '../core/native-session.js';
+import { availableAfterCooldown, cooldownExpiry } from '../core/cooldown.js';
 import type { OutputSink } from './render.js';
 import { runTask } from './run.js';
 import { runLogin } from '../commands/login.js';
@@ -2079,6 +2080,38 @@ async function runChatLoop(
   // `while (true)` can break immediately even when awaiting readLine().
   let loopBreaker: ((result: 'menu' | 'exit') => void) | null = null;
 
+  // Per-conversation rate-limit cooldown: when a turn fails with a rate-limit
+  // error on a provider, remember it (expiry epoch ms) so the NEXT turn prefers
+  // an un-throttled provider. This is the real multi-plan capacity win — having
+  // a second signed-in provider lets us route around a 429 instead of stalling.
+  // orchestrate() already fails over within a task; this carries that memory
+  // across turns. Filtered (never to empty) in buildDeps via availableAfterCooldown.
+  const providerCooldownUntil = new Map<ProviderId, number>();
+
+  // Record a rate-limit cooldown from a turn's final event, when applicable.
+  // No-op for success, non-rate-limit failures, or finals without a provider.
+  const noteRateLimit = (final: Extract<CoreEvent, { type: 'final' }> | undefined): void => {
+    if (
+      final !== undefined &&
+      !final.success &&
+      final.errorCategory === 'rate-limit' &&
+      final.provider !== undefined
+    ) {
+      providerCooldownUntil.set(final.provider, cooldownExpiry(ctx.clock.now()));
+      // Be legible: if another provider is signed in, say we'll lean on it.
+      const others = [mutableCtx.env.claude, mutableCtx.env.codex, mutableCtx.env.opencode]
+        .filter((p) => p.authenticated && p.id !== final.provider);
+      if (others.length > 0) {
+        out.write(
+          dim(
+            `  (${final.provider} is rate-limited — preferring your other provider${others.length > 1 ? 's' : ''} for a few minutes)\n`,
+            out.color,
+          ),
+        );
+      }
+    }
+  };
+
   process.on('SIGINT', sigintHandler);
 
   let loopResult: 'menu' | 'exit' = 'menu';
@@ -2187,10 +2220,19 @@ async function runChatLoop(
         // Collect authenticated providers from the live env so route() prefers
         // signed-in providers over signed-out ones. Uses mutableCtx.env so
         // post-login re-detection is reflected without restart.
-        const authenticatedProviders: ProviderId[] = [];
-        if (mutableCtx.env.claude.authenticated) authenticatedProviders.push('claude');
-        if (mutableCtx.env.codex.authenticated) authenticatedProviders.push('codex');
-        if (mutableCtx.env.opencode.authenticated) authenticatedProviders.push('opencode');
+        const authedAll: ProviderId[] = [];
+        if (mutableCtx.env.claude.authenticated) authedAll.push('claude');
+        if (mutableCtx.env.codex.authenticated) authedAll.push('codex');
+        if (mutableCtx.env.opencode.authenticated) authedAll.push('opencode');
+
+        // Bias away from providers that recently hit a rate limit this session,
+        // so a second signed-in provider absorbs the load. Never strands the user:
+        // if every authed provider is cooling down, the full list is returned.
+        const authenticatedProviders = availableAfterCooldown(
+          authedAll,
+          providerCooldownUntil,
+          ctx.clock.now(),
+        );
 
         // EXPERIMENTAL native session plan (opt-in via config.nativeSessions).
         // Pure decision; null when disabled. When present, orchestrate uses the
@@ -2286,6 +2328,7 @@ async function runChatLoop(
             mutableCtx.config.verbosity ?? 'normal',
           );
           currentAc = null;
+          noteRateLimit(turn.final);
           completed = i + 1;
           if (shouldExit) { loopResult = 'exit'; return true; }
           if (shouldMenu) { loopResult = 'menu'; return true; }
@@ -2336,6 +2379,7 @@ async function runChatLoop(
       currentAc = ac;
       const result = await runTask(line, deps, out, ac.signal, mutableCtx.config.verbosity ?? 'normal');
       currentAc = null;
+      noteRateLimit(result.final);
 
       // Check for SIGINT-driven signals that fired while runTask was awaited.
       if (shouldExit) {
