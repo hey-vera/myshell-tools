@@ -4503,6 +4503,18 @@ describe('startMenu — mode settings [4] Auto', () => {
       sink.buf.includes('[4]') && sink.buf.toLowerCase().includes('auto'),
       `mode select screen must show [4] Auto option; got: ${sink.buf.slice(0, 800)}`,
     );
+
+    // …and the honest per-provider "Auto detected" breakdown. The fake env has
+    // Claude authed with no reported plan, so it must say exactly that — never a
+    // fabricated tier — and show the deciding rule.
+    assert.ok(
+      sink.buf.includes('Auto detected:'),
+      `mode screen must show the "Auto detected" breakdown; got: ${sink.buf.slice(0, 1200)}`,
+    );
+    assert.ok(
+      sink.buf.includes('Claude — no plan reported'),
+      'breakdown must honestly state Claude reported no plan (not a fabricated tier)',
+    );
   });
 
   it('when mode is unset (auto), main screen shows "(auto)" in mode line', async () => {
