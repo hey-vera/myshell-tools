@@ -8,6 +8,26 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ### Pending
 - Cross-OS CI execution (requires a public remote).
+- Installer: fish-shell + PowerShell-Core profile support; PowerShell interactive guard;
+  don't overwrite an existing `cm`/`mst` alias — deferred (niche shells / minor).
+- update-check: use semver precedence for prerelease→stable (no prereleases shipped today).
+
+## [3.10.19]
+
+### Fixed
+- **Auto-update can't relaunch the old binary (or loop).** It treated `npm install -g` exit
+  0 as success and relaunched `myshell-tools` from PATH without checking the active binary
+  was actually the new version — so a shadowed/wrong-prefix global install could relaunch
+  the old version (and, with auto-update on, loop). It now verifies the active
+  `myshell-tools --version` matches the target before relaunching; on a mismatch it prints
+  an actionable PATH message and stays on the current process instead of looping.
+- **Health checks the real state directory.** `probeStateWritable` probed `cwd/.myshell-tools`,
+  but config/conversations/credentials live under the resolved state home (your home dir off
+  Replit) — so health could say "writable" while the actual state dir failed. It now probes
+  the resolved state home and the (cwd-based) ledger dir separately, labeling each path.
+- **The health probe can't clobber a file.** It wrote a fixed `.health-probe` (truncating any
+  existing same-named file); it now uses a unique name with exclusive create and removes only
+  the file it made.
 
 ## [3.10.18]
 

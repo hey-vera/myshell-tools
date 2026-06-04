@@ -29,7 +29,8 @@ import { refreshClaudeOauthIfNeeded } from './infra/claude-oauth-refresh.js';
 import { syncConversationMirror } from './infra/session-mirror.js';
 import { replitPersistentEnv } from './infra/credentials.js';
 import { dim as dimText } from './ui/theme.js';
-import { evaluateHealth, probeStateWritable } from './infra/health.js';
+import { defaultStateDir, evaluateHealth, probeLedgerWritable, probeStateWritable } from './infra/health.js';
+import { getStateDir } from './infra/paths.js';
 import { isPricingStale } from './infra/pricing.js';
 import { runDoctor } from './commands/doctor.js';
 import { runCost } from './commands/cost.js';
@@ -322,10 +323,11 @@ async function main(): Promise<void> {
   if (args.length === 0) {
     const spinner = createSpinner(out);
     spinner.start('Detecting providers…');
-    const [env, config, stateWritable] = await Promise.all([
+    const [env, config, stateWritable, ledgerWritable] = await Promise.all([
       detectEnvironment(),
       loadConfig(),
       probeStateWritable(cwd),
+      probeLedgerWritable(cwd),
     ]);
     const providers = buildProviders(cwd, env);
     spinner.stop();
@@ -335,6 +337,9 @@ async function main(): Promise<void> {
     const healthIssues = evaluateHealth({
       nodeVersion: process.version,
       stateWritable,
+      stateDir: defaultStateDir(),
+      ledgerWritable,
+      ledgerDir: getStateDir(cwd),
       pricingStale: isPricingStale(),
     });
 
@@ -369,6 +374,18 @@ async function main(): Promise<void> {
         } catch {
           updateOut.write('Update failed — run: npm install -g myshell-tools@latest\n');
           return false;
+        }
+      },
+      activeVersion: async () => {
+        try {
+          const result = await execa('myshell-tools', ['--version'], {
+            reject: false,
+          });
+          if (result.exitCode !== 0) return null;
+          const active = result.stdout.trim();
+          return active.length > 0 ? active : null;
+        } catch {
+          return null;
         }
       },
       relaunch: async () => {

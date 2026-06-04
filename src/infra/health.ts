@@ -16,8 +16,11 @@
  * separate function the caller runs once at startup and feeds in.
  */
 
-import { mkdir, writeFile, rm, access } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
+import { mkdir, open, unlink, access } from 'node:fs/promises';
 import { join } from 'node:path';
+import { getStateDir } from './paths.js';
+import { defaultStateHome } from './state-dir.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -38,10 +41,21 @@ export interface HealthInputs {
   readonly nodeVersion: string;
   /** Whether the .myshell-tools state directory could be written to. */
   readonly stateWritable: boolean;
+  /** Actual resolved state directory, when the caller wants it named in messages. */
+  readonly stateDir?: string;
+  /** Whether the cwd-scoped ledger directory could be written to. */
+  readonly ledgerWritable?: boolean;
+  /** Actual cwd-scoped ledger directory, when the caller wants it named in messages. */
+  readonly ledgerDir?: string;
   /** Whether the bundled pricing seed is past its staleness window. */
   readonly pricingStale: boolean;
   /** Minimum supported Node major version (defaults to 20). */
   readonly minNodeMajor?: number;
+}
+
+export interface ProbeStateWritableOpts {
+  readonly stateHome?: string;
+  readonly probeFileName?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -73,11 +87,23 @@ export function evaluateHealth(inputs: HealthInputs): HealthIssue[] {
 
   // State directory not writable — the most serious: nothing persists.
   if (!inputs.stateWritable) {
+    const pathText = inputs.stateDir !== undefined ? ` (${inputs.stateDir})` : '';
     issues.push({
       id: 'state-not-writable',
       severity: 'error',
       message:
-        "Can't write to the .myshell-tools state directory — conversations and " +
+        `Can't write to the .myshell-tools state directory${pathText} — ` +
+        'config, credentials, and conversations will not be saved. Check the directory permissions.',
+    });
+  }
+
+  if (inputs.ledgerWritable === false) {
+    const pathText = inputs.ledgerDir !== undefined ? ` (${inputs.ledgerDir})` : '';
+    issues.push({
+      id: 'ledger-not-writable',
+      severity: 'error',
+      message:
+        `Can't write to the .myshell-tools ledger directory${pathText} — ` +
         'cost tracking will not be saved. Check the directory permissions.',
     });
   }
@@ -110,21 +136,49 @@ export function evaluateHealth(inputs: HealthInputs): HealthIssue[] {
 // ---------------------------------------------------------------------------
 
 /**
- * Probe whether the .myshell-tools state directory under `cwd` is writable.
+ * Probe whether the resolved .myshell-tools state directory is writable.
  *
- * Creates the directory if needed, writes and removes a temp file. Returns true
- * on success, false on any I/O error. Never throws.
+ * Creates the directory if needed, exclusively creates a unique temp file, and
+ * removes exactly that file. Returns true on success, false on any I/O error.
+ * Never throws.
  */
-export async function probeStateWritable(cwd: string): Promise<boolean> {
-  const stateDir = join(cwd, '.myshell-tools');
-  const probe = join(stateDir, '.health-probe');
+export async function probeStateWritable(_cwd: string, opts?: ProbeStateWritableOpts): Promise<boolean> {
+  const stateHome = opts?.stateHome ?? defaultStateHome();
+  return probeWritableDir(defaultStateDir(stateHome), opts);
+}
+
+/** Return the actual .myshell-tools directory used for app-global state. */
+export function defaultStateDir(stateHome: string = defaultStateHome()): string {
+  return join(stateHome, '.myshell-tools');
+}
+
+/** Probe the cwd-scoped .myshell-tools directory used by the cost ledger. */
+export async function probeLedgerWritable(cwd: string, opts?: ProbeStateWritableOpts): Promise<boolean> {
+  return probeWritableDir(getStateDir(cwd), opts);
+}
+
+async function probeWritableDir(stateDir: string, opts?: ProbeStateWritableOpts): Promise<boolean> {
+  const probeFileName = opts?.probeFileName ?? `.health-probe-${process.pid}-${randomUUID()}`;
+  const probe = join(stateDir, probeFileName);
+  let handle: Awaited<ReturnType<typeof open>> | null = null;
+  let createdProbe = false;
   try {
     await mkdir(stateDir, { recursive: true });
-    await writeFile(probe, '');
-    await rm(probe, { force: true });
+    handle = await open(probe, 'wx');
+    createdProbe = true;
+    await handle.writeFile('');
+    await handle.close();
+    handle = null;
     await access(stateDir);
     return true;
   } catch {
     return false;
+  } finally {
+    if (handle !== null) {
+      await handle.close().catch(() => undefined);
+    }
+    if (createdProbe) {
+      await unlink(probe).catch(() => undefined);
+    }
   }
 }

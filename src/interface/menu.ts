@@ -249,6 +249,13 @@ export interface MenuContext {
    */
   readonly updateSelf?: (out: OutputSink) => Promise<boolean>;
   /**
+   * Optional injected active-version reader for testing. Production runs
+   * `myshell-tools --version` through the same PATH resolution the relaunch uses.
+   *
+   * Returns the active binary version, or null when it cannot be verified.
+   */
+  readonly activeVersion?: () => Promise<string | null>;
+  /**
    * Optional injected relaunch function for testing. When provided, `startMenu`
    * uses this instead of the real `execa('myshell-tools', …)` re-exec.
    *
@@ -2988,6 +2995,7 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
   const detectEnvironmentFn = ctx.detectEnvironment !== undefined ? ctx.detectEnvironment : detectEnvironment;
   const checkForUpdateFn = ctx.checkForUpdate;
   const updateSelfFn = ctx.updateSelf;
+  const activeVersionFn = ctx.activeVersion;
   const relaunchFn = ctx.relaunch;
   // npx context: real detection from the running script path, or test override.
   const runningUnderNpx =
@@ -3087,6 +3095,20 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
         try {
           const ok = await doUpdate(out).catch(() => false);
           if (ok) {
+            if (activeVersionFn !== undefined) {
+              const activeVersion = await activeVersionFn().catch(() => null);
+              if (activeVersion !== toV) {
+                const activeLine = activeVersion !== null
+                  ? `the active \`myshell-tools\` on your PATH is still ${activeVersion}.`
+                  : 'the active `myshell-tools` on your PATH could not be verified.';
+                out.write(
+                  `\n  ⚠️  Updated to ${toV}, but ${activeLine}\n` +
+                    `     Fix your PATH or run: which myshell-tools\n` +
+                    `     Staying on ${fromV} in this process for now.\n\n`,
+                );
+                return false;
+              }
+            }
             if (relaunchFn !== undefined) await relaunchFn().catch(() => 1);
             return true;
           }

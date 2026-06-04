@@ -22,7 +22,8 @@ import { detectEnvironment, getInstallCommand } from '../providers/detect.js';
 import { installProvider } from '../providers/install.js';
 import { runLogin } from './login.js';
 import { isPricingStale } from '../infra/pricing.js';
-import { probeStateWritable } from '../infra/health.js';
+import { defaultStateDir, probeLedgerWritable, probeStateWritable } from '../infra/health.js';
+import { getStateDir } from '../infra/paths.js';
 import { loadClaudeTokenCapturedAt, claudeTokenStatus } from '../infra/credentials.js';
 import type { ClaudeTokenStatus } from '../infra/credentials.js';
 import { createLineReader, parseYesNo, yesNoHint } from '../interface/menu.js';
@@ -35,6 +36,9 @@ import { bold, green, red, yellow, dim, divider, label } from '../ui/theme.js';
 export interface DoctorExtras {
   readonly nodeVersion: string;
   readonly stateWritable: boolean;
+  readonly stateDir?: string;
+  readonly ledgerWritable?: boolean;
+  readonly ledgerDir?: string;
   readonly pricingStale: boolean;
 }
 
@@ -69,7 +73,20 @@ export function buildDoctorReport(
   const writableText = extras.stateWritable
     ? green('writable', color)
     : red('not writable', color);
-  lines.push(`${label('.myshell-tools dir', color)}: ${writableText}`);
+  const stateLabel = extras.stateDir !== undefined
+    ? `.myshell-tools state (${extras.stateDir})`
+    : '.myshell-tools dir';
+  lines.push(`${label(stateLabel, color)}: ${writableText}`);
+
+  if (extras.ledgerWritable !== undefined) {
+    const ledgerText = extras.ledgerWritable
+      ? green('writable', color)
+      : red('not writable', color);
+    const ledgerLabel = extras.ledgerDir !== undefined
+      ? `.myshell-tools ledger (${extras.ledgerDir})`
+      : '.myshell-tools ledger';
+    lines.push(`${label(ledgerLabel, color)}: ${ledgerText}`);
+  }
 
   // ---- Pricing staleness -----------------------------------------------------
   const pricingText = extras.pricingStale
@@ -217,11 +234,18 @@ export async function runDoctor(out: OutputSink, opts?: DoctorFixOpts): Promise<
   const loginFn = opts?.login ?? ((o, id) => runLogin(o, id));
 
   const env = await detectEnvironmentFn();
-  const stateWritable = await probeStateWritable(process.cwd());
+  const cwd = process.cwd();
+  const [stateWritable, ledgerWritable] = await Promise.all([
+    probeStateWritable(cwd),
+    probeLedgerWritable(cwd),
+  ]);
 
   const extras: DoctorExtras = {
     nodeVersion: process.version,
     stateWritable,
+    stateDir: defaultStateDir(),
+    ledgerWritable,
+    ledgerDir: getStateDir(cwd),
     pricingStale: isPricingStale(),
   };
 

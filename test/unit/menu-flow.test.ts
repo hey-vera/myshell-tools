@@ -3445,6 +3445,107 @@ describe('startMenu — update notifier: banner, [u], auto-update', () => {
     assert.deepEqual(calls, ['updateSelf', 'relaunch']);
   });
 
+  it('auto-update: relaunches when the active PATH version matches the target', async () => {
+    const calls: string[] = [];
+
+    const clock = makeFakeClock();
+    const store = makeStore(clock);
+    const ledger = makeFakeLedger();
+    const dir = join(tmpdir(), `menu-autoupdate-verify-ok-${randomUUID()}`);
+    const config: AppConfig = { onboarded: true, setAsDefault: false, autoUpdate: true };
+
+    const ctx: MenuContext = {
+      version: '2.0.0',
+      clock,
+      ledger,
+      providers: { claude: makeFakeProvider() },
+      env: FAKE_ENV,
+      store,
+      config,
+      cwd: dir,
+      sandbox: 'workspace-write',
+      timeoutMs: 5_000,
+      readLine: makeScriptedReader([]),
+      installProvider: async () => true,
+      login: async () => 0,
+      checkForUpdate: async (): Promise<UpdateCheckResult> => ({
+        current: '2.0.0',
+        latest: '3.0.0',
+        updateAvailable: true,
+      }),
+      updateSelf: async () => {
+        calls.push('updateSelf');
+        return true;
+      },
+      activeVersion: async () => {
+        calls.push('activeVersion');
+        return '3.0.0';
+      },
+      relaunch: async () => {
+        calls.push('relaunch');
+        return 0;
+      },
+    };
+
+    await startMenu(ctx, makeSink());
+
+    assert.deepEqual(calls, ['updateSelf', 'activeVersion', 'relaunch']);
+  });
+
+  it('auto-update: does NOT relaunch when the active PATH version is still old', async () => {
+    const calls: string[] = [];
+
+    const clock = makeFakeClock();
+    const store = makeStore(clock);
+    const ledger = makeFakeLedger();
+    const dir = join(tmpdir(), `menu-autoupdate-verify-mismatch-${randomUUID()}`);
+    const config: AppConfig = { onboarded: true, setAsDefault: false, autoUpdate: true };
+
+    const ctx: MenuContext = {
+      version: '2.0.0',
+      clock,
+      ledger,
+      providers: { claude: makeFakeProvider() },
+      env: FAKE_ENV,
+      store,
+      config,
+      cwd: dir,
+      sandbox: 'workspace-write',
+      timeoutMs: 5_000,
+      readLine: makeScriptedReader(['q']),
+      installProvider: async () => true,
+      login: async () => 0,
+      checkForUpdate: async (): Promise<UpdateCheckResult> => ({
+        current: '2.0.0',
+        latest: '3.0.0',
+        updateAvailable: true,
+      }),
+      updateSelf: async () => {
+        calls.push('updateSelf');
+        return true;
+      },
+      activeVersion: async () => {
+        calls.push('activeVersion');
+        return '2.0.0';
+      },
+      relaunch: async () => {
+        calls.push('relaunch');
+        return 0;
+      },
+    };
+
+    const sink = makeSink();
+    await startMenu(ctx, sink);
+
+    assert.deepEqual(calls, ['updateSelf', 'activeVersion']);
+    assert.ok(
+      /Updated to 3\.0\.0, but the active `myshell-tools` on your PATH is still 2\.0\.0/.test(sink.buf),
+      'must show the PATH version mismatch',
+    );
+    assert.ok(/which myshell-tools/.test(sink.buf), 'must show an actionable PATH check');
+    assert.ok(/Staying on 2\.0\.0/.test(sink.buf), 'must say the current process keeps running');
+  });
+
   it('auto-update: does NOT relaunch when updateSelf fails', async () => {
     let relaunchCalled = false;
 

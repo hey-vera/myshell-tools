@@ -10,8 +10,12 @@
 
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { randomUUID } from 'node:crypto';
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
-import { evaluateHealth, nodeMajor } from '../../src/infra/health.ts';
+import { evaluateHealth, nodeMajor, probeStateWritable } from '../../src/infra/health.ts';
 import type { HealthInputs } from '../../src/infra/health.ts';
 
 const HEALTHY: HealthInputs = {
@@ -91,6 +95,57 @@ describe('evaluateHealth', () => {
     for (const issue of issues) {
       assert.ok(issue.message.length > 0, 'message is non-empty');
       assert.ok(!/\d+%/.test(issue.message), 'no digit-% literal in message');
+    }
+  });
+});
+
+describe('probeStateWritable', () => {
+  it('probes the resolved state home, not cwd', async () => {
+    const cwd = join(tmpdir(), `health-cwd-${randomUUID()}`);
+    const home = join(tmpdir(), `health-home-${randomUUID()}`);
+    await mkdir(cwd, { recursive: true });
+    await mkdir(home, { recursive: true });
+    await writeFile(join(cwd, '.myshell-tools'), 'not a directory');
+
+    try {
+      assert.equal(await probeStateWritable(cwd, { stateHome: home }), true);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
+  it('returns false when the resolved state home cannot hold the state directory', async () => {
+    const cwd = join(tmpdir(), `health-cwd-${randomUUID()}`);
+    const home = join(tmpdir(), `health-home-${randomUUID()}`);
+    await mkdir(cwd, { recursive: true });
+    await mkdir(home, { recursive: true });
+    await writeFile(join(home, '.myshell-tools'), 'not a directory');
+
+    try {
+      assert.equal(await probeStateWritable(cwd, { stateHome: home }), false);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
+  it('uses exclusive probe creation and does not clobber an existing probe-like file', async () => {
+    const cwd = join(tmpdir(), `health-cwd-${randomUUID()}`);
+    const home = join(tmpdir(), `health-home-${randomUUID()}`);
+    const stateDir = join(home, '.myshell-tools');
+    const probeFileName = '.health-probe-existing';
+    const probe = join(stateDir, probeFileName);
+    await mkdir(cwd, { recursive: true });
+    await mkdir(stateDir, { recursive: true });
+    await writeFile(probe, 'keep me');
+
+    try {
+      assert.equal(await probeStateWritable(cwd, { stateHome: home, probeFileName }), false);
+      assert.equal(await readFile(probe, 'utf8'), 'keep me');
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+      await rm(home, { recursive: true, force: true });
     }
   });
 });
