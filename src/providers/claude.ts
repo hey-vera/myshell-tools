@@ -202,12 +202,14 @@ export function createClaudeProvider(opts?: { bin?: string }): Provider {
       // execa v9: the subprocess itself is an AsyncIterable that yields one
       // string per stdout line (from types/subprocess/subprocess.d.ts).
       try {
+        stdoutLoop:
         for await (const line of subprocess) {
           const events = parseClaudeLine(line);
           for (const ev of events) {
             yield ev;
             if (ev.type === 'done' || ev.type === 'error') {
               emittedTerminal = true;
+              break stdoutLoop;
             }
           }
         }
@@ -251,6 +253,14 @@ export function createClaudeProvider(opts?: { bin?: string }): Provider {
               typeof result.stderr === 'string' ? result.stderr : '',
               result.exitCode ?? 1,
             ),
+          };
+        } else {
+          yield {
+            type: 'error',
+            error: {
+              ...classifyError('', result.exitCode ?? 0),
+              message: 'claude produced no parseable output.',
+            },
           };
         }
       }

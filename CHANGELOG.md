@@ -8,6 +8,25 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ### Pending
 - Cross-OS CI execution (requires a public remote).
+- opencode native-session continuity (`run --session`) — feature add, needs live opencode verification.
+
+## [3.10.12]
+
+### Fixed
+Provider adapter/parser robustness (from an adapter-layer review):
+- **Claude/Codex always emit a terminal event.** If the CLI exited 0 with no parseable
+  terminal line (schema change, all-noise stdout, truncated output), `run()` could finish
+  silently — now it emits an honest `unknown` error ("… produced no parseable output").
+- **Adapters stop after the first terminal event.** All three adapters now break stdout
+  parsing once a `done`/`error` is emitted, so a stray extra result/error line can't
+  produce a second terminal (or post-terminal) event.
+- **The Claude parser never throws on an unexpected shape.** It validated nothing before
+  iterating `message.content`; a schema change/truncated object could throw out of the
+  stream. It now checks the `message`/`content`/block shapes and skips malformed blocks.
+- **More auth errors are recognized.** "not logged in", "not authenticated", "please log
+  in", and "api key missing/required/invalid" now classify as `auth` (so the inline
+  re-login offer fires) instead of falling to `unknown` — matched precisely to avoid
+  over-classifying unrelated errors.
 
 ## [3.10.11]
 

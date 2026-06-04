@@ -132,12 +132,14 @@ export function createCodexProvider(opts?: { bin?: string }): Provider {
       // execa v9: the subprocess itself is an AsyncIterable that yields one
       // string per stdout line (from types/subprocess/subprocess.d.ts).
       try {
+        stdoutLoop:
         for await (const line of subprocess) {
           const events = parseCodexLine(line);
           for (const ev of events) {
             yield ev;
             if (ev.type === 'done' || ev.type === 'error') {
               emittedTerminal = true;
+              break stdoutLoop;
             }
           }
         }
@@ -171,6 +173,14 @@ export function createCodexProvider(opts?: { bin?: string }): Provider {
               typeof result.stderr === 'string' ? result.stderr : '',
               result.exitCode ?? 1,
             ),
+          };
+        } else {
+          yield {
+            type: 'error',
+            error: {
+              ...classifyError('', result.exitCode ?? 0),
+              message: 'codex produced no parseable output.',
+            },
           };
         }
       }

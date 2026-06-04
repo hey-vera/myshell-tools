@@ -38,16 +38,6 @@ interface WireContentToolUse {
   readonly name: string;
 }
 
-type WireContent = WireContentText | WireContentToolUse | { readonly type: string };
-
-interface WireAssistantEvent {
-  readonly type: 'assistant';
-  readonly message: {
-    readonly content: readonly WireContent[];
-    readonly usage?: WireUsage;
-  };
-}
-
 interface WireResultEvent {
   readonly type: 'result';
   readonly subtype: string;
@@ -115,14 +105,22 @@ export function parseClaudeLine(line: string): ProviderEvent[] {
   // Do NOT emit usage from assistant events (it's intermediate).
   // -------------------------------------------------------------------------
   if (eventType === 'assistant') {
-    const ev = parsed as WireAssistantEvent;
+    const message = obj['message'];
+    if (typeof message !== 'object' || message === null) return [];
+
+    const content = (message as Record<string, unknown>)['content'];
+    if (!Array.isArray(content)) return [];
+
     const events: ProviderEvent[] = [];
 
-    for (const item of ev.message.content) {
-      if (item.type === 'text') {
+    for (const item of content) {
+      if (typeof item !== 'object' || item === null) continue;
+
+      const block = item as Record<string, unknown>;
+      if (block['type'] === 'text' && typeof block['text'] === 'string') {
         const textItem = item as WireContentText;
         events.push({ type: 'text', delta: textItem.text });
-      } else if (item.type === 'tool_use') {
+      } else if (block['type'] === 'tool_use' && typeof block['name'] === 'string') {
         const toolItem = item as WireContentToolUse;
         events.push({ type: 'tool', name: toolItem.name, phase: 'start' });
       }

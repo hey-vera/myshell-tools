@@ -27,14 +27,42 @@ import type { ProviderRequest, ProviderEvent } from '../../src/providers/port.ts
 const STUB_SOURCE = `#!/usr/bin/env node
 setTimeout(() => { process.exit(0); }, 10000);
 `;
+const NO_PARSEABLE_OUTPUT_SOURCE = `#!/usr/bin/env node
+console.log('noise, not json');
+process.exit(0);
+`;
+const TERMINAL_THEN_EXTRA_SOURCE = `#!/usr/bin/env node
+console.log(JSON.stringify({
+  type: 'result',
+  subtype: 'success',
+  is_error: false,
+  result: 'first',
+  usage: { input_tokens: 1, output_tokens: 2 }
+}));
+console.log(JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'late' }] } }));
+console.log(JSON.stringify({
+  type: 'result',
+  subtype: 'success',
+  is_error: false,
+  result: 'second',
+  usage: { input_tokens: 3, output_tokens: 4 }
+}));
+process.exit(0);
+`;
 
 let dir: string;
 let stubPath: string;
+let noParseableOutputStubPath: string;
+let terminalThenExtraStubPath: string;
 
 before(async () => {
   dir = await mkdtemp(join(tmpdir(), 'claude-adapter-'));
   stubPath = join(dir, 'sleeper.mjs');
+  noParseableOutputStubPath = join(dir, 'no-parseable-output.mjs');
+  terminalThenExtraStubPath = join(dir, 'terminal-then-extra.mjs');
   await writeFile(stubPath, STUB_SOURCE, { mode: 0o755 });
+  await writeFile(noParseableOutputStubPath, NO_PARSEABLE_OUTPUT_SOURCE, { mode: 0o755 });
+  await writeFile(terminalThenExtraStubPath, TERMINAL_THEN_EXTRA_SOURCE, { mode: 0o755 });
 });
 
 after(async () => {
@@ -93,6 +121,37 @@ describe('claude adapter — timeout classification', () => {
     if (errorEv.type === 'error') {
       // 2000ms → "2-second limit"
       assert.match(errorEv.error.message, /2-second limit/);
+    }
+  });
+});
+
+describe('claude adapter — terminal contract', () => {
+  it('emits an unknown error when the CLI exits 0 without parseable terminal output', async () => {
+    const provider = createClaudeProvider({ bin: noParseableOutputStubPath });
+    const events = await collect(provider.run(makeRequest(5000), new AbortController().signal));
+
+    assert.equal(events.length, 1);
+    const errorEv = events[0];
+    assert.ok(errorEv !== undefined && errorEv.type === 'error');
+    if (errorEv.type === 'error') {
+      assert.equal(errorEv.error.category, 'unknown');
+      assert.equal(errorEv.error.message, 'claude produced no parseable output.');
+    }
+  });
+
+  it('does not yield events after the first terminal event', async () => {
+    const provider = createClaudeProvider({ bin: terminalThenExtraStubPath });
+    const events = await collect(provider.run(makeRequest(5000), new AbortController().signal));
+
+    assert.deepEqual(events.map((e) => e.type), ['usage', 'done']);
+    const doneEvents = events.filter((e) => e.type === 'done');
+    const terminalEvents = events.filter((e) => e.type === 'done' || e.type === 'error');
+    assert.equal(doneEvents.length, 1);
+    assert.equal(terminalEvents.length, 1);
+    const done = doneEvents[0];
+    assert.ok(done !== undefined && done.type === 'done');
+    if (done.type === 'done') {
+      assert.equal(done.text, 'first');
     }
   });
 });

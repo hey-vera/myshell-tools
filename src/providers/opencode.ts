@@ -101,12 +101,14 @@ export function createOpencodeProvider(opts?: { bin?: string }): Provider {
       // execa v9: the subprocess itself is an AsyncIterable that yields one
       // string per stdout line (from types/subprocess/subprocess.d.ts).
       try {
+        stdoutLoop:
         for await (const line of subprocess) {
           const events = parser.parseLine(line);
           for (const ev of events) {
             yield ev;
             if (ev.type === 'done' || ev.type === 'error') {
               emittedTerminal = true;
+              break stdoutLoop;
             }
           }
         }

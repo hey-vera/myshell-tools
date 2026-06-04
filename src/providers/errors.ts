@@ -76,14 +76,22 @@ function isAuthStderr(lower: string): boolean {
   // token-related matches require a companion word to avoid false positives
   const tokenExpired =
     lower.includes('token') && (lower.includes('expired') || lower.includes('invalid'));
+  const apiKeyProblem =
+    lower.includes('api key') &&
+    (lower.includes('missing') || lower.includes('required') || lower.includes('invalid'));
   return (
     tokenExpired ||
+    apiKeyProblem ||
     includesAny(lower, [
       'authentication',
       'unauthorized',
       '401',
       'invalid credentials',
       'login required',
+      'not logged in',
+      'not authenticated',
+      'please log in',
+      'log in to',
     ])
   );
 }
