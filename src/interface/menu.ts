@@ -1242,8 +1242,8 @@ async function runWelcome(
 
   // ---- Mode selection — single collapsed prompt ----------------------------
   // Accepts 1/2/3 directly; Enter keeps the auto default (derived from your plan).
-  // Quality is never capped in any mode — this only tunes how eagerly we reach
-  // for the strongest model.
+  // Each mode escalates to its OWN ceiling when a turn needs it; the ceiling rises
+  // with the mode (only Max opens the strongest model — see MODE_DESC / maxTier).
   out.write(
     `\nMode — [1] ${modeLabel('cost-saver')}  [2] ${modeLabel('balanced')}  [3] ${modeLabel('quality-first')}  (Enter = auto from your subscription): `,
   );
@@ -1337,8 +1337,8 @@ async function runModeSelect(
   // fixed-width box border.
   const lines = [
     '',
-    bold('Mode — how eagerly to reach for the strongest model', out.color),
-    dim('Quality is never capped: routing always escalates to the best model when a turn needs it.', out.color),
+    bold('Mode — how high routing is allowed to reach', out.color),
+    dim('Within a mode the router escalates as turns need it; higher modes reach stronger models. Only Max opens the most powerful (and priciest) one.', out.color),
     '',
     `  [1] ${bold(modeLabel('cost-saver'), out.color)} — ${MODE_DESC['cost-saver']}${mark('cost-saver')}`,
     `  [2] ${bold(modeLabel('balanced'), out.color)} — ${MODE_DESC['balanced']}${mark('balanced')}`,

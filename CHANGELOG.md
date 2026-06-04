@@ -9,6 +9,18 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 ### Pending
 - Cross-OS CI execution (requires a public remote).
 
+## [3.6.11]
+
+### Fixed
+- **Honest mode descriptions (Honesty Contract).** The mode copy claimed quality is
+  "never capped — routing always escalates to the strongest model when a turn needs
+  it." That was false for `Efficient` and `Balanced`, which hard-cap at the IC tier
+  (`maxTier: 'ic'`) and therefore can *never* reach the manager-tier (Opus / GPT-5.5)
+  model — only `Max` can. Reworded the descriptions, the mode-screen header, and the
+  README so each mode honestly states its ceiling: Efficient/Balanced top out below
+  the strongest model, only Max opens it. No behaviour change — the deliberate tier
+  clamp is unchanged; the copy now matches the code.
+
 ## [3.6.10]
 
 ### Changed

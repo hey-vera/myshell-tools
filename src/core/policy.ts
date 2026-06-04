@@ -79,15 +79,19 @@ const MODE_LABEL: Record<Mode, string> = {
 };
 
 /**
- * One-line descriptions. The crucial point in every mode: quality is never
- * sacrificed — routing always escalates to the strongest model when a turn needs
- * it (the floor is the architecture, not the knob). The mode only tunes how
- * EAGERLY it reaches for the slower/stronger model above that floor.
+ * One-line descriptions, framed around how high each mode lets routing reach.
+ * Within a mode the architecture still escalates to that mode's CEILING when a
+ * turn needs it — but the ceiling differs by mode: Efficient and Balanced top out
+ * below the strongest model, and only Max opens it. Launching the most powerful
+ * (and priciest) model is a deliberate choice, not a silent default — see the
+ * maxTier reasoning in DEFAULT_POLICY. (Honest copy: earlier wording claimed every
+ * mode "always escalates to the strongest model", which the maxTier clamp on
+ * cost-saver/balanced makes false.)
  */
 export const MODE_DESC: Record<Mode, string> = {
-  'cost-saver': 'lean & fast — lightest model that fits, escalates to the best when a turn needs it',
-  'balanced': 'sensible middle — reaches for the strong model on the harder turns',
-  'quality-first': 'best answers — always reaches for the strongest model; slower, never capped',
+  'cost-saver': 'lean & fast — stays on the lighter models, escalating among them only when a turn needs it (won\'t open the top model)',
+  'balanced': 'sensible middle — escalates to the mid-tier model on harder turns; the strongest model stays reserved for Max',
+  'quality-first': 'best answers — opens and reaches for the strongest model on hard turns; slower, never capped',
 };
 
 export function modeLabel(mode: Mode): string {
