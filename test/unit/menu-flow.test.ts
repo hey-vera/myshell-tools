@@ -4524,10 +4524,12 @@ describe('startMenu — mode settings [4] Auto', () => {
 
     await assert.doesNotReject(() => startMenu(ctx, sink));
 
-    // The main screen mode line must show the auto indicator
+    // The main screen mode line must show the auto indicator. The suffix now
+    // carries the detected-plan reason (e.g. "(auto · no plan reported)" or
+    // "(auto · 1 Max)"), so assert on the "(auto" indicator, not the bare "(auto)".
     assert.ok(
-      sink.buf.includes('(auto)'),
-      'main screen mode line must show "(auto)" when mode is unset',
+      sink.buf.includes('(auto'),
+      'main screen mode line must show the "(auto…" indicator when mode is unset',
     );
   });
 

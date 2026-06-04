@@ -9,7 +9,14 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { autoModeForPlans, defaultModeForPlan } from '../../src/core/policy.ts';
+import {
+  autoModeForPlans,
+  autoModeForPlanInfos,
+  classifyPlan,
+  describePlanSet,
+  planTierLabel,
+  defaultModeForPlan,
+} from '../../src/core/policy.ts';
 
 // ---------------------------------------------------------------------------
 // autoModeForPlans — all spec rules
@@ -123,5 +130,108 @@ describe('defaultModeForPlan — still exported and correct', () => {
 
   it('pro → balanced', () => {
     assert.equal(defaultModeForPlan('pro'), 'balanced');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// classifyPlan — the honest taxonomy
+// ---------------------------------------------------------------------------
+
+describe('classifyPlan — observed vs none, kind by substring', () => {
+  it('null → unknown / none (never a guess)', () => {
+    assert.deepEqual(classifyPlan(null), { raw: null, tier: 'unknown', confidence: 'none' });
+  });
+
+  it("'max' → max / observed", () => {
+    assert.deepEqual(classifyPlan('max'), { raw: 'max', tier: 'max', confidence: 'observed' });
+  });
+
+  it("'claude_max_20x' → max, raw preserved", () => {
+    const info = classifyPlan('claude_max_20x');
+    assert.equal(info.tier, 'max');
+    assert.equal(info.raw, 'claude_max_20x');
+    assert.equal(info.confidence, 'observed');
+  });
+
+  it("'Pro' → pro (case-insensitive)", () => {
+    assert.equal(classifyPlan('Pro').tier, 'pro');
+  });
+
+  it("'free' → free", () => {
+    assert.equal(classifyPlan('free').tier, 'free');
+  });
+
+  it('max is checked before pro (a "max" label never falls to pro)', () => {
+    // a hypothetical label containing both should resolve to the stronger kind
+    assert.equal(classifyPlan('max-pro-bundle').tier, 'max');
+  });
+
+  it('unrecognised but present label → unknown / observed (we saw a plan)', () => {
+    const info = classifyPlan('enterprise-x');
+    assert.equal(info.tier, 'unknown');
+    assert.equal(info.confidence, 'observed');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// autoModeForPlanInfos — strongest KIND wins across the full set
+// ---------------------------------------------------------------------------
+
+describe('autoModeForPlanInfos — full-set rules', () => {
+  it('any max → quality-first (even mixed with pro/free)', () => {
+    const infos = ['max', 'pro', 'free'].map(classifyPlan);
+    assert.equal(autoModeForPlanInfos(infos), 'quality-first');
+  });
+
+  it('pro present, no max → balanced', () => {
+    assert.equal(autoModeForPlanInfos(['pro', 'free'].map(classifyPlan)), 'balanced');
+  });
+
+  it('all free → cost-saver', () => {
+    assert.equal(autoModeForPlanInfos(['free', 'free'].map(classifyPlan)), 'cost-saver');
+  });
+
+  it('no observed plans → balanced (no signal)', () => {
+    assert.equal(autoModeForPlanInfos([null, null].map(classifyPlan)), 'balanced');
+  });
+
+  it('matches autoModeForPlans for the same raw inputs', () => {
+    const plans = ['max', null, 'free'];
+    assert.equal(autoModeForPlans(plans), autoModeForPlanInfos(plans.map(classifyPlan)));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// describePlanSet — honest multiset summary (accounts for duplicates)
+// ---------------------------------------------------------------------------
+
+describe('describePlanSet — counts and kinds, never overclaims', () => {
+  it('no providers → "no plan reported"', () => {
+    assert.equal(describePlanSet([]), 'no plan reported');
+  });
+
+  it('all null → "no plan reported"', () => {
+    assert.equal(describePlanSet([null, null].map(classifyPlan)), 'no plan reported');
+  });
+
+  it('multiple Max plans are counted (duplicates accounted for)', () => {
+    assert.equal(describePlanSet(['max', 'max'].map(classifyPlan)), '2 Max');
+  });
+
+  it('mixed kinds listed strongest-first', () => {
+    assert.equal(describePlanSet(['pro', 'max', 'free'].map(classifyPlan)), '1 Max, 1 Pro, 1 Free');
+  });
+
+  it('separates providers that reported no plan', () => {
+    assert.equal(describePlanSet(['max', null].map(classifyPlan)), '1 Max · 1 reported no plan');
+  });
+});
+
+describe('planTierLabel', () => {
+  it('maps each tier to a title-case label', () => {
+    assert.equal(planTierLabel('max'), 'Max');
+    assert.equal(planTierLabel('pro'), 'Pro');
+    assert.equal(planTierLabel('free'), 'Free');
+    assert.equal(planTierLabel('unknown'), 'Unknown');
   });
 });

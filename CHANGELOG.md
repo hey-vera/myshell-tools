@@ -9,6 +9,28 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 ### Pending
 - Cross-OS CI execution (requires a public remote).
 
+## [3.6.8]
+
+### Added
+- **Auto now classifies every plan and shows you the full breakdown.** A new honest
+  plan taxonomy (`classifyPlan` → `{ tier, confidence }`) replaces the old loose
+  substring matching: each authenticated provider's plan is classified as Max / Pro /
+  Free / Unknown, and either `observed` (the CLI actually reported it) or `none` (no
+  plan reported — never a guess). The mode screen now prints an **"Auto detected"**
+  breakdown: one line per signed-in provider with its detected plan (or an explicit
+  "no plan reported"), then the deciding rule, e.g. `→ 2 Max, 1 Pro ⇒ Max`.
+- **Auto accounts for the full set of plans, including duplicates.** Multiple Max or
+  Pro plans are all counted and summarised (`2 Max, 1 Pro`) rather than short-circuiting
+  on the first match. The main-screen mode line now carries this reason too
+  (`Mode: Max (auto · 2 Max, 1 Pro)`).
+
+### Changed
+- Auto's mode decision is now driven by the classified plan KIND (`autoModeForPlanInfos`):
+  any Max → Max; else any Pro → Balanced; only Free → Efficient; no signal → Balanced.
+  Behaviour is unchanged for existing single-plan users; the honesty boundary is intact
+  — Codex and opencode still report no plan, so they show "no plan reported" rather than
+  a fabricated tier.
+
 ## [3.6.7]
 
 ### Added

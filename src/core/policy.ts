@@ -110,28 +110,117 @@ export function defaultModeForPlan(plan: string | null | undefined): Mode {
 }
 
 /**
- * Auto-resolve the mode from the plans of ALL authenticated providers (strongest
- * signal wins). Pure. `plans` is the list of plan strings for providers that are
- * authenticated (null for providers whose CLI does not expose a plan, e.g. codex/
- * opencode today). Rules:
- *   - any non-null plan includes 'max'  -> 'quality-first'
- *   - no non-null plans at all          -> 'balanced'   (no signal)
- *   - every non-null plan includes 'free' -> 'cost-saver'
- *   - otherwise                          -> 'balanced'
+ * The KIND of a subscription plan, classified from its reported label. This is
+ * the honest taxonomy: we only ever observe a plan string from a CLI that
+ * actually reports one (Claude's `subscriptionType` today). Everything else is
+ * `unknown` with `confidence: 'none'` — we never fabricate a tier.
+ */
+export type PlanTier = 'max' | 'pro' | 'free' | 'unknown';
+
+/**
+ * A classified plan for one provider. `raw` is the original reported string
+ * (null when the CLI reports no plan). `tier` is the classified kind. `confidence`
+ * distinguishes a real reported plan ('observed') from the absence of any signal
+ * ('none') — there is deliberately no 'inferred' producer yet, because inferring a
+ * plan from indirect signals would be fabrication. The variant is reserved so the
+ * shape is forward-compatible the day a CLI lets us infer responsibly.
+ */
+export interface PlanInfo {
+  readonly raw: string | null;
+  readonly tier: PlanTier;
+  readonly confidence: 'observed' | 'inferred' | 'none';
+}
+
+/**
+ * Classify a single reported plan string into a {@link PlanInfo}. Pure;
+ * case-insensitive substring match. A null plan (CLI reports nothing) classifies
+ * to `unknown` / `none` — NOT a guess. A non-null string that matches no known
+ * kind is `unknown` but still `observed` (we saw a plan, we just don't recognise
+ * the label). Order matters: 'max' is checked before 'pro' so "max" never falls
+ * through to a substring like "pro".
+ */
+export function classifyPlan(plan: string | null): PlanInfo {
+  if (plan === null) {
+    return { raw: null, tier: 'unknown', confidence: 'none' };
+  }
+  const p = plan.toLowerCase();
+  let tier: PlanTier = 'unknown';
+  if (p.includes('max')) tier = 'max';
+  else if (p.includes('pro')) tier = 'pro';
+  else if (p.includes('free')) tier = 'free';
+  return { raw: plan, tier, confidence: 'observed' };
+}
+
+/**
+ * Resolve the auto mode from a set of classified plans (strongest KIND wins).
+ * Pure. Built on {@link classifyPlan} so the decision and the display share one
+ * taxonomy. Rules, accounting for the FULL set of authenticated providers:
+ *   - any plan is 'max'          -> 'quality-first'
+ *   - else any plan is 'pro'     -> 'balanced'
+ *   - no observed plans at all   -> 'balanced'   (no signal)
+ *   - every observed plan 'free' -> 'cost-saver'
+ *   - otherwise                  -> 'balanced'
+ */
+export function autoModeForPlanInfos(infos: ReadonlyArray<PlanInfo>): Mode {
+  const observed = infos.filter((i) => i.confidence === 'observed');
+
+  if (observed.some((i) => i.tier === 'max')) return 'quality-first';
+  if (observed.some((i) => i.tier === 'pro')) return 'balanced';
+  if (observed.length === 0) return 'balanced';
+  if (observed.every((i) => i.tier === 'free')) return 'cost-saver';
+  return 'balanced';
+}
+
+/**
+ * Convenience overload kept for existing call-sites that hold raw plan strings:
+ * classifies each then delegates to {@link autoModeForPlanInfos}. `plans` is the
+ * list of plan strings for authenticated providers (null for providers whose CLI
+ * does not expose a plan, e.g. codex/opencode today).
  */
 export function autoModeForPlans(plans: ReadonlyArray<string | null>): Mode {
-  const nonNull = plans.filter((p): p is string => p !== null);
+  return autoModeForPlanInfos(plans.map(classifyPlan));
+}
 
-  // Any plan includes 'max' → quality-first
-  if (nonNull.some((p) => p.toLowerCase().includes('max'))) return 'quality-first';
+/** Title-case label for a {@link PlanTier} (display only). */
+const PLAN_TIER_LABEL: Record<PlanTier, string> = {
+  max: 'Max',
+  pro: 'Pro',
+  free: 'Free',
+  unknown: 'Unknown',
+};
 
-  // No non-null plans → balanced (no signal)
-  if (nonNull.length === 0) return 'balanced';
+export function planTierLabel(tier: PlanTier): string {
+  return PLAN_TIER_LABEL[tier];
+}
 
-  // Every non-null plan includes 'free' → cost-saver
-  if (nonNull.every((p) => p.toLowerCase().includes('free'))) return 'cost-saver';
+/**
+ * Summarise a set of classified plans into a short reason string that accounts
+ * for the FULL multiset (counts and kinds), e.g. "2 Max, 1 Pro" or
+ * "Max + Pro". Providers that reported no plan are counted separately as
+ * "N reported no plan" so the string never implies we know more than we do.
+ * Returns "no plan reported" when nothing was observed. Pure.
+ */
+export function describePlanSet(infos: ReadonlyArray<PlanInfo>): string {
+  const observed = infos.filter((i) => i.confidence === 'observed');
+  const none = infos.length - observed.length;
 
-  return 'balanced';
+  if (observed.length === 0) {
+    return 'no plan reported';
+  }
+
+  // Count by tier, strongest first.
+  const order: readonly PlanTier[] = ['max', 'pro', 'free', 'unknown'];
+  const parts: string[] = [];
+  for (const tier of order) {
+    const n = observed.filter((i) => i.tier === tier).length;
+    if (n > 0) parts.push(`${n} ${PLAN_TIER_LABEL[tier]}`);
+  }
+
+  let summary = parts.join(', ');
+  if (none > 0) {
+    summary += `${parts.length > 0 ? ' · ' : ''}${none} reported no plan`;
+  }
+  return summary;
 }
 
 export const POLICY_PRESETS: Record<Mode, Policy> = {

@@ -34,7 +34,16 @@ import { installProvider, installCommandFor } from '../providers/install.js';
 import type { Provider, ProviderId, SandboxLevel } from '../providers/port.js';
 import { listRecentNativeSessions, importNativeSession } from '../providers/native-sessions.js';
 import { replitPersistentEnv } from '../infra/credentials.js';
-import { POLICY_PRESETS, modeLabel, autoModeForPlans, MODE_DESC } from '../core/policy.js';
+import {
+  POLICY_PRESETS,
+  modeLabel,
+  autoModeForPlanInfos,
+  classifyPlan,
+  describePlanSet,
+  planTierLabel,
+  MODE_DESC,
+} from '../core/policy.js';
+import type { PlanInfo } from '../core/policy.js';
 import type { Mode } from '../core/policy.js';
 import { planNativeSession } from '../core/native-session.js';
 import type { OutputSink } from './render.js';
@@ -57,39 +66,96 @@ import type { HealthIssue } from '../infra/health.js';
 // Auto-mode helpers (multi-provider)
 // ---------------------------------------------------------------------------
 
+const PROVIDER_LABEL: Record<string, string> = {
+  claude: 'Claude',
+  codex: 'Codex',
+  opencode: 'OpenCode',
+};
+
 /**
- * Resolve the auto mode across ALL authenticated providers. Gathers the plan
- * strings for every authenticated provider and delegates to autoModeForPlans.
- * Replaces the old single-provider `defaultModeForPlan(env.claude.plan)` call
- * so Codex and opencode subscriptions are included in the decision.
+ * One authenticated provider's classified plan, paired with its display label.
+ * The honest unit the Auto decision and the "Auto detected" screen share.
  */
-function resolveAutoMode(env: EnvironmentStatus): Mode {
-  const plans = [env.claude, env.codex, env.opencode]
-    .filter((p) => p.authenticated)
-    .map((p) => p.plan);
-  return autoModeForPlans(plans);
+interface ProviderPlanInfo {
+  readonly label: string;
+  readonly info: PlanInfo;
 }
 
 /**
- * Short human-readable reason string for the status line when auto is active.
- * If any authenticated provider plan includes 'max', returns
- * "auto · <ProviderLabel> <Plan>" for the first such provider.
- * Otherwise returns "auto".
+ * Classify the plan of every AUTHENTICATED provider. Providers that are signed
+ * out are excluded (they contribute no signal). The result preserves duplicates
+ * (multiple Max plans show up as multiple entries) — that is what lets the Auto
+ * decision and its reason account for "all of them, and what kind".
+ */
+function authedProviderPlans(env: EnvironmentStatus): ProviderPlanInfo[] {
+  return [env.claude, env.codex, env.opencode]
+    .filter((p) => p.authenticated)
+    .map((p) => ({
+      label: PROVIDER_LABEL[p.id] ?? p.id,
+      info: classifyPlan(p.plan),
+    }));
+}
+
+/**
+ * Resolve the auto mode across ALL authenticated providers (strongest KIND wins).
+ * Classifies each provider's plan then delegates to autoModeForPlanInfos, so
+ * Claude, Codex and opencode subscriptions are all included in the decision.
+ */
+function resolveAutoMode(env: EnvironmentStatus): Mode {
+  return autoModeForPlanInfos(authedProviderPlans(env).map((p) => p.info));
+}
+
+/**
+ * Short human-readable reason for the status line when auto is active. Accounts
+ * for the FULL set of authenticated plans, not just the first match —
+ * e.g. "auto · 2 Max, 1 Pro" or "auto · Pro · 1 reported no plan". Honest about
+ * what was not reported.
  */
 function autoModeReason(env: EnvironmentStatus): string {
-  const PROVIDER_LABEL: Record<string, string> = {
-    claude: 'Claude',
-    codex: 'Codex',
-    opencode: 'OpenCode',
-  };
-  const providers = [env.claude, env.codex, env.opencode];
-  for (const p of providers) {
-    if (p.authenticated && p.plan !== null && p.plan.toLowerCase().includes('max')) {
-      const label = PROVIDER_LABEL[p.id] ?? p.id;
-      return `auto · ${label} ${p.plan}`;
+  return `auto · ${describePlanSet(authedProviderPlans(env).map((p) => p.info))}`;
+}
+
+/**
+ * One-line, per-provider honest description of a classified plan for the
+ * "Auto detected" breakdown. Shows the reported tier + the raw label when the
+ * CLI gave one, or an explicit "no plan reported" when it didn't — never a guess.
+ */
+function planLineFor(p: ProviderPlanInfo): string {
+  if (p.info.confidence === 'none') {
+    return `${p.label} — no plan reported`;
+  }
+  const tierLabel = planTierLabel(p.info.tier);
+  // Show the raw label alongside the tier when they differ (e.g. tier Max,
+  // raw "claude_max_20x") so the breakdown is fully traceable.
+  const raw = p.info.raw;
+  const detail = raw !== null && raw.toLowerCase() !== tierLabel.toLowerCase() ? ` (${raw})` : '';
+  return `${p.label} — ${tierLabel}${detail} · observed`;
+}
+
+/**
+ * Render the "Auto detected" breakdown: every authenticated provider with its
+ * classified plan, the resulting mode, and the deciding rule. This is the honest
+ * answer to "account for all of them and what kind" — it shows exactly what was
+ * detected per provider (including providers that report nothing) and why Auto
+ * landed where it did. Returns lines (no trailing newline) for the caller to write.
+ */
+function renderAutoDetected(env: EnvironmentStatus, color: boolean): string[] {
+  const plans = authedProviderPlans(env);
+  const mode = autoModeForPlanInfos(plans.map((p) => p.info));
+  const lines: string[] = [dim('  Auto detected:', color)];
+
+  if (plans.length === 0) {
+    lines.push(dim('    (no providers signed in)', color));
+  } else {
+    for (const p of plans) {
+      lines.push(dim(`    • ${planLineFor(p)}`, color));
     }
   }
-  return 'auto';
+
+  lines.push(
+    dim(`    → ${describePlanSet(plans.map((p) => p.info))} ⇒ ${modeLabel(mode)}`, color),
+  );
+  return lines;
 }
 
 // ---------------------------------------------------------------------------
@@ -1253,6 +1319,7 @@ async function runModeSelect(
   out: OutputSink,
   readLine: () => Promise<string | null>,
   autoMode: Mode = 'balanced',
+  env?: EnvironmentStatus,
 ): Promise<AppConfig> {
   // Effective mode = explicit choice, else the subscription-derived auto default.
   const effective = config.mode ?? autoMode;
@@ -1272,6 +1339,8 @@ async function runModeSelect(
     `  [2] ${bold(modeLabel('balanced'), out.color)} — ${MODE_DESC['balanced']}${mark('balanced')}`,
     `  [3] ${bold(modeLabel('quality-first'), out.color)} — ${MODE_DESC['quality-first']}${mark('quality-first')}`,
     autoActive ? autoEntry : dim(autoEntry, out.color),
+    // Honest per-provider breakdown of what Auto saw and why it decided.
+    ...(env !== undefined ? ['', ...renderAutoDetected(env, out.color)] : []),
   ];
   out.write('\n' + lines.filter((l) => l !== '').join('\n') + '\n\n');
 
@@ -1414,7 +1483,7 @@ async function runSettings(
   if (key === null || key.length === 0) return;
 
   if (key === '1') {
-    mutableCtx.config = await runModeSelect(mutableCtx.config, out, readLine, autoMode);
+    mutableCtx.config = await runModeSelect(mutableCtx.config, out, readLine, autoMode, mutableCtx.env);
   } else if (key === '2') {
     mutableCtx.config = await toggleDefaultShell(mutableCtx.config, out);
   } else if (key === '3') {
@@ -2063,7 +2132,7 @@ async function runChatLoop(
       // home [m], so there is one source of truth and never a global/per-chat drift.
       if (line === '/mode') {
         const autoMode = resolveAutoMode(mutableCtx.env);
-        mutableCtx.config = await runModeSelect(mutableCtx.config, out, readLine, autoMode);
+        mutableCtx.config = await runModeSelect(mutableCtx.config, out, readLine, autoMode, mutableCtx.env);
         continue;
       }
 
@@ -2894,7 +2963,7 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
       // ---- [m] Change mode (direct — no settings dive) ------------------------
       if (key === 'm') {
         const autoMode = resolveAutoMode(mutableCtx.env);
-        mutableCtx.config = await runModeSelect(mutableCtx.config, out, readLine, autoMode);
+        mutableCtx.config = await runModeSelect(mutableCtx.config, out, readLine, autoMode, mutableCtx.env);
         continue;
       }
 
