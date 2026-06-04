@@ -36,6 +36,18 @@ export interface AppConfig {
    */
   nativeSessions?: boolean;
   /**
+   * EXPERIMENTAL Parallel Subscription Panel (default off). When true, hard
+   * (high/critical-risk) turns run as a CONCURRENT panel of the user's signed-in
+   * providers — each answers independently — then a cross-vendor synthesizer
+   * adjudicates them into one answer. Maps to policy `panelPolicy: 'hard-turns'`.
+   * Uniquely a subscription-first move: extra concurrent runs cost $0 in dollars
+   * on a flat-rate plan (the only budget is quota + latency), buying independent
+   * cross-vendor judgment a per-token-billed tool could never afford. A panel
+   * only forms when ≥2 providers are authenticated; otherwise the normal
+   * single-model path runs. See core/ensemble.ts.
+   */
+  panel?: boolean;
+  /**
    * Output verbosity for the chat TUI. Absent → 'normal' (a clean conversation:
    * the model's prose and nothing else). 'quiet' additionally suppresses the
    * per-turn status line; 'verbose' shows tool activity and per-tier telemetry

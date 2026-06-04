@@ -2195,7 +2195,13 @@ async function runChatLoop(
       // subscription plan (Max → top of the knob, etc.) — no interrogation.
       const effectiveMode: Mode =
         mutableCtx.config.mode ?? resolveAutoMode(mutableCtx.env);
-      const policy = POLICY_PRESETS[effectiveMode];
+      // EXPERIMENTAL: opt-in Parallel Subscription Panel (config.panel) maps to
+      // policy.panelPolicy 'hard-turns'. Absent/false → unchanged sequential
+      // behaviour (panelPolicy stays absent → 'off').
+      const policy = {
+        ...POLICY_PRESETS[effectiveMode],
+        ...(mutableCtx.config.panel === true ? { panelPolicy: 'hard-turns' as const } : {}),
+      };
 
       // ---- Bug 4 fix: no-provider gate ----------------------------------------
       // Check whether any provider is actually authenticated before dispatching a

@@ -253,7 +253,12 @@ async function main(): Promise<void> {
         .filter((p) => p.authenticated)
         .map((p) => p.plan),
     );
-    const policy = POLICY_PRESETS[resolvedMode];
+    // EXPERIMENTAL: opt-in Parallel Subscription Panel (config.panel) maps to
+    // policy.panelPolicy 'hard-turns'. Absent/false → unchanged sequential path.
+    const policy = {
+      ...POLICY_PRESETS[resolvedMode],
+      ...(config.panel === true ? { panelPolicy: 'hard-turns' as const } : {}),
+    };
     const deps = buildDeps(cwd, env, policy, resolveTimeoutMs(config));
     const result = await runTask(taskParts.join(' '), deps, out, new AbortController().signal);
     // Notify-only update nudge for the scripted / one-shot path. The interactive

@@ -40,6 +40,7 @@ import { compactHistory } from './history.js';
 import { getModelPricing, calculateCost } from '../infra/pricing.js';
 import { nextTierUp, pickReviewer } from './escalate.js';
 import { buildReviewPrompt, parseReviewVerdict } from './review.js';
+import { planPanel, runPanel } from './ensemble.js';
 
 // ---------------------------------------------------------------------------
 // Pure helper: should this output be cross-vendor reviewed?
@@ -212,6 +213,37 @@ export async function* orchestrate(
   }
 
   // -------------------------------------------------------------------------
+  // (c2) Parallel Subscription Panel (EXPERIMENTAL, opt-in, default OFF).
+  //      planPanel() returns null unless deps.policy.panelPolicy opts in AND ≥2
+  //      authenticated providers exist (and, for 'hard-turns', the turn is high/
+  //      critical risk). When it returns a plan we delegate the ENTIRE turn to the
+  //      panel and return — runPanel owns the user/assistant session appends,
+  //      ledger records, and the streamed answer, so the sequential code below
+  //      (including the single user append in (d)) never runs for this turn.
+  //      Because panelPolicy defaults to 'off', planPanel returns null on every
+  //      existing path → ZERO behaviour change. We branch here, BEFORE (d), so the
+  //      user message is appended exactly once (by runPanel).
+  // Compute the compacted history ONCE here (shared by the panel branch and the
+  // sequential loop below) so a long history isn't compacted twice per turn.
+  const historyContext =
+    deps.history !== undefined && deps.history.length > 0
+      ? compactHistory(deps.history)
+      : undefined;
+  const panelPlan = planPanel({
+    panelPolicy: deps.policy.panelPolicy,
+    classification,
+    // Use the as-classified tier — the panel routes each candidate through
+    // route(), which applies the policy's own tier ceiling per provider.
+    tier: classification.tier,
+    authenticatedProviders: deps.authenticatedProviders ?? [],
+    maxPanelProviders: deps.policy.maxPanelProviders ?? 2,
+  });
+  if (panelPlan !== null) {
+    yield* runPanel(task, deps, panelPlan, signal, historyContext);
+    return;
+  }
+
+  // -------------------------------------------------------------------------
   // (d) Append user message to session once (before any tier run)
   // -------------------------------------------------------------------------
   await deps.session.append({
@@ -251,13 +283,9 @@ export async function* orchestrate(
    */
   let failoverPool: ProviderId[] | null = null;
 
-  // Compute history context once per orchestrate() call (before the loop).
-  // It is injected into the first-tier prompt to give stateless providers
-  // multi-turn context; the history does NOT grow during the loop.
-  const historyContext =
-    deps.history !== undefined && deps.history.length > 0
-      ? compactHistory(deps.history)
-      : undefined;
+  // (historyContext is computed once above, before the panel branch, and reused
+  // here — it is injected into the first-tier prompt so stateless providers get
+  // multi-turn context; the history does NOT grow during the loop.)
   /**
    * Track which attempt indices have already been reviewed so that re-runs
    * (e.g. after a revise verdict) are not reviewed a second time and we

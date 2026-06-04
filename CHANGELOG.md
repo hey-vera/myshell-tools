@@ -9,6 +9,28 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 ### Pending
 - Cross-OS CI execution (requires a public remote).
 
+## [3.8.0]
+
+### Added
+- **Parallel Subscription Panel (EXPERIMENTAL, opt-in, default OFF).** A categorically
+  different engine for hard turns: instead of one model then maybe another, it runs a
+  turn as a *concurrent panel* of your signed-in providers — each answers
+  independently — then a cross-vendor synthesizer reconciles their answers into one.
+  This is uniquely a subscription-first move: on a flat-rate plan extra model runs cost
+  $0 in dollars (the budget is quota + latency), so spending several concurrent runs on
+  a hard turn buys genuinely independent cross-vendor judgment a per-token-billed tool
+  would never afford — and it catches single-model confident-but-wrong answers.
+  - New pure `core/ensemble.ts`: `planPanel` (when/who; needs ≥2 authenticated
+    providers), `buildPanelCandidatePrompt` / `buildPanelSynthesisPrompt`, and the
+    `runPanel` executor (candidates run via `Promise.all`; the synthesizer streams live;
+    candidate prose isn't streamed, to protect attention).
+  - Opt in with `panel: true` in config → maps to `panelPolicy: 'hard-turns'` (panel on
+    high/critical-risk turns). `Policy` gains `panelPolicy` (`off`|`hard-turns`|`always`)
+    and `maxPanelProviders` (default 2). With `panelPolicy` absent (the default for every
+    preset), `planPanel` returns null on every turn → **zero behaviour change**.
+  - Honest by construction: real per-run ledger entries and measured metrics, no
+    fabricated confidence/usage, no dollar-budget framing.
+
 ## [3.7.2]
 
 ### Fixed

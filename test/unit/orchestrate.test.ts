@@ -3327,3 +3327,109 @@ describe('orchestrate — ask_user short-circuit', () => {
     assert.ok(assistant!.content.includes('ask_user'), 'persisted content carries the block for replay');
   });
 });
+
+// ---------------------------------------------------------------------------
+// Parallel Subscription Panel (EXPERIMENTAL) — delegation from orchestrate()
+// ---------------------------------------------------------------------------
+
+describe('orchestrate — panel delegation (panelPolicy)', () => {
+  it("panelPolicy 'hard-turns' + high-risk task + 2 authed providers delegates to the panel", async () => {
+    const icEnvelope =
+      '{"confidence": 0.85, "escalate": false, "reason": "done", "needs_review": false}';
+    const deps: OrchestrateDeps = {
+      providers: {
+        claude: makeFakeProvider('claude', [
+          { type: 'done', text: `Claude answer.\n${icEnvelope}`, usage: FAKE_USAGE, raw: {} },
+        ]),
+        codex: makeFakeProvider('codex', [
+          { type: 'done', text: `Codex answer.\n${icEnvelope}`, usage: FAKE_USAGE, raw: {} },
+        ]),
+      },
+      clock: makeFakeClock(),
+      session: makeFakeSession(),
+      ledger: makeFakeLedger(),
+      // 'payment' → high risk; panelPolicy hard-turns triggers a panel.
+      policy: { ...DEFAULT_POLICY, panelPolicy: 'hard-turns', maxTier: 'manager' },
+      cwd: '/fake/cwd',
+      sandbox: 'workspace-write',
+      timeoutMs: 30_000,
+      authenticatedProviders: ['claude', 'codex'],
+    };
+
+    const events = await collectEvents(
+      orchestrate('implement payment handler', deps, new AbortController().signal),
+    );
+
+    const panelNotice = events.find(
+      (e) => e.type === 'notice' && e.message.includes('Panel'),
+    );
+    assert.ok(panelNotice !== undefined, 'expected a Panel notice (turn delegated to the panel)');
+
+    const finalEv = events.find((e) => e.type === 'final');
+    assert.ok(finalEv !== undefined && finalEv.type === 'final' && finalEv.success === true);
+  });
+
+  it('default policy (panel off) does NOT form a panel — zero behaviour change', async () => {
+    const icEnvelope =
+      '{"confidence": 0.85, "escalate": false, "reason": "done", "needs_review": false}';
+    const deps: OrchestrateDeps = {
+      providers: {
+        claude: makeFakeProvider('claude', [
+          { type: 'done', text: `Claude answer.\n${icEnvelope}`, usage: FAKE_USAGE, raw: {} },
+        ]),
+        codex: makeFakeProvider('codex', [
+          { type: 'done', text: `Codex answer.\n${icEnvelope}`, usage: FAKE_USAGE, raw: {} },
+        ]),
+      },
+      clock: makeFakeClock(),
+      session: makeFakeSession(),
+      ledger: makeFakeLedger(),
+      policy: DEFAULT_POLICY, // panelPolicy absent → 'off'
+      cwd: '/fake/cwd',
+      sandbox: 'workspace-write',
+      timeoutMs: 30_000,
+      authenticatedProviders: ['claude', 'codex'],
+    };
+
+    const events = await collectEvents(
+      orchestrate('implement payment handler', deps, new AbortController().signal),
+    );
+
+    const panelNotice = events.find(
+      (e) => e.type === 'notice' && e.message.includes('Panel'),
+    );
+    assert.equal(panelNotice, undefined, 'no panel must form when panelPolicy is off');
+  });
+
+  it("'hard-turns' on a LOW-risk task does NOT form a panel", async () => {
+    const icEnvelope =
+      '{"confidence": 0.9, "escalate": false, "reason": "done", "needs_review": false}';
+    const deps: OrchestrateDeps = {
+      providers: {
+        claude: makeFakeProvider('claude', [
+          { type: 'done', text: `Answer.\n${icEnvelope}`, usage: FAKE_USAGE, raw: {} },
+        ]),
+        codex: makeFakeProvider('codex', [
+          { type: 'done', text: `Answer.\n${icEnvelope}`, usage: FAKE_USAGE, raw: {} },
+        ]),
+      },
+      clock: makeFakeClock(),
+      session: makeFakeSession(),
+      ledger: makeFakeLedger(),
+      policy: { ...DEFAULT_POLICY, panelPolicy: 'hard-turns' },
+      cwd: '/fake/cwd',
+      sandbox: 'workspace-write',
+      timeoutMs: 30_000,
+      authenticatedProviders: ['claude', 'codex'],
+    };
+
+    // 'refactor X' is low/medium risk → hard-turns must not trigger a panel.
+    const events = await collectEvents(
+      orchestrate('refactor X', deps, new AbortController().signal),
+    );
+    const panelNotice = events.find(
+      (e) => e.type === 'notice' && e.message.includes('Panel'),
+    );
+    assert.equal(panelNotice, undefined, 'low-risk turn must not form a panel under hard-turns');
+  });
+});

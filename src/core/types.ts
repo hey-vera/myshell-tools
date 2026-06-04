@@ -203,6 +203,31 @@ export interface Policy {
    * admission postures.
    */
   readonly maxFlagshipAttemptsPerTurn?: number;
+
+  /**
+   * EXPERIMENTAL — Parallel Subscription Panel. When/whether to run a turn as a
+   * concurrent panel of the user's signed-in providers (each answers
+   * independently) followed by a cross-vendor synthesizer, instead of the
+   * sequential single-model path. This is uniquely a subscription-first move: on a
+   * flat-rate plan extra model runs cost $0 in dollars — the budget is quota +
+   * latency — so spending several concurrent runs on a hard turn buys independent
+   * judgment an API-key tool would never afford.
+   *
+   * - `'off'`        : never (default; the sequential engine runs).
+   * - `'hard-turns'` : panel only on high/critical-risk turns.
+   * - `'always'`     : panel every turn (Max-style; quota-heavy).
+   *
+   * Absent → `'off'`. A panel still only forms when ≥2 authenticated providers are
+   * available (see core/ensemble.ts::planPanel); otherwise the turn falls back to
+   * the normal path.
+   */
+  readonly panelPolicy?: 'off' | 'hard-turns' | 'always';
+
+  /**
+   * Maximum number of providers to run concurrently in a panel (quota guard).
+   * Absent → 2. Ignored when `panelPolicy` is `'off'`.
+   */
+  readonly maxPanelProviders?: number;
 }
 
 // ---------------------------------------------------------------------------

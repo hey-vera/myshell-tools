@@ -1,0 +1,475 @@
+/**
+ * Unit tests for src/core/ensemble.ts — the Parallel Subscription Panel.
+ *
+ * Pure tests for planPanel + the two prompt builders, plus integration tests for
+ * runPanel using fake providers (mirrors test/unit/orchestrate.test.ts).
+ * Run with: node --experimental-strip-types --test test/unit/ensemble.test.ts
+ */
+
+import { describe, it } from 'node:test';
+import assert from 'node:assert/strict';
+import {
+  planPanel,
+  runPanel,
+  buildPanelCandidatePrompt,
+  buildPanelSynthesisPrompt,
+  type PanelPlan,
+} from '../../src/core/ensemble.ts';
+import { DEFAULT_POLICY } from '../../src/core/policy.ts';
+import type {
+  Classification,
+  Clock,
+  SessionWriter,
+  SessionEntry,
+  LedgerWriter,
+  LedgerEntry,
+  OrchestrateDeps,
+  CoreEvent,
+} from '../../src/core/types.ts';
+import type {
+  Provider,
+  ProviderRequest,
+  ProviderEvent,
+  ProviderId,
+  Usage,
+} from '../../src/providers/port.ts';
+
+// ---------------------------------------------------------------------------
+// Pure: planPanel
+// ---------------------------------------------------------------------------
+
+const HIGH: Classification = { tier: 'ic', risk: 'high', rationale: 'r' };
+const LOW: Classification = { tier: 'ic', risk: 'low', rationale: 'r' };
+const CRIT: Classification = { tier: 'manager', risk: 'critical', rationale: 'r' };
+
+describe('planPanel — gating', () => {
+  it("panelPolicy 'off' → null", () => {
+    assert.equal(
+      planPanel({
+        panelPolicy: 'off',
+        classification: HIGH,
+        tier: 'ic',
+        authenticatedProviders: ['claude', 'codex'],
+        maxPanelProviders: 2,
+      }),
+      null,
+    );
+  });
+
+  it('panelPolicy undefined → null', () => {
+    assert.equal(
+      planPanel({
+        panelPolicy: undefined,
+        classification: HIGH,
+        tier: 'ic',
+        authenticatedProviders: ['claude', 'codex'],
+        maxPanelProviders: 2,
+      }),
+      null,
+    );
+  });
+
+  it("'hard-turns' on low risk → null", () => {
+    assert.equal(
+      planPanel({
+        panelPolicy: 'hard-turns',
+        classification: LOW,
+        tier: 'ic',
+        authenticatedProviders: ['claude', 'codex'],
+        maxPanelProviders: 2,
+      }),
+      null,
+    );
+  });
+
+  it("'hard-turns' on high risk → a plan", () => {
+    const plan = planPanel({
+      panelPolicy: 'hard-turns',
+      classification: HIGH,
+      tier: 'ic',
+      authenticatedProviders: ['claude', 'codex'],
+      maxPanelProviders: 2,
+    });
+    assert.ok(plan !== null);
+    assert.deepEqual(plan.candidates, ['claude', 'codex']);
+  });
+
+  it("'hard-turns' on critical risk → a plan", () => {
+    const plan = planPanel({
+      panelPolicy: 'hard-turns',
+      classification: CRIT,
+      tier: 'manager',
+      authenticatedProviders: ['claude', 'codex'],
+      maxPanelProviders: 2,
+    });
+    assert.ok(plan !== null);
+  });
+
+  it("'always' forms a plan even on low risk", () => {
+    const plan = planPanel({
+      panelPolicy: 'always',
+      classification: LOW,
+      tier: 'ic',
+      authenticatedProviders: ['claude', 'codex'],
+      maxPanelProviders: 2,
+    });
+    assert.ok(plan !== null);
+  });
+});
+
+describe('planPanel — composition', () => {
+  it('fewer than 2 authenticated providers → null', () => {
+    assert.equal(
+      planPanel({
+        panelPolicy: 'always',
+        classification: LOW,
+        tier: 'ic',
+        authenticatedProviders: ['claude'],
+        maxPanelProviders: 2,
+      }),
+      null,
+    );
+    assert.equal(
+      planPanel({
+        panelPolicy: 'always',
+        classification: LOW,
+        tier: 'ic',
+        authenticatedProviders: [],
+        maxPanelProviders: 4,
+      }),
+      null,
+    );
+  });
+
+  it('cap floors at 2 even when maxPanelProviders < 2', () => {
+    const plan = planPanel({
+      panelPolicy: 'always',
+      classification: LOW,
+      tier: 'ic',
+      authenticatedProviders: ['claude', 'codex', 'opencode'],
+      maxPanelProviders: 1,
+    });
+    assert.ok(plan !== null);
+    assert.equal(plan.candidates.length, 2);
+    assert.deepEqual(plan.candidates, ['claude', 'codex']);
+  });
+
+  it('slices candidates to the cap', () => {
+    const plan = planPanel({
+      panelPolicy: 'always',
+      classification: LOW,
+      tier: 'ic',
+      authenticatedProviders: ['claude', 'codex', 'opencode'],
+      maxPanelProviders: 2,
+    });
+    assert.ok(plan !== null);
+    assert.deepEqual(plan.candidates, ['claude', 'codex']);
+  });
+
+  it('cap above provider count keeps all authenticated providers', () => {
+    const plan = planPanel({
+      panelPolicy: 'always',
+      classification: LOW,
+      tier: 'ic',
+      authenticatedProviders: ['claude', 'codex', 'opencode'],
+      maxPanelProviders: 10,
+    });
+    assert.ok(plan !== null);
+    assert.deepEqual(plan.candidates, ['claude', 'codex', 'opencode']);
+  });
+
+  it('synthesizer is candidates[0] and tier is passed through', () => {
+    const plan = planPanel({
+      panelPolicy: 'always',
+      classification: LOW,
+      tier: 'manager',
+      authenticatedProviders: ['codex', 'claude'],
+      maxPanelProviders: 2,
+    });
+    assert.ok(plan !== null);
+    assert.equal(plan.synthesizer, 'codex');
+    assert.equal(plan.tier, 'manager');
+  });
+
+  it('is deterministic for identical inputs', () => {
+    const opts = {
+      panelPolicy: 'always' as const,
+      classification: LOW,
+      tier: 'ic' as const,
+      authenticatedProviders: ['claude', 'codex'] as const,
+      maxPanelProviders: 2,
+    };
+    assert.deepEqual(planPanel(opts), planPanel(opts));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Pure: prompt builders
+// ---------------------------------------------------------------------------
+
+describe('buildPanelCandidatePrompt', () => {
+  it('includes the task, the envelope keys, and the independence framing', () => {
+    const p = buildPanelCandidatePrompt('ic', 'refactor the auth module');
+    assert.match(p, /refactor the auth module/);
+    assert.match(p, /independent/i);
+    assert.match(p, /"confidence"/);
+    assert.match(p, /"assumptions"/);
+    assert.match(p, /"what_would_make_this_wrong"/);
+  });
+
+  it('injects the history context block when provided', () => {
+    const p = buildPanelCandidatePrompt('ic', 'task', 'prior turn summary');
+    assert.match(p, /CONVERSATION SO FAR/);
+    assert.match(p, /prior turn summary/);
+  });
+
+  it('omits the history block when not provided', () => {
+    const p = buildPanelCandidatePrompt('ic', 'task');
+    assert.doesNotMatch(p, /CONVERSATION SO FAR/);
+  });
+});
+
+describe('buildPanelSynthesisPrompt', () => {
+  it('includes the task, every candidate output, and synthesis instructions', () => {
+    const p = buildPanelSynthesisPrompt('design a cache', [
+      { provider: 'claude', output: 'use an LRU' },
+      { provider: 'codex', output: 'use a TTL map' },
+    ]);
+    assert.match(p, /design a cache/);
+    assert.match(p, /use an LRU/);
+    assert.match(p, /use a TTL map/);
+    assert.match(p, /claude/);
+    assert.match(p, /codex/);
+    assert.match(p, /synthesiz/i);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Fakes (mirrors orchestrate.test.ts)
+// ---------------------------------------------------------------------------
+
+function makeFakeClock(): Clock {
+  let now = 1_000_000;
+  let n = 0;
+  return {
+    now: () => (now += 10),
+    isoNow: () => new Date(now).toISOString(),
+    uuid: () => `fake-uuid-${++n}`,
+    random: () => 0.42,
+  };
+}
+
+function makeFakeSession(id = 'sess-panel-1'): SessionWriter & { entries: SessionEntry[] } {
+  const entries: SessionEntry[] = [];
+  return {
+    id,
+    async append(e: SessionEntry): Promise<void> {
+      entries.push(e);
+    },
+    entries,
+  };
+}
+
+function makeFakeLedger(): LedgerWriter & { entries: LedgerEntry[] } {
+  const entries: LedgerEntry[] = [];
+  return {
+    async record(e: LedgerEntry): Promise<void> {
+      entries.push(e);
+    },
+    entries,
+  };
+}
+
+const USAGE: Usage = { inputTokens: 1000, outputTokens: 500 };
+
+function makeProvider(
+  id: ProviderId,
+  text: string,
+  opts?: { error?: boolean; onRun?: () => void },
+): Provider {
+  return {
+    id,
+    async detect() {
+      return {
+        id,
+        installed: true,
+        version: '1',
+        authenticated: true,
+        binaryPath: '/f',
+        availableModels: [],
+      };
+    },
+    async *run(_req: ProviderRequest, _signal: AbortSignal): AsyncIterable<ProviderEvent> {
+      opts?.onRun?.();
+      if (opts?.error === true) {
+        yield {
+          type: 'error',
+          error: { category: 'network', recoverable: true, message: 'boom', suggestion: 'retry' },
+        };
+        return;
+      }
+      yield { type: 'text', delta: text };
+      yield { type: 'done', text, usage: USAGE, raw: {} };
+    },
+  };
+}
+
+async function collect(gen: AsyncGenerator<CoreEvent>): Promise<CoreEvent[]> {
+  const out: CoreEvent[] = [];
+  for await (const ev of gen) out.push(ev);
+  return out;
+}
+
+function panelDeps(providers: Partial<Record<ProviderId, Provider>>): {
+  deps: OrchestrateDeps;
+  session: ReturnType<typeof makeFakeSession>;
+  ledger: ReturnType<typeof makeFakeLedger>;
+} {
+  const session = makeFakeSession();
+  const ledger = makeFakeLedger();
+  const authed = Object.keys(providers) as ProviderId[];
+  return {
+    session,
+    ledger,
+    deps: {
+      providers,
+      clock: makeFakeClock(),
+      session,
+      ledger,
+      policy: { ...DEFAULT_POLICY, panelPolicy: 'hard-turns', maxTier: 'manager' },
+      cwd: '/fake',
+      sandbox: 'workspace-write',
+      timeoutMs: 30_000,
+      authenticatedProviders: authed,
+    },
+  };
+}
+
+const PLAN: PanelPlan = { tier: 'ic', candidates: ['claude', 'codex'], synthesizer: 'claude' };
+
+// ---------------------------------------------------------------------------
+// Integration: runPanel
+// ---------------------------------------------------------------------------
+
+describe('runPanel — happy path', () => {
+  it('(a) emits tier-start per candidate and a success final = synthesizer text', async () => {
+    // synthesizer is 'claude' (candidates[0]); give it a distinct text so we can
+    // assert the final output is the synthesizer's, not a candidate's.
+    let claudeCalls = 0;
+    const claude = makeProvider('claude', 'CLAUDE-ANSWER', {
+      onRun: () => {
+        claudeCalls++;
+      },
+    });
+    const codex = makeProvider('codex', 'CODEX-ANSWER');
+    // claude runs as a candidate AND as synthesizer; make synthesizer text differ
+    // by wrapping: easiest is to have claude always answer 'CLAUDE-ANSWER' — the
+    // final output is whatever the synthesizer (claude) returned. We assert it is
+    // the claude text (the synthesizer's output), distinct from codex's.
+    const { deps, session } = panelDeps({ claude, codex });
+
+    const events = await collect(runPanel('hard task', deps, PLAN, new AbortController().signal));
+
+    const candidateStarts = events.filter(
+      (e) => e.type === 'tier-start' && (e.provider === 'claude' || e.provider === 'codex'),
+    );
+    // 2 candidate starts + 1 synthesizer start = 3 tier-starts total.
+    assert.ok(candidateStarts.length >= 2, 'expected tier-start for each candidate');
+
+    const final = events.find((e) => e.type === 'final');
+    assert.ok(final !== undefined && final.type === 'final');
+    if (final.type === 'final') {
+      assert.equal(final.success, true);
+      assert.equal(final.output, 'CLAUDE-ANSWER');
+    }
+    // claude invoked at least twice (candidate + synthesizer).
+    assert.ok(claudeCalls >= 2, `expected claude to run as candidate + synthesizer, got ${claudeCalls}`);
+
+    // session has a user + assistant entry.
+    assert.equal(session.entries[0]?.role, 'user');
+    assert.ok(session.entries.some((e) => e.role === 'assistant' && e.content === 'CLAUDE-ANSWER'));
+  });
+
+  it('(b) every candidate provider is actually invoked', async () => {
+    let claudeRan = false;
+    let codexRan = false;
+    const claude = makeProvider('claude', 'A', { onRun: () => (claudeRan = true) });
+    const codex = makeProvider('codex', 'B', { onRun: () => (codexRan = true) });
+    const { deps } = panelDeps({ claude, codex });
+    await collect(runPanel('hard task', deps, PLAN, new AbortController().signal));
+    assert.ok(claudeRan, 'claude candidate must run');
+    assert.ok(codexRan, 'codex candidate must run');
+  });
+
+  it('(d) ledger has entries for both candidates + the synthesizer', async () => {
+    const { deps, ledger } = panelDeps({
+      claude: makeProvider('claude', 'A'),
+      codex: makeProvider('codex', 'B'),
+    });
+    await collect(runPanel('hard task', deps, PLAN, new AbortController().signal));
+    // 2 candidates + 1 synthesizer = 3 ledger entries.
+    assert.equal(ledger.entries.length, 3);
+    assert.ok(ledger.entries.every((e) => e.usd > 0), 'each run records real cost');
+  });
+
+  it('notice names the panel composition', async () => {
+    const { deps } = panelDeps({
+      claude: makeProvider('claude', 'A'),
+      codex: makeProvider('codex', 'B'),
+    });
+    const events = await collect(runPanel('hard task', deps, PLAN, new AbortController().signal));
+    const notice = events.find((e) => e.type === 'notice' && e.message.includes('Panel'));
+    assert.ok(notice !== undefined, 'expected a Panel notice');
+  });
+});
+
+describe('runPanel — all candidates fail', () => {
+  it('(c) yields a failing final when no candidate succeeds', async () => {
+    const { deps, ledger } = panelDeps({
+      claude: makeProvider('claude', '', { error: true }),
+      codex: makeProvider('codex', '', { error: true }),
+    });
+    const events = await collect(runPanel('hard task', deps, PLAN, new AbortController().signal));
+    const final = events.find((e) => e.type === 'final');
+    assert.ok(final !== undefined && final.type === 'final');
+    if (final.type === 'final') {
+      assert.equal(final.success, false);
+    }
+    // No synthesizer run when all candidates failed → only 2 candidate ledger entries.
+    assert.equal(ledger.entries.length, 2);
+    assert.ok(ledger.entries.every((e) => e.success === false));
+  });
+});
+
+describe('runPanel — partial failure still synthesizes', () => {
+  it('synthesizes from the surviving candidate when one fails', async () => {
+    // claude (synthesizer + a candidate) succeeds; codex candidate fails.
+    const { deps } = panelDeps({
+      claude: makeProvider('claude', 'GOOD'),
+      codex: makeProvider('codex', '', { error: true }),
+    });
+    const events = await collect(runPanel('hard task', deps, PLAN, new AbortController().signal));
+    const final = events.find((e) => e.type === 'final');
+    assert.ok(final !== undefined && final.type === 'final');
+    if (final.type === 'final') {
+      assert.equal(final.success, true);
+      assert.equal(final.output, 'GOOD');
+    }
+  });
+});
+
+describe('runPanel — abort', () => {
+  it('yields cancelled notice + failing final when aborted before start', async () => {
+    const ac = new AbortController();
+    ac.abort();
+    const { deps } = panelDeps({
+      claude: makeProvider('claude', 'A'),
+      codex: makeProvider('codex', 'B'),
+    });
+    const events = await collect(runPanel('hard task', deps, PLAN, ac.signal));
+    const notice = events.find((e) => e.type === 'notice' && e.level === 'warn');
+    assert.ok(notice !== undefined && /cancel/i.test(notice.message));
+    const final = events.find((e) => e.type === 'final');
+    assert.ok(final !== undefined && final.type === 'final' && final.success === false);
+  });
+});
