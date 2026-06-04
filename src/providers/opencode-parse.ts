@@ -264,6 +264,25 @@ export function createOpencodeParser(): OpencodeParser {
     // do not emit a duplicate.
     if (terminalEmitted) return [];
 
+    if (
+      accumulatedText.length === 0 &&
+      accumulatedInputTokens === 0 &&
+      accumulatedOutputTokens === 0 &&
+      (accumulatedCachedInputTokens ?? 0) === 0 &&
+      accumulatedCostUsd === 0
+    ) {
+      terminalEmitted = true;
+      return [
+        {
+          type: 'error',
+          error: {
+            ...classifyError('', 1),
+            message: 'opencode produced no output',
+          },
+        },
+      ];
+    }
+
     // Build the accumulated usage object.
     const usage: Usage = (() => {
       const base: Usage = {

@@ -299,16 +299,15 @@ describe('createOpencodeParser — edge cases', () => {
     assert.deepEqual(parser.parseLine(line), []);
   });
 
-  it('finalize on a fresh parser returns a done event with empty text and zero usage', () => {
+  it('finalize on a fresh parser returns an error instead of a blank success', () => {
     const parser = createOpencodeParser();
     const events = parser.finalize();
-    const done = events.find(
-      (e): e is Extract<ProviderEvent, { type: 'done' }> => e.type === 'done',
+    const error = events.find(
+      (e): e is Extract<ProviderEvent, { type: 'error' }> => e.type === 'error',
     );
-    assert.ok(done !== undefined, 'expected a done event even from a fresh parser');
-    assert.equal(done.text, '');
-    assert.equal(done.usage?.inputTokens, 0);
-    assert.equal(done.usage?.outputTokens, 0);
+    assert.ok(error !== undefined, 'expected an error from a fresh parser');
+    assert.equal(error.error.category, 'unknown');
+    assert.equal(error.error.message, 'opencode produced no output');
   });
 
   it('omits cachedInputTokens in done when cache.read is absent', () => {

@@ -118,7 +118,18 @@ export function createOpencodeProvider(opts?: { bin?: string }): Provider {
       const result = await subprocess;
 
       if (!emittedTerminal) {
-        if (result.isCanceled) {
+        if (result.timedOut === true) {
+          const seconds = Math.round((req.timeoutMs ?? 0) / 1000);
+          const base = classifyError('timed out', 1); // → category 'timeout', recoverable
+          yield {
+            type: 'error',
+            error: {
+              ...base,
+              message: `Hit the ${seconds}-second limit before the model finished.`,
+            },
+          };
+          emittedTerminal = true;
+        } else if (result.isCanceled) {
           yield {
             type: 'error',
             error: classifyError('cancelled', 1),

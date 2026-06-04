@@ -9,6 +9,23 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 ### Pending
 - Cross-OS CI execution (requires a public remote).
 
+## [3.10.8]
+
+### Fixed
+- **Codex/opencode timeouts are now classified as timeouts.** Only the Claude adapter
+  checked `timedOut`; a timed-out Codex/opencode run was reported as an unexplained
+  error, and the menu's "ran past the time limit — keep working autonomously?" offer
+  (which keys off the `timeout` category) never fired. Both adapters now emit a real
+  `timeout` error first, so a big task offers autonomous chunking instead of dying.
+- **opencode no longer reports an empty answer as success.** A run that produced no
+  text, tokens, or cost emitted a blank `done` (→ "✓ done (0 tokens)"); it now emits an
+  honest error ("opencode produced no output").
+- **`assess()` only reads a *trailing* confidence envelope.** It scanned for the last
+  `confidence` JSON anywhere in the output, so an answer containing an *example* JSON
+  with a `confidence` field could wrongly drive escalation/review. It now uses the same
+  trailing-envelope contract as the renderer and question parser (no real trailing
+  envelope → confidence null, never fabricated).
+
 ## [3.10.7]
 
 ### Fixed

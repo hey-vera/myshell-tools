@@ -357,6 +357,19 @@ describe('createOpencodeParser — resilience: malformed JSON → []', () => {
 // ---------------------------------------------------------------------------
 
 describe('createOpencodeParser — finalize() produces done event', () => {
+  it('finalize() returns an error when no text, usage, or cost was accumulated', () => {
+    const p = createOpencodeParser();
+    const finalEvents = p.finalize();
+    assert.equal(finalEvents.length, 1);
+    const ev = finalEvents[0];
+    assert.ok(ev !== undefined);
+    assert.equal(ev.type, 'error');
+    if (ev.type === 'error') {
+      assert.equal(ev.error.category, 'unknown');
+      assert.equal(ev.error.message, 'opencode produced no output');
+    }
+  });
+
   it('finalize() returns a done event after text accumulation', () => {
     const p = createOpencodeParser();
     p.parseLine(TEXT_LINE_HI);
@@ -540,12 +553,13 @@ describe('createOpencodeParser — each parser instance is independent', () => {
     p1.parseLine(TEXT_LINE_HI);
     p1.parseLine(TEXT_LINE_THERE);
 
-    // p2 has no text events
+    // p2 has no real output and now reports an honest parser error, not a blank
+    // done event.
     const finalP2 = p2.finalize();
     const evP2 = finalP2[0];
-    assert.ok(evP2 !== undefined && evP2.type === 'done');
-    if (evP2.type === 'done') {
-      assert.equal(evP2.text, '', 'p2 must have empty text (no events fed)');
+    assert.ok(evP2 !== undefined && evP2.type === 'error');
+    if (evP2.type === 'error') {
+      assert.equal(evP2.error.message, 'opencode produced no output');
     }
 
     const finalP1 = p1.finalize();

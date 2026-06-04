@@ -14,7 +14,7 @@
  */
 
 import type { Assessment } from './types.js';
-import { lastJsonObjectWithKey } from './json-envelope.js';
+import { isTrailingNoise, lastJsonObjectBoundsWithKey } from './json-envelope.js';
 
 // ---------------------------------------------------------------------------
 // Internal envelope shape (before coercion)
@@ -76,7 +76,11 @@ export function assess(output: string): Assessment {
 
   let envelope: RawEnvelope | null;
   try {
-    envelope = lastJsonObjectWithKey(output, 'confidence') as RawEnvelope | null;
+    const match = lastJsonObjectBoundsWithKey(output, 'confidence');
+    if (match === null || !isTrailingNoise(output.slice(match.end))) {
+      return NULL_RESULT;
+    }
+    envelope = match.value as RawEnvelope;
   } catch {
     return NULL_RESULT;
   }

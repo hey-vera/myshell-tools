@@ -59,6 +59,27 @@ describe('assess — valid envelope', () => {
     assert.equal(result.reason, 'second attempt');
   });
 
+  it('ignores a non-trailing confidence JSON example', () => {
+    const output =
+      'Example config: {"confidence": 0.2, "escalate": true, "reason": "example", "needs_review": true}\n' +
+      'The actual answer continues after the example.';
+    const result = assess(output);
+    assert.equal(result.confidence, null);
+    assert.equal(result.escalate, false);
+    assert.equal(result.reason, 'no confidence envelope');
+  });
+
+  it('reads a genuine trailing confidence envelope after prose examples', () => {
+    const output =
+      'Example config: {"confidence": 0.2, "escalate": true, "reason": "example", "needs_review": true}\n' +
+      'The actual answer.\n' +
+      '{"confidence": 0.91, "escalate": false, "reason": "final", "needs_review": false}';
+    const result = assess(output);
+    assert.equal(result.confidence, 0.91);
+    assert.equal(result.escalate, false);
+    assert.equal(result.reason, 'final');
+  });
+
   it('parses an envelope with extra whitespace around it', () => {
     const output =
       'Done.\n\n  \n' +
