@@ -515,6 +515,79 @@ describe('startMenu — n → first-message → /exit → q', () => {
   });
 });
 
+describe('startMenu — /goal ask_user stops autonomous loop and surfaces selector', () => {
+  it('answers the selector without starting another autonomous goal turn', async () => {
+    const prompts: string[] = [];
+    const questionBlock =
+      '{"ask_user":{"questions":[{"id":"db","prompt":"Which database?","options":[{"label":"Postgres"},{"label":"SQLite"}],"multiSelect":false,"allowFreeText":false}]}}';
+    let callCount = 0;
+    const provider: Provider = {
+      id: 'claude',
+      async detect() {
+        return {
+          id: 'claude',
+          installed: true,
+          version: '1.0.0',
+          authenticated: true,
+          plan: null,
+          binaryPath: null,
+          availableModels: ['model-a'],
+        };
+      },
+      async *run(req: ProviderRequest, _signal: AbortSignal): AsyncIterable<ProviderEvent> {
+        prompts.push(req.prompt);
+        callCount++;
+        if (callCount === 1) {
+          yield { type: 'text', delta: 'Which database?\n' };
+          yield {
+            type: 'done',
+            text: `Which database?\n${questionBlock}`,
+            usage: FAKE_USAGE,
+            raw: {},
+          };
+          return;
+        }
+        yield { type: 'text', delta: 'Using Postgres.' };
+        yield {
+          type: 'done',
+          text: `Using Postgres.\n${CONFIDENCE_ENVELOPE}`,
+          usage: FAKE_USAGE,
+          raw: {},
+        };
+      },
+    };
+
+    const clock = makeFakeClock();
+    const store = makeStore(clock);
+    const sink = makeSink();
+    const ctx = makeCtx(
+      {
+        providers: { claude: provider },
+        readLine: makeScriptedReader([
+          'n',
+          '/goal choose the database',
+          '1',
+          '/exit',
+          'q',
+        ]),
+      },
+      clock,
+      store,
+    );
+
+    await startMenu(ctx, sink);
+
+    assert.equal(callCount, 2, 'one goal turn plus one normal answer turn');
+    assert.ok(sink.buf.includes('Which database?'), 'question selector is surfaced');
+    assert.ok(prompts[0]?.includes('Goal: choose the database'), 'first call is the goal turn');
+    assert.ok(prompts[1]?.includes('Answers: db = Postgres'), 'second call submits the selected answer');
+    assert.ok(
+      !prompts.slice(1).some((p) => p.includes('Continue working autonomously toward this goal')),
+      'must not start another autonomous goal turn after ask_user',
+    );
+  });
+});
+
 // ---------------------------------------------------------------------------
 // FLOW 4: "e" → manage screen → pin → back → "q"
 // ---------------------------------------------------------------------------

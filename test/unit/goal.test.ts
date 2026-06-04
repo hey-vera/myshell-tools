@@ -7,6 +7,8 @@ import assert from 'node:assert/strict';
 
 import {
   buildGoalTask,
+  parseTrailingGoalMarker,
+  stripTrailingGoalMarker,
   parseGoalSignal,
   decideGoalNext,
   formatGoalProgress,
@@ -29,29 +31,45 @@ describe('buildGoalTask', () => {
   });
 });
 
-describe('parseGoalSignal', () => {
-  it('"complete" only on a clear completion marker', () => {
-    assert.equal(parseGoalSignal('All done.\nGOAL_COMPLETE'), 'complete');
+describe('parseTrailingGoalMarker / stripTrailingGoalMarker', () => {
+  it('parses a trailing GOAL_COMPLETE marker', () => {
+    assert.equal(parseTrailingGoalMarker('All done.\nGOAL_COMPLETE'), 'complete');
   });
 
-  it('"continue" on a continue marker', () => {
+  it('parses a trailing GOAL_CONTINUE marker with a next step', () => {
+    assert.equal(parseTrailingGoalMarker('Did step 1.\nGOAL_CONTINUE: write the tests'), 'continue');
+  });
+
+  it('ignores a marker that is not on the last non-empty line', () => {
+    assert.equal(parseTrailingGoalMarker('GOAL_COMPLETE\nBut this is the real ending.'), null);
+  });
+
+  it('ignores prose that merely mentions GOAL_COMPLETE mid-text', () => {
+    assert.equal(parseTrailingGoalMarker('Do not write GOAL_COMPLETE in prose.\nStill working.'), null);
+  });
+
+  it('strips only a trailing marker line', () => {
+    assert.equal(
+      stripTrailingGoalMarker('Mention GOAL_COMPLETE safely.\nDone.\nGOAL_COMPLETE'),
+      'Mention GOAL_COMPLETE safely.\nDone.',
+    );
+    assert.equal(
+      stripTrailingGoalMarker('GOAL_COMPLETE\nBut this is prose.'),
+      'GOAL_COMPLETE\nBut this is prose.',
+    );
+  });
+});
+
+describe('parseGoalSignal', () => {
+  it('returns the trailing marker signal when present', () => {
+    assert.equal(parseGoalSignal('All done.\nGOAL_COMPLETE'), 'complete');
     assert.equal(parseGoalSignal('Did step 1.\nGOAL_CONTINUE: write the tests'), 'continue');
   });
 
-  it('"continue" when no marker is present (never guesses completion)', () => {
-    assert.equal(parseGoalSignal('I made some changes.'), 'continue');
-    assert.equal(parseGoalSignal(''), 'continue');
-  });
-
-  it('when both markers appear, trusts the LAST one', () => {
-    assert.equal(
-      parseGoalSignal('GOAL_CONTINUE: more\n...later...\nGOAL_COMPLETE'),
-      'complete',
-    );
-    assert.equal(
-      parseGoalSignal('GOAL_COMPLETE earlier was wrong\nGOAL_CONTINUE: keep going'),
-      'continue',
-    );
+  it('"missing" when no valid trailing marker is present', () => {
+    assert.equal(parseGoalSignal('I made some changes.'), 'missing');
+    assert.equal(parseGoalSignal(''), 'missing');
+    assert.equal(parseGoalSignal('GOAL_CONTINUE: more\n...later...\nfinished without marker'), 'missing');
   });
 });
 
@@ -71,6 +89,12 @@ describe('decideGoalNext', () => {
   it('stops on the cost ceiling before another turn', () => {
     const s = decideGoalNext({ signal: 'continue', lastSucceeded: true, completedIterations: 2, ceilings, costSoFarUsd: 2.5 });
     assert.equal(s.action, 'stop-budget');
+  });
+
+  it('stops honestly when the marker is missing or invalid', () => {
+    const s = decideGoalNext({ signal: 'missing', lastSucceeded: true, completedIterations: 2, ceilings, costSoFarUsd: 0.1 });
+    assert.equal(s.action, 'stop-signal');
+    assert.match(s.reason, /no goal signal/);
   });
 
   it('stops on the iteration ceiling', () => {

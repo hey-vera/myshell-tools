@@ -24,6 +24,7 @@ import type { ProviderId } from '../providers/port.js';
 import type { CliError, ErrorCategory } from '../providers/errors.js';
 import { classifyError, formatErrorMessage } from '../providers/errors.js';
 import { lastJsonObjectBoundsWithKey, isTrailingNoise } from '../core/json-envelope.js';
+import { GOAL_MARKER_TOKENS, stripTrailingGoalMarker } from '../core/goal.js';
 import { bold, cyan, dim, green, red, yellow } from '../ui/theme.js';
 import { createSpinner } from '../ui/spinner.js';
 import { formatTokens } from '../infra/insights.js';
@@ -192,12 +193,6 @@ function trailingControlEnvelope(
   return best;
 }
 
-// Trailing autonomous-goal control markers. These mirror core/goal.ts's
-// COMPLETE_MARKER / CONTINUE_MARKER: the model writes one on its own line at the
-// very END of a `/goal` turn to signal status. Like the confidence envelope, it's
-// a control token, not prose — so it must never leak into the visible transcript.
-const GOAL_MARKER_TOKENS = ['GOAL_COMPLETE', 'GOAL_CONTINUE'] as const;
-
 /**
  * Start index of a trailing goal-marker region (the final line, plus its leading
  * newline so no orphan blank line remains), or -1 when the last line isn't a goal
@@ -329,16 +324,12 @@ class EnvelopeFilter {
         cutEnd = open;
       }
     }
-    // Also cut a confirmed trailing goal-control marker line. We only strip it when
-    // the last line is genuinely a GOAL_COMPLETE / GOAL_CONTINUE marker (the regex
-    // requires the full token), so a non-marker prefix that was briefly held back is
-    // released here as normal prose.
-    const goalStart = trailingGoalMarkerStart(this.full);
-    if (goalStart !== -1 && goalStart < cutEnd) {
-      const lastLine = this.full.slice(this.full.lastIndexOf('\n', cutEnd - 1) + 1, cutEnd).trim();
-      if (/^GOAL_(COMPLETE|CONTINUE)\b/.test(lastLine)) {
-        cutEnd = goalStart;
-      }
+    // Also cut a confirmed trailing goal-control marker line using the same
+    // shared definition as the parser/history compactor. A non-marker prefix
+    // that was briefly held back is released here as normal prose.
+    const strippedGoal = stripTrailingGoalMarker(this.full.slice(0, cutEnd));
+    if (strippedGoal.length < cutEnd) {
+      cutEnd = strippedGoal.length;
     }
     if (cutEnd > this.flushed) {
       // Trim trailing whitespace AND a dangling ```json/``` fence-opener that the

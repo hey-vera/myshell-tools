@@ -14,6 +14,7 @@
 
 import type { SessionEntry } from './types.js';
 import { lastJsonObjectBoundsWithKey } from './json-envelope.js';
+import { stripTrailingGoalMarker } from './goal.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -65,6 +66,12 @@ function stripEnvelope(content: string): string {
   } catch {
     return content;
   }
+}
+
+function stripAssistantReplayControls(content: string): string {
+  const withoutTrailingMarker = stripTrailingGoalMarker(content);
+  const withoutEnvelope = stripEnvelope(withoutTrailingMarker);
+  return stripTrailingGoalMarker(withoutEnvelope);
 }
 
 /**
@@ -119,7 +126,7 @@ export function compactHistory(
     // Format each entry into a display line
     const formatted: string[] = window.map((entry) => {
       const label = roleLabel(entry.role);
-      const rawContent = entry.role === 'assistant' ? stripEnvelope(entry.content) : entry.content;
+      const rawContent = entry.role === 'assistant' ? stripAssistantReplayControls(entry.content) : entry.content;
       const content = rawContent.trim();
       return `${label}: ${content}`;
     });

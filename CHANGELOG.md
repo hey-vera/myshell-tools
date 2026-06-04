@@ -8,6 +8,24 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ### Pending
 - Cross-OS CI execution (requires a public remote).
+
+## [3.10.18]
+
+### Fixed
+`/goal` autonomous-loop control-marker fixes (the iteration ceiling was already correct):
+- **A goal no longer stops early because prose *mentions* the completion marker.** The
+  parser matched `GOAL_COMPLETE`/`GOAL_CONTINUE` anywhere in the output (and "last
+  wins"); it now reads only the trailing marker line (shared with the renderer's stripping
+  via one `goal.ts` utility), so a turn discussing the markers can't end the run.
+- **A turn with no marker stops honestly instead of burning turns.** A missing/garbled
+  signal previously defaulted to "continue", spending the remaining autonomous turns
+  repeating work; it now stops with "no goal signal — re-run /goal to continue".
+- **Goal markers no longer leak into replayed history.** They were stripped from the
+  display but not from the compacted history, so later turns saw a prior turn's
+  `GOAL_CONTINUE: <next step>` as context; history compaction now strips them too.
+- **A question during a `/goal` run pauses for you.** If a goal turn emits an `ask_user`
+  block, the loop now surfaces the question selector instead of treating it as a
+  markerless success and continuing to guess autonomously.
 - opencode native-session continuity (`run --session`) — feature add, needs live opencode verification.
 - Reconcile Codex advertised models (detect.ts) with the pricing table and current vendor
   model IDs — deferred: needs live verification of what the `codex` CLI actually exposes.

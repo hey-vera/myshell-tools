@@ -120,6 +120,24 @@ describe('compactHistory — confidence envelope stripping', () => {
     assert.ok(!result.includes('ask_user'), 'Should strip the raw ask_user JSON block');
   });
 
+  it('strips a trailing goal marker from replayed assistant history', () => {
+    const content = 'Finished the implementation and tests.\nGOAL_COMPLETE';
+    const result = compactHistory([makeEntry('assistant', content)]);
+    assert.equal(result, 'Assistant: Finished the implementation and tests.');
+    assert.ok(!result.includes('GOAL_COMPLETE'), 'Should strip the raw goal marker');
+  });
+
+  it('strips a goal marker exposed after removing a trailing envelope', () => {
+    const content =
+      'Finished the implementation and tests.\n' +
+      'GOAL_CONTINUE: run the contract tests\n' +
+      '{"confidence": 0.8, "escalate": false, "reason": "x", "needs_review": false}';
+    const result = compactHistory([makeEntry('assistant', content)]);
+    assert.equal(result, 'Assistant: Finished the implementation and tests.');
+    assert.ok(!result.includes('GOAL_CONTINUE'), 'Should strip marker before replay');
+    assert.ok(!result.includes('"confidence"'), 'Should still strip the confidence envelope');
+  });
+
   it('handles assistant content with no envelope gracefully', () => {
     const content = 'Just a plain response with no JSON at all.';
     const result = compactHistory([makeEntry('assistant', content)]);

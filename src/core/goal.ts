@@ -10,14 +10,14 @@
  * Completion is signalled by a plain-text marker the model writes, NOT a change
  * to the confidence envelope or the orchestrate hot path — so `/goal` is fully
  * self-contained and the marker parser is trivially testable. Honest default:
- * when the signal is unclear we CONTINUE (and let the ceilings stop the loop),
- * never falsely claim completion.
+ * when the signal is missing or unclear we STOP and tell the user instead of
+ * burning the remaining autonomous turns on a guess.
  *
  * Pure module: no I/O, no time, no randomness, never throws.
  */
 
 /** What the model's last reply signalled about the goal. */
-export type GoalSignal = 'complete' | 'continue';
+export type GoalSignal = 'complete' | 'continue' | 'missing';
 
 /** Hard bounds on an autonomous goal run. */
 export interface GoalCeilings {
@@ -28,7 +28,7 @@ export interface GoalCeilings {
 }
 
 /** The decision after one turn of a goal run. */
-type GoalAction = 'complete' | 'continue' | 'stop-iterations' | 'stop-budget' | 'stop-error';
+type GoalAction = 'complete' | 'continue' | 'stop-iterations' | 'stop-budget' | 'stop-error' | 'stop-signal';
 
 export interface GoalStep {
   readonly action: GoalAction;
@@ -38,8 +38,10 @@ export interface GoalStep {
 /** Default ceiling on autonomous turns — generous but finite. */
 export const DEFAULT_MAX_GOAL_ITERATIONS = 8;
 
-const COMPLETE_MARKER = 'GOAL_COMPLETE';
-const CONTINUE_MARKER = 'GOAL_CONTINUE';
+export const GOAL_MARKER_TOKENS = ['GOAL_COMPLETE', 'GOAL_CONTINUE'] as const;
+
+const COMPLETE_MARKER = GOAL_MARKER_TOKENS[0];
+const CONTINUE_MARKER = GOAL_MARKER_TOKENS[1];
 
 /**
  * Build the task sent for one turn of an autonomous goal run. The first turn
@@ -103,33 +105,76 @@ export function formatGoalProgress(opts: {
 }
 
 /**
- * Parse the completion signal from a model reply. Returns 'complete' only on a
- * clear completion marker; anything ambiguous or absent returns 'continue' (the
- * ceilings, not a guess, decide when to stop). Never throws.
+ * Parse a goal marker from ONLY the last non-empty line of a model reply.
+ * Mid-prose mentions are content, not control signals. Never throws.
+ */
+export function parseTrailingGoalMarker(output: string): Exclude<GoalSignal, 'missing'> | null {
+  try {
+    const line = lastNonEmptyLine(output);
+    if (line === null) return null;
+    const trimmed = line.replace(/^[ \t]+/, '');
+    if (/^GOAL_COMPLETE\s*$/.test(trimmed)) return 'complete';
+    if (/^GOAL_CONTINUE\b/.test(trimmed)) return 'continue';
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Remove a trailing goal-marker line from assistant text. Idempotent; never
+ * touches mid-prose mentions, and never throws.
+ */
+export function stripTrailingGoalMarker(output: string): string {
+  try {
+    if (typeof output !== 'string' || output.length === 0) return output;
+    const bounds = lastNonEmptyLineBounds(output);
+    if (bounds === null) return output;
+    if (parseTrailingGoalMarker(output) === null) return output;
+
+    const before = output.slice(0, bounds.start).replace(/\s+$/, '');
+    const after = output.slice(bounds.end).replace(/^\s+/, '');
+    return after.length > 0 ? `${before}\n${after}` : before;
+  } catch {
+    return output;
+  }
+}
+
+/**
+ * Parse the completion signal from a model reply. Only a trailing marker is
+ * trusted; missing or garbled markers are represented explicitly. Never throws.
  */
 export function parseGoalSignal(output: string): GoalSignal {
-  if (typeof output !== 'string' || output.length === 0) return 'continue';
+  return parseTrailingGoalMarker(output) ?? 'missing';
+}
 
-  const completeRe = new RegExp(`\\b${COMPLETE_MARKER}\\b`);
-  const continueRe = new RegExp(`\\b${CONTINUE_MARKER}\\b`);
-  const hasComplete = completeRe.test(output);
-  const hasContinue = continueRe.test(output);
+function lastNonEmptyLine(output: string): string | null {
+  const bounds = lastNonEmptyLineBounds(output);
+  return bounds === null ? null : output.slice(bounds.start, bounds.end);
+}
 
-  if (hasComplete && !hasContinue) return 'complete';
-  if (hasComplete && hasContinue) {
-    // Both present — trust whichever the model wrote LAST.
-    return output.lastIndexOf(COMPLETE_MARKER) > output.lastIndexOf(CONTINUE_MARKER)
-      ? 'complete'
-      : 'continue';
+function lastNonEmptyLineBounds(output: string): { readonly start: number; readonly end: number } | null {
+  if (typeof output !== 'string' || output.length === 0) return null;
+
+  let end = output.length;
+  while (end > 0) {
+    const ch = output.charCodeAt(end - 1);
+    if (ch !== 10 && ch !== 13 && ch !== 32 && ch !== 9) break;
+    end--;
   }
-  return 'continue';
+  if (end === 0) return null;
+
+  const prevLf = output.lastIndexOf('\n', end - 1);
+  const start = prevLf >= 0 ? prevLf + 1 : 0;
+  return { start, end };
 }
 
 /**
  * Decide what to do after one turn of a goal run. Pure.
  *
  * Order: a failed turn stops immediately; an explicit completion stops with
- * success; otherwise the ceilings (cost, then iterations) gate another turn.
+ * success; a missing/garbled signal stops honestly; otherwise the ceilings
+ * (cost, then iterations) gate another turn.
  *
  * @param opts.signal              - The parsed signal from the turn's output.
  * @param opts.lastSucceeded       - Whether the turn's task succeeded.
@@ -149,6 +194,12 @@ export function decideGoalNext(opts: {
   }
   if (opts.signal === 'complete') {
     return { action: 'complete', reason: 'the model reported the goal is complete' };
+  }
+  if (opts.signal === 'missing') {
+    return {
+      action: 'stop-signal',
+      reason: 'the last turn gave no goal signal — re-run /goal to continue',
+    };
   }
   if (
     opts.ceilings.maxCostUsd !== undefined &&

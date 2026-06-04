@@ -2558,6 +2558,53 @@ async function runChatLoop(
         };
       };
 
+      const runStructuredQuestionFlow = async (
+        initialFinal: Extract<CoreEvent, { type: 'final' }> | undefined,
+      ): Promise<void> => {
+        let pending = initialFinal;
+        let questionTurns = 0;
+        while (
+          pending !== undefined &&
+          pending.success &&
+          pending.questions !== undefined &&
+          questionTurns < MAX_CONSECUTIVE_QUESTION_TURNS
+        ) {
+          const answerLine = await runQuestionSelector(pending.questions, out, readLine);
+          // Cancelled every question → submit nothing, return to the prompt.
+          if (answerLine === null) break;
+
+          questionTurns++;
+
+          // Reload history (the question turn was persisted by orchestrate) and
+          // rebuild deps so the answer turn replays the full thread.
+          const answerHistory = await ctx.store.load(convId);
+          const answerDeps: OrchestrateDeps = buildDeps(answerHistory);
+
+          const answerAc = new AbortController();
+          currentAc = answerAc;
+          const answerResult = await runTask(
+            answerLine,
+            answerDeps,
+            out,
+            answerAc.signal,
+            mutableCtx.config.verbosity ?? 'normal',
+          );
+          currentAc = null;
+
+          if (shouldExit || shouldMenu) break;
+
+          pending = answerResult.final;
+        }
+        if (
+          questionTurns >= MAX_CONSECUTIVE_QUESTION_TURNS &&
+          pending?.questions !== undefined
+        ) {
+          out.write(
+            '\n[info] The assistant is still asking questions — over to you. Type a reply or /back.\n',
+          );
+        }
+      };
+
       // Autonomous goal loop — shared by /goal AND by accepting the model's
       // in-chat "keep going?" offer. Runs turns toward `goalText`, reloading
       // history each turn so the model sees its own progress, bounded by a turn
@@ -2613,6 +2660,14 @@ async function runChatLoop(
           completed = i + 1;
           if (shouldExit) { loopResult = 'exit'; return true; }
           if (shouldMenu) { loopResult = 'menu'; return true; }
+
+          if (turn.final?.success === true && turn.final.questions !== undefined) {
+            out.write(dim('\n  The goal run needs your input before it can continue.\n', out.color));
+            await runStructuredQuestionFlow(turn.final);
+            if (shouldExit) { loopResult = 'exit'; return true; }
+            if (shouldMenu) { loopResult = 'menu'; return true; }
+            break;
+          }
 
           // A per-turn TIMEOUT isn't a hard failure here — a big goal legitimately
           // needs many turns, and a single long step shouldn't abort the whole run.
@@ -2759,47 +2814,7 @@ async function runChatLoop(
       // cap consecutive auto-resubmitted question turns at
       // MAX_CONSECUTIVE_QUESTION_TURNS so a model that keeps asking can't loop
       // forever without the human ever typing.
-      let pending = result.final;
-      let questionTurns = 0;
-      while (
-        pending !== undefined &&
-        pending.success &&
-        pending.questions !== undefined &&
-        questionTurns < MAX_CONSECUTIVE_QUESTION_TURNS
-      ) {
-        const answerLine = await runQuestionSelector(pending.questions, out, readLine);
-        // Cancelled every question → submit nothing, return to the prompt.
-        if (answerLine === null) break;
-
-        questionTurns++;
-
-        // Reload history (the question turn was persisted by orchestrate) and
-        // rebuild deps so the answer turn replays the full thread.
-        const answerHistory = await ctx.store.load(convId);
-        const answerDeps: OrchestrateDeps = buildDeps(answerHistory);
-
-        const answerAc = new AbortController();
-        currentAc = answerAc;
-        const answerResult = await runTask(
-          answerLine,
-          answerDeps,
-          out,
-          answerAc.signal,
-          mutableCtx.config.verbosity ?? 'normal',
-        );
-        currentAc = null;
-
-        if (shouldExit) {
-          loopResult = 'exit';
-          break;
-        }
-        if (shouldMenu) {
-          loopResult = 'menu';
-          break;
-        }
-
-        pending = answerResult.final;
-      }
+      await runStructuredQuestionFlow(result.final);
       if (shouldExit) {
         loopResult = 'exit';
         break;
@@ -2807,14 +2822,6 @@ async function runChatLoop(
       if (shouldMenu) {
         loopResult = 'menu';
         break;
-      }
-      if (
-        questionTurns >= MAX_CONSECUTIVE_QUESTION_TURNS &&
-        pending?.questions !== undefined
-      ) {
-        out.write(
-          '\n[info] The assistant is still asking questions — over to you. Type a reply or /back.\n',
-        );
       }
     }
   } finally {
