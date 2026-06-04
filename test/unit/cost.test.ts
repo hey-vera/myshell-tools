@@ -70,6 +70,7 @@ describe('formatCostReport — single entry', () => {
 
   it('reports tokens as the unit and shows NO dollar figure (subscription, not API-billed)', () => {
     const total = lines.join('\n');
+    assert.ok(total.includes('Model calls'), `expected honest call label, got:\n${total}`);
     assert.ok(total.includes('Tokens used'), `expected a token total, got:\n${total}`);
     assert.ok(!/\$\d/.test(total), `must not show any dollar amount (subscription tool):\n${total}`);
   });
@@ -155,7 +156,7 @@ describe('formatCostReport — multi-entry across haiku and sonnet', () => {
   it('haiku shows 2 calls', () => {
     const haikuLine = lines.find((l) => l.includes('claude-haiku-4-5'));
     assert.ok(haikuLine !== undefined, 'haiku line not found');
-    assert.ok(haikuLine.includes('2'), 'haiku line should show 2 calls');
+    assert.ok(haikuLine.includes('2 calls'), 'haiku line should show 2 calls');
   });
 
   it('routing-efficiency line references the flagship', () => {

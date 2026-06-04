@@ -24,6 +24,8 @@ export interface SpendSummary {
   readonly totalUsd: number;
   /** Total number of ledger entries (calls). */
   readonly calls: number;
+  /** Number of ledger entries (calls) dated today (UTC). */
+  readonly todayCalls: number;
   /** Real tokens (input + output) used today (UTC). The transparent primary
    *  signal — measured, not an estimate, unlike the USD figures. */
   readonly todayTokens: number;
@@ -47,6 +49,7 @@ export function summarizeSpend(entries: LedgerEntry[], nowIso: string): SpendSum
 
   let todayUsd = 0;
   let totalUsd = 0;
+  let todayCalls = 0;
   let todayTokens = 0;
   let totalTokens = 0;
   const byProvider: Record<string, { usd: number; calls: number }> = {};
@@ -58,6 +61,7 @@ export function summarizeSpend(entries: LedgerEntry[], nowIso: string): SpendSum
 
     if (entry.timestamp.slice(0, 10) === todayDate) {
       todayUsd += entry.usd;
+      todayCalls += 1;
       todayTokens += entryTokens;
     }
 
@@ -74,6 +78,7 @@ export function summarizeSpend(entries: LedgerEntry[], nowIso: string): SpendSum
     todayUsd,
     totalUsd,
     calls: entries.length,
+    todayCalls,
     todayTokens,
     totalTokens,
     byProvider,

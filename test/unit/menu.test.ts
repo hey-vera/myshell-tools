@@ -478,6 +478,7 @@ describe('renderBudgetLine', () => {
       todayUsd: 0,
       totalUsd: 0,
       calls: 0,
+      todayCalls: 0,
       todayTokens: 0,
       totalTokens: 0,
       byProvider: {},
@@ -508,18 +509,18 @@ describe('renderBudgetLine', () => {
     assert.ok(line.includes('89k'), `expected all-time tokens "89k" in: "${line}"`);
   });
 
-  it('shows the task count (singular/plural) when calls > 0', () => {
-    assert.ok(renderBudgetLine(makeSpend({ calls: 3, todayTokens: 100 }), false).includes('3 tasks'));
-    assert.ok(renderBudgetLine(makeSpend({ calls: 1, todayTokens: 100 }), false).includes('1 task'));
+  it('shows the today call count (singular/plural) when calls > 0', () => {
+    assert.ok(renderBudgetLine(makeSpend({ calls: 3, todayCalls: 3, todayTokens: 100 }), false).includes('3 calls'));
+    assert.ok(renderBudgetLine(makeSpend({ calls: 1, todayCalls: 1, todayTokens: 100 }), false).includes('1 call'));
   });
 
   it('includes "Today:" prefix when calls > 0', () => {
-    const line = renderBudgetLine(makeSpend({ calls: 1, todayTokens: 100, totalTokens: 100 }), false);
+    const line = renderBudgetLine(makeSpend({ calls: 1, todayCalls: 1, todayTokens: 100, totalTokens: 100 }), false);
     assert.ok(line.startsWith('Today:'), `expected "Today:" prefix in: "${line}"`);
   });
 
   it('color=false → no ANSI codes', () => {
-    const line = renderBudgetLine(makeSpend({ calls: 1, todayTokens: 100, totalTokens: 100 }), false);
+    const line = renderBudgetLine(makeSpend({ calls: 1, todayCalls: 1, todayTokens: 100, totalTokens: 100 }), false);
     assert.ok(
       !ANSI_RE.test(line),
       `renderBudgetLine(color=false) must not contain ANSI codes: "${line}"`,
@@ -529,7 +530,7 @@ describe('renderBudgetLine', () => {
   it('does not contain a digit-% literal', () => {
     const cases = [
       makeSpend({ calls: 0 }),
-      makeSpend({ calls: 1, todayTokens: 100, totalTokens: 100 }),
+      makeSpend({ calls: 1, todayCalls: 1, todayTokens: 100, totalTokens: 100 }),
       makeSpend({ calls: 99, todayTokens: 999999, totalTokens: 1234567 }),
     ];
     for (const spend of cases) {

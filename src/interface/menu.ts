@@ -720,8 +720,8 @@ export function renderBudgetLine(spend: SpendSummary, _color: boolean): string {
   if (spend.calls === 0) {
     return 'No runs yet — press n to start';
   }
-  const taskWord = spend.calls === 1 ? 'task' : 'tasks';
-  const todayPart = 'Today: ' + String(spend.calls) + ' ' + taskWord + ' · ' + formatTokens(spend.todayTokens) + ' tokens';
+  const callWord = spend.todayCalls === 1 ? 'call' : 'calls';
+  const todayPart = 'Today: ' + String(spend.todayCalls) + ' ' + callWord + ' · ' + formatTokens(spend.todayTokens) + ' tokens';
   const totalPart = formatTokens(spend.totalTokens) + ' tokens all-time';
   return todayPart + '   ·   ' + totalPart;
 }

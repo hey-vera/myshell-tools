@@ -74,13 +74,13 @@ export function formatCostReport(entries: LedgerEntry[], color = false): string[
 
   // ---- Usage (REAL, measured) -----------------------------------------------
   // Tokens are measured, not estimated — the trustworthy primary figure.
-  lines.push(`${label('Tasks run', color)}:   ${summary.calls}`);
+  lines.push(`${label('Model calls', color)}: ${summary.calls}`);
   lines.push(`${label('Tokens used', color)}: ${formatTokens(totalTokens)} ${dim('(real, measured)', color)}`);
 
   lines.push(divider(color));
   lines.push(bold('Per-model usage', color));
   for (const [model, ms] of Object.entries(summary.byModel)) {
-    const callStr = ms.calls === 1 ? '1 task' : `${ms.calls} tasks`;
+    const callStr = ms.calls === 1 ? '1 call' : `${ms.calls} calls`;
     lines.push(
       `  ${cyan(model, color)}: ${callStr}, ${formatTokens(tokensByModel[model] ?? 0)} tokens`,
     );

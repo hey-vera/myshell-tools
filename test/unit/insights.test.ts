@@ -78,6 +78,7 @@ describe('summarizeSpend', () => {
     assert.strictEqual(spend.todayUsd, 0);
     assert.strictEqual(spend.totalUsd, 0);
     assert.strictEqual(spend.calls, 0);
+    assert.strictEqual(spend.todayCalls, 0);
     assert.strictEqual(spend.todayTokens, 0);
     assert.strictEqual(spend.totalTokens, 0);
     assert.deepStrictEqual(spend.byProvider, {});
@@ -87,6 +88,7 @@ describe('summarizeSpend', () => {
     const today = makeEntry({ timestamp: NOW_ISO, inputTokens: 1000, outputTokens: 200 });
     const yesterday = makeEntry({ timestamp: YESTERDAY_ISO, inputTokens: 500, outputTokens: 100 });
     const spend = summarizeSpend([today, yesterday], NOW_ISO);
+    assert.strictEqual(spend.todayCalls, 1, 'todayCalls counts only entries dated today');
     assert.strictEqual(spend.todayTokens, 1200, 'today = 1000 + 200');
     assert.strictEqual(spend.totalTokens, 1800, 'all-time = 1200 + 600');
   });

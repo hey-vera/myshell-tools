@@ -10,6 +10,15 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 - Cross-OS CI execution (requires a public remote).
 - opencode native-session continuity (`run --session`) — feature add, needs live opencode verification.
 
+## [3.10.15]
+
+### Fixed
+- **Honest usage counts.** The home screen's "Today:" line showed the *all-time* call
+  count (while its tokens were today-scoped) and labeled provider calls as "tasks". It
+  now shows today's calls (new `todayCalls`) and says "calls". The `cost` command's
+  "Tasks run" is relabeled "Model calls" (and per-model "N tasks" → "N calls"), since the
+  ledger records provider calls/attempts/reviews, not user tasks.
+
 ## [3.10.14]
 
 ### Fixed
