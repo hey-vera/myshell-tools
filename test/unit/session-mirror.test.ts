@@ -46,6 +46,26 @@ describe('syncConversationMirror', () => {
     assert.equal(await readFile(join(archDir(home), 'a.jsonl'), 'utf8'), 'one\ntwo\nthree\n');
   });
 
+  it('preserves the archive and writes a conflict copy when a larger live log diverges', async () => {
+    const home = await newHome();
+    const archiveBytes = Buffer.from('known-good\n');
+    const liveBytes = Buffer.from('different larger replacement\n');
+    await writeFile(join(convDir(home), 'a.jsonl'), archiveBytes);
+    await syncConversationMirror(home);
+
+    await writeFile(join(convDir(home), 'a.jsonl'), liveBytes);
+    const r = await syncConversationMirror(home);
+
+    assert.deepEqual(r, { copied: 0, grew: 0 });
+    assert.deepEqual(await readFile(join(archDir(home), 'a.jsonl')), archiveBytes);
+
+    const conflicts = (await readdir(archDir(home))).filter((name) =>
+      name.startsWith('a.jsonl.conflict-'),
+    );
+    assert.equal(conflicts.length, 1);
+    assert.deepEqual(await readFile(join(archDir(home), conflicts[0]!)), liveBytes);
+  });
+
   it('never shrinks the archive when the live log is truncated', async () => {
     const home = await newHome();
     await writeFile(join(convDir(home), 'a.jsonl'), 'full\ncontent\nhere\n');

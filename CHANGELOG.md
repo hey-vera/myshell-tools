@@ -9,6 +9,27 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 ### Pending
 - Cross-OS CI execution (requires a public remote).
 - opencode native-session continuity (`run --session`) — feature add, needs live opencode verification.
+- Per-conversation append/remove lock (a delete racing an append from two concurrent
+  processes on the same conversation) — low single-user likelihood; deferred as a
+  larger, deadlock-sensitive change.
+- fsync durability on writes — deferred: the atomic temp+rename already gives readers a
+  consistent file, and the workspace FS is durable; fsync's only benefit is surviving an
+  abrupt kernel/power crash mid-write, at a per-write latency cost.
+
+## [3.10.16]
+
+### Fixed
+- **The append-only conversation mirror can no longer clobber a good archive.** It
+  `copyFile`d the live log over the archive whenever the live file was larger — so a
+  corrupted/replaced live file could overwrite the known-good backup. It now verifies the
+  archive is a byte-prefix of the live file and appends only the new suffix; if the live
+  file has diverged, it keeps the archive and saves the divergent bytes as a `.conflict-`
+  copy. Initial archives are written atomically (temp + rename).
+- **Locks are owner-safe.** A lock stolen as "stale" (e.g. a process merely paused past
+  the threshold) could be cross-deleted by another process's release, reintroducing an
+  index read-modify-write clobber. Each acquisition now writes a unique token and
+  `releaseLock` only unlinks when the on-disk token still matches — a lock that was
+  stolen/re-acquired is never deleted by the wrong owner.
 
 ## [3.10.15]
 

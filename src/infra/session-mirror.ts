@@ -17,7 +17,8 @@
  * must never break a real operation.
  */
 
-import { mkdir, stat, readdir, copyFile } from 'node:fs/promises';
+import { randomBytes } from 'node:crypto';
+import { mkdir, stat, readdir, copyFile, rename, unlink, readFile, open } from 'node:fs/promises';
 import { join, dirname } from 'node:path';
 import { defaultStateHome } from './state-dir.js';
 
@@ -44,6 +45,60 @@ async function fileSize(path: string): Promise<number> {
   }
 }
 
+function uniqueSuffix(): string {
+  return `${Date.now()}.${process.pid}.${randomBytes(4).toString('hex')}`;
+}
+
+async function atomicCopyFile(srcPath: string, destPath: string): Promise<void> {
+  const tmpPath = `${destPath}.tmp.${uniqueSuffix()}`;
+  try {
+    await copyFile(srcPath, tmpPath);
+    await rename(tmpPath, destPath);
+  } catch (err) {
+    try {
+      await unlink(tmpPath);
+    } catch {
+      /* ignore */
+    }
+    throw err;
+  }
+}
+
+async function isBytePrefix(prefixPath: string, fullPath: string): Promise<boolean> {
+  const prefix = await readFile(prefixPath);
+  const fh = await open(fullPath, 'r');
+  try {
+    const fullPrefix = Buffer.allocUnsafe(prefix.length);
+    const { bytesRead } = await fh.read(fullPrefix, 0, prefix.length, 0);
+    return bytesRead === prefix.length && prefix.equals(fullPrefix);
+  } finally {
+    await fh.close();
+  }
+}
+
+async function appendSuffix(srcPath: string, destPath: string, start: number): Promise<void> {
+  const src = await open(srcPath, 'r');
+  const dest = await open(destPath, 'a');
+  try {
+    const buf = Buffer.allocUnsafe(64 * 1024);
+    let pos = start;
+    for (;;) {
+      const { bytesRead } = await src.read(buf, 0, buf.length, pos);
+      if (bytesRead === 0) break;
+      await dest.write(buf, 0, bytesRead);
+      pos += bytesRead;
+    }
+  } finally {
+    await Promise.allSettled([src.close(), dest.close()]);
+  }
+}
+
+async function writeConflictCopy(srcPath: string, destPath: string): Promise<void> {
+  // The archive is not a byte-prefix of the live file, so keep the known-good
+  // archive and preserve the divergent live bytes beside it for manual recovery.
+  await atomicCopyFile(srcPath, `${destPath}.conflict-${uniqueSuffix()}`);
+}
+
 /**
  * Copy `src` → `dest` only when `src` is strictly larger than `dest` (grow-only).
  * Returns what happened so callers can tally. Never throws.
@@ -58,8 +113,16 @@ async function archiveGrowOnly(
     const destSize = await fileSize(destPath);
     if (srcSize <= destSize) return 'skipped'; // archive already as complete or better
     await mkdir(dirname(destPath), { recursive: true });
-    await copyFile(srcPath, destPath);
-    return destSize < 0 ? 'copied' : 'grew';
+    if (destSize < 0) {
+      await atomicCopyFile(srcPath, destPath);
+      return 'copied';
+    }
+    if (!(await isBytePrefix(destPath, srcPath))) {
+      await writeConflictCopy(srcPath, destPath);
+      return 'skipped';
+    }
+    await appendSuffix(srcPath, destPath, destSize);
+    return 'grew';
   } catch {
     return 'skipped';
   }

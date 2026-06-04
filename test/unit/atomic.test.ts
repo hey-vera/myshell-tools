@@ -5,7 +5,7 @@
 
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, readFile, stat } from 'node:fs/promises';
+import { mkdtemp, rm, readFile, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -51,6 +51,17 @@ describe('acquireLock / releaseLock', () => {
   it('releaseLock is idempotent (no throw when file absent)', async () => {
     const lockPath = join(dir, 'idempotent.lock');
     await assert.doesNotReject(releaseLock(lockPath));
+  });
+
+  it('does not delete a lock owned by another acquisition', async () => {
+    const lockPath = join(dir, 'stolen.lock');
+    const otherLock = JSON.stringify({ pid: process.pid, token: 'other-token', ts: Date.now() });
+
+    await acquireLock(lockPath);
+    await writeFile(lockPath, otherLock);
+    await releaseLock(lockPath);
+
+    assert.equal(await readFile(lockPath, 'utf8'), otherLock);
   });
 });
 

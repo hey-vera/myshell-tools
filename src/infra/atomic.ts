@@ -7,7 +7,7 @@
  *   - O(1) JSONL append via fs.appendFile (no read-then-rewrite)
  */
 
-import { open, rename, unlink, stat, appendFile } from 'node:fs/promises';
+import { open, rename, unlink, stat, appendFile, readFile } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 
@@ -44,6 +44,7 @@ class AtomicWriteError extends Error {
 
 const DEFAULT_TIMEOUT_MS = 5_000;
 const DEFAULT_STALE_MS = 10_000;
+const heldLockTokens = new Map<string, string>();
 
 /** Async sleep. */
 function sleep(ms: number): Promise<void> {
@@ -53,6 +54,19 @@ function sleep(ms: number): Promise<void> {
 /** Unique suffix so concurrent processes never collide on the tmp file. */
 function tmpSuffix(): string {
   return `${process.pid}.${randomBytes(4).toString('hex')}`;
+}
+
+function lockToken(): string {
+  return randomBytes(16).toString('hex');
+}
+
+function parseLockToken(raw: string): string | undefined {
+  try {
+    const parsed = JSON.parse(raw) as { token?: unknown };
+    return typeof parsed.token === 'string' ? parsed.token : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -74,14 +88,16 @@ export async function acquireLock(lockPath: string, opts?: LockOptions): Promise
   let attempt = 0;
 
   while (Date.now() < deadline) {
+    const token = lockToken();
     try {
       // O_EXCL guarantees atomic creation — only one caller wins
       const fh = await open(lockPath, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL);
       try {
-        await fh.writeFile(JSON.stringify({ pid: process.pid, ts: Date.now() }));
+        await fh.writeFile(JSON.stringify({ pid: process.pid, token, ts: Date.now() }));
       } finally {
         await fh.close();
       }
+      heldLockTokens.set(lockPath, token);
       return; // lock acquired
     } catch (err) {
       const nodeErr = err as NodeJS.ErrnoException;
@@ -120,13 +136,22 @@ export async function acquireLock(lockPath: string, opts?: LockOptions): Promise
 
 /**
  * Release a lock file previously acquired with `acquireLock`.
- * Silently ignores a missing lock file (idempotent).
+ * Silently ignores a missing lock file (idempotent) or a lock now owned by
+ * another acquisition.
  */
 export async function releaseLock(lockPath: string): Promise<void> {
+  const token = heldLockTokens.get(lockPath);
+  if (token === undefined) return;
+
   try {
-    await unlink(lockPath);
+    const currentToken = parseLockToken(await readFile(lockPath, 'utf8'));
+    if (currentToken === token) {
+      await unlink(lockPath);
+    }
   } catch {
     // Already gone — that's fine
+  } finally {
+    heldLockTokens.delete(lockPath);
   }
 }
 
