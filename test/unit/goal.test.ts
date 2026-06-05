@@ -10,12 +10,30 @@ import {
   parseTrailingGoalMarker,
   stripTrailingGoalMarker,
   parseGoalSignal,
+  parseGoalContinueText,
   decideGoalNext,
   formatGoalProgress,
   DEFAULT_MAX_GOAL_ITERATIONS,
 } from '../../src/core/goal.ts';
 
 describe('buildGoalTask', () => {
+  it('preserves the byte-identical prompt when no contract is provided', () => {
+    assert.equal(
+      buildGoalTask('ship the login page', 0),
+      [
+        'Goal: ship the login page',
+        '',
+        'You are working across multiple autonomous turns. Take the next concrete step',
+        'now (read, edit, run — whatever actually moves the goal forward). Then, on its',
+        'own line, signal status:',
+        '  • write exactly "GOAL_COMPLETE" when the goal is FULLY achieved and verified;',
+        '  • otherwise write "GOAL_CONTINUE: <the single next step>".',
+        'Only claim completion when it is genuinely done — do not stop early, and do not',
+        'claim completion just to end the loop.',
+      ].join('\n'),
+    );
+  });
+
   it('frames the goal on the first turn and asks to continue after', () => {
     const first = buildGoalTask('ship the login page', 0);
     assert.ok(first.startsWith('Goal: ship the login page'));
@@ -28,6 +46,28 @@ describe('buildGoalTask', () => {
     const t = buildGoalTask('x', 0);
     assert.ok(t.includes('GOAL_COMPLETE'));
     assert.ok(t.includes('GOAL_CONTINUE'));
+  });
+
+  it('prepends the contract and keeps goal-marker instructions intact', () => {
+    const t = buildGoalTask(
+      'ship the login page',
+      1,
+      {
+        version: 1,
+        objective: 'ship the login page',
+        checkpoints: [{ id: 'C1', summary: 'implemented the form' }],
+      },
+    );
+
+    assert.ok(t.startsWith('OBJECTIVE: ship the login page'));
+    assert.ok(t.includes('CHECKPOINTS SO FAR:\n- C1: implemented the form'));
+    assert.ok(
+      t.includes('Before acting, confirm this turn still directly serves the OBJECTIVE; do not pursue unrelated improvements.'),
+    );
+    assert.ok(t.includes('own line, signal status:'));
+    assert.ok(t.includes('  • write exactly "GOAL_COMPLETE" when the goal is FULLY achieved and verified;'));
+    assert.ok(t.includes('  • otherwise write "GOAL_CONTINUE: <the single next step>".'));
+    assert.ok(t.endsWith('claim completion just to end the loop.'));
   });
 });
 
@@ -70,6 +110,21 @@ describe('parseGoalSignal', () => {
     assert.equal(parseGoalSignal('I made some changes.'), 'missing');
     assert.equal(parseGoalSignal(''), 'missing');
     assert.equal(parseGoalSignal('GOAL_CONTINUE: more\n...later...\nfinished without marker'), 'missing');
+  });
+});
+
+describe('parseGoalContinueText', () => {
+  it('returns the trailing GOAL_CONTINUE next-step text', () => {
+    assert.equal(
+      parseGoalContinueText('Did step 1.\nGOAL_CONTINUE: write the tests'),
+      'write the tests',
+    );
+  });
+
+  it('returns empty string unless the trusted trailing marker is GOAL_CONTINUE', () => {
+    assert.equal(parseGoalContinueText('All done.\nGOAL_COMPLETE'), '');
+    assert.equal(parseGoalContinueText('GOAL_CONTINUE: more\nnot a marker'), '');
+    assert.equal(parseGoalContinueText('GOAL_CONTINUE:'), '');
   });
 });
 

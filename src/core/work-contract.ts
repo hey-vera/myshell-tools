@@ -194,6 +194,32 @@ export function renderContractForPrompt(c: WorkContract): string {
   return lines.join('\n');
 }
 
+/**
+ * Fold one autonomous /goal GOAL_CONTINUE next-step into the contract's running
+ * checkpoint trace. Keeps the most recent CHECKPOINT_LIMIT checkpoints, dropping
+ * the oldest entries when the trace grows past the prompt cap.
+ */
+export function appendCheckpointFromContinue(
+  contract: WorkContract,
+  continueText: string,
+  turnIndex: number,
+): WorkContract {
+  const summary = safeString(continueText).trim();
+  if (summary.length === 0) return contract;
+
+  const capped = capContract(contract);
+  const nextCheckpoint: Checkpoint = {
+    id: `C${turnIndex + 1}`,
+    summary,
+  };
+  const checkpoints = [...(capped.checkpoints ?? []), nextCheckpoint].slice(-CHECKPOINT_LIMIT);
+
+  return capContract({
+    ...capped,
+    checkpoints,
+  });
+}
+
 export function shouldMaterializeContract(opts: {
   readonly classification: Classification;
   readonly routePlan: boolean;

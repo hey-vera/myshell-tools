@@ -6,6 +6,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  appendCheckpointFromContinue,
   capContract,
   renderContractForPrompt,
   shouldMaterializeContract,
@@ -126,6 +127,59 @@ describe('renderContractForPrompt', () => {
     assert.match(rendered, /ROADMAP:\n- \[done\] r1: patch review prompt/);
     assert.match(rendered, /CHECKPOINTS SO FAR:\n- c1 \(r1\): tests pass/);
     assert.match(rendered, /evidence: npm test/);
+  });
+});
+
+describe('appendCheckpointFromContinue', () => {
+  it('appends one checkpoint with a capped summary', () => {
+    const result = appendCheckpointFromContinue(
+      { version: 1, objective: 'ship' },
+      repeat('s', 200),
+      0,
+    );
+
+    assert.equal(result.checkpoints?.length, 1);
+    assert.equal(result.checkpoints?.[0]?.id, 'C1');
+    assert.equal(result.checkpoints?.[0]?.summary.length, 160);
+  });
+
+  it('preserves order and keeps the most recent six checkpoints', () => {
+    const contract: WorkContract = {
+      version: 1,
+      objective: 'ship',
+      checkpoints: Array.from({ length: 6 }, (_, i) => ({
+        id: `C${i + 1}`,
+        summary: `step ${i + 1}`,
+      })),
+    };
+
+    const result = appendCheckpointFromContinue(contract, 'step 7', 6);
+
+    assert.deepEqual(
+      result.checkpoints?.map((checkpoint) => checkpoint.id),
+      ['C2', 'C3', 'C4', 'C5', 'C6', 'C7'],
+    );
+    assert.deepEqual(
+      result.checkpoints?.map((checkpoint) => checkpoint.summary),
+      ['step 2', 'step 3', 'step 4', 'step 5', 'step 6', 'step 7'],
+    );
+  });
+
+  it('returns the original contract unchanged for empty or whitespace continue text', () => {
+    const contract: WorkContract = { version: 1, objective: 'ship' };
+
+    assert.equal(appendCheckpointFromContinue(contract, '', 0), contract);
+    assert.equal(appendCheckpointFromContinue(contract, '   \n\t  ', 0), contract);
+  });
+
+  it('never throws on garbage continue text', () => {
+    const garbage = {
+      toString: () => {
+        throw new Error('boom');
+      },
+    } as unknown as string;
+
+    assert.doesNotThrow(() => appendCheckpointFromContinue({ version: 1, objective: 'ship' }, garbage, 2));
   });
 });
 

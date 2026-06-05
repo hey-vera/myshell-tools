@@ -11,9 +11,28 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 - Installer: PowerShell-Core profile support + PowerShell interactive guard; don't
   overwrite an existing `cm`/`mst` alias — deferred (niche / minor).
 - update-check: use semver precedence for prerelease→stable (no prereleases shipped today).
-- Work Contract: anti-drift goal-loop anchor (Stage 2), persisted `workTrace` audit
-  trail (Stage 3), mode-gated auto-engage behind a default-off flag (Stage 4),
-  cross-turn contract seeding (Stage 5) — staged, building on 3.11.0.
+- Work Contract: persisted `workTrace` audit trail (Stage 3), mode-gated auto-engage
+  behind a default-off flag (Stage 4), cross-turn contract seeding (Stage 5) —
+  staged, building on 3.11.0–3.11.1.
+
+## [3.11.1]
+
+### Added
+Work Contract — Stage 2: anti-drift north star in the autonomous `/goal` loop. Each
+goal turn now re-states the objective as a hard constraint and carries a compact
+running checkpoint trace built from the worker's *own* `GOAL_CONTINUE` text — so long
+autonomous runs stay pointed at the original ask instead of drifting:
+- `buildGoalTask` gained an optional `contract?`; when present it prepends the
+  objective + "confirm this turn still serves the OBJECTIVE" and a capped checkpoint
+  trace. When absent it is **byte-identical** to before (existing goal tests unchanged).
+- New pure `appendCheckpointFromContinue` folds each turn's `GOAL_CONTINUE: <next step>`
+  into the contract (keeps the most recent 6, drops oldest), and new additive
+  `parseGoalContinueText` extracts that text — `parseGoalSignal`/`parseTrailingGoalMarker`
+  semantics are untouched, no new control key.
+- The contract lives only in the live prompt: `runGoalLoop` persists the **clean**
+  goal task to session history (a thin session-writer wrapper), so the internal
+  objective/checkpoint block never bloats history or leaks into replayed conversation.
+- Still prompt-only: no persistence, no extra model call, no `SessionEntry` change.
 
 ## [3.11.0]
 

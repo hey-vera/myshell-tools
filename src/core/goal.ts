@@ -16,6 +16,9 @@
  * Pure module: no I/O, no time, no randomness, never throws.
  */
 
+import type { WorkContract } from './work-contract.js';
+import { renderContractForPrompt } from './work-contract.js';
+
 /** What the model's last reply signalled about the goal. */
 export type GoalSignal = 'complete' | 'continue' | 'missing';
 
@@ -51,13 +54,14 @@ const CONTINUE_MARKER = GOAL_MARKER_TOKENS[1];
  *
  * @param goal      - The user's goal text.
  * @param iteration - 0-based turn index (0 = first turn).
+ * @param contract  - Optional anti-drift contract for autonomous multi-turn work.
  */
-export function buildGoalTask(goal: string, iteration: number): string {
+export function buildGoalTask(goal: string, iteration: number, contract?: WorkContract): string {
   const header =
     iteration === 0
       ? `Goal: ${goal}`
       : `Continue working autonomously toward this goal: ${goal}`;
-  return [
+  const task = [
     header,
     '',
     'You are working across multiple autonomous turns. Take the next concrete step',
@@ -67,6 +71,15 @@ export function buildGoalTask(goal: string, iteration: number): string {
     `  • otherwise write "${CONTINUE_MARKER}: <the single next step>".`,
     'Only claim completion when it is genuinely done — do not stop early, and do not',
     'claim completion just to end the loop.',
+  ].join('\n');
+
+  if (contract === undefined) return task;
+
+  return [
+    renderContractForPrompt(contract),
+    'Before acting, confirm this turn still directly serves the OBJECTIVE; do not pursue unrelated improvements.',
+    '',
+    task,
   ].join('\n');
 }
 
@@ -146,6 +159,24 @@ export function stripTrailingGoalMarker(output: string): string {
  */
 export function parseGoalSignal(output: string): GoalSignal {
   return parseTrailingGoalMarker(output) ?? 'missing';
+}
+
+/**
+ * Extract the free-text next-step payload from a trailing GOAL_CONTINUE marker.
+ * This is additive: parseGoalSignal/parseTrailingGoalMarker keep their existing
+ * return shapes and marker semantics. Never throws.
+ */
+export function parseGoalContinueText(output: string): string {
+  try {
+    if (parseTrailingGoalMarker(output) !== 'continue') return '';
+    const line = lastNonEmptyLine(output);
+    if (line === null) return '';
+    const trimmed = line.replace(/^[ \t]+/, '');
+    const match = /^GOAL_CONTINUE\b(?::[ \t]*(.*))?$/.exec(trimmed);
+    return match?.[1]?.trim() ?? '';
+  } catch {
+    return '';
+  }
 }
 
 function lastNonEmptyLine(output: string): string | null {

@@ -18,9 +18,10 @@
 
 import readline from 'node:readline';
 import { execa } from 'execa';
-import type { Clock, CoreEvent, LedgerWriter, OrchestrateDeps, Question, QuestionSet, SessionEntry, Tier } from '../core/types.js';
-import { buildGoalTask, parseGoalSignal, decideGoalNext, formatGoalProgress, DEFAULT_MAX_GOAL_ITERATIONS } from '../core/goal.js';
+import type { Clock, CoreEvent, LedgerWriter, OrchestrateDeps, Question, QuestionSet, SessionEntry, SessionWriter, Tier } from '../core/types.js';
+import { buildGoalTask, parseGoalSignal, parseGoalContinueText, decideGoalNext, formatGoalProgress, DEFAULT_MAX_GOAL_ITERATIONS } from '../core/goal.js';
 import type { GoalCeilings } from '../core/goal.js';
+import { appendCheckpointFromContinue, capContract } from '../core/work-contract.js';
 import { formatAnswers, isKeepGoingOffer } from '../core/questions.js';
 import type { AppConfig } from '../infra/config.js';
 import { saveConfig } from '../infra/config.js';
@@ -2619,6 +2620,7 @@ async function runChatLoop(
       // (Ctrl+C → menu/exit). Closes over the per-turn buildDeps + the shared
       // currentAc/shouldExit/shouldMenu/loopResult flags.
       const runGoalLoop = async (goalText: string): Promise<boolean> => {
+        let goalContract = capContract({ version: 1, objective: goalText });
         // Title a still-untitled conversation from the goal (no-op if already set).
         const gMeta = (await ctx.store.list()).find((m) => m.id === convId);
         if (gMeta !== undefined && gMeta.title.trim().length === 0) {
@@ -2653,11 +2655,23 @@ async function runChatLoop(
             ),
           );
           const goalDeps = buildDeps(await ctx.store.load(convId));
+          const contractedGoalTask = buildGoalTask(goalText, i, goalContract);
+          const replayGoalTask = buildGoalTask(goalText, i);
+          const goalSession: SessionWriter = {
+            id: goalDeps.session.id,
+            async append(entry) {
+              await goalDeps.session.append(
+                entry.role === 'user' && entry.content === contractedGoalTask
+                  ? { ...entry, content: replayGoalTask }
+                  : entry,
+              );
+            },
+          };
           const goalAc = new AbortController();
           currentAc = goalAc;
           const turn = await runTask(
-            buildGoalTask(goalText, i),
-            goalDeps,
+            contractedGoalTask,
+            { ...goalDeps, session: goalSession },
             out,
             goalAc.signal,
             mutableCtx.config.verbosity ?? 'normal',
@@ -2689,8 +2703,17 @@ async function runChatLoop(
             continue;
           }
 
+          const turnOutput = turn.final?.output ?? '';
+          const signal = parseGoalSignal(turnOutput);
+          if (signal === 'continue') {
+            goalContract = appendCheckpointFromContinue(
+              goalContract,
+              parseGoalContinueText(turnOutput),
+              i,
+            );
+          }
           const step = decideGoalNext({
-            signal: parseGoalSignal(turn.final?.output ?? ''),
+            signal,
             lastSucceeded: turn.final?.success === true,
             completedIterations: completed,
             ceilings,

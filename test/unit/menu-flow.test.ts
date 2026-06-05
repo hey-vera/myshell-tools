@@ -588,6 +588,87 @@ describe('startMenu — /goal ask_user stops autonomous loop and surfaces select
   });
 });
 
+describe('startMenu — /goal work contract threading', () => {
+  it('passes a contract into each goal turn and grows it from GOAL_CONTINUE text', async () => {
+    const prompts: string[] = [];
+    let callCount = 0;
+    const provider: Provider = {
+      id: 'claude',
+      async detect() {
+        return {
+          id: 'claude',
+          installed: true,
+          version: '1.0.0',
+          authenticated: true,
+          plan: null,
+          binaryPath: null,
+          availableModels: ['model-a'],
+        };
+      },
+      async *run(req: ProviderRequest, _signal: AbortSignal): AsyncIterable<ProviderEvent> {
+        prompts.push(req.prompt);
+        callCount++;
+        if (callCount === 1) {
+          yield { type: 'text', delta: 'Created the files.\nGOAL_CONTINUE: run the tests' };
+          yield {
+            type: 'done',
+            text: 'Created the files.\nGOAL_CONTINUE: run the tests',
+            usage: FAKE_USAGE,
+            raw: {},
+          };
+          return;
+        }
+        yield { type: 'text', delta: 'Tests pass.\nGOAL_COMPLETE' };
+        yield {
+          type: 'done',
+          text: 'Tests pass.\nGOAL_COMPLETE',
+          usage: FAKE_USAGE,
+          raw: {},
+        };
+      },
+    };
+
+    const clock = makeFakeClock();
+    const store = makeStore(clock);
+    const sink = makeSink();
+    const ctx = makeCtx(
+      {
+        providers: { claude: provider },
+        readLine: makeScriptedReader([
+          'n',
+          '/goal ship the widget',
+          '/exit',
+          'q',
+        ]),
+      },
+      clock,
+      store,
+    );
+
+    await startMenu(ctx, sink);
+
+    assert.equal(callCount, 2, 'one continue turn plus one complete turn');
+    assert.ok(prompts[0]?.includes('OBJECTIVE: ship the widget'));
+    assert.ok(
+      prompts[0]?.includes('Before acting, confirm this turn still directly serves the OBJECTIVE; do not pursue unrelated improvements.'),
+    );
+    assert.ok(!prompts[0]?.includes('CHECKPOINTS SO FAR:'));
+    assert.ok(prompts[1]?.includes('OBJECTIVE: ship the widget'));
+    assert.ok(prompts[1]?.includes('CHECKPOINTS SO FAR:\n- C1: run the tests'));
+    assert.ok(prompts[1]?.includes('Continue working autonomously toward this goal: ship the widget'));
+
+    const persistedEntries = [...store._writers.values()].flatMap((writer) => writer.entries);
+    assert.ok(
+      persistedEntries.some((entry) => entry.role === 'user' && entry.content.startsWith('Goal: ship the widget')),
+      'the persisted user turn remains the ordinary goal task',
+    );
+    assert.ok(
+      !persistedEntries.some((entry) => entry.content.includes('OBJECTIVE: ship the widget')),
+      'the prompt-only contract is not persisted in session history',
+    );
+  });
+});
+
 // ---------------------------------------------------------------------------
 // FLOW 4: "e" → manage screen → pin → back → "q"
 // ---------------------------------------------------------------------------
