@@ -87,6 +87,13 @@ export const GLYPHS = {
   fail: '✗',
   /** Cancelled outcome. */
   cancel: '■',
+  /**
+   * Orientation marker — `※` (U+203B REFERENCE MARK). Reserved EXCLUSIVELY for
+   * the conversation recap ("before we continue, here's where we were"), distinct
+   * from the `●` turn marker and the `⋮` notice (docs/recap-feature-5.5.md §5.3).
+   * Single-cell, width-stable, renders widely.
+   */
+  recap: '※',
 } as const;
 
 /** The lifecycle/outcome states an assistant turn marker can reflect. */
@@ -135,4 +142,22 @@ export function turnMarker(state: TurnState, color: boolean): string {
     case 'cancel':
       return dim(glyph, color);
   }
+}
+
+/**
+ * Render the conversation recap orientation line — `※ recap  <text>` — honouring
+ * the same `color` gate as every other helper. The `※` glyph is dim-cyan
+ * (orientation), the word `recap` dim, the body in normal weight. When `color` is
+ * false the bare `※ recap  <text>` is returned (NO_COLOR / non-TTY), UNLESS
+ * MYSHELL_PLAIN is set, in which case the glyph is dropped and a plain
+ * `recap  <text>` is returned for the cleanest machine output. Returns '' for an
+ * empty/whitespace-only body so a vacuous recap prints nothing. Mirrors
+ * `turnMarker`'s gating discipline (docs/recap-feature-5.5.md §5.3).
+ */
+export function formatRecapLine(text: string, color: boolean): string {
+  const body = text.trim();
+  if (body.length === 0) return '';
+  const plain = !color && isPlainMode();
+  const glyph = plain ? '' : `${dim(cyan(GLYPHS.recap, color), color)} `;
+  return `${glyph}${dim('recap', color)}  ${body}`;
 }

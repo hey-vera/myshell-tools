@@ -135,6 +135,7 @@ function makeFakeStore(): FakeStore {
 
     async setPinned(): Promise<void> { /* no-op */ },
     async setCategory(): Promise<void> { /* no-op */ },
+    async setRecap(): Promise<void> { /* no-op */ },
   };
 }
 

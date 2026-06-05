@@ -244,6 +244,21 @@ function makeStore(clock: Clock, initialMetas?: ConversationMeta[]): FakeConvers
         }
       }
     },
+
+    async setRecap(id: string, recap: string | null, atMessageCount: number): Promise<void> {
+      const idx = metas.findIndex((m) => m.id === id);
+      if (idx >= 0) {
+        const m = metas[idx];
+        if (m !== undefined) {
+          metas[idx] = {
+            ...m,
+            recap,
+            recapAt: recap === null ? null : clock.isoNow(),
+            recapMessageCount: atMessageCount,
+          };
+        }
+      }
+    },
   };
 }
 
@@ -5986,5 +6001,200 @@ describe('startMenu — mode settings [4] Auto', () => {
       sink.buf.includes('(auto'),
       'main screen must include the auto indicator when mode is unset',
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// FLOW: ※ RECAP on resume + /recap (Phase 7, docs/recap-feature-5.5.md)
+// ---------------------------------------------------------------------------
+
+/** Seed a conversation with prior history + (optional) cached recap. */
+function seedConversation(
+  store: FakeConversationStore,
+  opts: {
+    id: string;
+    title: string;
+    messageCount: number;
+    recap?: string | null;
+    recapMessageCount?: number;
+    entries?: SessionEntry[];
+  },
+): void {
+  const meta: ConversationMeta = {
+    id: opts.id,
+    title: opts.title,
+    createdAt: '2024-01-01T00:00:00.000Z',
+    updatedAt: '2024-01-02T00:00:00.000Z',
+    messageCount: opts.messageCount,
+    pinned: false,
+    category: null,
+    ...(opts.recap !== undefined ? { recap: opts.recap } : {}),
+    ...(opts.recapMessageCount !== undefined ? { recapMessageCount: opts.recapMessageCount } : {}),
+  };
+  store._metas.push(meta);
+  const w = makeFakeSessionWriter(opts.id, store._metas);
+  for (const e of opts.entries ?? []) w.entries.push(e);
+  store._writers.set(opts.id, w);
+}
+
+const RECAP_ENTRIES: SessionEntry[] = [
+  { timestamp: '2024-01-01T00:00:00.000Z', role: 'user', content: 'Migrate auth to JWT' },
+  { timestamp: '2024-01-01T00:01:00.000Z', role: 'assistant', content: '4 files edited.' },
+  { timestamp: '2024-01-01T00:02:00.000Z', role: 'user', content: 'Now the expiry tests' },
+];
+
+/** A provider whose worker-tier run returns a recognizable recap string. */
+function recapFakeProvider(recapText: string): Provider {
+  return {
+    id: 'claude',
+    async detect() {
+      return { id: 'claude', installed: true, version: '1.0.0', authenticated: true, plan: null, binaryPath: null, availableModels: ['model-a'] };
+    },
+    async *run(): AsyncIterable<ProviderEvent> {
+      yield { type: 'done', text: recapText, usage: FAKE_USAGE, raw: {} };
+    },
+  };
+}
+
+describe('startMenu — ※ recap on resume + /recap', () => {
+  it('shows the cached ※ recap line on resume (fresh cache → no regeneration)', async () => {
+    const clock = makeFakeClock();
+    const store = makeStore(clock);
+    seedConversation(store, {
+      id: 'conv-recap-1',
+      title: 'Auth migration',
+      messageCount: 4,
+      recap: 'Migrating auth to JWT; next: expiry tests.',
+      recapMessageCount: 4, // fresh: advanced 0 turns < threshold
+      entries: RECAP_ENTRIES,
+    });
+    const sink = makeSink();
+    // Resume conversation 1, then exit chat + menu.
+    const ctx = makeCtx({ readLine: makeScriptedReader(['1', '/exit', 'q']) }, clock, store);
+    await startMenu(ctx, sink);
+
+    assert.ok(sink.buf.includes('※'), 'resume shows the ※ orientation marker');
+    assert.ok(sink.buf.includes('recap'), 'resume shows the recap label');
+    assert.ok(
+      sink.buf.includes('Migrating auth to JWT; next: expiry tests.'),
+      'resume shows the cached recap body',
+    );
+    // The old weak tail-echo must be GONE.
+    assert.ok(!sink.buf.includes('Resuming — last message'), 'old tail-echo is replaced');
+  });
+
+  it('falls back cleanly (no recap line) when the conversation is too short', async () => {
+    const clock = makeFakeClock();
+    const store = makeStore(clock);
+    seedConversation(store, {
+      id: 'conv-short',
+      title: 'Tiny chat',
+      messageCount: 2, // below the ≥3 floor
+      entries: [RECAP_ENTRIES[0]!, RECAP_ENTRIES[1]!],
+    });
+    const sink = makeSink();
+    const ctx = makeCtx({ readLine: makeScriptedReader(['1', '/exit', 'q']) }, clock, store);
+    await startMenu(ctx, sink);
+
+    assert.ok(!sink.buf.includes('※'), 'no recap marker for a sub-floor conversation');
+    assert.ok(!sink.buf.includes('Resuming — last message'), 'no old tail-echo either');
+  });
+
+  it('generates + caches a recap on resume when stale, via the injected worker pass', async () => {
+    const clock = makeFakeClock();
+    const store = makeStore(clock);
+    seedConversation(store, {
+      id: 'conv-stale',
+      title: 'Stale recap',
+      messageCount: 6,
+      recap: null, // no cache yet → stale → generate
+      entries: RECAP_ENTRIES,
+    });
+    const sink = makeSink();
+    const ctx = makeCtx(
+      {
+        readLine: makeScriptedReader(['1', '/exit', 'q']),
+        providers: { claude: recapFakeProvider('Resumed: auth JWT work; next: expiry tests.') },
+      },
+      clock,
+      store,
+    );
+    await startMenu(ctx, sink);
+
+    assert.ok(
+      sink.buf.includes('Resumed: auth JWT work; next: expiry tests.'),
+      'a freshly generated recap is shown',
+    );
+    // It was cached via setRecap.
+    const m = store._metas.find((x) => x.id === 'conv-stale');
+    assert.ok(m !== undefined);
+    assert.equal(m.recap, 'Resumed: auth JWT work; next: expiry tests.', 'recap is cached');
+    assert.equal(m.recapMessageCount, 6, 'cache records the provenance count');
+  });
+
+  it('resume NEVER blocks when recap generation fails (fail-soft)', async () => {
+    const clock = makeFakeClock();
+    const store = makeStore(clock);
+    seedConversation(store, {
+      id: 'conv-failsoft',
+      title: 'Failsoft',
+      messageCount: 6,
+      recap: null, // stale → tries to generate
+      entries: RECAP_ENTRIES,
+    });
+    const throwingProvider: Provider = {
+      id: 'claude',
+      async detect() {
+        return { id: 'claude', installed: true, version: '1.0.0', authenticated: true, plan: null, binaryPath: null, availableModels: ['model-a'] };
+      },
+      // eslint-disable-next-line require-yield
+      async *run(): AsyncIterable<ProviderEvent> {
+        throw new Error('recap boom');
+      },
+    };
+    const sink = makeSink();
+    const ctx = makeCtx(
+      {
+        readLine: makeScriptedReader(['1', '/exit', 'q']),
+        providers: { claude: throwingProvider },
+      },
+      clock,
+      store,
+    );
+    // The whole flow must resolve (resume proceeds despite the failed recap).
+    await assert.doesNotReject(() => startMenu(ctx, sink));
+    assert.ok(!sink.buf.includes('※'), 'no recap line when generation fails');
+    // No recap was cached.
+    const m = store._metas.find((x) => x.id === 'conv-failsoft');
+    assert.ok(m !== undefined);
+    assert.ok(m.recap === null || m.recap === undefined, 'no recap cached on failure');
+  });
+
+  it('/recap renders the ※ recap line on demand', async () => {
+    const clock = makeFakeClock();
+    const store = makeStore(clock);
+    seedConversation(store, {
+      id: 'conv-cmd',
+      title: 'On demand',
+      messageCount: 4,
+      recap: 'cached note',
+      recapMessageCount: 4,
+      entries: RECAP_ENTRIES,
+    });
+    const sink = makeSink();
+    const ctx = makeCtx(
+      {
+        readLine: makeScriptedReader(['1', '/recap', '/exit', 'q']),
+        // /recap forces regeneration → returns this fresh text.
+        providers: { claude: recapFakeProvider('On-demand recap; next: ship it.') },
+      },
+      clock,
+      store,
+    );
+    await startMenu(ctx, sink);
+
+    assert.ok(sink.buf.includes('On-demand recap; next: ship it.'), '/recap shows a fresh recap');
+    // The ※ marker appears for the /recap output.
+    assert.ok(sink.buf.includes('※'), '/recap uses the ※ marker');
   });
 });

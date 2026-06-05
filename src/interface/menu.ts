@@ -74,7 +74,9 @@ import { runDoctor } from '../commands/doctor.js';
 import { runCost } from '../commands/cost.js';
 import { runInstall, isHookInstalled } from '../commands/install.js';
 import { box, separator, menu } from '../ui/tui.js';
-import { dim, cyan, bold, green } from '../ui/theme.js';
+import { dim, cyan, bold, green, formatRecapLine } from '../ui/theme.js';
+import { makeRecapGenerator } from '../core/recap-generator.js';
+import { isRecapStale, recapEligible, parseRecap } from '../core/recap.js';
 import { createSpinner } from '../ui/spinner.js';
 import { makeRouteClassifier } from '../core/route-classifier.js';
 import { makeIntentExtractor } from '../core/intent-extractor.js';
@@ -510,13 +512,14 @@ export const FREE_TEXT_SENTINEL = '\x00__FREE_TEXT__\x00';
  * The slash-commands available at the chat prompt — the canonical command set
  * (Tab T1, docs/tab-completion-5.5.md). Tab-completion offers exactly these;
  * keep in sync with the dispatch in `runOneChatInput` (/style, /mode, /goal,
- * /remember, /forget, /memory, /help, /back, /exit). Ordered most-used first.
+ * /recap, /remember, /forget, /memory, /help, /back, /exit). Ordered most-used first.
  */
 export const CHAT_SLASH_COMMANDS: readonly string[] = [
   '/help',
   '/style',
   '/mode',
   '/goal',
+  '/recap',
   '/remember',
   '/forget',
   '/memory',
@@ -772,14 +775,25 @@ export function renderBudgetLine(spend: SpendSummary, _color: boolean): string {
  * Category suffix: "  [<category>]" appended when category is set, omitted otherwise.
  * Returns string[] (no ANSI — pure string building, safe for tests).
  */
-export function renderConversationList(metas: ConversationMeta[], nowMs: number): string[] {
+export function renderConversationList(
+  metas: ConversationMeta[],
+  nowMs: number,
+  color = false,
+): string[] {
   return metas.slice(0, 7).map((m, i) => {
     const thenMs = new Date(m.updatedAt).getTime();
     const rel = relativeTime(thenMs, nowMs);
     const idx = i + 1;
     const pin = m.pinned ? '📌 ' : '   ';
     const categorySuffix = m.category != null ? `  [${m.category}]` : '';
-    return `[${idx}] ${pin}${rel}  ${m.title}${categorySuffix}`;
+    const row = `[${idx}] ${pin}${rel}  ${m.title}${categorySuffix}`;
+    // Optional second dim line = the cached ※ recap (state, not just the opening
+    // words). Only when a non-empty recap exists; legacy rows show the title alone
+    // (docs/recap-feature-5.5.md §5.3). Truncated; indented to align under the title.
+    const recap = typeof m.recap === 'string' ? m.recap.trim() : '';
+    if (recap.length === 0) return row;
+    const shown = recap.length > 72 ? recap.slice(0, 71) + '…' : recap;
+    return `${row}\n         ${dim(shown, color)}`;
   });
 }
 
@@ -2402,7 +2416,7 @@ async function runManage(
   async function renderList(): Promise<ConversationMeta[]> {
     const latest = await ctx.store.list();
     const nowMs = ctx.clock.now();
-    const lines = renderConversationList(latest, nowMs);
+    const lines = renderConversationList(latest, nowMs, out.color);
     out.write('\n' + separator('Conversations') + '\n');
     for (const line of lines) {
       out.write(`  ${line}\n`);
@@ -2865,14 +2879,112 @@ async function runChatLoop(
   // queueing then degrades off (no second stdin owner is invented for tests).
   lineReader?: LineReader | null,
 ): Promise<'menu' | 'exit'> {
-  // Print a short recap of the conversation (last entry) if history exists
-  const history = await ctx.store.load(convId);
-  if (history.length > 0) {
-    const last = history[history.length - 1];
-    if (last !== undefined) {
-      out.write(
-        `\n  Resuming — last message (${last.role}): ${last.content.slice(0, 80)}${last.content.length > 80 ? '…' : ''}\n\n`,
-      );
+  // -------------------------------------------------------------------------
+  // RECAP (Phase 7, docs/recap-feature-5.5.md) — a ※ orientation line on resume
+  // and on /recap, replacing the old raw-tail-echo. The recap is conversation-
+  // scoped orientation (DISTINCT from durable user memory), cached on the meta,
+  // and regenerated only when stale. Generation is a single gated, cheap, read-
+  // only worker-tier pass behind the injected generator port; fail-soft so a
+  // missing/failed/timed-out recap NEVER blocks resume.
+  // -------------------------------------------------------------------------
+
+  /**
+   * Build the cheap worker-tier recap generator from the LIVE env, or null when
+   * no provider is authenticated (→ no model touch, fall back to prior behaviour).
+   * Mirrors the worker-tier provider selection in buildDeps.
+   */
+  const buildRecapGenerator = ():
+    | ((history: readonly SessionEntry[], signal: AbortSignal) => Promise<string | null>)
+    | null => {
+    if (!hasAuthenticatedProvider(mutableCtx.env)) return null;
+    const effectiveMode: Mode = mutableCtx.config.mode ?? resolveAutoMode(mutableCtx.env);
+    const policy = POLICY_PRESETS[effectiveMode];
+
+    const availableModels: Partial<Record<ProviderId, readonly string[]>> = {};
+    if (mutableCtx.env.claude.installed && mutableCtx.env.claude.availableModels.length > 0) {
+      availableModels['claude'] = mutableCtx.env.claude.availableModels;
+    }
+    if (mutableCtx.env.codex.installed && mutableCtx.env.codex.availableModels.length > 0) {
+      availableModels['codex'] = mutableCtx.env.codex.availableModels;
+    }
+    if (mutableCtx.env.opencode.installed && mutableCtx.env.opencode.availableModels.length > 0) {
+      availableModels['opencode'] = mutableCtx.env.opencode.availableModels;
+    }
+    const authenticatedProviders: ProviderId[] = [];
+    if (mutableCtx.env.claude.authenticated) authenticatedProviders.push('claude');
+    if (mutableCtx.env.codex.authenticated) authenticatedProviders.push('codex');
+    if (mutableCtx.env.opencode.authenticated) authenticatedProviders.push('opencode');
+
+    const RECAP_TIMEOUT_MS = 8_000;
+    return makeRecapGenerator({
+      providers: ctx.providers,
+      policy,
+      cwd: ctx.cwd,
+      timeoutMs: Math.min(ctx.timeoutMs, RECAP_TIMEOUT_MS),
+      ...(Object.keys(availableModels).length > 0 ? { availableModels } : {}),
+      ...(authenticatedProviders.length > 0 ? { authenticatedProviders } : {}),
+    });
+  };
+
+  /**
+   * Produce the recap text to show: the fresh cache when not stale, otherwise a
+   * best-effort regeneration that is cached via setRecap. Always fail-soft —
+   * returns null (caller falls back) rather than throwing/blocking. When `force`
+   * (the /recap command), regenerate regardless of staleness.
+   */
+  const resolveRecap = async (force: boolean): Promise<string | null> => {
+    let meta: ConversationMeta | undefined;
+    try {
+      meta = (await ctx.store.list()).find((m) => m.id === convId);
+    } catch {
+      meta = undefined;
+    }
+    const messageCount = meta?.messageCount ?? 0;
+    if (!recapEligible(messageCount)) return null;
+
+    const cached = typeof meta?.recap === 'string' ? meta.recap.trim() : '';
+    const stale = meta === undefined ? true : isRecapStale(meta);
+    if (!force && cached.length > 0 && !stale) return cached;
+
+    const generate = buildRecapGenerator();
+    if (generate === null) return cached.length > 0 ? cached : null;
+
+    let entries: SessionEntry[];
+    try {
+      entries = await ctx.store.load(convId);
+    } catch {
+      return cached.length > 0 ? cached : null;
+    }
+    let fresh: string | null = null;
+    try {
+      fresh = await generate(entries, new AbortController().signal);
+    } catch {
+      fresh = null;
+    }
+    const normalised = parseRecap(fresh);
+    if (normalised === null) {
+      // Generation failed/empty — fall back to a stale cache or nothing. NEVER block.
+      return cached.length > 0 ? cached : null;
+    }
+    try {
+      await ctx.store.setRecap(convId, normalised, messageCount);
+    } catch {
+      // Caching is best-effort; show the recap even if persisting it failed.
+    }
+    return normalised;
+  };
+
+  // Recap on resume: replace the weak tail-echo with a real ※ recap line when one
+  // is available; otherwise stay silent (prior behaviour with no recap).
+  {
+    let recapText: string | null = null;
+    try {
+      recapText = await resolveRecap(false);
+    } catch {
+      recapText = null; // fail-soft: a recap failure must never block resume
+    }
+    if (recapText !== null) {
+      out.write('\n  ' + formatRecapLine(recapText, out.color) + '\n\n');
     }
   }
 
@@ -3204,9 +3316,30 @@ async function runChatLoop(
         '  /goal <text>  — work autonomously until the goal is done (Ctrl+C to stop)\n' +
         '  /mode         — quality vs speed (Efficient / Balanced / Max)\n' +
         '  /style        — partner posture (Direct / Balanced / Collaborative)\n' +
+        '  /recap        — ※ where were we? (orient on this conversation)\n' +
         '  /back, /exit  — return to the main menu\n' +
         '  /help         — show this help\n',
       );
+      return 'continue';
+    }
+
+    // ※ Recap on demand (Phase 7): orient mid-conversation or before a hand-off.
+    // Always regenerate (force) so /recap reflects the latest state, fail-soft so a
+    // generation failure prints a gentle note instead of throwing.
+    if (line === '/recap') {
+      let recapText: string | null = null;
+      try {
+        recapText = await resolveRecap(true);
+      } catch {
+        recapText = null;
+      }
+      if (recapText !== null) {
+        out.write('\n  ' + formatRecapLine(recapText, out.color) + '\n\n');
+      } else {
+        out.write(
+          dim('  Not enough yet to recap — keep going and I\'ll have one for you.\n', out.color),
+        );
+      }
       return 'continue';
     }
 
@@ -3965,7 +4098,7 @@ async function renderMainScreen(
   // doesn't repeat the "Conversations" action header that follows.
   out.write(separator('Recent') + '\n');
   const nowMs = ctx.clock.now();
-  const convLines = renderConversationList(metas, nowMs);
+  const convLines = renderConversationList(metas, nowMs, out.color);
   if (convLines.length === 0) {
     out.write('  (no conversations yet)\n');
   } else {

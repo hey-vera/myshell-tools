@@ -23,6 +23,17 @@ export interface ConversationMeta {
   readonly pinned: boolean;
   /** Optional short category tag (e.g. "ui", "refactor"); null when unset. */
   readonly category: string | null;
+  /**
+   * Cached conversation RECAP — the last model-written ※ orientation line for
+   * this thread (docs/recap-feature-5.5.md §5.2). Conversation-scoped, regenerated
+   * as the thread grows, discarded with it; DISTINCT from durable user memory.
+   * Optional + null-when-unset so legacy index entries forward-migrate cleanly.
+   */
+  readonly recap?: string | null;
+  /** ISO time the cached recap was generated; null when none. */
+  readonly recapAt?: string | null;
+  /** `messageCount` at recap generation, for the staleness check; absent when none. */
+  readonly recapMessageCount?: number;
 }
 
 export interface ConversationStore {
@@ -42,4 +53,10 @@ export interface ConversationStore {
   setPinned(id: string, pinned: boolean): Promise<void>;
   /** Set or clear the category tag for a conversation. No-op if id missing. */
   setCategory(id: string, category: string | null): Promise<void>;
+  /**
+   * Cache the conversation recap (text + the messageCount it was generated at, for
+   * staleness). Pass `recap: null` to clear it. No-op if the id does not exist.
+   * Best-effort orientation cache — never the durable-memory write path.
+   */
+  setRecap(id: string, recap: string | null, atMessageCount: number): Promise<void>;
 }

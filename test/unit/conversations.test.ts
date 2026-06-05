@@ -475,6 +475,130 @@ describe('createFileConversationStore — legacy index migration', () => {
       await rm(home2, { recursive: true, force: true });
     }
   });
+
+  it('old index entries missing recap fields migrate cleanly — no data loss, no recap fabricated', async () => {
+    const home2 = await mkdtemp(join(tmpdir(), `conv-legacy-recap-${randomUUID()}-`));
+    try {
+      const convDir = join(home2, '.myshell-tools', 'conversations');
+      await mkdir(convDir, { recursive: true });
+      // A pre-recap index entry: has pinned/category but NONE of recap/recapAt/
+      // recapMessageCount. The forward-migration must keep all real data and treat
+      // the absent recap as the valid "no recap yet" default (never a scary prompt).
+      const legacyIndex = [
+        {
+          id: 'legacy-id-2',
+          title: 'Pre-recap conversation',
+          createdAt: '2023-01-01T00:00:00.000Z',
+          updatedAt: '2023-06-01T00:00:00.000Z',
+          messageCount: 7,
+          pinned: true,
+          category: 'ui',
+          // deliberately omits: recap, recapAt, recapMessageCount
+        },
+      ];
+      await writeFile(join(convDir, 'index.json'), JSON.stringify(legacyIndex), 'utf8');
+
+      const clock = makeFakeClock();
+      const store = createFileConversationStore({ homeDir: home2, clock });
+      const list = await store.list();
+
+      assert.equal(list.length, 1, 'no data loss: the conversation still loads');
+      const m = list[0];
+      assert.ok(m !== undefined);
+      // Real data preserved
+      assert.equal(m.title, 'Pre-recap conversation');
+      assert.equal(m.messageCount, 7);
+      assert.equal(m.pinned, true);
+      assert.equal(m.category, 'ui');
+      // Recap absent — NOT fabricated, NOT a default string
+      assert.equal(m.recap, undefined);
+      assert.equal(m.recapAt, undefined);
+      assert.equal(m.recapMessageCount, undefined);
+    } finally {
+      await rm(home2, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// setRecap — recap fields round-trip + preserved across other mutations
+// ---------------------------------------------------------------------------
+
+describe('createFileConversationStore — setRecap', () => {
+  it('persists recap text + provenance and list reflects them', async () => {
+    const home2 = await mkdtemp(join(tmpdir(), `conv-recap-persist-${randomUUID()}-`));
+    try {
+      const clock = makeFakeClock('2024-06-01T10:00:00.000Z');
+      const store = createFileConversationStore({ homeDir: home2, clock });
+      const meta = await store.create('Recap me');
+
+      await store.setRecap(meta.id, 'Migrating auth to JWT; next: expiry tests.', 5);
+
+      const found = (await store.list()).find((m) => m.id === meta.id);
+      assert.ok(found !== undefined);
+      assert.equal(found.recap, 'Migrating auth to JWT; next: expiry tests.');
+      assert.equal(found.recapAt, '2024-06-01T10:00:00.000Z');
+      assert.equal(found.recapMessageCount, 5);
+    } finally {
+      await rm(home2, { recursive: true, force: true });
+    }
+  });
+
+  it('setRecap(null) clears the recap', async () => {
+    const home2 = await mkdtemp(join(tmpdir(), `conv-recap-clear-${randomUUID()}-`));
+    try {
+      const clock = makeFakeClock();
+      const store = createFileConversationStore({ homeDir: home2, clock });
+      const meta = await store.create('Clear me');
+      await store.setRecap(meta.id, 'something', 4);
+      await store.setRecap(meta.id, null, 4);
+      const found = (await store.list()).find((m) => m.id === meta.id);
+      assert.ok(found !== undefined);
+      assert.equal(found.recap, null);
+      assert.equal(found.recapAt, null);
+    } finally {
+      await rm(home2, { recursive: true, force: true });
+    }
+  });
+
+  it('is a no-op for an unknown id', async () => {
+    const home2 = await mkdtemp(join(tmpdir(), `conv-recap-noop-${randomUUID()}-`));
+    try {
+      const clock = makeFakeClock();
+      const store = createFileConversationStore({ homeDir: home2, clock });
+      await store.setRecap('does-not-exist', 'x', 3); // must not throw
+      const found = (await store.list()).find((m) => m.id === 'does-not-exist');
+      assert.equal(found, undefined);
+    } finally {
+      await rm(home2, { recursive: true, force: true });
+    }
+  });
+
+  it('a cached recap survives an unrelated mutation (rename / pin / category)', async () => {
+    const home2 = await mkdtemp(join(tmpdir(), `conv-recap-survive-${randomUUID()}-`));
+    const cleanup = async () => rm(home2, { recursive: true, force: true });
+    try {
+    const clock = makeFakeClock();
+    const store = createFileConversationStore({ homeDir: home2, clock });
+    const meta = await store.create('Survivor');
+    await store.setRecap(meta.id, 'where we were', 6);
+
+    await store.rename(meta.id, 'Survivor renamed');
+    await store.setPinned(meta.id, true);
+    await store.setCategory(meta.id, 'refactor');
+
+    const found = (await store.list()).find((m) => m.id === meta.id);
+    assert.ok(found !== undefined);
+    assert.equal(found.title, 'Survivor renamed');
+    assert.equal(found.pinned, true);
+    assert.equal(found.category, 'refactor');
+    // The recap must NOT be dropped by the unrelated updates
+    assert.equal(found.recap, 'where we were');
+    assert.equal(found.recapMessageCount, 6);
+    } finally {
+      await cleanup();
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------

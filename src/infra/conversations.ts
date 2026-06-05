@@ -58,12 +58,16 @@ async function ensureDir(homeDir: string): Promise<void> {
 
 /**
  * Normalise a raw index entry that may be missing fields added in later
- * versions (pinned, category). Old on-disk entries that predate these fields
- * will be migrated transparently on read so existing stores keep working.
+ * versions (pinned, category, recap). Old on-disk entries that predate these
+ * fields will be migrated transparently on read so existing stores keep working —
+ * an absent field is a valid default (no recap), never a data-loss or a scary
+ * prompt for upgraders.
  */
 function normaliseMeta(raw: unknown): ConversationMeta {
   const r = raw as Record<string, unknown>;
-  return {
+  const meta: {
+    -readonly [K in keyof ConversationMeta]: ConversationMeta[K];
+  } = {
     id: String(r['id'] ?? ''),
     title: String(r['title'] ?? ''),
     createdAt: String(r['createdAt'] ?? ''),
@@ -72,6 +76,34 @@ function normaliseMeta(raw: unknown): ConversationMeta {
     pinned: typeof r['pinned'] === 'boolean' ? r['pinned'] : false,
     category: typeof r['category'] === 'string' ? r['category'] : null,
   };
+  // Recap fields (additive, forward-migrated): carry them only when present and
+  // well-typed. A legacy entry lacking them keeps recap absent — exactly the
+  // "no recap yet" state, never a fabricated one.
+  if (typeof r['recap'] === 'string') meta.recap = r['recap'];
+  else if (r['recap'] === null) meta.recap = null;
+  if (typeof r['recapAt'] === 'string') meta.recapAt = r['recapAt'];
+  else if (r['recapAt'] === null) meta.recapAt = null;
+  if (typeof r['recapMessageCount'] === 'number') meta.recapMessageCount = r['recapMessageCount'];
+  return meta;
+}
+
+/**
+ * The recap fields of a meta, spread back in on every index mutation so an
+ * unrelated update (writer/rename/pin/category) never drops a cached recap.
+ * Returns only the fields that are actually present (exactOptionalPropertyTypes).
+ */
+function recapFields(
+  m: ConversationMeta,
+): Pick<ConversationMeta, 'recap' | 'recapAt' | 'recapMessageCount'> {
+  const out: {
+    recap?: string | null;
+    recapAt?: string | null;
+    recapMessageCount?: number;
+  } = {};
+  if (m.recap !== undefined) out.recap = m.recap;
+  if (m.recapAt !== undefined) out.recapAt = m.recapAt;
+  if (m.recapMessageCount !== undefined) out.recapMessageCount = m.recapMessageCount;
+  return out;
 }
 
 async function readIndexFile(homeDir: string): Promise<IndexReadResult> {
@@ -331,6 +363,7 @@ export function createFileConversationStore(opts: {
               messageCount,
               pinned: existing.pinned,
               category: existing.category,
+              ...recapFields(existing),
             };
 
             const newIndex = [...index];
@@ -360,6 +393,7 @@ export function createFileConversationStore(opts: {
           messageCount: existing.messageCount,
           pinned: existing.pinned,
           category: existing.category,
+          ...recapFields(existing),
         };
         const newIndex = [...index];
         newIndex[idx] = updated;
@@ -411,6 +445,7 @@ export function createFileConversationStore(opts: {
           messageCount: existing.messageCount,
           pinned,
           category: existing.category,
+          ...recapFields(existing),
         };
         const newIndex = [...index];
         newIndex[idx] = updated;
@@ -438,6 +473,37 @@ export function createFileConversationStore(opts: {
           messageCount: existing.messageCount,
           pinned: existing.pinned,
           category,
+          ...recapFields(existing),
+        };
+        const newIndex = [...index];
+        newIndex[idx] = updated;
+        await writeIndex(home, newIndex);
+      });
+    },
+
+    // -----------------------------------------------------------------------
+    // setRecap — cache the conversation recap (text + provenance) under the lock
+    // -----------------------------------------------------------------------
+    async setRecap(id: string, recap: string | null, atMessageCount: number): Promise<void> {
+      await ensureDir(home);
+      await withLock(getIndexLockPath(home), async () => {
+        const index = await readIndexLocked(home, onWarning);
+        const idx = index.findIndex((m) => m.id === id);
+        if (idx === -1) return; // no-op if missing
+
+        const existing = index[idx];
+        if (existing === undefined) return;
+        const updated: ConversationMeta = {
+          id: existing.id,
+          title: existing.title,
+          createdAt: existing.createdAt,
+          updatedAt: existing.updatedAt,
+          messageCount: existing.messageCount,
+          pinned: existing.pinned,
+          category: existing.category,
+          recap,
+          recapAt: recap === null ? null : clock.isoNow(),
+          recapMessageCount: atMessageCount,
         };
         const newIndex = [...index];
         newIndex[idx] = updated;

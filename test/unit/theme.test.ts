@@ -9,7 +9,7 @@
 
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { turnMarker, isPlainMode, GLYPHS, type TurnState } from '../../src/ui/theme.ts';
+import { turnMarker, isPlainMode, GLYPHS, formatRecapLine, type TurnState } from '../../src/ui/theme.ts';
 
 const DOT = '●'; // ● U+25CF BLACK CIRCLE
 
@@ -29,10 +29,60 @@ describe('theme — GLYPHS vocabulary', () => {
     assert.equal(GLYPHS.success, '✓', 'success is ✓');
     assert.equal(GLYPHS.fail, '✗', 'fail is ✗');
     assert.equal(GLYPHS.cancel, '■', 'cancel is ■');
+    assert.equal(GLYPHS.recap, '※', 'recap orientation marker is ※ U+203B');
     // No emoji / multi-codepoint glyphs (width stability).
     for (const g of Object.values(GLYPHS)) {
       assert.equal([...g].length, 1, `glyph "${g}" must be a single code point`);
     }
+  });
+
+  it('the recap marker is distinct from the turn and outcome glyphs', () => {
+    assert.notEqual(GLYPHS.recap, GLYPHS.turn, '※ must not collide with ●');
+    assert.notEqual(GLYPHS.recap, GLYPHS.success);
+    assert.notEqual(GLYPHS.recap, GLYPHS.fail);
+    assert.notEqual(GLYPHS.recap, GLYPHS.cancel);
+  });
+});
+
+describe('theme — formatRecapLine', () => {
+  it('renders "※ recap  <text>" with colour when colour is ON', () => {
+    const out = formatRecapLine('where we were', true);
+    assert.ok(out.includes('※'), 'contains the ※ marker');
+    assert.ok(out.includes('recap'), 'contains the recap label');
+    assert.ok(out.includes('where we were'), 'contains the body');
+    assert.ok(out.includes('\x1b['), 'colour bytes present when colour on');
+  });
+
+  it('degrades to a plain "※ recap  <text>" with NO ANSI when colour is OFF', () => {
+    const orig = process.env['MYSHELL_PLAIN'];
+    delete process.env['MYSHELL_PLAIN'];
+    try {
+      const out = formatRecapLine('where we were', false);
+      assert.equal(out, '※ recap  where we were');
+      assert.ok(!out.includes('\x1b['), 'no ANSI bytes when colour off');
+    } finally {
+      if (orig === undefined) delete process.env['MYSHELL_PLAIN'];
+      else process.env['MYSHELL_PLAIN'] = orig;
+    }
+  });
+
+  it('drops the ※ glyph under MYSHELL_PLAIN (colour off), keeping the text', () => {
+    const orig = process.env['MYSHELL_PLAIN'];
+    process.env['MYSHELL_PLAIN'] = '1';
+    try {
+      const out = formatRecapLine('where we were', false);
+      assert.ok(!out.includes('※'), 'plain mode drops the glyph');
+      assert.ok(out.includes('where we were'), 'plain mode keeps the text');
+      assert.equal(out, 'recap  where we were');
+    } finally {
+      if (orig === undefined) delete process.env['MYSHELL_PLAIN'];
+      else process.env['MYSHELL_PLAIN'] = orig;
+    }
+  });
+
+  it('returns "" for an empty / whitespace-only body', () => {
+    assert.equal(formatRecapLine('', false), '');
+    assert.equal(formatRecapLine('   ', false), '');
   });
 });
 
