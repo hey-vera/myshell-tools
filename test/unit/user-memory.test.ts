@@ -322,6 +322,25 @@ describe('decideConsolidation — full op table', () => {
     assert.equal(d.op, 'ADD');
   });
 
+  it("does NOT collapse distinct facts that both fall to the 'other' catch-all (RC-1 residual, live-found)", () => {
+    // Two unrelated facts, same kind, both → subject 'other' (no closed-vocab match)
+    // and low lexical similarity. They MUST coexist — collapsing them silently
+    // clobbered a saved preference in live testing (a saved language preference was
+    // lost when an identity fact was added).
+    assert.equal(normalizeSubject('preference', 'My name is Jordan'), 'other');
+    const existing = fact({ kind: 'preference', subject: 'other', text: 'I prefer British English spelling' });
+    const incoming = cand({ kind: 'preference', text: 'My name is Jordan' });
+    const d = decideConsolidation(incoming, [existing]);
+    assert.equal(d.op, 'ADD', "distinct 'other' facts must ADD, never clobber");
+  });
+
+  it('still UPDATEs in place on a REAL closed subject (guard: the fix did not disable real collapse)', () => {
+    const existing = fact({ kind: 'preference', subject: 'answer_length', text: 'prefers concise answers' });
+    const incoming = cand({ kind: 'preference', subject: 'answer_length', text: 'prefers very brief replies' });
+    const d = decideConsolidation(incoming, [existing]);
+    assert.equal(d.op, 'UPDATE', 'a real closed subject must still collapse to one fact');
+  });
+
   it('NOOP for an exact normalized duplicate (touch existing)', () => {
     const f = fact({ text: 'Prefers concise answers.' });
     const d = decideConsolidation(cand({ subject: 'answer_length', text: 'prefers concise answers' }), [f]);

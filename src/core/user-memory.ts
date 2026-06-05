@@ -522,7 +522,17 @@ export function decideConsolidation(c: Candidate, existing: readonly UserMemoryF
     if (exact) return { op: 'NOOP', targetId: exact.id, touch: true };
 
     // 2. SAME (scope,kind,subject) → arbitrate by trust, REGARDLESS of Jaccard.
-    const sameKey = sameScope.find((f) => f.kind === cc.kind && f.subject === subject);
+    //    EXCEPT the 'other' catch-all: it is NOT a unique key. Unrelated facts
+    //    routinely land there (the closed vocab can't name everything), so treating
+    //    (kind,'other') as one slot would silently CLOBBER distinct facts — the
+    //    RC-1 residual the red-team flagged, observed live (a saved language
+    //    preference lost when an identity fact was added). 'other' facts fall
+    //    through to near-dup (step 3): they merge only on real lexical similarity,
+    //    otherwise ADD and coexist. Never collapse unrelated facts → never lose data.
+    const sameKey =
+      subject === 'other'
+        ? undefined
+        : sameScope.find((f) => f.kind === cc.kind && f.subject === subject);
     if (sameKey) {
       // Trust arbitration: a lower-trust candidate may NOT overwrite a higher-trust fact.
       if (trustRank(cc.trust) < trustRank(sameKey.trust)) {
