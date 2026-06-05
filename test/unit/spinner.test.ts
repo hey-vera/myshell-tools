@@ -189,3 +189,35 @@ describe('createSpinner — resume()', () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// 4. elapsed() — real tick-derived seconds, survives stop(), 0 off-TTY
+// ---------------------------------------------------------------------------
+
+describe('createSpinner — elapsed()', () => {
+  it('TTY: reports whole seconds derived from real ticks and persists after stop()', () => {
+    mock.timers.enable({ apis: ['setInterval'] });
+    try {
+      const sink = makeSink(true);
+      const spinner = createSpinner(sink);
+
+      assert.equal(spinner.elapsed(), 0, 'elapsed is 0 before any tick');
+      spinner.start('working');
+      mock.timers.tick(80 * 30); // ~30 ticks → 2s at 80ms/12.5fps
+      assert.equal(spinner.elapsed(), 2, 'elapsed reflects the real tick count (2s)');
+      spinner.stop();
+      // stop() must NOT reset the counter — the completion line reads it after stop.
+      assert.equal(spinner.elapsed(), 2, 'elapsed survives stop() so the completion line can show it');
+    } finally {
+      mock.timers.reset();
+    }
+  });
+
+  it('non-TTY: elapsed() is 0 (no ticks fire) so piped output stays stable', () => {
+    const sink = makeSink(false);
+    const spinner = createSpinner(sink);
+    spinner.start('working');
+    spinner.stop();
+    assert.equal(spinner.elapsed(), 0, 'no animation off-TTY → elapsed stays 0');
+  });
+});

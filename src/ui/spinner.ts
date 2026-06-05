@@ -37,6 +37,11 @@ export interface Spinner {
   update(text: string): void;
   /** Stop the spinner and clear the line (TTY) or do nothing (non-TTY). */
   stop(): void;
+  /** Whole seconds the spinner has been visible this run, derived from the real
+   *  animation tick count (never Date/Math). 0 before the first second, and 0 on
+   *  a non-TTY sink where no ticks fire. Lets the completion line show the same
+   *  honest elapsed value the live `· Ns` suffix shows, without re-deriving it. */
+  elapsed(): number;
 }
 
 /**
@@ -133,6 +138,10 @@ export function createSpinner(out: OutputSink): Spinner {
         // Clear the spinner line so the real output follows cleanly.
         out.write('\r\x1b[K');
       }
+    },
+
+    elapsed(): number {
+      return elapsedSeconds();
     },
   };
 }

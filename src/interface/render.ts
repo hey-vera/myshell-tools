@@ -25,7 +25,7 @@ import type { CliError, ErrorCategory } from '../providers/errors.js';
 import { classifyError, formatErrorMessage } from '../providers/errors.js';
 import { lastJsonObjectBoundsWithKey, isTrailingNoise } from '../core/json-envelope.js';
 import { GOAL_MARKER_TOKENS, stripTrailingGoalMarker } from '../core/goal.js';
-import { bold, cyan, dim, green, red, yellow } from '../ui/theme.js';
+import { bold, cyan, dim, green, red, yellow, turnMarker } from '../ui/theme.js';
 import { createSpinner } from '../ui/spinner.js';
 import { formatTokens } from '../infra/insights.js';
 
@@ -365,11 +365,18 @@ class EnvelopeFilter {
  * @param verbosity - How much status chrome to show. Defaults to 'normal' so
  *                    callers that don't thread it through still compile and get
  *                    the clean conversation view.
+ * @param interruptHint - Optional one-line hint (e.g. "esc to interrupt · ctrl-c
+ *                    twice for menu") shown dim under the live status line on a
+ *                    TTY and cleared with it. The renderer does NOT own
+ *                    interruption mechanics — the driving loop passes the wording
+ *                    that matches its keybindings (menu chat vs. plain repl), so
+ *                    the two layers stay in sync. Omitted / off-TTY → no hint.
  */
 export async function renderStream(
   events: AsyncIterable<CoreEvent>,
   out: OutputSink,
   verbosity: Verbosity = 'normal',
+  interruptHint?: string,
 ): Promise<{
   success: boolean;
   final?: Extract<CoreEvent, { type: 'final' }>;
@@ -417,15 +424,35 @@ export async function renderStream(
   // reports the REAL measured token count, so no fabricated figure ever persists.
   let streamedChars = 0;
 
-  /** Compose the live indicator label: work verb, step count, and the streamed
-   *  token estimate when any prose has arrived. */
+  /** Compose the live indicator label: a leading assistant `●` (cyan, the same
+   *  marker that will head the answer, so the eye tracks one object from
+   *  "working" → "answer"), the work verb, step count, and the streamed token
+   *  estimate when any prose has arrived. The braille frame + `· Ns` elapsed
+   *  suffix are added by the spinner itself. */
   function spinnerLabel(): string {
+    const dot = `${turnMarker('streaming', c)} `;
     const steps = `${stepCount} step${stepCount === 1 ? '' : 's'}`;
     if (streamedChars > 0) {
       const approxTok = formatTokens(Math.ceil(streamedChars / 4));
-      return `${workLabel}… ${steps} · ↓ ~${approxTok} tokens`;
+      return `${dot}${workLabel}… ${steps} · ↓ ~${approxTok} tokens`;
     }
-    return `${workLabel}… ${steps}`;
+    return `${dot}${workLabel}… ${steps}`;
+  }
+
+  // The interrupt hint is a single dim line shown once per turn on a TTY (never
+  // off-TTY, never in plain pipes). It is printed ABOVE the live status line so
+  // the spinner's in-place `\r` repaints always land on the spinner's own (last)
+  // line and never clobber the hint — the static hint sits just above the
+  // animated verb, exactly the Claude/Codex layout. The wording is passed in by
+  // the driving loop (Phase 0 owns the interrupt mechanics) rather than hardcoded
+  // here, so the two layers stay in sync.
+  let hintShown = false;
+  function showInterruptHint(): void {
+    if (hintShown) return;
+    if (!out.isTty) return;
+    if (interruptHint === undefined || interruptHint === '') return;
+    out.write(`${dim(interruptHint, c)}\n`);
+    hintShown = true;
   }
 
   function stopSpinner(): void {
@@ -433,6 +460,18 @@ export async function renderStream(
       spinner.stop();
       spinnerActive = false;
     }
+    // The hint clears with the status line: once the spinner's line is erased the
+    // hint above is stale, so re-arm it to be reprinted if work resumes. (It is a
+    // single line of chrome; the spinner's own \r\x1b[K handles its row.)
+    hintShown = false;
+  }
+
+  /** The final-state assistant dot for a completion line, with a trailing space.
+   *  This is where the turn's outcome colour lands (the streamed dot was cyan and
+   *  can't be retro-recoloured). Empty (no leading space) under MYSHELL_PLAIN. */
+  function completionDot(state: 'success' | 'fail' | 'cancel' | 'ask'): string {
+    const marker = turnMarker(state, c);
+    return marker === '' ? '' : `${marker} `;
   }
 
   /** Ensure the live indicator is on and showing the current label. Restarts it
@@ -443,6 +482,7 @@ export async function renderStream(
     if (!spinnerActive) {
       // resume(), not start(): a tier that streamed an answer and then runs more
       // tools keeps ONE continuous elapsed count instead of restarting at 0s.
+      showInterruptHint();
       spinner.resume(spinnerLabel());
       spinnerActive = true;
     } else {
@@ -487,7 +527,9 @@ export async function renderStream(
         currentProvider = ev.provider;
         workLabel = isVerbose ? `${ev.tier} (${ev.provider}/${ev.model})` : 'Thinking';
         if (out.isTty) {
-          spinner.start(`${workLabel}…`);
+          // Hint first (sits above), then the animated status line below it.
+          showInterruptHint();
+          spinner.start(spinnerLabel());
           spinnerActive = true;
         }
         break;
@@ -498,6 +540,17 @@ export async function renderStream(
         if (pe.type === 'text') {
           // First real answer prose — clear the indicator and start streaming.
           stopSpinner();
+          // Head the assistant's turn with the cyan streaming `●`, exactly once,
+          // immediately before the first prose delta — the same marker the live
+          // status line carried, so the eye tracks one object from "working" →
+          // "answer". It is written straight to the sink (not through the envelope
+          // filter) so it can't be mistaken for prose. A streamed dot cannot be
+          // retro-recoloured, so the COMPLETION line (below) owns the final-state
+          // colour. Under MYSHELL_PLAIN turnMarker() returns '' → no marker.
+          if (!proseStarted) {
+            const marker = turnMarker('streaming', c);
+            if (marker !== '') out.write(`${marker} `);
+          }
           // If a tool call interrupted the prose, break the line so the resumed
           // text isn't glued onto the previous sentence. Only between segments —
           // never before the very first delta.
@@ -613,7 +666,8 @@ export async function renderStream(
 
         if (ev.canceled === true) {
           if (!isQuiet) {
-            out.write(`\n${dim('■ Cancelled', c)}\n`);
+            // Dim turn dot + the existing `■ Cancelled` glyph line.
+            out.write(`\n${completionDot('cancel')}${dim('■ Cancelled', c)}\n`);
           }
           break;
         }
@@ -628,8 +682,9 @@ export async function renderStream(
             }
           }
           if (!isQuiet) {
+            // Red turn dot owns the failed final-state colour.
             out.write(
-              `\n${bold(red('Failed', c), c)} — ` +
+              `\n${completionDot('fail')}${bold(red('Failed', c), c)} — ` +
               `tier: ${ev.tier}, ` +
               `${formatTokens(runningTokens)} tokens, ` +
               `attempts: ${ev.attempts}, ` +
@@ -652,15 +707,25 @@ export async function renderStream(
         // Success: a single minimal completion line in normal/verbose; nothing
         // in quiet.
         if (isVerbose) {
+          // Green turn dot owns the success final-state colour.
           out.write(
-            `\n${bold(green('Success', c), c)} — ` +
+            `\n${completionDot('success')}${bold(green('Success', c), c)} — ` +
             `tier: ${ev.tier}, ` +
             `${formatTokens(runningTokens)} tokens, ` +
             `attempts: ${ev.attempts}, ` +
             `session: ${ev.sessionId}\n`,
           );
         } else if (!isQuiet) {
-          out.write(`\n${dim(`✓ done (${formatTokens(runningTokens)} tokens)`, c)}\n`);
+          // `● ✓ done · N tokens · Ns` — green dot, dim metrics. Elapsed is the
+          // real seconds the spinner was visible (spinner.elapsed(), tick-derived,
+          // never fabricated); on a non-TTY run no ticks fire so it is 0 and the
+          // suffix is omitted, keeping piped output stable.
+          const secs = spinner.elapsed();
+          const elapsedStr = secs > 0 ? ` · ${secs}s` : '';
+          out.write(
+            `\n${completionDot('success')}` +
+            `${dim(`✓ done · ${formatTokens(runningTokens)} tokens${elapsedStr}`, c)}\n`,
+          );
         }
         break;
       }

@@ -1111,3 +1111,207 @@ describe('renderStream — remember_user block stripping', () => {
     assert.ok(!joined.includes('"facts"'), 'no fragment may leak');
   });
 });
+
+// ---------------------------------------------------------------------------
+// 14. Phase-1 presentation chrome — assistant `●`, final-state completion dot,
+//     elapsed suffix, interrupt hint, and clean degradation off-colour/TTY.
+// ---------------------------------------------------------------------------
+
+const DOT = '●';
+
+/** A colour-enabled TTY sink so glyph colours + the hint actually render. */
+function makeColorTtySink(): OutputSink & { buf: string[] } {
+  const buf: string[] = [];
+  return { buf, write: (s: string) => { buf.push(s); }, color: true, isTty: true };
+}
+
+describe('renderStream — assistant ● turn marker', () => {
+  it('heads an assistant turn with a cyan streaming ● before the first prose delta', async () => {
+    const sink = makeColorTtySink();
+    const events: CoreEvent[] = [
+      { type: 'tier-start', tier: 'ic', provider: 'claude', model: 'claude-sonnet-4-6', attempt: 1 },
+      { type: 'provider-event', tier: 'ic', event: { type: 'text', delta: 'Hello there.' } },
+      { type: 'final', success: true, output: 'Hello there.', tier: 'ic', totalCostUsd: 0, sessionId: 's', attempts: 1 },
+    ];
+    await renderStream(makeStream(events), sink, 'normal');
+    const joined = sink.buf.join('');
+
+    // The streaming dot is cyan (\x1b[36m) and precedes the prose.
+    assert.ok(joined.includes(`\x1b[36m${DOT}\x1b[0m `), 'cyan ● heads the streaming turn');
+    const dotIdx = joined.indexOf(DOT);
+    const proseIdx = joined.indexOf('Hello there.');
+    assert.ok(dotIdx >= 0 && dotIdx < proseIdx, '● appears before the prose');
+  });
+
+  it('writes the prose-heading ● exactly once even when prose arrives in several deltas', async () => {
+    // Non-TTY/non-colour sink: no spinner status line is painted, so the only
+    // dots are the prose-heading marker (once) + the completion marker (once).
+    // This isolates the "exactly one streaming dot per turn" guarantee from the
+    // status-line dot that a TTY sink would also paint.
+    const sink = makeSink();
+    const events: CoreEvent[] = [
+      { type: 'tier-start', tier: 'ic', provider: 'claude', model: 'm', attempt: 1 },
+      { type: 'provider-event', tier: 'ic', event: { type: 'text', delta: 'one ' } },
+      { type: 'provider-event', tier: 'ic', event: { type: 'text', delta: 'two ' } },
+      { type: 'provider-event', tier: 'ic', event: { type: 'text', delta: 'three' } },
+      { type: 'final', success: true, output: 'one two three', tier: 'ic', totalCostUsd: 0, sessionId: 's', attempts: 1 },
+    ];
+    await renderStream(makeStream(events), sink, 'normal');
+    const joined = sink.buf.join('');
+    // One streaming dot + one completion dot = two ●s total; never one-per-delta.
+    const count = [...joined].filter((ch) => ch === DOT).length;
+    assert.equal(count, 2, `exactly one prose-heading ● + one completion ●, got ${count}`);
+    // The heading dot sits immediately before the first prose, once.
+    assert.equal(joined.split(`${DOT} one `).length - 1, 1, 'heading ● precedes the first delta exactly once');
+  });
+});
+
+describe('renderStream — completion line carries the final-state dot/colour', () => {
+  function streamWith(finalEv: CoreEvent): CoreEvent[] {
+    return [
+      { type: 'tier-start', tier: 'ic', provider: 'claude', model: 'm', attempt: 1 },
+      { type: 'provider-event', tier: 'ic', event: { type: 'text', delta: 'Answer.' } },
+      finalEv,
+    ];
+  }
+
+  it('success → green ● and an elapsed suffix on the normal done line', async () => {
+    const sink = makeColorTtySink();
+    const events = streamWith({
+      type: 'final', success: true, output: 'Answer.', tier: 'ic', totalCostUsd: 0, sessionId: 's', attempts: 1,
+    });
+    await renderStream(makeStream(events), sink, 'normal');
+    const joined = sink.buf.join('');
+    // Completion line: green ● + dim "✓ done · …".
+    assert.ok(joined.includes(`\x1b[32m${DOT}\x1b[0m `), 'green ● on the success completion line');
+    assert.ok(joined.includes('✓ done · '), 'success line uses the new "✓ done · N tokens" form');
+  });
+
+  it('appends the spinner elapsed (· Ns) to the normal success line when time passed', async () => {
+    // Drive real ticks so spinner.elapsed() > 0, then assert it reaches the line.
+    const { mock } = await import('node:test');
+    mock.timers.enable({ apis: ['setInterval'] });
+    try {
+      const sink = makeColorTtySink();
+      // A generator that lets the spinner animate between tier-start and final.
+      async function* timedStream(): AsyncIterable<CoreEvent> {
+        yield { type: 'tier-start', tier: 'ic', provider: 'claude', model: 'm', attempt: 1 };
+        mock.timers.tick(80 * 30); // ~2s of spinner ticks
+        yield { type: 'final', success: true, output: '', tier: 'ic', totalCostUsd: 0, sessionId: 's', attempts: 1 };
+      }
+      await renderStream(timedStream(), sink, 'normal');
+      const joined = sink.buf.join('');
+      assert.ok(/✓ done · .* · 2s/.test(joined), `success line carries elapsed "· 2s", got:\n${JSON.stringify(joined)}`);
+    } finally {
+      mock.timers.reset();
+    }
+  });
+
+  it('failure → red ● on the Failed line', async () => {
+    const sink = makeColorTtySink();
+    const events = streamWith({
+      type: 'final', success: false, output: '', tier: 'ic', totalCostUsd: 0, sessionId: 's', attempts: 2,
+    });
+    await renderStream(makeStream(events), sink, 'normal');
+    const joined = sink.buf.join('');
+    assert.ok(joined.includes(`\x1b[31m${DOT}\x1b[0m `), 'red ● on the failure completion line');
+    assert.ok(joined.includes('Failed'), 'failure summary still present');
+  });
+
+  it('cancel → dim ● on the Cancelled line', async () => {
+    const sink = makeColorTtySink();
+    const events = streamWith({
+      type: 'final', success: false, output: '', tier: 'ic', totalCostUsd: 0, sessionId: 's', attempts: 1, canceled: true,
+    });
+    await renderStream(makeStream(events), sink, 'normal');
+    const joined = sink.buf.join('');
+    assert.ok(joined.includes(`\x1b[2m${DOT}\x1b[0m `), 'dim ● on the cancelled completion line');
+    assert.ok(joined.includes('■ Cancelled'), 'cancelled glyph line preserved');
+  });
+
+  it('question turn → NO completion line (selector follows), prose still under a ●', async () => {
+    const sink = makeColorTtySink();
+    const events: CoreEvent[] = [
+      { type: 'tier-start', tier: 'ic', provider: 'claude', model: 'm', attempt: 1 },
+      { type: 'provider-event', tier: 'ic', event: { type: 'text', delta: 'Which one?' } },
+      {
+        type: 'final', success: true, output: 'Which one?', tier: 'ic', totalCostUsd: 0, sessionId: 's', attempts: 1,
+        questions: { questions: [{ id: 'q', prompt: 'Which?', options: [{ label: 'a' }, { label: 'b' }], multiSelect: false, allowFreeText: true }] },
+      },
+    ];
+    await renderStream(makeStream(events), sink, 'normal');
+    const joined = sink.buf.join('');
+    assert.ok(joined.includes('Which one?'), 'lead-in prose shown');
+    assert.ok(!joined.includes('✓ done'), 'no done line on a question turn');
+    assert.ok(!joined.includes('Failed'), 'no failure line on a question turn');
+  });
+});
+
+describe('renderStream — interrupt hint (passed in, TTY-only)', () => {
+  const HINT = 'esc to interrupt · ctrl-c twice for menu';
+  const events: CoreEvent[] = [
+    { type: 'tier-start', tier: 'ic', provider: 'claude', model: 'm', attempt: 1 },
+    { type: 'provider-event', tier: 'ic', event: { type: 'text', delta: 'Working.' } },
+    { type: 'final', success: true, output: 'Working.', tier: 'ic', totalCostUsd: 0, sessionId: 's', attempts: 1 },
+  ];
+
+  it('renders the passed-in hint once, dim, on a TTY', async () => {
+    const sink = makeColorTtySink();
+    await renderStream(makeStream(events), sink, 'normal', HINT);
+    const joined = sink.buf.join('');
+    assert.ok(joined.includes(HINT), 'the exact passed-in hint string is shown');
+    assert.ok(joined.includes(`\x1b[2m${HINT}\x1b[0m`), 'the hint is dim');
+    const occurrences = joined.split(HINT).length - 1;
+    assert.equal(occurrences, 1, 'hint shown exactly once');
+  });
+
+  it('never renders the hint off-TTY (piped)', async () => {
+    const sink = makeSink(); // non-TTY, non-colour
+    await renderStream(makeStream(events), sink, 'normal', HINT);
+    const joined = sink.buf.join('');
+    assert.ok(!joined.includes(HINT), 'no interrupt hint in piped output');
+  });
+
+  it('renders no hint when none is passed', async () => {
+    const sink = makeColorTtySink();
+    await renderStream(makeStream(events), sink, 'normal');
+    const joined = sink.buf.join('');
+    assert.ok(!joined.includes('interrupt'), 'no hint text when the param is omitted');
+  });
+});
+
+describe('renderStream — degradation off-colour / non-TTY / MYSHELL_PLAIN', () => {
+  const events: CoreEvent[] = [
+    { type: 'tier-start', tier: 'ic', provider: 'claude', model: 'm', attempt: 1 },
+    { type: 'provider-event', tier: 'ic', event: { type: 'text', delta: 'Plain answer.' } },
+    { type: 'final', success: true, output: 'Plain answer.', tier: 'ic', totalCostUsd: 0, sessionId: 's', attempts: 1 },
+  ];
+
+  it('non-colour/non-TTY: emits NO ANSI, no spinner frames, but keeps the structural ●', async () => {
+    const sink = makeSink(); // color:false, isTty:false
+    await renderStream(makeStream(events), sink, 'normal');
+    const joined = sink.buf.join('');
+    assert.ok(!joined.includes('\x1b['), `piped output must contain zero ANSI bytes, got:\n${JSON.stringify(joined)}`);
+    assert.ok(!/[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]/.test(joined), 'no braille spinner frames off-TTY');
+    assert.ok(joined.includes(DOT), 'the structural ● is kept as a plain marker in pipes');
+    assert.ok(joined.includes('Plain answer.'), 'prose is shown verbatim');
+    // No elapsed suffix off-TTY (no ticks fired).
+    assert.ok(!/· \d+s/.test(joined), 'no fabricated elapsed off-TTY');
+  });
+
+  it('MYSHELL_PLAIN drops the ● entirely from piped output', async () => {
+    const orig = process.env['MYSHELL_PLAIN'];
+    process.env['MYSHELL_PLAIN'] = '1';
+    try {
+      const sink = makeSink();
+      await renderStream(makeStream(events), sink, 'normal');
+      const joined = sink.buf.join('');
+      assert.ok(!joined.includes(DOT), 'plain mode drops the ● marker for clean machine output');
+      assert.ok(joined.includes('Plain answer.'), 'prose is still shown under MYSHELL_PLAIN');
+      assert.ok(joined.includes('✓ done'), 'completion line still present (just no dot)');
+    } finally {
+      if (orig === undefined) delete process.env['MYSHELL_PLAIN'];
+      else process.env['MYSHELL_PLAIN'] = orig;
+    }
+  });
+});
