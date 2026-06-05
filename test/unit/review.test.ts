@@ -186,7 +186,45 @@ describe('parseReviewVerdict — fail-open (broken reviewer must not block user)
 // buildReviewPrompt — basic structure checks
 // ---------------------------------------------------------------------------
 
+const EXPECTED_REVIEW_PROMPT_NO_CONTRACT = `\
+You are a senior-manager / staff-engineer reviewer performing a critical quality gate.
+
+You are reviewing the work of an individual-contributor (IC) engineer who was given the
+following task. Your job is to identify any issues with correctness, quality, security,
+or completeness in the IC's output before it reaches the user.
+
+Original task:
+task
+
+IC output to review:
+output
+
+Review checklist (assess each dimension):
+1. CORRECTNESS — Does the output actually solve the task? Are there logic errors, off-by-ones,
+   or wrong assumptions?
+2. QUALITY — Is the code/output clean, idiomatic, and maintainable? Are there obvious smells?
+3. SECURITY — Are there any injection risks, secret leaks, missing input validation, or
+   privilege-escalation paths?
+4. COMPLETENESS — Does the output address all parts of the task, or does it miss edge cases?
+
+For any finding, anchor it to a specific file path and line range when applicable.
+
+After your review, append EXACTLY the following JSON object on its own line at the very end
+of your response (no trailing text after it):
+{"verdict": "approve|revise|escalate", "notes": "<specific, file-anchored feedback>", "confidence": <0.0-1.0>}
+
+verdict choices:
+  approve   — the IC output is correct, complete, and safe; ship it.
+  revise    — the IC output has fixable issues; provide actionable notes so the IC can retry.
+  escalate  — the task requires architectural judgement or has critical defects beyond IC scope.
+
+confidence: your honest estimate that your review is complete and correct (1.0 = certain).`;
+
 describe('buildReviewPrompt — structure', () => {
+  it('without a contract matches the existing prompt byte-for-byte', () => {
+    assert.equal(buildReviewPrompt('task', 'output'), EXPECTED_REVIEW_PROMPT_NO_CONTRACT);
+  });
+
   it('contains the original task', () => {
     const prompt = buildReviewPrompt('refactor auth module', 'IC did some work');
     assert.ok(prompt.includes('refactor auth module'));
@@ -211,5 +249,20 @@ describe('buildReviewPrompt — structure', () => {
     assert.ok(prompt.includes('quality'));
     assert.ok(prompt.includes('security'));
     assert.ok(prompt.includes('completeness'));
+  });
+
+  it('with a contract adds verifier criteria before the verdict envelope instruction', () => {
+    const prompt = buildReviewPrompt('task', 'output', {
+      version: 1,
+      objective: 'finish auth migration',
+      vision: 'preserve login behavior',
+    });
+
+    assert.match(prompt, /VERIFY AGAINST CONTRACT:\nOBJECTIVE: finish auth migration\nVISION: preserve login behavior/);
+    assert.ok(
+      prompt.indexOf('VERIFY AGAINST CONTRACT') <
+        prompt.indexOf('After your review, append EXACTLY'),
+    );
+    assert.ok(prompt.endsWith('confidence: your honest estimate that your review is complete and correct (1.0 = certain).'));
   });
 });

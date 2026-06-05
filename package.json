@@ -1,6 +1,6 @@
 {
   "name": "myshell-tools",
-  "version": "3.10.20",
+  "version": "3.11.0",
   "type": "module",
   "bin": {
     "myshell-tools": "dist/cli.js",

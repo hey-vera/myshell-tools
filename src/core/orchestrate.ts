@@ -42,6 +42,7 @@ import { nextTierUp, pickReviewer } from './escalate.js';
 import { buildReviewPrompt, parseReviewVerdict } from './review.js';
 import { planPanel, runPanel } from './ensemble.js';
 import { planHedge, runHedged } from './hedge.js';
+import { capContract, shouldMaterializeContract } from './work-contract.js';
 
 // ---------------------------------------------------------------------------
 // Pure helper: should this output be cross-vendor reviewed?
@@ -257,6 +258,7 @@ export async function* orchestrate(
     risk: decision.risk,
     rationale: decision.rationale,
   };
+  const routePlan = decision.plan;
   yield { type: 'classified', classification };
 
   // -------------------------------------------------------------------------
@@ -833,7 +835,15 @@ export async function* orchestrate(
           deps.learnedProviderOrder?.['manager'],
         );
         const reviewTier = reviewDecision.tier;
-        const reviewPrompt = buildReviewPrompt(task, lastOutput);
+        const reviewContractDecision = shouldMaterializeContract({
+          classification,
+          routePlan,
+          context: 'normal',
+          reviewWillRun: true,
+        });
+        const reviewPrompt = reviewContractDecision.criteria
+          ? buildReviewPrompt(task, lastOutput, capContract({ version: 1, objective: task }))
+          : buildReviewPrompt(task, lastOutput);
 
         // Yield tier-start for review run
         yield {

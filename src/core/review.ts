@@ -12,6 +12,8 @@
  */
 
 import { lastJsonObjectWithKey } from './json-envelope.js';
+import type { WorkContract } from './work-contract.js';
+import { renderContractForPrompt } from './work-contract.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -49,8 +51,14 @@ export interface ReviewVerdict {
  *
  * @param task     - The original user task description.
  * @param icOutput - The IC's full output text being reviewed.
+ * @param contract - Optional ephemeral work contract criteria for this review.
  */
-export function buildReviewPrompt(task: string, icOutput: string): string {
+export function buildReviewPrompt(task: string, icOutput: string, contract?: WorkContract): string {
+  const contractSection =
+    contract !== undefined
+      ? `\n\nVERIFY AGAINST CONTRACT:\n${renderContractForPrompt(contract)}\n\nUse this contract as the review criteria: did the IC output serve the objective and vision, or drift? Which roadmap item advanced, if any? Does any checkpoint claim conflict with the actual IC output? If there is divergence, identify where it began.`
+      : '';
+
   return `\
 You are a senior-manager / staff-engineer reviewer performing a critical quality gate.
 
@@ -73,7 +81,7 @@ Review checklist (assess each dimension):
 4. COMPLETENESS — Does the output address all parts of the task, or does it miss edge cases?
 
 For any finding, anchor it to a specific file path and line range when applicable.
-
+${contractSection}
 After your review, append EXACTLY the following JSON object on its own line at the very end
 of your response (no trailing text after it):
 {"verdict": "approve|revise|escalate", "notes": "<specific, file-anchored feedback>", "confidence": <0.0-1.0>}

@@ -233,6 +233,47 @@ describe('buildPanelCandidatePrompt', () => {
 });
 
 describe('buildPanelSynthesisPrompt', () => {
+  const EXPECTED_SYNTH_PROMPT_NO_CONTRACT = `\
+You are a senior synthesizer adjudicating an expert panel. 2
+engineers each answered the SAME task independently (their answers are below).
+Your job is to produce the single best final answer for the user.
+
+How to synthesize:
+- Read every panelist's answer carefully and cross-check their claims against one
+  another. Where they agree on something substantive, that agreement is evidence
+  it is right.
+- Where they DISAGREE on something material, do not paper over it: decide which
+  position is better supported (and briefly say why), or surface the disagreement
+  honestly if it genuinely cannot be resolved from what's here.
+- Prefer the best-supported, most concrete claims; discard anything a panelist
+  asserted without support that another panelist contradicts.
+- Do NOT just stitch the answers together or pick one wholesale — integrate them
+  into one coherent, correct answer in your own voice.
+- Write the final answer directly to the user. Do not mention "panelists" or this
+  instruction unless a real disagreement is worth flagging.
+
+Original task:
+design a cache
+
+Independent panel answers:
+--- PANELIST 1 (claude) ---
+use an LRU
+
+--- PANELIST 2 (codex) ---
+use a TTL map
+
+Now write the single final answer for the user.`;
+
+  it('without a contract matches the existing prompt byte-for-byte', () => {
+    assert.equal(
+      buildPanelSynthesisPrompt('design a cache', [
+        { provider: 'claude', output: 'use an LRU' },
+        { provider: 'codex', output: 'use a TTL map' },
+      ]),
+      EXPECTED_SYNTH_PROMPT_NO_CONTRACT,
+    );
+  });
+
   it('includes the task, every candidate output, and synthesis instructions', () => {
     const p = buildPanelSynthesisPrompt('design a cache', [
       { provider: 'claude', output: 'use an LRU' },
@@ -244,6 +285,20 @@ describe('buildPanelSynthesisPrompt', () => {
     assert.match(p, /claude/);
     assert.match(p, /codex/);
     assert.match(p, /synthesiz/i);
+  });
+
+  it('with a contract adds adjudication criteria before the original task', () => {
+    const p = buildPanelSynthesisPrompt(
+      'design a cache',
+      [
+        { provider: 'claude', output: 'use an LRU' },
+        { provider: 'codex', output: 'use a TTL map' },
+      ],
+      { version: 1, objective: 'choose a simple cache', vision: 'avoid broad rewrites' },
+    );
+
+    assert.match(p, /CONTRACT TO ADJUDICATE AGAINST:\nOBJECTIVE: choose a simple cache\nVISION: avoid broad rewrites/);
+    assert.ok(p.indexOf('CONTRACT TO ADJUDICATE AGAINST') < p.indexOf('Original task:'));
   });
 });
 

@@ -41,6 +41,8 @@ import { route } from './route.js';
 import { getModelPricing, calculateCost } from '../infra/pricing.js';
 import { assess } from './assess.js';
 import { authorizeTier } from './flagship.js';
+import type { WorkContract } from './work-contract.js';
+import { capContract, renderContractForPrompt, shouldMaterializeContract } from './work-contract.js';
 
 // ---------------------------------------------------------------------------
 // Plan
@@ -184,6 +186,7 @@ not a throwaway.`;
 export function buildPanelSynthesisPrompt(
   task: string,
   candidates: ReadonlyArray<{ provider: ProviderId; output: string }>,
+  contract?: WorkContract,
 ): string {
   const blocks = candidates
     .map(
@@ -191,6 +194,10 @@ export function buildPanelSynthesisPrompt(
         `--- PANELIST ${i + 1} (${c.provider}) ---\n${c.output.trim()}`,
     )
     .join('\n\n');
+  const contractSection =
+    contract !== undefined
+      ? `\n\nCONTRACT TO ADJUDICATE AGAINST:\n${renderContractForPrompt(contract)}\n\nUse this contract as the criteria when reconciling the panel answers. Prefer candidates that serve the objective and vision directly, and call out material drift from that objective.`
+      : '';
 
   return `\
 You are a senior synthesizer adjudicating an expert panel. ${candidates.length}
@@ -210,7 +217,7 @@ How to synthesize:
   into one coherent, correct answer in your own voice.
 - Write the final answer directly to the user. Do not mention "panelists" or this
   instruction unless a real disagreement is worth flagging.
-
+${contractSection}
 Original task:
 ${task}
 
@@ -619,10 +626,20 @@ export async function* runPanel(
     // route() call site.
     deps.learnedProviderOrder?.[plan.tier],
   );
-  const synthPrompt = buildPanelSynthesisPrompt(
-    task,
-    succeeded.map((o) => ({ provider: o.provider, output: o.finalText })),
-  );
+  const synthContractDecision = shouldMaterializeContract({
+    classification: plan.classification,
+    routePlan: false,
+    context: 'normal',
+    reviewWillRun: true,
+  });
+  const synthCandidates = succeeded.map((o) => ({ provider: o.provider, output: o.finalText }));
+  const synthPrompt = synthContractDecision.criteria
+    ? buildPanelSynthesisPrompt(
+        task,
+        synthCandidates,
+        capContract({ version: 1, objective: task }),
+      )
+    : buildPanelSynthesisPrompt(task, synthCandidates);
 
   attempts++;
   yield {

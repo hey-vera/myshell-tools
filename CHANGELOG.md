@@ -11,6 +11,29 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 - Installer: PowerShell-Core profile support + PowerShell interactive guard; don't
   overwrite an existing `cm`/`mst` alias — deferred (niche / minor).
 - update-check: use semver precedence for prerelease→stable (no prereleases shipped today).
+- Work Contract: anti-drift goal-loop anchor (Stage 2), persisted `workTrace` audit
+  trail (Stage 3), mode-gated auto-engage behind a default-off flag (Stage 4),
+  cross-turn contract seeding (Stage 5) — staged, building on 3.11.0.
+
+## [3.11.0]
+
+### Added
+Work Contract — Stage 1: structured verifier criteria. A compact, ephemeral
+`WorkContract` (objective + optional vision) is now handed to the cross-vendor
+reviewer and the panel synthesizer as explicit adjudication criteria, replacing the
+prior unstructured "does this look good?" review:
+- New pure `src/core/work-contract.ts`: the `WorkContract` type model, a deterministic
+  `capContract` (caps every field; never throws), `renderContractForPrompt` (degrades
+  cleanly to objective-only), and the `shouldMaterializeContract` proportionality
+  predicate (criteria only when a reviewer/synthesizer already runs; roadmap reserved
+  for multi-step contexts in later stages).
+- `buildReviewPrompt` / `buildPanelSynthesisPrompt` gained an optional `contract?`
+  argument; when absent the prompts are **byte-for-byte identical** to before (pinned
+  by snapshot tests), so trivial turns pay zero tax and no new control-envelope key is
+  introduced (the 3.10.10 leak contract is untouched).
+- The contract lives only in the prompt we send — never in model output we parse,
+  never in assistant prose — so nothing new can leak and history replay is unaffected.
+- No persistence, no extra model call, no worker-output change in this stage.
 
 ## [3.10.20]
 
