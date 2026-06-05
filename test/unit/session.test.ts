@@ -149,6 +149,31 @@ describe('createSessionWriter — append and readSession', () => {
     assert.equal(entries[0]?.model, 'claude-sonnet-4-6');
     assert.equal(entries[0]?.costUsd, 0.0012);
   });
+
+  it('round-trips persisted workTrace records', async () => {
+    const cwd = join(dir, 'work-trace');
+    const writer = createSessionWriter({ cwd, id: randomUUID() });
+
+    await writer.append(
+      makeEntry({
+        role: 'assistant',
+        content: 'done',
+        workTrace: {
+          version: 1,
+          objective: 'ship the widget',
+          checkpoints: [{ id: 'C1', summary: 'implemented the widget' }],
+        },
+      }),
+    );
+
+    const entries = await readSession(cwd);
+    assert.equal(entries.length, 1);
+    assert.deepEqual(entries[0]?.workTrace, {
+      version: 1,
+      objective: 'ship the widget',
+      checkpoints: [{ id: 'C1', summary: 'implemented the widget' }],
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------

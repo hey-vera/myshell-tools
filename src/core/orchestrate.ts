@@ -42,6 +42,7 @@ import { nextTierUp, pickReviewer } from './escalate.js';
 import { buildReviewPrompt, parseReviewVerdict } from './review.js';
 import { planPanel, runPanel } from './ensemble.js';
 import { planHedge, runHedged } from './hedge.js';
+import type { WorkContract } from './work-contract.js';
 import { capContract, shouldMaterializeContract } from './work-contract.js';
 
 // ---------------------------------------------------------------------------
@@ -103,6 +104,7 @@ interface AcceptedRunSessionData {
   readonly costUsd: number;
   readonly durationMs: number;
   readonly sessionId?: string;
+  readonly workTrace?: WorkContract;
 }
 
 async function appendAcceptedAssistant(
@@ -120,7 +122,18 @@ async function appendAcceptedAssistant(
     costUsd: run.costUsd,
     durationMs: run.durationMs,
     ...(run.sessionId !== undefined ? { sessionId: run.sessionId } : {}),
+    ...(run.workTrace !== undefined ? { workTrace: run.workTrace } : {}),
   });
+}
+
+function isCleanObjectiveTask(task: string): boolean {
+  const trimmed = task.trim();
+  if (trimmed.length === 0) return false;
+  if (trimmed.startsWith('OBJECTIVE:')) return false;
+  if (trimmed.includes('\nBefore acting, confirm this turn still directly serves the OBJECTIVE')) {
+    return false;
+  }
+  return true;
 }
 
 /**
@@ -259,6 +272,22 @@ export async function* orchestrate(
     rationale: decision.rationale,
   };
   const routePlan = decision.plan;
+  const incomingWorkContract =
+    deps.workContract !== undefined ? capContract(deps.workContract) : undefined;
+  const normalRoadmapDecision = shouldMaterializeContract({
+    classification,
+    routePlan,
+    context: 'normal',
+    reviewWillRun: false,
+  });
+  const generatedWorkTrace =
+    incomingWorkContract === undefined &&
+    normalRoadmapDecision.roadmap &&
+    isCleanObjectiveTask(task)
+      ? capContract({ version: 1, objective: task })
+      : undefined;
+  const workTrace =
+    incomingWorkContract !== undefined ? incomingWorkContract : generatedWorkTrace;
   yield { type: 'classified', classification };
 
   // -------------------------------------------------------------------------
@@ -605,6 +634,7 @@ export async function* orchestrate(
         costUsd: usd,
         durationMs,
         ...(outcome.sessionId !== undefined ? { sessionId: outcome.sessionId } : {}),
+        ...(workTrace !== undefined ? { workTrace } : {}),
       };
     }
 
@@ -841,9 +871,16 @@ export async function* orchestrate(
           context: 'normal',
           reviewWillRun: true,
         });
-        const reviewPrompt = reviewContractDecision.criteria
-          ? buildReviewPrompt(task, lastOutput, capContract({ version: 1, objective: task }))
-          : buildReviewPrompt(task, lastOutput);
+        const reviewContract =
+          incomingWorkContract !== undefined
+            ? incomingWorkContract
+            : isCleanObjectiveTask(task)
+              ? capContract({ version: 1, objective: task })
+              : undefined;
+        const reviewPrompt =
+          reviewContractDecision.criteria && reviewContract !== undefined
+            ? buildReviewPrompt(task, lastOutput, reviewContract)
+            : buildReviewPrompt(task, lastOutput);
 
         // Yield tier-start for review run
         yield {

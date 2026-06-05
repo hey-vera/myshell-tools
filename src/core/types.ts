@@ -115,6 +115,7 @@ export interface SessionEntry {
    * conversation id directly) or when native sessions are off.
    */
   readonly sessionId?: string;
+  readonly workTrace?: import('./work-contract.js').WorkContract;
 }
 
 export interface SessionWriter {
@@ -316,6 +317,13 @@ export interface OrchestrateDeps {
    * and when the feature is disabled. See core/native-session.ts.
    */
   readonly nativeSession?: readonly NativeSessionPlan[];
+  /**
+   * Optional structured trace for genuinely multi-step work. The interface layer
+   * owns long-running goal state and passes the current capped contract here;
+   * orchestrate may persist it on the accepted assistant entry without rendering
+   * it into conversation prose.
+   */
+  readonly workContract?: import('./work-contract.js').WorkContract;
   /**
    * Optional model-brained route classifier. When wired, orchestrate consults it
    * ONLY on turns the deterministic keyword classifier couldn't route (no tier

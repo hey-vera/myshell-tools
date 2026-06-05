@@ -186,6 +186,42 @@ describe('orchestrate — happy path (claude available)', () => {
     assert.ok(tierDoneIdx < finalIdx, 'tier-done must precede final');
   });
 
+  it('omits workTrace on ordinary accepted non-multi-step turns', async () => {
+    await collectEvents(orchestrate('refactor X', deps, new AbortController().signal));
+
+    const assistantEntry = session.entries.find((entry) => entry.role === 'assistant');
+    assert.ok(assistantEntry !== undefined);
+    assert.equal(Object.hasOwn(assistantEntry, 'workTrace'), false);
+  });
+
+  it('persists a capped incoming workContract on accepted assistant entries', async () => {
+    await collectEvents(
+      orchestrate(
+        'OBJECTIVE: rendered prompt must not become the objective\nGoal: ship',
+        {
+          ...deps,
+          workContract: {
+            version: 1,
+            objective: 'x'.repeat(300),
+            checkpoints: Array.from({ length: 8 }, (_, i) => ({
+              id: `C${i + 1}`,
+              summary: `step ${i + 1}`,
+            })),
+          },
+        },
+        new AbortController().signal,
+      ),
+    );
+
+    const assistantEntry = session.entries.find((entry) => entry.role === 'assistant');
+    assert.ok(assistantEntry !== undefined);
+    assert.equal(assistantEntry.workTrace?.objective.length, 240);
+    assert.deepEqual(
+      assistantEntry.workTrace?.checkpoints?.map((checkpoint) => checkpoint.id),
+      ['C1', 'C2', 'C3', 'C4', 'C5', 'C6'],
+    );
+  });
+
   it('classified event contains correct classification', async () => {
     const events = await collectEvents(
       orchestrate('refactor X', deps, new AbortController().signal),

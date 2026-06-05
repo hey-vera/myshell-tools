@@ -2671,7 +2671,7 @@ async function runChatLoop(
           currentAc = goalAc;
           const turn = await runTask(
             contractedGoalTask,
-            { ...goalDeps, session: goalSession },
+            { ...goalDeps, session: goalSession, workContract: goalContract },
             out,
             goalAc.signal,
             mutableCtx.config.verbosity ?? 'normal',

@@ -666,6 +666,18 @@ describe('startMenu — /goal work contract threading', () => {
       !persistedEntries.some((entry) => entry.content.includes('OBJECTIVE: ship the widget')),
       'the prompt-only contract is not persisted in session history',
     );
+    assert.ok(
+      !persistedEntries.some((entry) => entry.role === 'user' && entry.workTrace !== undefined),
+      'user entries stay clean and carry no workTrace',
+    );
+
+    const assistantEntries = persistedEntries.filter((entry) => entry.role === 'assistant');
+    assert.equal(assistantEntries.length, 2);
+    assert.equal(assistantEntries[0]?.workTrace?.objective, 'ship the widget');
+    assert.equal(assistantEntries[0]?.workTrace?.checkpoints, undefined);
+    assert.deepEqual(assistantEntries[1]?.workTrace?.checkpoints, [
+      { id: 'C1', summary: 'run the tests' },
+    ]);
   });
 });
 

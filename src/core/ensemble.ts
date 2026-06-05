@@ -121,6 +121,16 @@ export function planPanel(opts: {
   return { tier, candidates, synthesizer, classification };
 }
 
+function isCleanObjectiveTask(task: string): boolean {
+  const trimmed = task.trim();
+  if (trimmed.length === 0) return false;
+  if (trimmed.startsWith('OBJECTIVE:')) return false;
+  if (trimmed.includes('\nBefore acting, confirm this turn still directly serves the OBJECTIVE')) {
+    return false;
+  }
+  return true;
+}
+
 // ---------------------------------------------------------------------------
 // Prompt builders (PURE)
 // ---------------------------------------------------------------------------
@@ -632,13 +642,30 @@ export async function* runPanel(
     context: 'normal',
     reviewWillRun: true,
   });
+  const incomingWorkContract =
+    deps.workContract !== undefined ? capContract(deps.workContract) : undefined;
+  const generatedWorkTrace =
+    incomingWorkContract === undefined &&
+    shouldMaterializeContract({
+      classification: plan.classification,
+      routePlan: false,
+      context: 'normal',
+      reviewWillRun: false,
+    }).roadmap &&
+    isCleanObjectiveTask(task)
+      ? capContract({ version: 1, objective: task })
+      : undefined;
+  const workTrace =
+    incomingWorkContract !== undefined ? incomingWorkContract : generatedWorkTrace;
+  const synthContract =
+    incomingWorkContract !== undefined
+      ? incomingWorkContract
+      : isCleanObjectiveTask(task)
+        ? capContract({ version: 1, objective: task })
+        : undefined;
   const synthCandidates = succeeded.map((o) => ({ provider: o.provider, output: o.finalText }));
-  const synthPrompt = synthContractDecision.criteria
-    ? buildPanelSynthesisPrompt(
-        task,
-        synthCandidates,
-        capContract({ version: 1, objective: task }),
-      )
+  const synthPrompt = synthContractDecision.criteria && synthContract !== undefined
+    ? buildPanelSynthesisPrompt(task, synthCandidates, synthContract)
     : buildPanelSynthesisPrompt(task, synthCandidates);
 
   attempts++;
@@ -755,6 +782,7 @@ export async function* runPanel(
     confidence: synthAssessment.confidence,
     costUsd: synthUsd,
     durationMs: synthDurationMs,
+    ...(workTrace !== undefined ? { workTrace } : {}),
   });
 
   yield {

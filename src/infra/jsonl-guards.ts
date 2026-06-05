@@ -28,6 +28,68 @@ function isOptionalNumber(value: unknown): boolean {
   return value === undefined || (typeof value === 'number' && Number.isFinite(value));
 }
 
+function isRoadmapStatus(value: unknown): boolean {
+  return value === 'pending' || value === 'active' || value === 'done' || value === 'blocked';
+}
+
+function isStringArray(value: unknown): boolean {
+  return Array.isArray(value) && value.every((item) => typeof item === 'string');
+}
+
+function isRoadmapItem(value: unknown): boolean {
+  if (!isRecord(value)) return false;
+  if (typeof value['id'] !== 'string') return false;
+  if (typeof value['text'] !== 'string') return false;
+  if (!isRoadmapStatus(value['status'])) return false;
+  return true;
+}
+
+function isCheckpoint(value: unknown): boolean {
+  if (!isRecord(value)) return false;
+  if (typeof value['id'] !== 'string') return false;
+  if (typeof value['summary'] !== 'string') return false;
+  if (!isOptionalString(value['roadmapId'])) return false;
+  if (!isOptionalString(value['evidence'])) return false;
+  return true;
+}
+
+function isVerification(value: unknown): boolean {
+  if (!isRecord(value)) return false;
+  if (
+    value['verdict'] !== 'approve' &&
+    value['verdict'] !== 'revise' &&
+    value['verdict'] !== 'escalate'
+  ) {
+    return false;
+  }
+  if (!isOptionalString(value['notes'])) return false;
+  const failedCheckpointIds = value['failedCheckpointIds'];
+  if (failedCheckpointIds !== undefined && !isStringArray(failedCheckpointIds)) return false;
+  return true;
+}
+
+export function isWorkTrace(value: unknown): boolean {
+  if (!isRecord(value)) return false;
+  if (value['version'] !== 1) return false;
+  if (typeof value['objective'] !== 'string') return false;
+  if (!isOptionalString(value['vision'])) return false;
+
+  const roadmap = value['roadmap'];
+  if (roadmap !== undefined) {
+    if (!Array.isArray(roadmap) || !roadmap.every(isRoadmapItem)) return false;
+  }
+
+  const checkpoints = value['checkpoints'];
+  if (checkpoints !== undefined) {
+    if (!Array.isArray(checkpoints) || !checkpoints.every(isCheckpoint)) return false;
+  }
+
+  const verification = value['verification'];
+  if (verification !== undefined && !isVerification(verification)) return false;
+
+  return true;
+}
+
 export function isSessionEntry(value: unknown): value is SessionEntry {
   if (!isRecord(value)) return false;
   if (typeof value['timestamp'] !== 'string') return false;
@@ -49,6 +111,7 @@ export function isSessionEntry(value: unknown): value is SessionEntry {
   if (!isOptionalNumber(value['costUsd'])) return false;
   if (!isOptionalNumber(value['durationMs'])) return false;
   if (!isOptionalString(value['sessionId'])) return false;
+  if (value['workTrace'] !== undefined && !isWorkTrace(value['workTrace'])) return false;
   return true;
 }
 

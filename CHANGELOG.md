@@ -11,9 +11,30 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 - Installer: PowerShell-Core profile support + PowerShell interactive guard; don't
   overwrite an existing `cm`/`mst` alias — deferred (niche / minor).
 - update-check: use semver precedence for prerelease→stable (no prereleases shipped today).
-- Work Contract: persisted `workTrace` audit trail (Stage 3), mode-gated auto-engage
-  behind a default-off flag (Stage 4), cross-turn contract seeding (Stage 5) —
-  staged, building on 3.11.0–3.11.1.
+- Work Contract: mode-gated auto-engage behind a default-off flag (Stage 4),
+  cross-turn contract seeding (Stage 5) — staged, building on 3.11.0–3.11.2.
+
+## [3.11.2]
+
+### Added
+Work Contract — Stage 3: a capped audit trail persisted on accepted turns. Genuinely
+multi-step work now records one compact `workTrace` (objective + checkpoint trace)
+on the accepted assistant entry, in the existing conversation JSONL — no new files:
+- `SessionEntry` gained an optional `workTrace?: WorkContract`; an autonomous `/goal`
+  turn persists its live contract (clean objective + `GOAL_CONTINUE`-derived
+  checkpoints), threaded from the goal loop through a new optional
+  `OrchestrateDeps.workContract`. All four sequential accept sites and the panel
+  accept site persist it uniformly via the shared accepted-run object.
+- Ordinary single-shot turns persist **no** `workTrace` key at all (verified by
+  `Object.hasOwn` test) — zero bytes, zero behavior change.
+- New `isWorkTrace` guard in `jsonl-guards.ts` validates a present trace (version,
+  objective, roadmap/checkpoint/verification shapes) and is wired into
+  `isSessionEntry`, so a corrupt trace is skipped rather than trusted — while an
+  absent one is always fine.
+- A non-`/goal` trace is only generated for multi-step (manager-tier / plan) turns
+  whose task is a clean objective line, never a rendered contract prompt. Traces are
+  `capContract`-capped before write. `workTrace` is a structured field, never rendered
+  into prose, so history replay is unaffected.
 
 ## [3.11.1]
 
