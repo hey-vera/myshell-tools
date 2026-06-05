@@ -533,6 +533,50 @@ describe('runPanel — happy path', () => {
     assert.ok(session.entries.some((e) => e.role === 'assistant' && e.content === 'CLAUDE-ANSWER'));
   });
 
+  it('emits a typed phase:panel event (with participants) then phase:synthesis (with success count)', async () => {
+    const { deps } = panelDeps({
+      claude: makeProvider('claude', 'A'),
+      codex: makeProvider('codex', 'B'),
+    });
+    const events = await collect(runPanel('hard task', deps, PLAN, new AbortController().signal));
+
+    // The panel phase event names the concurrent candidates, in run order, and is
+    // emitted BEFORE the up-front candidate tier-starts (the renderer enters panel
+    // mode off this real signal, not the notice string).
+    const panelIdx = events.findIndex((e) => e.type === 'phase' && e.phase === 'panel');
+    const firstStartIdx = events.findIndex((e) => e.type === 'tier-start');
+    assert.ok(panelIdx >= 0, 'expected a phase:panel event');
+    assert.ok(panelIdx < firstStartIdx, 'phase:panel must precede the candidate tier-starts');
+    const panelEv = events[panelIdx];
+    assert.ok(panelEv !== undefined && panelEv.type === 'phase');
+    if (panelEv.type === 'phase') {
+      assert.deepEqual(panelEv.participants, PLAN.candidates);
+    }
+
+    // The synthesis phase event carries the count of SUCCESSFUL candidate answers
+    // (both succeed here) and is emitted after the candidate tier-dones, before
+    // the synthesizer tier-start.
+    const synthIdx = events.findIndex((e) => e.type === 'phase' && e.phase === 'synthesis');
+    assert.ok(synthIdx >= 0, 'expected a phase:synthesis event');
+    assert.ok(synthIdx > panelIdx, 'synthesis phase comes after panel phase');
+    const synthEv = events[synthIdx];
+    assert.ok(synthEv !== undefined && synthEv.type === 'phase');
+    if (synthEv.type === 'phase') {
+      assert.equal(synthEv.count, 2);
+    }
+  });
+
+  it('phase:synthesis is NOT emitted when every candidate fails (nothing to synthesize)', async () => {
+    const claude = makeProvider('claude', 'A', { error: true });
+    const codex = makeProvider('codex', 'B', { error: true });
+    const { deps } = panelDeps({ claude, codex });
+    const events = await collect(runPanel('hard task', deps, PLAN, new AbortController().signal));
+    // The panel phase still fires (candidates were announced)…
+    assert.ok(events.some((e) => e.type === 'phase' && e.phase === 'panel'));
+    // …but synthesis never runs, so no synthesis phase event.
+    assert.ok(!events.some((e) => e.type === 'phase' && e.phase === 'synthesis'));
+  });
+
   it('(b) every candidate provider is actually invoked', async () => {
     let claudeRan = false;
     let codexRan = false;

@@ -11,6 +11,7 @@ import assert from 'node:assert/strict';
 import { renderStream } from '../../src/interface/render.ts';
 import type { OutputSink } from '../../src/interface/render.ts';
 import type { CoreEvent } from '../../src/core/types.ts';
+import { panelLabel, styleInlineMarkdown } from '../../src/ui/theme.ts';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -1313,5 +1314,198 @@ describe('renderStream — degradation off-colour / non-TTY / MYSHELL_PLAIN', ()
       if (orig === undefined) delete process.env['MYSHELL_PLAIN'];
       else process.env['MYSHELL_PLAIN'] = orig;
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 15. Phase 8 — multi-agent panel "Waiting on N models" + typed `phase` event
+//     + lightweight inline markdown.
+// ---------------------------------------------------------------------------
+
+describe('panelLabel (pure)', () => {
+  it('renders "Waiting on N models" with N = running count and a per-model strip', () => {
+    const label = panelLabel(
+      [{ provider: 'claude', state: 'done' }, { provider: 'codex', state: 'running' }],
+      null,
+      false,
+    );
+    assert.ok(label.startsWith('Waiting on 1 model'), `got: ${label}`);
+    assert.ok(label.includes('claude ✓'), 'done candidate shows ✓');
+    assert.ok(label.includes('codex …'), 'running candidate shows …');
+  });
+
+  it('pluralises models and uses the strip in order', () => {
+    const label = panelLabel(
+      [{ provider: 'claude', state: 'running' }, { provider: 'codex', state: 'running' }],
+      null,
+      false,
+    );
+    assert.ok(label.startsWith('Waiting on 2 models'), `got: ${label}`);
+    assert.ok(label.indexOf('claude') < label.indexOf('codex'), 'strip is in announce order');
+  });
+
+  it('switches to "Synthesizing N answers…" when synthesizing', () => {
+    assert.equal(
+      panelLabel([{ provider: 'claude', state: 'done' }], { count: 2 }, false),
+      'Synthesizing 2 answers…',
+    );
+    assert.equal(
+      panelLabel([], { count: 1 }, false),
+      'Synthesizing 1 answer…',
+    );
+  });
+
+  it('emits zero ANSI bytes when color is false', () => {
+    const label = panelLabel(
+      [{ provider: 'claude', state: 'done' }, { provider: 'codex', state: 'running' }],
+      null,
+      false,
+    );
+    assert.ok(!/\x1b\[/.test(label), 'no ANSI escapes off-color');
+  });
+});
+
+/** A colour TTY sink that records every painted spinner frame (so panel-label
+ *  transitions are observable without waiting on animation ticks). */
+function makePanelSink(): OutputSink & { buf: string[] } {
+  const buf: string[] = [];
+  return { buf, write: (s: string) => { buf.push(s); }, color: false, isTty: true };
+}
+
+/** The scripted REAL panel event sequence runPanel emits: composition notice +
+ *  phase:panel + 2 up-front candidate tier-starts + 2 candidate tier-dones (one
+ *  first) + phase:synthesis + synthesizer tier-start/stream/tier-done + final. */
+function panelEvents(): CoreEvent[] {
+  return [
+    { type: 'notice', level: 'info', message: 'Panel: claude, codex → synthesized by claude' },
+    { type: 'phase', phase: 'panel', participants: ['claude', 'codex'] },
+    { type: 'tier-start', tier: 'ic', provider: 'claude', model: 'claude-sonnet-4-6', attempt: 1 },
+    { type: 'tier-start', tier: 'ic', provider: 'codex', model: 'gpt-5-codex', attempt: 2 },
+    { type: 'tier-done', tier: 'ic', success: true, confidence: 0.8, costUsd: 0, inputTokens: 10, outputTokens: 5, durationMs: 100 },
+    { type: 'tier-done', tier: 'ic', success: true, confidence: 0.7, costUsd: 0, inputTokens: 10, outputTokens: 5, durationMs: 200 },
+    { type: 'phase', phase: 'synthesis', count: 2 },
+    { type: 'tier-start', tier: 'manager', provider: 'claude', model: 'claude-opus-4-8', attempt: 3 },
+    { type: 'provider-event', tier: 'manager', event: { type: 'text', delta: 'Synthesized answer.' } },
+    { type: 'tier-done', tier: 'manager', success: true, confidence: 0.9, costUsd: 0, inputTokens: 50, outputTokens: 20, durationMs: 300 },
+    { type: 'final', success: true, output: 'Synthesized answer.', tier: 'manager', totalCostUsd: 0, sessionId: 's', attempts: 3 },
+  ];
+}
+
+describe('renderStream — panel "Waiting on N models" state machine', () => {
+  it('transitions Waiting on 2 → Waiting on 1 → Synthesizing as real tier-dones arrive', async () => {
+    const sink = makePanelSink();
+    await renderStream(makeStream(panelEvents()), sink, 'normal');
+    const joined = sink.buf.join('');
+
+    assert.ok(joined.includes('Waiting on 2 models'), 'shows N=2 while both run');
+    assert.ok(joined.includes('Waiting on 1 model'), 'ticks down to N=1 after first tier-done');
+    assert.ok(joined.includes('Synthesizing 2 answers'), 'switches to synthesizing on phase:synthesis');
+    // The compact strip flips claude → ✓ after its tier-done.
+    assert.ok(joined.includes('claude ✓'), 'first candidate flips to ✓');
+    // The composition header is shown dim in NORMAL mode (not just verbose).
+    assert.ok(joined.includes('Panel: claude, codex'), 'composition header surfaces in normal mode');
+    // Synthesizer prose still streams under the turn marker.
+    assert.ok(joined.includes('Synthesized answer.'), 'synthesizer answer is shown');
+  });
+
+  it('a single-model / hedge turn never shows the panel race', async () => {
+    const sink = makePanelSink();
+    const events: CoreEvent[] = [
+      // Hedge surfaces a human notice but NO phase event.
+      { type: 'notice', level: 'info', message: 'hedge: primary slow — starting speculative flagship' },
+      { type: 'tier-start', tier: 'ic', provider: 'claude', model: 'claude-sonnet-4-6', attempt: 1 },
+      { type: 'provider-event', tier: 'ic', event: { type: 'text', delta: 'One answer.' } },
+      { type: 'tier-done', tier: 'ic', success: true, confidence: 0.9, costUsd: 0, inputTokens: 10, outputTokens: 5, durationMs: 100 },
+      { type: 'final', success: true, output: 'One answer.', tier: 'ic', totalCostUsd: 0, sessionId: 's', attempts: 1 },
+    ];
+    await renderStream(makeStream(events), sink, 'normal');
+    const joined = sink.buf.join('');
+    assert.ok(!joined.includes('Waiting on'), 'no "Waiting on N" for a single-model turn');
+    assert.ok(!joined.includes('Synthesizing'), 'no synthesizing line for a single-model turn');
+    // The hedge speculative notice IS surfaced dim in normal mode per the spec.
+    assert.ok(joined.includes('primary slow'), 'hedge speculative notice is surfaced');
+  });
+
+  it('the phase event is ignored safely by ordinary non-panel rendering', async () => {
+    // A lone phase event in an otherwise single-model stream must not crash, must
+    // not print a panel line on its own (no participants reach a tier-start path),
+    // and must leave the normal completion line intact.
+    const sink = makeSink();
+    const events: CoreEvent[] = [
+      { type: 'phase', phase: 'panel', participants: [] },
+      { type: 'tier-start', tier: 'ic', provider: 'claude', model: 'm', attempt: 1 },
+      { type: 'provider-event', tier: 'ic', event: { type: 'text', delta: 'Plain.' } },
+      { type: 'final', success: true, output: 'Plain.', tier: 'ic', totalCostUsd: 0, sessionId: 's', attempts: 1 },
+    ];
+    const res = await renderStream(makeStream(events), sink, 'normal');
+    assert.equal(res.success, true);
+    assert.ok(sink.buf.join('').includes('Plain.'), 'prose still rendered');
+  });
+
+  it('panel output stays ANSI-free on a piped (no-color, non-TTY) sink', async () => {
+    const sink = makeSink(); // color:false, isTty:false
+    await renderStream(makeStream(panelEvents()), sink, 'normal');
+    const joined = sink.buf.join('');
+    assert.ok(!/\x1b\[/.test(joined), 'no ANSI escapes in piped panel output');
+    assert.ok(joined.includes('Synthesized answer.'), 'answer still shown in pipe');
+  });
+});
+
+describe('styleInlineMarkdown (pure)', () => {
+  it('styles bold, inline code, headings and bullets in colour mode', () => {
+    assert.ok(styleInlineMarkdown('a **bold** word', true).includes('\x1b[1mbold\x1b[0m'));
+    assert.ok(styleInlineMarkdown('an __also__ word', true).includes('\x1b[1malso\x1b[0m'));
+    assert.ok(styleInlineMarkdown('use `code` here', true).includes('\x1b[7mcode\x1b[0m'));
+    // ATX heading at a line start → bold (markers kept).
+    assert.ok(styleInlineMarkdown('## Title', true).includes('\x1b[1m'));
+    // Bullet marker normalised to •.
+    assert.ok(styleInlineMarkdown('- item', true).startsWith('•'));
+  });
+
+  it('is the identity when color is false (raw markdown preserved for pipes)', () => {
+    const md = '# Heading\n- item with **bold** and `code`';
+    assert.equal(styleInlineMarkdown(md, false), md);
+  });
+
+  it('leaves an UNMATCHED marker verbatim so a split-across-deltas token never corrupts output', () => {
+    // A lone opening `**` (closer not yet arrived) must pass through untouched.
+    assert.equal(styleInlineMarkdown('the **bo', true), 'the **bo');
+    // A lone backtick likewise.
+    assert.equal(styleInlineMarkdown('a `partial', true), 'a `partial');
+    // Mid-line `#`/`-` are not treated as structure.
+    assert.equal(styleInlineMarkdown('C# and 5 - 3', true, false), 'C# and 5 - 3');
+  });
+});
+
+describe('renderStream — inline markdown over a split-across-deltas stream', () => {
+  it('renders bold split across two text deltas without corruption, on a colour TTY', async () => {
+    const sink = makeColorTtySink();
+    const events: CoreEvent[] = [
+      { type: 'tier-start', tier: 'ic', provider: 'claude', model: 'm', attempt: 1 },
+      // The bold span is split: "**bo" then "ld** done" — completed by a newline.
+      { type: 'provider-event', tier: 'ic', event: { type: 'text', delta: 'pre **bo' } },
+      { type: 'provider-event', tier: 'ic', event: { type: 'text', delta: 'ld** done\n' } },
+      { type: 'final', success: true, output: 'x', tier: 'ic', totalCostUsd: 0, sessionId: 's', attempts: 1 },
+    ];
+    await renderStream(makeStream(events), sink, 'normal');
+    const joined = sink.buf.join('');
+    // The completed bold span is styled exactly once and the literal "**bold**"
+    // markers around the styled word do not leak as a stray, unbalanced pair.
+    assert.ok(joined.includes('\x1b[1mbold\x1b[0m'), 'bold span styled once the pair completes');
+    assert.ok(joined.includes('pre '), 'leading prose preserved');
+    assert.ok(joined.includes('done'), 'trailing prose preserved');
+  });
+
+  it('does NOT style markdown on a piped (no-color) sink — raw chars preserved', async () => {
+    const sink = makeSink();
+    const events: CoreEvent[] = [
+      { type: 'tier-start', tier: 'ic', provider: 'claude', model: 'm', attempt: 1 },
+      { type: 'provider-event', tier: 'ic', event: { type: 'text', delta: 'a **bold** word\n' } },
+      { type: 'final', success: true, output: 'x', tier: 'ic', totalCostUsd: 0, sessionId: 's', attempts: 1 },
+    ];
+    await renderStream(makeStream(events), sink, 'normal');
+    const joined = sink.buf.join('');
+    assert.ok(joined.includes('**bold**'), 'raw markdown preserved in pipe');
+    assert.ok(!/\x1b\[/.test(joined), 'no ANSI escapes in pipe');
   });
 });

@@ -470,6 +470,36 @@ export type CoreEvent =
       readonly plan: import('./engagement.js').EngagementPlan;
     }
   | {
+      /**
+       * A typed execution-PHASE signal for the presentation layer (Phase 8). It
+       * lets the renderer drive the multi-agent "Waiting on N models" panel state
+       * machine from a real, explicit event instead of sniffing the composition
+       * `notice("Panel: …")` string or guessing from the count of up-front
+       * `tier-start`s.
+       *
+       * - `'panel'`     : emitted ONCE by `runPanel` at composition time, right
+       *                   after the panel notice and BEFORE the up-front candidate
+       *                   `tier-start`s. `participants` lists the candidate
+       *                   providers that are about to run concurrently, in order.
+       *                   The renderer enters panel mode and shows "Waiting on N
+       *                   models", ticking each off as its real `tier-done` arrives.
+       * - `'synthesis'` : emitted ONCE after all candidate `tier-done`s and before
+       *                   the synthesizer `tier-start`. `count` is the number of
+       *                   SUCCESSFUL candidate answers being synthesized. The
+       *                   renderer switches the line to "Synthesizing N answers…".
+       *
+       * Purely additive chrome: every existing consumer ignores an unknown event
+       * type, so this changes no behaviour. The sequential and hedge paths never
+       * emit it, so they keep their single-model presentation (no fake race).
+       */
+      readonly type: 'phase';
+      readonly phase: 'panel' | 'synthesis';
+      /** The concurrent panel candidates (phase 'panel' only), in run order. */
+      readonly participants?: readonly ProviderId[];
+      /** The number of successful candidate answers (phase 'synthesis' only). */
+      readonly count?: number;
+    }
+  | {
       readonly type: 'tier-start';
       readonly tier: Tier;
       readonly provider: ProviderId;

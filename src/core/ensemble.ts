@@ -494,6 +494,17 @@ export async function* runPanel(
     message: `Panel: ${plan.candidates.join(', ')} → synthesized by ${plan.synthesizer}`,
   };
 
+  // Phase 8 — a typed PANEL phase signal so the renderer drives the "Waiting on N
+  // models" state machine from a real event (the candidate list, in run order)
+  // rather than parsing the notice string above. Emitted ONCE, before the up-front
+  // candidate tier-starts; the renderer flips each candidate to ✓ on its real
+  // tier-done. Additive: non-panel renderers ignore it.
+  yield {
+    type: 'phase',
+    phase: 'panel',
+    participants: plan.candidates,
+  };
+
   // --- Candidates: announce all, then run concurrently. ---
   // Resolve each candidate's model first so the tier-start carries the real model.
   const candidateModels = new Map<ProviderId, string>();
@@ -610,6 +621,17 @@ export async function* runPanel(
     };
     return;
   }
+
+  // Phase 8 — a typed SYNTHESIS phase signal so the renderer switches the panel
+  // line from "Waiting on N models" to "Synthesizing N answers…". `count` is the
+  // number of SUCCESSFUL candidate answers actually being synthesized (real,
+  // measured — never the candidate count, since some may have failed). Emitted
+  // after every candidate tier-done and before the synthesizer tier-start.
+  yield {
+    type: 'phase',
+    phase: 'synthesis',
+    count: succeeded.length,
+  };
 
   // --- Synthesizer: stream its adjudication live as the user-facing answer. ---
   // The synthesizer is the FINAL decision-maker on the user's hardest turns, so

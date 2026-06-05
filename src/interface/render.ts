@@ -25,7 +25,18 @@ import type { CliError, ErrorCategory } from '../providers/errors.js';
 import { classifyError, formatErrorMessage } from '../providers/errors.js';
 import { lastJsonObjectBoundsWithKey, isTrailingNoise } from '../core/json-envelope.js';
 import { GOAL_MARKER_TOKENS, stripTrailingGoalMarker } from '../core/goal.js';
-import { bold, cyan, dim, green, red, yellow, turnMarker } from '../ui/theme.js';
+import {
+  bold,
+  cyan,
+  dim,
+  green,
+  red,
+  yellow,
+  turnMarker,
+  panelLabel,
+  styleInlineMarkdown,
+  type PanelistState,
+} from '../ui/theme.js';
 import { createSpinner } from '../ui/spinner.js';
 import { formatTokens } from '../infra/insights.js';
 
@@ -246,12 +257,46 @@ class EnvelopeFilter {
   private full = '';
   private flushed = 0;
   private readonly out: OutputSink;
+  // Optional line-safe inline-markdown styler (Phase 8). When set, a flushed
+  // chunk is styled ONLY up to its last newline — the trailing partial line is
+  // held back (in `full`, not written) until a newline completes it. This makes
+  // styling stream-safe: the styler only ever sees COMPLETE lines, so a paired
+  // span split across deltas (`**bo` then `ld**`) is never half-styled and a
+  // bullet/heading at a line start is correctly detected. Identity off-TTY.
+  private readonly style: ((text: string, atLineStart: boolean) => string) | undefined;
+  // Whether the next styled chunk begins at a fresh line (start of stream, or
+  // right after a flushed newline) — so the line-leading heading/bullet rules
+  // only apply at a real line start.
+  private atLineStart = true;
 
   // NOTE: a plain field assignment, NOT a constructor parameter property
   // (`constructor(private out)`) — the test runner strips types in strip-only
   // mode, which rejects parameter properties even though tsc accepts them.
-  constructor(out: OutputSink) {
+  constructor(out: OutputSink, style?: (text: string, atLineStart: boolean) => string) {
     this.out = out;
+    this.style = style;
+  }
+
+  /** Write a slice of already-envelope-safe prose to the sink, applying the
+   *  optional markdown styler line-safely. When a styler is present we only emit
+   *  up to the last newline in `text` and HOLD BACK the trailing partial line
+   *  (by NOT advancing `flushed` past it), so the styler always sees complete
+   *  lines. Returns the number of chars actually emitted (≤ text.length). */
+  private emit(text: string): number {
+    if (this.style === undefined || text.length === 0) {
+      if (text.length > 0) this.out.write(text);
+      return text.length;
+    }
+    const lastNl = text.lastIndexOf('\n');
+    if (lastNl === -1) {
+      // No complete line yet — hold the whole fragment back for now.
+      return 0;
+    }
+    const complete = text.slice(0, lastNl + 1);
+    this.out.write(this.style(complete, this.atLineStart));
+    // The emitted chunk ended on a newline, so the next chunk is a line start.
+    this.atLineStart = true;
+    return complete.length;
   }
 
   /** Accept the next streamed prose delta, flushing everything that cannot be
@@ -268,8 +313,8 @@ class EnvelopeFilter {
     // A balanced `{…}` with real prose after it is inline content and streams.
     const safeUpto = this.safeFlushBoundary();
     if (safeUpto > this.flushed) {
-      this.out.write(this.full.slice(this.flushed, safeUpto));
-      this.flushed = safeUpto;
+      const emitted = this.emit(this.full.slice(this.flushed, safeUpto));
+      this.flushed += emitted;
     }
   }
 
@@ -345,7 +390,13 @@ class EnvelopeFilter {
         .replace(/\s+$/, '')
         .replace(/(?:^|\n)[ \t]*```[a-zA-Z0-9]*[ \t]*$/, '')
         .replace(/\s+$/, '');
-      if (tail.length > 0) this.out.write(tail);
+      if (tail.length > 0) {
+        // Terminal flush: this is the rest of the prose (incl. the last partial
+        // line the streaming path held back), so style it as a complete unit.
+        this.out.write(this.style !== undefined ? this.style(tail, this.atLineStart) : tail);
+        if (tail.endsWith('\n')) this.atLineStart = true;
+        else this.atLineStart = false;
+      }
     }
     this.flushed = this.full.length;
   }
@@ -397,9 +448,19 @@ export async function renderStream(
   // total instead of an estimated dollar figure (subscription tool, not API).
   let runningTokens = 0;
 
+  // Inline markdown is the lightweight, stream-safe styling from theme.ts. It is
+  // applied per prose flush and is the identity off-TTY / NO_COLOR (so pipes get
+  // raw markdown) — enabling it cannot corrupt machine output. Forced off with
+  // MYSHELL_NO_MARKDOWN for users who prefer raw prose on a colour TTY.
+  const markdownEnabled = c && process.env['MYSHELL_NO_MARKDOWN'] === undefined;
+  const proseStyler = markdownEnabled
+    ? (text: string, atLineStart: boolean): string =>
+        styleInlineMarkdown(text, c, atLineStart)
+    : undefined;
+
   // Buffers model prose and strips the trailing confidence envelope before it
   // can ever reach the user.
-  let prose = new EnvelopeFilter(out);
+  let prose = new EnvelopeFilter(out, proseStyler);
 
   // Spinner is only used in TTY mode. It starts at tier-start and STAYS alive
   // through tool/reasoning activity (showing a live step count + elapsed time) so
@@ -424,6 +485,18 @@ export async function renderStream(
   // reports the REAL measured token count, so no fabricated figure ever persists.
   let streamedChars = 0;
 
+  // --- Multi-agent panel state (Phase 8) ---
+  // Driven entirely by the typed `phase` event + the panel's REAL up-front
+  // candidate tier-starts and their tier-dones. `panelMode` is set by a
+  // `phase:'panel'` event and stays on for the rest of the turn; `panelists` is
+  // the ordered candidate strip (each flips running→done on its tier-done);
+  // `synthesizing` holds the success count once the `phase:'synthesis'` event
+  // arrives, which switches the line to "Synthesizing N answers…". The sequential
+  // and hedge paths never emit `phase`, so they keep their single-model line —
+  // no fabricated race.
+  let panelMode = false;
+  const panelists: Array<{ provider: ProviderId; state: PanelistState }> = [];
+  let synthesizing: { count: number } | null = null;
   /** Compose the live indicator label: a leading assistant `●` (cyan, the same
    *  marker that will head the answer, so the eye tracks one object from
    *  "working" → "answer"), the work verb, step count, and the streamed token
@@ -431,6 +504,13 @@ export async function renderStream(
    *  suffix are added by the spinner itself. */
   function spinnerLabel(): string {
     const dot = `${turnMarker('streaming', c)} `;
+    // Multi-agent panel: collapse the N concurrent candidate runs into ONE live
+    // line — "Waiting on N models · claude ✓ · codex …" while they run, then
+    // "Synthesizing N answers…" once the synthesizer starts. Derived purely from
+    // the real panel state (panelists/synthesizing), never fabricated.
+    if (panelMode) {
+      return `${dot}${panelLabel(panelists, synthesizing, c)}`;
+    }
     const steps = `${stepCount} step${stepCount === 1 ? '' : 's'}`;
     if (streamedChars > 0) {
       const approxTok = formatTokens(Math.ceil(streamedChars / 4));
@@ -512,6 +592,29 @@ export async function renderStream(
         break;
       }
 
+      case 'phase': {
+        // Phase 8 — the typed multi-agent signal. `panel` opens panel mode and
+        // pre-registers every candidate as `running` (the up-front candidate
+        // tier-starts that follow are then collapsed into the one "Waiting on N"
+        // line); `synthesis` switches the line to "Synthesizing N answers…".
+        // Non-panel turns never emit this, so their rendering is unchanged.
+        if (ev.phase === 'panel') {
+          panelMode = true;
+          synthesizing = null;
+          panelists.length = 0;
+          for (const p of ev.participants ?? []) {
+            panelists.push({ provider: p, state: 'running' });
+          }
+          // Refresh the live line so it reflects the new panel composition the
+          // moment the panel forms (before the candidate tier-starts arrive).
+          if (spinnerActive) spinner.update(spinnerLabel());
+        } else if (ev.phase === 'synthesis') {
+          synthesizing = { count: ev.count ?? 0 };
+          if (spinnerActive) spinner.update(spinnerLabel());
+        }
+        break;
+      }
+
       case 'tier-start': {
         if (isVerbose) {
           out.write(
@@ -525,12 +628,29 @@ export async function renderStream(
         streamedChars = 0;
         attemptHadProse = false;
         currentProvider = ev.provider;
+        // In panel mode the candidates' up-front tier-starts are collapsed into
+        // the single "Waiting on N models" line; a candidate not pre-registered
+        // by the `phase:'panel'` event (defensive) is added as running. Once
+        // synthesis has begun, the synthesizer's tier-start is a normal single
+        // stream — the panel line gives way to "Synthesizing…" already shown.
+        if (panelMode && synthesizing === null) {
+          if (!panelists.some((p) => p.provider === ev.provider)) {
+            panelists.push({ provider: ev.provider, state: 'running' });
+          }
+        }
         workLabel = isVerbose ? `${ev.tier} (${ev.provider}/${ev.model})` : 'Thinking';
         if (out.isTty) {
           // Hint first (sits above), then the animated status line below it.
           showInterruptHint();
-          spinner.start(spinnerLabel());
-          spinnerActive = true;
+          // In panel mode keep ONE continuous line across the candidate
+          // tier-starts (they all share the "Waiting on N" status) instead of
+          // restarting the spinner per candidate.
+          if (panelMode && spinnerActive) {
+            spinner.update(spinnerLabel());
+          } else {
+            spinner.start(spinnerLabel());
+            spinnerActive = true;
+          }
         }
         break;
       }
@@ -597,9 +717,42 @@ export async function renderStream(
       }
 
       case 'tier-done': {
+        // Panel candidate tier-done (we're in panel mode and synthesis hasn't
+        // started): flip that panelist to ✓ and keep the SINGLE live line going,
+        // ticking "Waiting on N" down — do NOT stop the spinner or reset prose
+        // (candidate prose is never streamed). The synthesizer's tier-done falls
+        // through to the normal path below.
+        if (panelMode && synthesizing === null) {
+          // Flip the first still-running panelist (candidate tier-dones arrive in
+          // announce order). Match by the running flag so a provider that appears
+          // twice is handled left-to-right.
+          const pending = panelists.find((p) => p.state === 'running');
+          if (pending !== undefined) pending.state = 'done';
+          // Tokens are real and measured — accumulate them like any tier.
+          runningTokens += ev.inputTokens + ev.outputTokens;
+          if (isVerbose) {
+            const confidenceStr = renderConfidence(ev.confidence, c);
+            const tokenStr = formatTokens(ev.inputTokens + ev.outputTokens);
+            const successMark = ev.success ? green('✓', c) : red('✗', c);
+            // Stop the live line so the verbose telemetry isn't clobbered, then
+            // let ensureAlive() bring the panel line back for the remaining
+            // candidates.
+            stopSpinner();
+            out.write(
+              `\n${successMark} ${bold('tier done', c)} — ` +
+              `confidence: ${confidenceStr}, ` +
+              `${tokenStr} tokens, ` +
+              `duration: ${ev.durationMs}ms\n`,
+            );
+            ensureAlive();
+          } else if (spinnerActive) {
+            spinner.update(spinnerLabel());
+          }
+          break;
+        }
         stopSpinner();
         prose.finishAttempt();
-        prose = new EnvelopeFilter(out);
+        prose = new EnvelopeFilter(out, proseStyler);
         if (attemptHadProse) {
           breakBeforeNextProse = true;
         }
@@ -644,15 +797,29 @@ export async function renderStream(
       }
 
       case 'notice': {
+        // The panel COMPOSITION header ("Panel: claude, codex → synthesized by …")
+        // and the hedge speculative notices are surfaced dim in NORMAL mode too
+        // (not just verbose) so the user sees who is on the panel / why the wait,
+        // per docs/chat-presentation-5.5.md §4.2/§4.3. Other info notices stay
+        // verbose-gated chrome. We key off the message shape (the only info notice
+        // runPanel emits is the "Panel: …" line; hedge emits "primary slow …").
+        const isPanelHeader = ev.level === 'info' && ev.message.startsWith('Panel: ');
+        const isHedgeNotice =
+          ev.level === 'info' && ev.message.startsWith('hedge: primary slow');
         // Clear the live indicator before printing a notice so it isn't clobbered.
-        if (ev.level === 'error' || isVerbose) stopSpinner();
+        if (ev.level === 'error' || isVerbose || isPanelHeader || isHedgeNotice) {
+          stopSpinner();
+        }
         // Errors are ALWAYS shown (every verbosity). Info/warn are chrome and
-        // only surface in verbose mode.
+        // only surface in verbose mode — except the two normal-mode notices above.
         if (ev.level === 'error') {
           out.write(`${red('[error]', c)} ${ev.message}\n`);
         } else if (isVerbose) {
           const prefix = ev.level === 'warn' ? yellow('[warn]', c) : dim('[info]', c);
           out.write(`${prefix} ${ev.message}\n`);
+        } else if (isPanelHeader || isHedgeNotice) {
+          // A dim `⋮ <message>` header line, matching the spec mockups.
+          out.write(`${dim(`⋮ ${ev.message}`, c)}\n`);
         }
         break;
       }

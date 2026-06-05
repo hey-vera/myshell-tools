@@ -144,6 +144,137 @@ export function turnMarker(state: TurnState, color: boolean): string {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Panel status line ("Waiting on N models") — Phase 8
+// ---------------------------------------------------------------------------
+
+/** One panelist's run state for the compact per-model strip. */
+export type PanelistState = 'running' | 'done';
+
+/**
+ * Build the body of the multi-agent panel status line (WITHOUT the leading
+ * spinner frame / `●` marker / trailing `· Ns` elapsed, which the renderer +
+ * spinner add). PURE so it is unit-testable without animation timing.
+ *
+ * Two shapes, driven entirely by REAL panel state derived from the up-front
+ * candidate `tier-start`s and their `tier-done`s:
+ *
+ *  - candidates running →
+ *      `Waiting on 2 models · claude ✓ · codex …`
+ *    where N = the count still `running`, pluralised, and the compact strip
+ *    shows each panelist with `✓` (done, green) or `…` (running, dim), in the
+ *    order the panel announced them.
+ *  - synthesizing (all candidates done, the synthesizer is adjudicating) →
+ *      `Synthesizing 2 answers…`
+ *    where N = the number of successful candidate answers being synthesized.
+ *
+ * `color` gates every ANSI sequence exactly like the other helpers, so a
+ * NO_COLOR / non-TTY caller (`color:false`) gets a clean, ANSI-free string.
+ */
+export function panelLabel(
+  panelists: ReadonlyArray<{ readonly provider: string; readonly state: PanelistState }>,
+  synthesizing: { readonly count: number } | null,
+  color: boolean,
+): string {
+  if (synthesizing !== null) {
+    const n = synthesizing.count;
+    const noun = n === 1 ? 'answer' : 'answers';
+    return `Synthesizing ${n} ${noun}…`;
+  }
+  const running = panelists.filter((p) => p.state === 'running').length;
+  const noun = running === 1 ? 'model' : 'models';
+  const head = `Waiting on ${running} ${noun}`;
+  if (panelists.length === 0) return head;
+  const strip = panelists
+    .map((p) => {
+      if (p.state === 'done') return `${p.provider} ${green(GLYPHS.success, color)}`;
+      return `${p.provider} ${dim('…', color)}`;
+    })
+    .join(dim(' · ', color));
+  return `${head}${dim(' · ', color)}${strip}`;
+}
+
+// ---------------------------------------------------------------------------
+// Lightweight inline markdown — Phase 8 (conservative, stream-safe)
+// ---------------------------------------------------------------------------
+
+/**
+ * Apply LIGHTWEIGHT, INLINE-ONLY markdown styling to a finished line of model
+ * prose (docs/chat-presentation-5.5.md §5, Q1: inline-only — bold, inline code,
+ * headings, bullets; NO fenced syntax highlighting). PURE.
+ *
+ * Conservative on purpose so it never corrupts a streamed transcript:
+ *  - It is the IDENTITY function when `color` is false (NO_COLOR / non-TTY /
+ *    MYSHELL_PLAIN-style pipes), so raw markdown characters are preserved for
+ *    machine consumers — exactly what a pipe wants.
+ *  - It styles only COMPLETE, paired inline spans on the given text: `**bold**`
+ *    / `__bold__` → bold, `` `code` `` → a subtle inverse. A lone unmatched
+ *    marker (e.g. a `**` whose closer hasn't streamed yet, or a single backtick)
+ *    is left verbatim, so a token split across deltas can never produce a stray
+ *    escape or eat following text. The renderer applies this per-flush, so each
+ *    call sees only already-flushed bytes.
+ *  - Line-leading structure is styled only when this text STARTS a line (the
+ *    caller passes `atLineStart`): a `#`/`##`/`###` heading → bold (markers
+ *    kept), and a `- `/`* ` bullet marker → a `•` bullet. Mid-line `#`/`-`/`*`
+ *    are untouched so prose like "C# is great" or "5 - 3" is never mangled.
+ *
+ * It deliberately does NOT touch fenced code blocks, links, tables, or reflow —
+ * those need Glamour-class machinery and would fight the streaming model.
+ */
+export function styleInlineMarkdown(
+  text: string,
+  color: boolean,
+  atLineStart = true,
+): string {
+  if (!color || text.length === 0) return text;
+
+  // Process line by line so heading/bullet structure is per-line and a styled
+  // span never spans a newline. The first line inherits `atLineStart`; every
+  // subsequent line begins a fresh line by construction.
+  const lines = text.split('\n');
+  const styled = lines.map((line, i) => {
+    const lineStart = i === 0 ? atLineStart : true;
+    return styleInlineSpans(styleLineStructure(line, lineStart, color), color);
+  });
+  return styled.join('\n');
+}
+
+/** Heading / bullet structure for a single line (only when it begins a line). */
+function styleLineStructure(line: string, atLineStart: boolean, color: boolean): string {
+  if (!atLineStart) return line;
+  // ATX heading: `#`, `##`, `###` then a space then text → embolden the line,
+  // keeping the `#` markers (we do not reflow or strip).
+  const heading = line.match(/^(\s*)(#{1,3})(\s+)(.*)$/);
+  if (heading) {
+    const [, lead, hashes, gap, body] = heading;
+    return `${lead ?? ''}${bold(`${hashes ?? ''}${gap ?? ''}${body ?? ''}`, color)}`;
+  }
+  // Bullet: `- ` or `* ` at line start → a `•` bullet marker.
+  const bullet = line.match(/^(\s*)[-*](\s+)(.*)$/);
+  if (bullet) {
+    const [, lead, gap, body] = bullet;
+    return `${lead ?? ''}•${gap ?? ''}${body ?? ''}`;
+  }
+  return line;
+}
+
+/** Paired inline spans (bold, inline code) within a single line. */
+function styleInlineSpans(line: string, color: boolean): string {
+  // Inline code first (so a backtick span isn't re-scanned for bold markers).
+  // Only COMPLETE `` `…` `` pairs (non-greedy, no embedded backtick) are styled;
+  // a lone backtick is left verbatim.
+  let out = line.replace(/`([^`\n]+)`/g, (_m, code: string) => inverse(code, color));
+  // Bold: **…** or __…__ — complete pairs only, non-greedy, no embedded marker.
+  out = out.replace(/\*\*([^*\n]+)\*\*/g, (_m, b: string) => bold(b, color));
+  out = out.replace(/__([^_\n]+)__/g, (_m, b: string) => bold(b, color));
+  return out;
+}
+
+/** Subtle inverse for inline code, gated on colour. */
+function inverse(text: string, color: boolean): string {
+  return color ? `\x1b[7m${text}\x1b[0m` : text;
+}
+
 /**
  * Render the conversation recap orientation line — `※ recap  <text>` — honouring
  * the same `color` gate as every other helper. The `※` glyph is dim-cyan
