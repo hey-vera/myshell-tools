@@ -22,7 +22,8 @@ import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 
 import { EventEmitter } from 'node:events';
-import { startMenu, defaultAliasHint, parseYesNo, interpretYesNoKey, yesNoHint, readSingleKey, readMenuKey, confirmViaKey, autoUpdateEnabled, createLineReader, completeSlash, CHAT_SLASH_COMMANDS, normalizeMenuKey } from '../../src/interface/menu.ts';
+import { startMenu, defaultAliasHint, parseYesNo, interpretYesNoKey, yesNoHint, readSingleKey, readMenuKey, confirmViaKey, autoUpdateEnabled, createLineReader, completeSlash, CHAT_SLASH_COMMANDS, normalizeMenuKey, attachChatTurnKeyListener } from '../../src/interface/menu.ts';
+import type { KeypressEvent } from '../../src/interface/menu.ts';
 import type { MenuContext, KeyInputStream } from '../../src/interface/menu.ts';
 import type { UpdateCheckResult } from '../../src/infra/update-check.ts';
 import type { OutputSink } from '../../src/interface/render.ts';
@@ -1785,6 +1786,209 @@ describe('createLineReader — suspend/resume release stdin for an inherited chi
     rl.emitLine('q');
 
     assert.equal(await reader.nextLine(), 'q', 'stray post-child Enter must not answer the next prompt');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// createLineReader — typed-ahead capture (beginCapture/drainBuffered/clearBuffered)
+// Phase 0: lines typed DURING a model turn are queued, not fed to nextLine().
+// ---------------------------------------------------------------------------
+
+describe('createLineReader — beginCapture typed-ahead queue', () => {
+  const mkReader = (): { reader: ReturnType<typeof createLineReader>; rl: FakeReadline } => {
+    const rl = new FakeReadline();
+    const stdin = new FakeStdin(true);
+    const reader = createLineReader(
+      rl as unknown as Parameters<typeof createLineReader>[0],
+      stdin as unknown as KeyInputStream,
+    );
+    return { reader, rl };
+  };
+
+  it('captured lines go to the callback, NOT to nextLine()', async () => {
+    const { reader, rl } = mkReader();
+    const captured: string[] = [];
+    const stop = reader.beginCapture((l) => captured.push(l));
+
+    rl.emitLine('first queued');
+    rl.emitLine('second queued');
+
+    assert.deepEqual(captured, ['first queued', 'second queued']);
+    stop();
+
+    // After detach, lines again satisfy nextLine().
+    rl.emitLine('after detach');
+    assert.equal(await reader.nextLine(), 'after detach');
+  });
+
+  it('capture drops blank lines (a bare Enter is not a queued turn)', () => {
+    const { reader, rl } = mkReader();
+    const captured: string[] = [];
+    reader.beginCapture((l) => captured.push(l));
+
+    rl.emitLine('');
+    rl.emitLine('   ');
+    rl.emitLine('real');
+
+    assert.deepEqual(captured, ['real'], 'blank/whitespace lines are not captured');
+  });
+
+  it('detach is idempotent and only clears its own capture', () => {
+    const { reader, rl } = mkReader();
+    const captured: string[] = [];
+    const stop = reader.beginCapture((l) => captured.push(l));
+    stop();
+    stop(); // second call is a no-op
+    rl.emitLine('to-buffer');
+    assert.deepEqual(captured, [], 'nothing captured after detach');
+  });
+
+  it('beginCapture is exclusive — a concurrent capture throws (real-bug guard)', () => {
+    const { reader } = mkReader();
+    reader.beginCapture(() => {});
+    assert.throws(() => reader.beginCapture(() => {}), /capture already active/);
+  });
+
+  it('drainBuffered returns and clears incidental buffered lines', async () => {
+    const { reader, rl } = mkReader();
+    rl.emitLine('a');
+    rl.emitLine('b');
+    assert.deepEqual(reader.drainBuffered(), ['a', 'b']);
+    assert.deepEqual(reader.drainBuffered(), [], 'buffer is cleared after drain');
+    rl.emitLine('c');
+    assert.equal(await reader.nextLine(), 'c');
+  });
+
+  it('clearBuffered drops buffered lines without returning them', () => {
+    const { reader, rl } = mkReader();
+    rl.emitLine('x');
+    reader.clearBuffered();
+    assert.deepEqual(reader.drainBuffered(), [], 'cleared');
+  });
+
+  it('blank-line suppression after resume() still wins over capture', () => {
+    // The guarded blank-line suppression (a leftover submit Enter from an
+    // inherited child) must NOT be queued as a typed-ahead turn.
+    const { reader, rl } = mkReader();
+    reader.suspend();
+    reader.resume();
+    const captured: string[] = [];
+    reader.beginCapture((l) => captured.push(l));
+    rl.emitLine(''); // the suppressed immediate blank line
+    rl.emitLine('real');
+    assert.deepEqual(captured, ['real'], 'suppressed blank is dropped, not captured');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// attachChatTurnKeyListener — scoped mid-turn ESC observer (Phase 0)
+// ESC = interrupt this turn; observe ESC only; degrade off-TTY.
+// ---------------------------------------------------------------------------
+
+/**
+ * A TTY-capable fake stdin that records keypress listener attach/detach and
+ * raw-mode toggles, and can emit synthetic keypress events. Mirrors how
+ * readline.emitKeypressEvents would deliver (str, key) to the handler.
+ */
+class FakeKeypressStdin extends EventEmitter {
+  isTTY = true;
+  isRaw: boolean;
+  rawCalls: boolean[] = [];
+  constructor(initiallyRaw = true) {
+    super();
+    this.isRaw = initiallyRaw;
+  }
+  setRawMode(mode: boolean): void {
+    this.isRaw = mode;
+    this.rawCalls.push(mode);
+  }
+  removeAllListeners(event?: string): this {
+    // attachChatTurnKeyListener must never use this destructive path.
+    throw new Error(`attachChatTurnKeyListener must NOT call removeAllListeners(${event ?? ''})`);
+  }
+  pause(): void {}
+  resume(): void {}
+  // Count only the chat-turn listener (ignore the data translator that
+  // readline.emitKeypressEvents attaches internally).
+  keypressListenerCount(): number {
+    return this.listenerCount('keypress');
+  }
+  // Drive a synthetic keypress straight to registered 'keypress' listeners,
+  // bypassing readline's byte-decoding timing quirks for a lone ESC.
+  emitKey(str: string | undefined, key: KeypressEvent | undefined): void {
+    this.emit('keypress', str, key);
+  }
+}
+
+const ttyOut = { write(): void {}, color: false, isTty: true } as unknown as OutputSink;
+const nonTtyOut = { write(): void {}, color: false, isTty: false } as unknown as OutputSink;
+
+describe('attachChatTurnKeyListener — scoped ESC observer', () => {
+  it('calls onEscape on a bare ESC keypress', () => {
+    const stdin = new FakeKeypressStdin();
+    let escapes = 0;
+    const detach = attachChatTurnKeyListener(ttyOut, stdin as unknown as KeyInputStream, () => { escapes++; });
+    stdin.emitKey('\x1b', { name: 'escape', sequence: '\x1b' });
+    assert.equal(escapes, 1);
+    detach();
+  });
+
+  it('ignores arrow/function-key escape sequences and printable input', () => {
+    const stdin = new FakeKeypressStdin();
+    let escapes = 0;
+    const detach = attachChatTurnKeyListener(ttyOut, stdin as unknown as KeyInputStream, () => { escapes++; });
+    stdin.emitKey('\x1b[A', { name: 'up', sequence: '\x1b[A' });
+    stdin.emitKey('a', { name: 'a', sequence: 'a' });
+    stdin.emitKey('\x03', { name: 'c', ctrl: true, sequence: '\x03' });
+    assert.equal(escapes, 0, 'only a bare ESC interrupts');
+    detach();
+  });
+
+  it('attaches exactly one keypress listener and removes only it on detach', () => {
+    const stdin = new FakeKeypressStdin();
+    const prior = (): void => {};
+    stdin.on('keypress', prior as (...a: never[]) => void);
+    assert.equal(stdin.keypressListenerCount(), 1);
+    const detach = attachChatTurnKeyListener(ttyOut, stdin as unknown as KeyInputStream, () => {});
+    assert.equal(stdin.keypressListenerCount(), 2, 'added exactly one');
+    detach();
+    assert.equal(stdin.keypressListenerCount(), 1, 'removed only its own');
+  });
+
+  it('never calls removeAllListeners (would re-break the 3.12.x stdin handoff)', () => {
+    const stdin = new FakeKeypressStdin();
+    // FakeKeypressStdin.removeAllListeners throws if called.
+    assert.doesNotThrow(() => {
+      const detach = attachChatTurnKeyListener(ttyOut, stdin as unknown as KeyInputStream, () => {});
+      stdin.emitKey('\x1b', { name: 'escape', sequence: '\x1b' });
+      detach();
+    });
+  });
+
+  it('toggles raw mode only when not already raw, and restores on detach', () => {
+    const stdin = new FakeKeypressStdin(false); // not already raw
+    const detach = attachChatTurnKeyListener(ttyOut, stdin as unknown as KeyInputStream, () => {});
+    assert.deepEqual(stdin.rawCalls, [true], 'enabled raw for the turn');
+    detach();
+    assert.deepEqual(stdin.rawCalls, [true, false], 'restored prior (off) on detach');
+  });
+
+  it('leaves raw mode untouched when readline already owns it', () => {
+    const stdin = new FakeKeypressStdin(true); // already raw (terminal readline)
+    const detach = attachChatTurnKeyListener(ttyOut, stdin as unknown as KeyInputStream, () => {});
+    detach();
+    assert.deepEqual(stdin.rawCalls, [], 'never toggled raw — ownership stays with readline');
+  });
+
+  it('degrades off-TTY: returns a no-op detach and observes nothing', () => {
+    const stdin = new FakeKeypressStdin();
+    let escapes = 0;
+    const detach = attachChatTurnKeyListener(nonTtyOut, stdin as unknown as KeyInputStream, () => { escapes++; });
+    // No listener attached → emitting a key does nothing; normal line input still works.
+    stdin.emitKey('\x1b', { name: 'escape', sequence: '\x1b' });
+    assert.equal(escapes, 0);
+    assert.equal(stdin.keypressListenerCount(), 0);
+    assert.doesNotThrow(detach);
   });
 });
 

@@ -15,8 +15,11 @@ import assert from 'node:assert/strict';
 import {
   countRecentInterrupts,
   interpretInterrupt,
+  interpretChatKey,
+  decidePostTurn,
   shouldEscapeRawSession,
 } from '../../src/interface/menu.ts';
+import type { PostTurnAction, PostTurnInputs } from '../../src/interface/menu.ts';
 
 // ---------------------------------------------------------------------------
 // countRecentInterrupts
@@ -349,5 +352,105 @@ describe('countRecentInterrupts + interpretInterrupt integration', () => {
     const count = countRecentInterrupts(times, NOW, WIN);
     assert.strictEqual(count, 2);
     assert.strictEqual(interpretInterrupt(count, false), 'to-menu');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// interpretChatKey — mid-turn ESC classification (Phase 0)
+// ---------------------------------------------------------------------------
+
+describe('interpretChatKey', () => {
+  it('a bare ESC while a turn is running interrupts that turn', () => {
+    assert.equal(interpretChatKey('\x1b', true), 'interrupt-task');
+  });
+
+  it('a bare ESC while idle is ignored (no interrupt at idle)', () => {
+    assert.equal(interpretChatKey('\x1b', false), 'ignore');
+  });
+
+  it('arrow / function-key escape sequences are ignored even while running', () => {
+    assert.equal(interpretChatKey('\x1b[A', true), 'ignore'); // up
+    assert.equal(interpretChatKey('\x1b[B', true), 'ignore'); // down
+    assert.equal(interpretChatKey('\x1bOP', true), 'ignore'); // F1
+  });
+
+  it('printable input and Ctrl+C bytes are ignored by this helper', () => {
+    assert.equal(interpretChatKey('a', true), 'ignore');
+    assert.equal(interpretChatKey('\x03', true), 'ignore'); // Ctrl+C handled by SIGINT model
+    assert.equal(interpretChatKey('\r', true), 'ignore');
+    assert.equal(interpretChatKey('', true), 'ignore');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// decidePostTurn — the one canonical post-turn order (MASTER-PLAN MF3)
+// ---------------------------------------------------------------------------
+
+describe('decidePostTurn', () => {
+  const decide = (i: Partial<PostTurnInputs>): readonly PostTurnAction[] =>
+    decidePostTurn({
+      hasQuestions: false,
+      hasMemoryProposal: false,
+      queuedCount: 0,
+      interrupted: false,
+      ...i,
+    });
+
+  it('normal settle, no q/proposal, queue=2 → [discard-typeahead, drain-queue]', () => {
+    assert.deepEqual(decide({ queuedCount: 2 }), ['discard-typeahead', 'drain-queue']);
+  });
+
+  it('questions present, queue=1 → [discard-typeahead, question-flow] (no drain)', () => {
+    assert.deepEqual(decide({ hasQuestions: true, queuedCount: 1 }), [
+      'discard-typeahead',
+      'question-flow',
+    ]);
+  });
+
+  it('memory proposal, no questions, queue=0 → [discard-typeahead, memory-approval, drain-queue]', () => {
+    assert.deepEqual(decide({ hasMemoryProposal: true }), [
+      'discard-typeahead',
+      'memory-approval',
+      'drain-queue',
+    ]);
+  });
+
+  it('interrupted, queue=3 → [discard-typeahead] (queue discarded, no drain)', () => {
+    assert.deepEqual(decide({ interrupted: true, queuedCount: 3 }), ['discard-typeahead']);
+  });
+
+  it('question-flow and memory-approval are mutually exclusive per turn (questions win)', () => {
+    assert.deepEqual(decide({ hasQuestions: true, hasMemoryProposal: true }), [
+      'discard-typeahead',
+      'question-flow',
+    ]);
+  });
+
+  it('memory-approval always runs AFTER discard and BEFORE drain (a queued "1" can never become "Save")', () => {
+    const actions = decide({ hasMemoryProposal: true, queuedCount: 2 });
+    const discardIdx = actions.indexOf('discard-typeahead');
+    const approvalIdx = actions.indexOf('memory-approval');
+    const drainIdx = actions.indexOf('drain-queue');
+    assert.ok(discardIdx < approvalIdx, 'discard precedes memory-approval');
+    assert.ok(approvalIdx < drainIdx, 'memory-approval precedes drain');
+  });
+
+  it('discard-typeahead is always first', () => {
+    for (const i of [
+      { queuedCount: 0 },
+      { queuedCount: 5 },
+      { hasQuestions: true },
+      { hasMemoryProposal: true },
+      { interrupted: true },
+    ]) {
+      assert.equal(decide(i)[0], 'discard-typeahead');
+    }
+  });
+
+  it('interrupt suppresses drain even with a memory proposal', () => {
+    assert.deepEqual(decide({ hasMemoryProposal: true, interrupted: true, queuedCount: 4 }), [
+      'discard-typeahead',
+      'memory-approval',
+    ]);
   });
 });

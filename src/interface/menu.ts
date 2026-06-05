@@ -53,7 +53,7 @@ import type { Mode } from '../core/policy.js';
 import { planNativeSession } from '../core/native-session.js';
 import { availableAfterCooldown, cooldownExpiry } from '../core/cooldown.js';
 import { learnProviderOrder } from '../core/routing-memory.js';
-import type { OutputSink } from './render.js';
+import type { OutputSink, Verbosity } from './render.js';
 import { runTask } from './run.js';
 import { runLogin } from '../commands/login.js';
 import type { LoginMethod } from '../commands/login.js';
@@ -812,6 +812,114 @@ export function interpretInterrupt(
   return 'hint';
 }
 
+/**
+ * Classify a single raw keypress observed DURING a streaming model turn.
+ *
+ * The mid-turn key listener (see {@link attachChatTurnKeyListener}) observes the
+ * terminal while a turn runs. The only key it acts on is a bare ESC (`'\x1b'`),
+ * which means "interrupt this turn and stay at the chat prompt" — distinct from
+ * the SIGINT/Ctrl+C escape model ({@link interpretInterrupt}). Everything else
+ * is ignored so printable input and line editing stay owned by readline:
+ *
+ *   - a bare ESC while a turn is running → `'interrupt-task'`
+ *   - a bare ESC while idle (no turn) → `'ignore'` (no interrupt message at idle)
+ *   - an arrow-key / function-key escape sequence (`'\x1b[A'`, `'\x1bOP'`, …) →
+ *     `'ignore'` (the leading ESC is part of a longer sequence, not a deliberate
+ *     ESC press)
+ *   - any printable byte, Enter, Ctrl+C, etc. → `'ignore'`
+ *
+ * Pure — never throws, no I/O, no side effects.
+ *
+ * @param raw         - The raw keypress bytes as a string (one or more bytes).
+ * @param taskRunning - Whether a model turn is currently in-flight.
+ */
+export function interpretChatKey(
+  raw: string,
+  taskRunning: boolean,
+): 'interrupt-task' | 'ignore' {
+  // Only an isolated ESC byte is the interrupt. A longer string starting with
+  // ESC is an arrow/function-key escape sequence and must be ignored so it does
+  // not steal cursor navigation from readline's line editor.
+  if (raw !== '\x1b') return 'ignore';
+  return taskRunning ? 'interrupt-task' : 'ignore';
+}
+
+// ---------------------------------------------------------------------------
+// Post-turn ordering — the one canonical sequence (MASTER-PLAN MF3)
+// ---------------------------------------------------------------------------
+
+/**
+ * One action in the canonical post-turn sequence. See {@link decidePostTurn}.
+ *
+ *   - `discard-typeahead` — drop lines typed during the turn (they never saw the
+ *     selector that may follow), always emitted before any selector.
+ *   - `question-flow` — run the `ask_user` structured-question selector.
+ *   - `memory-approval` — run the `remember_user` Save/Skip/Edit selector
+ *     (Phase 5; a no-op stub until then).
+ *   - `drain-queue` — run queued chat lines as the next turns, FIFO.
+ */
+export type PostTurnAction =
+  | 'discard-typeahead'
+  | 'question-flow'
+  | 'memory-approval'
+  | 'drain-queue';
+
+/** Inputs to {@link decidePostTurn} — see MASTER-PLAN MF3. */
+export interface PostTurnInputs {
+  /** `final.questions` present (the model asked a structured question). */
+  readonly hasQuestions: boolean;
+  /** `final.memoryProposal` present AND passed the worth gate (Phase 5). */
+  readonly hasMemoryProposal: boolean;
+  /** Chat-turn queue length (lines typed-ahead during the turn). */
+  readonly queuedCount: number;
+  /** Whether ESC or Ctrl+C cancelled this turn. */
+  readonly interrupted: boolean;
+}
+
+/**
+ * The single canonical post-turn sequence (red-team Axis-9 / MASTER-PLAN MF3).
+ * Returns the ordered actions to perform after a turn settles. PURE +
+ * table-tested. chat-ux owns the implementation; memory and question flow both
+ * route through it so a queued line can NEVER answer an unseen selector.
+ *
+ *   settle
+ *     → discard queued typeahead            (always, before any selector)
+ *     → IF hasQuestions: question-flow      (mutually exclusive with memory-approval per turn)
+ *     → ELSE IF hasMemoryProposal: memory-approval
+ *     → drain-queue                         (only if NOT interrupted; interrupt discards)
+ *
+ * Rules: a selector is never fed a queued line (`discard-typeahead` always
+ * precedes it). On interrupt, the queue is discarded and not drained.
+ * `question-flow` and `memory-approval` never both run in one turn (the model
+ * never emits `ask_user` alongside `remember_user` — memory doc §8).
+ *
+ * Pure — never throws, no I/O, no side effects.
+ */
+export function decidePostTurn(inputs: PostTurnInputs): readonly PostTurnAction[] {
+  const actions: PostTurnAction[] = [];
+  // Always discard typed-ahead lines first: they were entered before any
+  // selector below was rendered, so they must never be misread as answers.
+  actions.push('discard-typeahead');
+
+  if (inputs.hasQuestions) {
+    actions.push('question-flow');
+  } else if (inputs.hasMemoryProposal) {
+    actions.push('memory-approval');
+  }
+
+  // Drain the queue only on a clean settle AND when the turn did NOT end in a
+  // structured question. When questions are present the answer turn re-enters
+  // the loop and the queued lines were discarded above (they never saw the
+  // selector) — so there is nothing to drain (MASTER-PLAN MF3 table row 2). An
+  // interrupt (ESC / Ctrl+C) likewise means "stop": the queue is discarded, not
+  // drained.
+  if (!inputs.interrupted && !inputs.hasQuestions) {
+    actions.push('drain-queue');
+  }
+
+  return actions;
+}
+
 // ---------------------------------------------------------------------------
 // Internal readline helpers
 // ---------------------------------------------------------------------------
@@ -830,7 +938,7 @@ export function interpretInterrupt(
  * stream is closed/EOF. It NEVER throws and returns `null` for every call after
  * close, so callers can treat `null` as a clean end-of-input sentinel.
  */
-interface LineReader {
+export interface LineReader {
   /** Resolve with the next line, or `null` on EOF (and for every call after). */
   nextLine(): Promise<string | null>;
   /**
@@ -845,6 +953,24 @@ interface LineReader {
   resume(): void;
   /** Close the underlying readline interface (idempotent). */
   close(): void;
+  /**
+   * Begin capturing lines typed DURING a model turn (typed-ahead queueing). While
+   * a capture is active, every non-blank line goes to `onLine` instead of the
+   * `nextLine()` buffer/waiters, so mid-turn input can NEVER leak into a later
+   * question/auth/menu prompt or auto-answer an unseen selector. Returns a detach
+   * function; call it (in a `finally`) when the turn settles.
+   *
+   * Exclusive: throwing if a capture is already active is a real-bug guard — two
+   * concurrent owners of mid-turn input would be a logic error.
+   */
+  beginCapture(onLine: (line: string) => void): () => void;
+  /**
+   * Remove and return any lines buffered by `nextLine()` (incidental stale input,
+   * e.g. a stray Enter) so a selector or child handoff starts from a clean slate.
+   */
+  drainBuffered(): string[];
+  /** Drop any buffered lines without returning them. */
+  clearBuffered(): void;
 }
 
 /**
@@ -865,18 +991,32 @@ export function createLineReader(
   let closed = false;
   let suppressEmptyUntil = 0;
   let suppressGeneration = 0;
+  // When non-null, a model turn is active and full lines typed mid-turn are
+  // routed here (typed-ahead capture) instead of the nextLine() buffer/waiters.
+  // This keeps mid-turn input out of question/auth/menu prompts entirely.
+  let capture: ((line: string) => void) | null = null;
 
   rl.on('line', (raw: string) => {
     const line = raw.trim();
     if (line === '' && Date.now() <= suppressEmptyUntil) {
       // Some inherited-stdio CLIs leave the submit Enter queued as they exit.
       // Drop only that immediate blank line so the next prompt is not auto-answered.
+      // The blank-line suppression intentionally wins over capture: a leftover
+      // submit Enter must never be queued as a typed-ahead turn.
       suppressEmptyUntil = 0;
       suppressGeneration += 1;
       return;
     }
     suppressEmptyUntil = 0;
     suppressGeneration += 1;
+    if (capture !== null) {
+      // Mid-turn typed-ahead. Blank lines are dropped (a bare Enter is not a
+      // queued turn); non-blank lines go to the capture sink, never to the
+      // buffer/waiters. This is the single line-mode owner — no second
+      // stdin.on('data') consumer is added.
+      if (line !== '') capture(line);
+      return;
+    }
     const waiter = waiters.shift();
     if (waiter !== undefined) {
       waiter(line);
@@ -983,6 +1123,30 @@ export function createLineReader(
     },
     close(): void {
       rl.close();
+    },
+    beginCapture(onLine: (line: string) => void): () => void {
+      // Exclusive: a second concurrent capture owner would be a real bug (two
+      // turns claiming mid-turn input at once). Throw rather than silently steal.
+      if (capture !== null) {
+        throw new Error('createLineReader: capture already active');
+      }
+      capture = onLine;
+      let detached = false;
+      return (): void => {
+        if (detached) return;
+        detached = true;
+        // Only clear OUR capture — never another owner's (defensive against an
+        // out-of-order detach).
+        if (capture === onLine) capture = null;
+      };
+    },
+    drainBuffered(): string[] {
+      const drained = buffered.slice();
+      buffered.length = 0;
+      return drained;
+    },
+    clearBuffered(): void {
+      buffered.length = 0;
     },
   };
 }
@@ -1111,6 +1275,107 @@ export function readSingleKey(
       reject(err instanceof Error ? err : new Error(String(err)));
     }
   });
+}
+
+/**
+ * A keypress event object as emitted by `readline.emitKeypressEvents`. `name`
+ * is the logical key (`'escape'`, `'up'`, …); `sequence` is the raw bytes. We
+ * declare the slice we read so a fake can drive the listener without a real TTY.
+ */
+export interface KeypressEvent {
+  name?: string;
+  sequence?: string;
+  ctrl?: boolean;
+  meta?: boolean;
+  shift?: boolean;
+}
+
+/**
+ * Attach a SCOPED key listener for the duration of one streaming model turn.
+ *
+ * Semantics (chat-ux audit §"ESC Interrupt"): the only key it acts on is a bare
+ * ESC, which calls `onEscape()` — "interrupt this turn and stay at the chat
+ * prompt". It OBSERVES esc only; every printable byte, arrow/function-key escape
+ * sequence, Enter, and Ctrl+C is left untouched so line buffering stays owned by
+ * readline (no double-submit / stolen-byte class of bug).
+ *
+ * 3.12.x coexistence — this is a deliberately narrow, non-destructive listener:
+ *   - It uses ONLY the given `stdin` (default `process.stdin`); it never reaches
+ *     for `/dev/tty` (a second mid-turn reader would violate the single-owner rule).
+ *   - It NEVER calls `removeAllListeners`, never `stdin.read()`, never `suspend()`/
+ *     `resume()`. It adds exactly one `keypress` listener and removes only that
+ *     listener on detach.
+ *   - It records `wasRaw`; if raw mode was not already on it enables it for the
+ *     turn and restores the prior state on detach. In normal terminal-readline
+ *     mode raw is already on, so this is a no-op and ownership stays with readline.
+ *   - Off-TTY (no `out.isTty` / `stdin.isTTY` / `setRawMode`) it returns a no-op
+ *     detach immediately, so normal line input keeps working unchanged. Mid-turn
+ *     interruption is then covered by Ctrl+C / direct helper tests.
+ *
+ * Returns a detach function; wrap the turn in `try/finally` so detach always runs.
+ *
+ * @param out     - Output sink (used only for the TTY capability check).
+ * @param stdin   - The key stream (injectable for tests; default `process.stdin`).
+ * @param onEscape - Invoked once per bare-ESC press while attached.
+ */
+export function attachChatTurnKeyListener(
+  out: OutputSink,
+  stdin: KeyInputStream = process.stdin as unknown as KeyInputStream,
+  onEscape: () => void = (): void => {},
+): () => void {
+  // Degrade cleanly off-TTY: no raw keypresses available → no-op detach. Normal
+  // line input (and Ctrl+C) keep working; ESC simply isn't observed.
+  if (!out.isTty || stdin.isTTY !== true || typeof stdin.setRawMode !== 'function') {
+    return (): void => {};
+  }
+
+  // Make readline-style keypress events flow from this stream. Idempotent — safe
+  // to call alongside the live readline interface, which already enables them.
+  try {
+    readline.emitKeypressEvents(stdin as unknown as NodeJS.ReadableStream);
+  } catch {
+    // If keypress events can't be enabled, fall back to a no-op rather than a
+    // raw 'data' parser (which could steal/duplicate bytes from readline).
+    return (): void => {};
+  }
+
+  const wasRaw = stdin.isRaw === true;
+  try {
+    if (!wasRaw) stdin.setRawMode(true);
+  } catch {
+    // Raw mode unavailable → don't risk a half-attached listener; no-op.
+    return (): void => {};
+  }
+
+  const handler = (str: string | undefined, key: KeypressEvent | undefined): void => {
+    // Observe ONLY a bare ESC. A bare ESC arrives as name 'escape' with sequence
+    // '\x1b'; arrow/function keys ('up', 'f1', …) carry a longer '\x1b[…' sequence
+    // and must be ignored. interpretChatKey is the single classification truth.
+    const seq = key?.sequence ?? str ?? '';
+    const isBareEscape = key?.name === 'escape' && seq === '\x1b';
+    if (!isBareEscape) return;
+    onEscape();
+  };
+
+  stdin.on('keypress', handler as (...a: never[]) => void);
+
+  let detached = false;
+  return (): void => {
+    if (detached) return;
+    detached = true;
+    // Remove ONLY our listener — never removeAllListeners (that destructive
+    // pattern is safe only for the isolated readSingleKey prompt).
+    stdin.removeListener('keypress', handler as (...a: never[]) => void);
+    // Restore only the raw-mode state we changed. If readline already owned raw
+    // mode, leave it; we never took ownership.
+    if (!wasRaw) {
+      try {
+        if (typeof stdin.setRawMode === 'function') stdin.setRawMode(false);
+      } catch {
+        /* best-effort — never throw on mode restore */
+      }
+    }
+  };
 }
 
 /**
@@ -2040,6 +2305,7 @@ async function runImportNative(
   detectEnvironmentFn: () => Promise<EnvironmentStatus>,
   confirm: Confirm,
   suspendStdin?: () => () => void,
+  lineReader?: LineReader | null,
 ): Promise<'menu' | 'exit'> {
   const env = { ...process.env, ...replitPersistentEnv(process.env, ctx.cwd) };
   const sessions = await listRecentNativeSessions({ env, limit: 9 });
@@ -2080,7 +2346,7 @@ async function runImportNative(
 
   // Enter the chat loop for the newly imported conversation.
   // Return value propagates the 'exit' signal to the caller (startMenu).
-  return runChatLoop(ctx, mutableCtx, id, out, readLine, loginFn, detectEnvironmentFn, confirm, suspendStdin);
+  return runChatLoop(ctx, mutableCtx, id, out, readLine, loginFn, detectEnvironmentFn, confirm, suspendStdin, lineReader);
 }
 
 // ---------------------------------------------------------------------------
@@ -2242,6 +2508,43 @@ async function runRawProviderSession(
  */
 const MAX_CONSECUTIVE_QUESTION_TURNS = 3;
 
+// ---------------------------------------------------------------------------
+// Typed-ahead queue — UI chrome notices (verbosity = render chrome only)
+// ---------------------------------------------------------------------------
+
+/**
+ * Render a dim "queued" hint after a line is typed-ahead during a turn. UI
+ * chrome: shown in `normal`/`verbose`, suppressed in `quiet` (it is not
+ * data-loss-relevant). Printed on its own line so it never corrupts the spinner.
+ */
+function renderQueuedHint(
+  out: OutputSink,
+  verbosity: Verbosity,
+  queueLength: number,
+  preview: string,
+): void {
+  if (verbosity === 'quiet') return;
+  const short = preview.length > 48 ? `${preview.slice(0, 48)}…` : preview;
+  out.write(dim(`  (queued ${queueLength} message${queueLength === 1 ? '' : 's'}: ${short})\n`, out.color));
+}
+
+/**
+ * Render a dim "discarded N queued" notice. Shown in EVERY verbosity (including
+ * `quiet`) because dropping typed-ahead input silently is a data-loss surprise.
+ */
+function renderDiscardedQueue(
+  out: OutputSink,
+  count: number,
+  reason: 'interrupt' | 'question',
+): void {
+  if (count <= 0) return;
+  const tail =
+    reason === 'question'
+      ? '; answer the question first'
+      : '';
+  out.write(dim(`  (discarded ${count} queued message${count === 1 ? '' : 's'}${tail})\n`, out.color));
+}
+
 /**
  * Render a {@link QuestionSet} and collect the user's answers, returning the
  * deterministic next-turn text (via {@link formatAnswers}) to resubmit into the
@@ -2264,7 +2567,7 @@ const MAX_CONSECUTIVE_QUESTION_TURNS = 3;
  * The reader (and thus its EOF/Ctrl-C semantics) is injected, so this is
  * testable without a TTY.
  */
-async function runQuestionSelector(
+export async function runQuestionSelector(
   questions: QuestionSet,
   out: OutputSink,
   readLine: () => Promise<string | null>,
@@ -2337,6 +2640,10 @@ async function runChatLoop(
   detectEnvironmentFn: () => Promise<EnvironmentStatus>,
   confirm: Confirm,
   suspendStdin?: () => () => void,
+  // The real LineReader (when stdin is owned by readline). Enables typed-ahead
+  // capture/queueing during a turn. Null on the injected-readLine test path —
+  // queueing then degrades off (no second stdin owner is invented for tests).
+  lineReader?: LineReader | null,
 ): Promise<'menu' | 'exit'> {
   // Print a short recap of the conversation (last entry) if history exists
   const history = await ctx.store.load(convId);
@@ -2385,12 +2692,119 @@ async function runChatLoop(
   }
 
   let currentAc: AbortController | null = null;
+  // Set true when the in-flight turn was interrupted by ESC (distinct from the
+  // Ctrl+C escape model). Read by the post-turn slot to discard the typed-ahead
+  // queue (per decidePostTurn) and print the ESC status once.
+  let interruptedByEsc = false;
+
+  // Typed-ahead queue: full lines the user submits DURING a turn. Captured by
+  // the LineReader (single owner — no second stdin consumer), drained FIFO after
+  // a clean settle, discarded on interrupt / before any selector (decidePostTurn).
+  const queuedTurns: string[] = [];
 
   // Interrupt timestamps — populated on each SIGINT; checked against the
   // 1 500 ms sliding window. Using ctx.clock.now() (not Date.now) so tests
   // can drive time with a fake clock.
   const interruptTimes: number[] = [];
   const INTERRUPT_WINDOW_MS = 1_500;
+
+  // Stdin used by the scoped ESC listener. Only the real readLine path (where
+  // the LineReader owns process.stdin) gets a live listener; the injected-test
+  // path leaves this absent so attachChatTurnKeyListener degrades to a no-op.
+  const turnKeyStdin: KeyInputStream | undefined =
+    lineReader !== undefined && lineReader !== null
+      ? (process.stdin as unknown as KeyInputStream)
+      : undefined;
+
+  /**
+   * Run ONE model turn with the chat-ux input hooks: a scoped ESC listener
+   * (ESC = interrupt this turn, stay at the prompt) and typed-ahead capture
+   * (full lines submitted mid-turn are queued, not fed to the next prompt).
+   * Always detaches both in `finally`. Returns runTask's result.
+   */
+  const runTaskWithInputHooks = async (
+    taskLine: string,
+    taskDeps: OrchestrateDeps,
+    signal: AbortSignal,
+    verbosity: Verbosity,
+  ): Promise<Awaited<ReturnType<typeof runTask>>> => {
+    // Fresh interrupt state for THIS task (a prior turn's ESC must not leak).
+    interruptedByEsc = false;
+    // Typed-ahead capture (only when the real LineReader owns stdin).
+    const stopCapture =
+      lineReader !== undefined && lineReader !== null
+        ? lineReader.beginCapture((captured: string) => {
+            queuedTurns.push(captured);
+            renderQueuedHint(out, verbosity, queuedTurns.length, captured);
+          })
+        : null;
+    // Scoped ESC listener (no-op off-TTY / injected-test path).
+    const detachEsc =
+      turnKeyStdin !== undefined
+        ? attachChatTurnKeyListener(out, turnKeyStdin, () => {
+            // ESC: interrupt THIS turn and stay at the chat prompt. It never
+            // touches the Ctrl+C window and never returns to the menu.
+            interruptedByEsc = true;
+            currentAc?.abort();
+          })
+        : (): void => {};
+    try {
+      return await runTask(taskLine, taskDeps, out, signal, verbosity);
+    } finally {
+      detachEsc();
+      if (stopCapture !== null) stopCapture();
+    }
+  };
+
+  /**
+   * The canonical post-turn slot (MASTER-PLAN MF3 / decidePostTurn). Computes the
+   * ordered actions from the settled turn and runs them: discard typed-ahead
+   * (always, before any selector), question-flow (the existing selector),
+   * memory-approval (Phase-5 stub), drain-queue (clean settle only). The actual
+   * question-flow and drain are wired by the caller via the supplied callbacks so
+   * this helper stays the single ordering authority.
+   */
+  const runPostTurnSlot = async (
+    finalEvent: Extract<CoreEvent, { type: 'final' }> | undefined,
+    runQuestionFlow: () => Promise<void>,
+    drainQueue: () => Promise<void>,
+  ): Promise<void> => {
+    const hasQuestions =
+      finalEvent?.success === true && finalEvent.questions !== undefined;
+    const actions = decidePostTurn({
+      hasQuestions,
+      // Phase 5: memory proposals don't exist yet — always false. The
+      // 'memory-approval' action is reachable in the table but no-ops here.
+      hasMemoryProposal: false,
+      queuedCount: queuedTurns.length,
+      interrupted: interruptedByEsc || shouldExit || shouldMenu,
+    });
+    for (const action of actions) {
+      if (action === 'discard-typeahead') {
+        // Discard before any selector so a queued line can never auto-answer an
+        // unseen question/memory selector. Notice the user it was dropped.
+        if (queuedTurns.length > 0) {
+          const reason = hasQuestions ? 'question' : 'interrupt';
+          // Only annotate as a data-loss notice when something is dropped that
+          // the user could otherwise expect to run (interrupt or a pending
+          // selector). On a clean settle with no selector, drain-queue runs and
+          // there is nothing to discard (queuedCount feeds the queue below).
+          if (interruptedByEsc || shouldExit || shouldMenu || hasQuestions) {
+            renderDiscardedQueue(out, queuedTurns.length, reason);
+            queuedTurns.length = 0;
+          }
+        }
+      } else if (action === 'question-flow') {
+        await runQuestionFlow();
+      } else if (action === 'memory-approval') {
+        // TODO(Phase 5): wire the remember_user Save/Skip/Edit selector here.
+        // It MUST route through this slot (after discard, before drain) so a
+        // queued "1" can never become "Save" — see MASTER-PLAN MF3.
+      } else if (action === 'drain-queue') {
+        await drainQueue();
+      }
+    }
+  };
 
   // The 'exit' and 'menu' signals are communicated from the SIGINT handler to
   // the main loop via these flags (the handler can't break the outer while directly).
@@ -2520,32 +2934,60 @@ async function runChatLoop(
 
       if (line.length === 0) continue;
 
-      if (line === '/exit' || line === '/back') {
+      // One input → one turn (+ its post-turn slot). Drain-queue re-enters this
+      // SAME helper so a typed-ahead line is handled identically to a fresh
+      // prompt line (including queued slash commands like /back). Returns a
+      // control signal for the outer loop.
+      const signal = await runOneChatInput(line);
+      if (signal === 'menu') {
+        loopResult = 'menu';
         break;
       }
-
-      if (line === '/help') {
-        out.write(
-          dim('  Just type to chat — I pick the right model for each message.\n', out.color) +
-          '  /goal <text>  — work autonomously until the goal is done (Ctrl+C to stop)\n' +
-          '  /mode         — quality vs speed (Efficient / Balanced / Max)\n' +
-          '  /back, /exit  — return to the main menu\n' +
-          '  /help         — show this help\n',
-        );
-        continue;
+      if (signal === 'exit') {
+        loopResult = 'exit';
+        break;
       }
+    }
+  } finally {
+    process.removeListener('SIGINT', sigintHandler);
+    loopBreaker = null;
+  }
 
-      // Change the (single, global) mode from inside the chat — same knob as the
-      // home [m], so there is one source of truth and never a global/per-chat drift.
-      if (line === '/mode') {
-        const autoMode = resolveAutoMode(mutableCtx.env);
-        mutableCtx.config = await runModeSelect(mutableCtx.config, out, readLine, autoMode, mutableCtx.env);
-        continue;
-      }
+  return loopResult;
 
-      // Effective mode: the user's explicit choice, else auto-detected from their
-      // subscription plan (Max → top of the knob, etc.) — no interrogation.
-      const effectiveMode: Mode =
+  // -------------------------------------------------------------------------
+  // runOneChatInput — process a single chat input (prompt OR queued), run its
+  // turn, then drive the canonical post-turn slot (decidePostTurn). Hoisted as a
+  // function declaration so the loop above can call it before its definition;
+  // it closes over the loop's mutable state (currentAc, shouldExit/Menu, queue).
+  // -------------------------------------------------------------------------
+  async function runOneChatInput(line: string): Promise<'continue' | 'menu' | 'exit'> {
+    if (line === '/exit' || line === '/back') {
+      return 'menu';
+    }
+
+    if (line === '/help') {
+      out.write(
+        dim('  Just type to chat — I pick the right model for each message.\n', out.color) +
+        '  /goal <text>  — work autonomously until the goal is done (Ctrl+C to stop)\n' +
+        '  /mode         — quality vs speed (Efficient / Balanced / Max)\n' +
+        '  /back, /exit  — return to the main menu\n' +
+        '  /help         — show this help\n',
+      );
+      return 'continue';
+    }
+
+    // Change the (single, global) mode from inside the chat — same knob as the
+    // home [m], so there is one source of truth and never a global/per-chat drift.
+    if (line === '/mode') {
+      const autoMode = resolveAutoMode(mutableCtx.env);
+      mutableCtx.config = await runModeSelect(mutableCtx.config, out, readLine, autoMode, mutableCtx.env);
+      return 'continue';
+    }
+
+    // Effective mode: the user's explicit choice, else auto-detected from their
+    // subscription plan (Max → top of the knob, etc.) — no interrogation.
+    const effectiveMode: Mode =
         mutableCtx.config.mode ?? resolveAutoMode(mutableCtx.env);
       // EXPERIMENTAL: opt-in Parallel Subscription Panel (config.panel) maps to
       // policy.panelPolicy 'hard-turns'. Absent/false → unchanged sequential
@@ -2565,7 +3007,7 @@ async function runChatLoop(
         out.write(
           '\n[info] No signed-in provider yet — type /back or press Ctrl+C twice to return, then [j] Claude / [k] Codex / [o] opencode to sign in.\n',
         );
-        continue;
+        return 'continue';
       }
 
       // Load prior history before each turn so the provider receives conversation
@@ -2696,16 +3138,15 @@ async function runChatLoop(
 
           const answerAc = new AbortController();
           currentAc = answerAc;
-          const answerResult = await runTask(
+          const answerResult = await runTaskWithInputHooks(
             answerLine,
             answerDeps,
-            out,
             answerAc.signal,
             mutableCtx.config.verbosity ?? 'normal',
           );
           currentAc = null;
 
-          if (shouldExit || shouldMenu) break;
+          if (shouldExit || shouldMenu || interruptedByEsc) break;
 
           pending = answerResult.final;
         }
@@ -2775,10 +3216,9 @@ async function runChatLoop(
           };
           const goalAc = new AbortController();
           currentAc = goalAc;
-          const turn = await runTask(
+          const turn = await runTaskWithInputHooks(
             contractedGoalTask,
             { ...goalDeps, session: goalSession, workContract: goalContract, goalTurn: true },
-            out,
             goalAc.signal,
             mutableCtx.config.verbosity ?? 'normal',
           );
@@ -2787,6 +3227,15 @@ async function runChatLoop(
           completed = i + 1;
           if (shouldExit) { loopResult = 'exit'; return true; }
           if (shouldMenu) { loopResult = 'menu'; return true; }
+          // ESC interrupts the goal loop and returns to the chat prompt (it does
+          // not exit/menu). Discard any typed-ahead so it can't run unexpectedly.
+          if (interruptedByEsc) {
+            if (queuedTurns.length > 0) {
+              renderDiscardedQueue(out, queuedTurns.length, 'interrupt');
+              queuedTurns.length = 0;
+            }
+            return false;
+          }
 
           if (turn.final?.success === true && turn.final.questions !== undefined) {
             out.write(dim('\n  The goal run needs your input before it can continue.\n', out.color));
@@ -2840,10 +3289,10 @@ async function runChatLoop(
         const goalText = line.slice('/goal'.length).trim();
         if (goalText.length === 0) {
           out.write(dim('  Usage: /goal <what you want achieved> — I work autonomously until it\'s done (Ctrl+C to stop).\n', out.color));
-          continue;
+          return 'continue';
         }
-        if (await runGoalLoop(goalText)) break;
-        continue;
+        if (await runGoalLoop(goalText)) return loopResult;
+        return 'continue';
       }
 
       const deps = buildDeps(priorHistory);
@@ -2856,26 +3305,35 @@ async function runChatLoop(
           autoGoalEnabled: true,
         });
         if (autonomy.kind === 'auto_engage') {
-          if (await runGoalLoop(line)) break;
-          continue;
+          if (await runGoalLoop(line)) return loopResult;
+          return 'continue';
         }
       }
 
       const ac = new AbortController();
       currentAc = ac;
-      const result = await runTask(line, deps, out, ac.signal, mutableCtx.config.verbosity ?? 'normal');
+      const result = await runTaskWithInputHooks(line, deps, ac.signal, mutableCtx.config.verbosity ?? 'normal');
       currentAc = null;
       noteRateLimit(result);
+
+      // ESC interrupt during the turn: discard typed-ahead, print a calm status
+      // once, and return to the chat prompt (NOT menu). decidePostTurn guarantees
+      // the queue is discarded (not drained) on interrupt; we surface it here.
+      if (interruptedByEsc) {
+        await runPostTurnSlot(result.final, async () => {}, async () => {});
+        out.write('\nInterrupted.\n');
+        return 'continue';
+      }
 
       // Check for SIGINT-driven signals that fired while runTask was awaited.
       if (shouldExit) {
         loopResult = 'exit';
-        break;
+        return 'exit';
       }
       // Bug 3 fix: shouldMenu may have been set by a 2×Ctrl+C during the task.
       if (shouldMenu) {
         loopResult = 'menu';
-        break;
+        return 'menu';
       }
 
       // Inline re-login on auth failure: offer to sign in and retry once.
@@ -2901,15 +3359,23 @@ async function runChatLoop(
           // Retry the same task once.
           const retryAc = new AbortController();
           currentAc = retryAc;
-          const retryResult = await runTask(line, retryDeps, out, retryAc.signal, mutableCtx.config.verbosity ?? 'normal');
+          const retryResult = await runTaskWithInputHooks(line, retryDeps, retryAc.signal, mutableCtx.config.verbosity ?? 'normal');
           currentAc = null;
+          if (interruptedByEsc) {
+            if (queuedTurns.length > 0) {
+              renderDiscardedQueue(out, queuedTurns.length, 'interrupt');
+              queuedTurns.length = 0;
+            }
+            out.write('\nInterrupted.\n');
+            return 'continue';
+          }
           if (shouldExit) {
             loopResult = 'exit';
-            break;
+            return 'exit';
           }
           if (shouldMenu) {
             loopResult = 'menu';
-            break;
+            return 'menu';
           }
           // If still auth failure after retry, inform and continue to prompt.
           if (
@@ -2933,12 +3399,18 @@ async function runChatLoop(
         !result.final.success &&
         result.final.errorCategory === 'timeout'
       ) {
+        // A confirm/goal-loop branch supersedes the post-turn slot; drop any
+        // typed-ahead so it can't surprise-run after the confirm.
+        if (queuedTurns.length > 0) {
+          renderDiscardedQueue(out, queuedTurns.length, 'interrupt');
+          queuedTurns.length = 0;
+        }
         out.write('\n  ' + dim("That's a big one — it ran past the time limit for a single turn.", out.color) + '\n');
         out.write(`  Keep working on it autonomously, step by step, until it's done? ${yesNoHint('yes', out.color)} `);
         if (await confirm(true)) {
-          if (await runGoalLoop(line)) break;
+          if (await runGoalLoop(line)) return loopResult;
         }
-        continue;
+        return 'continue';
       }
 
       // ---- Natural autonomy: accept the model's "keep going?" offer -----------
@@ -2948,38 +3420,48 @@ async function runChatLoop(
       // ORIGINAL task — so sustained work needs no command. Handled BEFORE the
       // generic selector so the offer isn't shown as a numbered list.
       if (result.final?.questions !== undefined && isKeepGoingOffer(result.final.questions)) {
+        if (queuedTurns.length > 0) {
+          renderDiscardedQueue(out, queuedTurns.length, 'interrupt');
+          queuedTurns.length = 0;
+        }
         out.write('\n  ' + dim("I can keep working on this autonomously until it's done.", out.color) + '\n');
         out.write(`  Keep going? ${yesNoHint('yes', out.color)} `);
         if (await confirm(true)) {
-          if (await runGoalLoop(line)) break;
+          if (await runGoalLoop(line)) return loopResult;
         }
-        continue;
+        return 'continue';
       }
 
-      // ---- Structured-question turns (ask_user) -------------------------------
-      // When the model ended its turn by asking the user a structured question,
-      // render the selector, build the deterministic answer line, and resubmit
-      // it into the SAME conversation so history replay carries the question +
-      // answer forward. The answer turn may itself end in another question; we
-      // cap consecutive auto-resubmitted question turns at
-      // MAX_CONSECUTIVE_QUESTION_TURNS so a model that keeps asking can't loop
-      // forever without the human ever typing.
-      await runStructuredQuestionFlow(result.final);
+      // ---- Post-turn slot (decidePostTurn / MASTER-PLAN MF3) ------------------
+      // The single canonical post-turn order: discard typed-ahead (before any
+      // selector) → question-flow (the ask_user selector) → memory-approval
+      // (Phase-5 stub) → drain-queue (FIFO, clean settle only). question-flow
+      // wires the EXISTING runStructuredQuestionFlow; drain re-enters
+      // runOneChatInput per queued line. A queued line can NEVER answer an unseen
+      // selector (discard always precedes question-flow).
+      await runPostTurnSlot(
+        result.final,
+        () => runStructuredQuestionFlow(result.final),
+        async () => {
+          while (queuedTurns.length > 0 && !shouldExit && !shouldMenu) {
+            const next = queuedTurns.shift();
+            if (next === undefined) break;
+            const drainSignal = await runOneChatInput(next);
+            if (drainSignal === 'menu') { shouldMenu = true; loopResult = 'menu'; break; }
+            if (drainSignal === 'exit') { shouldExit = true; loopResult = 'exit'; break; }
+          }
+        },
+      );
       if (shouldExit) {
         loopResult = 'exit';
-        break;
+        return 'exit';
       }
       if (shouldMenu) {
         loopResult = 'menu';
-        break;
+        return 'menu';
       }
-    }
-  } finally {
-    process.removeListener('SIGINT', sigintHandler);
-    loopBreaker = null;
+      return 'continue';
   }
-
-  return loopResult;
 }
 
 // ---------------------------------------------------------------------------
@@ -3358,7 +3840,7 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
         // (conversations.ts append()), so create an untitled conversation and drop
         // straight into it.
         const meta = await ctx.store.create('');
-        const chatResult = await runChatLoop(ctx, mutableCtx, meta.id, out, readLine, loginFn, detectEnvironmentFn, confirm, suspendStdin);
+        const chatResult = await runChatLoop(ctx, mutableCtx, meta.id, out, readLine, loginFn, detectEnvironmentFn, confirm, suspendStdin, lineReader);
         spendDirty = true; // a task may have run — refresh the spend summary
         if (chatResult === 'exit') break;
         continue;
@@ -3372,7 +3854,7 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
           if (!(await promptForAuthBeforeChat(out, readLine, mutableCtx, loginFn, detectEnvironmentFn, confirm, suspendStdin))) {
             continue;
           }
-          const chatResult = await runChatLoop(ctx, mutableCtx, latest.id, out, readLine, loginFn, detectEnvironmentFn, confirm, suspendStdin);
+          const chatResult = await runChatLoop(ctx, mutableCtx, latest.id, out, readLine, loginFn, detectEnvironmentFn, confirm, suspendStdin, lineReader);
           spendDirty = true; // a task may have run — refresh the spend summary
           if (chatResult === 'exit') break;
         } else {
@@ -3389,7 +3871,7 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
           if (!(await promptForAuthBeforeChat(out, readLine, mutableCtx, loginFn, detectEnvironmentFn, confirm, suspendStdin))) {
             continue;
           }
-          const chatResult = await runChatLoop(ctx, mutableCtx, target.id, out, readLine, loginFn, detectEnvironmentFn, confirm, suspendStdin);
+          const chatResult = await runChatLoop(ctx, mutableCtx, target.id, out, readLine, loginFn, detectEnvironmentFn, confirm, suspendStdin, lineReader);
           spendDirty = true; // a task may have run — refresh the spend summary
           if (chatResult === 'exit') break;
         } else {
@@ -3406,7 +3888,7 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
 
       // ---- [i] Import a native conversation -----------------------------------
       if (key === 'i') {
-        const importResult = await runImportNative(ctx, mutableCtx, out, readLine, loginFn, detectEnvironmentFn, confirm, suspendStdin);
+        const importResult = await runImportNative(ctx, mutableCtx, out, readLine, loginFn, detectEnvironmentFn, confirm, suspendStdin, lineReader);
         spendDirty = true; // an imported session may run a task — refresh spend
         if (importResult === 'exit') break;
         continue;
