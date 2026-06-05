@@ -15,6 +15,44 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   resumed goal's contract from the persisted `workTrace` (niche: the in-run contract
   is already kept in memory; only cross-session resume benefits). Optional.
 
+## [3.14.0]
+
+### Added
+**The "world-class chat" — a vision-first adaptive partner.** A 10-phase build
+(designed, adversarially gated to 9.5/10, then implemented and re-gated to 9.7/10
+on the running tool), all behind the existing subscription-auth model (no API
+keys, embeddings, or metered services; the only new model touches are gated cheap
+worker-tier passes via the existing injected provider port). Full design corpus in
+`docs/*-5.5.md`, build sequenced by `docs/MASTER-PLAN-5.5.md`. Highlights:
+
+- **Chat mechanics** — press **ESC to interrupt** the current turn (stay at the
+  prompt; distinct from double-Ctrl+C → menu), **type-ahead queueing** (lines typed
+  while it works are queued and drained FIFO, never auto-answering an unseen
+  selector), and a single canonical post-turn order (`decidePostTurn`).
+- **Adaptive partner** — an intent engine builds a per-turn `IntentFrame` (one
+  gated cheap call, skipped on trivial turns) and an Adaptive Partner Engine decides
+  *what to do, when, and in what order* (execute / reflect / ask / plan-first /
+  investigate / research / discuss) with a hard safety floor (irreversible+ambiguous
+  always confirms) and efficiency guardrails (no over-ask/over-research). `partnerStyle`
+  (`/style` direct·balanced·collaborative) is a soft bias, not a hard mode.
+- **Memory** — durable, *smart* memory: a write-gate (rejects secrets, transient,
+  instruction-shaped, re-derivable), write-as-consolidation (ADD/UPDATE/SUPERSEDE/
+  NOOP — no duplicate-fact drift), trust tiers, bi-temporal invalidate-not-delete,
+  use-it-or-lose-it decay, deterministic capped retrieval, and per-turn injection
+  gated so trivial turns stay clean. No silent saves: `/remember`, `/forget`,
+  `/memory [all·loaded·export]`, CLI `memory …`, and approved `remember_user`
+  proposals. On by default, project-scoped; kill-switch in Settings.
+- **Feel** — a semantic `●` turn marker (cyan→green/red), a real **"Waiting on N
+  models"** panel status sourced from live ensemble events, `※` recap on resume,
+  and light inline markdown — all degrading cleanly under NO_COLOR / non-TTY /
+  MYSHELL_PLAIN.
+- **Whole-tool** — progressive first-run hints, a unified teach-on-failure error
+  format, a cumulative cost budget (≤1 added blocking call/turn) with a quota-shed
+  ladder where the core answer always survives, and a verified 3.12.x→3.14.0
+  upgrade path (no data loss, no scary prompts).
+
+Test suite grew 2461 → 2926 (0 failing).
+
 ## [3.13.0]
 
 ### Changed
