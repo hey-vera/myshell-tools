@@ -29,6 +29,8 @@ import { createFileConversationStore } from './infra/conversations.js';
 import { createFileUserMemoryStore, resolveProjectKey } from './infra/user-memory-store.js';
 export { createFileUserMemoryStore };
 import { resolveMemoryContext } from './core/memory-injection.js';
+import { buildEnvironmentContext } from './core/repo-map.js';
+import { nodeRepoScanPort } from './infra/repo-scan.js';
 import { loadConfig, resolvePartnerStyle } from './infra/config.js';
 import { makeIntentExtractor } from './core/intent-extractor.js';
 import { replCapabilities } from './core/surface-capabilities.js';
@@ -114,6 +116,10 @@ function buildDeps(
   // caller via resolveMemoryContext and threaded once so it rides sequential,
   // hedge, AND panel prompts through assembleContextBlocks. Absent/'' → omit.
   memoryContext?: string,
+  // Pre-rendered, capped ENVIRONMENT / repo-map orientation block (E1, codebase-
+  // awareness §1.2). Gathered once for the one-shot run via buildEnvironmentContext
+  // and threaded so orientation rides every prompt builder. Absent/'' → omit.
+  environmentContext?: string,
 ): OrchestrateDeps {
   const providers = buildProviders(cwd, env);
 
@@ -161,6 +167,9 @@ function buildDeps(
       : {}),
     ...(sleep !== undefined ? { sleep } : {}),
     ...(memoryContext !== undefined && memoryContext.length > 0 ? { memoryContext } : {}),
+    ...(environmentContext !== undefined && environmentContext.length > 0
+      ? { environmentContext }
+      : {}),
   };
 }
 
@@ -331,6 +340,13 @@ async function main(): Promise<void> {
       nowIso: systemClock.isoNow(),
       config,
     }).catch(() => '');
+    // ENVIRONMENT / repo-map orientation block (E1, codebase-awareness §1.2):
+    // gather the deterministic block once for the one-shot run. Fully fail-soft
+    // (→ ''), NO model call. Kill-switch: config.codebaseAwareness === false → skip.
+    const environmentContext =
+      config.codebaseAwareness === false
+        ? ''
+        : await buildEnvironmentContext(cwd, nodeRepoScanPort).catch(() => '');
     const deps = buildDeps(
       cwd,
       env,
@@ -339,6 +355,7 @@ async function main(): Promise<void> {
       learnedProviderOrder,
       config.hedge === true ? (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms)) : undefined,
       memoryContext,
+      environmentContext,
     );
     const result = await runTask(task, deps, out, new AbortController().signal);
     // Notify-only update nudge for the scripted / one-shot path. The interactive

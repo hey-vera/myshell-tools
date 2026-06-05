@@ -351,6 +351,17 @@ export interface OrchestrateDeps {
    */
   readonly memoryContext?: string;
   /**
+   * Pre-rendered, capped ENVIRONMENT / repo-map orientation block (codebase-
+   * awareness §1.2, Phase E1) for the prompt seam. Deterministic, NO model call:
+   * repo name/branch/dirty, project type, doc presence, key entry points, and a
+   * ranked file map fit to a token budget. Gathered ONCE per chat session (the
+   * repo map is stable within a session) and threaded here so orientation rides
+   * sequential, hedge, AND panel prompts via `assembleContextBlocks`, where it is
+   * rendered FIRST (orientation precedes MEMORY → INTENT → ENGAGEMENT → partner).
+   * Absent → byte-identical to pre-E1 prompts. Producer: core/repo-map.ts.
+   */
+  readonly environmentContext?: string;
+  /**
    * Pre-rendered, capped INTENT block (intent-engine §5.4) for the prompt seam.
    * Computed ONCE per turn INSIDE orchestrate (gated — substantial/ambiguous
    * turns only) and threaded onto a per-turn deps copy so it rides sequential,

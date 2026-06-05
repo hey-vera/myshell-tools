@@ -138,6 +138,15 @@ export interface AppConfig {
    */
   intentEngine?: boolean;
   /**
+   * CODEBASE AWARENESS master switch (codebase-awareness §6.1, Phase E1). Absent/
+   * true → the chat gathers a cheap, deterministic ENVIRONMENT / repo-map
+   * orientation block once per session (repo name/branch/dirty, project type, doc
+   * presence, entry points, a ranked file map) and injects it via the prompt seam.
+   * NO model call, NO embeddings, fully fail-soft. `false` is the kill-switch: no
+   * scan, no block, byte-identical to pre-E1 prompts. See core/repo-map.ts.
+   */
+  codebaseAwareness?: boolean;
+  /**
    * USER MEMORY master switch (memory-architecture §9). Absent/true → memory on
    * (read + inject + capture); false → the privacy kill-switch: no retrieval, no
    * injection, no proposals (existing facts remain listable/exportable). The

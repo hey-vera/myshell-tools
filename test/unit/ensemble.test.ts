@@ -367,6 +367,27 @@ describe('MF1 — panel prompts carry context blocks (no longer context-blind)',
     assert.doesNotMatch(without, /PARTNER POSTURE/);
   });
 
+  it('E1 — the ENVIRONMENT block reaches a panel CANDIDATE prompt, FIRST and before the task', () => {
+    const ENV = 'ENVIRONMENT\n  cwd:    /work\n  repo:   acme-web  (branch main)';
+    const cand = buildPanelCandidatePrompt('ic', 'make the socials page real', undefined, {
+      environmentContext: ENV,
+      memoryContext: MEM,
+    });
+    assert.match(cand, /ENVIRONMENT/);
+    assert.match(cand, /repo:\s+acme-web/);
+    // Orientation precedes memory and sits before the task.
+    assert.ok(cand.indexOf(ENV) < cand.indexOf(MEM));
+    assert.ok(cand.indexOf(ENV) < cand.indexOf('Task:'));
+    // And it reaches the synthesizer too.
+    const synth = buildPanelSynthesisPrompt(
+      'make the socials page real',
+      [{ provider: 'claude', output: 'a' }],
+      undefined,
+      { environmentContext: ENV },
+    );
+    assert.match(synth, /repo:\s+acme-web/);
+  });
+
   it('a partner nudge alone reaches both panel builders (soft-bias plumbing)', () => {
     const cand = buildPanelCandidatePrompt('ic', 'task', undefined, {
       partnerStyle: 'direct',

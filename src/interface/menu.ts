@@ -29,6 +29,8 @@ import { formatAnswers, isKeepGoingOffer } from '../core/questions.js';
 import { decideAutonomyOffer } from '../core/autonomy.js';
 import { classify } from '../core/classify.js';
 import { resolveMemoryContextDetailed } from '../core/memory-injection.js';
+import { buildEnvironmentContext } from '../core/repo-map.js';
+import { nodeRepoScanPort } from '../infra/repo-scan.js';
 import { createFileUserMemoryStore, resolveProjectKey } from '../infra/user-memory-store.js';
 import {
   runRemember,
@@ -3472,6 +3474,11 @@ async function runChatLoop(
         // per-turn by resolveTurnMemory below. Threaded once so it rides
         // sequential, hedge, AND panel prompts via assembleContextBlocks.
         memoryContext?: string,
+        // Pre-rendered, capped ENVIRONMENT / repo-map orientation block (E1,
+        // codebase-awareness §1.2). Gathered ONCE per session (the map is stable
+        // within a session — see resolveEnvironmentOnce below) and threaded here so
+        // orientation rides sequential, hedge, AND panel prompts. Absent → omit.
+        environmentContext?: string,
       ): OrchestrateDeps => {
         // Build per-provider advertised model sets from the live env so route()
         // can prefer a model the CLI actually advertises. Only include installed
@@ -3599,6 +3606,12 @@ async function runChatLoop(
           // USER MEMORY block (Phase 4, §7) — present only when memory is on AND
           // facts survived the inject-time gate + relevance selection.
           ...(memoryContext !== undefined && memoryContext.length > 0 ? { memoryContext } : {}),
+          // ENVIRONMENT / repo-map orientation block (E1) — gathered once per
+          // session, present only when codebase awareness is on AND the scan
+          // produced a non-empty block (fail-soft → '' otherwise).
+          ...(environmentContext !== undefined && environmentContext.length > 0
+            ? { environmentContext }
+            : {}),
         };
       };
 
@@ -3678,6 +3691,25 @@ async function runChatLoop(
         return resolved.block;
       };
 
+      // ---- ENVIRONMENT / repo-map (E1, codebase-awareness §1.2) ---------------
+      // Gather the deterministic orientation block ONCE per chat session — the
+      // repo map is stable within a session, so (unlike memory) we do NOT regather
+      // it every turn. Mirrors resolveProjectKeyOnce's memoize-once pattern. Fully
+      // fail-soft: any scan error → '' (no block), the turn proceeds. NO model
+      // call. Kill-switch: config.codebaseAwareness === false → skip entirely.
+      let environmentContext: string | undefined;
+      const resolveEnvironmentOnce = async (): Promise<string> => {
+        if (environmentContext !== undefined) return environmentContext;
+        if (mutableCtx.config.codebaseAwareness === false) {
+          environmentContext = '';
+          return environmentContext;
+        }
+        environmentContext = await buildEnvironmentContext(ctx.cwd, nodeRepoScanPort).catch(
+          () => '',
+        );
+        return environmentContext;
+      };
+
       const runStructuredQuestionFlow = async (
         initialFinal: Extract<CoreEvent, { type: 'final' }> | undefined,
       ): Promise<void> => {
@@ -3701,6 +3733,7 @@ async function runChatLoop(
           const answerDeps: OrchestrateDeps = buildDeps(
             answerHistory,
             await resolveTurnMemory(answerLine),
+            await resolveEnvironmentOnce(),
           );
 
           const answerAc = new AbortController();
@@ -3771,6 +3804,7 @@ async function runChatLoop(
           const goalDeps = buildDeps(
             await ctx.store.load(convId),
             await resolveTurnMemory(goalText),
+            await resolveEnvironmentOnce(),
           );
           const contractedGoalTask = buildGoalTask(goalText, i, goalContract);
           const replayGoalTask = buildGoalTask(goalText, i);
@@ -3940,7 +3974,11 @@ async function runChatLoop(
         return 'continue';
       }
 
-      const deps = buildDeps(priorHistory, await resolveTurnMemory(line));
+      const deps = buildDeps(
+        priorHistory,
+        await resolveTurnMemory(line),
+        await resolveEnvironmentOnce(),
+      );
 
       if (mutableCtx.config.autoGoal === true && effectiveMode === 'quality-first') {
         const autoClassification = classify(line);
@@ -4000,7 +4038,11 @@ async function runChatLoop(
           // Bug 5 fix: re-detect with the freshly-authenticated env so the retry
           // deps reflect the now-signed-in provider (not the stale pre-login state).
           mutableCtx.env = await detectEnvironmentFn();
-          const retryDeps = buildDeps(await ctx.store.load(convId), await resolveTurnMemory(line));
+          const retryDeps = buildDeps(
+            await ctx.store.load(convId),
+            await resolveTurnMemory(line),
+            await resolveEnvironmentOnce(),
+          );
           // Retry the same task once.
           const retryAc = new AbortController();
           currentAc = retryAc;

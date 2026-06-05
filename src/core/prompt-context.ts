@@ -46,6 +46,13 @@ export function engagementBiasOf(style: PartnerStyle): -1 | 0 | 1 {
 
 export interface ContextBlockOptions {
   /**
+   * Pre-rendered, capped ENVIRONMENT / repo-map orientation block (codebase-
+   * awareness §1.2, Phase E1). undefined → omit. Rendered FIRST — orientation
+   * precedes everything so the later intent/engagement reasoning already sees
+   * "where am I, what is this project". Produced by core/repo-map.ts.
+   */
+  readonly environmentContext?: string;
+  /**
    * Pre-rendered, capped MEMORY block (memory doc §7 `renderMemoryContext`).
    * undefined → omit. Produced by Phase 4; rendered here when present.
    */
@@ -97,8 +104,8 @@ export function partnerNudge(style: PartnerStyle): string {
  * (byte-for-byte identical to the pre-seam prompt). Caps the total injected
  * length regardless of caller. PURE + table-tested.
  *
- * Canonical block order (master plan §MF1):
- *   MEMORY → INTENT → ENGAGEMENT → (partner posture nudge)
+ * Canonical block order (master plan §MF1; ENVIRONMENT prepended in E1):
+ *   ENVIRONMENT → MEMORY → INTENT → ENGAGEMENT → (partner posture nudge)
  *
  * Each block is independently present/absent. The returned string is inserted by
  * every prompt builder at the same point: AFTER system, BEFORE "CONVERSATION SO
@@ -106,6 +113,13 @@ export function partnerNudge(style: PartnerStyle): string {
  */
 export function assembleContextBlocks(opts: ContextBlockOptions): string {
   const blocks: string[] = [];
+
+  // ENVIRONMENT goes FIRST — orientation precedes memory/intent/engagement so the
+  // later reasoning already knows where it is and what the project is (E1 §1.2).
+  const environment = opts.environmentContext?.trim();
+  if (environment !== undefined && environment.length > 0) {
+    blocks.push(environment);
+  }
 
   const memory = opts.memoryContext?.trim();
   if (memory !== undefined && memory.length > 0) {

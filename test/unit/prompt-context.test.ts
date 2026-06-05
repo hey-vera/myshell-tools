@@ -36,9 +36,31 @@ describe('partnerNudge', () => {
 });
 
 describe('assembleContextBlocks', () => {
+  const ENV = 'ENVIRONMENT\n  cwd:    /work\n  repo:   acme-web  (branch main)';
   const MEM = 'USER PREFERENCES AND MEMORY:\n- prefers concise answers';
   const INTENT = 'INTENT (your current understanding):\nShip the feature';
   const ENG = 'ENGAGEMENT:\nFirst inspect X. Then reflect the goal in one line.';
+
+  it('renders the ENVIRONMENT block FIRST (orientation precedes everything)', () => {
+    assert.equal(assembleContextBlocks({ environmentContext: ENV }), ENV);
+    const out = assembleContextBlocks({
+      environmentContext: ENV,
+      memoryContext: MEM,
+      intentFrame: INTENT,
+      engagementPlan: ENG,
+      partnerStyle: 'collaborative',
+    });
+    const iEnv = out.indexOf(ENV);
+    const iMem = out.indexOf(MEM);
+    assert.equal(iEnv, 0);
+    assert.ok(iMem > iEnv);
+  });
+
+  it('omits the ENVIRONMENT block when absent or whitespace (byte-identical)', () => {
+    const withoutKey = assembleContextBlocks({ memoryContext: MEM });
+    const withEmpty = assembleContextBlocks({ environmentContext: '   ', memoryContext: MEM });
+    assert.equal(withEmpty, withoutKey);
+  });
 
   it('returns "" when no blocks apply', () => {
     assert.equal(assembleContextBlocks({}), '');

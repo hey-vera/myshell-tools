@@ -154,6 +154,7 @@ export function planPanel(opts: {
 function contextFromDeps(deps: OrchestrateDeps): ContextBlockOptions | undefined {
   const ctx: { -readonly [K in keyof ContextBlockOptions]?: ContextBlockOptions[K] } = {};
   if (deps.partnerStyle !== undefined) ctx.partnerStyle = deps.partnerStyle;
+  if (deps.environmentContext !== undefined) ctx.environmentContext = deps.environmentContext;
   if (deps.memoryContext !== undefined) ctx.memoryContext = deps.memoryContext;
   if (deps.intentFrame !== undefined) ctx.intentFrame = deps.intentFrame;
   if (deps.engagementPlan !== undefined) ctx.engagementPlan = deps.engagementPlan;
