@@ -18,6 +18,7 @@
 
 import type { WorkContract } from './work-contract.js';
 import { renderContractForPrompt } from './work-contract.js';
+import { lastJsonObjectBoundsWithKey } from './json-envelope.js';
 
 /** What the model's last reply signalled about the goal. */
 export type GoalSignal = 'complete' | 'continue' | 'missing';
@@ -159,6 +160,28 @@ export function stripTrailingGoalMarker(output: string): string {
  */
 export function parseGoalSignal(output: string): GoalSignal {
   return parseTrailingGoalMarker(output) ?? 'missing';
+}
+
+/**
+ * Remove a trailing confidence envelope from a goal-turn output before the
+ * goal-loop control path looks for its marker. This does NOT change
+ * parseGoalSignal/parseTrailingGoalMarker semantics: those still trust only the
+ * last non-empty line they are given. It is a goal-loop compatibility shim for
+ * stale/conflicting prompts or provider retries that append the normal envelope
+ * after a GOAL_CONTINUE/GOAL_COMPLETE marker.
+ */
+export function stripTrailingGoalConfidenceEnvelope(output: string): string {
+  try {
+    const match = lastJsonObjectBoundsWithKey(output, 'confidence');
+    if (match === null || output.slice(match.end).trim().length > 0) {
+      return output;
+    }
+    const before = output.slice(0, match.start).replace(/\s+$/, '');
+    const after = output.slice(match.end).replace(/^\s+/, '');
+    return after.length > 0 ? `${before}\n${after}` : before;
+  } catch {
+    return output;
+  }
 }
 
 /**

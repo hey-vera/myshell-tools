@@ -42,7 +42,7 @@ import { getModelPricing, calculateCost } from '../infra/pricing.js';
 import { assess } from './assess.js';
 import { authorizeTier } from './flagship.js';
 import type { WorkContract } from './work-contract.js';
-import { capContract, renderContractForPrompt, shouldMaterializeContract } from './work-contract.js';
+import { capContract, renderContractForPrompt, shouldMaterializeContract, isCleanObjectiveTask } from './work-contract.js';
 
 // ---------------------------------------------------------------------------
 // Plan
@@ -119,16 +119,6 @@ export function planPanel(opts: {
   const synthesizer = candidates[0] as ProviderId;
 
   return { tier, candidates, synthesizer, classification };
-}
-
-function isCleanObjectiveTask(task: string): boolean {
-  const trimmed = task.trim();
-  if (trimmed.length === 0) return false;
-  if (trimmed.startsWith('OBJECTIVE:')) return false;
-  if (trimmed.includes('\nBefore acting, confirm this turn still directly serves the OBJECTIVE')) {
-    return false;
-  }
-  return true;
 }
 
 // ---------------------------------------------------------------------------

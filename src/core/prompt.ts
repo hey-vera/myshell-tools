@@ -231,6 +231,34 @@ situation warrants immediate human or higher-tier intervention.`;
 // Public API
 // ---------------------------------------------------------------------------
 
+export interface BuildPromptOptions {
+  /**
+   * Goal turns have their own trailing GOAL_COMPLETE/GOAL_CONTINUE marker.
+   * Suppress the normal confidence-envelope requirement so the goal marker is
+   * the sole required trailing status line.
+   */
+  readonly goalTurn?: boolean;
+}
+
+const GOAL_TURN_CONFIDENCE_SUPPRESSION = `\
+Autonomous goal turn: follow the Task's GOAL_COMPLETE/GOAL_CONTINUE instruction
+as the only required trailing status marker. Do not emit the confidence JSON
+envelope on goal turns. If you must ask the user a structured question, emit
+only the ask_user JSON block and stop.`;
+
+function promptForMode(system: string, opts?: BuildPromptOptions): string {
+  if (opts?.goalTurn !== true) return system;
+
+  const withoutConfidenceTail = system
+    .replace(
+      'When you ask via ask_user, do NOT also\nemit the confidence envelope below — the two are mutually exclusive.',
+      'When you ask via ask_user, emit only that JSON block and STOP — do not also emit a goal marker.',
+    )
+    .replace(/\n\nAfter completing[\s\S]*$/, '');
+
+  return `${withoutConfidenceTail}\n\n${GOAL_TURN_CONFIDENCE_SUPPRESSION}`;
+}
+
 /**
  * Build the full prompt string to deliver to a model for the given tier.
  *
@@ -255,8 +283,9 @@ export function buildPrompt(
   task: string,
   managerNotes?: string,
   historyContext?: string,
+  opts?: BuildPromptOptions,
 ): string {
-  const system = TIER_PROMPTS[tier];
+  const system = promptForMode(TIER_PROMPTS[tier], opts);
   let prompt = system;
 
   if (historyContext !== undefined && historyContext.trim().length > 0) {

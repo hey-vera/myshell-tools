@@ -14,8 +14,31 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 - Work Contract: cross-turn / cross-session contract seeding (Stage 5) — re-seed a
   resumed goal's contract from the persisted `workTrace` (niche: the in-run contract
   is already kept in memory; only cross-session resume benefits). Optional.
-- Auto-goal: thread the pre-dispatch route decision into the turn's run to avoid
-  double-routing on opt-in quality-first turns (latency optimization).
+
+## [3.12.1]
+
+### Fixed
+Cross-stage hardening of the Work Contract feature (from a full integration review):
+- **`/goal` loop could stall after one turn.** A goal turn also received the normal
+  trailing confidence-envelope instruction; a model emitting that JSON *after* the
+  `GOAL_CONTINUE`/`GOAL_COMPLETE` marker made the last line JSON, so the loop read
+  "no signal" and stopped. Goal turns now suppress the confidence envelope (via a
+  `goalTurn` prompt mode — non-goal turns are unaffected), and the loop also strips a
+  stray trailing confidence envelope before reading the marker. This most affected the
+  new auto-engaged goals.
+- **Auto-goal no longer double-routes.** The opt-in pre-dispatch check used the model
+  router and then `runTask` routed again — an extra model-classifier run on ambiguous
+  turns. The preflight now uses only deterministic keyword classification (no model
+  call); auto-engage requires manager tier + ≥2 classifier signals.
+- **Hedged goal turns now persist their `workTrace`** (previously dropped on the hedge
+  accept path; now mirrors the sequential and panel paths).
+- **Honest progress labeling.** The running trace built from each turn's
+  `GOAL_CONTINUE` next-step is now rendered as "RECENT STEPS (each turn's stated next
+  action)" instead of "CHECKPOINTS SO FAR" — stated intentions, not verified
+  completions.
+- Trimmed unused branches from `decideAutonomyOffer`; de-duplicated
+  `isCleanObjectiveTask` into `work-contract.ts`; documented `SessionEntry.workTrace`
+  as an append-only audit trail.
 
 ## [3.12.0]
 

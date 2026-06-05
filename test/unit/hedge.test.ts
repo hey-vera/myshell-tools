@@ -339,6 +339,29 @@ describe('runHedged — primary fast + adequate (speculative never starts)', () 
     assert.equal(session.entries[0]?.role, 'user');
     assert.ok(session.entries.some((e) => e.role === 'assistant' && e.content === adequate('PRIMARY-OK')));
   });
+
+  it('persists workTrace for an accepted hedged goal turn', async () => {
+    const claude = makeProvider('claude', adequate('PRIMARY-OK'));
+    const codex = makeProvider('codex', adequate('SPEC'));
+    const neverSleep = (): Promise<void> => new Promise<void>(() => {});
+    const { deps, session } = hedgeDeps({ claude, codex }, neverSleep, SPLIT_ORDER);
+
+    await collect(
+      runHedged(
+        'Goal: ship the widget',
+        {
+          ...deps,
+          goalTurn: true,
+          workContract: { version: 1, objective: 'ship the widget' },
+        },
+        PLAN,
+        new AbortController().signal,
+      ),
+    );
+
+    const assistant = session.entries.find((entry) => entry.role === 'assistant');
+    assert.equal(assistant?.workTrace?.objective, 'ship the widget');
+  });
 });
 
 describe('runHedged — primary slow → speculative wins', () => {

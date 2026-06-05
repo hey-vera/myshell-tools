@@ -115,6 +115,11 @@ export interface SessionEntry {
    * conversation id directly) or when native sessions are off.
    */
   readonly sessionId?: string;
+  /**
+   * Append-only AUDIT trail for multi-turn work contracts. Persisted and
+   * validated for traceability; not consumed by runtime routing, review, or
+   * goal-loop decisions today.
+   */
   readonly workTrace?: import('./work-contract.js').WorkContract;
 }
 
@@ -324,6 +329,12 @@ export interface OrchestrateDeps {
    * it into conversation prose.
    */
   readonly workContract?: import('./work-contract.js').WorkContract;
+  /**
+   * True only for autonomous /goal turns. Suppresses the normal confidence
+   * envelope prompt requirement because goal turns use GOAL_COMPLETE or
+   * GOAL_CONTINUE as their sole trailing status marker.
+   */
+  readonly goalTurn?: boolean;
   /**
    * Optional model-brained route classifier. When wired, orchestrate consults it
    * ONLY on turns the deterministic keyword classifier couldn't route (no tier

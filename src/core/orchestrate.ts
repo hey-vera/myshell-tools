@@ -43,7 +43,7 @@ import { buildReviewPrompt, parseReviewVerdict } from './review.js';
 import { planPanel, runPanel } from './ensemble.js';
 import { planHedge, runHedged } from './hedge.js';
 import type { WorkContract } from './work-contract.js';
-import { capContract, shouldMaterializeContract } from './work-contract.js';
+import { capContract, shouldMaterializeContract, isCleanObjectiveTask } from './work-contract.js';
 
 // ---------------------------------------------------------------------------
 // Pure helper: should this output be cross-vendor reviewed?
@@ -124,16 +124,6 @@ async function appendAcceptedAssistant(
     ...(run.sessionId !== undefined ? { sessionId: run.sessionId } : {}),
     ...(run.workTrace !== undefined ? { workTrace: run.workTrace } : {}),
   });
-}
-
-function isCleanObjectiveTask(task: string): boolean {
-  const trimmed = task.trim();
-  if (trimmed.length === 0) return false;
-  if (trimmed.startsWith('OBJECTIVE:')) return false;
-  if (trimmed.includes('\nBefore acting, confirm this turn still directly serves the OBJECTIVE')) {
-    return false;
-  }
-  return true;
 }
 
 /**
@@ -528,7 +518,13 @@ export async function* orchestrate(
     // clamp) — not the requested currentTier — so the persona prompt always
     // matches the model that runs (e.g. balanced clamps manager→ic: we must use
     // the IC persona on the sonnet model, never the manager persona).
-    const prompt = buildPrompt(decision.tier, task, managerNotes, useNative ? undefined : historyContext);
+    const prompt = buildPrompt(
+      decision.tier,
+      task,
+      managerNotes,
+      useNative ? undefined : historyContext,
+      deps.goalTurn === true ? { goalTurn: true } : undefined,
+    );
 
     // --- Yield tier-start ---
     yield {

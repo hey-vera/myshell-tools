@@ -8,43 +8,32 @@
 import type { Classification } from './types.js';
 import type { Mode } from './policy.js';
 
-type AutonomyReason = 'timeout' | 'keep_going' | 'multi_step';
+type AutonomyReason = 'multi_step';
 
 export type AutonomyDecision =
   | { readonly kind: 'none' }
-  | { readonly kind: 'offer'; readonly reason: AutonomyReason }
   | { readonly kind: 'auto_engage'; readonly reason: AutonomyReason };
 
 export interface DecideAutonomyOfferOptions {
   readonly mode: Mode;
   readonly classification: Classification;
-  readonly routePlan: boolean;
-  readonly finalErrorCategory?: string;
-  readonly keepGoingOffered: boolean;
   readonly autoGoalEnabled: boolean;
 }
 
 /**
- * Central autonomy policy.
+ * Auto-goal engagement policy.
  *
- * Existing explicit offers are preserved for all modes: a timeout or model
- * keep-going offer still asks the user before entering the goal loop. The new
- * auto-engage path is stricter: only Max/quality-first, opt-in, and corroborated
- * multi-step work (`manager` tier plus route `plan:true` or at least two
- * classifier tier signals) can start `/goal` without a Y/n.
+ * Explicit timeout and model keep-going offers live in the interface layer. This
+ * pure helper decides only the opt-in auto-engage path: Max/quality-first,
+ * enabled by config, and deterministic multi-step evidence (`manager` tier plus
+ * at least two classifier tier signals).
  */
 export function decideAutonomyOffer(opts: DecideAutonomyOfferOptions): AutonomyDecision {
-  if (opts.finalErrorCategory === 'timeout') {
-    return { kind: 'offer', reason: 'timeout' };
-  }
-  if (opts.keepGoingOffered) {
-    return { kind: 'offer', reason: 'keep_going' };
-  }
   if (
     opts.mode === 'quality-first' &&
     opts.autoGoalEnabled &&
     opts.classification.tier === 'manager' &&
-    (opts.routePlan || tierSignalCount(opts.classification.rationale) >= 2)
+    tierSignalCount(opts.classification.rationale) >= 2
   ) {
     return { kind: 'auto_engage', reason: 'multi_step' };
   }

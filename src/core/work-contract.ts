@@ -18,6 +18,7 @@ export interface RoadmapItem {
 
 export interface Checkpoint {
   readonly id: string;
+  /** A model-stated next action from a GOAL_CONTINUE marker, not a verified completion. */
   readonly summary: string;
   readonly roadmapId?: string;
   readonly evidence?: string;
@@ -183,7 +184,7 @@ export function renderContractForPrompt(c: WorkContract): string {
   }
 
   if (c.checkpoints !== undefined && c.checkpoints.length > 0) {
-    lines.push('CHECKPOINTS SO FAR:');
+    lines.push("RECENT STEPS (each turn's stated next action):");
     for (const checkpoint of c.checkpoints) {
       const roadmap = checkpoint.roadmapId !== undefined ? ` (${checkpoint.roadmapId})` : '';
       const evidence = checkpoint.evidence !== undefined ? ` — evidence: ${checkpoint.evidence}` : '';
@@ -196,8 +197,9 @@ export function renderContractForPrompt(c: WorkContract): string {
 
 /**
  * Fold one autonomous /goal GOAL_CONTINUE next-step into the contract's running
- * checkpoint trace. Keeps the most recent CHECKPOINT_LIMIT checkpoints, dropping
- * the oldest entries when the trace grows past the prompt cap.
+ * next-action trace. These entries are what the model said it would do next,
+ * not verified completed progress. Keeps the most recent CHECKPOINT_LIMIT
+ * entries, dropping the oldest when the trace grows past the prompt cap.
  */
 export function appendCheckpointFromContinue(
   contract: WorkContract,
@@ -233,4 +235,14 @@ export function shouldMaterializeContract(opts: {
       opts.routePlan === true ||
       opts.classification.tier === 'manager',
   };
+}
+
+export function isCleanObjectiveTask(task: string): boolean {
+  const trimmed = task.trim();
+  if (trimmed.length === 0) return false;
+  if (trimmed.startsWith('OBJECTIVE:')) return false;
+  if (trimmed.includes('\nBefore acting, confirm this turn still directly serves the OBJECTIVE')) {
+    return false;
+  }
+  return true;
 }

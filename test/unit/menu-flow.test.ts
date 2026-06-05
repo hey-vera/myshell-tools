@@ -609,10 +609,11 @@ describe('startMenu — /goal work contract threading', () => {
         prompts.push(req.prompt);
         callCount++;
         if (callCount === 1) {
-          yield { type: 'text', delta: 'Created the files.\nGOAL_CONTINUE: run the tests' };
+          const continued = `Created the files.\nGOAL_CONTINUE: run the tests\n${CONFIDENCE_ENVELOPE}`;
+          yield { type: 'text', delta: continued };
           yield {
             type: 'done',
-            text: 'Created the files.\nGOAL_CONTINUE: run the tests',
+            text: continued,
             usage: FAKE_USAGE,
             raw: {},
           };
@@ -650,11 +651,15 @@ describe('startMenu — /goal work contract threading', () => {
     assert.equal(callCount, 2, 'one continue turn plus one complete turn');
     assert.ok(prompts[0]?.includes('OBJECTIVE: ship the widget'));
     assert.ok(
+      !prompts[0]?.includes('append EXACTLY the following JSON object'),
+      'goal turns suppress the normal confidence-envelope requirement',
+    );
+    assert.ok(
       prompts[0]?.includes('Before acting, confirm this turn still directly serves the OBJECTIVE; do not pursue unrelated improvements.'),
     );
-    assert.ok(!prompts[0]?.includes('CHECKPOINTS SO FAR:'));
+    assert.ok(!prompts[0]?.includes("RECENT STEPS (each turn's stated next action):"));
     assert.ok(prompts[1]?.includes('OBJECTIVE: ship the widget'));
-    assert.ok(prompts[1]?.includes('CHECKPOINTS SO FAR:\n- C1: run the tests'));
+    assert.ok(prompts[1]?.includes("RECENT STEPS (each turn's stated next action):\n- C1: run the tests"));
     assert.ok(prompts[1]?.includes('Continue working autonomously toward this goal: ship the widget'));
 
     const persistedEntries = [...store._writers.values()].flatMap((writer) => writer.entries);
@@ -808,6 +813,80 @@ describe('startMenu — auto-goal smart autonomy', () => {
     assert.ok(
       sink.buf.includes("Working autonomously until it's done (up to 8 turns). Ctrl+C to stop."),
       'auto-goal must print the visible Ctrl+C banner',
+    );
+  });
+
+  it('with autoGoal on, ambiguous non-engaged work calls the model router only once', async () => {
+    let routerPrompts = 0;
+    let taskPrompts = 0;
+    const provider: Provider = {
+      id: 'claude',
+      async detect() {
+        return {
+          id: 'claude',
+          installed: true,
+          version: '1.0.0',
+          authenticated: true,
+          plan: null,
+          binaryPath: null,
+          availableModels: ['model-a'],
+        };
+      },
+      async *run(req: ProviderRequest, _signal: AbortSignal): AsyncIterable<ProviderEvent> {
+        if (req.prompt.includes('You are a routing classifier')) {
+          routerPrompts++;
+          yield {
+            type: 'done',
+            text: '{"tier":"worker","plan":false,"reason":"ambiguous"}',
+            usage: FAKE_USAGE,
+            raw: {},
+          };
+          return;
+        }
+
+        taskPrompts++;
+        yield { type: 'text', delta: 'Done.' };
+        yield {
+          type: 'done',
+          text: `Done.\n${CONFIDENCE_ENVELOPE}`,
+          usage: FAKE_USAGE,
+          raw: {},
+        };
+      },
+    };
+
+    const clock = makeFakeClock();
+    const store = makeStore(clock);
+    const sink = makeSink();
+    const config: AppConfig = {
+      onboarded: true,
+      setAsDefault: false,
+      mode: 'quality-first',
+      smartRoute: true,
+      autoGoal: true,
+    };
+    const ctx = makeCtx(
+      {
+        config,
+        providers: { claude: provider },
+        readLine: makeScriptedReader([
+          'n',
+          'frobnicate the wotsit',
+          '/exit',
+          'q',
+        ]),
+      },
+      clock,
+      store,
+    );
+
+    await startMenu(ctx, sink);
+
+    assert.equal(routerPrompts, 1, 'normal orchestrate may call the model router once');
+    assert.equal(taskPrompts, 1, 'the non-engaged turn still runs exactly once');
+    assert.ok(
+      !sink.buf.includes("Working autonomously until it's done"),
+      'ambiguous one-signal work must not auto-engage goal mode',
     );
   });
 

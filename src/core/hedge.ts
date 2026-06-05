@@ -48,6 +48,8 @@ import { getModelPricing, calculateCost } from '../infra/pricing.js';
 import { assess } from './assess.js';
 import { authorizeTier } from './flagship.js';
 import { buildPrompt } from './prompt.js';
+import type { WorkContract } from './work-contract.js';
+import { capContract, isCleanObjectiveTask, shouldMaterializeContract } from './work-contract.js';
 
 // ---------------------------------------------------------------------------
 // Plan
@@ -257,7 +259,13 @@ async function runAttempt(
 
   const req: import('../providers/port.js').ProviderRequest = {
     model: decision.model,
-    prompt: buildPrompt(decision.tier, task, undefined, historyContext),
+    prompt: buildPrompt(
+      decision.tier,
+      task,
+      undefined,
+      historyContext,
+      deps.goalTurn === true ? { goalTurn: true } : undefined,
+    ),
     cwd: deps.cwd,
     sandbox: deps.sandbox,
     timeoutMs: deps.timeoutMs,
@@ -390,6 +398,22 @@ export async function* runHedged(
 
   let totalCostUsd = 0;
   let attempts = 0;
+  const classification = adequacyClassification(plan);
+  const incomingWorkContract =
+    deps.workContract !== undefined ? capContract(deps.workContract) : undefined;
+  const generatedWorkTrace =
+    incomingWorkContract === undefined &&
+    shouldMaterializeContract({
+      classification,
+      routePlan: false,
+      context: 'normal',
+      reviewWillRun: false,
+    }).roadmap &&
+    isCleanObjectiveTask(task)
+      ? capContract({ version: 1, objective: task })
+      : undefined;
+  const workTrace =
+    incomingWorkContract !== undefined ? incomingWorkContract : generatedWorkTrace;
 
   // Early abort: nothing ran yet.
   if (signal.aborted) {
@@ -496,7 +520,7 @@ export async function* runHedged(
         // its quota is genuinely saved. Honest notice (no cancellation claim).
         yield { type: 'notice', level: 'info', message: 'hedge: primary answered in time' };
         yield* primary.events;
-        yield* finalAndAppend(primary, totalCostUsd, deps, attempts);
+        yield* finalAndAppend(primary, totalCostUsd, deps, attempts, workTrace);
         return;
       }
 
@@ -540,7 +564,7 @@ export async function* runHedged(
       yield* speculative.events;
       // Ship the flagship result (it's the strongest attempt) — successful when it
       // produced output without error, even if its confidence is unparsed.
-      yield* finalAndAppend(speculative, totalCostUsd, deps, attempts);
+      yield* finalAndAppend(speculative, totalCostUsd, deps, attempts, workTrace);
       return;
     }
 
@@ -567,7 +591,6 @@ export async function* runHedged(
     );
 
     // Take the FIRST to finish with an adequate result; cancel the other.
-    const classification: Classification = adequacyClassification(plan);
     const winner = await pickWinner(
       primaryPromise,
       speculativePromise,
@@ -607,7 +630,7 @@ export async function* runHedged(
     };
 
     yield* winner.chosen.events;
-    yield* finalAndAppend(winner.chosen, totalCostUsd, deps, attempts);
+    yield* finalAndAppend(winner.chosen, totalCostUsd, deps, attempts, workTrace);
     return;
   } finally {
     // Never leave a branch running or a listener attached.
@@ -704,6 +727,7 @@ async function* finalAndAppend(
   totalCostUsd: number,
   deps: OrchestrateDeps,
   attempts: number,
+  workTrace: WorkContract | undefined,
 ): AsyncGenerator<CoreEvent> {
   const success = run.errored == null && run.finalText !== undefined && !run.canceled;
   const output = run.finalText ?? (run.errored?.message ?? '');
@@ -736,6 +760,7 @@ async function* finalAndAppend(
     confidence: assessment.confidence,
     costUsd: usd,
     durationMs: run.durationMs,
+    ...(workTrace !== undefined ? { workTrace } : {}),
   });
 
   yield {

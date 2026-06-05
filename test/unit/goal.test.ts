@@ -10,6 +10,7 @@ import {
   parseTrailingGoalMarker,
   stripTrailingGoalMarker,
   parseGoalSignal,
+  stripTrailingGoalConfidenceEnvelope,
   parseGoalContinueText,
   decideGoalNext,
   formatGoalProgress,
@@ -60,7 +61,7 @@ describe('buildGoalTask', () => {
     );
 
     assert.ok(t.startsWith('OBJECTIVE: ship the login page'));
-    assert.ok(t.includes('CHECKPOINTS SO FAR:\n- C1: implemented the form'));
+    assert.ok(t.includes("RECENT STEPS (each turn's stated next action):\n- C1: implemented the form"));
     assert.ok(
       t.includes('Before acting, confirm this turn still directly serves the OBJECTIVE; do not pursue unrelated improvements.'),
     );
@@ -110,6 +111,24 @@ describe('parseGoalSignal', () => {
     assert.equal(parseGoalSignal('I made some changes.'), 'missing');
     assert.equal(parseGoalSignal(''), 'missing');
     assert.equal(parseGoalSignal('GOAL_CONTINUE: more\n...later...\nfinished without marker'), 'missing');
+  });
+});
+
+describe('stripTrailingGoalConfidenceEnvelope', () => {
+  it('lets goal-loop control parse a marker before a stale confidence envelope', () => {
+    const output =
+      'Did step 1.\nGOAL_CONTINUE: write the tests\n{"confidence":0.9,"escalate":false,"reason":"done","needs_review":false}';
+    const normalized = stripTrailingGoalConfidenceEnvelope(output);
+
+    assert.equal(parseGoalSignal(normalized), 'continue');
+    assert.equal(parseGoalContinueText(normalized), 'write the tests');
+  });
+
+  it('does not make parseGoalSignal itself scan past the last line', () => {
+    const output =
+      'Did step 1.\nGOAL_CONTINUE: write the tests\n{"confidence":0.9,"escalate":false,"reason":"done","needs_review":false}';
+
+    assert.equal(parseGoalSignal(output), 'missing');
   });
 });
 

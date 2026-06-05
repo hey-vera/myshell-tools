@@ -239,6 +239,19 @@ describe('buildPrompt — confidence envelope instruction is preserved exactly',
   }
 });
 
+describe('buildPrompt — goal turn prompt mode', () => {
+  it('suppresses the confidence-envelope requirement for goal turns', () => {
+    const result = buildPrompt('ic', 'Goal: ship it\nGOAL_CONTINUE: next', undefined, undefined, {
+      goalTurn: true,
+    });
+
+    assert.ok(!result.includes(ENVELOPE_LINE));
+    assert.ok(!result.includes('append EXACTLY the following JSON object'));
+    assert.match(result, /Do not emit the confidence JSON\s+envelope on goal turns/);
+    assert.ok(result.includes('GOAL_COMPLETE/GOAL_CONTINUE'));
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Partner persona / tone
 // ---------------------------------------------------------------------------

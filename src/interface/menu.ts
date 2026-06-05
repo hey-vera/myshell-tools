@@ -19,12 +19,12 @@
 import readline from 'node:readline';
 import { execa } from 'execa';
 import type { Clock, CoreEvent, LedgerWriter, OrchestrateDeps, Question, QuestionSet, SessionEntry, SessionWriter, Tier } from '../core/types.js';
-import { buildGoalTask, parseGoalSignal, parseGoalContinueText, decideGoalNext, formatGoalProgress, DEFAULT_MAX_GOAL_ITERATIONS } from '../core/goal.js';
+import { buildGoalTask, parseGoalSignal, parseGoalContinueText, decideGoalNext, formatGoalProgress, DEFAULT_MAX_GOAL_ITERATIONS, stripTrailingGoalConfidenceEnvelope } from '../core/goal.js';
 import type { GoalCeilings } from '../core/goal.js';
 import { appendCheckpointFromContinue, capContract } from '../core/work-contract.js';
 import { formatAnswers, isKeepGoingOffer } from '../core/questions.js';
 import { decideAutonomyOffer } from '../core/autonomy.js';
-import { decideRoute } from '../core/router.js';
+import { classify } from '../core/classify.js';
 import type { AppConfig } from '../infra/config.js';
 import { saveConfig } from '../infra/config.js';
 import type { ConversationMeta, ConversationStore } from '../infra/conversation-store.js';
@@ -2716,7 +2716,7 @@ async function runChatLoop(
           currentAc = goalAc;
           const turn = await runTask(
             contractedGoalTask,
-            { ...goalDeps, session: goalSession, workContract: goalContract },
+            { ...goalDeps, session: goalSession, workContract: goalContract, goalTurn: true },
             out,
             goalAc.signal,
             mutableCtx.config.verbosity ?? 'normal',
@@ -2749,11 +2749,12 @@ async function runChatLoop(
           }
 
           const turnOutput = turn.final?.output ?? '';
-          const signal = parseGoalSignal(turnOutput);
+          const goalControlOutput = stripTrailingGoalConfidenceEnvelope(turnOutput);
+          const signal = parseGoalSignal(goalControlOutput);
           if (signal === 'continue') {
             goalContract = appendCheckpointFromContinue(
               goalContract,
-              parseGoalContinueText(turnOutput),
+              parseGoalContinueText(goalControlOutput),
               i,
             );
           }
@@ -2787,30 +2788,10 @@ async function runChatLoop(
       const deps = buildDeps(priorHistory);
 
       if (mutableCtx.config.autoGoal === true && effectiveMode === 'quality-first') {
-        const routeAc = new AbortController();
-        currentAc = routeAc;
-        const autoRoute = await decideRoute(line, {
-          ...(deps.routeClassifier !== undefined ? { classifier: deps.routeClassifier } : {}),
-          signal: routeAc.signal,
-        });
-        currentAc = null;
-        if (shouldExit) {
-          loopResult = 'exit';
-          break;
-        }
-        if (shouldMenu) {
-          loopResult = 'menu';
-          break;
-        }
+        const autoClassification = classify(line);
         const autonomy = decideAutonomyOffer({
           mode: effectiveMode,
-          classification: {
-            tier: autoRoute.tier,
-            risk: autoRoute.risk,
-            rationale: autoRoute.rationale,
-          },
-          routePlan: autoRoute.plan,
-          keepGoingOffered: false,
+          classification: autoClassification,
           autoGoalEnabled: true,
         });
         if (autonomy.kind === 'auto_engage') {

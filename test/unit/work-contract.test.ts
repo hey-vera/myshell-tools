@@ -8,6 +8,7 @@ import assert from 'node:assert/strict';
 import {
   appendCheckpointFromContinue,
   capContract,
+  isCleanObjectiveTask,
   renderContractForPrompt,
   shouldMaterializeContract,
   type Checkpoint,
@@ -125,7 +126,7 @@ describe('renderContractForPrompt', () => {
     });
 
     assert.match(rendered, /ROADMAP:\n- \[done\] r1: patch review prompt/);
-    assert.match(rendered, /CHECKPOINTS SO FAR:\n- c1 \(r1\): tests pass/);
+    assert.match(rendered, /RECENT STEPS \(each turn's stated next action\):\n- c1 \(r1\): tests pass/);
     assert.match(rendered, /evidence: npm test/);
   });
 });
@@ -253,6 +254,20 @@ describe('shouldMaterializeContract', () => {
         reviewWillRun: false,
       }),
       { criteria: false, roadmap: false },
+    );
+  });
+});
+
+describe('isCleanObjectiveTask', () => {
+  it('accepts ordinary objectives and rejects already-contracted prompt text', () => {
+    assert.equal(isCleanObjectiveTask('ship the login flow'), true);
+    assert.equal(isCleanObjectiveTask('   '), false);
+    assert.equal(isCleanObjectiveTask('OBJECTIVE: ship'), false);
+    assert.equal(
+      isCleanObjectiveTask(
+        'Goal: ship\nBefore acting, confirm this turn still directly serves the OBJECTIVE; do not pursue unrelated improvements.',
+      ),
+      false,
     );
   });
 });
