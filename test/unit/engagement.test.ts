@@ -25,6 +25,8 @@ import {
   scopeScore,
   needsContext,
   needsExternal,
+  isInvestigable,
+  hasGenuineFork,
   forkBudget,
   ASK_CAP,
   type EngagementAction,
@@ -207,6 +209,152 @@ describe('planEngagement — table', () => {
       }),
     );
     assert.ok(plan.actions.includes('INVESTIGATE_CONTEXT'));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// INVESTIGATE-BEFORE-INTERROGATE (live-found friction)
+// ---------------------------------------------------------------------------
+
+describe('planEngagement — investigate before interrogate', () => {
+  it('investigable-ambiguity fork → INVESTIGATE_CONTEXT, NO ASK (resolve by looking)', () => {
+    // A code-detail fork the codebase would answer: investigate, don't interrogate.
+    const plan = planEngagement(
+      signals({
+        classification: CLS('ic'),
+        engagementBias: 1, // collaborative — would normally permit an ask
+        task: 'make the socials page real in this project',
+        frame: frame({
+          goal: 'finish the socials page',
+          kind: 'coding',
+          confidence: 'low',
+          forks: [{ id: 'F1', question: 'is the socials page a feed or just links?' }],
+        }),
+      }),
+    );
+    assert.ok(plan.actions.includes('INVESTIGATE_CONTEXT'), 'investigates the discoverable detail');
+    assert.ok(!plan.actions.includes('ASK_CLARIFYING'), 'does NOT interrogate the user');
+    assert.equal(plan.asks, 0);
+  });
+
+  it('INVESTIGATE_CONTEXT is ordered BEFORE any ASK in an investigable+genuine mix', () => {
+    const plan = planEngagement(
+      signals({
+        classification: CLS('ic'),
+        engagementBias: 1,
+        task: 'rework the existing dashboard the way you prefer it',
+        frame: frame({
+          goal: 'rework dashboard',
+          kind: 'coding',
+          confidence: 'low',
+          forks: [{ id: 'F1', question: 'which color palette do you prefer?' }],
+        }),
+      }),
+    );
+    const iInv = plan.actions.indexOf('INVESTIGATE_CONTEXT');
+    const iAsk = plan.actions.indexOf('ASK_CLARIFYING');
+    assert.ok(iInv >= 0, 'investigates the existing dashboard first');
+    if (iAsk >= 0) assert.ok(iInv < iAsk, 'INVESTIGATE_CONTEXT precedes ASK_CLARIFYING');
+  });
+
+  it('genuine non-investigable preference fork → may still ASK at collaborative', () => {
+    // Pure preference, no codebase reference: the user is the only source.
+    const plan = planEngagement(
+      signals({
+        classification: CLS('ic'),
+        engagementBias: 1,
+        task: 'help me pick a name for the launch',
+        frame: frame({
+          goal: 'choose a launch name',
+          kind: 'writing',
+          confidence: 'low',
+          forks: [{ id: 'F1', question: 'which tone do you prefer — playful or serious?' }],
+        }),
+      }),
+    );
+    assert.ok(hasGenuineFork(signals({
+      task: 'help me pick a name for the launch',
+      frame: frame({
+        kind: 'writing',
+        forks: [{ id: 'F1', question: 'which tone do you prefer — playful or serious?' }],
+      }),
+    })));
+    assert.ok(plan.actions.includes('ASK_CLARIFYING'), 'a real preference fork can still ask');
+    assert.equal(plan.asks, 1);
+  });
+
+  it('"project not in cwd" style reference does NOT just ASK abstractly — it investigates', () => {
+    // The heyvera-socials live failure: a referenced page in a (possibly absent)
+    // project must route through INVESTIGATE_CONTEXT, never an abstract ASK.
+    const plan = planEngagement(
+      signals({
+        classification: CLS('ic'),
+        engagementBias: 1,
+        task: "we're making the heyvera socials page real",
+        frame: frame({
+          goal: 'make the heyvera socials page real',
+          kind: 'coding',
+          confidence: 'low',
+          forks: [{ id: 'F1', question: 'is it a social-links page or a feed?' }],
+        }),
+      }),
+    );
+    assert.ok(plan.actions.includes('INVESTIGATE_CONTEXT'));
+    assert.ok(!plan.actions.includes('ASK_CLARIFYING'), 'no abstract interrogation of the user');
+  });
+
+  it('trivial still stays [EXECUTE_NOW] (no investigate, no ask)', () => {
+    const plan = planEngagement(
+      signals({
+        classification: CLS('worker', 'low'),
+        task: 'what time is it?',
+        frame: frame({ goal: 'time', confidence: 'high' }),
+      }),
+    );
+    assert.deepEqual([...plan.actions], ['EXECUTE_NOW']);
+    assert.equal(plan.source, 'fast-path');
+  });
+
+  it('irreversible+investigable+ambiguous still hits the safety floor (discuss, may ask)', () => {
+    const plan = planEngagement(
+      signals({
+        classification: CLS('ic', 'high'),
+        engagementBias: -1,
+        task: 'deploy the existing service to production',
+        frame: frame({
+          goal: 'deploy service',
+          kind: 'ops',
+          confidence: 'low',
+          forks: [{ id: 'F1', question: 'which region?' }],
+        }),
+      }),
+    );
+    assert.ok(plan.actions.includes('DISCUSS_OPTIONS'), 'safety floor intact');
+    assert.ok(plan.asks <= ASK_CAP);
+  });
+
+  it('isInvestigable / hasGenuineFork classify the codebase-vs-vision boundary', () => {
+    assert.ok(isInvestigable(signals({ task: 'fix the existing module', frame: frame({ kind: 'coding' }) })));
+    assert.ok(isInvestigable(signals({ task: 'make the socials page real', frame: frame() })));
+    assert.ok(!isInvestigable(signals({ task: 'pick a name for the launch', frame: frame({ kind: 'writing' }) })));
+    // an investigable code-detail fork is NOT genuine (investigate instead)
+    assert.ok(
+      !hasGenuineFork(
+        signals({
+          task: 'fix the existing module',
+          frame: frame({ kind: 'coding', forks: [{ id: 'F1', question: 'is it a feed or links?' }] }),
+        }),
+      ),
+    );
+    // a non-investigable preference fork IS genuine
+    assert.ok(
+      hasGenuineFork(
+        signals({
+          task: 'pick a launch name',
+          frame: frame({ kind: 'writing', forks: [{ id: 'F1', question: 'playful or serious tone?' }] }),
+        }),
+      ),
+    );
   });
 });
 

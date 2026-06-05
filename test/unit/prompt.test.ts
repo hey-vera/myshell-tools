@@ -246,6 +246,62 @@ describe('buildPrompt — ask_user uses the genuine-fork framing', () => {
 });
 
 // ---------------------------------------------------------------------------
+// INVESTIGATE BEFORE YOU INTERROGATE — investigate-first + cwd-mismatch guidance
+// ---------------------------------------------------------------------------
+
+describe('buildPrompt — investigate before you interrogate', () => {
+  for (const tier of ['worker', 'ic', 'manager'] as const) {
+    it(`${tier}: instructs the model to investigate the codebase before asking`, () => {
+      const result = buildPrompt(tier, 'task');
+      assert.ok(
+        result.includes('INVESTIGATE BEFORE YOU INTERROGATE'),
+        `${tier} prompt should carry the investigate-before-interrogate header`,
+      );
+      assert.ok(
+        /FIRST determine what you can yourself by investigating/i.test(result),
+        `${tier} prompt should tell the model to investigate first`,
+      );
+      assert.ok(
+        result.includes('discoverable in the code'),
+        `${tier} prompt should forbid asking about things discoverable in the code`,
+      );
+    });
+
+    it(`${tier}: reserves questions for genuine non-investigable forks (vision/preference/external)`, () => {
+      const result = buildPrompt(tier, 'task');
+      assert.ok(
+        /vision, priorities, or preferences, or a real\s+decision external to the code/i.test(result),
+        `${tier} prompt should reserve asks for vision/preference/external forks`,
+      );
+    });
+
+    it(`${tier}: handles a referenced project NOT in the working directory (say so, ask where)`, () => {
+      const result = buildPrompt(tier, 'task');
+      assert.ok(
+        /NOT in the current working directory/i.test(result),
+        `${tier} prompt should address a project absent from the cwd`,
+      );
+      assert.ok(
+        /SAY SO plainly and ask where\s+the\s+code is/i.test(result),
+        `${tier} prompt should tell the model to say so and ask where the code is`,
+      );
+      assert.ok(
+        /never ask abstract questions about a\s+codebase you cannot see/i.test(result),
+        `${tier} prompt should forbid abstract questions about an unseen codebase`,
+      );
+    });
+  }
+
+  it('the investigate guidance sits ABOVE the ASKING THE USER block', () => {
+    const result = buildPrompt('ic', 'task');
+    const invIdx = result.indexOf('INVESTIGATE BEFORE YOU INTERROGATE');
+    const askIdx = result.indexOf('ASKING THE USER');
+    assert.ok(invIdx >= 0 && askIdx >= 0);
+    assert.ok(invIdx < askIdx, 'investigate-first guidance precedes ASKING THE USER');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Envelope instruction integrity (must remain exact + last)
 // ---------------------------------------------------------------------------
 

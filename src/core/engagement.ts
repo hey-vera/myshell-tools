@@ -201,6 +201,62 @@ export function needsContext(s: EngagementSignals): number {
 }
 
 /**
+ * INVESTIGATE-BEFORE-INTERROGATE (live-found friction): when the turn is
+ * ambiguous about the CODEBASE/TASK details, a partner with code access should
+ * investigate first rather than interrogate the user about what the code would
+ * answer. This is a BROADER signal than `needsContext` (which gates an explicit
+ * inspect request): it fires whenever the turn plausibly concerns code in the
+ * working directory — a coding/ops kind, or any reference to an existing
+ * file/repo/module/project/page/feature/area. Investigable ambiguity is resolved
+ * by looking, NOT by an ASK; only genuine non-investigable forks (vision /
+ * preference / external decision) earn a question. PURE.
+ */
+export function isInvestigable(s: EngagementSignals): boolean {
+  if (needsContext(s) > 0) return true;
+  // Building something genuinely NEW from scratch is NOT investigable — there is
+  // no existing code to read; the decisions are real forks for the user.
+  if (/\b(new|from scratch|greenfield|set up (a|the|my)? ?(new )?project|scaffold|bootstrap)\b/i.test(s.task)) {
+    return false;
+  }
+  const codeKind = s.frame?.kind === 'coding' || s.frame?.kind === 'ops';
+  // A reference to EXISTING code/area in the working directory: an explicit
+  // "existing/current/codebase/this repo" signal, OR a concrete in-place artifact
+  // noun (page, feed, component, endpoint, dashboard, …) the workspace already
+  // contains. Matched loosely so "the socials page" / "make the feed real" both
+  // count as investigable, but a from-scratch build (handled above) does not.
+  const referencesExistingArea =
+    /\b(existing|current|the codebase|this (repo|project|module|file))\b/i.test(s.task) ||
+    /\b(page|feed|feature|component|endpoint|route|screen|dashboard|frontend|backend|the (app|site|website|ui|api|module|file|code))\b/i.test(
+      s.task,
+    );
+  return codeKind || referencesExistingArea;
+}
+
+/**
+ * Whether a fork is a GENUINE non-investigable fork — one a partner cannot
+ * resolve by reading the code, so a question is warranted: the user's vision,
+ * priorities, preferences, or a decision external to the codebase. Forks that are
+ * about discoverable code details are NOT genuine here (investigate instead).
+ * Heuristic over the fork's question text. PURE.
+ */
+const NON_INVESTIGABLE_FORK_LEXICON: readonly RegExp[] = [
+  /\b(prefer|preference|want|would you like|which (do|would) you)\b/i,
+  /\b(vision|priorit(y|ies)|goal|audience|tone|style|brand|aesthetic|look and feel)\b/i,
+  /\b(budget|deadline|timeline|scope|tradeoff|trade-off)\b/i,
+  /\b(should we|do you want|are you ok|is it ok|go ahead|approve)\b/i,
+];
+
+export function hasGenuineFork(s: EngagementSignals): boolean {
+  const forks = s.frame?.forks;
+  if (forks === undefined || forks.length === 0) return false;
+  // A fork is genuine (worth asking) when its text reads as a vision/preference/
+  // external decision — OR when the turn is plainly NOT investigable (no code to
+  // look at), so the user is the only source of the answer.
+  if (!isInvestigable(s)) return true;
+  return forks.some((f) => NON_INVESTIGABLE_FORK_LEXICON.some((re) => re.test(f.question)));
+}
+
+/**
  * SMART knowledge-boundary for external research (§5.5): web research is
  * warranted only when the answer is plainly NOT knowable from the model's
  * training — an explicit "latest / current / look up / recent" signal. Never
@@ -310,6 +366,16 @@ export function planEngagement(s: EngagementSignals): EngagementPlan {
   if (needsContext(s) >= threshold(INVEST_T, s.engagementBias, memoryBias)) {
     selected.add('INVESTIGATE_CONTEXT');
   }
+  // INVESTIGATE-BEFORE-INTERROGATE: when there is a genuine FORK that the
+  // CODEBASE could resolve (an investigable fork), the partner investigates FIRST
+  // rather than interrogating the user about a discoverable detail. ACTION_ORDER
+  // already places INVESTIGATE_CONTEXT before ASK_CLARIFYING, and the fork block
+  // (below) routes such forks here instead of to an ASK — reducing asks, never
+  // adding a model call. We trigger only on an actual fork being redirected, so a
+  // plain ambiguous turn with no fork keeps its prior silent fast/normal path.
+  if (realForks(s) > 0 && isInvestigable(s) && !hasGenuineFork(s) && !irreversible) {
+    selected.add('INVESTIGATE_CONTEXT');
+  }
   if (needsExternal(s) >= threshold(RESEARCH_T, s.engagementBias, memoryBias)) {
     selected.add('WEB_RESEARCH');
   }
@@ -318,13 +384,21 @@ export function planEngagement(s: EngagementSignals): EngagementPlan {
   }
 
   // Forks → ask the residual (within the safety-floor cap) or state assumptions.
-  if (realForks(s) > 0) {
+  // INVESTIGATE-BEFORE-INTERROGATE: only a GENUINE non-investigable fork (vision /
+  // preference / external decision the code cannot answer) earns a question. A
+  // fork about discoverable code details is resolved by INVESTIGATE_CONTEXT +
+  // stated assumptions, never by interrogating the user. The safety floor above
+  // still governs irreversible+ambiguous turns regardless.
+  if (realForks(s) > 0 && hasGenuineFork(s)) {
     const budget = forkBudget(s.engagementBias, memoryBias);
     asks = Math.max(asks, Math.min(budget, ASK_CAP));
     if (asks > 0) selected.add('ASK_CLARIFYING');
     // asks === 0 → state assumptions in the prompt (prefer-assume default); the
     // INTENT block already carries assumeIfUnasked. No action added.
   }
+  // An investigable (non-genuine) fork is handled by INVESTIGATE_CONTEXT above —
+  // the partner looks instead of asking, and states its assumption in the INTENT
+  // block. No ASK is added for it.
 
   if (highStakes && ambiguous) escalate = true;
 
