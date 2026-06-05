@@ -80,6 +80,9 @@ import { isRecapStale, recapEligible, parseRecap } from '../core/recap.js';
 import { createSpinner } from '../ui/spinner.js';
 import { makeRouteClassifier } from '../core/route-classifier.js';
 import { makeIntentExtractor } from '../core/intent-extractor.js';
+import { shouldShowFirstTouch, markSeen, FIRST_TOUCH_LINES } from '../core/first-touch.js';
+import { teach } from '../core/teach.js';
+import { decideShed, pressureFromSignals } from '../core/capability-budget.js';
 import type { UpdateCheckResult } from '../infra/update-check.js';
 import type { ClaudeTokenStatus } from '../infra/credentials.js';
 import { loadClaudeTokenCapturedAt, claudeTokenStatus } from '../infra/credentials.js';
@@ -1767,6 +1770,19 @@ async function runWelcome(
   out.write(`Check for updates at launch (I'll show the version and ask first)? ${yesNoHint('yes', out.color)} `);
   const autoUpdate = await confirm(true);
 
+  // The one setup-time disclosure (whole-tool-finish §1.1, §1.4): memory is the
+  // only always-on surface that writes durable state about the user, so it gets a
+  // single honest "memory is on; here's how to manage/turn it off" line — the
+  // other four surfaces self-explain just-in-time via first-touch. Gated inside
+  // runWelcome (so it's structurally once-only for fresh users; upgraders skip
+  // runWelcome and meet memory via the first-touch line at their first approval).
+  out.write(
+    dim(
+      "\nMemory is on — I'll remember preferences you approve. Turn it off or see what's stored anytime with /memory.\n",
+      out.color,
+    ),
+  );
+
   const saved: AppConfig = {
     onboarded: true,
     setAsDefault,
@@ -2926,6 +2942,30 @@ async function runChatLoop(
     });
   };
 
+  // Per-conversation rate-limit cooldown (declared early so the quota-shed plan
+  // below — consumed by the recap-on-resume path and per-turn buildDeps — can read
+  // it). When a turn fails with a rate-limit on a provider, remember it (expiry
+  // epoch ms) so the next turn prefers an un-throttled provider; noteRateLimit
+  // (below) populates it, availableAfterCooldown filters on it.
+  const providerCooldownUntil = new Map<ProviderId, number>();
+
+  // Quota-shed (whole-tool-finish §3.2): derive the per-turn shed plan from the
+  // ONE pressure signal the renderer already tracks — how many providers are in
+  // rate-limit cooldown right now — with NO new probe and NO token-budget readout
+  // (subscription-auth has none). The pure decideShed returns the ordered ladder:
+  // recap refresh → narrow memory to identity/constraints → skip the intent pass
+  // → CORE ANSWER always survives. Recomputed each turn so a cooldown expiring
+  // restores full capability. Shared by resolveRecap (recap rung), buildDeps
+  // (intent rung) and resolveTurnMemory (memory rung).
+  const currentShedPlan = (): ReturnType<typeof decideShed> => {
+    const nowMs = ctx.clock.now();
+    let cooledCount = 0;
+    for (const until of providerCooldownUntil.values()) {
+      if (until > nowMs) cooledCount++;
+    }
+    return decideShed(pressureFromSignals({ rateLimitedProviderCount: cooledCount }));
+  };
+
   /**
    * Produce the recap text to show: the fresh cache when not stale, otherwise a
    * best-effort regeneration that is cached via setRecap. Always fail-soft —
@@ -2945,6 +2985,11 @@ async function runChatLoop(
     const cached = typeof meta?.recap === 'string' ? meta.recap.trim() : '';
     const stale = meta === undefined ? true : isRecapStale(meta);
     if (!force && cached.length > 0 && !stale) return cached;
+    // Quota-shed rung 1 (whole-tool-finish §3.2): under ANY pressure, skip the
+    // background recap REFRESH (the most-expensive, least-valuable add) and show
+    // the cached line instead. `/recap` (force) always regenerates — an explicit
+    // ask overrides the shed. Cosmetic orientation only; never blocks the answer.
+    if (!force && !currentShedPlan().recapRefresh && cached.length > 0) return cached;
 
     const generate = buildRecapGenerator();
     if (generate === null) return cached.length > 0 ? cached : null;
@@ -2974,6 +3019,23 @@ async function runChatLoop(
     return normalised;
   };
 
+  // First-touch helper (whole-tool-finish §1.2): print a single dim, shown-once
+  // explainer the first time a surface occurs, then persist `markSeen` best-effort
+  // (a failed save only risks showing the line once more — never blocks). The
+  // pure `shouldShowFirstTouch` decides; this only renders + persists. Fail-soft.
+  const showFirstTouch = async (
+    key: Parameters<typeof shouldShowFirstTouch>[0],
+  ): Promise<void> => {
+    if (!shouldShowFirstTouch(key, mutableCtx.config.seen)) return;
+    out.write(dim('  ' + FIRST_TOUCH_LINES[key] + '\n', out.color));
+    mutableCtx.config = markSeen(key, mutableCtx.config);
+    try {
+      await saveConfig(mutableCtx.config);
+    } catch {
+      // Best-effort: a failed save only risks re-showing the line once more.
+    }
+  };
+
   // Recap on resume: replace the weak tail-echo with a real ※ recap line when one
   // is available; otherwise stay silent (prior behaviour with no recap).
   {
@@ -2984,6 +3046,8 @@ async function runChatLoop(
       recapText = null; // fail-soft: a recap failure must never block resume
     }
     if (recapText !== null) {
+      // First-touch explainer for the ※ glyph, once ever, printed ABOVE the recap.
+      await showFirstTouch('recap');
       out.write('\n  ' + formatRecapLine(recapText, out.color) + '\n\n');
     }
   }
@@ -3194,14 +3258,6 @@ async function runChatLoop(
   // `while (true)` can break immediately even when awaiting readLine().
   let loopBreaker: ((result: 'menu' | 'exit') => void) | null = null;
 
-  // Per-conversation rate-limit cooldown: when a turn fails with a rate-limit
-  // error on a provider, remember it (expiry epoch ms) so the NEXT turn prefers
-  // an un-throttled provider. This is the real multi-plan capacity win — having
-  // a second signed-in provider lets us route around a 429 instead of stalling.
-  // orchestrate() already fails over within a task; this carries that memory
-  // across turns. Filtered (never to empty) in buildDeps via availableAfterCooldown.
-  const providerCooldownUntil = new Map<ProviderId, number>();
-
   // Record rate-limit cooldowns from a completed turn. Cools down EVERY provider
   // that hit a 429 during the run (result.rateLimitedProviders) — including one
   // that failed but was rescued by failover into a success final — plus the final
@@ -3311,14 +3367,24 @@ async function runChatLoop(
     }
 
     if (line === '/help') {
+      // Unified menu /help (whole-tool-finish §1.3): the full command list PLUS a
+      // grouped "about what you'll see" block that introduces every new surface in
+      // one place (memory, recap, intent reflection, the parallel-models panel).
       out.write(
         dim('  Just type to chat — I pick the right model for each message.\n', out.color) +
         '  /goal <text>  — work autonomously until the goal is done (Ctrl+C to stop)\n' +
         '  /mode         — quality vs speed (Efficient / Balanced / Max)\n' +
-        '  /style        — partner posture (Direct / Balanced / Collaborative)\n' +
-        '  /recap        — ※ where were we? (orient on this conversation)\n' +
+        '  /memory       — see, edit, export, or delete what I remember (/forget to remove)\n' +
+        '  /recap        — short recap of where this conversation left off\n' +
+        '  /style        — how forward I am: ask-first vs just-do-it\n' +
         '  /back, /exit  — return to the main menu\n' +
-        '  /help         — show this help\n',
+        '  /help         — show this help\n' +
+        '\n' +
+        dim('  About what you\'ll see:\n', out.color) +
+        dim('    ※                      a recap of where we left off (on resume)\n', out.color) +
+        dim('    "what I understood…"    I restate the task before big work — correct me anytime\n', out.color) +
+        dim('    "Waiting on N models"   your models running in parallel (no extra cost on your plan)\n', out.color) +
+        dim('    Save / Skip             I asked to remember something — Save keeps it\n', out.color),
       );
       return 'continue';
     }
@@ -3409,6 +3475,14 @@ async function runChatLoop(
         // can prefer a model the CLI actually advertises. Only include installed
         // providers (exactOptionalPropertyTypes is ON).
         // Use mutableCtx.env (not ctx.env) so post-login re-detect is reflected.
+        // ---- Quota-shed (whole-tool-finish §3.2) --------------------------------
+        // The pure decideShed ladder for this turn (see currentShedPlan above):
+        // recap refresh → narrow memory to identity/constraints → skip the intent
+        // pass → CORE ANSWER always survives. We honour the deps-level rungs here
+        // (intent rung below; the memory rung rides resolveTurnMemory); the
+        // un-sheddable core answer always runs.
+        const shedPlan = currentShedPlan();
+
         const availableModels: Partial<Record<ProviderId, readonly string[]>> = {};
         if (mutableCtx.env.claude.installed && mutableCtx.env.claude.availableModels.length > 0) {
           availableModels['claude'] = mutableCtx.env.claude.availableModels;
@@ -3478,7 +3552,10 @@ async function runChatLoop(
         // pause is bounded; absent → orchestrate uses the deterministic rules frame.
         const INTENT_TIMEOUT_MS = 8_000;
         const intentExtractor =
-          mutableCtx.config.intentEngine !== false
+          // Quota-shed rung 3: under heavy pressure the intent pass is skipped
+          // (orchestrate falls back to the deterministic rules frame — no call, no
+          // latency), exactly the timeout-fallback path. Absent extractor → rules.
+          mutableCtx.config.intentEngine !== false && shedPlan.intentPass
             ? makeIntentExtractor({
                 providers: ctx.providers,
                 policy,
@@ -3534,7 +3611,31 @@ async function runChatLoop(
       // The store is always created (so /memory list/forget/export work even when
       // memory is OFF — the kill-switch only suppresses READ/inject + WRITE, not
       // the user's ability to inspect/delete/export what is already stored, §9).
-      const memoryStore = createFileUserMemoryStore({ clock: ctx.clock });
+      // Surface a memory index REBUILD (a terminal-for-the-feature recovery the
+      // user should know about) in the unified teach voice, ONCE per session
+      // (whole-tool-finish §2.3 — corrupt index → warn once). Lock contention and
+      // other transients stay silent (the store only calls onWarning on recovery).
+      let memoryRebuildWarned = false;
+      const memoryStore = createFileUserMemoryStore({
+        clock: ctx.clock,
+        onWarning: (): void => {
+          if (memoryRebuildWarned) return;
+          memoryRebuildWarned = true;
+          out.write(
+            '  ' +
+              teach(
+                {
+                  what: 'Memory index was damaged',
+                  did: 'I rebuilt it from your saved facts (a backup was kept)',
+                  you: 'Run /memory to verify.',
+                  severity: 'warn',
+                },
+                out.color,
+              ) +
+              '\n',
+          );
+        },
+      });
       let memoryProjectKey: string | null | undefined;
       let memorySwept = false;
       // Facts ACTUALLY injected into a prompt this session — the `/memory loaded`
@@ -3550,6 +3651,10 @@ async function runChatLoop(
         // Kill-switch: no read/inject when memory is off.
         if (mutableCtx.config.memory === false) return '';
         const projectKey = await resolveProjectKeyOnce();
+        // Quota-shed rung 2: under moderate+ pressure, narrow injection to
+        // identity + hard constraints only (drop ranked prefs). The load-bearing
+        // identity/constraints always ride; only the nice-to-have prefs are shed.
+        const identityOnly = currentShedPlan().memoryWidth === 'identity-only';
         const resolved = await resolveMemoryContextDetailed({
           store: memoryStore,
           task,
@@ -3559,6 +3664,7 @@ async function runChatLoop(
           config: mutableCtx.config,
           // Sweep once per chat session (the "store open"), not every turn.
           sweep: !memorySwept,
+          ...(identityOnly ? { identityOnly: true } : {}),
         }).catch(() => ({ block: '', facts: [] as readonly UserMemoryFact[] }));
         memorySwept = true;
         // Record what loaded (de-dup by id; most-recent injection wins position).
@@ -3996,6 +4102,11 @@ async function runChatLoop(
           ? async (): Promise<void> => {
               const proposal = result.final?.memoryProposal;
               if (proposal === undefined) return;
+              // First-touch (whole-tool-finish §1.2): print the one-line
+              // explainer ABOVE the first Save/Skip selector, once ever. It adds
+              // no new interaction — the user was going to act on the selector
+              // anyway. Fail-soft (a save miss only risks re-showing it).
+              await showFirstTouch('memorySave');
               await runMemoryApproval({
                 proposal,
                 store: memoryStore,

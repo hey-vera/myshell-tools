@@ -27,6 +27,7 @@
 
 import type { OutputSink } from '../interface/render.js';
 import { dim, green, bold } from '../ui/theme.js';
+import { teach } from '../core/teach.js';
 import {
   worthGate,
   type Candidate,
@@ -511,7 +512,19 @@ async function commitProposed(
     const result = await input.store.commit(candidate, { projectKey: input.projectKey });
     return green(describeCommitOutcome(result), input.out.color);
   } catch {
-    return 'Could not save that right now — memory is unavailable.';
+    // The user APPROVED a durable save and it failed to persist — surface it in
+    // the unified teach voice (whole-tool-finish §2.3: approved-save failure is
+    // the one transient→terminal case we owe the user honesty about). The write
+    // is atomic, so either it landed or it didn't — nothing is half-stored.
+    return teach(
+      {
+        what: "I couldn't save that just now",
+        did: 'nothing was stored',
+        you: 'You can ask me to remember it again.',
+        severity: 'info',
+      },
+      input.out.color,
+    );
   }
 }
 

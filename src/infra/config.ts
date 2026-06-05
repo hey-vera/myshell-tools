@@ -16,6 +16,19 @@ import type { PartnerStyle } from '../core/prompt-context.js';
 // Types
 // ---------------------------------------------------------------------------
 
+/**
+ * Keys for the per-user "I have shown the first-touch explainer for surface X"
+ * map (whole-tool-finish-5.5.md §0.1). Each new chat surface gets a single dim,
+ * shown-once explainer the first time the user encounters it. See
+ * core/first-touch.ts for the pure decision seam and the line text.
+ */
+export type FirstTouchKey =
+  | 'memorySave' // first memory Save/Skip approval selector
+  | 'intentReflect' // first "here's what I understand" intent reflection
+  | 'panelWaiting' // first "Waiting on N models" panel status
+  | 'recap' // first ※ recap on resume
+  | 'apeEngage'; // first time APE visibly chose to ask/plan/investigate
+
 export interface AppConfig {
   onboarded: boolean;
   setAsDefault: boolean;
@@ -150,6 +163,15 @@ export interface AppConfig {
    * Default 200.
    */
   memoryMaxFactsPerScope?: number;
+  /**
+   * Per-user "first-touch explainer shown" flags (whole-tool-finish-5.5.md §0.1).
+   * Absent → nothing shown yet (each surface explains itself once on first
+   * encounter). Each key flips to true the first time that surface is met.
+   * Forward-compatible: `loadConfig`'s merge preserves it, so a downgrade then
+   * re-upgrade is safe and upgraders are never re-onboarded for surfaces they
+   * have already met. See core/first-touch.ts.
+   */
+  seen?: Partial<Record<FirstTouchKey, true>>;
 }
 
 // ---------------------------------------------------------------------------

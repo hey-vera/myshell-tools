@@ -101,6 +101,14 @@ export interface ResolveMemoryContextInput {
    * the doc ("sweep on store open").
    */
   readonly sweep?: boolean;
+  /**
+   * Quota-shed rung 2 (whole-tool-finish §3.2): when true, narrow injection to
+   * identity + hard constraints ONLY (drop ranked preferences/corrections/project)
+   * regardless of whether this is a work request — the decay-exempt load-bearing
+   * facts (an allergy, "always TypeScript") always ride, the nice-to-have prefs
+   * are shed under quota pressure. Default false (full width). PURE gate.
+   */
+  readonly identityOnly?: boolean;
 }
 
 /** Result of {@link resolveMemoryContextDetailed}: the block + the facts injected. */
@@ -148,7 +156,10 @@ export async function resolveMemoryContextDetailed(
     if (all.length === 0) return EMPTY;
 
     // Inject-time gate (§7): prefs/corrections/project ride only on real work.
-    const gated = applyInjectGate(all, hasTierEvidence(task));
+    // Quota-shed rung 2 forces identity-only (isWorkRequest:false narrows to the
+    // ALWAYS_RIDE_KINDS — identity + constraints) even on a work request.
+    const isWork = input.identityOnly === true ? false : hasTierEvidence(task);
+    const gated = applyInjectGate(all, isWork);
     if (gated.length === 0) return EMPTY;
 
     const selected = selectRelevant({

@@ -27,6 +27,7 @@ Available commands:
   /exit     Exit the REPL
   /quit     Exit the REPL
   <task>    Run a task (any other non-empty line)
+  (The full chat experience — memory, recap, /style — lives in the menu chat.)
 `;
 
 /**

@@ -30,6 +30,8 @@ import { createFileUserMemoryStore, resolveProjectKey } from './infra/user-memor
 export { createFileUserMemoryStore };
 import { resolveMemoryContext } from './core/memory-injection.js';
 import { loadConfig, resolvePartnerStyle } from './infra/config.js';
+import { makeIntentExtractor } from './core/intent-extractor.js';
+import { replCapabilities } from './core/surface-capabilities.js';
 import { checkForUpdate } from './infra/update-check.js';
 import { refreshClaudeOauthIfNeeded } from './infra/claude-oauth-refresh.js';
 import { syncConversationMirror } from './infra/session-mirror.js';
@@ -446,12 +448,74 @@ async function main(): Promise<void> {
     out.write(banner(version, out.color) + '\n');
     const spinner = createSpinner(out);
     spinner.start('Detecting providers…');
-    const env = await detectEnvironment();
-    // TODO: the repl path does not load AppConfig, so it uses the built-in
-    // DEFAULT_TIMEOUT_MS. If/when this path loads config, pass
-    // resolveTimeoutMs(config) here like the menu and run paths do.
-    const deps = buildDeps(cwd, env);
+    const [env, config] = await Promise.all([detectEnvironment(), loadConfig()]);
+    const replMode = config.mode ?? autoModeForPlans(
+      [env.claude, env.codex, env.opencode]
+        .filter((p) => p.authenticated)
+        .map((p) => p.plan),
+    );
+    const replPolicy = POLICY_PRESETS[replMode];
     spinner.stop();
+
+    // REPL asymmetry (whole-tool-finish §4): the REPL is the lean SUBSET. It still
+    // gets memory INJECTION + the intent FRAME "for free" because those are
+    // deps/prompt concerns, not UI (the matrix's repl:true rows) — so the same
+    // shared core delivers memory-aware, intent-sharpened answers. It does NOT get
+    // memory-approval / intent-reflection / recap / queue/ESC (the menu-only TUI
+    // affordances). The capability matrix is the single source of truth for what
+    // is wired here; replCapabilities() drives the read-only deps below.
+    const caps = new Set(replCapabilities());
+
+    // Memory injection (read-only): resolved once for the session (the REPL is
+    // stateless-per-line and project-scoped, so a single resolve is faithful and
+    // cheap). Fail-soft → '' (no memory) on any error.
+    let memoryContext = '';
+    if (caps.has('memoryInjection')) {
+      memoryContext = await resolveMemoryContext({
+        store: createFileUserMemoryStore({ clock: systemClock }),
+        task: '',
+        projectKey: await resolveProjectKey(cwd).catch(() => null),
+        partnerStyle: resolvePartnerStyle(config, replMode),
+        nowIso: systemClock.isoNow(),
+        config,
+      }).catch(() => '');
+    }
+
+    const baseDeps = buildDeps(
+      cwd,
+      env,
+      replPolicy,
+      resolveTimeoutMs(config),
+      undefined,
+      undefined,
+      memoryContext,
+    );
+
+    // Intent FRAME (deps concern, not UI): a read-only extractor for sharper
+    // prompts. Gated by config.intentEngine like the menu; absent → rules frame.
+    const INTENT_TIMEOUT_MS = 8_000;
+    const replIntentExtractor =
+      caps.has('intentFrame') && config.intentEngine !== false
+        ? makeIntentExtractor({
+            providers: baseDeps.providers,
+            policy: replPolicy,
+            cwd,
+            timeoutMs: Math.min(resolveTimeoutMs(config), INTENT_TIMEOUT_MS),
+            ...(baseDeps.availableModels !== undefined
+              ? { availableModels: baseDeps.availableModels }
+              : {}),
+            ...(baseDeps.authenticatedProviders !== undefined
+              ? { authenticatedProviders: baseDeps.authenticatedProviders }
+              : {}),
+          })
+        : undefined;
+
+    const deps: OrchestrateDeps = {
+      ...baseDeps,
+      partnerStyle: resolvePartnerStyle(config, replMode),
+      ...(replIntentExtractor !== undefined ? { intentExtractor: replIntentExtractor } : {}),
+    };
+
     out.write(welcome(deps, out.color) + '\n\n');
     await startRepl(deps, out);
     process.exit(0);
