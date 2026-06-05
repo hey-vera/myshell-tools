@@ -20,6 +20,7 @@ import type { OutputSink } from '../interface/render.js';
 import type { EnvironmentStatus } from '../providers/detect.js';
 import { detectEnvironment, getInstallCommand } from '../providers/detect.js';
 import { installProvider } from '../providers/install.js';
+import type { LoginMethod } from './login.js';
 import { runLogin } from './login.js';
 import { isPricingStale } from '../infra/pricing.js';
 import { defaultStateDir, probeLedgerWritable, probeStateWritable } from '../infra/health.js';
@@ -28,6 +29,18 @@ import { loadClaudeTokenCapturedAt, claudeTokenStatus } from '../infra/credentia
 import type { ClaudeTokenStatus } from '../infra/credentials.js';
 import { createLineReader, parseYesNo, yesNoHint } from '../interface/menu.js';
 import { bold, green, red, yellow, dim, divider, label } from '../ui/theme.js';
+
+type DoctorConfirm = (
+  defaultYes: boolean,
+  opts?: { requireExplicit?: boolean },
+) => Promise<boolean>;
+
+type DoctorLoginOptions = {
+  method?: LoginMethod;
+  readLine?: () => Promise<string | null>;
+  suspendStdin?: () => () => void;
+  confirm?: DoctorConfirm;
+};
 
 // ---------------------------------------------------------------------------
 // Pure builder — testable with a fake EnvironmentStatus
@@ -193,7 +206,12 @@ export interface DoctorFixOpts {
    * Sign in to a provider. Injected in tests to avoid real login spawns.
    * Defaults to the real runLogin from commands/login.ts.
    */
-  readonly login?: (out: OutputSink, providerArg?: string) => Promise<number>;
+  readonly login?: (out: OutputSink, providerArg?: string, opts?: DoctorLoginOptions) => Promise<number>;
+  /**
+   * Release and resume the active line reader around inherited-stdio children.
+   * Injected with readLine in tests; created automatically in the real CLI path.
+   */
+  readonly suspendStdin?: () => () => void;
   /**
    * Detect the environment. Injected in tests to avoid real spawns.
    * Defaults to the real detectEnvironment from providers/detect.ts.
@@ -231,7 +249,7 @@ export interface DoctorFixOpts {
 export async function runDoctor(out: OutputSink, opts?: DoctorFixOpts): Promise<number> {
   const detectEnvironmentFn = opts?.detectEnvironment ?? detectEnvironment;
   const installProviderFn = opts?.installProvider ?? installProvider;
-  const loginFn = opts?.login ?? ((o, id) => runLogin(o, id));
+  const loginFn = opts?.login ?? ((o, id, loginOpts) => runLogin(o, id, loginOpts));
 
   const env = await detectEnvironmentFn();
   const cwd = process.cwd();
@@ -269,7 +287,7 @@ export async function runDoctor(out: OutputSink, opts?: DoctorFixOpts): Promise<
   // Create a temporary readline if no readLine seam was injected (real CLI path).
   let rlClose: (() => void) | undefined;
   let readLineFn = opts.readLine;
-  let suspendStdin: (() => () => void) | undefined;
+  let suspendStdin = opts.suspendStdin;
   if (readLineFn === undefined) {
     const rl = readline.createInterface({
       input: process.stdin,
@@ -284,6 +302,8 @@ export async function runDoctor(out: OutputSink, opts?: DoctorFixOpts): Promise<
     };
     rlClose = () => lineReader.close();
   }
+  const confirmFn: DoctorConfirm = async (defaultYes, confirmOpts) =>
+    parseYesNo(await readLineFn(), defaultYes, confirmOpts?.requireExplicit ?? false);
 
   const loadCapturedAtFn = opts.loadClaudeTokenCapturedAt ?? loadClaudeTokenCapturedAt;
   const nowFn = opts.now ?? (() => Date.now());
@@ -298,6 +318,7 @@ export async function runDoctor(out: OutputSink, opts?: DoctorFixOpts): Promise<
       detectEnvironmentFn,
       loadCapturedAtFn,
       nowFn,
+      confirmFn,
       suspendStdin,
     );
     return hasAuthenticatedProvider(finalEnv) ? 0 : 1;
@@ -326,10 +347,11 @@ async function runFixPass(
   initialEnv: EnvironmentStatus,
   readLine: () => Promise<string | null>,
   installProviderFn: (id: 'claude' | 'codex' | 'opencode', out: OutputSink) => Promise<boolean>,
-  loginFn: (out: OutputSink, providerArg?: string) => Promise<number>,
+  loginFn: (out: OutputSink, providerArg?: string, opts?: DoctorLoginOptions) => Promise<number>,
   detectEnvironmentFn: () => Promise<EnvironmentStatus>,
   loadCapturedAtFn: () => Promise<string | undefined>,
   nowFn: () => number,
+  confirm: DoctorConfirm,
   suspendStdin?: () => () => void,
 ): Promise<EnvironmentStatus> {
   const providers: Array<'claude' | 'codex' | 'opencode'> = ['claude', 'codex', 'opencode'];
@@ -375,13 +397,14 @@ async function runFixPass(
     out.write(`\nSign in to ${id}? ${yesNoHint('yes', out.color)} `);
     const ans = await readLine();
     if (parseYesNo(ans, true)) {
-      const resumeStdin = suspendStdin?.();
       try {
-        await loginFn(out, id);
+        await loginFn(out, id, {
+          readLine,
+          confirm,
+          ...(suspendStdin !== undefined ? { suspendStdin } : {}),
+        });
       } catch {
         out.write(red(`✗ Sign-in for ${id} did not complete.\n`, out.color));
-      } finally {
-        resumeStdin?.();
       }
     }
   }
@@ -401,13 +424,14 @@ async function runFixPass(
       out.write(`\nYour Claude token ${when}. Refresh it now? ${yesNoHint('yes', out.color)} `);
       const ans = await readLine();
       if (parseYesNo(ans, true)) {
-        const resumeStdin = suspendStdin?.();
         try {
-          await loginFn(out, 'claude');
+          await loginFn(out, 'claude', {
+            readLine,
+            confirm,
+            ...(suspendStdin !== undefined ? { suspendStdin } : {}),
+          });
         } catch {
           out.write(red(`✗ Claude re-login did not complete.\n`, out.color));
-        } finally {
-          resumeStdin?.();
         }
       }
     }

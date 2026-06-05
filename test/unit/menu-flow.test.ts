@@ -422,6 +422,34 @@ describe('startMenu — immediate q → exits cleanly', () => {
     assert.deepEqual(loginCalls, ['claude'], 'normalized line-mode j must dispatch to Claude login');
   });
 
+  it('after Claude login re-detects authenticated state and returns to home without re-prompting auth', async () => {
+    const sink = makeSink();
+    const loginCalls: string[] = [];
+    let detectCalls = 0;
+    const afterLoginEnv: EnvironmentStatus = {
+      ...FAKE_ENV,
+      claude: { ...FAKE_ENV.claude, authenticated: true, availableModels: ['model-a'] },
+    };
+    const ctx = makeCtx({
+      env: { ...FAKE_ENV, claude: { ...FAKE_ENV.claude, authenticated: false } },
+      readLine: makeScriptedReader(['j', '', 'q']),
+      login: async (_out, providerArg) => {
+        loginCalls.push(providerArg ?? 'all');
+        return 0;
+      },
+      detectEnvironment: async () => {
+        detectCalls += 1;
+        return afterLoginEnv;
+      },
+    });
+
+    await startMenu(ctx, sink);
+
+    assert.deepEqual(loginCalls, ['claude'], 'completed login must not loop back into auth');
+    assert.equal(detectCalls, 1, 'menu must refresh provider state exactly once after login');
+    assert.ok(sink.buf.includes('ready'), 'home screen after login must render authenticated status');
+  });
+
   it('startMenu resolves (not hangs)', async () => {
     const sink = makeSink();
     const ctx = makeCtx({ readLine: makeScriptedReader(['q']) });
@@ -1612,8 +1640,13 @@ describe('parseYesNo — strict mode (requireExplicit)', () => {
  */
 class FakeReadline {
   events: string[] = [];
-  on(_event: string, _fn: (...a: never[]) => void): this {
+  private lineListeners: Array<(raw: string) => void> = [];
+  on(event: string, fn: (...a: never[]) => void): this {
+    if (event === 'line') this.lineListeners.push(fn as unknown as (raw: string) => void);
     return this;
+  }
+  emitLine(raw: string): void {
+    for (const fn of this.lineListeners) fn(raw);
   }
   pause(): void {
     this.events.push('rl.pause');
@@ -1741,6 +1774,17 @@ describe('createLineReader — suspend/resume release stdin for an inherited chi
 
     assert.equal(stdin.reads, 0, 'suspend() must not call stdin.read()');
     assert.deepEqual(stdin.calls, ['setRawMode:false', 'pause']);
+  });
+
+  it('resume() drops one immediate blank line left by an inherited-stdio child', async () => {
+    const { reader, rl } = mkReader(true);
+    reader.suspend();
+    reader.resume();
+
+    rl.emitLine('');
+    rl.emitLine('q');
+
+    assert.equal(await reader.nextLine(), 'q', 'stray post-child Enter must not answer the next prompt');
   });
 });
 
@@ -3154,6 +3198,66 @@ describe('startMenu — first-run: post-onboarding env refresh (BUG 1)', () => {
     // detectEnvironment is called inside runWelcome (after codex install) and once
     // more in startMenu after runWelcome returns — total 2 injected calls.
     assert.equal(detectCalls, 2, 'detectEnvironment must be called exactly twice: once inside runWelcome after install, once in startMenu after onboarding');
+  });
+
+  it('re-detects after an onboarding login so completed auth is not re-entered', async () => {
+    const clock = makeFakeClock();
+    const store = makeStore(clock);
+    const ledger = makeFakeLedger();
+    const dir = join(tmpdir(), `menu-onboard-login-refresh-${randomUUID()}`);
+    const installedUnauthed: EnvironmentStatus = {
+      claude: { id: 'claude', installed: true, version: '1.0.0', authenticated: false, plan: null, binaryPath: 'claude', availableModels: [] },
+      codex: { id: 'codex', installed: true, version: '1.0.0', authenticated: false, plan: null, binaryPath: 'codex', availableModels: [] },
+      opencode: { id: 'opencode', installed: true, version: '1.0.0', authenticated: false, plan: null, binaryPath: 'opencode', availableModels: [] },
+      hasAnyProvider: true,
+      platform: 'linux',
+    };
+    const allAuthed: EnvironmentStatus = {
+      claude: { ...installedUnauthed.claude, authenticated: true, availableModels: ['opus'] },
+      codex: { ...installedUnauthed.codex, authenticated: true, availableModels: ['gpt-5.5'] },
+      opencode: { ...installedUnauthed.opencode, authenticated: true, availableModels: ['opencode/paid'] },
+      hasAnyProvider: true,
+      platform: 'linux',
+    };
+    const loginCalls: string[] = [];
+    let detectCalls = 0;
+    const ctx: MenuContext = {
+      version: '2.0.0',
+      clock,
+      ledger,
+      providers: { claude: makeFakeProvider() },
+      env: installedUnauthed,
+      store,
+      config: { onboarded: false, setAsDefault: false },
+      cwd: dir,
+      sandbox: 'workspace-write',
+      timeoutMs: 5_000,
+      // y = accept Claude sign-in, '' = mode Enter. Without the post-login
+      // re-detect, that blank would default-accept the stale Codex auth prompt.
+      readLine: makeScriptedReader(['y', '', 'n', 'n', 'q']),
+      installProvider: async () => true,
+      login: async (_out, providerArg) => {
+        loginCalls.push(providerArg ?? 'all');
+        return 0;
+      },
+      detectEnvironment: async () => {
+        detectCalls += 1;
+        return allAuthed;
+      },
+      checkForUpdate: async (): Promise<UpdateCheckResult> => ({
+        current: '2.0.0',
+        latest: null,
+        updateAvailable: false,
+      }),
+      isHookInstalled: async () => false,
+    };
+
+    const sink = makeSink();
+    await startMenu(ctx, sink);
+
+    assert.deepEqual(loginCalls, ['claude'], 'onboarding must not re-enter auth after a successful login');
+    assert.equal(detectCalls, 2, 'detects once after login and once after onboarding returns');
+    assert.ok(!sink.buf.includes('Sign in to codex?'), 'stale Codex auth prompt must be skipped after refresh');
   });
 });
 

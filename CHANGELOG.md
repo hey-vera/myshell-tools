@@ -15,6 +15,37 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   resumed goal's contract from the persisted `workTrace` (niche: the in-run contract
   is already kept in memory; only cross-session resume benefits). Optional.
 
+## [3.12.3]
+
+### Fixed
+Auth flow could loop back into sign-in after a **successful** login, and a vendor
+prompt's text could stay invisible until a second Enter (reported live on Replit).
+Full diagnosis in `docs/auth-flow-audit-5.5.md`; root cause was two bugs lining up:
+- **Post-login re-auth loop.** First-run onboarding (`runWelcome`) decided each
+  provider's sign-in prompt from a **stale** environment snapshot taken before login,
+  so a completed Claude sign-in could be followed by another (stale) auth prompt —
+  and a leftover Enter could default-accept it. Onboarding now **re-detects the
+  environment immediately after each accepted login**, so a finished sign-in is never
+  offered again.
+- **Invisible prompt / double-Enter race.** After an inherited-stdio vendor child
+  exited, a trailing Enter could arrive just *after* `createLineReader.resume()` had
+  cleared its buffer and then auto-answer (or flash) the next prompt. `resume()` now
+  suppresses one immediate blank line during the short TTY handoff window (guarded;
+  no effect on piped/test input).
+- **Browser-mode login trusted exit code 0.** It now uses the same real credential
+  probe as code-mode login (shared `verifyPostLogin`) — a vendor exiting 0 after a
+  cancelled/failed paste or first-run trust dialog is correctly reported as not signed in.
+- **`doctor --fix` double stdin-handoff.** `doctor` suspended stdin *and* `runLogin`
+  suspended internally — a nested suspend/resume around one login (same race class).
+  `doctor` now threads its `readLine`/`confirm`/`suspendStdin` seams into `runLogin`
+  so there is a single handoff owner, matching the menu path.
+
+### Tests
+- No-re-auth-loop regressions (explicit `[j]` login and onboarding login both re-detect
+  and return home without re-prompting), a `createLineReader.resume()` blank-line-drain
+  test, and a `doctor` test proving stdin is suspended once (by login only). Full suite:
+  2458 pass / 0 fail.
+
 ## [3.12.2]
 
 ### Fixed

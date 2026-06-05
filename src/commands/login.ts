@@ -208,21 +208,7 @@ async function runCodeMethodForProvider(
     resumeStdin?.();
   }
 
-  // Verify with a REAL credential probe rather than trusting the exit code:
-  // `claude auth login` can exit 0 even when the pasted code was rejected, so the
-  // only honest "are you signed in?" answer is to re-detect. This makes the flow
-  // self-correcting — a failed paste is reported as such, with the next step.
-  const status = await detectProvider(id, {
-    env: childEnv,
-    cwd,
-    credentialFileFallback: false,
-    storedCredentialInjection: false,
-  }).catch(() => null);
-  if (status?.authenticated === true) {
-    if (id === 'claude') await finishClaudeSignIn(out);
-    else out.write(green(`✓ ${id} sign-in complete.\n`, out.color));
-    return;
-  }
+  if (await verifyPostLogin(out, id, childEnv, cwd)) return;
 
   // Not authenticated. Be specific for claude's OOB "Invalid code" failure and
   // point at the guaranteed fallback (a direct `claude /login` that myshell then
@@ -241,6 +227,31 @@ async function runCodeMethodForProvider(
   } else {
     out.write(dim(`  Re-run \`myshell-tools login ${id}\` to try again.\n`, out.color));
   }
+}
+
+/**
+ * Verify with a REAL credential probe rather than trusting the vendor exit code:
+ * some login CLIs can exit 0 after a cancelled prompt, failed paste, or first-run
+ * trust dialog. This keeps menu/onboarding state aligned with actual credentials.
+ */
+async function verifyPostLogin(
+  out: OutputSink,
+  id: ProviderId,
+  childEnv: NodeJS.ProcessEnv,
+  cwd: string,
+): Promise<boolean> {
+  const status = await detectProvider(id, {
+    env: childEnv,
+    cwd,
+    credentialFileFallback: false,
+    storedCredentialInjection: false,
+  }).catch(() => null);
+  if (status?.authenticated === true) {
+    if (id === 'claude') await finishClaudeSignIn(out);
+    else out.write(green(`✓ ${id} sign-in complete.\n`, out.color));
+    return true;
+  }
+  return false;
 }
 
 /**
@@ -338,8 +349,10 @@ export async function runLogin(
       }
 
       if (result.exitCode === 0) {
-        if (id === 'claude') await finishClaudeSignIn(out);
-        else out.write(green(`✓ ${id} sign-in complete.\n`, out.color));
+        const authenticated = await verifyPostLogin(out, id, childEnv, cwd);
+        if (!authenticated) {
+          out.write(red(`✗ ${id} exited successfully, but is still not signed in.\n`, out.color));
+        }
       } else {
         out.write(
           red(`✗ ${id} sign-in did not complete (exit ${result.exitCode ?? 'unknown'}).\n`, out.color),

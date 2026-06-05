@@ -534,6 +534,45 @@ describe('runDoctor --fix — installed+unauthenticated provider answered y call
 
     assert.deepEqual(loginCalls, ['claude'], 'login must be called for claude');
   });
+
+  it('passes the shared reader and suspend seam to login without an outer suspend', async () => {
+    const loginCalls: string[] = [];
+    const suspendEvents: string[] = [];
+
+    const env = makeFullEnv({
+      claude: { installed: true, authenticated: false, version: '1.0.0', binaryPath: 'claude' },
+    });
+
+    const answers = ['n', 'n', 'y', 'y'];
+    let idx = 0;
+    const readLine = async () => answers[idx++] ?? 'n';
+    const suspendStdin = () => {
+      suspendEvents.push('suspend');
+      return () => suspendEvents.push('resume');
+    };
+
+    const { out } = makeFakeOut();
+    await runDoctor(out, {
+      fix: true,
+      readLine,
+      suspendStdin,
+      installProvider: async (_id, _out) => false,
+      login: async (_out, id, loginOpts) => {
+        loginCalls.push(id ?? 'all');
+        assert.deepEqual(suspendEvents, [], 'doctor must not suspend before handing off to login');
+        assert.strictEqual(loginOpts?.readLine, readLine, 'login should receive doctor readLine seam');
+        assert.strictEqual(loginOpts?.suspendStdin, suspendStdin, 'login should receive doctor suspend seam');
+        assert.ok(await loginOpts?.confirm?.(true), 'login should receive a confirm seam backed by readLine');
+        const resume = loginOpts?.suspendStdin?.();
+        resume?.();
+        return 0;
+      },
+      detectEnvironment: async () => env,
+    });
+
+    assert.deepEqual(loginCalls, ['claude'], 'login must be called exactly once for claude');
+    assert.deepEqual(suspendEvents, ['suspend', 'resume'], 'stdin should be suspended once by login only');
+  });
 });
 
 // ---------------------------------------------------------------------------

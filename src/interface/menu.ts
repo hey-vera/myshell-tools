@@ -863,9 +863,20 @@ export function createLineReader(
   // nextLine() callers waiting for a line that hasn't arrived yet.
   const waiters: Array<(value: string | null) => void> = [];
   let closed = false;
+  let suppressEmptyUntil = 0;
+  let suppressGeneration = 0;
 
   rl.on('line', (raw: string) => {
     const line = raw.trim();
+    if (line === '' && Date.now() <= suppressEmptyUntil) {
+      // Some inherited-stdio CLIs leave the submit Enter queued as they exit.
+      // Drop only that immediate blank line so the next prompt is not auto-answered.
+      suppressEmptyUntil = 0;
+      suppressGeneration += 1;
+      return;
+    }
+    suppressEmptyUntil = 0;
+    suppressGeneration += 1;
     const waiter = waiters.shift();
     if (waiter !== undefined) {
       waiter(line);
@@ -936,6 +947,16 @@ export function createLineReader(
       //    the user pressed to submit a pasted code — so it can't bleed into or
       //    desync the next prompt.
       buffered.length = 0;
+      if (input.isTTY === true) {
+        suppressEmptyUntil = Date.now() + 250;
+        const generation = suppressGeneration;
+        setTimeout(() => {
+          if (suppressGeneration === generation) {
+            suppressEmptyUntil = 0;
+            buffered.length = 0;
+          }
+        }, 250).unref?.();
+      }
       // 2. Re-PRIME the TTY. A bare `input.resume()` is not enough: after a child
       //    held fd0, the tty read handle is left dormant and the next keypress
       //    won't emit 'data' until Enter kicks it. Cycling raw mode off→on forces
@@ -1377,6 +1398,9 @@ async function runWelcome(
         confirm,
         ...(suspendStdin !== undefined ? { suspendStdin } : {}),
       });
+      // Keep onboarding's auth loop in sync with the credential the vendor just
+      // persisted, so a completed sign-in cannot be offered again from stale env.
+      env = await detectEnvironmentFn();
     }
   }
 
