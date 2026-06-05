@@ -112,6 +112,32 @@ export interface AppConfig {
    * chrome only. See core/prompt-context.ts.
    */
   partnerStyle?: PartnerStyle;
+  /**
+   * USER MEMORY master switch (memory-architecture §9). Absent/true → memory on
+   * (read + inject + capture); false → the privacy kill-switch: no retrieval, no
+   * injection, no proposals (existing facts remain listable/exportable). The
+   * Settings "Memory: on/off" row toggles this; advanced keys below are
+   * config-file-only in v1 to keep the menu lean.
+   */
+  memory?: boolean;
+  /**
+   * Where new facts default when scope is unspecified (§9). Default 'project'.
+   */
+  memoryDefaultScope?: 'global' | 'project';
+  /**
+   * Approval posture for MODEL-proposed memory (§9). Default 'always-ask'.
+   */
+  memoryApproval?: 'always-ask' | 'auto-save-explicit';
+  /**
+   * Base decay window (days) for importance level 2; levels 1/3 scale ×⅓/×4
+   * (§6, §9). Default 90.
+   */
+  memoryDecayDays?: number;
+  /**
+   * Hard cap on non-archived facts per scope before capacity eviction (§6, §9).
+   * Default 200.
+   */
+  memoryMaxFactsPerScope?: number;
 }
 
 // ---------------------------------------------------------------------------

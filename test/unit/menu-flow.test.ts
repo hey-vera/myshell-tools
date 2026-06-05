@@ -4622,6 +4622,111 @@ describe('startMenu — update notifier: banner, [u], auto-update', () => {
     assert.equal(persisted.autoGoal, true, 'autoGoal must be persisted as true');
   });
 
+  // ---- Settings toggle for USER MEMORY (Phase 4, §9) ----------------------
+  it('[s] settings shows the [c] Memory toggle line (on by default)', async () => {
+    const sink = makeSink();
+    const dir = join(tmpdir(), `menu-memory-show-${randomUUID()}`);
+    const config: AppConfig = { onboarded: true, setAsDefault: false, smartRoute: false };
+    const ctx = makeCtx({
+      config,
+      cwd: dir,
+      readLine: makeScriptedReader(['s', '\n', 'q']),  // settings → Enter back → quit
+    });
+
+    await withStateHome(dir, async () => {
+      await assert.doesNotReject(() => startMenu(ctx, sink));
+    });
+
+    assert.ok(
+      sink.buf.includes('[c] Memory: on'),
+      'settings must show the [c] Memory toggle line, on by default',
+    );
+  });
+
+  it('[s] → [c] toggles memory OFF (kill-switch) and persists it', async () => {
+    const sink = makeSink();
+    const dir = join(tmpdir(), `menu-memory-off-${randomUUID()}`);
+    const config: AppConfig = { onboarded: true, setAsDefault: false, smartRoute: false };
+    const ctx = makeCtx({
+      config,
+      cwd: dir,
+      readLine: makeScriptedReader(['s', 'c', 'q']),  // settings → [c] toggle → quit
+    });
+
+    const persisted = await withStateHome(dir, async () => {
+      await assert.doesNotReject(() => startMenu(ctx, sink));
+      return readPersistedConfig();
+    });
+
+    assert.ok(sink.buf.includes('Memory: off'), 'toggling [c] must report memory off');
+    assert.equal(persisted.memory, false, 'memory must be persisted as false (kill-switch)');
+  });
+
+  it('[s] → [c] toggles memory back ON (removes the kill-switch flag)', async () => {
+    const sink = makeSink();
+    const dir = join(tmpdir(), `menu-memory-on-${randomUUID()}`);
+    const config: AppConfig = { onboarded: true, setAsDefault: false, smartRoute: false, memory: false };
+    const ctx = makeCtx({
+      config,
+      cwd: dir,
+      readLine: makeScriptedReader(['s', 'c', 'q']),  // settings → [c] toggle → quit
+    });
+
+    const persisted = await withStateHome(dir, async () => {
+      await assert.doesNotReject(() => startMenu(ctx, sink));
+      return readPersistedConfig();
+    });
+
+    assert.ok(sink.buf.includes('Memory: on'), 'toggling [c] from off must report memory on');
+    assert.notEqual(persisted.memory, false, 'memory:false must be cleared when re-enabling');
+  });
+
+  it('[s] → [c] memory toggle PRESERVES advanced memory keys', async () => {
+    const sink = makeSink();
+    const dir = join(tmpdir(), `menu-memory-preserve-${randomUUID()}`);
+    const config: AppConfig = {
+      onboarded: true,
+      setAsDefault: false,
+      smartRoute: false,
+      memoryDecayDays: 45,
+      memoryMaxFactsPerScope: 120,
+      memoryDefaultScope: 'global',
+    };
+    const ctx = makeCtx({
+      config,
+      cwd: dir,
+      readLine: makeScriptedReader(['s', 'c', 'q']),
+    });
+
+    const persisted = await withStateHome(dir, async () => {
+      await assert.doesNotReject(() => startMenu(ctx, sink));
+      return readPersistedConfig();
+    });
+
+    assert.equal(persisted.memory, false, 'memory toggled off');
+    assert.equal(persisted.memoryDecayDays, 45, 'advanced key memoryDecayDays preserved');
+    assert.equal(persisted.memoryMaxFactsPerScope, 120, 'advanced key memoryMaxFactsPerScope preserved');
+    assert.equal(persisted.memoryDefaultScope, 'global', 'advanced key memoryDefaultScope preserved');
+  });
+
+  it('[s] → [6] smart-routing toggle PRESERVES the memory kill-switch', async () => {
+    const sink = makeSink();
+    const dir = join(tmpdir(), `menu-memory-survives-${randomUUID()}`);
+    const config: AppConfig = { onboarded: true, setAsDefault: false, memory: false };
+    const ctx = makeCtx({
+      config,
+      cwd: dir,
+      readLine: makeScriptedReader(['s', '6', 'q']),  // toggle a DIFFERENT setting
+    });
+
+    const persisted = await withStateHome(dir, async () => {
+      await assert.doesNotReject(() => startMenu(ctx, sink));
+      return readPersistedConfig();
+    });
+
+    assert.equal(persisted.memory, false, 'flipping smart-routing must NOT drop memory:false');
+  });
+
   // The bug this guards against: rebuilding the config for ANY toggle used to
   // drop unrelated experimental flags. Start with panel + learnRouting ON, flip
   // a DIFFERENT setting, and assert both survive.

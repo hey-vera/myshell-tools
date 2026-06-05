@@ -27,6 +27,8 @@ import { appendCheckpointFromContinue, capContract } from '../core/work-contract
 import { formatAnswers, isKeepGoingOffer } from '../core/questions.js';
 import { decideAutonomyOffer } from '../core/autonomy.js';
 import { classify } from '../core/classify.js';
+import { resolveMemoryContext } from '../core/memory-injection.js';
+import { createFileUserMemoryStore, resolveProjectKey } from '../infra/user-memory-store.js';
 import type { AppConfig } from '../infra/config.js';
 import { saveConfig, resolvePartnerStyle } from '../infra/config.js';
 import type { PartnerStyle } from '../core/prompt-context.js';
@@ -1752,6 +1754,26 @@ async function runWelcome(
 // Settings screen
 // ---------------------------------------------------------------------------
 
+/**
+ * Preserve the USER MEMORY config keys (Phase 4, §9) across a Settings toggle
+ * that reconstructs `AppConfig` from scratch. The toggle functions deliberately
+ * rebuild config with only the keys they know so unknown keys stay minimal; this
+ * spread keeps the memory keys from being silently dropped when another setting
+ * is flipped. Only explicit memory:false (the kill-switch) and any set advanced
+ * keys are carried — absence means defaults (memory on).
+ */
+function preserveMemoryKeys(config: AppConfig): Partial<AppConfig> {
+  return {
+    ...(config.memory === false ? { memory: false } : {}),
+    ...(config.memoryDefaultScope !== undefined ? { memoryDefaultScope: config.memoryDefaultScope } : {}),
+    ...(config.memoryApproval !== undefined ? { memoryApproval: config.memoryApproval } : {}),
+    ...(config.memoryDecayDays !== undefined ? { memoryDecayDays: config.memoryDecayDays } : {}),
+    ...(config.memoryMaxFactsPerScope !== undefined
+      ? { memoryMaxFactsPerScope: config.memoryMaxFactsPerScope }
+      : {}),
+  };
+}
+
 async function runModeSelect(
   config: AppConfig,
   out: OutputSink,
@@ -1807,6 +1829,7 @@ async function runModeSelect(
     ...(config.hedge === true ? { hedge: true } : {}),
     ...(config.autoGoal === true ? { autoGoal: true } : {}),
     ...(config.partnerStyle !== undefined ? { partnerStyle: config.partnerStyle } : {}),
+    ...preserveMemoryKeys(config),
   };
 
   await saveConfig(updated);
@@ -1863,6 +1886,7 @@ async function runVerbositySelect(
     ...(config.hedge === true ? { hedge: true } : {}),
     ...(config.autoGoal === true ? { autoGoal: true } : {}),
     ...(config.partnerStyle !== undefined ? { partnerStyle: config.partnerStyle } : {}),
+    ...preserveMemoryKeys(config),
   };
 
   await saveConfig(updated);
@@ -1927,6 +1951,7 @@ async function runStyleSelect(
     ...(config.hedge === true ? { hedge: true } : {}),
     ...(config.autoGoal === true ? { autoGoal: true } : {}),
     ...(newStyle !== undefined ? { partnerStyle: newStyle } : {}),
+    ...preserveMemoryKeys(config),
   };
 
   await saveConfig(updated);
@@ -1967,6 +1992,7 @@ async function toggleDefaultShell(
     ...(config.hedge === true ? { hedge: true } : {}),
     ...(config.autoGoal === true ? { autoGoal: true } : {}),
     ...(config.partnerStyle !== undefined ? { partnerStyle: config.partnerStyle } : {}),
+    ...preserveMemoryKeys(config),
   };
   await saveConfig(updated);
   return updated;
@@ -1994,6 +2020,7 @@ async function runSettings(
     `  [9] Hedged escalation (experimental): ${cfg.hedge === true ? 'on' : 'off'}`,
     `  [a] Auto-goal (quality-first): ${cfg.autoGoal === true ? 'on' : 'off'} — only takes effect under quality-first mode`,
     `  [b] Partner style: ${resolvePartnerStyle(cfg, effMode)}${cfg.partnerStyle === undefined ? ' (auto)' : ''}`,
+    `  [c] Memory: ${cfg.memory !== false ? 'on' : 'off'}`,
     '',
     '  [Enter] Back',
     '',
@@ -2028,8 +2055,47 @@ async function runSettings(
     mutableCtx.config = await toggleAutoGoal(mutableCtx.config, out);
   } else if (key === 'b') {
     mutableCtx.config = await runStyleSelect(mutableCtx.config, out, readLine, autoMode);
+  } else if (key === 'c') {
+    mutableCtx.config = await toggleMemory(mutableCtx.config, out);
   }
   // anything else → back
+}
+
+/**
+ * Toggle the USER MEMORY master switch (memory-architecture §9) and persist it.
+ *
+ * Default-on: memory is enabled unless `memory` is explicitly false. Toggling
+ * when on writes `memory:false` (the privacy kill-switch — no retrieval, no
+ * injection, no proposals); toggling when off removes the flag (restores
+ * default-on). The advanced memory keys are config-file-only and preserved.
+ */
+async function toggleMemory(config: AppConfig, out: OutputSink): Promise<AppConfig> {
+  const currentlyEnabled = config.memory !== false;
+  const enable = !currentlyEnabled;
+  const updated: AppConfig = {
+    onboarded: config.onboarded,
+    setAsDefault: config.setAsDefault,
+    ...(config.mode !== undefined ? { mode: config.mode } : {}),
+    ...(config.autoUpdate === false ? { autoUpdate: false } : {}),
+    ...(config.nativeSessions === true ? { nativeSessions: true } : {}),
+    ...(config.verbosity !== undefined ? { verbosity: config.verbosity } : {}),
+    ...(config.timeoutMs !== undefined ? { timeoutMs: config.timeoutMs } : {}),
+    ...(config.smartRoute === false ? { smartRoute: false } : {}),
+    ...(config.panel === true ? { panel: true } : {}),
+    ...(config.learnRouting === true ? { learnRouting: true } : {}),
+    ...(config.hedge === true ? { hedge: true } : {}),
+    ...(config.autoGoal === true ? { autoGoal: true } : {}),
+    ...(config.partnerStyle !== undefined ? { partnerStyle: config.partnerStyle } : {}),
+    ...preserveMemoryKeys(config),
+    // Persist only the explicit-OFF; absent means default-on.
+    ...(!enable ? { memory: false } : {}),
+  };
+  // preserveMemoryKeys carried the OLD memory flag; the trailing spread above is
+  // the authoritative new value (or its absence when re-enabling).
+  if (enable) delete (updated as { memory?: boolean }).memory;
+  await saveConfig(updated);
+  out.write(`Memory: ${enable ? 'on' : 'off'}\n`);
+  return updated;
 }
 
 /**
@@ -2060,6 +2126,7 @@ async function toggleSmartRoute(config: AppConfig, out: OutputSink): Promise<App
     ...(config.hedge === true ? { hedge: true } : {}),
     ...(config.autoGoal === true ? { autoGoal: true } : {}),
     ...(config.partnerStyle !== undefined ? { partnerStyle: config.partnerStyle } : {}),
+    ...preserveMemoryKeys(config),
   };
   await saveConfig(updated);
   out.write(`Smart routing: ${enable ? 'on' : 'off'}\n`);
@@ -2092,6 +2159,7 @@ async function toggleAutoUpdate(config: AppConfig, out: OutputSink): Promise<App
     ...(config.hedge === true ? { hedge: true } : {}),
     ...(config.autoGoal === true ? { autoGoal: true } : {}),
     ...(config.partnerStyle !== undefined ? { partnerStyle: config.partnerStyle } : {}),
+    ...preserveMemoryKeys(config),
   };
   await saveConfig(updated);
   out.write(`Update on launch: ${enable ? 'on' : 'off'}\n`);
@@ -2123,6 +2191,7 @@ async function toggleNativeSessions(config: AppConfig, out: OutputSink): Promise
     ...(config.hedge === true ? { hedge: true } : {}),
     ...(config.autoGoal === true ? { autoGoal: true } : {}),
     ...(config.partnerStyle !== undefined ? { partnerStyle: config.partnerStyle } : {}),
+    ...preserveMemoryKeys(config),
   };
   await saveConfig(updated);
   out.write(`Native sessions (experimental): ${enable ? 'on' : 'off'}\n`);
@@ -2153,6 +2222,7 @@ async function togglePanel(config: AppConfig, out: OutputSink): Promise<AppConfi
     ...(config.hedge === true ? { hedge: true } : {}),
     ...(config.autoGoal === true ? { autoGoal: true } : {}),
     ...(config.partnerStyle !== undefined ? { partnerStyle: config.partnerStyle } : {}),
+    ...preserveMemoryKeys(config),
   };
   await saveConfig(updated);
   out.write(`Panel (experimental): ${enable ? 'on' : 'off'}\n`);
@@ -2184,6 +2254,7 @@ async function toggleHedge(config: AppConfig, out: OutputSink): Promise<AppConfi
     ...(enable ? { hedge: true } : {}),
     ...(config.autoGoal === true ? { autoGoal: true } : {}),
     ...(config.partnerStyle !== undefined ? { partnerStyle: config.partnerStyle } : {}),
+    ...preserveMemoryKeys(config),
   };
   await saveConfig(updated);
   out.write(`Hedged escalation (experimental): ${enable ? 'on' : 'off'}\n`);
@@ -2213,6 +2284,7 @@ async function toggleLearnRouting(config: AppConfig, out: OutputSink): Promise<A
     ...(config.hedge === true ? { hedge: true } : {}),
     ...(config.autoGoal === true ? { autoGoal: true } : {}),
     ...(config.partnerStyle !== undefined ? { partnerStyle: config.partnerStyle } : {}),
+    ...preserveMemoryKeys(config),
   };
   await saveConfig(updated);
   out.write(`Learned routing (experimental): ${enable ? 'on' : 'off'}\n`);
@@ -3112,7 +3184,13 @@ async function runChatLoop(
       // This helper is inlined as a function so it can be called again after
       // inline re-login with the refreshed env (bug 5 fix: no stale auth state),
       // and re-called with fresh history each turn of a /goal run.
-      const buildDeps = (hist: readonly SessionEntry[]): OrchestrateDeps => {
+      const buildDeps = (
+        hist: readonly SessionEntry[],
+        // Pre-rendered, capped USER MEMORY block (Phase 4, memory §7), computed
+        // per-turn by resolveTurnMemory below. Threaded once so it rides
+        // sequential, hedge, AND panel prompts via assembleContextBlocks.
+        memoryContext?: string,
+      ): OrchestrateDeps => {
         // Build per-provider advertised model sets from the live env so route()
         // can prefer a model the CLI actually advertises. Only include installed
         // providers (exactOptionalPropertyTypes is ON).
@@ -3207,7 +3285,43 @@ async function runChatLoop(
           ...(mutableCtx.config.hedge === true
             ? { sleep: (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms)) }
             : {}),
+          // USER MEMORY block (Phase 4, §7) — present only when memory is on AND
+          // facts survived the inject-time gate + relevance selection.
+          ...(memoryContext !== undefined && memoryContext.length > 0 ? { memoryContext } : {}),
         };
+      };
+
+      // ---- USER MEMORY (Phase 4, §7) — per-turn retrieval/injection ----------
+      // Resolve the rendered MEMORY block for one turn: open the store (lazy
+      // decay sweep), gate prefs/corrections/project behind a real work request
+      // (identity+constraints always ride), select the relevant facts, markUsed
+      // the relevance-selected ids, and render. The project key is resolved once
+      // per chat session (it can't change mid-conversation). Fully fail-soft: any
+      // store error → '' (no memory), the turn proceeds. Skipped entirely when
+      // the kill-switch is set (config.memory===false). No model call.
+      const memoryStore =
+        mutableCtx.config.memory !== false
+          ? createFileUserMemoryStore({ clock: ctx.clock })
+          : undefined;
+      let memoryProjectKey: string | null | undefined;
+      let memorySwept = false;
+      const resolveTurnMemory = async (task: string): Promise<string> => {
+        if (memoryStore === undefined) return '';
+        if (memoryProjectKey === undefined) {
+          memoryProjectKey = await resolveProjectKey(ctx.cwd).catch(() => null);
+        }
+        const block = await resolveMemoryContext({
+          store: memoryStore,
+          task,
+          projectKey: memoryProjectKey,
+          partnerStyle: resolvePartnerStyle(mutableCtx.config, effectiveMode),
+          nowIso: ctx.clock.isoNow(),
+          config: mutableCtx.config,
+          // Sweep once per chat session (the "store open"), not every turn.
+          sweep: !memorySwept,
+        }).catch(() => '');
+        memorySwept = true;
+        return block;
       };
 
       const runStructuredQuestionFlow = async (
@@ -3230,7 +3344,10 @@ async function runChatLoop(
           // Reload history (the question turn was persisted by orchestrate) and
           // rebuild deps so the answer turn replays the full thread.
           const answerHistory = await ctx.store.load(convId);
-          const answerDeps: OrchestrateDeps = buildDeps(answerHistory);
+          const answerDeps: OrchestrateDeps = buildDeps(
+            answerHistory,
+            await resolveTurnMemory(answerLine),
+          );
 
           const answerAc = new AbortController();
           currentAc = answerAc;
@@ -3297,7 +3414,10 @@ async function runChatLoop(
               out.color,
             ),
           );
-          const goalDeps = buildDeps(await ctx.store.load(convId));
+          const goalDeps = buildDeps(
+            await ctx.store.load(convId),
+            await resolveTurnMemory(goalText),
+          );
           const contractedGoalTask = buildGoalTask(goalText, i, goalContract);
           const replayGoalTask = buildGoalTask(goalText, i);
           const goalSession: SessionWriter = {
@@ -3391,7 +3511,7 @@ async function runChatLoop(
         return 'continue';
       }
 
-      const deps = buildDeps(priorHistory);
+      const deps = buildDeps(priorHistory, await resolveTurnMemory(line));
 
       if (mutableCtx.config.autoGoal === true && effectiveMode === 'quality-first') {
         const autoClassification = classify(line);
@@ -3451,7 +3571,7 @@ async function runChatLoop(
           // Bug 5 fix: re-detect with the freshly-authenticated env so the retry
           // deps reflect the now-signed-in provider (not the stale pre-login state).
           mutableCtx.env = await detectEnvironmentFn();
-          const retryDeps = buildDeps(await ctx.store.load(convId));
+          const retryDeps = buildDeps(await ctx.store.load(convId), await resolveTurnMemory(line));
           // Retry the same task once.
           const retryAc = new AbortController();
           currentAc = retryAc;

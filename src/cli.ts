@@ -23,10 +23,13 @@ import type { MenuContext } from './interface/menu.js';
 import { buildProviders } from './providers/registry.js';
 import { detectEnvironment } from './providers/detect.js';
 import { createFileConversationStore } from './infra/conversations.js';
-// Memory 5.5 Phase 3: the store factory is part of the package surface (wired into
-// deps assembly in Phase 4). Re-exported here so it participates in the import graph.
-export { createFileUserMemoryStore } from './infra/user-memory-store.js';
-import { loadConfig } from './infra/config.js';
+// Memory 5.5: the file-backed store + project-key resolver, now wired into
+// per-turn deps assembly (Phase 4). Re-exported so it stays part of the package
+// surface.
+import { createFileUserMemoryStore, resolveProjectKey } from './infra/user-memory-store.js';
+export { createFileUserMemoryStore };
+import { resolveMemoryContext } from './core/memory-injection.js';
+import { loadConfig, resolvePartnerStyle } from './infra/config.js';
 import { checkForUpdate } from './infra/update-check.js';
 import { refreshClaudeOauthIfNeeded } from './infra/claude-oauth-refresh.js';
 import { syncConversationMirror } from './infra/session-mirror.js';
@@ -104,6 +107,10 @@ function buildDeps(
   // runs unchanged. setTimeout-based real impl (the pure core never calls it
   // directly). See core/hedge.ts.
   sleep?: (ms: number) => Promise<void>,
+  // Pre-rendered, capped USER MEMORY block (Phase 4, memory §7). Computed by the
+  // caller via resolveMemoryContext and threaded once so it rides sequential,
+  // hedge, AND panel prompts through assembleContextBlocks. Absent/'' → omit.
+  memoryContext?: string,
 ): OrchestrateDeps {
   const providers = buildProviders(cwd, env);
 
@@ -150,6 +157,7 @@ function buildDeps(
       ? { learnedProviderOrder }
       : {}),
     ...(sleep !== undefined ? { sleep } : {}),
+    ...(memoryContext !== undefined && memoryContext.length > 0 ? { memoryContext } : {}),
   };
 }
 
@@ -297,6 +305,21 @@ async function main(): Promise<void> {
       }
       if (Object.keys(learned).length > 0) learnedProviderOrder = learned;
     }
+    const task = taskParts.join(' ');
+    // ---- USER MEMORY (Phase 4, §7) — read-only inject for the one-shot path.
+    // Resolve the project key, run the lazy decay sweep on open, select+render
+    // the relevant facts, and markUsed the relevance-selected ids. Fully
+    // fail-soft (any store error → no memory injected). The non-TTY one-shot
+    // path never prompts — it injects read-only. Skipped entirely when the
+    // memory kill-switch is set (config.memory===false).
+    const memoryContext = await resolveMemoryContext({
+      store: createFileUserMemoryStore({ clock: systemClock }),
+      task,
+      projectKey: await resolveProjectKey(cwd),
+      partnerStyle: resolvePartnerStyle(config, resolvedMode),
+      nowIso: systemClock.isoNow(),
+      config,
+    }).catch(() => '');
     const deps = buildDeps(
       cwd,
       env,
@@ -304,8 +327,9 @@ async function main(): Promise<void> {
       resolveTimeoutMs(config),
       learnedProviderOrder,
       config.hedge === true ? (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms)) : undefined,
+      memoryContext,
     );
-    const result = await runTask(taskParts.join(' '), deps, out, new AbortController().signal);
+    const result = await runTask(task, deps, out, new AbortController().signal);
     // Notify-only update nudge for the scripted / one-shot path. The interactive
     // menu auto-updates, but `run` must NEVER swap the binary mid-task. Written
     // to stderr and TTY-guarded so it can't corrupt piped stdout or spam CI logs.

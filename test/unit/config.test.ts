@@ -122,6 +122,40 @@ describe('saveConfig + loadConfig — round-trip', () => {
     assert.equal(loaded.partnerStyle, 'collaborative');
   });
 
+  it('round-trips the memory kill-switch (memory:false)', async () => {
+    const cfg: AppConfig = { onboarded: true, setAsDefault: false, memory: false };
+    await saveConfig(cfg, homeDir);
+    const loaded = await loadConfig(homeDir);
+    assert.equal(loaded.memory, false);
+  });
+
+  it('round-trips all advanced memory keys (§9)', async () => {
+    const cfg: AppConfig = {
+      onboarded: true,
+      setAsDefault: false,
+      memory: true,
+      memoryDefaultScope: 'global',
+      memoryApproval: 'auto-save-explicit',
+      memoryDecayDays: 45,
+      memoryMaxFactsPerScope: 120,
+    };
+    await saveConfig(cfg, homeDir);
+    const loaded = await loadConfig(homeDir);
+    assert.equal(loaded.memory, true);
+    assert.equal(loaded.memoryDefaultScope, 'global');
+    assert.equal(loaded.memoryApproval, 'auto-save-explicit');
+    assert.equal(loaded.memoryDecayDays, 45);
+    assert.equal(loaded.memoryMaxFactsPerScope, 120);
+  });
+
+  it('memory defaults to on when absent (no key written)', async () => {
+    const cfg: AppConfig = { onboarded: true, setAsDefault: false };
+    await saveConfig(cfg, homeDir);
+    const loaded = await loadConfig(homeDir);
+    // Absent → memory on; the kill-switch is only an explicit false.
+    assert.notEqual(loaded.memory, false);
+  });
+
   it('preserves autoGoal across a Settings-style config rebuild', () => {
     const config: AppConfig = {
       onboarded: true,
