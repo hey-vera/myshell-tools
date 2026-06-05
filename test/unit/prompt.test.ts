@@ -179,6 +179,73 @@ describe('buildPrompt — historyContext', () => {
 });
 
 // ---------------------------------------------------------------------------
+// MF1 seam — buildPrompt composes context blocks after system, before history
+// ---------------------------------------------------------------------------
+
+describe('buildPrompt — context blocks (MF1 seam)', () => {
+  it('injects a partner-posture nudge between system and Task when partnerStyle is set', () => {
+    const result = buildPrompt('ic', 'do something', undefined, undefined, {
+      partnerStyle: 'direct',
+    });
+    assert.ok(result.includes('PARTNER POSTURE'), 'should carry the partner nudge');
+    const systemIdx = result.indexOf('individual-contributor');
+    const nudgeIdx = result.indexOf('PARTNER POSTURE');
+    const taskIdx = result.indexOf('Task:');
+    assert.ok(systemIdx < nudgeIdx, 'nudge after system');
+    assert.ok(nudgeIdx < taskIdx, 'nudge before task');
+  });
+
+  it('places context blocks AFTER system and BEFORE CONVERSATION SO FAR', () => {
+    const result = buildPrompt('ic', 'do something', undefined, 'User: hi', {
+      memoryContext: 'USER PREFERENCES AND MEMORY:\n- prefers concise answers',
+    });
+    const systemIdx = result.indexOf('individual-contributor');
+    const memIdx = result.indexOf('USER PREFERENCES AND MEMORY');
+    const historyIdx = result.indexOf('CONVERSATION SO FAR');
+    assert.ok(systemIdx < memIdx, 'memory after system');
+    assert.ok(memIdx < historyIdx, 'memory before history');
+  });
+
+  it('is byte-identical to the no-opts prompt when opts carry no context (balanced nudge is empty)', () => {
+    const base = buildPrompt('ic', 'do something');
+    const balanced = buildPrompt('ic', 'do something', undefined, undefined, {
+      partnerStyle: 'balanced',
+    });
+    assert.equal(balanced, base);
+    assert.ok(!balanced.includes('PARTNER POSTURE'));
+  });
+
+  it('renders all blocks in canonical order MEMORY → INTENT → ENGAGEMENT → nudge', () => {
+    const result = buildPrompt('ic', 'do something', undefined, undefined, {
+      memoryContext: 'MEMBLOCK',
+      intentFrame: 'INTENTBLOCK',
+      engagementPlan: 'ENGBLOCK',
+      partnerStyle: 'collaborative',
+    });
+    assert.ok(result.indexOf('MEMBLOCK') < result.indexOf('INTENTBLOCK'));
+    assert.ok(result.indexOf('INTENTBLOCK') < result.indexOf('ENGBLOCK'));
+    assert.ok(result.indexOf('ENGBLOCK') < result.indexOf('PARTNER POSTURE'));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ASKING THE USER — genuine-fork rewrite
+// ---------------------------------------------------------------------------
+
+describe('buildPrompt — ask_user uses the genuine-fork framing', () => {
+  for (const tier of ['worker', 'ic', 'manager'] as const) {
+    it(`${tier}: instructs ask_user at genuine decision forks (not only when blocked)`, () => {
+      const result = buildPrompt(tier, 'task');
+      assert.ok(result.includes('genuine decision forks'), 'should use genuine-fork phrasing');
+      assert.ok(
+        !result.includes('Only when you genuinely cannot proceed'),
+        'should drop the timid "only when blocked" framing',
+      );
+    });
+  }
+});
+
+// ---------------------------------------------------------------------------
 // Envelope instruction integrity (must remain exact + last)
 // ---------------------------------------------------------------------------
 

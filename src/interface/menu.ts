@@ -28,7 +28,8 @@ import { formatAnswers, isKeepGoingOffer } from '../core/questions.js';
 import { decideAutonomyOffer } from '../core/autonomy.js';
 import { classify } from '../core/classify.js';
 import type { AppConfig } from '../infra/config.js';
-import { saveConfig } from '../infra/config.js';
+import { saveConfig, resolvePartnerStyle } from '../infra/config.js';
+import type { PartnerStyle } from '../core/prompt-context.js';
 import type { ConversationMeta, ConversationStore } from '../infra/conversation-store.js';
 import { readLedger } from '../infra/ledger.js';
 import { summarizeSpend, formatTokens } from '../infra/insights.js';
@@ -1805,6 +1806,7 @@ async function runModeSelect(
     ...(config.learnRouting === true ? { learnRouting: true } : {}),
     ...(config.hedge === true ? { hedge: true } : {}),
     ...(config.autoGoal === true ? { autoGoal: true } : {}),
+    ...(config.partnerStyle !== undefined ? { partnerStyle: config.partnerStyle } : {}),
   };
 
   await saveConfig(updated);
@@ -1860,10 +1862,77 @@ async function runVerbositySelect(
     ...(config.learnRouting === true ? { learnRouting: true } : {}),
     ...(config.hedge === true ? { hedge: true } : {}),
     ...(config.autoGoal === true ? { autoGoal: true } : {}),
+    ...(config.partnerStyle !== undefined ? { partnerStyle: config.partnerStyle } : {}),
   };
 
   await saveConfig(updated);
   out.write(`Output detail set to: ${newVerbosity ?? 'normal'}\n`);
+  return updated;
+}
+
+/**
+ * Choose the partner posture (soft bias) and persist it.
+ *
+ *   direct        → lean toward executing on a reasonable default
+ *   balanced      → reflect briefly on substantial work, ask at genuine forks
+ *   collaborative → align on the approach before heavy execution
+ *
+ * It is a SOFT BIAS, not a hard mode (APE §2): it nudges the engagement
+ * thresholds and never forces an action the turn's signals contradict. Absent →
+ * resolved from the effective mode (`resolvePartnerStyle`). "Auto" clears the
+ * explicit override so the style follows the mode again. Preserves all other
+ * config fields via conditional spread.
+ */
+async function runStyleSelect(
+  config: AppConfig,
+  out: OutputSink,
+  readLine: () => Promise<string | null>,
+  autoMode: Mode,
+): Promise<AppConfig> {
+  const effMode = config.mode ?? autoMode;
+  const resolved = resolvePartnerStyle(config, effMode);
+  const isAuto = config.partnerStyle === undefined;
+  const settingsLines = [
+    '',
+    'Partner style (how I engage — a soft bias, not a hard mode):',
+    `  [1] direct${resolved === 'direct' ? ' (active)' : ''} — prefer a sensible default and proceed`,
+    `  [2] balanced${resolved === 'balanced' ? ' (active)' : ''} — reflect briefly, ask at genuine forks`,
+    `  [3] collaborative${resolved === 'collaborative' ? ' (active)' : ''} — align on the approach first`,
+    `  [4] auto${isAuto ? ' (active)' : ''} — follow the mode (${resolved})`,
+    '',
+  ];
+  out.write('\n' + box('Settings', settingsLines) + '\n\n');
+
+  out.write('[1/2/3/4 to change, Enter to keep] ');
+  const key = await readMenuKey(out, readLine);
+
+  // EOF / Enter → keep current.
+  let newStyle: PartnerStyle | undefined = config.partnerStyle;
+  if (key === '1') newStyle = 'direct';
+  else if (key === '2') newStyle = 'balanced';
+  else if (key === '3') newStyle = 'collaborative';
+  else if (key === '4') newStyle = undefined; // clear explicit override → auto
+
+  const updated: AppConfig = {
+    onboarded: config.onboarded,
+    setAsDefault: config.setAsDefault,
+    ...(config.mode !== undefined ? { mode: config.mode } : {}),
+    ...(config.autoUpdate === false ? { autoUpdate: false } : {}),
+    ...(config.nativeSessions === true ? { nativeSessions: true } : {}),
+    ...(config.verbosity !== undefined ? { verbosity: config.verbosity } : {}),
+    ...(config.timeoutMs !== undefined ? { timeoutMs: config.timeoutMs } : {}),
+    ...(config.smartRoute === false ? { smartRoute: false } : {}),
+    ...(config.panel === true ? { panel: true } : {}),
+    ...(config.learnRouting === true ? { learnRouting: true } : {}),
+    ...(config.hedge === true ? { hedge: true } : {}),
+    ...(config.autoGoal === true ? { autoGoal: true } : {}),
+    ...(newStyle !== undefined ? { partnerStyle: newStyle } : {}),
+  };
+
+  await saveConfig(updated);
+  out.write(
+    `Partner style set to: ${newStyle ?? `auto (${resolvePartnerStyle(updated, effMode)})`}\n`,
+  );
   return updated;
 }
 
@@ -1897,6 +1966,7 @@ async function toggleDefaultShell(
     ...(config.learnRouting === true ? { learnRouting: true } : {}),
     ...(config.hedge === true ? { hedge: true } : {}),
     ...(config.autoGoal === true ? { autoGoal: true } : {}),
+    ...(config.partnerStyle !== undefined ? { partnerStyle: config.partnerStyle } : {}),
   };
   await saveConfig(updated);
   return updated;
@@ -1923,6 +1993,7 @@ async function runSettings(
     `  [8] Learned routing (experimental): ${cfg.learnRouting === true ? 'on' : 'off'}`,
     `  [9] Hedged escalation (experimental): ${cfg.hedge === true ? 'on' : 'off'}`,
     `  [a] Auto-goal (quality-first): ${cfg.autoGoal === true ? 'on' : 'off'} — only takes effect under quality-first mode`,
+    `  [b] Partner style: ${resolvePartnerStyle(cfg, effMode)}${cfg.partnerStyle === undefined ? ' (auto)' : ''}`,
     '',
     '  [Enter] Back',
     '',
@@ -1955,6 +2026,8 @@ async function runSettings(
     mutableCtx.config = await toggleHedge(mutableCtx.config, out);
   } else if (key === 'a') {
     mutableCtx.config = await toggleAutoGoal(mutableCtx.config, out);
+  } else if (key === 'b') {
+    mutableCtx.config = await runStyleSelect(mutableCtx.config, out, readLine, autoMode);
   }
   // anything else → back
 }
@@ -1986,6 +2059,7 @@ async function toggleSmartRoute(config: AppConfig, out: OutputSink): Promise<App
     ...(config.learnRouting === true ? { learnRouting: true } : {}),
     ...(config.hedge === true ? { hedge: true } : {}),
     ...(config.autoGoal === true ? { autoGoal: true } : {}),
+    ...(config.partnerStyle !== undefined ? { partnerStyle: config.partnerStyle } : {}),
   };
   await saveConfig(updated);
   out.write(`Smart routing: ${enable ? 'on' : 'off'}\n`);
@@ -2017,6 +2091,7 @@ async function toggleAutoUpdate(config: AppConfig, out: OutputSink): Promise<App
     ...(config.learnRouting === true ? { learnRouting: true } : {}),
     ...(config.hedge === true ? { hedge: true } : {}),
     ...(config.autoGoal === true ? { autoGoal: true } : {}),
+    ...(config.partnerStyle !== undefined ? { partnerStyle: config.partnerStyle } : {}),
   };
   await saveConfig(updated);
   out.write(`Update on launch: ${enable ? 'on' : 'off'}\n`);
@@ -2047,6 +2122,7 @@ async function toggleNativeSessions(config: AppConfig, out: OutputSink): Promise
     ...(config.learnRouting === true ? { learnRouting: true } : {}),
     ...(config.hedge === true ? { hedge: true } : {}),
     ...(config.autoGoal === true ? { autoGoal: true } : {}),
+    ...(config.partnerStyle !== undefined ? { partnerStyle: config.partnerStyle } : {}),
   };
   await saveConfig(updated);
   out.write(`Native sessions (experimental): ${enable ? 'on' : 'off'}\n`);
@@ -2076,6 +2152,7 @@ async function togglePanel(config: AppConfig, out: OutputSink): Promise<AppConfi
     ...(config.learnRouting === true ? { learnRouting: true } : {}),
     ...(config.hedge === true ? { hedge: true } : {}),
     ...(config.autoGoal === true ? { autoGoal: true } : {}),
+    ...(config.partnerStyle !== undefined ? { partnerStyle: config.partnerStyle } : {}),
   };
   await saveConfig(updated);
   out.write(`Panel (experimental): ${enable ? 'on' : 'off'}\n`);
@@ -2106,6 +2183,7 @@ async function toggleHedge(config: AppConfig, out: OutputSink): Promise<AppConfi
     ...(config.learnRouting === true ? { learnRouting: true } : {}),
     ...(enable ? { hedge: true } : {}),
     ...(config.autoGoal === true ? { autoGoal: true } : {}),
+    ...(config.partnerStyle !== undefined ? { partnerStyle: config.partnerStyle } : {}),
   };
   await saveConfig(updated);
   out.write(`Hedged escalation (experimental): ${enable ? 'on' : 'off'}\n`);
@@ -2134,6 +2212,7 @@ async function toggleLearnRouting(config: AppConfig, out: OutputSink): Promise<A
     ...(enable ? { learnRouting: true } : {}),
     ...(config.hedge === true ? { hedge: true } : {}),
     ...(config.autoGoal === true ? { autoGoal: true } : {}),
+    ...(config.partnerStyle !== undefined ? { partnerStyle: config.partnerStyle } : {}),
   };
   await saveConfig(updated);
   out.write(`Learned routing (experimental): ${enable ? 'on' : 'off'}\n`);
@@ -2971,8 +3050,21 @@ async function runChatLoop(
         dim('  Just type to chat — I pick the right model for each message.\n', out.color) +
         '  /goal <text>  — work autonomously until the goal is done (Ctrl+C to stop)\n' +
         '  /mode         — quality vs speed (Efficient / Balanced / Max)\n' +
+        '  /style        — partner posture (Direct / Balanced / Collaborative)\n' +
         '  /back, /exit  — return to the main menu\n' +
         '  /help         — show this help\n',
+      );
+      return 'continue';
+    }
+
+    // Change the partner posture (soft bias) from inside the chat — same knob as
+    // Settings → Partner style, one source of truth.
+    if (line === '/style') {
+      mutableCtx.config = await runStyleSelect(
+        mutableCtx.config,
+        out,
+        readLine,
+        resolveAutoMode(mutableCtx.env),
       );
       return 'continue';
     }
@@ -3104,6 +3196,10 @@ async function runChatLoop(
           ...(nativeSession.length > 0 ? { nativeSession } : {}),
           ...(routeClassifier !== undefined ? { routeClassifier } : {}),
           ...(Object.keys(learnedProviderOrder).length > 0 ? { learnedProviderOrder } : {}),
+          // Partner posture (soft bias, APE §2). Explicit config wins; else the
+          // default is derived from the effective mode. Threaded once per turn so
+          // it rides sequential, hedge, AND panel prompts via assembleContextBlocks.
+          partnerStyle: resolvePartnerStyle(mutableCtx.config, effectiveMode),
           // Latency-Hedged Escalation needs an injected delay port (so its timing
           // stays out of the pure core). Provide a setTimeout-based impl only when
           // hedging is enabled — when off, the dep is absent and planHedge returns

@@ -523,7 +523,11 @@ export async function* orchestrate(
       task,
       managerNotes,
       useNative ? undefined : historyContext,
-      deps.goalTurn === true ? { goalTurn: true } : undefined,
+      {
+        ...(deps.goalTurn === true ? { goalTurn: true } : {}),
+        ...(deps.partnerStyle !== undefined ? { partnerStyle: deps.partnerStyle } : {}),
+        ...(deps.memoryContext !== undefined ? { memoryContext: deps.memoryContext } : {}),
+      },
     );
 
     // --- Yield tier-start ---

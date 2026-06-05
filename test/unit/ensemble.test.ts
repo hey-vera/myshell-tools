@@ -303,6 +303,86 @@ Now write the single final answer for the user.`;
 });
 
 // ---------------------------------------------------------------------------
+// MF1 — the binding regression: panel turns are no longer context-blind.
+//
+// Before Phase 2, the panel builders threaded NO memory/intent/engagement/
+// partner context, so the highest-stakes multi-model turns silently dropped it.
+// These assert that BOTH the candidate AND the synthesizer prompt now carry the
+// rendered context blocks, in canonical order, via assembleContextBlocks.
+// ---------------------------------------------------------------------------
+
+describe('MF1 — panel prompts carry context blocks (no longer context-blind)', () => {
+  const MEM = 'USER PREFERENCES AND MEMORY:\n- prefers concise answers';
+  const INTENT = 'INTENT (your current understanding):\nShip the cache';
+  const ENG = 'ENGAGEMENT:\nFirst inspect the cache layer. Then reflect the goal.';
+
+  it('a panel CANDIDATE prompt contains the MEMORY, INTENT, ENGAGEMENT, and partner-nudge blocks', () => {
+    const p = buildPanelCandidatePrompt('ic', 'design a cache', undefined, {
+      memoryContext: MEM,
+      intentFrame: INTENT,
+      engagementPlan: ENG,
+      partnerStyle: 'collaborative',
+    });
+    assert.match(p, /USER PREFERENCES AND MEMORY/);
+    assert.match(p, /INTENT \(your current understanding\)/);
+    assert.match(p, /ENGAGEMENT:/);
+    assert.match(p, /PARTNER POSTURE/);
+    // Canonical order MEMORY → INTENT → ENGAGEMENT → nudge, and blocks sit
+    // BEFORE the task.
+    assert.ok(p.indexOf(MEM) < p.indexOf(INTENT));
+    assert.ok(p.indexOf(INTENT) < p.indexOf(ENG));
+    assert.ok(p.indexOf(ENG) < p.indexOf('PARTNER POSTURE'));
+    assert.ok(p.indexOf('PARTNER POSTURE') < p.indexOf('Task:'));
+  });
+
+  it('a panel SYNTHESIS prompt contains the same context blocks, before the panel answers', () => {
+    const p = buildPanelSynthesisPrompt(
+      'design a cache',
+      [
+        { provider: 'claude', output: 'use an LRU' },
+        { provider: 'codex', output: 'use a TTL map' },
+      ],
+      undefined,
+      {
+        memoryContext: MEM,
+        intentFrame: INTENT,
+        engagementPlan: ENG,
+        partnerStyle: 'direct',
+      },
+    );
+    assert.match(p, /USER PREFERENCES AND MEMORY/);
+    assert.match(p, /INTENT \(your current understanding\)/);
+    assert.match(p, /ENGAGEMENT:/);
+    assert.match(p, /PARTNER POSTURE/);
+    assert.ok(p.indexOf(MEM) < p.indexOf(INTENT));
+    assert.ok(p.indexOf(INTENT) < p.indexOf(ENG));
+    // Context rides AFTER the synthesizer preamble and BEFORE the panel answers.
+    assert.ok(p.indexOf('PARTNER POSTURE') < p.indexOf('Independent panel answers:'));
+  });
+
+  it('panel CANDIDATE stays byte-identical when no context is supplied', () => {
+    const withUndefined = buildPanelCandidatePrompt('ic', 'task', undefined, undefined);
+    const without = buildPanelCandidatePrompt('ic', 'task');
+    assert.equal(withUndefined, without);
+    assert.doesNotMatch(without, /PARTNER POSTURE/);
+  });
+
+  it('a partner nudge alone reaches both panel builders (soft-bias plumbing)', () => {
+    const cand = buildPanelCandidatePrompt('ic', 'task', undefined, {
+      partnerStyle: 'direct',
+    });
+    const synth = buildPanelSynthesisPrompt(
+      'task',
+      [{ provider: 'claude', output: 'a' }],
+      undefined,
+      { partnerStyle: 'direct' },
+    );
+    assert.match(cand, /PARTNER POSTURE/);
+    assert.match(synth, /PARTNER POSTURE/);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Fakes (mirrors orchestrate.test.ts)
 // ---------------------------------------------------------------------------
 

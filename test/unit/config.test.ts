@@ -10,8 +10,26 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 
-import { loadConfig, saveConfig } from '../../src/infra/config.ts';
+import { loadConfig, saveConfig, resolvePartnerStyle } from '../../src/infra/config.ts';
 import type { AppConfig } from '../../src/infra/config.ts';
+
+// ---------------------------------------------------------------------------
+// resolvePartnerStyle — explicit wins, else derived from effective mode
+// ---------------------------------------------------------------------------
+
+describe('resolvePartnerStyle', () => {
+  it('returns the explicit config.partnerStyle regardless of mode', () => {
+    assert.equal(resolvePartnerStyle({ partnerStyle: 'collaborative' }, 'cost-saver'), 'collaborative');
+    assert.equal(resolvePartnerStyle({ partnerStyle: 'direct' }, 'quality-first'), 'direct');
+    assert.equal(resolvePartnerStyle({ partnerStyle: 'balanced' }, 'balanced'), 'balanced');
+  });
+
+  it('derives the default from the effective mode when unset', () => {
+    assert.equal(resolvePartnerStyle({}, 'cost-saver'), 'direct');
+    assert.equal(resolvePartnerStyle({}, 'balanced'), 'balanced');
+    assert.equal(resolvePartnerStyle({}, 'quality-first'), 'collaborative');
+  });
+});
 
 // ---------------------------------------------------------------------------
 // loadConfig — defaults
@@ -95,6 +113,13 @@ describe('saveConfig + loadConfig — round-trip', () => {
     await saveConfig(cfg, homeDir);
     const loaded = await loadConfig(homeDir);
     assert.equal(loaded.autoGoal, true);
+  });
+
+  it('saves and reloads partnerStyle', async () => {
+    const cfg: AppConfig = { onboarded: true, setAsDefault: false, partnerStyle: 'collaborative' };
+    await saveConfig(cfg, homeDir);
+    const loaded = await loadConfig(homeDir);
+    assert.equal(loaded.partnerStyle, 'collaborative');
   });
 
   it('preserves autoGoal across a Settings-style config rebuild', () => {

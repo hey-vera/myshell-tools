@@ -43,6 +43,7 @@ import { assess } from './assess.js';
 import { authorizeTier } from './flagship.js';
 import type { WorkContract } from './work-contract.js';
 import { capContract, renderContractForPrompt, shouldMaterializeContract, isCleanObjectiveTask } from './work-contract.js';
+import { assembleContextBlocks, type ContextBlockOptions } from './prompt-context.js';
 
 // ---------------------------------------------------------------------------
 // Plan
@@ -143,10 +144,25 @@ export function planPanel(opts: {
  * @param task           - The raw user task.
  * @param historyContext - Optional compacted prior-conversation summary.
  */
+/**
+ * Derive the per-turn `ContextBlockOptions` from the shared `OrchestrateDeps`,
+ * exactly as the sequential/hedge executors do — so the panel candidate and
+ * synthesizer prompts carry the SAME memory/intent/engagement/partner context.
+ * Returns `undefined` when no context applies (the prompt is then byte-for-byte
+ * identical to the pre-seam panel prompt). PURE.
+ */
+function contextFromDeps(deps: OrchestrateDeps): ContextBlockOptions | undefined {
+  const ctx: { -readonly [K in keyof ContextBlockOptions]?: ContextBlockOptions[K] } = {};
+  if (deps.partnerStyle !== undefined) ctx.partnerStyle = deps.partnerStyle;
+  if (deps.memoryContext !== undefined) ctx.memoryContext = deps.memoryContext;
+  return Object.keys(ctx).length > 0 ? ctx : undefined;
+}
+
 export function buildPanelCandidatePrompt(
   tier: Tier,
   task: string,
   historyContext?: string,
+  context?: ContextBlockOptions,
 ): string {
   let prompt = `\
 You are ONE independent member of an expert panel answering the following task in
@@ -163,6 +179,16 @@ code fences):
 Be honest in the envelope: confidence is your real self-assessed probability of
 correctness, and "what_would_make_this_wrong" should name a genuine failure mode,
 not a throwaway.`;
+
+  // MF1: the panel candidate is no longer context-blind — compose the same
+  // ordered context blocks every other executor gets, after the panel-member
+  // preamble and before CONVERSATION SO FAR.
+  if (context !== undefined) {
+    const contextBlocks = assembleContextBlocks(context);
+    if (contextBlocks.length > 0) {
+      prompt += `\n\n${contextBlocks}`;
+    }
+  }
 
   if (historyContext !== undefined && historyContext.trim().length > 0) {
     prompt += `\n\nCONVERSATION SO FAR (for context; do not repeat it back):\n${historyContext.trim()}`;
@@ -187,6 +213,7 @@ export function buildPanelSynthesisPrompt(
   task: string,
   candidates: ReadonlyArray<{ provider: ProviderId; output: string }>,
   contract?: WorkContract,
+  context?: ContextBlockOptions,
 ): string {
   const blocks = candidates
     .map(
@@ -198,6 +225,14 @@ export function buildPanelSynthesisPrompt(
     contract !== undefined
       ? `\n\nCONTRACT TO ADJUDICATE AGAINST:\n${renderContractForPrompt(contract)}\n\nUse this contract as the criteria when reconciling the panel answers. Prefer candidates that serve the objective and vision directly, and call out material drift from that objective.`
       : '';
+
+  // MF1: the synthesizer is no longer context-blind either — the same ordered
+  // context blocks ride here too, after the synthesizer preamble and before the
+  // panelist answers.
+  const contextBlocks =
+    context !== undefined ? assembleContextBlocks(context) : '';
+  const contextSection =
+    contextBlocks.length > 0 ? `\n\n${contextBlocks}` : '';
 
   return `\
 You are a senior synthesizer adjudicating an expert panel. ${candidates.length}
@@ -217,7 +252,7 @@ How to synthesize:
   into one coherent, correct answer in your own voice.
 - Write the final answer directly to the user. Do not mention "panelists" or this
   instruction unless a real disagreement is worth flagging.
-${contractSection}
+${contextSection}${contractSection}
 Original task:
 ${task}
 
@@ -345,7 +380,12 @@ async function runCandidate(
 
   const req: import('../providers/port.js').ProviderRequest = {
     model: decision.model,
-    prompt: buildPanelCandidatePrompt(decision.tier, task, historyContext),
+    prompt: buildPanelCandidatePrompt(
+      decision.tier,
+      task,
+      historyContext,
+      contextFromDeps(deps),
+    ),
     cwd: deps.cwd,
     sandbox: deps.sandbox,
     timeoutMs: deps.timeoutMs,
@@ -654,9 +694,10 @@ export async function* runPanel(
         ? capContract({ version: 1, objective: task })
         : undefined;
   const synthCandidates = succeeded.map((o) => ({ provider: o.provider, output: o.finalText }));
+  const synthContext = contextFromDeps(deps);
   const synthPrompt = synthContractDecision.criteria && synthContract !== undefined
-    ? buildPanelSynthesisPrompt(task, synthCandidates, synthContract)
-    : buildPanelSynthesisPrompt(task, synthCandidates);
+    ? buildPanelSynthesisPrompt(task, synthCandidates, synthContract, synthContext)
+    : buildPanelSynthesisPrompt(task, synthCandidates, undefined, synthContext);
 
   attempts++;
   yield {

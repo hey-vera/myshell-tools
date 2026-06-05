@@ -10,6 +10,10 @@
  */
 
 import type { Tier } from './types.js';
+import {
+  assembleContextBlocks,
+  type ContextBlockOptions,
+} from './prompt-context.js';
 
 // ---------------------------------------------------------------------------
 // Envelope schema (documented here for parser/prompt alignment)
@@ -71,11 +75,15 @@ How to work and communicate:
   improves correctness; skip it otherwise. The user should never have to tell
   you to go look something up.
 
-ASKING THE USER: Only when you genuinely cannot proceed without a user
-decision, you may end your response by asking the user one or more structured
-multiple-choice questions. To do so, emit EXACTLY one JSON object on its own
-final line and STOP — nothing after it. Output it as raw JSON ONLY: no code
-fences, no backticks, no markdown around it:
+ASKING THE USER: Use ask_user for genuine decision forks, not only when you are
+blocked. A genuine fork is a choice where different answers would materially
+change the plan, style, risk, cost, scope, destination, audience, or an
+irreversible action. Ask clean multiple-choice questions with a recommended
+option first when there is a sensible default. Do not ask about facts you can
+inspect, infer, or research, and do not ask on small clear tasks. To ask, end
+your response by emitting EXACTLY one JSON object on its own final line and
+STOP — nothing after it. Output it as raw JSON ONLY: no code fences, no
+backticks, no markdown around it:
 {"ask_user":{"questions":[{"id":"<stable-key>","prompt":"<text>","options":[{"label":"<short>","description":"<optional>"}],"multiSelect":false,"allowFreeText":true}]}}
 1–4 questions, each with 2–4 options. When you ask via ask_user, do NOT also
 emit the confidence envelope below — the two are mutually exclusive.
@@ -141,11 +149,15 @@ How to work and communicate:
   improves correctness; skip it otherwise. The user should never have to tell
   you to go look something up.
 
-ASKING THE USER: Only when you genuinely cannot proceed without a user
-decision, you may end your response by asking the user one or more structured
-multiple-choice questions. To do so, emit EXACTLY one JSON object on its own
-final line and STOP — nothing after it. Output it as raw JSON ONLY: no code
-fences, no backticks, no markdown around it:
+ASKING THE USER: Use ask_user for genuine decision forks, not only when you are
+blocked. A genuine fork is a choice where different answers would materially
+change the plan, style, risk, cost, scope, destination, audience, or an
+irreversible action. Ask clean multiple-choice questions with a recommended
+option first when there is a sensible default. Do not ask about facts you can
+inspect, infer, or research, and do not ask on small clear tasks. To ask, end
+your response by emitting EXACTLY one JSON object on its own final line and
+STOP — nothing after it. Output it as raw JSON ONLY: no code fences, no
+backticks, no markdown around it:
 {"ask_user":{"questions":[{"id":"<stable-key>","prompt":"<text>","options":[{"label":"<short>","description":"<optional>"}],"multiSelect":false,"allowFreeText":true}]}}
 1–4 questions, each with 2–4 options. When you ask via ask_user, do NOT also
 emit the confidence envelope below — the two are mutually exclusive.
@@ -210,11 +222,15 @@ How to work and communicate:
   improves correctness; skip it otherwise. The user should never have to tell
   you to go look something up.
 
-ASKING THE USER: Only when you genuinely cannot proceed without a user
-decision, you may end your response by asking the user one or more structured
-multiple-choice questions. To do so, emit EXACTLY one JSON object on its own
-final line and STOP — nothing after it. Output it as raw JSON ONLY: no code
-fences, no backticks, no markdown around it:
+ASKING THE USER: Use ask_user for genuine decision forks, not only when you are
+blocked. A genuine fork is a choice where different answers would materially
+change the plan, style, risk, cost, scope, destination, audience, or an
+irreversible action. Ask clean multiple-choice questions with a recommended
+option first when there is a sensible default. Do not ask about facts you can
+inspect, infer, or research, and do not ask on small clear tasks. To ask, end
+your response by emitting EXACTLY one JSON object on its own final line and
+STOP — nothing after it. Output it as raw JSON ONLY: no code fences, no
+backticks, no markdown around it:
 {"ask_user":{"questions":[{"id":"<stable-key>","prompt":"<text>","options":[{"label":"<short>","description":"<optional>"}],"multiSelect":false,"allowFreeText":true}]}}
 1–4 questions, each with 2–4 options. When you ask via ask_user, do NOT also
 emit the confidence envelope below — the two are mutually exclusive.
@@ -231,7 +247,18 @@ situation warrants immediate human or higher-tier intervention.`;
 // Public API
 // ---------------------------------------------------------------------------
 
-export interface BuildPromptOptions {
+/**
+ * Canonical prompt-build options. Extended ONCE here (Phase 2 — the prompt-seam
+ * owner) with the context fields the later phases populate. Memory (Phase 4),
+ * intent (Phase 6), and APE then *consume* this shape via `assembleContextBlocks`
+ * with no further plumbing; no other phase re-declares it (master plan §3).
+ *
+ * The context fields (`memoryContext`/`intentFrame`/`engagementPlan`/
+ * `partnerStyle`) are exactly `ContextBlockOptions` — they flow unchanged into
+ * the one shared seam so `buildPrompt` and BOTH panel builders compose the same
+ * ordered blocks (MF1).
+ */
+export interface BuildPromptOptions extends ContextBlockOptions {
   /**
    * Goal turns have their own trailing GOAL_COMPLETE/GOAL_CONTINUE marker.
    * Suppress the normal confidence-envelope requirement so the goal marker is
@@ -287,6 +314,16 @@ export function buildPrompt(
 ): string {
   const system = promptForMode(TIER_PROMPTS[tier], opts);
   let prompt = system;
+
+  // MF1: compose the ordered context blocks (MEMORY → INTENT → ENGAGEMENT →
+  // partner nudge) AFTER the system prompt and BEFORE CONVERSATION SO FAR. "" →
+  // byte-for-byte identical to the pre-seam prompt.
+  if (opts !== undefined) {
+    const contextBlocks = assembleContextBlocks(opts);
+    if (contextBlocks.length > 0) {
+      prompt += `\n\n${contextBlocks}`;
+    }
+  }
 
   if (historyContext !== undefined && historyContext.trim().length > 0) {
     prompt += `\n\nCONVERSATION SO FAR (for context; do not repeat it back):\n${historyContext.trim()}`;

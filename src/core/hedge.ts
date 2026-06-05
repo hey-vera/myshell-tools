@@ -264,7 +264,11 @@ async function runAttempt(
       task,
       undefined,
       historyContext,
-      deps.goalTurn === true ? { goalTurn: true } : undefined,
+      {
+        ...(deps.goalTurn === true ? { goalTurn: true } : {}),
+        ...(deps.partnerStyle !== undefined ? { partnerStyle: deps.partnerStyle } : {}),
+        ...(deps.memoryContext !== undefined ? { memoryContext: deps.memoryContext } : {}),
+      },
     ),
     cwd: deps.cwd,
     sandbox: deps.sandbox,

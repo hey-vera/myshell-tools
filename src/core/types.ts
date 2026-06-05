@@ -336,6 +336,21 @@ export interface OrchestrateDeps {
    */
   readonly goalTurn?: boolean;
   /**
+   * Soft partner posture (APE §2 — a SOFT BIAS, never a hard mode). Threaded
+   * once per turn into every executor (sequential, hedge, panel) and rendered as
+   * a one-line posture nudge via `assembleContextBlocks`. Absent → no nudge.
+   * Resolved from config (`partnerStyle`, else default from `mode`) in the
+   * deps-assembly layer. See core/prompt-context.ts.
+   */
+  readonly partnerStyle?: import('./prompt-context.js').PartnerStyle;
+  /**
+   * Pre-rendered, capped MEMORY block injected into every executor's prompt via
+   * `assembleContextBlocks`. Populated by Phase 4 (memory injection); absent for
+   * now. Threaded here so memory rides sequential, hedge, AND panel turns with no
+   * further plumbing.
+   */
+  readonly memoryContext?: string;
+  /**
    * Optional model-brained route classifier. When wired, orchestrate consults it
    * ONLY on turns the deterministic keyword classifier couldn't route (no tier
    * evidence — see core/router.ts), and falls back to the rules on any failure or

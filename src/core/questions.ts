@@ -1,8 +1,10 @@
 /**
  * src/core/questions.ts — parse a structured `ask_user` elicitation block.
  *
- * The model is instructed (via prompt.ts) that, ONLY when it genuinely cannot
- * proceed without a user decision, it may end its response with exactly one JSON
+ * The model is instructed (via prompt.ts) to use `ask_user` at GENUINE decision
+ * forks — a choice where different answers would materially change the plan,
+ * style, risk, cost, scope, destination, audience, or an irreversible action —
+ * not only when it is blocked. It may then end its response with exactly one JSON
  * object on its own final line:
  *
  *   {"ask_user":{"questions":[

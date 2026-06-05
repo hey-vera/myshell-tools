@@ -10,6 +10,7 @@ import { mkdir, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { atomicWrite } from './atomic.js';
 import { defaultStateHome } from './state-dir.js';
+import type { PartnerStyle } from '../core/prompt-context.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -101,6 +102,16 @@ export interface AppConfig {
    * multi-step work. Ignored in Efficient/Balanced. Absent/false → unchanged.
    */
   autoGoal?: boolean;
+  /**
+   * Partner posture (conversational style). A SOFT BIAS, not a hard mode (APE
+   * §2): `direct`/`balanced`/`collaborative` seed an `engagementBias` of
+   * `-1/0/+1` that shifts the engagement thresholds without ever forcing an
+   * action the turn's signals contradict or crossing the safety floor. Absent →
+   * resolved from `mode` (cost-saver→direct, balanced/auto→balanced,
+   * quality-first→collaborative). Separate from `verbosity`, which is render
+   * chrome only. See core/prompt-context.ts.
+   */
+  partnerStyle?: PartnerStyle;
 }
 
 // ---------------------------------------------------------------------------
@@ -161,4 +172,32 @@ export async function saveConfig(config: AppConfig, homeDir?: string): Promise<v
   const home = homeDir ?? defaultStateHome();
   await mkdir(getConfigDir(home), { recursive: true });
   await atomicWrite(getConfigPath(home), JSON.stringify(config, null, 2));
+}
+
+/**
+ * Resolve the effective partner posture (soft bias) for a turn. An explicit
+ * `config.partnerStyle` always wins; otherwise it is derived from the effective
+ * routing mode so the dial has a sensible default without interrogating the user:
+ *
+ *   cost-saver    → direct
+ *   balanced/auto → balanced
+ *   quality-first → collaborative
+ *
+ * `effectiveMode` is the mode actually in force (the user's explicit `config.mode`
+ * or the plan-auto-detected mode the caller already computed). Pure.
+ */
+export function resolvePartnerStyle(
+  config: Pick<AppConfig, 'partnerStyle'>,
+  effectiveMode: 'cost-saver' | 'balanced' | 'quality-first',
+): PartnerStyle {
+  if (config.partnerStyle !== undefined) return config.partnerStyle;
+  switch (effectiveMode) {
+    case 'cost-saver':
+      return 'direct';
+    case 'quality-first':
+      return 'collaborative';
+    case 'balanced':
+    default:
+      return 'balanced';
+  }
 }
