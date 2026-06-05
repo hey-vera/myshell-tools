@@ -13,7 +13,14 @@
 
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { isProviderId, isHeadlessEnv, resolveLoginMethod, shouldRetryWithCode, runLogin } from '../../src/commands/login.ts';
+import {
+  isProviderId,
+  isHeadlessEnv,
+  resolveLoginMethod,
+  shouldRetryWithCode,
+  runLogin,
+  getLoginCommand,
+} from '../../src/commands/login.ts';
 import { extractClaudeToken, stripPastedSecretWrapper, classifyPastedSecret } from '../../src/infra/credentials.ts';
 
 describe('isProviderId', () => {
@@ -111,6 +118,35 @@ describe('resolveLoginMethod — explicit method overrides detection', () => {
 
   it('auto-detects "browser" on linux when DISPLAY is set', () => {
     assert.equal(resolveLoginMethod(undefined, { DISPLAY: ':0' }, 'linux'), 'browser');
+  });
+});
+
+describe('getLoginCommand — opencode gateway is preselected', () => {
+  it('uses opencode auth login -p opencode for browser/default login', () => {
+    assert.deepEqual(getLoginCommand('opencode', 'browser'), {
+      bin: 'opencode',
+      args: ['auth', 'login', '-p', 'opencode'],
+    });
+  });
+
+  it('uses opencode auth login -p opencode for code login', () => {
+    assert.deepEqual(getLoginCommand('opencode', 'code'), {
+      bin: 'opencode',
+      args: ['auth', 'login', '-p', 'opencode'],
+    });
+  });
+
+  it('leaves claude and codex login commands unchanged', () => {
+    assert.deepEqual(getLoginCommand('claude', 'browser'), {
+      bin: 'claude',
+      args: ['/login'],
+    });
+    assert.deepEqual(getLoginCommand('claude', 'code'), { bin: 'claude', args: ['/login'] });
+    assert.deepEqual(getLoginCommand('codex', 'browser'), { bin: 'codex', args: ['login'] });
+    assert.deepEqual(getLoginCommand('codex', 'code'), {
+      bin: 'codex',
+      args: ['login', '--device-auth'],
+    });
   });
 });
 

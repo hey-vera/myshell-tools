@@ -1356,11 +1356,11 @@ async function runWelcome(
     env = await detectEnvironmentFn();
   }
 
-  // ---- Offer opencode (optional, free models + more providers) -------------
+  // ---- Offer opencode (optional OpenCode account gateway) ------------------
   // Enter = yes, consistent with the claude/codex install prompts above (adding a
   // CLI is additive and easily removed). Decline with n.
   if (!env.opencode.installed) {
-    out.write(`Add opencode? (optional — bring your own provider/subscription) ${yesNoHint('yes', out.color)} `);
+    out.write(`Add opencode? (optional — connect an OpenCode account) ${yesNoHint('yes', out.color)} `);
     if (await confirm(true)) {
       const resumeStdin = suspendStdin?.();
       let ok = false;
@@ -1379,8 +1379,8 @@ async function runWelcome(
 
   // ---- Offer sign-in for installed-but-unauthenticated providers -----------
   // opencode now reports authenticated from a real credential probe, so a freshly
-  // installed opencode (0 credentials) is offered sign-in here too — bring your
-  // subscription, log it in once, and it just works.
+  // installed opencode (0 credentials) is offered sign-in here too. The default
+  // login connects the OpenCode account gateway directly.
   for (const id of ['claude', 'codex', 'opencode'] as const) {
     const ps = env[id];
     if (!ps.installed || ps.authenticated) continue;

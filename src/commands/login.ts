@@ -24,6 +24,10 @@
  *         token.)
  *       · codex  → `codex login --device-auth`: prints a URL + one-time code;
  *         the user authorizes their ChatGPT account on any device.
+ *       · opencode → `opencode auth login -p opencode`: opens opencode's own
+ *         account gateway credential flow directly. The user creates/pastes the
+ *         API key from opencode.ai; OpenCode Go and Zen are account tiers behind
+ *         that same provider key, not separate providers for myshell to choose.
  *
  * When no method is forced, we auto-detect: headless/remote environments default
  * to 'code' (so the guidance matches a no-local-browser shell), else 'browser'.
@@ -49,9 +53,7 @@ export type LoginMethod = 'browser' | 'code';
 const LOGIN_COMMAND: Record<ProviderId, { readonly bin: string; readonly args: readonly string[] }> = {
   claude: { bin: 'claude', args: ['/login'] },
   codex: { bin: 'codex', args: ['login'] },
-  // `opencode auth login` logs in your provider/subscription (anthropic, openai,
-  // opencode-zen, …) — that's what makes opencode actually useful for real work.
-  opencode: { bin: 'opencode', args: ['auth', 'login'] },
+  opencode: { bin: 'opencode', args: ['auth', 'login', '-p', 'opencode'] },
 };
 
 /**
@@ -91,17 +93,23 @@ const LOGIN_CODE_COMMAND: Record<
   },
   opencode: {
     bin: 'opencode',
-    args: ['auth', 'login'],
+    args: ['auth', 'login', '-p', 'opencode'],
     guidance:
-      'This starts `opencode auth login` — opencode is multi-provider, so it shows\n' +
-      '  a list. Pick the one you pay for:\n' +
-      '  • OpenCode Go ($10/mo subscription — Kimi, GLM, DeepSeek, Qwen…): select\n' +
-      '    "opencode" and paste the API key from your OpenCode account.\n' +
-      '  • Or a provider you have (anthropic, openai, …) / OpenCode Zen credits.\n' +
-      '  myshell then auto-picks the best model you have per task. Free models alone\n' +
-      '  are not enough. myshell never sees the credentials — opencode manages them.',
+      'This connects your OpenCode account directly — no provider picker.\n' +
+      '  Create an API key at https://opencode.ai/auth when prompted, paste it into\n' +
+      '  opencode, and you are done. OpenCode Go subscriptions and OpenCode Zen\n' +
+      '  credits are tiers of that same account; myshell just uses the models your\n' +
+      '  account unlocks. myshell never sees the key — opencode stores it.',
   },
 };
+
+export function getLoginCommand(
+  id: ProviderId,
+  method: LoginMethod,
+): { readonly bin: string; readonly args: readonly string[] } {
+  const { bin, args } = method === 'code' ? LOGIN_CODE_COMMAND[id] : LOGIN_COMMAND[id];
+  return { bin, args };
+}
 
 export function isProviderId(value: string): value is ProviderId {
   return value === 'claude' || value === 'codex' || value === 'opencode';
@@ -317,7 +325,7 @@ export async function runLogin(
       await runCodeMethodForProvider(out, id, opts?.suspendStdin);
     } else {
       // Browser method
-      const { bin, args } = LOGIN_COMMAND[id];
+      const { bin, args } = getLoginCommand(id, 'browser');
       const cwd = process.cwd();
       const childEnv = { ...process.env, ...loginPersistentEnv(process.env, cwd, [id]) };
       out.write(bold(`\nSigning in to ${id} — a browser window may open…\n`, out.color));

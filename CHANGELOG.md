@@ -15,6 +15,23 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   resumed goal's contract from the persisted `workTrace` (niche: the in-run contract
   is already kept in memory; only cross-session resume benefits). Optional.
 
+## [3.13.0]
+
+### Changed
+**opencode sign-in is now one frictionless step — no giant provider picker.**
+Previously "Add/sign in to opencode" ran bare `opencode auth login`, which dumped
+opencode's full multi-provider list (anthropic, openai, google, dozens of
+models.dev providers) before you ever reached the OpenCode account. Both the
+browser and code/headless login paths now run `opencode auth login -p opencode`,
+which goes straight to connecting your **OpenCode account** (create/paste one API
+key from `https://opencode.ai/auth`). OpenCode Go subscriptions and OpenCode Zen
+credits are tiers of that same account — once connected, myshell just uses whatever
+models the account unlocks, exactly like a Claude/ChatGPT subscription. myshell
+never sees the key; opencode stores it. Onboarding and login guidance reworded to
+match. Empirically verified against opencode 1.15.12 (`-p opencode` lands directly
+on the credential screen; no `-m` method label needed). Full write-up in
+`docs/opencode-auth-audit-5.5.md`.
+
 ## [3.12.3]
 
 ### Fixed
