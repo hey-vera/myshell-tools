@@ -768,6 +768,11 @@ describe('startMenu — auto-goal smart autonomy', () => {
       setAsDefault: false,
       mode: 'quality-first',
       smartRoute: false,
+      // Disable the gated intent pass so this asserts PURE task-dispatch routing
+      // (a manager-tier turn would otherwise also make one cheap intent-extraction
+      // call — that is exercised in the intent tests, not here). Same discipline
+      // as smartRoute:false above.
+      intentEngine: false,
     };
     const ctx = makeCtx(
       {

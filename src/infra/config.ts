@@ -113,6 +113,18 @@ export interface AppConfig {
    */
   partnerStyle?: PartnerStyle;
   /**
+   * INTENT ENGINE master switch (intent-engine §4, default ON but gated). When
+   * absent/true, on substantial/ambiguous turns orchestrate runs ONE cheap,
+   * read-only, short-timeout extractor pass to produce a typed IntentFrame, which
+   * drives the persona reflection, work-contract seed, ask_user forks, and the
+   * Adaptive Partner Engine's engagement plan. Trivial/clear turns skip the pass
+   * entirely (zero overhead, no model call). `false` disables the extractor wiring
+   * → orchestrate uses only the deterministic rules frame (the engagement policy
+   * still runs, purely from {tier,risk}/route.plan). Any failure falls back to
+   * rules. See core/intent.ts + core/intent-extractor.ts + core/engagement.ts.
+   */
+  intentEngine?: boolean;
+  /**
    * USER MEMORY master switch (memory-architecture §9). Absent/true → memory on
    * (read + inject + capture); false → the privacy kill-switch: no retrieval, no
    * injection, no proposals (existing facts remain listable/exportable). The

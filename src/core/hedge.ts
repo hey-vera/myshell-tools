@@ -268,6 +268,8 @@ async function runAttempt(
         ...(deps.goalTurn === true ? { goalTurn: true } : {}),
         ...(deps.partnerStyle !== undefined ? { partnerStyle: deps.partnerStyle } : {}),
         ...(deps.memoryContext !== undefined ? { memoryContext: deps.memoryContext } : {}),
+        ...(deps.intentFrame !== undefined ? { intentFrame: deps.intentFrame } : {}),
+        ...(deps.engagementPlan !== undefined ? { engagementPlan: deps.engagementPlan } : {}),
       },
     ),
     cwd: deps.cwd,

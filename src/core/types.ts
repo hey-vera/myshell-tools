@@ -351,6 +351,38 @@ export interface OrchestrateDeps {
    */
   readonly memoryContext?: string;
   /**
+   * Pre-rendered, capped INTENT block (intent-engine §5.4) for the prompt seam.
+   * Computed ONCE per turn INSIDE orchestrate (gated — substantial/ambiguous
+   * turns only) and threaded onto a per-turn deps copy so it rides sequential,
+   * hedge, AND panel prompts via `assembleContextBlocks`. Absent on trivial turns
+   * → byte-identical to pre-intent prompts. Producers/consumers: core/intent.ts.
+   */
+  readonly intentFrame?: string;
+  /**
+   * Pre-rendered ENGAGEMENT block (APE §6.4) for the prompt seam. Computed ONCE
+   * per turn INSIDE orchestrate alongside the intent block; surfaced ONLY when the
+   * engagement plan produces a visible action (else absent — the silent mechanics
+   * are never rendered). Rides sequential, hedge, AND panel via
+   * `assembleContextBlocks`. Producers/consumers: core/engagement.ts.
+   */
+  readonly engagementPlan?: string;
+  /**
+   * Optional model-brained INTENT extractor — the gated cheap subscription pass
+   * that populates an `IntentFrame` on substantial/ambiguous turns (intent-engine
+   * §5.1). Mirrors `routeClassifier` exactly: orchestrate consults it ONLY behind
+   * the pure `shouldExtractIntent` gate, and falls back to `rulesIntentFrame` on
+   * any failure/timeout (returns null). Absent → the intent engine is skipped,
+   * byte-identical to the pre-intent behaviour. The infra layer builds it from the
+   * cheapest available provider (see core/intent-extractor.ts).
+   *
+   * Typed inline (not imported) to keep types.ts a leaf module; structurally
+   * identical to intent.ts's IntentExtractor.
+   */
+  readonly intentExtractor?: (
+    task: string,
+    signal: AbortSignal,
+  ) => Promise<import('./intent.js').IntentFrame | null>;
+  /**
    * Optional model-brained route classifier. When wired, orchestrate consults it
    * ONLY on turns the deterministic keyword classifier couldn't route (no tier
    * evidence — see core/router.ts), and falls back to the rules on any failure or
@@ -418,6 +450,25 @@ export interface OrchestrateDeps {
  */
 export type CoreEvent =
   | { readonly type: 'classified'; readonly classification: Classification }
+  | {
+      /**
+       * The turn's extracted INTENT frame (intent-engine §5.3). Emitted once per
+       * turn after classification, ONLY on substantial/ambiguous turns that ran
+       * the gate (trivial turns skip it entirely). Render-optional: the render
+       * layer may surface a one-line reflection or ignore it, like other notices.
+       */
+      readonly type: 'intent';
+      readonly frame: import('./intent.js').IntentFrame;
+    }
+  | {
+      /**
+       * The turn's ENGAGEMENT plan (APE §6.1). Emitted once per turn after the
+       * intent stage. Render-optional and per the locked default surfaced ONLY
+       * when it produces a visible action; the silent mechanics are never shown.
+       */
+      readonly type: 'engagement';
+      readonly plan: import('./engagement.js').EngagementPlan;
+    }
   | {
       readonly type: 'tier-start';
       readonly tier: Tier;

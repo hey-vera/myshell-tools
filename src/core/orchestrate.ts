@@ -50,6 +50,10 @@ import { planPanel, runPanel } from './ensemble.js';
 import { planHedge, runHedged } from './hedge.js';
 import type { WorkContract } from './work-contract.js';
 import { capContract, shouldMaterializeContract, isCleanObjectiveTask } from './work-contract.js';
+import type { IntentFrame } from './intent.js';
+import { shouldExtractIntent, rulesIntentFrame, renderIntentBlock } from './intent.js';
+import { planEngagement, seedFromIntentAndPlan, renderEngagementBlock, deriveAskFromForks } from './engagement.js';
+import { engagementBiasOf } from './prompt-context.js';
 
 // ---------------------------------------------------------------------------
 // Pure helper: should this output be cross-vendor reviewed?
@@ -282,7 +286,7 @@ async function collectProviderRun(
  */
 export async function* orchestrate(
   task: string,
-  deps: OrchestrateDeps,
+  depsArg: OrchestrateDeps,
   signal: AbortSignal,
 ): AsyncGenerator<CoreEvent> {
   // -------------------------------------------------------------------------
@@ -292,7 +296,7 @@ export async function* orchestrate(
   //     reserved for plan-first mode (Phase C).
   // -------------------------------------------------------------------------
   const decision = await decideRoute(task, {
-    ...(deps.routeClassifier !== undefined ? { classifier: deps.routeClassifier } : {}),
+    ...(depsArg.routeClassifier !== undefined ? { classifier: depsArg.routeClassifier } : {}),
     signal,
   });
   const classification: Classification = {
@@ -301,6 +305,90 @@ export async function* orchestrate(
     rationale: decision.rationale,
   };
   const routePlan = decision.plan;
+  yield { type: 'classified', classification };
+
+  // -------------------------------------------------------------------------
+  // (a2) INTENT ENGINE + ADAPTIVE PARTNER ENGINE (Phase 6 / APE).
+  //
+  // GATED, fail-soft, ZERO-overhead on trivial turns. shouldExtractIntent is the
+  // pure gate (the intent analogue of hasTierEvidence): clear/cheap turns skip
+  // the model pass entirely → EXECUTE_NOW, no extra call. Substantial/ambiguous
+  // turns run the cheap, read-only, short-timeout extractor (the ONLY model touch
+  // here) and fall back to the deterministic rulesIntentFrame on ANY failure
+  // (null/timeout/bad-parse) — never a hang, never a blocked turn.
+  //
+  // planEngagement is then a PURE decision over {frame, classification, routePlan,
+  // engagementBias, memoryBias} → an ordered EngagementPlan. It adds NO model
+  // call (it rides the one gated intent call). The rendered INTENT + ENGAGEMENT
+  // blocks flow through the Phase-2 prompt seam (assembleContextBlocks) to the
+  // sequential, hedge, AND panel executors via the per-turn `deps` copy below.
+  // -------------------------------------------------------------------------
+  let intentFrame: IntentFrame | undefined;
+  const runIntent =
+    // Autonomous /goal turns own their roadmap loop (work-contract.ts) — running
+    // the intent pass per goal sub-turn would double-plan (APE §5.9). The initial
+    // goal contract is already seeded by the interface layer. So the gate never
+    // fires inside a goal turn; the deterministic frame still feeds APE/seed.
+    depsArg.goalTurn !== true &&
+    shouldExtractIntent({
+      task,
+      classification,
+      routePlan,
+      ...(depsArg.partnerStyle !== undefined ? { partnerStyle: depsArg.partnerStyle } : {}),
+      hasExtractor: depsArg.intentExtractor !== undefined,
+    });
+  if (runIntent && depsArg.intentExtractor !== undefined) {
+    let extracted: IntentFrame | null = null;
+    try {
+      extracted = await depsArg.intentExtractor(task, signal);
+    } catch {
+      extracted = null; // fail-soft: extractor threw → rules fallback
+    }
+    intentFrame = extracted ?? rulesIntentFrame(task, classification, 'rules-fallback');
+  } else {
+    // Trivial turn (or no extractor): a cheap, deterministic, source:'skipped'
+    // frame. No model call, no latency. It still lets APE/seed read a goal.
+    intentFrame = rulesIntentFrame(task, classification, 'skipped');
+  }
+  const engagementPlan = planEngagement({
+    ...(intentFrame !== undefined ? { frame: intentFrame } : {}),
+    classification,
+    routePlan,
+    engagementBias: depsArg.partnerStyle !== undefined ? engagementBiasOf(depsArg.partnerStyle) : 0,
+    task,
+  });
+
+  // Pre-render the INTENT + ENGAGEMENT blocks ONCE and thread them onto a per-turn
+  // deps copy so they reach every executor through the shared seam with no further
+  // plumbing. Empty blocks (trivial/silent) are omitted → byte-identical to today.
+  const intentBlock = runIntent ? renderIntentBlock(intentFrame) : '';
+  const engagementBlock = renderEngagementBlock(engagementPlan);
+
+  // Render-optional events (locked APE default #1): surface intent ONLY when the
+  // gated pass ran AND produced a non-empty reflection block; surface engagement
+  // ONLY when the plan produces a VISIBLE action (a non-empty block). The silent
+  // mechanics (bare EXECUTE_NOW, depth, escalation, fast-path) emit nothing, so a
+  // plain substantial turn keeps the classified → tier-start stream unchanged.
+  if (runIntent && intentFrame !== undefined && intentBlock.length > 0) {
+    yield { type: 'intent', frame: intentFrame };
+  }
+  if (engagementBlock.length > 0) {
+    yield { type: 'engagement', plan: engagementPlan };
+  }
+
+  const deps: OrchestrateDeps =
+    intentBlock.length > 0 || engagementBlock.length > 0
+      ? {
+          ...depsArg,
+          ...(intentBlock.length > 0 ? { intentFrame: intentBlock } : {}),
+          ...(engagementBlock.length > 0 ? { engagementPlan: engagementBlock } : {}),
+        }
+      : depsArg;
+
+  // Work-contract seed: prefer the frame's goal/vision (and a plan-aware roadmap
+  // when planFirst) over the verbatim task copy. Consumes route.plan THROUGH APE
+  // (plan.planFirst). Falls back to the prior capContract seed when there's no
+  // usable goal. Caps/render/checkpoints/verification stay the work-contract's.
   const incomingWorkContract =
     deps.workContract !== undefined ? capContract(deps.workContract) : undefined;
   const normalRoadmapDecision = shouldMaterializeContract({
@@ -309,15 +397,15 @@ export async function* orchestrate(
     context: 'normal',
     reviewWillRun: false,
   });
-  const generatedWorkTrace =
+  const seededTrace =
     incomingWorkContract === undefined &&
     normalRoadmapDecision.roadmap &&
     isCleanObjectiveTask(task)
-      ? capContract({ version: 1, objective: task })
+      ? (seedFromIntentAndPlan(intentFrame, engagementPlan, task) ??
+        capContract({ version: 1, objective: task }))
       : undefined;
   const workTrace =
-    incomingWorkContract !== undefined ? incomingWorkContract : generatedWorkTrace;
-  yield { type: 'classified', classification };
+    incomingWorkContract !== undefined ? incomingWorkContract : seededTrace;
 
   // -------------------------------------------------------------------------
   // (b) Resolve available providers
@@ -566,6 +654,8 @@ export async function* orchestrate(
         ...(deps.goalTurn === true ? { goalTurn: true } : {}),
         ...(deps.partnerStyle !== undefined ? { partnerStyle: deps.partnerStyle } : {}),
         ...(deps.memoryContext !== undefined ? { memoryContext: deps.memoryContext } : {}),
+        ...(deps.intentFrame !== undefined ? { intentFrame: deps.intentFrame } : {}),
+        ...(deps.engagementPlan !== undefined ? { engagementPlan: deps.engagementPlan } : {}),
       },
     );
 
@@ -686,7 +776,20 @@ export async function* orchestrate(
     // and return WITHOUT escalating or reviewing. The confidence envelope is
     // ignored for this turn (the two are mutually exclusive per prompt.ts).
     if (success) {
-      const questions = parseQuestions(finalText ?? '');
+      // Prefer the model's own ask_user block. When APE planned an ASK_CLARIFYING
+      // at a genuine fork but the model did NOT ask, derive the structured
+      // question from the frame's fork so the planned fork is never silently
+      // dropped (intent §5.4 / APE §6.2). The derivation is bounded by ASK_CAP and
+      // only fires on the FIRST attempt (a derived ask is terminal — it short-
+      // circuits the turn exactly like a model ask, no escalate/review).
+      const modelQuestions = parseQuestions(finalText ?? '');
+      const derivedQuestions =
+        modelQuestions === null &&
+        attempts === 1 &&
+        engagementPlan.actions.includes('ASK_CLARIFYING')
+          ? deriveAskFromForks(intentFrame, engagementPlan)
+          : null;
+      const questions = modelQuestions ?? derivedQuestions;
       if (questions !== null) {
         if (acceptedRun === undefined) {
           throw new Error('orchestrate invariant violated: question final without accepted run');

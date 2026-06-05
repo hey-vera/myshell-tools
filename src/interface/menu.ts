@@ -77,6 +77,7 @@ import { box, separator, menu } from '../ui/tui.js';
 import { dim, cyan, bold, green } from '../ui/theme.js';
 import { createSpinner } from '../ui/spinner.js';
 import { makeRouteClassifier } from '../core/route-classifier.js';
+import { makeIntentExtractor } from '../core/intent-extractor.js';
 import type { UpdateCheckResult } from '../infra/update-check.js';
 import type { ClaudeTokenStatus } from '../infra/credentials.js';
 import { loadClaudeTokenCapturedAt, claudeTokenStatus } from '../infra/credentials.js';
@@ -1793,6 +1794,10 @@ function preserveMemoryKeys(config: AppConfig): Partial<AppConfig> {
     ...(config.memoryMaxFactsPerScope !== undefined
       ? { memoryMaxFactsPerScope: config.memoryMaxFactsPerScope }
       : {}),
+    // Intent engine is default-ON, so only the explicit-OFF kill-switch is
+    // persisted; carried through every settings toggle so flipping an unrelated
+    // setting never silently re-enables it (same discipline as memory:false).
+    ...(config.intentEngine === false ? { intentEngine: false } : {}),
   };
 }
 
@@ -2043,6 +2048,7 @@ async function runSettings(
     `  [a] Auto-goal (quality-first): ${cfg.autoGoal === true ? 'on' : 'off'} — only takes effect under quality-first mode`,
     `  [b] Partner style: ${resolvePartnerStyle(cfg, effMode)}${cfg.partnerStyle === undefined ? ' (auto)' : ''}`,
     `  [c] Memory: ${cfg.memory !== false ? 'on' : 'off'}`,
+    `  [d] Intent engine: ${cfg.intentEngine !== false ? 'on' : 'off'}`,
     '',
     '  [Enter] Back',
     '',
@@ -2079,8 +2085,49 @@ async function runSettings(
     mutableCtx.config = await runStyleSelect(mutableCtx.config, out, readLine, autoMode);
   } else if (key === 'c') {
     mutableCtx.config = await toggleMemory(mutableCtx.config, out);
+  } else if (key === 'd') {
+    mutableCtx.config = await toggleIntentEngine(mutableCtx.config, out);
   }
   // anything else → back
+}
+
+/**
+ * Toggle the INTENT ENGINE master switch (intent-engine §4) and persist it.
+ *
+ * Default-on but GATED: when enabled, orchestrate runs ONE cheap, read-only,
+ * short-timeout extractor pass ONLY on substantial/ambiguous turns; trivial turns
+ * skip it (zero overhead). Toggling when on writes `intentEngine:false` (no
+ * extractor wired — orchestrate uses the deterministic rules frame, and the
+ * engagement policy still runs from {tier,risk}/route.plan); toggling when off
+ * removes the flag (restores default-on). Preserves all other keys.
+ */
+async function toggleIntentEngine(config: AppConfig, out: OutputSink): Promise<AppConfig> {
+  const currentlyEnabled = config.intentEngine !== false;
+  const enable = !currentlyEnabled;
+  const updated: AppConfig = {
+    onboarded: config.onboarded,
+    setAsDefault: config.setAsDefault,
+    ...(config.mode !== undefined ? { mode: config.mode } : {}),
+    ...(config.autoUpdate === false ? { autoUpdate: false } : {}),
+    ...(config.nativeSessions === true ? { nativeSessions: true } : {}),
+    ...(config.verbosity !== undefined ? { verbosity: config.verbosity } : {}),
+    ...(config.timeoutMs !== undefined ? { timeoutMs: config.timeoutMs } : {}),
+    ...(config.smartRoute === false ? { smartRoute: false } : {}),
+    ...(config.panel === true ? { panel: true } : {}),
+    ...(config.learnRouting === true ? { learnRouting: true } : {}),
+    ...(config.hedge === true ? { hedge: true } : {}),
+    ...(config.autoGoal === true ? { autoGoal: true } : {}),
+    ...(config.partnerStyle !== undefined ? { partnerStyle: config.partnerStyle } : {}),
+    ...preserveMemoryKeys(config),
+    // Persist only the explicit-OFF; absent means default-on.
+    ...(!enable ? { intentEngine: false } : {}),
+  };
+  // preserveMemoryKeys carried the OLD intentEngine flag; the trailing spread
+  // above is authoritative (or its absence when re-enabling).
+  if (enable) delete (updated as { intentEngine?: boolean }).intentEngine;
+  await saveConfig(updated);
+  out.write(`Intent engine: ${enable ? 'on' : 'off'}\n`);
+  return updated;
 }
 
 /**
@@ -3292,6 +3339,23 @@ async function runChatLoop(
               })
             : undefined;
 
+        // Intent engine (default ON, gated): the cheap, read-only, short-timeout
+        // extractor that populates an IntentFrame ONLY on substantial/ambiguous
+        // turns (see shouldExtractIntent). Capped like the router so the worst-case
+        // pause is bounded; absent → orchestrate uses the deterministic rules frame.
+        const INTENT_TIMEOUT_MS = 8_000;
+        const intentExtractor =
+          mutableCtx.config.intentEngine !== false
+            ? makeIntentExtractor({
+                providers: ctx.providers,
+                policy,
+                cwd: ctx.cwd,
+                timeoutMs: Math.min(ctx.timeoutMs, INTENT_TIMEOUT_MS),
+                ...(Object.keys(availableModels).length > 0 ? { availableModels } : {}),
+                ...(authenticatedProviders.length > 0 ? { authenticatedProviders } : {}),
+              })
+            : undefined;
+
         return {
           clock: ctx.clock,
           session: ctx.store.writer(convId),
@@ -3307,6 +3371,7 @@ async function runChatLoop(
           ...(Object.keys(planInfos).length > 0 ? { planInfos } : {}),
           ...(nativeSession.length > 0 ? { nativeSession } : {}),
           ...(routeClassifier !== undefined ? { routeClassifier } : {}),
+          ...(intentExtractor !== undefined ? { intentExtractor } : {}),
           ...(Object.keys(learnedProviderOrder).length > 0 ? { learnedProviderOrder } : {}),
           // Partner posture (soft bias, APE §2). Explicit config wins; else the
           // default is derived from the effective mode. Threaded once per turn so
