@@ -23,6 +23,9 @@ import type { MenuContext } from './interface/menu.js';
 import { buildProviders } from './providers/registry.js';
 import { detectEnvironment } from './providers/detect.js';
 import { createFileConversationStore } from './infra/conversations.js';
+// Memory 5.5 Phase 3: the store factory is part of the package surface (wired into
+// deps assembly in Phase 4). Re-exported here so it participates in the import graph.
+export { createFileUserMemoryStore } from './infra/user-memory-store.js';
 import { loadConfig } from './infra/config.js';
 import { checkForUpdate } from './infra/update-check.js';
 import { refreshClaudeOauthIfNeeded } from './infra/claude-oauth-refresh.js';
