@@ -15,6 +15,36 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   resumed goal's contract from the persisted `workTrace` (niche: the in-run contract
   is already kept in memory; only cross-session resume benefits). Optional.
 
+## [3.12.2]
+
+### Fixed
+Interactive menu was broken and Enter-bound on Replit / web shells after a launch
+auto-update self-relaunch (reported live on v3.12.1). Two compounding faults, both fixed:
+- **Keys didn't dispatch.** When raw single-key mode was unavailable, `readMenuKey`
+  fell back to a line read and returned it **un-normalized**, so a line like `j`, `J`,
+  `j ` or `j\r` never matched the exact `key === 'j'` dispatch — the menu silently
+  re-rendered and you could not even sign in. The line fallback now runs through a
+  shared `normalizeMenuKey` (trim + lowercase; multi-char tokens like settings keys
+  preserved), so every menu/confirm key dispatches in line mode too.
+- **Single-keypress was lost after self-relaunch.** The auto-update relaunch left the
+  child process with a stdin that wasn't raw-capable, forcing line mode (press key
+  **then Enter**). `readMenuKey` and the yes/no confirm now fall back to the
+  controlling terminal (`/dev/tty`, lazily opened + cached, guarded, non-Windows) for
+  true single-keypress input, and the parent no longer re-primes `fd0` after a
+  successful relaunch handoff (it would steal keys / degrade the child's TTY).
+
+### Changed (friction)
+- Pressing **[n]/[c]** with exactly one installed-but-unauthenticated provider now
+  signs in to it **directly** instead of asking a second "Sign in now? [j/k/o]" question.
+- Settings **Auto-goal** moved from `[10]` to **`[a]`** — a two-char item was
+  unreachable under raw single-key input (pressing `1` fired option 1 immediately).
+- Empty **Manage** screen returns immediately instead of a dead-end "press Enter to go back".
+
+### Tests
+- `normalizeMenuKey` + line-fallback coverage (`j\r`→`j`, ` J `→`j`, `n\t`→`n`,
+  blank→`''`, `null`→`null`, `10`→`10`) and an end-to-end regression proving a
+  line-mode `j\r` dispatches Claude login. Full suite green: 2454 pass / 0 fail.
+
 ## [3.12.1]
 
 ### Fixed

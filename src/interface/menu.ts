@@ -17,6 +17,8 @@
  */
 
 import readline from 'node:readline';
+import fs from 'node:fs';
+import tty from 'node:tty';
 import { execa } from 'execa';
 import type { Clock, CoreEvent, LedgerWriter, OrchestrateDeps, Question, QuestionSet, SessionEntry, SessionWriter, Tier } from '../core/types.js';
 import { buildGoalTask, parseGoalSignal, parseGoalContinueText, decideGoalNext, formatGoalProgress, DEFAULT_MAX_GOAL_ITERATIONS, stripTrailingGoalConfidenceEnvelope } from '../core/goal.js';
@@ -992,6 +994,39 @@ export interface KeyInputStream {
   listeners(event: string): Array<(...args: never[]) => void>;
 }
 
+let controllingTtyInput: KeyInputStream | null | undefined;
+
+function canReadRawKey(out: OutputSink, stdin: KeyInputStream): boolean {
+  return out.isTty && stdin.isTTY === true && typeof stdin.setRawMode === 'function';
+}
+
+function controllingTtyRawInput(out: OutputSink): KeyInputStream | null {
+  if (!out.isTty || process.platform === 'win32') return null;
+  if (controllingTtyInput !== undefined) return controllingTtyInput;
+  try {
+    const fd = fs.openSync('/dev/tty', 'r');
+    controllingTtyInput = new tty.ReadStream(fd) as unknown as KeyInputStream;
+  } catch {
+    controllingTtyInput = null;
+  }
+  return controllingTtyInput;
+}
+
+function rawKeyInputs(
+  out: OutputSink,
+  stdin: KeyInputStream = process.stdin as unknown as KeyInputStream,
+): KeyInputStream[] {
+  if (!out.isTty) return [];
+  if (canReadRawKey(out, stdin)) return [stdin];
+  const fallback = controllingTtyRawInput(out);
+  return fallback !== null && canReadRawKey(out, fallback) ? [fallback] : [];
+}
+
+export function normalizeMenuKey(input: string | null): string | null {
+  if (input === null) return null;
+  return input.trim().toLowerCase();
+}
+
 /**
  * Read exactly one raw keypress from the TTY.
  *
@@ -1112,25 +1147,26 @@ export async function readMenuKey(
   readLine: () => Promise<string | null>,
   stdin: KeyInputStream = process.stdin as unknown as KeyInputStream,
 ): Promise<string | null> {
-  const canRawKey =
-    out.isTty && stdin.isTTY === true && typeof stdin.setRawMode === 'function';
-  if (!canRawKey) return readLine();
-  try {
-    const raw = await readSingleKey(stdin);
-    if (raw === '\x03' || raw === '\x04') return null; // Ctrl-C / Ctrl-D → exit
-    if (raw === '\r' || raw === '\n') return ''; // bare Enter → no-op (re-render)
-    // Only a single printable char is a menu choice; ignore escape sequences
-    // (arrow keys arrive as multi-byte '\x1b[A' and must not echo or match).
-    if (raw.length === 1 && raw >= ' ') {
-      const choice = raw.toLowerCase();
-      out.write(choice + '\n'); // echo — raw mode suppressed the terminal's echo
-      return choice;
+  const inputs = rawKeyInputs(out, stdin);
+  if (inputs.length === 0) return normalizeMenuKey(await readLine());
+  for (const input of inputs) {
+    try {
+      const raw = await readSingleKey(input);
+      if (raw === '\x03' || raw === '\x04') return null; // Ctrl-C / Ctrl-D → exit
+      if (raw === '\r' || raw === '\n') return ''; // bare Enter → no-op (re-render)
+      // Only a single printable char is a menu choice; ignore escape sequences
+      // (arrow keys arrive as multi-byte '\x1b[A' and must not echo or match).
+      if (raw.length === 1 && raw >= ' ') {
+        const choice = raw.toLowerCase();
+        out.write(choice + '\n'); // echo — raw mode suppressed the terminal's echo
+        return choice;
+      }
+      return '';
+    } catch {
+      // Try the next raw-capable stream, then fall back to a normalized line.
     }
-    return '';
-  } catch {
-    // Raw read unavailable → fall back to a line so the menu never wedges.
-    return readLine();
   }
+  return normalizeMenuKey(await readLine());
 }
 
 /**
@@ -1149,29 +1185,17 @@ function makeConfirm(
 ): Confirm {
   if (injected !== undefined) return injected;
 
-  const canRawKey =
-    out.isTty &&
-    process.stdin.isTTY === true &&
-    typeof process.stdin.setRawMode === 'function';
-
-  if (!canRawKey) {
-    return async (defaultYes: boolean, opts?: { requireExplicit?: boolean }): Promise<boolean> =>
-      parseYesNo(await readLine(), defaultYes, opts?.requireExplicit ?? false);
-  }
-
   return async (defaultYes: boolean, opts?: { requireExplicit?: boolean }): Promise<boolean> => {
     const requireExplicit = opts?.requireExplicit ?? false;
-    try {
-      return await confirmViaKey(
-        out,
-        defaultYes,
-        process.stdin as unknown as KeyInputStream,
-        requireExplicit,
-      );
-    } catch {
-      // Any raw-mode hiccup must never break onboarding — fall back to a line.
-      return parseYesNo(await readLine(), defaultYes, requireExplicit);
+    for (const input of rawKeyInputs(out)) {
+      try {
+        return await confirmViaKey(out, defaultYes, input, requireExplicit);
+      } catch {
+        // Any raw-mode hiccup must never break onboarding — try the fallback TTY,
+        // then fall back to a line.
+      }
     }
+    return parseYesNo(normalizeMenuKey(await readLine()), defaultYes, requireExplicit);
   };
 }
 
@@ -1202,6 +1226,21 @@ async function promptForAuthBeforeChat(
 
   if (choices.length === 0) {
     out.write('\nNo provider signed in yet, and no provider is installed. Install one from the Auth section first.\n');
+    return false;
+  }
+
+  if (choices.length === 1) {
+    const onlyChoice = choices[0];
+    if (onlyChoice === undefined) return false;
+    out.write(`\nNo provider signed in yet. Signing in to ${onlyChoice.label}...\n`);
+    await loginFn(out, onlyChoice.id, {
+      readLine,
+      confirm,
+      ...(suspendStdin !== undefined ? { suspendStdin } : {}),
+    });
+    mutableCtx.env = await detectEnvironmentFn();
+    if (hasAuthenticatedProvider(mutableCtx.env)) return true;
+    out.write('No provider is signed in yet. Returning to menu.\n');
     return false;
   }
 
@@ -1594,7 +1633,7 @@ async function runSettings(
     `  [7] Panel (experimental): ${cfg.panel === true ? 'on' : 'off'}`,
     `  [8] Learned routing (experimental): ${cfg.learnRouting === true ? 'on' : 'off'}`,
     `  [9] Hedged escalation (experimental): ${cfg.hedge === true ? 'on' : 'off'}`,
-    `  [10] Auto-goal (quality-first): ${cfg.autoGoal === true ? 'on' : 'off'} — only takes effect under quality-first mode`,
+    `  [a] Auto-goal (quality-first): ${cfg.autoGoal === true ? 'on' : 'off'} — only takes effect under quality-first mode`,
     '',
     '  [Enter] Back',
     '',
@@ -1625,7 +1664,7 @@ async function runSettings(
     mutableCtx.config = await toggleLearnRouting(mutableCtx.config, out);
   } else if (key === '9') {
     mutableCtx.config = await toggleHedge(mutableCtx.config, out);
-  } else if (key === '10') {
+  } else if (key === 'a') {
     mutableCtx.config = await toggleAutoGoal(mutableCtx.config, out);
   }
   // anything else → back
@@ -1867,8 +1906,6 @@ async function runManage(
 
   if (metas.length === 0) {
     out.write('No conversations yet.\n');
-    out.write('[Enter to go back] ');
-    await readLine();
     return;
   }
 
@@ -3169,6 +3206,7 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
       // Install + relaunch; returns true when startMenu should hand off to the new
       // version, false on failure (with an actionable message).
       const install = async (): Promise<boolean> => {
+        let handedOff = false;
         // Release the parent's stdin/readline so the npm child AND the relaunched
         // child own the TTY alone — otherwise the parent's reader races the relaunched
         // process for keypresses and the new menu falls back to line mode (needs Enter).
@@ -3191,7 +3229,10 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
                 return false;
               }
             }
-            if (relaunchFn !== undefined) await relaunchFn().catch(() => 1);
+            if (relaunchFn !== undefined) {
+              await relaunchFn().catch(() => 1);
+              handedOff = true;
+            }
             return true;
           }
           out.write(
@@ -3203,8 +3244,9 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
           );
           return false;
         } finally {
-          // Restore the parent's reader on any path (esp. update failure → back to menu).
-          resumeStdin?.();
+          // After a successful relaunch handoff, the child owns fd0. Re-priming
+          // the parent's readline here can steal keys or degrade the child's TTY.
+          if (!handedOff) resumeStdin?.();
         }
       };
 

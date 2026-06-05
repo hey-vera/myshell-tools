@@ -22,7 +22,7 @@ import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 
 import { EventEmitter } from 'node:events';
-import { startMenu, defaultAliasHint, parseYesNo, interpretYesNoKey, yesNoHint, readSingleKey, readMenuKey, confirmViaKey, autoUpdateEnabled, createLineReader, completeSlash, CHAT_SLASH_COMMANDS } from '../../src/interface/menu.ts';
+import { startMenu, defaultAliasHint, parseYesNo, interpretYesNoKey, yesNoHint, readSingleKey, readMenuKey, confirmViaKey, autoUpdateEnabled, createLineReader, completeSlash, CHAT_SLASH_COMMANDS, normalizeMenuKey } from '../../src/interface/menu.ts';
 import type { MenuContext, KeyInputStream } from '../../src/interface/menu.ts';
 import type { UpdateCheckResult } from '../../src/infra/update-check.ts';
 import type { OutputSink } from '../../src/interface/render.ts';
@@ -403,6 +403,23 @@ describe('startMenu — immediate q → exits cleanly', () => {
 
     await startMenu(ctx, sink);
     assert.ok(sink.buf.includes('myshell-tools'), 'main screen should be rendered');
+  });
+
+  it('dispatches a line-mode j with carriage return to Claude login', async () => {
+    const sink = makeSink();
+    const loginCalls: string[] = [];
+    const ctx = makeCtx({
+      readLine: makeScriptedReader(['j\r', 'q']),
+      login: async (_out, providerArg) => {
+        loginCalls.push(providerArg ?? 'all');
+        return 0;
+      },
+      detectEnvironment: async () => FAKE_ENV,
+    });
+
+    await startMenu(ctx, sink);
+
+    assert.deepEqual(loginCalls, ['claude'], 'normalized line-mode j must dispatch to Claude login');
   });
 
   it('startMenu resolves (not hangs)', async () => {
@@ -1062,7 +1079,6 @@ describe('startMenu — e → manage → pin → back → q', () => {
       {
         readLine: makeScriptedReader([
           'e',  // enter manage
-          '',   // Enter to go back
           'q',  // quit
         ]),
       },
@@ -1506,6 +1522,16 @@ describe('readMenuKey — single-key main-menu choice', () => {
     throw new Error('readLine must not be called on the raw-key path');
   };
 
+  it('normalizes line-mode keys without truncating multi-char choices', () => {
+    assert.equal(normalizeMenuKey('j\r'), 'j');
+    assert.equal(normalizeMenuKey(' J '), 'j');
+    assert.equal(normalizeMenuKey('n\t'), 'n');
+    assert.equal(normalizeMenuKey(''), '');
+    assert.equal(normalizeMenuKey('   \t'), '');
+    assert.equal(normalizeMenuKey(null), null);
+    assert.equal(normalizeMenuKey('10'), '10');
+  });
+
   it('resolves on a single keypress (no Enter) and echoes it', async () => {
     const out = ttySink();
     assert.equal(await readMenuKey(out, neverLine, ttyStream(['c'])), 'c');
@@ -1532,7 +1558,7 @@ describe('readMenuKey — single-key main-menu choice', () => {
   it('falls back to a line read when stdin is not a raw TTY', async () => {
     const out = makeSink(); // isTty:false
     const f = new FakeKeyStream([]); // not a TTY (no isTTY)
-    assert.equal(await readMenuKey(out, async () => 'n', asStream(f)), 'n');
+    assert.equal(await readMenuKey(out, async () => ' J ', asStream(f)), 'j');
   });
 
   it('falls back to a line read if the raw-key stream closes', async () => {
@@ -1540,7 +1566,7 @@ describe('readMenuKey — single-key main-menu choice', () => {
     const f = new FakeKeyStream([]);
     (f as unknown as { isTTY: boolean }).isTTY = true;
     queueMicrotask(() => f.emit('close'));
-    assert.equal(await readMenuKey(out, async () => 'q', asStream(f)), 'q');
+    assert.equal(await readMenuKey(out, async () => 'q\r', asStream(f)), 'q');
   });
 });
 
@@ -4262,14 +4288,14 @@ describe('startMenu — update notifier: banner, [u], auto-update', () => {
     assert.equal(persisted.learnRouting, true, 'learnRouting must be persisted as true');
   });
 
-  it('[s] settings shows and toggles [10] Auto-goal (quality-first)', async () => {
+  it('[s] settings shows and toggles [a] Auto-goal (quality-first)', async () => {
     const sink = makeSink();
     const dir = join(tmpdir(), `menu-autogoal-toggle-${randomUUID()}`);
     const config: AppConfig = { onboarded: true, setAsDefault: false, smartRoute: false };
     const ctx = makeCtx({
       config,
       cwd: dir,
-      readLine: makeScriptedReader(['s', '10', 'q']),
+      readLine: makeScriptedReader(['s', 'a', 'q']),
     });
 
     const persisted = await withStateHome(dir, async () => {
@@ -4278,12 +4304,12 @@ describe('startMenu — update notifier: banner, [u], auto-update', () => {
     });
 
     assert.ok(
-      sink.buf.includes('[10] Auto-goal (quality-first)'),
-      'settings must show the [10] Auto-goal (quality-first) toggle line',
+      sink.buf.includes('[a] Auto-goal (quality-first)'),
+      'settings must show the [a] Auto-goal (quality-first) toggle line',
     );
     assert.ok(
       sink.buf.includes('Auto-goal (quality-first): on'),
-      'toggling [10] must report auto-goal on',
+      'toggling [a] must report auto-goal on',
     );
     assert.equal(persisted.autoGoal, true, 'autoGoal must be persisted as true');
   });
@@ -4897,7 +4923,6 @@ describe('startMenu — no-provider gate in chat loop', () => {
         providers: { claude: makeFakeProvider() },
         readLine: makeScriptedReader([
           'n',        // new conversation → auth prompt first
-          'j',        // sign in to Claude
           'do work',  // proceeds into chat after re-detect
           '/exit',    // exit chat
           'q',        // quit
@@ -4918,7 +4943,7 @@ describe('startMenu — no-provider gate in chat loop', () => {
       sink.buf.includes('No provider signed in yet'),
       'Must prompt before opening chat when no provider is authenticated',
     );
-    assert.deepEqual(loginCalls, ['claude'], 'inline auth prompt must call login for the selected provider');
+    assert.deepEqual(loginCalls, ['claude'], 'single installed provider must sign in directly');
 
     const metas = await store.list();
     const id = metas[0]?.id;
