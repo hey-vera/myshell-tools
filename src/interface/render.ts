@@ -135,10 +135,16 @@ function trailingOpenBraceIndex(text: string): number {
  *                    JSON must never leak into the prose, same class of bug.
  *   - `verdict`    : the cross-vendor review verdict envelope. Review output is
  *                    internal, but the renderer strips it defensively too.
+ *   - `remember_user` : the model-proposed durable-memory block (Phase 5). It is
+ *                    carried INSIDE the confidence envelope, so the `confidence`
+ *                    key already covers the common case; but the model may emit a
+ *                    bare `{"remember_user":{…}}` and the approval selector
+ *                    renders the proposal from the parsed CoreEvent — the raw
+ *                    JSON must never leak into the prose (same class of bug).
  * These are mutually exclusive per turn, but scanning for all is harmless and
  * future-proof.
  */
-const CONTROL_ENVELOPE_KEYS = ['confidence', 'ask_user', 'verdict'] as const;
+const CONTROL_ENVELOPE_KEYS = ['confidence', 'ask_user', 'verdict', 'remember_user'] as const;
 
 /**
  * The opening signatures a trailing control envelope can have: `{` then optional
@@ -146,7 +152,7 @@ const CONTROL_ENVELOPE_KEYS = ['confidence', 'ask_user', 'verdict'] as const;
  * `{…` fragment could BECOME a control envelope (and so must be held back) or is
  * just ordinary prose/code/JSON (and so should stream immediately).
  */
-const CONTROL_ENVELOPE_OPENINGS = ['"confidence', '"ask_user', '"verdict'] as const;
+const CONTROL_ENVELOPE_OPENINGS = ['"confidence', '"ask_user', '"verdict', '"remember_user'] as const;
 
 /**
  * Given a trailing fragment that begins at an OPEN `{` (its `}` hasn't arrived),

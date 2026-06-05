@@ -426,3 +426,34 @@ describe('buildPrompt — proactive research judgment', () => {
     });
   }
 });
+
+// ---------------------------------------------------------------------------
+// Phase 5 — the memory capture instruction (remember_user)
+// ---------------------------------------------------------------------------
+
+describe('buildPrompt — memory capture instruction (Phase 5)', () => {
+  for (const tier of ['worker', 'ic', 'manager'] as const) {
+    it(`${tier}: includes the remember_user capture instruction`, () => {
+      const result = buildPrompt(tier, 'do the task');
+      assert.ok(result.includes('remember_user'), `${tier} prompt should mention remember_user`);
+      assert.ok(
+        /durable[\s\S]*non-secret|non-secret[\s\S]*durable/i.test(result),
+        `${tier} prompt should scope memory to durable non-secret facts`,
+      );
+      assert.ok(
+        /never[\s\S]*alongside ask_user/i.test(result),
+        `${tier} prompt should forbid proposing memory alongside ask_user`,
+      );
+      assert.ok(
+        /routine turns/i.test(result),
+        `${tier} prompt should forbid proposing memory on routine turns`,
+      );
+    });
+  }
+
+  it('goal turns DROP the capture instruction (no proposals during autonomous runs)', () => {
+    const result = buildPrompt('ic', 'keep building', undefined, undefined, { goalTurn: true });
+    assert.ok(!result.includes('remember_user'), 'goal turns must not carry the capture instruction');
+    assert.ok(!result.includes('"confidence"'), 'goal turns suppress the confidence tail too');
+  });
+});

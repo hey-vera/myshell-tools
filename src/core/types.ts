@@ -484,4 +484,15 @@ export type CoreEvent =
        * orchestrate does not escalate or review. Absent for normal turns.
        */
       readonly questions?: QuestionSet;
+      /**
+       * Set when the model proposed durable user memory via a trailing
+       * `remember_user` block (parsed by `parseRememberUser`, carried INSIDE the
+       * confidence envelope). Attached only on NORMAL successful turns and NEVER
+       * alongside `questions` (the model never emits `ask_user` with
+       * `remember_user` — memory doc §8). At least one proposed fact has passed
+       * `worthGate`; the interface renders a Save/Skip/Edit selector for it via
+       * the post-turn slot (MASTER-PLAN MF3). Unlike `questions` it does NOT
+       * short-circuit the turn — the turn is still a complete success.
+       */
+      readonly memoryProposal?: import('./user-memory.js').RememberProposal;
     };

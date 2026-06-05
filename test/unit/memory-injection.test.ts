@@ -15,6 +15,7 @@ import {
   applyInjectGate,
   isMemoryEnabled,
   resolveMemoryContext,
+  resolveMemoryContextDetailed,
   type MemoryReadStore,
 } from '../../src/core/memory-injection.ts';
 import type { UserMemoryFact, MemoryKind } from '../../src/core/user-memory.ts';
@@ -312,5 +313,50 @@ describe('resolveMemoryContext', () => {
       config: {},
     });
     assert.ok(block.includes('Prefers tests'), 'a failed markUsed must not drop the injected block');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// resolveMemoryContextDetailed — exposes the injected facts (/memory loaded)
+// ---------------------------------------------------------------------------
+
+describe('resolveMemoryContextDetailed', () => {
+  it('returns BOTH the block and the facts injected this turn', async () => {
+    const f = fact({ kind: 'constraint', text: 'Uses Node 22.', subject: 'runtime' });
+    const store = fakeStore([f]);
+    const { block, facts } = await resolveMemoryContextDetailed({
+      store,
+      task: 'build the auth module',
+      projectKey: null,
+      nowIso: NOW,
+      config: {},
+    });
+    assert.ok(block.includes('Uses Node 22'), 'block carries the injected fact');
+    assert.equal(facts.length, 1);
+    assert.equal(facts[0]?.id, f.id, 'the injected fact id is exposed for /memory loaded');
+  });
+
+  it('empty store → { block: "", facts: [] }', async () => {
+    const { block, facts } = await resolveMemoryContextDetailed({
+      store: fakeStore([]),
+      task: 'do work',
+      projectKey: null,
+      nowIso: NOW,
+      config: {},
+    });
+    assert.equal(block, '');
+    assert.deepEqual(facts, []);
+  });
+
+  it('kill-switch → no facts exposed', async () => {
+    const { block, facts } = await resolveMemoryContextDetailed({
+      store: fakeStore([fact({ kind: 'constraint', text: 'Uses Node 22.' })]),
+      task: 'do work',
+      projectKey: null,
+      nowIso: NOW,
+      config: { memory: false },
+    });
+    assert.equal(block, '');
+    assert.deepEqual(facts, []);
   });
 });

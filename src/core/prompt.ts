@@ -35,6 +35,26 @@ import {
 // Tier role prompts
 // ---------------------------------------------------------------------------
 
+/**
+ * The model-proposed memory capture instruction (Phase 5, memory doc §8(b)).
+ * Appended to each persona AFTER the confidence envelope. It is deliberately
+ * conservative — propose memory ONLY for a clear durable non-secret fact, or when
+ * the user said "remember…"; never on routine turns; never alongside `ask_user`.
+ * Goal turns strip the whole confidence tail (see `promptForMode`), so no memory
+ * is proposed there either.
+ */
+const MEMORY_CAPTURE_INSTRUCTION = `\
+REMEMBERING ABOUT THE USER: If — and only if — this turn surfaced a clearly
+durable, non-secret fact about the user that would change how you help them in
+FUTURE chats (a stable preference, their role/stack, a hard constraint, a durable
+project fact, or a correction), OR the user explicitly said "remember …", you may
+propose it for memory by adding a "remember_user" key INSIDE the confidence JSON
+object above (not a second block):
+{"confidence": …, "escalate": …, "reason": …, "needs_review": …, "remember_user":{"facts":[{"scope":"global|project","kind":"preference|identity|constraint|project|correction","text":"<short fact ≤180>","reason":"<why durable ≤160>"}]}}
+1–3 facts. NEVER propose memory on routine turns, never for secrets/credentials,
+and NEVER alongside ask_user (if you need the user's input, ask first — memory
+waits). When nothing durable came up, simply omit "remember_user".`;
+
 const WORKER_SYSTEM = `\
 You are a thoughtful senior engineering partner working at the fast, precise
 worker-tier. Your role is to handle well-scoped, read-oriented tasks: searching
@@ -94,7 +114,9 @@ line at the very end of your response (no trailing text after it):
 
 Set confidence to your honest estimate of correctness (1.0 = certain, 0.0 = no
 idea). Set escalate to true if the task requires a higher-tier model. Set
-needs_review to true if you are uncertain and an independent check would help.`;
+needs_review to true if you are uncertain and an independent check would help.
+
+${MEMORY_CAPTURE_INSTRUCTION}`;
 
 const IC_SYSTEM = `\
 You are a thoughtful senior engineering partner working at the
@@ -169,7 +191,9 @@ line at the very end of your response (no trailing text after it):
 Set confidence to your honest estimate of correctness (1.0 = certain, 0.0 = no
 idea). Set escalate to true if the task is beyond IC scope (e.g. requires
 cross-cutting architectural decisions). Set needs_review to true if an
-independent reviewer would meaningfully reduce risk.`;
+independent reviewer would meaningfully reduce risk.
+
+${MEMORY_CAPTURE_INSTRUCTION}`;
 
 const MANAGER_SYSTEM = `\
 You are a thoughtful senior engineering partner working at the senior-manager /
@@ -241,7 +265,9 @@ its own line at the very end of your response (no trailing text after it):
 
 Set confidence to your honest estimate that your analysis is complete and correct
 (1.0 = certain, 0.0 = severely incomplete). Set escalate to true only if the
-situation warrants immediate human or higher-tier intervention.`;
+situation warrants immediate human or higher-tier intervention.
+
+${MEMORY_CAPTURE_INSTRUCTION}`;
 
 // ---------------------------------------------------------------------------
 // Public API

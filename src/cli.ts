@@ -40,6 +40,7 @@ import { getStateDir } from './infra/paths.js';
 import { isPricingStale } from './infra/pricing.js';
 import { runDoctor } from './commands/doctor.js';
 import { runCost } from './commands/cost.js';
+import { runMemoryCli } from './commands/memory.js';
 import { runLogin } from './commands/login.js';
 import { runInstall } from './commands/install.js';
 import { banner } from './ui/banner.js';
@@ -254,6 +255,14 @@ async function main(): Promise<void> {
 
   if (args[0] === 'cost') {
     process.exit(await runCost(cwd, out));
+  }
+
+  // ---- Memory one-shot subcommands (Phase 5, memory doc §8(a)) ---------------
+  // `memory list | add "<fact>" | forget <id> | export`. No provider detection,
+  // no model call — deterministic store I/O. The interactive `/remember`,
+  // `/forget`, `/memory` live in the chat loop (menu.ts).
+  if (args[0] === 'memory') {
+    process.exit(await runMemoryCli(args.slice(1), cwd, out, systemClock));
   }
 
   if (args[0] === 'install') {

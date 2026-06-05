@@ -226,3 +226,34 @@ describe('assess — fuzz loop over junk strings', () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// Phase 5 — assess() IGNORES the remember_user key (no-op wrt memory)
+// ---------------------------------------------------------------------------
+
+describe('assess — remember_user is a no-op (Phase 5)', () => {
+  it('parses confidence normally even when remember_user rides in the same envelope', () => {
+    const output =
+      'Answer.\n' +
+      '{"confidence":0.91,"escalate":false,"reason":"done","needs_review":false,' +
+      '"remember_user":{"facts":[{"scope":"global","kind":"preference",' +
+      '"text":"Prefers concise answers","reason":"stable pref"}]}}';
+    const result = assess(output);
+    // The memory key must not change confidence parsing in any way.
+    assert.equal(result.confidence, 0.91);
+    assert.equal(result.escalate, false);
+    assert.equal(result.needsReview, false);
+    // Assessment has no memory field — it never reads remember_user.
+    assert.equal(Object.hasOwn(result, 'remember_user'), false);
+    assert.equal(Object.hasOwn(result, 'memoryProposal'), false);
+  });
+
+  it('a bare remember_user block (no confidence) → confidence null (envelope absent)', () => {
+    const output =
+      'Answer.\n' +
+      '{"remember_user":{"facts":[{"scope":"global","kind":"preference",' +
+      '"text":"Prefers concise answers","reason":"pref"}]}}';
+    const result = assess(output);
+    assert.equal(result.confidence, null);
+  });
+});

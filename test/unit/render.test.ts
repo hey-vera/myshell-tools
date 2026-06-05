@@ -1060,3 +1060,54 @@ describe('renderStream — ask_user block stripping', () => {
     assert.ok(!joined.includes('"confidence"'), 'confidence envelope still stripped');
   });
 });
+
+// ---------------------------------------------------------------------------
+// 13. remember_user block stripping (Phase 5 — no raw memory JSON leak)
+// ---------------------------------------------------------------------------
+
+describe('renderStream — remember_user block stripping', () => {
+  it('strips a remember_user block carried INSIDE the confidence envelope', async () => {
+    const sink = makeSink();
+    const ENVELOPE =
+      '{"confidence":0.9,"escalate":false,"reason":"ok","needs_review":false,' +
+      '"remember_user":{"facts":[{"scope":"global","kind":"preference",' +
+      '"text":"Prefers concise answers","reason":"stable pref"}]}}';
+    await renderStream(makeStream(textStream([`All set.\n${ENVELOPE}`])), sink);
+    const joined = sink.buf.join('');
+    assert.ok(joined.includes('All set.'), 'prose survives');
+    assert.ok(!joined.includes('remember_user'), 'remember_user must not be shown');
+    assert.ok(!joined.includes('"facts"'), 'no block fragment may leak');
+    assert.ok(!joined.includes('"confidence"'), 'envelope still stripped');
+  });
+
+  it('strips a BARE trailing remember_user block (no confidence key)', async () => {
+    const sink = makeSink();
+    const BARE =
+      '{"remember_user":{"facts":[{"scope":"project","kind":"project",' +
+      '"text":"heyvera should feel retro","reason":"durable project feel"}]}}';
+    await renderStream(makeStream(textStream([`Done.\n${BARE}`])), sink);
+    const joined = sink.buf.join('');
+    assert.ok(joined.includes('Done.'), 'prose survives');
+    assert.ok(!joined.includes('remember_user'), 'bare remember_user must not leak');
+    assert.ok(!joined.includes('heyvera should feel retro'), 'no proposed fact text may leak');
+  });
+
+  it('strips a remember_user block SPLIT across deltas', async () => {
+    const sink = makeSink();
+    await renderStream(
+      makeStream(
+        textStream([
+          'Captured.\n',
+          '{"remember_user":{"facts":[',
+          '{"scope":"global","kind":"preference",',
+          '"text":"Prefers concise answers","reason":"pref"}]}}',
+        ]),
+      ),
+      sink,
+    );
+    const joined = sink.buf.join('');
+    assert.ok(joined.includes('Captured.'), 'prose streams fully');
+    assert.ok(!joined.includes('remember_user'), 'split block must NOT leak');
+    assert.ok(!joined.includes('"facts"'), 'no fragment may leak');
+  });
+});

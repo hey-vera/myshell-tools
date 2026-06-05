@@ -3712,3 +3712,87 @@ describe('orchestrate — learnedProviderOrder (Local Outcome Learner)', () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// Phase 5 — model-proposed memory (final.memoryProposal)
+// ---------------------------------------------------------------------------
+
+describe('orchestrate — final.memoryProposal (remember_user, Phase 5)', () => {
+  function depsWith(): OrchestrateDeps {
+    return {
+      providers: { claude: makeFakeProvider('claude') },
+      clock: makeFakeClock(),
+      session: makeFakeSession(),
+      ledger: makeFakeLedger(),
+      policy: DEFAULT_POLICY,
+      cwd: '/fake/cwd',
+      sandbox: 'workspace-write',
+      timeoutMs: 30_000,
+    };
+  }
+
+  function providerEmitting(finalText: string): Provider {
+    return makeFakeProvider('claude', [
+      { type: 'text', delta: 'done.\n' },
+      { type: 'done', text: finalText, usage: FAKE_USAGE, raw: {} },
+    ]);
+  }
+
+  it('attaches a gated memoryProposal when the envelope carries remember_user', async () => {
+    const finalText =
+      'Here is your answer.\n' +
+      '{"confidence":0.9,"escalate":false,"reason":"done","needs_review":false,' +
+      '"remember_user":{"facts":[{"scope":"global","kind":"preference",' +
+      '"text":"Prefers concise, direct answers","reason":"stable communication preference"}]}}';
+    const deps = { ...depsWith(), providers: { claude: providerEmitting(finalText) } };
+    const events = await collectEvents(orchestrate('refactor X', deps, new AbortController().signal));
+    const final = events.find((e) => e.type === 'final');
+    assert.ok(final !== undefined && final.type === 'final');
+    if (final.type === 'final') {
+      assert.equal(final.success, true);
+      assert.ok(final.memoryProposal !== undefined, 'expected a memoryProposal');
+      assert.equal(final.memoryProposal?.facts.length, 1);
+      assert.match(final.memoryProposal?.facts[0]?.text ?? '', /concise/);
+    }
+  });
+
+  it('drops a secret-bearing proposed fact (gate runs before surfacing)', async () => {
+    const finalText =
+      'Answer.\n' +
+      '{"confidence":0.9,"escalate":false,"reason":"done","needs_review":false,' +
+      '"remember_user":{"facts":[{"scope":"global","kind":"constraint",' +
+      '"text":"my api key is sk-ABCDEF0123456789abcdef0123","reason":"x"}]}}';
+    const deps = { ...depsWith(), providers: { claude: providerEmitting(finalText) } };
+    const events = await collectEvents(orchestrate('refactor X', deps, new AbortController().signal));
+    const final = events.find((e) => e.type === 'final');
+    assert.ok(final !== undefined && final.type === 'final');
+    if (final.type === 'final') {
+      assert.equal(final.memoryProposal, undefined, 'a secret must not surface as a proposal');
+    }
+  });
+
+  it('no remember_user → no memoryProposal on a normal turn', async () => {
+    const deps = depsWith();
+    const events = await collectEvents(orchestrate('refactor X', deps, new AbortController().signal));
+    const final = events.find((e) => e.type === 'final');
+    assert.ok(final !== undefined && final.type === 'final');
+    if (final.type === 'final') {
+      assert.equal(final.memoryProposal, undefined);
+    }
+  });
+
+  it('a question turn (ask_user) NEVER carries a memoryProposal (mutually exclusive)', async () => {
+    const finalText =
+      'Let me ask.\n' +
+      '{"ask_user":{"questions":[{"id":"q1","prompt":"Pick one","options":' +
+      '[{"label":"A"},{"label":"B"}],"multiSelect":false,"allowFreeText":false}]}}';
+    const deps = { ...depsWith(), providers: { claude: providerEmitting(finalText) } };
+    const events = await collectEvents(orchestrate('refactor X', deps, new AbortController().signal));
+    const final = events.find((e) => e.type === 'final');
+    assert.ok(final !== undefined && final.type === 'final');
+    if (final.type === 'final') {
+      assert.ok(final.questions !== undefined, 'expected a question final');
+      assert.equal(final.memoryProposal, undefined, 'ask_user and remember_user are mutually exclusive');
+    }
+  });
+});

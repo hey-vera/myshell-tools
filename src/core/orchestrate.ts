@@ -36,6 +36,12 @@ import type { FlagshipTrigger, FlagshipDecision } from './flagship.js';
 import { buildPrompt } from './prompt.js';
 import { assess } from './assess.js';
 import { parseQuestions } from './questions.js';
+import {
+  parseRememberUser,
+  worthGate,
+  type Candidate,
+  type RememberProposal,
+} from './user-memory.js';
 import { compactHistory } from './history.js';
 import { getModelPricing, calculateCost } from '../infra/pricing.js';
 import { nextTierUp, pickReviewer } from './escalate.js';
@@ -77,6 +83,39 @@ function shouldReview(
     classification.risk === 'critical' ||
     assessment.needsReview === true
   );
+}
+
+/**
+ * Parse a model-proposed `remember_user` block from a NORMAL successful turn's
+ * final text and keep ONLY the facts that pass `worthGate` as
+ * `agent_inferred / model_proposed` candidates (so a secret / noise / instruction
+ * never even surfaces as a proposal — memory doc §8(b)). Returns a
+ * `RememberProposal` of the surviving facts, or `undefined` when there is no
+ * block or none survive the gate. Pure; never throws.
+ *
+ * Attached to the final ONLY on the normal (non-question) success path so it can
+ * never ride alongside `questions` (the two are mutually exclusive). The
+ * interface renders the Save/Skip/Edit selector for it via the post-turn slot.
+ */
+function memoryProposalFor(finalText: string | undefined): RememberProposal | undefined {
+  const proposal = parseRememberUser(finalText ?? '');
+  if (proposal === null) return undefined;
+  const kept = proposal.facts.filter((f) => {
+    const candidate: Candidate = {
+      scope: f.scope,
+      projectKey: null,
+      shape: f.kind === 'correction' ? 'collection' : 'profile',
+      kind: f.kind,
+      subjectHint: f.text,
+      text: f.text,
+      reason: f.reason,
+      trust: 'agent_inferred',
+      source: 'model_proposed',
+    };
+    return worthGate(candidate).ok;
+  });
+  if (kept.length === 0) return undefined;
+  return { facts: kept };
 }
 
 // ---------------------------------------------------------------------------
@@ -1012,15 +1051,19 @@ export async function* orchestrate(
               throw new Error('orchestrate invariant violated: approved final without accepted run');
             }
             await appendAcceptedAssistant(deps, acceptedRun);
-            yield {
-              type: 'final',
-              success: true,
-              output: lastOutput,
-              tier: currentTier,
-              totalCostUsd,
-              sessionId: deps.session.id,
-              attempts,
-            };
+            {
+              const memoryProposal = memoryProposalFor(lastOutput);
+              yield {
+                type: 'final',
+                success: true,
+                output: lastOutput,
+                tier: currentTier,
+                totalCostUsd,
+                sessionId: deps.session.id,
+                attempts,
+                ...(memoryProposal !== undefined ? { memoryProposal } : {}),
+              };
+            }
             return;
           }
 
@@ -1048,15 +1091,19 @@ export async function* orchestrate(
               throw new Error('orchestrate invariant violated: ceiling-accepted final without accepted run');
             }
             await appendAcceptedAssistant(deps, acceptedRun);
-            yield {
-              type: 'final',
-              success: true,
-              output: lastOutput,
-              tier: currentTier,
-              totalCostUsd,
-              sessionId: deps.session.id,
-              attempts,
-            };
+            {
+              const memoryProposal = memoryProposalFor(lastOutput);
+              yield {
+                type: 'final',
+                success: true,
+                output: lastOutput,
+                tier: currentTier,
+                totalCostUsd,
+                sessionId: deps.session.id,
+                attempts,
+                ...(memoryProposal !== undefined ? { memoryProposal } : {}),
+              };
+            }
             return;
           }
           if (escalateTo === null) {
@@ -1142,15 +1189,19 @@ export async function* orchestrate(
       throw new Error('orchestrate invariant violated: successful final without accepted run');
     }
     await appendAcceptedAssistant(deps, acceptedRun);
-    yield {
-      type: 'final',
-      success: true,
-      output: lastOutput,
-      tier: currentTier,
-      totalCostUsd,
-      sessionId: deps.session.id,
-      attempts,
-    };
+    {
+      const memoryProposal = memoryProposalFor(lastOutput);
+      yield {
+        type: 'final',
+        success: true,
+        output: lastOutput,
+        tier: currentTier,
+        totalCostUsd,
+        sessionId: deps.session.id,
+        attempts,
+        ...(memoryProposal !== undefined ? { memoryProposal } : {}),
+      };
+    }
     return;
   }
 

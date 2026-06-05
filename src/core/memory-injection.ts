@@ -103,27 +103,33 @@ export interface ResolveMemoryContextInput {
   readonly sweep?: boolean;
 }
 
+/** Result of {@link resolveMemoryContextDetailed}: the block + the facts injected. */
+export interface ResolvedMemoryContext {
+  /** The pre-rendered, capped MEMORY block ('' when nothing applies). */
+  readonly block: string;
+  /**
+   * The facts ACTUALLY injected into the prompt this turn (the `/memory loaded`
+   * transparency source, §8). Empty when nothing was injected.
+   */
+  readonly facts: readonly UserMemoryFact[];
+}
+
 /**
- * Per-turn retrieval + injection (§7), fully fail-soft.
+ * Per-turn retrieval + injection (§7), fully fail-soft. Returns BOTH the rendered
+ * block AND the facts that were injected (so the chat loop can power
+ * `/memory loaded`). See {@link resolveMemoryContext} for the steps.
  *
- * 1. Kill-switch / no-store → '' (no memory).
- * 2. sweepDecay on open (lazy, §6) — best-effort, swallowed on error.
- * 3. listAll → applyInjectGate (gate prefs/corrections/project behind a real
- *    work request; identity+constraints always ride) → selectRelevant
- *    (deterministic scoring, 12-fact/1200-char budget) → render.
- * 4. markUsed the RELEVANCE-selected ids only (RC-5 — injection alone is not
- *    "validated use"); best-effort.
- *
- * ANY error anywhere returns '' — memory degrades, the turn proceeds. No model
- * call. Returns the pre-rendered, capped MEMORY block ('' when nothing applies).
+ * ANY error anywhere returns `{ block: '', facts: [] }` — memory degrades, the
+ * turn proceeds. No model call.
  */
-export async function resolveMemoryContext(
+export async function resolveMemoryContextDetailed(
   input: ResolveMemoryContextInput,
-): Promise<string> {
+): Promise<ResolvedMemoryContext> {
+  const EMPTY: ResolvedMemoryContext = { block: '', facts: [] };
   const { store, task, projectKey, partnerStyle, nowIso, config } = input;
 
   // Kill-switch or no store → nothing injected.
-  if (store === undefined || !isMemoryEnabled(config)) return '';
+  if (store === undefined || !isMemoryEnabled(config)) return EMPTY;
 
   try {
     // Lazy decay sweep on open — the CLI's "idle" (§6). Best-effort.
@@ -139,11 +145,11 @@ export async function resolveMemoryContext(
     }
 
     const all = await store.listAll();
-    if (all.length === 0) return '';
+    if (all.length === 0) return EMPTY;
 
     // Inject-time gate (§7): prefs/corrections/project ride only on real work.
     const gated = applyInjectGate(all, hasTierEvidence(task));
-    if (gated.length === 0) return '';
+    if (gated.length === 0) return EMPTY;
 
     const selected = selectRelevant({
       task,
@@ -152,7 +158,7 @@ export async function resolveMemoryContext(
       nowIso,
       ...(partnerStyle !== undefined ? { partnerStyle } : {}),
     });
-    if (selected.facts.length === 0) return '';
+    if (selected.facts.length === 0) return EMPTY;
 
     // RC-5: reset decay ONLY for relevance-selected facts. Best-effort.
     if (selected.resetDecayIds.length > 0) {
@@ -163,9 +169,20 @@ export async function resolveMemoryContext(
       }
     }
 
-    return renderMemoryContext(selected.facts);
+    return { block: renderMemoryContext(selected.facts), facts: selected.facts };
   } catch {
     // Any store/selection failure → no memory injected; turn proceeds.
-    return '';
+    return EMPTY;
   }
+}
+
+/**
+ * Per-turn retrieval + injection (§7), fully fail-soft. Thin wrapper over
+ * {@link resolveMemoryContextDetailed} returning only the rendered block (the
+ * common path for callers that don't need the injected-fact list).
+ */
+export async function resolveMemoryContext(
+  input: ResolveMemoryContextInput,
+): Promise<string> {
+  return (await resolveMemoryContextDetailed(input)).block;
 }

@@ -18,6 +18,7 @@
 
 import readline from 'node:readline';
 import fs from 'node:fs';
+import { join } from 'node:path';
 import tty from 'node:tty';
 import { execa } from 'execa';
 import type { Clock, CoreEvent, LedgerWriter, OrchestrateDeps, Question, QuestionSet, SessionEntry, SessionWriter, Tier } from '../core/types.js';
@@ -27,8 +28,17 @@ import { appendCheckpointFromContinue, capContract } from '../core/work-contract
 import { formatAnswers, isKeepGoingOffer } from '../core/questions.js';
 import { decideAutonomyOffer } from '../core/autonomy.js';
 import { classify } from '../core/classify.js';
-import { resolveMemoryContext } from '../core/memory-injection.js';
+import { resolveMemoryContextDetailed } from '../core/memory-injection.js';
 import { createFileUserMemoryStore, resolveProjectKey } from '../infra/user-memory-store.js';
+import {
+  runRemember,
+  runForget,
+  runMemoryList,
+  runMemoryLoaded,
+  runMemoryExport,
+  runMemoryApproval,
+} from '../commands/memory.js';
+import type { UserMemoryFact } from '../core/user-memory.js';
 import type { AppConfig } from '../infra/config.js';
 import { saveConfig, resolvePartnerStyle } from '../infra/config.js';
 import type { PartnerStyle } from '../core/prompt-context.js';
@@ -496,10 +506,22 @@ export function interpretQuestionAnswer(
 export const FREE_TEXT_SENTINEL = '\x00__FREE_TEXT__\x00';
 
 /**
- * The slash-commands available at the chat prompt. Tab-completion offers these;
- * keep in sync with the dispatch in runChatLoop (/back, /exit, /help).
+ * The slash-commands available at the chat prompt — the canonical command set
+ * (Tab T1, docs/tab-completion-5.5.md). Tab-completion offers exactly these;
+ * keep in sync with the dispatch in `runOneChatInput` (/style, /mode, /goal,
+ * /remember, /forget, /memory, /help, /back, /exit). Ordered most-used first.
  */
-export const CHAT_SLASH_COMMANDS: readonly string[] = ['/help', '/back', '/exit'];
+export const CHAT_SLASH_COMMANDS: readonly string[] = [
+  '/help',
+  '/style',
+  '/mode',
+  '/goal',
+  '/remember',
+  '/forget',
+  '/memory',
+  '/back',
+  '/exit',
+];
 
 /**
  * Pure completer for a readline `completer` option, scoped to slash-commands.
@@ -2919,14 +2941,24 @@ async function runChatLoop(
     finalEvent: Extract<CoreEvent, { type: 'final' }> | undefined,
     runQuestionFlow: () => Promise<void>,
     drainQueue: () => Promise<void>,
+    runMemoryApprovalFlow?: () => Promise<void>,
   ): Promise<void> => {
     const hasQuestions =
       finalEvent?.success === true && finalEvent.questions !== undefined;
+    // A memory proposal is present when the turn succeeded WITHOUT questions and
+    // carries a `memoryProposal` with ≥1 fact. The facts on the event already
+    // passed `worthGate` in orchestrate (`memoryProposalFor`), so "present" ==
+    // "passed gate" here (MASTER-PLAN MF3 `hasMemoryProposal`). Memory is OFF →
+    // never surface a proposal.
+    const hasMemoryProposal =
+      runMemoryApprovalFlow !== undefined &&
+      finalEvent?.success === true &&
+      finalEvent.questions === undefined &&
+      finalEvent.memoryProposal !== undefined &&
+      finalEvent.memoryProposal.facts.length > 0;
     const actions = decidePostTurn({
       hasQuestions,
-      // Phase 5: memory proposals don't exist yet — always false. The
-      // 'memory-approval' action is reachable in the table but no-ops here.
-      hasMemoryProposal: false,
+      hasMemoryProposal,
       queuedCount: queuedTurns.length,
       interrupted: interruptedByEsc || shouldExit || shouldMenu,
     });
@@ -2936,11 +2968,11 @@ async function runChatLoop(
         // unseen question/memory selector. Notice the user it was dropped.
         if (queuedTurns.length > 0) {
           const reason = hasQuestions ? 'question' : 'interrupt';
-          // Only annotate as a data-loss notice when something is dropped that
-          // the user could otherwise expect to run (interrupt or a pending
-          // selector). On a clean settle with no selector, drain-queue runs and
-          // there is nothing to discard (queuedCount feeds the queue below).
-          if (interruptedByEsc || shouldExit || shouldMenu || hasQuestions) {
+          // Annotate as a data-loss notice when something is dropped that the
+          // user could otherwise expect to run (interrupt, a pending question,
+          // or a pending memory-approval selector). On a clean settle with no
+          // selector, drain-queue runs and there is nothing to discard.
+          if (interruptedByEsc || shouldExit || shouldMenu || hasQuestions || hasMemoryProposal) {
             renderDiscardedQueue(out, queuedTurns.length, reason);
             queuedTurns.length = 0;
           }
@@ -2948,9 +2980,11 @@ async function runChatLoop(
       } else if (action === 'question-flow') {
         await runQuestionFlow();
       } else if (action === 'memory-approval') {
-        // TODO(Phase 5): wire the remember_user Save/Skip/Edit selector here.
-        // It MUST route through this slot (after discard, before drain) so a
-        // queued "1" can never become "Save" — see MASTER-PLAN MF3.
+        // The remember_user Save/Skip/Edit selector. It runs HERE — after
+        // discard-typeahead, before drain-queue (MASTER-PLAN MF3) — so a queued
+        // "1" can never be misread as "Save". Reuses the injected line reader,
+        // never the raw menu input internals.
+        if (runMemoryApprovalFlow !== undefined) await runMemoryApprovalFlow();
       } else if (action === 'drain-queue') {
         await drainQueue();
       }
@@ -3299,29 +3333,43 @@ async function runChatLoop(
       // per chat session (it can't change mid-conversation). Fully fail-soft: any
       // store error → '' (no memory), the turn proceeds. Skipped entirely when
       // the kill-switch is set (config.memory===false). No model call.
-      const memoryStore =
-        mutableCtx.config.memory !== false
-          ? createFileUserMemoryStore({ clock: ctx.clock })
-          : undefined;
+      // The store is always created (so /memory list/forget/export work even when
+      // memory is OFF — the kill-switch only suppresses READ/inject + WRITE, not
+      // the user's ability to inspect/delete/export what is already stored, §9).
+      const memoryStore = createFileUserMemoryStore({ clock: ctx.clock });
       let memoryProjectKey: string | null | undefined;
       let memorySwept = false;
-      const resolveTurnMemory = async (task: string): Promise<string> => {
-        if (memoryStore === undefined) return '';
+      // Facts ACTUALLY injected into a prompt this session — the `/memory loaded`
+      // transparency source (§8). De-duplicated by id, newest-first.
+      const loadedThisSession: UserMemoryFact[] = [];
+      const resolveProjectKeyOnce = async (): Promise<string | null> => {
         if (memoryProjectKey === undefined) {
           memoryProjectKey = await resolveProjectKey(ctx.cwd).catch(() => null);
         }
-        const block = await resolveMemoryContext({
+        return memoryProjectKey;
+      };
+      const resolveTurnMemory = async (task: string): Promise<string> => {
+        // Kill-switch: no read/inject when memory is off.
+        if (mutableCtx.config.memory === false) return '';
+        const projectKey = await resolveProjectKeyOnce();
+        const resolved = await resolveMemoryContextDetailed({
           store: memoryStore,
           task,
-          projectKey: memoryProjectKey,
+          projectKey,
           partnerStyle: resolvePartnerStyle(mutableCtx.config, effectiveMode),
           nowIso: ctx.clock.isoNow(),
           config: mutableCtx.config,
           // Sweep once per chat session (the "store open"), not every turn.
           sweep: !memorySwept,
-        }).catch(() => '');
+        }).catch(() => ({ block: '', facts: [] as readonly UserMemoryFact[] }));
         memorySwept = true;
-        return block;
+        // Record what loaded (de-dup by id; most-recent injection wins position).
+        for (const f of resolved.facts) {
+          const existing = loadedThisSession.findIndex((x) => x.id === f.id);
+          if (existing >= 0) loadedThisSession.splice(existing, 1);
+          loadedThisSession.unshift(f);
+        }
+        return resolved.block;
       };
 
       const runStructuredQuestionFlow = async (
@@ -3500,6 +3548,81 @@ async function runChatLoop(
         return false;
       };
 
+      // ---- Memory commands (Phase 5, memory doc §8) ---------------------------
+      // Dispatched here (after the per-turn memory machinery is in scope) so they
+      // share the single store + project key + the `/memory loaded` tracker. They
+      // use the SAME injected line reader as the chat prompt (not raw input
+      // internals); no model call (subscription-auth).
+      if (line === '/remember' || line.startsWith('/remember ')) {
+        const fact = line.slice('/remember'.length).trim();
+        out.write(
+          `${await runRemember({
+            text: fact,
+            store: memoryStore,
+            config: mutableCtx.config,
+            projectKey: await resolveProjectKeyOnce(),
+          })}\n`,
+        );
+        return 'continue';
+      }
+
+      if (line === '/forget' || line.startsWith('/forget ')) {
+        const id = line.slice('/forget'.length).trim();
+        out.write(
+          `${await runForget({
+            store: memoryStore,
+            projectKey: await resolveProjectKeyOnce(),
+            out,
+            readLine,
+            ...(id.length > 0 ? { id } : {}),
+          })}\n`,
+        );
+        return 'continue';
+      }
+
+      if (line === '/memory' || line.startsWith('/memory ')) {
+        const arg = line.slice('/memory'.length).trim();
+        const projectKey = await resolveProjectKeyOnce();
+        if (arg === '' || arg === 'list') {
+          await runMemoryList({ store: memoryStore, projectKey, out });
+        } else if (arg === 'all') {
+          await runMemoryList({ store: memoryStore, projectKey, out, all: true });
+        } else if (arg === 'loaded') {
+          runMemoryLoaded({ out, loaded: loadedThisSession });
+        } else if (arg === 'export') {
+          const exportPath = join(ctx.cwd, 'myshell-memory.md');
+          out.write(
+            `${await runMemoryExport({
+              store: memoryStore,
+              out,
+              path: exportPath,
+              writeFile: (p, data) => fs.promises.writeFile(p, data, 'utf8'),
+            })}\n`,
+          );
+        } else if (arg.startsWith('edit ')) {
+          // Edit = forget the chosen id then re-add via /remember. v1 routes the
+          // user to the explicit two-step (forget + remember) rather than an
+          // in-place editor (kept lean); show the fact so they can copy it.
+          const id = arg.slice('edit '.length).trim();
+          const fact = await memoryStore.get(id).catch(() => null);
+          if (fact === null) {
+            out.write(`No memory with id ${id}.\n`);
+          } else {
+            out.write(
+              dim(
+                `  ${fact.text}\n  To change it: /forget ${id}  then  /remember <new fact>\n`,
+                out.color,
+              ),
+            );
+          }
+        } else {
+          out.write(
+            dim('  Usage: /memory [all | loaded | export | edit <id>]\n', out.color),
+          );
+        }
+        return 'continue';
+      }
+
       // ---- /goal — explicit autonomous loop -----------------------------------
       if (line.startsWith('/goal')) {
         const goalText = line.slice('/goal'.length).trim();
@@ -3651,10 +3774,11 @@ async function runChatLoop(
       // ---- Post-turn slot (decidePostTurn / MASTER-PLAN MF3) ------------------
       // The single canonical post-turn order: discard typed-ahead (before any
       // selector) → question-flow (the ask_user selector) → memory-approval
-      // (Phase-5 stub) → drain-queue (FIFO, clean settle only). question-flow
-      // wires the EXISTING runStructuredQuestionFlow; drain re-enters
-      // runOneChatInput per queued line. A queued line can NEVER answer an unseen
-      // selector (discard always precedes question-flow).
+      // (the remember_user Save/Skip/Edit selector) → drain-queue (FIFO, clean
+      // settle only). question-flow wires the EXISTING runStructuredQuestionFlow;
+      // memory-approval wires runMemoryApproval (same injected reader); drain
+      // re-enters runOneChatInput per queued line. A queued line can NEVER answer
+      // an unseen selector (discard always precedes both selectors).
       await runPostTurnSlot(
         result.final,
         () => runStructuredQuestionFlow(result.final),
@@ -3667,6 +3791,23 @@ async function runChatLoop(
             if (drainSignal === 'exit') { shouldExit = true; loopResult = 'exit'; break; }
           }
         },
+        // Memory-approval: only when memory writes are ON and the (already
+        // gated) proposal carries facts. Non-TTY ignores proposals (the slot is
+        // never reached off-TTY because runChatLoop only runs interactively).
+        result.final?.memoryProposal !== undefined && mutableCtx.config.memory !== false
+          ? async (): Promise<void> => {
+              const proposal = result.final?.memoryProposal;
+              if (proposal === undefined) return;
+              await runMemoryApproval({
+                proposal,
+                store: memoryStore,
+                projectKey: await resolveProjectKeyOnce(),
+                out,
+                readLine,
+                config: mutableCtx.config,
+              });
+            }
+          : undefined,
       );
       if (shouldExit) {
         loopResult = 'exit';
