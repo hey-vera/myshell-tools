@@ -2785,13 +2785,15 @@ function renderQueuedHint(
 function renderDiscardedQueue(
   out: OutputSink,
   count: number,
-  reason: 'interrupt' | 'question',
+  reason: 'interrupt' | 'question' | 'memory',
 ): void {
   if (count <= 0) return;
   const tail =
     reason === 'question'
       ? '; answer the question first'
-      : '';
+      : reason === 'memory'
+        ? '; respond to the memory prompt first'
+        : '';
   out.write(dim(`  (discarded ${count} queued message${count === 1 ? '' : 's'}${tail})\n`, out.color));
 }
 
@@ -3190,7 +3192,7 @@ async function runChatLoop(
         // Discard before any selector so a queued line can never auto-answer an
         // unseen question/memory selector. Notice the user it was dropped.
         if (queuedTurns.length > 0) {
-          const reason = hasQuestions ? 'question' : 'interrupt';
+          const reason = hasQuestions ? 'question' : hasMemoryProposal ? 'memory' : 'interrupt';
           // Annotate as a data-loss notice when something is dropped that the
           // user could otherwise expect to run (interrupt, a pending question,
           // or a pending memory-approval selector). On a clean settle with no

@@ -122,6 +122,32 @@ function memoryProposalFor(finalText: string | undefined): RememberProposal | un
   return { facts: kept };
 }
 
+/**
+ * Wrap a delegated panel/hedge event stream and attach a model-proposed memory
+ * block to its successful final — parity with the sequential path (closes the
+ * Phase-9 implementation re-gate's F1 gap, where panel/hedge injected memory but
+ * never proposed it). Attaches ONLY to a normal success final that carries
+ * neither questions nor an existing proposal, preserving the questions ⊻ memory
+ * mutual-exclusivity invariant. Pure pass-through for every other event.
+ */
+export async function* withMemoryProposalAttached(
+  source: AsyncGenerator<CoreEvent>,
+): AsyncGenerator<CoreEvent> {
+  for await (const ev of source) {
+    if (
+      ev.type === 'final' &&
+      ev.success === true &&
+      ev.questions === undefined &&
+      ev.memoryProposal === undefined
+    ) {
+      const memoryProposal = memoryProposalFor(ev.output);
+      yield memoryProposal !== undefined ? { ...ev, memoryProposal } : ev;
+    } else {
+      yield ev;
+    }
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Private streaming helper
 // ---------------------------------------------------------------------------
@@ -464,7 +490,7 @@ export async function* orchestrate(
     maxPanelProviders: deps.policy.maxPanelProviders ?? 2,
   });
   if (panelPlan !== null) {
-    yield* runPanel(task, deps, panelPlan, signal, historyContext);
+    yield* withMemoryProposalAttached(runPanel(task, deps, panelPlan, signal, historyContext));
     return;
   }
 
@@ -489,7 +515,7 @@ export async function* orchestrate(
     hasSleep: deps.sleep !== undefined,
   });
   if (hedgePlan !== null) {
-    yield* runHedged(task, deps, hedgePlan, signal, historyContext);
+    yield* withMemoryProposalAttached(runHedged(task, deps, hedgePlan, signal, historyContext));
     return;
   }
 

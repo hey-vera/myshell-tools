@@ -8,7 +8,7 @@
 
 import { describe, it, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { orchestrate } from '../../src/core/orchestrate.ts';
+import { orchestrate, withMemoryProposalAttached } from '../../src/core/orchestrate.ts';
 import { DEFAULT_POLICY, POLICY_PRESETS } from '../../src/core/policy.ts';
 import type {
   Clock,
@@ -3716,6 +3716,64 @@ describe('orchestrate — learnedProviderOrder (Local Outcome Learner)', () => {
 // ---------------------------------------------------------------------------
 // Phase 5 — model-proposed memory (final.memoryProposal)
 // ---------------------------------------------------------------------------
+
+describe('withMemoryProposalAttached — panel/hedge memory-proposal parity (5.5 F1)', () => {
+  const REMEMBER =
+    '{"confidence":0.9,"escalate":false,"reason":"done","needs_review":false,' +
+    '"remember_user":{"facts":[{"scope":"global","kind":"preference",' +
+    '"text":"Prefers concise, direct answers","reason":"stable preference"}]}}';
+
+  function baseFinal(extra: Record<string, unknown>) {
+    return {
+      type: 'final' as const,
+      success: true,
+      output: `Answer.\n${REMEMBER}`,
+      tier: 'ic' as const,
+      totalCostUsd: 0,
+      sessionId: 's',
+      attempts: 1,
+      ...extra,
+    };
+  }
+
+  async function* stream(...events: unknown[]) {
+    for (const e of events) yield e as never;
+  }
+
+  async function collect(gen: AsyncGenerator<unknown>) {
+    const out: unknown[] = [];
+    for await (const e of gen) out.push(e);
+    return out as Array<Record<string, unknown>>;
+  }
+
+  it('attaches a gated proposal to a panel/hedge success final (parity with sequential)', async () => {
+    const out = await collect(withMemoryProposalAttached(stream(baseFinal({}))));
+    const final = out[0];
+    assert.equal(final?.['type'], 'final');
+    const mp = final?.['memoryProposal'] as { facts: unknown[] } | undefined;
+    assert.ok(mp !== undefined, 'expected memoryProposal attached on the panel/hedge final');
+    assert.equal(mp.facts.length, 1);
+  });
+
+  it('does NOT attach when the final already carries questions (mutual exclusivity)', async () => {
+    const qFinal = baseFinal({ questions: { questions: [] } });
+    const out = await collect(withMemoryProposalAttached(stream(qFinal)));
+    assert.equal(out[0]?.['memoryProposal'], undefined);
+  });
+
+  it('does NOT overwrite an existing memoryProposal', async () => {
+    const existing = { facts: [{ text: 'keep me' }] };
+    const out = await collect(withMemoryProposalAttached(stream(baseFinal({ memoryProposal: existing }))));
+    assert.equal(out[0]?.['memoryProposal'], existing);
+  });
+
+  it('passes non-final events through untouched', async () => {
+    const tick = { type: 'tier-start', tier: 'ic' };
+    const out = await collect(withMemoryProposalAttached(stream(tick, baseFinal({ success: false }))));
+    assert.equal(out[0], tick);
+    assert.equal(out[1]?.['memoryProposal'], undefined, 'a failed final gets no proposal');
+  });
+});
 
 describe('orchestrate — final.memoryProposal (remember_user, Phase 5)', () => {
   function depsWith(): OrchestrateDeps {
