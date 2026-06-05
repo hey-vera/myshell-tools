@@ -11,8 +11,33 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 - Installer: PowerShell-Core profile support + PowerShell interactive guard; don't
   overwrite an existing `cm`/`mst` alias — deferred (niche / minor).
 - update-check: use semver precedence for prerelease→stable (no prereleases shipped today).
-- Work Contract: mode-gated auto-engage behind a default-off flag (Stage 4),
-  cross-turn contract seeding (Stage 5) — staged, building on 3.11.0–3.11.2.
+- Work Contract: cross-turn / cross-session contract seeding (Stage 5) — re-seed a
+  resumed goal's contract from the persisted `workTrace` (niche: the in-run contract
+  is already kept in memory; only cross-session resume benefits). Optional.
+- Auto-goal: thread the pre-dispatch route decision into the turn's run to avoid
+  double-routing on opt-in quality-first turns (latency optimization).
+
+## [3.12.0]
+
+### Added
+Smart-auto autonomy (Stage 4) — opt-in, **default-off**. When enabled, `quality-first`
+mode can automatically enter the existing `/goal` loop for conservatively detected
+multi-step work, instead of requiring you to type `/goal`:
+- New `autoGoal` config flag (default off) + a Settings toggle **[10] Auto-goal
+  (quality-first)**. With the flag off, behavior is **identical** to before — no
+  preflight routing, no auto-engage (pinned by a parity test).
+- New pure `decideAutonomyOffer` centralizes the autonomy decision. Existing timeout
+  and `keep_going` offers are preserved in all modes (still ask first). Auto-engage is
+  strict: only `quality-first` + opt-in + corroborated multi-step work (manager tier
+  **and** route `plan` or ≥2 classifier signals) starts `/goal` without a prompt.
+- Auto-engaged runs show a visible banner — `Working autonomously until it's done
+  (up to 8 turns). Ctrl+C to stop.` — and bail instantly on Ctrl+C via the existing
+  AbortController. It reuses `runGoalLoop` as-is (no second autonomous executor).
+
+This completes the user-facing half of the Work Contract feature: a structured
+objective now anchors long autonomous runs (3.11.1), the reviewer verifies against it
+(3.11.0), it persists as an audit trail (3.11.2), and qualifying work can now engage
+autonomously on its own (3.12.0).
 
 ## [3.11.2]
 

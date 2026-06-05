@@ -90,6 +90,43 @@ describe('saveConfig + loadConfig — round-trip', () => {
     assert.equal(loaded.autoUpdate, true);
   });
 
+  it('saves and reloads autoGoal: true', async () => {
+    const cfg: AppConfig = { onboarded: true, setAsDefault: false, autoGoal: true };
+    await saveConfig(cfg, homeDir);
+    const loaded = await loadConfig(homeDir);
+    assert.equal(loaded.autoGoal, true);
+  });
+
+  it('preserves autoGoal across a Settings-style config rebuild', () => {
+    const config: AppConfig = {
+      onboarded: true,
+      setAsDefault: false,
+      mode: 'quality-first',
+      smartRoute: false,
+      panel: true,
+      learnRouting: true,
+      hedge: true,
+      autoGoal: true,
+    };
+
+    const rebuilt: AppConfig = {
+      onboarded: config.onboarded,
+      setAsDefault: config.setAsDefault,
+      ...(config.mode !== undefined ? { mode: config.mode } : {}),
+      ...(config.autoUpdate === false ? { autoUpdate: false } : {}),
+      ...(config.nativeSessions === true ? { nativeSessions: true } : {}),
+      ...(config.verbosity !== undefined ? { verbosity: config.verbosity } : {}),
+      ...(config.timeoutMs !== undefined ? { timeoutMs: config.timeoutMs } : {}),
+      ...(config.smartRoute === false ? { smartRoute: false } : {}),
+      ...(config.panel === true ? { panel: true } : {}),
+      ...(config.learnRouting === true ? { learnRouting: true } : {}),
+      ...(config.hedge === true ? { hedge: true } : {}),
+      ...(config.autoGoal === true ? { autoGoal: true } : {}),
+    };
+
+    assert.equal(rebuilt.autoGoal, true);
+  });
+
   it('saveConfig creates .myshell-tools dir if missing', async () => {
     const freshHome = await mkdtemp(join(tmpdir(), `config-dir-${randomUUID()}-`));
     try {

@@ -23,6 +23,8 @@ import { buildGoalTask, parseGoalSignal, parseGoalContinueText, decideGoalNext, 
 import type { GoalCeilings } from '../core/goal.js';
 import { appendCheckpointFromContinue, capContract } from '../core/work-contract.js';
 import { formatAnswers, isKeepGoingOffer } from '../core/questions.js';
+import { decideAutonomyOffer } from '../core/autonomy.js';
+import { decideRoute } from '../core/router.js';
 import type { AppConfig } from '../infra/config.js';
 import { saveConfig } from '../infra/config.js';
 import type { ConversationMeta, ConversationStore } from '../infra/conversation-store.js';
@@ -1354,6 +1356,7 @@ async function runWelcome(
       onboarded: true,
       setAsDefault: false,
       ...(mutableConfig.mode !== undefined ? { mode: mutableConfig.mode } : {}),
+      ...(mutableConfig.autoGoal === true ? { autoGoal: true } : {}),
     };
     await saveConfig(saved);
     return saved;
@@ -1369,6 +1372,7 @@ async function runWelcome(
     onboarded: mutableConfig.onboarded,
     setAsDefault: mutableConfig.setAsDefault,
     ...(newMode !== undefined ? { mode: newMode } : {}),
+    ...(mutableConfig.autoGoal === true ? { autoGoal: true } : {}),
   };
 
   // Detect whether we're already the default shell BEFORE asking — show a quick
@@ -1400,6 +1404,7 @@ async function runWelcome(
     setAsDefault,
     ...(updated.mode !== undefined ? { mode: updated.mode } : {}),
     ...(!autoUpdate ? { autoUpdate: false } : {}),
+    ...(updated.autoGoal === true ? { autoGoal: true } : {}),
   };
 
   await saveConfig(saved);
@@ -1471,6 +1476,7 @@ async function runModeSelect(
     ...(config.panel === true ? { panel: true } : {}),
     ...(config.learnRouting === true ? { learnRouting: true } : {}),
     ...(config.hedge === true ? { hedge: true } : {}),
+    ...(config.autoGoal === true ? { autoGoal: true } : {}),
   };
 
   await saveConfig(updated);
@@ -1525,6 +1531,7 @@ async function runVerbositySelect(
     ...(config.panel === true ? { panel: true } : {}),
     ...(config.learnRouting === true ? { learnRouting: true } : {}),
     ...(config.hedge === true ? { hedge: true } : {}),
+    ...(config.autoGoal === true ? { autoGoal: true } : {}),
   };
 
   await saveConfig(updated);
@@ -1561,6 +1568,7 @@ async function toggleDefaultShell(
     ...(config.panel === true ? { panel: true } : {}),
     ...(config.learnRouting === true ? { learnRouting: true } : {}),
     ...(config.hedge === true ? { hedge: true } : {}),
+    ...(config.autoGoal === true ? { autoGoal: true } : {}),
   };
   await saveConfig(updated);
   return updated;
@@ -1586,6 +1594,7 @@ async function runSettings(
     `  [7] Panel (experimental): ${cfg.panel === true ? 'on' : 'off'}`,
     `  [8] Learned routing (experimental): ${cfg.learnRouting === true ? 'on' : 'off'}`,
     `  [9] Hedged escalation (experimental): ${cfg.hedge === true ? 'on' : 'off'}`,
+    `  [10] Auto-goal (quality-first): ${cfg.autoGoal === true ? 'on' : 'off'} — only takes effect under quality-first mode`,
     '',
     '  [Enter] Back',
     '',
@@ -1616,6 +1625,8 @@ async function runSettings(
     mutableCtx.config = await toggleLearnRouting(mutableCtx.config, out);
   } else if (key === '9') {
     mutableCtx.config = await toggleHedge(mutableCtx.config, out);
+  } else if (key === '10') {
+    mutableCtx.config = await toggleAutoGoal(mutableCtx.config, out);
   }
   // anything else → back
 }
@@ -1646,6 +1657,7 @@ async function toggleSmartRoute(config: AppConfig, out: OutputSink): Promise<App
     ...(config.panel === true ? { panel: true } : {}),
     ...(config.learnRouting === true ? { learnRouting: true } : {}),
     ...(config.hedge === true ? { hedge: true } : {}),
+    ...(config.autoGoal === true ? { autoGoal: true } : {}),
   };
   await saveConfig(updated);
   out.write(`Smart routing: ${enable ? 'on' : 'off'}\n`);
@@ -1676,6 +1688,7 @@ async function toggleAutoUpdate(config: AppConfig, out: OutputSink): Promise<App
     ...(config.panel === true ? { panel: true } : {}),
     ...(config.learnRouting === true ? { learnRouting: true } : {}),
     ...(config.hedge === true ? { hedge: true } : {}),
+    ...(config.autoGoal === true ? { autoGoal: true } : {}),
   };
   await saveConfig(updated);
   out.write(`Update on launch: ${enable ? 'on' : 'off'}\n`);
@@ -1705,6 +1718,7 @@ async function toggleNativeSessions(config: AppConfig, out: OutputSink): Promise
     ...(config.panel === true ? { panel: true } : {}),
     ...(config.learnRouting === true ? { learnRouting: true } : {}),
     ...(config.hedge === true ? { hedge: true } : {}),
+    ...(config.autoGoal === true ? { autoGoal: true } : {}),
   };
   await saveConfig(updated);
   out.write(`Native sessions (experimental): ${enable ? 'on' : 'off'}\n`);
@@ -1733,6 +1747,7 @@ async function togglePanel(config: AppConfig, out: OutputSink): Promise<AppConfi
     ...(enable ? { panel: true } : {}),
     ...(config.learnRouting === true ? { learnRouting: true } : {}),
     ...(config.hedge === true ? { hedge: true } : {}),
+    ...(config.autoGoal === true ? { autoGoal: true } : {}),
   };
   await saveConfig(updated);
   out.write(`Panel (experimental): ${enable ? 'on' : 'off'}\n`);
@@ -1762,6 +1777,7 @@ async function toggleHedge(config: AppConfig, out: OutputSink): Promise<AppConfi
     ...(config.panel === true ? { panel: true } : {}),
     ...(config.learnRouting === true ? { learnRouting: true } : {}),
     ...(enable ? { hedge: true } : {}),
+    ...(config.autoGoal === true ? { autoGoal: true } : {}),
   };
   await saveConfig(updated);
   out.write(`Hedged escalation (experimental): ${enable ? 'on' : 'off'}\n`);
@@ -1789,9 +1805,38 @@ async function toggleLearnRouting(config: AppConfig, out: OutputSink): Promise<A
     ...(config.panel === true ? { panel: true } : {}),
     ...(enable ? { learnRouting: true } : {}),
     ...(config.hedge === true ? { hedge: true } : {}),
+    ...(config.autoGoal === true ? { autoGoal: true } : {}),
   };
   await saveConfig(updated);
   out.write(`Learned routing (experimental): ${enable ? 'on' : 'off'}\n`);
+  return updated;
+}
+
+/**
+ * Toggle opt-in auto-goal and persist it.
+ *
+ * When on, quality-first mode may automatically enter the existing /goal loop
+ * for conservatively detected multi-step work. Other modes ignore it. Default
+ * OFF; absent/false means unchanged single-turn dispatch.
+ */
+async function toggleAutoGoal(config: AppConfig, out: OutputSink): Promise<AppConfig> {
+  const enable = config.autoGoal !== true;
+  const updated: AppConfig = {
+    onboarded: config.onboarded,
+    setAsDefault: config.setAsDefault,
+    ...(config.mode !== undefined ? { mode: config.mode } : {}),
+    ...(config.autoUpdate === false ? { autoUpdate: false } : {}),
+    ...(config.nativeSessions === true ? { nativeSessions: true } : {}),
+    ...(config.verbosity !== undefined ? { verbosity: config.verbosity } : {}),
+    ...(config.timeoutMs !== undefined ? { timeoutMs: config.timeoutMs } : {}),
+    ...(config.smartRoute === false ? { smartRoute: false } : {}),
+    ...(config.panel === true ? { panel: true } : {}),
+    ...(config.learnRouting === true ? { learnRouting: true } : {}),
+    ...(config.hedge === true ? { hedge: true } : {}),
+    ...(enable ? { autoGoal: true } : {}),
+  };
+  await saveConfig(updated);
+  out.write(`Auto-goal (quality-first): ${enable ? 'on' : 'off'}\n`);
   return updated;
 }
 
@@ -2740,6 +2785,39 @@ async function runChatLoop(
       }
 
       const deps = buildDeps(priorHistory);
+
+      if (mutableCtx.config.autoGoal === true && effectiveMode === 'quality-first') {
+        const routeAc = new AbortController();
+        currentAc = routeAc;
+        const autoRoute = await decideRoute(line, {
+          ...(deps.routeClassifier !== undefined ? { classifier: deps.routeClassifier } : {}),
+          signal: routeAc.signal,
+        });
+        currentAc = null;
+        if (shouldExit) {
+          loopResult = 'exit';
+          break;
+        }
+        if (shouldMenu) {
+          loopResult = 'menu';
+          break;
+        }
+        const autonomy = decideAutonomyOffer({
+          mode: effectiveMode,
+          classification: {
+            tier: autoRoute.tier,
+            risk: autoRoute.risk,
+            rationale: autoRoute.rationale,
+          },
+          routePlan: autoRoute.plan,
+          keepGoingOffered: false,
+          autoGoalEnabled: true,
+        });
+        if (autonomy.kind === 'auto_engage') {
+          if (await runGoalLoop(line)) break;
+          continue;
+        }
+      }
 
       const ac = new AbortController();
       currentAc = ac;

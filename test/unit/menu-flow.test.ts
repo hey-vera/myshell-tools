@@ -681,6 +681,210 @@ describe('startMenu — /goal work contract threading', () => {
   });
 });
 
+describe('startMenu — auto-goal smart autonomy', () => {
+  it('with autoGoal off, a manager-tier task stays on the single runTask path', async () => {
+    const prompts: string[] = [];
+    const provider: Provider = {
+      id: 'claude',
+      async detect() {
+        return {
+          id: 'claude',
+          installed: true,
+          version: '1.0.0',
+          authenticated: true,
+          plan: null,
+          binaryPath: null,
+          availableModels: ['model-a'],
+        };
+      },
+      async *run(req: ProviderRequest, _signal: AbortSignal): AsyncIterable<ProviderEvent> {
+        prompts.push(req.prompt);
+        yield { type: 'text', delta: 'Done.' };
+        yield {
+          type: 'done',
+          text: `Done.\n${CONFIDENCE_ENVELOPE}`,
+          usage: FAKE_USAGE,
+          raw: {},
+        };
+      },
+    };
+
+    const clock = makeFakeClock();
+    const store = makeStore(clock);
+    const sink = makeSink();
+    const config: AppConfig = {
+      onboarded: true,
+      setAsDefault: false,
+      mode: 'quality-first',
+      smartRoute: false,
+    };
+    const ctx = makeCtx(
+      {
+        config,
+        providers: { claude: provider },
+        readLine: makeScriptedReader([
+          'n',
+          'review and design the architecture',
+          '/exit',
+          'q',
+        ]),
+      },
+      clock,
+      store,
+    );
+
+    await startMenu(ctx, sink);
+
+    assert.equal(prompts.length, 1, 'autoGoal off must dispatch exactly one task');
+    assert.ok(
+      !prompts[0]?.includes('Goal: review and design the architecture'),
+      'autoGoal off must not rewrite the task as a goal turn',
+    );
+    assert.ok(
+      !sink.buf.includes("Working autonomously until it's done"),
+      'autoGoal off must not print the autonomous banner',
+    );
+  });
+
+  it('with autoGoal on and quality-first, strong multi-step work enters runGoalLoop and prints the banner', async () => {
+    const prompts: string[] = [];
+    const provider: Provider = {
+      id: 'claude',
+      async detect() {
+        return {
+          id: 'claude',
+          installed: true,
+          version: '1.0.0',
+          authenticated: true,
+          plan: null,
+          binaryPath: null,
+          availableModels: ['model-a'],
+        };
+      },
+      async *run(req: ProviderRequest, _signal: AbortSignal): AsyncIterable<ProviderEvent> {
+        prompts.push(req.prompt);
+        yield { type: 'text', delta: 'Done.\nGOAL_COMPLETE' };
+        yield {
+          type: 'done',
+          text: 'Done.\nGOAL_COMPLETE',
+          usage: FAKE_USAGE,
+          raw: {},
+        };
+      },
+    };
+
+    const clock = makeFakeClock();
+    const store = makeStore(clock);
+    const sink = makeSink();
+    const config: AppConfig = {
+      onboarded: true,
+      setAsDefault: false,
+      mode: 'quality-first',
+      smartRoute: false,
+      autoGoal: true,
+    };
+    const ctx = makeCtx(
+      {
+        config,
+        providers: { claude: provider },
+        readLine: makeScriptedReader([
+          'n',
+          'review and design the architecture',
+          '/exit',
+          'q',
+        ]),
+      },
+      clock,
+      store,
+    );
+
+    await startMenu(ctx, sink);
+
+    assert.equal(prompts.length, 1, 'auto-goal should run the existing goal loop once');
+    assert.ok(
+      prompts[0]?.includes('Goal: review and design the architecture'),
+      'auto-goal must call runGoalLoop instead of the normal single task',
+    );
+    assert.ok(
+      sink.buf.includes("Working autonomously until it's done (up to 8 turns). Ctrl+C to stop."),
+      'auto-goal must print the visible Ctrl+C banner',
+    );
+  });
+
+  it('Ctrl+C aborts an auto-engaged goal turn through the existing AbortController path', async () => {
+    let sawAbort = false;
+    let callCount = 0;
+    const provider: Provider = {
+      id: 'claude',
+      async detect() {
+        return {
+          id: 'claude',
+          installed: true,
+          version: '1.0.0',
+          authenticated: true,
+          plan: null,
+          binaryPath: null,
+          availableModels: ['model-a'],
+        };
+      },
+      async *run(_req: ProviderRequest, signal: AbortSignal): AsyncIterable<ProviderEvent> {
+        callCount++;
+        setImmediate(() => process.emit('SIGINT'));
+        await new Promise<void>((resolve) => {
+          if (signal.aborted) {
+            sawAbort = true;
+            resolve();
+            return;
+          }
+          signal.addEventListener(
+            'abort',
+            () => {
+              sawAbort = true;
+              resolve();
+            },
+            { once: true },
+          );
+        });
+        yield { type: 'text', delta: 'partial' };
+      },
+    };
+
+    const clock = makeFakeClock();
+    const store = makeStore(clock);
+    const sink = makeSink();
+    const config: AppConfig = {
+      onboarded: true,
+      setAsDefault: false,
+      mode: 'quality-first',
+      smartRoute: false,
+      autoGoal: true,
+    };
+    const ctx = makeCtx(
+      {
+        config,
+        providers: { claude: provider },
+        readLine: makeScriptedReader([
+          'n',
+          'review and design the architecture',
+          '/exit',
+          'q',
+        ]),
+      },
+      clock,
+      store,
+    );
+
+    await startMenu(ctx, sink);
+
+    assert.equal(callCount, 1, 'auto-goal should have started one provider run');
+    assert.equal(sawAbort, true, 'Ctrl+C must abort the active goal AbortController');
+    assert.ok(
+      sink.buf.includes('Task cancelled. (Ctrl+C again'),
+      'existing Ctrl+C cancellation message should be used',
+    );
+  });
+});
+
 // ---------------------------------------------------------------------------
 // FLOW 4: "e" → manage screen → pin → back → "q"
 // ---------------------------------------------------------------------------
@@ -3977,6 +4181,32 @@ describe('startMenu — update notifier: banner, [u], auto-update', () => {
       'toggling [8] must report learned routing on',
     );
     assert.equal(persisted.learnRouting, true, 'learnRouting must be persisted as true');
+  });
+
+  it('[s] settings shows and toggles [10] Auto-goal (quality-first)', async () => {
+    const sink = makeSink();
+    const dir = join(tmpdir(), `menu-autogoal-toggle-${randomUUID()}`);
+    const config: AppConfig = { onboarded: true, setAsDefault: false, smartRoute: false };
+    const ctx = makeCtx({
+      config,
+      cwd: dir,
+      readLine: makeScriptedReader(['s', '10', 'q']),
+    });
+
+    const persisted = await withStateHome(dir, async () => {
+      await assert.doesNotReject(() => startMenu(ctx, sink));
+      return readPersistedConfig();
+    });
+
+    assert.ok(
+      sink.buf.includes('[10] Auto-goal (quality-first)'),
+      'settings must show the [10] Auto-goal (quality-first) toggle line',
+    );
+    assert.ok(
+      sink.buf.includes('Auto-goal (quality-first): on'),
+      'toggling [10] must report auto-goal on',
+    );
+    assert.equal(persisted.autoGoal, true, 'autoGoal must be persisted as true');
   });
 
   // The bug this guards against: rebuilding the config for ANY toggle used to

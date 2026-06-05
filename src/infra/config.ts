@@ -95,6 +95,12 @@ export interface AppConfig {
    * core/routing-memory.ts.
    */
   learnRouting?: boolean;
+  /**
+   * EXPERIMENTAL Auto-goal (default off). When true, quality-first mode may
+   * automatically enter the existing /goal loop for conservatively detected
+   * multi-step work. Ignored in Efficient/Balanced. Absent/false → unchanged.
+   */
+  autoGoal?: boolean;
 }
 
 // ---------------------------------------------------------------------------
