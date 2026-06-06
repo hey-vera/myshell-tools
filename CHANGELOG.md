@@ -15,6 +15,39 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   resumed goal's contract from the persisted `workTrace` (niche: the in-run contract
   is already kept in memory; only cross-session resume benefits). Optional.
 
+## [3.15.0]
+
+Post-3.14.0 hardening + codebase awareness — several driven by live testing on a
+real repo (the kind of bug unit tests miss).
+
+### Fixed
+- **Memory never silently loses a fact.** Distinct facts that both fell into the
+  `'other'` catch-all subject (the closed vocab can't name everything) were
+  collapsed by consolidation — e.g. saving "My name is Jordan" clobbered a saved
+  "I prefer British English spelling". `'other'` is no longer treated as a unique
+  key; distinct facts coexist (they merge only on real lexical similarity).
+- **Never report a good answer as "Failed".** The cross-vendor review `revise`
+  loop re-ran the whole task at the same tier with no cap; a good-but-low-
+  confidence answer could loop to `maxAttempts` and then be discarded as a red
+  "Failed" (after burning tokens re-running it). The loop now returns the
+  best-effort answer (flagged, not discarded), caps revise re-runs at 1 then
+  escalates, and reserves "Failed" for genuine no-output failures.
+
+### Added
+- **Investigate before interrogate (partner posture).** The vision-first partner
+  now reads the codebase to answer its own questions and asks the user only about
+  genuine forks it can't resolve by looking; if you reference a project/area that
+  isn't in the current working directory, it says so and asks where the code is
+  instead of asking abstract questions.
+- **Codebase awareness (E1).** The chat opens already knowing its repo: a cheap,
+  deterministic ENVIRONMENT / repo-map block (repo name/branch/dirty, project
+  type, key docs + entry points, a ranked file map) is injected first into every
+  prompt — Cursor-grade orientation with **no embeddings, no vector DB, no metered
+  service, no model call**, composed with the wrapped model's own agentic search.
+  `codebaseAwareness` config kill-switch.
+
+Test suite 2926 → 2985 (0 failing).
+
 ## [3.14.0]
 
 ### Added
