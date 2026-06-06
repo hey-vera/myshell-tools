@@ -20,7 +20,8 @@
     "knip": "knip",
     "test:integration": "node --test \"test/integration/**/*.test.ts\"",
     "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
-    "prepublishOnly": "npm run clean && npm run typecheck && npm run lint && npm run build"
+    "prepublishOnly": "npm run clean && npm run typecheck && npm run lint && npm run build",
+    "smoke:pty": "node scripts/pty-smoke.mjs"
   },
   "files": [
     "dist/",
