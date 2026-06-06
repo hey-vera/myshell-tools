@@ -15,6 +15,28 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   resumed goal's contract from the persisted `workTrace` (niche: the in-run contract
   is already kept in memory; only cross-session resume benefits). Optional.
 
+## [3.16.0]
+
+**It's a real chat now.** A ranked roadmap (`docs/real-chat-gap-analysis.md`) of
+the gaps between myshell's chat and a polished chat app, all built — driven by
+live testing. Subscription-auth throughout (no metered services).
+
+### Added
+- **Transcript on resume.** Reopening a conversation now *shows* it — a bounded,
+  glyph-styled transcript of the recent messages (● assistant / › user, dim
+  timestamps) above the recap, so you see where you left off instead of a blank
+  prompt. (The model already received the history; this was the missing display.)
+- **`/retry` and `/edit`** — message-level redo. `/retry` regenerates the last
+  answer; `/edit` lets you pick a prior message, edit it, and re-run from there.
+  Backed by a new controlled, atomic, fail-soft `truncateAfter` store op.
+- **`/copy` and `/export`** — `/copy` puts the last answer on your clipboard
+  (fail-soft, with a headless text fallback); `/export` writes the conversation
+  as a Markdown transcript. Your work is never trapped in scrollback.
+- **Richer conversation list** — each row shows a `· N msgs` count.
+- **Semantic conversation titles** — titles are distilled from the conversation's
+  recap (reusing it; no extra model call) instead of raw first-words, and never
+  clobber a name you set.
+
 ## [3.15.0]
 
 Post-3.14.0 hardening + codebase awareness — several driven by live testing on a
