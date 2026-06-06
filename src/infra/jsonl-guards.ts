@@ -112,6 +112,18 @@ export function isSessionEntry(value: unknown): value is SessionEntry {
   if (!isOptionalNumber(value['durationMs'])) return false;
   if (!isOptionalString(value['sessionId'])) return false;
   if (value['workTrace'] !== undefined && !isWorkTrace(value['workTrace'])) return false;
+  // Optional engine BEHAVIOR version marker (AP2-F / Stage 6). Absent on legacy/
+  // pre-fix entries — that is the valid "pre-fix" default and still loads. When
+  // present it must be a finite number; a non-finite/non-number value fails the
+  // guard (the entry is dropped) rather than being silently coerced — same
+  // discipline as confidence/costUsd above. Backward-compatible by construction.
+  const engineBehaviorVersion = value['engineBehaviorVersion'];
+  if (
+    engineBehaviorVersion !== undefined &&
+    (typeof engineBehaviorVersion !== 'number' || !Number.isFinite(engineBehaviorVersion))
+  ) {
+    return false;
+  }
   return true;
 }
 

@@ -76,6 +76,7 @@ import {
 import type { PlanInfo } from '../core/policy.js';
 import type { Mode } from '../core/policy.js';
 import { planNativeSession } from '../core/native-session.js';
+import { decideHistoryPolicy } from '../core/turn-directive.js';
 import { availableAfterCooldown, cooldownExpiry } from '../core/cooldown.js';
 import { learnProviderOrder, learnModelOutcomeOrder } from '../core/routing-memory.js';
 import type { OutputSink, Verbosity } from './render.js';
@@ -4290,12 +4291,31 @@ async function runChatLoop(
         // EXPERIMENTAL native session plan (opt-in via config.nativeSessions).
         // Pure decision; null when disabled. When present, orchestrate uses the
         // provider's native session for matching tiers instead of replaying history.
+        //
+        // STALE-HISTORY HARDENING (AP2-F / Stage 6, §3): decide the history policy
+        // ONCE here (over the prior assistant turns + their engine-behavior version
+        // markers) and pass it to planNativeSession. On a quarantined turn — a prior
+        // assistant turn was a generic menu OR predates the enforced-ask engine
+        // version — planNativeSession withholds the plan, so orchestrate replays the
+        // CLEANED history rather than resuming the provider's server-side memory of
+        // the poisoned/legacy prose. Clean turns are unaffected (native as before).
+        const nativeHistoryPolicy = decideHistoryPolicy(
+          hist
+            .filter((e) => e.role === 'assistant')
+            .map((e) => ({
+              content: e.content,
+              ...(e.engineBehaviorVersion !== undefined
+                ? { engineBehaviorVersion: e.engineBehaviorVersion }
+                : {}),
+            })),
+        );
         const nativeSession = planNativeSession({
           enabled: mutableCtx.config.nativeSessions === true,
           conversationId: convId,
           history: hist,
+          historyPolicy: nativeHistoryPolicy,
         });
-        // planNativeSession returns [] when disabled / no conversation id.
+        // planNativeSession returns [] when disabled / no conversation id / quarantined.
 
         // Smart routing (opt-in): on ambiguous turns, let a cheap model pick the
         // tier. Capped at 20s so the worst-case fallback delay is bounded; the

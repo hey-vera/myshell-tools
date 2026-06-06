@@ -29,6 +29,7 @@ import type { IntentFrame } from './intent.js';
 import type { EngagementPlan, EngagementSignals } from './engagement.js';
 import { deriveAskFromForks, hasGenuineFork, isTrivial } from './engagement.js';
 import type { WorkStateSnapshot } from './work-state.js';
+import { isLegacyEngineEntry } from './engine-version.js';
 import {
   triageVision,
   hasMigrationConcern,
@@ -166,9 +167,19 @@ export interface CompileDirectiveInput {
   readonly repoPresent?: boolean;
   /**
    * Prior conversation assistant entries, oldest-first, for the history-policy
-   * decision. Each is `{ role, content }`; only assistant prose is inspected.
+   * decision (Stage 1, text axis only). Each is the assistant prose string; only
+   * assistant prose is inspected. Superseded by {@link priorAssistant} when the
+   * caller has the engine-version marker (Stage 6); kept for backward compatibility.
    */
   readonly priorAssistantTexts?: readonly string[];
+  /**
+   * Prior conversation assistant entries WITH their persisted engine-behavior
+   * version marker (AP2-F / Stage 6), oldest-first. When present this is used for
+   * the history-policy decision instead of {@link priorAssistantTexts}, so the
+   * quarantine can fire on the VERSION axis (pre-fix prose) as well as the text
+   * axis (an obvious menu). undefined → fall back to the text-only form.
+   */
+  readonly priorAssistant?: readonly PriorAssistantTurn[];
   /**
    * Truthful work-state derived from accepted prior turns' `workTrace` (AP2-B
    * §2.3 B). Threaded onto the compiled directive unchanged so the turn knows
@@ -545,27 +556,81 @@ export function shouldAppendGroundedFallback(text: string, directive: TurnDirect
 // ---------------------------------------------------------------------------
 
 /**
+ * A prior assistant turn for the history-policy decision (AP2-F / Stage 6). Carries
+ * the prose PLUS the persisted engine-behavior version marker, so the policy can
+ * quarantine pre-fix prose on TWO independent axes: an obvious generic menu (text),
+ * OR an entry written by a pre-fix engine (version absent/below current) even when
+ * its text is not an obvious menu (§3 "predate the engine version that introduced
+ * enforced asks"). PURE shape; no I/O.
+ */
+export interface PriorAssistantTurn {
+  readonly content: string;
+  /** The persisted `engineBehaviorVersion`; absent → legacy/pre-fix entry. */
+  readonly engineBehaviorVersion?: number;
+}
+
+/**
  * Decide the history replay policy for the NEXT turn. PURE; never throws.
  *
- * STAGE 1: when any prior ASSISTANT turn is itself a generic open menu, switch to
- * `quarantine_assistant_prose` so that poisoned prose does not few-shot the new
- * turn back into the order-taker behavior. Otherwise `normal`. User entries are
- * never affected by this signal.
+ * QUARANTINE TRIGGERS (§3):
+ *   1. TEXT axis (Stage 1): a prior ASSISTANT turn is itself a generic open menu.
+ *      This is the primary, self-sufficient poisoning signal.
+ *   2. VERSION axis (AP2-F / Stage 6): a prior ASSISTANT turn PREDATES the engine
+ *      version that introduced enforced asks — its `engineBehaviorVersion` marker is
+ *      absent or below the current {@link ENGINE_BEHAVIOR_VERSION}.
+ *
+ * The version axis is a WIDENER, NOT a standalone trigger: it only fires WHEN the
+ * conversation already shows a poisoning signal (the text axis flagged a generic
+ * menu somewhere in the pre-fix period). In that case the WHOLE pre-fix period is
+ * suspect, so legacy-version assistant prose — even prose that is not itself an
+ * obvious menu — is also quarantined (it predates the fix and may few-shot the old
+ * behavior). A conversation of purely-clean LEGACY prose with NO menu anywhere stays
+ * `normal`: a missing marker alone never quarantines a clean transcript, so existing
+ * resumed chats keep their continuity (backward-compatible). The orchestrate replay
+ * filter applies the SAME two-axis rule per entry, so what is decided here matches
+ * what is dropped there.
+ *
+ * BACKWARD-COMPATIBLE OVERLOADS:
+ *   - `decideHistoryPolicy(string[])` — the Stage-1 text-only form (callers/tests
+ *     with no version info). Text axis only; the version axis cannot apply (no
+ *     markers) — byte-for-byte the original Stage-1 behavior.
+ *   - `decideHistoryPolicy(PriorAssistantTurn[])` — the Stage-6 form carrying the
+ *     marker; the version axis widens the quarantine when the text axis fired.
  */
 export function decideHistoryPolicy(
-  priorAssistantTexts: readonly string[] | undefined,
+  priorAssistant: readonly string[] | readonly PriorAssistantTurn[] | undefined,
 ): HistoryPolicy {
-  if (!Array.isArray(priorAssistantTexts) || priorAssistantTexts.length === 0) {
+  if (!Array.isArray(priorAssistant) || priorAssistant.length === 0) {
     return { replayMode: 'normal', reasons: [] };
   }
-  const poisoned = priorAssistantTexts.some(
-    (t) => typeof t === 'string' && detectGenericOpenMenu(t),
-  );
-  if (poisoned) {
-    return {
-      replayMode: 'quarantine_assistant_prose',
-      reasons: ['prior assistant turn contained a generic open menu'],
-    };
+
+  // TEXT axis — the primary poisoning signal (an obvious generic menu anywhere).
+  const menuPoisoned = priorAssistant.some((entry) => {
+    const content = typeof entry === 'string' ? entry : entry?.content;
+    return typeof content === 'string' && detectGenericOpenMenu(content);
+  });
+
+  // VERSION axis — only meaningful in the object form, and only WIDENS the
+  // quarantine: it requires the text axis to have already flagged poisoning. A
+  // missing marker on otherwise-clean prose never quarantines on its own.
+  const hasLegacyProse =
+    menuPoisoned &&
+    priorAssistant.some(
+      (entry) =>
+        entry !== null &&
+        typeof entry === 'object' &&
+        typeof entry.content === 'string' &&
+        entry.content.trim().length > 0 &&
+        !detectGenericOpenMenu(entry.content) &&
+        isLegacyEngineEntry(entry.engineBehaviorVersion),
+    );
+
+  if (menuPoisoned) {
+    const reasons = ['prior assistant turn contained a generic open menu'];
+    if (hasLegacyProse) {
+      reasons.push('pre-fix transcript period: legacy assistant prose also quarantined');
+    }
+    return { replayMode: 'quarantine_assistant_prose', reasons };
   }
   return { replayMode: 'normal', reasons: [] };
 }
@@ -664,7 +729,13 @@ export function compileTurnDirective(input: CompileDirectiveInput): TurnDirectiv
     input.repoPresent === true ||
     (plan !== undefined && Array.isArray(plan.actions) && plan.actions.includes('INVESTIGATE_CONTEXT'));
 
-  const historyPolicy = decideHistoryPolicy(input.priorAssistantTexts);
+  // Prefer the version-aware Stage-6 form when the caller provided it (both the
+  // text and version quarantine axes apply); otherwise fall back to the Stage-1
+  // text-only form. Backward-compatible: a caller passing only `priorAssistantTexts`
+  // behaves exactly as before.
+  const historyPolicy = decideHistoryPolicy(
+    input.priorAssistant !== undefined ? input.priorAssistant : input.priorAssistantTexts,
+  );
 
   // STAGE 3 — vision triage (PURE, no model call). Decompose the vision and decide
   // whether to carry a `vision_triage` directive action. We surface it only for a

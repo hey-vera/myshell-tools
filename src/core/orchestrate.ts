@@ -66,6 +66,7 @@ import {
   GROUNDED_RECOMMENDATION_FALLBACK,
 } from './turn-directive.js';
 import { engagementBiasOf } from './prompt-context.js';
+import { ENGINE_BEHAVIOR_VERSION, isLegacyEngineEntry } from './engine-version.js';
 import { deriveWorkStateFromHistory, renderWorkStateBlock } from './work-state.js';
 import { renderVisionTriageBlock } from './vision-triage.js';
 import {
@@ -317,6 +318,10 @@ async function appendAcceptedAssistant(
     durationMs: run.durationMs,
     ...(run.sessionId !== undefined ? { sessionId: run.sessionId } : {}),
     ...(run.workTrace !== undefined ? { workTrace: run.workTrace } : {}),
+    // Stamp the engine BEHAVIOR version (AP2-F / Stage 6, §3, §4) so a later turn
+    // can identify this as CURRENT-engine prose and NOT quarantine it on the
+    // version axis. Absent on legacy/pre-fix entries → quarantine candidate.
+    engineBehaviorVersion: ENGINE_BEHAVIOR_VERSION,
   });
 }
 
@@ -522,9 +527,21 @@ export async function* orchestrate(
   //   - historyPolicy: prior assistant generic-menu prose is quarantined from the
   //     replayed history so it can't few-shot the new turn — §3.
   // PURE compile, NO model call — it consumes the already-computed plan/frame.
-  const priorAssistantTexts =
+  // Prior assistant turns WITH their persisted engine-behavior version marker
+  // (AP2-F / Stage 6, §3): the history-policy quarantine fires on TWO axes — an
+  // obvious generic menu (text), OR a turn written by a pre-fix engine (version
+  // absent/below current) even when its text is not an obvious menu. Absent on
+  // legacy entries → treated as pre-fix (quarantine candidate).
+  const priorAssistant =
     depsArg.history !== undefined
-      ? depsArg.history.filter((e) => e.role === 'assistant').map((e) => e.content)
+      ? depsArg.history
+          .filter((e) => e.role === 'assistant')
+          .map((e) => ({
+            content: e.content,
+            ...(e.engineBehaviorVersion !== undefined
+              ? { engineBehaviorVersion: e.engineBehaviorVersion }
+              : {}),
+          }))
       : undefined;
 
   // (a3b) WORK-STATE AWARENESS (adaptive-partner-v2-5.6.md §2.3 B). Reconstruct a
@@ -566,7 +583,7 @@ export async function* orchestrate(
     signals: engagementSignals,
     repoPresent: depsArg.environmentContext !== undefined && depsArg.environmentContext.length > 0,
     canAuthorizeManagerForMigration,
-    ...(priorAssistantTexts !== undefined ? { priorAssistantTexts } : {}),
+    ...(priorAssistant !== undefined ? { priorAssistant } : {}),
     ...(workState !== undefined ? { workState } : {}),
   });
 
@@ -668,6 +685,9 @@ export async function* orchestrate(
       role: 'assistant',
       content: '',
       ...(workTrace !== undefined ? { workTrace } : {}),
+      // Current-engine turn: stamp the behavior version so a resumed chat does not
+      // quarantine this (empty, terminal-ask) turn on the version axis (AP2-F §3).
+      engineBehaviorVersion: ENGINE_BEHAVIOR_VERSION,
     });
     yield {
       type: 'final',
@@ -732,11 +752,22 @@ export async function* orchestrate(
   // compacting so they cannot few-shot the new turn back into the order-taker
   // behavior. User entries are NEVER dropped; the store is untouched (we filter a
   // local copy only). Fail-soft: any other policy uses the full history as before.
+  // We drop a poisoned assistant turn on TWO axes (AP2-F / Stage 6, §3): an obvious
+  // generic menu (text), OR an assistant turn written by a pre-fix engine (version
+  // marker absent/below current) — pre-fix prose is a quarantine candidate even when
+  // its text is not an obvious menu. User entries are NEVER dropped (the user's asks
+  // survive verbatim). The trusted `workTrace` survives independently: work-state
+  // (AP2-B) derives from `deps.history` (the FULL, unfiltered history) above/below,
+  // NOT from this replay copy, so excluding a poisoned turn's PROSE here never loses
+  // its workTrace data. The store is untouched (we filter a LOCAL copy only).
+  // Fail-soft: any other policy uses the full history as before.
   const replayHistory =
     directive.historyPolicy.replayMode === 'quarantine_assistant_prose' &&
     deps.history !== undefined
       ? deps.history.filter(
-          (e) => !(e.role === 'assistant' && detectGenericOpenMenu(e.content)),
+          (e) =>
+            e.role !== 'assistant' ||
+            (!detectGenericOpenMenu(e.content) && !isLegacyEngineEntry(e.engineBehaviorVersion)),
         )
       : deps.history;
   const historyContext =
@@ -1044,7 +1075,23 @@ export async function* orchestrate(
     // Use native continuity only when this tier's provider has a plan. Otherwise
     // (no plan for this provider) fall back to replaying the compacted history —
     // so switching providers never loses context.
-    const nativePlan = deps.nativeSession?.find((p) => p.provider === decision.provider);
+    //
+    // STALE-HISTORY HARDENING (AP2-F / Stage 6, §3 "Native session caveat"): when
+    // this turn's directive quarantines the history (a prior assistant turn was a
+    // generic menu OR predates the enforced-ask engine version), do NOT resume the
+    // provider's NATIVE session — it holds the SERVER-SIDE memory of that poisoned/
+    // legacy prose, which would few-shot the old order-taker behavior straight past
+    // the cleaned replay. Forcing the replay path means the model sees the
+    // QUARANTINED/cleaned history, not the provider's stale memory. This is a NARROW
+    // per-turn policy: clean turns keep native sessions exactly as before. menu.ts
+    // already withholds the plan entirely on a quarantined turn (planNativeSession
+    // gets the policy); this is the in-orchestrate backstop so the directive remains
+    // authoritative even if a plan slipped through. Fail-soft: no plan → no-op.
+    const quarantined =
+      directive.historyPolicy.replayMode === 'quarantine_assistant_prose';
+    const nativePlan = quarantined
+      ? undefined
+      : deps.nativeSession?.find((p) => p.provider === decision.provider);
     const useNative = nativePlan !== undefined;
 
     // --- Build prompt (with optional reviewer feedback on retry + history context) ---

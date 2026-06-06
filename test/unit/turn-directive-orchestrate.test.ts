@@ -425,4 +425,121 @@ describe('orchestrate history quarantine', () => {
     const prompt = provider.prompts[0] ?? '';
     assert.match(prompt, /I wired the feed and tests pass/);
   });
+
+  // AP2-F / Stage 6: compaction preserves user asks + trusted workTrace while
+  // excluding old generic-menu assistant turns AND pre-fix legacy assistant prose.
+  it('preserves user asks + workTrace-derived WORK STATE while dropping the menu AND legacy prose', async () => {
+    const provider = scriptedProvider('claude', [GROUNDED_ANSWER]);
+    const history: SessionEntry[] = [
+      { timestamp: 't0', role: 'user', content: 'ship the analytics dashboard please' },
+      // A pre-fix legacy assistant turn carrying a trusted workTrace (no marker).
+      {
+        timestamp: 't1',
+        role: 'assistant',
+        content: 'Legacy build note: I started on the dashboard wiring.',
+        workTrace: {
+          version: 1,
+          objective: 'ship the analytics dashboard',
+          roadmap: [{ id: 'R1', text: 'wired the route', status: 'done' }],
+        },
+      },
+      // The poisoning signal (a generic menu, pre-fix).
+      {
+        timestamp: 't2',
+        role: 'assistant',
+        content:
+          'What are you trying to do — are you fixing something, adding a feature, or polishing the layout?',
+      },
+      { timestamp: 't3', role: 'user', content: 'just continue the dashboard' },
+    ];
+    await collect(
+      orchestrate(
+        'continue the analytics dashboard in this repo',
+        baseDeps({
+          providers: { claude: provider },
+          environmentContext: 'ENVIRONMENT:\nrepo: myapp\n',
+          history,
+        }),
+        new AbortController().signal,
+      ),
+    );
+    const prompt = provider.prompts[0] ?? '';
+    // User asks survive verbatim.
+    assert.match(prompt, /ship the analytics dashboard please/);
+    assert.match(prompt, /just continue the dashboard/);
+    // The poisoned menu is dropped, AND the legacy assistant prose is dropped too
+    // (pre-fix widening).
+    assert.doesNotMatch(prompt, /are you fixing something, adding a feature/);
+    assert.doesNotMatch(prompt, /Legacy build note/);
+    // But the trusted workTrace still derives the WORK STATE block (work-state from
+    // AP2-B is reconstructed from the FULL history, not the cleaned replay copy).
+    assert.match(prompt, /WORK STATE/);
+    assert.match(prompt, /ship the analytics dashboard/);
+  });
+
+  // AP2-F / Stage 6: on a quarantined turn the native session is NOT resumed — the
+  // cleaned replay path is forced so the provider's server-side memory of the old
+  // menu can't few-shot the new turn.
+  it('does NOT use the native session on a quarantined turn (forces cleaned replay)', async () => {
+    const provider = scriptedProvider('claude', [GROUNDED_ANSWER]);
+    const history: SessionEntry[] = [
+      { timestamp: 't0', role: 'user', content: 'help with the page' },
+      {
+        timestamp: 't1',
+        role: 'assistant',
+        content:
+          'What are you trying to do — are you fixing something, adding a feature, or polishing the layout?',
+        provider: 'claude',
+      },
+    ];
+    await collect(
+      orchestrate(
+        'make the existing socials page in this repo feel like the real product',
+        baseDeps({
+          providers: { claude: provider },
+          environmentContext: 'ENVIRONMENT:\nrepo: myapp\n',
+          history,
+          // A native plan is present (as menu.ts would pass for a clean turn) — the
+          // orchestrate backstop must still IGNORE it on a quarantined turn.
+          nativeSession: [{ provider: 'claude', sessionId: 'conv-1', resume: true }],
+        }),
+        new AbortController().signal,
+      ),
+    );
+    const prompt = provider.prompts[0] ?? '';
+    // Because native was bypassed, the cleaned history replay is in the prompt — the
+    // user ask survives and the menu is quarantined out.
+    assert.match(prompt, /help with the page/);
+    assert.doesNotMatch(prompt, /are you fixing something, adding a feature/);
+  });
+
+  it('USES the native session on a clean turn (feature not disabled for clean turns)', async () => {
+    const provider = scriptedProvider('claude', [GROUNDED_ANSWER]);
+    const history: SessionEntry[] = [
+      { timestamp: 't0', role: 'user', content: 'wire the feed' },
+      {
+        timestamp: 't1',
+        role: 'assistant',
+        content: 'I wired the feed and tests pass.',
+        provider: 'claude',
+        engineBehaviorVersion: 1,
+      },
+    ];
+    await collect(
+      orchestrate(
+        'now add pagination to the feed in this repo',
+        baseDeps({
+          providers: { claude: provider },
+          environmentContext: 'ENVIRONMENT:\nrepo: myapp\n',
+          history,
+          nativeSession: [{ provider: 'claude', sessionId: 'conv-1', resume: true }],
+        }),
+        new AbortController().signal,
+      ),
+    );
+    const prompt = provider.prompts[0] ?? '';
+    // Native session is used → the replayed history is SKIPPED (the provider holds
+    // it server-side), so the prior prose is NOT in the prompt.
+    assert.doesNotMatch(prompt, /I wired the feed and tests pass/);
+  });
 });

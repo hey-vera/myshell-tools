@@ -24,6 +24,7 @@
 
 import type { ProviderId } from '../providers/port.js';
 import type { SessionEntry } from './types.js';
+import type { HistoryPolicy } from './turn-directive.js';
 
 export interface NativeSessionPlan {
   /** The provider whose native session this plan continues. */
@@ -41,6 +42,19 @@ export interface PlanNativeSessionOpts {
   readonly conversationId: string;
   /** Prior turns of this conversation (oldest first). */
   readonly history: readonly SessionEntry[];
+  /**
+   * The history-replay policy for THIS turn (AP2-F / Stage 6, §3 "Native session
+   * caveat"). When `replayMode === 'quarantine_assistant_prose'` — a prior assistant
+   * turn was a generic menu OR predates the enforced-ask engine version — the
+   * provider's native session would resume its SERVER-SIDE memory of that poisoned/
+   * legacy prose, re-introducing the old order-taker behavior past the cleaned
+   * replay. So we WITHHOLD the native-session plan for that turn, forcing the
+   * replayed/compact-state path (orchestrate falls back to history replay when no
+   * plan is returned). This is a NARROW per-turn policy: a `normal`/absent policy
+   * keeps native sessions behaving EXACTLY as before (the feature is not disabled
+   * for clean turns). Absent → treated as `normal` (backward-compatible).
+   */
+  readonly historyPolicy?: HistoryPolicy;
 }
 
 /**
@@ -78,6 +92,12 @@ function latestSessionId(
 export function planNativeSession(opts: PlanNativeSessionOpts): NativeSessionPlan[] {
   if (!opts.enabled) return [];
   if (opts.conversationId.length === 0) return [];
+
+  // STALE-HISTORY HARDENING (AP2-F / Stage 6, §3): on a quarantined turn, withhold
+  // every native-session plan so orchestrate replays the CLEANED/compact history
+  // instead of resuming the provider's server-side memory of poisoned/legacy prose.
+  // Narrow + fail-soft: any other (or absent) policy plans natively as before.
+  if (opts.historyPolicy?.replayMode === 'quarantine_assistant_prose') return [];
 
   const plans: NativeSessionPlan[] = [];
 

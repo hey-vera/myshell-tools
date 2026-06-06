@@ -139,6 +139,17 @@ export interface SessionEntry {
    * goal-loop decisions today.
    */
   readonly workTrace?: import('./work-contract.js').WorkContract;
+  /**
+   * The engine BEHAVIOR version this turn was produced under (AP2-F / Stage 6,
+   * adaptive-partner-v2-5.6.md §3, §4). Stamped onto ACCEPTED assistant entries
+   * when persisted (see core/engine-version.ts::ENGINE_BEHAVIOR_VERSION), so a
+   * later turn can IDENTIFY which transcript period a prior assistant turn was
+   * written in and quarantine pre-fix prose even when its text is not an obvious
+   * menu. ABSENT on legacy/pre-fix entries (and user/system turns) — an absent
+   * marker is the pre-fix state and still loads (backward-compatible); the guard
+   * accepts both present (a finite number) and absent.
+   */
+  readonly engineBehaviorVersion?: number;
 }
 
 export interface SessionWriter {
