@@ -517,11 +517,14 @@ export const FREE_TEXT_SENTINEL = '\x00__FREE_TEXT__\x00';
 /**
  * The slash-commands available at the chat prompt — the canonical command set
  * (Tab T1, docs/tab-completion-5.5.md). Tab-completion offers exactly these;
- * keep in sync with the dispatch in `runOneChatInput` (/style, /mode, /goal,
- * /recap, /remember, /forget, /memory, /help, /back, /exit). Ordered most-used first.
+ * keep in sync with the dispatch in `runOneChatInput` (/retry, /edit, /style,
+ * /mode, /goal, /recap, /remember, /forget, /memory, /help, /back, /exit).
+ * Ordered most-used first.
  */
 export const CHAT_SLASH_COMMANDS: readonly string[] = [
   '/help',
+  '/retry',
+  '/edit',
   '/style',
   '/mode',
   '/goal',
@@ -554,6 +557,83 @@ export function completeSlash(
   // Return all commands as the candidate list when the bare `/` is typed, so
   // readline lists them; otherwise the filtered prefix matches.
   return [hits.length > 0 ? hits : [], line];
+}
+
+// ---------------------------------------------------------------------------
+// /retry + /edit — message-level redo (real-chat gap #2). The truncate POINTS
+// are computed by these PURE helpers so they're hermetically testable; the menu
+// applies them via the store's controlled `truncateAfter` and re-runs the turn.
+// ---------------------------------------------------------------------------
+
+/**
+ * Plan a `/retry` from a loaded conversation log.
+ *
+ * Finds the LAST user message whose turn produced an answer (i.e. there is at
+ * least one assistant entry after it), then returns the truncation point and the
+ * user line to replay: keep everything BEFORE that user message (`keepCount`),
+ * drop the user message AND the assistant answer(s) that followed, and re-run
+ * `replayLine`. The user message is dropped from the kept prefix because the
+ * re-run re-appends it via orchestrate — keeping it too would duplicate the user
+ * turn. System control entries are ignored when deciding "was there an answer."
+ *
+ * Returns null when there is nothing to retry — an empty log, or a log whose tail
+ * is a user message with no assistant answer yet (the turn is still the user's).
+ * PURE; never throws.
+ */
+export function planRetryTruncation(
+  entries: readonly SessionEntry[],
+): { readonly keepCount: number; readonly replayLine: string } | null {
+  if (!Array.isArray(entries) || entries.length === 0) return null;
+  // Walk back to the last assistant entry (the answer we'd regenerate).
+  let lastAssistant = -1;
+  for (let i = entries.length - 1; i >= 0; i--) {
+    if (entries[i]?.role === 'assistant') {
+      lastAssistant = i;
+      break;
+    }
+  }
+  if (lastAssistant === -1) return null; // no answer to retry
+  // The user message that PROMPTED that answer is the last user entry before it.
+  let userIdx = -1;
+  for (let i = lastAssistant - 1; i >= 0; i--) {
+    if (entries[i]?.role === 'user') {
+      userIdx = i;
+      break;
+    }
+  }
+  if (userIdx === -1) return null; // answer with no preceding user turn
+  const replayLine = entries[userIdx]?.content ?? '';
+  if (replayLine.trim().length === 0) return null;
+  // Keep everything BEFORE the user message; it (and the answer after it) are
+  // dropped, because the re-run re-appends the user turn via orchestrate.
+  return { keepCount: userIdx, replayLine };
+}
+
+/** A recent user message offered in the `/edit` picker — its log index + text. */
+export interface EditableUserMessage {
+  /** The entry's index in the full loaded log (the truncate boundary basis). */
+  readonly index: number;
+  /** The user message body. */
+  readonly content: string;
+}
+
+/**
+ * The recent USER messages eligible for `/edit`, most-recent first, bounded to
+ * `max`. Empty-bodied and non-user entries are skipped. PURE; never throws.
+ */
+export function recentUserMessages(
+  entries: readonly SessionEntry[],
+  max = 8,
+): EditableUserMessage[] {
+  if (!Array.isArray(entries) || entries.length === 0) return [];
+  const out: EditableUserMessage[] = [];
+  for (let i = entries.length - 1; i >= 0 && out.length < Math.max(1, max); i--) {
+    const e = entries[i];
+    if (e?.role === 'user' && e.content.trim().length > 0) {
+      out.push({ index: i, content: e.content });
+    }
+  }
+  return out;
 }
 
 /**
@@ -3401,6 +3481,8 @@ async function runChatLoop(
       // one place (memory, recap, intent reflection, the parallel-models panel).
       out.write(
         dim('  Just type to chat — I pick the right model for each message.\n', out.color) +
+        '  /retry        — regenerate my last answer\n' +
+        '  /edit         — edit one of your recent messages and re-run from there\n' +
         '  /goal <text>  — work autonomously until the goal is done (Ctrl+C to stop)\n' +
         '  /mode         — quality vs speed (Efficient / Balanced / Max)\n' +
         '  /memory       — see, edit, export, or delete what I remember (/forget to remove)\n' +
@@ -3456,6 +3538,100 @@ async function runChatLoop(
       const autoMode = resolveAutoMode(mutableCtx.env);
       mutableCtx.config = await runModeSelect(mutableCtx.config, out, readLine, autoMode, mutableCtx.env);
       return 'continue';
+    }
+
+    // ---- /retry — regenerate the LAST assistant answer ----------------------
+    // Truncate the last assistant turn off the log (back to just after the last
+    // user message), then re-run that user message as a fresh turn by recursing
+    // into runOneChatInput — so the new turn loads the now-truncated history and
+    // flows through the SAME ESC/queue/post-turn machinery as any normal turn.
+    // Fully fail-soft: a load/truncate error never corrupts the log or the loop.
+    if (line === '/retry') {
+      let entries: SessionEntry[] = [];
+      try {
+        entries = await ctx.store.load(convId);
+      } catch {
+        entries = [];
+      }
+      const plan = planRetryTruncation(entries);
+      if (plan === null) {
+        out.write(dim('  Nothing to retry yet — ask me something first.\n', out.color));
+        return 'continue';
+      }
+      try {
+        await ctx.store.truncateAfter(convId, plan.keepCount);
+      } catch {
+        // Truncate must never crash the loop; if it failed the log is intact —
+        // re-running would duplicate the answer, so bail with a gentle note.
+        out.write(dim("  Couldn't reset the last answer just now — try again.\n", out.color));
+        return 'continue';
+      }
+      out.write(dim('  Regenerating…\n', out.color));
+      return runOneChatInput(plan.replayLine);
+    }
+
+    // ---- /edit — edit a PRIOR user message + regenerate ---------------------
+    // Show the recent USER messages numbered, let the user pick one, edit its
+    // text (the original is offered as the starting point), truncate the log from
+    // that message onward, then submit the edited text as a NEW turn (recurse so
+    // it replays the truncated history through the normal machinery). `/edit`
+    // with no arg opens the picker. Reuses ONLY the injected readLine seam — no
+    // raw-mode/input internals (Phase 0). Fail-soft throughout.
+    if (line === '/edit' || line.startsWith('/edit ')) {
+      let entries: SessionEntry[] = [];
+      try {
+        entries = await ctx.store.load(convId);
+      } catch {
+        entries = [];
+      }
+      const candidates = recentUserMessages(entries);
+      if (candidates.length === 0) {
+        out.write(dim("  Nothing to edit yet — you haven't sent a message in this chat.\n", out.color));
+        return 'continue';
+      }
+      // Render the picker (oldest-of-the-recent last reads naturally top-to-
+      // bottom; we number most-recent = [1] so the common "edit my last message"
+      // is a single keystroke).
+      out.write('\n' + dim('  Which message do you want to edit?', out.color) + '\n');
+      for (let i = 0; i < candidates.length; i++) {
+        const c = candidates[i];
+        if (c === undefined) continue;
+        const preview = c.content.replace(/\s+/g, ' ').trim();
+        const shown = preview.length > 72 ? `${preview.slice(0, 72)}…` : preview;
+        out.write(`  [${i + 1}] ${shown}\n`);
+      }
+      out.write('  Pick a number, or Enter to cancel: ');
+      const pickRaw = await readLine();
+      const pickTrimmed = (pickRaw ?? '').trim();
+      if (pickTrimmed.length === 0) {
+        out.write(dim('  Cancelled.\n', out.color));
+        return 'continue';
+      }
+      const pickNum = Number.parseInt(pickTrimmed, 10);
+      const chosen =
+        Number.isInteger(pickNum) && pickNum >= 1 && pickNum <= candidates.length
+          ? candidates[pickNum - 1]
+          : undefined;
+      if (chosen === undefined) {
+        out.write(dim('  Not a listed number — nothing edited.\n', out.color));
+        return 'continue';
+      }
+      // Offer the original as the starting point; Enter keeps it unchanged.
+      out.write('\n  ' + dim('Current:', out.color) + ' ' + chosen.content.replace(/\s+/g, ' ').trim() + '\n');
+      out.write('  New message (Enter to keep it as-is): ');
+      const editedRaw = await readLine();
+      const edited = (editedRaw ?? '').trim();
+      const newText = edited.length > 0 ? edited : chosen.content;
+      // Truncate the log to BEFORE the chosen message (its index), then resubmit
+      // the edited text as a fresh turn — orchestrate appends the new user entry.
+      try {
+        await ctx.store.truncateAfter(convId, chosen.index);
+      } catch {
+        out.write(dim("  Couldn't rewind to that message just now — try again.\n", out.color));
+        return 'continue';
+      }
+      out.write(dim('  Regenerating…\n', out.color));
+      return runOneChatInput(newText);
     }
 
     // Effective mode: the user's explicit choice, else auto-detected from their

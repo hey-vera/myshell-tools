@@ -49,6 +49,27 @@ export interface ConversationStore {
   remove(id: string): Promise<void>;
   /** A SessionWriter bound to `id` — appends entries and bumps updatedAt/count. */
   writer(id: string): SessionWriter;
+  /**
+   * Truncate a conversation to its first `keepCount` entries, discarding every
+   * entry after that point — the one deliberate, user-initiated departure from
+   * the otherwise APPEND-ONLY log (it powers /retry and /edit: regenerate the
+   * last answer, or edit a prior message and re-run from there).
+   *
+   * Semantics:
+   *   - `keepCount` is clamped to `[0, currentLength]`; a no-op when it already
+   *     covers the whole log (returns the unchanged length).
+   *   - Atomic: the message file is rewritten via the same atomic tmp+rename path
+   *     as the index, under the index lock — a crash mid-truncate never leaves a
+   *     half-written log.
+   *   - Updates `messageCount` to the new length and CLEARS any cached recap (the
+   *     recap may describe turns that no longer exist).
+   *   - Path/id-validated and fail-soft: an invalid id or missing conversation is
+   *     a no-op (returns the would-be length / 0), never a throw that could crash
+   *     the chat loop or corrupt the conversation.
+   *
+   * Returns the conversation's entry count AFTER the operation.
+   */
+  truncateAfter(id: string, keepCount: number): Promise<number>;
   /** Pin or unpin a conversation. No-op if the id does not exist. */
   setPinned(id: string, pinned: boolean): Promise<void>;
   /** Set or clear the category tag for a conversation. No-op if id missing. */

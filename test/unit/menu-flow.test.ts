@@ -259,6 +259,21 @@ function makeStore(clock: Clock, initialMetas?: ConversationMeta[]): FakeConvers
         }
       }
     },
+
+    async truncateAfter(id: string, keepCount: number): Promise<number> {
+      const w = writers.get(id);
+      if (w === undefined) return 0;
+      const keep = Math.max(0, Math.min(Math.floor(keepCount), w.entries.length));
+      w.entries.length = keep;
+      const idx = metas.findIndex((m) => m.id === id);
+      if (idx >= 0) {
+        const m = metas[idx];
+        if (m !== undefined) {
+          metas[idx] = { ...m, messageCount: keep, recap: null, recapAt: null };
+        }
+      }
+      return keep;
+    },
   };
 }
 
@@ -5660,9 +5675,11 @@ describe('completeSlash — Tab-completion for the chat prompt', () => {
   });
 
   it('matches multiple commands sharing a prefix', () => {
-    // '/' + 'h' → only /help; '/e' → only /exit; verify filtering is by prefix
+    // '/' + 'h' → only /help; '/e' → /edit AND /exit (both share the prefix);
+    // verify filtering is by prefix and returns ALL matches.
     assert.deepEqual(completeSlash('/h')[0], ['/help']);
-    assert.deepEqual(completeSlash('/e')[0], ['/exit']);
+    assert.deepEqual(completeSlash('/e')[0], ['/edit', '/exit']);
+    assert.deepEqual(completeSlash('/ed')[0], ['/edit']);
   });
 
   it('is a no-op (no hits) on non-slash prose so plain text is never mangled', () => {
@@ -6196,5 +6213,234 @@ describe('startMenu — ※ recap on resume + /recap', () => {
     assert.ok(sink.buf.includes('On-demand recap; next: ship it.'), '/recap shows a fresh recap');
     // The ※ marker appears for the /recap output.
     assert.ok(sink.buf.includes('※'), '/recap uses the ※ marker');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// /retry + /edit — message-level redo (real-chat gap #2). Resume a seeded
+// conversation, run the verb through the SAME injected store + readLine + fake
+// task runner, and assert the truncate + re-run + history-after-truncate.
+// ---------------------------------------------------------------------------
+
+describe('startMenu — /retry regenerates the last answer', () => {
+  function seedRetryable(store: FakeConversationStore): string {
+    seedConversation(store, {
+      id: 'conv-retry',
+      title: 'Retry me',
+      messageCount: 2,
+      entries: [
+        { timestamp: '2024-01-01T00:00:00.000Z', role: 'user', content: 'my question' },
+        { timestamp: '2024-01-01T00:01:00.000Z', role: 'assistant', content: 'a stale old answer' },
+      ],
+    });
+    return 'conv-retry';
+  }
+
+  it('truncates the last assistant turn and re-runs the last user message', async () => {
+    const clock = makeFakeClock();
+    const store = makeStore(clock);
+    const id = seedRetryable(store);
+    const sink = makeSink();
+    const ctx = makeCtx(
+      { readLine: makeScriptedReader(['1', '/retry', '/exit', 'q']) },
+      clock,
+      store,
+    );
+    await startMenu(ctx, sink);
+
+    const entries = await store.load(id);
+    // The stale answer was dropped; the user message was replayed and a FRESH
+    // assistant answer ("Done." from the fake provider) appended.
+    const assistantBodies = entries.filter((e) => e.role === 'assistant').map((e) => e.content);
+    assert.ok(
+      !assistantBodies.some((b) => b.includes('a stale old answer')),
+      'the stale answer is gone after /retry',
+    );
+    assert.ok(
+      entries.some((e) => e.role === 'assistant' && e.content.includes('Done.')),
+      'a fresh answer was generated',
+    );
+    // The replayed user message is still the last user turn.
+    const userBodies = entries.filter((e) => e.role === 'user').map((e) => e.content);
+    assert.deepEqual(userBodies, ['my question'], 'exactly one user turn, the replayed one');
+    assert.ok(sink.buf.includes('Regenerating'), 'shows the Regenerating notice');
+  });
+
+  it('prints a no-op notice when there is nothing to retry', async () => {
+    const clock = makeFakeClock();
+    const store = makeStore(clock);
+    seedConversation(store, {
+      id: 'conv-noretry',
+      title: 'No answer yet',
+      messageCount: 1,
+      entries: [
+        { timestamp: '2024-01-01T00:00:00.000Z', role: 'user', content: 'just a question, no answer' },
+      ],
+    });
+    const sink = makeSink();
+    const ctx = makeCtx(
+      { readLine: makeScriptedReader(['1', '/retry', '/exit', 'q']) },
+      clock,
+      store,
+    );
+    await startMenu(ctx, sink);
+
+    assert.ok(sink.buf.includes('Nothing to retry'), 'shows the nothing-to-retry notice');
+    // The log is untouched — still just the single user message.
+    const entries = await store.load('conv-noretry');
+    assert.equal(entries.length, 1);
+  });
+});
+
+describe('startMenu — /edit picks a prior user message and re-runs from there', () => {
+  function seedEditable(store: FakeConversationStore): string {
+    seedConversation(store, {
+      id: 'conv-edit',
+      title: 'Edit me',
+      messageCount: 4,
+      entries: [
+        { timestamp: '2024-01-01T00:00:00.000Z', role: 'user', content: 'first question' },
+        { timestamp: '2024-01-01T00:01:00.000Z', role: 'assistant', content: 'first answer' },
+        { timestamp: '2024-01-01T00:02:00.000Z', role: 'user', content: 'second question' },
+        { timestamp: '2024-01-01T00:03:00.000Z', role: 'assistant', content: 'second answer' },
+      ],
+    });
+    return 'conv-edit';
+  }
+
+  it('picks the chosen message, truncates from there, and resubmits the edited text', async () => {
+    const clock = makeFakeClock();
+    const store = makeStore(clock);
+    const id = seedEditable(store);
+    const sink = makeSink();
+    // Resume → /edit → pick [2] (the FIRST question, since recent-first numbers
+    // the second question [1]) → type a new message → /exit → q.
+    const ctx = makeCtx(
+      {
+        readLine: makeScriptedReader([
+          '1',
+          '/edit',
+          '2',
+          'a sharper first question',
+          '/exit',
+          'q',
+        ]),
+      },
+      clock,
+      store,
+    );
+    await startMenu(ctx, sink);
+
+    const entries = await store.load(id);
+    const userBodies = entries.filter((e) => e.role === 'user').map((e) => e.content);
+    // Everything from the first question onward was truncated; the edited text was
+    // resubmitted as a fresh turn. So the only user message is the edited one.
+    assert.deepEqual(userBodies, ['a sharper first question']);
+    // The old "second question/answer" tail and the original "first answer" are gone.
+    assert.ok(!entries.some((e) => e.content.includes('second question')));
+    assert.ok(!entries.some((e) => e.content.includes('first answer')));
+    // A fresh answer was generated for the edited turn.
+    assert.ok(entries.some((e) => e.role === 'assistant' && e.content.includes('Done.')));
+  });
+
+  it('keeps the original text when the user presses Enter (no edit)', async () => {
+    const clock = makeFakeClock();
+    const store = makeStore(clock);
+    const id = seedEditable(store);
+    const sink = makeSink();
+    // /edit → pick [1] (the second question) → Enter (keep as-is) → /exit → q.
+    const ctx = makeCtx(
+      {
+        readLine: makeScriptedReader(['1', '/edit', '1', '', '/exit', 'q']),
+      },
+      clock,
+      store,
+    );
+    await startMenu(ctx, sink);
+
+    const entries = await store.load(id);
+    const userBodies = entries.filter((e) => e.role === 'user').map((e) => e.content);
+    // first question kept; second question re-run unchanged.
+    assert.deepEqual(userBodies, ['first question', 'second question']);
+  });
+
+  it('cancels cleanly on a blank pick (no truncation, no re-run)', async () => {
+    const clock = makeFakeClock();
+    const store = makeStore(clock);
+    const id = seedEditable(store);
+    const sink = makeSink();
+    const ctx = makeCtx(
+      { readLine: makeScriptedReader(['1', '/edit', '', '/exit', 'q']) },
+      clock,
+      store,
+    );
+    await startMenu(ctx, sink);
+
+    assert.ok(sink.buf.includes('Cancelled'), 'shows a cancel notice');
+    // The log is unchanged.
+    const entries = await store.load(id);
+    assert.equal(entries.length, 4);
+  });
+
+  it('prints a no-op notice when there are no user messages to edit', async () => {
+    const clock = makeFakeClock();
+    const store = makeStore(clock);
+    seedConversation(store, {
+      id: 'conv-noedit',
+      title: 'Empty',
+      messageCount: 1,
+      entries: [
+        { timestamp: '2024-01-01T00:00:00.000Z', role: 'assistant', content: 'only an assistant note' },
+      ],
+    });
+    const sink = makeSink();
+    const ctx = makeCtx(
+      { readLine: makeScriptedReader(['1', '/edit', '/exit', 'q']) },
+      clock,
+      store,
+    );
+    await startMenu(ctx, sink);
+
+    assert.ok(sink.buf.includes('Nothing to edit'), 'shows the nothing-to-edit notice');
+  });
+});
+
+describe('history-after-truncate excludes the tail (no stale leak into the next turn)', () => {
+  it('the re-run turn replays only the truncated history', async () => {
+    const clock = makeFakeClock();
+    const store = makeStore(clock);
+    seedConversation(store, {
+      id: 'conv-hist',
+      title: 'History check',
+      messageCount: 2,
+      entries: [
+        { timestamp: '2024-01-01T00:00:00.000Z', role: 'user', content: 'original question' },
+        { timestamp: '2024-01-01T00:01:00.000Z', role: 'assistant', content: 'STALE ANSWER TOKEN' },
+      ],
+    });
+    // Capture the history each turn sees by wrapping load — once the truncate
+    // happened, the re-run's load() must NOT include the stale answer.
+    const realLoad = store.load.bind(store);
+    const histories: SessionEntry[][] = [];
+    store.load = async (cid: string) => {
+      const h = await realLoad(cid);
+      histories.push(h);
+      return h;
+    };
+    const sink = makeSink();
+    const ctx = makeCtx(
+      { readLine: makeScriptedReader(['1', '/retry', '/exit', 'q']) },
+      clock,
+      store,
+    );
+    await startMenu(ctx, sink);
+
+    // The history load that fed the regenerated turn (the LAST load before the
+    // new answer was written) must not contain the stale answer.
+    const fedToReRun = histories[histories.length - 1] ?? [];
+    assert.ok(
+      !fedToReRun.some((e) => e.content.includes('STALE ANSWER TOKEN')),
+      'the re-run turn never sees the truncated stale answer',
+    );
   });
 });

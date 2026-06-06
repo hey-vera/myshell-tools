@@ -41,6 +41,18 @@ function getMessagePath(homeDir: string, id: string): string {
   return join(getConversationsDir(homeDir), `${id}.jsonl`);
 }
 
+/**
+ * Path-traversal guard for the controlled `truncateAfter` rewrite — the only op
+ * that REWRITES a message file (vs. append/read), so it gates the id against the
+ * known conversation-id shape (a UUID, plus a permissive alnum/`-`/`_` fallback
+ * for legacy/test ids) before touching the filesystem. No `/`, `\`, `.` or NUL
+ * can reach the path. Append/load stay as-is (they never overwrite a sibling).
+ */
+const VALID_CONV_ID_RE = /^[A-Za-z0-9_-]+$/;
+function isValidConversationId(id: string): boolean {
+  return typeof id === 'string' && id.length > 0 && VALID_CONV_ID_RE.test(id);
+}
+
 // ---------------------------------------------------------------------------
 // Internal index helpers
 // ---------------------------------------------------------------------------
@@ -372,6 +384,92 @@ export function createFileConversationStore(opts: {
           });
         },
       };
+    },
+
+    // -----------------------------------------------------------------------
+    // truncateAfter — the controlled, atomic, fail-soft departure from append-
+    // only that powers /retry and /edit (rewrite the log to its first
+    // `keepCount` entries; clear the now-possibly-stale recap; bump messageCount).
+    // -----------------------------------------------------------------------
+    async truncateAfter(id: string, keepCount: number): Promise<number> {
+      // Path/id validation FIRST — this op overwrites a file, so a bad id must
+      // never resolve a path. Fail-soft: a no-op (0), never a throw.
+      if (!isValidConversationId(id)) return 0;
+
+      const keep = Math.max(0, Math.floor(Number.isFinite(keepCount) ? keepCount : 0));
+      const messagePath = getMessagePath(home, id);
+
+      // The conversations dir must exist before acquiring the lock (the lock file
+      // lives there) — matches setPinned/setCategory/setRecap. Fail-soft.
+      try {
+        await ensureDir(home);
+      } catch {
+        return 0;
+      }
+
+      // Read the current log OUTSIDE the rewrite is unsafe (TOCTOU), so do the
+      // whole read-decide-rewrite INSIDE the index lock — the same lock that
+      // guards the messageCount/recap update — so a concurrent append can't
+      // interleave with the rewrite.
+      return withLock(getIndexLockPath(home), async () => {
+        let entries: SessionEntry[];
+        try {
+          entries = await loadMessageFile(messagePath);
+        } catch (err) {
+          const nodeErr = err as NodeJS.ErrnoException;
+          if (nodeErr.code === 'ENOENT') return 0; // no log → nothing to truncate
+          // Unreadable log: fail-soft. Leave it untouched rather than risk
+          // clobbering a recoverable file; report the best-known length (0).
+          return 0;
+        }
+
+        const newLength = Math.min(keep, entries.length);
+        // Already covers (or exceeds) the whole log → genuine no-op, no rewrite.
+        if (newLength >= entries.length) return entries.length;
+
+        const kept = entries.slice(0, newLength);
+
+        // Atomic rewrite: tmp + rename (atomicWrite), same as the index. A crash
+        // mid-write leaves the original log intact (rename is the commit point).
+        const body = kept.map((e) => JSON.stringify(e)).join('\n') + (kept.length > 0 ? '\n' : '');
+        try {
+          await atomicWrite(messagePath, body);
+        } catch {
+          // A rewrite failure must NOT corrupt the conversation or crash the
+          // loop. atomicWrite either fully commits or leaves the original in
+          // place; on failure we report the unchanged length.
+          return entries.length;
+        }
+
+        // Update the index: new count + CLEAR the cached recap (it may describe
+        // turns that no longer exist). Best-effort — the log is already the
+        // source of truth; an index miss self-heals on the next rebuild.
+        const index = await readIndexLocked(home, onWarning);
+        const idx = index.findIndex((m) => m.id === id);
+        if (idx !== -1) {
+          const existing = index[idx];
+          if (existing !== undefined) {
+            const updated: ConversationMeta = {
+              id: existing.id,
+              title: existing.title,
+              createdAt: existing.createdAt,
+              updatedAt: clock.isoNow(),
+              messageCount: newLength,
+              pinned: existing.pinned,
+              category: existing.category,
+              // Drop the recap provenance entirely so resume regenerates rather
+              // than show a recap of deleted turns (isRecapStale → regenerate).
+              recap: null,
+              recapAt: null,
+            };
+            const newIndex = [...index];
+            newIndex[idx] = updated;
+            await writeIndex(home, newIndex);
+          }
+        }
+
+        return newLength;
+      });
     },
 
     // -----------------------------------------------------------------------

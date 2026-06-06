@@ -602,6 +602,177 @@ describe('createFileConversationStore — setRecap', () => {
 });
 
 // ---------------------------------------------------------------------------
+// truncateAfter — controlled, atomic, fail-soft departure from append-only
+// (powers /retry and /edit). Round-trip, index update, recap-clear, validation,
+// atomicity, fail-soft.
+// ---------------------------------------------------------------------------
+
+describe('createFileConversationStore — truncateAfter', () => {
+  async function seed(home: string, clock: Clock, n: number) {
+    const store = createFileConversationStore({ homeDir: home, clock });
+    const meta = await store.create('Truncate me');
+    const w = store.writer(meta.id);
+    for (let i = 0; i < n; i++) {
+      await w.append(
+        makeEntry({
+          role: i % 2 === 0 ? 'user' : 'assistant',
+          content: `msg ${i}`,
+        }),
+      );
+    }
+    return { store, id: meta.id };
+  }
+
+  it('keeps the first keepCount entries and drops the rest (round-trip)', async () => {
+    const home2 = await mkdtemp(join(tmpdir(), `conv-trunc-rt-${randomUUID()}-`));
+    try {
+      const clock = makeFakeClock();
+      const { store, id } = await seed(home2, clock, 5);
+      const result = await store.truncateAfter(id, 3);
+      assert.equal(result, 3);
+      const entries = await store.load(id);
+      assert.equal(entries.length, 3);
+      assert.equal(entries[0]?.content, 'msg 0');
+      assert.equal(entries[2]?.content, 'msg 2');
+    } finally {
+      await rm(home2, { recursive: true, force: true });
+    }
+  });
+
+  it('updates messageCount in the index to the new length', async () => {
+    const home2 = await mkdtemp(join(tmpdir(), `conv-trunc-count-${randomUUID()}-`));
+    try {
+      const clock = makeFakeClock();
+      const { store, id } = await seed(home2, clock, 4);
+      await store.truncateAfter(id, 1);
+      const found = (await store.list()).find((m) => m.id === id);
+      assert.ok(found !== undefined);
+      assert.equal(found.messageCount, 1);
+    } finally {
+      await rm(home2, { recursive: true, force: true });
+    }
+  });
+
+  it('clears any cached recap (it may describe deleted turns)', async () => {
+    const home2 = await mkdtemp(join(tmpdir(), `conv-trunc-recap-${randomUUID()}-`));
+    try {
+      const clock = makeFakeClock();
+      const { store, id } = await seed(home2, clock, 4);
+      await store.setRecap(id, 'we were doing X', 4);
+      await store.truncateAfter(id, 2);
+      const found = (await store.list()).find((m) => m.id === id);
+      assert.ok(found !== undefined);
+      assert.equal(found.recap, null);
+      assert.equal(found.recapAt, null);
+    } finally {
+      await rm(home2, { recursive: true, force: true });
+    }
+  });
+
+  it('truncateAfter(0) empties the log', async () => {
+    const home2 = await mkdtemp(join(tmpdir(), `conv-trunc-zero-${randomUUID()}-`));
+    try {
+      const clock = makeFakeClock();
+      const { store, id } = await seed(home2, clock, 3);
+      const result = await store.truncateAfter(id, 0);
+      assert.equal(result, 0);
+      assert.deepEqual(await store.load(id), []);
+    } finally {
+      await rm(home2, { recursive: true, force: true });
+    }
+  });
+
+  it('keepCount >= length is a no-op (returns the unchanged length)', async () => {
+    const home2 = await mkdtemp(join(tmpdir(), `conv-trunc-noop-${randomUUID()}-`));
+    try {
+      const clock = makeFakeClock();
+      const { store, id } = await seed(home2, clock, 3);
+      assert.equal(await store.truncateAfter(id, 3), 3);
+      assert.equal(await store.truncateAfter(id, 99), 3);
+      assert.equal((await store.load(id)).length, 3);
+    } finally {
+      await rm(home2, { recursive: true, force: true });
+    }
+  });
+
+  it('clamps a negative keepCount to 0', async () => {
+    const home2 = await mkdtemp(join(tmpdir(), `conv-trunc-neg-${randomUUID()}-`));
+    try {
+      const clock = makeFakeClock();
+      const { store, id } = await seed(home2, clock, 3);
+      assert.equal(await store.truncateAfter(id, -5), 0);
+      assert.deepEqual(await store.load(id), []);
+    } finally {
+      await rm(home2, { recursive: true, force: true });
+    }
+  });
+
+  it('is a no-op (0) for an unknown id — never throws', async () => {
+    const home2 = await mkdtemp(join(tmpdir(), `conv-trunc-unknown-${randomUUID()}-`));
+    try {
+      const clock = makeFakeClock();
+      const store = createFileConversationStore({ homeDir: home2, clock });
+      assert.equal(await store.truncateAfter('no-such-conversation', 1), 0);
+    } finally {
+      await rm(home2, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects a path-traversal id without touching the filesystem (fail-soft 0)', async () => {
+    const home2 = await mkdtemp(join(tmpdir(), `conv-trunc-traversal-${randomUUID()}-`));
+    try {
+      const clock = makeFakeClock();
+      const store = createFileConversationStore({ homeDir: home2, clock });
+      assert.equal(await store.truncateAfter('../../etc/passwd', 0), 0);
+      assert.equal(await store.truncateAfter('a/b', 0), 0);
+      assert.equal(await store.truncateAfter('', 0), 0);
+    } finally {
+      await rm(home2, { recursive: true, force: true });
+    }
+  });
+
+  it('atomically rewrites the JSONL so a re-load round-trips byte-faithfully', async () => {
+    const home2 = await mkdtemp(join(tmpdir(), `conv-trunc-atomic-${randomUUID()}-`));
+    try {
+      const clock = makeFakeClock();
+      const { store, id } = await seed(home2, clock, 6);
+      await store.truncateAfter(id, 2);
+      // No tmp file should be left behind by the atomic rewrite.
+      const convDir = join(home2, '.myshell-tools', 'conversations');
+      const files = await import('node:fs/promises').then((m) => m.readdir(convDir));
+      assert.ok(!files.some((f) => f.includes('.tmp.')), 'no orphaned tmp file');
+      // The file ends with exactly one trailing newline and parses cleanly.
+      const raw = await readFile(join(convDir, `${id}.jsonl`), 'utf8');
+      assert.ok(raw.endsWith('\n'));
+      const lines = raw.split('\n').filter((l) => l.trim().length > 0);
+      assert.equal(lines.length, 2);
+      const reloaded = await store.load(id);
+      assert.equal(reloaded.length, 2);
+    } finally {
+      await rm(home2, { recursive: true, force: true });
+    }
+  });
+
+  it('a subsequent append after truncate continues the (now shorter) log', async () => {
+    const home2 = await mkdtemp(join(tmpdir(), `conv-trunc-append-${randomUUID()}-`));
+    try {
+      const clock = makeFakeClock();
+      const { store, id } = await seed(home2, clock, 4);
+      await store.truncateAfter(id, 2);
+      const w = store.writer(id);
+      await w.append(makeEntry({ role: 'assistant', content: 'fresh answer' }));
+      const entries = await store.load(id);
+      assert.equal(entries.length, 3);
+      assert.equal(entries[2]?.content, 'fresh answer');
+      const found = (await store.list()).find((m) => m.id === id);
+      assert.equal(found?.messageCount, 3);
+    } finally {
+      await rm(home2, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Resilience: corrupt / missing index
 // ---------------------------------------------------------------------------
 

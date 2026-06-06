@@ -20,8 +20,11 @@ import {
   isRunningUnderNpx,
   interpretQuestionAnswer,
   FREE_TEXT_SENTINEL,
+  planRetryTruncation,
+  recentUserMessages,
+  CHAT_SLASH_COMMANDS,
 } from '../../src/interface/menu.ts';
-import type { Question } from '../../src/core/types.ts';
+import type { Question, SessionEntry } from '../../src/core/types.ts';
 import type { UpdateCheckResult } from '../../src/infra/update-check.ts';
 import type { EnvironmentStatus } from '../../src/providers/detect.ts';
 import type { ConversationMeta } from '../../src/infra/conversation-store.ts';
@@ -778,5 +781,100 @@ describe('interpretQuestionAnswer', () => {
     for (const i of ['', '0', '-1', ',,,', '1,abc', '99']) {
       assert.doesNotThrow(() => interpretQuestionAnswer(i, multi));
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// planRetryTruncation / recentUserMessages — /retry + /edit truncate planning
+// ---------------------------------------------------------------------------
+
+function entry(role: SessionEntry['role'], content: string): SessionEntry {
+  return { timestamp: '2024-01-01T00:00:00.000Z', role, content };
+}
+
+describe('planRetryTruncation', () => {
+  it('plans to keep up to the last user message and replay it', () => {
+    const log = [
+      entry('user', 'first question'),
+      entry('assistant', 'first answer'),
+      entry('user', 'second question'),
+      entry('assistant', 'second answer'),
+    ];
+    const plan = planRetryTruncation(log);
+    assert.ok(plan !== null);
+    assert.equal(plan.keepCount, 2); // keep BEFORE the 2nd user message (re-run re-adds it)
+    assert.equal(plan.replayLine, 'second question');
+  });
+
+  it('returns null when there is no assistant answer yet', () => {
+    assert.equal(planRetryTruncation([entry('user', 'only a question')]), null);
+  });
+
+  it('returns null for an empty log', () => {
+    assert.equal(planRetryTruncation([]), null);
+  });
+
+  it('drops MULTIPLE trailing assistant entries back to the last user', () => {
+    const log = [
+      entry('user', 'q'),
+      entry('assistant', 'a1'),
+      entry('assistant', 'a2'),
+    ];
+    const plan = planRetryTruncation(log);
+    assert.ok(plan !== null);
+    assert.equal(plan.keepCount, 0); // drop the user too — the re-run re-adds it
+    assert.equal(plan.replayLine, 'q');
+  });
+
+  it('ignores trailing system entries but keeps them in the kept prefix count', () => {
+    const log = [
+      entry('user', 'q'),
+      entry('assistant', 'a'),
+      entry('system', 'control'),
+    ];
+    // The last assistant is at index 1; the user before it is index 0, which is
+    // dropped (keepCount 0) so the re-run re-appends it without duplication.
+    const plan = planRetryTruncation(log);
+    assert.ok(plan !== null);
+    assert.equal(plan.keepCount, 0);
+    assert.equal(plan.replayLine, 'q');
+  });
+
+  it('never throws on adversarial input', () => {
+    assert.doesNotThrow(() => planRetryTruncation(undefined as unknown as SessionEntry[]));
+  });
+});
+
+describe('recentUserMessages', () => {
+  it('returns recent user messages most-recent-first with their log indices', () => {
+    const log = [
+      entry('user', 'u0'),
+      entry('assistant', 'a0'),
+      entry('user', 'u1'),
+      entry('assistant', 'a1'),
+      entry('user', 'u2'),
+    ];
+    const out = recentUserMessages(log);
+    assert.equal(out.length, 3);
+    assert.deepEqual(out[0], { index: 4, content: 'u2' });
+    assert.deepEqual(out[1], { index: 2, content: 'u1' });
+    assert.deepEqual(out[2], { index: 0, content: 'u0' });
+  });
+
+  it('bounds the result to max', () => {
+    const log = Array.from({ length: 10 }, (_v, i) => entry('user', `u${i}`));
+    assert.equal(recentUserMessages(log, 3).length, 3);
+  });
+
+  it('skips empty-bodied and non-user entries; [] for none', () => {
+    const log = [entry('assistant', 'a'), entry('user', '   '), entry('system', 's')];
+    assert.deepEqual(recentUserMessages(log), []);
+  });
+});
+
+describe('CHAT_SLASH_COMMANDS includes /retry and /edit', () => {
+  it('registers both verbs for tab-completion', () => {
+    assert.ok(CHAT_SLASH_COMMANDS.includes('/retry'));
+    assert.ok(CHAT_SLASH_COMMANDS.includes('/edit'));
   });
 });

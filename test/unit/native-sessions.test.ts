@@ -136,6 +136,13 @@ function makeFakeStore(): FakeStore {
     async setPinned(): Promise<void> { /* no-op */ },
     async setCategory(): Promise<void> { /* no-op */ },
     async setRecap(): Promise<void> { /* no-op */ },
+    async truncateAfter(id: string, keepCount: number): Promise<number> {
+      const arr = written.get(id);
+      if (arr === undefined) return 0;
+      const keep = Math.max(0, Math.min(Math.floor(keepCount), arr.length));
+      arr.length = keep;
+      return keep;
+    },
   };
 }
 
