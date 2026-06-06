@@ -15,6 +15,39 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   resumed goal's contract from the persisted `workTrace` (niche: the in-run contract
   is already kept in memory; only cross-session resume benefits). Optional.
 
+## [3.21.0]
+
+### Added — model/provider capability registry (Stages 1–5, capability-aware routing)
+myshell-tools now knows what each model can actually do, and routes/explains
+accordingly — designed as 3 layers (objective declarative facts + dynamic refresh +
+a thin learned tie-break), per `docs/model-capability-registry-5.6.md`:
+- **Registry + dynamic refresh** (`model-capabilities.ts`, `model-capability-refresh.ts`,
+  `infra/model-capability-port.ts`): objective per-model facts (context window,
+  reasoning efforts, vision, tools, native session, cost tier), merged fail-soft from
+  declarative defaults ← detection `availableModels` ← `$CODEX_HOME/models_cache.json`.
+  Unknown = absent, never fabricated; missing cache degrades gracefully.
+- **Self-awareness** now states real capabilities ("Codex GPT-5.5 — low/medium/high/
+  xhigh, 272k context, vision") and degrades honestly to "unknown" when the source is
+  gone.
+- **Capability-fit routing** (`route()`): bounded re-ranking of *which model of the
+  already-chosen provider* runs (large context, vision, native session) — can never
+  bypass auth/cooldown/tier admission; byte-for-byte unchanged with no registry.
+- **Reasoning-effort selection** (`selectReasoningEffort`): mode×tier×risk×task ladder
+  → Codex `-c model_reasoning_effort=<effort>` (xhigh only when manager admitted);
+  recorded in the ledger. Claude/OpenCode unchanged.
+- **Learned outcomes** (`routing-memory.ts`): a conservative, per-user, ledger-derived
+  tie-break that *extends* `learnProviderOrder` (min 5 runs, neutral prior, ≤0.5
+  influence) — applied only after hard capability fit, never overriding it.
+- **Provider-native feature inventory** (facts only): records that Claude Code supports
+  Skills/sub-agents but states plainly that myshell-tools does NOT invoke them —
+  routing uses our own orchestrator. Non-routable; never executed.
+
+Verified by real provider runs at each stage (capability awareness + degradation,
+effort selection on the live codex cache, seeded-ledger thresholds, the skills answer)
+and a final integrated sweep. Subscription-cost clean (no embeddings/metered/extra
+model calls). Gemini deliberately deferred (provider-agnostic shapes leave a clean
+drop-in). 3119 → 3251 tests, 0 fail.
+
 ## [3.20.0]
 
 ### Added — tool self-awareness ("ABOUT THIS TOOL" context block)
