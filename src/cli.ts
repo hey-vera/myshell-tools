@@ -30,7 +30,14 @@ import { createFileUserMemoryStore, resolveProjectKey } from './infra/user-memor
 export { createFileUserMemoryStore };
 import { resolveMemoryContext } from './core/memory-injection.js';
 import { buildEnvironmentContext } from './core/repo-map.js';
-import { buildToolStateContext, type ToolStateProvider } from './core/tool-state.js';
+import {
+  buildToolStateContext,
+  buildCapabilitySummary,
+  type ToolStateProvider,
+  type CapabilitySelfAwarenessSummary,
+} from './core/tool-state.js';
+import { refreshCapabilities } from './core/model-capability-refresh.js';
+import { createCapabilityRefreshPort } from './infra/model-capability-port.js';
 import { nodeRepoScanPort } from './infra/repo-scan.js';
 import { loadConfig, resolvePartnerStyle } from './infra/config.js';
 import { makeIntentExtractor } from './core/intent-extractor.js';
@@ -62,6 +69,43 @@ const PROVIDER_LABEL: Record<string, string> = {
   codex: 'Codex',
   opencode: 'OpenCode',
 };
+
+/**
+ * Refresh the Model Capability Registry (Stage 1) and build the capped
+ * self-awareness summary from the live detection facts + the local Codex cache.
+ * Cheap, gathered once per session like environmentContext, and FULLY fail-soft:
+ * any error → `undefined` (the ABOUT block renders exactly as before). NO model
+ * call, NO network. Shared by the one-shot and repl paths.
+ */
+async function gatherCapabilitySummary(
+  env: import('./providers/detect.js').EnvironmentStatus,
+  cwd: string,
+): Promise<CapabilitySelfAwarenessSummary | undefined> {
+  try {
+    const { registry } = await refreshCapabilities(
+      {
+        providers: [env.claude, env.codex, env.opencode].map((p) => ({
+          provider: p.id,
+          authenticated: p.authenticated,
+          availableModels: p.availableModels,
+        })),
+        nowIso: systemClock.isoNow(),
+      },
+      createCapabilityRefreshPort(process.env, cwd),
+    );
+    return buildCapabilitySummary(
+      registry,
+      {
+        claude: env.claude.authenticated,
+        codex: env.codex.authenticated,
+        opencode: env.opencode.authenticated,
+      },
+      (p) => PROVIDER_LABEL[p] ?? p,
+    );
+  } catch {
+    return undefined;
+  }
+}
 
 /** Default hard wall-clock timeout (ms) for a single provider run. */
 const DEFAULT_TIMEOUT_MS = 120000;
@@ -365,6 +409,11 @@ async function main(): Promise<void> {
     // TOOL SELF-AWARENESS (tool-state §): render the authoritative "ABOUT THIS
     // TOOL" block from the live env + effective mode + config so the partner
     // answers the user's setup/mode questions from truth. Pure, NO model call.
+    // MODEL CAPABILITY REGISTRY (Stage 1, §4) — refresh the objective capability
+    // facts once per one-shot run (cheap, fully fail-soft, NO model call) and feed
+    // the capped summary into the self-awareness block. Missing/corrupt Codex cache
+    // degrades to detection/declarative facts (reasoning efforts "unknown").
+    const capabilitySummary = await gatherCapabilitySummary(env, cwd);
     const toolStateContext = buildToolStateContext({
       version,
       providers: [env.claude, env.codex, env.opencode].map(
@@ -378,6 +427,7 @@ async function main(): Promise<void> {
       mode: resolvedMode,
       modeIsAuto: config.mode === undefined,
       smartRoute: config.smartRoute !== false,
+      ...(capabilitySummary !== undefined ? { capabilitySummary } : {}),
     });
     const deps = buildDeps(
       cwd,
@@ -534,6 +584,7 @@ async function main(): Promise<void> {
     // TOOL SELF-AWARENESS for the REPL subset too (deps/prompt concern, not UI):
     // the same authoritative ABOUT block so the partner answers setup/mode
     // questions accurately. Pure assembly, NO model call.
+    const replCapabilitySummary = await gatherCapabilitySummary(env, cwd);
     const replToolStateContext = buildToolStateContext({
       version,
       providers: [env.claude, env.codex, env.opencode].map(
@@ -547,6 +598,7 @@ async function main(): Promise<void> {
       mode: replMode,
       modeIsAuto: config.mode === undefined,
       smartRoute: config.smartRoute !== false,
+      ...(replCapabilitySummary !== undefined ? { capabilitySummary: replCapabilitySummary } : {}),
     });
 
     const baseDeps = buildDeps(

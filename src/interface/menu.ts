@@ -31,7 +31,14 @@ import { decideAutonomyOffer } from '../core/autonomy.js';
 import { classify } from '../core/classify.js';
 import { resolveMemoryContextDetailed } from '../core/memory-injection.js';
 import { buildEnvironmentContext } from '../core/repo-map.js';
-import { buildToolStateContext, type ToolStateProvider } from '../core/tool-state.js';
+import {
+  buildToolStateContext,
+  buildCapabilitySummary,
+  type ToolStateProvider,
+  type CapabilitySelfAwarenessSummary,
+} from '../core/tool-state.js';
+import { refreshCapabilities } from '../core/model-capability-refresh.js';
+import { createCapabilityRefreshPort } from '../infra/model-capability-port.js';
 import { nodeRepoScanPort } from '../infra/repo-scan.js';
 import { createFileUserMemoryStore, resolveProjectKey } from '../infra/user-memory-store.js';
 import {
@@ -3450,6 +3457,51 @@ async function runChatLoop(
   // (below) populates it, availableAfterCooldown filters on it.
   const providerCooldownUntil = new Map<ProviderId, number>();
 
+  // ---- MODEL CAPABILITY REGISTRY (Stage 1, §4) ----------------------------
+  // Refresh the objective capability facts ONCE per chat session (the local Codex
+  // cache + advertised model set are stable within a session, like the repo map)
+  // and feed the capped summary into the self-awareness block via buildToolStateContext.
+  // Cheap + FULLY fail-soft (any error / missing cache → undefined → the ABOUT
+  // block renders exactly as before; reasoning efforts stay "unknown"). NO model
+  // call, NO network. Reads mutableCtx.env so it reflects the detected providers.
+  let capabilitySummary: CapabilitySelfAwarenessSummary | undefined;
+  let capabilitySummaryResolved = false;
+  const resolveCapabilitySummaryOnce = async (): Promise<
+    CapabilitySelfAwarenessSummary | undefined
+  > => {
+    if (capabilitySummaryResolved) return capabilitySummary;
+    capabilitySummaryResolved = true;
+    try {
+      const { registry } = await refreshCapabilities(
+        {
+          providers: [
+            mutableCtx.env.claude,
+            mutableCtx.env.codex,
+            mutableCtx.env.opencode,
+          ].map((p) => ({
+            provider: p.id,
+            authenticated: p.authenticated,
+            availableModels: p.availableModels,
+          })),
+          nowIso: ctx.clock.isoNow(),
+        },
+        createCapabilityRefreshPort(process.env, ctx.cwd),
+      );
+      capabilitySummary = buildCapabilitySummary(
+        registry,
+        {
+          claude: mutableCtx.env.claude.authenticated,
+          codex: mutableCtx.env.codex.authenticated,
+          opencode: mutableCtx.env.opencode.authenticated,
+        },
+        (p) => PROVIDER_LABEL[p] ?? p,
+      );
+    } catch {
+      capabilitySummary = undefined;
+    }
+    return capabilitySummary;
+  };
+
   // Quota-shed (whole-tool-finish §3.2): derive the per-turn shed plan from the
   // ONE pressure signal the renderer already tracks — how many providers are in
   // rate-limit cooldown right now — with NO new probe and NO token-budget readout
@@ -4143,6 +4195,10 @@ async function runChatLoop(
       // double-inclusion risk.
       const priorHistory = await ctx.store.load(convId);
 
+      // Resolve the capability summary once per session (await here so the
+      // synchronous buildDeps below can read the memoized value). Fail-soft → undefined.
+      await resolveCapabilitySummaryOnce();
+
       // ---- Build deps from the live mutableCtx.env ----------------------------
       // This helper is inlined as a function so it can be called again after
       // inline re-login with the refreshed env (bug 5 fix: no stale auth state),
@@ -4275,6 +4331,9 @@ async function runChatLoop(
           mode: effectiveMode,
           modeIsAuto: mutableCtx.config.mode === undefined,
           smartRoute: mutableCtx.config.smartRoute !== false,
+          // Objective capability summary (Stage 1, §4) — memoized once per session
+          // by resolveCapabilitySummaryOnce; absent → the block renders as before.
+          ...(capabilitySummary !== undefined ? { capabilitySummary } : {}),
         });
 
         return {

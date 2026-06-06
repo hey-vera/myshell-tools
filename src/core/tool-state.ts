@@ -21,6 +21,13 @@
  */
 
 import { modeLabel, type Mode } from './policy.js';
+import type { ProviderId } from '../providers/port.js';
+import type { Tier } from './types.js';
+import type {
+  CapabilityRegistry,
+  ModelCapability,
+  ReasoningEffort,
+} from './model-capabilities.js';
 
 /**
  * Distilled, already-detected state for ONE provider — the small shape the
@@ -54,6 +61,41 @@ export interface ToolStateInput {
   readonly modeIsAuto: boolean;
   /** Smart routing state (config.smartRoute !== false). */
   readonly smartRoute: boolean;
+  /**
+   * OPTIONAL objective capability summary (Capability Registry Stage 1, §4). When
+   * present and non-empty, a capped "Known model capabilities" portion is appended
+   * so the partner can answer "what models / reasoning efforts can you see?" from
+   * FACTS, not a guess. Absent → the block renders exactly as before.
+   */
+  readonly capabilitySummary?: CapabilitySelfAwarenessSummary;
+}
+
+/**
+ * The distilled, ALREADY-CAPPED self-awareness view of the capability registry
+ * (§4). Built by {@link buildCapabilitySummary} from the merged registry + the live
+ * auth facts. Only objective, known fields ride here — unknown stays absent.
+ */
+export interface CapabilitySelfAwarenessSummary {
+  readonly providers: readonly CapabilitySummaryProvider[];
+}
+
+/** One provider's capped capability view in the self-awareness summary. */
+export interface CapabilitySummaryProvider {
+  readonly provider: ProviderId;
+  readonly label: string;
+  readonly authed: boolean;
+  readonly models: readonly CapabilitySummaryModel[];
+}
+
+/** One model's objective facts, already trimmed to what the renderer states. */
+export interface CapabilitySummaryModel {
+  readonly id: string;
+  readonly displayName?: string;
+  readonly tierHint?: Tier;
+  readonly contextWindow?: number;
+  readonly reasoningEfforts?: readonly ReasoningEffort[];
+  readonly supportsVision?: boolean;
+  readonly supportsNativeSession?: boolean;
 }
 
 /**
@@ -61,7 +103,18 @@ export interface ToolStateInput {
  * `assembleContextBlocks` 6000-char cap is the backstop across all blocks. A few
  * hundred chars of headroom keeps orientation from crowding out the task.
  */
-export const TOOL_STATE_BLOCK_CHAR_CAP = 1600;
+export const TOOL_STATE_BLOCK_CHAR_CAP = 2200;
+
+/**
+ * Sub-cap for ONLY the appended capability portion (§4: "Rendered text must stay
+ * capped … not list every field for every model on every turn"). Kept well under
+ * the whole-block cap so the existing subscriptions/mode/capabilities content is
+ * never crowded out; the whole-block cap remains the hard backstop.
+ */
+export const CAPABILITY_SUMMARY_CHAR_CAP = 600;
+
+/** Max models rendered per provider in the capability summary (§4: top 3). */
+const MAX_SUMMARY_MODELS_PER_PROVIDER = 3;
 
 /**
  * Canonical one-line mode meanings, reusing the spirit of policy.ts MODE_DESC but
@@ -153,8 +206,126 @@ export function buildToolStateContext(input: ToolStateInput): string {
     `- What you can do for the user: ${capabilities}.`,
   ];
 
+  // Capability summary (Stage 1, §4) — appended ONLY when present + non-empty.
+  // Objective, local FACTS only; the renderer self-caps to CAPABILITY_SUMMARY_CHAR_CAP.
+  const capLines =
+    input.capabilitySummary !== undefined
+      ? renderCapabilitySummary(input.capabilitySummary)
+      : [];
+  lines.push(...capLines);
+
   const block = lines.join('\n');
   return block.length > TOOL_STATE_BLOCK_CHAR_CAP
     ? block.slice(0, TOOL_STATE_BLOCK_CHAR_CAP)
     : block;
+}
+
+// ---------------------------------------------------------------------------
+// Capability summary — pure builder + renderer (Stage 1, §4).
+// ---------------------------------------------------------------------------
+
+/**
+ * Build the CAPPED self-awareness summary from the merged capability registry +
+ * the live provider auth facts. PURE + deterministic. Selects only models known to
+ * the registry, keeps the top {@link MAX_SUMMARY_MODELS_PER_PROVIDER} per provider
+ * (by tier: manager → ic → worker → unknown), and carries ONLY objective known
+ * fields. Returns `undefined` when there is nothing factual to say (so callers can
+ * omit the field entirely and the block renders exactly as before).
+ *
+ * Honesty: a model with `supportedReasoningEfforts: []` contributes NO efforts line
+ * (we never claim Claude has a reasoning-effort knob); unknown context/vision are
+ * simply absent.
+ */
+export function buildCapabilitySummary(
+  registry: CapabilityRegistry,
+  authedByProvider: Readonly<Record<ProviderId, boolean>>,
+  labelOf: (p: ProviderId) => string,
+): CapabilitySelfAwarenessSummary | undefined {
+  const order: Record<Tier | 'unknown', number> = { manager: 0, ic: 1, worker: 2, unknown: 3 };
+  const providers: CapabilitySummaryProvider[] = [];
+
+  for (const provider of Object.keys(registry) as ProviderId[]) {
+    const caps = registry[provider] ?? [];
+    if (caps.length === 0) continue;
+    const sorted = [...caps].sort(
+      (a, b) => order[a.tierHint ?? 'unknown'] - order[b.tierHint ?? 'unknown'],
+    );
+    const models = sorted
+      .slice(0, MAX_SUMMARY_MODELS_PER_PROVIDER)
+      .map((c) => toSummaryModel(c));
+    if (models.length === 0) continue;
+    providers.push({
+      provider,
+      label: labelOf(provider),
+      authed: authedByProvider[provider] === true,
+      models,
+    });
+  }
+
+  if (providers.length === 0) return undefined;
+  return { providers };
+}
+
+/** Trim a full ModelCapability to the objective fields the summary renders. PURE. */
+function toSummaryModel(c: ModelCapability): CapabilitySummaryModel {
+  return {
+    id: c.id,
+    ...(c.displayName !== undefined ? { displayName: c.displayName } : {}),
+    ...(c.tierHint !== undefined ? { tierHint: c.tierHint } : {}),
+    ...(c.contextWindow !== undefined ? { contextWindow: c.contextWindow } : {}),
+    ...(c.supportedReasoningEfforts.length > 0
+      ? { reasoningEfforts: c.supportedReasoningEfforts }
+      : {}),
+    ...(c.supportsVision !== undefined ? { supportsVision: c.supportsVision } : {}),
+    ...(c.supportsNativeSession !== undefined
+      ? { supportsNativeSession: c.supportsNativeSession }
+      : {}),
+  };
+}
+
+/** Compact "272k" style context-window label. PURE. */
+function formatContext(tokens: number): string {
+  if (tokens >= 1_000_000) {
+    const m = tokens / 1_000_000;
+    return `${Number.isInteger(m) ? m : m.toFixed(1)}M`;
+  }
+  if (tokens >= 1000) return `${Math.round(tokens / 1000)}k`;
+  return String(tokens);
+}
+
+/** Render ONE model's known facts as an inline clause (e.g. "gpt-5.5 (reasoning low/medium/high/xhigh, 272k context, vision)"). PURE. */
+function renderModel(m: CapabilitySummaryModel): string {
+  const facts: string[] = [];
+  if (m.reasoningEfforts !== undefined && m.reasoningEfforts.length > 0) {
+    facts.push(`reasoning ${m.reasoningEfforts.join('/')}`);
+  }
+  if (m.contextWindow !== undefined) facts.push(`${formatContext(m.contextWindow)} context`);
+  if (m.supportsVision === true) facts.push('vision');
+  if (m.supportsNativeSession === true) facts.push('native sessions');
+  const name = m.displayName ?? m.id;
+  return facts.length > 0 ? `${name} (${facts.join(', ')})` : name;
+}
+
+/**
+ * Render the capped "Known model capabilities" portion (§4). Returns the lines to
+ * append, or `[]` when the summary is empty. Self-caps to CAPABILITY_SUMMARY_CHAR_CAP
+ * (the whole-block cap is the backstop). States ONLY objective known facts; closes
+ * with the routing-explanation template the partner can reuse.
+ */
+function renderCapabilitySummary(summary: CapabilitySelfAwarenessSummary): string[] {
+  const clauses: string[] = [];
+  for (const p of summary.providers) {
+    if (p.models.length === 0) continue;
+    const auth = p.authed ? 'signed in' : 'not signed in';
+    const models = p.models.map(renderModel).join('; ');
+    clauses.push(`${p.label} (${auth}): ${models}`);
+  }
+  if (clauses.length === 0) return [];
+
+  let body = `- Known model capabilities (objective, from local detection + caches; unknown facts are omitted, not guessed): ${clauses.join('. ')}.`;
+  if (body.length > CAPABILITY_SUMMARY_CHAR_CAP) body = body.slice(0, CAPABILITY_SUMMARY_CHAR_CAP);
+
+  const routing =
+    '- Routing explanation: choices are bounded by mode, plan, cooldown, flagship admission, and observed outcomes; explain a route using tier/mode/plan and known capability fit, and do NOT claim a model is "better" or has a knob (e.g. a Claude reasoning effort) without evidence in this block.';
+  return [body, routing];
 }
