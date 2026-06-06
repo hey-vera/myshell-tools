@@ -53,6 +53,13 @@ export interface ContextBlockOptions {
    */
   readonly environmentContext?: string;
   /**
+   * Pre-rendered, capped TOOL-STATE / "ABOUT THIS TOOL" block (tool self-awareness).
+   * undefined → omit. Orientation about the tool ITSELF (authed subscriptions,
+   * mode, what it can do) — rendered adjacent to ENVIRONMENT (right AFTER it) so the
+   * model answers setup/mode questions from live truth. Produced by core/tool-state.ts.
+   */
+  readonly toolStateContext?: string;
+  /**
    * Pre-rendered, capped MEMORY block (memory doc §7 `renderMemoryContext`).
    * undefined → omit. Produced by Phase 4; rendered here when present.
    */
@@ -104,8 +111,9 @@ export function partnerNudge(style: PartnerStyle): string {
  * (byte-for-byte identical to the pre-seam prompt). Caps the total injected
  * length regardless of caller. PURE + table-tested.
  *
- * Canonical block order (master plan §MF1; ENVIRONMENT prepended in E1):
- *   ENVIRONMENT → MEMORY → INTENT → ENGAGEMENT → (partner posture nudge)
+ * Canonical block order (master plan §MF1; ENVIRONMENT prepended in E1;
+ * TOOL-STATE adjacent to ENVIRONMENT):
+ *   ENVIRONMENT → TOOL-STATE → MEMORY → INTENT → ENGAGEMENT → (partner posture nudge)
  *
  * Each block is independently present/absent. The returned string is inserted by
  * every prompt builder at the same point: AFTER system, BEFORE "CONVERSATION SO
@@ -119,6 +127,14 @@ export function assembleContextBlocks(opts: ContextBlockOptions): string {
   const environment = opts.environmentContext?.trim();
   if (environment !== undefined && environment.length > 0) {
     blocks.push(environment);
+  }
+
+  // TOOL-STATE / ABOUT THIS TOOL — orientation about the tool ITSELF, adjacent to
+  // ENVIRONMENT (right after it): the live, authoritative answer to "what's my
+  // setup / mode / what can you do" so the model never has to guess or read files.
+  const toolState = opts.toolStateContext?.trim();
+  if (toolState !== undefined && toolState.length > 0) {
+    blocks.push(toolState);
   }
 
   const memory = opts.memoryContext?.trim();

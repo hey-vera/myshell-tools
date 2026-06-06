@@ -56,6 +56,32 @@ describe('assembleContextBlocks', () => {
     assert.ok(iMem > iEnv);
   });
 
+  const TOOLSTATE = 'ABOUT THIS TOOL (authoritative):\n- You are the assistant inside myshell-tools v3.19.0';
+
+  it('renders the TOOL-STATE block adjacent to ENVIRONMENT (right after it) when both present', () => {
+    const out = assembleContextBlocks({
+      environmentContext: ENV,
+      toolStateContext: TOOLSTATE,
+      memoryContext: MEM,
+    });
+    const iEnv = out.indexOf(ENV);
+    const iTool = out.indexOf(TOOLSTATE);
+    const iMem = out.indexOf(MEM);
+    assert.equal(iEnv, 0);
+    assert.ok(iTool > iEnv, 'tool-state follows ENVIRONMENT');
+    assert.ok(iMem > iTool, 'MEMORY follows tool-state');
+  });
+
+  it('includes the TOOL-STATE block alone when present, omits it cleanly when absent/whitespace', () => {
+    assert.equal(assembleContextBlocks({ toolStateContext: TOOLSTATE }), TOOLSTATE);
+    // Absent → omitted entirely.
+    assert.equal(assembleContextBlocks({ memoryContext: MEM }).includes('ABOUT THIS TOOL'), false);
+    // Whitespace-only → treated as absent (byte-identical to omitting the key).
+    const withoutKey = assembleContextBlocks({ memoryContext: MEM });
+    const withEmpty = assembleContextBlocks({ toolStateContext: '   ', memoryContext: MEM });
+    assert.equal(withEmpty, withoutKey);
+  });
+
   it('omits the ENVIRONMENT block when absent or whitespace (byte-identical)', () => {
     const withoutKey = assembleContextBlocks({ memoryContext: MEM });
     const withEmpty = assembleContextBlocks({ environmentContext: '   ', memoryContext: MEM });

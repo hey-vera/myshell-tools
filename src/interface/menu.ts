@@ -31,6 +31,7 @@ import { decideAutonomyOffer } from '../core/autonomy.js';
 import { classify } from '../core/classify.js';
 import { resolveMemoryContextDetailed } from '../core/memory-injection.js';
 import { buildEnvironmentContext } from '../core/repo-map.js';
+import { buildToolStateContext, type ToolStateProvider } from '../core/tool-state.js';
 import { nodeRepoScanPort } from '../infra/repo-scan.js';
 import { createFileUserMemoryStore, resolveProjectKey } from '../infra/user-memory-store.js';
 import {
@@ -4253,6 +4254,29 @@ async function runChatLoop(
               })
             : undefined;
 
+        // ---- TOOL SELF-AWARENESS (tool-state §) ---------------------------------
+        // Render the authoritative "ABOUT THIS TOOL" block from the LIVE env + the
+        // effective mode (explicit vs auto) + config, so the partner answers "how
+        // many subscriptions am I authed / what mode am I in" from truth, not a
+        // guess. Pure assembly, NO model call. modeIsAuto = no explicit config.mode.
+        const toolStateProviders: ToolStateProvider[] = [
+          mutableCtx.env.claude,
+          mutableCtx.env.codex,
+          mutableCtx.env.opencode,
+        ].map((p) => ({
+          label: PROVIDER_LABEL[p.id] ?? p.id,
+          installed: p.installed,
+          authenticated: p.authenticated,
+          plan: p.plan,
+        }));
+        const toolStateContext = buildToolStateContext({
+          version: ctx.version,
+          providers: toolStateProviders,
+          mode: effectiveMode,
+          modeIsAuto: mutableCtx.config.mode === undefined,
+          smartRoute: mutableCtx.config.smartRoute !== false,
+        });
+
         return {
           clock: ctx.clock,
           session: ctx.store.writer(convId),
@@ -4290,6 +4314,9 @@ async function runChatLoop(
           ...(environmentContext !== undefined && environmentContext.length > 0
             ? { environmentContext }
             : {}),
+          // TOOL-STATE / ABOUT block (tool self-awareness) — present only when the
+          // pure renderer produced a non-empty block (it always does given a version).
+          ...(toolStateContext.length > 0 ? { toolStateContext } : {}),
         };
       };
 

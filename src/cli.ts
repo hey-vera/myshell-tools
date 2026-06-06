@@ -30,6 +30,7 @@ import { createFileUserMemoryStore, resolveProjectKey } from './infra/user-memor
 export { createFileUserMemoryStore };
 import { resolveMemoryContext } from './core/memory-injection.js';
 import { buildEnvironmentContext } from './core/repo-map.js';
+import { buildToolStateContext, type ToolStateProvider } from './core/tool-state.js';
 import { nodeRepoScanPort } from './infra/repo-scan.js';
 import { loadConfig, resolvePartnerStyle } from './infra/config.js';
 import { makeIntentExtractor } from './core/intent-extractor.js';
@@ -54,6 +55,13 @@ import { dim } from './ui/theme.js';
 const require = createRequire(import.meta.url);
 const pkg = require('../package.json');
 const version: string = pkg.version as string;
+
+/** Display labels for the three providers (shared with the menu's PROVIDER_LABEL). */
+const PROVIDER_LABEL: Record<string, string> = {
+  claude: 'Claude',
+  codex: 'Codex',
+  opencode: 'OpenCode',
+};
 
 /** Default hard wall-clock timeout (ms) for a single provider run. */
 const DEFAULT_TIMEOUT_MS = 120000;
@@ -120,6 +128,10 @@ function buildDeps(
   // awareness §1.2). Gathered once for the one-shot run via buildEnvironmentContext
   // and threaded so orientation rides every prompt builder. Absent/'' → omit.
   environmentContext?: string,
+  // Pre-rendered TOOL-STATE / "ABOUT THIS TOOL" block (tool self-awareness): authed
+  // subscriptions + plans, the effective mode (auto vs explicit), smart-routing
+  // state, and what the tool can do. Pure assembly, NO model call. Absent/'' → omit.
+  toolStateContext?: string,
 ): OrchestrateDeps {
   const providers = buildProviders(cwd, env);
 
@@ -169,6 +181,9 @@ function buildDeps(
     ...(memoryContext !== undefined && memoryContext.length > 0 ? { memoryContext } : {}),
     ...(environmentContext !== undefined && environmentContext.length > 0
       ? { environmentContext }
+      : {}),
+    ...(toolStateContext !== undefined && toolStateContext.length > 0
+      ? { toolStateContext }
       : {}),
   };
 }
@@ -347,6 +362,23 @@ async function main(): Promise<void> {
       config.codebaseAwareness === false
         ? ''
         : await buildEnvironmentContext(cwd, nodeRepoScanPort).catch(() => '');
+    // TOOL SELF-AWARENESS (tool-state §): render the authoritative "ABOUT THIS
+    // TOOL" block from the live env + effective mode + config so the partner
+    // answers the user's setup/mode questions from truth. Pure, NO model call.
+    const toolStateContext = buildToolStateContext({
+      version,
+      providers: [env.claude, env.codex, env.opencode].map(
+        (p): ToolStateProvider => ({
+          label: PROVIDER_LABEL[p.id] ?? p.id,
+          installed: p.installed,
+          authenticated: p.authenticated,
+          plan: p.plan,
+        }),
+      ),
+      mode: resolvedMode,
+      modeIsAuto: config.mode === undefined,
+      smartRoute: config.smartRoute !== false,
+    });
     const deps = buildDeps(
       cwd,
       env,
@@ -356,6 +388,7 @@ async function main(): Promise<void> {
       config.hedge === true ? (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms)) : undefined,
       memoryContext,
       environmentContext,
+      toolStateContext,
     );
     const result = await runTask(task, deps, out, new AbortController().signal);
     // Notify-only update nudge for the scripted / one-shot path. The interactive
@@ -498,6 +531,24 @@ async function main(): Promise<void> {
       }).catch(() => '');
     }
 
+    // TOOL SELF-AWARENESS for the REPL subset too (deps/prompt concern, not UI):
+    // the same authoritative ABOUT block so the partner answers setup/mode
+    // questions accurately. Pure assembly, NO model call.
+    const replToolStateContext = buildToolStateContext({
+      version,
+      providers: [env.claude, env.codex, env.opencode].map(
+        (p): ToolStateProvider => ({
+          label: PROVIDER_LABEL[p.id] ?? p.id,
+          installed: p.installed,
+          authenticated: p.authenticated,
+          plan: p.plan,
+        }),
+      ),
+      mode: replMode,
+      modeIsAuto: config.mode === undefined,
+      smartRoute: config.smartRoute !== false,
+    });
+
     const baseDeps = buildDeps(
       cwd,
       env,
@@ -506,6 +557,8 @@ async function main(): Promise<void> {
       undefined,
       undefined,
       memoryContext,
+      undefined,
+      replToolStateContext,
     );
 
     // Intent FRAME (deps concern, not UI): a read-only extractor for sharper

@@ -362,6 +362,17 @@ export interface OrchestrateDeps {
    */
   readonly environmentContext?: string;
   /**
+   * Pre-rendered, capped TOOL-STATE / "ABOUT THIS TOOL" block (tool self-awareness)
+   * for the prompt seam. Deterministic, NO model call: authed subscriptions + plans
+   * + count, the effective mode (auto vs explicit) + canonical mode meanings, smart-
+   * routing state, and what the tool/partner can do. Assembled from the live
+   * EnvironmentStatus + Config + version in the deps layer and rendered ADJACENT to
+   * the ENVIRONMENT block by `assembleContextBlocks` so the model answers questions
+   * about the user's own setup/mode accurately instead of hallucinating. Absent →
+   * byte-identical to pre-self-awareness prompts. Producer: core/tool-state.ts.
+   */
+  readonly toolStateContext?: string;
+  /**
    * Pre-rendered, capped INTENT block (intent-engine §5.4) for the prompt seam.
    * Computed ONCE per turn INSIDE orchestrate (gated — substantial/ambiguous
    * turns only) and threaded onto a per-turn deps copy so it rides sequential,

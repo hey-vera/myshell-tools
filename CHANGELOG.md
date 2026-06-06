@@ -15,6 +15,28 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   resumed goal's contract from the persisted `workTrace` (niche: the in-run contract
   is already kept in memory; only cross-session resume benefits). Optional.
 
+## [3.20.0]
+
+### Added — tool self-awareness ("ABOUT THIS TOOL" context block)
+The chat partner now knows myshell-tools' own live state instead of guessing it.
+Before, asking "how many subscriptions am I authed and what mode am I in?" made the
+model read the wrong files and HALLUCINATE ("0 subscriptions, balanced mode") when
+the user actually had Claude Max + Codex authed in Max mode. Fixed with a
+deterministic, accurate context block (`src/core/tool-state.ts` →
+`buildToolStateContext`) assembled from the live `EnvironmentStatus` + `Config` and
+injected via `assembleContextBlocks` adjacent to the ENVIRONMENT block:
+- Connected subscriptions + plans + count (authed only; installed-but-unauthed noted;
+  null plan → "authed (plan unknown)", never a guess).
+- Current mode (auto vs explicit) + canonical meanings of Efficient/Balanced/Max +
+  smart-routing state.
+- What the tool/partner can do (the canonical /help command set).
+
+Pure assembly — no model call, no API key, no metered service. Wired into the chat
+path, the one-shot `run` path, and the legacy `repl`. Verified by a REAL run: the
+model now reports the exact detected state ("2 authed — Claude Max, Codex plan
+unknown; OpenCode installed, not signed in; mode Max, auto"), no hallucination.
++34 tests (3119 → 3153), 0 fail.
+
 ## [3.19.0]
 
 ### Added — adaptive partner: advisory → ENFORCED (TurnDirective, Stage 1)
