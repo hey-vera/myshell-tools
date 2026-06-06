@@ -3,8 +3,8 @@
  *
  * Pins the declarative defaults' WELL-FORMEDNESS (the §2 invariant: facts only,
  * unknown = absent): every provider key present, ids unique per provider, aliases
- * never collide within a provider, every enum value known, NO fabricated reasoning
- * efforts (all declarative efforts are empty), NO Gemini data, OpenCode empty.
+ * never collide within a provider, every enum value known, honest reasoning efforts
+ * (Claude declares the 5 CLI-verified levels; Codex/OpenCode empty), NO Gemini data.
  * Plus the findCapability id/alias matcher. PURE — no I/O, no model call.
  */
 
@@ -65,14 +65,26 @@ describe('DECLARATIVE_MODEL_CAPABILITIES — well-formed, facts only', () => {
     }
   });
 
-  it('fabricates NO reasoning efforts and NO context windows in declarative layer', () => {
+  it('Claude declares the 5 CLI-verified efforts; Codex/OpenCode efforts stay empty (filled by dynamic sources); NO guessed windows/vision', () => {
+    // Claude Code's CLI exposes `--effort <low|medium|high|xhigh|max>` (verified via
+    // `claude --help`) — an honest declarative fact, NOT a guess. Codex efforts come
+    // ONLY from the local models_cache.json, so they stay empty here.
+    for (const cap of reg.claude) {
+      assert.deepEqual(
+        cap.supportedReasoningEfforts,
+        ['low', 'medium', 'high', 'xhigh', 'max'],
+        `${cap.id}: Claude declares the CLI-verified effort levels`,
+      );
+    }
+    for (const cap of [...reg.codex, ...reg.opencode]) {
+      assert.deepEqual(
+        cap.supportedReasoningEfforts,
+        [],
+        `${cap.id}: non-Claude declarative efforts stay empty (filled only by dynamic sources)`,
+      );
+    }
     for (const provider of Object.keys(reg) as ProviderId[]) {
       for (const cap of reg[provider]) {
-        assert.deepEqual(
-          cap.supportedReasoningEfforts,
-          [],
-          `${cap.id}: declarative efforts must be empty (unknown), filled only by dynamic sources`,
-        );
         assert.equal(cap.contextWindow, undefined, `${cap.id}: no guessed context window`);
         assert.equal(cap.supportsVision, undefined, `${cap.id}: no guessed vision`);
       }
@@ -105,9 +117,20 @@ describe('DECLARATIVE_MODEL_CAPABILITIES — well-formed, facts only', () => {
 describe('isReasoningEffort / KNOWN_REASONING_EFFORTS', () => {
   it('accepts known efforts and rejects unknown strings', () => {
     for (const e of KNOWN_REASONING_EFFORTS) assert.ok(isReasoningEffort(e));
+    assert.equal(isReasoningEffort('max'), true);
     assert.equal(isReasoningEffort('ultra'), false);
     assert.equal(isReasoningEffort(''), false);
     assert.equal(isReasoningEffort('LOW'), false);
+  });
+
+  it('orders cheapest→deepest with `max` as the deepest level (max > xhigh)', () => {
+    assert.deepEqual(
+      [...KNOWN_REASONING_EFFORTS],
+      ['none', 'low', 'medium', 'high', 'xhigh', 'max'],
+    );
+    const rank = (e: string): number => (KNOWN_REASONING_EFFORTS as readonly string[]).indexOf(e);
+    assert.ok(rank('max') > rank('xhigh'), 'max must outrank xhigh');
+    assert.ok(rank('xhigh') > rank('high'));
   });
 });
 

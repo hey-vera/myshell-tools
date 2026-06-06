@@ -48,6 +48,68 @@ function pick(opts: {
   });
 }
 
+/** The 5 efforts the Claude Code CLI exposes (`--effort`), max deepest. */
+const CLAUDE_FULL: readonly ReasoningEffort[] = ['low', 'medium', 'high', 'xhigh', 'max'];
+
+describe('selectReasoningEffort — Max ladder reaches `max` for a Claude model, steps down for Codex', () => {
+  it('Max admitted-manager hard turn on a model that supports max → max', () => {
+    for (const hard of [
+      { risk: 'high' as Risk },
+      { risk: 'critical' as Risk },
+      { taskKind: 'architecture' as TaskKind },
+      { taskKind: 'review' as TaskKind },
+      { taskKind: 'large-context' as TaskKind },
+    ]) {
+      assert.strictEqual(
+        pick({ efforts: CLAUDE_FULL, mode: 'quality-first', tier: 'manager', ...hard }),
+        'max',
+        `Max manager hard turn ${JSON.stringify(hard)} should reach max`,
+      );
+    }
+  });
+
+  it('Codex (no max in its supported set) steps DOWN to xhigh — UNAFFECTED', () => {
+    assert.strictEqual(
+      pick({ efforts: FULL, mode: 'quality-first', tier: 'manager', taskKind: 'architecture' }),
+      'xhigh',
+    );
+  });
+
+  it('Max admitted-manager NON-hard turn stays high (not max), even with max available', () => {
+    assert.strictEqual(
+      pick({ efforts: CLAUDE_FULL, mode: 'quality-first', tier: 'manager' }),
+      'high',
+    );
+  });
+
+  it('Max IC never reaches max (max is admitted-manager-hard only)', () => {
+    assert.strictEqual(
+      pick({ efforts: CLAUDE_FULL, mode: 'quality-first', tier: 'ic', taskKind: 'architecture' }),
+      'high',
+    );
+  });
+
+  it('Efficient NEVER returns max or xhigh, even on a max-capable model', () => {
+    const e = pick({
+      efforts: CLAUDE_FULL,
+      mode: 'cost-saver',
+      tier: 'manager',
+      risk: 'critical',
+      taskKind: 'architecture',
+    });
+    assert.notStrictEqual(e, 'max');
+    assert.notStrictEqual(e, 'xhigh');
+    assert.strictEqual(e, 'medium');
+  });
+
+  it('Balanced admitted-manager xhigh-class turn caps at xhigh, never max', () => {
+    assert.strictEqual(
+      pick({ efforts: CLAUDE_FULL, mode: 'balanced', tier: 'manager', taskKind: 'architecture' }),
+      'xhigh',
+    );
+  });
+});
+
 describe('selectReasoningEffort — empty efforts → undefined (#1 non-regression bar)', () => {
   it('returns undefined when the model declares NO efforts', () => {
     for (const mode of ['cost-saver', 'balanced', 'quality-first'] as const) {

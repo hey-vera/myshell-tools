@@ -32,8 +32,9 @@ import type { Tier } from './types.js';
 /** Where a capability fact came from. `source` accumulates all contributors. */
 export type CapabilitySource = 'declarative' | 'detect' | 'codex-cache' | 'ledger';
 
-/** Reasoning-effort knob values, ordered from cheapest to deepest. */
-export type ReasoningEffort = 'none' | 'low' | 'medium' | 'high' | 'xhigh';
+/** Reasoning-effort knob values, ordered from cheapest to deepest. `max` is the
+ * deepest level (Claude CLI's `--effort max`); deeper than `xhigh`. */
+export type ReasoningEffort = 'none' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 
 /** Coarse cost/speed bucket; `unknown` is a first-class value, never guessed. */
 export type CostSpeedTier = 'fast' | 'standard' | 'premium' | 'unknown';
@@ -51,6 +52,7 @@ export const KNOWN_REASONING_EFFORTS: readonly ReasoningEffort[] = [
   'medium',
   'high',
   'xhigh',
+  'max',
 ] as const;
 
 /** True when `s` is a recognized reasoning-effort string. Unknown strings are dropped. */
@@ -148,10 +150,14 @@ export interface ModelPreference {
  * The conservative built-in capability defaults. These are the floor: dynamic
  * refresh (Layer 2) ADDS to them but never deletes them when a source is missing.
  *
+ * Declared (stable, objective):
+ *  - reasoning efforts for Claude: the Claude Code CLI exposes a verifiable
+ *    `--effort <low|medium|high|xhigh|max>` flag (`claude --help`), so the five
+ *    levels it accepts are an honest declarative fact, NOT a guess.
+ *
  * Deliberately NOT declared here (left absent = unknown):
- *  - reasoning efforts: empty for ALL providers. Codex efforts come ONLY from the
- *    local models_cache.json; Claude has no local machine-readable effort metadata,
- *    so we MUST NOT claim a Claude reasoning-effort knob.
+ *  - reasoning efforts for Codex: empty here. Codex efforts come ONLY from the
+ *    local models_cache.json (the CLI's own machine-readable source).
  *  - context windows / vision / tool support: only ever set from a dynamic source.
  *
  * Declared (stable, objective):
@@ -175,7 +181,9 @@ export const DECLARATIVE_MODEL_CAPABILITIES: CapabilityRegistry = {
       id: 'opus',
       aliases: ['claude-opus-4-7', 'opus-4.7', 'claude-opus-4.7'],
       tierHint: 'manager',
-      supportedReasoningEfforts: [],
+      // Claude Code's CLI exposes `--effort <low|medium|high|xhigh|max>` (verified
+      // via `claude --help`); these are the levels the installed CLI accepts.
+      supportedReasoningEfforts: ['low', 'medium', 'high', 'xhigh', 'max'],
       supportsNativeSession: true,
       // Provider-native features (Stage 5): Claude Code natively supports Skills and
       // sub-agents (official Claude Code docs). NON-ROUTABLE inventory facts only —
@@ -190,7 +198,7 @@ export const DECLARATIVE_MODEL_CAPABILITIES: CapabilityRegistry = {
       id: 'sonnet',
       aliases: ['claude-sonnet-4-6', 'sonnet-4.6', 'claude-sonnet-4.6'],
       tierHint: 'ic',
-      supportedReasoningEfforts: [],
+      supportedReasoningEfforts: ['low', 'medium', 'high', 'xhigh', 'max'],
       supportsNativeSession: true,
       supportsProviderSkills: true,
       supportsProviderSubagents: true,
@@ -202,7 +210,7 @@ export const DECLARATIVE_MODEL_CAPABILITIES: CapabilityRegistry = {
       id: 'haiku',
       aliases: ['claude-haiku-4-5', 'haiku-4.5', 'claude-haiku-4.5'],
       tierHint: 'worker',
-      supportedReasoningEfforts: [],
+      supportedReasoningEfforts: ['low', 'medium', 'high', 'xhigh', 'max'],
       supportsNativeSession: true,
       supportsProviderSkills: true,
       supportsProviderSubagents: true,

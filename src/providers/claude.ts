@@ -144,6 +144,17 @@ export function buildClaudeArgs(req: ProviderRequest): string[] {
       args.push('--session-id', req.sessionId);
     }
   }
+  // Reasoning-effort knob (capability registry §5): the Claude CLI exposes
+  // `--effort <low|medium|high|xhigh|max>`. Thread the selected effort ONLY when one
+  // is set AND it is a real "thinking" effort (not `none`). The effort is chosen
+  // upstream by selectReasoningEffort, which returns ONLY an effort the chosen
+  // model's ModelCapability declares it supports (or undefined) — so a set effort
+  // here is, by construction, a supported one. Absent/`none` → no flag at all
+  // (byte-for-byte unchanged). Placed BEFORE the variadic sandbox args so the
+  // trailing --disallowedTools list stays the tail of argv.
+  if (req.reasoningEffort !== undefined && req.reasoningEffort !== 'none') {
+    args.push('--effort', req.reasoningEffort);
+  }
   args.push(...claudeSandboxArgs(req.sandbox));
   return args;
 }

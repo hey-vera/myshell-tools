@@ -58,6 +58,35 @@ describe('buildClaudeArgs', () => {
     assert.ok(!args.includes('--resume') && !args.includes('--session-id'));
   });
 
+  // ---- Reasoning effort (--effort) ---------------------------------------
+
+  it('appends --effort <level> when reasoningEffort is set (Claude supports max)', () => {
+    const args = buildClaudeArgs(makeReq({ reasoningEffort: 'max' }));
+    const i = args.indexOf('--effort');
+    assert.ok(i >= 0, 'should include --effort');
+    assert.strictEqual(args[i + 1], 'max');
+  });
+
+  it('appends --effort xhigh when that level is selected', () => {
+    const args = buildClaudeArgs(makeReq({ reasoningEffort: 'xhigh' }));
+    const i = args.indexOf('--effort');
+    assert.strictEqual(args[i + 1], 'xhigh');
+  });
+
+  it('OMITS --effort when reasoningEffort is absent (byte-for-byte unchanged)', () => {
+    assert.ok(!buildClaudeArgs(makeReq()).includes('--effort'));
+  });
+
+  it("OMITS --effort when reasoningEffort is 'none' (no real thinking effort)", () => {
+    assert.ok(!buildClaudeArgs(makeReq({ reasoningEffort: 'none' })).includes('--effort'));
+  });
+
+  it('--effort precedes the variadic --disallowedTools (effort is not the tail)', () => {
+    const args = buildClaudeArgs(makeReq({ sandbox: 'read-only', reasoningEffort: 'high' }));
+    assert.ok(args.indexOf('--effort') < args.indexOf('--disallowedTools'));
+    assert.strictEqual(args[args.length - 1], 'Bash', 'tool list is still the tail of argv');
+  });
+
   // ---- Sandbox / privilege ladder ----------------------------------------
 
   it('read-only removes mutation/execution tools via --disallowedTools', () => {

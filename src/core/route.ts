@@ -435,7 +435,7 @@ function formatTokens(n: number): string {
 // Reasoning-effort selector (capability registry §3 "Effort selector", §5).
 // ---------------------------------------------------------------------------
 
-/** Ordinal rank along KNOWN_REASONING_EFFORTS (none=0 … xhigh=4). PURE. */
+/** Ordinal rank along KNOWN_REASONING_EFFORTS (none=0 … xhigh=4 … max=5). PURE. */
 function effortRank(e: ReasoningEffort): number {
   return KNOWN_REASONING_EFFORTS.indexOf(e);
 }
@@ -510,8 +510,10 @@ function isHardReasoningTurn(input: {
  *    architecture, review, or large-context); `xhigh` ONLY for an admitted
  *    manager on critical/architecture/large-context.
  *  - Max (quality-first): `high` floor for IC/manager (and worker hard turns);
- *    `xhigh` for an admitted manager on a hard turn (high/critical risk,
- *    architecture, review, or large-context). Worker non-hard stays `medium`.
+ *    the DEEPEST supported level (`max` for a model that offers it, e.g. Claude;
+ *    `xhigh` after step-down for Codex) for an admitted manager on a hard turn
+ *    (high/critical risk, architecture, review, or large-context). Worker non-hard
+ *    stays `medium`.
  */
 export function selectReasoningEffort(input: {
   readonly model: ModelCapability;
@@ -548,11 +550,15 @@ export function selectReasoningEffort(input: {
     }
     case 'quality-first': {
       // Max (quality-first, the deepest knob): `high` is the FLOOR for IC/manager
-      // (Max spends quality on substantial work by default); `xhigh` for an admitted
-      // manager on a hard turn (high/critical risk, architecture, review, or
-      // large-context). Worker rises to `high` on a hard turn but otherwise stays
-      // `medium` (a trivial worker chore is never worth deep reasoning, even in Max).
-      if (isManager && hardTurn) desired = 'xhigh';
+      // (Max spends quality on substantial work by default); for an admitted manager
+      // on a hard turn (high/critical risk, architecture, review, or large-context)
+      // we desire the DEEPEST level the chosen model offers — `max` (Claude's
+      // `--effort max`). resolveSupported steps this down to the nearest lower
+      // supported effort for a model without `max` (e.g. Codex → `xhigh`), so this
+      // is byte-for-byte unchanged for Codex while unlocking `max` for Claude.
+      // Worker rises to `high` on a hard turn but otherwise stays `medium` (a trivial
+      // worker chore is never worth deep reasoning, even in Max).
+      if (isManager && hardTurn) desired = 'max';
       else if (tier !== 'worker' || hardTurn) desired = 'high';
       else desired = 'medium';
       break;
