@@ -15,6 +15,34 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   resumed goal's contract from the persisted `workTrace` (niche: the in-run contract
   is already kept in memory; only cross-session resume benefits). Optional.
 
+## [3.19.0]
+
+### Added — adaptive partner: advisory → ENFORCED (TurnDirective, Stage 1)
+The engagement plan was *advisory* — rendered as prompt text the model could (and
+did) ignore, which is why a gate-green posture change left live behavior unmoved.
+Stage 1 of the v2 design (`docs/adaptive-partner-v2-5.6.md`) makes it **enforced**
+via an orchestrator-owned `TurnDirective` (`src/core/turn-directive.ts`, consumed in
+`orchestrate`):
+- **Pre-provider structured ask.** When the plan selects a genuine, non-investigable
+  fork with a real question set, the orchestrator emits the `ask_user` question
+  *before* the model runs — zero provider tokens, and the model can't bypass it with
+  prose.
+- **Generic-menu validator + one repair retry.** A pure `validateTurnOutput` detects
+  the generic "fixing / adding / polishing / integrating?" menu in final prose (only
+  when a repo is present / investigation was planned, so normal option-listing isn't
+  blocked) and retries once at the same tier with corrective feedback. One call only
+  on the actual failure — no new always-on model call. A still-failing repair keeps
+  the better answer (never discarded as Failed).
+- **History quarantine.** Prior assistant turns that are themselves generic menus are
+  filtered from the replayed history so a resumed conversation written by older builds
+  stops few-shot-poisoning new turns.
+
+Verified by **real provider runs**, not just the gate: a poisoned-history turn no
+longer reproduces the menu — it orients ("we're in myshell-tools, no heyvera here"),
+recommends concretely (SvelteKit vs Next.js, Axum), and asks grounded questions; a
+clear investigable task is answered directly with no over-asking. Subscription-cost
+clean (no embeddings, no metered services). +28 tests (3108 → 3136), 0 fail.
+
 ## [3.18.1]
 
 ### Fixed

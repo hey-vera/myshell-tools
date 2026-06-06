@@ -53,6 +53,13 @@ import { capContract, shouldMaterializeContract, isCleanObjectiveTask } from './
 import type { IntentFrame } from './intent.js';
 import { shouldExtractIntent, rulesIntentFrame, renderIntentBlock } from './intent.js';
 import { planEngagement, seedFromIntentAndPlan, renderEngagementBlock, deriveAskFromForks } from './engagement.js';
+import type { EngagementSignals } from './engagement.js';
+import {
+  compileTurnDirective,
+  validateTurnOutput,
+  detectGenericOpenMenu,
+  GENERIC_MENU_REPAIR_NOTE,
+} from './turn-directive.js';
 import { engagementBiasOf } from './prompt-context.js';
 
 // ---------------------------------------------------------------------------
@@ -376,12 +383,37 @@ export async function* orchestrate(
     // frame. No model call, no latency. It still lets APE/seed read a goal.
     intentFrame = rulesIntentFrame(task, classification, 'skipped');
   }
-  const engagementPlan = planEngagement({
+  const engagementSignals: EngagementSignals = {
     ...(intentFrame !== undefined ? { frame: intentFrame } : {}),
     classification,
     routePlan,
     engagementBias: depsArg.partnerStyle !== undefined ? engagementBiasOf(depsArg.partnerStyle) : 0,
     task,
+  };
+  const engagementPlan = planEngagement(engagementSignals);
+
+  // -------------------------------------------------------------------------
+  // (a3) ADAPTIVE PARTNER ENGINE v2 — compile the enforced TurnDirective (Stage 1).
+  //
+  // The EngagementPlan above is ADVISORY (rendered as prompt text). The directive
+  // is the orchestrator-owned ENFORCED form (adaptive-partner-v2-5.6.md §2.1):
+  //   - terminalQuestion: a planned ASK_CLARIFYING at a GENUINE non-investigable
+  //     fork is emitted BEFORE the provider run (zero tokens) — §2.2 A1.
+  //   - reject_generic_open_menu: the model's final prose is validated for the
+  //     order-taker "fix/add/polish/integrate?" menu, with one repair retry — §2.2 A2.
+  //   - historyPolicy: prior assistant generic-menu prose is quarantined from the
+  //     replayed history so it can't few-shot the new turn — §3.
+  // PURE compile, NO model call — it consumes the already-computed plan/frame.
+  const priorAssistantTexts =
+    depsArg.history !== undefined
+      ? depsArg.history.filter((e) => e.role === 'assistant').map((e) => e.content)
+      : undefined;
+  const directive = compileTurnDirective({
+    frame: intentFrame,
+    plan: engagementPlan,
+    signals: engagementSignals,
+    repoPresent: depsArg.environmentContext !== undefined && depsArg.environmentContext.length > 0,
+    ...(priorAssistantTexts !== undefined ? { priorAssistantTexts } : {}),
   });
 
   // Pre-render the INTENT + ENGAGEMENT blocks ONCE and thread them onto a per-turn
@@ -434,6 +466,46 @@ export async function* orchestrate(
     incomingWorkContract !== undefined ? incomingWorkContract : seededTrace;
 
   // -------------------------------------------------------------------------
+  // (a4) PRE-PROVIDER TERMINAL ASK (adaptive-partner-v2-5.6.md §2.2 A1).
+  //
+  // When the directive carries a terminalQuestion (planEngagement chose
+  // ASK_CLARIFYING at a GENUINE non-investigable fork), the orchestrator OWNS the
+  // ask: it emits the structured QuestionSet BEFORE any provider run and returns.
+  // The model never runs — zero provider attempts, zero tokens, totalCostUsd 0 —
+  // so a planned terminal ask can no longer be ignored by the model or poisoned by
+  // stale history. This flows through the SAME final+questions path the interface
+  // already renders for ask_user, so the selectable multiple-choice UI appears.
+  //
+  // We append the user entry + an EMPTY assistant entry (carrying workTrace) so the
+  // turn is recorded symmetrically with the model-ask path, then yield the final.
+  // Placed BEFORE the panel/hedge branches and the no-providers path: a free,
+  // model-less ask takes precedence over every metered route.
+  if (directive.terminalQuestion !== undefined) {
+    await deps.session.append({
+      timestamp: deps.clock.isoNow(),
+      role: 'user',
+      content: task,
+    });
+    await deps.session.append({
+      timestamp: deps.clock.isoNow(),
+      role: 'assistant',
+      content: '',
+      ...(workTrace !== undefined ? { workTrace } : {}),
+    });
+    yield {
+      type: 'final',
+      success: true,
+      output: '',
+      tier: classification.tier,
+      totalCostUsd: 0,
+      sessionId: deps.session.id,
+      attempts: 0,
+      questions: directive.terminalQuestion,
+    };
+    return;
+  }
+
+  // -------------------------------------------------------------------------
   // (b) Resolve available providers
   // -------------------------------------------------------------------------
   const available = (Object.keys(deps.providers) as Array<keyof typeof deps.providers>).filter(
@@ -476,9 +548,23 @@ export async function* orchestrate(
   //      user message is appended exactly once (by runPanel).
   // Compute the compacted history ONCE here (shared by the panel branch and the
   // sequential loop below) so a long history isn't compacted twice per turn.
+  //
+  // HISTORY QUARANTINE (adaptive-partner-v2-5.6.md §3): when the directive's
+  // historyPolicy is 'quarantine_assistant_prose' (a prior ASSISTANT turn was
+  // itself a generic open menu), drop ONLY those poisoned assistant entries before
+  // compacting so they cannot few-shot the new turn back into the order-taker
+  // behavior. User entries are NEVER dropped; the store is untouched (we filter a
+  // local copy only). Fail-soft: any other policy uses the full history as before.
+  const replayHistory =
+    directive.historyPolicy.replayMode === 'quarantine_assistant_prose' &&
+    deps.history !== undefined
+      ? deps.history.filter(
+          (e) => !(e.role === 'assistant' && detectGenericOpenMenu(e.content)),
+        )
+      : deps.history;
   const historyContext =
-    deps.history !== undefined && deps.history.length > 0
-      ? compactHistory(deps.history)
+    replayHistory !== undefined && replayHistory.length > 0
+      ? compactHistory(replayHistory)
       : undefined;
   const panelPlan = planPanel({
     panelPolicy: deps.policy.panelPolicy,
@@ -546,6 +632,18 @@ export async function* orchestrate(
    * admission (Balanced earns a bounded number of flagship passes per turn).
    */
   let flagshipAttemptsThisTurn = 0;
+
+  /**
+   * Generic-open-menu repair budget (adaptive-partner-v2-5.6.md §2.2 A2). The
+   * `reject_generic_open_menu` validator may fire ONCE per turn: when a successful
+   * answer is the order-taker menu, we re-run the SAME tier once with a manager-
+   * style repair note. Bounded at 1 (distinct from MAX_REVISE_RETRIES, which is
+   * the reviewer-revise budget) so it never adds a second metered call on a turn
+   * that already passed. A repaired answer that still fails is KEPT (never
+   * discarded) — the best-effort accept paths below preserve a usable answer.
+   */
+  let genericMenuRepairs = 0;
+  const MAX_VALIDATOR_REPAIRS = 1;
 
   /**
    * Per-tier set of providers that have already been tried, used by the
@@ -804,6 +902,37 @@ export async function* orchestrate(
         ...(outcome.sessionId !== undefined ? { sessionId: outcome.sessionId } : {}),
         ...(workTrace !== undefined ? { workTrace } : {}),
       };
+    }
+
+    // -----------------------------------------------------------------------
+    // 0a) GENERIC-OPEN-MENU REPAIR (adaptive-partner-v2-5.6.md §2.2 A2).
+    // -----------------------------------------------------------------------
+    // A successful answer that is the order-taker "are you fixing / adding /
+    // polishing / integrating?" menu is the exact live failure mode. When the
+    // directive's validator fires (and the model did NOT emit a legitimate
+    // structured ask_user block, which the short-circuit below owns), re-run the
+    // SAME tier ONCE with a manager-style repair note appended. This costs one
+    // retry ONLY on the live failure — never on a passing turn — and is bounded
+    // (MAX_VALIDATOR_REPAIRS = 1). The current `acceptedRun`/`lastOutput` are left
+    // in place: if the repaired answer is no better, the best-effort accept paths
+    // below KEEP a usable answer rather than discarding it as Failed.
+    if (
+      success &&
+      genericMenuRepairs < MAX_VALIDATOR_REPAIRS &&
+      parseQuestions(finalText ?? '') === null &&
+      validateTurnOutput(finalText ?? '', directive) !== null
+    ) {
+      genericMenuRepairs++;
+      managerNotes =
+        managerNotes !== undefined && managerNotes.length > 0
+          ? `${managerNotes}\n\n${GENERIC_MENU_REPAIR_NOTE}`
+          : GENERIC_MENU_REPAIR_NOTE;
+      yield {
+        type: 'notice',
+        level: 'info',
+        message: 'Reworking a generic task-category menu into a grounded recommendation.',
+      };
+      continue mainLoop;
     }
 
     // -----------------------------------------------------------------------
