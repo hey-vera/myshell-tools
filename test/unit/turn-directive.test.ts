@@ -131,6 +131,7 @@ describe('compileTurnDirective — terminalQuestion', () => {
 
 const REPO_DIRECTIVE: TurnDirective = {
   version: 1,
+  requiredBeforeAnswer: [],
   outputValidators: [{ kind: 'reject_generic_open_menu' }],
   historyPolicy: { replayMode: 'normal', reasons: [] },
   repoOriented: true,
@@ -256,5 +257,98 @@ describe('compileTurnDirective — workState', () => {
       signals: signals({ task: 'continue' }),
     });
     assert.equal(d.workState, undefined);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// compileTurnDirective — vision triage (AP2-C §2.4 C)
+// ---------------------------------------------------------------------------
+
+function visionTriageAction(d: TurnDirective) {
+  return d.requiredBeforeAnswer.find((a) => a.kind === 'vision_triage');
+}
+
+describe('compileTurnDirective — vision_triage', () => {
+  it('carries a vision_triage action for a broad multi-part vision', () => {
+    const task =
+      'figure out why the planner is flaky, and maybe rewrite the planner core in Rust';
+    const s = signals({ frame: frameWith(undefined, 'coding'), task });
+    const d = compileTurnDirective({ frame: undefined, plan: planEngagement(s), signals: s });
+    const action = visionTriageAction(d);
+    assert.ok(action !== undefined, 'directive carries vision_triage');
+    assert.ok(action.items.length >= 2, 'a broad vision decomposes into ≥2 items');
+    const ds = action.items.map((i) => i.disposition);
+    assert.ok(ds.includes('MIGRATE_REARCHITECT'));
+    assert.ok(ds.includes('INVESTIGATE_THEN_PROPOSE'));
+    assert.equal(action.requiresInvestigation, true);
+  });
+
+  it('carries NO vision_triage action on a plain single SOLID claim', () => {
+    const s = signals({ frame: frameWith(undefined, 'coding'), task: 'rename foo to bar' });
+    const d = compileTurnDirective({ frame: undefined, plan: planEngagement(s), signals: s });
+    assert.equal(visionTriageAction(d), undefined, 'a single clear claim needs no triage');
+    assert.deepEqual(d.requiredBeforeAnswer, []);
+  });
+
+  it('MIGRATE routing is bounded by authorizeTier — gate DENIES → no manager request', () => {
+    const s = signals({ task: 'rewrite the core in Rust' });
+    const d = compileTurnDirective({
+      frame: undefined,
+      plan: planEngagement(s),
+      signals: s,
+      // The injected gate (free-plan / never-auto) denies manager.
+      canAuthorizeManagerForMigration: () => false,
+    });
+    const action = visionTriageAction(d);
+    assert.ok(action !== undefined, 'migration still triaged');
+    assert.ok(action.items.some((i) => i.disposition === 'MIGRATE_REARCHITECT'));
+    assert.equal(
+      action.migrationNeedsArchitectureTier,
+      false,
+      'a denied authorizeTier gate must NOT request the manager tier (no bypass)',
+    );
+  });
+
+  it('MIGRATE routing requests manager ONLY when authorizeTier admits it', () => {
+    const s = signals({ task: 'rewrite the core in Rust' });
+    const d = compileTurnDirective({
+      frame: undefined,
+      plan: planEngagement(s),
+      signals: s,
+      canAuthorizeManagerForMigration: () => true,
+    });
+    const action = visionTriageAction(d);
+    assert.ok(action !== undefined);
+    assert.equal(
+      action.migrationNeedsArchitectureTier,
+      true,
+      'an admitting gate may request the manager tier',
+    );
+  });
+
+  it('with no authorizeTier gate injected, never claims the manager tier', () => {
+    const s = signals({ task: 'rewrite the core in Rust' });
+    const d = compileTurnDirective({ frame: undefined, plan: planEngagement(s), signals: s });
+    const action = visionTriageAction(d);
+    assert.ok(action !== undefined);
+    assert.equal(action.migrationNeedsArchitectureTier, false, 'absent gate → IC floor only, no manager');
+  });
+
+  it('a generic menu fork is NOT a genuine DISCUSS fork in the directive', () => {
+    const frame = frameWith([
+      {
+        id: 'F1',
+        question: 'What are you trying to do with the page?',
+        options: ['fix something broken', 'add a new feature', 'polish the layout'],
+      },
+    ]);
+    const s = signals({ frame, task: 'work on the existing socials page in this repo' });
+    const d = compileTurnDirective({ frame, plan: planEngagement(s), signals: s });
+    const action = visionTriageAction(d);
+    assert.ok(action !== undefined);
+    assert.ok(
+      !action.items.some((i) => i.disposition === 'DISCUSS'),
+      'a generic task-category fork never becomes a DISCUSS/ask item',
+    );
   });
 });

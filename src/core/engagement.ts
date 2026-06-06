@@ -269,10 +269,25 @@ const GENERIC_MENU_OPTION_LEXICON: readonly RegExp[] = [
 ];
 
 function isGenericOpenMenuFork(fork: { readonly question: string; readonly options?: readonly string[] }): boolean {
-  const questionLooksGeneric = GENERIC_MENU_QUESTION_LEXICON.some((re) => re.test(fork.question));
-  const options = fork.options ?? [];
-  const genericOptions = options.filter((o) => GENERIC_MENU_OPTION_LEXICON.some((re) => re.test(o))).length;
-  return questionLooksGeneric && genericOptions >= Math.min(2, options.length || 2);
+  return isGenericOpenMenuForkText(fork.question, fork.options);
+}
+
+/**
+ * Generic-open-menu detection over a fork's QUESTION + OPTIONS as plain values
+ * (the order-taker "are you fixing / adding / polishing / integrating?" failure
+ * mode). Exported so vision-triage can reuse the EXACT same predicate without
+ * reaching into engagement internals — one source of truth for "this fork is a
+ * generic menu, not a genuine fork". PURE; never throws.
+ */
+export function isGenericOpenMenuForkText(
+  question: string,
+  options?: readonly string[],
+): boolean {
+  const q = typeof question === 'string' ? question : '';
+  const questionLooksGeneric = GENERIC_MENU_QUESTION_LEXICON.some((re) => re.test(q));
+  const opts = options ?? [];
+  const genericOptions = opts.filter((o) => GENERIC_MENU_OPTION_LEXICON.some((re) => re.test(o))).length;
+  return questionLooksGeneric && genericOptions >= Math.min(2, opts.length || 2);
 }
 
 export function hasGenuineFork(s: EngagementSignals): boolean {

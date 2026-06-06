@@ -292,6 +292,7 @@ async function runAttempt(
         ...(deps.partnerStyle !== undefined ? { partnerStyle: deps.partnerStyle } : {}),
         ...(deps.environmentContext !== undefined ? { environmentContext: deps.environmentContext } : {}),
         ...(deps.memoryContext !== undefined ? { memoryContext: deps.memoryContext } : {}),
+        ...(deps.visionTriageContext !== undefined ? { visionTriageContext: deps.visionTriageContext } : {}),
         ...(deps.intentFrame !== undefined ? { intentFrame: deps.intentFrame } : {}),
         ...(deps.engagementPlan !== undefined ? { engagementPlan: deps.engagementPlan } : {}),
       },

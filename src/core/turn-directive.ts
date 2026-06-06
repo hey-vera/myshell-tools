@@ -29,6 +29,13 @@ import type { IntentFrame } from './intent.js';
 import type { EngagementPlan, EngagementSignals } from './engagement.js';
 import { deriveAskFromForks, hasGenuineFork } from './engagement.js';
 import type { WorkStateSnapshot } from './work-state.js';
+import {
+  triageVision,
+  hasMigrationConcern,
+  hasInvestigateConcern,
+  firstDiscussFork,
+  type VisionTriageItem,
+} from './vision-triage.js';
 
 // ---------------------------------------------------------------------------
 // Shapes (§2.1) — STAGE 1 minimal subset
@@ -36,6 +43,28 @@ import type { WorkStateSnapshot } from './work-state.js';
 
 /** Stage-1 output validators. Only the generic-open-menu rejector is built now. */
 export type OutputValidator = { readonly kind: 'reject_generic_open_menu' };
+
+/**
+ * A preliminary action the orchestrator REQUIRES before (or carries into) the
+ * answer (doc §2.1). STAGE 3 populates only `vision_triage` (the other variants —
+ * orient_repo / investigate_context / web_research / plan_first — are reserved for
+ * later stages and not built here). The `vision_triage` action carries the
+ * decomposed {@link VisionTriageItem}s plus the pre-computed routing facts derived
+ * from them, so `orchestrate` can route per disposition without re-deriving:
+ *   - `migrationNeedsArchitectureTier`: a MIGRATE_REARCHITECT item is present →
+ *     the turn should run at LEAST IC (often manager when scope/risk warrants),
+ *     ALWAYS via the existing `authorizeTier` gate (never a bypass). The flag is a
+ *     REQUEST; whether manager actually opens is decided by `authorizeTier` /
+ *     `admitManager` in orchestrate, bounded by free-plan / never-auto policy.
+ *   - `requiresInvestigation`: an INVESTIGATE_THEN_PROPOSE item is present → the
+ *     answer must return findings + a proposed plan, not a generic question.
+ */
+export type RequiredPreAnswerAction = {
+  readonly kind: 'vision_triage';
+  readonly items: readonly VisionTriageItem[];
+  readonly migrationNeedsArchitectureTier: boolean;
+  readonly requiresInvestigation: boolean;
+};
 
 /** History replay disposition for the NEXT turn (§3). */
 export interface HistoryPolicy {
@@ -58,6 +87,14 @@ export interface TurnDirective {
    * existing `QuestionSet` UI renders unchanged.
    */
   readonly terminalQuestion?: QuestionSet;
+  /**
+   * Preliminary actions the orchestrator requires before/at the answer (doc §2.1).
+   * STAGE 3 carries the `vision_triage` action when the vision decomposes into ≥1
+   * meaningful part (a non-trivial multi-part vision, a migration concern, an
+   * investigate-first part, or a genuine fork). Empty on a plain single-claim turn
+   * so nothing is rendered and behaviour is unchanged.
+   */
+  readonly requiredBeforeAnswer: readonly RequiredPreAnswerAction[];
   /** Validators applied to the model's FINAL prose after a provider run. */
   readonly outputValidators: readonly OutputValidator[];
   /** How the NEXT turn should treat prior history (quarantine of poisoned prose). */
@@ -102,6 +139,18 @@ export interface CompileDirectiveInput {
    * what was last done + the next honest step. undefined → no work-state.
    */
   readonly workState?: WorkStateSnapshot;
+  /**
+   * STAGE 3 (doc §2.4 C) — the existing `authorizeTier` gate, injected as a pure
+   * predicate the compiler may consult to decide whether a MIGRATE_REARCHITECT
+   * concern can be ROUTED at the manager tier. The compiler NEVER opens manager
+   * itself; it only records `migrationNeedsArchitectureTier` (≥ IC always; manager
+   * only when this predicate returns true). When absent, the compiler still
+   * records the architecture-note request but does NOT claim manager — orchestrate's
+   * own `admitManager`/`authorizeTier` remains the sole authority that opens
+   * manager, bounded by free-plan / never-auto policy. This keeps the gate
+   * un-bypassable: the flag is a REQUEST, the policy gate is the DECISION.
+   */
+  readonly canAuthorizeManagerForMigration?: () => boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -268,6 +317,23 @@ export function decideHistoryPolicy(
  *     never interrogate), and
  *   - `deriveAskFromForks(frame, plan)` returns a non-null QuestionSet.
  * ASK_CAP=1 is honored transitively via `deriveAskFromForks`.
+ *
+ * STAGE 3 (doc §2.4 C) — vision triage. The vision is decomposed (PURELY, no model
+ * call) into {@link VisionTriageItem}s via {@link triageVision}. When the result is
+ * a meaningful multi-part vision (≥2 items) OR carries a migration / investigate /
+ * genuine-fork concern, a `vision_triage` {@link RequiredPreAnswerAction} is added
+ * to `requiredBeforeAnswer`, carrying the items + the routing facts:
+ *   - SOLID                   → proceed (rendered as "state interpretation + proceed").
+ *   - DISCUSS (genuine fork)  → the FIRST such fork seeds `terminalQuestion` via the
+ *                               EXISTING fork machinery (`deriveAskFromForks`,
+ *                               ASK_CAP, `hasGenuineFork`); never a generic menu.
+ *   - MIGRATE_REARCHITECT     → `migrationNeedsArchitectureTier`: ≥ IC always; the
+ *                               manager bump is requested ONLY when the injected
+ *                               `canAuthorizeManagerForMigration()` (the existing
+ *                               `authorizeTier`/`admitManager` gate) returns true —
+ *                               so the policy gate is never bypassed.
+ *   - INVESTIGATE_THEN_PROPOSE→ `requiresInvestigation`: the answer must return
+ *                               findings + a plan, not a generic question.
  */
 export function compileTurnDirective(input: CompileDirectiveInput): TurnDirective {
   const { frame, plan, signals } = input;
@@ -279,11 +345,46 @@ export function compileTurnDirective(input: CompileDirectiveInput): TurnDirectiv
   const outputValidators: readonly OutputValidator[] = [{ kind: 'reject_generic_open_menu' }];
   const historyPolicy = decideHistoryPolicy(input.priorAssistantTexts);
 
+  // STAGE 3 — vision triage (PURE, no model call). Decompose the vision and decide
+  // whether to carry a `vision_triage` directive action. We surface it only for a
+  // genuinely multi-part vision OR when a migration / investigate / genuine-fork
+  // concern is present, so a plain single-claim turn renders nothing (unchanged).
+  const triageItems = triageVision({
+    signals,
+    ...(input.repoPresent !== undefined ? { repoPresent: input.repoPresent } : {}),
+  });
+  const migration = hasMigrationConcern(triageItems);
+  const investigate = hasInvestigateConcern(triageItems);
+  const discussFork = firstDiscussFork(triageItems);
+  const multiPart = triageItems.length >= 2;
+  const carriesTriage = multiPart || migration || investigate || discussFork !== undefined;
+
+  // MIGRATE bounded by authorizeTier: the architecture-note request is always
+  // recorded (≥ IC), but the manager bump is requested ONLY when the injected
+  // policy gate admits it. Absent gate → never request manager (request stays at
+  // the IC floor). The compiler NEVER opens a tier itself.
+  const migrationNeedsArchitectureTier =
+    migration &&
+    typeof input.canAuthorizeManagerForMigration === 'function' &&
+    input.canAuthorizeManagerForMigration() === true;
+
+  const requiredBeforeAnswer: readonly RequiredPreAnswerAction[] = carriesTriage
+    ? [
+        {
+          kind: 'vision_triage',
+          items: triageItems,
+          migrationNeedsArchitectureTier,
+          requiresInvestigation: investigate,
+        },
+      ]
+    : [];
+
   // Fail-soft base directive (no terminal ask). The truthful work-state (AP2-B
   // §2.3 B) rides through unchanged when present so the turn knows what was last
   // done + the next honest step.
   const base: TurnDirective = {
     version: 1,
+    requiredBeforeAnswer,
     outputValidators,
     historyPolicy,
     repoOriented,

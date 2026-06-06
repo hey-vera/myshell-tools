@@ -74,6 +74,15 @@ export interface ContextBlockOptions {
    */
   readonly workStateContext?: string;
   /**
+   * Pre-rendered, capped VISION TRIAGE block (adaptive-partner-v2-5.6.md §2.4 C):
+   * the decomposed vision parts with their dispositions (SOLID / DISCUSS /
+   * MIGRATE_REARCHITECT / INVESTIGATE_THEN_PROPOSE) and the instruction to address
+   * each per its disposition and recommend a SEQUENCE — never a generic menu.
+   * undefined → omit. Rendered right BEFORE INTENT so the model triages the request
+   * before reflecting a single goal. Produced by core/vision-triage.ts.
+   */
+  readonly visionTriageContext?: string;
+  /**
    * The turn's INTENT block, pre-rendered (intent doc §5.4). undefined → omit.
    * Produced by Phase 6; rendered here when present.
    */
@@ -157,6 +166,15 @@ export function assembleContextBlocks(opts: ContextBlockOptions): string {
   const workState = opts.workStateContext?.trim();
   if (workState !== undefined && workState.length > 0) {
     blocks.push(workState);
+  }
+
+  // VISION TRIAGE — decompose a broad multi-part vision into per-disposition parts
+  // (AP2-C §2.4 C), rendered right BEFORE INTENT so the model separates the work
+  // (solid / discuss / migrate / investigate) and recommends a SEQUENCE before
+  // reflecting a single goal line. Absent on a plain single-claim turn.
+  const visionTriage = opts.visionTriageContext?.trim();
+  if (visionTriage !== undefined && visionTriage.length > 0) {
+    blocks.push(visionTriage);
   }
 
   const intent = opts.intentFrame?.trim();

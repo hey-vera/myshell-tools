@@ -437,6 +437,18 @@ export interface OrchestrateDeps {
    */
   readonly toolStateContext?: string;
   /**
+   * Pre-rendered, capped VISION TRIAGE block (adaptive-partner-v2-5.6.md §2.4 C)
+   * for the prompt seam. Computed ONCE per turn INSIDE orchestrate from the same
+   * gated intent data (PURE, NO extra model call): a broad multi-part vision is
+   * decomposed into SOLID / DISCUSS / MIGRATE_REARCHITECT / INVESTIGATE_THEN_PROPOSE
+   * parts, with the instruction to address each per its disposition and recommend a
+   * SEQUENCE rather than a generic menu. Threaded onto the per-turn deps copy so it
+   * rides sequential, hedge, AND panel prompts via `assembleContextBlocks`. Absent
+   * on a plain single-claim turn → byte-identical to pre-triage prompts.
+   * Producer/consumer: core/vision-triage.ts.
+   */
+  readonly visionTriageContext?: string;
+  /**
    * Pre-rendered, capped INTENT block (intent-engine §5.4) for the prompt seam.
    * Computed ONCE per turn INSIDE orchestrate (gated — substantial/ambiguous
    * turns only) and threaded onto a per-turn deps copy so it rides sequential,

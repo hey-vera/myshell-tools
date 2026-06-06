@@ -64,6 +64,7 @@ import {
 } from './turn-directive.js';
 import { engagementBiasOf } from './prompt-context.js';
 import { deriveWorkStateFromHistory, renderWorkStateBlock } from './work-state.js';
+import { renderVisionTriageBlock } from './vision-triage.js';
 
 // ---------------------------------------------------------------------------
 // Pure helper: should this output be cross-vendor reviewed?
@@ -526,20 +527,55 @@ export async function* orchestrate(
   const workState =
     depsArg.history !== undefined ? deriveWorkStateFromHistory(depsArg.history) : undefined;
 
+  // (a3c) VISION TRIAGE (adaptive-partner-v2-5.6.md §2.4 C). The compiler decomposes
+  // a broad multi-part vision (PURE, no model call) and routes each part by its
+  // disposition. MIGRATE_REARCHITECT must run at LEAST IC, with the manager bump
+  // gated by the EXISTING `authorizeTier` policy (never bypassed). We pass a pure
+  // predicate over `authorizeTier` so the compiler may RECORD a manager request
+  // ONLY when the policy gate would admit it — free-plan / never-auto stays
+  // authoritative. The actual tier is still resolved by route()/admitManager below.
+  const canAuthorizeManagerForMigration = (): boolean =>
+    authorizeTier({
+      requestedTier: 'manager',
+      currentTier: classification.tier,
+      classification,
+      policy: depsArg.policy,
+      ...(depsArg.planInfos !== undefined ? { planInfos: depsArg.planInfos } : {}),
+      ...(depsArg.authenticatedProviders !== undefined
+        ? { candidateProviders: depsArg.authenticatedProviders }
+        : {}),
+      flagshipAttemptsThisTurn: 0,
+      // A migration/rearchitecture concern is a genuine high-stakes scope signal —
+      // an EARNED justification, but admission STILL honours free-plan/never-auto.
+      trigger: 'review',
+    }).allowed;
+
   const directive = compileTurnDirective({
     frame: intentFrame,
     plan: engagementPlan,
     signals: engagementSignals,
     repoPresent: depsArg.environmentContext !== undefined && depsArg.environmentContext.length > 0,
+    canAuthorizeManagerForMigration,
     ...(priorAssistantTexts !== undefined ? { priorAssistantTexts } : {}),
     ...(workState !== undefined ? { workState } : {}),
   });
+
+  // The compiled vision_triage action (if any) — drives the rendered block + the
+  // architecture-tier floor below. PURE read off the directive.
+  const visionTriageAction = directive.requiredBeforeAnswer.find(
+    (a): a is Extract<typeof a, { kind: 'vision_triage' }> => a.kind === 'vision_triage',
+  );
 
   // Pre-render the INTENT + ENGAGEMENT blocks ONCE and thread them onto a per-turn
   // deps copy so they reach every executor through the shared seam with no further
   // plumbing. Empty blocks (trivial/silent) are omitted → byte-identical to today.
   const intentBlock = runIntent ? renderIntentBlock(intentFrame) : '';
   const engagementBlock = renderEngagementBlock(engagementPlan);
+  // VISION TRIAGE block (AP2-C §2.4 C): render the decomposed parts + the
+  // address-each-then-recommend-a-sequence instruction. Empty when the directive
+  // carried no vision_triage action (plain single-claim turn) → byte-identical.
+  const visionTriageBlock =
+    visionTriageAction !== undefined ? renderVisionTriageBlock(visionTriageAction.items) : '';
   // Render the truthful WORK STATE block once. menu.ts may have pre-rendered it
   // from the same history into deps.workStateContext (so it survives even the
   // pre-provider terminal-ask path's prompt); fall back to rendering here.
@@ -561,12 +597,16 @@ export async function* orchestrate(
   }
 
   const deps: OrchestrateDeps =
-    intentBlock.length > 0 || engagementBlock.length > 0 || workStateBlock.length > 0
+    intentBlock.length > 0 ||
+    engagementBlock.length > 0 ||
+    workStateBlock.length > 0 ||
+    visionTriageBlock.length > 0
       ? {
           ...depsArg,
           ...(intentBlock.length > 0 ? { intentFrame: intentBlock } : {}),
           ...(engagementBlock.length > 0 ? { engagementPlan: engagementBlock } : {}),
           ...(workStateBlock.length > 0 ? { workStateContext: workStateBlock } : {}),
+          ...(visionTriageBlock.length > 0 ? { visionTriageContext: visionTriageBlock } : {}),
         }
       : depsArg;
 
@@ -711,6 +751,7 @@ export async function* orchestrate(
     deps.toolStateContext,
     deps.memoryContext,
     deps.workStateContext,
+    deps.visionTriageContext,
     deps.intentFrame,
     deps.engagementPlan,
   ]);
@@ -900,6 +941,25 @@ export async function* orchestrate(
     currentTier = 'ic';
   }
 
+  // VISION TRIAGE — MIGRATE_REARCHITECT tier floor (adaptive-partner-v2-5.6.md
+  // §2.4 C). A migration/rearchitecture concern must run at LEAST IC (raising a
+  // worker-tier turn to IC is always allowed — IC is below the flagship gate, so
+  // this is NEVER a bypass). The manager bump is requested ONLY when the directive
+  // recorded `migrationNeedsArchitectureTier` (already gated by `authorizeTier`
+  // upstream) AND the live `admitManager` gate still admits it here — so free-plan
+  // / never-auto / quota policy remains the sole authority that opens manager. The
+  // architecture-note INSTRUCTION itself rides the rendered VISION TRIAGE block.
+  if (visionTriageAction !== undefined) {
+    if (currentTier === 'worker') currentTier = 'ic';
+    if (
+      visionTriageAction.migrationNeedsArchitectureTier &&
+      currentTier !== 'manager' &&
+      admitManager('review').allowed
+    ) {
+      currentTier = 'manager';
+    }
+  }
+
   // -------------------------------------------------------------------------
   // (f) Main orchestration loop
   // -------------------------------------------------------------------------
@@ -996,6 +1056,7 @@ export async function* orchestrate(
         ...(deps.toolStateContext !== undefined ? { toolStateContext: deps.toolStateContext } : {}),
         ...(deps.memoryContext !== undefined ? { memoryContext: deps.memoryContext } : {}),
         ...(deps.workStateContext !== undefined ? { workStateContext: deps.workStateContext } : {}),
+        ...(deps.visionTriageContext !== undefined ? { visionTriageContext: deps.visionTriageContext } : {}),
         ...(deps.intentFrame !== undefined ? { intentFrame: deps.intentFrame } : {}),
         ...(deps.engagementPlan !== undefined ? { engagementPlan: deps.engagementPlan } : {}),
       },
