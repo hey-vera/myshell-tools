@@ -65,6 +65,13 @@ import {
 import { engagementBiasOf } from './prompt-context.js';
 import { deriveWorkStateFromHistory, renderWorkStateBlock } from './work-state.js';
 import { renderVisionTriageBlock } from './vision-triage.js';
+import {
+  extractDiscoverySignals,
+  discoveryWarrantsManager,
+  discoveryWarrantsReview,
+  discoveryEscalationReason,
+  type DiscoverySignal,
+} from './discovery.js';
 
 // ---------------------------------------------------------------------------
 // Pure helper: should this output be cross-vendor reviewed?
@@ -1128,6 +1135,22 @@ export async function* orchestrate(
     // --- Assess output ---
     const assessment = assess(finalText ?? '');
 
+    // --- DISCOVERY-DRIVEN ESCALATION SIGNALS (adaptive-partner-v2-5.6.md §2.5 D,
+    //     Stage 4). PURE extraction from the provider OUTPUT TEXT + the parsed
+    //     confidence envelope — NO extra model pass, NO new agent stack. The
+    //     signals feed the EXISTING review / escalation gates below, bounded by
+    //     `authorizeTier` (manager) and `panelPolicy` (panel) — discovery can never
+    //     bypass those. The low-confidence threshold is the SAME risk-indexed
+    //     escalate bar the confidence gate uses, so the two agree on "low". On a
+    //     clean, confident, local answer this is [] and nothing below changes. */
+    const discoverySignals: readonly DiscoverySignal[] = success
+      ? extractDiscoverySignals(
+          finalText ?? '',
+          assessment,
+          deps.policy.escalateBelowConfidence[classification.risk],
+        )
+      : [];
+
     // --- Record in ledger ---
     await deps.ledger.record({
       timestamp: deps.clock.isoNow(),
@@ -1392,8 +1415,20 @@ export async function* orchestrate(
     //    Guard: each attempt is reviewed at most once (prevents infinite loops).
     //    Guard: skip review if the only available reviewer is the same vendor
     //           (cross-vendor review is required; same-vendor-only → skip).
+    //
+    //    DISCOVERY (§2.5 D): a discovery worth a second vendor's eyes (a
+    //    high-stakes surface, a cross-cutting change, or a verified wider root
+    //    cause) ADDS a review trigger — but only as far as the user's reviewPolicy
+    //    already permits. We AND-gate the discovery path on reviewPolicy !== 'off'
+    //    so discovery can never review a turn the user turned review OFF for; and
+    //    the same `!reviewedAttempts.has` + cross-vendor guards below still bound
+    //    it to at most one review per attempt. A passing turn with no discovery
+    //    signal sees the original `shouldReview` decision unchanged.
+    const discoveryWantsReview =
+      deps.policy.reviewPolicy !== 'off' && discoveryWarrantsReview(discoverySignals);
     if (
-      shouldReview(classification, assessment, deps.policy.reviewPolicy) &&
+      (shouldReview(classification, assessment, deps.policy.reviewPolicy) ||
+        discoveryWantsReview) &&
       !reviewedAttempts.has(attempts)
     ) {
       // Pick the reviewer from AUTHENTICATED (and, since the conversation layer
@@ -1759,10 +1794,22 @@ export async function* orchestrate(
       }
     }
 
-    // 3) Confidence-based escalation
+    // 3) Confidence-based escalation (+ DISCOVERY-DRIVEN escalation, §2.5 D)
     const threshold = deps.policy.escalateBelowConfidence[classification.risk];
+    // A discovery indicating high-risk or cross-cutting blast radius (a
+    // high-confidence wider root cause, a cross-cutting change, or a high-stakes
+    // surface) is a §2.5 D reason to REQUEST a manager escalation — the engine
+    // deliberately changes scope when investigation finds the real work is bigger.
+    // It only sets `needEsc`; whether manager actually opens is STILL decided by
+    // `admitManager`/`authorizeTier` below (free-plan veto, Efficient never-auto,
+    // and the per-turn flagship budget remain the sole authority). A merely-larger
+    // BUT-LOCAL fix (a medium-confidence larger_bug with no cross-cutting/high-
+    // stakes signal) does NOT trip this — it stays at the current tier and is just
+    // done, per §2.5 D ("just do the larger fix when it is local/reversible").
+    const discoveryWantsEscalation = discoveryWarrantsManager(discoverySignals);
     const needEsc =
       assessment.escalate ||
+      discoveryWantsEscalation ||
       (assessment.confidence !== null && assessment.confidence < threshold);
 
     const nextTier = nextTierUp(currentTier);
@@ -1782,11 +1829,20 @@ export async function* orchestrate(
           ? nextTier
           : null;
     if (needEsc && escalateTo !== null) {
+      // Prefer a discovery-driven reason when a discovery (not low confidence)
+      // drove this escalation — the `escalate` event IS the notice of the real
+      // additional run that the next loop iteration starts at the higher tier, so
+      // it is the honest place to name WHY scope widened (no fake "escalating…"
+      // without a run). Falls back to the model's own reason / low confidence.
+      const discoveryReason = discoveryWantsEscalation
+        ? discoveryEscalationReason(discoverySignals)
+        : undefined;
       const escalateReason =
-        assessment.reason !== 'model provided no reason' &&
+        discoveryReason ??
+        (assessment.reason !== 'model provided no reason' &&
         assessment.reason !== 'no confidence envelope'
           ? assessment.reason
-          : 'low confidence';
+          : 'low confidence');
       yield {
         type: 'escalate',
         from: currentTier,
