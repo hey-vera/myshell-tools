@@ -69,6 +69,7 @@ import { planNativeSession } from '../core/native-session.js';
 import { availableAfterCooldown, cooldownExpiry } from '../core/cooldown.js';
 import { learnProviderOrder } from '../core/routing-memory.js';
 import type { OutputSink, Verbosity } from './render.js';
+import { renderResumeTranscript } from './render.js';
 import { runTask } from './run.js';
 import { runLogin } from '../commands/login.js';
 import type { LoginMethod } from '../commands/login.js';
@@ -3039,6 +3040,30 @@ async function runChatLoop(
       // Best-effort: a failed save only risks re-showing the line once more.
     }
   };
+
+  // Resume transcript: SHOW the user where they left off so reopening a saved
+  // conversation reads like a real chat instead of a blank prompt. Renders a
+  // bounded, glyph-styled view of the recent turns (● assistant / › user, dim
+  // relative timestamps) via the pure render seam — NO model call (subscription-
+  // auth) and NO raw-mode/input touch (Phase 0). Fail-soft: a load/render error
+  // must never block resume. Bounded so a long thread doesn't flood the screen.
+  {
+    let priorEntries: SessionEntry[] = [];
+    try {
+      priorEntries = await ctx.store.load(convId);
+    } catch {
+      priorEntries = []; // fail-soft: never block resume on a load error
+    }
+    if (priorEntries.length > 0) {
+      const transcript = renderResumeTranscript(priorEntries, {
+        color: out.color,
+        nowMs: ctx.clock.now(),
+      });
+      if (transcript.length > 0) {
+        out.write('\n' + transcript + '\n');
+      }
+    }
+  }
 
   // Recap on resume: replace the weak tail-echo with a real ※ recap line when one
   // is available; otherwise stay silent (prior behaviour with no recap).

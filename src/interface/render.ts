@@ -54,6 +54,137 @@ export interface OutputSink {
 export type Verbosity = 'quiet' | 'normal' | 'verbose';
 
 // ---------------------------------------------------------------------------
+// Resume transcript — "here's where we left off" (pure, testable seam)
+// ---------------------------------------------------------------------------
+
+/** Minimal shape a resume-transcript message needs. Structurally a SessionEntry. */
+export interface ResumeMessage {
+  readonly role: 'user' | 'assistant' | 'system';
+  readonly content: string;
+  readonly timestamp?: string;
+}
+
+export interface ResumeTranscriptOptions {
+  /** Emit ANSI colour (gated exactly like every theme helper). Default false. */
+  readonly color?: boolean;
+  /** How many of the most recent messages to show. Default 6. */
+  readonly maxMessages?: number;
+  /** Per-message body character budget before an ellipsis. Default 280. */
+  readonly maxCharsPerMessage?: number;
+  /**
+   * "Now" in epoch ms, for the dim relative timestamp ("2h ago"). Injected so
+   * the renderer stays pure/testable; absent → timestamps are omitted entirely
+   * (we never fabricate a clock).
+   */
+  readonly nowMs?: number;
+}
+
+const RESUME_DEFAULT_MAX_MESSAGES = 6;
+const RESUME_DEFAULT_MAX_CHARS = 280;
+
+/**
+ * Collapse the assistant's stored content down to displayable prose: strip the
+ * trailing control envelope (confidence / ask_user / verdict / remember_user)
+ * and any trailing goal marker, exactly as the live renderer does, so a resumed
+ * transcript shows clean prose rather than leaked control JSON.
+ */
+function transcriptBody(msg: ResumeMessage): string {
+  let body = msg.content ?? '';
+  if (msg.role === 'assistant') {
+    const env = trailingControlEnvelope(body);
+    if (env !== null) body = body.slice(0, env.start);
+    body = stripTrailingGoalMarker(body);
+  }
+  // Flatten to a single visual block: trim, collapse runs of blank lines so a
+  // long multi-paragraph turn doesn't dominate the recap strip.
+  return body.replace(/\n{3,}/g, '\n\n').trim();
+}
+
+/** A dim, human relative time ("just now" / "5m ago" / "3h ago" / "2d ago"). */
+function relativeTime(timestamp: string | undefined, nowMs: number | undefined): string {
+  if (timestamp === undefined || nowMs === undefined) return '';
+  const then = Date.parse(timestamp);
+  if (Number.isNaN(then)) return '';
+  const deltaMs = nowMs - then;
+  if (deltaMs < 0) return 'just now';
+  const sec = Math.floor(deltaMs / 1000);
+  if (sec < 60) return 'just now';
+  const min = Math.floor(sec / 60);
+  if (min < 60) return `${min}m ago`;
+  const hr = Math.floor(min / 60);
+  if (hr < 24) return `${hr}h ago`;
+  const day = Math.floor(hr / 24);
+  return `${day}d ago`;
+}
+
+/**
+ * Render a bounded, glyph-styled transcript of the recent conversation so that
+ * RESUMING a conversation reads like reopening a real chat — "here's where we
+ * were" — instead of dropping the user onto a blank prompt.
+ *
+ * PURE and side-effect-free (no I/O, no clock — `nowMs` is injected) so it is
+ * hermetically unit-testable. The menu calls it once on resume and writes the
+ * string above the recap line and the entry prompt.
+ *
+ * Shape (most-recent-last, chronological):
+ *   - a dim "…N earlier messages" note when older turns were dropped;
+ *   - one block per shown message: `› ` for the user, `● ` for the assistant
+ *     (the existing Phase-1 glyphs), the body (bounded per-message), and a dim
+ *     trailing relative timestamp when a clock + timestamp are available;
+ *   - system entries are skipped (they're internal control turns, not chat).
+ *
+ * Returns '' when there is nothing worth showing (no entries, or every entry is
+ * empty/system) so the caller can simply skip the block. Degrades cleanly under
+ * NO_COLOR / non-TTY: with `color:false` it emits the bare glyphs and no ANSI.
+ */
+export function renderResumeTranscript(
+  entries: readonly ResumeMessage[],
+  opts: ResumeTranscriptOptions = {},
+): string {
+  const color = opts.color ?? false;
+  const maxMessages = Math.max(1, opts.maxMessages ?? RESUME_DEFAULT_MAX_MESSAGES);
+  const maxChars = Math.max(1, opts.maxCharsPerMessage ?? RESUME_DEFAULT_MAX_CHARS);
+
+  if (!Array.isArray(entries) || entries.length === 0) return '';
+
+  // Only user/assistant turns are conversation; drop empty bodies + system control.
+  const shown = entries
+    .filter((e) => e.role === 'user' || e.role === 'assistant')
+    .map((e) => ({ role: e.role, body: transcriptBody(e), ts: e.timestamp }))
+    .filter((e) => e.body.length > 0);
+
+  if (shown.length === 0) return '';
+
+  const window = shown.slice(-maxMessages);
+  const dropped = shown.length - window.length;
+
+  const lines: string[] = [];
+  if (dropped > 0) {
+    const noun = dropped === 1 ? 'message' : 'messages';
+    lines.push(dim(`  …${dropped} earlier ${noun}`, color));
+  }
+
+  for (const m of window) {
+    const glyph =
+      m.role === 'assistant'
+        ? cyan('●', color) // assistant turn marker
+        : dim('›', color); // user echo marker
+    let body = m.body;
+    if (body.length > maxChars) {
+      body = `${body.slice(0, maxChars).replace(/\s+\S*$/, '')}…`;
+    }
+    // Indent continuation lines so a multi-line body stays visually grouped
+    // under its glyph.
+    body = body.replace(/\n/g, '\n    ');
+    const rel = relativeTime(m.ts, opts.nowMs);
+    const stamp = rel.length > 0 ? `  ${dim(rel, color)}` : '';
+    lines.push(`  ${glyph} ${body}${stamp}`);
+  }
+
+  return lines.join('\n');
+}
+
+// ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
 
