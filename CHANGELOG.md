@@ -15,6 +15,31 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   resumed goal's contract from the persisted `workTrace` (niche: the in-run contract
   is already kept in memory; only cross-session resume benefits). Optional.
 
+## [3.18.0]
+
+### Fixed (live-found — chat feel)
+- **Doubled input echo.** A pasted/typed chat line could appear twice (readline's
+  live preview row left on screen beneath the committed text). The loop now clears
+  that preview row and renders exactly one canonical `> <line>` echo on a TTY.
+  Rendering-only — no new stdin consumer, no raw-mode / suspend-resume change.
+- **Working indicator now appears instantly.** The "Thinking…" spinner started only
+  at `tier-start`, so it looked like it appeared only once a model/agent spawned. It
+  now starts the moment `renderStream` owns the turn (on a TTY), staying alive through
+  setup, tool, and reasoning activity. Verbose telemetry, the parallel-models panel
+  line, the elapsed counter, and the interrupt hint are unchanged.
+- **One indicator, not two.** The live working line no longer prepends the semantic
+  `●` glyph on top of the braille loading frame — just the loading frame + label. The
+  `●` remains where it's meaningful: heading the assistant's answer and on the
+  completion line.
+
+### Changed (partner posture)
+- **Investigate, then recommend — don't interrogate.** After orienting, the partner now
+  states what it found and recommends the concrete next step instead of offering a
+  generic "fixing / adding / polishing / integrating?" menu. The engagement engine no
+  longer treats such a generic task-category menu as a genuine fork on an investigable
+  request, and `ask_user` options must be concrete and grounded in findings. Applied
+  across all three personas.
+
 ## [3.17.0]
 
 ### Added
