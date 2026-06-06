@@ -144,5 +144,18 @@ export function isLedgerEntry(value: unknown): value is LedgerEntry {
     return false;
   }
   if (typeof value['success'] !== 'boolean') return false;
+  // Optional capability-registry effort (Stage 3). Absent on old entries; when
+  // present it must be a known reasoning-effort string.
+  const effort = value['reasoningEffort'];
+  if (
+    effort !== undefined &&
+    effort !== 'none' &&
+    effort !== 'low' &&
+    effort !== 'medium' &&
+    effort !== 'high' &&
+    effort !== 'xhigh'
+  ) {
+    return false;
+  }
   return true;
 }

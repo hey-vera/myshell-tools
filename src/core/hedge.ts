@@ -43,11 +43,13 @@ import type {
   Policy,
 } from './types.js';
 import type { ProviderId } from '../providers/port.js';
-import { route } from './route.js';
+import { route, selectReasoningEffort } from './route.js';
 import { getModelPricing, calculateCost } from '../infra/pricing.js';
 import { assess } from './assess.js';
 import { authorizeTier } from './flagship.js';
 import { buildPrompt } from './prompt.js';
+import { findCapability, type ReasoningEffort, type TaskKind } from './model-capabilities.js';
+import { modeFromPolicy } from './policy.js';
 import type { WorkContract } from './work-contract.js';
 import { capContract, isCleanObjectiveTask, shouldMaterializeContract } from './work-contract.js';
 
@@ -174,6 +176,8 @@ interface RunResult {
   readonly canceled: boolean;
   /** The provider-event CoreEvents this run produced, in order (NOT yet yielded). */
   readonly events: CoreEvent[];
+  /** The reasoning effort threaded to this run, when one was selected. */
+  readonly reasoningEffort: ReasoningEffort | undefined;
 }
 
 /**
@@ -198,6 +202,7 @@ async function runAttempt(
   effPolicy: Policy,
   signal: AbortSignal,
   historyContext: string | undefined,
+  risk: Risk,
 ): Promise<RunResult> {
   const decision = route(
     requestedTier,
@@ -211,6 +216,13 @@ async function runAttempt(
     deps.authenticatedProviders,
     deps.learnedProviderOrder?.[requestedTier],
   );
+  // Reasoning effort for this hedge run (capability registry §3/§5). decision.tier
+  // is the tier route() resolved (admission already passed in planHedge), so this
+  // never opens manager or exceeds policy. undefined → no registry / no efforts →
+  // no flag (byte-for-byte unchanged). Hedge only fires on high/critical-risk
+  // turns; taskKind 'implementation' is the conservative default (risk drives the
+  // effort). The selector reconciles against the model's supported set.
+  const reasoningEffort = hedgeEffort(deps, decision.provider, decision.model, decision.tier, risk);
   const provider = deps.providers[decision.provider];
   const start = deps.clock.now();
   const events: CoreEvent[] = [];
@@ -238,6 +250,7 @@ async function runAttempt(
       durationMs: deps.clock.now() - start,
       canceled: signal.aborted,
       events,
+      reasoningEffort,
     };
   }
 
@@ -254,11 +267,13 @@ async function runAttempt(
       durationMs: deps.clock.now() - start,
       canceled: true,
       events,
+      reasoningEffort,
     };
   }
 
   const req: import('../providers/port.js').ProviderRequest = {
     model: decision.model,
+    ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
     prompt: buildPrompt(
       decision.tier,
       task,
@@ -317,7 +332,39 @@ async function runAttempt(
     durationMs: deps.clock.now() - start,
     canceled: canceled || signal.aborted,
     events,
+    reasoningEffort,
   };
+}
+
+/**
+ * Select the reasoning effort for a hedge run against the chosen model's
+ * registry facts (capability registry §3/§5). Returns undefined when the registry
+ * is absent, the model has no capability record, or it declares no efforts (→ no
+ * flag, byte-for-byte unchanged). The resolved tier is the tier route() granted
+ * (admission already passed in planHedge), so this never opens manager. Hedge only
+ * fires on high/critical risk; taskKind 'implementation' is the conservative
+ * default (risk is the dominant signal). PURE.
+ */
+function hedgeEffort(
+  deps: OrchestrateDeps,
+  provider: ProviderId,
+  model: string,
+  tier: Tier,
+  risk: Risk,
+): ReasoningEffort | undefined {
+  const registry = deps.capabilityRegistry;
+  if (registry === undefined) return undefined;
+  const cap = findCapability(registry, provider, model);
+  if (cap === undefined) return undefined;
+  const taskKind: TaskKind = 'implementation';
+  return selectReasoningEffort({
+    model: cap,
+    mode: modeFromPolicy(deps.policy),
+    tier,
+    risk,
+    taskKind,
+    routePlan: false,
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -474,6 +521,7 @@ export async function* runHedged(
       // A cancelled run is not a successful run, even if it produced partial text.
       success: result.errored == null && !result.canceled,
       durationMs: result.durationMs,
+      ...(result.reasoningEffort !== undefined ? { reasoningEffort: result.reasoningEffort } : {}),
     });
     return usd;
   };
@@ -488,6 +536,7 @@ export async function* runHedged(
       deps.policy,
       primaryAc.signal,
       historyContext,
+      plan.risk,
     );
 
     // --- Race the primary against the delay. ---
@@ -550,6 +599,7 @@ export async function* runHedged(
         specPolicy,
         speculativeAc.signal,
         historyContext,
+        plan.risk,
       );
       await recordRun(speculative);
 
@@ -595,6 +645,7 @@ export async function* runHedged(
       specPolicy,
       speculativeAc.signal,
       historyContext,
+      plan.risk,
     );
 
     // Take the FIRST to finish with an adequate result; cancel the other.

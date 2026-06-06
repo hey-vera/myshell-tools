@@ -80,8 +80,17 @@ const PROVIDER_LABEL: Record<string, string> = {
 async function gatherCapabilitySummary(
   env: import('./providers/detect.js').EnvironmentStatus,
   cwd: string,
-): Promise<CapabilitySelfAwarenessSummary | undefined> {
+): Promise<
+  | {
+      readonly summary: CapabilitySelfAwarenessSummary | undefined;
+      readonly registry: import('./core/model-capabilities.js').CapabilityRegistry;
+    }
+  | undefined
+> {
   try {
+    // ONE refresh; we keep BOTH the structured registry (Stage 3 — threaded into
+    // OrchestrateDeps so route()/selectReasoningEffort can use it) AND the capped
+    // self-awareness summary (Stage 1). Do NOT recompute either separately.
     const { registry } = await refreshCapabilities(
       {
         providers: [env.claude, env.codex, env.opencode].map((p) => ({
@@ -93,7 +102,7 @@ async function gatherCapabilitySummary(
       },
       createCapabilityRefreshPort(process.env, cwd),
     );
-    return buildCapabilitySummary(
+    const summary = buildCapabilitySummary(
       registry,
       {
         claude: env.claude.authenticated,
@@ -102,6 +111,7 @@ async function gatherCapabilitySummary(
       },
       (p) => PROVIDER_LABEL[p] ?? p,
     );
+    return { summary, registry };
   } catch {
     return undefined;
   }
@@ -176,6 +186,11 @@ function buildDeps(
   // subscriptions + plans, the effective mode (auto vs explicit), smart-routing
   // state, and what the tool can do. Pure assembly, NO model call. Absent/'' → omit.
   toolStateContext?: string,
+  // The merged structured capability registry (Stage 3) — the SAME snapshot the
+  // self-awareness summary above was derived from (REUSED, not recomputed). When
+  // present, orchestrate threads it into route()/selectReasoningEffort. Absent →
+  // no capability context, no effort flag (byte-for-byte unchanged routing).
+  capabilityRegistry?: import('./core/model-capabilities.js').CapabilityRegistry,
 ): OrchestrateDeps {
   const providers = buildProviders(cwd, env);
 
@@ -218,6 +233,7 @@ function buildDeps(
     ...(Object.keys(availableModels).length > 0 ? { availableModels } : {}),
     ...(authenticatedProviders.length > 0 ? { authenticatedProviders } : {}),
     ...(Object.keys(planInfos).length > 0 ? { planInfos } : {}),
+    ...(capabilityRegistry !== undefined ? { capabilityRegistry } : {}),
     ...(learnedProviderOrder !== undefined && Object.keys(learnedProviderOrder).length > 0
       ? { learnedProviderOrder }
       : {}),
@@ -413,7 +429,7 @@ async function main(): Promise<void> {
     // facts once per one-shot run (cheap, fully fail-soft, NO model call) and feed
     // the capped summary into the self-awareness block. Missing/corrupt Codex cache
     // degrades to detection/declarative facts (reasoning efforts "unknown").
-    const capabilitySummary = await gatherCapabilitySummary(env, cwd);
+    const capability = await gatherCapabilitySummary(env, cwd);
     const toolStateContext = buildToolStateContext({
       version,
       providers: [env.claude, env.codex, env.opencode].map(
@@ -427,7 +443,7 @@ async function main(): Promise<void> {
       mode: resolvedMode,
       modeIsAuto: config.mode === undefined,
       smartRoute: config.smartRoute !== false,
-      ...(capabilitySummary !== undefined ? { capabilitySummary } : {}),
+      ...(capability?.summary !== undefined ? { capabilitySummary: capability.summary } : {}),
     });
     const deps = buildDeps(
       cwd,
@@ -439,6 +455,7 @@ async function main(): Promise<void> {
       memoryContext,
       environmentContext,
       toolStateContext,
+      capability?.registry,
     );
     const result = await runTask(task, deps, out, new AbortController().signal);
     // Notify-only update nudge for the scripted / one-shot path. The interactive
@@ -584,7 +601,7 @@ async function main(): Promise<void> {
     // TOOL SELF-AWARENESS for the REPL subset too (deps/prompt concern, not UI):
     // the same authoritative ABOUT block so the partner answers setup/mode
     // questions accurately. Pure assembly, NO model call.
-    const replCapabilitySummary = await gatherCapabilitySummary(env, cwd);
+    const replCapability = await gatherCapabilitySummary(env, cwd);
     const replToolStateContext = buildToolStateContext({
       version,
       providers: [env.claude, env.codex, env.opencode].map(
@@ -598,7 +615,7 @@ async function main(): Promise<void> {
       mode: replMode,
       modeIsAuto: config.mode === undefined,
       smartRoute: config.smartRoute !== false,
-      ...(replCapabilitySummary !== undefined ? { capabilitySummary: replCapabilitySummary } : {}),
+      ...(replCapability?.summary !== undefined ? { capabilitySummary: replCapability.summary } : {}),
     });
 
     const baseDeps = buildDeps(
@@ -611,6 +628,7 @@ async function main(): Promise<void> {
       memoryContext,
       undefined,
       replToolStateContext,
+      replCapability?.registry,
     );
 
     // Intent FRAME (deps concern, not UI): a read-only extractor for sharper

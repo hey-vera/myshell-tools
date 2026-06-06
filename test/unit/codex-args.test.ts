@@ -51,3 +51,46 @@ describe('buildCodexArgs', () => {
     assert.ok(!args.includes('resume'));
   });
 });
+
+describe('buildCodexArgs — reasoning effort (capability registry §5)', () => {
+  it('omits model_reasoning_effort when reasoningEffort is absent (byte-for-byte unchanged)', () => {
+    const args = buildCodexArgs(makeReq());
+    assert.ok(
+      !args.some((a) => a.startsWith('model_reasoning_effort')),
+      'no effort flag when none was selected',
+    );
+    assert.ok(!args.includes('-c'), 'no -c override at all when no effort');
+  });
+
+  it('appends `-c model_reasoning_effort=xhigh` when reasoningEffort is xhigh', () => {
+    const args = buildCodexArgs(makeReq({ reasoningEffort: 'xhigh' }));
+    const i = args.indexOf('-c');
+    assert.ok(i >= 0, 'a -c override is present');
+    assert.strictEqual(args[i + 1], 'model_reasoning_effort=xhigh');
+  });
+
+  it('appends the flag for each supported effort level', () => {
+    for (const e of ['low', 'medium', 'high'] as const) {
+      const args = buildCodexArgs(makeReq({ reasoningEffort: e }));
+      assert.ok(
+        args.includes('-c') && args.includes(`model_reasoning_effort=${e}`),
+        `effort=${e} threads the flag`,
+      );
+    }
+  });
+
+  it('omits the flag for the degenerate `none` effort (never emits =none)', () => {
+    const args = buildCodexArgs(makeReq({ reasoningEffort: 'none' }));
+    assert.ok(
+      !args.some((a) => a.startsWith('model_reasoning_effort')),
+      'no reasoning flag for none',
+    );
+  });
+
+  it('threads the flag on a resume invocation too', () => {
+    const args = buildCodexArgs(makeReq({ sessionId: 't1', resume: true, reasoningEffort: 'high' }));
+    assert.strictEqual(args[0], 'exec');
+    assert.strictEqual(args[1], 'resume');
+    assert.ok(args.includes('model_reasoning_effort=high'));
+  });
+});

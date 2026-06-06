@@ -77,6 +77,16 @@ function toSandboxArg(level: SandboxLevel): string {
  */
 export function buildCodexArgs(req: ProviderRequest): string[] {
   const opts = ['--json', '-m', req.model, '--sandbox', toSandboxArg(req.sandbox), '--skip-git-repo-check'];
+  // Reasoning-effort knob (capability registry §5): thread the selected effort to
+  // Codex's CLI ONLY when one is set AND it is a real "thinking" effort. The effort
+  // is chosen upstream by selectReasoningEffort, which returns ONLY an effort the
+  // chosen model's ModelCapability declares it supports (or undefined) — so a set
+  // effort here is, by construction, a supported one. We still guard against the
+  // degenerate `none` (no reasoning) so we never emit `model_reasoning_effort=none`,
+  // and against the absent case (byte-for-byte unchanged: no `-c` flag at all).
+  if (req.reasoningEffort !== undefined && req.reasoningEffort !== 'none') {
+    opts.push('-c', `model_reasoning_effort=${req.reasoningEffort}`);
+  }
   if (req.sessionId !== undefined && req.sessionId.length > 0 && req.resume === true) {
     return ['exec', 'resume', req.sessionId, ...opts];
   }

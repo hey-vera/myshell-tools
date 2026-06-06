@@ -159,6 +159,15 @@ export interface LedgerEntry {
   readonly usd: number;
   readonly durationMs: number;
   readonly success: boolean;
+  /**
+   * The reasoning-effort knob this run used, when one was selected for the model
+   * (capability registry §5). Recorded so a later outcome learner (Stage 4) can
+   * weigh model/effort by task type, and so a reviewer can confirm the effort was
+   * actually applied. Absent when no effort was threaded (the default) — old
+   * ledger entries are unaffected and aggregate as "no effort". Type-only import
+   * to keep types.ts a leaf module.
+   */
+  readonly reasoningEffort?: import('./model-capabilities.js').ReasoningEffort;
 }
 
 export interface LedgerWriter {
@@ -315,6 +324,19 @@ export interface OrchestrateDeps {
    * Only include providers that are installed; exactOptionalPropertyTypes is ON.
    */
   readonly availableModels?: Partial<Record<ProviderId, readonly string[]>>;
+  /**
+   * The merged, structured capability registry (capability registry Layer 2 —
+   * the SAME snapshot the self-awareness summary is derived from in cli.ts /
+   * menu.ts; it is REUSED here, never recomputed). When present, orchestrate
+   * builds a CapabilityRouteContext and passes it to route() so capability-fit
+   * re-ranks models WITHIN the bounded candidate set and selectReasoningEffort
+   * chooses the run's reasoning effort against the chosen model's facts.
+   *
+   * ABSENT (the default, and on any fail-soft refresh failure) → orchestrate
+   * passes NO capability context to route() and selects NO effort, so behaviour
+   * is byte-for-byte unchanged. Type-only import to keep types.ts a leaf module.
+   */
+  readonly capabilityRegistry?: import('./model-capabilities.js').CapabilityRegistry;
   /**
    * The set of provider IDs that are currently signed in (authenticated).
    *

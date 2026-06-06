@@ -3465,6 +3465,11 @@ async function runChatLoop(
   // block renders exactly as before; reasoning efforts stay "unknown"). NO model
   // call, NO network. Reads mutableCtx.env so it reflects the detected providers.
   let capabilitySummary: CapabilitySelfAwarenessSummary | undefined;
+  // Stage 3: keep the STRUCTURED registry from the SAME snapshot (REUSED, never
+  // recomputed) so the per-turn deps build can thread it into orchestrate's
+  // route()/selectReasoningEffort. Absent on any fail-soft refresh failure →
+  // orchestrate gets no capability context, no effort flag (unchanged routing).
+  let capabilityRegistry: import('../core/model-capabilities.js').CapabilityRegistry | undefined;
   let capabilitySummaryResolved = false;
   const resolveCapabilitySummaryOnce = async (): Promise<
     CapabilitySelfAwarenessSummary | undefined
@@ -3487,6 +3492,7 @@ async function runChatLoop(
         },
         createCapabilityRefreshPort(process.env, ctx.cwd),
       );
+      capabilityRegistry = registry;
       capabilitySummary = buildCapabilitySummary(
         registry,
         {
@@ -3498,6 +3504,7 @@ async function runChatLoop(
       );
     } catch {
       capabilitySummary = undefined;
+      capabilityRegistry = undefined;
     }
     return capabilitySummary;
   };
@@ -4349,6 +4356,11 @@ async function runChatLoop(
           ...(Object.keys(availableModels).length > 0 ? { availableModels } : {}),
           ...(authenticatedProviders.length > 0 ? { authenticatedProviders } : {}),
           ...(Object.keys(planInfos).length > 0 ? { planInfos } : {}),
+          // Structured capability registry (Stage 3) — the SAME snapshot the
+          // self-awareness summary was derived from (resolveCapabilitySummaryOnce),
+          // REUSED here so orchestrate's route()/selectReasoningEffort can use it.
+          // Absent → no capability context, no effort flag (unchanged routing).
+          ...(capabilityRegistry !== undefined ? { capabilityRegistry } : {}),
           ...(nativeSession.length > 0 ? { nativeSession } : {}),
           ...(routeClassifier !== undefined ? { routeClassifier } : {}),
           ...(intentExtractor !== undefined ? { intentExtractor } : {}),

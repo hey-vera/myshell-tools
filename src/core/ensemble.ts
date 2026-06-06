@@ -37,10 +37,12 @@ import type {
   Policy,
 } from './types.js';
 import type { ProviderId } from '../providers/port.js';
-import { route } from './route.js';
+import { route, selectReasoningEffort } from './route.js';
 import { getModelPricing, calculateCost } from '../infra/pricing.js';
 import { assess } from './assess.js';
 import { authorizeTier } from './flagship.js';
+import { findCapability, type ReasoningEffort, type TaskKind } from './model-capabilities.js';
+import { modeFromPolicy } from './policy.js';
 import type { WorkContract } from './work-contract.js';
 import { capContract, renderContractForPrompt, shouldMaterializeContract, isCleanObjectiveTask } from './work-contract.js';
 import { assembleContextBlocks, type ContextBlockOptions } from './prompt-context.js';
@@ -160,6 +162,39 @@ function contextFromDeps(deps: OrchestrateDeps): ContextBlockOptions | undefined
   if (deps.intentFrame !== undefined) ctx.intentFrame = deps.intentFrame;
   if (deps.engagementPlan !== undefined) ctx.engagementPlan = deps.engagementPlan;
   return Object.keys(ctx).length > 0 ? ctx : undefined;
+}
+
+/**
+ * Select the reasoning effort for a panel run against the chosen model's registry
+ * facts (capability registry §3/§5). Returns undefined when the registry is
+ * absent, the model has no record, or it declares no efforts (→ no flag,
+ * byte-for-byte unchanged). The resolved tier is the tier route() granted (the
+ * synthesizer's manager admission already passed upstream), so this never opens
+ * manager or exceeds policy. PURE.
+ *
+ * @param taskKind - 'implementation' for an independent candidate; 'review' for
+ *                   the cross-vendor synthesizer (its job is adjudication).
+ */
+function panelEffort(
+  deps: OrchestrateDeps,
+  plan: PanelPlan,
+  provider: ProviderId,
+  model: string,
+  tier: Tier,
+  taskKind: TaskKind,
+): ReasoningEffort | undefined {
+  const registry = deps.capabilityRegistry;
+  if (registry === undefined) return undefined;
+  const cap = findCapability(registry, provider, model);
+  if (cap === undefined) return undefined;
+  return selectReasoningEffort({
+    model: cap,
+    mode: modeFromPolicy(deps.policy),
+    tier,
+    risk: plan.classification.risk,
+    taskKind,
+    routePlan: false,
+  });
 }
 
 export function buildPanelCandidatePrompt(
@@ -329,6 +364,8 @@ interface CandidateOutcome {
   readonly providerCostUsd: number | undefined;
   readonly errored: import('../providers/port.js').CliError | undefined;
   readonly durationMs: number;
+  /** The reasoning effort threaded to this candidate run, when one was selected. */
+  readonly reasoningEffort: ReasoningEffort | undefined;
 }
 
 /**
@@ -358,6 +395,11 @@ async function runCandidate(
   );
   const provider = deps.providers[candidate];
   const start = deps.clock.now();
+  // Reasoning effort for this independent candidate (taskKind 'implementation';
+  // diversity is its job, not adjudication). decision.tier is the tier route()
+  // resolved (candidates stay at plan.tier — never the lifted manager ceiling), so
+  // this never opens manager. undefined → no registry / no efforts → no flag.
+  const reasoningEffort = panelEffort(deps, plan, candidate, decision.model, decision.tier, 'implementation');
 
   let finalText: string | undefined;
   let errored: import('../providers/port.js').CliError | undefined;
@@ -379,6 +421,7 @@ async function runCandidate(
       providerCostUsd,
       errored,
       durationMs: deps.clock.now() - start,
+      reasoningEffort,
     };
   }
 
@@ -393,6 +436,7 @@ async function runCandidate(
     cwd: deps.cwd,
     sandbox: deps.sandbox,
     timeoutMs: deps.timeoutMs,
+    ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
   };
 
   try {
@@ -425,6 +469,7 @@ async function runCandidate(
     providerCostUsd,
     errored,
     durationMs: deps.clock.now() - start,
+    reasoningEffort,
   };
 }
 
@@ -570,6 +615,7 @@ export async function* runPanel(
       usd,
       durationMs: outcome.durationMs,
       success,
+      ...(outcome.reasoningEffort !== undefined ? { reasoningEffort: outcome.reasoningEffort } : {}),
     });
 
     yield {
@@ -692,6 +738,17 @@ export async function* runPanel(
     // route() call site.
     deps.learnedProviderOrder?.[plan.tier],
   );
+  // Reasoning effort for the synthesizer (taskKind 'review' — it adjudicates the
+  // panel). synthDecision.tier is the tier admission already granted, so this
+  // never opens manager. undefined → no registry / no efforts → no flag.
+  const synthEffort = panelEffort(
+    deps,
+    plan,
+    plan.synthesizer,
+    synthDecision.model,
+    synthDecision.tier,
+    'review',
+  );
   const synthContractDecision = shouldMaterializeContract({
     classification: plan.classification,
     routePlan: false,
@@ -740,6 +797,7 @@ export async function* runPanel(
     cwd: deps.cwd,
     sandbox: deps.sandbox,
     timeoutMs: deps.timeoutMs,
+    ...(synthEffort !== undefined ? { reasoningEffort: synthEffort } : {}),
   };
   const synthStart = deps.clock.now();
   const synthOutcome = yield* streamProvider(
@@ -795,6 +853,7 @@ export async function* runPanel(
     usd: synthUsd,
     durationMs: synthDurationMs,
     success: synthSuccess,
+    ...(synthEffort !== undefined ? { reasoningEffort: synthEffort } : {}),
   });
 
   yield {

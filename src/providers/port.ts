@@ -51,6 +51,16 @@ export interface ProviderRequest {
   readonly sessionId?: string;
   /** With sessionId: true continues an existing session, false establishes it. */
   readonly resume?: boolean;
+  /**
+   * The selected reasoning-effort knob for this run (capability registry §3/§5).
+   * Set ONLY when the chosen model's ModelCapability declares it supports the
+   * effort (selectReasoningEffort returns a supported effort, or undefined). When
+   * absent → no effort flag is threaded (byte-for-byte unchanged behaviour). Today
+   * only the Codex adapter maps this to a CLI flag (`-c model_reasoning_effort=…`);
+   * Claude/OpenCode ignore it (no stable per-model effort flag). Type-only import
+   * to keep port.ts a leaf module.
+   */
+  readonly reasoningEffort?: import('../core/model-capabilities.js').ReasoningEffort;
 }
 
 /**

@@ -16,8 +16,11 @@ import { getCheapestForTier, PRICING_TABLE } from '../infra/pricing.js';
 import { selectOpencodeModel } from './opencode-model.js';
 import {
   findCapability,
+  KNOWN_REASONING_EFFORTS,
   type CapabilityRegistry,
+  type ModelCapability,
   type ModelPreference,
+  type ReasoningEffort,
   type TaskKind,
 } from './model-capabilities.js';
 
@@ -426,4 +429,136 @@ function matchesModel(
 /** Compact token count for audit reasons (e.g. 272000 -> "272k"). PURE. */
 function formatTokens(n: number): string {
   return n >= 1000 ? `${Math.round(n / 1000)}k` : String(n);
+}
+
+// ---------------------------------------------------------------------------
+// Reasoning-effort selector (capability registry §3 "Effort selector", §5).
+// ---------------------------------------------------------------------------
+
+/** Ordinal rank along KNOWN_REASONING_EFFORTS (none=0 … xhigh=4). PURE. */
+function effortRank(e: ReasoningEffort): number {
+  return KNOWN_REASONING_EFFORTS.indexOf(e);
+}
+
+/**
+ * Given a DESIRED effort and the model's supported set, return the desired effort
+ * if supported; otherwise STEP DOWN to the nearest LOWER supported effort (§3
+ * "If selected effort is unavailable, step down to the nearest lower known
+ * effort"). Returns `undefined` only when nothing at/below the desired effort is
+ * supported (e.g. the model declares only a higher effort). PURE.
+ */
+function resolveSupported(
+  desired: ReasoningEffort,
+  supported: readonly ReasoningEffort[],
+): ReasoningEffort | undefined {
+  const supportedSet = new Set(supported);
+  if (supportedSet.has(desired)) return desired;
+  const desiredRank = effortRank(desired);
+  // Walk DOWN from the desired effort to the cheapest, taking the first supported.
+  let best: ReasoningEffort | undefined;
+  let bestRank = -1;
+  for (const e of supported) {
+    const r = effortRank(e);
+    if (r <= desiredRank && r > bestRank) {
+      best = e;
+      bestRank = r;
+    }
+  }
+  return best;
+}
+
+/**
+ * Is this turn a "hard reasoning" turn — the kind that earns a deeper effort?
+ * High/critical risk, architecture, review, or a large-context turn. PURE.
+ */
+function isHardReasoningTurn(input: {
+  readonly risk: Risk;
+  readonly taskKind: TaskKind;
+}): boolean {
+  return (
+    input.risk === 'high' ||
+    input.risk === 'critical' ||
+    input.taskKind === 'architecture' ||
+    input.taskKind === 'review' ||
+    input.taskKind === 'large-context'
+  );
+}
+
+/**
+ * Select the reasoning-effort knob for a run, per docs/model-capability-
+ * registry-5.6.md §3 ("Effort selector") and §5. PURE — no I/O, no time, no
+ * randomness; reference data only.
+ *
+ * The selector is BOUNDED BY POLICY, never a back door:
+ *  - It is called only AFTER tier/manager admission is resolved, against the
+ *    ALREADY-CHOSEN model's capability. `tier === 'manager'` here means the
+ *    flagship was already admitted by authorizeTier — the selector never opens
+ *    manager and never lifts a ceiling; it only chooses how deep to think within
+ *    the tier the policy already granted. `xhigh` is therefore reachable ONLY when
+ *    the caller passes `tier: 'manager'` (i.e. manager was admitted).
+ *  - When the model declares NO efforts (`supportedReasoningEfforts` empty) it
+ *    returns `undefined` → no effort flag → byte-for-byte unchanged behaviour.
+ *  - The desired effort is always reconciled against the model's supported set
+ *    (step-down to the nearest lower supported effort), so it can never force an
+ *    effort the model doesn't support (§3 "cannot force a reasoning effort
+ *    unsupported by the selected model").
+ *
+ * Rules (mode × tier × risk/taskKind):
+ *  - Efficient (cost-saver): worker/IC → `low`; admitted manager → `medium`;
+ *    NEVER `xhigh`.
+ *  - Balanced: `medium` default; `high` for a hard turn (high/critical risk,
+ *    architecture, review, or large-context); `xhigh` ONLY for an admitted
+ *    manager on critical/architecture/large-context.
+ *  - Max (quality-first): `high` floor for IC/manager (and worker hard turns);
+ *    `xhigh` for an admitted manager on a hard turn (high/critical risk,
+ *    architecture, review, or large-context). Worker non-hard stays `medium`.
+ */
+export function selectReasoningEffort(input: {
+  readonly model: ModelCapability;
+  readonly mode: Mode;
+  readonly tier: Tier;
+  readonly risk: Risk;
+  readonly taskKind: TaskKind;
+  readonly routePlan: boolean;
+}): ReasoningEffort | undefined {
+  const { model, mode, tier, risk, taskKind } = input;
+  const supported = model.supportedReasoningEfforts;
+  // No machine-readable effort metadata → never thread an effort (unchanged).
+  if (supported.length === 0) return undefined;
+
+  const isManager = tier === 'manager'; // manager here ⇒ already admitted by policy
+  const hardTurn = isHardReasoningTurn({ risk, taskKind });
+  // xhigh-class turns: critical/architecture/large-context (review/high are NOT
+  // sufficient for xhigh in Balanced, but ARE sufficient in Max).
+  const xhighClassStrict =
+    risk === 'critical' || taskKind === 'architecture' || taskKind === 'large-context';
+
+  let desired: ReasoningEffort;
+  switch (mode) {
+    case 'cost-saver': {
+      // Efficient: worker/IC → low; admitted manager → medium; NEVER xhigh.
+      desired = isManager ? 'medium' : 'low';
+      break;
+    }
+    case 'balanced': {
+      if (isManager && xhighClassStrict) desired = 'xhigh';
+      else if (hardTurn) desired = 'high';
+      else desired = 'medium';
+      break;
+    }
+    case 'quality-first': {
+      // Max (quality-first, the deepest knob): `high` is the FLOOR for IC/manager
+      // (Max spends quality on substantial work by default); `xhigh` for an admitted
+      // manager on a hard turn (high/critical risk, architecture, review, or
+      // large-context). Worker rises to `high` on a hard turn but otherwise stays
+      // `medium` (a trivial worker chore is never worth deep reasoning, even in Max).
+      if (isManager && hardTurn) desired = 'xhigh';
+      else if (tier !== 'worker' || hardTurn) desired = 'high';
+      else desired = 'medium';
+      break;
+    }
+  }
+
+  // Reconcile against the model's supported set (step down to nearest lower).
+  return resolveSupported(desired, supported);
 }

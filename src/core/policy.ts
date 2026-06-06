@@ -104,6 +104,27 @@ export function modeLabel(mode: Mode): string {
 }
 
 /**
+ * Recover the {@link Mode} a Policy was built from, using its `flagshipAdmission`
+ * posture (the 1:1 mode marker in POLICY_PRESETS: never-auto → Efficient,
+ * always-eligible → Max, adaptive/absent → Balanced). PURE. Used by orchestrate
+ * to pass the active mode into the capability-fit / reasoning-effort selectors
+ * without threading a second mode field everywhere. Falls back to 'balanced'
+ * (the safe middle) for any unrecognised/absent admission.
+ */
+export function modeFromPolicy(policy: Policy): Mode {
+  switch (policy.flagshipAdmission) {
+    case 'never-auto':
+      return 'cost-saver';
+    case 'always-eligible':
+      return 'quality-first';
+    case 'adaptive':
+      return 'balanced';
+    default:
+      return 'balanced';
+  }
+}
+
+/**
  * Pick a sensible default mode from the detected subscription plan, so a new user
  * gets the right firepower WITHOUT being asked. Big plan (Max) → the top of the
  * knob; everything else → balanced; unknown/none → balanced (safe). Pure;

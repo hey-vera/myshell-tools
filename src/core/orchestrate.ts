@@ -27,10 +27,12 @@
  *  - No process.exit() — only src/cli.ts may terminate the process
  */
 
-import type { CoreEvent, OrchestrateDeps, Tier, Classification, Assessment, Policy } from './types.js';
+import type { CoreEvent, OrchestrateDeps, Tier, Risk, Classification, Assessment, Policy } from './types.js';
 import type { CliError, Usage, ProviderRequest, Provider, ProviderId } from '../providers/port.js';
 import { decideRoute } from './router.js';
-import { route, clampTier } from './route.js';
+import { route, clampTier, selectReasoningEffort, type CapabilityRouteContext, type CapabilityTaskSignals } from './route.js';
+import { findCapability, type CapabilityRegistry, type ReasoningEffort, type TaskKind } from './model-capabilities.js';
+import { modeFromPolicy, type Mode } from './policy.js';
 import { authorizeTier } from './flagship.js';
 import type { FlagshipTrigger, FlagshipDecision } from './flagship.js';
 import { buildPrompt } from './prompt.js';
@@ -94,6 +96,110 @@ function shouldReview(
     classification.risk === 'critical' ||
     assessment.needsReview === true
   );
+}
+
+// ---------------------------------------------------------------------------
+// Pure helpers: capability task-signal derivation (capability registry §3).
+// These are deterministic (no model call, no I/O) and feed the optional
+// CapabilityRouteContext that activates capability-fit + reasoning-effort.
+// ---------------------------------------------------------------------------
+
+/** Keyword sets for deterministic taskKind classification. Lowercased matching. */
+const ARCHITECTURE_KEYWORDS = [
+  'architect', 'architecture', 'design', 'migration plan', 'rearchitect',
+  'system design', 'tradeoff', 'trade-off', 'high-level plan', 'roadmap',
+] as const;
+const DEBUG_KEYWORDS = ['debug', 'bug', 'fix the', 'stack trace', 'why is', "doesn't work", 'failing test', 'broken'] as const;
+const REVIEW_KEYWORDS = ['review', 'audit', 'critique', 'assess the', 'evaluate the'] as const;
+const TRIVIAL_KEYWORDS = ['what is', 'list', 'show me', 'print', 'rename', 'typo'] as const;
+
+/** True when any keyword is a substring of the lowercased text. PURE. */
+function hasAnyKeyword(lowerText: string, keywords: readonly string[]): boolean {
+  return keywords.some((k) => lowerText.includes(k));
+}
+
+/**
+ * The large-context engage threshold (tokens) at/above which a turn is classified
+ * `large-context` from size alone. Mirrors route.ts's LARGE_CONTEXT_ENGAGE_TOKENS
+ * intent (kept as a local constant so this module stays decoupled). PURE.
+ */
+const LARGE_CONTEXT_TASKKIND_TOKENS = 100_000;
+
+/**
+ * Derive a deterministic {@link TaskKind} from the existing classification signals
+ * (tier + risk), the route plan flag, the task text keywords, the estimated input
+ * size, and whether the review path will run. PURE, conservative: uncertain →
+ * 'unknown' (never guessed). Mirrors §2 Layer 3 / §3 examples:
+ *  - manager + architecture keywords → 'architecture'
+ *  - review path / review keywords   → 'review'
+ *  - big input estimate              → 'large-context'
+ *  - debug keywords                  → 'debug'
+ *  - else IC/manager substantial     → 'implementation'; trivial worker → 'trivial'
+ */
+function deriveTaskKind(input: {
+  readonly task: string;
+  readonly tier: Tier;
+  readonly risk: Risk;
+  readonly routePlan: boolean;
+  readonly estimatedInputTokens: number;
+}): TaskKind {
+  const lower = input.task.toLowerCase();
+  // Large-context wins first when the input is genuinely huge — a big repo-map /
+  // prompt is a large-context turn regardless of phrasing.
+  if (input.estimatedInputTokens >= LARGE_CONTEXT_TASKKIND_TOKENS) return 'large-context';
+  // Architecture: a manager-tier (or plan-first) turn with design/architecture
+  // language. Restricting to manager/plan keeps a casual "design a logo" worker
+  // turn from claiming architecture.
+  if (
+    (input.tier === 'manager' || input.routePlan) &&
+    hasAnyKeyword(lower, ARCHITECTURE_KEYWORDS)
+  ) {
+    return 'architecture';
+  }
+  if (hasAnyKeyword(lower, REVIEW_KEYWORDS)) return 'review';
+  if (hasAnyKeyword(lower, DEBUG_KEYWORDS)) return 'debug';
+  if (input.tier === 'worker' && input.risk === 'low' && hasAnyKeyword(lower, TRIVIAL_KEYWORDS)) {
+    return 'trivial';
+  }
+  if (input.tier === 'ic' || input.tier === 'manager') return 'implementation';
+  // Worker turns with no clearer signal: don't over-claim — 'unknown'.
+  return 'unknown';
+}
+
+/** Cheap deterministic token estimate ≈ chars/4 over the prompt-shaped inputs. PURE. */
+function estimateInputTokens(parts: ReadonlyArray<string | undefined>): number {
+  let chars = 0;
+  for (const p of parts) if (p !== undefined) chars += p.length;
+  return Math.floor(chars / 4);
+}
+
+/**
+ * Select the reasoning effort for a resolved RouteDecision against the merged
+ * registry, returning `undefined` when the registry is absent, the chosen model
+ * has no capability record, or the model declares no efforts. The chosen tier
+ * (decision.tier) is the tier the policy ALREADY granted (after route()'s clamp /
+ * admission), so passing it here can never open manager or exceed policy — the
+ * selector only decides how deep to think within the granted tier. PURE.
+ */
+function effortForDecision(
+  registry: CapabilityRegistry | undefined,
+  provider: ProviderId,
+  model: string,
+  tier: Tier,
+  mode: Mode,
+  signals: CapabilityTaskSignals,
+): ReasoningEffort | undefined {
+  if (registry === undefined) return undefined;
+  const cap = findCapability(registry, provider, model);
+  if (cap === undefined) return undefined;
+  return selectReasoningEffort({
+    model: cap,
+    mode,
+    tier,
+    risk: signals.risk,
+    taskKind: signals.taskKind,
+    routePlan: signals.routePlan,
+  });
 }
 
 /**
@@ -566,6 +672,53 @@ export async function* orchestrate(
     replayHistory !== undefined && replayHistory.length > 0
       ? compactHistory(replayHistory)
       : undefined;
+
+  // -------------------------------------------------------------------------
+  // (c1) CAPABILITY TASK SIGNALS (capability registry §3) — computed ONCE per
+  //      turn, deterministically, with NO model call. These activate the
+  //      capability-fit re-rank + reasoning-effort selector when (and only when)
+  //      deps.capabilityRegistry is present (the SAME merged snapshot the
+  //      self-awareness summary is built from in cli.ts/menu.ts, REUSED here).
+  //      ABSENT registry → capabilityContext stays undefined, no effort is ever
+  //      selected, and every route() call below behaves byte-for-byte as before.
+  // -------------------------------------------------------------------------
+  const mode: Mode = modeFromPolicy(deps.policy);
+  const estimatedInputTokens = estimateInputTokens([
+    task,
+    historyContext,
+    deps.environmentContext,
+    deps.toolStateContext,
+    deps.memoryContext,
+    deps.intentFrame,
+    deps.engagementPlan,
+  ]);
+  // needsVision is true ONLY when the turn genuinely carries image input. The
+  // text-only orchestration pipeline has no image channel today, so this stays
+  // false (the vision gate never fires falsely). Reserved for a future image path.
+  const taskSignals: CapabilityTaskSignals = {
+    risk: classification.risk,
+    routePlan,
+    estimatedInputTokens,
+    needsVision: false,
+    taskKind: deriveTaskKind({
+      task,
+      tier: classification.tier,
+      risk: classification.risk,
+      routePlan,
+      estimatedInputTokens,
+    }),
+  };
+  /**
+   * The opt-in capability context handed to route(). Built ONLY when the registry
+   * is present; absent → undefined → route() gets its existing argument list
+   * unchanged. Reused for the work route, the failover preview, and the review
+   * route so every site re-ranks with the SAME facts.
+   */
+  const capabilityContext: CapabilityRouteContext | undefined =
+    deps.capabilityRegistry !== undefined
+      ? { registry: deps.capabilityRegistry, taskSignals, mode }
+      : undefined;
+
   const panelPlan = planPanel({
     panelPolicy: deps.policy.panelPolicy,
     classification,
@@ -740,6 +893,20 @@ export async function* orchestrate(
       deps.availableModels,
       deps.authenticatedProviders,
       deps.learnedProviderOrder?.[currentTier],
+      capabilityContext,
+    );
+
+    // Reasoning effort for THIS run, selected against the resolved model's
+    // capability facts (capability registry §3/§5). decision.tier is the tier the
+    // policy ALREADY granted (after route()'s clamp), so this can never open
+    // manager or exceed policy. undefined when no registry / no efforts → no flag.
+    const reasoningEffort = effortForDecision(
+      deps.capabilityRegistry,
+      decision.provider,
+      decision.model,
+      decision.tier,
+      mode,
+      taskSignals,
     );
 
     // Count a flagship attempt the moment the run resolves to the manager tier
@@ -816,6 +983,7 @@ export async function* orchestrate(
       ...(nativePlan !== undefined
         ? { sessionId: nativePlan.sessionId, resume: nativePlan.resume }
         : {}),
+      ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
     };
     const start = deps.clock.now();
 
@@ -876,6 +1044,7 @@ export async function* orchestrate(
       usd,
       durationMs,
       success,
+      ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
     });
 
     // --- Yield tier-done ---
@@ -1082,6 +1251,7 @@ export async function* orchestrate(
             deps.availableModels,
             deps.authenticatedProviders,
             deps.learnedProviderOrder?.[currentTier],
+            capabilityContext,
           );
           yield {
             type: 'failover',
@@ -1167,6 +1337,18 @@ export async function* orchestrate(
         // The reviewer pool is a single provider, so the learned order can only
         // confirm it (never reorder a one-element pool) — passed for consistency
         // so every route() call site threads the same learned snapshot.
+        // Review is a 'review' taskKind regardless of the work turn's kind — the
+        // reviewer's job is critique. Build a review-flavoured capability context
+        // so capability-fit + effort selection treat it as such. Absent registry →
+        // undefined → route() unchanged (byte-for-byte).
+        const reviewCapabilityContext: CapabilityRouteContext | undefined =
+          deps.capabilityRegistry !== undefined
+            ? {
+                registry: deps.capabilityRegistry,
+                taskSignals: { ...taskSignals, taskKind: 'review' },
+                mode,
+              }
+            : undefined;
         const reviewDecision = route(
           'manager',
           [reviewerId],
@@ -1174,8 +1356,20 @@ export async function* orchestrate(
           deps.availableModels,
           deps.authenticatedProviders,
           deps.learnedProviderOrder?.['manager'],
+          reviewCapabilityContext,
         );
         const reviewTier = reviewDecision.tier;
+        // Reasoning effort for the reviewer run, against the resolved reviewer
+        // model. reviewTier is the tier admission already granted to the reviewer,
+        // so this never opens manager or exceeds policy. undefined → no flag.
+        const reviewEffort = effortForDecision(
+          deps.capabilityRegistry,
+          reviewerId,
+          reviewDecision.model,
+          reviewTier,
+          mode,
+          { ...taskSignals, taskKind: 'review' },
+        );
         const reviewContractDecision = shouldMaterializeContract({
           classification,
           routePlan,
@@ -1208,6 +1402,7 @@ export async function* orchestrate(
           cwd: deps.cwd,
           sandbox: deps.sandbox,
           timeoutMs: deps.timeoutMs,
+          ...(reviewEffort !== undefined ? { reasoningEffort: reviewEffort } : {}),
         };
         const reviewStart = deps.clock.now();
 
@@ -1255,6 +1450,7 @@ export async function* orchestrate(
           usd: reviewUsd,
           durationMs: reviewDurationMs,
           success: reviewSuccess,
+          ...(reviewEffort !== undefined ? { reasoningEffort: reviewEffort } : {}),
         });
 
         // Yield tier-done for reviewer
