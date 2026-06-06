@@ -265,6 +265,18 @@ describe('buildPrompt — investigate before you interrogate', () => {
         result.includes('discoverable in the code'),
         `${tier} prompt should forbid asking about things discoverable in the code`,
       );
+      assert.ok(
+        /After orienting, form a view/i.test(result),
+        `${tier} prompt should require a concrete view after investigation`,
+      );
+      assert.ok(
+        /recommend the concrete next step/i.test(result),
+        `${tier} prompt should require a concrete next-step recommendation`,
+      );
+      assert.ok(
+        /Do\s+not offer an open generic menu/i.test(result),
+        `${tier} prompt should forbid open generic menus`,
+      );
     });
 
     it(`${tier}: reserves questions for genuine non-investigable forks (vision/preference/external)`, () => {
@@ -278,7 +290,7 @@ describe('buildPrompt — investigate before you interrogate', () => {
     it(`${tier}: handles a referenced project NOT in the working directory (say so, ask where)`, () => {
       const result = buildPrompt(tier, 'task');
       assert.ok(
-        /NOT in the current working directory/i.test(result),
+        /NOT in the current\s+working directory/i.test(result),
         `${tier} prompt should address a project absent from the cwd`,
       );
       assert.ok(
@@ -288,6 +300,18 @@ describe('buildPrompt — investigate before you interrogate', () => {
       assert.ok(
         /never ask abstract questions about a\s+codebase you cannot see/i.test(result),
         `${tier} prompt should forbid abstract questions about an unseen codebase`,
+      );
+    });
+
+    it(`${tier}: requires ask_user options to be concrete and grounded`, () => {
+      const result = buildPrompt(tier, 'task');
+      assert.ok(
+        /Options must be concrete and\s+grounded in what you found/i.test(result),
+        `${tier} prompt should require grounded ask_user options`,
+      );
+      assert.ok(
+        /never broad task categories like fix\/add\/polish\/\s+integrate/i.test(result),
+        `${tier} prompt should forbid broad task-category options`,
       );
     });
   }

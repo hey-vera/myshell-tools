@@ -655,10 +655,10 @@ export async function renderStream(
   // can ever reach the user.
   let prose = new EnvelopeFilter(out, proseStyler);
 
-  // Spinner is only used in TTY mode. It starts at tier-start and STAYS alive
-  // through tool/reasoning activity (showing a live step count + elapsed time) so
-  // a long, tool-heavy run never looks frozen. It stops only when real answer
-  // prose begins streaming, or when the tier finishes/errors.
+  // Spinner is only used in TTY mode. It starts as soon as renderStream owns the
+  // turn and STAYS alive through setup plus tool/reasoning activity (showing a
+  // live step count + elapsed time) so a long run never looks frozen. It stops
+  // only when real answer prose begins streaming, or when the tier finishes/errors.
   const spinner = createSpinner(out);
   let spinnerActive = false;
   let workLabel = 'Thinking';
@@ -690,26 +690,23 @@ export async function renderStream(
   let panelMode = false;
   const panelists: Array<{ provider: ProviderId; state: PanelistState }> = [];
   let synthesizing: { count: number } | null = null;
-  /** Compose the live indicator label: a leading assistant `●` (cyan, the same
-   *  marker that will head the answer, so the eye tracks one object from
-   *  "working" → "answer"), the work verb, step count, and the streamed token
-   *  estimate when any prose has arrived. The braille frame + `· Ns` elapsed
-   *  suffix are added by the spinner itself. */
+  /** Compose the live indicator label: the work verb, step count, and the
+   *  streamed token estimate when any prose has arrived. The braille frame +
+   *  `· Ns` elapsed suffix are added by the spinner itself. */
   function spinnerLabel(): string {
-    const dot = `${turnMarker('streaming', c)} `;
     // Multi-agent panel: collapse the N concurrent candidate runs into ONE live
     // line — "Waiting on N models · claude ✓ · codex …" while they run, then
     // "Synthesizing N answers…" once the synthesizer starts. Derived purely from
     // the real panel state (panelists/synthesizing), never fabricated.
     if (panelMode) {
-      return `${dot}${panelLabel(panelists, synthesizing, c)}`;
+      return panelLabel(panelists, synthesizing, c);
     }
     const steps = `${stepCount} step${stepCount === 1 ? '' : 's'}`;
     if (streamedChars > 0) {
       const approxTok = formatTokens(Math.ceil(streamedChars / 4));
-      return `${dot}${workLabel}… ${steps} · ↓ ~${approxTok} tokens`;
+      return `${workLabel}… ${steps} · ↓ ~${approxTok} tokens`;
     }
-    return `${dot}${workLabel}… ${steps}`;
+    return `${workLabel}… ${steps}`;
   }
 
   // The interrupt hint is a single dim line shown once per turn on a TTY (never
@@ -770,6 +767,12 @@ export async function renderStream(
     ensureAlive();
   }
 
+  if (out.isTty) {
+    showInterruptHint();
+    spinner.start(spinnerLabel());
+    spinnerActive = true;
+  }
+
   for await (const ev of events) {
     switch (ev.type) {
       case 'classified': {
@@ -809,6 +812,11 @@ export async function renderStream(
       }
 
       case 'tier-start': {
+        const spinnerWasActive = spinnerActive;
+        if (isVerbose && spinnerActive) {
+          spinner.stop();
+          spinnerActive = false;
+        }
         if (isVerbose) {
           out.write(
             dim(`▶ ${ev.tier} (${ev.provider}/${ev.model})`, c) +
@@ -840,6 +848,11 @@ export async function renderStream(
           // restarting the spinner per candidate.
           if (panelMode && spinnerActive) {
             spinner.update(spinnerLabel());
+          } else if (spinnerActive) {
+            spinner.start(spinnerLabel());
+          } else if (spinnerWasActive) {
+            spinner.resume(spinnerLabel());
+            spinnerActive = true;
           } else {
             spinner.start(spinnerLabel());
             spinnerActive = true;

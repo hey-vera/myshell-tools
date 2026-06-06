@@ -303,6 +303,39 @@ describe('planEngagement — investigate before interrogate', () => {
     assert.ok(!plan.actions.includes('ASK_CLARIFYING'), 'no abstract interrogation of the user');
   });
 
+  it('live generic blocker/next-step menu → INVESTIGATE_CONTEXT, NO ASK, NO derived ask_user', () => {
+    const f = frame({
+      goal: 'understand the frontend next step',
+      kind: 'coding',
+      confidence: 'low',
+      forks: [
+        {
+          id: 'F1',
+          question: "What's the actual blocker or next step right now?",
+          options: [
+            'Fixing something broken',
+            'Adding a new feature',
+            'Polishing the layout/UX',
+            'Integrating the backend API',
+          ],
+        },
+      ],
+    });
+    const plan = planEngagement(
+      signals({
+        classification: CLS('ic'),
+        engagementBias: 1,
+        task: 'look at the heyvera frontend and help me figure out what is going on',
+        frame: f,
+      }),
+    );
+    assert.ok(plan.actions.includes('INVESTIGATE_CONTEXT'), 'look at the repo/context first');
+    assert.ok(!hasGenuineFork(signals({ task: 'look at the heyvera frontend', frame: f })));
+    assert.ok(!plan.actions.includes('ASK_CLARIFYING'), 'generic task menu is not a genuine fork');
+    assert.equal(plan.asks, 0);
+    assert.equal(deriveAskFromForks(f, plan), null, 'fallback ask_user must not surface the generic menu');
+  });
+
   it('trivial still stays [EXECUTE_NOW] (no investigate, no ask)', () => {
     const plan = planEngagement(
       signals({
@@ -331,6 +364,30 @@ describe('planEngagement — investigate before interrogate', () => {
     );
     assert.ok(plan.actions.includes('DISCUSS_OPTIONS'), 'safety floor intact');
     assert.ok(plan.asks <= ASK_CAP);
+  });
+
+  it('genuine narrow external fork can still ask after the generic-menu guard', () => {
+    const plan = planEngagement(
+      signals({
+        classification: CLS('ic'),
+        engagementBias: 1,
+        task: 'help me pick a production deploy window',
+        frame: frame({
+          goal: 'choose deploy timing',
+          kind: 'ops',
+          confidence: 'low',
+          forks: [
+            {
+              id: 'F1',
+              question: 'Which deploy window do you prefer?',
+              options: ['Today after market close', 'Tomorrow morning'],
+            },
+          ],
+        }),
+      }),
+    );
+    assert.ok(plan.actions.includes('ASK_CLARIFYING'), 'a concrete preference fork can still ask');
+    assert.equal(plan.asks, 1);
   });
 
   it('isInvestigable / hasGenuineFork classify the codebase-vs-vision boundary', () => {
@@ -690,5 +747,23 @@ describe('renderEngagementBlock', () => {
     const block = renderEngagementBlock(plan);
     assert.ok(block.startsWith('ENGAGEMENT'));
     assert.ok(block.toLowerCase().includes('reflect'));
+  });
+
+  it('investigate guidance tells the model to recommend the concrete next step', () => {
+    const plan = planEngagement(
+      signals({
+        classification: CLS('ic'),
+        task: 'look at the existing frontend and figure out the next step',
+        frame: frame({
+          goal: 'figure out frontend next step',
+          kind: 'coding',
+          confidence: 'low',
+          forks: [{ id: 'F1', question: 'what is the blocker?' }],
+        }),
+      }),
+    );
+    const block = renderEngagementBlock(plan);
+    assert.ok(block.includes('inspect ONLY the relevant existing files/code'));
+    assert.ok(block.includes('recommend the concrete next step'));
   });
 });

@@ -367,6 +367,16 @@ function makeSink(): OutputSink & { buf: string } {
   };
 }
 
+function makeTtySink(): OutputSink & { buf: string } {
+  let buf = '';
+  return {
+    get buf() { return buf; },
+    write: (s: string) => { buf += s; },
+    color: false,
+    isTty: true,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Build a MenuContext from parts
 // ---------------------------------------------------------------------------
@@ -587,6 +597,38 @@ describe('startMenu — n → first-message → /exit → q', () => {
     await assert.doesNotReject(() =>
       run(['n', 'My task', null]),
       'EOF inside chat loop should resolve cleanly (no ERR_USE_AFTER_CLOSE)',
+    );
+  });
+
+  it('replaces the live caret preview with one committed user echo on submit', async () => {
+    const clock = makeFakeClock();
+    const store = makeStore(clock);
+    const sink = makeTtySink();
+
+    const ctx = makeCtx(
+      {
+        readLine: makeScriptedReader([
+          'n',
+          'Pasted once',
+          '/exit',
+          'q',
+        ]),
+      },
+      clock,
+      store,
+    );
+
+    await startMenu(ctx, sink);
+
+    const committed = sink.buf.match(/> Pasted once\n/g) ?? [];
+    assert.equal(committed.length, 1, 'submitted chat input must be echoed exactly once');
+    assert.ok(
+      !sink.buf.includes('❯ Pasted once'),
+      'the readline caret preview must not remain as a second user line',
+    );
+    assert.ok(
+      sink.buf.includes('\r\x1b[K\x1b[1A\r\x1b[K> Pasted once\n'),
+      'TTY submit must clear the preview row before rendering the committed echo',
     );
   });
 });

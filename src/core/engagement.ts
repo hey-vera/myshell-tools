@@ -246,6 +246,35 @@ const NON_INVESTIGABLE_FORK_LEXICON: readonly RegExp[] = [
   /\b(should we|do you want|are you ok|is it ok|go ahead|approve)\b/i,
 ];
 
+/**
+ * Generic task-category menus are not genuine forks. They are the exact
+ * order-taker failure mode: "are you fixing / adding / polishing / integrating?"
+ * A partner should inspect the repo/context and recommend the concrete next step
+ * instead of asking the user to classify the work with broad verbs.
+ */
+const GENERIC_MENU_QUESTION_LEXICON: readonly RegExp[] = [
+  /\b(actual )?(blocker|next step|next move)\b/i,
+  /\bwhat (are|do) you (trying to )?(do|work on|fix|build)\b/i,
+  /\bare you\b/i,
+  /\bwhich (task|direction|area|kind|type)\b/i,
+];
+
+const GENERIC_MENU_OPTION_LEXICON: readonly RegExp[] = [
+  /\bfix(ing)?( something)?( broken)?\b/i,
+  /\badd(ing)? (a )?(new )?feature\b/i,
+  /\bpolish(ing)? (the )?(layout|ux|ui|design)\b/i,
+  /\bintegrat(e|ing) (the )?(backend|api|backend api)\b/i,
+  /\bdebug(ging)?\b/i,
+  /\brefactor(ing)?\b/i,
+];
+
+function isGenericOpenMenuFork(fork: { readonly question: string; readonly options?: readonly string[] }): boolean {
+  const questionLooksGeneric = GENERIC_MENU_QUESTION_LEXICON.some((re) => re.test(fork.question));
+  const options = fork.options ?? [];
+  const genericOptions = options.filter((o) => GENERIC_MENU_OPTION_LEXICON.some((re) => re.test(o))).length;
+  return questionLooksGeneric && genericOptions >= Math.min(2, options.length || 2);
+}
+
 export function hasGenuineFork(s: EngagementSignals): boolean {
   const forks = s.frame?.forks;
   if (forks === undefined || forks.length === 0) return false;
@@ -253,7 +282,11 @@ export function hasGenuineFork(s: EngagementSignals): boolean {
   // external decision — OR when the turn is plainly NOT investigable (no code to
   // look at), so the user is the only source of the answer.
   if (!isInvestigable(s)) return true;
-  return forks.some((f) => NON_INVESTIGABLE_FORK_LEXICON.some((re) => re.test(f.question)));
+  return forks.some(
+    (f) =>
+      !isGenericOpenMenuFork(f) &&
+      NON_INVESTIGABLE_FORK_LEXICON.some((re) => re.test(f.question)),
+  );
 }
 
 /**
@@ -526,7 +559,7 @@ export function deriveAskFromForks(
 /** Human instruction for each visible action, in canonical order. */
 const ACTION_INSTRUCTION: Partial<Record<EngagementAction, string>> = {
   INVESTIGATE_CONTEXT:
-    'First inspect ONLY the relevant existing files/code you need — do not over-investigate what you can re-derive.',
+    'First inspect ONLY the relevant existing files/code you need; then state what you found and recommend the concrete next step.',
   WEB_RESEARCH:
     'Look up the specific current facts you need (only what you genuinely cannot know), then proceed.',
   REFLECT_VISION:

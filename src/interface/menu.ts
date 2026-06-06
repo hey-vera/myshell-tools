@@ -3296,6 +3296,17 @@ function renderDiscardedQueue(
 }
 
 /**
+ * Replace readline's live prompt-preview row with one stable committed input
+ * echo. The chat prompt is written manually (`❯ `), while readline owns the
+ * typed text; after Enter the terminal cursor is on the next row, so clear that
+ * preview row before any task/command output is printed.
+ */
+function renderCommittedChatInput(out: OutputSink, line: string): void {
+  if (!out.isTty) return;
+  out.write(`\r\x1b[K\x1b[1A\r\x1b[K> ${line}\n`);
+}
+
+/**
  * Render a {@link QuestionSet} and collect the user's answers, returning the
  * deterministic next-turn text (via {@link formatAnswers}) to resubmit into the
  * same conversation, or `null` when the user cancelled every question (submit
@@ -3875,6 +3886,8 @@ async function runChatLoop(
       if (line === null) break;
 
       if (line.length === 0) continue;
+
+      renderCommittedChatInput(out, line);
 
       // One input → one turn (+ its post-turn slot). Drain-queue re-enters this
       // SAME helper so a typed-ahead line is handled identically to a fresh

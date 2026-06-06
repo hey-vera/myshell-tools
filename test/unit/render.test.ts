@@ -421,6 +421,26 @@ describe('renderStream — live working indicator (TTY)', () => {
     return { buf, write: (s: string) => { buf.push(s); }, color: false, isTty: true };
   }
 
+  it('starts the default Thinking indicator before a delayed first event arrives', async () => {
+    const sink = makeTtySink();
+    let yieldedFirstEvent = false;
+    async function* delayedStream(): AsyncIterable<CoreEvent> {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      yieldedFirstEvent = true;
+      yield { type: 'final', success: true, output: '', tier: 'ic', totalCostUsd: 0, sessionId: 's', attempts: 0 };
+    }
+
+    const rendering = renderStream(delayedStream(), sink, 'normal');
+    try {
+      const immediate = sink.buf.join('');
+      assert.equal(yieldedFirstEvent, false, 'the stream has not yielded its first event yet');
+      assert.ok(immediate.includes('Thinking… 0 steps'), 'default Thinking label is visible immediately');
+      assert.ok(/[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]/.test(immediate), 'spinner frame is painted immediately');
+    } finally {
+      await rendering;
+    }
+  });
+
   it('shows a "↓ ~N tokens" readout and revives after prose for a post-answer tool phase', async () => {
     const sink = makeTtySink();
     const longProse = 'x'.repeat(400); // ≈100 tokens at 4 chars/token
@@ -1127,6 +1147,31 @@ function makeColorTtySink(): OutputSink & { buf: string[] } {
 }
 
 describe('renderStream — assistant ● turn marker', () => {
+  it('does not put the semantic ● in the live spinner label, but keeps answer and completion dots', async () => {
+    const sink = makeColorTtySink();
+    const events: CoreEvent[] = [
+      { type: 'tier-start', tier: 'ic', provider: 'claude', model: 'claude-sonnet-4-6', attempt: 1 },
+      { type: 'provider-event', tier: 'ic', event: { type: 'text', delta: 'Hello there.' } },
+      { type: 'final', success: true, output: 'Hello there.', tier: 'ic', totalCostUsd: 0, sessionId: 's', attempts: 1 },
+    ];
+
+    await renderStream(makeStream(events), sink, 'normal');
+    const spinnerFrames = sink.buf.filter((s) => /^\r[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] /.test(s));
+    const joined = sink.buf.join('');
+
+    assert.ok(spinnerFrames.length > 0, 'TTY render should paint a live spinner frame');
+    assert.ok(
+      spinnerFrames.every((s) => !s.includes(DOT)),
+      `spinner label must not contain the semantic ●, got:\n${JSON.stringify(spinnerFrames)}`,
+    );
+    assert.ok(
+      spinnerFrames.some((s) => /[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] Thinking… 0 steps/.test(s)),
+      `spinner should be only frame + label, got:\n${JSON.stringify(spinnerFrames)}`,
+    );
+    assert.ok(joined.includes(`\x1b[36m${DOT}\x1b[0m Hello there.`), 'answer prose still starts under cyan ●');
+    assert.ok(joined.includes(`\x1b[32m${DOT}\x1b[0m `), 'completion line still carries green ●');
+  });
+
   it('heads an assistant turn with a cyan streaming ● before the first prose delta', async () => {
     const sink = makeColorTtySink();
     const events: CoreEvent[] = [
