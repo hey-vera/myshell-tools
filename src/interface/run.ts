@@ -9,7 +9,7 @@
 
 import type { CoreEvent, OrchestrateDeps } from '../core/types.js';
 import { orchestrate } from '../core/orchestrate.js';
-import type { OutputSink, Verbosity } from './render.js';
+import type { OutputSink, TurnInputSurface, Verbosity } from './render.js';
 import { renderStream } from './render.js';
 
 /** Result returned by {@link runTask}. */
@@ -44,9 +44,10 @@ export async function runTask(
   out: OutputSink,
   signal: AbortSignal,
   verbosity: Verbosity = 'normal',
+  turnInput?: TurnInputSurface | null,
 ): Promise<RunTaskResult> {
   try {
-    const result = await renderStream(orchestrate(task, deps, signal), out, verbosity);
+    const result = await renderStream(orchestrate(task, deps, signal), out, verbosity, undefined, turnInput);
     return {
       code: result.success ? 0 : 1,
       ...(result.final !== undefined ? { final: result.final } : {}),

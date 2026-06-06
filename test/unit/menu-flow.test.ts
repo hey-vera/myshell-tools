@@ -1885,6 +1885,22 @@ describe('createLineReader — beginCapture typed-ahead queue', () => {
     assert.throws(() => reader.beginCapture(() => {}), /capture already active/);
   });
 
+  it('beginCapture mutes readline echo only for the active capture lifetime', () => {
+    const rl = new FakeReadline();
+    const stdin = new FakeStdin(true);
+    const echo = { muted: false };
+    const reader = createLineReader(
+      rl as unknown as Parameters<typeof createLineReader>[0],
+      stdin as unknown as KeyInputStream,
+      echo,
+    );
+
+    const stop = reader.beginCapture(() => {});
+    assert.equal(echo.muted, true, 'capture suppresses readline terminal echo');
+    stop();
+    assert.equal(echo.muted, false, 'detach restores readline terminal echo');
+  });
+
   it('drainBuffered returns and clears incidental buffered lines', async () => {
     const { reader, rl } = mkReader();
     rl.emitLine('a');

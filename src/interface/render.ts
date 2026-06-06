@@ -37,7 +37,7 @@ import {
   styleInlineMarkdown,
   type PanelistState,
 } from '../ui/theme.js';
-import { createSpinner } from '../ui/spinner.js';
+import { createSpinner, type SpinnerOverlay } from '../ui/spinner.js';
 import { formatTokens } from '../infra/insights.js';
 
 // ---------------------------------------------------------------------------
@@ -52,6 +52,125 @@ export interface OutputSink {
 
 /** How much status/telemetry chrome to show alongside model prose. */
 export type Verbosity = 'quiet' | 'normal' | 'verbose';
+
+// ---------------------------------------------------------------------------
+// Chat input surface — prompt box + live typed-ahead row
+// ---------------------------------------------------------------------------
+
+const INPUT_BOX_MIN_COLUMNS = 32;
+const INPUT_BOX_MAX_COLUMNS = 84;
+const INPUT_BOX_GLYPH = '✦';
+
+export interface InputPromptOptions {
+  readonly color?: boolean;
+  readonly isTty?: boolean;
+  readonly columns?: number;
+  readonly value?: string;
+}
+
+export function canRenderInputBox(opts: InputPromptOptions): boolean {
+  return opts.isTty === true &&
+    opts.color === true &&
+    (opts.columns ?? 80) >= INPUT_BOX_MIN_COLUMNS;
+}
+
+function inputBoxWidth(columns: number | undefined): number {
+  const width = columns ?? 80;
+  return Math.max(INPUT_BOX_MIN_COLUMNS, Math.min(INPUT_BOX_MAX_COLUMNS, width));
+}
+
+function fitCell(text: string, width: number): string {
+  if (text.length <= width) return text + ' '.repeat(width - text.length);
+  if (width <= 1) return text.slice(0, width);
+  return text.slice(0, width - 1) + '…';
+}
+
+/** Render the idle chat prompt. TTY+colour+wide terminals get a compact input
+ * box; non-TTY, NO_COLOR, and narrow terminals keep the historical plain caret. */
+export function renderInputPrompt(opts: InputPromptOptions = {}): string {
+  const value = opts.value ?? '';
+  if (!canRenderInputBox(opts)) return `❯ ${value}`;
+
+  const outerWidth = inputBoxWidth(opts.columns);
+  const innerWidth = outerWidth - 2;
+  const topFill = Math.max(1, innerWidth - INPUT_BOX_GLYPH.length - 1);
+  const top = `╭${'─'.repeat(topFill)} ${INPUT_BOX_GLYPH}╮`;
+  const content = fitCell(` ❯ ${value}`, innerWidth);
+  const bottom = `╰${'─'.repeat(innerWidth)}╯`;
+
+  // Paint the whole box, then put the cursor back on the editable row after the
+  // caret. readline owns editing; this only positions its echo in the box.
+  return `${top}\n│${content}│\n${bottom}\x1b[1A\r│ ❯ `;
+}
+
+export function renderQueuedIndicator(queueLength: number, color = false): string {
+  return dim(`⏎ queued (${queueLength})`, color);
+}
+
+export interface TurnInputSurface {
+  readonly overlay: SpinnerOverlay;
+  setValue(value: string): void;
+  setQueued(queueLength: number): void;
+  clear(): void;
+}
+
+export function createTurnInputSurface(
+  out: OutputSink,
+  opts: { readonly columns?: number } = {},
+): TurnInputSurface | null {
+  if (!out.isTty || !out.color || (opts.columns ?? 80) < INPUT_BOX_MIN_COLUMNS) return null;
+
+  let status = '';
+  let value = '';
+  let queued: number | null = null;
+  let painted = false;
+
+  const inputLine = (): string => {
+    const outerWidth = inputBoxWidth(opts.columns);
+    const innerWidth = outerWidth - 2;
+    const body = queued !== null
+      ? ` ${renderQueuedIndicator(queued, out.color)}`
+      : ` ❯ ${value}`;
+    return `│${fitCell(body, innerWidth)}│`;
+  };
+
+  const repaint = (): void => {
+    if (status.length === 0) return;
+    const prefix = painted ? '\x1b[1A' : '';
+    out.write(`${prefix}\r${status}\x1b[K\n${inputLine()}\x1b[K`);
+    painted = true;
+  };
+
+  return {
+    overlay: {
+      paint(nextStatus: string): void {
+        status = nextStatus;
+        repaint();
+      },
+      clear(): void {
+        if (!painted) return;
+        out.write('\x1b[1A\r\x1b[K\n\r\x1b[K\x1b[1A\r');
+        painted = false;
+        status = '';
+        value = '';
+        queued = null;
+      },
+    },
+    setValue(next: string): void {
+      value = next;
+      queued = null;
+      repaint();
+    },
+    setQueued(queueLength: number): void {
+      value = '';
+      queued = queueLength;
+      repaint();
+    },
+    clear(): void {
+      this.overlay.clear();
+    },
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Resume transcript — "here's where we left off" (pure, testable seam)
@@ -621,6 +740,7 @@ export async function renderStream(
   out: OutputSink,
   verbosity: Verbosity = 'normal',
   interruptHint?: string,
+  turnInput?: TurnInputSurface | null,
 ): Promise<{
   success: boolean;
   final?: Extract<CoreEvent, { type: 'final' }>;
@@ -659,7 +779,7 @@ export async function renderStream(
   // turn and STAYS alive through setup plus tool/reasoning activity (showing a
   // live step count + elapsed time) so a long run never looks frozen. It stops
   // only when real answer prose begins streaming, or when the tier finishes/errors.
-  const spinner = createSpinner(out);
+  const spinner = createSpinner(out, turnInput?.overlay);
   let spinnerActive = false;
   let workLabel = 'Thinking';
   let stepCount = 0;

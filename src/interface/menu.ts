@@ -21,6 +21,7 @@ import fs from 'node:fs';
 import { join } from 'node:path';
 import os from 'node:os';
 import tty from 'node:tty';
+import { Writable } from 'node:stream';
 import { execa } from 'execa';
 import type { Clock, CoreEvent, LedgerWriter, OrchestrateDeps, Question, QuestionSet, SessionEntry, SessionWriter, Tier } from '../core/types.js';
 import { buildGoalTask, parseGoalSignal, parseGoalContinueText, decideGoalNext, formatGoalProgress, DEFAULT_MAX_GOAL_ITERATIONS, stripTrailingGoalConfidenceEnvelope } from '../core/goal.js';
@@ -79,8 +80,16 @@ import { planNativeSession } from '../core/native-session.js';
 import { decideHistoryPolicy } from '../core/turn-directive.js';
 import { availableAfterCooldown, cooldownExpiry } from '../core/cooldown.js';
 import { learnProviderOrder, learnModelOutcomeOrder } from '../core/routing-memory.js';
-import type { OutputSink, Verbosity } from './render.js';
-import { renderResumeTranscript, pickCopyText, renderConversationMarkdown } from './render.js';
+import type { OutputSink, TurnInputSurface, Verbosity } from './render.js';
+import {
+  canRenderInputBox,
+  createTurnInputSurface,
+  renderInputPrompt,
+  renderQueuedIndicator,
+  renderResumeTranscript,
+  pickCopyText,
+  renderConversationMarkdown,
+} from './render.js';
 import { deriveTitleFromRecap, isStubTitle } from '../infra/conversations.js';
 import { systemClipboardPort, type ClipboardPort } from '../infra/clipboard.js';
 import { resolveStateHome } from '../infra/state-dir.js';
@@ -92,7 +101,7 @@ import { runDoctor } from '../commands/doctor.js';
 import { runCost } from '../commands/cost.js';
 import { runInstall, isHookInstalled } from '../commands/install.js';
 import { box, separator, menu } from '../ui/tui.js';
-import { dim, cyan, bold, green, formatRecapLine } from '../ui/theme.js';
+import { dim, bold, green, formatRecapLine } from '../ui/theme.js';
 import { makeRecapGenerator } from '../core/recap-generator.js';
 import { isRecapStale, recapEligible, parseRecap } from '../core/recap.js';
 import { createSpinner } from '../ui/spinner.js';
@@ -1516,6 +1525,9 @@ export interface LineReader {
    * concurrent owners of mid-turn input would be a logic error.
    */
   beginCapture(onLine: (line: string) => void): () => void;
+  /** Current readline edit buffer. Used only to mirror mid-turn typeahead into
+   * managed terminal chrome while readline remains the sole line parser. */
+  currentLine(): string;
   /**
    * Remove and return any lines buffered by `nextLine()` (incidental stale input,
    * e.g. a stray Enter) so a selector or child handoff starts from a clean slate.
@@ -1523,6 +1535,47 @@ export interface LineReader {
   drainBuffered(): string[];
   /** Drop any buffered lines without returning them. */
   clearBuffered(): void;
+}
+
+export interface ReadlineEchoController {
+  muted: boolean;
+}
+
+class ReadlineOutputProxy extends Writable {
+  readonly isTTY: boolean | undefined;
+  // NB: explicit fields, NOT constructor parameter properties — the test runner
+  // strips types in strip-only mode and rejects `constructor(private x)`.
+  private readonly target: NodeJS.WriteStream;
+  private readonly controller: ReadlineEchoController;
+  constructor(target: NodeJS.WriteStream, controller: ReadlineEchoController) {
+    super();
+    this.target = target;
+    this.controller = controller;
+    this.isTTY = target.isTTY;
+  }
+  get columns(): number | undefined {
+    return this.target.columns;
+  }
+  get rows(): number | undefined {
+    return this.target.rows;
+  }
+  _write(chunk: Buffer | string, _encoding: BufferEncoding, cb: (error?: Error | null) => void): void {
+    if (this.controller.muted) {
+      cb();
+      return;
+    }
+    // Forward the chunk as-is. With decodeStrings (the Writable default) Node hands
+    // us a Buffer and passes `_encoding: 'buffer'`, so `chunk.toString(encoding)`
+    // would throw ERR_UNKNOWN_ENCODING. stdout.write accepts a Buffer or string
+    // directly, preserving the already-encoded bytes.
+    this.target.write(chunk, cb);
+  }
+  getColorDepth(...args: Parameters<NodeJS.WriteStream['getColorDepth']>): number {
+    return this.target.getColorDepth(...args);
+  }
+  hasColors(...args: Parameters<NodeJS.WriteStream['hasColors']>): boolean {
+    return this.target.hasColors(...args);
+  }
 }
 
 /**
@@ -1535,6 +1588,7 @@ export interface LineReader {
 export function createLineReader(
   rl: readline.Interface,
   input: KeyInputStream = process.stdin as unknown as KeyInputStream,
+  echo?: ReadlineEchoController,
 ): LineReader {
   // Lines received but not yet consumed by a nextLine() caller.
   const buffered: string[] = [];
@@ -1683,6 +1737,7 @@ export function createLineReader(
         throw new Error('createLineReader: capture already active');
       }
       capture = onLine;
+      if (echo !== undefined) echo.muted = true;
       let detached = false;
       return (): void => {
         if (detached) return;
@@ -1690,7 +1745,12 @@ export function createLineReader(
         // Only clear OUR capture — never another owner's (defensive against an
         // out-of-order detach).
         if (capture === onLine) capture = null;
+        if (echo !== undefined) echo.muted = false;
       };
+    },
+    currentLine(): string {
+      const line = (rl as readline.Interface & { line?: unknown }).line;
+      return typeof line === 'string' ? line : '';
     },
     drainBuffered(): string[] {
       const drained = buffered.slice();
@@ -1874,6 +1934,7 @@ export function attachChatTurnKeyListener(
   out: OutputSink,
   stdin: KeyInputStream = process.stdin as unknown as KeyInputStream,
   onEscape: () => void = (): void => {},
+  onEdit: () => void = (): void => {},
 ): () => void {
   // Degrade cleanly off-TTY: no raw keypresses available → no-op detach. Normal
   // line input (and Ctrl+C) keep working; ESC simply isn't observed.
@@ -1905,8 +1966,11 @@ export function attachChatTurnKeyListener(
     // and must be ignored. interpretChatKey is the single classification truth.
     const seq = key?.sequence ?? str ?? '';
     const isBareEscape = key?.name === 'escape' && seq === '\x1b';
-    if (!isBareEscape) return;
-    onEscape();
+    if (isBareEscape) {
+      onEscape();
+      return;
+    }
+    setImmediate(onEdit);
   };
 
   stdin.on('keypress', handler as (...a: never[]) => void);
@@ -3281,10 +3345,16 @@ function renderQueuedHint(
   verbosity: Verbosity,
   queueLength: number,
   preview: string,
+  turnInput?: TurnInputSurface | null,
 ): void {
   if (verbosity === 'quiet') return;
+  if (turnInput !== undefined && turnInput !== null) {
+    turnInput.setQueued(queueLength);
+    return;
+  }
   const short = preview.length > 48 ? `${preview.slice(0, 48)}…` : preview;
-  out.write(dim(`  (queued ${queueLength} message${queueLength === 1 ? '' : 's'}: ${short})\n`, out.color));
+  const indicator = renderQueuedIndicator(queueLength, out.color);
+  out.write(dim(`  (${indicator}; ${short})\n`, out.color));
 }
 
 /**
@@ -3746,12 +3816,13 @@ async function runChatLoop(
   ): Promise<Awaited<ReturnType<typeof runTask>>> => {
     // Fresh interrupt state for THIS task (a prior turn's ESC must not leak).
     interruptedByEsc = false;
+    const turnInput = createTurnInputSurface(out, { columns: process.stdout.columns });
     // Typed-ahead capture (only when the real LineReader owns stdin).
     const stopCapture =
       lineReader !== undefined && lineReader !== null
         ? lineReader.beginCapture((captured: string) => {
             queuedTurns.push(captured);
-            renderQueuedHint(out, verbosity, queuedTurns.length, captured);
+            renderQueuedHint(out, verbosity, queuedTurns.length, captured, turnInput);
           })
         : null;
     // Scoped ESC listener (no-op off-TTY / injected-test path).
@@ -3762,13 +3833,18 @@ async function runChatLoop(
             // touches the Ctrl+C window and never returns to the menu.
             interruptedByEsc = true;
             currentAc?.abort();
+          }, () => {
+            if (lineReader !== undefined && lineReader !== null) {
+              turnInput?.setValue(lineReader.currentLine());
+            }
           })
         : (): void => {};
     try {
-      return await runTask(taskLine, taskDeps, out, signal, verbosity);
+      return await runTask(taskLine, taskDeps, out, signal, verbosity, turnInput);
     } finally {
       detachEsc();
       if (stopCapture !== null) stopCapture();
+      turnInput?.clear();
     }
   };
 
@@ -3926,9 +4002,17 @@ async function runChatLoop(
 
   try {
     while (true) {
-      // Clean caret — a colored chevron, no label. This is the partner-chat feel:
-      // the prompt is just an invitation to type, not an instruction.
-      out.write(cyan('❯ ', out.color));
+      const promptColumns = process.stdout.columns;
+      const promptIsBoxed = canRenderInputBox({
+        color: out.color,
+        isTty: out.isTty,
+        columns: promptColumns,
+      });
+      out.write(renderInputPrompt({
+        color: out.color,
+        isTty: out.isTty,
+        columns: promptColumns,
+      }));
 
       // Race readLine() against a loopBreak signal from the SIGINT handler.
       // When Ctrl+C fires (to-menu or exit-app), loopBreaker is called with the
@@ -3951,6 +4035,7 @@ async function runChatLoop(
 
       // EOF → exit the chat loop gracefully
       if (line === null) break;
+      if (promptIsBoxed) out.write('\n');
 
       if (line.length === 0) continue;
 
@@ -5192,13 +5277,15 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
     // Injected reader — no real readline needed.
     readLine = ctx.readLine;
   } else {
+    const readlineEcho: ReadlineEchoController = { muted: false };
+    const readlineOutput = new ReadlineOutputProxy(process.stdout, readlineEcho);
     // Create ONE readline interface for the whole menu lifecycle and drive it
     // through the event-driven queue (NOT per-prompt rl.question). This buffers
     // lines that arrive before they're awaited (fixing pipe eager-drain loss)
     // and resolves to `null` on EOF instead of throwing ERR_USE_AFTER_CLOSE.
     const rl = readline.createInterface({
       input: process.stdin,
-      output: process.stdout,
+      output: readlineOutput,
       terminal: out.isTty,
       // Empty prompt: the chat caret (`❯ `) is written manually to `out` so it
       // can be coloured. readline's DEFAULT prompt is `'> '`, and a paste (or any
@@ -5221,7 +5308,7 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
         );
       },
     });
-    lineReader = createLineReader(rl);
+    lineReader = createLineReader(rl, process.stdin as unknown as KeyInputStream, readlineEcho);
     const reader = lineReader;
     // All prompt text is already written to `out` before readLine() is called.
     readLine = () => reader.nextLine();

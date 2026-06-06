@@ -44,6 +44,13 @@ export interface Spinner {
   elapsed(): number;
 }
 
+/** Optional owner for repainting a spinner together with adjacent terminal
+ * chrome (for example, a live input row below the status row). */
+export interface SpinnerOverlay {
+  paint(status: string): void;
+  clear(): void;
+}
+
 /**
  * Create a spinner bound to the given OutputSink.
  *
@@ -54,7 +61,7 @@ export interface Spinner {
  * - When `out.isTty` is false: prints the label once (static) and does nothing
  *   on stop/update — safe for CI / pipe output.
  */
-export function createSpinner(out: OutputSink): Spinner {
+export function createSpinner(out: OutputSink, overlay?: SpinnerOverlay): Spinner {
   let frameIndex = 0;
   let tickCount = 0;
   let label = '';
@@ -69,8 +76,13 @@ export function createSpinner(out: OutputSink): Spinner {
     const frame = FRAMES[frameIndex] ?? FRAMES[0] ?? '⠋';
     const secs = elapsedSeconds();
     const elapsed = secs > 0 ? ` · ${secs}s` : '';
+    const status = `${frame} ${label}${elapsed}`;
+    if (overlay !== undefined) {
+      overlay.paint(status);
+      return;
+    }
     // Clear to end-of-line (\x1b[K) so a shorter new label can't leave stale chars.
-    out.write(`\r${frame} ${label}${elapsed}\x1b[K`);
+    out.write(`\r${status}\x1b[K`);
   }
 
   return {
@@ -136,7 +148,11 @@ export function createSpinner(out: OutputSink): Spinner {
       }
       if (out.isTty) {
         // Clear the spinner line so the real output follows cleanly.
-        out.write('\r\x1b[K');
+        if (overlay !== undefined) {
+          overlay.clear();
+        } else {
+          out.write('\r\x1b[K');
+        }
       }
     },
 

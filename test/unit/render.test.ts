@@ -8,7 +8,7 @@
 
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { renderStream } from '../../src/interface/render.ts';
+import { renderInputPrompt, renderQueuedIndicator, renderStream } from '../../src/interface/render.ts';
 import type { OutputSink } from '../../src/interface/render.ts';
 import type { CoreEvent } from '../../src/core/types.ts';
 import { panelLabel, styleInlineMarkdown } from '../../src/ui/theme.ts';
@@ -34,6 +34,33 @@ async function* makeStream(events: CoreEvent[]): AsyncIterable<CoreEvent> {
     yield ev;
   }
 }
+
+describe('input prompt renderer', () => {
+  it('renders a bordered input box for a wide colour TTY', () => {
+    const prompt = renderInputPrompt({
+      color: true,
+      isTty: true,
+      columns: 80,
+    });
+
+    assert.ok(prompt.includes('╭'), 'top-left box corner is rendered');
+    assert.ok(prompt.includes('╮'), 'top-right box corner is rendered');
+    assert.ok(prompt.includes('│ ❯'), 'caret lives inside the box');
+    assert.ok(prompt.includes('╰'), 'bottom-left box corner is rendered');
+    assert.ok(prompt.includes('✦'), 'top-right glyph is rendered');
+    assert.ok(prompt.endsWith('│ ❯ '), 'cursor is returned to the editable caret row');
+  });
+
+  it('degrades to the plain caret off-TTY, without colour, and when narrow', () => {
+    assert.equal(renderInputPrompt({ color: true, isTty: false, columns: 80 }), '❯ ');
+    assert.equal(renderInputPrompt({ color: false, isTty: true, columns: 80 }), '❯ ');
+    assert.equal(renderInputPrompt({ color: true, isTty: true, columns: 24 }), '❯ ');
+  });
+
+  it('renders the queued indicator text with the queue count', () => {
+    assert.equal(renderQueuedIndicator(2, false), '⏎ queued (2)');
+  });
+});
 
 // ---------------------------------------------------------------------------
 // 1. Happy-path: full event sequence with real confidence + cost
