@@ -587,4 +587,13 @@ export type CoreEvent =
        * short-circuit the turn — the turn is still a complete success.
        */
       readonly memoryProposal?: import('./user-memory.js').RememberProposal;
+      /**
+       * Set on a SUCCESS final that the loop returned as a best-effort answer:
+       * the bounded escalation/review loop exhausted its attempt budget without
+       * a clean accept, but a substantive answer WAS produced. We return that
+       * answer (never discard usable work as "Failed") and flag it best-effort so
+       * the renderer can honestly note it was not fully verified / stayed under
+       * the confidence bar. Absent on a normal, fully-accepted success.
+       */
+      readonly bestEffort?: true;
     };

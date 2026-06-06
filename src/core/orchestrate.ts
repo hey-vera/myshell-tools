@@ -571,6 +571,18 @@ export async function* orchestrate(
   const reviewedAttempts = new Set<number>();
 
   /**
+   * How many times a reviewer's `revise` verdict has triggered a same-tier
+   * re-run this turn. A `revise` re-executes the ENTIRE (often expensive)
+   * investigation against the same model with feedback notes; left unbounded it
+   * can drive the loop to exhaust `maxAttempts` re-doing the same heavy work and
+   * then discard the result. We allow ONE revise re-run (apply the notes once);
+   * beyond that, blind re-execution is wasteful — escalate to a stronger tier if
+   * admission allows, otherwise accept the best answer we already have.
+   */
+  let reviseRetries = 0;
+  const MAX_REVISE_RETRIES = 1;
+
+  /**
    * Adaptive flagship admission for a manager request at the current decision
    * point. Closes over the live `currentTier` and `flagshipAttemptsThisTurn`.
    * Returns the full decision (tier + allowed + reason) so callers can surface an
@@ -1198,9 +1210,59 @@ export async function* orchestrate(
           }
 
           if (verdict.verdict === 'revise') {
-            // Retry current tier with reviewer's notes
-            managerNotes = verdict.notes;
-            continue mainLoop;
+            // Bound blind re-execution. The first revise applies the reviewer's
+            // notes and re-runs the same tier once. A SECOND revise would re-run
+            // the same expensive investigation against the same model again — the
+            // 160k-token runaway. Instead, treat a persistent revise like an
+            // escalate: hand it to a stronger tier when admission allows; if we
+            // can't escalate, accept the best answer we already have (the accept
+            // path below), never blind-loop to exhaustion.
+            if (reviseRetries < MAX_REVISE_RETRIES) {
+              reviseRetries++;
+              managerNotes = verdict.notes;
+              continue mainLoop;
+            }
+            const escalateTo = nextTierUp(currentTier);
+            const escalateBlocked =
+              escalateTo === 'manager' ? !admitManager('review', assessment).allowed : false;
+            if (escalateTo !== null && !escalateBlocked) {
+              managerNotes = verdict.notes;
+              yield {
+                type: 'escalate',
+                from: currentTier,
+                to: escalateTo,
+                reason: 'review revise (bounded re-execution)',
+              };
+              currentTier = escalateTo;
+              continue mainLoop;
+            }
+            // Can't escalate (top tier, or admission denied) — accept the best
+            // result rather than re-running the same model again.
+            yield {
+              type: 'notice',
+              level: 'warn',
+              message:
+                'reviewer asked for further revision but the cheaper re-run budget is spent — accepting best result',
+            };
+            if (acceptedRun === undefined) {
+              throw new Error('orchestrate invariant violated: revise-accept final without accepted run');
+            }
+            await appendAcceptedAssistant(deps, acceptedRun);
+            {
+              const memoryProposal = memoryProposalFor(lastOutput);
+              yield {
+                type: 'final',
+                success: true,
+                output: lastOutput,
+                tier: currentTier,
+                totalCostUsd,
+                sessionId: deps.session.id,
+                attempts,
+                bestEffort: true,
+                ...(memoryProposal !== undefined ? { memoryProposal } : {}),
+              };
+            }
+            return;
           }
 
           // verdict === 'escalate'
@@ -1335,7 +1397,44 @@ export async function* orchestrate(
     return;
   }
 
-  // Loop exhausted or broke out on failure
+  // -------------------------------------------------------------------------
+  // Loop exhausted or broke out on failure.
+  //
+  // CARDINAL RULE — never discard a usable answer as "Failed". The bounded
+  // escalation/review loop can run out of attempts (e.g. a reviewer kept asking
+  // to `revise`, or low confidence kept retrying the same tier) WITHOUT ever
+  // reaching a clean accept. If a provider run nonetheless produced a substantive
+  // answer (`acceptedRun` is set only on an errorless run, and its content is
+  // non-empty), that answer is the user's best result — returning success:false
+  // here throws away good work AND hides it behind a "Failed" banner.
+  //
+  // So: when a substantive accepted answer exists, return it as a BEST-EFFORT
+  // success — persist it to the session like any accepted turn, attach any
+  // model-proposed memory, and flag `bestEffort` so the renderer notes honestly
+  // that it exhausted the loop / stayed under the confidence bar (not a clean
+  // success, but real work the user can use). success:false is reserved for
+  // GENUINE failure: no usable output (provider/auth/timeout errors, empty text).
+  // Those terminal paths already returned above with their own honest finals; the
+  // only way to reach here with no acceptedRun is the `break mainLoop` on an
+  // error with no untried vendor — that correctly still fails below.
+  // -------------------------------------------------------------------------
+  if (acceptedRun !== undefined && acceptedRun.content.trim().length > 0) {
+    await appendAcceptedAssistant(deps, acceptedRun);
+    const memoryProposal = memoryProposalFor(acceptedRun.content);
+    yield {
+      type: 'final',
+      success: true,
+      output: acceptedRun.content,
+      tier: currentTier,
+      totalCostUsd,
+      sessionId: deps.session.id,
+      attempts,
+      bestEffort: true,
+      ...(memoryProposal !== undefined ? { memoryProposal } : {}),
+    };
+    return;
+  }
+
   yield {
     type: 'final',
     success: false,

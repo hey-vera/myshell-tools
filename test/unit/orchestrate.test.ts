@@ -3854,3 +3854,140 @@ describe('orchestrate — final.memoryProposal (remember_user, Phase 5)', () => 
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// Best-effort exhaustion: NEVER discard a usable answer as "Failed".
+//
+// Regression for the live defect where a task that produced good, complete
+// reports across 3 attempts (a reviewer kept asking to `revise`) ended as
+// "● Failed — tier: ic, attempts: 3" — throwing the good work away and burning
+// tokens re-running the same investigation. The loop must return the best-effort
+// answer (success:true, flagged bestEffort) when it exhausts its budget but HAS a
+// substantive answer; only genuine no-output failures stay success:false.
+// ---------------------------------------------------------------------------
+
+describe('orchestrate — best-effort on loop exhaustion (never discard a usable answer)', () => {
+  const GOOD_LOW_CONF =
+    '{"confidence": 0.35, "escalate": false, "reason": "unclear from these files alone", "needs_review": true}';
+  const GOOD_ANSWER = `Here is a solid summary of the socials page and the top gaps.\n${GOOD_LOW_CONF}`;
+  const REVISE_VERDICT =
+    'Needs more detail.\n{"verdict": "revise", "notes": "add more on the gaps", "confidence": 0.6}';
+
+  function reviewLoopDeps(): OrchestrateDeps {
+    // claude is the IC (always returns a good but low-confidence, needs_review answer);
+    // codex is the cross-vendor reviewer (always returns `revise`). With reviewPolicy
+    // 'auto' and needs_review:true, shouldReview fires every attempt → revise loop.
+    const claude: Provider = {
+      id: 'claude',
+      async detect() {
+        return { id: 'claude', installed: true, version: '1', authenticated: true, binaryPath: '/f', availableModels: [] };
+      },
+      async *run() {
+        yield { type: 'done', text: GOOD_ANSWER, usage: { inputTokens: 50_000, outputTokens: 3_000 }, raw: {} };
+      },
+    };
+    const codex: Provider = {
+      id: 'codex',
+      async detect() {
+        return { id: 'codex', installed: true, version: '1', authenticated: true, binaryPath: '/f', availableModels: [] };
+      },
+      async *run() {
+        yield { type: 'done', text: REVISE_VERDICT, usage: { inputTokens: 100, outputTokens: 50 }, raw: {} };
+      },
+    };
+    return {
+      providers: { claude, codex },
+      clock: makeFakeClock(),
+      session: makeFakeSession(),
+      ledger: makeFakeLedger(),
+      // never-auto admission keeps the turn pinned at the IC tier (no flagship
+      // escalation), so a persistent `revise` would, before the fix, loop to
+      // maxAttempts and discard the good answer.
+      policy: { ...POLICY_PRESETS['cost-saver'], reviewPolicy: 'auto' as const, maxAttempts: 3 },
+      authenticatedProviders: ['claude', 'codex'],
+      cwd: '/fake/cwd',
+      sandbox: 'workspace-write',
+      timeoutMs: 30_000,
+    } as OrchestrateDeps;
+  }
+
+  it('low-confidence-but-answered turn at the attempt ceiling returns the answer (best-effort), NOT Failed', async () => {
+    const deps = reviewLoopDeps();
+    const session = deps.session as ReturnType<typeof makeFakeSession>;
+    // "refactor X" classifies directly at the IC tier (no worker→ic hop), and
+    // cost-saver's never-auto admission pins it there (no escalation to manager) —
+    // exactly the live shape: a persistent `revise` at IC. Before the fix this ran
+    // the heavy IC investigation 3× and ended "● Failed". The IC answer carries the
+    // good text below.
+    const events = await collectEvents(
+      orchestrate('refactor X', deps, new AbortController().signal),
+    );
+
+    const final = events.find((e) => e.type === 'final');
+    assert.ok(final !== undefined && final.type === 'final');
+    if (final.type === 'final') {
+      // The cardinal rule: a usable answer is NEVER discarded as Failed.
+      assert.equal(final.success, true, 'a substantive answer must not be reported as Failed');
+      assert.equal(final.bestEffort, true, 'an exhausted-loop answer must be flagged best-effort');
+      assert.ok(
+        final.output.includes('solid summary of the socials page'),
+        'the good answer must be returned, not thrown away',
+      );
+      assert.equal(final.tier, 'ic', 'the answer must report the tier it actually ran on');
+    }
+
+    // The accepted best-effort answer must be persisted to the session like any
+    // accepted turn (so the conversation keeps the work).
+    const assistantEntries = session.entries.filter((e) => e.role === 'assistant');
+    assert.equal(assistantEntries.length, 1, 'the best-effort answer must be appended to the session');
+    assert.ok(assistantEntries[0]?.content.includes('solid summary'));
+
+    // Bounded re-execution: the IC investigation must NOT run a full 3 times.
+    // One revise re-run is allowed (apply notes once); beyond that, with no
+    // higher tier admissible, we accept — never blind-loop the heavy work.
+    const icRuns = events.filter((e) => e.type === 'tier-start' && e.provider === 'claude');
+    assert.ok(
+      icRuns.length <= 2,
+      `expected at most 2 IC runs (1 revise re-run), got ${icRuns.length} — blind re-execution not bounded`,
+    );
+  });
+
+  it('a genuinely-errored turn (no usable output) still fails — best-effort never masks real failure', async () => {
+    // The only provider errors on every attempt with a non-terminal, non-auth,
+    // non-timeout category and there is no untried/authenticated vendor to fail
+    // over to → the loop breaks with NO acceptedRun → success:false, no bestEffort.
+    const erroringClaude: Provider = {
+      id: 'claude',
+      async detect() {
+        return { id: 'claude', installed: true, version: '1', authenticated: true, binaryPath: '/f', availableModels: [] };
+      },
+      async *run() {
+        yield {
+          type: 'error',
+          error: { category: 'network', recoverable: true, message: 'model crashed', suggestion: 'retry' },
+        };
+      },
+    };
+    const deps: OrchestrateDeps = {
+      providers: { claude: erroringClaude },
+      clock: makeFakeClock(),
+      session: makeFakeSession(),
+      ledger: makeFakeLedger(),
+      policy: DEFAULT_POLICY,
+      authenticatedProviders: ['claude'],
+      cwd: '/fake/cwd',
+      sandbox: 'workspace-write',
+      timeoutMs: 30_000,
+    } as OrchestrateDeps;
+
+    const events = await collectEvents(
+      orchestrate('refactor X', deps, new AbortController().signal),
+    );
+    const final = events.find((e) => e.type === 'final');
+    assert.ok(final !== undefined && final.type === 'final');
+    if (final.type === 'final') {
+      assert.equal(final.success, false, 'a turn with no usable output must still fail');
+      assert.notEqual(final.bestEffort, true, 'a real failure must never be flagged best-effort');
+    }
+  });
+});

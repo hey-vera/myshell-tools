@@ -871,6 +871,17 @@ export async function renderStream(
           break;
         }
 
+        // Best-effort success: the loop exhausted its escalation/review budget
+        // without a clean accept but DID produce a substantive answer. Surface it
+        // honestly — the answer above is real and usable, but it stayed under the
+        // confidence bar / wasn't fully verified. Shown in every non-quiet mode so
+        // the user isn't misled into treating it as a clean success.
+        if (ev.bestEffort === true && !isQuiet) {
+          out.write(
+            `\n${yellow('Best-effort answer — reached the attempt limit without a fully-confident result; treat the above as unverified.', c)}\n`,
+          );
+        }
+
         // Success: a single minimal completion line in normal/verbose; nothing
         // in quiet.
         if (isVerbose) {
