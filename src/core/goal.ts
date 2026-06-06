@@ -86,17 +86,24 @@ export function buildGoalTask(goal: string, iteration: number, contract?: WorkCo
 
 /**
  * Format the live progress panel shown each turn of an autonomous goal run.
- * Every figure is REAL and measured — turn index, wall-clock elapsed, and tokens
- * actually recorded in the ledger for THIS run (no estimates, no fabrication) —
- * so the user can watch overall progress move without it ever looking frozen.
+ * Every figure is REAL and measured/derived — objective and roadmap/checkpoints
+ * from the work contract, turn index from the loop, wall-clock elapsed, and
+ * tokens actually recorded in the ledger for THIS run (no estimates, no
+ * fabrication) — so the user can watch overall progress move without it ever
+ * looking frozen.
  *
- * Example: `turn 3/8 · 6m 12s · 42.1k tokens this goal`. Pure / never throws.
+ * Example: `goal: ship · turn 3/8 · current: run tests · 42.1k tokens · 6m 12s`.
+ * Pure / never throws.
  */
 export function formatGoalProgress(opts: {
   readonly turn: number; // 1-based
   readonly maxTurns: number;
   readonly elapsedMs: number;
   readonly tokensThisRun: number;
+  readonly objective?: string;
+  readonly contract?: WorkContract;
+  readonly nextStep?: string;
+  readonly parallelModels?: number;
 }): string {
   const fmtDur = (ms: number): string => {
     const s = Math.max(0, Math.floor(ms / 1000));
@@ -115,7 +122,48 @@ export function formatGoalProgress(opts: {
     if (n < 1_000_000) return `${(n / 1000).toFixed(1)}k`;
     return `${(n / 1_000_000).toFixed(1)}M`;
   };
-  return `turn ${opts.turn}/${opts.maxTurns} · ${fmtDur(opts.elapsedMs)} · ${fmtTok(opts.tokensThisRun)} tokens this goal`;
+  const oneLine = (s: string): string => s.replace(/\s+/g, ' ').trim();
+  const cap = (s: string, n: number): string => {
+    const clean = oneLine(s);
+    return clean.length <= n ? clean : `${clean.slice(0, Math.max(0, n - 1)).trimEnd()}…`;
+  };
+  const latestCheckpoint =
+    opts.contract?.checkpoints !== undefined && opts.contract.checkpoints.length > 0
+      ? opts.contract.checkpoints[opts.contract.checkpoints.length - 1]?.summary
+      : undefined;
+  const roadmap = opts.contract?.roadmap ?? [];
+  const currentRoadmap =
+    roadmap.find((item) => item.status === 'active') ??
+    roadmap.find((item) => item.status === 'pending') ??
+    roadmap.find((item) => item.status === 'blocked') ??
+    roadmap[roadmap.length - 1];
+  const objective = cap(opts.contract?.objective ?? opts.objective ?? 'goal', 72);
+  const stepText = cap(
+    opts.nextStep ??
+      latestCheckpoint ??
+      currentRoadmap?.text ??
+      `turn ${Math.max(1, Math.floor(opts.turn))} of ${Math.max(1, Math.floor(opts.maxTurns))}`,
+    96,
+  );
+  const parts = [`goal: ${objective}`];
+
+  if (roadmap.length > 0) {
+    const done = roadmap.filter((item) => item.status === 'done').length;
+    parts.push(`steps ${done}/${roadmap.length} done`);
+  } else {
+    parts.push(`turn ${Math.max(1, Math.floor(opts.turn))}/${Math.max(1, Math.floor(opts.maxTurns))}`);
+  }
+
+  parts.push(`current: ${stepText}`);
+  parts.push(`${fmtTok(opts.tokensThisRun)} tokens`);
+  parts.push(fmtDur(opts.elapsedMs));
+
+  if (opts.parallelModels !== undefined && opts.parallelModels >= 2) {
+    const n = Math.floor(opts.parallelModels);
+    parts.push(`${n} models in parallel`);
+  }
+
+  return parts.join(' · ');
 }
 
 /**

@@ -318,6 +318,60 @@ describe('renderStream — final success:false', () => {
     assert.ok(!joined.includes('Failed'), `Cancellation must not render the failure summary, got:\n${joined}`);
     assert.ok(!joined.includes('cancel-session'), 'Cancellation must skip failure telemetry');
   });
+
+  it('frames timeout finals as big single-turn work, not a bare crash failure', async () => {
+    const sink = makeSink();
+
+    const events: CoreEvent[] = [
+      {
+        type: 'final',
+        success: false,
+        output: 'The request timed out.',
+        tier: 'ic',
+        totalCostUsd: 0,
+        sessionId: 'timeout-session',
+        attempts: 1,
+        errorCategory: 'timeout',
+        provider: 'claude',
+      },
+    ];
+
+    const result = await renderStream(makeStream(events), sink);
+    const joined = sink.buf.join('');
+
+    assert.equal(result.success, false);
+    assert.ok(joined.includes('single-turn time limit'), `Should explain the time limit, got:\n${joined}`);
+    assert.ok(joined.includes('big task'), `Should frame this as big work, got:\n${joined}`);
+    assert.ok(joined.includes('Timed out after one turn'), `Should still be truthful, got:\n${joined}`);
+    assert.ok(joined.includes('0 tokens'), `Should show the real measured token total, got:\n${joined}`);
+    assert.ok(!joined.includes('Failed'), `Timeout must not render the stark failure summary, got:\n${joined}`);
+    assert.ok(!joined.includes('CLAUDE Error [timeout]'), `Timeout must not render the crash-like provider error line, got:\n${joined}`);
+  });
+
+  it('keeps non-timeout failures on the existing failure path', async () => {
+    const sink = makeSink();
+
+    const events: CoreEvent[] = [
+      {
+        type: 'final',
+        success: false,
+        output: 'Authentication failed.',
+        tier: 'ic',
+        totalCostUsd: 0,
+        sessionId: 'auth-session',
+        attempts: 1,
+        errorCategory: 'auth',
+        provider: 'claude',
+      },
+    ];
+
+    await renderStream(makeStream(events), sink);
+    const joined = sink.buf.join('');
+
+    assert.ok(joined.includes('Failed'), `Non-timeout failure summary should remain, got:\n${joined}`);
+    assert.ok(joined.includes('auth-session'), `Existing failure telemetry should remain, got:\n${joined}`);
+    assert.ok(!joined.includes('single-turn time limit'), `Non-timeout failures should not use timeout framing, got:\n${joined}`);
+  });
 });
 
 describe('renderStream — rate-limit collection (cooldown signal survives failover)', () => {

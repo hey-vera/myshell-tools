@@ -1046,6 +1046,20 @@ export async function renderStream(
         }
 
         if (!ev.success) {
+          if (ev.errorCategory === 'timeout') {
+            if (!isQuiet) {
+              out.write(
+                `\n${yellow("That ran past the single-turn time limit — it's a big task, not a crash.", c)}\n`,
+              );
+              out.write(
+                `${dim(
+                  `Timed out after one turn · tier: ${ev.tier} · ${formatTokens(runningTokens)} tokens · attempts: ${ev.attempts} · session: ${ev.sessionId}`,
+                  c,
+                )}\n`,
+              );
+            }
+            break;
+          }
           // Surface an ACTIONABLE error in every verbosity mode: the bare
           // category message plus the suggestion from formatErrorMessage().
           if (ev.errorCategory !== undefined) {

@@ -198,35 +198,85 @@ describe('decideGoalNext', () => {
 });
 
 describe('formatGoalProgress', () => {
-  it('shows turn, elapsed (seconds), and tokens', () => {
+  it('shows objective, iteration fallback, elapsed, and real tokens when no roadmap exists', () => {
     assert.equal(
-      formatGoalProgress({ turn: 1, maxTurns: 8, elapsedMs: 12_000, tokensThisRun: 0 }),
-      'turn 1/8 · 12s · 0 tokens this goal',
+      formatGoalProgress({
+        turn: 1,
+        maxTurns: 8,
+        elapsedMs: 12_000,
+        tokensThisRun: 0,
+        objective: 'ship the login page',
+      }),
+      'goal: ship the login page · turn 1/8 · current: turn 1 of 8 · 0 tokens · 12s',
     );
   });
 
-  it('formats minutes+seconds and k tokens', () => {
+  it('uses roadmap done/total and current active step when a contract has a roadmap', () => {
     assert.equal(
-      formatGoalProgress({ turn: 3, maxTurns: 8, elapsedMs: 372_000, tokensThisRun: 42_100 }),
-      'turn 3/8 · 6m 12s · 42.1k tokens this goal',
+      formatGoalProgress({
+        turn: 3,
+        maxTurns: 8,
+        elapsedMs: 372_000,
+        tokensThisRun: 42_100,
+        contract: {
+          version: 1,
+          objective: 'ship the login page',
+          roadmap: [
+            { id: 'R1', text: 'wire the form', status: 'done' },
+            { id: 'R2', text: 'add validation tests', status: 'active' },
+            { id: 'R3', text: 'run the gate', status: 'pending' },
+          ],
+        },
+      }),
+      'goal: ship the login page · steps 1/3 done · current: add validation tests · 42.1k tokens · 6m 12s',
     );
   });
 
-  it('formats whole minutes (no trailing seconds) and hours', () => {
+  it('uses the latest model-stated checkpoint as the next step between iterations', () => {
     assert.equal(
-      formatGoalProgress({ turn: 2, maxTurns: 5, elapsedMs: 120_000, tokensThisRun: 1_500_000 }),
-      'turn 2/5 · 2m · 1.5M tokens this goal',
-    );
-    assert.equal(
-      formatGoalProgress({ turn: 9, maxTurns: 9, elapsedMs: 3_660_000, tokensThisRun: 500 }),
-      'turn 9/9 · 1h 1m · 500 tokens this goal',
+      formatGoalProgress({
+        turn: 2,
+        maxTurns: 5,
+        elapsedMs: 120_000,
+        tokensThisRun: 1_500_000,
+        contract: {
+          version: 1,
+          objective: 'ship',
+          checkpoints: [{ id: 'C1', summary: 'run focused tests next' }],
+        },
+      }),
+      'goal: ship · turn 2/5 · current: run focused tests next · 1.5M tokens · 2m',
     );
   });
 
-  it('never produces negative figures', () => {
+  it('surfaces only a real parallel-model count when explicitly provided', () => {
     assert.equal(
-      formatGoalProgress({ turn: 1, maxTurns: 1, elapsedMs: -5, tokensThisRun: -10 }),
-      'turn 1/1 · 0s · 0 tokens this goal',
+      formatGoalProgress({
+        turn: 9,
+        maxTurns: 9,
+        elapsedMs: 3_660_000,
+        tokensThisRun: 500,
+        objective: 'ship',
+        parallelModels: 3,
+      }),
+      'goal: ship · turn 9/9 · current: turn 9 of 9 · 500 tokens · 1h 1m · 3 models in parallel',
+    );
+    assert.ok(
+      !formatGoalProgress({
+        turn: 1,
+        maxTurns: 1,
+        elapsedMs: 0,
+        tokensThisRun: 0,
+        objective: 'ship',
+      }).includes('models in parallel'),
+      'must not invent a parallel model count when none is provided',
+    );
+  });
+
+  it('never produces negative turn, elapsed, or token figures', () => {
+    assert.equal(
+      formatGoalProgress({ turn: -1, maxTurns: -1, elapsedMs: -5, tokensThisRun: -10 }),
+      'goal: goal · turn 1/1 · current: turn 1 of 1 · 0 tokens · 0s',
     );
   });
 });

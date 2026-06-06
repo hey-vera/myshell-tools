@@ -4626,6 +4626,8 @@ async function runChatLoop(
                 maxTurns: ceilings.maxIterations,
                 elapsedMs: ctx.clock.now() - goalStartMs,
                 tokensThisRun,
+                objective: goalText,
+                contract: goalContract,
               })}\n`,
               out.color,
             ),
@@ -4935,7 +4937,7 @@ async function runChatLoop(
           renderDiscardedQueue(out, queuedTurns.length, 'interrupt');
           queuedTurns.length = 0;
         }
-        out.write('\n  ' + dim("That's a big one — it ran past the time limit for a single turn.", out.color) + '\n');
+        out.write('\n  ' + dim('I can keep working on it autonomously, step by step.', out.color) + '\n');
         out.write(`  Keep working on it autonomously, step by step, until it's done? ${yesNoHint('yes', out.color)} `);
         if (await confirm(true)) {
           if (await runGoalLoop(line)) return loopResult;
