@@ -15,6 +15,16 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   resumed goal's contract from the persisted `workTrace` (niche: the in-run contract
   is already kept in memory; only cross-session resume benefits). Optional.
 
+## [3.17.0]
+
+### Added
+- **Smart Tab completion.** Press Tab to complete: command arguments (`/mode `→
+  tiers, `/style `→ direct/balanced/collaborative, `/memory `→ subcommands),
+  file **paths** (`./ ../ ~/`), and `@`-file **mentions** — with fuzzy matching
+  (prefix → substring → subsequence). It stays strictly out of the way on plain
+  prose (a mid-sentence `@email` or free-text never gets mangled), runs locally
+  with no model call, and is fail-soft. Shared by both the menu chat and the REPL.
+
 ## [3.16.0]
 
 **It's a real chat now.** A ranked roadmap (`docs/real-chat-gap-analysis.md`) of
