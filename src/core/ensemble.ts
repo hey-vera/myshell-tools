@@ -159,6 +159,7 @@ function contextFromDeps(deps: OrchestrateDeps): ContextBlockOptions | undefined
   if (deps.environmentContext !== undefined) ctx.environmentContext = deps.environmentContext;
   if (deps.toolStateContext !== undefined) ctx.toolStateContext = deps.toolStateContext;
   if (deps.memoryContext !== undefined) ctx.memoryContext = deps.memoryContext;
+  if (deps.workStateContext !== undefined) ctx.workStateContext = deps.workStateContext;
   if (deps.intentFrame !== undefined) ctx.intentFrame = deps.intentFrame;
   if (deps.engagementPlan !== undefined) ctx.engagementPlan = deps.engagementPlan;
   return Object.keys(ctx).length > 0 ? ctx : undefined;

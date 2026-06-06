@@ -225,3 +225,36 @@ describe('decideHistoryPolicy', () => {
     assert.ok(p.reasons.length > 0);
   });
 });
+
+// ---------------------------------------------------------------------------
+// compileTurnDirective — workState passthrough (AP2-B §2.3 B)
+// ---------------------------------------------------------------------------
+
+describe('compileTurnDirective — workState', () => {
+  it('carries the work-state snapshot onto the directive unchanged when provided', () => {
+    const ws = {
+      objective: 'ship the dashboard',
+      roadmap: [{ id: 'R1', text: 'wired route', status: 'done' as const }],
+      recentCheckpoints: [],
+      verifiedDone: ['wired route'],
+      claimedNext: 'hydrate the chart',
+      source: 'session-workTrace' as const,
+    };
+    const d = compileTurnDirective({
+      frame: undefined,
+      plan: planEngagement(signals({ task: 'continue' })),
+      signals: signals({ task: 'continue' }),
+      workState: ws,
+    });
+    assert.deepEqual(d.workState, ws);
+  });
+
+  it('omits workState when not provided', () => {
+    const d = compileTurnDirective({
+      frame: undefined,
+      plan: planEngagement(signals({ task: 'continue' })),
+      signals: signals({ task: 'continue' }),
+    });
+    assert.equal(d.workState, undefined);
+  });
+});

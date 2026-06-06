@@ -28,6 +28,7 @@ import type { QuestionSet } from './types.js';
 import type { IntentFrame } from './intent.js';
 import type { EngagementPlan, EngagementSignals } from './engagement.js';
 import { deriveAskFromForks, hasGenuineFork } from './engagement.js';
+import type { WorkStateSnapshot } from './work-state.js';
 
 // ---------------------------------------------------------------------------
 // Shapes (§2.1) — STAGE 1 minimal subset
@@ -62,6 +63,15 @@ export interface TurnDirective {
   /** How the NEXT turn should treat prior history (quarantine of poisoned prose). */
   readonly historyPolicy: HistoryPolicy;
   /**
+   * Truthful work-state for this turn (AP2-B §2.3 B): objective + evidence-backed
+   * done + model-stated next + blocked, derived from accepted prior turns'
+   * `workTrace`. Present only when a resumed/continuing chat has a trusted trace;
+   * absent otherwise (truthful or absent). The directive carries it so a resumed
+   * chat KNOWS what was last done + the next honest step — the model never re-asks
+   * "what are we doing?" or repeats completed work.
+   */
+  readonly workState?: WorkStateSnapshot;
+  /**
    * True when the engagement plan included INVESTIGATE_CONTEXT or the environment
    * indicates a repo is present. The `reject_generic_open_menu` validator fires
    * ONLY when this is true, so plain brainstorming / option-listing on a non-repo
@@ -86,6 +96,12 @@ export interface CompileDirectiveInput {
    * decision. Each is `{ role, content }`; only assistant prose is inspected.
    */
   readonly priorAssistantTexts?: readonly string[];
+  /**
+   * Truthful work-state derived from accepted prior turns' `workTrace` (AP2-B
+   * §2.3 B). Threaded onto the compiled directive unchanged so the turn knows
+   * what was last done + the next honest step. undefined → no work-state.
+   */
+  readonly workState?: WorkStateSnapshot;
 }
 
 // ---------------------------------------------------------------------------
@@ -263,12 +279,15 @@ export function compileTurnDirective(input: CompileDirectiveInput): TurnDirectiv
   const outputValidators: readonly OutputValidator[] = [{ kind: 'reject_generic_open_menu' }];
   const historyPolicy = decideHistoryPolicy(input.priorAssistantTexts);
 
-  // Fail-soft base directive (no terminal ask).
+  // Fail-soft base directive (no terminal ask). The truthful work-state (AP2-B
+  // §2.3 B) rides through unchanged when present so the turn knows what was last
+  // done + the next honest step.
   const base: TurnDirective = {
     version: 1,
     outputValidators,
     historyPolicy,
     repoOriented,
+    ...(input.workState !== undefined ? { workState: input.workState } : {}),
   };
 
   if (plan === undefined || plan === null || !Array.isArray(plan.actions)) {

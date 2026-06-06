@@ -26,6 +26,7 @@ import type { Clock, CoreEvent, LedgerWriter, OrchestrateDeps, Question, Questio
 import { buildGoalTask, parseGoalSignal, parseGoalContinueText, decideGoalNext, formatGoalProgress, DEFAULT_MAX_GOAL_ITERATIONS, stripTrailingGoalConfidenceEnvelope } from '../core/goal.js';
 import type { GoalCeilings } from '../core/goal.js';
 import { appendCheckpointFromContinue, capContract } from '../core/work-contract.js';
+import { deriveWorkStateFromHistory, renderWorkStateBlock } from '../core/work-state.js';
 import { formatAnswers, isKeepGoingOffer } from '../core/questions.js';
 import { decideAutonomyOffer } from '../core/autonomy.js';
 import { classify } from '../core/classify.js';
@@ -4347,6 +4348,15 @@ async function runChatLoop(
           authenticated: p.authenticated,
           plan: p.plan,
         }));
+        // ---- WORK-STATE AWARENESS (adaptive-partner-v2-5.6.md §2.3 B) ----------
+        // Derive a TRUTHFUL "what's done / what's next" snapshot from the
+        // already-loaded history's persisted workTrace and pre-render the WORK STATE
+        // block. PURE, NO model call (subscription-cost clean). This is task/session
+        // CONTINUITY seeded ONLY from workTrace — kept distinct from USER MEMORY.
+        // Threaded into deps below so it rides sequential, hedge, AND panel prompts
+        // (orchestrate re-derives identically when absent). Truthful or absent.
+        const workStateContext = renderWorkStateBlock(deriveWorkStateFromHistory(hist));
+
         const toolStateContext = buildToolStateContext({
           version: ctx.version,
           providers: toolStateProviders,
@@ -4397,6 +4407,10 @@ async function runChatLoop(
           // USER MEMORY block (Phase 4, §7) — present only when memory is on AND
           // facts survived the inject-time gate + relevance selection.
           ...(memoryContext !== undefined && memoryContext.length > 0 ? { memoryContext } : {}),
+          // WORK STATE block (AP2-B §2.3 B) — present only when an accepted prior
+          // turn carried a trusted workTrace (resumed/continuing chat). Truthful or
+          // absent; pure derivation from the loaded history, no model call.
+          ...(workStateContext.length > 0 ? { workStateContext } : {}),
           // ENVIRONMENT / repo-map orientation block (E1) — gathered once per
           // session, present only when codebase awareness is on AND the scan
           // produced a non-empty block (fail-soft → '' otherwise).

@@ -404,6 +404,17 @@ export interface OrchestrateDeps {
    */
   readonly memoryContext?: string;
   /**
+   * Pre-rendered, truthful WORK STATE block (adaptive-partner-v2-5.6.md §2.3 B):
+   * objective / evidence-backed done / model-stated next / blocked, derived from
+   * accepted prior turns' persisted `workTrace` by `deriveWorkStateFromHistory`
+   * (core/work-state.ts). Threaded here so it rides sequential, hedge, AND panel
+   * prompts via `assembleContextBlocks` with no further plumbing. This is
+   * task/session CONTINUITY, NOT memory (durable preference) — kept distinct and
+   * seeded only from `workTrace`. Absent → omitted (truthful or absent). PURE
+   * derivation: NO model call, no API key, no metered service.
+   */
+  readonly workStateContext?: string;
+  /**
    * Pre-rendered, capped ENVIRONMENT / repo-map orientation block (codebase-
    * awareness §1.2, Phase E1) for the prompt seam. Deterministic, NO model call:
    * repo name/branch/dirty, project type, doc presence, key entry points, and a

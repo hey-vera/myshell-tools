@@ -65,6 +65,15 @@ export interface ContextBlockOptions {
    */
   readonly memoryContext?: string;
   /**
+   * Pre-rendered, truthful WORK STATE block (adaptive-partner-v2-5.6.md §2.3 B):
+   * objective / evidence-backed done / model-stated next / blocked, derived from
+   * accepted prior turns' workTrace by `deriveWorkStateFromHistory`. undefined →
+   * omit. This is task/session CONTINUITY, NOT memory (durable preference) — kept
+   * distinct and rendered right AFTER MEMORY / BEFORE INTENT so the resumed turn
+   * knows what was last done and the next honest step. Produced by core/work-state.ts.
+   */
+  readonly workStateContext?: string;
+  /**
    * The turn's INTENT block, pre-rendered (intent doc §5.4). undefined → omit.
    * Produced by Phase 6; rendered here when present.
    */
@@ -112,8 +121,8 @@ export function partnerNudge(style: PartnerStyle): string {
  * length regardless of caller. PURE + table-tested.
  *
  * Canonical block order (master plan §MF1; ENVIRONMENT prepended in E1;
- * TOOL-STATE adjacent to ENVIRONMENT):
- *   ENVIRONMENT → TOOL-STATE → MEMORY → INTENT → ENGAGEMENT → (partner posture nudge)
+ * TOOL-STATE adjacent to ENVIRONMENT; WORK STATE after MEMORY, AP2-B §2.3 B):
+ *   ENVIRONMENT → TOOL-STATE → MEMORY → WORK STATE → INTENT → ENGAGEMENT → (partner posture nudge)
  *
  * Each block is independently present/absent. The returned string is inserted by
  * every prompt builder at the same point: AFTER system, BEFORE "CONVERSATION SO
@@ -140,6 +149,14 @@ export function assembleContextBlocks(opts: ContextBlockOptions): string {
   const memory = opts.memoryContext?.trim();
   if (memory !== undefined && memory.length > 0) {
     blocks.push(memory);
+  }
+
+  // WORK STATE — task/session continuity (what's done / what's next), distinct from
+  // MEMORY and rendered right after it so the resumed turn orients on prior progress
+  // before intent/engagement reasoning (AP2-B §2.3 B). Truthful or absent.
+  const workState = opts.workStateContext?.trim();
+  if (workState !== undefined && workState.length > 0) {
+    blocks.push(workState);
   }
 
   const intent = opts.intentFrame?.trim();

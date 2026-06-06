@@ -123,6 +123,31 @@ describe('assembleContextBlocks', () => {
     assert.ok(iNudge > iEng);
   });
 
+  const WORKSTATE =
+    'WORK STATE (truthful, from accepted prior turns):\nOBJECTIVE: ship the dashboard\nDONE: wired route\nNEXT (model-stated, not yet verified): hydrate the chart\nBLOCKED: none';
+
+  it('renders the WORK STATE block after MEMORY / before INTENT (AP2-B §2.3 B)', () => {
+    const out = assembleContextBlocks({
+      memoryContext: MEM,
+      workStateContext: WORKSTATE,
+      intentFrame: INTENT,
+    });
+    const iMem = out.indexOf(MEM);
+    const iWork = out.indexOf(WORKSTATE);
+    const iIntent = out.indexOf(INTENT);
+    assert.ok(iMem >= 0);
+    assert.ok(iWork > iMem, 'WORK STATE follows MEMORY');
+    assert.ok(iIntent > iWork, 'INTENT follows WORK STATE');
+  });
+
+  it('includes WORK STATE alone when present, omits it cleanly when absent/whitespace', () => {
+    assert.equal(assembleContextBlocks({ workStateContext: WORKSTATE }), WORKSTATE);
+    assert.equal(assembleContextBlocks({ memoryContext: MEM }).includes('WORK STATE'), false);
+    const withoutKey = assembleContextBlocks({ memoryContext: MEM });
+    const withEmpty = assembleContextBlocks({ workStateContext: '   ', memoryContext: MEM });
+    assert.equal(withEmpty, withoutKey);
+  });
+
   it('joins present blocks with a blank line and trims each', () => {
     const out = assembleContextBlocks({
       memoryContext: `\n${MEM}\n`,

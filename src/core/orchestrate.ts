@@ -63,6 +63,7 @@ import {
   GENERIC_MENU_REPAIR_NOTE,
 } from './turn-directive.js';
 import { engagementBiasOf } from './prompt-context.js';
+import { deriveWorkStateFromHistory, renderWorkStateBlock } from './work-state.js';
 
 // ---------------------------------------------------------------------------
 // Pure helper: should this output be cross-vendor reviewed?
@@ -514,12 +515,24 @@ export async function* orchestrate(
     depsArg.history !== undefined
       ? depsArg.history.filter((e) => e.role === 'assistant').map((e) => e.content)
       : undefined;
+
+  // (a3b) WORK-STATE AWARENESS (adaptive-partner-v2-5.6.md §2.3 B). Reconstruct a
+  // TRUTHFUL "what's done / what's next" snapshot from accepted prior turns'
+  // persisted workTrace — PURE, no model call. Prefer a snapshot menu.ts already
+  // derived from the same history (deps.workStateContext is pre-rendered there);
+  // otherwise derive here from deps.history. The directive carries the snapshot and
+  // the rendered block rides the prompt seam, so a resumed chat knows what was last
+  // done + the next honest step. Truthful or absent: undefined → omitted.
+  const workState =
+    depsArg.history !== undefined ? deriveWorkStateFromHistory(depsArg.history) : undefined;
+
   const directive = compileTurnDirective({
     frame: intentFrame,
     plan: engagementPlan,
     signals: engagementSignals,
     repoPresent: depsArg.environmentContext !== undefined && depsArg.environmentContext.length > 0,
     ...(priorAssistantTexts !== undefined ? { priorAssistantTexts } : {}),
+    ...(workState !== undefined ? { workState } : {}),
   });
 
   // Pre-render the INTENT + ENGAGEMENT blocks ONCE and thread them onto a per-turn
@@ -527,6 +540,13 @@ export async function* orchestrate(
   // plumbing. Empty blocks (trivial/silent) are omitted → byte-identical to today.
   const intentBlock = runIntent ? renderIntentBlock(intentFrame) : '';
   const engagementBlock = renderEngagementBlock(engagementPlan);
+  // Render the truthful WORK STATE block once. menu.ts may have pre-rendered it
+  // from the same history into deps.workStateContext (so it survives even the
+  // pre-provider terminal-ask path's prompt); fall back to rendering here.
+  const workStateBlock =
+    depsArg.workStateContext !== undefined && depsArg.workStateContext.length > 0
+      ? depsArg.workStateContext
+      : renderWorkStateBlock(workState);
 
   // Render-optional events (locked APE default #1): surface intent ONLY when the
   // gated pass ran AND produced a non-empty reflection block; surface engagement
@@ -541,11 +561,12 @@ export async function* orchestrate(
   }
 
   const deps: OrchestrateDeps =
-    intentBlock.length > 0 || engagementBlock.length > 0
+    intentBlock.length > 0 || engagementBlock.length > 0 || workStateBlock.length > 0
       ? {
           ...depsArg,
           ...(intentBlock.length > 0 ? { intentFrame: intentBlock } : {}),
           ...(engagementBlock.length > 0 ? { engagementPlan: engagementBlock } : {}),
+          ...(workStateBlock.length > 0 ? { workStateContext: workStateBlock } : {}),
         }
       : depsArg;
 
@@ -689,6 +710,7 @@ export async function* orchestrate(
     deps.environmentContext,
     deps.toolStateContext,
     deps.memoryContext,
+    deps.workStateContext,
     deps.intentFrame,
     deps.engagementPlan,
   ]);
@@ -973,6 +995,7 @@ export async function* orchestrate(
         ...(deps.environmentContext !== undefined ? { environmentContext: deps.environmentContext } : {}),
         ...(deps.toolStateContext !== undefined ? { toolStateContext: deps.toolStateContext } : {}),
         ...(deps.memoryContext !== undefined ? { memoryContext: deps.memoryContext } : {}),
+        ...(deps.workStateContext !== undefined ? { workStateContext: deps.workStateContext } : {}),
         ...(deps.intentFrame !== undefined ? { intentFrame: deps.intentFrame } : {}),
         ...(deps.engagementPlan !== undefined ? { engagementPlan: deps.engagementPlan } : {}),
       },
