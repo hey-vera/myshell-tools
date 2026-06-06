@@ -714,9 +714,23 @@ export async function* orchestrate(
    * unchanged. Reused for the work route, the failover preview, and the review
    * route so every site re-ranks with the SAME facts.
    */
+  // Learned MODEL-level outcome order for THIS turn's taskKind (Stage 4, §2 Layer
+  // 3). The impure ledger READ + aggregation happens in the conversation layer
+  // (cli.ts / menu.ts) via learnModelOutcomeOrder; here we just SELECT the entry
+  // for the current taskKind from the immutable snapshot the caller passed. Absent
+  // (feature off / cold-start / below-threshold → no entry) → undefined → route()
+  // gets no learned tie-break and behaviour is byte-for-byte unchanged.
+  const workModelOutcomeOrder = deps.modelOutcomeOrderByTaskKind?.[taskSignals.taskKind];
   const capabilityContext: CapabilityRouteContext | undefined =
     deps.capabilityRegistry !== undefined
-      ? { registry: deps.capabilityRegistry, taskSignals, mode }
+      ? {
+          registry: deps.capabilityRegistry,
+          taskSignals,
+          mode,
+          ...(workModelOutcomeOrder !== undefined
+            ? { modelOutcomeOrder: workModelOutcomeOrder }
+            : {}),
+        }
       : undefined;
 
   const panelPlan = planPanel({
@@ -1045,6 +1059,9 @@ export async function* orchestrate(
       durationMs,
       success,
       ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
+      // Record the SAME taskKind orchestrate derived for routing (Stage 4, §2
+      // Layer 3) so the model-level outcome learner weighs this run by task type.
+      taskKind: taskSignals.taskKind,
     });
 
     // --- Yield tier-done ---
@@ -1341,12 +1358,16 @@ export async function* orchestrate(
         // reviewer's job is critique. Build a review-flavoured capability context
         // so capability-fit + effort selection treat it as such. Absent registry →
         // undefined → route() unchanged (byte-for-byte).
+        const reviewModelOutcomeOrder = deps.modelOutcomeOrderByTaskKind?.['review'];
         const reviewCapabilityContext: CapabilityRouteContext | undefined =
           deps.capabilityRegistry !== undefined
             ? {
                 registry: deps.capabilityRegistry,
                 taskSignals: { ...taskSignals, taskKind: 'review' },
                 mode,
+                ...(reviewModelOutcomeOrder !== undefined
+                  ? { modelOutcomeOrder: reviewModelOutcomeOrder }
+                  : {}),
               }
             : undefined;
         const reviewDecision = route(
@@ -1451,6 +1472,8 @@ export async function* orchestrate(
           durationMs: reviewDurationMs,
           success: reviewSuccess,
           ...(reviewEffort !== undefined ? { reasoningEffort: reviewEffort } : {}),
+          // The reviewer run is always a 'review' taskKind (Stage 4).
+          taskKind: 'review',
         });
 
         // Yield tier-done for reviewer

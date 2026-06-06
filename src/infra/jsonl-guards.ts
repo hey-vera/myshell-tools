@@ -157,5 +157,22 @@ export function isLedgerEntry(value: unknown): value is LedgerEntry {
   ) {
     return false;
   }
+  // Optional capability-registry task kind (Stage 4). Absent on old entries; when
+  // present it must be a known TaskKind string. An unknown string fails the guard
+  // (the entry is dropped) rather than being silently coerced — same discipline as
+  // reasoningEffort above.
+  const taskKind = value['taskKind'];
+  if (
+    taskKind !== undefined &&
+    taskKind !== 'trivial' &&
+    taskKind !== 'implementation' &&
+    taskKind !== 'debug' &&
+    taskKind !== 'review' &&
+    taskKind !== 'architecture' &&
+    taskKind !== 'large-context' &&
+    taskKind !== 'unknown'
+  ) {
+    return false;
+  }
   return true;
 }

@@ -11,7 +11,7 @@ import { execa } from 'execa';
 import { systemClock } from './infra/clock.js';
 import { createSessionWriter } from './infra/session.js';
 import { createLedger, readLedger } from './infra/ledger.js';
-import { learnProviderOrder } from './core/routing-memory.js';
+import { learnProviderOrder, learnModelOutcomeOrder } from './core/routing-memory.js';
 import { DEFAULT_POLICY, POLICY_PRESETS, autoModeForPlans, classifyPlan } from './core/policy.js';
 import type { PlanInfo } from './core/policy.js';
 import type { OrchestrateDeps } from './core/types.js';
@@ -191,6 +191,15 @@ function buildDeps(
   // present, orchestrate threads it into route()/selectReasoningEffort. Absent →
   // no capability context, no effort flag (byte-for-byte unchanged routing).
   capabilityRegistry?: import('./core/model-capabilities.js').CapabilityRegistry,
+  // Stage 4 (§2 Layer 3): learned MODEL-level outcome order per task kind, computed
+  // by the caller from this user's own ledger (learnModelOutcomeOrder). Absent /
+  // below-threshold → no entry → route() gets no learned tie-break (unchanged).
+  modelOutcomeOrderByTaskKind?: Partial<
+    Record<
+      import('./core/model-capabilities.js').TaskKind,
+      readonly import('./core/model-capabilities.js').ModelPreference[]
+    >
+  >,
 ): OrchestrateDeps {
   const providers = buildProviders(cwd, env);
 
@@ -236,6 +245,10 @@ function buildDeps(
     ...(capabilityRegistry !== undefined ? { capabilityRegistry } : {}),
     ...(learnedProviderOrder !== undefined && Object.keys(learnedProviderOrder).length > 0
       ? { learnedProviderOrder }
+      : {}),
+    ...(modelOutcomeOrderByTaskKind !== undefined &&
+    Object.keys(modelOutcomeOrderByTaskKind).length > 0
+      ? { modelOutcomeOrderByTaskKind }
       : {}),
     ...(sleep !== undefined ? { sleep } : {}),
     ...(memoryContext !== undefined && memoryContext.length > 0 ? { memoryContext } : {}),
@@ -389,6 +402,17 @@ async function main(): Promise<void> {
     let learnedProviderOrder:
       | Partial<Record<import('./core/types.js').Tier, readonly import('./providers/port.js').ProviderId[]>>
       | undefined;
+    // Stage 4 (§2 Layer 3): the model-level outcome order per task kind, learned
+    // from the SAME recent-ledger slice. Weakest signal; below-threshold task
+    // kinds get no entry (learnModelOutcomeOrder → null) so routing is unchanged.
+    let modelOutcomeOrderByTaskKind:
+      | Partial<
+          Record<
+            import('./core/model-capabilities.js').TaskKind,
+            readonly import('./core/model-capabilities.js').ModelPreference[]
+          >
+        >
+      | undefined;
     if (config.learnRouting === true) {
       const recent = (await readLedger(cwd)).slice(-500);
       const learned: Partial<
@@ -399,6 +423,19 @@ async function main(): Promise<void> {
         if (order !== null) learned[tier] = order;
       }
       if (Object.keys(learned).length > 0) learnedProviderOrder = learned;
+      const byKind: Partial<
+        Record<
+          import('./core/model-capabilities.js').TaskKind,
+          readonly import('./core/model-capabilities.js').ModelPreference[]
+        >
+      > = {};
+      for (const kind of [
+        'trivial', 'implementation', 'debug', 'review', 'architecture', 'large-context', 'unknown',
+      ] as const) {
+        const order = learnModelOutcomeOrder(recent, kind);
+        if (order !== null) byKind[kind] = order;
+      }
+      if (Object.keys(byKind).length > 0) modelOutcomeOrderByTaskKind = byKind;
     }
     const task = taskParts.join(' ');
     // ---- USER MEMORY (Phase 4, §7) — read-only inject for the one-shot path.
@@ -456,6 +493,7 @@ async function main(): Promise<void> {
       environmentContext,
       toolStateContext,
       capability?.registry,
+      modelOutcomeOrderByTaskKind,
     );
     const result = await runTask(task, deps, out, new AbortController().signal);
     // Notify-only update nudge for the scripted / one-shot path. The interactive

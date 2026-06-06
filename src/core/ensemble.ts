@@ -366,6 +366,9 @@ interface CandidateOutcome {
   readonly durationMs: number;
   /** The reasoning effort threaded to this candidate run, when one was selected. */
   readonly reasoningEffort: ReasoningEffort | undefined;
+  /** The taskKind this candidate served (Stage 4 ledger signal) — always
+   *  'implementation' for an independent panel candidate. */
+  readonly taskKind: TaskKind;
 }
 
 /**
@@ -399,7 +402,10 @@ async function runCandidate(
   // diversity is its job, not adjudication). decision.tier is the tier route()
   // resolved (candidates stay at plan.tier — never the lifted manager ceiling), so
   // this never opens manager. undefined → no registry / no efforts → no flag.
-  const reasoningEffort = panelEffort(deps, plan, candidate, decision.model, decision.tier, 'implementation');
+  // Independent panel candidates are always 'implementation' (diversity, not
+  // adjudication) — recorded on the ledger for Stage 4 outcome learning.
+  const taskKind: TaskKind = 'implementation';
+  const reasoningEffort = panelEffort(deps, plan, candidate, decision.model, decision.tier, taskKind);
 
   let finalText: string | undefined;
   let errored: import('../providers/port.js').CliError | undefined;
@@ -422,6 +428,7 @@ async function runCandidate(
       errored,
       durationMs: deps.clock.now() - start,
       reasoningEffort,
+      taskKind,
     };
   }
 
@@ -470,6 +477,7 @@ async function runCandidate(
     errored,
     durationMs: deps.clock.now() - start,
     reasoningEffort,
+    taskKind,
   };
 }
 
@@ -616,6 +624,7 @@ export async function* runPanel(
       durationMs: outcome.durationMs,
       success,
       ...(outcome.reasoningEffort !== undefined ? { reasoningEffort: outcome.reasoningEffort } : {}),
+      taskKind: outcome.taskKind,
     });
 
     yield {
@@ -854,6 +863,8 @@ export async function* runPanel(
     durationMs: synthDurationMs,
     success: synthSuccess,
     ...(synthEffort !== undefined ? { reasoningEffort: synthEffort } : {}),
+    // The synthesizer adjudicates the panel — always a 'review' taskKind (Stage 4).
+    taskKind: 'review',
   });
 
   yield {

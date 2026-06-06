@@ -178,6 +178,9 @@ interface RunResult {
   readonly events: CoreEvent[];
   /** The reasoning effort threaded to this run, when one was selected. */
   readonly reasoningEffort: ReasoningEffort | undefined;
+  /** The taskKind this run served (Stage 4 ledger signal). Hedge is always
+   *  'implementation' (its job is fast independent work, not adjudication). */
+  readonly taskKind: TaskKind;
 }
 
 /**
@@ -223,6 +226,9 @@ async function runAttempt(
   // turns; taskKind 'implementation' is the conservative default (risk drives the
   // effort). The selector reconciles against the model's supported set.
   const reasoningEffort = hedgeEffort(deps, decision.provider, decision.model, decision.tier, risk);
+  // Hedge runs are always 'implementation' (the same conservative default
+  // hedgeEffort uses) — recorded on the ledger for Stage 4 outcome learning.
+  const taskKind: TaskKind = 'implementation';
   const provider = deps.providers[decision.provider];
   const start = deps.clock.now();
   const events: CoreEvent[] = [];
@@ -251,6 +257,7 @@ async function runAttempt(
       canceled: signal.aborted,
       events,
       reasoningEffort,
+      taskKind,
     };
   }
 
@@ -268,6 +275,7 @@ async function runAttempt(
       canceled: true,
       events,
       reasoningEffort,
+      taskKind,
     };
   }
 
@@ -333,6 +341,7 @@ async function runAttempt(
     canceled: canceled || signal.aborted,
     events,
     reasoningEffort,
+    taskKind,
   };
 }
 
@@ -522,6 +531,7 @@ export async function* runHedged(
       success: result.errored == null && !result.canceled,
       durationMs: result.durationMs,
       ...(result.reasoningEffort !== undefined ? { reasoningEffort: result.reasoningEffort } : {}),
+      taskKind: result.taskKind,
     });
     return usd;
   };

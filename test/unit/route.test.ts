@@ -706,3 +706,97 @@ describe('route — capability-fit (Stage 2)', () => {
     assert.equal(fit.model, 'gpt-5.4', 'image task picks the vision-capable model');
   });
 });
+
+// ===========================================================================
+// Stage 4 — learned modelOutcomeOrder is a WEAK tie-break, AFTER hard fit.
+// ===========================================================================
+describe('route — modelOutcomeOrder (Stage 4 weak tie-break)', () => {
+  // Two codex IC candidates that are EQUAL on every hard capability signal (both
+  // have a known 200k window — neither wins large-context; no vision; equal native
+  // session) so any movement comes ONLY from the learned tie-break.
+  const TIE_REG: CapabilityRegistry = {
+    claude: [],
+    opencode: [],
+    codex: [
+      {
+        provider: 'codex',
+        id: 'gpt-5.4',
+        aliases: [],
+        tierHint: 'ic',
+        supportedReasoningEfforts: [],
+        contextWindow: 200_000,
+        source: ['codex-cache'],
+      },
+      {
+        provider: 'codex',
+        id: 'gpt-5.2-codex',
+        aliases: ['codex'],
+        tierHint: 'ic',
+        supportedReasoningEfforts: [],
+        contextWindow: 200_000,
+        source: ['codex-cache'],
+      },
+    ],
+  };
+  // A registry where gpt-5.4 has a LARGE window and gpt-5.2-codex a small one — a
+  // HARD large-context fit that must out-weigh any learned preference.
+  const HARD_REG: CapabilityRegistry = {
+    claude: [],
+    opencode: [],
+    codex: [
+      { provider: 'codex', id: 'gpt-5.4', aliases: [], tierHint: 'ic', supportedReasoningEfforts: [], contextWindow: 400_000, source: ['codex-cache'] },
+      { provider: 'codex', id: 'gpt-5.2-codex', aliases: ['codex'], tierHint: 'ic', supportedReasoningEfforts: [], contextWindow: 128_000, source: ['codex-cache'] },
+    ],
+  };
+  const MODELS = { codex: ['gpt-5.4', 'gpt-5.2-codex'] } as const;
+  const SMALL = { risk: 'low' as const, routePlan: false, estimatedInputTokens: 2_000, taskKind: 'implementation' as const };
+
+  it('breaks a TIE in favour of the higher-ranked learned model (within the chosen provider)', () => {
+    // Baseline (no learned order): cheapest codex IC = gpt-5.2-codex.
+    const baseline = route('ic', ['codex'], DEFAULT_POLICY, MODELS, undefined, undefined, {
+      mode: 'balanced', registry: TIE_REG, taskSignals: SMALL,
+    });
+    assert.equal(baseline.model, 'gpt-5.2-codex');
+
+    // With a learned order preferring gpt-5.4 (rank 1), the tie tips to gpt-5.4.
+    const tipped = route('ic', ['codex'], DEFAULT_POLICY, MODELS, undefined, undefined, {
+      mode: 'balanced',
+      registry: TIE_REG,
+      taskSignals: SMALL,
+      modelOutcomeOrder: [
+        { provider: 'codex', model: 'gpt-5.4' },
+        { provider: 'codex', model: 'gpt-5.2-codex' },
+      ],
+    });
+    assert.equal(tipped.provider, 'codex', 'provider unchanged');
+    assert.equal(tipped.model, 'gpt-5.4', 'learned order broke the capability tie');
+  });
+
+  it('NEVER overrides a hard capability fit: large-context wins even when learned order prefers the smaller model', () => {
+    const fit = route('ic', ['codex'], DEFAULT_POLICY, MODELS, undefined, undefined, {
+      mode: 'balanced',
+      registry: HARD_REG,
+      taskSignals: { risk: 'high', routePlan: false, estimatedInputTokens: 300_000, taskKind: 'large-context' },
+      // Learned order PREFERS the small-window model — must be ignored vs hard fit.
+      modelOutcomeOrder: [
+        { provider: 'codex', model: 'gpt-5.2-codex' },
+        { provider: 'codex', model: 'gpt-5.4' },
+      ],
+    });
+    // The +10..+ large-context score dwarfs the ≤0.5 learned bump, so gpt-5.4 wins.
+    assert.equal(fit.model, 'gpt-5.4', 'hard large-context fit out-ranks the learned tie-break');
+  });
+
+  it('NEVER changes provider: a learned preference for a signed-out provider does not win over an authed one', () => {
+    // codex authenticated; claude signed out. A learned order ranking claude first
+    // must not override auth (route() picks the authed provider; the learned term
+    // only ever re-ranks WITHIN the chosen provider's models).
+    const fit = route('ic', ['codex', 'claude'], DEFAULT_POLICY, MODELS, ['codex'], undefined, {
+      mode: 'balanced',
+      registry: TIE_REG,
+      taskSignals: SMALL,
+      modelOutcomeOrder: [{ provider: 'claude', model: 'claude-sonnet-4-6' }],
+    });
+    assert.equal(fit.provider, 'codex', 'authed provider chosen; learned order cannot switch provider');
+  });
+});

@@ -76,7 +76,7 @@ import type { PlanInfo } from '../core/policy.js';
 import type { Mode } from '../core/policy.js';
 import { planNativeSession } from '../core/native-session.js';
 import { availableAfterCooldown, cooldownExpiry } from '../core/cooldown.js';
-import { learnProviderOrder } from '../core/routing-memory.js';
+import { learnProviderOrder, learnModelOutcomeOrder } from '../core/routing-memory.js';
 import type { OutputSink, Verbosity } from './render.js';
 import { renderResumeTranscript, pickCopyText, renderConversationMarkdown } from './render.js';
 import { deriveTitleFromRecap, isStubTitle } from '../infra/conversations.js';
@@ -3680,12 +3680,27 @@ async function runChatLoop(
   // independently (omitting tiers with insufficient signal → learnProviderOrder
   // returns null). Observed-only; never fabricated.
   const learnedProviderOrder: Partial<Record<Tier, readonly ProviderId[]>> = {};
+  // Stage 4 (§2 Layer 3): learned MODEL-level outcome order per task kind, from the
+  // SAME recent-ledger slice. Weakest signal; below-threshold task kinds get no
+  // entry (learnModelOutcomeOrder → null) so routing is unchanged.
+  const modelOutcomeOrderByTaskKind: Partial<
+    Record<
+      import('../core/model-capabilities.js').TaskKind,
+      readonly import('../core/model-capabilities.js').ModelPreference[]
+    >
+  > = {};
   if (mutableCtx.config.learnRouting === true) {
     const allEntries = await readLedger(ctx.cwd);
     const recent = allEntries.slice(-500);
     for (const tier of ['worker', 'ic', 'manager'] as const) {
       const order = learnProviderOrder(recent, tier);
       if (order !== null) learnedProviderOrder[tier] = order;
+    }
+    for (const kind of [
+      'trivial', 'implementation', 'debug', 'review', 'architecture', 'large-context', 'unknown',
+    ] as const) {
+      const order = learnModelOutcomeOrder(recent, kind);
+      if (order !== null) modelOutcomeOrderByTaskKind[kind] = order;
     }
   }
 
@@ -4365,6 +4380,9 @@ async function runChatLoop(
           ...(routeClassifier !== undefined ? { routeClassifier } : {}),
           ...(intentExtractor !== undefined ? { intentExtractor } : {}),
           ...(Object.keys(learnedProviderOrder).length > 0 ? { learnedProviderOrder } : {}),
+          ...(Object.keys(modelOutcomeOrderByTaskKind).length > 0
+            ? { modelOutcomeOrderByTaskKind }
+            : {}),
           // Partner posture (soft bias, APE §2). Explicit config wins; else the
           // default is derived from the effective mode. Threaded once per turn so
           // it rides sequential, hedge, AND panel prompts via assembleContextBlocks.

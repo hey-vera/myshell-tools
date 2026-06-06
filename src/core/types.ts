@@ -168,6 +168,19 @@ export interface LedgerEntry {
    * to keep types.ts a leaf module.
    */
   readonly reasoningEffort?: import('./model-capabilities.js').ReasoningEffort;
+  /**
+   * The deterministic task category this run served (capability registry §2
+   * Layer 3 / Stage 4). Recorded so the model-level outcome learner can weigh a
+   * (provider, model) by the KIND of task it tends to handle well, not just
+   * overall. Reuses the SAME value orchestrate derives for routing
+   * (deriveTaskKind), so the ledger records exactly what the router saw.
+   *
+   * Absent on old entries (and whenever it wasn't derived) — the aggregator
+   * treats a missing value as `'unknown'`, so prior ledgers are unaffected and
+   * `learnProviderOrder` output is byte-for-byte unchanged. Type-only import to
+   * keep types.ts a leaf module.
+   */
+  readonly taskKind?: import('./model-capabilities.js').TaskKind;
 }
 
 export interface LedgerWriter {
@@ -493,6 +506,31 @@ export interface OrchestrateDeps {
    * for one-shot runs / when the feature is off) → routing is unchanged.
    */
   readonly learnedProviderOrder?: Partial<Record<Tier, readonly ProviderId[]>>;
+  /**
+   * EXPERIMENTAL learned MODEL-level outcome order, keyed by task kind (capability
+   * registry §2 Layer 3 / Stage 4; opt-in via config.learnRouting, default absent).
+   * An immutable snapshot computed ONCE by the conversation layer from THIS user's
+   * own ledger (core/routing-memory.ts::learnModelOutcomeOrder): for each task kind
+   * with enough signal, the (provider, model) pairs ranked by smoothed success
+   * rate, then latency, then token use.
+   *
+   * When present for the turn's taskKind, orchestrate threads that order into the
+   * CapabilityRouteContext as a WEAK tie-break that route() applies ONLY AFTER hard
+   * capability requirements and ONLY within the already-bounded candidate models of
+   * the already-chosen provider — it never overrides a capability fit, never changes
+   * provider, and never bypasses auth/cooldown/authorizeTier.
+   *
+   * Below the conservative thresholds (min runs per provider/model/taskKind, min
+   * candidates) the aggregator returns null and no entry is added, so behaviour is
+   * byte-for-byte unchanged. Absent (the default, one-shot runs, feature off, or
+   * cold start) → routing is unchanged. Type-only import to keep types.ts a leaf.
+   */
+  readonly modelOutcomeOrderByTaskKind?: Partial<
+    Record<
+      import('./model-capabilities.js').TaskKind,
+      readonly import('./model-capabilities.js').ModelPreference[]
+    >
+  >;
   /**
    * Injected delay port for Latency-Hedged Escalation (core/hedge.ts). Resolves
    * after roughly `ms` milliseconds. Injected (rather than calling setTimeout
