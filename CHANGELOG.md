@@ -15,6 +15,36 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   resumed goal's contract from the persisted `workTrace` (niche: the in-run contract
   is already kept in memory; only cross-session resume benefits). Optional.
 
+## [3.22.0]
+
+### Added — adaptive partner v2 roadmap complete (work-state, vision triage, discovery escalation, grounded opinion, history hardening)
+Completes the adaptive-partner-v2 design (`docs/adaptive-partner-v2-5.6.md`) on top of
+the enforced TurnDirective (3.19.0). Each stage real-run-verified, not just gated:
+- **Live work-state (AP2-B)** — `deriveWorkStateFromHistory` reconstructs objective /
+  done / next / blocked from persisted `workTrace` (done requires evidence; never
+  inferred from silence) and renders a truthful WORK STATE block. Resume + "continue"
+  now names what's truly done and starts the next step instead of re-asking.
+- **Vision triage (AP2-C)** — decomposes a multi-part vision into SOLID / DISCUSS /
+  MIGRATE_REARCHITECT / INVESTIGATE_THEN_PROPOSE, recommends a sequence (not a menu),
+  and gives an opinion on migrations. MIGRATE tier bounded by `authorizeTier`.
+- **Discovery-driven escalation (AP2-D)** — extracts discovery signals (larger bug,
+  cross-cutting, wrong-repo, high-stakes, low-confidence) from a turn's output and
+  escalates/reviews through the existing gates (bounded by authorizeTier/panelPolicy/
+  maxAttempts); local reversible fixes are just done; no spurious escalation on clean
+  turns.
+- **Grounded-recommendation validator (AP2-E)** — substantial decision turns must carry
+  a recommendation grounded in real evidence (files, repo facts, assumptions, sources,
+  or an honest "I can't see that repo"), else one shared-budget repair + truthful
+  fallback; tiny factual turns exempt.
+- **Native-session + stale-history hardening (AP2-F)** — quarantine now blocks resuming
+  a poisoned provider-side session, compaction preserves user asks + trusted workTrace,
+  and an `ENGINE_BEHAVIOR_VERSION` marker identifies pre-fix transcript periods.
+
+Subscription-cost clean throughout (pure decisions, no embeddings/metered/extra always-on
+model calls). 3356 → 3380 tests (whole roadmap 3119 → 3380), 0 fail. Final integrated
+real-run sweep green: accurate self-awareness, instant trivial turns, and the original
+generic-menu complaint stays fixed (including via the native-session path).
+
 ## [3.21.0]
 
 ### Added — model/provider capability registry (Stages 1–5, capability-aware routing)
