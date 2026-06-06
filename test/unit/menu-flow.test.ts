@@ -22,7 +22,7 @@ import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 
 import { EventEmitter } from 'node:events';
-import { startMenu, defaultAliasHint, parseYesNo, interpretYesNoKey, yesNoHint, readSingleKey, readMenuKey, confirmViaKey, autoUpdateEnabled, createLineReader, completeSlash, CHAT_SLASH_COMMANDS, normalizeMenuKey, attachChatTurnKeyListener } from '../../src/interface/menu.ts';
+import { startMenu, defaultAliasHint, parseYesNo, interpretYesNoKey, yesNoHint, readSingleKey, readMenuKey, confirmViaKey, autoUpdateEnabled, createLineReader, completeSlash, CHAT_SLASH_COMMANDS, normalizeMenuKey, attachChatTurnKeyListener, classifyCompletion, completeSlashArg, fuzzyRank, expandPathToken, matchPathEntries, completeChat, CHAT_SLASH_ARG_MAP } from '../../src/interface/menu.ts';
 import type { KeypressEvent } from '../../src/interface/menu.ts';
 import type { MenuContext, KeyInputStream } from '../../src/interface/menu.ts';
 import type { UpdateCheckResult } from '../../src/infra/update-check.ts';
@@ -5701,6 +5701,257 @@ describe('completeSlash — Tab-completion for the chat prompt', () => {
   it('never throws on odd input', () => {
     assert.doesNotThrow(() => completeSlash(''));
     assert.doesNotThrow(() => completeSlash('/'));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Smart Tab T2–T4 — classifyCompletion routing (docs/tab-completion-5.5.md)
+// ---------------------------------------------------------------------------
+
+describe('classifyCompletion — routes Tab to the right completer', () => {
+  it('routes a leading-slash word with no space to slash-name', () => {
+    const c = classifyCompletion('/st');
+    assert.equal(c.kind, 'slash-name');
+    assert.equal(c.token, '/st');
+    assert.equal(c.prefixLen, 0);
+  });
+
+  it('routes a known command + partial arg to slash-arg', () => {
+    const c = classifyCompletion('/mode E');
+    assert.equal(c.kind, 'slash-arg');
+    assert.equal(c.command, '/mode');
+    assert.equal(c.token, 'E');
+    // prefixLen marks where the trailing token starts (after '/mode ').
+    assert.equal(c.prefixLen, '/mode '.length);
+  });
+
+  it('routes /memory and /style args to slash-arg', () => {
+    assert.equal(classifyCompletion('/memory lo').kind, 'slash-arg');
+    assert.equal(classifyCompletion('/style D').command, '/style');
+  });
+
+  it('treats a free-text command arg (/goal) as none', () => {
+    const c = classifyCompletion('/goal ship the auth refactor');
+    assert.equal(c.kind, 'none');
+  });
+
+  it('routes ./ ../ / ~/ and embedded-slash tokens to path', () => {
+    assert.equal(classifyCompletion('./src/i').kind, 'path');
+    assert.equal(classifyCompletion('cat ../a/b').kind, 'path');
+    assert.equal(classifyCompletion('open /etc/ho').kind, 'path');
+    assert.equal(classifyCompletion('~/proj').kind, 'path');
+    assert.equal(classifyCompletion('src/inter').kind, 'path');
+  });
+
+  it('routes a leading-@ trailing token to mention', () => {
+    const c = classifyCompletion('look at @src/in');
+    assert.equal(c.kind, 'mention');
+    assert.equal(c.token, '@src/in');
+    assert.equal(c.prefixLen, 'look at '.length);
+  });
+
+  it('is a strict no-op on plain prose (never corrupt a sentence)', () => {
+    assert.equal(classifyCompletion('refactor the auth module').kind, 'none');
+    assert.equal(classifyCompletion("don't break this").kind, 'none');
+    assert.equal(classifyCompletion('email me at a.b@x.com').kind, 'none'); // not leading-@
+    assert.equal(classifyCompletion('').kind, 'none');
+    assert.equal(classifyCompletion('just some words').kind, 'none');
+  });
+
+  it('treats an unknown slash command arg as none', () => {
+    assert.equal(classifyCompletion('/help me out').kind, 'none');
+  });
+});
+
+describe('completeSlashArg — per-command argument value sets (T2)', () => {
+  it('completes /mode tiers — prefix first then fuzzy substring fallback', () => {
+    // 'Eff' is an unambiguous prefix of only one tier.
+    assert.deepEqual(completeSlashArg('/mode', 'Eff'), ['Efficient']);
+    assert.deepEqual(completeSlashArg('/mode', 'ma'), ['Max']); // case-insensitive prefix
+    // 'E' prefixes 'Efficient' and substring-matches 'Balanced' (fuzzy fallback).
+    assert.deepEqual(completeSlashArg('/mode', 'E'), ['Efficient', 'Balanced']);
+  });
+
+  it('completes /style styles', () => {
+    assert.deepEqual(completeSlashArg('/style', 'Di'), ['Direct']);
+    assert.deepEqual(completeSlashArg('/style', 'Co'), ['Collaborative']);
+  });
+
+  it('completes /memory subcommands (prefix before substring)', () => {
+    // 'li' prefixes only 'list'.
+    assert.deepEqual(completeSlashArg('/memory', 'li'), ['list']);
+    assert.deepEqual(completeSlashArg('/memory', 'exp'), ['export']);
+    // 'l' prefixes list+loaded, substring-matches 'all' (fuzzy fallback).
+    assert.deepEqual(completeSlashArg('/memory', 'l'), ['list', 'loaded', 'all']);
+  });
+
+  it('returns all candidates for an empty partial', () => {
+    assert.deepEqual(completeSlashArg('/style', ''), ['Direct', 'Balanced', 'Collaborative']);
+  });
+
+  it('returns [] for a free-text / unknown command', () => {
+    assert.deepEqual(completeSlashArg('/goal', 'anything'), []);
+    assert.deepEqual(completeSlashArg('/zzz', 'x'), []);
+  });
+});
+
+describe('fuzzyRank — prefix → substring → subsequence ordering (T4)', () => {
+  it('ranks exact-prefix before substring before subsequence', () => {
+    const out = fuzzyRank('ba', ['Balanced', 'Abacus', 'bxax']);
+    // 'Balanced' prefix; 'Abacus' substring ('ba'); 'bxax' subsequence (b..a)
+    assert.deepEqual(out, ['Balanced', 'Abacus', 'bxax']);
+  });
+
+  it('is case-insensitive and stable within a tier', () => {
+    assert.deepEqual(fuzzyRank('e', ['Efficient', 'Balanced', 'Collaborative']), [
+      'Efficient',
+      'Balanced',
+      'Collaborative',
+    ]);
+  });
+
+  it('returns all candidates for an empty token', () => {
+    assert.deepEqual(fuzzyRank('', ['a', 'b']), ['a', 'b']);
+  });
+
+  it('returns [] when nothing matches', () => {
+    assert.deepEqual(fuzzyRank('zzz', ['Direct', 'Balanced']), []);
+  });
+});
+
+describe('expandPathToken — pure ~/cwd/dir math, no fs (T3)', () => {
+  it('expands ~ to home for the read but keeps ~/ as the display prefix', () => {
+    const r = expandPathToken('~/proj/sr', '/home/u', '/work');
+    assert.equal(r.dir, '/home/u/proj');
+    assert.equal(r.base, 'sr');
+    assert.equal(r.displayPrefix, '~/proj/');
+  });
+
+  it('resolves ../ against cwd and preserves the typed prefix', () => {
+    const r = expandPathToken('../a/b', '/home/u', '/work/pkg');
+    assert.equal(r.dir, '/work/a');
+    assert.equal(r.base, 'b');
+    assert.equal(r.displayPrefix, '../a/');
+  });
+
+  it('reads cwd for a bare basename token', () => {
+    const r = expandPathToken('src/in', '/home/u', '/work');
+    assert.equal(r.dir, '/work/src');
+    assert.equal(r.base, 'in');
+    assert.equal(r.displayPrefix, 'src/');
+  });
+
+  it('carries a leading @ in the display prefix (mention stays well-formed)', () => {
+    const r = expandPathToken('@src/in', '/home/u', '/work');
+    assert.equal(r.dir, '/work/src');
+    assert.equal(r.base, 'in');
+    assert.equal(r.displayPrefix, '@src/');
+  });
+
+  it('reads an absolute dir directly', () => {
+    const r = expandPathToken('/etc/ho', '/home/u', '/work');
+    assert.equal(r.dir, '/etc');
+    assert.equal(r.base, 'ho');
+    assert.equal(r.displayPrefix, '/etc/');
+  });
+});
+
+describe('matchPathEntries — basename filter, dirs first + trailing slash (T3)', () => {
+  const entries = [
+    { name: 'index.ts', isDirectory: () => false },
+    { name: 'infra', isDirectory: () => true },
+    { name: 'interface', isDirectory: () => true },
+    { name: 'core.ts', isDirectory: () => false },
+    { name: '.hidden', isDirectory: () => false },
+  ];
+
+  it('filters by basename prefix, dirs first with a trailing slash', () => {
+    assert.deepEqual(matchPathEntries('in', entries), ['infra/', 'interface/', 'index.ts']);
+  });
+
+  it('hides dot-entries unless the basename starts with a dot', () => {
+    assert.equal(matchPathEntries('i', entries).includes('.hidden'), false);
+    assert.deepEqual(matchPathEntries('.h', entries), ['.hidden']);
+  });
+
+  it('returns everything (dirs first) for an empty basename', () => {
+    assert.deepEqual(matchPathEntries('', entries), [
+      'infra/',
+      'interface/',
+      'core.ts',
+      'index.ts',
+    ]);
+  });
+
+  it('accepts plain-string entries (no Dirent)', () => {
+    assert.deepEqual(matchPathEntries('co', ['core.ts', 'config.json']), ['config.json', 'core.ts']);
+  });
+});
+
+describe('completeChat — async completer over an injected readdir (T2–T4)', () => {
+  const fakeReaddir = async (dir: string) => {
+    if (dir.endsWith('src')) {
+      return [
+        { name: 'interface', isDirectory: () => true },
+        { name: 'index.ts', isDirectory: () => false },
+      ];
+    }
+    return [];
+  };
+
+  it('completes a path token from readdir; substring is the trailing token', async () => {
+    const [hits, substr] = await completeChat('open src/in', {
+      readdir: fakeReaddir,
+      cwd: '/work',
+    });
+    assert.deepEqual(hits, ['src/interface/', 'src/index.ts']);
+    assert.equal(substr, 'src/in');
+  });
+
+  it('preserves the @ prefix for a mention token', async () => {
+    const [hits, substr] = await completeChat('see @src/in', {
+      readdir: fakeReaddir,
+      cwd: '/work',
+    });
+    assert.deepEqual(hits, ['@src/interface/', '@src/index.ts']);
+    assert.equal(substr, '@src/in');
+  });
+
+  it('returns EMPTY on plain prose (no sentence corruption)', async () => {
+    const [hits, line] = await completeChat('refactor the auth module', { readdir: fakeReaddir });
+    assert.deepEqual(hits, []);
+    assert.equal(line, 'refactor the auth module');
+  });
+
+  it('completes slash-name and slash-arg without touching fs', async () => {
+    let called = false;
+    const readdir = async () => {
+      called = true;
+      return [];
+    };
+    const [nameHits] = await completeChat('/mo', { readdir });
+    assert.deepEqual(nameHits, ['/mode']);
+    const [argHits, substr] = await completeChat('/mode Eff', { readdir });
+    assert.deepEqual(argHits, ['Efficient']);
+    assert.equal(substr, 'Eff');
+    assert.equal(called, false);
+  });
+
+  it('fails soft on a throwing readdir → no completions, never throws', async () => {
+    const readdir = async () => {
+      throw new Error('EACCES');
+    };
+    let result: [string[], string] | undefined;
+    await assert.doesNotReject(async () => {
+      result = await completeChat('open src/in', { readdir, cwd: '/work' });
+    });
+    assert.deepEqual(result, [[], 'open src/in']);
+  });
+
+  it('the arg map is the canonical command source for completion', () => {
+    assert.ok(CHAT_SLASH_ARG_MAP['/mode']);
+    assert.ok(CHAT_SLASH_ARG_MAP['/style']);
+    assert.ok(CHAT_SLASH_ARG_MAP['/memory']);
   });
 });
 

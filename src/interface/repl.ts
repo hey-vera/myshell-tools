@@ -16,7 +16,7 @@ import readline from 'node:readline';
 import type { OrchestrateDeps } from '../core/types.js';
 import type { OutputSink } from './render.js';
 import { runTask } from './run.js';
-import { completeSlash } from './menu.js';
+import { completeChat } from './menu.js';
 
 /** Slash-commands offered by the REPL's Tab-completer. */
 const REPL_SLASH_COMMANDS: readonly string[] = ['/help', '/exit', '/quit'];
@@ -44,7 +44,15 @@ export async function startRepl(deps: OrchestrateDeps, out: OutputSink): Promise
       output: process.stdout,
       prompt: 'myshell-tools> ',
       terminal: out.isTty,
-      completer: (line: string) => completeSlash(line, REPL_SLASH_COMMANDS),
+      // Smart Tab — shares the chat completer engine (slash-name + path + @),
+      // scoped to the REPL's own slash-command set. Async (readdir); any error
+      // degrades to a safe no-op (never throws).
+      completer: (line: string, cb: (err: null, result: [string[], string]) => void) => {
+        completeChat(line, { commands: REPL_SLASH_COMMANDS }).then(
+          (result) => cb(null, result),
+          () => cb(null, [[], line]),
+        );
+      },
     });
 
     // Track the in-flight AbortController so SIGINT can cancel it.
