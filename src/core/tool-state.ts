@@ -96,6 +96,13 @@ export interface CapabilitySummaryModel {
   readonly reasoningEfforts?: readonly ReasoningEffort[];
   readonly supportsVision?: boolean;
   readonly supportsNativeSession?: boolean;
+  // --- Provider-native feature inventory (Stage 5). NON-ROUTABLE facts. --------
+  // Carried purely so the self-awareness block can DISCLOSE that the provider's
+  // CLI supports these features while being EXPLICIT that myshell-tools does NOT
+  // invoke them and routing never uses them. Never set unless the registry knows.
+  readonly supportsProviderSkills?: boolean;
+  readonly supportsProviderSubagents?: boolean;
+  readonly providerFeatureSource?: string;
 }
 
 /**
@@ -280,6 +287,17 @@ function toSummaryModel(c: ModelCapability): CapabilitySummaryModel {
     ...(c.supportsNativeSession !== undefined
       ? { supportsNativeSession: c.supportsNativeSession }
       : {}),
+    // Provider-native feature facts (Stage 5) — carried ONLY when the registry
+    // actually knows them (unknown stays absent, never fabricated as false).
+    ...(c.supportsProviderSkills !== undefined
+      ? { supportsProviderSkills: c.supportsProviderSkills }
+      : {}),
+    ...(c.supportsProviderSubagents !== undefined
+      ? { supportsProviderSubagents: c.supportsProviderSubagents }
+      : {}),
+    ...(c.providerFeatureSource !== undefined
+      ? { providerFeatureSource: c.providerFeatureSource }
+      : {}),
   };
 }
 
@@ -320,12 +338,59 @@ function renderCapabilitySummary(summary: CapabilitySelfAwarenessSummary): strin
     const models = p.models.map(renderModel).join('; ');
     clauses.push(`${p.label} (${auth}): ${models}`);
   }
-  if (clauses.length === 0) return [];
+  const lines: string[] = [];
+  if (clauses.length > 0) {
+    let body = `- Known model capabilities (objective, from local detection + caches; unknown facts are omitted, not guessed): ${clauses.join('. ')}.`;
+    if (body.length > CAPABILITY_SUMMARY_CHAR_CAP) body = body.slice(0, CAPABILITY_SUMMARY_CHAR_CAP);
+    lines.push(body);
+  }
 
-  let body = `- Known model capabilities (objective, from local detection + caches; unknown facts are omitted, not guessed): ${clauses.join('. ')}.`;
-  if (body.length > CAPABILITY_SUMMARY_CHAR_CAP) body = body.slice(0, CAPABILITY_SUMMARY_CHAR_CAP);
+  // Provider-native feature inventory (Stage 5) — appended ONLY when the registry
+  // actually knows a provider supports a native feature. EXPLICIT non-execution
+  // framing: these are available IN THE PROVIDER, but myshell-tools does NOT invoke
+  // them; routing uses myshell-tools' own orchestrator. NEVER routable.
+  const feature = renderProviderFeatureLine(summary);
+  if (feature !== undefined) lines.push(feature);
+
+  if (lines.length === 0) return [];
 
   const routing =
     '- Routing explanation: choices are bounded by mode, plan, cooldown, flagship admission, and observed outcomes; explain a route using tier/mode/plan and known capability fit, and do NOT claim a model is "better" or has a knob (e.g. a Claude reasoning effort) without evidence in this block.';
-  return [body, routing];
+  lines.push(routing);
+  return lines;
+}
+
+/**
+ * Render the Stage-5 provider-native feature line (§8). Collects, per provider, the
+ * native features the registry KNOWS the provider's CLI supports (Skills / sub-agents),
+ * and states them with the binding non-execution framing: available in the provider,
+ * but myshell-tools does NOT invoke them automatically; routing uses myshell-tools'
+ * own orchestrator. Returns `undefined` when NO provider declares any such fact (so
+ * the line is omitted cleanly — never fabricated). PURE + self-capped.
+ */
+function renderProviderFeatureLine(
+  summary: CapabilitySelfAwarenessSummary,
+): string | undefined {
+  const clauses: string[] = [];
+  for (const p of summary.providers) {
+    const skills = p.models.some((m) => m.supportsProviderSkills === true);
+    const subagents = p.models.some((m) => m.supportsProviderSubagents === true);
+    if (!skills && !subagents) continue;
+    const feats: string[] = [];
+    if (skills) feats.push('Skills');
+    if (subagents) feats.push('sub-agents');
+    clauses.push(`${p.label} supports ${joinAnd(feats)}`);
+  }
+  if (clauses.length === 0) return undefined;
+
+  let line = `- Provider-native features: ${clauses.join('; ')} — these are available in the provider, but myshell-tools does NOT invoke them automatically; routing uses myshell-tools' own orchestrator (tier/mode/plan/cooldown/flagship admission), so do NOT claim to run a provider skill or sub-agent.`;
+  if (line.length > CAPABILITY_SUMMARY_CHAR_CAP) line = line.slice(0, CAPABILITY_SUMMARY_CHAR_CAP);
+  return line;
+}
+
+/** Join a short list with commas and a trailing "and" (e.g. "Skills and sub-agents"). PURE. */
+function joinAnd(items: readonly string[]): string {
+  if (items.length <= 1) return items[0] ?? '';
+  if (items.length === 2) return `${items[0]} and ${items[1]}`;
+  return `${items.slice(0, -1).join(', ')}, and ${items[items.length - 1]}`;
 }

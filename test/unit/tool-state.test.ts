@@ -312,6 +312,7 @@ describe('buildToolStateContext — capability summary rendering', () => {
     const out = buildToolStateContext(baseInput());
     assert.ok(!/Known model capabilities/.test(out));
     assert.ok(!/Routing explanation/.test(out));
+    assert.ok(!/Provider-native features/.test(out));
   });
 
   it('respects the whole-block char cap with the summary appended', () => {
@@ -336,5 +337,101 @@ describe('buildToolStateContext — capability summary rendering', () => {
     assert.ok(out.length <= TOOL_STATE_BLOCK_CHAR_CAP, `block ${out.length} > cap ${TOOL_STATE_BLOCK_CHAR_CAP}`);
     // capped to top 3 models per provider
     assert.ok(!/gpt-x-3\b/.test(out), 'only top 3 models per provider are rendered');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Stage 5 — provider-native feature inventory (FACTS ONLY, never execution).
+// ---------------------------------------------------------------------------
+
+/**
+ * A registry where Claude declares the Stage-5 NON-ROUTABLE provider-native facts
+ * (Skills + sub-agents, from claude-code-docs) and Codex declares NONE (absent =
+ * unknown). This pins the explicit non-execution framing and the "never fabricated"
+ * contract end-to-end through buildCapabilitySummary → buildToolStateContext.
+ */
+const REG_STAGE5: CapabilityRegistry = {
+  claude: [
+    {
+      provider: 'claude',
+      id: 'opus',
+      aliases: [],
+      tierHint: 'manager',
+      supportedReasoningEfforts: [],
+      supportsNativeSession: true,
+      supportsProviderSkills: true,
+      supportsProviderSubagents: true,
+      providerFeatureSource: 'claude-code-docs',
+      source: ['declarative'],
+    },
+  ],
+  codex: [
+    {
+      provider: 'codex',
+      id: 'gpt-5.5',
+      aliases: [],
+      tierHint: 'manager',
+      supportedReasoningEfforts: ['low', 'medium', 'high', 'xhigh'],
+      contextWindow: 272000,
+      supportsNativeSession: true,
+      // NO provider-native feature facts → must NOT appear in the rendered line.
+      source: ['declarative', 'codex-cache'],
+    },
+  ],
+  opencode: [],
+};
+
+const labelOf = (p: 'claude' | 'codex' | 'opencode'): string =>
+  ({ claude: 'Claude', codex: 'Codex', opencode: 'OpenCode' })[p] ?? p;
+
+describe('Stage 5 — provider-native feature self-awareness (facts only)', () => {
+  it('carries the non-routable provider-feature facts through buildCapabilitySummary', () => {
+    const summary = buildCapabilitySummary(
+      REG_STAGE5,
+      { claude: true, codex: true, opencode: false },
+      labelOf,
+    );
+    assert.ok(summary);
+    const claude = summary.providers.find((p) => p.provider === 'claude');
+    const m = claude?.models[0];
+    assert.equal(m?.supportsProviderSkills, true);
+    assert.equal(m?.supportsProviderSubagents, true);
+    assert.equal(m?.providerFeatureSource, 'claude-code-docs');
+    // Codex declares none → the facts stay ABSENT (never fabricated as false).
+    const codex = summary.providers.find((p) => p.provider === 'codex');
+    assert.equal(codex?.models[0]?.supportsProviderSkills, undefined);
+    assert.equal(codex?.models[0]?.supportsProviderSubagents, undefined);
+  });
+
+  it('renders the EXPLICIT non-execution framing when the facts are present', () => {
+    const summary = buildCapabilitySummary(
+      REG_STAGE5,
+      { claude: true, codex: true, opencode: false },
+      labelOf,
+    );
+    const out = buildToolStateContext(baseInput({ capabilitySummary: summary }));
+    assert.match(out, /Provider-native features:/);
+    assert.match(out, /Claude supports Skills and sub-agents/);
+    // The binding framing: available in the provider, NOT invoked by myshell-tools,
+    // routing uses myshell-tools' own orchestrator.
+    assert.match(out, /available in the provider/);
+    assert.match(out, /myshell-tools does NOT invoke them automatically/);
+    assert.match(out, /routing uses myshell-tools' own orchestrator/);
+    // Codex declared no native features → it must NOT be claimed to support any.
+    assert.ok(!/Codex supports/.test(out), 'Codex must not be claimed to support native features');
+  });
+
+  it('omits the provider-feature line entirely when NO provider declares facts (never fabricated)', () => {
+    // Same Codex-only registry, no provider-feature facts anywhere.
+    const noFeatureReg: CapabilityRegistry = { claude: [], codex: REG_STAGE5.codex, opencode: [] };
+    const summary = buildCapabilitySummary(
+      noFeatureReg,
+      { claude: false, codex: true, opencode: false },
+      labelOf,
+    );
+    const out = buildToolStateContext(baseInput({ capabilitySummary: summary }));
+    // Capability facts still render, but the provider-feature line is absent.
+    assert.match(out, /Known model capabilities/);
+    assert.ok(!/Provider-native features/.test(out), 'no facts → no provider-feature line');
   });
 });

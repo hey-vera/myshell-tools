@@ -92,6 +92,20 @@ export interface ModelCapability {
   readonly supportsParallelToolCalls?: boolean;
   readonly supportsNativeSession?: boolean;
   readonly costSpeedTier?: CostSpeedTier;
+  // --- Provider-native feature inventory (Stage 5, §6 + §8). NON-ROUTABLE. -----
+  // These describe what the PROVIDER's CLI supports natively (e.g. Claude Code's
+  // Skills + sub-agents). They are FACTS for honest self-awareness disclosure ONLY:
+  // myshell-tools does NOT invoke them and they NEVER enter route()/scoreModel/
+  // selectReasoningEffort or any selection (see §6 verdict: "non-routable facts").
+  // Set `true` ONLY from a real local source or a well-grounded declarative fact
+  // (with providerFeatureSource naming the basis); unknown = ABSENT, never `false`,
+  // never guessed from a brand.
+  /** Provider CLI natively supports Skills (filesystem instruction packs). NON-ROUTABLE. */
+  readonly supportsProviderSkills?: boolean;
+  /** Provider CLI natively supports sub-agents (delegated agents). NON-ROUTABLE. */
+  readonly supportsProviderSubagents?: boolean;
+  /** Where the provider-feature facts came from (e.g. 'claude-code-docs', a local dir). */
+  readonly providerFeatureSource?: string;
   /** All contributing sources, in merge order. Always at least one entry. */
   readonly source: readonly CapabilitySource[];
   /** ISO timestamp of the dynamic data that set this; set ONLY for dynamic facts. */
@@ -145,6 +159,11 @@ export interface ModelPreference {
  *  - conservative tierHint (matches detect.ts's current static tiering).
  *  - supportsNativeSession: true — Claude and Codex both support `--resume`/native
  *    continuity, which myshell already relies on in detect/native-session.
+ *  - supportsProviderSkills / supportsProviderSubagents: true for Claude only
+ *    (providerFeatureSource: 'claude-code-docs') — Claude Code natively supports
+ *    Skills and sub-agents per official docs. Stage 5 NON-ROUTABLE inventory facts:
+ *    myshell-tools does NOT invoke them and they NEVER enter route()/effort scoring.
+ *    Codex/OpenCode are left ABSENT (no grounded local fact = unknown, not false).
  *
  * OpenCode stays empty: it is a meta-provider whose real models come from
  * `opencode models` (detect.ts), never from a guessed default. Gemini is absent.
@@ -158,6 +177,12 @@ export const DECLARATIVE_MODEL_CAPABILITIES: CapabilityRegistry = {
       tierHint: 'manager',
       supportedReasoningEfforts: [],
       supportsNativeSession: true,
+      // Provider-native features (Stage 5): Claude Code natively supports Skills and
+      // sub-agents (official Claude Code docs). NON-ROUTABLE inventory facts only —
+      // myshell-tools does NOT invoke them; they never enter routing.
+      supportsProviderSkills: true,
+      supportsProviderSubagents: true,
+      providerFeatureSource: 'claude-code-docs',
       source: ['declarative'],
     },
     {
@@ -167,6 +192,9 @@ export const DECLARATIVE_MODEL_CAPABILITIES: CapabilityRegistry = {
       tierHint: 'ic',
       supportedReasoningEfforts: [],
       supportsNativeSession: true,
+      supportsProviderSkills: true,
+      supportsProviderSubagents: true,
+      providerFeatureSource: 'claude-code-docs',
       source: ['declarative'],
     },
     {
@@ -176,6 +204,9 @@ export const DECLARATIVE_MODEL_CAPABILITIES: CapabilityRegistry = {
       tierHint: 'worker',
       supportedReasoningEfforts: [],
       supportsNativeSession: true,
+      supportsProviderSkills: true,
+      supportsProviderSubagents: true,
+      providerFeatureSource: 'claude-code-docs',
       source: ['declarative'],
     },
   ],

@@ -5,7 +5,7 @@
 
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { route } from '../../src/core/route.ts';
+import { route, selectReasoningEffort } from '../../src/core/route.ts';
 import type { CapabilityRouteContext } from '../../src/core/route.ts';
 import { DEFAULT_POLICY, POLICY_PRESETS } from '../../src/core/policy.ts';
 import type { ProviderId } from '../../src/providers/port.ts';
@@ -798,5 +798,139 @@ describe('route — modelOutcomeOrder (Stage 4 weak tie-break)', () => {
       modelOutcomeOrder: [{ provider: 'claude', model: 'claude-sonnet-4-6' }],
     });
     assert.equal(fit.provider, 'codex', 'authed provider chosen; learned order cannot switch provider');
+  });
+});
+
+// ===========================================================================
+// Stage 5 — provider-native feature facts are NON-ROUTABLE.
+// A model that differs ONLY in supportsProviderSkills / supportsProviderSubagents /
+// providerFeatureSource must produce the SAME route decision. These facts are pure
+// self-awareness inventory; route()/scoreModel must never read them.
+// ===========================================================================
+describe('route — provider-native feature facts are non-routable (Stage 5)', () => {
+  // Two codex IC candidates with the SAME (neutral) capability facts. One variant of
+  // the registry adds the Stage-5 provider-feature flags; the routing-relevant fields
+  // (tier, window, vision, native session, efforts) are byte-for-byte identical.
+  function reg(withFeatures: boolean): CapabilityRegistry {
+    const feat = withFeatures
+      ? {
+          supportsProviderSkills: true,
+          supportsProviderSubagents: true,
+          providerFeatureSource: 'claude-code-docs',
+        }
+      : {};
+    return {
+      claude: [
+        {
+          provider: 'claude',
+          id: 'sonnet',
+          aliases: ['claude-sonnet-4-6'],
+          tierHint: 'ic',
+          supportedReasoningEfforts: [],
+          supportsNativeSession: true,
+          source: ['declarative'],
+          ...feat,
+        },
+      ],
+      opencode: [],
+      codex: [
+        {
+          provider: 'codex',
+          id: 'gpt-5.4',
+          aliases: [],
+          tierHint: 'ic',
+          supportedReasoningEfforts: [],
+          contextWindow: 400_000,
+          source: ['codex-cache'],
+          ...feat,
+        },
+        {
+          provider: 'codex',
+          id: 'gpt-5.2-codex',
+          aliases: ['codex'],
+          tierHint: 'ic',
+          supportedReasoningEfforts: [],
+          contextWindow: 128_000,
+          source: ['codex-cache'],
+          ...feat,
+        },
+      ],
+    };
+  }
+
+  const SCENARIOS: ReadonlyArray<{
+    readonly name: string;
+    readonly tier: Tier;
+    readonly pool: ProviderId[];
+    readonly models?: Partial<Record<ProviderId, readonly string[]>>;
+    readonly signals: CapabilityRouteContext['taskSignals'];
+  }> = [
+    {
+      name: 'small implementation task (baseline pick)',
+      tier: 'ic',
+      pool: ['codex'],
+      models: { codex: ['gpt-5.4', 'gpt-5.2-codex'] },
+      signals: { risk: 'low', routePlan: false, estimatedInputTokens: 2_000, taskKind: 'implementation' },
+    },
+    {
+      name: 'large-context task (window fit fires)',
+      tier: 'ic',
+      pool: ['codex'],
+      models: { codex: ['gpt-5.4', 'gpt-5.2-codex'] },
+      signals: { risk: 'high', routePlan: false, estimatedInputTokens: 300_000, taskKind: 'large-context' },
+    },
+    {
+      name: 'claude IC architecture turn',
+      tier: 'ic',
+      pool: ['claude'],
+      signals: { risk: 'high', routePlan: true, taskKind: 'architecture' },
+    },
+  ];
+
+  for (const s of SCENARIOS) {
+    it(`adding skills/sub-agent facts does NOT change the route decision — ${s.name}`, () => {
+      const without = route(s.tier, s.pool, DEFAULT_POLICY, s.models, undefined, undefined, {
+        mode: 'balanced',
+        registry: reg(false),
+        taskSignals: s.signals,
+      });
+      const withFeat = route(s.tier, s.pool, DEFAULT_POLICY, s.models, undefined, undefined, {
+        mode: 'balanced',
+        registry: reg(true),
+        taskSignals: s.signals,
+      });
+      // Identical provider, model, tier, AND capabilityReasons — the flags are
+      // invisible to scoring, so nothing about the decision moves.
+      assert.deepEqual(withFeat, without);
+    });
+  }
+
+  it('selectReasoningEffort ignores the provider-feature facts entirely', () => {
+    const base = {
+      provider: 'codex' as const,
+      id: 'gpt-5.5',
+      aliases: [],
+      tierHint: 'manager' as const,
+      supportedReasoningEfforts: ['low', 'medium', 'high', 'xhigh'] as const,
+      source: ['codex-cache'] as const,
+    };
+    const input = {
+      mode: 'quality-first' as const,
+      tier: 'manager' as const,
+      risk: 'critical' as const,
+      taskKind: 'architecture' as const,
+      routePlan: true,
+    };
+    const plain = selectReasoningEffort({ model: base, ...input });
+    const withFeat = selectReasoningEffort({
+      model: {
+        ...base,
+        supportsProviderSkills: true,
+        supportsProviderSubagents: true,
+        providerFeatureSource: 'claude-code-docs',
+      },
+      ...input,
+    });
+    assert.equal(withFeat, plain, 'effort selection must not read provider-feature facts');
   });
 });

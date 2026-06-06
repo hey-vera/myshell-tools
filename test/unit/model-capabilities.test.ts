@@ -84,6 +84,22 @@ describe('DECLARATIVE_MODEL_CAPABILITIES — well-formed, facts only', () => {
       assert.equal(cap.supportsNativeSession, true);
     }
   });
+
+  it('declares Claude provider-native features (Skills + sub-agents) with a source; Codex/OpenCode leave them ABSENT (Stage 5)', () => {
+    // Claude Code natively supports Skills + sub-agents (claude-code-docs). These are
+    // NON-ROUTABLE inventory facts only — set true with a providerFeatureSource.
+    for (const cap of reg.claude) {
+      assert.equal(cap.supportsProviderSkills, true, `${cap.id}: Claude supports Skills`);
+      assert.equal(cap.supportsProviderSubagents, true, `${cap.id}: Claude supports sub-agents`);
+      assert.equal(cap.providerFeatureSource, 'claude-code-docs', `${cap.id}: names its source`);
+    }
+    // Codex/OpenCode have no grounded local fact → unknown = ABSENT (never false).
+    for (const cap of [...reg.codex, ...reg.opencode]) {
+      assert.equal(cap.supportsProviderSkills, undefined, `${cap.id}: no fabricated Skills fact`);
+      assert.equal(cap.supportsProviderSubagents, undefined, `${cap.id}: no fabricated sub-agent fact`);
+      assert.equal(cap.providerFeatureSource, undefined, `${cap.id}: no fabricated feature source`);
+    }
+  });
 });
 
 describe('isReasoningEffort / KNOWN_REASONING_EFFORTS', () => {
