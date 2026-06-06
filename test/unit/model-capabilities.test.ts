@@ -97,6 +97,13 @@ describe('DECLARATIVE_MODEL_CAPABILITIES — well-formed, facts only', () => {
     }
   });
 
+  it('declares supportsSearchTool:true for every Codex model (codex exec supports web_search via -c tools.web_search=true)', () => {
+    assert.ok(reg.codex.length > 0, 'codex registry is non-empty');
+    for (const cap of reg.codex) {
+      assert.equal(cap.supportsSearchTool, true, `${cap.id}: Codex declares the native search tool`);
+    }
+  });
+
   it('declares Claude provider-native features (Skills + sub-agents) with a source; Codex/OpenCode leave them ABSENT (Stage 5)', () => {
     // Claude Code natively supports Skills + sub-agents (claude-code-docs). These are
     // NON-ROUTABLE inventory facts only — set true with a providerFeatureSource.

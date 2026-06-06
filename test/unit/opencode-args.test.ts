@@ -31,6 +31,11 @@ describe('buildOpencodeArgs — defaults (byte-for-byte unchanged)', () => {
     const args = buildOpencodeArgs(makeReq({ model: 'opencode-go/kimi-k2.6' }));
     assert.deepEqual(args, ['run', '--format', 'json', '-m', 'opencode-go/kimi-k2.6']);
   });
+
+  it('NEVER adds the codex web_search override even when webSearch is set (Codex-only feature)', () => {
+    const args = buildOpencodeArgs(makeReq({ webSearch: true }));
+    assert.ok(!args.some((a) => a.includes('web_search')), 'opencode args must not carry tools.web_search');
+  });
 });
 
 describe('buildOpencodeArgs — --variant reasoning-effort adapter', () => {

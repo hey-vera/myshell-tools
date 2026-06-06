@@ -61,6 +61,17 @@ export interface ProviderRequest {
    * to keep port.ts a leaf module.
    */
   readonly reasoningEffort?: import('../core/model-capabilities.js').ReasoningEffort;
+  /**
+   * Request the provider's NATIVE web-search tool for this run (provider-capability
+   * audit opportunity #3). Set by the orchestrator ONLY when the turn genuinely
+   * needs external/current facts — derived from the EXISTING engagement
+   * WEB_RESEARCH determination (the knowledge-boundary predicate), so it never
+   * fires on ordinary coding/local turns. When absent/false the adapter args are
+   * byte-for-byte unchanged. TODAY only the Codex adapter honours this (appends
+   * `-c tools.web_search=true` when the chosen codex model supportsSearchTool);
+   * Claude/OpenCode ignore it (their CLI web-search invocation is unverified).
+   */
+  readonly webSearch?: boolean;
 }
 
 /**

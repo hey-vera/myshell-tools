@@ -32,6 +32,11 @@ describe('buildClaudeArgs', () => {
     assert.ok(!args.includes('--resume'), 'no --resume when sessionId is unset');
   });
 
+  it('NEVER adds the codex web_search override even when webSearch is set (Codex-only feature)', () => {
+    const args = buildClaudeArgs(makeReq({ webSearch: true }));
+    assert.ok(!args.some((a) => a.includes('web_search')), 'claude args must not carry tools.web_search');
+  });
+
   it('maps concrete model ids to CLI aliases', () => {
     assert.ok(buildClaudeArgs(makeReq({ model: 'claude-opus-4-7' })).includes('opus'));
     assert.ok(buildClaudeArgs(makeReq({ model: 'claude-haiku-4-5' })).includes('haiku'));

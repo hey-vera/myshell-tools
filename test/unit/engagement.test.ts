@@ -200,6 +200,31 @@ describe('planEngagement — table', () => {
     assert.ok(plan.actions.includes('WEB_RESEARCH'));
   });
 
+  // The webSearch provider signal (audit #3) is derived from EXACTLY this
+  // WEB_RESEARCH determination — so these guard that ordinary coding turns never
+  // request native web search.
+  it('current/external queries → WEB_RESEARCH (the webSearch signal fires)', () => {
+    for (const task of [
+      "what's the latest version of Node?",
+      'look up current AWS Lambda pricing',
+      'search the web for the React 19 release date',
+    ]) {
+      const plan = planEngagement(signals({ classification: CLS('ic'), task }));
+      assert.ok(plan.actions.includes('WEB_RESEARCH'), `WEB_RESEARCH for: ${task}`);
+    }
+  });
+
+  it('ordinary coding turns → NO WEB_RESEARCH (webSearch stays off — conservative)', () => {
+    for (const task of [
+      'refactor this function',
+      'fix the failing test',
+      'rename the variable and update its callers',
+    ]) {
+      const plan = planEngagement(signals({ classification: CLS('ic'), task }));
+      assert.ok(!plan.actions.includes('WEB_RESEARCH'), `no WEB_RESEARCH for: ${task}`);
+    }
+  });
+
   it('explicit "inspect the existing code" → INVESTIGATE_CONTEXT selected', () => {
     const plan = planEngagement(
       signals({

@@ -35,6 +35,7 @@ import { detectProvider } from './detect.js';
 import { classifyError } from './errors.js';
 import { createCodexParser } from './codex-parse.js';
 import { replitPersistentEnv } from '../infra/credentials.js';
+import { DECLARATIVE_MODEL_CAPABILITIES, findCapability } from '../core/model-capabilities.js';
 
 // ---------------------------------------------------------------------------
 // Sandbox argument mapping
@@ -75,6 +76,19 @@ function toSandboxArg(level: SandboxLevel): string {
  * privilege boundary is the explicit `--sandbox <level>`, not the git check, so
  * skipping it is safe. (Live audit: codex errored out in a non-repo cwd without it.)
  */
+/**
+ * PURE: does the chosen codex model support the native web_search tool? Resolved
+ * against the declarative capability registry (id/alias match, case-insensitive).
+ * Returns false ONLY when an entry exists and explicitly declares
+ * `supportsSearchTool === false`; an unknown model (no registry entry) returns
+ * true, since the codex CLI exposes the web_search tool regardless. No I/O.
+ */
+function codexModelSupportsSearch(model: string): boolean {
+  const cap = findCapability(DECLARATIVE_MODEL_CAPABILITIES, 'codex', model);
+  if (cap === undefined) return true;
+  return cap.supportsSearchTool !== false;
+}
+
 export function buildCodexArgs(req: ProviderRequest): string[] {
   const opts = ['--json', '-m', req.model, '--sandbox', toSandboxArg(req.sandbox), '--skip-git-repo-check'];
   // Reasoning-effort knob (capability registry §5): thread the selected effort to
@@ -86,6 +100,18 @@ export function buildCodexArgs(req: ProviderRequest): string[] {
   // and against the absent case (byte-for-byte unchanged: no `-c` flag at all).
   if (req.reasoningEffort !== undefined && req.reasoningEffort !== 'none') {
     opts.push('-c', `model_reasoning_effort=${req.reasoningEffort}`);
+  }
+  // Native web-search tool (provider-capability audit #3). `codex exec` REJECTS the
+  // top-level `--search` flag, but enables live web search via the config override
+  // `-c tools.web_search=true` (CLI-verified with --strict-config; runs under the
+  // user's logged-in subscription — no api key / metered service). Append it ONLY
+  // when the orchestrator asked for search AND the chosen codex model declares
+  // supportsSearchTool. We gate on the declarative capability when KNOWN: an
+  // explicit `false` omits the override; an unknown model (no registry entry) still
+  // allows it, since the codex CLI tool exists. Absent/false req.webSearch → no
+  // `-c tools.web_search` at all (byte-for-byte unchanged).
+  if (req.webSearch === true && codexModelSupportsSearch(req.model)) {
+    opts.push('-c', 'tools.web_search=true');
   }
   if (req.sessionId !== undefined && req.sessionId.length > 0 && req.resume === true) {
     return ['exec', 'resume', req.sessionId, ...opts];

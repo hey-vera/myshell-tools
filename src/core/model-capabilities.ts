@@ -226,6 +226,10 @@ export const DECLARATIVE_MODEL_CAPABILITIES: CapabilityRegistry = {
       tierHint: 'manager',
       supportedReasoningEfforts: [],
       supportsNativeSession: true,
+      // `codex exec` supports the native web_search tool via `-c tools.web_search=true`
+      // (CLI-verified with --strict-config). Honest declarative fact — the Codex
+      // adapter gates the override on this flag.
+      supportsSearchTool: true,
       source: ['declarative'],
     },
     {
@@ -235,6 +239,7 @@ export const DECLARATIVE_MODEL_CAPABILITIES: CapabilityRegistry = {
       tierHint: 'ic',
       supportedReasoningEfforts: [],
       supportsNativeSession: true,
+      supportsSearchTool: true,
       source: ['declarative'],
     },
     {
@@ -244,6 +249,7 @@ export const DECLARATIVE_MODEL_CAPABILITIES: CapabilityRegistry = {
       tierHint: 'worker',
       supportedReasoningEfforts: [],
       supportsNativeSession: true,
+      supportsSearchTool: true,
       source: ['declarative'],
     },
   ],

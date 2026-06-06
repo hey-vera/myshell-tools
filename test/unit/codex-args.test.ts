@@ -94,3 +94,36 @@ describe('buildCodexArgs — reasoning effort (capability registry §5)', () => 
     assert.ok(args.includes('model_reasoning_effort=high'));
   });
 });
+
+describe('buildCodexArgs — native web search (provider-capability audit #3)', () => {
+  // `codex exec` REJECTS top-level `--search`; web search is enabled via the config
+  // override `-c tools.web_search=true` (CLI-verified with --strict-config).
+  it('omits tools.web_search when webSearch is absent (byte-for-byte unchanged)', () => {
+    const args = buildCodexArgs(makeReq());
+    assert.ok(!args.some((a) => a.startsWith('tools.web_search')), 'no web_search override by default');
+  });
+
+  it('omits tools.web_search when webSearch is false', () => {
+    const args = buildCodexArgs(makeReq({ webSearch: false }));
+    assert.ok(!args.some((a) => a.startsWith('tools.web_search')));
+  });
+
+  it('appends `-c tools.web_search=true` when webSearch+search-capable model', () => {
+    // gpt-5.5 declares supportsSearchTool:true in the registry.
+    const args = buildCodexArgs(makeReq({ model: 'gpt-5.5', webSearch: true }));
+    const i = args.indexOf('tools.web_search=true');
+    assert.ok(i > 0, 'web_search override present');
+    assert.strictEqual(args[i - 1], '-c', 'it is a -c config override');
+  });
+
+  it('enables web search for an unknown codex model (no registry entry) since the CLI tool exists', () => {
+    const args = buildCodexArgs(makeReq({ model: 'gpt-5-codex', webSearch: true }));
+    assert.ok(args.includes('tools.web_search=true'), 'unknown model still allows the tool');
+  });
+
+  it('threads tools.web_search alongside model_reasoning_effort', () => {
+    const args = buildCodexArgs(makeReq({ model: 'gpt-5.5', webSearch: true, reasoningEffort: 'high' }));
+    assert.ok(args.includes('model_reasoning_effort=high'));
+    assert.ok(args.includes('tools.web_search=true'));
+  });
+});

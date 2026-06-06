@@ -515,6 +515,15 @@ export async function* orchestrate(
   };
   const engagementPlan = planEngagement(engagementSignals);
 
+  // Native web-search request signal (provider-capability audit #3). REUSE the
+  // existing engagement WEB_RESEARCH determination — itself driven by the pure
+  // knowledge-boundary predicate `needsExternal` (engagement.ts §5.5) — rather than
+  // a parallel detector. So `webSearch` fires on EXACTLY the genuine external/current-
+  // fact turns the engine already flagged for research, and never on ordinary
+  // coding/local turns. Threaded onto the provider request below; only the Codex
+  // adapter honours it (Claude/OpenCode ignore it).
+  const wantsWebSearch = engagementPlan.actions.includes('WEB_RESEARCH');
+
   // -------------------------------------------------------------------------
   // (a3) ADAPTIVE PARTNER ENGINE v2 — compile the enforced TurnDirective (Stage 1).
   //
@@ -1139,6 +1148,7 @@ export async function* orchestrate(
         ? { sessionId: nativePlan.sessionId, resume: nativePlan.resume }
         : {}),
       ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
+      ...(wantsWebSearch ? { webSearch: true } : {}),
     };
     const start = deps.clock.now();
 
