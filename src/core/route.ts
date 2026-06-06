@@ -200,6 +200,34 @@ export function route(
   }
 
   /**
+   * Candidate model ids for `id` at THIS (already-clamped) tier — bounded EXACTLY
+   * as the existing machinery: pricing-table models for the provider+tier, then
+   * (when the provider advertises a set) kept to only its members valid for the
+   * tier (mirrors getCheapestForTier's tier+allowed filter, so neither the
+   * pre-pass nor capability-fit can ever consider a model the tier machinery would
+   * have excluded — e.g. a manager-tier id on an IC route). If that intersection is
+   * empty we degrade to the pricing-tier set, exactly like getCheapestForTier's
+   * graceful fallback. opencode real ids are not in the pricing table, so this
+   * yields the placeholder set and the baseline (selectOpencodeModel's pick)
+   * stands — we never re-rank arbitrary opencode ids. PURE, shared by the
+   * hard-requirement pre-pass and applyCapabilityFit so their bounds are identical.
+   */
+  function candidateModelsFor(
+    id: ProviderId,
+    allowedSet: readonly string[] | undefined,
+  ): readonly string[] {
+    const tierModels = PRICING_TABLE.models.filter((m) => m.provider === id && m.tier === tier);
+    if (allowedSet !== undefined) {
+      const allowed = new Set(allowedSet.map((a) => a.toLowerCase()));
+      const filtered = tierModels.filter(
+        (m) => allowed.has(m.model.toLowerCase()) || m.aliases.some((a) => allowed.has(a.toLowerCase())),
+      );
+      return (filtered.length > 0 ? filtered : tierModels).map((m) => m.model);
+    }
+    return tierModels.map((m) => m.model);
+  }
+
+  /**
    * Re-rank candidate models for an ALREADY-CHOSEN provider using objective
    * registry facts. Pure, bounded, fail-soft: it can only swap WHICH model of
    * `id` runs (always within the candidate set), never the provider; it never
@@ -214,26 +242,7 @@ export function route(
   ): RouteDecision {
     const registry = ctx.registry;
     const signals = ctx.taskSignals;
-    // Candidate model ids — bounded EXACTLY as the existing machinery: models for
-    // THIS provider at THIS (already-clamped) tier. When the provider advertises a
-    // set we keep only its members that are valid for the tier (mirrors
-    // getCheapestForTier's tier+allowed filter, so capability-fit can never select
-    // a model the tier machinery would have excluded — e.g. a manager-tier id on an
-    // IC route). If that intersection is empty we degrade to the pricing-tier set,
-    // exactly like getCheapestForTier's graceful fallback. opencode real ids are
-    // not in the pricing table, so this yields the placeholder set and the baseline
-    // (selectOpencodeModel's pick) stands — we never re-rank arbitrary opencode ids.
-    const tierModels = PRICING_TABLE.models.filter((m) => m.provider === id && m.tier === tier);
-    let candidates: readonly string[];
-    if (allowedSet !== undefined) {
-      const allowed = new Set(allowedSet.map((a) => a.toLowerCase()));
-      const filtered = tierModels.filter(
-        (m) => allowed.has(m.model.toLowerCase()) || m.aliases.some((a) => allowed.has(a.toLowerCase())),
-      );
-      candidates = (filtered.length > 0 ? filtered : tierModels).map((m) => m.model);
-    } else {
-      candidates = tierModels.map((m) => m.model);
-    }
+    const candidates = candidateModelsFor(id, allowedSet);
     if (registry === undefined || candidates.length === 0) {
       // Nothing to rank against → baseline, but still record the (empty/neutral)
       // reasoning so callers can tell capability-fit RAN with no actionable fact.
@@ -270,6 +279,112 @@ export function route(
     preferredOrder !== undefined && preferredOrder.length > 0 ? preferredOrder : undefined;
   const candidateOrders: ReadonlyArray<readonly ProviderId[]> =
     learnedOrder !== undefined ? [learnedOrder, preferredOrder_policy] : [preferredOrder_policy];
+
+  // -------------------------------------------------------------------------
+  // Capability-aware provider PRE-PASS (cross-provider hard-requirement fit).
+  //
+  // CONSERVATIVE + ACTIVATES ONLY ON A GENUINE HARD REQUIREMENT. When this pass
+  // does not fire — capabilityContext absent, registry absent, no hard requirement
+  // detected, or no available+authenticated provider KNOWN-satisfies it — we DO
+  // NOTHING and fall through to the existing auth-aware/standard passes below, so
+  // route() is byte-for-byte identical to today on every non-hard turn.
+  //
+  // A HARD requirement is one only some providers can hold (not a soft preference):
+  //   - needsVision === true (the turn truly has image input), OR
+  //   - estimatedInputTokens exceeds the known context window of some candidate
+  //     providers' in-tier models (a large-context need only big-window providers
+  //     can satisfy).
+  // (Web search is intentionally NOT detected here: CapabilityTaskSignals carries
+  //  no search signal, and the brief forbids inventing one.)
+  //
+  // When a hard requirement exists AND a registry is present, we compute which
+  // providers KNOWN-satisfy it (have an in-tier model — bounded EXACTLY like
+  // decisionFor via candidateModelsFor — whose registry capability satisfies the
+  // requirement). We then route to the best satisfying provider using the SAME
+  // preference logic as below (auth-aware over learned→policy order, then
+  // first-available over learned→policy order), restricted to the satisfying set.
+  // Bounds preserved: we only ever pick a provider that the unrestricted passes
+  // below could also have picked at this tier (available, and — under auth info —
+  // never a signed-out provider ahead of a signed-in one); we never change tier,
+  // bypass authorizeTier/maxTier (the pre-pass runs at the already-clamped `tier`),
+  // override cooldown (we operate only on the passed `available`), or reorder on
+  // unknown-capability guesses (only KNOWN-satisfying providers qualify). If the
+  // satisfying set is empty we fall through unchanged — never strand, never pick a
+  // signed-out/unavailable provider ahead of an eligible one.
+  if (capabilityContext?.registry !== undefined) {
+    const reg = capabilityContext.registry;
+    const signals = capabilityContext.taskSignals;
+    const needsVision = signals?.needsVision === true;
+    const est = signals?.estimatedInputTokens;
+    const needsLargeContext =
+      est !== undefined && est > 0 && est >= LARGE_CONTEXT_ENGAGE_TOKENS;
+
+    if (needsVision || needsLargeContext) {
+      // A provider KNOWN-satisfies the requirement when at least one of its in-tier
+      // candidate models has a registry capability that is KNOWN to satisfy it.
+      // Unknown capability is NEITHER a satisfier nor a disqualifier (it simply
+      // does not count toward the satisfying set), so we never reorder on a guess.
+      const knownSatisfies = (id: ProviderId): boolean => {
+        const candidates = candidateModelsFor(id, availableModels?.[id]);
+        for (const modelId of candidates) {
+          const cap = findCapability(reg, id, modelId);
+          if (cap === undefined) continue;
+          if (needsVision && cap.supportsVision !== true) continue;
+          if (needsLargeContext) {
+            const window = cap.maxContextWindow ?? cap.contextWindow;
+            if (
+              window === undefined ||
+              !(est !== undefined && window >= est + LARGE_CONTEXT_MARGIN_TOKENS)
+            ) {
+              continue;
+            }
+          }
+          return true;
+        }
+        return false;
+      };
+
+      // Pick within the SATISFYING set using the existing preference logic: prefer
+      // an authenticated+available satisfying provider (when auth info is present),
+      // walking learned→policy order; then a first-available satisfying provider,
+      // walking learned→policy order. This is the same two-phase walk as below,
+      // just gated by `knownSatisfies` — so a satisfying provider is never picked
+      // ahead of an equally-eligible one in a way the standard passes wouldn't.
+      if (hasAuthInfo) {
+        for (const order of candidateOrders) {
+          for (const preferred of order) {
+            if (
+              available.includes(preferred) &&
+              (authenticatedProviders as readonly ProviderId[]).includes(preferred) &&
+              knownSatisfies(preferred)
+            ) {
+              return decisionFor(preferred);
+            }
+          }
+        }
+      }
+      for (const order of candidateOrders) {
+        for (const preferred of order) {
+          if (available.includes(preferred) && knownSatisfies(preferred)) {
+            // When auth info IS present, do NOT let this first-available phase pick
+            // a signed-out satisfying provider ahead of a signed-in (but
+            // non-satisfying) one — that would strand the user on an unauthenticated
+            // provider. The auth-aware phase above already handled authed
+            // satisfiers; if none existed, fall through to today's selection rather
+            // than promote a signed-out provider on capability grounds.
+            if (
+              hasAuthInfo &&
+              !(authenticatedProviders as readonly ProviderId[]).includes(preferred)
+            ) {
+              continue;
+            }
+            return decisionFor(preferred);
+          }
+        }
+      }
+      // No KNOWN-satisfying eligible provider → fall through unchanged.
+    }
+  }
 
   // Auth-aware pass: when authenticatedProviders is supplied and non-empty, prefer
   // the first provider that is both available AND authenticated. We try the

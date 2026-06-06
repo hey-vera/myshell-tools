@@ -934,3 +934,301 @@ describe('route — provider-native feature facts are non-routable (Stage 5)', (
     assert.equal(withFeat, plain, 'effort selection must not read provider-feature facts');
   });
 });
+
+// ===========================================================================
+// Cross-provider capability-aware PRE-PASS (combined-utilization lever, #7/#6).
+//
+// route() chooses the PROVIDER capability-aware ONLY for a genuine HARD
+// requirement (true image input, or a large-context need only some providers can
+// hold), and ONLY among available+authenticated providers whose in-tier model
+// KNOWN-satisfies it. Otherwise it is byte-for-byte today. These tests pin both
+// the activation and — most importantly — the non-regression + bounds.
+// ===========================================================================
+describe('route — cross-provider capability pre-pass (hard requirements)', () => {
+  // Registry where, at IC tier, ONLY codex's gpt-5.4 supports vision; claude has a
+  // known sonnet WITHOUT vision (known-false, not just unknown). Policy order is
+  // claude-first, so without the pre-pass claude would win.
+  const VISION_REG: CapabilityRegistry = {
+    claude: [
+      {
+        provider: 'claude',
+        id: 'sonnet',
+        aliases: ['claude-sonnet-4-6'],
+        tierHint: 'ic',
+        supportedReasoningEfforts: [],
+        supportsVision: false, // KNOWN no vision
+        source: ['declarative'],
+      },
+    ],
+    opencode: [],
+    codex: [
+      {
+        provider: 'codex',
+        id: 'gpt-5.2-codex',
+        aliases: ['codex'],
+        tierHint: 'ic',
+        supportedReasoningEfforts: [],
+        supportsVision: true, // the only vision-capable in-tier model
+        source: ['codex-cache'],
+      },
+    ],
+  };
+
+  // Registry where BOTH claude and codex have a vision-capable IC model.
+  const BOTH_VISION_REG: CapabilityRegistry = {
+    claude: [
+      {
+        provider: 'claude',
+        id: 'sonnet',
+        aliases: ['claude-sonnet-4-6'],
+        tierHint: 'ic',
+        supportedReasoningEfforts: [],
+        supportsVision: true,
+        source: ['declarative'],
+      },
+    ],
+    opencode: [],
+    codex: [
+      {
+        provider: 'codex',
+        id: 'gpt-5.2-codex',
+        aliases: ['codex'],
+        tierHint: 'ic',
+        supportedReasoningEfforts: [],
+        supportsVision: true,
+        source: ['codex-cache'],
+      },
+    ],
+  };
+
+  // Registry where claude IC has a SMALL window and codex IC a LARGE one.
+  const CONTEXT_REG: CapabilityRegistry = {
+    claude: [
+      {
+        provider: 'claude',
+        id: 'sonnet',
+        aliases: ['claude-sonnet-4-6'],
+        tierHint: 'ic',
+        supportedReasoningEfforts: [],
+        contextWindow: 128_000, // too small for 300k
+        source: ['declarative'],
+      },
+    ],
+    opencode: [],
+    codex: [
+      {
+        provider: 'codex',
+        id: 'gpt-5.2-codex',
+        aliases: ['codex'],
+        tierHint: 'ic',
+        supportedReasoningEfforts: [],
+        contextWindow: 400_000, // holds 300k + margin
+        source: ['codex-cache'],
+      },
+    ],
+  };
+
+  // Registry where NO IC model has a KNOWN window (vision/context all unknown).
+  const UNKNOWN_REG: CapabilityRegistry = {
+    claude: [
+      {
+        provider: 'claude',
+        id: 'sonnet',
+        aliases: ['claude-sonnet-4-6'],
+        tierHint: 'ic',
+        supportedReasoningEfforts: [],
+        source: ['declarative'], // window + vision unknown
+      },
+    ],
+    opencode: [],
+    codex: [
+      {
+        provider: 'codex',
+        id: 'gpt-5.2-codex',
+        aliases: ['codex'],
+        tierHint: 'ic',
+        supportedReasoningEfforts: [],
+        source: ['codex-cache'], // window + vision unknown
+      },
+    ],
+  };
+
+  const VISION_SIGNALS = {
+    risk: 'medium' as const,
+    routePlan: false,
+    needsVision: true,
+    taskKind: 'implementation' as const,
+  };
+  const LARGE_SIGNALS = {
+    risk: 'high' as const,
+    routePlan: false,
+    estimatedInputTokens: 300_000,
+    taskKind: 'large-context' as const,
+  };
+  const SMALL_SIGNALS = {
+    risk: 'low' as const,
+    routePlan: false,
+    estimatedInputTokens: 2_000,
+    taskKind: 'implementation' as const,
+  };
+
+  // --- Non-regression: no hard requirement → deep-equals today --------------
+  it('no hard requirement → route() deep-equals today across every call shape (with registry present)', () => {
+    const cases: Array<[Tier, ProviderId[], Policy, Parameters<typeof route>[3]?, readonly ProviderId[]?, readonly ProviderId[]?]> = [
+      ['ic', CLAUDE_ONLY, DEFAULT_POLICY],
+      ['ic', CODEX_ONLY, DEFAULT_POLICY],
+      ['worker', BOTH, DEFAULT_POLICY],
+      ['manager', CLAUDE_ONLY, MANAGER_OK_POLICY],
+      ['ic', ['codex'], DEFAULT_POLICY, { codex: ['gpt-5.4', 'gpt-5.5'] }],
+      ['ic', BOTH, DEFAULT_POLICY, undefined, ['codex']],
+      ['ic', BOTH, DEFAULT_POLICY, undefined, ['claude', 'codex'], ['codex', 'claude']],
+    ];
+    for (const [tier, pool, policy, models, authed, learned] of cases) {
+      // Baseline: NO capability context at all (today's exact behaviour).
+      const base = route(tier, pool, policy, models, authed, learned);
+      // With a registry present but only a SMALL-context / non-vision signal — the
+      // pre-pass must NOT fire, so the decision (incl. capabilityReasons from the
+      // within-provider fit) must equal the no-pre-pass path. We compare provider,
+      // model and tier (the routing decision the pre-pass governs) byte-for-byte.
+      const withReg = route(tier, pool, policy, models, authed, learned, {
+        mode: 'balanced',
+        registry: CONTEXT_REG,
+        taskSignals: SMALL_SIGNALS,
+      });
+      assert.equal(withReg.provider, base.provider, `provider must match for ${tier}/${pool}`);
+      assert.equal(withReg.model, base.model, `model must match for ${tier}/${pool}`);
+      assert.equal(withReg.tier, base.tier, `tier must match for ${tier}/${pool}`);
+    }
+  });
+
+  it('capabilityContext absent → byte-for-byte identical even on a vision-shaped pool', () => {
+    const base = route('ic', BOTH, DEFAULT_POLICY, undefined, ['claude', 'codex']);
+    const same = route('ic', BOTH, DEFAULT_POLICY, undefined, ['claude', 'codex'], undefined, undefined);
+    assert.deepEqual(same, base);
+    assert.ok(!('capabilityReasons' in same));
+  });
+
+  // --- needsVision routes to the only vision-capable authed provider --------
+  it('needsVision → routes to the ONLY vision-capable authed provider even though it is later in policy order', () => {
+    // Policy order is claude-first; both authed; only codex has a vision model.
+    const fit = route('ic', BOTH, DEFAULT_POLICY, undefined, ['claude', 'codex'], undefined, {
+      mode: 'balanced',
+      registry: VISION_REG,
+      taskSignals: VISION_SIGNALS,
+    });
+    assert.equal(fit.provider, 'codex', 'must route to the vision-capable provider');
+  });
+
+  it('needsVision with BOTH vision-capable → existing order wins (claude first)', () => {
+    const fit = route('ic', BOTH, DEFAULT_POLICY, undefined, ['claude', 'codex'], undefined, {
+      mode: 'balanced',
+      registry: BOTH_VISION_REG,
+      taskSignals: VISION_SIGNALS,
+    });
+    assert.equal(fit.provider, 'claude', 'when both satisfy, the existing claude-first order wins');
+  });
+
+  // --- Vision-capable provider signed out → falls through, no stranding -----
+  it('needsVision but the only vision-capable provider is SIGNED OUT → falls through to today (no stranding, no signed-out pick)', () => {
+    // codex has the vision model but is NOT authenticated; claude IS authed (no vision).
+    const fit = route('ic', BOTH, DEFAULT_POLICY, undefined, ['claude'], undefined, {
+      mode: 'balanced',
+      registry: VISION_REG,
+      taskSignals: VISION_SIGNALS,
+    });
+    const base = route('ic', BOTH, DEFAULT_POLICY, undefined, ['claude']);
+    assert.equal(fit.provider, 'claude', 'must not strand on the signed-out vision provider');
+    assert.equal(fit.provider, base.provider, 'falls through to today’s authed selection');
+  });
+
+  it('needsVision but the only vision-capable provider is UNAVAILABLE → falls through', () => {
+    // Only claude available (no vision); codex (vision) not in the available pool.
+    const fit = route('ic', CLAUDE_ONLY, DEFAULT_POLICY, undefined, undefined, undefined, {
+      mode: 'balanced',
+      registry: VISION_REG,
+      taskSignals: VISION_SIGNALS,
+    });
+    assert.equal(fit.provider, 'claude', 'never selects an unavailable provider');
+  });
+
+  // --- Large context prefers the bigger-window authed provider --------------
+  it('large-context → prefers the bigger-window authed provider over the policy-first small-window one', () => {
+    const fit = route('ic', BOTH, DEFAULT_POLICY, undefined, ['claude', 'codex'], undefined, {
+      mode: 'balanced',
+      registry: CONTEXT_REG,
+      taskSignals: LARGE_SIGNALS,
+    });
+    assert.equal(fit.provider, 'codex', 'big-window provider satisfies the large-context requirement');
+  });
+
+  it('large-context but the big-window provider is SIGNED OUT → falls through to the authed (small-window) provider', () => {
+    const fit = route('ic', BOTH, DEFAULT_POLICY, undefined, ['claude'], undefined, {
+      mode: 'balanced',
+      registry: CONTEXT_REG,
+      taskSignals: LARGE_SIGNALS,
+    });
+    assert.equal(fit.provider, 'claude', 'no stranding on the signed-out big-window provider');
+  });
+
+  // --- Unknown caps → no reorder --------------------------------------------
+  it('unknown capability for all providers → NO reorder (falls through to today)', () => {
+    const fit = route('ic', BOTH, DEFAULT_POLICY, undefined, ['claude', 'codex'], undefined, {
+      mode: 'balanced',
+      registry: UNKNOWN_REG,
+      taskSignals: LARGE_SIGNALS,
+    });
+    const base = route('ic', BOTH, DEFAULT_POLICY, undefined, ['claude', 'codex']);
+    assert.equal(fit.provider, base.provider, 'unknown windows must not move the provider');
+    assert.equal(fit.provider, 'claude');
+  });
+
+  it('unknown vision for all providers → NO reorder', () => {
+    const fit = route('ic', BOTH, DEFAULT_POLICY, undefined, ['claude', 'codex'], undefined, {
+      mode: 'balanced',
+      registry: UNKNOWN_REG,
+      taskSignals: VISION_SIGNALS,
+    });
+    assert.equal(fit.provider, 'claude', 'unknown vision is not a satisfier — no reorder');
+  });
+
+  // --- Bounds: never changes tier / never picks unauthed ahead of authed ----
+  it('pre-pass never changes tier: a manager request under balanced stays clamped to ic', () => {
+    const fit = route('manager', BOTH, DEFAULT_POLICY, undefined, ['claude', 'codex'], undefined, {
+      mode: 'balanced',
+      registry: CONTEXT_REG,
+      taskSignals: { risk: 'critical', routePlan: true, estimatedInputTokens: 300_000, taskKind: 'large-context' },
+    });
+    assert.equal(fit.tier, 'ic', 'tier must remain clamped — the pre-pass never opens manager');
+  });
+
+  it('pre-pass never picks an unauthed satisfier ahead of an authed non-satisfier', () => {
+    // codex satisfies (big window) but is SIGNED OUT; claude is authed but small window.
+    const fit = route('ic', BOTH, DEFAULT_POLICY, undefined, ['claude'], undefined, {
+      mode: 'balanced',
+      registry: CONTEXT_REG,
+      taskSignals: LARGE_SIGNALS,
+    });
+    assert.equal(fit.provider, 'claude', 'authed provider wins over a signed-out satisfier');
+  });
+
+  it('pre-pass never selects a provider not in available', () => {
+    // codex is the only satisfier in the registry but is NOT available.
+    const fit = route('ic', CLAUDE_ONLY, DEFAULT_POLICY, undefined, ['claude'], undefined, {
+      mode: 'balanced',
+      registry: CONTEXT_REG,
+      taskSignals: LARGE_SIGNALS,
+    });
+    assert.equal(fit.provider, 'claude');
+  });
+
+  it('no auth info supplied: large-context still prefers the satisfying available provider (policy order within satisfiers)', () => {
+    // No authenticatedProviders. claude (small) is policy-first but does NOT satisfy;
+    // codex (big) satisfies → first-available phase over the satisfying set picks codex.
+    const fit = route('ic', BOTH, DEFAULT_POLICY, undefined, undefined, undefined, {
+      mode: 'balanced',
+      registry: CONTEXT_REG,
+      taskSignals: LARGE_SIGNALS,
+    });
+    assert.equal(fit.provider, 'codex');
+  });
+});
