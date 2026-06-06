@@ -349,6 +349,18 @@ export interface OrchestrateDeps {
    */
   readonly availableModels?: Partial<Record<ProviderId, readonly string[]>>;
   /**
+   * Image attachments for THIS turn (provider-capability audit opportunity #4,
+   * image scope). Populated by the interface layer (menu.ts / cli.ts) from the
+   * user's message: the PURE extractor (core/attachments.ts) finds candidate image
+   * paths, then the interface layer keeps only those that EXIST on disk (the fs
+   * existence check lives there, never in core). When present + non-empty,
+   * orchestrate sets taskSignals.needsVision = true (so the shipped cross-provider
+   * routing prefers a vision-capable provider) AND threads these onto every provider
+   * request. ABSENT/empty → needsVision stays false and provider args are
+   * byte-for-byte unchanged. Type-only import to keep types.ts a leaf module.
+   */
+  readonly attachments?: readonly import('./attachments.js').Attachment[];
+  /**
    * The merged, structured capability registry (capability registry Layer 2 —
    * the SAME snapshot the self-awareness summary is derived from in cli.ts /
    * menu.ts; it is REUSED here, never recomputed). When present, orchestrate

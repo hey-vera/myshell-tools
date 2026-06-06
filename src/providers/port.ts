@@ -72,6 +72,20 @@ export interface ProviderRequest {
    * Claude/OpenCode ignore it (their CLI web-search invocation is unverified).
    */
   readonly webSearch?: boolean;
+  /**
+   * Local image attachments for this run (provider-capability audit opportunity #4,
+   * scoped to images). Set by the orchestrator ONLY when the user's message
+   * referenced a real, existing local image file (the impure existence check lives
+   * in the interface layer; the pure extractor in core/attachments.ts). When present
+   * the turn is treated as vision (taskSignals.needsVision = true → routed to a
+   * vision-capable provider). Adapters that can attach images thread one CLI flag per
+   * path: Codex appends `-i <path>` (verified `codex exec -i/--image`); OpenCode
+   * appends `-f <path>` (verified `opencode run -f/--file`). Claude does NOT attach
+   * (local-image invocation unverified) — fail-soft, the attachment is simply not
+   * passed. ABSENT/empty → adapter args are byte-for-byte unchanged. Type-only import
+   * to keep port.ts a leaf module.
+   */
+  readonly attachments?: readonly import('../core/attachments.js').Attachment[];
 }
 
 /**

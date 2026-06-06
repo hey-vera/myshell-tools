@@ -805,14 +805,19 @@ export async function* orchestrate(
     deps.intentFrame,
     deps.engagementPlan,
   ]);
-  // needsVision is true ONLY when the turn genuinely carries image input. The
-  // text-only orchestration pipeline has no image channel today, so this stays
-  // false (the vision gate never fires falsely). Reserved for a future image path.
+  // needsVision is true ONLY when the turn genuinely carries image input (audit
+  // opportunity #4). It is derived from REAL image attachments the interface layer
+  // resolved (extracted from the message AND confirmed to exist on disk); no image
+  // attachment → false, so the vision gate never fires falsely and a text-only turn
+  // is byte-for-byte unchanged. When true, the shipped cross-provider routing
+  // (route.ts) prefers a vision-capable provider (codex/opencode).
+  const hasImageAttachment =
+    deps.attachments !== undefined && deps.attachments.some((a) => a.kind === 'image');
   const taskSignals: CapabilityTaskSignals = {
     risk: classification.risk,
     routePlan,
     estimatedInputTokens,
-    needsVision: false,
+    needsVision: hasImageAttachment,
     taskKind: deriveTaskKind({
       task,
       tier: classification.tier,
@@ -1149,6 +1154,14 @@ export async function* orchestrate(
         : {}),
       ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
       ...(wantsWebSearch ? { webSearch: true } : {}),
+      // Image attachments (audit #4): threaded onto the request ONLY when the turn
+      // genuinely carries image input (the interface layer extracted + confirmed
+      // existence). Adapters that support images attach one CLI flag per path
+      // (codex `-i`, opencode `-f`); claude ignores them (fail-soft). Absent → the
+      // field is omitted entirely (byte-for-byte unchanged).
+      ...(hasImageAttachment && deps.attachments !== undefined
+        ? { attachments: deps.attachments }
+        : {}),
     };
     const start = deps.clock.now();
 

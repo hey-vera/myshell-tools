@@ -96,6 +96,17 @@ export function buildOpencodeArgs(req: ProviderRequest): string[] {
     const variant = effortToVariant(req.reasoningEffort);
     if (variant !== null) args.push('--variant', variant);
   }
+  // Image attachments (provider-capability audit #4, image scope). `opencode run`
+  // accepts `-f/--file <path>` (repeatable) to attach a local file to the prompt
+  // under the user's connected subscription — no api key / upload service. Append
+  // `-f <path>` for each image attachment the orchestrator set (only when it
+  // confirmed the file exists). Absent/empty → no `-f` flag (byte-for-byte
+  // unchanged: just `run --format json [-m model] [--variant …]`).
+  if (req.attachments !== undefined) {
+    for (const att of req.attachments) {
+      if (att.kind === 'image') args.push('-f', att.path);
+    }
+  }
   return args;
 }
 

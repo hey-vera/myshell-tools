@@ -17,6 +17,7 @@ import type { PlanInfo } from './core/policy.js';
 import type { OrchestrateDeps } from './core/types.js';
 import type { OutputSink } from './interface/render.js';
 import { runTask } from './interface/run.js';
+import { resolveImageAttachments } from './infra/attachments.js';
 import { startRepl } from './interface/repl.js';
 import { startMenu } from './interface/menu.js';
 import type { MenuContext } from './interface/menu.js';
@@ -495,7 +496,15 @@ async function main(): Promise<void> {
       capability?.registry,
       modelOutcomeOrderByTaskKind,
     );
-    const result = await runTask(task, deps, out, new AbortController().signal);
+    // Image attachments (audit #4, image scope): the IMPURE existence check lives
+    // here (fs allowed). The pure extractor finds candidate image paths in the
+    // task; we keep only those that exist on disk and thread them onto deps so
+    // orchestrate sets needsVision + passes them to a vision-capable provider.
+    // No real image → empty → field omitted → behaviour byte-for-byte unchanged.
+    const imageAttachments = resolveImageAttachments(task, { cwd });
+    const depsWithAttachments: OrchestrateDeps =
+      imageAttachments.length > 0 ? { ...deps, attachments: imageAttachments } : deps;
+    const result = await runTask(task, depsWithAttachments, out, new AbortController().signal);
     // Notify-only update nudge for the scripted / one-shot path. The interactive
     // menu auto-updates, but `run` must NEVER swap the binary mid-task. Written
     // to stderr and TTY-guarded so it can't corrupt piped stdout or spam CI logs.

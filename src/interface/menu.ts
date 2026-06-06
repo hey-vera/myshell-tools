@@ -84,6 +84,7 @@ import { renderResumeTranscript, pickCopyText, renderConversationMarkdown } from
 import { deriveTitleFromRecap, isStubTitle } from '../infra/conversations.js';
 import { systemClipboardPort, type ClipboardPort } from '../infra/clipboard.js';
 import { resolveStateHome } from '../infra/state-dir.js';
+import { resolveImageAttachments } from '../infra/attachments.js';
 import { runTask } from './run.js';
 import { runLogin } from '../commands/login.js';
 import type { LoginMethod } from '../commands/login.js';
@@ -4802,11 +4803,20 @@ async function runChatLoop(
         return 'continue';
       }
 
-      const deps = buildDeps(
+      const depsBase = buildDeps(
         priorHistory,
         await resolveTurnMemory(line),
         await resolveEnvironmentOnce(),
       );
+      // Image attachments (audit #4, image scope): the IMPURE existence check lives
+      // here in the interface layer (fs allowed). The pure extractor finds candidate
+      // image paths in the user's message; we keep only those that exist on disk and
+      // thread them onto deps so orchestrate sets needsVision + routes the turn to a
+      // vision-capable provider (codex `-i` / opencode `-f`). No real image → empty
+      // → field omitted → behaviour byte-for-byte unchanged.
+      const turnAttachments = resolveImageAttachments(line, { cwd: ctx.cwd });
+      const deps: OrchestrateDeps =
+        turnAttachments.length > 0 ? { ...depsBase, attachments: turnAttachments } : depsBase;
 
       if (mutableCtx.config.autoGoal === true && effectiveMode === 'quality-first') {
         const autoClassification = classify(line);
@@ -4866,11 +4876,16 @@ async function runChatLoop(
           // Bug 5 fix: re-detect with the freshly-authenticated env so the retry
           // deps reflect the now-signed-in provider (not the stale pre-login state).
           mutableCtx.env = await detectEnvironmentFn();
-          const retryDeps = buildDeps(
+          const retryDepsBase = buildDeps(
             await ctx.store.load(convId),
             await resolveTurnMemory(line),
             await resolveEnvironmentOnce(),
           );
+          // Re-thread image attachments onto the retry (same message → same images).
+          const retryDeps: OrchestrateDeps =
+            turnAttachments.length > 0
+              ? { ...retryDepsBase, attachments: turnAttachments }
+              : retryDepsBase;
           // Retry the same task once.
           const retryAc = new AbortController();
           currentAc = retryAc;

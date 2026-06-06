@@ -113,6 +113,17 @@ export function buildCodexArgs(req: ProviderRequest): string[] {
   if (req.webSearch === true && codexModelSupportsSearch(req.model)) {
     opts.push('-c', 'tools.web_search=true');
   }
+  // Image attachments (provider-capability audit #4, image scope). `codex exec`
+  // accepts `-i/--image <FILE>` (one flag per image; repeatable) to attach local
+  // image(s) to the prompt under the user's logged-in subscription — no api key /
+  // upload service. Append `-i <path>` for each attachment the orchestrator set
+  // (only image-kind, only when it confirmed the file exists). Absent/empty
+  // attachments → no `-i` flag at all (byte-for-byte unchanged).
+  if (req.attachments !== undefined) {
+    for (const att of req.attachments) {
+      if (att.kind === 'image') opts.push('-i', att.path);
+    }
+  }
   if (req.sessionId !== undefined && req.sessionId.length > 0 && req.resume === true) {
     return ['exec', 'resume', req.sessionId, ...opts];
   }
