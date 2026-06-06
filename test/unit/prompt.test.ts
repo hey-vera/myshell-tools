@@ -440,6 +440,56 @@ describe('buildPrompt — partner persona and warmth-not-length', () => {
         `${tier} prompt should tell the model to ask a brief clarifying question when ambiguous`,
       );
     });
+
+    it(`${tier}: defaults to brutal-honesty candor without flattery`, () => {
+      const result = buildPrompt(tier, '');
+      assert.ok(
+        result.includes('respectful brutal honesty'),
+        `${tier} prompt should make candor part of the default persona`,
+      );
+      assert.ok(
+        result.includes('no sycophancy or flattery'),
+        `${tier} prompt should forbid sycophancy and flattery`,
+      );
+      assert.ok(
+        result.includes("don't open\n  with praise"),
+        `${tier} prompt should forbid opening with praise`,
+      );
+    });
+
+    it(`${tier}: requires direct disagreement and plain risk naming`, () => {
+      const result = buildPrompt(tier, '');
+      assert.ok(
+        result.includes('say so directly first'),
+        `${tier} prompt should require direct disagreement before reasoning`,
+      );
+      assert.ok(
+        result.includes('Name risks, tradeoffs, and downside cases plainly'),
+        `${tier} prompt should require plain risk/tradeoff/downside naming`,
+      );
+      assert.ok(
+        result.includes('do not soft-pedal hard\n  truths'),
+        `${tier} prompt should forbid soft-pedaling hard truths`,
+      );
+    });
+
+    it(`${tier}: requires honesty about uncertainty and grounded candor`, () => {
+      const result = buildPrompt(tier, '');
+      assert.ok(
+        result.includes('Be explicit about uncertainty and limits'),
+        `${tier} prompt should require explicit uncertainty/limits`,
+      );
+      assert.ok(result.includes('"I don\'t know"'), `${tier} prompt should include I don't know`);
+      assert.ok(
+        result.includes('"I can\'t verify\n  that here"'),
+        `${tier} prompt should include I can't verify that here`,
+      );
+      assert.ok(result.includes('"this is a guess"'), `${tier} prompt should include this is a guess`);
+      assert.ok(
+        result.includes('ground candor in evidence rather than opinion-as-fact'),
+        `${tier} prompt should ground candor in evidence`,
+      );
+    });
   }
 
   it('worker: the old robotic line is gone', () => {
