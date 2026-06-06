@@ -15,6 +15,16 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   resumed goal's contract from the persisted `workTrace` (niche: the in-run contract
   is already kept in memory; only cross-session resume benefits). Optional.
 
+## [3.18.1]
+
+### Fixed
+- **Doubled input line (correct root cause).** 3.18.0 attacked the wrong layer. The
+  real cause: the chat readline interface used Node's DEFAULT prompt `'> '`, and a
+  paste (any line refresh) makes readline repaint `'> ' + buffer` at column 0 —
+  competing with the manually-written `❯ ` caret and showing the pasted text on a
+  second line. Fixed by setting readline's prompt to empty (`prompt: ''`) so a
+  refresh repaints just the buffer; reverted the 3.18.0 cursor-math echo hack.
+
 ## [3.18.0]
 
 ### Fixed (live-found — chat feel)

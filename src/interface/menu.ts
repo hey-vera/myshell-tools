@@ -3296,17 +3296,6 @@ function renderDiscardedQueue(
 }
 
 /**
- * Replace readline's live prompt-preview row with one stable committed input
- * echo. The chat prompt is written manually (`❯ `), while readline owns the
- * typed text; after Enter the terminal cursor is on the next row, so clear that
- * preview row before any task/command output is printed.
- */
-function renderCommittedChatInput(out: OutputSink, line: string): void {
-  if (!out.isTty) return;
-  out.write(`\r\x1b[K\x1b[1A\r\x1b[K> ${line}\n`);
-}
-
-/**
  * Render a {@link QuestionSet} and collect the user's answers, returning the
  * deterministic next-turn text (via {@link formatAnswers}) to resubmit into the
  * same conversation, or `null` when the user cancelled every question (submit
@@ -3886,8 +3875,6 @@ async function runChatLoop(
       if (line === null) break;
 
       if (line.length === 0) continue;
-
-      renderCommittedChatInput(out, line);
 
       // One input → one turn (+ its post-turn slot). Drain-queue re-enters this
       // SAME helper so a typed-ahead line is handled identically to a fresh
@@ -5046,6 +5033,14 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
       input: process.stdin,
       output: process.stdout,
       terminal: out.isTty,
+      // Empty prompt: the chat caret (`❯ `) is written manually to `out` so it
+      // can be coloured. readline's DEFAULT prompt is `'> '`, and a paste (or any
+      // line refresh) makes readline repaint `'> ' + buffer` at column 0 —
+      // competing with the manual caret and showing the input on a SECOND line
+      // (the "doubled paste" bug). With prompt:'' a refresh repaints just the
+      // buffer, so there is one input line. (Node measures prompt width with an
+      // ANSI-aware helper, but we keep colour out of readline entirely here.)
+      prompt: '',
       // Smart Tab at the chat prompt (T2–T4, docs/tab-completion-5.5.md):
       // slash-name + slash-argument + file/path + @-mention, fuzzy-ranked,
       // async (readdir). Lives entirely inside readline's own callback — adds
