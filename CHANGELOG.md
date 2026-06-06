@@ -15,6 +15,28 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   resumed goal's contract from the persisted `workTrace` (niche: the in-run contract
   is already kept in memory; only cross-session resume benefits). Optional.
 
+## [3.24.0]
+
+### Added/Fixed — polished chat surface (queueing that feels real, input box, live goal visibility)
+- **Clean mid-turn input + visible queue (fixes "can't queue messages"):** the queue
+  worked mechanically, but mid-turn keystrokes echoed RAW onto the spinner line
+  (PTY-confirmed: `Thinking… 0 steps · 2sQUEUEDLINE`), so it looked broken. A muting
+  `ReadlineOutputProxy` suppresses readline's echo during a turn; typed-ahead text no
+  longer smears, and a clean `⏎ queued (N); <preview>` indicator shows what's queued.
+- **Bordered input box:** `╭──── ✦╮ / │ ❯ … │ / ╰────╯` with a corner glyph (the modern
+  shell-chat "type box"); degrades to the plain `❯ ` caret off-TTY / NO_COLOR / narrow.
+- **Graceful big-work framing:** a turn that times out now reads as a big-task signal
+  ("that ran past the single-turn time limit — it's a big one") leading into keep-going,
+  instead of an alarming "Failed — 0 tokens" crash line.
+- **Live goal visibility:** `/goal` shows an honest live status each iteration —
+  objective, current step, steps done/total (from the real roadmap), and cumulative
+  tokens spent (from the ledger). No fabricated agent count (the goal loop runs
+  sequential turns; only a real parallel-panel turn surfaces "N models in parallel").
+
+PTY-VERIFIED (`npm run smoke:pty` PASS): paste commits once, single-keypress intact,
+mid-turn smear gone, queued indicator visible, no crash on typing. Box render visually
+confirmed + unit-tested. +7 tests (3457 → 3464), gate green.
+
 ## [3.23.0]
 
 ### Added — provider capability utilization (audit-driven: use the full capacity of each provider, smartly + combined)
