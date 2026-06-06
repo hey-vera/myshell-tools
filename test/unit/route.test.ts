@@ -6,9 +6,11 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { route } from '../../src/core/route.ts';
+import type { CapabilityRouteContext } from '../../src/core/route.ts';
 import { DEFAULT_POLICY, POLICY_PRESETS } from '../../src/core/policy.ts';
 import type { ProviderId } from '../../src/providers/port.ts';
 import type { Tier, Policy } from '../../src/core/types.ts';
+import type { CapabilityRegistry } from '../../src/core/model-capabilities.ts';
 
 // quality-first opens the manager tier (maxTier 'manager'); use it to verify
 // manager-tier model resolution now that DEFAULT_POLICY/balanced clamps to 'ic'.
@@ -463,5 +465,244 @@ describe('route — learned preferredOrder', () => {
   it('empty preferredOrder → behaviour is UNCHANGED (static order wins)', () => {
     const withEmpty = route('ic', BOTH, DEFAULT_POLICY, undefined, undefined, []);
     assert.equal(withEmpty.provider, 'claude');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Stage 2 — capability-fit ranking (bounded re-rank within the candidate set)
+// ---------------------------------------------------------------------------
+
+describe('route — capability-fit (Stage 2)', () => {
+  // A fake registry where, for codex IC, gpt-5.4 has a LARGE known context window
+  // and gpt-5.2-codex a small one. claude/opencode left empty (unknown = neutral).
+  const REG: CapabilityRegistry = {
+    claude: [],
+    opencode: [],
+    codex: [
+      {
+        provider: 'codex',
+        id: 'gpt-5.4',
+        aliases: [],
+        tierHint: 'ic',
+        supportedReasoningEfforts: [],
+        contextWindow: 400_000,
+        source: ['codex-cache'],
+      },
+      {
+        provider: 'codex',
+        id: 'gpt-5.2-codex',
+        aliases: ['codex'],
+        tierHint: 'ic',
+        supportedReasoningEfforts: [],
+        contextWindow: 128_000,
+        source: ['codex-cache'],
+      },
+    ],
+  };
+
+  function ctx(over: Partial<CapabilityRouteContext> = {}): CapabilityRouteContext {
+    return { mode: 'balanced', registry: REG, ...over };
+  }
+
+  it('NO capabilityContext → output is byte-for-byte identical (no capabilityReasons field)', () => {
+    // Exhaustively compare the with-undefined-context decision to the baseline
+    // across every existing call shape; the new optional arg must change nothing.
+    const cases: Array<[Tier, ProviderId[], Policy, Parameters<typeof route>[3]?]> = [
+      ['ic', CLAUDE_ONLY, DEFAULT_POLICY],
+      ['ic', CODEX_ONLY, DEFAULT_POLICY],
+      ['worker', BOTH, DEFAULT_POLICY],
+      ['manager', CLAUDE_ONLY, MANAGER_OK_POLICY],
+      ['ic', ['codex'], DEFAULT_POLICY, { codex: ['gpt-5.4', 'gpt-5.5'] }],
+      ['ic', ['opencode'], DEFAULT_POLICY],
+    ];
+    for (const [tier, pool, policy, models] of cases) {
+      const base = route(tier, pool, policy, models);
+      const withUndef = route(tier, pool, policy, models, undefined, undefined, undefined);
+      assert.deepEqual(withUndef, base);
+      // The field must be genuinely ABSENT, not present-and-undefined.
+      assert.ok(!('capabilityReasons' in withUndef), 'capabilityReasons must be absent');
+      assert.ok(!('reasoningEffort' in withUndef), 'reasoningEffort must be absent');
+    }
+  });
+
+  it('large-context task picks the larger-window model WITHIN the bounded set', () => {
+    // Baseline (cheapest codex ic among advertised) is gpt-5.2-codex ($1.75).
+    const baseline = route('ic', ['codex'], DEFAULT_POLICY, {
+      codex: ['gpt-5.4', 'gpt-5.2-codex'],
+    });
+    assert.equal(baseline.model, 'gpt-5.2-codex');
+
+    const fit = route(
+      'ic',
+      ['codex'],
+      DEFAULT_POLICY,
+      { codex: ['gpt-5.4', 'gpt-5.2-codex'] },
+      undefined,
+      undefined,
+      ctx({
+        taskSignals: {
+          risk: 'high',
+          routePlan: false,
+          estimatedInputTokens: 300_000,
+          taskKind: 'large-context',
+        },
+      }),
+    );
+    // gpt-5.4 (400k window) clears 300k + margin; gpt-5.2-codex (128k) does not.
+    assert.equal(fit.provider, 'codex');
+    assert.equal(fit.model, 'gpt-5.4');
+    assert.ok(
+      (fit.capabilityReasons ?? []).some((r) => /context window/i.test(r)),
+      'should explain the large-context choice',
+    );
+  });
+
+  it('small-context task leaves the baseline pick unchanged (fit moves only on a known win)', () => {
+    const fit = route(
+      'ic',
+      ['codex'],
+      DEFAULT_POLICY,
+      { codex: ['gpt-5.4', 'gpt-5.2-codex'] },
+      undefined,
+      undefined,
+      ctx({
+        taskSignals: { risk: 'low', routePlan: false, estimatedInputTokens: 2_000, taskKind: 'trivial' },
+      }),
+    );
+    assert.equal(fit.model, 'gpt-5.2-codex');
+  });
+
+  it('capability-fit CANNOT open manager: balanced still clamps a manager request to ic', () => {
+    // Even with a registry that would "prefer" the manager model, the clampTier /
+    // authorizeTier ceiling is upstream of fit — fit only re-ranks within the
+    // already-clamped IC candidate set, so opus/gpt-5.5 can never be selected.
+    const fit = route(
+      'manager',
+      CLAUDE_ONLY,
+      DEFAULT_POLICY, // balanced: maxTier 'ic'
+      undefined,
+      undefined,
+      undefined,
+      ctx({
+        taskSignals: {
+          risk: 'critical',
+          routePlan: true,
+          estimatedInputTokens: 900_000,
+          taskKind: 'architecture',
+        },
+      }),
+    );
+    assert.equal(fit.tier, 'ic', 'must stay clamped to ic');
+    assert.equal(fit.model, 'claude-sonnet-4-6');
+    assert.notEqual(fit.model, 'claude-opus-4-7');
+  });
+
+  it('capability-fit CANNOT pick a signed-out provider ahead of a signed-in one', () => {
+    // codex is the only authenticated provider; the registry knows nothing helpful
+    // about claude. Fit must not override auth to choose claude.
+    const fit = route(
+      'ic',
+      ['claude', 'codex'],
+      DEFAULT_POLICY,
+      undefined,
+      ['codex'], // only codex authenticated
+      undefined,
+      ctx({
+        taskSignals: {
+          risk: 'high',
+          routePlan: false,
+          estimatedInputTokens: 300_000,
+          taskKind: 'large-context',
+        },
+      }),
+    );
+    assert.equal(fit.provider, 'codex', 'authenticated provider must still win');
+  });
+
+  it('capability-fit CANNOT pick a model not in availableModels', () => {
+    // Only gpt-5.2-codex is advertised; the registry knows gpt-5.4 has a huge
+    // window, but it is NOT advertised, so it must never be selected.
+    const fit = route(
+      'ic',
+      ['codex'],
+      DEFAULT_POLICY,
+      { codex: ['gpt-5.2-codex'] },
+      undefined,
+      undefined,
+      ctx({
+        taskSignals: {
+          risk: 'high',
+          routePlan: false,
+          estimatedInputTokens: 300_000,
+          taskKind: 'large-context',
+        },
+      }),
+    );
+    assert.equal(fit.provider, 'codex');
+    assert.equal(fit.model, 'gpt-5.2-codex', 'must stay within advertised models');
+  });
+
+  it('capabilityReasons present when context supplied, absent when not', () => {
+    const without = route('ic', ['codex'], DEFAULT_POLICY, { codex: ['gpt-5.4', 'gpt-5.2-codex'] });
+    assert.equal(without.capabilityReasons, undefined);
+
+    const withCtx = route(
+      'ic',
+      ['codex'],
+      DEFAULT_POLICY,
+      { codex: ['gpt-5.4', 'gpt-5.2-codex'] },
+      undefined,
+      undefined,
+      ctx({
+        taskSignals: {
+          risk: 'high',
+          routePlan: false,
+          estimatedInputTokens: 300_000,
+          taskKind: 'large-context',
+        },
+      }),
+    );
+    assert.ok(Array.isArray(withCtx.capabilityReasons), 'capabilityReasons present with context');
+    assert.ok((withCtx.capabilityReasons ?? []).length > 0);
+  });
+
+  it('vision: requires supportsVision only when the task has image input', () => {
+    const visionReg: CapabilityRegistry = {
+      claude: [],
+      opencode: [],
+      codex: [
+        {
+          provider: 'codex',
+          id: 'gpt-5.4',
+          aliases: [],
+          tierHint: 'ic',
+          supportedReasoningEfforts: [],
+          supportsVision: true,
+          source: ['codex-cache'],
+        },
+        {
+          provider: 'codex',
+          id: 'gpt-5.2-codex',
+          aliases: ['codex'],
+          tierHint: 'ic',
+          supportedReasoningEfforts: [],
+          source: ['codex-cache'], // vision unknown
+        },
+      ],
+    };
+    const fit = route(
+      'ic',
+      ['codex'],
+      DEFAULT_POLICY,
+      { codex: ['gpt-5.4', 'gpt-5.2-codex'] },
+      undefined,
+      undefined,
+      {
+        mode: 'balanced',
+        registry: visionReg,
+        taskSignals: { risk: 'medium', routePlan: false, needsVision: true, taskKind: 'implementation' },
+      },
+    );
+    assert.equal(fit.model, 'gpt-5.4', 'image task picks the vision-capable model');
   });
 });

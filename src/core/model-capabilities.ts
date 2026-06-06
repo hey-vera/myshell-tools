@@ -101,6 +101,31 @@ export interface ModelCapability {
 /** Provider-keyed registry. Keyed by ProviderId so new providers drop in cleanly. */
 export type CapabilityRegistry = Readonly<Record<ProviderId, readonly ModelCapability[]>>;
 
+/**
+ * Coarse, deterministic task category used by capability-fit ranking (Stage 2)
+ * and, later, by the model-level outcome ledger (Stage 4, §2 Layer 3). Defined
+ * here in the pure registry module so both consumers reuse ONE shape rather than
+ * duplicating it. `'unknown'` is a first-class value — never guessed.
+ */
+export type TaskKind =
+  | 'trivial'
+  | 'implementation'
+  | 'debug'
+  | 'review'
+  | 'architecture'
+  | 'large-context'
+  | 'unknown';
+
+/**
+ * A single (provider, model) preference produced by a learned outcome aggregator
+ * (Stage 4). Stage 2 accepts an ordered list of these in the capability context
+ * but only consumes it minimally (it never expands the bounded candidate set).
+ */
+export interface ModelPreference {
+  readonly provider: ProviderId;
+  readonly model: string;
+}
+
 // ---------------------------------------------------------------------------
 // Declarative defaults (§2 Layer 1) — deliberately SPARSE. Facts only.
 // ---------------------------------------------------------------------------

@@ -68,6 +68,24 @@ export interface RouteDecision {
   readonly tier: Tier;
   readonly provider: ProviderId;
   readonly model: string; // concrete model id
+  /**
+   * The selected reasoning-effort knob for this run, when the registry knows the
+   * model supports one (capability registry §3/§5). ADDED to the type in Stage 2
+   * for the shape, but NOT selected or threaded to any provider here — effort
+   * selection + adapter wiring is Stage 3. Absent in Stage 2. Type-only import to
+   * keep types.ts a leaf module.
+   */
+  readonly reasoningEffort?: import('./model-capabilities.js').ReasoningEffort;
+  /**
+   * Human-readable, audit-grade reasons capability-fit ranking chose this
+   * provider/model (e.g. "context window 272k ≥ estimated 180k", "vision
+   * supported for image input"). Populated ONLY when a `capabilityContext` is
+   * passed to route(); ABSENT otherwise so the no-context path is byte-for-byte
+   * unchanged. Capability-fit is a BOUNDED re-rank — these reasons never reflect a
+   * provider outside `available`, a signed-out provider preferred over a signed-in
+   * one, a bypass of authorizeTier/maxTier, or a model not in availableModels.
+   */
+  readonly capabilityReasons?: readonly string[];
 }
 
 /**
