@@ -15,6 +15,35 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   resumed goal's contract from the persisted `workTrace` (niche: the in-run contract
   is already kept in memory; only cross-session resume benefits). Optional.
 
+## [3.23.0]
+
+### Added — provider capability utilization (audit-driven: use the full capacity of each provider, smartly + combined)
+Acting on `docs/provider-capability-utilization-audit-5.6.md` (which rated utilization
+Claude 45% / Codex 62% / OpenCode 28% / combined 52%), each lever verified live:
+- **Claude `--effort`** (audit #1): the CLI exposes low/medium/high/xhigh/**max**; only
+  Codex consumed the effort seam before. Now Claude does too (`max` is the deepest level;
+  Max-mode admitted-manager hardest turns reach it, bounded by authorizeTier).
+- **OpenCode capabilities** (audit #2, the most under-used): a fail-soft
+  `opencode models --verbose` refresh populates real per-model facts (context, vision,
+  toolcall, reasoning variants) and `opencode run --variant` is wired — so capability-fit
+  routing now applies to OpenCode's lane.
+- **Codex native web search** (audit #3): external/current-fact turns (the existing
+  WEB_RESEARCH signal) pass the verified `-c tools.web_search=true` override to `codex exec`.
+- **Cross-provider capability-aware routing** (audit #6, the combined lever): on a genuine
+  hard requirement (vision, large-context) the router prefers an authed provider whose model
+  can satisfy it — bounded, never bypassing auth/cooldown/tier, byte-for-byte unchanged on
+  ordinary turns.
+- **Image attachments** (audit #4): referencing a local image path attaches it (codex `-i`,
+  opencode `-f`), flags the turn `needsVision`, and activates the cross-provider vision route.
+
+Self-awareness now presents the full per-provider capability matrix (models, efforts,
+search, vision). Subscription-cost clean throughout (OAuth-CLI flags only; no api-key/
+embeddings/metered/Vertex). Deliberate, rationale-backed deferrals (not gaps): structured-
+output for internal envelopes (audit #5 — marginal over the existing fail-soft parsing),
+OpenCode native sessions (#8), routing unknown dynamic models (#9 — would require guessing
+tiers), MCP/provider-native skills/subagents (keep explicit, not auto), and Gemini (design
+provider-agnostic for a clean later drop-in). 3431 → 3457 tests, 0 fail.
+
 ## [3.22.0]
 
 ### Added — adaptive partner v2 roadmap complete (work-state, vision triage, discovery escalation, grounded opinion, history hardening)
