@@ -21,7 +21,18 @@ import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
+import { execa } from 'execa';
+
 import type { CapabilityRefreshPort } from '../core/model-capability-refresh.js';
+import { replitPersistentEnv } from './credentials.js';
+
+/**
+ * Bound on the `opencode models --verbose` spawn. Mirrors the 10s detection probes
+ * in providers/detect.ts: this is gathered once per session (the caller caches the
+ * snapshot), so it must NOT hang a turn. On timeout/missing-binary/non-zero exit the
+ * reader returns null and the pure refresh degrades to declarative/detect facts.
+ */
+const OPENCODE_VERBOSE_TIMEOUT_MS = 10_000;
 
 /** Resolve the effective CODEX_HOME directory. Pure-ish (reads env + existsSync). */
 export function resolveCodexHome(env: NodeJS.ProcessEnv, cwd: string): string {
@@ -51,6 +62,30 @@ export function createCapabilityRefreshPort(
         const codexHome = resolveCodexHome(env, cwd);
         return await readFile(join(codexHome, 'models_cache.json'), 'utf8');
       } catch {
+        return null;
+      }
+    },
+
+    async readOpencodeModelsVerbose(): Promise<string | null> {
+      try {
+        // Local OAuth CLI spawn (no api key / network of ours) with a hard wall-clock
+        // bound. reject:false → we always inspect the result instead of throwing.
+        // Point opencode at the Replit-persistent XDG dirs so the configured
+        // provider/subscription is the same one a real run would see.
+        const childEnv: NodeJS.ProcessEnv = {
+          ...env,
+          ...replitPersistentEnv(env, cwd),
+        };
+        const result = await execa('opencode', ['models', '--verbose'], {
+          cwd,
+          reject: false,
+          timeout: OPENCODE_VERBOSE_TIMEOUT_MS,
+          env: childEnv,
+        });
+        if (result.timedOut === true || result.failed || result.exitCode !== 0) return null;
+        return typeof result.stdout === 'string' ? result.stdout : null;
+      } catch {
+        // Missing binary / spawn failure / anything unexpected → declarative defaults.
         return null;
       }
     },

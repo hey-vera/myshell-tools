@@ -41,6 +41,63 @@ import { detectProvider } from './detect.js';
 import { classifyError } from './errors.js';
 import { createOpencodeParser } from './opencode-parse.js';
 import { replitPersistentEnv } from '../infra/credentials.js';
+import type { ReasoningEffort } from '../core/model-capabilities.js';
+
+// ---------------------------------------------------------------------------
+// Argv builder (pure)
+// ---------------------------------------------------------------------------
+
+/**
+ * Map our ReasoningEffort onto an opencode `--variant <level>` string. opencode's
+ * variant keys ARE the level names (verified via `opencode models --verbose`:
+ * variants `{ low, medium, high, max }`). We map only the levels opencode declares;
+ * `none` and our Claude-only `xhigh` (which opencode never advertises as a variant)
+ * map to null → no flag. This is conservative: the only efforts ever passed are ones
+ * the chosen model's ModelCapability declared (its variant keys), since
+ * selectReasoningEffort returns ONLY a supported effort. Unknown/unsupported → null.
+ */
+function effortToVariant(effort: ReasoningEffort): string | null {
+  switch (effort) {
+    case 'low':
+      return 'low';
+    case 'medium':
+      return 'medium';
+    case 'high':
+      return 'high';
+    case 'max':
+      return 'max';
+    // 'none' = no reasoning; 'xhigh' is not an opencode variant level → omit.
+    case 'none':
+    case 'xhigh':
+      return null;
+  }
+}
+
+/**
+ * Build the `opencode run` argv for a request. PURE (no spawn, no env).
+ *
+ * `--variant <level>` is appended ONLY when `req.reasoningEffort` is set, not `none`,
+ * and maps to a level opencode exposes as a variant. By the capability contract
+ * (port.ts ProviderRequest.reasoningEffort) a set effort is already one the chosen
+ * model's ModelCapability declares it supports — and for OpenCode those efforts are
+ * derived from the model's own `variants` keys (model-capability-refresh.ts), so a
+ * passed variant is, by construction, a declared one. Absent/none/unsupported →
+ * omit the flag (byte-for-byte unchanged: just `run --format json [-m model]`).
+ *
+ * `-m <provider/model>` is passed only for a concrete resolved id (contains a slash);
+ * the `'opencode'` pricing placeholder omits it so opencode uses its configured default.
+ */
+export function buildOpencodeArgs(req: ProviderRequest): string[] {
+  const args = ['run', '--format', 'json'];
+  if (req.model.includes('/')) {
+    args.push('-m', req.model);
+  }
+  if (req.reasoningEffort !== undefined && req.reasoningEffort !== 'none') {
+    const variant = effortToVariant(req.reasoningEffort);
+    if (variant !== null) args.push('--variant', variant);
+  }
+  return args;
+}
 
 // ---------------------------------------------------------------------------
 // Factory
@@ -62,16 +119,13 @@ export function createOpencodeProvider(opts?: { bin?: string }): Provider {
     },
 
     async *run(req: ProviderRequest, signal: AbortSignal): AsyncIterable<ProviderEvent> {
-      // Pass `-m <provider/model>` when the router resolved a real opencode model
-      // for this tier (selectOpencodeModel picks the best of the user's REAL
-      // available models — free, OpenCode Go, or Zen). A real id contains a slash
-      // (e.g. `opencode-go/kimi-k2.6`); the `'opencode'` pricing placeholder does
-      // not. Fail-safe: when no concrete model was resolved we omit -m and let
-      // opencode use its own configured default — never spawn an invalid -m.
-      const args = ['run', '--format', 'json'];
-      if (req.model.includes('/')) {
-        args.push('-m', req.model);
-      }
+      // Build argv (pure). Pass `-m <provider/model>` when the router resolved a real
+      // opencode model for this tier (selectOpencodeModel picks the best of the user's
+      // REAL available models — free, OpenCode Go, or Zen); a real id contains a slash
+      // (e.g. `opencode-go/kimi-k2.6`), the `'opencode'` placeholder does not, so we
+      // omit -m and let opencode use its configured default. `--variant <level>` is
+      // appended only when a supported reasoning effort was selected (see buildOpencodeArgs).
+      const args = buildOpencodeArgs(req);
 
       // Point opencode at the Replit-persistent XDG dirs when present so your own
       // configured provider/subscription (Kimi etc.) is remembered across restarts.

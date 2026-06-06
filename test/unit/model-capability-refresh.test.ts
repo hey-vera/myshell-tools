@@ -34,6 +34,171 @@ function port(text: string | null | (() => never)): CapabilityRefreshPort {
   };
 }
 
+/** A port that returns the given opencode verbose stdout (and no codex cache). */
+function opencodePort(verbose: string | null | (() => never)): CapabilityRefreshPort {
+  return {
+    async readCodexModelsCache(): Promise<string | null> {
+      return null;
+    },
+    async readOpencodeModelsVerbose(): Promise<string | null> {
+      if (typeof verbose === 'function') return verbose();
+      return verbose;
+    },
+  };
+}
+
+const opencodeDetect: ProviderDetectFacts = {
+  provider: 'opencode',
+  authenticated: true,
+  availableModels: ['opencode/deepseek-v4-flash-free', 'opencode/big-pickle'],
+};
+
+/**
+ * Real `opencode models --verbose` shape: a `providerID/id` header line precedes each
+ * pretty-printed JSON object. deepseek: reasoning + low/medium/high/max variants, no
+ * image. big-pickle: reasoning true but EMPTY variants (no efforts), image false.
+ */
+const OPENCODE_VERBOSE = [
+  'opencode/deepseek-v4-flash-free',
+  JSON.stringify(
+    {
+      id: 'deepseek-v4-flash-free',
+      providerID: 'opencode',
+      name: 'DeepSeek V4 Flash Free',
+      limit: { context: 163840, input: 130000, output: 32000 },
+      capabilities: {
+        reasoning: true,
+        toolcall: true,
+        input: { text: true, audio: false, image: true, video: false, pdf: false },
+      },
+      variants: {
+        low: { reasoningEffort: 'low' },
+        medium: { reasoningEffort: 'medium' },
+        high: { reasoningEffort: 'high' },
+        max: { reasoningEffort: 'max' },
+        // 'ultra' is not in our ReasoningEffort set → dropped, the rest kept.
+        ultra: { reasoningEffort: 'ultra' },
+      },
+    },
+    null,
+    2,
+  ),
+  'opencode/big-pickle',
+  JSON.stringify(
+    {
+      id: 'big-pickle',
+      providerID: 'opencode',
+      name: 'Big Pickle',
+      limit: { context: 200000, input: 160000, output: 32000 },
+      capabilities: {
+        reasoning: true,
+        toolcall: true,
+        input: { text: true, audio: false, image: false, video: false, pdf: false },
+      },
+      variants: {},
+    },
+    null,
+    2,
+  ),
+].join('\n');
+
+describe('refreshCapabilities — OpenCode verbose merge (real shape)', () => {
+  it('merges context, maxOutput, vision, toolcall, and variant efforts', async () => {
+    const { registry, diagnostics } = await refreshCapabilities(
+      { providers: [opencodeDetect], nowIso: NOW },
+      opencodePort(OPENCODE_VERBOSE),
+    );
+    const ds = registry.opencode.find((c) => c.id === 'opencode/deepseek-v4-flash-free');
+    assert.ok(ds);
+    assert.equal(ds.contextWindow, 163840);
+    assert.equal(ds.maxOutputTokens, 32000);
+    assert.equal(ds.supportsVision, true, 'input.image === true → vision');
+    assert.equal(ds.supportsToolCalling, true);
+    // Efforts derived from variant KEYS; unknown 'ultra' dropped, rest kept in order.
+    assert.deepEqual(ds.supportedReasoningEfforts, ['low', 'medium', 'high', 'max']);
+    assert.equal(ds.displayName, 'DeepSeek V4 Flash Free');
+    assert.equal(ds.lastRefreshedAt, NOW);
+    assert.ok(diagnostics.some((d) => d.level === 'info' && /OpenCode/.test(d.message)));
+  });
+
+  it('input.image:false → vision ABSENT (not false-guessed)', async () => {
+    const { registry } = await refreshCapabilities(
+      { providers: [opencodeDetect], nowIso: NOW },
+      opencodePort(OPENCODE_VERBOSE),
+    );
+    const bp = registry.opencode.find((c) => c.id === 'opencode/big-pickle');
+    assert.ok(bp);
+    assert.equal(bp.supportsVision, undefined, 'image:false leaves vision unknown, not false');
+    assert.equal(bp.contextWindow, 200000);
+    assert.equal(bp.supportsToolCalling, true);
+  });
+
+  it('empty variants + reasoning:true → NO fabricated efforts', async () => {
+    const { registry } = await refreshCapabilities(
+      { providers: [opencodeDetect], nowIso: NOW },
+      opencodePort(OPENCODE_VERBOSE),
+    );
+    const bp = registry.opencode.find((c) => c.id === 'opencode/big-pickle');
+    assert.deepEqual(bp?.supportedReasoningEfforts, [], 'empty variants → no efforts guessed');
+  });
+
+  it('merges verbose facts onto a detect-advertised entry (single record, source=detect)', async () => {
+    const { registry } = await refreshCapabilities(
+      { providers: [opencodeDetect], nowIso: NOW },
+      opencodePort(OPENCODE_VERBOSE),
+    );
+    const matches = registry.opencode.filter((c) => c.id === 'opencode/big-pickle');
+    assert.equal(matches.length, 1, 'detect + verbose collapse onto ONE entry');
+    assert.deepEqual(matches[0]?.source, ['detect']);
+  });
+});
+
+describe('refreshCapabilities — OpenCode fail-soft', () => {
+  it('malformed verbose JSON → declarative/detect preserved, no throw, warn diag', async () => {
+    const { registry, diagnostics } = await refreshCapabilities(
+      { providers: [opencodeDetect], nowIso: NOW },
+      opencodePort('not json at all\nblah blah'),
+    );
+    // detect ids still present; no fabricated facts.
+    const bp = registry.opencode.find((c) => c.id === 'opencode/big-pickle');
+    assert.ok(bp);
+    assert.equal(bp.contextWindow, undefined);
+    assert.deepEqual(bp.supportedReasoningEfforts, []);
+    assert.ok(diagnostics.some((d) => d.provider === 'opencode' && d.level === 'warn'));
+  });
+
+  it('null verbose (absent/old opencode) → detect/declarative stand, info diag', async () => {
+    const { registry, diagnostics } = await refreshCapabilities(
+      { providers: [opencodeDetect], nowIso: NOW },
+      opencodePort(null),
+    );
+    const bp = registry.opencode.find((c) => c.id === 'opencode/big-pickle');
+    assert.ok(bp);
+    assert.equal(bp.contextWindow, undefined);
+    assert.ok(diagnostics.some((d) => d.provider === 'opencode' && d.level === 'info'));
+  });
+
+  it('throwing verbose port → caught, detect/declarative preserved', async () => {
+    const { registry } = await refreshCapabilities(
+      { providers: [opencodeDetect], nowIso: NOW },
+      opencodePort(() => {
+        throw new Error('boom');
+      }),
+    );
+    assert.ok(registry.opencode.find((c) => c.id === 'opencode/big-pickle'));
+  });
+
+  it('port WITHOUT readOpencodeModelsVerbose (legacy) → no throw, detect stands', async () => {
+    const { registry } = await refreshCapabilities(
+      { providers: [opencodeDetect], nowIso: NOW },
+      port(null),
+    );
+    const bp = registry.opencode.find((c) => c.id === 'opencode/big-pickle');
+    assert.ok(bp);
+    assert.equal(bp.contextWindow, undefined);
+  });
+});
+
 const codexDetect: ProviderDetectFacts = {
   provider: 'codex',
   authenticated: true,

@@ -86,6 +86,15 @@ export interface CapabilityRefreshPort {
    * the common-absent case, but the refresh tolerates rejection anyway.
    */
   readCodexModelsCache(): Promise<string | null>;
+  /**
+   * Read the raw stdout of `opencode models --verbose` (the OAuth CLI's own
+   * machine-readable per-model metadata: limit/capabilities/variants). Returns
+   * `null` when opencode is absent / old / errors / times out — the refresh then
+   * keeps the detect/declarative facts for opencode (efforts stay unknown). MUST
+   * NOT throw in the common-absent case; the refresh tolerates rejection anyway.
+   * Optional so existing/fake ports without it keep compiling and degrade fail-soft.
+   */
+  readOpencodeModelsVerbose?(): Promise<string | null>;
 }
 
 // ---------------------------------------------------------------------------
@@ -113,6 +122,30 @@ interface CodexCacheModel {
 }
 
 const KNOWN_MODALITIES: readonly InputModality[] = ['text', 'image', 'audio', 'video'];
+
+// ---------------------------------------------------------------------------
+// OpenCode verbose schema (the REAL local shape — `opencode models --verbose`).
+// Output is a series of `providerID/id` header lines, each followed by a
+// pretty-printed JSON object. We parse the JSON objects (header lines are skipped)
+// and key the registry entry by `${providerID}/${id}` to match detect.ts ids.
+// ---------------------------------------------------------------------------
+
+interface OpencodeVerboseModel {
+  readonly id?: string;
+  readonly providerID?: string;
+  readonly name?: string;
+  readonly limit?: {
+    readonly context?: number;
+    readonly input?: number;
+    readonly output?: number;
+  };
+  readonly capabilities?: {
+    readonly reasoning?: boolean;
+    readonly toolcall?: boolean;
+    readonly input?: Record<string, unknown>;
+  };
+  readonly variants?: Record<string, unknown>;
+}
 
 // ---------------------------------------------------------------------------
 // Public entry — refreshCapabilities. Fully fail-soft; NEVER throws.
@@ -190,12 +223,217 @@ export async function refreshCapabilities(
     });
   }
 
+  // --- Source 4: OpenCode `opencode models --verbose` ----------------------
+  try {
+    const raw = (await port.readOpencodeModelsVerbose?.().catch(() => null)) ?? null;
+    if (raw === null) {
+      // Absent/old opencode (or the port doesn't implement the read): keep
+      // declarative + detect facts; opencode efforts/context/vision stay unknown.
+      diagnostics.push({
+        provider: 'opencode',
+        source: 'detect',
+        level: 'info',
+        message:
+          'opencode models --verbose unavailable; using detection/declarative facts only for OpenCode.',
+      });
+    } else {
+      mergeOpencodeVerbose(raw, working, input.nowIso, diagnostics);
+    }
+  } catch {
+    diagnostics.push({
+      provider: 'opencode',
+      source: 'detect',
+      level: 'warn',
+      message: 'Unexpected error reading opencode models --verbose; kept existing facts.',
+    });
+  }
+
   const registry: CapabilityRegistry = {
     claude: working.claude,
     codex: working.codex,
     opencode: working.opencode,
   };
   return { registry, diagnostics };
+}
+
+// ---------------------------------------------------------------------------
+// OpenCode verbose merge — pure given the raw text. Fail-soft on parse/schema.
+// ---------------------------------------------------------------------------
+
+/**
+ * Parse `opencode models --verbose` stdout and merge OBJECTIVE facts into the
+ * working `opencode` set. The output is a stream of `providerID/id` header lines,
+ * each followed by a pretty-printed JSON object; we collect the JSON objects (the
+ * header lines fail JSON.parse and are skipped). On a total parse failure (no
+ * objects recoverable) we emit a single 'warn' and leave declarative/detect facts
+ * untouched — NEVER throws. PURE given `raw`.
+ */
+function mergeOpencodeVerbose(
+  raw: string,
+  working: Record<ProviderId, ModelCapability[]>,
+  nowIso: string,
+  diagnostics: CapabilityRefreshDiagnostic[],
+): void {
+  const models = parseOpencodeVerbose(raw);
+  if (models.length === 0) {
+    diagnostics.push({
+      provider: 'opencode',
+      source: 'detect',
+      level: 'warn',
+      message:
+        'opencode models --verbose produced no parseable model JSON; kept declarative/detect facts.',
+    });
+    return;
+  }
+
+  let merged = 0;
+  for (const m of models) {
+    const id = typeof m.id === 'string' ? m.id.trim() : '';
+    const providerID = typeof m.providerID === 'string' ? m.providerID.trim() : '';
+    if (id.length === 0 || providerID.length === 0) continue;
+    // Key by `${providerID}/${id}` to match the ids detect.ts advertises.
+    const key = `${providerID}/${id}`;
+
+    const facts = extractOpencodeFacts(m, nowIso);
+    const existing = matchById(working.opencode, key);
+    if (existing === undefined) {
+      working.opencode.push({
+        provider: 'opencode',
+        id: key,
+        aliases: [],
+        supportedReasoningEfforts: facts.efforts,
+        source: ['detect'],
+        lastRefreshedAt: nowIso,
+        ...facts.optional,
+      });
+    } else {
+      applyOpencodeFacts(existing, facts);
+    }
+    merged++;
+  }
+
+  diagnostics.push({
+    provider: 'opencode',
+    source: 'detect',
+    level: 'info',
+    message: `Merged ${merged} OpenCode model${merged === 1 ? '' : 's'} from opencode models --verbose.`,
+  });
+}
+
+/**
+ * Split the verbose stdout into JSON objects. The CLI pretty-prints one object per
+ * model preceded by a `providerID/id` header line. We accumulate from each `{` at
+ * column 0 to the matching `}` at column 0 and JSON.parse each block, skipping any
+ * block that fails to parse (header/banner noise). Tolerant: returns [] on garbage.
+ */
+function parseOpencodeVerbose(raw: string): OpencodeVerboseModel[] {
+  const out: OpencodeVerboseModel[] = [];
+  const lines = raw.split('\n');
+  let buf: string[] = [];
+  let collecting = false;
+  const flush = (): void => {
+    if (buf.length === 0) return;
+    try {
+      const obj = JSON.parse(buf.join('\n')) as unknown;
+      if (obj !== null && typeof obj === 'object' && !Array.isArray(obj)) {
+        out.push(obj as OpencodeVerboseModel);
+      }
+    } catch {
+      // Not a JSON block (header/banner) — skip.
+    }
+    buf = [];
+  };
+  for (const line of lines) {
+    if (line.startsWith('{')) {
+      flush();
+      collecting = true;
+      buf.push(line);
+      continue;
+    }
+    if (collecting) {
+      buf.push(line);
+      if (line.startsWith('}')) {
+        flush();
+        collecting = false;
+      }
+    }
+  }
+  flush();
+  return out;
+}
+
+interface OpencodeFacts {
+  readonly efforts: readonly ReasoningEffort[];
+  readonly optional: Partial<ModelCapability>;
+}
+
+/**
+ * Pull OBJECTIVE facts out of one OpenCode verbose model. Absent fields stay ABSENT
+ * (never fabricated):
+ *   - contextWindow ← limit.context; maxOutputTokens ← limit.output.
+ *   - supportsVision ← capabilities.input.image === true (ONLY when explicitly true).
+ *   - supportsToolCalling ← capabilities.toolcall === true.
+ *   - efforts: ONLY when capabilities.reasoning === true AND `variants` is a non-empty
+ *     object — derived from the variant KEYS mapped onto our ReasoningEffort set
+ *     (unknown keys dropped). Empty/absent variants → [] (no fabricated levels), even
+ *     when reasoning is true. PURE.
+ */
+function extractOpencodeFacts(m: OpencodeVerboseModel, refreshedAt: string): OpencodeFacts {
+  const optional: {
+    displayName?: string;
+    contextWindow?: number;
+    maxOutputTokens?: number;
+    supportsVision?: boolean;
+    supportsToolCalling?: boolean;
+    inputModalities?: readonly InputModality[];
+    lastRefreshedAt?: string;
+  } = { lastRefreshedAt: refreshedAt };
+
+  if (typeof m.name === 'string' && m.name.length > 0) optional.displayName = m.name;
+
+  const limit = m.limit;
+  if (limit !== null && typeof limit === 'object') {
+    if (typeof limit.context === 'number' && Number.isFinite(limit.context)) {
+      optional.contextWindow = limit.context;
+    }
+    if (typeof limit.output === 'number' && Number.isFinite(limit.output)) {
+      optional.maxOutputTokens = limit.output;
+    }
+  }
+
+  const caps = m.capabilities;
+  if (caps !== null && typeof caps === 'object') {
+    if (caps.toolcall === true) optional.supportsToolCalling = true;
+    const inputCaps = caps.input;
+    if (inputCaps !== null && typeof inputCaps === 'object') {
+      // Vision ONLY when image is explicitly true — false/absent leaves it unknown.
+      if (inputCaps['image'] === true) optional.supportsVision = true;
+      const mods = KNOWN_MODALITIES.filter((k) => inputCaps[k] === true);
+      if (mods.length > 0) optional.inputModalities = mods;
+    }
+  }
+
+  const efforts: ReasoningEffort[] = [];
+  const variants = m.variants;
+  const reasoning = caps !== null && typeof caps === 'object' && caps.reasoning === true;
+  if (reasoning && variants !== null && typeof variants === 'object' && !Array.isArray(variants)) {
+    for (const key of Object.keys(variants)) {
+      const lvl = key.trim();
+      if (lvl.length > 0 && isReasoningEffort(lvl) && !efforts.includes(lvl)) efforts.push(lvl);
+    }
+  }
+
+  return { efforts, optional };
+}
+
+/** Layer the extracted OpenCode facts onto an existing (declarative/detect) record. */
+function applyOpencodeFacts(target: ModelCapability, facts: OpencodeFacts): void {
+  const mut = target as Mutable<ModelCapability>;
+  if (facts.efforts.length > 0) mut.supportedReasoningEfforts = facts.efforts;
+  for (const [k, v] of Object.entries(facts.optional)) {
+    if (v !== undefined) (mut as Record<string, unknown>)[k] = v;
+  }
+  addSource(target, 'detect');
 }
 
 // ---------------------------------------------------------------------------
