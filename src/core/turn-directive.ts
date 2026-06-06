@@ -27,7 +27,7 @@
 import type { QuestionSet } from './types.js';
 import type { IntentFrame } from './intent.js';
 import type { EngagementPlan, EngagementSignals } from './engagement.js';
-import { deriveAskFromForks, hasGenuineFork } from './engagement.js';
+import { deriveAskFromForks, hasGenuineFork, isTrivial } from './engagement.js';
 import type { WorkStateSnapshot } from './work-state.js';
 import {
   triageVision,
@@ -41,8 +41,36 @@ import {
 // Shapes (§2.1) — STAGE 1 minimal subset
 // ---------------------------------------------------------------------------
 
-/** Stage-1 output validators. Only the generic-open-menu rejector is built now. */
-export type OutputValidator = { readonly kind: 'reject_generic_open_menu' };
+/**
+ * Output validators applied to the model's FINAL prose (§2.2 A2, §2.6 E).
+ *   - `reject_generic_open_menu`        — STAGE 1: the order-taker fix/add/polish/
+ *                                         integrate menu (fires only when repoOriented).
+ *   - `require_grounded_recommendation` — STAGE 5 (AP2-E, §2.6 E): on a SUBSTANTIAL
+ *                                         decision/recommendation-shaped turn the
+ *                                         answer must include a recommendation OR a
+ *                                         clear next step, grounded in at least one
+ *                                         {@link RecommendationGrounding}. Fires only
+ *                                         when the directive is `substantial`; tiny
+ *                                         factual/lookup turns are EXEMPT.
+ */
+export type OutputValidator =
+  | { readonly kind: 'reject_generic_open_menu' }
+  | { readonly kind: 'require_grounded_recommendation' };
+
+/**
+ * The kinds of grounding that make a recommendation honest (§2.6 E). A substantial
+ * turn's recommendation must be backed by at LEAST one of these — a referenced file
+ * path/symbol, a repo/environment fact, an explicit stated assumption, an external
+ * source, or an honest "I cannot see the requested repo / not enough context". This
+ * is the NOTION; {@link detectGrounding} maps prose onto it. We never FABRICATE a
+ * grounding — detection is over what the model actually wrote.
+ */
+export type RecommendationGrounding =
+  | { readonly kind: 'file_evidence'; readonly paths: readonly string[] }
+  | { readonly kind: 'repo_orientation'; readonly facts: readonly string[] }
+  | { readonly kind: 'stated_assumption'; readonly assumptions: readonly string[] }
+  | { readonly kind: 'external_source'; readonly sources: readonly string[] }
+  | { readonly kind: 'not_enough_context'; readonly missing: string };
 
 /**
  * A preliminary action the orchestrator REQUIRES before (or carries into) the
@@ -115,6 +143,14 @@ export interface TurnDirective {
    * turn is never blocked (§2.2 A2 guard).
    */
   readonly repoOriented: boolean;
+  /**
+   * STAGE 5 (AP2-E, §2.6 E) — true when this is a SUBSTANTIAL,
+   * decision/recommendation-shaped turn (NOT a tiny factual/lookup turn). The
+   * `require_grounded_recommendation` validator fires ONLY when this is true, so a
+   * latency-sensitive trivial turn ("what is 2+2", "how many files") is never
+   * gated. See {@link decideSubstantial} for the heuristic.
+   */
+  readonly substantial: boolean;
 }
 
 /** Inputs to {@link compileTurnDirective}. PURE — no model call, no I/O. */
@@ -216,6 +252,130 @@ export function detectGenericOpenMenu(text: string): boolean {
 }
 
 // ---------------------------------------------------------------------------
+// Grounded-recommendation detection over FINAL PROSE (§2.6 E, AP2-E)
+// ---------------------------------------------------------------------------
+
+/**
+ * "Substantial" decision/recommendation-shaped signal lexicon over the TASK text.
+ * A turn is substantial when the user is asking for a judgment, a comparison, a
+ * decision, a plan, an evaluation, or a "should we X or Y" fork — the class of turn
+ * where a bare options list / waffle is the failure mode. NOT a tiny factual lookup.
+ */
+const DECISION_TASK_LEXICON: readonly RegExp[] = [
+  /\bshould (we|i|it|you)\b/i,
+  /\b(which|what) (is|would be|'s)? ?(the )?(best|better|right|preferred|recommended)\b/i,
+  /\b\w[\w\s./+-]{0,40}\bor\b[\w\s./+-]{0,40}\?/i, // "X or Y?" forks
+  /\b(recommend|recommendation|advise|advice|opinion|propose|proposal|suggest)\b/i,
+  /\b(decide|decision|choose|pick|evaluate|assess|compare|trade-?offs?|pros and cons)\b/i,
+  /\b(plan|strategy|approach|architecture|design)\b.*\b(for|to|of)\b/i,
+  /\b(move|migrate|port|rewrite|switch|rearchitect)\b/i,
+  /\bworth (it|doing|the)\b/i,
+];
+
+/**
+ * A recommendation / clear next-step signal — what the model SHOULD produce on a
+ * substantial turn. Either an explicit recommendation verb or a stated next step.
+ */
+const RECOMMENDATION_LEXICON: readonly RegExp[] = [
+  /\bi (recommend|suggest|advise|propose|would (recommend|suggest|go with|keep|pick|choose|start))\b/i,
+  /\b(my recommendation|my advice|my suggestion|recommended (approach|option|path|default)|the recommendation is)\b/i,
+  /\b(go with|stick with|stay (on|with|in)|keep (it|this)|move to|switch to|don't|do not) /i,
+  /\b(the (best|right|default) (option|choice|path|approach|answer) is)\b/i,
+  /\b(next step|the next step|i'd start|start (by|with)|first,? )\b/i,
+  /\b(default to|lean toward|leaning toward|the call is|bottom line)\b/i,
+];
+
+/**
+ * A bare options-list / waffle: an enumeration of choices with NO recommendation.
+ * Two distinct shapes: an explicit "here are (some|the) options / a few options"
+ * opener, OR ≥3 enumerated bullet/numbered items that read as parallel choices.
+ */
+const OPTIONS_OPENER_LEXICON: readonly RegExp[] = [
+  /\bhere are (some|a few|the|several|your)? ?(options|choices|approaches|alternatives|paths|ways)\b/i,
+  /\b(some|a few|several) (options|choices|approaches|alternatives|paths)\b.*:/i,
+  /\b(you (could|can|might)|we (could|can|might))\b.*\b(or|alternatively)\b/i,
+  /\b(option (a|b|c|1|2|3)|approach (1|2|3|a|b|c))\b/i,
+];
+
+/**
+ * Honest "I cannot see the repo / not enough context" lexicon — a VALID grounding
+ * (the `not_enough_context` notion). When the model truthfully says it cannot see
+ * the requested repo or lacks context AND names what it needs, the turn passes.
+ */
+const HONEST_NO_CONTEXT_LEXICON: readonly RegExp[] = [
+  /\b(i (can('?t| ?not)|cannot|don'?t)) (see|find|access|locate)\b.*\b(repo|repository|project|file|directory|folder|codebase|code|path|context)\b/i,
+  /\b(not enough|insufficient|lacking|missing|no) (context|information|repo|repository|access|visibility)\b/i,
+  /\b(the (requested |referenced )?(repo|repository|project)) (is not|isn'?t|was not) (visible|present|here|in (the )?(cwd|current))/i,
+  /\b(point (me|the tool) (at|to)|share|provide|tell me) the (repo|repository|path|directory|file)\b/i,
+  /\b(i don'?t have (enough )?(context|access|visibility))\b/i,
+];
+
+/**
+ * Grounding lexicons mapped onto the {@link RecommendationGrounding} notion. Each
+ * entry is "does the prose contain this kind of grounding". PURE; never throws.
+ */
+// A referenced file path / symbol: `src/foo.ts`, `foo/bar.js:12`, `path/to/x.py`.
+const FILE_PATH_RE =
+  /\b[\w./-]*[\w-]\/[\w./-]*\.[a-z]{1,5}\b|\b[\w-]+\.(ts|tsx|js|jsx|mjs|cjs|py|go|rs|java|kt|rb|c|cpp|h|json|md|yml|yaml|toml|sh)\b(?::\d+)?/i;
+// An explicit stated assumption.
+const ASSUMPTION_RE = /\b(assum(e|ing|ption)|i'?ll assume|i am assuming|presum(e|ing)|taking it that|if we assume)\b/i;
+// An external source: a URL, a docs/spec/RFC reference, "according to".
+const EXTERNAL_SOURCE_RE =
+  /\bhttps?:\/\/\S+|\b(according to|per the|the (docs?|documentation|spec|specification|rfc|changelog|release notes))\b|\b(benchmark|published|upstream)\b/i;
+// A repo/environment fact: a concrete observation about the code/env the model saw.
+const REPO_FACT_RE =
+  /\b(the (codebase|repo|repository|project|code) (uses|has|is|contains|relies on|depends on|targets)|i (see|found|noticed|inspected|looked at|checked|read)|currently (uses|on)|there (is|are) \d+ |in (this|the) (repo|project|codebase)|the (existing|current) (code|implementation|module|setup|stack|config|tests?|build))\b/i;
+
+/** Detect a recommendation / clear next step in the prose. PURE. */
+export function detectRecommendation(text: string): boolean {
+  if (typeof text !== 'string' || text.length === 0) return false;
+  return RECOMMENDATION_LEXICON.some((re) => re.test(text));
+}
+
+/** Detect a bare options-list / waffle (enumerated choices, no recommendation). PURE. */
+export function detectBareOptionsList(text: string): boolean {
+  if (typeof text !== 'string' || text.length === 0) return false;
+  if (OPTIONS_OPENER_LEXICON.some((re) => re.test(text))) return true;
+  // ≥3 enumerated bullet / numbered items that read as parallel choices.
+  const bullets = (text.match(/^\s*(?:[-*•]|\d+[.)])\s+/gm) ?? []).length;
+  return bullets >= 3;
+}
+
+/** Detect an honest "can't see the repo / not enough context". PURE. */
+export function detectHonestNoContext(text: string): boolean {
+  if (typeof text !== 'string' || text.length === 0) return false;
+  return HONEST_NO_CONTEXT_LEXICON.some((re) => re.test(text));
+}
+
+/**
+ * Detect whether the prose is grounded in at least one {@link RecommendationGrounding}.
+ * Returns the FIRST grounding found, or `null` when none is present. PURE; never
+ * fabricates — detection is over what the model actually wrote.
+ */
+export function detectGrounding(text: string): RecommendationGrounding | null {
+  if (typeof text !== 'string' || text.length === 0) return null;
+  // not_enough_context — the honest "I can't see the repo" escape hatch is itself
+  // a valid grounding (§2.6 E). Check first: it is the truthful fallback shape.
+  if (detectHonestNoContext(text)) {
+    return { kind: 'not_enough_context', missing: 'repo/context not visible' };
+  }
+  const fileMatch = text.match(FILE_PATH_RE);
+  if (fileMatch !== null) {
+    return { kind: 'file_evidence', paths: [fileMatch[0]] };
+  }
+  if (REPO_FACT_RE.test(text)) {
+    return { kind: 'repo_orientation', facts: ['stated repo/environment fact'] };
+  }
+  if (EXTERNAL_SOURCE_RE.test(text)) {
+    return { kind: 'external_source', sources: ['cited external source'] };
+  }
+  if (ASSUMPTION_RE.test(text)) {
+    return { kind: 'stated_assumption', assumptions: ['explicit stated assumption'] };
+  }
+  return null;
+}
+
+// ---------------------------------------------------------------------------
 // Output validation (§2.2 A2)
 // ---------------------------------------------------------------------------
 
@@ -252,7 +412,69 @@ export function validateTurnOutput(
         };
       }
     }
+    if (validator.kind === 'require_grounded_recommendation') {
+      // STAGE 5 (§2.6 E): fires ONLY on a substantial decision/recommendation turn.
+      // Tiny factual/lookup turns are EXEMPT — never gated (latency + no nagging).
+      if (!directive.substantial) continue;
+      const failure = checkGroundedRecommendation(text);
+      if (failure !== null) return failure;
+    }
   }
+  return null;
+}
+
+/**
+ * The grounded-recommendation rule over final prose (§2.6 E). PURE; never throws.
+ * On a substantial turn the answer FAILS when:
+ *   - it is a bare options list / waffle with NO recommendation or next step; OR
+ *   - it has a recommendation/next step but NO grounding (no file evidence, repo
+ *     fact, stated assumption, external source, or honest "can't see the repo").
+ * An honest "I cannot see the requested repo / not enough context" is itself a
+ * valid grounding (detectGrounding returns `not_enough_context`), so such an
+ * answer PASSES. Returns the failure, or `null` when the answer is acceptable.
+ */
+function checkGroundedRecommendation(text: string): ValidationFailure | null {
+  const grounding = detectGrounding(text);
+  // An honest no-context answer is fully acceptable on its own (it states the
+  // missing context AND the next step — point the tool at the repo).
+  if (grounding !== null && grounding.kind === 'not_enough_context') return null;
+
+  const hasRecommendation = detectRecommendation(text);
+
+  // Bare options list / waffle with no recommendation → fail (the order-taker
+  // failure mode in recommendation clothing).
+  if (!hasRecommendation && detectBareOptionsList(text)) {
+    return {
+      kind: 'ungrounded_recommendation',
+      severity: 'repair',
+      reason:
+        'A substantial decision turn returned an options list with no recommendation. ' +
+        'Inspect the context, recommend a default, and state what would change the decision.',
+    };
+  }
+
+  // No recommendation AND no grounding → fail (waffle without a stance).
+  if (!hasRecommendation && grounding === null) {
+    return {
+      kind: 'ungrounded_recommendation',
+      severity: 'repair',
+      reason:
+        'A substantial decision turn produced neither a grounded recommendation nor an ' +
+        'honest "I cannot see the repo / not enough context". Orient and take a stance.',
+    };
+  }
+
+  // A recommendation with NO grounding → fail (an opinion floating free of evidence).
+  if (hasRecommendation && grounding === null) {
+    return {
+      kind: 'ungrounded_recommendation',
+      severity: 'repair',
+      reason:
+        'The recommendation is not grounded in any file evidence, repo/environment fact, ' +
+        'stated assumption, external source, or an honest "not enough context".',
+    };
+  }
+
   return null;
 }
 
@@ -268,6 +490,55 @@ export const GENERIC_MENU_REPAIR_NOTE =
   'and the task to orient, state what you can verify, and recommend the concrete next ' +
   'step. If the referenced project is not in the current working directory, say so ' +
   'explicitly and ask for the repo path.';
+
+/**
+ * The repair feedback appended to the shared ONE retry when the
+ * `require_grounded_recommendation` validator fires (§2.6 E). Plain text injected
+ * as `managerNotes` so it rides the SAME attempt loop and shares the single
+ * validator-repair budget with the generic-menu note — never a second metered
+ * call. Exported so orchestrate and tests share one string.
+ */
+export const GROUNDED_RECOMMENDATION_REPAIR_NOTE =
+  'The previous answer was a substantial decision but gave an options list / waffle ' +
+  'with no clear recommendation, or a recommendation with no grounding. Inspect the ' +
+  'available repo/context, recommend a DEFAULT, and ground it in at least one of: a ' +
+  'referenced file path/symbol, a repo/environment fact, an explicit stated assumption, ' +
+  'or a cited source. Then state WHAT WOULD CHANGE the decision, and ask only a genuine ' +
+  'fork if one remains. If you cannot see the requested repo, say so and name what you ' +
+  'need — do not fabricate grounding.';
+
+/**
+ * The DETERMINISTIC truthful fallback appended ONLY when, after the one retry, the
+ * answer still lacks a groundable recommendation (§2.6 E). It is appended ONLY when
+ * it is LITERALLY true — i.e. no recommendation could be grounded from the output;
+ * see {@link shouldAppendGroundedFallback}. Never fabricates grounding.
+ */
+export const GROUNDED_RECOMMENDATION_FALLBACK =
+  'I cannot ground a recommendation from the current output; the next step is to point ' +
+  'the tool at the correct repo or narrow the task.';
+
+/**
+ * Decide whether the deterministic truthful fallback (§2.6 E) may be appended to a
+ * final answer. PURE; never throws. It is truthful ONLY when the answer is still
+ * ungrounded on a substantial turn AND it is not already an honest "I cannot see
+ * the repo" (which would make the fallback redundant). Returns false for any
+ * non-substantial directive or an answer that already grounds a recommendation —
+ * the fallback is appended ONLY when literally nothing could be grounded.
+ */
+export function shouldAppendGroundedFallback(text: string, directive: TurnDirective): boolean {
+  if (directive === null || typeof directive !== 'object') return false;
+  if (directive.substantial !== true) return false;
+  if (!directive.outputValidators.some((v) => v.kind === 'require_grounded_recommendation')) {
+    return false;
+  }
+  if (typeof text !== 'string') return false;
+  // Already an honest no-context answer → fallback would be redundant (and the
+  // validator already passes), so do not append.
+  if (detectHonestNoContext(text)) return false;
+  // Append ONLY when the answer is still ungrounded — i.e. the validator still
+  // fails. This is the "no recommendation could be grounded" truth condition.
+  return checkGroundedRecommendation(text) !== null;
+}
 
 // ---------------------------------------------------------------------------
 // History policy (§3) — quarantine prior generic-menu assistant prose
@@ -297,6 +568,57 @@ export function decideHistoryPolicy(
     };
   }
   return { replayMode: 'normal', reasons: [] };
+}
+
+// ---------------------------------------------------------------------------
+// "Substantial" decision-turn predicate (§2.6 E, AP2-E)
+// ---------------------------------------------------------------------------
+
+/**
+ * Decide whether the turn is SUBSTANTIAL — a decision/recommendation-shaped turn on
+ * which {@link OutputValidator} `require_grounded_recommendation` should fire. PURE;
+ * never throws.
+ *
+ * A turn is substantial when it is NOT a tiny factual/lookup turn AND it is
+ * genuinely DECISION/RECOMMENDATION-shaped — NOT a plain implementation turn. We
+ * keep this NARROW (the §6 over-blocking risk): a normal "implement X" turn that
+ * merely plans first must NOT be gated. Concretely it is substantial when ANY hold:
+ *   - vision triage carried a MIGRATE_REARCHITECT, INVESTIGATE_THEN_PROPOSE, or a
+ *     genuine DISCUSS fork (the §2.4 C dispositions that need an opinion); or
+ *   - the task itself reads as a decision ("should we X or Y", "which is better",
+ *     "recommend / migrate / rewrite …", "X or Y?").
+ * It is NEVER substantial when {@link isTrivial} (the same population the intent gate
+ * skips) — a tiny "what is 2+2 / how many files" turn is EXEMPT (latency, no nagging).
+ *
+ * We deliberately do NOT key off engagement ACTIONS (DISCUSS_OPTIONS / PLAN_FIRST /
+ * REFLECT_VISION): those also fire on ordinary high-risk implementation work — the
+ * irreversible+ambiguous SAFETY FLOOR adds DISCUSS_OPTIONS to "implement the payment
+ * handler" — and gating those would over-fire the validator (doc §6 over-blocking
+ * risk). A turn is substantial because it is a genuine DECISION, surfaced by the
+ * vision-triage disposition or the decision-shaped task text, not because a
+ * thoroughness rung happened to be selected.
+ */
+export function decideSubstantial(input: {
+  readonly plan: EngagementPlan;
+  readonly signals: EngagementSignals;
+  readonly migration: boolean;
+  readonly investigate: boolean;
+  readonly discussFork: boolean;
+}): boolean {
+  const { signals, migration, investigate, discussFork } = input;
+  if (signals === null || typeof signals !== 'object') return false;
+  // Tiny factual/lookup/trivial turns are EXEMPT — never gated.
+  if (isTrivial(signals)) return false;
+
+  // Vision-triage dispositions that need an opinion (§2.4 C).
+  if (migration || investigate || discussFork) return true;
+
+  // A decision/recommendation-shaped task.
+  const task = typeof signals.task === 'string' ? signals.task : '';
+  const decisionShaped = DECISION_TASK_LEXICON.some((re) => re.test(task));
+  if (decisionShaped) return true;
+
+  return false;
 }
 
 // ---------------------------------------------------------------------------
@@ -342,7 +664,6 @@ export function compileTurnDirective(input: CompileDirectiveInput): TurnDirectiv
     input.repoPresent === true ||
     (plan !== undefined && Array.isArray(plan.actions) && plan.actions.includes('INVESTIGATE_CONTEXT'));
 
-  const outputValidators: readonly OutputValidator[] = [{ kind: 'reject_generic_open_menu' }];
   const historyPolicy = decideHistoryPolicy(input.priorAssistantTexts);
 
   // STAGE 3 — vision triage (PURE, no model call). Decompose the vision and decide
@@ -368,6 +689,24 @@ export function compileTurnDirective(input: CompileDirectiveInput): TurnDirectiv
     typeof input.canAuthorizeManagerForMigration === 'function' &&
     input.canAuthorizeManagerForMigration() === true;
 
+  // STAGE 5 (§2.6 E, AP2-E) — decide whether this is a SUBSTANTIAL
+  // decision/recommendation turn. The `require_grounded_recommendation` validator
+  // is added ONLY when so; tiny factual/lookup turns stay EXEMPT (never gated).
+  const substantial =
+    plan !== undefined && plan !== null && Array.isArray(plan.actions)
+      ? decideSubstantial({
+          plan,
+          signals,
+          migration,
+          investigate,
+          discussFork: discussFork !== undefined,
+        })
+      : false;
+
+  const outputValidators: readonly OutputValidator[] = substantial
+    ? [{ kind: 'reject_generic_open_menu' }, { kind: 'require_grounded_recommendation' }]
+    : [{ kind: 'reject_generic_open_menu' }];
+
   const requiredBeforeAnswer: readonly RequiredPreAnswerAction[] = carriesTriage
     ? [
         {
@@ -388,6 +727,7 @@ export function compileTurnDirective(input: CompileDirectiveInput): TurnDirectiv
     outputValidators,
     historyPolicy,
     repoOriented,
+    substantial,
     ...(input.workState !== undefined ? { workState: input.workState } : {}),
   };
 

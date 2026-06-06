@@ -60,7 +60,10 @@ import {
   compileTurnDirective,
   validateTurnOutput,
   detectGenericOpenMenu,
+  shouldAppendGroundedFallback,
   GENERIC_MENU_REPAIR_NOTE,
+  GROUNDED_RECOMMENDATION_REPAIR_NOTE,
+  GROUNDED_RECOMMENDATION_FALLBACK,
 } from './turn-directive.js';
 import { engagementBiasOf } from './prompt-context.js';
 import { deriveWorkStateFromHistory, renderWorkStateBlock } from './work-state.js';
@@ -1210,23 +1213,75 @@ export async function* orchestrate(
     // (MAX_VALIDATOR_REPAIRS = 1). The current `acceptedRun`/`lastOutput` are left
     // in place: if the repaired answer is no better, the best-effort accept paths
     // below KEEP a usable answer rather than discarding it as Failed.
-    if (
-      success &&
-      genericMenuRepairs < MAX_VALIDATOR_REPAIRS &&
-      parseQuestions(finalText ?? '') === null &&
-      validateTurnOutput(finalText ?? '', directive) !== null
-    ) {
+    // The generic-menu (§2.2 A2) and grounded-recommendation (§2.6 E) validators
+    // SHARE this single repair budget — together they retry at most once, so we
+    // never multiply provider calls. validateTurnOutput returns the FIRST failure;
+    // we pick the matching repair note so the retry gets targeted feedback.
+    const rawValidatorFailure =
+      success && genericMenuRepairs < MAX_VALIDATOR_REPAIRS && parseQuestions(finalText ?? '') === null
+        ? validateTurnOutput(finalText ?? '', directive)
+        : null;
+    // The grounded-recommendation repair DEFERS to the review pipeline: when this
+    // turn will be cross-vendor reviewed (high/critical risk, or the model asked for
+    // review), the reviewer's revise verdict is the STRONGER, already-budgeted
+    // correction — preempting it with a local repair would waste the shared budget
+    // and double-correct. The generic-menu failure is a hard order-taker failure
+    // mode and is repaired regardless. (When review will NOT run, the grounded
+    // repair fires here as the only correction.)
+    const validatorFailure =
+      rawValidatorFailure !== null &&
+      rawValidatorFailure.kind === 'ungrounded_recommendation' &&
+      shouldReview(classification, assessment, deps.policy.reviewPolicy)
+        ? null
+        : rawValidatorFailure;
+    if (validatorFailure !== null) {
       genericMenuRepairs++;
+      const repairNote =
+        validatorFailure.kind === 'ungrounded_recommendation'
+          ? GROUNDED_RECOMMENDATION_REPAIR_NOTE
+          : GENERIC_MENU_REPAIR_NOTE;
       managerNotes =
         managerNotes !== undefined && managerNotes.length > 0
-          ? `${managerNotes}\n\n${GENERIC_MENU_REPAIR_NOTE}`
-          : GENERIC_MENU_REPAIR_NOTE;
+          ? `${managerNotes}\n\n${repairNote}`
+          : repairNote;
       yield {
         type: 'notice',
         level: 'info',
-        message: 'Reworking a generic task-category menu into a grounded recommendation.',
+        message:
+          validatorFailure.kind === 'ungrounded_recommendation'
+            ? 'Reworking an ungrounded answer into a grounded recommendation.'
+            : 'Reworking a generic task-category menu into a grounded recommendation.',
       };
       continue mainLoop;
+    }
+
+    // -----------------------------------------------------------------------
+    // 0b) GROUNDED-RECOMMENDATION TRUTHFUL FALLBACK (§2.6 E, AP2-E).
+    // -----------------------------------------------------------------------
+    // If we reach here on a successful turn, the validator either passed OR the
+    // shared one-retry budget is exhausted. When the grounded-recommendation
+    // validator STILL fails (a substantial turn left ungrounded after the retry),
+    // append the DETERMINISTIC truthful wrapper — but ONLY when it is literally
+    // true (no recommendation could be grounded, and it is not already an honest
+    // "can't see the repo"). We NEVER fabricate grounding; this only states the
+    // honest next step. The fallback is appended to the kept answer (lastOutput +
+    // acceptedRun.content) so every downstream final carries it. We DEFER it when a
+    // review will run (the reviewer may replace this output — appending now would
+    // wrap a soon-discarded answer); on a reviewed turn the grounded repair is also
+    // deferred, so review owns the correction end-to-end.
+    if (
+      success &&
+      parseQuestions(finalText ?? '') === null &&
+      !shouldReview(classification, assessment, deps.policy.reviewPolicy) &&
+      shouldAppendGroundedFallback(lastOutput, directive)
+    ) {
+      lastOutput =
+        lastOutput.length > 0
+          ? `${lastOutput}\n\n${GROUNDED_RECOMMENDATION_FALLBACK}`
+          : GROUNDED_RECOMMENDATION_FALLBACK;
+      if (acceptedRun !== undefined) {
+        acceptedRun = { ...acceptedRun, content: lastOutput };
+      }
     }
 
     // -----------------------------------------------------------------------

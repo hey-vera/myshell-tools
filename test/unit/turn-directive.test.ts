@@ -22,7 +22,13 @@ import {
   validateTurnOutput,
   detectGenericOpenMenu,
   decideHistoryPolicy,
+  detectRecommendation,
+  detectGrounding,
+  detectBareOptionsList,
+  detectHonestNoContext,
+  shouldAppendGroundedFallback,
   GENERIC_MENU_REPAIR_NOTE,
+  GROUNDED_RECOMMENDATION_FALLBACK,
   type TurnDirective,
 } from '../../src/core/turn-directive.ts';
 import { planEngagement, type EngagementSignals } from '../../src/core/engagement.ts';
@@ -135,6 +141,7 @@ const REPO_DIRECTIVE: TurnDirective = {
   outputValidators: [{ kind: 'reject_generic_open_menu' }],
   historyPolicy: { replayMode: 'normal', reasons: [] },
   repoOriented: true,
+  substantial: false,
 };
 const NON_REPO_DIRECTIVE: TurnDirective = { ...REPO_DIRECTIVE, repoOriented: false };
 
@@ -350,5 +357,185 @@ describe('compileTurnDirective — vision_triage', () => {
       !action.items.some((i) => i.disposition === 'DISCUSS'),
       'a generic task-category fork never becomes a DISCUSS/ask item',
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// STAGE 5 (AP2-E, §2.6 E) — grounded-recommendation validator
+// ---------------------------------------------------------------------------
+
+describe('require_grounded_recommendation — substantial detection', () => {
+  it('a "should we X or Y" decision task is substantial → carries the validator', () => {
+    const s = signals({ task: 'should we keep this in TypeScript or move the core to another language?' });
+    const d = compileTurnDirective({ frame: undefined, plan: planEngagement(s), signals: s });
+    assert.equal(d.substantial, true, 'a should-we-X-or-Y fork is a substantial decision');
+    assert.ok(
+      d.outputValidators.some((v) => v.kind === 'require_grounded_recommendation'),
+      'a substantial turn carries the grounded-recommendation validator',
+    );
+  });
+
+  it('a migration/rearchitecture task is substantial (vision-triage MIGRATE)', () => {
+    const s = signals({ task: 'rewrite the core in Rust' });
+    const d = compileTurnDirective({ frame: undefined, plan: planEngagement(s), signals: s });
+    assert.equal(d.substantial, true);
+    assert.ok(d.outputValidators.some((v) => v.kind === 'require_grounded_recommendation'));
+  });
+
+  it('a tiny factual/lookup turn is NOT substantial → no grounded validator (no over-fire)', () => {
+    const s = signals({
+      frame: frameWith(undefined, 'other'),
+      task: 'what is 2+2',
+      engagementBias: 0,
+      classification: { tier: 'worker', risk: 'low', rationale: 't' },
+    });
+    const d = compileTurnDirective({ frame: undefined, plan: planEngagement(s), signals: s });
+    assert.equal(d.substantial, false, 'a trivial factual turn must stay exempt');
+    assert.deepEqual(
+      d.outputValidators,
+      [{ kind: 'reject_generic_open_menu' }],
+      'a trivial turn carries ONLY the generic-menu validator',
+    );
+  });
+
+  it('a plain high-risk IMPLEMENTATION turn is NOT substantial (no over-fire on DISCUSS_OPTIONS floor)', () => {
+    const s = signals({
+      task: 'implement the payment handler',
+      engagementBias: 0,
+      classification: { tier: 'ic', risk: 'high', rationale: 't' },
+    });
+    const d = compileTurnDirective({ frame: undefined, plan: planEngagement(s), signals: s });
+    assert.equal(d.substantial, false, 'a high-risk implementation turn is not a decision turn');
+  });
+});
+
+describe('detectRecommendation / detectGrounding / detectBareOptionsList / detectHonestNoContext', () => {
+  it('detects a recommendation and a clear next step', () => {
+    assert.equal(detectRecommendation('I recommend keeping TypeScript.'), true);
+    assert.equal(detectRecommendation('The next step is to add tests.'), true);
+    assert.equal(detectRecommendation('Here is a neutral paragraph about the weather.'), false);
+  });
+
+  it('detects file evidence as grounding', () => {
+    const g = detectGrounding('Keep TypeScript — see src/core/orchestrate.ts:12 for the hot path.');
+    assert.ok(g !== null && g.kind === 'file_evidence');
+  });
+
+  it('detects an honest no-context as the not_enough_context grounding', () => {
+    const g = detectGrounding('I cannot see the requested repo in the current directory.');
+    assert.ok(g !== null && g.kind === 'not_enough_context');
+    assert.equal(detectHonestNoContext('I cannot see the requested repo here.'), true);
+  });
+
+  it('detects a stated assumption and an external source', () => {
+    const a = detectGrounding('I will assume the build targets Node 22.');
+    assert.ok(a !== null && a.kind === 'stated_assumption');
+    const e = detectGrounding('According to the TypeScript docs, this is supported.');
+    assert.ok(e !== null && (e.kind === 'external_source' || e.kind === 'repo_orientation'));
+  });
+
+  it('detects a bare options list / waffle (raw detector — recommendation-guard is in the validator)', () => {
+    assert.equal(detectBareOptionsList('Here are some options: A, B, and C.'), true);
+    assert.equal(
+      detectBareOptionsList('- Apple\n- Banana\n- Cherry'),
+      true,
+      '≥3 enumerated bullets read as parallel choices',
+    );
+    assert.equal(detectBareOptionsList('A plain grounded sentence with no enumerated choices.'), false);
+  });
+
+  it('ungrounded prose has no grounding', () => {
+    assert.equal(detectGrounding('I recommend rewriting everything, trust me.'), null);
+  });
+});
+
+describe('validateTurnOutput — require_grounded_recommendation', () => {
+  // A substantial directive carrying the grounded validator (decision task).
+  const substantialDirective = (): TurnDirective => {
+    const s = signals({ task: 'should we keep this in TypeScript or move the core to Rust?' });
+    return compileTurnDirective({ frame: undefined, plan: planEngagement(s), signals: s });
+  };
+
+  it('ACCEPTS a concrete file-grounded recommendation', () => {
+    const d = substantialDirective();
+    const text =
+      'I recommend keeping TypeScript — see src/core/orchestrate.ts:12; the hot path is small. ' +
+      'What would change this: a sustained CPU-bound indexing workload.';
+    assert.equal(validateTurnOutput(text, d), null);
+  });
+
+  it('ACCEPTS an honest "I do not see that repo here"', () => {
+    const d = substantialDirective();
+    const text = 'I cannot see the requested repo in the current working directory; point the tool at it.';
+    assert.equal(validateTurnOutput(text, d), null);
+  });
+
+  it('REJECTS a bare options list with no recommendation on a substantial turn', () => {
+    const d = substantialDirective();
+    const text = 'Here are some options: stay on TypeScript, move to Rust, or use Go. Up to you.';
+    const f = validateTurnOutput(text, d);
+    assert.ok(f !== null && f.kind === 'ungrounded_recommendation');
+  });
+
+  it('REJECTS a recommendation with zero grounding', () => {
+    const d = substantialDirective();
+    const text = 'I recommend rewriting the core in Rust. It will be better.';
+    const f = validateTurnOutput(text, d);
+    assert.ok(f !== null && f.kind === 'ungrounded_recommendation');
+  });
+
+  it('SKIPS the grounded check on a tiny factual turn (no fire)', () => {
+    const s = signals({
+      task: 'what is 2+2',
+      engagementBias: 0,
+      classification: { tier: 'worker', risk: 'low', rationale: 't' },
+    });
+    const d = compileTurnDirective({ frame: undefined, plan: planEngagement(s), signals: s });
+    // Even an obviously ungrounded "answer" is not gated on a non-substantial turn.
+    assert.equal(validateTurnOutput('Here are some options: A, B, C.', d), null);
+  });
+});
+
+describe('shouldAppendGroundedFallback — truthful only', () => {
+  const substantialDirective = (): TurnDirective => {
+    const s = signals({ task: 'should we keep this in TypeScript or move the core to Rust?' });
+    return compileTurnDirective({ frame: undefined, plan: planEngagement(s), signals: s });
+  };
+
+  it('appends ONLY when the answer is still ungrounded on a substantial turn', () => {
+    const d = substantialDirective();
+    assert.equal(
+      shouldAppendGroundedFallback('I recommend rewriting it. Trust me.', d),
+      true,
+      'an ungrounded recommendation on a substantial turn is groundless → fallback',
+    );
+    assert.ok(GROUNDED_RECOMMENDATION_FALLBACK.length > 0);
+  });
+
+  it('does NOT append when the recommendation is already grounded', () => {
+    const d = substantialDirective();
+    assert.equal(
+      shouldAppendGroundedFallback('I recommend keeping TS — see src/core/orchestrate.ts:12.', d),
+      false,
+    );
+  });
+
+  it('does NOT append when the answer already honestly states no context', () => {
+    const d = substantialDirective();
+    assert.equal(
+      shouldAppendGroundedFallback('I cannot see the requested repo here; share the path.', d),
+      false,
+      'an honest no-context answer makes the fallback redundant',
+    );
+  });
+
+  it('does NOT append on a non-substantial turn', () => {
+    const s = signals({
+      task: 'what is 2+2',
+      engagementBias: 0,
+      classification: { tier: 'worker', risk: 'low', rationale: 't' },
+    });
+    const d = compileTurnDirective({ frame: undefined, plan: planEngagement(s), signals: s });
+    assert.equal(shouldAppendGroundedFallback('A, B, or C.', d), false);
   });
 });

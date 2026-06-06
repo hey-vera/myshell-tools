@@ -245,6 +245,132 @@ describe('orchestrate generic-menu repair (A2)', () => {
 });
 
 // ---------------------------------------------------------------------------
+// STAGE 5 (AP2-E, §2.6 E) — grounded-recommendation repair + shared budget
+// ---------------------------------------------------------------------------
+
+// A substantial decision task that classifies low-risk (so no cross-vendor review
+// preempts the local grounded repair). Repo present so a recommendation is gradable.
+const DECISION_TASK = 'which logging approach is better for this small CLI, pino or winston?';
+const UNGROUNDED_REC = `I recommend pino. It is better. Trust me.\n${ENVELOPE}`;
+const GROUNDED_REC = `I recommend pino — see src/log.ts:3, the CLI already imports it. What would change this: a need for transport plugins.\n${ENVELOPE}`;
+const BARE_OPTIONS = `Here are some options: pino, winston, or bunyan. Up to you.\n${ENVELOPE}`;
+
+describe('orchestrate grounded-recommendation repair (AP2-E §2.6 E)', () => {
+  it('re-runs ONCE on an ungrounded recommendation and accepts the grounded retry', async () => {
+    const provider = scriptedProvider('claude', [UNGROUNDED_REC, GROUNDED_REC]);
+    const events = await collect(
+      orchestrate(
+        DECISION_TASK,
+        baseDeps({
+          providers: { claude: provider },
+          environmentContext: 'ENVIRONMENT:\nrepo: cli (clean)\n',
+        }),
+        new AbortController().signal,
+      ),
+    );
+    assert.equal(provider.calls, 2, 'exactly one grounded-recommendation repair retry');
+    assert.match(provider.prompts[1] ?? '', /recommend a DEFAULT|grounding|grounded recommendation/i);
+    const final = events.find((e) => e.type === 'final');
+    assert.ok(final !== undefined && final.type === 'final');
+    assert.equal(final.success, true);
+    assert.match(final.output, /src\/log\.ts/);
+  });
+
+  it('appends the truthful fallback ONLY when nothing could be grounded after the retry', async () => {
+    const provider = scriptedProvider('claude', [UNGROUNDED_REC]); // always ungrounded
+    const events = await collect(
+      orchestrate(
+        DECISION_TASK,
+        baseDeps({
+          providers: { claude: provider },
+          environmentContext: 'ENVIRONMENT:\nrepo: cli (clean)\n',
+        }),
+        new AbortController().signal,
+      ),
+    );
+    assert.equal(provider.calls, 2, 'repair fires once, then stops (bounded)');
+    const final = events.find((e) => e.type === 'final');
+    assert.ok(final !== undefined && final.type === 'final');
+    assert.equal(final.success, true, 'a usable answer is kept, not discarded');
+    assert.match(
+      final.output,
+      /cannot ground a recommendation from the current output/,
+      'the deterministic truthful fallback is appended when still ungrounded',
+    );
+  });
+
+  it('does NOT append the fallback when the answer is already grounded', async () => {
+    const provider = scriptedProvider('claude', [GROUNDED_REC]);
+    const events = await collect(
+      orchestrate(
+        DECISION_TASK,
+        baseDeps({
+          providers: { claude: provider },
+          environmentContext: 'ENVIRONMENT:\nrepo: cli (clean)\n',
+        }),
+        new AbortController().signal,
+      ),
+    );
+    assert.equal(provider.calls, 1, 'a grounded recommendation passes — no repair');
+    const final = events.find((e) => e.type === 'final');
+    assert.ok(final !== undefined && final.type === 'final');
+    assert.doesNotMatch(final.output, /cannot ground a recommendation/);
+  });
+
+  it('SHARED budget: a generic-menu THEN an ungrounded answer retry AT MOST once total', async () => {
+    // First answer is a generic open menu (fires reject_generic_open_menu); the
+    // repaired second answer is still ungrounded (would fire the grounded validator)
+    // — but the SHARED budget (MAX_VALIDATOR_REPAIRS = 1) is already spent, so the
+    // ungrounded answer is KEPT (with the truthful fallback) rather than retried again.
+    const provider = scriptedProvider('claude', [`${GENERIC_MENU}\n${ENVELOPE}`, UNGROUNDED_REC]);
+    const events = await collect(
+      orchestrate(
+        DECISION_TASK,
+        baseDeps({
+          providers: { claude: provider },
+          environmentContext: 'ENVIRONMENT:\nrepo: cli (clean)\n',
+        }),
+        new AbortController().signal,
+      ),
+    );
+    assert.equal(provider.calls, 2, 'generic-menu + grounded share ONE retry — never two');
+    const final = events.find((e) => e.type === 'final');
+    assert.ok(final !== undefined && final.type === 'final');
+    assert.equal(final.success, true);
+    assert.match(final.output, /cannot ground a recommendation/);
+  });
+
+  it('re-runs ONCE on a bare options list with no recommendation', async () => {
+    const provider = scriptedProvider('claude', [BARE_OPTIONS, GROUNDED_REC]);
+    const events = await collect(
+      orchestrate(
+        DECISION_TASK,
+        baseDeps({
+          providers: { claude: provider },
+          environmentContext: 'ENVIRONMENT:\nrepo: cli (clean)\n',
+        }),
+        new AbortController().signal,
+      ),
+    );
+    assert.equal(provider.calls, 2, 'a bare options list with no recommendation is repaired once');
+    const final = events.find((e) => e.type === 'final');
+    assert.ok(final !== undefined && final.type === 'final');
+    assert.match(final.output, /src\/log\.ts/);
+  });
+
+  it('does NOT fire on a tiny factual turn (no repair, no fallback)', async () => {
+    const provider = scriptedProvider('claude', [`2 + 2 is 4.\n${ENVELOPE}`]);
+    const events = await collect(
+      orchestrate('what is 2+2', baseDeps({ providers: { claude: provider } }), new AbortController().signal),
+    );
+    assert.equal(provider.calls, 1, 'a trivial factual turn is never gated');
+    const final = events.find((e) => e.type === 'final');
+    assert.ok(final !== undefined && final.type === 'final');
+    assert.doesNotMatch(final.output, /cannot ground a recommendation/);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // History quarantine (§3)
 // ---------------------------------------------------------------------------
 
