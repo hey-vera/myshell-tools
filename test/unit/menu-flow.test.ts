@@ -5675,11 +5675,12 @@ describe('completeSlash — Tab-completion for the chat prompt', () => {
   });
 
   it('matches multiple commands sharing a prefix', () => {
-    // '/' + 'h' → only /help; '/e' → /edit AND /exit (both share the prefix);
-    // verify filtering is by prefix and returns ALL matches.
+    // '/' + 'h' → only /help; '/e' → /edit, /export AND /exit (all share the
+    // prefix); verify filtering is by prefix and returns ALL matches in order.
     assert.deepEqual(completeSlash('/h')[0], ['/help']);
-    assert.deepEqual(completeSlash('/e')[0], ['/edit', '/exit']);
+    assert.deepEqual(completeSlash('/e')[0], ['/edit', '/export', '/exit']);
     assert.deepEqual(completeSlash('/ed')[0], ['/edit']);
+    assert.deepEqual(completeSlash('/ex')[0], ['/export', '/exit']);
   });
 
   it('is a no-op (no hits) on non-slash prose so plain text is never mangled', () => {

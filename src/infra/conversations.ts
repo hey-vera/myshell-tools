@@ -166,11 +166,73 @@ async function loadMessageFile(path: string): Promise<SessionEntry[]> {
 
 const MAX_TITLE_LEN = 80;
 
+/** Semantic titles (gap #5) are shorter than raw first-words truncations: a
+ * clean topic phrase, not a sentence. Bounded so the menu row stays compact. */
+const MAX_RECAP_TITLE_LEN = 56;
+
 function deriveTitle(content: string): string {
   // Collapse ALL internal whitespace (incl. newlines) to single spaces so a
   // multi-line first message can't render as a broken multi-line menu entry.
   const trimmed = content.trim().replace(/\s+/g, ' ');
   return trimmed.length <= MAX_TITLE_LEN ? trimmed : trimmed.slice(0, MAX_TITLE_LEN);
+}
+
+/**
+ * Derive a short, clean TITLE from a conversation's already-cached recap
+ * (real-chat gap #5) — semantic auto-naming with NO new model call. The recap
+ * (the ※ orientation line) is the existing topic summary; this distills it to a
+ * 3-to-~8-word topic phrase so a thread that opened "hey can you look at this"
+ * is titled by what it became, not its first keystrokes.
+ *
+ * Deterministic + fail-soft + bounded:
+ *   - takes the recap's FIRST clause (up to the first sentence/clause boundary —
+ *     `.`/`;`/`—`/newline), trims a leading "we …"/"you …" framing the recap
+ *     tends to open with so the title reads as a topic, then bounds to
+ *     {@link MAX_RECAP_TITLE_LEN} on a word boundary;
+ *   - returns null when the recap is absent/blank/too short to be a better title
+ *     than the fallback, so the caller keeps the first-words title (no churn,
+ *     no regressions).
+ *
+ * PURE; never throws.
+ */
+export function deriveTitleFromRecap(recap: string | null | undefined): string | null {
+  if (typeof recap !== 'string') return null;
+  // Single line, single-spaced; drop a leading ※ glyph the recap may carry.
+  let s = recap.replace(/^[\s※]+/, '').replace(/\s+/g, ' ').trim();
+  if (s.length === 0) return null;
+  // First clause only — the recap's opening phrase is the topic; the rest is
+  // detail. Split on the earliest strong boundary.
+  const boundary = s.search(/[.;\n]|\s—\s/);
+  if (boundary > 0) s = s.slice(0, boundary).trim();
+  // Strip a leading conversational framing ("We've been…", "You asked…") so the
+  // title is a topic, not a narration. Only when it leaves a usable remainder.
+  const reframed = s.replace(
+    /^(?:we(?:'ve| have| are| were)?|you(?:'ve| have| are| were)?|i(?:'ve| have| am| was)?|this conversation(?: is| was)?|the (?:user|thread))\b[\s:,-]*/i,
+    '',
+  );
+  if (reframed.trim().length >= 3) s = reframed.trim();
+  if (s.length < 3) return null;
+  // Bound on a word boundary so we never cut mid-word.
+  if (s.length > MAX_RECAP_TITLE_LEN) {
+    s = s.slice(0, MAX_RECAP_TITLE_LEN).replace(/\s+\S*$/, '').trim();
+    if (s.length === 0) return null;
+  }
+  // Capitalise the first letter for a clean title; leave the rest as written.
+  return s.charAt(0).toUpperCase() + s.slice(1);
+}
+
+/**
+ * Is this title still an auto-derived STUB (the first-words truncation of the
+ * opening user message), as opposed to a title the user explicitly set or a goal
+ * named itself? Used to gate the gap-#5 recap re-title so we only IMPROVE an
+ * auto stub and never clobber a deliberate name. A title is a stub when it is
+ * empty, or it exactly equals `deriveTitle(firstUserContent)`. PURE; never throws.
+ */
+export function isStubTitle(title: string, firstUserContent: string | null | undefined): boolean {
+  const t = (title ?? '').trim();
+  if (t.length === 0) return true;
+  if (typeof firstUserContent !== 'string') return false;
+  return t === deriveTitle(firstUserContent);
 }
 
 function metaFromMessages(

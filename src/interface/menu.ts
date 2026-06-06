@@ -69,7 +69,10 @@ import { planNativeSession } from '../core/native-session.js';
 import { availableAfterCooldown, cooldownExpiry } from '../core/cooldown.js';
 import { learnProviderOrder } from '../core/routing-memory.js';
 import type { OutputSink, Verbosity } from './render.js';
-import { renderResumeTranscript } from './render.js';
+import { renderResumeTranscript, pickCopyText, renderConversationMarkdown } from './render.js';
+import { deriveTitleFromRecap, isStubTitle } from '../infra/conversations.js';
+import { systemClipboardPort, type ClipboardPort } from '../infra/clipboard.js';
+import { resolveStateHome } from '../infra/state-dir.js';
 import { runTask } from './run.js';
 import { runLogin } from '../commands/login.js';
 import type { LoginMethod } from '../commands/login.js';
@@ -210,6 +213,12 @@ export interface MenuContext {
   readonly cwd: string;
   readonly sandbox: SandboxLevel;
   readonly timeoutMs: number;
+  /**
+   * Optional injected clipboard port for `/copy` (real-chat gap #3). When absent,
+   * the real {@link systemClipboardPort} (platform shell-out, fail-soft) is used.
+   * Tests inject a fake to drive the success/headless-fallback paths hermetically.
+   */
+  readonly clipboard?: ClipboardPort;
   /**
    * Optional injected line reader for testing. When provided, `startMenu` uses
    * this instead of the real `node:readline` interface, allowing tests to drive
@@ -529,6 +538,8 @@ export const CHAT_SLASH_COMMANDS: readonly string[] = [
   '/mode',
   '/goal',
   '/recap',
+  '/copy',
+  '/export',
   '/remember',
   '/forget',
   '/memory',
@@ -634,6 +645,91 @@ export function recentUserMessages(
     }
   }
   return out;
+}
+
+// ---------------------------------------------------------------------------
+// /copy + /export — real-chat gap #3 (local-only, fail-soft). The dispatch is a
+// thin wrapper over these testable helpers so the clipboard/fs I/O is injected.
+// ---------------------------------------------------------------------------
+
+/** A short, deterministic, fs-safe slug for an export filename. PURE. */
+export function exportFileSlug(title: string | undefined): string {
+  const base = (typeof title === 'string' ? title : '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 48);
+  return base.length > 0 ? base : 'conversation';
+}
+
+export interface CopyCommandInput {
+  readonly entries: readonly SessionEntry[];
+  readonly out: OutputSink;
+  /** Injected clipboard port (real one shells out; tests inject a fake). */
+  readonly clipboard: ClipboardPort;
+}
+
+/**
+ * Run `/copy`: pick the last assistant answer (stripped), try the injected
+ * clipboard port, and on success print a confirmation. On a headless host (no
+ * clipboard tool → port returns false) print an honest "clipboard unavailable —
+ * here's the text:" fallback block the user can mouse-select. When there is
+ * nothing to copy, print a gentle notice. Fully fail-soft — never throws.
+ */
+export async function runCopyCommand(input: CopyCommandInput): Promise<void> {
+  const { out } = input;
+  const text = pickCopyText(input.entries);
+  if (text === null) {
+    out.write(dim('  Nothing to copy yet — ask me something first.\n', out.color));
+    return;
+  }
+  let ok = false;
+  try {
+    ok = await input.clipboard(text);
+  } catch {
+    ok = false; // a misbehaving port must still reach the fallback, never crash
+  }
+  if (ok) {
+    out.write(dim('  Copied my last answer to your clipboard.\n', out.color));
+    return;
+  }
+  // Headless / no clipboard tool: be honest and print the text to select.
+  out.write(
+    dim("  Clipboard unavailable here — here's the text to select:\n\n", out.color) +
+      text +
+      '\n',
+  );
+}
+
+export interface ExportCommandInput {
+  readonly meta: { readonly title?: string } | undefined;
+  readonly entries: readonly SessionEntry[];
+  readonly out: OutputSink;
+  /** Absolute path to write the Markdown transcript to. */
+  readonly path: string;
+  /** Injected file writer (so the command is testable without disk). */
+  readonly writeFile: (path: string, data: string) => Promise<void>;
+}
+
+/**
+ * Run `/export`: render the conversation to Markdown via the pure
+ * `renderConversationMarkdown` seam and write it to `path` through the injected
+ * writer (mirrors `/memory export`). Prints the path on success, a gentle note
+ * on failure. Fail-soft — never throws.
+ */
+export async function runExportCommand(input: ExportCommandInput): Promise<void> {
+  const { out } = input;
+  if (!Array.isArray(input.entries) || input.entries.length === 0) {
+    out.write(dim('  Nothing to export yet — this conversation is empty.\n', out.color));
+    return;
+  }
+  const md = renderConversationMarkdown(input.meta ?? {}, input.entries);
+  try {
+    await input.writeFile(input.path, md);
+    out.write(dim(`  Exported this conversation to ${input.path}\n`, out.color));
+  } catch {
+    out.write(dim(`  Couldn't write the export to ${input.path} just now.\n`, out.color));
+  }
 }
 
 /**
@@ -872,7 +968,14 @@ export function renderConversationList(
     const idx = i + 1;
     const pin = m.pinned ? '📌 ' : '   ';
     const categorySuffix = m.category != null ? `  [${m.category}]` : '';
-    const row = `[${idx}] ${pin}${rel}  ${m.title}${categorySuffix}`;
+    // At-a-glance message count (real-chat gap #4): a dim "· N msgs" cue from the
+    // already-stored messageCount, so the picker shows how much is in each thread.
+    // Only when there's at least one message; degrades under no-color (dim is a
+    // no-op when color:false → plain " · N msgs"). Singular/plural kept honest.
+    const count = typeof m.messageCount === 'number' ? m.messageCount : 0;
+    const countSuffix =
+      count > 0 ? `  ${dim(`· ${count} msg${count === 1 ? '' : 's'}`, color)}` : '';
+    const row = `[${idx}] ${pin}${rel}  ${m.title}${categorySuffix}${countSuffix}`;
     // Optional second dim line = the cached ※ recap (state, not just the opening
     // words). Only when a non-empty recap exists; legacy rows show the title alone
     // (docs/recap-feature-5.5.md §5.3). Truncated; indented to align under the title.
@@ -3101,6 +3204,24 @@ async function runChatLoop(
     } catch {
       // Caching is best-effort; show the recap even if persisting it failed.
     }
+    // Semantic auto-naming (real-chat gap #5): the recap is the existing topic
+    // summary, so when we just (re)generated one and the title is still an
+    // auto-derived STUB (first-words of the opening message), upgrade the title
+    // to a clean topic phrase distilled from the recap — NO new model call, it
+    // rides the recap we already made. Fail-soft + guarded so a deliberate name
+    // is never clobbered and there is no churn (only rename when it differs).
+    try {
+      const semantic = deriveTitleFromRecap(normalised);
+      if (semantic !== null) {
+        const firstUser = entries.find((e) => e.role === 'user')?.content ?? null;
+        const currentTitle = meta?.title ?? '';
+        if (isStubTitle(currentTitle, firstUser) && semantic !== currentTitle.trim()) {
+          await ctx.store.rename(convId, semantic);
+        }
+      }
+    } catch {
+      // Auto-naming is pure polish; a failure must never affect the recap or loop.
+    }
     return normalised;
   };
 
@@ -3487,6 +3608,8 @@ async function runChatLoop(
         '  /mode         — quality vs speed (Efficient / Balanced / Max)\n' +
         '  /memory       — see, edit, export, or delete what I remember (/forget to remove)\n' +
         '  /recap        — short recap of where this conversation left off\n' +
+        '  /copy         — copy my last answer to your clipboard\n' +
+        '  /export       — save this conversation to a Markdown file\n' +
         '  /style        — how forward I am: ask-first vs just-do-it\n' +
         '  /back, /exit  — return to the main menu\n' +
         '  /help         — show this help\n' +
@@ -3517,6 +3640,48 @@ async function runChatLoop(
           dim('  Not enough yet to recap — keep going and I\'ll have one for you.\n', out.color),
         );
       }
+      return 'continue';
+    }
+
+    // ---- /copy — last answer → system clipboard (real-chat gap #3) ----------
+    // Local-only, fail-soft: pick the last assistant answer (stripped) and try
+    // the injected clipboard port; on a headless host with no clipboard tool the
+    // helper prints the text to select instead. NO network, NO hosted share.
+    if (line === '/copy') {
+      let entries: SessionEntry[] = [];
+      try {
+        entries = await ctx.store.load(convId);
+      } catch {
+        entries = [];
+      }
+      await runCopyCommand({ entries, out, clipboard: ctx.clipboard ?? systemClipboardPort });
+      return 'continue';
+    }
+
+    // ---- /export — conversation → Markdown file (real-chat gap #3) -----------
+    // Mirror /memory export: render via the pure renderConversationMarkdown seam
+    // and write under the state dir (durable, co-located with conversations).
+    // Fail-soft: a load/render/write error prints a gentle note, never crashes.
+    if (line === '/export') {
+      let entries: SessionEntry[] = [];
+      try {
+        entries = await ctx.store.load(convId);
+      } catch {
+        entries = [];
+      }
+      let meta: ConversationMeta | undefined;
+      try {
+        meta = (await ctx.store.list()).find((m) => m.id === convId);
+      } catch {
+        meta = undefined;
+      }
+      const exportDir = join(resolveStateHome(process.env, ctx.cwd), '.myshell-tools', 'exports');
+      const exportPath = join(exportDir, `myshell-${exportFileSlug(meta?.title)}-${convId}.md`);
+      const writeFile = async (p: string, data: string): Promise<void> => {
+        await fs.promises.mkdir(exportDir, { recursive: true });
+        await fs.promises.writeFile(p, data, 'utf8');
+      };
+      await runExportCommand({ meta, entries, out, path: exportPath, writeFile });
       return 'continue';
     }
 

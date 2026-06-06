@@ -83,21 +83,83 @@ const RESUME_DEFAULT_MAX_MESSAGES = 6;
 const RESUME_DEFAULT_MAX_CHARS = 280;
 
 /**
+ * Strip an ASSISTANT turn's stored content down to clean displayable prose:
+ * remove the trailing control envelope (confidence / ask_user / verdict /
+ * remember_user) and any trailing goal marker, exactly as the live renderer
+ * does, so a copied/exported/replayed answer shows prose rather than leaked
+ * control JSON or a `GOAL_COMPLETE` marker. PURE; never throws (the underlying
+ * envelope/marker strippers are themselves fail-soft → original on any failure).
+ */
+export function cleanAssistantText(content: string): string {
+  let body = content ?? '';
+  const env = trailingControlEnvelope(body);
+  if (env !== null) body = body.slice(0, env.start);
+  body = stripTrailingGoalMarker(body);
+  return body;
+}
+
+/**
  * Collapse the assistant's stored content down to displayable prose: strip the
  * trailing control envelope (confidence / ask_user / verdict / remember_user)
  * and any trailing goal marker, exactly as the live renderer does, so a resumed
  * transcript shows clean prose rather than leaked control JSON.
  */
 function transcriptBody(msg: ResumeMessage): string {
-  let body = msg.content ?? '';
-  if (msg.role === 'assistant') {
-    const env = trailingControlEnvelope(body);
-    if (env !== null) body = body.slice(0, env.start);
-    body = stripTrailingGoalMarker(body);
-  }
+  const body = msg.role === 'assistant' ? cleanAssistantText(msg.content ?? '') : (msg.content ?? '');
   // Flatten to a single visual block: trim, collapse runs of blank lines so a
   // long multi-paragraph turn doesn't dominate the recap strip.
   return body.replace(/\n{3,}/g, '\n\n').trim();
+}
+
+// ---------------------------------------------------------------------------
+// /copy + /export — pure seams (real-chat gap #3). Local-only, no network.
+// ---------------------------------------------------------------------------
+
+/**
+ * Pick the text the user wants `/copy` to put on the clipboard: the LAST
+ * assistant answer in the conversation, stripped of its control envelope and
+ * goal marker. Returns null when there is no assistant answer to copy (an empty
+ * log, or a log whose only assistant turns are blank after stripping) so the
+ * caller shows a "nothing to copy" notice. PURE; never throws.
+ */
+export function pickCopyText(entries: readonly ResumeMessage[]): string | null {
+  if (!Array.isArray(entries)) return null;
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const e = entries[i];
+    if (e === undefined || e.role !== 'assistant') continue;
+    const body = cleanAssistantText(e.content ?? '').trim();
+    if (body.length > 0) return body;
+  }
+  return null;
+}
+
+/**
+ * Render the whole conversation as a faithful Markdown transcript for `/export`.
+ * Mirrors the `/memory export` Markdown shape: a title header (the conversation
+ * title), then one `## You` / `## Assistant` section per user/assistant turn with
+ * the (stripped) body beneath. System control entries are dropped — they are
+ * internal turns, not chat. PURE and deterministic (no clock/I/O); never throws.
+ */
+export function renderConversationMarkdown(
+  meta: { readonly title?: string },
+  entries: readonly ResumeMessage[],
+): string {
+  const title = typeof meta?.title === 'string' ? meta.title.trim() : '';
+  const lines: string[] = [`# ${title.length > 0 ? title : 'Conversation'}`, ''];
+  const turns = Array.isArray(entries) ? entries : [];
+  let wrote = false;
+  for (const e of turns) {
+    if (e === undefined || (e.role !== 'user' && e.role !== 'assistant')) continue;
+    const body =
+      e.role === 'assistant'
+        ? cleanAssistantText(e.content ?? '').trim()
+        : (e.content ?? '').trim();
+    if (body.length === 0) continue;
+    lines.push(e.role === 'assistant' ? '## Assistant' : '## You', '', body, '');
+    wrote = true;
+  }
+  if (!wrote) lines.push('_No messages yet._', '');
+  return lines.join('\n');
 }
 
 /** A dim, human relative time ("just now" / "5m ago" / "3h ago" / "2d ago"). */
