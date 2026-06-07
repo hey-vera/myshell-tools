@@ -20,10 +20,9 @@ import {
   isRunningUnderNpx,
   interpretQuestionAnswer,
   FREE_TEXT_SENTINEL,
-  planRetryTruncation,
-  recentUserMessages,
-  CHAT_SLASH_COMMANDS,
 } from '../../src/interface/menu.ts';
+import { planRetryTruncation, recentUserMessages } from '../../src/interface/menu-message-redo.ts';
+import { CHAT_SLASH_COMMANDS } from '../../src/interface/menu-completion.ts';
 import type { Question, SessionEntry } from '../../src/core/types.ts';
 import type { UpdateCheckResult } from '../../src/infra/update-check.ts';
 import type { EnvironmentStatus } from '../../src/providers/detect.ts';

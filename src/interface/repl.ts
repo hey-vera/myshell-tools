@@ -16,7 +16,7 @@ import readline from 'node:readline';
 import type { OrchestrateDeps } from '../core/types.js';
 import type { OutputSink } from './render.js';
 import { runTask } from './run.js';
-import { completeChat } from './menu.js';
+import { completeChat } from './menu-completion.js';
 import { resolveImageAttachments } from '../infra/attachments.js';
 
 /** Slash-commands offered by the REPL's Tab-completer. */

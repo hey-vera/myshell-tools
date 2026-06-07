@@ -16,10 +16,10 @@ import {
   countRecentInterrupts,
   interpretInterrupt,
   interpretChatKey,
-  decidePostTurn,
   shouldEscapeRawSession,
 } from '../../src/interface/menu.ts';
-import type { PostTurnAction, PostTurnInputs } from '../../src/interface/menu.ts';
+import { decidePostTurn } from '../../src/interface/menu-post-turn.ts';
+import type { PostTurnAction, PostTurnInputs } from '../../src/interface/menu-post-turn.ts';
 
 // ---------------------------------------------------------------------------
 // countRecentInterrupts

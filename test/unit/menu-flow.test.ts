@@ -22,7 +22,8 @@ import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 
 import { EventEmitter } from 'node:events';
-import { startMenu, defaultAliasHint, parseYesNo, interpretYesNoKey, yesNoHint, readSingleKey, readMenuKey, confirmViaKey, autoUpdateEnabled, createLineReader, completeSlash, CHAT_SLASH_COMMANDS, normalizeMenuKey, attachChatTurnKeyListener, classifyCompletion, completeSlashArg, fuzzyRank, expandPathToken, matchPathEntries, completeChat, CHAT_SLASH_ARG_MAP } from '../../src/interface/menu.ts';
+import { startMenu, defaultAliasHint, parseYesNo, interpretYesNoKey, yesNoHint, readSingleKey, readMenuKey, confirmViaKey, autoUpdateEnabled, createLineReader, normalizeMenuKey, attachChatTurnKeyListener } from '../../src/interface/menu.ts';
+import { completeSlash, CHAT_SLASH_COMMANDS, classifyCompletion, completeSlashArg, fuzzyRank, expandPathToken, matchPathEntries, completeChat, CHAT_SLASH_ARG_MAP } from '../../src/interface/menu-completion.ts';
 import type { KeypressEvent } from '../../src/interface/menu.ts';
 import type { MenuContext, KeyInputStream } from '../../src/interface/menu.ts';
 import type { UpdateCheckResult } from '../../src/infra/update-check.ts';
