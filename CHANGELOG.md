@@ -15,6 +15,39 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   resumed goal's contract from the persisted `workTrace` (niche: the in-run contract
   is already kept in memory; only cross-session resume benefits). Optional.
 
+## [3.26.0]
+
+### Fixed — honesty & graceful failure (ready-for-real-usage pass)
+- **Empty model output is now an honest failure, not a fake success.** An errorless
+  run whose final text was empty/whitespace used to render as `✓ done · 0 tokens`
+  with no answer — a failure shown as success. It now becomes a `model`-category
+  error and routes through the normal failover → escalate → honest-fail path.
+- **Escalation is visible in normal mode.** When a turn escalates (first model
+  low-confidence → a stronger model runs), normal mode previously streamed BOTH
+  full answers with no explanation. It now shows a concise `↑ low confidence —
+  refining with a stronger model…` so the second answer reads as a refinement.
+- A failure-path audit verified the other modes degrade gracefully: no-auth
+  (actionable sign-in prompt), rate-limit/429 (failover + cooldown), crash/timeout
+  (honest "big task" framing + unknown-spend warning, never false success), and
+  network/missing-binary (clean one-liners, no stack traces).
+
+### Changed — panel latency feel
+- **Panel candidates now stream live progress** instead of a silent `Promise.all`.
+  A Max-mode multi-provider panel used to show a silent "Waiting on N models"
+  spinner for the whole (multi-minute) candidate phase; each candidate's progress
+  and completion now surface as it happens. (Synthesis remains a final adjudication
+  pass — Max trades speed for quality, and discloses its quota cost up front.)
+
+### Changed — internal architecture (behavior-preserving)
+- **Decomposed the two largest files** with zero behavior change, every step gated +
+  PTY-smoked: `menu.ts` 5,686 → ~2,575 lines (14 focused `menu-*` modules), and
+  `orchestrate.ts` 2,106 → ~1,910 (`orchestrate-signals` + `orchestrate-memory`).
+  An independent senior review confirmed the codebase is advanced (strictest TS
+  flags, statically-enforced core purity, zero real `any`/`@ts-ignore`/TODO) — a
+  ground-up rewrite was assessed and explicitly rejected as a second-system trap.
+- **Removed all knip-flagged dead exports** (26 → 0) and aligned `@types/node` /
+  `engines` to Node 22 (matches `.nvmrc` and the test runner).
+
 ## [3.25.0]
 
 ### Changed — concurrency is now automatic (the `/mode` knob owns it)
