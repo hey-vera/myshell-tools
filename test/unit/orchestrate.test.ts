@@ -773,6 +773,80 @@ describe('orchestrate — model with no confidence envelope', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Empty/whitespace-only errorless output must FAIL SAFE, not fabricate "✓ done"
+// ---------------------------------------------------------------------------
+
+describe('orchestrate — empty errorless output fails safe (does not fake success)', () => {
+  it('an errorless run that streams no usable text yields success:false (model error), never a blank "done"', async () => {
+    // A provider that exits cleanly (no error event) but produces an empty
+    // answer on every attempt — the exact "blank ✓ done · 0 tokens" failure.
+    const emptyProvider: Provider = {
+      id: 'claude',
+      async detect() {
+        return {
+          id: 'claude',
+          installed: true,
+          version: '1.0.0',
+          authenticated: true,
+          binaryPath: '/usr/bin/fake',
+          availableModels: [],
+        };
+      },
+      async *run(_req: ProviderRequest, _signal: AbortSignal): AsyncIterable<ProviderEvent> {
+        yield { type: 'done', text: '   \n  ', usage: { inputTokens: 5, outputTokens: 0 }, raw: {} };
+      },
+    };
+
+    const deps: OrchestrateDeps = {
+      providers: { claude: emptyProvider },
+      clock: makeFakeClock(),
+      session: makeFakeSession(),
+      ledger: makeFakeLedger(),
+      policy: DEFAULT_POLICY,
+      cwd: '/fake/cwd',
+      sandbox: 'workspace-write',
+      timeoutMs: 30_000,
+    };
+
+    const events = await collectEvents(
+      orchestrate('say hi', deps, new AbortController().signal),
+    );
+    const finalEv = events.find((e) => e.type === 'final');
+    assert.ok(finalEv !== undefined);
+    if (finalEv.type === 'final') {
+      assert.equal(finalEv.success, false, 'empty output must not be a clean success');
+      assert.notEqual(finalEv.bestEffort, true, 'empty output must not be a best-effort accept');
+      assert.equal(finalEv.errorCategory, 'model', 'empty output is classified as a model error');
+    }
+  });
+
+  it('a non-empty answer is still accepted as a clean success (guard does not over-fire)', async () => {
+    const okProvider = makeFakeProvider('claude', [
+      { type: 'done', text: 'Here is the real answer.', usage: FAKE_USAGE, raw: {} },
+    ]);
+    const deps: OrchestrateDeps = {
+      providers: { claude: okProvider },
+      clock: makeFakeClock(),
+      session: makeFakeSession(),
+      ledger: makeFakeLedger(),
+      policy: DEFAULT_POLICY,
+      cwd: '/fake/cwd',
+      sandbox: 'workspace-write',
+      timeoutMs: 30_000,
+    };
+    const events = await collectEvents(
+      orchestrate('list files', deps, new AbortController().signal),
+    );
+    const finalEv = events.find((e) => e.type === 'final');
+    assert.ok(finalEv !== undefined);
+    if (finalEv.type === 'final') {
+      assert.equal(finalEv.success, true);
+      assert.equal(finalEv.errorCategory, undefined);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
 // (a) Low-confidence envelope → escalates to next tier
 // ---------------------------------------------------------------------------
 

@@ -1010,7 +1010,28 @@ export async function* orchestrate(
       return;
     }
 
-    const { finalText, errored, usage, providerCostUsd } = outcome;
+    const { finalText, usage, providerCostUsd } = outcome;
+
+    // Empty-output guard (Goal 4 — fail safe on malformed/empty model output):
+    // a provider can exit cleanly (no error event) yet stream NOTHING usable —
+    // an empty or whitespace-only `done.text`. Accepting that as a clean success
+    // renders a blank "✓ done · 0 tokens" turn with no answer, which reads as if
+    // the work were finished when in fact the model produced nothing. Treat it as
+    // a synthetic `model`-category error so the SAME decision tree below (cross-
+    // vendor failover → escalate → honest fail) handles it exactly like any other
+    // provider failure. A run that produced real text is byte-for-byte unaffected.
+    const emptyOutput =
+      outcome.errored === undefined &&
+      !outcome.canceled &&
+      (finalText ?? '').trim().length === 0;
+    const errored: CliError | undefined = emptyOutput
+      ? {
+          category: 'model',
+          recoverable: true,
+          message: 'The model returned an empty response.',
+          suggestion: 'Retry, or rephrase the request — the provider produced no output.',
+        }
+      : outcome.errored;
 
     // Track last error for failing final event.
     if (errored !== undefined) {
