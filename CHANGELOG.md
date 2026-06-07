@@ -15,6 +15,39 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   resumed goal's contract from the persisted `workTrace` (niche: the in-run contract
   is already kept in memory; only cross-session resume benefits). Optional.
 
+## [3.25.0]
+
+### Changed — concurrency is now automatic (the `/mode` knob owns it)
+- **Panel and hedge auto-engage from the mode preset.** They used to be hidden,
+  default-off opt-in switches (`config.panel` / `config.hedge`); now the `/mode`
+  knob drives them so the default experience is "auto and frictionless":
+  - **Efficient** — panel off, hedge off (quota-frugal; sequential path only).
+  - **Balanced** (the default) — hedge on, panel on hard turns, up to 2 providers.
+  - **Max** — hedge on, panel on hard turns, up to 3 providers.
+  - **Scope/Reality:** the pre-existing safety gates still bound everything — a
+    panel needs ≥2 signed-in providers **and** a high/critical-risk turn; a hedge
+    needs high/critical risk + an admittable flagship + the sleep port. So
+    trivial/low/medium turns stay on the single sequential path; only the rare hard
+    turn auto-engages. A single sign-in never forms a panel (it may hedge).
+  - `config.panel` / `config.hedge` remain as explicit **force-on** overrides;
+    there is no force-OFF override (a user who wants neither picks Efficient).
+- **Honest quota disclosure when it fires.** Because a user who flipped no switch
+  can now trigger extra runs, the surface discloses the cost: the panel header reads
+  `Panel (hard turn): … · N quota-consuming runs, may take longer`; the hedge emits
+  `primary slow — starting flagship in parallel (now 2 quota-consuming runs)` only
+  when the second run is genuinely incurred. Never billed as "free" (the budget is
+  quota + latency on a flat-rate subscription, not dollars). A guardrail test locks
+  the disclosure.
+- **Design cross-checked with GPT-5.5 (codex)** against the real code: reuse the
+  existing `/mode` knob rather than add a parallel "strategy" knob, and avoid panel
+  `'always'` (it bypasses the risk gate). The two paths are kept, not collapsed —
+  panel buys cross-vendor correctness, hedge buys latency hiding; they are distinct.
+
+### Removed
+- **Dead exports flagged by knip (26 → 0)** — dropped redundant `export` on
+  internally-used symbols and one dead `RecapGenerator` re-export chain. No runtime
+  behaviour change.
+
 ## [3.24.0]
 
 ### Added/Fixed — polished chat surface (queueing that feels real, input box, live goal visibility)
