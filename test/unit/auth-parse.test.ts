@@ -18,6 +18,8 @@ import {
   parseOpencodeModels,
   getInstallCommand,
   credentialFileIndicatesAuth,
+  foldRateLimitTier,
+  rateLimitTierFromCreds,
 } from '../../src/providers/detect.ts';
 
 // ---------------------------------------------------------------------------
@@ -502,5 +504,99 @@ describe('credentialFileIndicatesAuth', () => {
 
   it('empty object {} → false', () => {
     assert.equal(credentialFileIndicatesAuth('{}', NOW_MS), false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Max sub-tier: foldRateLimitTier + rateLimitTierFromCreds + parseClaudeAuth
+// enrichment. Verifies 5x / 20x / missing → the right plan string.
+// ---------------------------------------------------------------------------
+
+describe('foldRateLimitTier — folds the Max sub-tier into the plan string', () => {
+  it('max + a 5x rateLimitTier → "max_5x"', () => {
+    assert.equal(foldRateLimitTier('max', 'default_claude_max_5x'), 'max_5x');
+  });
+
+  it('max + a 20x rateLimitTier → "max_20x"', () => {
+    assert.equal(foldRateLimitTier('max', 'default_claude_max_20x'), 'max_20x');
+  });
+
+  it('20x is matched before 5x (no mis-match)', () => {
+    assert.equal(foldRateLimitTier('max', 'something_max_20x'), 'max_20x');
+  });
+
+  it('matches the substring robustly, not an exact string', () => {
+    assert.equal(foldRateLimitTier('max', 'totally_renamed_prefix_5x'), 'max_5x');
+  });
+
+  it('missing rateLimitTier → unchanged generic "max"', () => {
+    assert.equal(foldRateLimitTier('max', null), 'max');
+    assert.equal(foldRateLimitTier('max', undefined), 'max');
+    assert.equal(foldRateLimitTier('max', ''), 'max');
+  });
+
+  it('garbage rateLimitTier with no marker → unchanged generic "max"', () => {
+    assert.equal(foldRateLimitTier('max', 'default_claude_pro'), 'max');
+  });
+
+  it('non-Max plan is never enriched', () => {
+    assert.equal(foldRateLimitTier('pro', 'default_claude_max_20x'), 'pro');
+    assert.equal(foldRateLimitTier('free', 'whatever_5x'), 'free');
+  });
+
+  it('null plan stays null', () => {
+    assert.equal(foldRateLimitTier(null, 'default_claude_max_5x'), null);
+  });
+
+  it('does not double-fold a plan that already carries a sub-tier marker', () => {
+    assert.equal(foldRateLimitTier('max_20x', 'default_claude_max_5x'), 'max_20x');
+  });
+});
+
+describe('rateLimitTierFromCreds — reads claudeAiOauth.rateLimitTier', () => {
+  it('reads the tier string when present', () => {
+    const raw = JSON.stringify({
+      claudeAiOauth: { accessToken: 'x', rateLimitTier: 'default_claude_max_5x' },
+    });
+    assert.equal(rateLimitTierFromCreds(raw), 'default_claude_max_5x');
+  });
+
+  it('missing field → null', () => {
+    const raw = JSON.stringify({ claudeAiOauth: { accessToken: 'x' } });
+    assert.equal(rateLimitTierFromCreds(raw), null);
+  });
+
+  it('missing claudeAiOauth → null', () => {
+    assert.equal(rateLimitTierFromCreds('{}'), null);
+  });
+
+  it('garbage / non-JSON → null (never throws)', () => {
+    assert.doesNotThrow(() => rateLimitTierFromCreds('not json %%%'));
+    assert.equal(rateLimitTierFromCreds('not json %%%'), null);
+  });
+});
+
+describe('parseClaudeAuth — enriches the Max plan from status-JSON rateLimitTier', () => {
+  it('subscriptionType max + rateLimitTier 5x → plan "max_5x"', () => {
+    const stdout = JSON.stringify({
+      loggedIn: true,
+      subscriptionType: 'max',
+      rateLimitTier: 'default_claude_max_5x',
+    });
+    assert.equal(parseClaudeAuth(stdout, '', 0).plan, 'max_5x');
+  });
+
+  it('subscriptionType max + rateLimitTier 20x → plan "max_20x"', () => {
+    const stdout = JSON.stringify({
+      loggedIn: true,
+      subscriptionType: 'max',
+      rateLimitTier: 'default_claude_max_20x',
+    });
+    assert.equal(parseClaudeAuth(stdout, '', 0).plan, 'max_20x');
+  });
+
+  it('subscriptionType max, no rateLimitTier → plain "max" (fail-soft)', () => {
+    const stdout = JSON.stringify({ loggedIn: true, subscriptionType: 'max' });
+    assert.equal(parseClaudeAuth(stdout, '', 0).plan, 'max');
   });
 });

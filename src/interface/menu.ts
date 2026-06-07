@@ -62,6 +62,7 @@ import {
   POLICY_PRESETS,
   modeLabel,
   classifyPlan,
+  tunePolicyForMaxSubTier,
 } from '../core/policy.js';
 import type { PlanInfo } from '../core/policy.js';
 import type { Mode } from '../core/policy.js';
@@ -1313,8 +1314,20 @@ export async function runChatLoop(
       // overrides that FORCE the strategy on regardless of mode — e.g. force a panel
       // even under Efficient. (Absent → the preset's default stands; there is no
       // force-OFF override yet — a user who wants neither picks Efficient.)
+      // Quota-aware auto tuning: when mode is AUTO (no explicit /mode), narrow the
+      // Max panel to 2 providers for a detected Max 5x account (gentler on its
+      // smaller quota); 20x / generic Max / explicit-mode users are unchanged.
+      const autoTunedPreset =
+        mutableCtx.config.mode === undefined
+          ? tunePolicyForMaxSubTier(
+              POLICY_PRESETS[effectiveMode],
+              [mutableCtx.env.claude, mutableCtx.env.codex, mutableCtx.env.opencode]
+                .filter((p) => p.authenticated)
+                .map((p) => p.plan),
+            )
+          : POLICY_PRESETS[effectiveMode];
       const policy = {
-        ...POLICY_PRESETS[effectiveMode],
+        ...autoTunedPreset,
         ...(mutableCtx.config.panel === true ? { panelPolicy: 'hard-turns' as const } : {}),
         ...(mutableCtx.config.hedge === true ? { hedgePolicy: 'on' as const } : {}),
       };

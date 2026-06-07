@@ -12,7 +12,13 @@ import { systemClock } from './infra/clock.js';
 import { createSessionWriter } from './infra/session.js';
 import { createLedger, readLedger } from './infra/ledger.js';
 import { learnProviderOrder, learnModelOutcomeOrder } from './core/routing-memory.js';
-import { DEFAULT_POLICY, POLICY_PRESETS, autoModeForPlans, classifyPlan } from './core/policy.js';
+import {
+  DEFAULT_POLICY,
+  POLICY_PRESETS,
+  autoModeForPlans,
+  classifyPlan,
+  tunePolicyForMaxSubTier,
+} from './core/policy.js';
 import type { PlanInfo } from './core/policy.js';
 import type { OrchestrateDeps } from './core/types.js';
 import type { OutputSink } from './interface/render.js';
@@ -390,8 +396,19 @@ async function main(): Promise<void> {
     // EXPERIMENTAL: opt-in Parallel Subscription Panel (config.panel) maps to
     // policy.panelPolicy 'hard-turns'. Absent/false → unchanged sequential path.
     // Opt-in Latency-Hedged Escalation (config.hedge) maps to hedgePolicy 'on'.
+    // Quota-aware auto tuning: when mode is AUTO (unset), narrow the Max panel to
+    // 2 providers for a detected Max 5x account; explicit-mode users are untouched.
+    const autoTunedPreset =
+      config.mode === undefined
+        ? tunePolicyForMaxSubTier(
+            POLICY_PRESETS[resolvedMode],
+            [env.claude, env.codex, env.opencode]
+              .filter((p) => p.authenticated)
+              .map((p) => p.plan),
+          )
+        : POLICY_PRESETS[resolvedMode];
     const policy = {
-      ...POLICY_PRESETS[resolvedMode],
+      ...autoTunedPreset,
       ...(config.panel === true ? { panelPolicy: 'hard-turns' as const } : {}),
       ...(config.hedge === true ? { hedgePolicy: 'on' as const } : {}),
     };
@@ -618,7 +635,15 @@ async function main(): Promise<void> {
         .filter((p) => p.authenticated)
         .map((p) => p.plan),
     );
-    const replPolicy = POLICY_PRESETS[replMode];
+    const replPolicy =
+      config.mode === undefined
+        ? tunePolicyForMaxSubTier(
+            POLICY_PRESETS[replMode],
+            [env.claude, env.codex, env.opencode]
+              .filter((p) => p.authenticated)
+              .map((p) => p.plan),
+          )
+        : POLICY_PRESETS[replMode];
     spinner.stop();
 
     // REPL asymmetry (whole-tool-finish §4): the REPL is the lean SUBSET. It still

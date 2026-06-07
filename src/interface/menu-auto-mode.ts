@@ -10,7 +10,7 @@ import {
   autoModeForPlanInfos,
   classifyPlan,
   describePlanSet,
-  planTierLabel,
+  planDisplayLabel,
 } from '../core/policy.js';
 import type { PlanInfo } from '../core/policy.js';
 import type { Mode } from '../core/policy.js';
@@ -82,9 +82,10 @@ function planLineFor(p: ProviderPlanInfo): string {
   if (p.info.confidence === 'none') {
     return `${p.label} — no plan reported`;
   }
-  const tierLabel = planTierLabel(p.info.tier);
-  // Show the raw label alongside the tier when they differ (e.g. tier Max,
-  // raw "claude_max_20x") so the breakdown is fully traceable.
+  // Sub-tier-aware label: "Max 5x" / "Max 20x" when known, else the plain tier.
+  const tierLabel = planDisplayLabel(p.info);
+  // Show the raw label alongside the tier when they differ (e.g. label "Max 20x",
+  // raw "default_claude_max_20x") so the breakdown is fully traceable.
   const raw = p.info.raw;
   const detail = raw !== null && raw.toLowerCase() !== tierLabel.toLowerCase() ? ` (${raw})` : '';
   return `${p.label} — ${tierLabel}${detail} · observed`;

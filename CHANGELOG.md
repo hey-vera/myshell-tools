@@ -15,6 +15,22 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   resumed goal's contract from the persisted `workTrace` (niche: the in-run contract
   is already kept in memory; only cross-session resume benefits). Optional.
 
+## [3.27.0]
+
+### Added — Claude Max 5x vs 20x awareness (quota-aware auto behavior)
+- The system now distinguishes **Claude Max 5x** ($100) from **Max 20x** ($200).
+  Previously any "max" plan was treated identically and got the most aggressive
+  auto-behavior (3-way panels on hard turns). The sub-tier lives in the
+  credentials' `rateLimitTier` (e.g. `default_claude_max_5x`) — read fail-soft and
+  matched on the `5x`/`20x` substring (no brittle exact-string hardcoding).
+  - **Honest display:** the plan shows as "Max 5x" / "Max 20x" (plain "Max" when
+    the sub-tier is unknown).
+  - **Quota-aware tuning:** on the AUTO mode path, a detected Max **5x** narrows the
+    panel to `maxPanelProviders: 2` (gentler on its smaller quota); **20x**, generic
+    Max, and any explicitly-chosen `/mode Max` keep the full 3. A mix of tiers stays
+    at 3 (conservative). `classifyPlan` still classifies both as tier `'max'`, so
+    quality-first auto-selection is unchanged — only panel width and the label differ.
+
 ## [3.26.0]
 
 ### Fixed — honesty & graceful failure (ready-for-real-usage pass)

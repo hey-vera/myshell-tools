@@ -13,9 +13,13 @@ import {
   autoModeForPlans,
   autoModeForPlanInfos,
   classifyPlan,
+  classifyMaxSubTier,
   describePlanSet,
   planTierLabel,
+  planDisplayLabel,
+  tunePolicyForMaxSubTier,
   defaultModeForPlan,
+  POLICY_PRESETS,
 } from '../../src/core/policy.ts';
 
 // ---------------------------------------------------------------------------
@@ -233,5 +237,101 @@ describe('planTierLabel', () => {
     assert.equal(planTierLabel('pro'), 'Pro');
     assert.equal(planTierLabel('free'), 'Free');
     assert.equal(planTierLabel('unknown'), 'Unknown');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Max sub-tier: classification, display, quota-aware auto tuning
+// ---------------------------------------------------------------------------
+
+describe('classifyMaxSubTier', () => {
+  it('classifies the 5x / 20x markers (substring, case-insensitive)', () => {
+    assert.equal(classifyMaxSubTier('max_5x'), 'max_5x');
+    assert.equal(classifyMaxSubTier('MAX_20X'), 'max_20x');
+    assert.equal(classifyMaxSubTier('default_claude_max_5x'), 'max_5x');
+  });
+
+  it('20x is checked before 5x', () => {
+    assert.equal(classifyMaxSubTier('max_20x'), 'max_20x');
+  });
+
+  it('generic max / non-max / missing → unknown', () => {
+    assert.equal(classifyMaxSubTier('max'), 'unknown');
+    assert.equal(classifyMaxSubTier('pro'), 'unknown');
+    assert.equal(classifyMaxSubTier(null), 'unknown');
+    assert.equal(classifyMaxSubTier(undefined), 'unknown');
+  });
+});
+
+describe('planDisplayLabel — honest about the Max sub-tier', () => {
+  it('shows "Max 5x" / "Max 20x" when known', () => {
+    assert.equal(planDisplayLabel(classifyPlan('max_5x')), 'Max 5x');
+    assert.equal(planDisplayLabel(classifyPlan('max_20x')), 'Max 20x');
+  });
+
+  it('plain "Max" when the sub-tier is unknown', () => {
+    assert.equal(planDisplayLabel(classifyPlan('max')), 'Max');
+  });
+
+  it('non-Max tiers use the plain tier label', () => {
+    assert.equal(planDisplayLabel(classifyPlan('pro')), 'Pro');
+    assert.equal(planDisplayLabel(classifyPlan('free')), 'Free');
+  });
+});
+
+describe('describePlanSet — breaks out Max sub-tiers', () => {
+  it('shows "1 Max 5x" / "1 Max 20x" when detected', () => {
+    assert.equal(describePlanSet(['max_5x'].map(classifyPlan)), '1 Max 5x');
+    assert.equal(describePlanSet(['max_20x'].map(classifyPlan)), '1 Max 20x');
+  });
+
+  it('orders 20x before 5x before generic Max', () => {
+    assert.equal(
+      describePlanSet(['max_5x', 'max_20x', 'max'].map(classifyPlan)),
+      '1 Max 20x, 1 Max 5x, 1 Max',
+    );
+  });
+
+  it('plain generic max still summarises as "Max" (back-compat)', () => {
+    assert.equal(describePlanSet(['max', 'max'].map(classifyPlan)), '2 Max');
+  });
+});
+
+describe('tunePolicyForMaxSubTier — quota-aware auto panel width', () => {
+  const qf = POLICY_PRESETS['quality-first'];
+
+  it('max_5x narrows the auto panel to 2 providers', () => {
+    assert.equal(tunePolicyForMaxSubTier(qf, ['max_5x']).maxPanelProviders, 2);
+  });
+
+  it('max_20x keeps the 3-way panel', () => {
+    assert.equal(tunePolicyForMaxSubTier(qf, ['max_20x']).maxPanelProviders, 3);
+  });
+
+  it('generic max keeps the 3-way panel (fail-soft)', () => {
+    assert.equal(tunePolicyForMaxSubTier(qf, ['max']).maxPanelProviders, 3);
+  });
+
+  it('a 20x alongside a 5x keeps the wider panel (more headroom wins)', () => {
+    assert.equal(tunePolicyForMaxSubTier(qf, ['max_5x', 'max_20x']).maxPanelProviders, 3);
+  });
+
+  it('a generic max alongside a 5x keeps the wider panel', () => {
+    assert.equal(tunePolicyForMaxSubTier(qf, ['max_5x', 'max']).maxPanelProviders, 3);
+  });
+
+  it('no Max signal (pro/free/null) leaves the policy unchanged', () => {
+    assert.equal(tunePolicyForMaxSubTier(qf, ['pro']).maxPanelProviders, 3);
+    assert.equal(tunePolicyForMaxSubTier(qf, [null]).maxPanelProviders, 3);
+  });
+
+  it('does not mutate the shared preset', () => {
+    tunePolicyForMaxSubTier(qf, ['max_5x']);
+    assert.equal(POLICY_PRESETS['quality-first'].maxPanelProviders, 3);
+  });
+
+  it('cost-saver (no panel) max_5x stays as-is — nothing to narrow', () => {
+    const cs = POLICY_PRESETS['cost-saver'];
+    assert.equal(tunePolicyForMaxSubTier(cs, ['max_5x']).maxPanelProviders, cs.maxPanelProviders);
   });
 });

@@ -172,6 +172,32 @@ export function defaultModeForPlan(plan: string | null | undefined): Mode {
 export type PlanTier = 'max' | 'pro' | 'free' | 'unknown';
 
 /**
+ * The Max sub-tier, distinguished from the generic Max plan by the account's
+ * rate-limit tier (Claude's `rateLimitTier`, e.g. "default_claude_max_5x" vs the
+ * analogous "...max_20x"). 'unknown' covers both non-Max plans and a Max plan
+ * whose sub-tier we could not read (fail-soft → behaves like generic Max). We
+ * deliberately match the "5x"/"20x" SUBSTRING rather than any exact string, so a
+ * future rename of the surrounding label does not break detection.
+ */
+export type MaxSubTier = 'max_5x' | 'max_20x' | 'unknown';
+
+/**
+ * Classify a plan string's Max sub-tier from the "5x"/"20x" substring it may
+ * carry (detect.ts folds the account's rateLimitTier into the plan string as
+ * "max_5x"/"max_20x" when known). Pure; case-insensitive substring match. Any
+ * non-Max plan, or a Max plan with no recognised sub-tier marker, is 'unknown'
+ * — which the auto path treats exactly like generic Max (3-way panel).
+ */
+export function classifyMaxSubTier(plan: string | null | undefined): MaxSubTier {
+  if (plan === null || plan === undefined) return 'unknown';
+  const p = plan.toLowerCase();
+  if (!p.includes('max')) return 'unknown';
+  if (p.includes('20x')) return 'max_20x';
+  if (p.includes('5x')) return 'max_5x';
+  return 'unknown';
+}
+
+/**
  * A classified plan for one provider. `raw` is the original reported string
  * (null when the CLI reports no plan). `tier` is the classified kind. `confidence`
  * distinguishes a real reported plan ('observed') from the absence of any signal
@@ -248,6 +274,22 @@ export function planTierLabel(tier: PlanTier): string {
 }
 
 /**
+ * Display label for a classified plan that is honest about the Max sub-tier:
+ * "Max 5x" / "Max 20x" when the account's rate-limit tier told us which, plain
+ * "Max" when it didn't (or for any non-Max tier, which just uses the tier label).
+ * Pure / display-only. Keeps the concise tier name for Pro/Free/Unknown.
+ */
+export function planDisplayLabel(info: PlanInfo): string {
+  if (info.tier === 'max') {
+    const sub = classifyMaxSubTier(info.raw);
+    if (sub === 'max_5x') return 'Max 5x';
+    if (sub === 'max_20x') return 'Max 20x';
+    return 'Max';
+  }
+  return PLAN_TIER_LABEL[info.tier];
+}
+
+/**
  * Summarise a set of classified plans into a short reason string that accounts
  * for the FULL multiset (counts and kinds), e.g. "2 Max, 1 Pro" or
  * "Max + Pro". Providers that reported no plan are counted separately as
@@ -262,10 +304,21 @@ export function describePlanSet(infos: ReadonlyArray<PlanInfo>): string {
     return 'no plan reported';
   }
 
-  // Count by tier, strongest first.
-  const order: readonly PlanTier[] = ['max', 'pro', 'free', 'unknown'];
+  // Count by tier, strongest first. Max is broken out by sub-tier so the summary
+  // is honest about quota ("1 Max 5x" vs "1 Max 20x") when we detected which.
   const parts: string[] = [];
-  for (const tier of order) {
+  const maxByLabel = new Map<string, number>();
+  for (const i of observed) {
+    if (i.tier !== 'max') continue;
+    const label = planDisplayLabel(i); // "Max 5x" / "Max 20x" / "Max"
+    maxByLabel.set(label, (maxByLabel.get(label) ?? 0) + 1);
+  }
+  // Emit Max sub-tiers in a stable, strongest-first order.
+  for (const label of ['Max 20x', 'Max 5x', 'Max']) {
+    const n = maxByLabel.get(label) ?? 0;
+    if (n > 0) parts.push(`${n} ${label}`);
+  }
+  for (const tier of ['pro', 'free', 'unknown'] as const) {
     const n = observed.filter((i) => i.tier === tier).length;
     if (n > 0) parts.push(`${n} ${PLAN_TIER_LABEL[tier]}`);
   }
@@ -275,6 +328,44 @@ export function describePlanSet(infos: ReadonlyArray<PlanInfo>): string {
     summary += `${parts.length > 0 ? ' · ' : ''}${none} reported no plan`;
   }
   return summary;
+}
+
+/**
+ * Quota-aware tuning of an AUTO-selected policy for the Max 5x sub-tier.
+ *
+ * A Max 5x account has far less rate-limit headroom than Max 20x, yet both would
+ * otherwise auto-engage the same 3-way cross-vendor panel on hard turns. When the
+ * detected plans indicate a 5x account WITHOUT any 20x/generic-Max signal that
+ * carries more headroom, narrow the auto panel to 2 providers (still a real
+ * cross-vendor panel, just gentler on quota). 20x, generic Max, and any non-Max
+ * mix are left exactly as today.
+ *
+ * Applied ONLY in the auto-mode path (keyed off the DETECTED plan) — a user who
+ * explicitly picks the Max preset via /mode is untouched, because this is not
+ * folded into POLICY_PRESETS['quality-first'] itself.
+ *
+ * Pure / fail-soft: returns the policy unchanged unless every Max signal we saw
+ * is specifically 5x. `plans` are the raw plan strings of the authenticated
+ * providers (the same list the auto mode was resolved from).
+ */
+export function tunePolicyForMaxSubTier(
+  policy: Policy,
+  plans: ReadonlyArray<string | null>,
+): Policy {
+  const maxSubs = plans
+    .map(classifyPlan)
+    .filter((i) => i.tier === 'max')
+    .map((i) => classifyMaxSubTier(i.raw));
+
+  if (maxSubs.length === 0) return policy; // no Max signal → unchanged
+  // Keep the wider panel if ANY Max carries more headroom (20x) or an unknown
+  // (generic) Max sub-tier — only narrow when EVERY Max signal is specifically 5x.
+  const everyMaxIs5x = maxSubs.every((s) => s === 'max_5x');
+  if (!everyMaxIs5x) return policy;
+  if (policy.maxPanelProviders === undefined || policy.maxPanelProviders <= 2) {
+    return policy; // already gentle enough
+  }
+  return { ...policy, maxPanelProviders: 2 };
 }
 
 export const POLICY_PRESETS: Record<Mode, Policy> = {

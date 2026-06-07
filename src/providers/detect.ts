@@ -87,7 +87,12 @@ function notDetected(id: 'claude' | 'codex' | 'opencode'): ProviderStatus {
  * ```
  *
  * Authenticated when: exitCode === 0 AND the JSON contains `"loggedIn": true`.
- * Plan: the `subscriptionType` string when present and non-empty, else null.
+ * Plan: the `subscriptionType` string when present and non-empty, else null —
+ * ENRICHED with the Max sub-tier when both `subscriptionType` is a Max plan and a
+ * `rateLimitTier` field is present that carries a "5x"/"20x" marker (see
+ * foldRateLimitTier). `rateLimitTier` is read from the status JSON when present;
+ * detectProvider additionally folds it from the on-disk credentials file (where
+ * Claude actually stores `claudeAiOauth.rateLimitTier`).
  * Conservative: on any parse error, authenticated stays false and plan is null.
  */
 export function parseClaudeAuth(
@@ -112,12 +117,52 @@ export function parseClaudeAuth(
     }
 
     const sub = obj['subscriptionType'];
-    const plan = typeof sub === 'string' && sub.length > 0 ? sub : null;
+    const basePlan = typeof sub === 'string' && sub.length > 0 ? sub : null;
+    // Enrich with the Max sub-tier when the status JSON happens to carry it.
+    const rateLimitTier = obj['rateLimitTier'];
+    const plan = foldRateLimitTier(
+      basePlan,
+      typeof rateLimitTier === 'string' ? rateLimitTier : null,
+    );
 
     return { authenticated: true, plan };
   } catch {
     return { authenticated: false, plan: null };
   }
+}
+
+/**
+ * Fold a Claude account's `rateLimitTier` into the plan string so the generic
+ * "max" plan becomes the honest sub-tier "max_5x" / "max_20x" when known. This
+ * keeps the existing `plan: string` contract intact — classifyPlan still matches
+ * the "max" substring — while preserving which Max the user has so display and
+ * quota-aware auto behaviour can differ.
+ *
+ * Robust matching: we look for the "20x" / "5x" SUBSTRING in rateLimitTier
+ * (Claude reports e.g. "default_claude_max_5x"; a 20x account carries the
+ * analogous "...max_20x"). We deliberately do NOT hardcode the exact surrounding
+ * string, so a relabel of the prefix does not break detection. 20x is checked
+ * before 5x so a hypothetical "...max_20x" never mis-matches a stray "5x".
+ *
+ * Fail-soft: only enriches when `plan` is already a Max plan. A null/non-Max
+ * plan, or a missing/garbage rateLimitTier with no recognised marker, returns the
+ * plan unchanged → downstream behaves exactly as before (generic max → 3-way).
+ * Pure; case-insensitive.
+ */
+export function foldRateLimitTier(
+  plan: string | null,
+  rateLimitTier: string | null | undefined,
+): string | null {
+  if (plan === null) return null;
+  if (!plan.toLowerCase().includes('max')) return plan;
+  // Already carries a sub-tier marker — keep it (don't double-fold).
+  const pl = plan.toLowerCase();
+  if (pl.includes('20x') || pl.includes('5x')) return plan;
+  if (typeof rateLimitTier !== 'string' || rateLimitTier.length === 0) return plan;
+  const rt = rateLimitTier.toLowerCase();
+  if (rt.includes('20x')) return 'max_20x';
+  if (rt.includes('5x')) return 'max_5x';
+  return plan;
 }
 
 /**
@@ -181,6 +226,26 @@ export function credentialFileIndicatesAuth(rawCredsJson: string, nowMs: number)
     return false;
   } catch {
     return false;
+  }
+}
+
+/**
+ * Extract the `claudeAiOauth.rateLimitTier` string from the raw credentials JSON,
+ * or null when absent/garbage. This is the account's rate-limit tier (e.g.
+ * "default_claude_max_5x") that distinguishes Max 5x from Max 20x. Pure /
+ * fail-soft: returns null on any non-object / missing-field / parse error; never
+ * throws. We read only this one string — no token material is touched or logged.
+ */
+export function rateLimitTierFromCreds(rawCredsJson: string): string | null {
+  try {
+    const parsed = JSON.parse(rawCredsJson) as unknown;
+    if (typeof parsed !== 'object' || parsed === null) return null;
+    const oauth = (parsed as Record<string, unknown>)['claudeAiOauth'];
+    if (typeof oauth !== 'object' || oauth === null) return null;
+    const tier = (oauth as Record<string, unknown>)['rateLimitTier'];
+    return typeof tier === 'string' && tier.length > 0 ? tier : null;
+  } catch {
+    return null;
   }
 }
 
@@ -281,6 +346,25 @@ export async function detectProvider(
             }
           } catch {
             // File missing or unreadable — leave authenticated false
+          }
+        }
+
+        // Sub-tier enrichment: `claude auth status` reports the generic
+        // `subscriptionType` ("max") but the on-disk credentials carry the
+        // account's `rateLimitTier` (e.g. "default_claude_max_5x"). When we have a
+        // Max plan with no sub-tier marker yet, read the creds file and fold the
+        // rateLimitTier in so display + auto behaviour can distinguish 5x from 20x.
+        // Fail-soft: any read/parse failure leaves the plan exactly as-is.
+        if (plan !== null && plan.toLowerCase().includes('max')) {
+          const pl = plan.toLowerCase();
+          if (!pl.includes('20x') && !pl.includes('5x')) {
+            try {
+              const credsPath = resolveClaudeCredsPath(claudeChildEnv, cwd);
+              const raw = await readFile(credsPath, 'utf8');
+              plan = foldRateLimitTier(plan, rateLimitTierFromCreds(raw));
+            } catch {
+              // File missing/unreadable — leave plan as the generic Max.
+            }
           }
         }
 
