@@ -751,3 +751,84 @@ describe('runPanel — abort', () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// Capability parity: the panel must carry the SAME per-turn capability data the
+// sequential path carries — image attachments + native web-search — onto EVERY
+// provider request (each candidate AND the synthesizer). Regression guard for
+// the audit finding that the ensemble path silently dropped them.
+// ---------------------------------------------------------------------------
+
+/**
+ * A provider that records each ProviderRequest it receives (so a test can assert
+ * which fields reached it), then answers like a normal fake provider.
+ */
+function makeCapturingProvider(
+  id: ProviderId,
+  text: string,
+  reqs: ProviderRequest[],
+): Provider {
+  return {
+    id,
+    async detect() {
+      return {
+        id,
+        installed: true,
+        version: '1',
+        authenticated: true,
+        binaryPath: '/f',
+        availableModels: [],
+      };
+    },
+    async *run(req: ProviderRequest, _signal: AbortSignal): AsyncIterable<ProviderEvent> {
+      reqs.push(req);
+      yield { type: 'text', delta: text };
+      yield { type: 'done', text, usage: USAGE, raw: {} };
+    },
+  };
+}
+
+describe('runPanel — capability parity (attachments + webSearch)', () => {
+  it('threads image attachments + webSearch onto every candidate AND synthesizer request', async () => {
+    const claudeReqs: ProviderRequest[] = [];
+    const codexReqs: ProviderRequest[] = [];
+    const { deps } = panelDeps({
+      claude: makeCapturingProvider('claude', 'A', claudeReqs),
+      codex: makeCapturingProvider('codex', 'B', codexReqs),
+    });
+    const attachments = [{ path: '/tmp/shot.png', kind: 'image' as const }];
+
+    await collect(
+      runPanel('hard task', deps, PLAN, new AbortController().signal, undefined, {
+        attachments,
+        webSearch: true,
+      }),
+    );
+
+    // claude ran as a candidate AND as the synthesizer → both its requests carry
+    // the attachments + webSearch; codex ran as a candidate → its one request too.
+    const all = [...claudeReqs, ...codexReqs];
+    assert.ok(all.length >= 3, `expected ≥3 provider requests (2 candidates + synth), got ${all.length}`);
+    for (const req of all) {
+      assert.deepEqual(req.attachments, attachments, 'every panel request must carry the image attachments');
+      assert.equal(req.webSearch, true, 'every panel request must carry the web-search flag');
+    }
+  });
+
+  it('omits attachments when no image attachment is present (byte-for-byte unchanged)', async () => {
+    const claudeReqs: ProviderRequest[] = [];
+    const codexReqs: ProviderRequest[] = [];
+    const { deps } = panelDeps({
+      claude: makeCapturingProvider('claude', 'A', claudeReqs),
+      codex: makeCapturingProvider('codex', 'B', codexReqs),
+    });
+
+    // No capability bag → no attachments, no webSearch on any request.
+    await collect(runPanel('hard task', deps, PLAN, new AbortController().signal));
+
+    for (const req of [...claudeReqs, ...codexReqs]) {
+      assert.equal(req.attachments, undefined, 'no image attachment → attachments omitted');
+      assert.equal(req.webSearch, undefined, 'no web-search need → webSearch omitted');
+    }
+  });
+});

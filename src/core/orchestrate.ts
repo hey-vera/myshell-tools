@@ -861,7 +861,19 @@ export async function* orchestrate(
     maxPanelProviders: deps.policy.maxPanelProviders ?? 2,
   });
   if (panelPlan !== null) {
-    yield* withMemoryProposalAttached(runPanel(task, deps, panelPlan, signal, historyContext));
+    // Thread the per-turn capability seam into the panel so the ensemble path
+    // drops nothing the sequential path carries (audit parity): the SAME
+    // capabilityContext handed to route() below, the SAME web-search flag, and
+    // the SAME image attachments. Built ONCE above; the structured engagement
+    // plan (wantsWebSearch) and the assembled capabilityContext are not
+    // reconstructable from deps inside runPanel, so they're passed in.
+    yield* withMemoryProposalAttached(
+      runPanel(task, deps, panelPlan, signal, historyContext, {
+        ...(capabilityContext !== undefined ? { capabilityContext } : {}),
+        ...(deps.attachments !== undefined ? { attachments: deps.attachments } : {}),
+        ...(wantsWebSearch ? { webSearch: true } : {}),
+      }),
+    );
     return;
   }
 
@@ -886,7 +898,9 @@ export async function* orchestrate(
     hasSleep: deps.sleep !== undefined,
   });
   if (hedgePlan !== null) {
-    yield* withMemoryProposalAttached(runHedged(task, deps, hedgePlan, signal, historyContext));
+    yield* withMemoryProposalAttached(
+      runHedged(task, deps, hedgePlan, signal, historyContext, capabilityContext, wantsWebSearch),
+    );
     return;
   }
 
@@ -1668,6 +1682,23 @@ export async function* orchestrate(
           sandbox: deps.sandbox,
           timeoutMs: deps.timeoutMs,
           ...(reviewEffort !== undefined ? { reasoningEffort: reviewEffort } : {}),
+          // Provider-capability parity (audit): the reviewer judges THIS turn's
+          // output, so it must see the SAME capability inputs the sequential work
+          // request carried — otherwise a reviewer of a vision turn can't see the
+          // attached image, and a reviewer of a current-facts turn can't verify the
+          // claim against live info. Mirror both signals from the work request:
+          //   • webSearch — when the turn genuinely needed external/current facts
+          //     (`wantsWebSearch`, driven by the engagement WEB_RESEARCH flag), the
+          //     reviewer needs the same live-info access to validate, not rubber-stamp
+          //     or falsely reject, current-fact answers. Codex honours it; others
+          //     fail-soft ignore it.
+          //   • attachments — when the turn genuinely carries image input, the
+          //     reviewer must SEE the image to judge a vision answer. Omitted entirely
+          //     on text-only turns → byte-for-byte unchanged.
+          ...(wantsWebSearch ? { webSearch: true } : {}),
+          ...(hasImageAttachment && deps.attachments !== undefined
+            ? { attachments: deps.attachments }
+            : {}),
         };
         const reviewStart = deps.clock.now();
 

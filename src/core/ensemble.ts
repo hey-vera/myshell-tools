@@ -37,7 +37,8 @@ import type {
   Policy,
 } from './types.js';
 import type { ProviderId } from '../providers/port.js';
-import { route, selectReasoningEffort } from './route.js';
+import { route, selectReasoningEffort, type CapabilityRouteContext } from './route.js';
+import type { Attachment } from './attachments.js';
 import { getModelPricing, calculateCost } from '../infra/pricing.js';
 import { assess } from './assess.js';
 import { authorizeTier } from './flagship.js';
@@ -199,6 +200,18 @@ function panelEffort(
   });
 }
 
+/**
+ * True ONLY when the turn genuinely carries image input — the SAME predicate the
+ * sequential path uses (orchestrate's `hasImageAttachment`) to decide whether to
+ * attach the request's image paths. No image attachment → false → the field is
+ * omitted entirely (byte-for-byte unchanged). PURE.
+ */
+function panelHasImageAttachment(
+  attachments: readonly Attachment[] | undefined,
+): attachments is readonly Attachment[] {
+  return attachments !== undefined && attachments.some((a) => a.kind === 'image');
+}
+
 export function buildPanelCandidatePrompt(
   tier: Tier,
   task: string,
@@ -304,6 +317,28 @@ Now write the single final answer for the user.`;
 }
 
 // ---------------------------------------------------------------------------
+// Capability seam — the per-turn capability data the SEQUENTIAL path threads
+// onto its route() calls and provider requests, carried into the panel so the
+// ensemble path drops nothing the single-model path carries (audit parity):
+//   - capabilityContext: the opt-in capability-fit re-rank context handed to
+//     route() (capability registry §3/§5). Absent → route() behaves exactly as
+//     before, byte-for-byte.
+//   - attachments: the turn's image attachments, attached to EVERY panel
+//     provider request when the turn genuinely carries image input (audit #4).
+//   - webSearch: the native web-search request flag (audit #3), threaded onto
+//     every panel provider request when the turn needs external/current facts.
+// All three are computed ONCE per turn by orchestrate (from the structured
+// EngagementPlan + the built CapabilityRouteContext, neither of which is
+// reconstructable from OrchestrateDeps alone) and passed in so the panel
+// mirrors the sequential path EXACTLY rather than re-deriving and diverging.
+// All optional: absent → the panel runs byte-for-byte as before.
+export interface PanelCapabilityInput {
+  readonly capabilityContext?: CapabilityRouteContext;
+  readonly attachments?: readonly Attachment[];
+  readonly webSearch?: boolean;
+}
+
+// ---------------------------------------------------------------------------
 // Executor — internal streaming + candidate helpers
 // ---------------------------------------------------------------------------
 
@@ -386,6 +421,7 @@ async function runCandidate(
   candidate: ProviderId,
   signal: AbortSignal,
   historyContext: string | undefined,
+  capability: PanelCapabilityInput,
 ): Promise<CandidateOutcome> {
   const decision = route(
     plan.tier,
@@ -397,6 +433,9 @@ async function runCandidate(
     // (it cannot reorder a one-element pool, and each candidate is fixed by the
     // panel plan). Passed for consistency so every route() call threads it.
     deps.learnedProviderOrder?.[plan.tier],
+    // Capability-fit context (capability registry §3/§5), mirroring the
+    // sequential path — absent → route() behaves byte-for-byte as before.
+    capability.capabilityContext,
   );
   const provider = deps.providers[candidate];
   const start = deps.clock.now();
@@ -446,6 +485,15 @@ async function runCandidate(
     sandbox: deps.sandbox,
     timeoutMs: deps.timeoutMs,
     ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
+    // Native web-search request (audit #3) + image attachments (audit #4),
+    // mirroring the sequential provider request exactly: only the Codex adapter
+    // honours webSearch, and attachments ride only on a genuine image turn
+    // (image-bearing attachments present). Absent → omitted, byte-for-byte
+    // unchanged. Adapters that don't support images ignore the flag (fail-soft).
+    ...(capability.webSearch === true ? { webSearch: true } : {}),
+    ...(panelHasImageAttachment(capability.attachments)
+      ? { attachments: capability.attachments }
+      : {}),
   };
 
   try {
@@ -511,6 +559,10 @@ async function runCandidate(
  * @param plan           - The resolved PanelPlan from planPanel().
  * @param signal         - AbortSignal; on abort yields notice(warn) + failing final.
  * @param historyContext - Optional compacted prior-conversation summary.
+ * @param capability     - Per-turn capability seam (capabilityContext for route()
+ *                         re-rank + attachments/webSearch for provider requests),
+ *                         mirroring the sequential path so the panel drops nothing
+ *                         it carries. Defaults to empty → byte-for-byte unchanged.
  */
 export async function* runPanel(
   task: string,
@@ -518,6 +570,7 @@ export async function* runPanel(
   plan: PanelPlan,
   signal: AbortSignal,
   historyContext?: string,
+  capability: PanelCapabilityInput = {},
 ): AsyncGenerator<CoreEvent> {
   // Append the user message once (matches orchestrate's single user append).
   await deps.session.append({
@@ -573,6 +626,9 @@ export async function* runPanel(
       deps.availableModels,
       deps.authenticatedProviders,
       deps.learnedProviderOrder?.[plan.tier],
+      // Same capability-fit context the candidate's own route() (in runCandidate)
+      // uses, so the announced model matches the one that actually runs.
+      capability.capabilityContext,
     );
     candidateModels.set(candidate, d.model);
     attempts++;
@@ -588,7 +644,7 @@ export async function* runPanel(
   // True concurrency: all candidates run in parallel.
   const outcomes = await Promise.all(
     plan.candidates.map((candidate) =>
-      runCandidate(task, deps, plan, candidate, signal, historyContext),
+      runCandidate(task, deps, plan, candidate, signal, historyContext, capability),
     ),
   );
 
@@ -748,6 +804,9 @@ export async function* runPanel(
     // resolved-classification tier); passed for consistency with every other
     // route() call site.
     deps.learnedProviderOrder?.[plan.tier],
+    // Capability-fit context (capability registry §3/§5), mirroring the
+    // sequential review route — absent → route() unchanged, byte-for-byte.
+    capability.capabilityContext,
   );
   // Reasoning effort for the synthesizer (taskKind 'review' — it adjudicates the
   // panel). synthDecision.tier is the tier admission already granted, so this
@@ -809,6 +868,15 @@ export async function* runPanel(
     sandbox: deps.sandbox,
     timeoutMs: deps.timeoutMs,
     ...(synthEffort !== undefined ? { reasoningEffort: synthEffort } : {}),
+    // Native web-search (audit #3) + image attachments (audit #4) ride the
+    // synthesizer request too, mirroring the sequential provider request: the
+    // synthesizer is the final decision-maker, so it must see the same image
+    // input and may itself need external/current facts. Omitted when absent
+    // (byte-for-byte unchanged); unsupported adapters ignore them (fail-soft).
+    ...(capability.webSearch === true ? { webSearch: true } : {}),
+    ...(panelHasImageAttachment(capability.attachments)
+      ? { attachments: capability.attachments }
+      : {}),
   };
   const synthStart = deps.clock.now();
   const synthOutcome = yield* streamProvider(

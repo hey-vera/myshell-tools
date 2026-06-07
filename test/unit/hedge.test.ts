@@ -198,6 +198,7 @@ function makeProvider(
     gate?: Promise<void>;
     onRun?: () => void;
     record?: { ran: boolean; aborted: boolean };
+    reqSink?: { last?: ProviderRequest };
   },
 ): Provider {
   return {
@@ -214,6 +215,7 @@ function makeProvider(
     },
     async *run(_req: ProviderRequest, signal: AbortSignal): AsyncIterable<ProviderEvent> {
       opts?.onRun?.();
+      if (opts?.reqSink !== undefined) opts.reqSink.last = _req;
       if (opts?.record !== undefined) opts.record.ran = true;
       if (opts?.gate !== undefined) {
         // Race the gate against abort so a cancelled slow run actually returns.
@@ -507,5 +509,90 @@ describe('runHedged — abort', () => {
       events.some((e) => e.type === 'notice' && e.level === 'warn' && /cancel/i.test(e.message)),
       'expected a cancelled notice',
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Capability parity with the sequential path: image attachments, native web
+// search, and the capability-fit context must reach BOTH hedged branches'
+// provider requests (audit: hedge previously dropped these).
+// ---------------------------------------------------------------------------
+
+describe('runHedged — capability parity (attachments + webSearch + capabilityContext)', () => {
+  it('threads attachments + webSearch onto the PRIMARY request when it answers in time', async () => {
+    const primSink: { last?: ProviderRequest } = {};
+    const claude = makeProvider('claude', adequate('PRIMARY-OK'), { reqSink: primSink });
+    const codex = makeProvider('codex', adequate('SPEC'));
+    const neverSleep = (): Promise<void> => new Promise<void>(() => {});
+    const { deps } = hedgeDeps({ claude, codex }, neverSleep, SPLIT_ORDER);
+    const depsWithCaps: OrchestrateDeps = {
+      ...deps,
+      attachments: [{ path: '/tmp/diagram.png', kind: 'image' }],
+    };
+
+    await collect(
+      runHedged('describe this image', depsWithCaps, PLAN, new AbortController().signal, undefined, undefined, true),
+    );
+
+    assert.ok(primSink.last !== undefined, 'primary provider received a request');
+    assert.equal(primSink.last?.webSearch, true, 'webSearch threaded onto the primary request');
+    assert.deepEqual(
+      primSink.last?.attachments,
+      [{ path: '/tmp/diagram.png', kind: 'image' }],
+      'image attachments threaded onto the primary request',
+    );
+  });
+
+  it('threads attachments + webSearch onto the SPECULATIVE request when it wins the race', async () => {
+    const primaryGate = deferred(); // primary hangs → speculative wins
+    const claude = makeProvider('claude', adequate('PRIMARY-SLOW'), { gate: primaryGate.promise });
+    const specSink: { last?: ProviderRequest } = {};
+    const codex = makeProvider('codex', adequate('SPEC-WINS'), { reqSink: specSink });
+    const instantSleep = (): Promise<void> => Promise.resolve();
+    const { deps } = hedgeDeps({ claude, codex }, instantSleep, SPLIT_ORDER);
+    const depsWithCaps: OrchestrateDeps = {
+      ...deps,
+      attachments: [{ path: '/tmp/shot.png', kind: 'image' }],
+    };
+
+    await collect(
+      runHedged('look at this', depsWithCaps, PLAN, new AbortController().signal, undefined, undefined, true),
+    );
+
+    assert.ok(specSink.last !== undefined, 'speculative flagship received a request');
+    assert.equal(specSink.last?.webSearch, true, 'webSearch threaded onto the speculative request');
+    assert.deepEqual(
+      specSink.last?.attachments,
+      [{ path: '/tmp/shot.png', kind: 'image' }],
+      'image attachments threaded onto the speculative request',
+    );
+  });
+
+  it('omits attachments/webSearch when the turn carries neither (byte-for-byte unchanged)', async () => {
+    const primSink: { last?: ProviderRequest } = {};
+    const claude = makeProvider('claude', adequate('PRIMARY-OK'), { reqSink: primSink });
+    const codex = makeProvider('codex', adequate('SPEC'));
+    const neverSleep = (): Promise<void> => new Promise<void>(() => {});
+    const { deps } = hedgeDeps({ claude, codex }, neverSleep, SPLIT_ORDER);
+
+    await collect(runHedged('plain text task', deps, PLAN, new AbortController().signal));
+
+    assert.ok(primSink.last !== undefined);
+    assert.equal(primSink.last?.webSearch, undefined, 'no webSearch field when not requested');
+    assert.equal(primSink.last?.attachments, undefined, 'no attachments field when none present');
+  });
+
+  it('a non-image attachment never sets the attachments field (vision gate)', async () => {
+    const primSink: { last?: ProviderRequest } = {};
+    const claude = makeProvider('claude', adequate('PRIMARY-OK'), { reqSink: primSink });
+    const codex = makeProvider('codex', adequate('SPEC'));
+    const neverSleep = (): Promise<void> => new Promise<void>(() => {});
+    const { deps } = hedgeDeps({ claude, codex }, neverSleep, SPLIT_ORDER);
+    // An attachments array with no image kind → hasImageAttachment is false.
+    const depsNoImage: OrchestrateDeps = { ...deps, attachments: [] };
+
+    await collect(runHedged('task', depsNoImage, PLAN, new AbortController().signal));
+
+    assert.equal(primSink.last?.attachments, undefined, 'no image → attachments omitted');
   });
 });

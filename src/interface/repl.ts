@@ -17,6 +17,7 @@ import type { OrchestrateDeps } from '../core/types.js';
 import type { OutputSink } from './render.js';
 import { runTask } from './run.js';
 import { completeChat } from './menu.js';
+import { resolveImageAttachments } from '../infra/attachments.js';
 
 /** Slash-commands offered by the REPL's Tab-completer. */
 const REPL_SLASH_COMMANDS: readonly string[] = ['/help', '/exit', '/quit'];
@@ -99,7 +100,17 @@ export async function startRepl(deps: OrchestrateDeps, out: OutputSink): Promise
       const ac = new AbortController();
       currentAc = ac;
 
-      runTask(line, deps, out, ac.signal).then(() => {
+      // Image attachments (audit #4, image scope): resolve per-turn the SAME way the
+      // chat menu does — the IMPURE existence check lives here in the interface layer
+      // (fs allowed), reusing the shared resolveImageAttachments helper (no
+      // reimplementation). Real images referenced in the line are threaded onto a
+      // per-turn deps so orchestrate sets needsVision + routes to a vision-capable
+      // provider. No real image → empty → field omitted → behaviour unchanged.
+      const turnAttachments = resolveImageAttachments(line, { cwd: deps.cwd });
+      const turnDeps: OrchestrateDeps =
+        turnAttachments.length > 0 ? { ...deps, attachments: turnAttachments } : deps;
+
+      runTask(line, turnDeps, out, ac.signal).then(() => {
         currentAc = null;
         rl.resume();
         rl.prompt();

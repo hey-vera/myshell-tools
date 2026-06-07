@@ -43,7 +43,7 @@ import type {
   Policy,
 } from './types.js';
 import type { ProviderId } from '../providers/port.js';
-import { route, selectReasoningEffort } from './route.js';
+import { route, selectReasoningEffort, type CapabilityRouteContext } from './route.js';
 import { getModelPricing, calculateCost } from '../infra/pricing.js';
 import { assess } from './assess.js';
 import { authorizeTier } from './flagship.js';
@@ -197,6 +197,16 @@ interface RunResult {
  *                         lifted for the speculative flagship; as-is otherwise).
  * @param signal         - This attempt's OWN AbortSignal (so the loser can be cancelled).
  * @param historyContext - Optional compacted prior-conversation summary.
+ * @param capabilityContext - The SAME opt-in capability-fit context the sequential
+ *                         path threads into route() (built from deps.capabilityRegistry
+ *                         + taskSignals in orchestrate). Absent → route() behaves
+ *                         byte-for-byte as before. Mirrors orchestrate's route() call so
+ *                         a hedged turn re-ranks models on the exact same facts (incl.
+ *                         needsVision for image input).
+ * @param wantsWebSearch - Whether the turn genuinely needs native web search (the
+ *                         SAME engagement WEB_RESEARCH signal the sequential path uses).
+ *                         When true, threaded onto the provider request (Codex honours
+ *                         it; Claude/OpenCode ignore it). Absent/false → field omitted.
  */
 async function runAttempt(
   task: string,
@@ -206,6 +216,8 @@ async function runAttempt(
   signal: AbortSignal,
   historyContext: string | undefined,
   risk: Risk,
+  capabilityContext: CapabilityRouteContext | undefined,
+  wantsWebSearch: boolean,
 ): Promise<RunResult> {
   const decision = route(
     requestedTier,
@@ -218,6 +230,7 @@ async function runAttempt(
     deps.availableModels,
     deps.authenticatedProviders,
     deps.learnedProviderOrder?.[requestedTier],
+    capabilityContext,
   );
   // Reasoning effort for this hedge run (capability registry §3/§5). decision.tier
   // is the tier route() resolved (admission already passed in planHedge), so this
@@ -300,6 +313,15 @@ async function runAttempt(
     cwd: deps.cwd,
     sandbox: deps.sandbox,
     timeoutMs: deps.timeoutMs,
+    ...(wantsWebSearch ? { webSearch: true } : {}),
+    // Image attachments (audit #4): threaded onto the request ONLY when the turn
+    // genuinely carries image input — mirrors the sequential path (orchestrate.ts).
+    // Adapters that support images attach one CLI flag per path (codex `-i`,
+    // opencode `-f`); claude ignores them (fail-soft). Absent → the field is
+    // omitted entirely (byte-for-byte unchanged).
+    ...(hasImageAttachment(deps.attachments) && deps.attachments !== undefined
+      ? { attachments: deps.attachments }
+      : {}),
   };
 
   let canceled = false;
@@ -344,6 +366,18 @@ async function runAttempt(
     reasoningEffort,
     taskKind,
   };
+}
+
+/**
+ * True ONLY when the turn genuinely carries image input — the SAME predicate the
+ * sequential path uses (orchestrate.ts). Derived from REAL image attachments the
+ * interface layer resolved (extracted + confirmed on disk). Absent/empty → false,
+ * so a text-only turn is byte-for-byte unchanged. PURE.
+ */
+function hasImageAttachment(
+  attachments: OrchestrateDeps['attachments'],
+): boolean {
+  return attachments !== undefined && attachments.some((a) => a.kind === 'image');
 }
 
 /**
@@ -445,6 +479,15 @@ function costOf(result: RunResult): number {
  * @param plan           - The resolved HedgePlan from planHedge().
  * @param signal         - Caller AbortSignal; on abort → notice(warn) + failing final.
  * @param historyContext - Optional compacted prior-conversation summary.
+ * @param capabilityContext - The SAME capability-fit context the sequential path
+ *                         threads into route() (built in orchestrate from
+ *                         deps.capabilityRegistry + taskSignals). Absent → route()
+ *                         behaves byte-for-byte as before. Passed to BOTH branches so
+ *                         a hedged turn re-ranks on the exact same facts (incl.
+ *                         needsVision for image input).
+ * @param wantsWebSearch - Whether the turn genuinely needs native web search (the
+ *                         SAME engagement WEB_RESEARCH signal the sequential path uses),
+ *                         threaded onto BOTH branches' provider requests. Default false.
  */
 export async function* runHedged(
   task: string,
@@ -452,6 +495,8 @@ export async function* runHedged(
   plan: HedgePlan,
   signal: AbortSignal,
   historyContext?: string,
+  capabilityContext?: CapabilityRouteContext,
+  wantsWebSearch = false,
 ): AsyncGenerator<CoreEvent> {
   // Append the user message once (matches orchestrate/runPanel).
   await deps.session.append({
@@ -548,6 +593,8 @@ export async function* runHedged(
       primaryAc.signal,
       historyContext,
       plan.risk,
+      capabilityContext,
+      wantsWebSearch,
     );
 
     // --- Race the primary against the delay. ---
@@ -611,6 +658,8 @@ export async function* runHedged(
         speculativeAc.signal,
         historyContext,
         plan.risk,
+        capabilityContext,
+        wantsWebSearch,
       );
       await recordRun(speculative);
 
@@ -657,6 +706,8 @@ export async function* runHedged(
       speculativeAc.signal,
       historyContext,
       plan.risk,
+      capabilityContext,
+      wantsWebSearch,
     );
 
     // Take the FIRST to finish with an adequate result; cancel the other.
