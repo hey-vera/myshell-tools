@@ -8,15 +8,19 @@
  * Codex detection is REAL: spawns `codex --version` to probe installation,
  * then `codex login status` to probe real authentication state.
  * Opencode detection is REAL: spawns `opencode --version` to probe installation,
- * then `opencode auth list` to probe real authentication state. Opencode is
- * authenticated ONLY when at least one provider/subscription credential is
- * configured (its free models alone can't do serious work, so a zero-credential
- * install is treated as not-ready). See detectOpencodeProvider / parseOpencodeAuth.
+ * then classifies its on-disk credentials (auth.json) to probe real auth state.
+ * GUARDRAIL: myshell-tools is subscription-OAuth-only. Opencode is authenticated
+ * ONLY when it holds at least one credential whose `type === "oauth"` (a real
+ * subscription/OAuth login). An API-key-only install (every entry `type:"api"`)
+ * is NOT authenticated — API keys are a metered, non-subscription path the
+ * product never honors. See detectOpencodeProvider / opencodeOauthCredentialCount.
  *
  * Plan labels are only set when clearly present in CLI output — never fabricated.
  */
 
 import { readFile } from 'node:fs/promises';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 import { execa } from 'execa';
 import { loadClaudeToken, claudeEnv, replitPersistentEnv } from '../infra/credentials.js';
 import {
@@ -199,10 +203,11 @@ export function credentialFileIndicatesAuth(rawCredsJson: string, nowMs: number)
  * remains true, authenticated false, plan null.
  *
  * For 'opencode': runs `opencode --version` to confirm the binary is present,
- * then delegates to detectOpencodeProvider, which probes `opencode auth list`.
- * authenticated is true ONLY when at least one credential is configured — the
- * free models alone are not treated as ready (a serious task routed to a zero-
- * credential opencode is doomed). Plan is always null (opencode exposes no tier).
+ * then delegates to detectOpencodeProvider, which reads opencode's auth.json and
+ * classifies its credentials. authenticated is true ONLY when at least one
+ * credential is an OAuth/subscription login (`type === "oauth"`) — an API-key-only
+ * install does NOT count under the subscription-OAuth-only guardrail. Plan is
+ * always null (opencode exposes no tier).
  */
 export async function detectProvider(
   id: 'claude' | 'codex' | 'opencode',
@@ -358,28 +363,71 @@ export async function detectProvider(
 // ---------------------------------------------------------------------------
 
 /**
- * Parse `opencode auth list` into a real authentication verdict.
+ * Classify opencode's on-disk credentials (auth.json) into a real auth verdict.
  *
- * opencode is only useful when the user has logged a real provider/subscription
- * in (`opencode auth login`) — its credentials live in `auth.json` and the CLI
- * prints a footer like "N credentials" (and "0 credentials" when none exist).
- * Free zen models alone are NOT treated as "ready": a serious task routed to an
- * opencode with zero credentials is doomed, so authenticated = at least one
- * configured credential. Tolerant — returns 0 (not authenticated) on no match.
+ * GUARDRAIL: myshell-tools is subscription-OAuth-only — it NEVER honors API keys.
+ * opencode stores credentials in `auth.json` as a JSON object keyed by provider
+ * id; each value carries a `type` field of either `"oauth"` (a real
+ * subscription/OAuth login — GUARDRAIL-VALID) or `"api"` (a metered API key —
+ * NOT valid). opencode is authenticated ONLY when at least one credential is
+ * `type === "oauth"`. An API-key-only install (every entry `type:"api"`) is NOT
+ * authenticated, even though the CLI itself would happily use the key.
  *
- * @param stdout - stdout from `opencode auth list`.
- * @param stderr - stderr from `opencode auth list` (opencode uses both).
+ * Note: `opencode auth list`'s text output only prints a count ("N credentials"),
+ * not the per-credential type, so it cannot enforce the OAuth-only rule — we read
+ * auth.json directly and classify (see opencodeOauthCredentialCount).
+ *
+ * @param rawAuthJson - the raw contents of opencode's auth.json.
  */
 export function parseOpencodeAuth(
-  stdout: string,
-  stderr: string,
-): { authenticated: boolean; credentialCount: number } {
-  const hay = `${stdout}\n${stderr}`;
-  const matches = [...hay.matchAll(/(\d+)\s+credential/gi)];
-  const last = matches.at(-1);
-  const parsed = last ? Number.parseInt(last[1] ?? '0', 10) : 0;
-  const count = Number.isFinite(parsed) ? parsed : 0;
-  return { authenticated: count > 0, credentialCount: count };
+  rawAuthJson: string,
+): { authenticated: boolean; oauthCredentialCount: number } {
+  const count = opencodeOauthCredentialCount(rawAuthJson);
+  return { authenticated: count > 0, oauthCredentialCount: count };
+}
+
+/**
+ * Count opencode credentials that are OAuth/subscription logins (`type === "oauth"`)
+ * in the raw contents of its auth.json. auth.json is a JSON object keyed by
+ * provider id (e.g. `{ "anthropic": { "type": "oauth", ... } }`); API-key entries
+ * have `type: "api"` and are deliberately excluded under the OAuth-only guardrail.
+ * Pure / fail-soft: returns 0 on missing/garbage/non-object input. Never throws.
+ *
+ * @param rawAuthJson - the raw contents of opencode's auth.json.
+ */
+export function opencodeOauthCredentialCount(rawAuthJson: string): number {
+  try {
+    const parsed = JSON.parse(rawAuthJson) as unknown;
+    if (typeof parsed !== 'object' || parsed === null) return 0;
+    let count = 0;
+    for (const value of Object.values(parsed as Record<string, unknown>)) {
+      if (
+        typeof value === 'object' &&
+        value !== null &&
+        (value as Record<string, unknown>)['type'] === 'oauth'
+      ) {
+        count += 1;
+      }
+    }
+    return count;
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * Resolve where opencode's `auth.json` lives — the same way opencode does:
+ * `$XDG_DATA_HOME/opencode/auth.json` when XDG_DATA_HOME is set (Replit points it
+ * at the persistent workspace via replitPersistentEnv), else
+ * `$HOME/.local/share/opencode/auth.json`. Pure / never throws.
+ */
+export function resolveOpencodeAuthPath(
+  env: NodeJS.ProcessEnv,
+  home: string = homedir(),
+): string {
+  const xdg = env['XDG_DATA_HOME'];
+  const base = xdg !== undefined && xdg.length > 0 ? xdg : join(home, '.local', 'share');
+  return join(base, 'opencode', 'auth.json');
 }
 
 /**
@@ -401,11 +449,12 @@ export function parseOpencodeModels(stdout: string): string[] {
 
 /**
  * Detect the opencode CLI. `installed` is true when `opencode --version`
- * succeeds; `authenticated` reflects a REAL credential probe (`opencode auth
- * list`) — true only when the user has logged a provider/subscription in. We do
- * NOT treat the binary as authenticated-when-installed: opencode's free models
- * can't do serious work, so the realistic flow is bring-your-own-subscription
- * (e.g. a paid opencode/anthropic/openai login) → then it's ready.
+ * succeeds; `authenticated` reflects a REAL credential probe — we read opencode's
+ * auth.json and treat it as authenticated ONLY when it holds at least one
+ * OAuth/subscription credential (`type === "oauth"`). Under the subscription-
+ * OAuth-only guardrail an API-key-only install is NOT authenticated. We do NOT
+ * treat the binary as authenticated-when-installed: the realistic flow is
+ * bring-your-own-subscription (a real OAuth login) → then it's ready.
  */
 async function detectOpencodeProvider(
   baseEnv: NodeJS.ProcessEnv = process.env,
@@ -420,20 +469,17 @@ async function detectOpencodeProvider(
     });
 
     if (result.exitCode === 0) {
-      // Binary present — now probe real auth state via configured credentials.
+      // Binary present — now probe real auth state from opencode's auth.json.
+      // GUARDRAIL: authenticated ONLY when ≥1 credential is an OAuth/subscription
+      // login (`type:"oauth"`). `opencode auth list` only prints a count, not the
+      // per-credential type, so we read auth.json directly to enforce OAuth-only.
       let authenticated = false;
       try {
-        const authResult = await execa('opencode', ['auth', 'list'], {
-          reject: false,
-          timeout: 10_000,
-          env,
-        });
-        authenticated = parseOpencodeAuth(
-          typeof authResult.stdout === 'string' ? authResult.stdout : '',
-          typeof authResult.stderr === 'string' ? authResult.stderr : '',
-        ).authenticated;
+        const raw = await readFile(resolveOpencodeAuthPath(env), 'utf8');
+        authenticated = parseOpencodeAuth(raw).authenticated;
       } catch {
-        // Spawn failure — leave authenticated false (offer sign-in, don't pretend).
+        // File missing/unreadable — leave authenticated false (offer sign-in,
+        // don't pretend). An API-key-only auth.json also stays not-authenticated.
       }
 
       // Probe the user's REAL available models (`opencode models`) so the router

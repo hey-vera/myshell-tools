@@ -1886,6 +1886,11 @@ export async function* orchestrate(
                 totalCostUsd,
                 sessionId: deps.session.id,
                 attempts,
+                // Honesty: the reviewer wanted a stronger tier and policy denied
+                // it. We accept the best result rather than re-running, but flag it
+                // best-effort so the user can tell this apart from a clean,
+                // fully-verified success.
+                bestEffort: true,
                 ...(memoryProposal !== undefined ? { memoryProposal } : {}),
               };
             }
