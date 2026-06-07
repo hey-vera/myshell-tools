@@ -27,9 +27,9 @@ import {
 import {
   runCopyCommand,
   runExportCommand,
-  renderConversationList,
   exportFileSlug,
-} from '../../src/interface/menu.ts';
+} from '../../src/interface/menu-io-commands.ts';
+import { renderConversationList } from '../../src/interface/menu-display.ts';
 import { deriveTitleFromRecap, isStubTitle } from '../../src/infra/conversations.ts';
 import { systemClipboardPort } from '../../src/infra/clipboard.ts';
 import type { SessionEntry } from '../../src/core/types.ts';

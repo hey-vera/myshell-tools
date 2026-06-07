@@ -22,10 +22,14 @@ import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 
 import { EventEmitter } from 'node:events';
-import { startMenu, defaultAliasHint, parseYesNo, interpretYesNoKey, yesNoHint, readSingleKey, readMenuKey, confirmViaKey, autoUpdateEnabled, createLineReader, normalizeMenuKey, attachChatTurnKeyListener } from '../../src/interface/menu.ts';
+import { startMenu, parseYesNo, interpretYesNoKey, yesNoHint } from '../../src/interface/menu.ts';
+import { readSingleKey, createLineReader, normalizeMenuKey } from '../../src/interface/menu-readline.ts';
+import { readMenuKey, confirmViaKey, attachChatTurnKeyListener } from '../../src/interface/menu-key-confirm.ts';
+import { defaultAliasHint, autoUpdateEnabled } from '../../src/interface/menu-display.ts';
 import { completeSlash, CHAT_SLASH_COMMANDS, classifyCompletion, completeSlashArg, fuzzyRank, expandPathToken, matchPathEntries, completeChat, CHAT_SLASH_ARG_MAP } from '../../src/interface/menu-completion.ts';
-import type { KeypressEvent } from '../../src/interface/menu.ts';
-import type { MenuContext, KeyInputStream } from '../../src/interface/menu.ts';
+import type { KeypressEvent } from '../../src/interface/menu-key-confirm.ts';
+import type { KeyInputStream } from '../../src/interface/menu-readline.ts';
+import type { MenuContext } from '../../src/interface/menu.ts';
 import type { UpdateCheckResult } from '../../src/infra/update-check.ts';
 import type { OutputSink } from '../../src/interface/render.ts';
 import type { ConversationMeta, ConversationStore } from '../../src/infra/conversation-store.ts';

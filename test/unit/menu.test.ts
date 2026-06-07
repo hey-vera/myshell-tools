@@ -12,15 +12,17 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
+  interpretQuestionAnswer,
+  FREE_TEXT_SENTINEL,
+} from '../../src/interface/menu.ts';
+import {
   relativeTime,
   renderHeaderLines,
   renderConversationList,
   renderBudgetLine,
   versionStatusLabel,
   isRunningUnderNpx,
-  interpretQuestionAnswer,
-  FREE_TEXT_SENTINEL,
-} from '../../src/interface/menu.ts';
+} from '../../src/interface/menu-display.ts';
 import { planRetryTruncation, recentUserMessages } from '../../src/interface/menu-message-redo.ts';
 import { CHAT_SLASH_COMMANDS } from '../../src/interface/menu-completion.ts';
 import type { Question, SessionEntry } from '../../src/core/types.ts';

@@ -13,11 +13,13 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
+  shouldEscapeRawSession,
+} from '../../src/interface/menu.ts';
+import {
   countRecentInterrupts,
   interpretInterrupt,
   interpretChatKey,
-  shouldEscapeRawSession,
-} from '../../src/interface/menu.ts';
+} from '../../src/interface/menu-display.ts';
 import { decidePostTurn } from '../../src/interface/menu-post-turn.ts';
 import type { PostTurnAction, PostTurnInputs } from '../../src/interface/menu-post-turn.ts';
 

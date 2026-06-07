@@ -27,7 +27,8 @@ import { defaultStateDir, probeLedgerWritable, probeStateWritable } from '../inf
 import { getStateDir } from '../infra/paths.js';
 import { loadClaudeTokenCapturedAt, claudeTokenStatus } from '../infra/credentials.js';
 import type { ClaudeTokenStatus } from '../infra/credentials.js';
-import { createLineReader, parseYesNo, yesNoHint } from '../interface/menu.js';
+import { parseYesNo, yesNoHint } from '../interface/menu.js';
+import { createLineReader } from '../interface/menu-readline.js';
 import { bold, green, red, yellow, dim, divider, label } from '../ui/theme.js';
 
 type DoctorConfirm = (
