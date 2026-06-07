@@ -15,6 +15,18 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   resumed goal's contract from the persisted `workTrace` (niche: the in-run contract
   is already kept in memory; only cross-session resume benefits). Optional.
 
+## [3.27.1]
+
+### Fixed — runtime Node floor (don't warn/block Node 20 users)
+- `engines.node` was `>=22.0.0`, which made every end user on Node 20 hit an
+  `EBADENGINE` warning on install (and would hard-fail installs under
+  `engine-strict`). The Node 22 requirement was only ever needed for the **dev
+  test runner** (`--experimental-strip-types`), never the shipped runtime.
+  Lowered to **`>=20.0.0`** — the real, proven floor: the compiled `dist/` targets
+  ES2022 and uses only stable `node:` builtins (JSON is loaded via `createRequire`,
+  not import-attributes), so it runs cleanly on Node 20. Dev/test still uses Node 22
+  via `.nvmrc`; nothing about the gate changed.
+
 ## [3.27.0]
 
 ### Added — Claude Max 5x vs 20x awareness (quota-aware auto behavior)

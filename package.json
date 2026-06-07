@@ -1,13 +1,13 @@
 {
   "name": "myshell-tools",
-  "version": "3.27.0",
+  "version": "3.27.1",
   "type": "module",
   "bin": {
     "myshell-tools": "dist/cli.js",
     "myshell": "dist/cli.js"
   },
   "engines": {
-    "node": ">=22.0.0"
+    "node": ">=20.0.0"
   },
   "scripts": {
     "build": "tsc",
