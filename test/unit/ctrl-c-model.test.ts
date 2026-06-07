@@ -14,7 +14,7 @@ import assert from 'node:assert/strict';
 
 import {
   shouldEscapeRawSession,
-} from '../../src/interface/menu.ts';
+} from '../../src/interface/menu-raw-session.ts';
 import {
   countRecentInterrupts,
   interpretInterrupt,
