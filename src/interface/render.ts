@@ -1103,11 +1103,20 @@ export async function renderStream(
       }
 
       case 'escalate': {
-        // Escalation is internal routing — verbose-only.
+        // Escalation always goes UP a tier: the first model self-reported low
+        // confidence so orchestrate re-runs a stronger model. Without a note,
+        // a normal-mode user sees two full answers back-to-back with no
+        // context — it reads like a bug. Surface a concise, honest dim line so
+        // the next answer reads as a refinement (mirrors the panel-header /
+        // hedge normal-mode notices below). Stop the spinner first so the line
+        // isn't clobbered.
+        stopSpinner();
         if (isVerbose) {
           out.write(
             yellow(`↑ Escalating ${ev.from} → ${ev.to}: ${ev.reason}`, c) + `\n`,
           );
+        } else {
+          out.write(`${dim('↑ low confidence — refining with a stronger model…', c)}\n`);
         }
         break;
       }

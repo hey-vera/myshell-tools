@@ -715,6 +715,48 @@ describe('renderStream — escalate and notice events', () => {
     assert.ok(joined.includes('confidence below threshold'), 'Should render real escalation reason');
     assert.ok(joined.includes('provider latency is high'), 'Should render real notice message');
   });
+
+  it('surfaces a concise refining note for escalate in normal mode (no verbose leak)', async () => {
+    const sink = makeSink();
+
+    const events: CoreEvent[] = [
+      {
+        type: 'escalate',
+        from: 'worker',
+        to: 'ic',
+        reason: 'confidence below threshold',
+      },
+      {
+        type: 'final',
+        success: true,
+        output: 'Refined answer.',
+        tier: 'ic',
+        totalCostUsd: 0,
+        sessionId: 'escalate-normal-session',
+        attempts: 2,
+      },
+    ];
+
+    const result = await renderStream(makeStream(events), sink, 'normal');
+    const joined = sink.buf.join('');
+
+    assert.equal(result.success, true);
+    // The honest refining note must appear so the second answer reads as a
+    // refinement rather than a mysterious duplicate.
+    assert.ok(
+      joined.includes('refining with a stronger model'),
+      'Normal mode should surface the refining note',
+    );
+    // The verbose-only "Escalating from → to" wording must NOT leak in normal mode.
+    assert.ok(
+      !joined.includes('Escalating'),
+      'Normal mode should not leak the verbose Escalating from→to wording',
+    );
+    assert.ok(
+      !joined.includes('confidence below threshold'),
+      'Normal mode should not leak the verbose escalation reason',
+    );
+  });
 });
 
 // ---------------------------------------------------------------------------
