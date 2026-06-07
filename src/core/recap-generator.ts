@@ -22,7 +22,6 @@ import type { Policy, SessionEntry, Tier } from './types.js';
 import type { Provider, ProviderId, ProviderRequest, SandboxLevel } from '../providers/port.js';
 import { route } from './route.js';
 import { buildRecapPrompt, parseRecap } from './recap.js';
-import type { RecapGenerator } from './recap.js';
 
 /** Everything the generator needs to pick and run the cheapest model. */
 export interface RecapGeneratorDeps {
@@ -101,5 +100,3 @@ export function makeRecapGenerator(
     return parseRecap(finalText);
   };
 }
-
-export type { RecapGenerator };

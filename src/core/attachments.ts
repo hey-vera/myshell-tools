@@ -22,7 +22,7 @@
  */
 
 /** The kind of an attachment. Images only for now (audit #4 scope). */
-export type AttachmentKind = 'image';
+type AttachmentKind = 'image';
 
 /** A resolved attachment threaded onto a ProviderRequest. */
 export interface Attachment {

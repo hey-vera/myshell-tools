@@ -37,7 +37,7 @@ export type CapabilitySource = 'declarative' | 'detect' | 'codex-cache' | 'ledge
 export type ReasoningEffort = 'none' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 
 /** Coarse cost/speed bucket; `unknown` is a first-class value, never guessed. */
-export type CostSpeedTier = 'fast' | 'standard' | 'premium' | 'unknown';
+type CostSpeedTier = 'fast' | 'standard' | 'premium' | 'unknown';
 
 /** Closed set of input modalities a model accepts. */
 export type InputModality = 'text' | 'image' | 'audio' | 'video';

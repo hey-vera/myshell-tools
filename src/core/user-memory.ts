@@ -36,7 +36,7 @@ export type MemoryTrust = 'user_stated' | 'agent_inferred' | 'ingested';
 export type MemorySource = 'user_explicit' | 'model_proposed';
 
 /** Provenance for audit / verify-before-trust (§2). */
-export interface MemoryProvenance {
+interface MemoryProvenance {
   readonly conversationId: string | null;
   readonly capturedFromTurn: number | null;
   readonly command: '/remember' | 'remember_user' | null;
@@ -91,8 +91,8 @@ export interface Candidate {
 }
 
 /** Bounds shared with `parseRememberUser` (§8) and the fact schema (§2). */
-export const MAX_TEXT_LEN = 180;
-export const MAX_REASON_LEN = 160;
+const MAX_TEXT_LEN = 180;
+const MAX_REASON_LEN = 160;
 
 /**
  * Closed `subject` vocabulary per `kind` — the anti-drift keystone (§1, RC-1).
@@ -181,7 +181,7 @@ export function normalizeSubject(kind: MemoryKind, textOrProposed: string | unde
 // §3 — Write gate (the signal/noise brain). All pure, never throw.
 // ===========================================================================
 
-export type GateRejectReason =
+type GateRejectReason =
   | 'secret'
   | 'instruction_shaped'
   | 'untrusted_source'
@@ -399,7 +399,7 @@ export function worthGate(c: Candidate): GateResult {
 // §4 — Write = consolidation (not append)
 // ===========================================================================
 
-export type ConsolidationOp = 'ADD' | 'UPDATE' | 'SUPERSEDE' | 'NOOP';
+type ConsolidationOp = 'ADD' | 'UPDATE' | 'SUPERSEDE' | 'NOOP';
 
 export interface ConsolidationDecision {
   readonly op: ConsolidationOp;
@@ -413,7 +413,7 @@ export interface ConsolidationDecision {
 }
 
 /** Lowercase, collapse whitespace, strip punctuation. Pure. */
-export function normalize(text: string): string {
+function normalize(text: string): string {
   return (text ?? '')
     .toLowerCase()
     .replace(/[^\p{L}\p{N}\s]/gu, ' ')
@@ -703,7 +703,7 @@ export interface SelectRelevantResult {
 
 export const MAX_FACTS = 12;
 export const MAX_CHARS = 1200;
-export const RELEVANCE_RESERVE = 4;
+const RELEVANCE_RESERVE = 4;
 
 const W_REL = 0.55;
 const W_REC = 0.25;

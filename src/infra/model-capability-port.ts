@@ -35,7 +35,7 @@ import { replitPersistentEnv } from './credentials.js';
 const OPENCODE_VERBOSE_TIMEOUT_MS = 10_000;
 
 /** Resolve the effective CODEX_HOME directory. Pure-ish (reads env + existsSync). */
-export function resolveCodexHome(env: NodeJS.ProcessEnv, cwd: string): string {
+function resolveCodexHome(env: NodeJS.ProcessEnv, cwd: string): string {
   const explicit = env['CODEX_HOME'];
   if (typeof explicit === 'string' && explicit.length > 0) return explicit;
   try {

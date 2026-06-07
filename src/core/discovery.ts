@@ -32,7 +32,7 @@ import type { Assessment } from './types.js';
 // ---------------------------------------------------------------------------
 
 /** The high-stakes surfaces a discovery may implicate (§2.5 D). */
-export type HighStakesArea =
+type HighStakesArea =
   | 'auth'
   | 'secrets'
   | 'payments'

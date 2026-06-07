@@ -45,14 +45,14 @@ import { hasGenuineFork, isInvestigable, isGenericOpenMenuForkText } from './eng
  *                               that needs an opinionated note before code.
  *   - INVESTIGATE_THEN_PROPOSE: answerable by reading the code/context first.
  */
-export type VisionDisposition =
+type VisionDisposition =
   | 'SOLID'
   | 'DISCUSS'
   | 'MIGRATE_REARCHITECT'
   | 'INVESTIGATE_THEN_PROPOSE';
 
 /** The default handling for an item — what the orchestrator/model should DO with it. */
-export type VisionDefaultAction = 'proceed' | 'ask_user' | 'flag_architecture' | 'investigate';
+type VisionDefaultAction = 'proceed' | 'ask_user' | 'flag_architecture' | 'investigate';
 
 /**
  * One decomposed part of the user's vision with its disposition + default action

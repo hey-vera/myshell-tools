@@ -92,7 +92,7 @@ export class InvalidFactIdError extends Error {
 // Audit log (append-only, rotated)
 // ---------------------------------------------------------------------------
 
-export interface AuditEntry {
+interface AuditEntry {
   readonly ts: string;
   readonly op: ConsolidationDecision['op'] | 'FORGET';
   readonly id: string;
@@ -133,7 +133,7 @@ async function rotateAuditIfNeeded(homeDir: string, path: string): Promise<void>
 // ---------------------------------------------------------------------------
 
 /** The retrieval facet — the subset of a fact retrieval needs (memory doc §2). */
-export interface FactFacet {
+interface FactFacet {
   readonly id: string;
   readonly scope: MemoryScope;
   readonly projectKey: string | null;

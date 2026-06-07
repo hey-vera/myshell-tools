@@ -61,7 +61,7 @@ export interface RefreshCapabilityInput {
 }
 
 /** A single non-fatal note from the refresh (surfaced for diagnostics, not the prompt). */
-export interface CapabilityRefreshDiagnostic {
+interface CapabilityRefreshDiagnostic {
   readonly provider: ProviderId;
   readonly source: CapabilitySource;
   readonly level: 'info' | 'warn';

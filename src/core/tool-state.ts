@@ -80,7 +80,7 @@ export interface CapabilitySelfAwarenessSummary {
 }
 
 /** One provider's capped capability view in the self-awareness summary. */
-export interface CapabilitySummaryProvider {
+interface CapabilitySummaryProvider {
   readonly provider: ProviderId;
   readonly label: string;
   readonly authed: boolean;
@@ -88,7 +88,7 @@ export interface CapabilitySummaryProvider {
 }
 
 /** One model's objective facts, already trimmed to what the renderer states. */
-export interface CapabilitySummaryModel {
+interface CapabilitySummaryModel {
   readonly id: string;
   readonly displayName?: string;
   readonly tierHint?: Tier;
@@ -118,7 +118,7 @@ export const TOOL_STATE_BLOCK_CHAR_CAP = 2200;
  * the whole-block cap so the existing subscriptions/mode/capabilities content is
  * never crowded out; the whole-block cap remains the hard backstop.
  */
-export const CAPABILITY_SUMMARY_CHAR_CAP = 600;
+const CAPABILITY_SUMMARY_CHAR_CAP = 600;
 
 /** Max models rendered per provider in the capability summary (§4: top 3). */
 const MAX_SUMMARY_MODELS_PER_PROVIDER = 3;

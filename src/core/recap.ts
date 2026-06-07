@@ -11,7 +11,7 @@
  * This module is PURE (no fs/path/child_process/Date/Math.random): the load-bearing
  * logic is unit-testable at the seam, exactly like `intent.ts`/`history.ts`. The
  * one model touch — generating the recap text — lives behind the injected
- * {@link RecapGenerator} port, realised by the thin composer `makeRecapGenerator`
+ * `RecapGenerator` port, realised by the thin composer `makeRecapGenerator`
  * in `src/core/recap-generator.ts` (a near-twin of `intent-extractor.ts`).
  *
  * Fail-soft contract (mirrors the IntentExtractor): the generator returns `null`
@@ -23,28 +23,13 @@ import type { SessionEntry } from './types.js';
 import { compactHistory } from './history.js';
 
 // ---------------------------------------------------------------------------
-// The injected port (mirrors IntentExtractor, intent.ts:68-71)
-// ---------------------------------------------------------------------------
-
-/**
- * The injected recap-generation port. Given a (already compacted) history block,
- * returns a one-to-three-line recap string, or `null` on ANY failure (no
- * generator, parse/empty output, timeout, garbled). Never throws — the caller
- * falls back to the title / prior behaviour. Twin of {@link IntentExtractor}.
- */
-export type RecapGenerator = (
-  historyBlock: string,
-  signal: AbortSignal,
-) => Promise<string | null>;
-
-// ---------------------------------------------------------------------------
 // Tunables (mirror the design §5.1)
 // ---------------------------------------------------------------------------
 
 /** Minimum turns before a recap is worth distilling (Claude Code's ≥3 floor). */
 export const RECAP_MIN_TURNS = 3;
 /** Regenerate only when messageCount has advanced by ≥ this since recapMessageCount. */
-export const RECAP_STALE_AFTER_TURNS = 3;
+const RECAP_STALE_AFTER_TURNS = 3;
 /** Hard cap on the rendered recap body (the design's ≤240 chars). */
 export const RECAP_MAX_CHARS = 240;
 

@@ -9,3 +9,6 @@ coverage
 # DATA Tools - All sensitive data in one place (added by DATA Tools)
 .replit-tools/
 .npm-publish-token
+
+# git worktrees
+.wt/

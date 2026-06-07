@@ -618,7 +618,7 @@ export const CHAT_SLASH_ARG_MAP: Readonly<Record<string, readonly string[]>> = {
 };
 
 /** A classified Tab-completion request. PURE output of {@link classifyCompletion}. */
-export type CompletionKind = 'slash-name' | 'slash-arg' | 'path' | 'mention' | 'none';
+type CompletionKind = 'slash-name' | 'slash-arg' | 'path' | 'mention' | 'none';
 export interface Completion {
   readonly kind: CompletionKind;
   /** For 'slash-arg': the canonical command (e.g. '/mode'). */
@@ -3398,7 +3398,7 @@ function renderDiscardedQueue(
  * The reader (and thus its EOF/Ctrl-C semantics) is injected, so this is
  * testable without a TTY.
  */
-export async function runQuestionSelector(
+async function runQuestionSelector(
   questions: QuestionSet,
   out: OutputSink,
   readLine: () => Promise<string | null>,

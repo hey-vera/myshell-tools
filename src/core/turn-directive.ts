@@ -54,7 +54,7 @@ import {
  *                                         when the directive is `substantial`; tiny
  *                                         factual/lookup turns are EXEMPT.
  */
-export type OutputValidator =
+type OutputValidator =
   | { readonly kind: 'reject_generic_open_menu' }
   | { readonly kind: 'require_grounded_recommendation' };
 
@@ -88,7 +88,7 @@ export type RecommendationGrounding =
  *   - `requiresInvestigation`: an INVESTIGATE_THEN_PROPOSE item is present → the
  *     answer must return findings + a proposed plan, not a generic question.
  */
-export type RequiredPreAnswerAction = {
+type RequiredPreAnswerAction = {
   readonly kind: 'vision_triage';
   readonly items: readonly VisionTriageItem[];
   readonly migrationNeedsArchitectureTier: boolean;
@@ -663,7 +663,7 @@ export function decideHistoryPolicy(
  * vision-triage disposition or the decision-shaped task text, not because a
  * thoroughness rung happened to be selected.
  */
-export function decideSubstantial(input: {
+function decideSubstantial(input: {
   readonly plan: EngagementPlan;
   readonly signals: EngagementSignals;
   readonly migration: boolean;
