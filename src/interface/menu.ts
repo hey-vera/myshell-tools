@@ -4092,7 +4092,9 @@ async function runChatLoop(
         dim('  About what you\'ll see:\n', out.color) +
         dim('    ※                      a recap of where we left off (on resume)\n', out.color) +
         dim('    "what I understood…"    I restate the task before big work — correct me anytime\n', out.color) +
-        dim('    "Waiting on N models"   your models running in parallel (no extra cost on your plan)\n', out.color) +
+        dim('    "Waiting on N models"   models running in parallel — no dollar charge on a\n', out.color) +
+        dim('                            subscription, but each run draws on your plan\'s rate\n', out.color) +
+        dim('                            limit/quota and adds some latency\n', out.color) +
         dim('    Save / Skip             I asked to remember something — Save keeps it\n', out.color),
       );
       return 'continue';

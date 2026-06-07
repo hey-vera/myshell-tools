@@ -13,6 +13,8 @@ import {
   parseClaudeAuth,
   parseCodexAuth,
   parseOpencodeAuth,
+  opencodeOauthCredentialCount,
+  resolveOpencodeAuthPath,
   parseOpencodeModels,
   getInstallCommand,
   credentialFileIndicatesAuth,
@@ -344,43 +346,70 @@ describe('opencode — detection rationale: installed implies authenticated (fre
 });
 
 // ---------------------------------------------------------------------------
-// parseOpencodeAuth — real credential probe (`opencode auth list`)
+// parseOpencodeAuth / opencodeOauthCredentialCount — OAuth-only guardrail.
+// myshell-tools is subscription-OAuth-only: opencode is authenticated ONLY when
+// its auth.json holds ≥1 credential of `type:"oauth"`. API-key-only does NOT count.
 // ---------------------------------------------------------------------------
 
-describe('parseOpencodeAuth', () => {
-  it('not authenticated when zero credentials are configured', () => {
-    // Real captured footer from `opencode auth list` with nothing logged in.
-    const stdout = '┌  Credentials ~/.local/share/opencode/auth.json\n│\n└  0 credentials';
-    const r = parseOpencodeAuth(stdout, '');
+describe('parseOpencodeAuth — OAuth-only guardrail', () => {
+  it('authenticated when an oauth credential is present', () => {
+    const raw = JSON.stringify({
+      anthropic: { type: 'oauth', access: 'a', refresh: 'r', expires: 123 },
+    });
+    const r = parseOpencodeAuth(raw);
+    assert.equal(r.authenticated, true);
+    assert.equal(r.oauthCredentialCount, 1);
+  });
+
+  it('NOT authenticated when only api-key credentials are present', () => {
+    const raw = JSON.stringify({
+      opencode: { type: 'api', key: 'sk-xxx' },
+      openai: { type: 'api', key: 'sk-yyy' },
+    });
+    const r = parseOpencodeAuth(raw);
     assert.equal(r.authenticated, false);
-    assert.equal(r.credentialCount, 0);
+    assert.equal(r.oauthCredentialCount, 0);
   });
 
-  it('authenticated when one or more credentials are configured', () => {
-    const stdout =
-      '┌  Credentials ~/.local/share/opencode/auth.json\n│\n│  anthropic  oauth\n│\n└  1 credential';
-    const r = parseOpencodeAuth(stdout, '');
+  it('authenticated for a mix of oauth + api-key (the oauth one qualifies)', () => {
+    const raw = JSON.stringify({
+      anthropic: { type: 'oauth', access: 'a' },
+      openai: { type: 'api', key: 'sk-yyy' },
+    });
+    const r = parseOpencodeAuth(raw);
     assert.equal(r.authenticated, true);
-    assert.equal(r.credentialCount, 1);
+    assert.equal(r.oauthCredentialCount, 1);
   });
 
-  it('counts multiple credentials (uses the footer total)', () => {
-    const stdout =
-      '┌  Credentials\n│  anthropic  oauth\n│  openai     api\n└  2 credentials';
-    const r = parseOpencodeAuth(stdout, '');
-    assert.equal(r.authenticated, true);
-    assert.equal(r.credentialCount, 2);
+  it('counts every oauth credential in a multi-oauth file', () => {
+    const raw = JSON.stringify({
+      anthropic: { type: 'oauth' },
+      'github-copilot': { type: 'oauth' },
+      openai: { type: 'api' },
+    });
+    assert.equal(opencodeOauthCredentialCount(raw), 2);
   });
 
-  it('reads the count from stderr too (opencode uses both streams)', () => {
-    const r = parseOpencodeAuth('', '└  3 credentials');
-    assert.equal(r.authenticated, true);
-    assert.equal(r.credentialCount, 3);
+  it('NOT authenticated for empty / garbage / non-object input (fail-soft)', () => {
+    assert.equal(parseOpencodeAuth('').authenticated, false);
+    assert.equal(parseOpencodeAuth('not json at all').authenticated, false);
+    assert.equal(parseOpencodeAuth('{}').authenticated, false);
+    assert.equal(parseOpencodeAuth('[]').authenticated, false);
+    assert.equal(parseOpencodeAuth('null').authenticated, false);
+    assert.equal(opencodeOauthCredentialCount(''), 0);
+    assert.equal(opencodeOauthCredentialCount('garbage'), 0);
+  });
+});
+
+describe('resolveOpencodeAuthPath', () => {
+  it('uses $XDG_DATA_HOME/opencode/auth.json when XDG_DATA_HOME is set', () => {
+    const p = resolveOpencodeAuthPath({ XDG_DATA_HOME: '/persist/data' }, '/home/u');
+    assert.equal(p, '/persist/data/opencode/auth.json');
   });
 
-  it('defaults to NOT authenticated when output is empty / unrecognized (safe)', () => {
-    assert.equal(parseOpencodeAuth('', '').authenticated, false);
-    assert.equal(parseOpencodeAuth('garbage with no count', '').authenticated, false);
+  it('falls back to $HOME/.local/share/opencode/auth.json when XDG is unset', () => {
+    const p = resolveOpencodeAuthPath({}, '/home/u');
+    assert.equal(p, '/home/u/.local/share/opencode/auth.json');
   });
 });
 

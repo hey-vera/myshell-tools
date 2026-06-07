@@ -375,6 +375,74 @@ describe('renderStream — final success:false', () => {
     assert.ok(!joined.includes('CLAUDE Error [timeout]'), `Timeout must not render the crash-like provider error line, got:\n${joined}`);
   });
 
+  it('surfaces the unknown-spend warning to normal-mode users on a timeout', async () => {
+    const sink = makeSink();
+
+    const events: CoreEvent[] = [
+      {
+        type: 'notice',
+        level: 'warn',
+        message:
+          'Spend unknown — the process was killed before reporting usage; the recorded $0 is not a real cost (the run may still have consumed your subscription).',
+      },
+      {
+        type: 'final',
+        success: false,
+        output: '',
+        tier: 'ic',
+        totalCostUsd: 0,
+        sessionId: 'timeout-session',
+        attempts: 1,
+        errorCategory: 'timeout',
+        provider: 'claude',
+      },
+    ];
+
+    // Default (normal) verbosity — NOT verbose.
+    await renderStream(makeStream(events), sink);
+    const joined = sink.buf.join('');
+
+    assert.ok(
+      joined.includes('Spend unknown'),
+      `Normal mode must surface the unknown-spend warning so the "0 tokens" timeout isn't read as no spend, got:\n${joined}`,
+    );
+    assert.ok(
+      joined.includes('[warn]'),
+      `Unknown-spend caveat should render as a [warn] line in normal mode, got:\n${joined}`,
+    );
+  });
+
+  it('still hides ordinary warn notices in normal mode (only spend-unknown is excepted)', async () => {
+    const sink = makeSink();
+
+    const events: CoreEvent[] = [
+      {
+        type: 'notice',
+        level: 'warn',
+        message: 'provider latency is high',
+      },
+      {
+        type: 'final',
+        success: false,
+        output: '',
+        tier: 'ic',
+        totalCostUsd: 0,
+        sessionId: 'noise-session',
+        attempts: 1,
+        errorCategory: 'timeout',
+        provider: 'claude',
+      },
+    ];
+
+    await renderStream(makeStream(events), sink);
+    const joined = sink.buf.join('');
+
+    assert.ok(
+      !joined.includes('provider latency is high'),
+      `Generic warn notices must stay verbose-gated chrome in normal mode, got:\n${joined}`,
+    );
+  });
+
   it('keeps non-timeout failures on the existing failure path', async () => {
     const sink = makeSink();
 

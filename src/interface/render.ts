@@ -1132,17 +1132,35 @@ export async function renderStream(
         const isPanelHeader = ev.level === 'info' && ev.message.startsWith('Panel: ');
         const isHedgeNotice =
           ev.level === 'info' && ev.message.startsWith('hedge: primary slow');
+        // The unknown-spend warning (orchestrate.ts, emitted on a timeout when the
+        // child was killed before reporting usage) MUST reach normal-mode users:
+        // hiding it would let the timeout final line below read as a clean "0
+        // tokens" failure that silently implies no spend, when spend is in fact
+        // unknown. We key off the message prefix the orchestrator emits.
+        const isSpendUnknownWarn =
+          ev.level === 'warn' && ev.message.startsWith('Spend unknown —');
         // Clear the live indicator before printing a notice so it isn't clobbered.
-        if (ev.level === 'error' || isVerbose || isPanelHeader || isHedgeNotice) {
+        if (
+          ev.level === 'error' ||
+          isVerbose ||
+          isPanelHeader ||
+          isHedgeNotice ||
+          isSpendUnknownWarn
+        ) {
           stopSpinner();
         }
         // Errors are ALWAYS shown (every verbosity). Info/warn are chrome and
-        // only surface in verbose mode — except the two normal-mode notices above.
+        // only surface in verbose mode — except the normal-mode notices above
+        // (panel header, hedge, and the honest unknown-spend warning).
         if (ev.level === 'error') {
           out.write(`${red('[error]', c)} ${ev.message}\n`);
         } else if (isVerbose) {
           const prefix = ev.level === 'warn' ? yellow('[warn]', c) : dim('[info]', c);
           out.write(`${prefix} ${ev.message}\n`);
+        } else if (isSpendUnknownWarn) {
+          // A yellow `[warn]` line in normal mode too — spend honesty is not
+          // verbose-gated chrome.
+          out.write(`${yellow('[warn]', c)} ${ev.message}\n`);
         } else if (isPanelHeader || isHedgeNotice) {
           // A dim `⋮ <message>` header line, matching the spec mockups.
           out.write(`${dim(`⋮ ${ev.message}`, c)}\n`);

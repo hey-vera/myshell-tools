@@ -1396,8 +1396,10 @@ describe('orchestrate — risk-indexed fail-open (parsed:false + high risk)', ()
     assert.ok(escalateEv !== undefined, 'Expected an escalate event — must not silently approve on inconclusive review');
   });
 
-  it('unparseable review output on low-risk task still approves (fail-open is fine for low risk)', async () => {
-    // "refactor X" → low/medium risk — fail-open approve is acceptable
+  it('unparseable review output on low-risk task does not crash (fail-safe drives revise/best-effort, not silent approve)', async () => {
+    // "refactor X" → low/medium risk — a malformed review must NOT be flattened
+    // into a clean approve; the fail-safe `revise` drives a bounded re-run and
+    // ultimately a best-effort acceptance. This test asserts only non-crash.
     const icEnvelope =
       '{"confidence": 0.88, "escalate": false, "reason": "done", "needs_review": true}';
     const icText = `Refactored X module.\n${icEnvelope}`;
@@ -1439,16 +1441,17 @@ describe('orchestrate — risk-indexed fail-open (parsed:false + high risk)', ()
       timeoutMs: 30_000,
     };
 
-    // "refactor X" → low risk; needsReview:true in envelope triggers review
-    // but fail-open approve is acceptable for low risk
+    // "refactor X" → low risk; needsReview:true in envelope triggers review.
+    // The malformed review yields the fail-safe `revise`, which re-runs/accepts
+    // best-effort rather than silently approving.
     const events = await collectEvents(
       orchestrate('refactor X', deps, new AbortController().signal),
     );
 
     const finalEv = events.find((e) => e.type === 'final');
     assert.ok(finalEv !== undefined);
-    // For low-risk + parsed:false, the system may approve (fail-open is OK here).
-    // The key property is it does NOT crash.
+    // For low-risk + parsed:false, the system no longer silently approves; the
+    // key property under test is that it does NOT crash.
     assert.equal(typeof finalEv.type, 'string');
   });
 });

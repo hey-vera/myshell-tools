@@ -5,8 +5,10 @@
  * the structured review verdict returned by the reviewing model.
  *
  * Honesty Contract: parseReviewVerdict never throws and never fabricates a
- * verdict — on any parse failure it defaults to fail-open `approve` with
- * confidence null so a broken reviewer cannot block the user.
+ * verdict — on any parse failure it defaults to a fail-safe `revise` with
+ * confidence null and `parsed: false`. This never silently approves the IC's
+ * work on a broken reviewer: lower tiers re-run/escalate (and ultimately accept
+ * only as best-effort), while the high/critical guard keys off `parsed: false`.
  *
  * Pure module: no I/O, no time, no randomness.
  */
@@ -26,9 +28,11 @@ import { renderContractForPrompt } from './work-contract.js';
  * - `revise`    : IC output needs changes; retry IC with the reviewer's notes.
  * - `escalate`  : The issue is beyond IC scope; escalate to manager tier.
  * - `parsed`    : True when a real verdict envelope was found and validated;
- *                 false when the fail-open default was used. Callers should
+ *                 false when the fail-safe default was used. Callers should
  *                 treat `parsed === false` on high/critical risk as
- *                 inconclusive rather than approved.
+ *                 inconclusive rather than approved. On lower tiers the
+ *                 default verdict is `revise` (NOT `approve`) so a broken
+ *                 reviewer can never be mistaken for a clean approval.
  */
 export interface ReviewVerdict {
   readonly verdict: 'approve' | 'revise' | 'escalate';
@@ -107,34 +111,44 @@ interface RawVerdict {
 
 const VALID_VERDICTS = new Set<string>(['approve', 'revise', 'escalate']);
 
-/** Fail-open default used whenever the envelope is absent or malformed. */
-const FAIL_OPEN: ReviewVerdict = { verdict: 'approve', notes: '', confidence: null, parsed: false };
+/**
+ * Fail-safe default used whenever the envelope is absent or malformed.
+ *
+ * Deliberately `revise` (not `approve`): a broken/unparseable reviewer must
+ * never be silently flattened into a clean approval. `parsed: false` keeps the
+ * high/critical-risk guard (orchestrate.ts) firing as "inconclusive"; on lower
+ * tiers the `revise` verdict drives a bounded re-run / escalation and any
+ * eventual acceptance is flagged best-effort rather than fully verified.
+ */
+const FAIL_SAFE: ReviewVerdict = { verdict: 'revise', notes: '', confidence: null, parsed: false };
 
 /**
  * Robustly parse the trailing JSON verdict envelope from a reviewer's output.
  *
- * Fail-open contract: if the envelope is absent or malformed, returns
- * `{ verdict: 'approve', notes: '', confidence: null }`. A broken reviewer
- * must never block the user. This function NEVER throws.
+ * Fail-safe contract: if the envelope is absent or malformed, returns
+ * `{ verdict: 'revise', notes: '', confidence: null, parsed: false }`. A broken
+ * reviewer is never silently treated as an approval — it drives a bounded
+ * re-run/escalation (lower tiers) or "inconclusive" handling (high/critical,
+ * via `parsed: false`). This function NEVER throws.
  *
  * @param output - The full text output from the reviewing model.
  */
 export function parseReviewVerdict(output: string): ReviewVerdict {
   // Guard: never throw on any input
-  if (typeof output !== 'string') return FAIL_OPEN;
+  if (typeof output !== 'string') return FAIL_SAFE;
 
   let envelope: RawVerdict | null;
   try {
     envelope = lastJsonObjectWithKey(output, 'verdict') as RawVerdict | null;
   } catch {
-    return FAIL_OPEN;
+    return FAIL_SAFE;
   }
 
-  if (envelope === null) return FAIL_OPEN;
+  if (envelope === null) return FAIL_SAFE;
 
   // Validate verdict — must be one of the three allowed values
   if (typeof envelope.verdict !== 'string' || !VALID_VERDICTS.has(envelope.verdict)) {
-    return FAIL_OPEN;
+    return FAIL_SAFE;
   }
 
   const verdict = envelope.verdict as 'approve' | 'revise' | 'escalate';

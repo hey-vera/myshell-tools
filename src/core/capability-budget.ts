@@ -1,17 +1,24 @@
 /**
- * src/core/capability-budget.ts — the ONE place the per-turn overhead is summed,
+ * src/core/capability-budget.ts — an ADVISORY model of the per-turn overhead,
  * plus the ordered quota-shed policy (whole-tool-finish-5.5.md §0.3, §3).
  *
- * Two non-negotiable throughlines this module makes literal:
+ * Scope / honesty: this module is ADVISORY, NOT a hard per-turn governor. It
+ * does NOT intercept or count real calls at runtime — nothing here enforces a
+ * call budget on the live chat path. Real chat paths can stack several OPTIONAL
+ * blocking pre-answer calls (smart-route classifier, intent extraction, resume
+ * recap, capability refresh), each bounded only by its OWN timeout — not by a
+ * single summed cap. The table below documents the overhead we INTEND each
+ * turn-class to carry; treat it as a design target and a regression tripwire,
+ * not a guarantee the code prevents a second blocking call from being added.
+ *
+ * Two throughlines this module models:
  *  - **Subscription-aware.** The user pays a flat subscription (OAuth, not
- *    API-key). Our added overhead spends quota + latency, NEVER dollars — there
- *    is no token-budget readout to surface. The only enforced ceiling is *added
- *    blocking model calls* (and injected tokens), summed here so a future feature
- *    that quietly adds a second blocking call FAILS the budget test (the budget
- *    is enforced data, not just documentation).
- *  - **The core answer always survives.** When quota is pressured we shed *our*
- *    features in a fixed order; the un-sheddable core answer is the last thing
- *    standing. The user never hits a wall because of our overhead.
+ *    API-key). Our added overhead spends quota + latency. The real cost ceiling
+ *    is the subscription quota / rate-limit itself, not a number summed here.
+ *  - **The core answer survives shedding.** When quota is pressured we shed
+ *    *our* advisory features in a fixed order; the core answer is the last thing
+ *    we drop. (This is the one behaviour this module actually drives — see
+ *    {@link decideShed}.)
  *
  * This module is PURE: no I/O, no time, no randomness (`test/arch/guards.ts`).
  * It is DATA + total pure functions only.
@@ -25,33 +32,36 @@
 export type TurnClass = 'trivial' | 'normal' | 'substantial';
 
 // ---------------------------------------------------------------------------
-// The budget table (§3.1) — worst-case ADDED overhead per turn-class
+// The budget table (§3.1) — INTENDED ADDED overhead per turn-class (advisory)
 // ---------------------------------------------------------------------------
 
 /**
- * The worst-case ADDED overhead a turn-class may incur on top of the core answer
- * the user pays for anyway. `addedBlockingCalls` is the load-bearing invariant:
- * **at most ONE blocking added call per turn** (the gated intent pass). Recap is
- * always background (non-blocking); memory makes ZERO model calls (deterministic
- * retrieval); APE rides the existing intent frame (it consumes the signal, it
- * does not add a call). `addedDollars` is always 0 on a flat-rate subscription.
+ * The INTENDED added overhead a turn-class carries on top of the core answer the
+ * user pays for anyway. These are design targets, not runtime-enforced limits.
+ *
+ * Reality check on `addedBlockingCalls`: this field records the overhead this
+ * MODULE'S own features intend to add (the gated intent pass). It is NOT a count
+ * of every blocking pre-answer call on the live chat path — the smart-route
+ * classifier, intent extraction, resume recap and capability refresh can each
+ * run as separate optional blocking calls, none of which this table sums or
+ * caps. Each is bounded only by its own timeout. Do not read this number as a
+ * guarantee that only one blocking call precedes the answer.
  */
 export interface TurnBudget {
-  /** Worst-case ADDED *blocking* model calls. NEVER exceeds 1 (the budget cap). */
+  /** INTENDED added *blocking* model calls from this module's features (advisory). */
   readonly addedBlockingCalls: number;
-  /** Worst-case ADDED *background* (non-blocking) model calls (recap refresh). */
+  /** INTENDED added *background* (non-blocking) model calls (recap refresh). */
   readonly addedBackgroundCalls: number;
-  /** Worst-case ADDED injected tokens (memory + intent + engagement blocks). */
+  /** INTENDED added injected tokens (memory + intent + engagement blocks). */
   readonly addedTokensCeiling: number;
-  /** Added dollar cost. ALWAYS 0 — flat-rate subscription, quota+latency only. */
-  readonly addedDollars: 0;
 }
 
 /**
- * The summed worst-case budget per turn-class. This CONSTANT is the enforced
- * ceiling: a test asserts these exact numbers, so adding a second blocking call
- * anywhere (e.g. a non-background recap, a second extractor pass) makes the test
- * fail. The numbers are *ceilings* — the common case (trivial/normal
+ * The intended added overhead per turn-class. The unit test asserts these exact
+ * numbers, so it acts as a regression tripwire: if THIS module's features change
+ * their intended overhead, the test must be updated deliberately. It is NOT a
+ * runtime governor and does not prevent other subsystems from adding blocking
+ * calls. The numbers are intent targets — the common case (trivial/normal
  * non-ambiguous) adds ZERO calls and a few-hundred tokens at most.
  */
 export const CAPABILITY_BUDGET: Readonly<Record<TurnClass, TurnBudget>> = {
@@ -61,7 +71,6 @@ export const CAPABILITY_BUDGET: Readonly<Record<TurnClass, TurnBudget>> = {
     addedBlockingCalls: 0,
     addedBackgroundCalls: 0,
     addedTokensCeiling: 80,
-    addedDollars: 0,
   },
   // a question / small edit: intent MAY run 1 cheap call if ambiguous; memory is
   // pure I/O; recap is background-only.
@@ -69,22 +78,22 @@ export const CAPABILITY_BUDGET: Readonly<Record<TurnClass, TurnBudget>> = {
     addedBlockingCalls: 1,
     addedBackgroundCalls: 0,
     addedTokensCeiling: 600,
-    addedDollars: 0,
   },
-  // "rebuild this module", /goal: 1 intent call (blocking, gated) + 1 background
-  // recap call if idle-stale — NEVER 2 blocking calls. Full memory budget.
+  // "rebuild this module", /goal: 1 intent call (gated) + 1 background recap call
+  // if idle-stale. Full memory budget. (This module's own intended overhead —
+  // other pre-answer calls on the chat path are not counted here.)
   substantial: {
     addedBlockingCalls: 1,
     addedBackgroundCalls: 1,
     addedTokensCeiling: 1200,
-    addedDollars: 0,
   },
 } as const;
 
 /**
- * The hard ceiling on added *blocking* model calls per turn, across ALL classes.
- * The budget test asserts no `TurnBudget.addedBlockingCalls` exceeds this — so a
- * second blocking call anywhere fails the gate. (The intent pass is the one.)
+ * The intended ceiling on added *blocking* model calls from THIS module's own
+ * features, across all classes. The unit test asserts no `addedBlockingCalls`
+ * in the table above exceeds this — a regression tripwire for this module, NOT a
+ * runtime cap on the chat path's total blocking pre-answer calls.
  */
 export const MAX_ADDED_BLOCKING_CALLS = 1;
 

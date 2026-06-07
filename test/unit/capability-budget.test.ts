@@ -2,10 +2,11 @@
  * test/unit/capability-budget.test.ts — the summed budget + quota-shed policy
  * (whole-tool-finish-5.5.md §0.3, §3, §3.4).
  *
- * The budget constants match the documented §3.1 ceilings (so a future feature
- * that quietly adds a SECOND blocking call FAILS this test — the budget is
- * enforced data, not just documentation); decideShed returns the exact ordered
- * ladder and the core answer ALWAYS survives.
+ * The budget constants are ADVISORY design targets, not a runtime governor.
+ * This test pins THIS module's intended per-class overhead so a deliberate
+ * change to it is required to alter the table (a regression tripwire — it does
+ * NOT prove the live chat path makes only one blocking call). decideShed
+ * returns the exact ordered ladder and the core answer ALWAYS survives.
  */
 
 import { describe, it } from 'node:test';
@@ -26,41 +27,32 @@ const CLASSES: readonly TurnClass[] = ['trivial', 'normal', 'substantial'];
 // The enforced budget ceilings (§3.1)
 // ---------------------------------------------------------------------------
 
-describe('CAPABILITY_BUDGET — enforced ceilings (§3.1)', () => {
-  it('matches the documented per-class budget EXACTLY', () => {
+describe('CAPABILITY_BUDGET — advisory intent targets (§3.1)', () => {
+  it('matches this module\'s documented per-class intended overhead EXACTLY', () => {
     assert.deepEqual(CAPABILITY_BUDGET.trivial, {
       addedBlockingCalls: 0,
       addedBackgroundCalls: 0,
       addedTokensCeiling: 80,
-      addedDollars: 0,
     });
     assert.deepEqual(CAPABILITY_BUDGET.normal, {
       addedBlockingCalls: 1,
       addedBackgroundCalls: 0,
       addedTokensCeiling: 600,
-      addedDollars: 0,
     });
     assert.deepEqual(CAPABILITY_BUDGET.substantial, {
       addedBlockingCalls: 1,
       addedBackgroundCalls: 1,
       addedTokensCeiling: 1200,
-      addedDollars: 0,
     });
   });
 
-  it('NEVER exceeds ONE added blocking call per turn (a 2nd would fail this)', () => {
+  it('this module\'s own intended blocking overhead stays within its tripwire (advisory, not a runtime cap)', () => {
     assert.equal(MAX_ADDED_BLOCKING_CALLS, 1);
     for (const c of CLASSES) {
       assert.ok(
         CAPABILITY_BUDGET[c].addedBlockingCalls <= MAX_ADDED_BLOCKING_CALLS,
-        `${c} adds ≤1 blocking call — a second blocking call (non-background recap, 2nd extractor) must fail here`,
+        `${c}: this module's intended blocking overhead exceeds its tripwire — change deliberately`,
       );
-    }
-  });
-
-  it('adds $0 on every class (flat-rate subscription, quota+latency only)', () => {
-    for (const c of CLASSES) {
-      assert.equal(CAPABILITY_BUDGET[c].addedDollars, 0, `${c} adds no dollars`);
     }
   });
 

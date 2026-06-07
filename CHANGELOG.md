@@ -47,16 +47,22 @@ Claude 45% / Codex 62% / OpenCode 28% / combined 52%), each lever verified live:
   Max-mode admitted-manager hardest turns reach it, bounded by authorizeTier).
 - **OpenCode capabilities** (audit #2, the most under-used): a fail-soft
   `opencode models --verbose` refresh populates real per-model facts (context, vision,
-  toolcall, reasoning variants) and `opencode run --variant` is wired — so capability-fit
-  routing now applies to OpenCode's lane.
-- **Codex native web search** (audit #3): external/current-fact turns (the existing
-  WEB_RESEARCH signal) pass the verified `-c tools.web_search=true` override to `codex exec`.
-- **Cross-provider capability-aware routing** (audit #6, the combined lever): on a genuine
-  hard requirement (vision, large-context) the router prefers an authed provider whose model
-  can satisfy it — bounded, never bypassing auth/cooldown/tier, byte-for-byte unchanged on
-  ordinary turns.
+  toolcall, reasoning variants) and `opencode run --variant` is wired.
+- **Codex native web search** (audit #3): when Codex is ALREADY the selected provider, an
+  external/current-fact turn passes the `-c tools.web_search=true` override to `codex exec`.
 - **Image attachments** (audit #4): referencing a local image path attaches it (codex `-i`,
-  opencode `-f`), flags the turn `needsVision`, and activates the cross-provider vision route.
+  opencode `-f`) and flags the turn `needsVision`.
+
+Scope/Reality (corrected after audit): these levers are narrower than first stated.
+- Cross-provider routing does NOT re-rank arbitrary OpenCode models: the OpenCode refresh
+  populates facts and `--variant`, but `candidateModelsFor` emits placeholder OpenCode ids
+  and the router never re-ranks arbitrary dynamic OpenCode ids across providers. The
+  hard-requirement preference applies within the existing candidate set only.
+- Web search is NOT a cross-provider routing trigger. It is a Codex adapter flag that only
+  fires when Codex is already selected; search is not detected from task signals, and the
+  Claude/OpenCode adapters ignore `webSearch`.
+- Image vision is honored on the SEQUENTIAL chat/run path only. The image/`needsVision`
+  flag is dropped in the REPL, hedge, panel and review paths.
 
 Self-awareness now presents the full per-provider capability matrix (models, efforts,
 search, vision). Subscription-cost clean throughout (OAuth-CLI flags only; no api-key/
@@ -69,8 +75,8 @@ provider-agnostic for a clean later drop-in). 3431 → 3457 tests, 0 fail.
 ## [3.22.0]
 
 ### Added — adaptive partner v2 roadmap complete (work-state, vision triage, discovery escalation, grounded opinion, history hardening)
-Completes the adaptive-partner-v2 design (`docs/adaptive-partner-v2-5.6.md`) on top of
-the enforced TurnDirective (3.19.0). Each stage real-run-verified, not just gated:
+Builds out the adaptive-partner-v2 design (`docs/adaptive-partner-v2-5.6.md`) on top of
+the TurnDirective (3.19.0):
 - **Live work-state (AP2-B)** — `deriveWorkStateFromHistory` reconstructs objective /
   done / next / blocked from persisted `workTrace` (done requires evidence; never
   inferred from silence) and renders a truthful WORK STATE block. Resume + "continue"
@@ -92,9 +98,20 @@ the enforced TurnDirective (3.19.0). Each stage real-run-verified, not just gate
   and an `ENGINE_BEHAVIOR_VERSION` marker identifies pre-fix transcript periods.
 
 Subscription-cost clean throughout (pure decisions, no embeddings/metered/extra always-on
-model calls). 3356 → 3380 tests (whole roadmap 3119 → 3380), 0 fail. Final integrated
-real-run sweep green: accurate self-awareness, instant trivial turns, and the original
-generic-menu complaint stays fixed (including via the native-session path).
+model calls). 3356 → 3380 tests (whole roadmap 3119 → 3380), 0 fail.
+
+Scope/Reality (corrected after audit): "each stage real-run-verified" overstated it — most
+of v2 is prompt-shaping and pure decisions, not an enforced runtime layer:
+- Vision triage is deterministic lexicon/regex logic rendered as prompt INSTRUCTIONS to the
+  model, not an independent classifier pass.
+- Discovery-driven escalation reads regex signals out of the MODEL'S OWN output — it is not
+  an independent discovery pass.
+- The grounded-recommendation validator checks the final TEXT for evidence shape; it does
+  not independently verify the claims.
+- Work-state is reconstructed for PROMPT CONTEXT (a rendered block), not a runtime state
+  machine that gates execution.
+The checked-in tests for these are unit/fake/gated, not reproducible real-provider runs in
+CI (see 3.21 Scope/Reality).
 
 ## [3.21.0]
 
@@ -119,15 +136,22 @@ a thin learned tie-break), per `docs/model-capability-registry-5.6.md`:
 - **Learned outcomes** (`routing-memory.ts`): a conservative, per-user, ledger-derived
   tie-break that *extends* `learnProviderOrder` (min 5 runs, neutral prior, ≤0.5
   influence) — applied only after hard capability fit, never overriding it.
+  Scope/Reality: OFF BY DEFAULT (`learnRouting=false`) and cold-started — it needs history
+  across 2+ providers and 5+ runs per model before it contributes, and even when enabled it
+  is only a small bounded tie-break. For a default install it effectively does not
+  participate in routing.
 - **Provider-native feature inventory** (facts only): records that Claude Code supports
   Skills/sub-agents but states plainly that myshell-tools does NOT invoke them —
   routing uses our own orchestrator. Non-routable; never executed.
 
-Verified by real provider runs at each stage (capability awareness + degradation,
-effort selection on the live codex cache, seeded-ledger thresholds, the skills answer)
-and a final integrated sweep. Subscription-cost clean (no embeddings/metered/extra
-model calls). Gemini deliberately deferred (provider-agnostic shapes leave a clean
-drop-in). 3119 → 3251 tests, 0 fail.
+Subscription-cost clean (no embeddings/metered/extra model calls). Gemini deliberately
+deferred (provider-agnostic shapes leave a clean drop-in). 3119 → 3251 tests, 0 fail.
+
+Scope/Reality: the checked-in test base is unit/fake/gated — it is not reproducible
+real-provider evidence in CI. The native-session E2E is skipped unless
+`MYSHELL_NATIVE_SESSION_E2E=1`, and the menu-cli integration tests make no real provider
+calls. Treat "verified" here as "covered by deterministic tests", not "reproduced live
+from repo CI".
 
 ## [3.20.0]
 
@@ -153,12 +177,12 @@ unknown; OpenCode installed, not signed in; mode Max, auto"), no hallucination.
 
 ## [3.19.0]
 
-### Added — adaptive partner: advisory → ENFORCED (TurnDirective, Stage 1)
+### Added — adaptive partner: advisory → partially enforced (TurnDirective, Stage 1)
 The engagement plan was *advisory* — rendered as prompt text the model could (and
 did) ignore, which is why a gate-green posture change left live behavior unmoved.
-Stage 1 of the v2 design (`docs/adaptive-partner-v2-5.6.md`) makes it **enforced**
-via an orchestrator-owned `TurnDirective` (`src/core/turn-directive.ts`, consumed in
-`orchestrate`):
+Stage 1 of the v2 design (`docs/adaptive-partner-v2-5.6.md`) moves SOME of it from
+advisory toward enforced via an orchestrator-owned `TurnDirective`
+(`src/core/turn-directive.ts`, consumed in `orchestrate`):
 - **Pre-provider structured ask.** When the plan selects a genuine, non-investigable
   fork with a real question set, the orchestrator emits the `ask_user` question
   *before* the model runs — zero provider tokens, and the model can't bypass it with
@@ -173,11 +197,16 @@ via an orchestrator-owned `TurnDirective` (`src/core/turn-directive.ts`, consume
   filtered from the replayed history so a resumed conversation written by older builds
   stops few-shot-poisoning new turns.
 
-Verified by **real provider runs**, not just the gate: a poisoned-history turn no
-longer reproduces the menu — it orients ("we're in myshell-tools, no heyvera here"),
-recommends concretely (SvelteKit vs Next.js, Axum), and asks grounded questions; a
-clear investigable task is answered directly with no over-asking. Subscription-cost
-clean (no embeddings, no metered services). +28 tests (3108 → 3136), 0 fail.
+Subscription-cost clean (no embeddings, no metered services). +28 tests
+(3108 → 3136), 0 fail.
+
+Scope/Reality (corrected after audit): "enforced" applies to the parts that run in the
+orchestrator — the pre-provider `ask_user`, the pure `validateTurnOutput` menu check + one
+repair retry, and history quarantine. The broader `requiredBeforeAnswer` directive is only
+partially enforced: only `vision_triage` has a live impl, while `orient_repo`,
+`investigate_context`, `web_research` and `plan_first` are RESERVED (not built). The
+"real provider runs" claim is not reproducible from repo CI — the checked-in tests for this
+are unit/fake (see 3.21 Scope/Reality).
 
 ## [3.18.1]
 
@@ -282,10 +311,11 @@ Test suite 2926 → 2985 (0 failing).
 ## [3.14.0]
 
 ### Added
-**The "world-class chat" — a vision-first adaptive partner.** A 10-phase build
-(designed, adversarially gated to 9.5/10, then implemented and re-gated to 9.7/10
-on the running tool), all behind the existing subscription-auth model (no API
-keys, embeddings, or metered services; the only new model touches are gated cheap
+**Vision-first adaptive partner — chat overhaul.** A 10-phase build (designed and
+adversarially self-reviewed, then implemented and re-reviewed on the running tool;
+the X/10 figures were our own internal design-review scores, not an external
+benchmark), all behind the existing subscription-auth model (no API keys,
+embeddings, or metered services; the only new model touches are gated cheap
 worker-tier passes via the existing injected provider port). Full design corpus in
 `docs/*-5.5.md`, build sequenced by `docs/MASTER-PLAN-5.5.md`. Highlights:
 
@@ -311,9 +341,11 @@ worker-tier passes via the existing injected provider port). Full design corpus 
   and light inline markdown — all degrading cleanly under NO_COLOR / non-TTY /
   MYSHELL_PLAIN.
 - **Whole-tool** — progressive first-run hints, a unified teach-on-failure error
-  format, a cumulative cost budget (≤1 added blocking call/turn) with a quota-shed
-  ladder where the core answer always survives, and a verified 3.12.x→3.14.0
-  upgrade path (no data loss, no scary prompts).
+  format, an ADVISORY overhead budget (a documented intent of ≤1 added blocking call
+  per turn from this layer — not a runtime governor; other pre-answer calls on the
+  chat path are not counted or capped by it) with a quota-shed ladder where the core
+  answer always survives, and a 3.12.x→3.14.0 upgrade path (no data loss, no scary
+  prompts).
 
 Test suite grew 2461 → 2926 (0 failing).
 

@@ -121,19 +121,31 @@ describe('resolveLoginMethod — explicit method overrides detection', () => {
   });
 });
 
-describe('getLoginCommand — opencode gateway is preselected', () => {
-  it('uses opencode auth login -p opencode for browser/default login', () => {
+describe('getLoginCommand — opencode uses the OAuth provider picker (no -p opencode)', () => {
+  // GUARDRAIL: subscription-OAuth-only. `-p opencode` forces the API-key gateway,
+  // so we must NOT pass it — the bare `auth login` shows the provider picker where
+  // the user selects an OAuth/subscription provider.
+  it('uses opencode auth login (provider picker) for browser/default login', () => {
     assert.deepEqual(getLoginCommand('opencode', 'browser'), {
       bin: 'opencode',
-      args: ['auth', 'login', '-p', 'opencode'],
+      args: ['auth', 'login'],
     });
   });
 
-  it('uses opencode auth login -p opencode for code login', () => {
+  it('uses opencode auth login (provider picker) for code login', () => {
     assert.deepEqual(getLoginCommand('opencode', 'code'), {
       bin: 'opencode',
-      args: ['auth', 'login', '-p', 'opencode'],
+      args: ['auth', 'login'],
     });
+  });
+
+  it('never forces the api-key gateway (-p opencode) in either method', () => {
+    for (const method of ['browser', 'code'] as const) {
+      assert.ok(
+        !getLoginCommand('opencode', method).args.includes('-p'),
+        `opencode ${method} login must not pass -p (forces API-key gateway)`,
+      );
+    }
   });
 
   it('leaves claude and codex login commands unchanged', () => {

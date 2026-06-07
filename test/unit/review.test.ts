@@ -78,47 +78,56 @@ describe('parseReviewVerdict — valid verdict envelopes', () => {
 });
 
 // ---------------------------------------------------------------------------
-// parseReviewVerdict — fail-open on malformed / missing input
+// parseReviewVerdict — fail-safe on malformed / missing input
+//
+// A broken/unparseable reviewer must NEVER be flattened into a silent
+// `approve`. The fail-safe default is `revise` (with parsed:false), so lower
+// tiers re-run/escalate rather than ship unreviewed work, while the
+// high/critical guard still keys off parsed:false.
 // ---------------------------------------------------------------------------
 
-describe('parseReviewVerdict — fail-open (broken reviewer must not block user)', () => {
-  it('missing envelope → fail-open approve with confidence null AND parsed:false', () => {
+describe('parseReviewVerdict — fail-safe (broken reviewer must not silently approve)', () => {
+  it('missing envelope → fail-safe revise with confidence null AND parsed:false', () => {
     const verdict = parseReviewVerdict('No JSON here at all.');
-    assert.equal(verdict.verdict, 'approve');
+    assert.equal(verdict.verdict, 'revise');
     assert.equal(verdict.notes, '');
     assert.equal(verdict.confidence, null);
-    assert.equal(verdict.parsed, false, 'fail-open must set parsed:false');
+    assert.equal(verdict.parsed, false, 'fail-safe must set parsed:false');
   });
 
-  it('empty string → fail-open approve with parsed:false', () => {
+  it('empty string → fail-safe revise with parsed:false', () => {
     const verdict = parseReviewVerdict('');
-    assert.equal(verdict.verdict, 'approve');
+    assert.equal(verdict.verdict, 'revise');
     assert.equal(verdict.confidence, null);
     assert.equal(verdict.parsed, false);
   });
 
-  it('malformed JSON → fail-open approve', () => {
+  it('malformed JSON → fail-safe revise', () => {
     const verdict = parseReviewVerdict('{"verdict": "approve", "notes": broken json}');
-    assert.equal(verdict.verdict, 'approve');
+    assert.equal(verdict.verdict, 'revise');
     assert.equal(verdict.confidence, null);
+    assert.equal(verdict.parsed, false);
   });
 
-  it('truncated JSON → fail-open approve', () => {
+  it('truncated JSON → fail-safe revise', () => {
     const verdict = parseReviewVerdict('{"verdict": "approve"');
-    assert.equal(verdict.verdict, 'approve');
+    assert.equal(verdict.verdict, 'revise');
     assert.equal(verdict.confidence, null);
+    assert.equal(verdict.parsed, false);
   });
 
-  it('invalid verdict value → fail-open approve', () => {
+  it('invalid verdict value → fail-safe revise', () => {
     const verdict = parseReviewVerdict('{"verdict": "reject", "notes": "nope", "confidence": 0.5}');
-    assert.equal(verdict.verdict, 'approve');
+    assert.equal(verdict.verdict, 'revise');
     assert.equal(verdict.confidence, null);
+    assert.equal(verdict.parsed, false);
   });
 
-  it('verdict is a number → fail-open approve', () => {
+  it('verdict is a number → fail-safe revise', () => {
     const verdict = parseReviewVerdict('{"verdict": 42, "notes": "", "confidence": 0.5}');
-    assert.equal(verdict.verdict, 'approve');
+    assert.equal(verdict.verdict, 'revise');
     assert.equal(verdict.confidence, null);
+    assert.equal(verdict.parsed, false);
   });
 
   it('never throws on garbage input — random junk string', () => {
@@ -144,15 +153,15 @@ describe('parseReviewVerdict — fail-open (broken reviewer must not block user)
       } catch (err) {
         assert.fail(`parseReviewVerdict threw on input: ${JSON.stringify(junk)} — error: ${String(err)}`);
       }
-      // All junk should fail-open
+      // All junk should fail-safe
       assert.ok(
         verdict !== undefined,
         `parseReviewVerdict returned undefined for: ${JSON.stringify(junk)}`,
       );
       assert.equal(
         verdict.verdict,
-        'approve',
-        `Expected fail-open 'approve' for junk: ${JSON.stringify(junk)}, got: ${verdict.verdict}`,
+        'revise',
+        `Expected fail-safe 'revise' for junk: ${JSON.stringify(junk)}, got: ${verdict.verdict}`,
       );
       assert.equal(
         verdict.confidence,
@@ -167,17 +176,17 @@ describe('parseReviewVerdict — fail-open (broken reviewer must not block user)
     }
   });
 
-  it('non-string input — null — returns fail-open', () => {
+  it('non-string input — null — returns fail-safe', () => {
     // @ts-expect-error Testing runtime robustness with wrong type
     const verdict = parseReviewVerdict(null);
-    assert.equal(verdict.verdict, 'approve');
+    assert.equal(verdict.verdict, 'revise');
     assert.equal(verdict.confidence, null);
   });
 
-  it('non-string input — number — returns fail-open', () => {
+  it('non-string input — number — returns fail-safe', () => {
     // @ts-expect-error Testing runtime robustness with wrong type
     const verdict = parseReviewVerdict(12345);
-    assert.equal(verdict.verdict, 'approve');
+    assert.equal(verdict.verdict, 'revise');
     assert.equal(verdict.confidence, null);
   });
 });
