@@ -8,7 +8,8 @@
 
 import { describe, it, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { orchestrate, withMemoryProposalAttached } from '../../src/core/orchestrate.ts';
+import { orchestrate } from '../../src/core/orchestrate.ts';
+import { withMemoryProposalAttached } from '../../src/core/orchestrate-memory.ts';
 import { DEFAULT_POLICY, POLICY_PRESETS } from '../../src/core/policy.ts';
 import type {
   Clock,
