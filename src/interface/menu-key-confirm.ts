@@ -8,7 +8,7 @@
  * scoped mid-turn {@link attachChatTurnKeyListener} (bare-ESC interrupt), the
  * yes/no {@link confirmViaKey}, the {@link readMenuKey} single-key menu reader,
  * and the {@link makeConfirm} factory. The pure decision cores it depends on
- * (`parseYesNo` / `interpretYesNoKey`) still live in menu.ts.
+ * (`parseYesNo` / `interpretYesNoKey`) live in menu-questions.ts.
  */
 
 import readline from 'node:readline';
@@ -19,7 +19,7 @@ import {
   rawKeyInputs,
   normalizeMenuKey,
 } from './menu-readline.js';
-import { parseYesNo, interpretYesNoKey } from './menu.js';
+import { parseYesNo, interpretYesNoKey } from './menu-questions.js';
 
 /** A yes/no confirm: resolves true for yes, false for no, honouring a default. */
 export type Confirm = (

@@ -14,7 +14,7 @@ import assert from 'node:assert/strict';
 import {
   interpretQuestionAnswer,
   FREE_TEXT_SENTINEL,
-} from '../../src/interface/menu.ts';
+} from '../../src/interface/menu-questions.ts';
 import {
   relativeTime,
   renderHeaderLines,

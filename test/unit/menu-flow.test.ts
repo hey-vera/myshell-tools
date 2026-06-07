@@ -22,7 +22,8 @@ import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 
 import { EventEmitter } from 'node:events';
-import { startMenu, parseYesNo, interpretYesNoKey, yesNoHint } from '../../src/interface/menu.ts';
+import { startMenu } from '../../src/interface/menu.ts';
+import { parseYesNo, interpretYesNoKey, yesNoHint } from '../../src/interface/menu-questions.ts';
 import { readSingleKey, createLineReader, normalizeMenuKey } from '../../src/interface/menu-readline.ts';
 import { readMenuKey, confirmViaKey, attachChatTurnKeyListener } from '../../src/interface/menu-key-confirm.ts';
 import { defaultAliasHint, autoUpdateEnabled } from '../../src/interface/menu-display.ts';

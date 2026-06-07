@@ -44,7 +44,7 @@ import type { OutputSink } from '../interface/render.js';
 import type { ProviderId } from '../providers/port.js';
 import { detectProvider, getInstallCommand } from '../providers/detect.js';
 import { bold, dim, green, red } from '../ui/theme.js';
-import { parseYesNo, yesNoHint } from '../interface/menu.js';
+import { parseYesNo, yesNoHint } from '../interface/menu-questions.js';
 import { clearClaudeToken, loginPersistentEnv } from '../infra/credentials.js';
 
 /** Which sign-in flow to run. See module docstring. */
