@@ -4280,10 +4280,12 @@ async function runChatLoop(
     // subscription plan (Max → top of the knob, etc.) — no interrogation.
     const effectiveMode: Mode =
         mutableCtx.config.mode ?? resolveAutoMode(mutableCtx.env);
-      // EXPERIMENTAL: opt-in Parallel Subscription Panel (config.panel) maps to
-      // policy.panelPolicy 'hard-turns'. Absent/false → unchanged sequential
-      // behaviour (panelPolicy stays absent → 'off'). Opt-in Latency-Hedged
-      // Escalation (config.hedge) maps to policy.hedgePolicy 'on' (absent → 'off').
+      // Concurrency (panel / hedge) is now owned by the mode preset: Balanced and
+      // Max auto-engage them on hard turns, Efficient leaves them off (see
+      // POLICY_PRESETS). config.panel / config.hedge remain as explicit power-user
+      // overrides that FORCE the strategy on regardless of mode — e.g. force a panel
+      // even under Efficient. (Absent → the preset's default stands; there is no
+      // force-OFF override yet — a user who wants neither picks Efficient.)
       const policy = {
         ...POLICY_PRESETS[effectiveMode],
         ...(mutableCtx.config.panel === true ? { panelPolicy: 'hard-turns' as const } : {}),

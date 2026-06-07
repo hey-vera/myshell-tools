@@ -1,0 +1,416 @@
+Reading additional input from stdin...
+OpenAI Codex v0.137.0
+--------
+workdir: /home/runner/workspace
+model: gpt-5.5
+provider: openai
+approval: never
+sandbox: workspace-write [workdir, /tmp, $TMPDIR]
+reasoning effort: none
+reasoning summaries: none
+session id: 019ea2cc-a32a-7a11-a400-c537dd0a051f
+--------
+user
+# Design audit request: auto-engaging concurrency in myshell-tools
+
+You are a senior architect doing an independent design cross-check. Be opinionated and ambitious — the product owner explicitly said "avoid self-limiting perspectives, go fully into how great we can make it, the vision is the priority." But every idea must respect the hard guardrails below or it is invalid.
+
+## FIRST: read the real code, not just this brief (the owner said "make sure GPT sees the whole picture, no self-limiting")
+You are running inside the repo with read access. BEFORE answering, actually read these files so your design is grounded in reality, not my summary:
+- src/core/orchestrate.ts — the orchestrator; see `shouldReview` (~line 93, the auto-gate precedent), and the panel/hedge call sites (~lines 745-912).
+- src/core/ensemble.ts — PANEL (planPanel/runPanel/runCandidate).
+- src/core/hedge.ts — HEDGE (planHedge/runHedged/runAttempt/isAdequate).
+- src/core/route.ts — the router (capability-fit, candidate ordering, supportsSearchTool).
+- src/core/types.ts — Policy struct (panelPolicy/hedgePolicy/reviewPolicy/flagship admission).
+- CHANGELOG.md (recent entries) and CLAUDE.md if present, for product intent.
+Use `grep`/`cat` freely. The summary below is a starting map — TRUST THE CODE over the summary where they differ, and SAY SO if they differ.
+
+## Product vision
+myshell-tools is a CLI chat partner over MULTIPLE provider CLIs (Claude, Codex/GPT, etc.), all authenticated by the user's existing **subscription OAuth** (NOT API keys). The north star: **"one chat, automatic, honest"** — the user types intent, the tool auto-picks the right model and the right execution strategy, and is brutally honest about cost/limits. The owner just said: **"auto and frictionless most of the time."**
+
+## HARD GUARDRAILS (violating any = invalid design)
+1. Subscription-OAuth auth ONLY. No API keys, no embeddings, no vector DB, no metered/per-call paid services anywhere. Reuse the provider-CLI OAuth machinery only.
+2. Cost is QUOTA/RATE-LIMIT on a flat-rate plan, not dollars. So "free" runs still consume the user's plan quota and add latency — honesty about that is mandatory (the partner persona is brutally honest; no "free!" marketing).
+3. Behavior-preserving where it counts: this is a working tool with 3497 passing tests. Changes must be gated.
+
+## The two concurrency paths today (both default-OFF, both manual opt-in)
+**PANEL** (ensemble.ts, ~996 LOC): runs N signed-in models in PARALLEL, then a synthesizer reconciles them into one answer. Buys cross-vendor DIVERSITY/CORRECTNESS — catches confident-but-wrong single-model answers. Cost: N+1 model runs per hard turn. Trigger today: user sets `panelPolicy: 'hard-turns' | 'always'`; 'hard-turns' runs only on high/critical-risk turns AND >=2 authed providers.
+
+**HEDGE** (hedge.ts, ~901 LOC): races the weak/fast model against the strong/slow flagship — after a delay (default 4s), if the primary hasn't returned, start the flagship in parallel; ship the first ADEQUATE result, cancel the loser. Buys LATENCY HIDING on escalation. Cost: 1 run if primary fast+adequate, else 2 overlapped runs. Trigger today: user sets `hedgePolicy: 'on'`; then fires only on high/critical risk + flagship admittable + >=1 authed provider + a sleep port injected.
+
+They are DISTINCT (correctness vs latency), not redundant. Neither auto-engages today — both need a manual settings flag.
+
+## Existing precedent in the codebase
+There is already a `shouldReview(classification, ...)` auto-gate in orchestrate.ts that auto-engages a cross-vendor REVIEWER on hard turns without the user flipping a flag. So "router auto-engages an expensive strategy on high/critical turns" is an established, accepted pattern here. The router already computes: a risk classification (trivial..high/critical), the number of authenticated providers, and flagship admittability per the user's plan/policy.
+
+## Your task
+Design the BEST auto-engagement architecture for panel + hedge so the tool is "auto and frictionless most of the time," honest about quota, and never self-limiting on quality. Specifically answer:
+
+1. **The gate.** What signals should auto-engage PANEL vs HEDGE vs neither vs the plain sequential path? They cost differently (panel = N+1 always; hedge = 1-2). When do you pick which? Can they compose (e.g. hedge inside a panel candidate)? Give concrete decision logic.
+2. **"Most of the time" frictionless** — the owner wants auto, but said "most of the time." Where's the line between auto-engaging for quality vs respecting quota? Should there be a single "quality vs frugality" knob that shifts the thresholds, and what are its 2-3 settings?
+3. **Honesty surface.** When auto-engagement fires, what exactly should the user see (before/during/after) so it's transparent but not noisy? Remember: no dollars, it's quota+latency.
+4. **Override.** How does the user opt out or force a path, frictionlessly?
+5. **Risks / failure modes.** What could make this feel WORSE than manual (surprise latency, quota burn, flapping decisions)? How does the design prevent each?
+6. **Is "delete one path" ever the right call?** The owner leaned toward keeping both + auto-engaging. Argue for or against, honestly.
+
+Be concrete, name the decision thresholds, and flag anything in the current trigger logic you'd change. Output a clear design, not hedged options. ~600-900 words.
+warning: Codex could not find bubblewrap on PATH. Install bubblewrap with your OS package manager. See the sandbox prerequisites: https://developers.openai.com/codex/concepts/sandboxing#prerequisites. Codex will use the bundled bubblewrap in the meantime.
+2026-06-07T15:56:21.396938Z ERROR codex_core::shell_snapshot: Shell snapshot validation failed: Snapshot command exited with status exit status: 2: /home/runner/workspace/.replit-tools/.codex-persistent/shell_snapshots/019ea2cc-a32a-7a11-a400-c537dd0a051f.tmp-1780847780703148535: line 785: syntax error near unexpected token `('
+
+codex
+I’ll read the requested files first and ground the audit in the actual implementation. I’m using the code as authority and will call out any mismatch with the brief.
+exec
+/bin/bash -lc "sed -n '1,260p' src/core/ensemble.ts && sed -n '260,620p' src/core/ensemble.ts && sed -n '620,1040p' src/core/ensemble.ts" in /home/runner/workspace
+ exited 1 in 0ms:
+bwrap: Unexpected capabilities but not setuid, old file caps config?
+
+exec
+/bin/bash -lc "sed -n '1,220p' src/core/orchestrate.ts && sed -n '700,940p' src/core/orchestrate.ts" in /home/runner/workspace
+ exited 1 in 0ms:
+bwrap: Unexpected capabilities but not setuid, old file caps config?
+
+exec
+/bin/bash -lc "sed -n '1,280p' src/core/hedge.ts && sed -n '280,620p' src/core/hedge.ts && sed -n '620,940p' src/core/hedge.ts" in /home/runner/workspace
+ exited 1 in 0ms:
+bwrap: Unexpected capabilities but not setuid, old file caps config?
+
+codex
+The shell wrapper is failing before the commands run (`bwrap` capability issue), so I’m switching to the available filesystem/MCP read path if exposed. If that is also unavailable, I’ll report the access blocker rather than pretending I read the code.
+mcp: codex/list_mcp_resources started
+mcp: codex/list_mcp_resource_templates started
+mcp: codex/list_mcp_resources (completed)
+mcp: codex/list_mcp_resource_templates (completed)
+codex
+There are no MCP file resources exposed. I’m going to try the shell without login/PTTY behavior next; the failure appears to be sandbox setup, not the repo commands themselves.
+exec
+/bin/bash -c pwd in /home/runner/workspace
+ exited 1 in 0ms:
+bwrap: Unexpected capabilities but not setuid, old file caps config?
+
+codex
+I could not independently read the repo because every shell command failed before execution with:
+
+```text
+bwrap: Unexpected capabilities but not setuid, old file caps config?
+```
+
+No MCP file resources are exposed either, so the design below is based on your brief, not a verified code read. That violates your requested process, so treat this as a provisional architecture cross-check.
+
+**Design**
+Keep both PANEL and HEDGE. They buy different things and should auto-engage from the same routing classification, but with separate gates.
+
+Decision order:
+
+1. **Plain sequential**
+   Use for `trivial`, `low`, and most `medium` turns. Default path should remain boring and quota-light.
+
+2. **HEDGE**
+   Use when the turn is high value but mostly latency-sensitive:
+   - risk is `high` or `critical`
+   - flagship is admissible under policy
+   - a cheaper/faster primary is selected first
+   - task does not strongly require independent cross-vendor judgment
+   - sleep/cancel ports are available
+   - user mode is not `frugal`
+
+   Concrete default: start primary immediately, start flagship after `4s` if no adequate result. Keep current adequacy check, but make it stricter for code changes, commands, legal/medical/financial advice, and destructive operations.
+
+3. **PANEL**
+   Use when correctness/diversity matters more than latency:
+   - risk is `critical`, always, if at least 2 authenticated providers
+   - risk is `high` when task has ambiguity, architecture/design judgment, security implications, irreversible operations, or conflicting provider capability fit
+   - user asks for review, comparison, audit, plan, migration, root-cause analysis, or “best answer”
+   - router confidence is low or top candidates are close
+
+   Concrete default: run 2 candidates plus synthesizer, not every signed-in model. Expand to 3 only in `max` quality mode or when critical and providers are meaningfully diverse.
+
+4. **PANEL + HEDGE composition**
+   Do not hedge every panel candidate by default. That can explode quota from `N+1` to `2N+1`.
+
+   Allow composition only for `critical` turns in `max` mode:
+   - panel candidate A is the best fast/fit model
+   - panel candidate B is cross-vendor strong model
+   - hedge only the weakest/fastest candidate against flagship if flagship is not already in the panel
+   - hard cap total provider runs before synth: 3
+
+So the clean rule is: HEDGE is the default auto-upgrade for hard turns where latency is the problem; PANEL is the default auto-upgrade where independent judgment is the problem.
+
+**Quality Knob**
+Add one user-facing strategy knob:
+
+```ts
+strategy: 'frugal' | 'balanced' | 'max'
+```
+
+Default should be `balanced`.
+
+`frugal`:
+- no automatic PANEL
+- HEDGE only on `critical`
+- review stays only where already established, or is reduced if policy allows
+- always disclose “using single path to conserve quota”
+
+`balanced`:
+- HEDGE on `high`/`critical` when flagship is admissible
+- PANEL on `critical`
+- PANEL on `high` only for judgment-heavy or ambiguity-heavy turns
+- cap PANEL at 2 candidates + synth
+
+`max`:
+- PANEL on all `high`/`critical`
+- HEDGE on eligible latency-sensitive hard turns
+- limited PANEL+HEDGE composition allowed
+- more aggressive flagship admission, still respecting existing plan/policy gates
+
+This is better than separate `panelPolicy` and `hedgePolicy` as the main UX. Keep those as expert overrides, but the product should expose one simple intent: conserve quota, balanced, or maximize answer quality.
+
+**Honesty Surface**
+Before/during, show one compact status line only when auto-engagement fires:
+
+```text
+Hard turn detected: using PANEL with 2 providers + synthesis. Costs 3 quota-consuming model runs and may take longer.
+```
+
+For HEDGE:
+
+```text
+Hard turn detected: using HEDGE. Starting fast model now; flagship may start after 4s if needed. Costs 1-2 quota-consuming runs.
+```
+
+During execution, avoid noisy logs unless verbose mode is on:
+
+```text
+Fast model still running; starting flagship backup...
+```
+
+Afterward, report actual cost:
+
+```text
+Answered via HEDGE: fast model won; flagship was not started. Quota-consuming runs: 1.
+```
+
+or:
+
+```text
+Answered via PANEL: 2 candidates + synthesizer. Quota-consuming runs: 3.
+```
+
+Never call it free. The unit is quota-consuming provider runs plus latency.
+
+**Overrides**
+Use frictionless command-level overrides:
+
+```text
+/strategy frugal
+/strategy balanced
+/strategy max
+/panel on
+/panel off
+/panel force
+/hedge on
+/hedge off
+/hedge force
+/auto off
+```
+
+Also support per-turn natural language hints:
+- “answer cheaply” maps to frugal/plain
+- “use the best models” maps to max
+- “cross-check this” forces PANEL
+- “fast answer” prefers HEDGE or plain, not PANEL
+
+Policy precedence should be:
+
+```text
+explicit per-turn force > explicit per-turn off > saved expert policy > strategy knob > default auto gate
+```
+
+**Changes I’d Make**
+The current trigger logic sounds too conservative if both PANEL and HEDGE are default-off. Given the existing `shouldReview` precedent, concurrency should move from opt-in feature flags to auto strategy gates.
+
+I would change:
+- `panelPolicy` from primary UX to expert override
+- `hedgePolicy: 'on'` requirement to default eligible under `balanced`
+- hard-turn-only PANEL to include `high + ambiguity/judgment`
+- signed-in provider count should distinguish “available” from “meaningfully diverse”; two variants from same provider are less valuable than cross-vendor paneling
+- add hard caps so auto never silently runs every provider
+
+**Failure Modes**
+Surprise quota burn: prevent with first-run notice, exact run count disclosure, and persistent strategy setting.
+
+Surprise latency: prevent by preferring HEDGE over PANEL when task is execution/simple-answer shaped.
+
+Flapping decisions: prevent with deterministic thresholds and visible reason strings like `critical-risk`, `low-router-confidence`, `cross-vendor-review`.
+
+Quota exhaustion: detect provider rate-limit/quota signals and automatically degrade from PANEL to HEDGE to plain, while saying so.
+
+Worse answers from synthesis: require synthesizer to preserve dissent on materially unresolved points instead of flattening disagreement.
+
+**Delete One Path?**
+No. Deleting either is product damage.
+
+PANEL is correctness infrastructure. HEDGE is latency infrastructure. They overlap only superficially because both use concurrency. A mature “one chat, automatic, honest” system needs both, but with a shared strategy gate, shared quota disclosure, and strict run caps. The right move is not deletion; it is making them feel like one coherent automatic execution strategy instead of two manual experimental switches.
+tokens used
+9,431
+I could not independently read the repo because every shell command failed before execution with:
+
+```text
+bwrap: Unexpected capabilities but not setuid, old file caps config?
+```
+
+No MCP file resources are exposed either, so the design below is based on your brief, not a verified code read. That violates your requested process, so treat this as a provisional architecture cross-check.
+
+**Design**
+Keep both PANEL and HEDGE. They buy different things and should auto-engage from the same routing classification, but with separate gates.
+
+Decision order:
+
+1. **Plain sequential**
+   Use for `trivial`, `low`, and most `medium` turns. Default path should remain boring and quota-light.
+
+2. **HEDGE**
+   Use when the turn is high value but mostly latency-sensitive:
+   - risk is `high` or `critical`
+   - flagship is admissible under policy
+   - a cheaper/faster primary is selected first
+   - task does not strongly require independent cross-vendor judgment
+   - sleep/cancel ports are available
+   - user mode is not `frugal`
+
+   Concrete default: start primary immediately, start flagship after `4s` if no adequate result. Keep current adequacy check, but make it stricter for code changes, commands, legal/medical/financial advice, and destructive operations.
+
+3. **PANEL**
+   Use when correctness/diversity matters more than latency:
+   - risk is `critical`, always, if at least 2 authenticated providers
+   - risk is `high` when task has ambiguity, architecture/design judgment, security implications, irreversible operations, or conflicting provider capability fit
+   - user asks for review, comparison, audit, plan, migration, root-cause analysis, or “best answer”
+   - router confidence is low or top candidates are close
+
+   Concrete default: run 2 candidates plus synthesizer, not every signed-in model. Expand to 3 only in `max` quality mode or when critical and providers are meaningfully diverse.
+
+4. **PANEL + HEDGE composition**
+   Do not hedge every panel candidate by default. That can explode quota from `N+1` to `2N+1`.
+
+   Allow composition only for `critical` turns in `max` mode:
+   - panel candidate A is the best fast/fit model
+   - panel candidate B is cross-vendor strong model
+   - hedge only the weakest/fastest candidate against flagship if flagship is not already in the panel
+   - hard cap total provider runs before synth: 3
+
+So the clean rule is: HEDGE is the default auto-upgrade for hard turns where latency is the problem; PANEL is the default auto-upgrade where independent judgment is the problem.
+
+**Quality Knob**
+Add one user-facing strategy knob:
+
+```ts
+strategy: 'frugal' | 'balanced' | 'max'
+```
+
+Default should be `balanced`.
+
+`frugal`:
+- no automatic PANEL
+- HEDGE only on `critical`
+- review stays only where already established, or is reduced if policy allows
+- always disclose “using single path to conserve quota”
+
+`balanced`:
+- HEDGE on `high`/`critical` when flagship is admissible
+- PANEL on `critical`
+- PANEL on `high` only for judgment-heavy or ambiguity-heavy turns
+- cap PANEL at 2 candidates + synth
+
+`max`:
+- PANEL on all `high`/`critical`
+- HEDGE on eligible latency-sensitive hard turns
+- limited PANEL+HEDGE composition allowed
+- more aggressive flagship admission, still respecting existing plan/policy gates
+
+This is better than separate `panelPolicy` and `hedgePolicy` as the main UX. Keep those as expert overrides, but the product should expose one simple intent: conserve quota, balanced, or maximize answer quality.
+
+**Honesty Surface**
+Before/during, show one compact status line only when auto-engagement fires:
+
+```text
+Hard turn detected: using PANEL with 2 providers + synthesis. Costs 3 quota-consuming model runs and may take longer.
+```
+
+For HEDGE:
+
+```text
+Hard turn detected: using HEDGE. Starting fast model now; flagship may start after 4s if needed. Costs 1-2 quota-consuming runs.
+```
+
+During execution, avoid noisy logs unless verbose mode is on:
+
+```text
+Fast model still running; starting flagship backup...
+```
+
+Afterward, report actual cost:
+
+```text
+Answered via HEDGE: fast model won; flagship was not started. Quota-consuming runs: 1.
+```
+
+or:
+
+```text
+Answered via PANEL: 2 candidates + synthesizer. Quota-consuming runs: 3.
+```
+
+Never call it free. The unit is quota-consuming provider runs plus latency.
+
+**Overrides**
+Use frictionless command-level overrides:
+
+```text
+/strategy frugal
+/strategy balanced
+/strategy max
+/panel on
+/panel off
+/panel force
+/hedge on
+/hedge off
+/hedge force
+/auto off
+```
+
+Also support per-turn natural language hints:
+- “answer cheaply” maps to frugal/plain
+- “use the best models” maps to max
+- “cross-check this” forces PANEL
+- “fast answer” prefers HEDGE or plain, not PANEL
+
+Policy precedence should be:
+
+```text
+explicit per-turn force > explicit per-turn off > saved expert policy > strategy knob > default auto gate
+```
+
+**Changes I’d Make**
+The current trigger logic sounds too conservative if both PANEL and HEDGE are default-off. Given the existing `shouldReview` precedent, concurrency should move from opt-in feature flags to auto strategy gates.
+
+I would change:
+- `panelPolicy` from primary UX to expert override
+- `hedgePolicy: 'on'` requirement to default eligible under `balanced`
+- hard-turn-only PANEL to include `high + ambiguity/judgment`
+- signed-in provider count should distinguish “available” from “meaningfully diverse”; two variants from same provider are less valuable than cross-vendor paneling
+- add hard caps so auto never silently runs every provider
+
+**Failure Modes**
+Surprise quota burn: prevent with first-run notice, exact run count disclosure, and persistent strategy setting.
+
+Surprise latency: prevent by preferring HEDGE over PANEL when task is execution/simple-answer shaped.
+
+Flapping decisions: prevent with deterministic thresholds and visible reason strings like `critical-risk`, `low-router-confidence`, `cross-vendor-review`.
+
+Quota exhaustion: detect provider rate-limit/quota signals and automatically degrade from PANEL to HEDGE to plain, while saying so.
+
+Worse answers from synthesis: require synthesizer to preserve dissent on materially unresolved points instead of flattening disagreement.
+
+**Delete One Path?**
+No. Deleting either is product damage.
+
+PANEL is correctness infrastructure. HEDGE is latency infrastructure. They overlap only superficially because both use concurrency. A mature “one chat, automatic, honest” system needs both, but with a shared strategy gate, shared quota disclosure, and strict run caps. The right move is not deletion; it is making them feel like one coherent automatic execution strategy instead of two manual experimental switches.

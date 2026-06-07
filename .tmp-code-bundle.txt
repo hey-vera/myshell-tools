@@ -1,0 +1,326 @@
+===== FILE: src/core/policy.ts (POLICY_PRESETS + modeFromPolicy) =====
+ */
+export type Mode = 'cost-saver' | 'balanced' | 'quality-first';
+
+/**
+ * User-facing labels — framed around the quality↔speed spectrum, NOT cost
+ * (myshell-tools drives subscriptions, so "cost" is the wrong axis). The internal
+ * keys stay stable so persisted configs and route() are untouched.
+ */
+const MODE_LABEL: Record<Mode, string> = {
+  'cost-saver': 'Efficient',
+  'balanced': 'Balanced',
+  'quality-first': 'Max',
+};
+
+/**
+ * One-line descriptions, framed around how readily each mode reaches the flagship
+ * (strongest) model — governed by flagshipAdmission, not a static ceiling:
+ *   - Efficient never auto-opens the flagship;
+ *   - Balanced EARNS a single flagship pass on a turn that proves it needs one
+ *     (high/critical risk, low confidence, reviewer escalation), vetoed on an
+ *     observed free plan;
+ *   - Max opens the flagship whenever a turn asks for it.
+ * (Honest copy: earlier wording claimed every mode "always escalates to the
+ * strongest model" — false under the old maxTier clamp — and a later revision
+ * over-corrected to "reserved for Max", which adaptive Balanced now makes false.)
+ */
+export const MODE_DESC: Record<Mode, string> = {
+  'cost-saver': 'lean & fast — stays on the lighter models, escalating among them only when a turn needs it (won\'t open the top model)',
+  'balanced': 'sensible middle — earns one pass at the strongest model on a turn that proves it needs it (high-risk or low-confidence); otherwise stays mid-tier',
+  'quality-first': 'best answers — opens and reaches for the strongest model on hard turns; slower, never capped',
+};
+
+export function modeLabel(mode: Mode): string {
+  return MODE_LABEL[mode];
+}
+
+/**
+ * Recover the {@link Mode} a Policy was built from, using its `flagshipAdmission`
+ * posture (the 1:1 mode marker in POLICY_PRESETS: never-auto → Efficient,
+ * always-eligible → Max, adaptive/absent → Balanced). PURE. Used by orchestrate
+ * to pass the active mode into the capability-fit / reasoning-effort selectors
+ * without threading a second mode field everywhere. Falls back to 'balanced'
+ * (the safe middle) for any unrecognised/absent admission.
+ */
+export function modeFromPolicy(policy: Policy): Mode {
+  switch (policy.flagshipAdmission) {
+    case 'never-auto':
+      return 'cost-saver';
+    case 'always-eligible':
+      return 'quality-first';
+    case 'adaptive':
+      return 'balanced';
+    default:
+      return 'balanced';
+  }
+}
+
+/**
+ * Pick a sensible default mode from the detected subscription plan, so a new user
+ * gets the right firepower WITHOUT being asked. Big plan (Max) → the top of the
+ * knob; everything else → balanced; unknown/none → balanced (safe). Pure;
+ * case-insensitive substring match on the plan string (e.g. claude's
+ * `subscriptionType`).
+ */
+export function defaultModeForPlan(plan: string | null | undefined): Mode {
+  if (plan === null || plan === undefined) return 'balanced';
+  const p = plan.toLowerCase();
+  if (p.includes('max')) return 'quality-first';
+  if (p.includes('free')) return 'cost-saver';
+  return 'balanced';
+}
+
+/**
+ * The KIND of a subscription plan, classified from its reported label. This is
+ * the honest taxonomy: we only ever observe a plan string from a CLI that
+ * actually reports one (Claude's `subscriptionType` today). Everything else is
+ * `unknown` with `confidence: 'none'` — we never fabricate a tier.
+ */
+export type PlanTier = 'max' | 'pro' | 'free' | 'unknown';
+
+/**
+ * A classified plan for one provider. `raw` is the original reported string
+ * (null when the CLI reports no plan). `tier` is the classified kind. `confidence`
+ * distinguishes a real reported plan ('observed') from the absence of any signal
+ * ('none') — there is deliberately no 'inferred' producer yet, because inferring a
+ * plan from indirect signals would be fabrication. The variant is reserved so the
+ * shape is forward-compatible the day a CLI lets us infer responsibly.
+ */
+export interface PlanInfo {
+  readonly raw: string | null;
+  readonly tier: PlanTier;
+  readonly confidence: 'observed' | 'inferred' | 'none';
+}
+
+/**
+ * Classify a single reported plan string into a {@link PlanInfo}. Pure;
+ * case-insensitive substring match. A null plan (CLI reports nothing) classifies
+ * to `unknown` / `none` — NOT a guess. A non-null string that matches no known
+ * kind is `unknown` but still `observed` (we saw a plan, we just don't recognise
+ * the label). Order matters: 'max' is checked before 'pro' so "max" never falls
+ * through to a substring like "pro".
+ */
+export function classifyPlan(plan: string | null): PlanInfo {
+  if (plan === null) {
+    return { raw: null, tier: 'unknown', confidence: 'none' };
+  }
+  const p = plan.toLowerCase();
+  let tier: PlanTier = 'unknown';
+  if (p.includes('max')) tier = 'max';
+  else if (p.includes('pro')) tier = 'pro';
+  else if (p.includes('free')) tier = 'free';
+  return { raw: plan, tier, confidence: 'observed' };
+}
+
+/**
+ * Resolve the auto mode from a set of classified plans (strongest KIND wins).
+ * Pure. Built on {@link classifyPlan} so the decision and the display share one
+ * taxonomy. Rules, accounting for the FULL set of authenticated providers:
+ *   - any plan is 'max'          -> 'quality-first'
+ *   - else any plan is 'pro'     -> 'balanced'
+ *   - no observed plans at all   -> 'balanced'   (no signal)
+ *   - every observed plan 'free' -> 'cost-saver'
+ *   - otherwise                  -> 'balanced'
+ */
+export function autoModeForPlanInfos(infos: ReadonlyArray<PlanInfo>): Mode {
+  const observed = infos.filter((i) => i.confidence === 'observed');
+
+  if (observed.some((i) => i.tier === 'max')) return 'quality-first';
+  if (observed.some((i) => i.tier === 'pro')) return 'balanced';
+  if (observed.length === 0) return 'balanced';
+  if (observed.every((i) => i.tier === 'free')) return 'cost-saver';
+
+===== FILE: src/core/orchestrate.ts shouldReview + panel/hedge call sites =====
+function shouldReview(
+  classification: Classification,
+  assessment: Assessment,
+  reviewPolicy: Policy['reviewPolicy'],
+): boolean {
+  // 'off' — never auto-review.
+  if (reviewPolicy === 'off') return false;
+
+  // 'critical-only' — review only when risk is critical.
+  if (reviewPolicy === 'critical-only') {
+    return classification.risk === 'critical';
+  }
+
+  // 'auto' (or undefined, treated as 'auto') — original behaviour.
+  return (
+    classification.risk === 'high' ||
+    classification.risk === 'critical' ||
+    assessment.needsReview === true
+  );
+}
+          ...(workModelOutcomeOrder !== undefined
+            ? { modelOutcomeOrder: workModelOutcomeOrder }
+            : {}),
+        }
+      : undefined;
+
+  const panelPlan = planPanel({
+    panelPolicy: deps.policy.panelPolicy,
+    classification,
+    // Use the as-classified tier — the panel routes each candidate through
+    // route(), which applies the policy's own tier ceiling per provider.
+    tier: classification.tier,
+    authenticatedProviders: deps.authenticatedProviders ?? [],
+    maxPanelProviders: deps.policy.maxPanelProviders ?? 2,
+  });
+  if (panelPlan !== null) {
+    // Thread the per-turn capability seam into the panel so the ensemble path
+    // drops nothing the sequential path carries (audit parity): the SAME
+    // capabilityContext handed to route() below, the SAME web-search flag, and
+    // the SAME image attachments. Built ONCE above; the structured engagement
+    // plan (wantsWebSearch) and the assembled capabilityContext are not
+    // reconstructable from deps inside runPanel, so they're passed in.
+    yield* withMemoryProposalAttached(
+      runPanel(task, deps, panelPlan, signal, historyContext, {
+        ...(capabilityContext !== undefined ? { capabilityContext } : {}),
+        ...(deps.attachments !== undefined ? { attachments: deps.attachments } : {}),
+        ...(wantsWebSearch ? { webSearch: true } : {}),
+      }),
+    );
+    return;
+  }
+
+  // -------------------------------------------------------------------------
+  // (c3) Latency-Hedged Escalation (EXPERIMENTAL, opt-in, default OFF).
+  //      Only considered when NO panel formed (panel takes precedence). planHedge()
+  //      returns null unless deps.policy.hedgePolicy === 'on' AND a delay port
+  //      (deps.sleep) is injected AND the turn is high/critical risk AND the
+  //      flagship is admittable AND the turn isn't already at manager AND ≥1
+  //      provider is authenticated. When it returns a plan we delegate the ENTIRE
+  //      turn to the hedge executor and return — runHedged owns the user/assistant
+  //      session appends, ledger records, and the streamed answer, so the sequential
+  //      code below (including the single user append in (d)) never runs for this
+  //      turn. Because hedgePolicy defaults to 'off', planHedge returns null on
+  //      every existing path → ZERO behaviour change. We branch BEFORE (d) so the
+  //      user message is appended exactly once (by runHedged).
+  const hedgePlan = planHedge({
+    hedgePolicy: deps.policy.hedgePolicy,
+    classification,
+    policy: deps.policy,
+    authenticatedProviders: deps.authenticatedProviders ?? [],
+    hasSleep: deps.sleep !== undefined,
+  });
+  if (hedgePlan !== null) {
+    yield* withMemoryProposalAttached(
+      runHedged(task, deps, hedgePlan, signal, historyContext, capabilityContext, wantsWebSearch),
+    );
+    return;
+  }
+
+  // -------------------------------------------------------------------------
+  // (d) Append user message to session once (before any tier run)
+
+===== FILE: src/core/ensemble.ts planPanel guard =====
+export function planPanel(opts: {
+  readonly panelPolicy: Policy['panelPolicy'];
+  readonly classification: Classification;
+  readonly tier: Tier;
+  readonly authenticatedProviders: readonly ProviderId[];
+  readonly maxPanelProviders: number;
+}): PanelPlan | null {
+  const { panelPolicy, classification, tier, authenticatedProviders, maxPanelProviders } = opts;
+
+  // 'off' / undefined → never form a panel (the sequential engine runs).
+  if (panelPolicy === undefined || panelPolicy === 'off') return null;
+
+  // 'always' qualifies every turn; 'hard-turns' only on high/critical risk.
+  const qualifies =
+    panelPolicy === 'always' ||
+    (panelPolicy === 'hard-turns' &&
+      (classification.risk === 'high' || classification.risk === 'critical'));
+  if (!qualifies) return null;
+
+  // Cap concurrent candidates — never below 2 (a panel needs ≥2 to be a panel).
+  const cap = Math.max(2, maxPanelProviders);
+  const candidates = authenticatedProviders.slice(0, cap);
+
+  // <2 distinct providers → no real panel; defer to the single-model path.
+  if (candidates.length < 2) return null;
+
+  // Deterministic synthesizer: the first candidate adjudicates all outputs.
+  const synthesizer = candidates[0] as ProviderId;
+
+  return { tier, candidates, synthesizer, classification };
+}
+
+// ---------------------------------------------------------------------------
+// Prompt builders (PURE)
+// ---------------------------------------------------------------------------
+
+/**
+ * Build the prompt for ONE independent panel candidate.
+ *
+ * Each candidate is told it is one member of a panel solving the task in
+
+===== FILE: src/core/hedge.ts planHedge guard =====
+  readonly hasSleep: boolean;
+}): HedgePlan | null {
+  const { hedgePolicy, classification, policy, authenticatedProviders, hasSleep } = opts;
+
+  // 'off' / undefined → never hedge (the sequential engine runs).
+  if (hedgePolicy !== 'on') return null;
+
+  // No injected delay port → we cannot time the hedge; defer to sequential.
+  if (!hasSleep) return null;
+
+  // Only hedge the turns that are actually likely to escalate — high/critical
+  // risk. Trivial turns rarely need the flagship, so speculating one would just
+  // burn quota.
+  const highStakes =
+    classification.risk === 'high' || classification.risk === 'critical';
+  if (!highStakes) return null;
+
+  // Already at the flagship → there is no higher tier to hedge TO; run normally.
+  if (classification.tier === 'manager') return null;
+
+  // The speculative flagship needs at least one provider to run on.
+  if (authenticatedProviders.length === 0) return null;
+
+  // No point speculating on a flagship the policy won't open. Gate it through the
+  // SAME adaptive admission as orchestrate's initial route ('initial' is the one
+  // trigger that must justify itself via risk — which a high/critical turn does)
+  // with the flagship budget unspent. Deny (Efficient/never-auto, free-plan veto)
+  // → don't hedge; the sequential path handles the turn correctly.
+  const admission = authorizeTier({
+    requestedTier: 'manager',
+    currentTier: classification.tier,
+    classification,
+    policy,
+    candidateProviders: authenticatedProviders,
+    flagshipAttemptsThisTurn: 0,
+    trigger: 'initial',
+  });
+  if (!admission.allowed) return null;
+
+  return {
+    primaryTier: classification.tier,
+    speculativeTier: 'manager',
+    delayMs: policy.hedgeDelayMs ?? 4000,
+    risk: classification.risk,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Executor — internal run helper
+// ---------------------------------------------------------------------------
+
+
+===== FILE: src/interface/menu.ts policy assembly + mode =====
+    // Effective mode: the user's explicit choice, else auto-detected from their
+    // subscription plan (Max → top of the knob, etc.) — no interrogation.
+    const effectiveMode: Mode =
+        mutableCtx.config.mode ?? resolveAutoMode(mutableCtx.env);
+      // EXPERIMENTAL: opt-in Parallel Subscription Panel (config.panel) maps to
+      // policy.panelPolicy 'hard-turns'. Absent/false → unchanged sequential
+      // behaviour (panelPolicy stays absent → 'off'). Opt-in Latency-Hedged
+      // Escalation (config.hedge) maps to policy.hedgePolicy 'on' (absent → 'off').
+      const policy = {
+        ...POLICY_PRESETS[effectiveMode],
+        ...(mutableCtx.config.panel === true ? { panelPolicy: 'hard-turns' as const } : {}),
+        ...(mutableCtx.config.hedge === true ? { hedgePolicy: 'on' as const } : {}),
+      };
+

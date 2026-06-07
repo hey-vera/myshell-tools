@@ -1084,8 +1084,12 @@ describe('orchestrate — cross-vendor review (high risk)', () => {
     });
 
     // Balanced (adaptive): high-risk review is admitted → reviewer tier-start is 'manager'.
+    // Pin panel/hedge OFF: Balanced now auto-engages a panel on a high-risk turn with
+    // ≥2 providers, which would divert this turn away from the sequential review path
+    // under test. This test is about review-tier labelling, not concurrency selection.
+    const balancedSeq = { ...DEFAULT_POLICY, panelPolicy: 'off' as const, hedgePolicy: 'off' as const };
     const balEvents = await collectEvents(
-      orchestrate('implement payment handler', baseDeps(DEFAULT_POLICY), new AbortController().signal),
+      orchestrate('implement payment handler', baseDeps(balancedSeq), new AbortController().signal),
     );
     const balReviewStart = balEvents.find((e) => e.type === 'tier-start' && e.provider === 'codex');
     assert.ok(balReviewStart !== undefined && balReviewStart.type === 'tier-start');
@@ -3518,7 +3522,11 @@ describe('orchestrate — panel delegation (panelPolicy)', () => {
     assert.ok(finalEv !== undefined && finalEv.type === 'final' && finalEv.success === true);
   });
 
-  it('default policy (panel off) does NOT form a panel — zero behaviour change', async () => {
+  it('default policy AUTO-engages a panel on a hard turn with ≥2 providers', async () => {
+    // Balanced is the default mode and now ships panelPolicy 'hard-turns' so the
+    // common experience auto-engages cross-vendor judgment on a high/critical turn
+    // WITHOUT the user flipping a switch. (A single sign-in or a low-risk turn still
+    // falls back to the sequential path — see the dedicated tests below.)
     const icEnvelope =
       '{"confidence": 0.85, "escalate": false, "reason": "done", "needs_review": false}';
     const deps: OrchestrateDeps = {
@@ -3533,7 +3541,7 @@ describe('orchestrate — panel delegation (panelPolicy)', () => {
       clock: makeFakeClock(),
       session: makeFakeSession(),
       ledger: makeFakeLedger(),
-      policy: DEFAULT_POLICY, // panelPolicy absent → 'off'
+      policy: DEFAULT_POLICY, // panelPolicy now 'hard-turns' by default
       cwd: '/fake/cwd',
       sandbox: 'workspace-write',
       timeoutMs: 30_000,
@@ -3547,7 +3555,72 @@ describe('orchestrate — panel delegation (panelPolicy)', () => {
     const panelNotice = events.find(
       (e) => e.type === 'notice' && e.message.includes('Panel'),
     );
-    assert.equal(panelNotice, undefined, 'no panel must form when panelPolicy is off');
+    assert.ok(panelNotice !== undefined, 'default Balanced must auto-form a panel on a hard turn');
+  });
+
+  it('default policy does NOT form a panel with only ONE provider signed in', async () => {
+    // The auto-panel safety gate: a panel needs ≥2 authenticated providers, else the
+    // turn falls back to the sequential path even on a hard turn.
+    const icEnvelope =
+      '{"confidence": 0.85, "escalate": false, "reason": "done", "needs_review": false}';
+    const deps: OrchestrateDeps = {
+      providers: {
+        claude: makeFakeProvider('claude', [
+          { type: 'done', text: `Claude answer.\n${icEnvelope}`, usage: FAKE_USAGE, raw: {} },
+        ]),
+      },
+      clock: makeFakeClock(),
+      session: makeFakeSession(),
+      ledger: makeFakeLedger(),
+      policy: DEFAULT_POLICY,
+      cwd: '/fake/cwd',
+      sandbox: 'workspace-write',
+      timeoutMs: 30_000,
+      authenticatedProviders: ['claude'],
+    };
+
+    const events = await collectEvents(
+      orchestrate('implement payment handler', deps, new AbortController().signal),
+    );
+
+    const panelNotice = events.find(
+      (e) => e.type === 'notice' && e.message.includes('Panel'),
+    );
+    assert.equal(panelNotice, undefined, 'a single provider cannot form a panel');
+  });
+
+  it('Efficient mode does NOT auto-engage a panel on a hard turn', async () => {
+    // The quota-frugal posture: cost-saver ships panelPolicy 'off', so even a hard
+    // turn with ≥2 providers stays on the single sequential path.
+    const icEnvelope =
+      '{"confidence": 0.85, "escalate": false, "reason": "done", "needs_review": false}';
+    const deps: OrchestrateDeps = {
+      providers: {
+        claude: makeFakeProvider('claude', [
+          { type: 'done', text: `Claude answer.\n${icEnvelope}`, usage: FAKE_USAGE, raw: {} },
+        ]),
+        codex: makeFakeProvider('codex', [
+          { type: 'done', text: `Codex answer.\n${icEnvelope}`, usage: FAKE_USAGE, raw: {} },
+        ]),
+      },
+      clock: makeFakeClock(),
+      session: makeFakeSession(),
+      ledger: makeFakeLedger(),
+      policy: POLICY_PRESETS['cost-saver'],
+      cwd: '/fake/cwd',
+      sandbox: 'workspace-write',
+      timeoutMs: 30_000,
+      authenticatedProviders: ['claude', 'codex'],
+    };
+
+    const events = await collectEvents(
+      orchestrate('implement payment handler', deps, new AbortController().signal),
+    );
+
+    const panelNotice = events.find(
+      (e) => e.type === 'notice' && e.message.includes('Panel'),
+    );
+    assert.equal(panelNotice, undefined, 'Efficient must not auto-engage a panel');
   });
 
   it("'hard-turns' on a LOW-risk task does NOT form a panel", async () => {
@@ -3604,7 +3677,10 @@ describe('orchestrate — hedge delegation (hedgePolicy)', () => {
       session: makeFakeSession(),
       ledger: makeFakeLedger(),
       // 'payment' → high risk; always-eligible admits the flagship; sleep present.
-      policy: { ...DEFAULT_POLICY, hedgePolicy: 'on', flagshipAdmission: 'always-eligible' },
+      // panelPolicy 'off' so the (now default) auto-panel does not preempt the hedge:
+      // orchestrate checks panel BEFORE hedge, and this test is specifically about
+      // hedge delegation.
+      policy: { ...DEFAULT_POLICY, panelPolicy: 'off', hedgePolicy: 'on', flagshipAdmission: 'always-eligible' },
       cwd: '/fake/cwd',
       sandbox: 'workspace-write',
       timeoutMs: 30_000,
@@ -3626,7 +3702,11 @@ describe('orchestrate — hedge delegation (hedgePolicy)', () => {
     assert.ok(finalEv !== undefined && finalEv.type === 'final' && finalEv.success === true);
   });
 
-  it('default policy (hedge off) does NOT hedge — zero behaviour change', async () => {
+  it('default policy AUTO-hedges a hard turn when a panel cannot form (single provider)', async () => {
+    // Balanced now ships hedgePolicy 'on'. On a hard turn the panel takes precedence,
+    // but with a single signed-in provider a panel cannot form (needs ≥2), so the
+    // hedge is the auto-engaged concurrency that hides escalation latency. The
+    // never-resolving sleep keeps the primary the winner (adequate, in time).
     const icEnvelope =
       '{"confidence": 0.9, "escalate": false, "reason": "done", "needs_review": false}';
     const deps: OrchestrateDeps = {
@@ -3634,19 +3714,46 @@ describe('orchestrate — hedge delegation (hedgePolicy)', () => {
         claude: makeFakeProvider('claude', [
           { type: 'done', text: `Claude answer.\n${icEnvelope}`, usage: FAKE_USAGE, raw: {} },
         ]),
-        codex: makeFakeProvider('codex', [
-          { type: 'done', text: `Codex answer.\n${icEnvelope}`, usage: FAKE_USAGE, raw: {} },
+      },
+      clock: makeFakeClock(),
+      session: makeFakeSession(),
+      ledger: makeFakeLedger(),
+      // always-eligible so the flagship is admittable on the hard turn.
+      policy: { ...DEFAULT_POLICY, flagshipAdmission: 'always-eligible' },
+      cwd: '/fake/cwd',
+      sandbox: 'workspace-write',
+      timeoutMs: 30_000,
+      authenticatedProviders: ['claude'],
+      sleep: () => new Promise<void>(() => {}),
+    };
+
+    const events = await collectEvents(
+      orchestrate('implement payment handler', deps, new AbortController().signal),
+    );
+
+    const hedgeNotice = events.find(
+      (e) => e.type === 'notice' && e.message.startsWith('hedge:'),
+    );
+    assert.ok(hedgeNotice !== undefined, 'default Balanced must auto-hedge a hard single-provider turn');
+  });
+
+  it('Efficient mode does NOT auto-hedge — quota-frugal posture', async () => {
+    const icEnvelope =
+      '{"confidence": 0.9, "escalate": false, "reason": "done", "needs_review": false}';
+    const deps: OrchestrateDeps = {
+      providers: {
+        claude: makeFakeProvider('claude', [
+          { type: 'done', text: `Claude answer.\n${icEnvelope}`, usage: FAKE_USAGE, raw: {} },
         ]),
       },
       clock: makeFakeClock(),
       session: makeFakeSession(),
       ledger: makeFakeLedger(),
-      policy: DEFAULT_POLICY, // hedgePolicy absent → 'off'
+      policy: POLICY_PRESETS['cost-saver'], // hedgePolicy 'off'
       cwd: '/fake/cwd',
       sandbox: 'workspace-write',
       timeoutMs: 30_000,
-      authenticatedProviders: ['claude', 'codex'],
-      // Even with sleep present, hedge stays off when hedgePolicy is absent.
+      authenticatedProviders: ['claude'],
       sleep: () => Promise.resolve(),
     };
 
@@ -3657,7 +3764,7 @@ describe('orchestrate — hedge delegation (hedgePolicy)', () => {
     const hedgeNotice = events.find(
       (e) => e.type === 'notice' && e.message.startsWith('hedge:'),
     );
-    assert.equal(hedgeNotice, undefined, 'no hedge must run when hedgePolicy is off');
+    assert.equal(hedgeNotice, undefined, 'Efficient must not auto-hedge');
   });
 });
 

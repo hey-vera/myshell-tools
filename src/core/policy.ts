@@ -48,6 +48,30 @@ export const DEFAULT_POLICY: Policy = {
 
   // Review policy: 'auto' = current default behaviour (review on high/critical or needsReview).
   reviewPolicy: 'auto',
+
+  // Auto-engaged concurrency (the default, frictionless experience). These are
+  // NOT separate opt-in switches any more — the mode knob owns them:
+  //  - hedgePolicy 'on'        : on a hard turn (high/critical risk) that is
+  //                              likely to escalate, speculatively start the
+  //                              flagship in parallel if the primary is slow, so
+  //                              the user never serially waits for a weak attempt
+  //                              before the strong one begins. Costs 1 run when
+  //                              the primary is fast+adequate, 2 overlapped runs
+  //                              when it is slow. Still gated by planHedge:
+  //                              high/critical risk + flagship admittable + the
+  //                              sleep port injected.
+  //  - panelPolicy 'hard-turns': on a hard turn, when ≥2 providers are signed in,
+  //                              run them as a cross-vendor panel + synthesizer
+  //                              for independent judgment. Falls back to the
+  //                              sequential path when <2 providers. Quota cost is
+  //                              maxPanelProviders + 1 runs — disclosed up front
+  //                              by the panel notice (never billed as "free").
+  // On a flat-rate subscription the budget is quota + latency, not dollars; these
+  // defaults spend a little of both on the RARE hard turn to buy a better answer,
+  // and stay completely out of the way on trivial/low/medium turns.
+  hedgePolicy: 'on',
+  panelPolicy: 'hard-turns',
+  maxPanelProviders: 2,
 };
 
 /**
@@ -275,6 +299,12 @@ export const POLICY_PRESETS: Record<Mode, Policy> = {
     },
     // Only trigger cross-vendor review for critical-risk tasks to halve spend.
     reviewPolicy: 'critical-only',
+    // Efficient is the quota-frugal posture: NO auto-engaged concurrency. No
+    // speculative hedge, no cross-vendor panel — the user explicitly chose to
+    // conserve quota, so a hard turn runs the single sequential path. (They can
+    // still force a panel/hedge per turn; see the explicit overrides.)
+    hedgePolicy: 'off',
+    panelPolicy: 'off',
   },
 
   'balanced': DEFAULT_POLICY,
@@ -298,5 +328,13 @@ export const POLICY_PRESETS: Record<Mode, Policy> = {
     },
     // Review on high/critical risk or model-requested needsReview (most thorough).
     reviewPolicy: 'auto',
+    // Max auto-engages the same concurrency as Balanced, but with broader panel
+    // coverage: a hard turn runs up to 3 signed-in providers (vs Balanced's 2)
+    // before synthesis, because the user explicitly chose "best answers" and
+    // accepts the extra quota. Panel still only forms on high/critical turns with
+    // ≥2 providers; hedge still only fires when the primary is slow.
+    hedgePolicy: 'on',
+    panelPolicy: 'hard-turns',
+    maxPanelProviders: 3,
   },
 };
