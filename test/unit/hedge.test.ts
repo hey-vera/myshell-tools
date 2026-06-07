@@ -46,6 +46,10 @@ const adequate = (body: string): string =>
   `${body}\n{"confidence": 0.95, "escalate": false, "reason": "ok", "needs_review": false}`;
 const lowConf = (body: string): string =>
   `${body}\n{"confidence": 0.1, "escalate": true, "reason": "unsure", "needs_review": true}`;
+// A body that SKIPS the required confidence envelope entirely → assess() reads
+// confidence=null. The contract requires an envelope, so this must NOT score as an
+// adequate hedge winner over a branch that DID report adequate confidence.
+const noConf = (body: string): string => `${body}\n(no confidence envelope here)`;
 
 // ---------------------------------------------------------------------------
 // Pure: planHedge
@@ -457,6 +461,68 @@ describe('runHedged — primary fast but inadequate → sequential flagship', ()
     assert.ok(specRec.ran, 'speculative flagship must run when the primary is inadequate');
     // Both the primary and the sequential flagship are recorded.
     assert.equal(ledger.entries.length, 2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Confidence-envelope contract (defect fix): a branch that SKIPPED the required
+// confidence envelope (assess → confidence=null) must NOT score as an adequate
+// hedge winner. A branch with present, adequate confidence outranks a missing one;
+// but when EVERY branch lacks the envelope we still ship the strongest best-effort
+// run rather than deadlocking with no answer.
+// ---------------------------------------------------------------------------
+
+describe('runHedged — confidence envelope is required to win', () => {
+  it('present-confidence beats missing-confidence: a no-envelope primary does NOT short-circuit; the flagship runs and wins', async () => {
+    const specRec = { ran: false, aborted: false };
+    // Primary finishes fast but SKIPS the confidence envelope (null) → must be
+    // treated as inadequate, NOT silently accepted. Pre-fix it would have shipped
+    // here and the flagship would never have run.
+    const claude = makeProvider('claude', noConf('PRIMARY-NO-ENVELOPE'));
+    const codex = makeProvider('codex', adequate('FLAGSHIP-ANSWER'), { record: specRec });
+    // sleep never resolves → primary wins the race, but it lacks the envelope.
+    const neverSleep = (): Promise<void> => new Promise<void>(() => {});
+    const { deps, ledger } = hedgeDeps({ claude, codex }, neverSleep, SPLIT_ORDER);
+
+    const events = await collect(runHedged('hard task', deps, PLAN, new AbortController().signal));
+
+    const finals = events.filter((e) => e.type === 'final');
+    assert.equal(finals.length, 1, 'exactly one final');
+    const final = finals[0];
+    assert.ok(final !== undefined && final.type === 'final');
+    if (final.type === 'final') {
+      assert.equal(final.success, true);
+      // The flagship's adequate, enveloped answer must win — not the no-envelope primary.
+      assert.equal(final.output, adequate('FLAGSHIP-ANSWER'));
+      assert.equal(final.tier, 'manager');
+    }
+    assert.ok(specRec.ran, 'missing-confidence primary must NOT short-circuit; the flagship must run');
+    assert.equal(ledger.entries.length, 2, 'both the primary and the escalated flagship are recorded');
+  });
+
+  it('ALL branches lack the envelope → no deadlock: the speculative flagship is shipped best-effort', async () => {
+    // Primary finishes fast but skips the envelope (inadequate); the speculative
+    // flagship ALSO skips it. Neither branch is adequate, so the hedge must still
+    // return SOMETHING (the strongest attempt = flagship) rather than deadlock.
+    const claude = makeProvider('claude', noConf('PRIMARY-NO-ENVELOPE'));
+    const codex = makeProvider('codex', noConf('SPEC-NO-ENVELOPE'));
+    // sleep never resolves → primary wins the race but is inadequate → the flagship
+    // runs sequentially and is shipped best-effort (no hanging branch to strand).
+    const neverSleep = (): Promise<void> => new Promise<void>(() => {});
+    const { deps, ledger } = hedgeDeps({ claude, codex }, neverSleep, SPLIT_ORDER);
+
+    const events = await collect(runHedged('hard task', deps, PLAN, new AbortController().signal));
+
+    const finals = events.filter((e) => e.type === 'final');
+    assert.equal(finals.length, 1, 'exactly one final — never strands the user with no answer');
+    const final = finals[0];
+    assert.ok(final !== undefined && final.type === 'final');
+    if (final.type === 'final') {
+      assert.equal(final.success, true, 'still ships a best-effort answer when all branches lack the envelope');
+      assert.equal(final.output, noConf('SPEC-NO-ENVELOPE'), 'the speculative flagship is the best-effort fallback');
+      assert.equal(final.tier, 'manager');
+    }
+    assert.equal(ledger.entries.length, 2, 'both branches recorded');
   });
 });
 

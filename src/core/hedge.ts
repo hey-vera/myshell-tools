@@ -417,16 +417,22 @@ function hedgeEffort(
 
 /**
  * Is this run's output an adequate answer to ship? An answer is adequate when it
- * succeeded, did not self-request escalation, and either reported no confidence
- * (null — we can't second-guess silence) OR a confidence at/above the risk-indexed
- * threshold. Mirrors orchestrate's accept condition. PURE.
+ * succeeded, did not self-request escalation, AND reported a confidence envelope
+ * at/above the risk-indexed threshold. A MISSING envelope (confidence === null) is
+ * NOT adequate: the product contract requires every answer to emit a confidence
+ * envelope, so a branch that SKIPPED it must not qualify as a hedge winner over a
+ * branch that did report adequate confidence. This is the gate that picks the race
+ * winner; the caller (pickWinner / CASE A) still falls back to the strongest
+ * best-effort run when NO branch is adequate, so all-missing never deadlocks. PURE.
  */
 function isAdequate(result: RunResult, policy: Policy, classification: Classification): boolean {
   if (result.errored != null || result.finalText === undefined) return false;
   const assessment = assess(result.finalText);
   if (assessment.escalate) return false;
   const threshold = policy.escalateBelowConfidence[classification.risk];
-  return assessment.confidence === null || assessment.confidence >= threshold;
+  // Missing confidence (null) is a penalty, not a pass — the required envelope was
+  // not emitted. Only a present confidence at/above threshold is adequate.
+  return assessment.confidence !== null && assessment.confidence >= threshold;
 }
 
 /** Compute the real USD cost for a run (provider-reported preferred; never fabricated). */

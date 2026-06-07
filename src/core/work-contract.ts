@@ -141,10 +141,18 @@ export function capContract(c: WorkContract): WorkContract {
         })
       : undefined;
 
+  // Honesty gate: only an EXPLICIT positive verdict counts as approval. A
+  // missing, malformed, or under-specified verdict (e.g. `{}` or `verdict:'bad'`)
+  // must NOT silently default to 'approve' — that would let a weak verification
+  // payload fabricate "verified done" downstream (work-state.isReviewApproved).
+  // Anything that is not an exact 'approve'/'revise'/'escalate' falls back to the
+  // fail-safe non-approval verdict 'revise' (the reviewer "sent it back").
   const verdict =
-    verification?.verdict === 'revise' || verification?.verdict === 'escalate'
+    verification?.verdict === 'approve' ||
+    verification?.verdict === 'revise' ||
+    verification?.verdict === 'escalate'
       ? verification.verdict
-      : 'approve';
+      : 'revise';
   const failedCheckpointIds = Array.isArray(verification?.failedCheckpointIds)
     ? verification.failedCheckpointIds.map(safeString)
     : undefined;

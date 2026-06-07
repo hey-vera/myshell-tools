@@ -37,6 +37,15 @@ export interface CapabilityTaskSignals {
   readonly estimatedInputTokens?: number;
   /** True only when the turn actually has image input (drives the vision gate). */
   readonly needsVision?: boolean;
+  /**
+   * True when the turn GENUINELY needs external/current facts — derived from the
+   * engagement WEB_RESEARCH determination (orchestrate's `wantsWebSearch`). Drives
+   * a SOFT, fail-soft preference for a provider whose in-tier model has a native
+   * search tool (today: Codex), so the documented "native web search" actually
+   * runs. NEVER a hard gate: when no such provider is authenticated+available the
+   * route falls through unchanged. Absent/false → byte-for-byte unchanged.
+   */
+  readonly needsWebSearch?: boolean;
   readonly taskKind: TaskKind;
 }
 
@@ -294,8 +303,9 @@ export function route(
   //   - estimatedInputTokens exceeds the known context window of some candidate
   //     providers' in-tier models (a large-context need only big-window providers
   //     can satisfy).
-  // (Web search is intentionally NOT detected here: CapabilityTaskSignals carries
-  //  no search signal, and the brief forbids inventing one.)
+  // (Web search is intentionally NOT a HARD requirement here: it is handled by a
+  //  separate SOFT, fail-soft pre-pass BELOW this block — a search turn must never
+  //  fail or be stranded just because the search-capable provider is absent.)
   //
   // When a hard requirement exists AND a registry is present, we compute which
   // providers KNOWN-satisfy it (have an in-tier model — bounded EXACTLY like
@@ -383,6 +393,58 @@ export function route(
         }
       }
       // No KNOWN-satisfying eligible provider → fall through unchanged.
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // Capability-aware provider SOFT pre-pass (native web-search preference).
+  //
+  // Makes the documented "routes by capability fit / native Codex web search"
+  // claim TRUE at the routing layer: when the turn GENUINELY needs web search
+  // (the engagement plan flagged WEB_RESEARCH → taskSignals.needsWebSearch), we
+  // PREFER a provider whose in-tier model has a KNOWN native search tool (today
+  // only Codex declares supportsSearchTool) so its native search actually runs.
+  //
+  // SOFT and FAIL-SOFT — deliberately NOT in the hard-requirement path above:
+  //   - It only fires AFTER the hard-requirement pre-pass, so vision / large-
+  //     context (genuine HARD requirements) always win over a search preference.
+  //   - It considers ONLY authenticated+available search-capable providers. If
+  //     none exists (e.g. Codex absent or signed out) we do NOTHING and fall
+  //     through to the unchanged passes below — a search turn NEVER fails or gets
+  //     stranded on a signed-out provider just because the search-capable one is
+  //     gone. (Without auth info we also do nothing, to avoid promoting a
+  //     possibly-signed-out provider on a soft preference.)
+  //   - It walks the SAME learned→policy preference orders, so among equally
+  //     eligible search-capable providers the existing precedence still decides.
+  // Bounds preserved: only ever picks a provider in `available` that is also
+  // authenticated; never changes tier, bypasses a gate, or reorders on a guess
+  // (only KNOWN-search-capable providers qualify).
+  if (capabilityContext?.registry !== undefined && hasAuthInfo) {
+    const reg = capabilityContext.registry;
+    const needsWebSearch = capabilityContext.taskSignals?.needsWebSearch === true;
+    if (needsWebSearch) {
+      const authed = authenticatedProviders as readonly ProviderId[];
+      const knownHasSearch = (id: ProviderId): boolean => {
+        const candidates = candidateModelsFor(id, availableModels?.[id]);
+        for (const modelId of candidates) {
+          const cap = findCapability(reg, id, modelId);
+          if (cap?.supportsSearchTool === true) return true;
+        }
+        return false;
+      };
+      for (const order of candidateOrders) {
+        for (const preferred of order) {
+          if (
+            available.includes(preferred) &&
+            authed.includes(preferred) &&
+            knownHasSearch(preferred)
+          ) {
+            return decisionFor(preferred);
+          }
+        }
+      }
+      // No authenticated+available search-capable provider → fall through
+      // unchanged (fail-soft: the turn still routes by the normal order).
     }
   }
 

@@ -818,6 +818,13 @@ export async function* orchestrate(
     routePlan,
     estimatedInputTokens,
     needsVision: hasImageAttachment,
+    // Thread the engagement WEB_RESEARCH determination (computed above as
+    // `wantsWebSearch`) into routing so route()'s SOFT search pre-pass can PREFER
+    // a native-search-capable provider (Codex) when the turn genuinely needs web
+    // search AND that provider is authenticated. Fail-soft inside route(): when no
+    // such provider is authed+available, routing is unchanged. This makes the
+    // documented "native Codex web search" claim true at the routing layer.
+    needsWebSearch: wantsWebSearch,
     taskKind: deriveTaskKind({
       task,
       tier: classification.tier,

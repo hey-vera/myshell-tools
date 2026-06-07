@@ -94,11 +94,66 @@ describe('capContract', () => {
         { id: '', summary: '' },
       ],
       verification: {
-        verdict: 'approve',
+        // A malformed verdict ('bad') must NOT silently become 'approve' — it
+        // falls back to the fail-safe non-approval verdict 'revise'.
+        verdict: 'revise',
         notes: '4',
         failedCheckpointIds: ['1'],
       },
     });
+  });
+
+  it('an explicit approve verdict is preserved', () => {
+    const result = capContract({
+      version: 1,
+      objective: 'ship',
+      verification: { verdict: 'approve', notes: 'tests pass' },
+    });
+    assert.equal(result.verification?.verdict, 'approve');
+  });
+
+  it('an empty verification object is NOT approved (defaults to revise)', () => {
+    const result = capContract({
+      version: 1,
+      objective: 'ship',
+      verification: {} as ContractVerification,
+    });
+    // The verification block is still surfaced, but it must not read as approval.
+    assert.equal(result.verification?.verdict, 'revise');
+  });
+
+  it('a malformed/under-specified verdict is NOT approved (defaults to revise)', () => {
+    for (const bad of ['', 'APPROVE', 'ok', 'yes', undefined, null, 42, {}]) {
+      const result = capContract({
+        version: 1,
+        objective: 'ship',
+        verification: { verdict: bad } as unknown as ContractVerification,
+      });
+      assert.equal(
+        result.verification?.verdict,
+        'revise',
+        `verdict=${JSON.stringify(bad)} must not silently approve`,
+      );
+    }
+  });
+
+  it('preserves an explicit revise/escalate verdict', () => {
+    assert.equal(
+      capContract({
+        version: 1,
+        objective: 'ship',
+        verification: { verdict: 'revise' },
+      }).verification?.verdict,
+      'revise',
+    );
+    assert.equal(
+      capContract({
+        version: 1,
+        objective: 'ship',
+        verification: { verdict: 'escalate' },
+      }).verification?.verdict,
+      'escalate',
+    );
   });
 });
 

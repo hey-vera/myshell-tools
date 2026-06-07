@@ -1232,3 +1232,201 @@ describe('route — cross-provider capability pre-pass (hard requirements)', () 
     assert.equal(fit.provider, 'codex');
   });
 });
+
+describe('route — SOFT web-search preference pre-pass', () => {
+  // Registry where, at IC tier, ONLY codex's model declares a native search tool;
+  // claude has NO search tool. Policy order is claude-first, so WITHOUT the search
+  // pre-pass claude wins. With a genuine search need + codex authed, codex wins so
+  // its native web search actually runs.
+  const SEARCH_REG: CapabilityRegistry = {
+    claude: [
+      {
+        provider: 'claude',
+        id: 'sonnet',
+        aliases: ['claude-sonnet-4-6'],
+        tierHint: 'ic',
+        supportedReasoningEfforts: [],
+        // no supportsSearchTool → claude cannot run native search here
+        source: ['declarative'],
+      },
+    ],
+    opencode: [],
+    codex: [
+      {
+        provider: 'codex',
+        id: 'gpt-5.2-codex',
+        aliases: ['codex'],
+        tierHint: 'ic',
+        supportedReasoningEfforts: [],
+        supportsSearchTool: true, // the only native-search-capable in-tier model
+        source: ['codex-cache'],
+      },
+    ],
+  };
+
+  // A registry where a HIGHER-priority HARD requirement (vision) and search both
+  // point at codex would be ambiguous, so for the "hard wins" test we use a
+  // registry where claude (policy-first) is the ONLY vision-capable provider and
+  // codex is the only search-capable one — proving vision (hard) overrides search
+  // (soft) and keeps claude.
+  const VISION_CLAUDE_SEARCH_CODEX_REG: CapabilityRegistry = {
+    claude: [
+      {
+        provider: 'claude',
+        id: 'sonnet',
+        aliases: ['claude-sonnet-4-6'],
+        tierHint: 'ic',
+        supportedReasoningEfforts: [],
+        supportsVision: true, // claude satisfies the HARD vision requirement
+        source: ['declarative'],
+      },
+    ],
+    opencode: [],
+    codex: [
+      {
+        provider: 'codex',
+        id: 'gpt-5.2-codex',
+        aliases: ['codex'],
+        tierHint: 'ic',
+        supportedReasoningEfforts: [],
+        supportsVision: false, // codex cannot do vision here
+        supportsSearchTool: true, // but it is the search-capable one
+        source: ['codex-cache'],
+      },
+    ],
+  };
+
+  const SEARCH_SIGNALS = {
+    risk: 'medium' as const,
+    routePlan: false,
+    needsWebSearch: true,
+    taskKind: 'implementation' as const,
+  };
+  const NO_SEARCH_SIGNALS = {
+    risk: 'medium' as const,
+    routePlan: false,
+    needsWebSearch: false,
+    taskKind: 'implementation' as const,
+  };
+
+  // (a) search + Codex authed → PREFERS Codex even though claude is policy-first.
+  it('search need + Codex authenticated → PREFERS Codex (so native web search runs)', () => {
+    const base = route('ic', BOTH, DEFAULT_POLICY, undefined, ['claude', 'codex']);
+    assert.equal(base.provider, 'claude', 'precondition: claude is policy-first without the pre-pass');
+    const fit = route('ic', BOTH, DEFAULT_POLICY, undefined, ['claude', 'codex'], undefined, {
+      mode: 'balanced',
+      registry: SEARCH_REG,
+      taskSignals: SEARCH_SIGNALS,
+    });
+    assert.equal(fit.provider, 'codex', 'search need prefers the native-search-capable provider');
+  });
+
+  // (b) search + Codex NOT authed → falls back UNCHANGED (fail-soft, never fails).
+  it('search need but Codex SIGNED OUT → falls back to today’s order unchanged (fail-soft, no stranding)', () => {
+    const base = route('ic', BOTH, DEFAULT_POLICY, undefined, ['claude']);
+    const fit = route('ic', BOTH, DEFAULT_POLICY, undefined, ['claude'], undefined, {
+      mode: 'balanced',
+      registry: SEARCH_REG,
+      taskSignals: SEARCH_SIGNALS,
+    });
+    assert.equal(fit.provider, 'claude', 'must not strand on the signed-out search provider');
+    assert.equal(fit.provider, base.provider, 'falls through to today’s authed selection');
+  });
+
+  it('search need but Codex UNAVAILABLE → falls through unchanged', () => {
+    const fit = route('ic', CLAUDE_ONLY, DEFAULT_POLICY, undefined, ['claude'], undefined, {
+      mode: 'balanced',
+      registry: SEARCH_REG,
+      taskSignals: SEARCH_SIGNALS,
+    });
+    assert.equal(fit.provider, 'claude', 'never selects an unavailable provider for search');
+  });
+
+  it('search need but NO auth info supplied → no soft promotion (fall through unchanged)', () => {
+    // Without auth info we must not promote a possibly-signed-out provider on a
+    // soft preference, so claude (policy-first) stays.
+    const base = route('ic', BOTH, DEFAULT_POLICY);
+    const fit = route('ic', BOTH, DEFAULT_POLICY, undefined, undefined, undefined, {
+      mode: 'balanced',
+      registry: SEARCH_REG,
+      taskSignals: SEARCH_SIGNALS,
+    });
+    assert.equal(fit.provider, base.provider, 'no auth info → no soft search promotion');
+    assert.equal(fit.provider, 'claude');
+  });
+
+  // (c) non-search turns → byte-for-byte unchanged.
+  it('NON-search turn (needsWebSearch false) → provider/model/tier identical to today', () => {
+    const base = route('ic', BOTH, DEFAULT_POLICY, undefined, ['claude', 'codex']);
+    const fit = route('ic', BOTH, DEFAULT_POLICY, undefined, ['claude', 'codex'], undefined, {
+      mode: 'balanced',
+      registry: SEARCH_REG,
+      taskSignals: NO_SEARCH_SIGNALS,
+    });
+    assert.equal(fit.provider, base.provider, 'non-search turn must not move the provider');
+    assert.equal(fit.provider, 'claude');
+  });
+
+  it('needsWebSearch undefined (signal absent) → no search promotion', () => {
+    const fit = route('ic', BOTH, DEFAULT_POLICY, undefined, ['claude', 'codex'], undefined, {
+      mode: 'balanced',
+      registry: SEARCH_REG,
+      taskSignals: { risk: 'medium', routePlan: false, taskKind: 'implementation' },
+    });
+    assert.equal(fit.provider, 'claude', 'absent search signal behaves like no search need');
+  });
+
+  // Bound: a HIGHER-priority HARD requirement (vision) overrides the soft search
+  // preference — it must NOT be bolted into the hard path.
+  it('HARD vision requirement overrides the SOFT search preference (hard wins)', () => {
+    // claude (policy-first) is the only vision-capable provider; codex is the only
+    // search-capable one. With BOTH a vision need (hard) AND a search need (soft),
+    // the hard vision pre-pass runs first and keeps claude.
+    const fit = route('ic', BOTH, DEFAULT_POLICY, undefined, ['claude', 'codex'], undefined, {
+      mode: 'balanced',
+      registry: VISION_CLAUDE_SEARCH_CODEX_REG,
+      taskSignals: {
+        risk: 'medium',
+        routePlan: false,
+        needsVision: true,
+        needsWebSearch: true,
+        taskKind: 'implementation',
+      },
+    });
+    assert.equal(fit.provider, 'claude', 'hard vision requirement wins over soft search preference');
+  });
+
+  it('search need with BOTH providers search-capable → existing claude-first order wins', () => {
+    const BOTH_SEARCH_REG: CapabilityRegistry = {
+      claude: [
+        {
+          provider: 'claude',
+          id: 'sonnet',
+          aliases: ['claude-sonnet-4-6'],
+          tierHint: 'ic',
+          supportedReasoningEfforts: [],
+          supportsSearchTool: true,
+          source: ['declarative'],
+        },
+      ],
+      opencode: [],
+      codex: [
+        {
+          provider: 'codex',
+          id: 'gpt-5.2-codex',
+          aliases: ['codex'],
+          tierHint: 'ic',
+          supportedReasoningEfforts: [],
+          supportsSearchTool: true,
+          source: ['codex-cache'],
+        },
+      ],
+    };
+    const fit = route('ic', BOTH, DEFAULT_POLICY, undefined, ['claude', 'codex'], undefined, {
+      mode: 'balanced',
+      registry: BOTH_SEARCH_REG,
+      taskSignals: SEARCH_SIGNALS,
+    });
+    assert.equal(fit.provider, 'claude', 'when both can search, the existing claude-first order wins');
+  });
+});
