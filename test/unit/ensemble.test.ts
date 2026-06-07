@@ -641,6 +641,119 @@ describe('runPanel — happy path', () => {
   });
 });
 
+describe('runPanel — live candidate progress (no silent hang)', () => {
+  // A provider that emits a NON-prose liveness event (reasoning) and a prose text
+  // delta before completing. `gate`, when supplied, withholds the terminal `done`
+  // until the returned resolve() is called — letting a test order completions.
+  function makeLivenessProvider(
+    id: ProviderId,
+    text: string,
+    gate?: { wait: Promise<void> },
+  ): Provider {
+    return {
+      id,
+      async detect() {
+        return {
+          id,
+          installed: true,
+          version: '1',
+          authenticated: true,
+          binaryPath: '/f',
+          availableModels: [],
+        };
+      },
+      async *run(_req: ProviderRequest, _signal: AbortSignal): AsyncIterable<ProviderEvent> {
+        // Liveness BEFORE the answer — this is what now reaches the renderer as
+        // "still working" feedback during the candidate phase.
+        yield { type: 'reasoning', delta: `${id}-thinking` };
+        yield { type: 'text', delta: text };
+        if (gate !== undefined) await gate.wait;
+        yield { type: 'done', text, usage: USAGE, raw: {} };
+      },
+    };
+  }
+
+  it('streams candidate liveness (reasoning) provider-events DURING the candidate phase, before synthesis', async () => {
+    const { deps } = panelDeps({
+      claude: makeLivenessProvider('claude', 'A'),
+      codex: makeLivenessProvider('codex', 'B'),
+    });
+    const events = await collect(runPanel('hard task', deps, PLAN, new AbortController().signal));
+
+    const synthIdx = events.findIndex((e) => e.type === 'phase' && e.phase === 'synthesis');
+    assert.ok(synthIdx >= 0, 'expected a synthesis phase');
+
+    // The candidate-phase liveness: a provider-event carrying a non-text reasoning
+    // delta, emitted at the candidate tier BEFORE synthesis began. This is the new
+    // behaviour — previously candidates ran inside Promise.all and yielded NOTHING.
+    const candidateLiveness = events.filter(
+      (e, i) =>
+        i < synthIdx &&
+        e.type === 'provider-event' &&
+        e.tier === PLAN.tier &&
+        e.event.type === 'reasoning',
+    );
+    assert.ok(
+      candidateLiveness.length >= 2,
+      `expected each candidate to stream a reasoning liveness event during the panel phase, got ${candidateLiveness.length}`,
+    );
+
+    // Candidate PROSE is NOT streamed — no candidate-tier text provider-event ever
+    // reaches the user (the synthesizer owns the single clean stream).
+    const candidateProse = events.filter(
+      (e, i) =>
+        i < synthIdx &&
+        e.type === 'provider-event' &&
+        e.tier === PLAN.tier &&
+        e.event.type === 'text',
+    );
+    assert.equal(candidateProse.length, 0, 'candidate prose must never be streamed to the user');
+  });
+
+  it('emits a fast candidate tier-done BEFORE a slow candidate finishes (no Promise.all stall)', async () => {
+    // codex is gated open immediately; claude is held until we release it. With the
+    // old Promise.all aggregation, NEITHER tier-done could be emitted until BOTH
+    // resolved. With the concurrent merge, codex's tier-done fires while claude is
+    // still running.
+    let releaseClaude!: () => void;
+    const claudeWait = new Promise<void>((r) => {
+      releaseClaude = r;
+    });
+    const codexWait = Promise.resolve();
+
+    const claude = makeLivenessProvider('claude', 'CLAUDE', { wait: claudeWait });
+    const codex = makeLivenessProvider('codex', 'CODEX', { wait: codexWait });
+    const { deps } = panelDeps({ claude, codex });
+
+    const out: CoreEvent[] = [];
+    const gen = runPanel('hard task', deps, PLAN, new AbortController().signal);
+    // Drain until codex's candidate tier-done arrives — claude is still blocked, so
+    // if the merge stalled on Promise.all this loop would hang forever (the test
+    // timeout would catch it). The first tier-done we see is codex's (fastest).
+    let sawCandidateDone = false;
+    while (!sawCandidateDone) {
+      const { value, done } = await gen.next();
+      if (done) break;
+      out.push(value);
+      if (value.type === 'tier-done') sawCandidateDone = true;
+    }
+    assert.ok(sawCandidateDone, 'a candidate tier-done must arrive before the slow candidate resolves');
+    // claude has NOT been released yet, so synthesis cannot have started.
+    assert.ok(
+      !out.some((e) => e.type === 'phase' && e.phase === 'synthesis'),
+      'synthesis must not begin while a candidate is still running',
+    );
+
+    // Now release claude and finish the turn cleanly — totals/final stay intact.
+    releaseClaude();
+    for await (const ev of gen) out.push(ev);
+    const final = out.find((e) => e.type === 'final');
+    assert.ok(final !== undefined && final.type === 'final' && final.success);
+    // Both candidate tier-dones + the synthesizer's = 3 tier-dones, accounting intact.
+    assert.equal(out.filter((e) => e.type === 'tier-done').length, 3);
+  });
+});
+
 describe('runPanel — synthesizer flagship admission', () => {
   // The LAST tier-start is the synthesizer's run (candidate starts come first,
   // before the concurrent await; the synthesizer starts after). Its `tier` is the

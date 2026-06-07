@@ -409,12 +409,24 @@ interface CandidateOutcome {
 }
 
 /**
- * Run ONE candidate to completion WITHOUT yielding (we cannot yield from inside
- * Promise.all). Consumes the provider's events purely for their terminal data —
- * candidate prose deltas are intentionally NOT streamed to the user (attention
- * budget); the caller emits only the start/done summary events around the await.
+ * Run ONE candidate as an async GENERATOR: it streams the provider's events for
+ * LIVENESS while accumulating the terminal data, then RETURNS its CandidateOutcome.
+ *
+ * Why a generator (was: a non-yielding Promise consumed by Promise.all): the old
+ * shape meant no candidate progress reached the user until ALL candidates resolved,
+ * so a slow panelist held back the live "tick-down" — the turn felt like a silent
+ * hang for the whole candidate phase. Now each candidate's events interleave (via
+ * `mergeCandidates`) so the renderer's panel line shows real, continuous activity
+ * and each candidate flips to ✓ the INSTANT it finishes.
+ *
+ * What is yielded: ONLY non-`text` provider-events (reasoning / tool / usage /
+ * error), which the renderer treats as "still working" liveness in panel mode and
+ * NEVER as user-facing answer prose. Candidate prose `text` deltas are deliberately
+ * NOT yielded — the attention budget is reserved for the synthesizer's single clean
+ * stream, and dumping N candidates' raw prose (plus their JSON envelopes) would
+ * corrupt the display. The terminal `text` is still captured for synthesis + ledger.
  */
-async function runCandidate(
+async function* runCandidate(
   task: string,
   deps: OrchestrateDeps,
   plan: PanelPlan,
@@ -422,7 +434,7 @@ async function runCandidate(
   signal: AbortSignal,
   historyContext: string | undefined,
   capability: PanelCapabilityInput,
-): Promise<CandidateOutcome> {
+): AsyncGenerator<CoreEvent, CandidateOutcome> {
   const decision = route(
     plan.tier,
     [candidate],
@@ -498,6 +510,15 @@ async function runCandidate(
 
   try {
     for await (const ev of provider.run(req, signal)) {
+      // Forward only NON-prose events as panel liveness — reasoning/tool/usage/
+      // error keep the "Waiting on N models" line visibly working without ever
+      // being mistaken for the user-facing answer. The candidate's prose `text`
+      // deltas are intentionally swallowed (captured below for synthesis/ledger,
+      // never streamed): N candidates' raw prose would corrupt the single clean
+      // stream the synthesizer owns.
+      if (ev.type !== 'text') {
+        yield { type: 'provider-event', tier: plan.tier, event: ev };
+      }
       if (ev.type === 'done') {
         finalText = ev.text;
         // done.usage is the authoritative accumulated total.
@@ -508,6 +529,9 @@ async function runCandidate(
       } else if (ev.type === 'usage' && usage === undefined) {
         usage = ev.usage;
       }
+      // Honour cancellation promptly — stop draining a candidate the moment the
+      // turn is aborted (mirrors streamProvider's mid-stream abort check).
+      if (signal.aborted) break;
     }
   } catch (err) {
     errored = {
@@ -529,6 +553,54 @@ async function runCandidate(
     reasoningEffort,
     taskKind,
   };
+}
+
+/**
+ * Run every candidate generator CONCURRENTLY and interleave their yielded
+ * liveness events as they arrive, calling `onOutcome(outcome)` the INSTANT each
+ * candidate's generator returns — so the caller can record its ledger/cost and
+ * emit its `tier-done` immediately, instead of waiting for the slowest panelist.
+ *
+ * This replaces the old `Promise.all(...)` aggregation, whose `await` blocked ALL
+ * candidate feedback until every candidate had resolved (the "silent hang"). True
+ * concurrency is preserved: every generator is started eagerly (all candidates run
+ * in parallel), we merely surface their progress + completion as it happens.
+ *
+ * `onOutcome` is invoked exactly once per candidate, in COMPLETION order (fastest
+ * first), which is also the order the renderer ticks panelists down. The returned
+ * outcomes array is the FULL set (every candidate), preserved for synthesis.
+ */
+async function* mergeCandidates(
+  gens: ReadonlyArray<AsyncGenerator<CoreEvent, CandidateOutcome>>,
+  onOutcome: (outcome: CandidateOutcome) => AsyncGenerator<CoreEvent>,
+): AsyncGenerator<CoreEvent, CandidateOutcome[]> {
+  const outcomes: CandidateOutcome[] = [];
+  // Each pending entry races its generator's next step; we tag the winner by index
+  // so a settled generator is dropped and the rest keep running concurrently.
+  type Pending = Promise<{ index: number; result: IteratorResult<CoreEvent, CandidateOutcome> }>;
+  const pending = new Map<number, Pending>();
+  const step = (index: number, gen: AsyncGenerator<CoreEvent, CandidateOutcome>): Pending =>
+    gen.next().then((result) => ({ index, result }));
+
+  gens.forEach((gen, index) => {
+    pending.set(index, step(index, gen));
+  });
+
+  while (pending.size > 0) {
+    const { index, result } = await Promise.race(pending.values());
+    if (result.done) {
+      pending.delete(index);
+      outcomes.push(result.value);
+      // Record + emit this candidate's completion right now (fastest first).
+      yield* onOutcome(result.value);
+    } else {
+      // A liveness event — forward it and re-arm this generator's next step.
+      yield result.value;
+      pending.set(index, step(index, gens[index] as AsyncGenerator<CoreEvent, CandidateOutcome>));
+    }
+  }
+
+  return outcomes;
 }
 
 // ---------------------------------------------------------------------------
@@ -648,17 +720,18 @@ export async function* runPanel(
     };
   }
 
-  // True concurrency: all candidates run in parallel.
-  const outcomes = await Promise.all(
-    plan.candidates.map((candidate) =>
-      runCandidate(task, deps, plan, candidate, signal, historyContext, capability),
-    ),
-  );
-
-  // Per-candidate: record cost, ledger, session, and emit tier-done.
+  // True concurrency with LIVE feedback: every candidate generator is started
+  // eagerly (all run in parallel), and `mergeCandidates` interleaves their liveness
+  // events as they arrive — then records cost/ledger and emits `tier-done` the
+  // INSTANT each candidate finishes (fastest first), so the renderer ticks the
+  // "Waiting on N models" line down in real time instead of all at once at the end.
   let lastErrored: import('../providers/port.js').CliError | undefined;
   let lastErroredProvider: ProviderId | undefined;
-  for (const outcome of outcomes) {
+
+  // Per-candidate completion: record cost, ledger, and emit tier-done — identical
+  // accounting to the old post-Promise.all loop, just driven the moment a
+  // candidate returns. Closes over totalCostUsd / lastErrored* (mutated in order).
+  async function* recordCandidate(outcome: CandidateOutcome): AsyncGenerator<CoreEvent> {
     const success = outcome.errored == null;
     const pricing = getModelPricing(outcome.provider, outcome.model);
     const usd =
@@ -704,6 +777,13 @@ export async function* runPanel(
     };
   }
 
+  const outcomes = yield* mergeCandidates(
+    plan.candidates.map((candidate) =>
+      runCandidate(task, deps, plan, candidate, signal, historyContext, capability),
+    ),
+    recordCandidate,
+  );
+
   // Cancellation during candidate runs → stop honestly.
   if (signal.aborted) {
     yield { type: 'notice', level: 'warn', message: 'cancelled' };
@@ -721,6 +801,14 @@ export async function* runPanel(
   }
 
   // --- Gather successful candidate outputs for synthesis. ---
+  // `mergeCandidates` returns outcomes in COMPLETION order (so tier-dones ticked
+  // down fastest-first). Re-sort into the deterministic announce order so the
+  // synthesis prompt's PANELIST labelling is independent of provider timing —
+  // byte-for-byte identical to the pre-merge Promise.all ordering.
+  const order = new Map(plan.candidates.map((p, i) => [p, i]));
+  outcomes.sort(
+    (a, b) => (order.get(a.provider) ?? 0) - (order.get(b.provider) ?? 0),
+  );
   const succeeded = outcomes.filter(
     (o): o is CandidateOutcome & { finalText: string } =>
       o.errored == null && o.finalText !== undefined,
