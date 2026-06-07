@@ -620,7 +620,7 @@ describe('runPanel — happy path', () => {
     assert.ok(ledger.entries.every((e) => e.usd > 0), 'each run records real cost');
   });
 
-  it('notice names the panel composition', async () => {
+  it('notice names the panel composition AND discloses the quota cost (honesty guardrail)', async () => {
     const { deps } = panelDeps({
       claude: makeProvider('claude', 'A'),
       codex: makeProvider('codex', 'B'),
@@ -628,6 +628,16 @@ describe('runPanel — happy path', () => {
     const events = await collect(runPanel('hard task', deps, PLAN, new AbortController().signal));
     const notice = events.find((e) => e.type === 'notice' && e.message.includes('Panel'));
     assert.ok(notice !== undefined, 'expected a Panel notice');
+    // Because the panel can now AUTO-engage (mode preset), the up-front notice MUST
+    // disclose that it spends quota — never silently, never billed as "free".
+    assert.ok(
+      notice.type === 'notice' && /quota-consuming runs/.test(notice.message),
+      'panel notice must disclose the quota cost up front',
+    );
+    assert.ok(
+      notice.type === 'notice' && !/\bfree\b/i.test(notice.message),
+      'panel notice must NOT claim the runs are free',
+    );
   });
 });
 

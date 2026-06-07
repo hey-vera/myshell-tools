@@ -1571,7 +1571,7 @@ function makePanelSink(): OutputSink & { buf: string[] } {
  *  first) + phase:synthesis + synthesizer tier-start/stream/tier-done + final. */
 function panelEvents(): CoreEvent[] {
   return [
-    { type: 'notice', level: 'info', message: 'Panel: claude, codex → synthesized by claude' },
+    { type: 'notice', level: 'info', message: 'Panel (hard turn): claude, codex → synthesized by claude · 3 quota-consuming runs, may take longer' },
     { type: 'phase', phase: 'panel', participants: ['claude', 'codex'] },
     { type: 'tier-start', tier: 'ic', provider: 'claude', model: 'claude-sonnet-4-6', attempt: 1 },
     { type: 'tier-start', tier: 'ic', provider: 'codex', model: 'gpt-5-codex', attempt: 2 },
@@ -1597,7 +1597,7 @@ describe('renderStream — panel "Waiting on N models" state machine', () => {
     // The compact strip flips claude → ✓ after its tier-done.
     assert.ok(joined.includes('claude ✓'), 'first candidate flips to ✓');
     // The composition header is shown dim in NORMAL mode (not just verbose).
-    assert.ok(joined.includes('Panel: claude, codex'), 'composition header surfaces in normal mode');
+    assert.ok(joined.includes('Panel (hard turn): claude, codex'), 'composition header surfaces in normal mode');
     // Synthesizer prose still streams under the turn marker.
     assert.ok(joined.includes('Synthesized answer.'), 'synthesizer answer is shown');
   });
@@ -1606,7 +1606,7 @@ describe('renderStream — panel "Waiting on N models" state machine', () => {
     const sink = makePanelSink();
     const events: CoreEvent[] = [
       // Hedge surfaces a human notice but NO phase event.
-      { type: 'notice', level: 'info', message: 'hedge: primary slow — starting speculative flagship' },
+      { type: 'notice', level: 'info', message: 'hedge: primary slow — starting flagship in parallel (now 2 quota-consuming runs)' },
       { type: 'tier-start', tier: 'ic', provider: 'claude', model: 'claude-sonnet-4-6', attempt: 1 },
       { type: 'provider-event', tier: 'ic', event: { type: 'text', delta: 'One answer.' } },
       { type: 'tier-done', tier: 'ic', success: true, confidence: 0.9, costUsd: 0, inputTokens: 10, outputTokens: 5, durationMs: 100 },

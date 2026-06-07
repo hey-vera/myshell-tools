@@ -598,10 +598,17 @@ export async function* runPanel(
     return;
   }
 
+  // Up-front honesty: a panel is auto-engaged on a hard turn and it ALWAYS spends
+  // one provider run per candidate plus the synthesizer. State that cost here (the
+  // budget is quota + latency on a flat-rate plan, never dollars — so we count
+  // "quota-consuming runs", we do NOT call it free). The user sees this even when
+  // they never flipped a switch, because the mode preset auto-engaged it.
   yield {
     type: 'notice',
     level: 'info',
-    message: `Panel: ${plan.candidates.join(', ')} → synthesized by ${plan.synthesizer}`,
+    message:
+      `Panel (hard turn): ${plan.candidates.join(', ')} → synthesized by ${plan.synthesizer}` +
+      ` · ${plan.candidates.length + 1} quota-consuming runs, may take longer`,
   };
 
   // Phase 8 — a typed PANEL phase signal so the renderer drives the "Waiting on N

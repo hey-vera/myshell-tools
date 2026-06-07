@@ -1129,7 +1129,9 @@ export async function renderStream(
         // per docs/chat-presentation-5.5.md §4.2/§4.3. Other info notices stay
         // verbose-gated chrome. We key off the message shape (the only info notice
         // runPanel emits is the "Panel: …" line; hedge emits "primary slow …").
-        const isPanelHeader = ev.level === 'info' && ev.message.startsWith('Panel: ');
+        const isPanelHeader =
+          ev.level === 'info' &&
+          (ev.message.startsWith('Panel: ') || ev.message.startsWith('Panel (hard turn): '));
         const isHedgeNotice =
           ev.level === 'info' && ev.message.startsWith('hedge: primary slow');
         // The unknown-spend warning (orchestrate.ts, emitted on a timeout when the

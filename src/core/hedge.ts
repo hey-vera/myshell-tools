@@ -694,10 +694,13 @@ export async function* runHedged(
     // ===================================================================
     // CASE B: the delay elapsed first — the primary is still running.
     // ===================================================================
+    // The primary proved slow, so we now actually spend a SECOND provider run to
+    // hide escalation latency. Disclose that this is the moment quota cost doubles
+    // (1 → 2 runs) — honest, and only emitted when the cost is genuinely incurred.
     yield {
       type: 'notice',
       level: 'info',
-      message: 'hedge: primary slow — starting speculative flagship',
+      message: 'hedge: primary slow — starting flagship in parallel (now 2 quota-consuming runs)',
     };
 
     // Start the speculative flagship in parallel. Lift the manager ceiling
