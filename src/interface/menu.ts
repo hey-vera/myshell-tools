@@ -554,18 +554,24 @@ export async function runChatLoop(
   // Cheap + FULLY fail-soft (any error / missing cache → undefined → the ABOUT
   // block renders exactly as before; reasoning efforts stay "unknown"). NO model
   // call, NO network. Reads mutableCtx.env so it reflects the detected providers.
-  let capabilitySummary: CapabilitySelfAwarenessSummary | undefined;
-  // Stage 3: keep the STRUCTURED registry from the SAME snapshot (REUSED, never
-  // recomputed) so the per-turn deps build can thread it into orchestrate's
-  // route()/selectReasoningEffort. Absent on any fail-soft refresh failure →
-  // orchestrate gets no capability context, no effort flag (unchanged routing).
-  let capabilityRegistry: import('../core/model-capabilities.js').CapabilityRegistry | undefined;
-  let capabilitySummaryResolved = false;
+  // PER-SESSION capability cache (Stage 1/3). The objective capability summary +
+  // the STRUCTURED registry it was derived from, both resolved ONCE per chat
+  // session from the SAME snapshot (REUSED, never recomputed) and memoized behind
+  // `resolved`. `summary` feeds the self-awareness ABOUT block; `registry` is
+  // threaded into orchestrate's route()/selectReasoningEffort. Either absent on a
+  // fail-soft refresh failure → unchanged routing / the ABOUT block renders as
+  // before. Grouped into one object so the three cross-turn fields share one
+  // explicit holder instead of three free closure `let`s.
+  const caps: {
+    summary: CapabilitySelfAwarenessSummary | undefined;
+    registry: import('../core/model-capabilities.js').CapabilityRegistry | undefined;
+    resolved: boolean;
+  } = { summary: undefined, registry: undefined, resolved: false };
   const resolveCapabilitySummaryOnce = async (): Promise<
     CapabilitySelfAwarenessSummary | undefined
   > => {
-    if (capabilitySummaryResolved) return capabilitySummary;
-    capabilitySummaryResolved = true;
+    if (caps.resolved) return caps.summary;
+    caps.resolved = true;
     try {
       const { registry } = await refreshCapabilities(
         {
@@ -582,8 +588,8 @@ export async function runChatLoop(
         },
         createCapabilityRefreshPort(process.env, ctx.cwd),
       );
-      capabilityRegistry = registry;
-      capabilitySummary = buildCapabilitySummary(
+      caps.registry = registry;
+      caps.summary = buildCapabilitySummary(
         registry,
         {
           claude: mutableCtx.env.claude.authenticated,
@@ -593,10 +599,10 @@ export async function runChatLoop(
         (p) => PROVIDER_LABEL[p] ?? p,
       );
     } catch {
-      capabilitySummary = undefined;
-      capabilityRegistry = undefined;
+      caps.summary = undefined;
+      caps.registry = undefined;
     }
-    return capabilitySummary;
+    return caps.summary;
   };
 
   // Quota-shed (whole-tool-finish §3.2): derive the per-turn shed plan from the
@@ -896,7 +902,7 @@ export async function runChatLoop(
       hasQuestions,
       hasMemoryProposal,
       queuedCount: queuedTurns.length,
-      interrupted: interruptedByEsc || shouldExit || shouldMenu,
+      interrupted: interruptedByEsc || control.exit || control.menu,
     });
     for (const action of actions) {
       if (action === 'discard-typeahead') {
@@ -908,7 +914,7 @@ export async function runChatLoop(
           // user could otherwise expect to run (interrupt, a pending question,
           // or a pending memory-approval selector). On a clean settle with no
           // selector, drain-queue runs and there is nothing to discard.
-          if (interruptedByEsc || shouldExit || shouldMenu || hasQuestions || hasMemoryProposal) {
+          if (interruptedByEsc || control.exit || control.menu || hasQuestions || hasMemoryProposal) {
             renderDiscardedQueue(out, queuedTurns.length, reason);
             queuedTurns.length = 0;
           }
@@ -927,10 +933,16 @@ export async function runChatLoop(
     }
   };
 
-  // The 'exit' and 'menu' signals are communicated from the SIGINT handler to
-  // the main loop via these flags (the handler can't break the outer while directly).
-  let shouldExit = false;
-  let shouldMenu = false;
+  // Loop-control signal state, grouped into one explicit holder. The 'exit' and
+  // 'menu' signals are communicated from the SIGINT handler to the main loop via
+  // `exit`/`menu` (the handler can't break the outer while directly); `result` is
+  // the value runChatLoop returns once the loop settles. One object instead of
+  // three free closure `let`s — same fields, same timing.
+  const control: { exit: boolean; menu: boolean; result: 'menu' | 'exit' } = {
+    exit: false,
+    menu: false,
+    result: 'menu',
+  };
 
   // Handle Ctrl+C with the press-counting model.
   const sigintHandler = (): void => {
@@ -951,8 +963,8 @@ export async function runChatLoop(
         currentAc.abort();
         currentAc = null;
       }
-      // Set shouldMenu so the loop returns 'menu' after any running task settles.
-      shouldMenu = true;
+      // Set control.menu so the loop returns 'menu' after any running task settles.
+      control.menu = true;
       // For the readLine case (idle prompt) we can interrupt the await immediately
       // via the loopBreaker resolver.
       loopBreaker?.('menu');
@@ -962,7 +974,7 @@ export async function runChatLoop(
         currentAc.abort();
         currentAc = null;
       }
-      shouldExit = true;
+      control.exit = true;
       loopBreaker?.('exit');
     }
   };
@@ -1015,8 +1027,6 @@ export async function runChatLoop(
 
   process.on('SIGINT', sigintHandler);
 
-  let loopResult: 'menu' | 'exit' = 'menu';
-
   try {
     while (true) {
       const promptColumns = process.stdout.columns;
@@ -1042,11 +1052,11 @@ export async function runChatLoop(
 
       // SIGINT-driven exit signals
       if (line === 'menu') {
-        loopResult = 'menu';
+        control.result = 'menu';
         break;
       }
       if (line === 'exit') {
-        loopResult = 'exit';
+        control.result = 'exit';
         break;
       }
 
@@ -1062,11 +1072,11 @@ export async function runChatLoop(
       // control signal for the outer loop.
       const signal = await runOneChatInput(line);
       if (signal === 'menu') {
-        loopResult = 'menu';
+        control.result = 'menu';
         break;
       }
       if (signal === 'exit') {
-        loopResult = 'exit';
+        control.result = 'exit';
         break;
       }
     }
@@ -1075,13 +1085,13 @@ export async function runChatLoop(
     loopBreaker = null;
   }
 
-  return loopResult;
+  return control.result;
 
   // -------------------------------------------------------------------------
   // runOneChatInput — process a single chat input (prompt OR queued), run its
   // turn, then drive the canonical post-turn slot (decidePostTurn). Hoisted as a
   // function declaration so the loop above can call it before its definition;
-  // it closes over the loop's mutable state (currentAc, shouldExit/Menu, queue).
+  // it closes over the loop's mutable state (currentAc, control.exit/menu, queue).
   // -------------------------------------------------------------------------
   async function runOneChatInput(line: string): Promise<'continue' | 'menu' | 'exit'> {
     if (line === '/exit' || line === '/back') {
@@ -1492,7 +1502,7 @@ export async function runChatLoop(
           smartRoute: mutableCtx.config.smartRoute !== false,
           // Objective capability summary (Stage 1, §4) — memoized once per session
           // by resolveCapabilitySummaryOnce; absent → the block renders as before.
-          ...(capabilitySummary !== undefined ? { capabilitySummary } : {}),
+          ...(caps.summary !== undefined ? { capabilitySummary: caps.summary } : {}),
         });
 
         return {
@@ -1512,7 +1522,7 @@ export async function runChatLoop(
           // self-awareness summary was derived from (resolveCapabilitySummaryOnce),
           // REUSED here so orchestrate's route()/selectReasoningEffort can use it.
           // Absent → no capability context, no effort flag (unchanged routing).
-          ...(capabilityRegistry !== undefined ? { capabilityRegistry } : {}),
+          ...(caps.registry !== undefined ? { capabilityRegistry: caps.registry } : {}),
           ...(nativeSession.length > 0 ? { nativeSession } : {}),
           ...(routeClassifier !== undefined ? { routeClassifier } : {}),
           ...(intentExtractor !== undefined ? { intentExtractor } : {}),
@@ -1681,7 +1691,7 @@ export async function runChatLoop(
           );
           currentAc = null;
 
-          if (shouldExit || shouldMenu || interruptedByEsc) break;
+          if (control.exit || control.menu || interruptedByEsc) break;
 
           pending = answerResult.final;
         }
@@ -1700,7 +1710,7 @@ export async function runChatLoop(
       // history each turn so the model sees its own progress, bounded by a turn
       // ceiling and Esc. Returns true when the outer chat loop should break
       // (Ctrl+C → menu/exit). Closes over the per-turn buildDeps + the shared
-      // currentAc/shouldExit/shouldMenu/loopResult flags.
+      // currentAc/control.exit/control.menu/control.result flags.
       const runGoalLoop = async (goalText: string): Promise<boolean> => {
         let goalContract = capContract({ version: 1, objective: goalText });
         // Title a still-untitled conversation from the goal (no-op if already set).
@@ -1766,8 +1776,8 @@ export async function runChatLoop(
           currentAc = null;
           noteRateLimit(turn);
           completed = i + 1;
-          if (shouldExit) { loopResult = 'exit'; return true; }
-          if (shouldMenu) { loopResult = 'menu'; return true; }
+          if (control.exit) { control.result = 'exit'; return true; }
+          if (control.menu) { control.result = 'menu'; return true; }
           // ESC interrupts the goal loop and returns to the chat prompt (it does
           // not exit/menu). Discard any typed-ahead so it can't run unexpectedly.
           if (interruptedByEsc) {
@@ -1781,8 +1791,8 @@ export async function runChatLoop(
           if (turn.final?.success === true && turn.final.questions !== undefined) {
             out.write(dim('\n  The goal run needs your input before it can continue.\n', out.color));
             await runStructuredQuestionFlow(turn.final);
-            if (shouldExit) { loopResult = 'exit'; return true; }
-            if (shouldMenu) { loopResult = 'menu'; return true; }
+            if (control.exit) { control.result = 'exit'; return true; }
+            if (control.menu) { control.result = 'menu'; return true; }
             break;
           }
 
@@ -1907,7 +1917,7 @@ export async function runChatLoop(
           out.write(dim('  Usage: /goal <what you want achieved> — I work autonomously until it\'s done (Ctrl+C to stop).\n', out.color));
           return 'continue';
         }
-        if (await runGoalLoop(goalText)) return loopResult;
+        if (await runGoalLoop(goalText)) return control.result;
         return 'continue';
       }
 
@@ -1934,7 +1944,7 @@ export async function runChatLoop(
           autoGoalEnabled: true,
         });
         if (autonomy.kind === 'auto_engage') {
-          if (await runGoalLoop(line)) return loopResult;
+          if (await runGoalLoop(line)) return control.result;
           return 'continue';
         }
       }
@@ -1955,13 +1965,13 @@ export async function runChatLoop(
       }
 
       // Check for SIGINT-driven signals that fired while runTask was awaited.
-      if (shouldExit) {
-        loopResult = 'exit';
+      if (control.exit) {
+        control.result = 'exit';
         return 'exit';
       }
-      // Bug 3 fix: shouldMenu may have been set by a 2×Ctrl+C during the task.
-      if (shouldMenu) {
-        loopResult = 'menu';
+      // Bug 3 fix: control.menu may have been set by a 2×Ctrl+C during the task.
+      if (control.menu) {
+        control.result = 'menu';
         return 'menu';
       }
 
@@ -2007,12 +2017,12 @@ export async function runChatLoop(
             out.write('\nInterrupted.\n');
             return 'continue';
           }
-          if (shouldExit) {
-            loopResult = 'exit';
+          if (control.exit) {
+            control.result = 'exit';
             return 'exit';
           }
-          if (shouldMenu) {
-            loopResult = 'menu';
+          if (control.menu) {
+            control.result = 'menu';
             return 'menu';
           }
           // If still auth failure after retry, inform and continue to prompt.
@@ -2046,7 +2056,7 @@ export async function runChatLoop(
         out.write('\n  ' + dim('I can keep working on it autonomously, step by step.', out.color) + '\n');
         out.write(`  Keep working on it autonomously, step by step, until it's done? ${yesNoHint('yes', out.color)} `);
         if (await confirm(true)) {
-          if (await runGoalLoop(line)) return loopResult;
+          if (await runGoalLoop(line)) return control.result;
         }
         return 'continue';
       }
@@ -2065,7 +2075,7 @@ export async function runChatLoop(
         out.write('\n  ' + dim("I can keep working on this autonomously until it's done.", out.color) + '\n');
         out.write(`  Keep going? ${yesNoHint('yes', out.color)} `);
         if (await confirm(true)) {
-          if (await runGoalLoop(line)) return loopResult;
+          if (await runGoalLoop(line)) return control.result;
         }
         return 'continue';
       }
@@ -2082,12 +2092,12 @@ export async function runChatLoop(
         result.final,
         () => runStructuredQuestionFlow(result.final),
         async () => {
-          while (queuedTurns.length > 0 && !shouldExit && !shouldMenu) {
+          while (queuedTurns.length > 0 && !control.exit && !control.menu) {
             const next = queuedTurns.shift();
             if (next === undefined) break;
             const drainSignal = await runOneChatInput(next);
-            if (drainSignal === 'menu') { shouldMenu = true; loopResult = 'menu'; break; }
-            if (drainSignal === 'exit') { shouldExit = true; loopResult = 'exit'; break; }
+            if (drainSignal === 'menu') { control.menu = true; control.result = 'menu'; break; }
+            if (drainSignal === 'exit') { control.exit = true; control.result = 'exit'; break; }
           }
         },
         // Memory-approval: only when memory writes are ON and the (already
@@ -2113,12 +2123,12 @@ export async function runChatLoop(
             }
           : undefined,
       );
-      if (shouldExit) {
-        loopResult = 'exit';
+      if (control.exit) {
+        control.result = 'exit';
         return 'exit';
       }
-      if (shouldMenu) {
-        loopResult = 'menu';
+      if (control.menu) {
+        control.result = 'menu';
         return 'menu';
       }
       return 'continue';
