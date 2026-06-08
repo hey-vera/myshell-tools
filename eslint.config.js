@@ -13,7 +13,7 @@ export default tseslint.config(
 
   // Base rules for all TypeScript source files
   {
-    files: ['src/**/*.ts', 'test/**/*.ts'],
+    files: ['src/**/*.ts', 'src/**/*.tsx', 'test/**/*.ts', 'test/**/*.tsx'],
     rules: {
       '@typescript-eslint/no-unused-vars': [
         'error',
@@ -25,7 +25,7 @@ export default tseslint.config(
 
   // Allow console in UI, interface, and CLI entry-point files
   {
-    files: ['src/ui/**/*.ts', 'src/interface/**/*.ts', 'src/cli.ts'],
+    files: ['src/ui/**/*.ts', 'src/interface/**/*.ts', 'src/interface/**/*.tsx', 'src/cli.ts'],
     rules: {
       'no-console': 'off',
     },
@@ -34,7 +34,7 @@ export default tseslint.config(
   // Tests may use non-null assertions after explicit existence assertions —
   // a wrong assumption simply fails the test, so the strictness buys nothing here.
   {
-    files: ['test/**/*.ts'],
+    files: ['test/**/*.ts', 'test/**/*.tsx'],
     rules: {
       '@typescript-eslint/no-non-null-assertion': 'off',
       // ANSI-detection regexes legitimately contain the ESC control char.

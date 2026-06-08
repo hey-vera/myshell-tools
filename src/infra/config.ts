@@ -173,6 +173,14 @@ export interface AppConfig {
    */
   memoryMaxFactsPerScope?: number;
   /**
+   * EXPERIMENTAL Ink chat UI (default off). When true (or with `MYSHELL_INK`
+   * truthy in the environment), the interactive menu mounts the new Ink-based
+   * renderer instead of the legacy raw-mode render/readline path. Step 1 ships a
+   * minimal skeleton (transcript + input box) behind this flag; the legacy path
+   * is byte-identical when it is absent/false. See src/interface/ui/.
+   */
+  experimentalInk?: boolean;
+  /**
    * Per-user "first-touch explainer shown" flags (whole-tool-finish-5.5.md §0.1).
    * Absent → nothing shown yet (each surface explains itself once on first
    * encounter). Each key flips to true the first time that surface is met.

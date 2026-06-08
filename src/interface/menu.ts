@@ -124,6 +124,7 @@ import {
   type KeyInputStream,
   createLineReader,
 } from './menu-readline.js';
+import { inkEnabled } from './ui/flag.js';
 import {
   type Confirm,
   attachChatTurnKeyListener,
@@ -2178,6 +2179,30 @@ export async function runChatLoop(
  * that EOF resolves gracefully instead of throwing.
  */
 export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void> {
+  // EXPERIMENTAL Ink UI (Step 1, default OFF). When the flag is on AND we are
+  // not under an injected test reader, mount the minimal Ink skeleton instead of
+  // the legacy raw-mode loop. The Ink mount is behind a DYNAMIC import so the
+  // default (flag-off) path never loads ink/react and pays zero startup cost.
+  // When the flag is off this whole block is a single false branch — the legacy
+  // path below runs byte-identically.
+  if (ctx.readLine === undefined && inkEnabled(process.env, ctx.config)) {
+    const { mountInk } = await import('./ui/mount.js');
+    const handle = mountInk({ color: out.color, isTty: out.isTty });
+    try {
+      // Minimal Step-1 loop: echo submitted lines into the transcript so the
+      // skeleton is observably alive. The real menu/chat wiring lands in later
+      // steps; `:quit` exits.
+      for (;;) {
+        const line = await handle.reader.nextLine();
+        if (line === null || line === ':quit') break;
+        handle.out.write(`${line}\n`);
+      }
+    } finally {
+      handle.unmount();
+    }
+    return;
+  }
+
   // Resolve injected seams — use the real implementations when not provided.
   const installProviderFn = ctx.installProvider !== undefined ? ctx.installProvider : installProvider;
   const loginFn = ctx.login !== undefined ? ctx.login : runLogin;
