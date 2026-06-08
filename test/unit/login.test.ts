@@ -121,10 +121,11 @@ describe('resolveLoginMethod — explicit method overrides detection', () => {
   });
 });
 
-describe('getLoginCommand — opencode uses the OAuth provider picker (no -p opencode)', () => {
-  // GUARDRAIL: subscription-OAuth-only. `-p opencode` forces the API-key gateway,
-  // so we must NOT pass it — the bare `auth login` shows the provider picker where
-  // the user selects an OAuth/subscription provider.
+describe('getLoginCommand — opencode uses the provider picker (no -p opencode)', () => {
+  // Bare `auth login` opens opencode's provider picker so the user can choose any
+  // provider — OpenCode Zen (recommended) or one they have access to. `-p opencode`
+  // would pin a single provider, so we must NOT pass it. opencode stores the chosen
+  // credential itself (oauth OR api); myshell never sees it.
   it('uses opencode auth login (provider picker) for browser/default login', () => {
     assert.deepEqual(getLoginCommand('opencode', 'browser'), {
       bin: 'opencode',
@@ -139,11 +140,11 @@ describe('getLoginCommand — opencode uses the OAuth provider picker (no -p ope
     });
   });
 
-  it('never forces the api-key gateway (-p opencode) in either method', () => {
+  it('never pins a single provider (-p opencode) in either method', () => {
     for (const method of ['browser', 'code'] as const) {
       assert.ok(
         !getLoginCommand('opencode', method).args.includes('-p'),
-        `opencode ${method} login must not pass -p (forces API-key gateway)`,
+        `opencode ${method} login must not pass -p (would pin one provider; use the picker)`,
       );
     }
   });

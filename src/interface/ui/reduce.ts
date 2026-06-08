@@ -298,7 +298,13 @@ export function reduce(state: UiState, action: Action): UiState {
     //       Verbose commits the per-tier telemetry line.
     case 'stream/flush-tier': {
       const isVerbose = action.verbosity === 'verbose';
-      const tierTokens = action.inputTokens + action.outputTokens;
+      // Clamp the per-tier token figure at the accumulation point: a malformed
+      // provider usage event (NaN, Infinity, or negative input/output counts)
+      // must never poison the running turn/session totals or the TokenMeter
+      // (which would render `NaN` / a negative figure). Floor at 0 and treat any
+      // non-finite sum as 0.
+      const rawTierTokens = action.inputTokens + action.outputTokens;
+      const tierTokens = Number.isFinite(rawTierTokens) ? Math.max(0, rawTierTokens) : 0;
       const telemetry: TranscriptLine = {
         kind: 'telemetry',
         text:

@@ -66,6 +66,16 @@ export interface LineReader {
   drainBuffered(): string[];
   /** Drop any buffered lines without returning them. */
   clearBuffered(): void;
+  /**
+   * Resolve every outstanding `nextLine()` awaiter with `null` and drop them from
+   * the queue. Used when a foreground `nextLine()` await is abandoned by another
+   * settled race (e.g. SIGINT-to-menu resolves the outer prompt promise): without
+   * this, the orphaned resolver lingers in `waiters[]` and the next typed line is
+   * delivered FIFO to that dead resolver (a no-op) — silently swallowing the
+   * keystroke. Idempotent and safe when no waiters are pending. Does NOT touch the
+   * buffer, capture, or closed state.
+   */
+  cancelPending(): void;
 }
 
 export interface ReadlineEchoController {
@@ -253,6 +263,14 @@ export function createLineReader(
     },
     clearBuffered(): void {
       buffered.length = 0;
+    },
+    cancelPending(): void {
+      // Resolve+drop every orphaned awaiter so a line typed after an abandoned
+      // nextLine() await isn't delivered FIFO to a dead resolver and swallowed.
+      while (waiters.length > 0) {
+        const waiter = waiters.shift();
+        if (waiter !== undefined) waiter(null);
+      }
     },
   };
 }

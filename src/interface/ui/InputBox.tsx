@@ -129,6 +129,16 @@ export interface InputBoxProps {
   /** Right-pinned composer chip. Omitted keeps the default chat hints. */
   readonly info?: string | undefined;
   /**
+   * Whether the composer CHROME is rendered. `true` (default) → the full chat
+   * surface (bordered box / caret) is shown — used during an ACTIVE CHAT. `false`
+   * → the box renders NOTHING (no `─ chat ─┌ … ┐` rule, no `❯` caret) but the
+   * editor's `useInput` + `useStdin` hooks stay mounted and ACTIVE, so Ink keeps
+   * raw mode armed and the LineReader's suspend()/resume() stdin control stays
+   * registered. The App passes `chatActive` here: the composer appears ONLY in a
+   * chat conversation, never in the menu / auth-login / settings sub-flows.
+   */
+  readonly visible?: boolean;
+  /**
    * When true the editor is SUSPENDED for an inherited-stdio child handoff: its
    * `useInput` goes `isActive: false` so Ink relinquishes its raw-mode refcount
    * and the child becomes the sole reader of the TTY. Default false.
@@ -258,6 +268,7 @@ export function InputBox({
   isTty,
   columns,
   info,
+  visible = true,
   suspended = false,
   onStdinControl,
   onEscape,
@@ -491,6 +502,16 @@ export function InputBox({
   // -------------------------------------------------------------------------
   // Rendering
   // -------------------------------------------------------------------------
+
+  // Composer hidden (NOT a chat conversation: menu / auth-login / settings). Render
+  // NO chrome — the `useInput`/`useStdin` hooks above stay mounted and active, so
+  // Ink keeps raw mode armed (menu single-key nav via <KeyCapture> works) and the
+  // LineReader's suspend()/resume() stdin control stays registered. We MUST keep an
+  // empty <Box> (not literal null) so this component still returns a ReactElement —
+  // and so a re-mount isn't forced when toggling visibility (the hooks persist).
+  if (!visible) {
+    return <Box />;
+  }
 
   // Split the edit buffer into its display rows. The caret row/col is derived
   // from the flat cursor so movement lands on the correct row. When the buffer

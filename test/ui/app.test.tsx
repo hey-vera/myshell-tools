@@ -10,10 +10,37 @@ import React from 'react';
 import { render } from 'ink-testing-library';
 import { App, ErrorBoundary, createInkAppBridge } from '../../src/interface/ui/App.js';
 
-test('idle <App> renders the input caret', () => {
+test('idle <App> hides the composer until a chat is active (default chatActive=false)', () => {
   const bridge = createInkAppBridge();
   const { lastFrame } = render(<App bridge={bridge} />);
-  assert.ok(lastFrame()?.includes('❯'), `expected caret in frame, got:\n${lastFrame()}`);
+  const frame = lastFrame() ?? '';
+  // The app opens at the MENU: no chat composer (no caret, no `─ chat ─` rule).
+  assert.ok(!frame.includes('❯'), `expected NO caret in the idle/menu frame, got:\n${frame}`);
+  assert.ok(!frame.includes('─ chat '), `expected NO chat rule in the idle/menu frame, got:\n${frame}`);
+});
+
+test('composer appears only when chatActive is set true, and hides again on false', async () => {
+  const bridge = createInkAppBridge();
+  const { lastFrame } = render(<App bridge={bridge} />);
+  await new Promise((r) => setTimeout(r, 20));
+  // Hidden while at the menu.
+  assert.ok(!(lastFrame() ?? '').includes('❯'), `composer must be hidden before chatActive=true:\n${lastFrame()}`);
+
+  // Entering a chat conversation shows the composer.
+  bridge.setChatActive(true);
+  await new Promise((r) => setTimeout(r, 20));
+  assert.ok((lastFrame() ?? '').includes('❯'), `composer must appear when chatActive=true:\n${lastFrame()}`);
+
+  // Returning to the menu hides it again.
+  bridge.setChatActive(false);
+  await new Promise((r) => setTimeout(r, 20));
+  assert.ok(!(lastFrame() ?? '').includes('❯'), `composer must hide again when chatActive=false:\n${lastFrame()}`);
+});
+
+test('setChatActive is a safe no-op before the App mounts', () => {
+  const bridge = createInkAppBridge();
+  // No App mounted yet → no _setChatActive wired; must not throw.
+  assert.doesNotThrow(() => bridge.setChatActive(true));
 });
 
 test('committed lines appear in the transcript', async () => {

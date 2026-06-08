@@ -13,7 +13,7 @@ import {
   parseClaudeAuth,
   parseCodexAuth,
   parseOpencodeAuth,
-  opencodeOauthCredentialCount,
+  opencodeCredentialCount,
   resolveOpencodeAuthPath,
   parseOpencodeModels,
   getInstallCommand,
@@ -348,48 +348,53 @@ describe('opencode — detection rationale: installed implies authenticated (fre
 });
 
 // ---------------------------------------------------------------------------
-// parseOpencodeAuth / opencodeOauthCredentialCount — OAuth-only guardrail.
-// myshell-tools is subscription-OAuth-only: opencode is authenticated ONLY when
-// its auth.json holds ≥1 credential of `type:"oauth"`. API-key-only does NOT count.
+// parseOpencodeAuth / opencodeCredentialCount — opencode-broker recognition.
+// myshell itself never stores or sees the secret; it DELEGATES sign-in to opencode,
+// which stores the credential in its own secure auth.json. So opencode is
+// authenticated whenever it holds ≥1 recognized credential of EITHER `type:"oauth"`
+// OR `type:"api"` (e.g. an OpenCode Zen gateway key). From that one credential
+// opencode brokers many models (e.g. Kimi via opencode-go).
 // ---------------------------------------------------------------------------
 
-describe('parseOpencodeAuth — OAuth-only guardrail', () => {
+describe('parseOpencodeAuth — opencode holds the secret (oauth OR api counts)', () => {
   it('authenticated when an oauth credential is present', () => {
     const raw = JSON.stringify({
       anthropic: { type: 'oauth', access: 'a', refresh: 'r', expires: 123 },
     });
     const r = parseOpencodeAuth(raw);
     assert.equal(r.authenticated, true);
-    assert.equal(r.oauthCredentialCount, 1);
+    assert.equal(r.credentialCount, 1);
   });
 
-  it('NOT authenticated when only api-key credentials are present', () => {
+  it('authenticated when only an api-key credential is present (opencode stores it, e.g. OpenCode Zen)', () => {
     const raw = JSON.stringify({
       opencode: { type: 'api', key: 'sk-xxx' },
       openai: { type: 'api', key: 'sk-yyy' },
     });
     const r = parseOpencodeAuth(raw);
-    assert.equal(r.authenticated, false);
-    assert.equal(r.oauthCredentialCount, 0);
+    assert.equal(r.authenticated, true);
+    assert.equal(r.credentialCount, 2);
   });
 
-  it('authenticated for a mix of oauth + api-key (the oauth one qualifies)', () => {
+  it('counts both oauth and api credentials in a mixed file', () => {
     const raw = JSON.stringify({
       anthropic: { type: 'oauth', access: 'a' },
       openai: { type: 'api', key: 'sk-yyy' },
     });
     const r = parseOpencodeAuth(raw);
     assert.equal(r.authenticated, true);
-    assert.equal(r.oauthCredentialCount, 1);
+    assert.equal(r.credentialCount, 2);
   });
 
-  it('counts every oauth credential in a multi-oauth file', () => {
+  it('counts every recognized (oauth/api) credential, ignoring unrecognized types', () => {
     const raw = JSON.stringify({
       anthropic: { type: 'oauth' },
       'github-copilot': { type: 'oauth' },
       openai: { type: 'api' },
+      bogus: { type: 'something-else' },
+      alsoBogus: { notAType: true },
     });
-    assert.equal(opencodeOauthCredentialCount(raw), 2);
+    assert.equal(opencodeCredentialCount(raw), 3);
   });
 
   it('NOT authenticated for empty / garbage / non-object input (fail-soft)', () => {
@@ -398,8 +403,10 @@ describe('parseOpencodeAuth — OAuth-only guardrail', () => {
     assert.equal(parseOpencodeAuth('{}').authenticated, false);
     assert.equal(parseOpencodeAuth('[]').authenticated, false);
     assert.equal(parseOpencodeAuth('null').authenticated, false);
-    assert.equal(opencodeOauthCredentialCount(''), 0);
-    assert.equal(opencodeOauthCredentialCount('garbage'), 0);
+    assert.equal(opencodeCredentialCount(''), 0);
+    assert.equal(opencodeCredentialCount('garbage'), 0);
+    // An object with no recognized credential type is still not authenticated.
+    assert.equal(parseOpencodeAuth('{"x":{"type":"weird"}}').authenticated, false);
   });
 });
 

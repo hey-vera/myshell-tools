@@ -93,8 +93,25 @@ export function tailStreamToRows(buffer: string, columns: number, cap: number): 
 // Row constants
 // ---------------------------------------------------------------------------
 
-/** Rows the pinned <InputBox> occupies: top border + caret row + bottom border. */
+/** Rows the pinned <InputBox> occupies at rest: top border + caret row + bottom
+ *  border. The single-line default; a multiline/pasted composer is taller. */
 export const INPUT_ROWS = 3;
+/**
+ * WORST-CASE rows the pinned <InputBox> can occupy: its top + bottom border (2)
+ * plus the editor's own MAX_VISIBLE_ROWS body cap (InputBox.tsx clamps a huge
+ * paste to its last 10 visible rows). The layout budget reserves this so a tall
+ * composer + panel + stream can never exceed the viewport and re-trigger the
+ * Ink scrollback-duplication bug.
+ *
+ * Tradeoff (documented): we reserve the worst case rather than the composer's
+ * LIVE height. The alternative — lifting the InputBox's private edit-buffer row
+ * count up to App — would couple a per-keystroke child setState into the parent
+ * render on every edit, which is materially more invasive than this constant and
+ * buys only a few extra stream rows while the composer is short. Over-reserving
+ * is the SAFE direction (it only shrinks the live <Stream> tail a little); under-
+ * reserving is the bug we are fixing. Keep INPUT_ROWS_MAX = MAX_VISIBLE_ROWS + 2.
+ */
+export const INPUT_ROWS_MAX = 12;
 /** Rows the spinner / "Waiting on N models" status line occupies. */
 export const STATUS_LINE_ROWS = 1;
 /** The two rounded-border rows of the GOALS panel (top + bottom). */
@@ -188,11 +205,16 @@ export function compactGoalsSummary(goals: readonly GoalView[], turnTokens: numb
  * @param rows  - the terminal height (already width-backfilled by mount).
  * @param streamLines - how many lines the live <Stream> buffer currently has
  *   (the consumer passes the wrapped line count; defaults to a 1-line estimate).
+ * @param inputRows - rows the pinned <InputBox> will actually occupy this frame
+ *   (the consumer passes the composer's rendered height, e.g. {@link INPUT_ROWS_MAX}
+ *   for a multiline/pasted buffer). Defaults to {@link INPUT_ROWS} so existing
+ *   callers/tests keep the single-line budget unchanged.
  */
 export function layoutForHeight(
   state: UiState,
   rows: number,
   streamLines = state.stream.buffer.length > 0 ? 1 : 0,
+  inputRows: number = INPUT_ROWS,
 ): StatusLayout {
   if (!state.turnActive) {
     return { visible: false, goals: { kind: 'hidden' }, streamCap: 0, plannedRows: 0 };
@@ -200,8 +222,10 @@ export function layoutForHeight(
 
   // The budget the dynamic region (panel + status line + stream) may occupy: the
   // viewport minus the always-present input box minus a safety margin. Floored at
-  // 1 so the status line always survives.
-  const budget = Math.max(1, rows - INPUT_ROWS - SAFETY_MARGIN_ROWS);
+  // 1 so the status line always survives. `inputRows` is the composer's ACTUAL
+  // rendered height (single-line default; worst-case for a tall/pasted buffer) so
+  // a multiline composer cannot push the dynamic region past the viewport.
+  const budget = Math.max(1, rows - Math.max(1, Math.floor(inputRows)) - SAFETY_MARGIN_ROWS);
 
   const goals = state.goals;
   const hasGoals = goals.length > 0;

@@ -315,6 +315,16 @@ export function createInkLineReader(bridge: InkAppBridge): LineReader {
     clearBuffered(): void {
       buffered.length = 0;
     },
+    cancelPending(): void {
+      // Resolve+drop every orphaned awaiter so a line typed after an abandoned
+      // nextLine() await isn't delivered FIFO to a dead resolver and swallowed.
+      // Parity with menu-readline.ts createLineReader.cancelPending. Does NOT
+      // touch buffer/capture/closed state.
+      while (waiters.length > 0) {
+        const waiter = waiters.shift();
+        if (waiter !== undefined) waiter(null);
+      }
+    },
   };
 }
 
@@ -385,6 +395,13 @@ export interface InkMountHandle {
    */
   setInterrupt(handler: (() => void) | null): void;
   setInputInfo(info: InputBoxInfo | null): void;
+  /**
+   * Flip whether an active chat conversation is in progress. `true` shows the chat
+   * composer; `false` (the default — menu / auth-login / settings) hides it. The
+   * menu loop calls this `true` at `runChatLoop` entry and `false` on exit. See
+   * {@link InkAppBridge.setChatActive}.
+   */
+  setChatActive(active: boolean): void;
   /**
    * Drive one model turn's CoreEvent stream into the reducer-backed transcript
    * (the STEP-3b streaming path). Same return shape as render.ts `renderStream`.
@@ -479,6 +496,7 @@ export function mountInk(opts: InkMountOptions): InkMountHandle {
     readKey: () => bridge.readKey(),
     setInterrupt: (handler) => bridge.setInterrupt(handler),
     setInputInfo: (info) => bridge.setInputInfo(info),
+    setChatActive: (active) => bridge.setChatActive(active),
     renderTurn,
     waitUntilExit: async () => {
       await instance.waitUntilExit();

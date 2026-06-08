@@ -28,7 +28,7 @@
  * endpoint. Never throws — every path resolves to a RefreshResult.
  */
 
-import { readFile, writeFile, copyFile, rename, mkdir, rm } from 'node:fs/promises';
+import { readFile, writeFile, copyFile, rename, mkdir, rm, chmod } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, dirname } from 'node:path';
@@ -293,6 +293,18 @@ export async function refreshClaudeOauthIfNeeded(opts: RefreshOpts = {}): Promis
   const thresholdMs = opts.thresholdMs ?? DEFAULT_THRESHOLD_MS;
   const fetcher = opts.fetcher ?? fetchRefreshedToken;
   const credsPath = opts.credsPath ?? resolveClaudeCredsPath(env, cwd, home);
+  const backup = `${credsPath}.myshell-bak`;
+  const tmp = `${credsPath}.myshell-tmp`;
+
+  // Hygiene: clear any token-bearing scratch files a prior crash (between
+  // copyFile and rm) may have left on disk. Best-effort; never throws out of the
+  // refresh.
+  try {
+    await rm(backup, { force: true });
+    await rm(tmp, { force: true });
+  } catch {
+    /* best-effort cleanup of stale scratch files */
+  }
 
   try {
     let raw: string;
@@ -332,10 +344,17 @@ export async function refreshClaudeOauthIfNeeded(opts: RefreshOpts = {}): Promis
     }
 
     const next = applyRefreshToCreds(rawObj, resp, nowMs);
-    const backup = `${credsPath}.myshell-bak`;
     try {
       await copyFile(credsPath, backup); // backup before touching the live file
-      const tmp = `${credsPath}.myshell-tmp`;
+      // copyFile does NOT force the destination mode (it inherits the umask /
+      // pre-existing perms), so a token-bearing backup could be group/world-
+      // readable for the window before rm. Pin it to 0o600 immediately. Best-
+      // effort: a chmod failure must not abort the refresh.
+      try {
+        await chmod(backup, 0o600);
+      } catch {
+        /* best-effort: backup mode pin */
+      }
       await writeFile(tmp, JSON.stringify(next), { mode: 0o600 });
       await rename(tmp, credsPath); // atomic swap
       await rm(backup, { force: true });

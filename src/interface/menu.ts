@@ -527,6 +527,11 @@ export async function runChatLoop(
   // the installed handler). Absent (legacy/test paths) → no-op, byte-identical.
   inkSetInterrupt?: (handler: (() => void) | null) => void,
   inkSetInputInfo?: (info: { readonly mode: string; readonly hints: readonly string[] } | null) => void,
+  // Ink chat-active seam. When provided (the Ink path), the App shows the full chat
+  // composer ONLY while this is true. Set true at entry (below) and false in the
+  // loop's finally on exit so returning to the menu hides the composer. Absent
+  // (legacy/test paths) → no-op, byte-identical. Mirrors inkSetInputInfo.
+  inkSetChatActive?: (active: boolean) => void,
 ): Promise<'menu' | 'exit'> {
   // -------------------------------------------------------------------------
   // RECAP (Phase 7, docs/recap-feature-5.5.md) — a ※ orientation line on resume
@@ -793,6 +798,9 @@ export async function runChatLoop(
     const entryMode = modeLabel(
       mutableCtx.config.mode ?? resolveAutoMode(mutableCtx.env),
     );
+    // Show the chat composer now that an active conversation is starting (the
+    // menu/sub-flows ran with it hidden). Cleared in the loop's finally on exit.
+    inkSetChatActive?.(true);
     if (inkSetInputInfo !== undefined) {
       inkSetInputInfo({ mode: entryMode, hints: ['/goal', '/help', '/back'] });
     } else {
@@ -1115,12 +1123,18 @@ export async function runChatLoop(
       });
       loopBreaker = null;
 
-      // SIGINT-driven exit signals
+      // SIGINT-driven exit signals. The loopBreaker resolver won the race against
+      // readLine(), so the nextLine() awaiter it raced is still parked in the
+      // shared LineReader's waiters[] — drop it (resolve null), or the first line
+      // typed in the menu we're about to break to is delivered FIFO to that dead
+      // resolver and silently swallowed.
       if (line === 'menu') {
+        lineReader?.cancelPending();
         control.result = 'menu';
         break;
       }
       if (line === 'exit') {
+        lineReader?.cancelPending();
         control.result = 'exit';
         break;
       }
@@ -1148,6 +1162,9 @@ export async function runChatLoop(
   } finally {
     process.removeListener('SIGINT', sigintHandler);
     loopBreaker = null;
+    // Hide the chat composer on exit (back to the menu / app exit) so it never
+    // lingers in the menu or sub-flows. Mirrors the entry inkSetChatActive(true).
+    inkSetChatActive?.(false);
   }
 
   return control.result;
@@ -2295,8 +2312,17 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
     // reassigning the seam bindings the shared loop below already uses.
     out = inkHandle.out;
     const handle = inkHandle;
-    inkRenderTurn = (events, _sink, verbosity) =>
-      handle.renderTurn(events, { verbosity });
+    inkRenderTurn = (events, _sink, verbosity) => {
+      // Parity with legacy renderStream's spinner clock: stamp the turn start and
+      // report wall-clock elapsed seconds so the Ink success line keeps its
+      // `· Ns` suffix (`✓ done · N tokens · 12s`). Mirrors mount.tsx's
+      // clock={() => Date.now()}; run-stream only reads this on a successful final.
+      const startMs = ctx.clock.now();
+      return handle.renderTurn(events, {
+        verbosity,
+        elapsedSecs: () => Math.max(0, Math.round((ctx.clock.now() - startMs) / 1000)),
+      });
+    };
   }
 
   // Resolve injected seams — use the real implementations when not provided.
@@ -2382,6 +2408,11 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
   const inkSetInputInfo:
     | ((info: { readonly mode: string; readonly hints: readonly string[] } | null) => void)
     | undefined = inkHandle !== null ? (info) => inkHandle.setInputInfo(info) : undefined;
+  // Ink chat-active setter — shows/hides the chat composer. runChatLoop sets it
+  // true at entry and false on exit so the composer appears ONLY in a conversation,
+  // never in the menu / auth-login / settings. Undefined off the Ink path.
+  const inkSetChatActive: ((active: boolean) => void) | undefined =
+    inkHandle !== null ? (active) => inkHandle.setChatActive(active) : undefined;
   const confirm = makeConfirm(out, readLine, ctx.confirm, false, inkReadKey);
   // Lets the login flow release stdin while an inherited-stdio child (e.g.
   // `claude auth login`) owns the terminal, then take it back. Returns the
@@ -2581,7 +2612,7 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
         // (conversations.ts append()), so create an untitled conversation and drop
         // straight into it.
         const meta = await ctx.store.create('');
-        const chatResult = await runChatLoop(ctx, mutableCtx, meta.id, out, readLine, loginFn, detectEnvironmentFn, confirm, suspendStdin, lineReader, inkRenderTurn, inkReadKey, inkSetInterrupt, inkSetInputInfo);
+        const chatResult = await runChatLoop(ctx, mutableCtx, meta.id, out, readLine, loginFn, detectEnvironmentFn, confirm, suspendStdin, lineReader, inkRenderTurn, inkReadKey, inkSetInterrupt, inkSetInputInfo, inkSetChatActive);
         spendDirty = true; // a task may have run — refresh the spend summary
         if (chatResult === 'exit') break;
         continue;
@@ -2595,7 +2626,7 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
           if (!(await promptForAuthBeforeChat(out, readLine, mutableCtx, loginFn, detectEnvironmentFn, confirm, suspendStdin, inkReadKey))) {
             continue;
           }
-          const chatResult = await runChatLoop(ctx, mutableCtx, latest.id, out, readLine, loginFn, detectEnvironmentFn, confirm, suspendStdin, lineReader, inkRenderTurn, inkReadKey, inkSetInterrupt, inkSetInputInfo);
+          const chatResult = await runChatLoop(ctx, mutableCtx, latest.id, out, readLine, loginFn, detectEnvironmentFn, confirm, suspendStdin, lineReader, inkRenderTurn, inkReadKey, inkSetInterrupt, inkSetInputInfo, inkSetChatActive);
           spendDirty = true; // a task may have run — refresh the spend summary
           if (chatResult === 'exit') break;
         } else {
@@ -2612,7 +2643,7 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
           if (!(await promptForAuthBeforeChat(out, readLine, mutableCtx, loginFn, detectEnvironmentFn, confirm, suspendStdin, inkReadKey))) {
             continue;
           }
-          const chatResult = await runChatLoop(ctx, mutableCtx, target.id, out, readLine, loginFn, detectEnvironmentFn, confirm, suspendStdin, lineReader, inkRenderTurn, inkReadKey, inkSetInterrupt, inkSetInputInfo);
+          const chatResult = await runChatLoop(ctx, mutableCtx, target.id, out, readLine, loginFn, detectEnvironmentFn, confirm, suspendStdin, lineReader, inkRenderTurn, inkReadKey, inkSetInterrupt, inkSetInputInfo, inkSetChatActive);
           spendDirty = true; // a task may have run — refresh the spend summary
           if (chatResult === 'exit') break;
         } else {
@@ -2629,7 +2660,7 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
 
       // ---- [i] Import a native conversation -----------------------------------
       if (key === 'i') {
-        const importResult = await runImportNative(ctx, mutableCtx, out, readLine, loginFn, detectEnvironmentFn, confirm, suspendStdin, lineReader, inkRenderTurn, inkReadKey, inkSetInterrupt, inkSetInputInfo);
+        const importResult = await runImportNative(ctx, mutableCtx, out, readLine, loginFn, detectEnvironmentFn, confirm, suspendStdin, lineReader, inkRenderTurn, inkReadKey, inkSetInterrupt, inkSetInputInfo, inkSetChatActive);
         spendDirty = true; // an imported session may run a task — refresh spend
         if (importResult === 'exit') break;
         continue;

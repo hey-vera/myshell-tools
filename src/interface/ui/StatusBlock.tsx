@@ -29,6 +29,7 @@ import { panelLabel, type PanelistState } from '../../ui/theme.js';
 import { pad, truncateToWidth } from '../../ui/tui.js';
 import {
   layoutForHeight,
+  INPUT_ROWS,
   type GoalsMode,
 } from './layout.js';
 import type { AgentView, AgentRunState, GoalView, UiState } from './state.js';
@@ -86,8 +87,11 @@ interface TokenMeterProps {
  * contract (no fabricated percentages).
  */
 export function TokenMeter({ tokens, color = true }: TokenMeterProps): React.ReactElement {
+  // Defence-in-depth alongside the reducer's clamp: a non-finite or negative
+  // figure reaching here must never render `NaN`/`-Nk` — floor at 0.
+  const safe = Number.isFinite(tokens) ? Math.max(0, tokens) : 0;
   return (
-    <Text dimColor={color}>{`↓ ~${formatTokens(tokens)} tokens`}</Text>
+    <Text dimColor={color}>{`↓ ~${formatTokens(safe)} tokens`}</Text>
   );
 }
 
@@ -299,6 +303,10 @@ export interface StatusBlockProps {
   /** Wrapped line count of the live stream buffer (for the cap). Default: 1 when
    *  the buffer is non-empty, else 0. */
   readonly streamLines?: number;
+  /** Rows the pinned <InputBox> will occupy this frame (the composer's rendered
+   *  height). MUST match what <App> passes to its own layoutForHeight so the panel
+   *  plan and the stream cap agree. Defaults to the single-line {@link INPUT_ROWS}. */
+  readonly inputRows?: number;
   readonly color?: boolean;
 }
 
@@ -318,6 +326,7 @@ export function StatusBlock({
   clock,
   rows = 24,
   streamLines,
+  inputRows,
   color = true,
 }: StatusBlockProps): React.ReactElement | null {
   const [frameIndex, setFrameIndex] = useState(0);
@@ -358,6 +367,7 @@ export function StatusBlock({
     state,
     rows,
     streamLines ?? (state.stream.buffer.length > 0 ? 1 : 0),
+    inputRows ?? INPUT_ROWS,
   );
   if (!plan.visible) return null;
 

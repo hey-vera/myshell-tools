@@ -24,11 +24,13 @@
  *         token.)
  *       · codex  → `codex login --device-auth`: prints a URL + one-time code;
  *         the user authorizes their ChatGPT account on any device.
- *       · opencode → `opencode auth login`: opens opencode's provider picker.
- *         GUARDRAIL — myshell-tools is subscription-OAuth-only: the user picks a
- *         provider they have a subscription for (e.g. Claude/Anthropic, GitHub
- *         Copilot) and completes its OAuth sign-in. We do NOT force opencode's
- *         API-key gateway (`-p opencode`); API keys are never honored.
+ *       · opencode → `opencode auth login`: opens opencode's provider picker. The
+ *         user picks "OpenCode Zen" (opencode's recommended gateway) or any
+ *         provider they have access to, and authorizes/pastes its credential into
+ *         opencode's own secure store. myshell never sees that credential —
+ *         opencode stores it — and from it opencode brokers many models (e.g. Kimi
+ *         via opencode-go). We keep the bare `auth login` (the provider picker)
+ *         rather than `-p opencode` so the user can choose any provider.
  *
  * When no method is forced, we auto-detect: headless/remote environments default
  * to 'code' (so the guidance matches a no-local-browser shell), else 'browser'.
@@ -54,8 +56,9 @@ export type LoginMethod = 'browser' | 'code';
 const LOGIN_COMMAND: Record<ProviderId, { readonly bin: string; readonly args: readonly string[] }> = {
   claude: { bin: 'claude', args: ['/login'] },
   codex: { bin: 'codex', args: ['login'] },
-  // No `-p opencode`: that forces the API-key gateway. Use the provider picker so
-  // the user selects an OAuth/subscription provider (subscription-OAuth-only guardrail).
+  // Bare `auth login` (not `-p opencode`) opens the provider picker so the user can
+  // choose any provider — OpenCode Zen (recommended) or one they have access to.
+  // opencode stores the chosen credential itself; myshell never sees it.
   opencode: { bin: 'opencode', args: ['auth', 'login'] },
 };
 
@@ -96,15 +99,16 @@ const LOGIN_CODE_COMMAND: Record<
   },
   opencode: {
     bin: 'opencode',
-    // No `-p opencode`: that forces the API-key gateway. Use the provider picker so
-    // the user selects an OAuth/subscription provider (subscription-OAuth-only guardrail).
+    // Bare `auth login` (not `-p opencode`) opens the provider picker so the user can
+    // choose any provider — OpenCode Zen (recommended) or one they have access to.
+    // opencode stores the chosen credential itself; myshell never sees it.
     args: ['auth', 'login'],
     guidance:
-      'opencode shows a provider picker. myshell uses subscription/OAuth sign-in\n' +
-      '  only — never API keys. Pick a provider you have a subscription for (e.g.\n' +
-      '  Claude/Anthropic or GitHub Copilot) and choose its OAuth/login option, then\n' +
-      '  authorize in your browser. myshell never sees the credential — opencode\n' +
-      '  stores it. (Do not pick the API-key option; it is not honored here.)',
+      'opencode shows a provider picker. Pick "OpenCode Zen" (opencode\'s\n' +
+      '  recommended gateway) or any provider you have access to, then authorize or\n' +
+      '  paste its credential. opencode stores it securely — myshell never sees it —\n' +
+      '  and from that one credential opencode brokers many models (e.g. Kimi via\n' +
+      '  opencode-go).',
   },
 };
 

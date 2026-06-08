@@ -15,6 +15,31 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   resumed goal's contract from the persisted `workTrace` (niche: the in-run contract
   is already kept in memory; only cross-session resume benefits). Optional.
 
+## [3.29.3]
+
+### Fixed — from live use in the data-tools shell
+- **The chat composer no longer shows in the menu.** The full-width composer is now
+  rendered ONLY inside an active conversation — at the main menu, sign-in flows,
+  settings, and raw-session passthrough it's hidden (those use single-key input, not
+  the line composer). Entering a chat shows it; returning to the menu hides it again.
+- **opencode is recognized when signed in with a key, not just OAuth.** myshell
+  delegates opencode sign-in to opencode's own secure store and **never sees the
+  credential** — so it now counts opencode as authenticated whenever opencode holds
+  *any* credential (an "OpenCode Zen" / provider key as well as OAuth). This unblocks
+  using opencode as a broker for the many models it fronts (e.g. Kimi via
+  `opencode-go`). The sign-in guidance now points at OpenCode Zen instead of
+  discouraging it. (myshell still never stores or handles a raw key itself.)
+
+### Also included — reliability polish
+- A keystroke typed right after Ctrl+C-returns-to-menu is no longer swallowed
+  (orphaned input waiters are now cancelled).
+- The Ink layout budget reserves the composer's real (multi-line) height, and the
+  token meter clamps malformed usage numbers — both further close the
+  scrollback-overflow / NaN edge cases.
+- The Ink turn-completion line shows elapsed time (`· Ns`), matching the legacy path.
+- The Claude OAuth-refresh backup file is mode-pinned to `0600` and stale scratch
+  files are cleaned up before each refresh.
+
 ## [3.29.2]
 
 ### Fixed — reliability hardening from a full end-to-end audit

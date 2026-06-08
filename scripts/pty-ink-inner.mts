@@ -133,6 +133,11 @@ async function main(): Promise<void> {
   const handle = mountInk({ color: true, isTty: true });
   const { out, renderTurn, setInterrupt } = handle;
 
+  // This smoke simulates an ACTIVE CHAT CONVERSATION (the composer is only shown in
+  // chat, not at the menu — runChatLoop flips this on entry). Enter chat mode so the
+  // pinned composer renders, which is what the COMPOSER integrity assertion checks.
+  handle.setChatActive(true);
+
   await sleep(400); // let Ink mount + paint the idle skeleton
   emit('READY');
 

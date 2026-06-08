@@ -19,7 +19,7 @@ import { Box, Static, Text, useInput, useStdout } from 'ink';
 import { InputBox, createInputBoxBridge, type InputBoxBridge } from './InputBox.js';
 import { Stream, CommittedLine } from './Stream.js';
 import { StatusBlock } from './StatusBlock.js';
-import { layoutForHeight, streamWrappedRows, tailStreamToRows } from './layout.js';
+import { layoutForHeight, streamWrappedRows, tailStreamToRows, INPUT_ROWS_MAX } from './layout.js';
 import { backfillTerminalSize } from './mount.js';
 import type { TranscriptLine, UiState } from './state.js';
 
@@ -91,6 +91,19 @@ export interface InkAppBridge {
   setSuspended(value: boolean): void;
   setInputInfo(info: InputBoxInfo | null): void;
   /**
+   * Flip whether an ACTIVE CHAT CONVERSATION is in progress. When `true`, the App
+   * renders the full chat composer (the `─ chat ─┌ Mode … ┐` rule + `❯` caret +
+   * closing rule). When `false` (the DEFAULT — the app opens at the menu, and
+   * during auth/login/settings sub-flows and raw-session), NO composer is shown.
+   *
+   * The menu loop sets this `true` at `runChatLoop` entry and `false` in a
+   * `finally` on exit, mirroring how {@link InkAppBridge.setInputInfo} is threaded.
+   * Menu single-key nav (`readKey`/`<KeyCapture>`) and the transcript/status/stream
+   * regions work in BOTH modes — a hidden input keeps Ink's raw mode + stdin
+   * control armed while the composer chrome is gone. No-op before the App mounts.
+   */
+  setChatActive(active: boolean): void;
+  /**
    * Read EXACTLY ONE keypress through Ink's OWN input pipeline (no competing raw
    * `process.stdin` listener that would fight Ink). Resolves with a string shaped
    * like the legacy menu-readline.ts `readSingleKey` output so `readMenuKey` /
@@ -142,6 +155,7 @@ export interface InkAppBridge {
     | undefined;
   /** @internal set by App on mount */ _setSuspended?: ((value: boolean) => void) | undefined;
   /** @internal set by App on mount */ _setInputInfo?: ((value: InputBoxInfo | null) => void) | undefined;
+  /** @internal set by App on mount */ _setChatActive?: ((value: boolean) => void) | undefined;
   /** @internal set by App on mount */ _setUiState?: ((state: UiState) => void) | undefined;
   /** @internal set by App on mount: flip the single-key capture state */
   _setAwaitingKey?: ((value: boolean) => void) | undefined;
@@ -180,6 +194,9 @@ export function createInkAppBridge(): InkAppBridge {
     },
     setInputInfo(info: InputBoxInfo | null): void {
       bridge._setInputInfo?.(info);
+    },
+    setChatActive(active: boolean): void {
+      bridge._setChatActive?.(active);
     },
     readKey(): Promise<string> {
       // Exactly-one-key guarantee: a second readKey() while one is pending would
@@ -427,6 +444,11 @@ function AppBody({
   // inactive and <KeyCapture> consumes the next key (see bridge.readKey()).
   const [awaitingKey, setAwaitingKey] = useState(false);
   const [inputInfo, setInputInfo] = useState<InputBoxInfo | null>(null);
+  // When true, an active chat conversation is in progress and the full composer
+  // (chat rule + caret + closing rule) is shown. FALSE by default — the app opens
+  // at the menu, and auth/login/settings sub-flows run with the composer hidden.
+  // Toggled by the menu loop via bridge.setChatActive() at runChatLoop entry/exit.
+  const [chatActive, setChatActive] = useState(false);
   // Bumped on every SIGWINCH (terminal resize). Ink's useStdout does NOT subscribe
   // to 'resize', so without this the cached columns/rows below would go stale after
   // a resize — the layout cap + InputBox width would never re-measure. The counter
@@ -444,12 +466,14 @@ function AppBody({
     bridge._setInputInfo = setInputInfo;
     bridge._setUiState = setUiState;
     bridge._setAwaitingKey = setAwaitingKey;
+    bridge._setChatActive = setChatActive;
     return () => {
       bridge._setLines = undefined;
       bridge._setSuspended = undefined;
       bridge._setInputInfo = undefined;
       bridge._setUiState = undefined;
       bridge._setAwaitingKey = undefined;
+      bridge._setChatActive = undefined;
     };
   }, [bridge]);
 
@@ -508,7 +532,14 @@ function AppBody({
     // rendered whole. This keeps the always-visible dynamic region <= the viewport
     // so Ink never re-emits the overflow into the scrollback on every repaint.
     const streamLines = streamWrappedRows(uiState.stream.buffer, liveColumns);
-    const plan = layoutForHeight(uiState, liveRows, streamLines);
+    // Reserve the InputBox's WORST-CASE rendered height (a multiline/pasted
+    // composer renders up to MAX_VISIBLE_ROWS + 2 borders), not the single-line
+    // default, so a tall composer + panel + stream can never exceed the viewport
+    // and re-trigger Ink's scrollback duplication. The composer's live buffer is
+    // private InputBox state (see layout.ts INPUT_ROWS_MAX for the tradeoff). The
+    // SAME value is threaded into StatusBlock so its panel plan and this stream
+    // cap agree.
+    const plan = layoutForHeight(uiState, liveRows, streamLines, INPUT_ROWS_MAX);
     const cappedStreamBuffer = tailStreamToRows(uiState.stream.buffer, liveColumns, plan.streamCap);
     return (
       <Box flexDirection="column">
@@ -520,6 +551,7 @@ function AppBody({
           color={color}
           rows={liveRows}
           streamLines={streamLines}
+          inputRows={INPUT_ROWS_MAX}
           {...(clock !== undefined ? { clock } : {})}
         />
         <Stream buffer={cappedStreamBuffer} color={color} />
@@ -529,6 +561,7 @@ function AppBody({
           isTty={isTty}
           columns={liveColumns}
           info={inputInfoText}
+          visible={chatActive}
           suspended={suspended || awaitingKey}
           onStdinControl={bridge.attachStdinControl}
           onEscape={() => bridge.interrupt()}
@@ -549,6 +582,7 @@ function AppBody({
         isTty={isTty}
         columns={liveColumns}
         info={inputInfoText}
+        visible={chatActive}
         suspended={suspended || awaitingKey}
         onStdinControl={bridge.attachStdinControl}
         onEscape={() => bridge.interrupt()}

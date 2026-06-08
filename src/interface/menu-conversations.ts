@@ -177,6 +177,9 @@ export async function runImportNative(
   // an imported session's in-flight turn (H1). Absent → legacy path unchanged.
   inkSetInterrupt?: (handler: (() => void) | null) => void,
   inkSetInputInfo?: (info: { readonly mode: string; readonly hints: readonly string[] } | null) => void,
+  // Ink chat-active setter — forwarded to runChatLoop so the imported session's
+  // composer shows only during its chat. Absent off the Ink path (unchanged).
+  inkSetChatActive?: (active: boolean) => void,
 ): Promise<'menu' | 'exit'> {
   const env = { ...process.env, ...replitPersistentEnv(process.env, ctx.cwd) };
   const sessions = await listRecentNativeSessions({ env, limit: 9 });
@@ -217,5 +220,5 @@ export async function runImportNative(
 
   // Enter the chat loop for the newly imported conversation.
   // Return value propagates the 'exit' signal to the caller (startMenu).
-  return runChatLoop(ctx, mutableCtx, id, out, readLine, loginFn, detectEnvironmentFn, confirm, suspendStdin, lineReader, inkRenderTurn, inkReadKey, inkSetInterrupt, inkSetInputInfo);
+  return runChatLoop(ctx, mutableCtx, id, out, readLine, loginFn, detectEnvironmentFn, confirm, suspendStdin, lineReader, inkRenderTurn, inkReadKey, inkSetInterrupt, inkSetInputInfo, inkSetChatActive);
 }
