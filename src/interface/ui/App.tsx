@@ -17,6 +17,8 @@
 import React, { useEffect, useState } from 'react';
 import { Box, Static, Text } from 'ink';
 import { InputBox, createInputBoxBridge, type InputBoxBridge } from './InputBox.js';
+import { Stream, CommittedLine } from './Stream.js';
+import type { TranscriptLine, UiState } from './state.js';
 
 /**
  * The Ink-side control surface the LineReader's `suspend()`/`resume()` need to
@@ -52,6 +54,16 @@ export interface InkStdinControl {
 export interface InkAppBridge {
   /** Append one already-safe committed line to the <Static> transcript. */
   commit(line: string): void;
+  /**
+   * Push the latest reducer {@link UiState} so the App renders the structured
+   * transcript (committed lines via `<Static>`, colour-by-kind) AND the live
+   * answer buffer via `<Stream>`. This is the STEP-3b streaming seam: the Node
+   * side runs `renderStreamInk` into the pure reducer and mirrors each snapshot
+   * here. When unused, the App falls back to the plain string `commit` transcript
+   * (the Step-1 scaffolding), so the flag-off path and the input-only mode are
+   * unaffected.
+   */
+  pushState(state: UiState): void;
   /** Register the callback invoked when the user submits an input line. The
    *  LineReader sets this; the InputBox calls it on Enter (UNTRIMMED). */
   onSubmit(handler: (line: string) => void): void;
@@ -77,6 +89,7 @@ export interface InkAppBridge {
     | ((fn: (prev: string[]) => string[]) => void)
     | undefined;
   /** @internal set by App on mount */ _setSuspended?: ((value: boolean) => void) | undefined;
+  /** @internal set by App on mount */ _setUiState?: ((state: UiState) => void) | undefined;
   /** @internal the attached Ink stdin control */ _stdinControl?: InkStdinControl | null;
 }
 
@@ -92,6 +105,9 @@ export function createInkAppBridge(): InkAppBridge {
     _stdinControl: null,
     commit(line: string): void {
       bridge._setLines?.((prev) => [...prev, line]);
+    },
+    pushState(state: UiState): void {
+      bridge._setUiState?.(state);
     },
     onSubmit(handler: (line: string) => void): void {
       input.onSubmit(handler);
@@ -127,6 +143,9 @@ export interface AppProps {
  */
 export function App({ bridge, color = true, isTty = true, columns }: AppProps): React.ReactElement {
   const [lines, setLines] = useState<string[]>([]);
+  // The structured reducer snapshot (STEP 3b). `null` until the Node side pushes
+  // one — until then the App uses the plain string `lines` transcript (Step 1).
+  const [uiState, setUiState] = useState<UiState | null>(null);
   // When true, an inherited-stdio child (e.g. `claude auth login`) owns the TTY:
   // the InputBox's useInput goes inactive so Ink drops its raw-mode refcount.
   const [suspended, setSuspended] = useState(false);
@@ -136,11 +155,37 @@ export function App({ bridge, color = true, isTty = true, columns }: AppProps): 
   useEffect(() => {
     bridge._setLines = setLines;
     bridge._setSuspended = setSuspended;
+    bridge._setUiState = setUiState;
     return () => {
       bridge._setLines = undefined;
       bridge._setSuspended = undefined;
+      bridge._setUiState = undefined;
     };
   }, [bridge]);
+
+  // Structured mode: render committed lines (write-once via <Static>, coloured by
+  // kind) plus the live answer buffer (<Stream>, repaints as prose streams). The
+  // <Static> item is a {line,key} pair so a stable React key survives appends.
+  if (uiState !== null) {
+    const committed: Array<{ readonly line: TranscriptLine; readonly key: number }> =
+      uiState.committed.map((line, index) => ({ line, key: index }));
+    return (
+      <Box flexDirection="column">
+        <Static items={committed}>
+          {(item) => <CommittedLine key={item.key} line={item.line} color={color} />}
+        </Static>
+        <Stream buffer={uiState.stream.buffer} color={color} />
+        <InputBox
+          bridge={bridge.input}
+          color={color}
+          isTty={isTty}
+          columns={columns}
+          suspended={suspended}
+          onStdinControl={bridge.attachStdinControl}
+        />
+      </Box>
+    );
+  }
 
   return (
     <Box flexDirection="column">

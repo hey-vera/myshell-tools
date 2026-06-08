@@ -21,7 +21,17 @@ import React from 'react';
 import { render } from 'ink';
 import type { OutputSink } from '../stream-filter.js';
 import type { LineReader, KeyInputStream } from '../menu-readline.js';
+import type { CoreEvent } from '../../core/types.js';
+import type { ProviderId } from '../../providers/port.js';
 import { App, createInkAppBridge, type InkAppBridge } from './App.js';
+import {
+  reduce,
+  initialState,
+  renderStreamInk,
+  type Action,
+  type UiState,
+  type Verbosity,
+} from './index.js';
 
 // ---------------------------------------------------------------------------
 // 1. Width-backfill bootstrap
@@ -269,12 +279,68 @@ export function createInkLineReader(bridge: InkAppBridge): LineReader {
 }
 
 // ---------------------------------------------------------------------------
+// 4. Streaming turn driver (STEP 3b)
+// ---------------------------------------------------------------------------
+
+/**
+ * Drive ONE model turn through the pure reducer and mirror each snapshot into the
+ * Ink App (committed lines → `<Static>`, live answer → `<Stream>`). This is the
+ * Ink-side equivalent of calling render.ts `renderStream`: it consumes the same
+ * `AsyncIterable<CoreEvent>` and returns the SAME `{ success, final?,
+ * rateLimitedProviders }` shape, so the menu loop can swap it in 1:1.
+ *
+ * The reducer state is held HERE (a plain fold, no React) and pushed to the App
+ * via `bridge.pushState` after each dispatch; `renderStreamInk` owns the throttle
+ * (so high-frequency prose deltas coalesce before they reach React). `elapsedSecs`
+ * is injected by the caller (the menu's spinner clock) so the success line's
+ * `· Ns` suffix stays honest and the driver stays hermetically testable.
+ */
+function createTurnDriver(
+  bridge: InkAppBridge,
+  base: { readonly color: boolean; readonly isTty: boolean },
+): (
+  events: AsyncIterable<CoreEvent>,
+  opts?: { readonly verbosity?: Verbosity; readonly elapsedSecs?: () => number },
+) => Promise<{
+  success: boolean;
+  final?: Extract<CoreEvent, { type: 'final' }>;
+  rateLimitedProviders: readonly ProviderId[];
+}> {
+  return async (events, opts = {}) => {
+    let state: UiState = initialState;
+    bridge.pushState(state);
+    const dispatch = (action: Action): void => {
+      state = reduce(state, action);
+      bridge.pushState(state);
+    };
+    return renderStreamInk(events, dispatch, {
+      color: base.color,
+      isTty: base.isTty,
+      ...(opts.verbosity !== undefined ? { verbosity: opts.verbosity } : {}),
+      ...(opts.elapsedSecs !== undefined ? { elapsedSecs: opts.elapsedSecs } : {}),
+    });
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Mount entry point
 // ---------------------------------------------------------------------------
 
 export interface InkMountHandle {
   readonly out: OutputSink;
   readonly reader: LineReader;
+  /**
+   * Drive one model turn's CoreEvent stream into the reducer-backed transcript
+   * (the STEP-3b streaming path). Same return shape as render.ts `renderStream`.
+   */
+  renderTurn(
+    events: AsyncIterable<CoreEvent>,
+    opts?: { readonly verbosity?: Verbosity; readonly elapsedSecs?: () => number },
+  ): Promise<{
+    success: boolean;
+    final?: Extract<CoreEvent, { type: 'final' }>;
+    rateLimitedProviders: readonly ProviderId[];
+  }>;
   /** Resolves when the Ink app unmounts (e.g. Ctrl-C / explicit unmount). */
   waitUntilExit(): Promise<void>;
   /** Tear down the Ink render and the LineReader. */
@@ -304,6 +370,7 @@ export function mountInk(opts: InkMountOptions): InkMountHandle {
   const bridge = createInkAppBridge();
   const out = createInkOutputSink(bridge, { color: opts.color, isTty: opts.isTty });
   const reader = createInkLineReader(bridge);
+  const renderTurn = createTurnDriver(bridge, { color: opts.color, isTty: opts.isTty });
 
   const instance = render(
     <App
@@ -324,6 +391,7 @@ export function mountInk(opts: InkMountOptions): InkMountHandle {
   return {
     out,
     reader,
+    renderTurn,
     waitUntilExit: async () => {
       await instance.waitUntilExit();
     },
