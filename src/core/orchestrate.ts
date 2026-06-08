@@ -49,6 +49,7 @@ import type { WorkContract } from './work-contract.js';
 import { capContract, shouldMaterializeContract, isCleanObjectiveTask } from './work-contract.js';
 import type { IntentFrame } from './intent.js';
 import { shouldExtractIntent, rulesIntentFrame, renderIntentBlock } from './intent.js';
+import { capGoalLabel } from './goal.js';
 import { planEngagement, seedFromIntentAndPlan, renderEngagementBlock, deriveAskFromForks } from './engagement.js';
 import type { EngagementSignals } from './engagement.js';
 import {
@@ -470,6 +471,20 @@ export async function* orchestrate(
       : undefined;
   const workTrace =
     incomingWorkContract !== undefined ? incomingWorkContract : seededTrace;
+
+  // Human GOAL LABEL for the live status panel (orchestration-UX Phase 2). The
+  // cheapest TRUTHFUL source already in scope, in fallback order: the work
+  // contract's objective → the intent frame's goal → the raw user task. Capped to
+  // a single ~72-char line by the SAME helper formatGoalProgress uses, so the
+  // panel label and the /goal progress line read consistently. NEVER fabricated:
+  // every candidate is real input; a turn that yielded none leaves `goalTitle`
+  // empty and the renderer falls back to the bare tier id (worker/ic/manager).
+  const goalTitleRaw =
+    workTrace?.objective ??
+    (intentFrame !== undefined && intentFrame.goal.trim().length > 0
+      ? intentFrame.goal
+      : task);
+  const goalTitle = capGoalLabel(goalTitleRaw, 72);
 
   // -------------------------------------------------------------------------
   // (a4) PRE-PROVIDER TERMINAL ASK (adaptive-partner-v2-5.6.md §2.2 A1).
@@ -964,6 +979,8 @@ export async function* orchestrate(
       provider: decision.provider,
       model: decision.model,
       attempt: attempts,
+      ...(goalTitle.length > 0 ? { title: goalTitle } : {}),
+      risk: classification.risk,
     };
 
     // --- Build request and record start time ---
@@ -1504,6 +1521,8 @@ export async function* orchestrate(
           provider: reviewerId,
           model: reviewDecision.model,
           attempt: attempts,
+          ...(goalTitle.length > 0 ? { title: goalTitle } : {}),
+          risk: classification.risk,
         };
 
         const reviewReq: ProviderRequest = {

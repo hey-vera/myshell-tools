@@ -114,6 +114,13 @@ export const INPUT_ROWS = 3;
 export const INPUT_ROWS_MAX = 12;
 /** Rows the spinner / "Waiting on N models" status line occupies. */
 export const STATUS_LINE_ROWS = 1;
+/**
+ * Rows the agent-centric summary line ("▸ N goals · M agents · …") occupies. It
+ * sits between the GOALS panel and the status line and is part of the height
+ * budget so adding it can never push the dynamic region past the viewport (the
+ * scrollback-duplication guard). One row when the panel is visible; 0 when hidden.
+ */
+export const SUMMARY_LINE_ROWS = 1;
 /** The two rounded-border rows of the GOALS panel (top + bottom). */
 export const PANEL_BORDER_ROWS = 2;
 /** Rows we keep as breathing room so the region never butts the very top edge. */
@@ -137,6 +144,14 @@ export interface StatusLayout {
   /** False when the turn is idle — the whole block collapses to nothing. */
   readonly visible: boolean;
   readonly goals: GoalsMode;
+  /**
+   * Whether the agent-centric summary line is part of this plan (it is budgeted as
+   * {@link SUMMARY_LINE_ROWS} whenever the GOALS panel is visible). The view builds
+   * the actual text via {@link summarizeTurn} with its injected elapsed — keeping
+   * the elapsed clock out of the pure planner — but renders the row ONLY when this
+   * is true, so it can never exceed the proven `plannedRows`.
+   */
+  readonly showSummary: boolean;
   /** Max lines of the live <Stream> to show (it is truncated to its LAST K). */
   readonly streamCap: number;
   /** The total rows this plan paints (block + status line + stream), EXCLUDING
@@ -160,17 +175,79 @@ function fullPanelRows(goals: readonly GoalView[]): number {
 }
 
 /**
- * Build the one-line compact summary that replaces the full cards under height
- * pressure, e.g. `3 goals · 2 running · 1 queued · ↓ 4.2k tok`. Counts are real
- * (derived from goal state); the token figure is the running turn total.
+ * The total number of REAL agents across the turn: one {@link AgentView} per goal
+ * agent plus the live panel candidates ({@link StreamView.panelists}). This is the
+ * honest headline count (1–4 today: ≤3 provider CLIs + 1 synthesizer in panel
+ * mode; sequential default = 1). It is DERIVED, never fabricated — it equals the
+ * number of AgentView entries the reducer actually created. PURE.
  */
-export function compactGoalsSummary(goals: readonly GoalView[], turnTokens: number): string {
+export function totalAgentCount(state: UiState): number {
+  const goalAgents = state.goals.reduce((sum, g) => sum + g.agents.length, 0);
+  return goalAgents + state.stream.panelists.length;
+}
+
+/**
+ * Whether the stacked goal cards are sequential PHASES of one request (IC →
+ * review → manager escalation of the SAME goal) rather than distinct goals. True
+ * when there is more than one goal and they all share the same human title — the
+ * honesty gate that makes the summary say "N phases" instead of inflating to "N
+ * goals" (orchestration-UX honesty contract). With ≤1 goal there is nothing to
+ * disambiguate, so this returns false. PURE.
+ */
+export function goalsAreSequentialPhases(goals: readonly GoalView[]): boolean {
+  if (goals.length <= 1) return false;
+  const first = goals[0]?.label;
+  return goals.every((g) => g.label === first);
+}
+
+/**
+ * The one-glance agent-centric SUMMARY line shown under the GOALS panel
+ * (orchestration-UX Phase 1):
+ *   `▸ 1 goal · 1 agent · 1.2k tok · 51s`
+ *   `▸ 2 phases · 2 agents · 3.3k tok · 40s`   (stacked escalation of one request)
+ * Every figure is REAL: the goal/phase count from `goals.length`, the agent count
+ * from {@link totalAgentCount} (goal agents + panel candidates), the token total
+ * from `tokens.turn`, and the elapsed `Ns` injected by the caller (never a
+ * fabricated clock; omitted when absent/0). "phases" is used only when the cards
+ * are sequential phases of one request ({@link goalsAreSequentialPhases}); else
+ * "goal[s]". PURE.
+ */
+export function summarizeTurn(state: UiState, elapsedSecs?: number): string {
+  const nUnits = state.goals.length;
+  const phases = goalsAreSequentialPhases(state.goals);
+  const noun = phases ? 'phase' : 'goal';
+  const unitStr = `${nUnits} ${noun}${nUnits === 1 ? '' : 's'}`;
+  const nAgents = totalAgentCount(state);
+  const agentStr = `${nAgents} agent${nAgents === 1 ? '' : 's'}`;
+  const parts = [`▸ ${unitStr}`, agentStr, `${formatTokens(state.tokens.turn)} tok`];
+  if (elapsedSecs !== undefined && elapsedSecs > 0) parts.push(`${elapsedSecs}s`);
+  return parts.join(' · ');
+}
+
+/**
+ * Build the one-line compact summary that replaces the full cards under height
+ * pressure, now LEADING with the agent count (orchestration-UX Phase 1), e.g.
+ * `2 phases · 4 agents · 1 running · 1 queued · ↓ 9.4k tok`. Counts are real
+ * (derived from goal state + panel candidates); the token figure is the running
+ * turn total. Uses "phases" when the cards are sequential phases of one request.
+ */
+export function compactGoalsSummary(
+  goals: readonly GoalView[],
+  turnTokens: number,
+  panelistCount = 0,
+): string {
   const n = goals.length;
+  const phases = goalsAreSequentialPhases(goals);
+  const noun = phases ? 'phase' : 'goal';
   const running = goals.filter((g) => g.state === 'running').length;
   const queued = goals.filter((g) => g.state === 'queued').length;
   const done = goals.filter((g) => g.state === 'done').length;
   const failed = goals.filter((g) => g.state === 'failed').length;
-  const parts: string[] = [`${n} goal${n === 1 ? '' : 's'}`];
+  const nAgents = goals.reduce((sum, g) => sum + g.agents.length, 0) + panelistCount;
+  const parts: string[] = [
+    `${n} ${noun}${n === 1 ? '' : 's'}`,
+    `${nAgents} agent${nAgents === 1 ? '' : 's'}`,
+  ];
   if (running > 0) parts.push(`${running} running`);
   if (queued > 0) parts.push(`${queued} queued`);
   if (done > 0) parts.push(`${done} done`);
@@ -217,7 +294,7 @@ export function layoutForHeight(
   inputRows: number = INPUT_ROWS,
 ): StatusLayout {
   if (!state.turnActive) {
-    return { visible: false, goals: { kind: 'hidden' }, streamCap: 0, plannedRows: 0 };
+    return { visible: false, goals: { kind: 'hidden' }, showSummary: false, streamCap: 0, plannedRows: 0 };
   }
 
   // The budget the dynamic region (panel + status line + stream) may occupy: the
@@ -230,31 +307,43 @@ export function layoutForHeight(
   const goals = state.goals;
   const hasGoals = goals.length > 0;
   const fullRows = hasGoals ? fullPanelRows(goals) : 0;
+  // The agent-centric summary line rides ABOVE the status line whenever the GOALS
+  // panel is visible (full or compact); it is part of the budget so it can never
+  // push the dynamic region past the viewport. It is dropped (0 rows) in the
+  // hidden-panel degradation step, exactly like the panel itself.
+  const summaryRows = hasGoals ? SUMMARY_LINE_ROWS : 0;
+  const fixed = STATUS_LINE_ROWS + summaryRows;
 
-  // Step 1 + 2: try full cards. The status line is mandatory (1 row); whatever is
-  // left after cards + status line is the stream's allowance.
-  const fullPlusStatus = fullRows + STATUS_LINE_ROWS;
-  if (hasGoals && fullPlusStatus <= budget) {
-    const streamCap = Math.max(0, Math.min(streamLines, budget - fullPlusStatus));
+  // Step 1 + 2: try full cards. The status line + summary line are mandatory when
+  // the panel shows; whatever is left after cards + those is the stream's allowance.
+  const fullPlusFixed = fullRows + fixed;
+  if (hasGoals && fullPlusFixed <= budget) {
+    const streamCap = Math.max(0, Math.min(streamLines, budget - fullPlusFixed));
     return {
       visible: true,
       goals: { kind: 'full', goals },
+      showSummary: true,
       streamCap,
-      plannedRows: fullRows + STATUS_LINE_ROWS + streamCap,
+      plannedRows: fullRows + fixed + streamCap,
     };
   }
 
   // Step 3: collapse cards to the one-line summary (PANEL_BORDER_ROWS + 1 summary
-  // row). This frees every agent row at once.
+  // row). This frees every agent row at once. The agent-centric summary line still
+  // rides above the status line.
   const compactRows = hasGoals ? PANEL_BORDER_ROWS + 1 : 0;
-  const compactPlusStatus = compactRows + STATUS_LINE_ROWS;
-  if (hasGoals && compactPlusStatus <= budget) {
-    const streamCap = Math.max(0, Math.min(streamLines, budget - compactPlusStatus));
+  const compactPlusFixed = compactRows + fixed;
+  if (hasGoals && compactPlusFixed <= budget) {
+    const streamCap = Math.max(0, Math.min(streamLines, budget - compactPlusFixed));
     return {
       visible: true,
-      goals: { kind: 'compact', summary: compactGoalsSummary(goals, state.tokens.turn) },
+      goals: {
+        kind: 'compact',
+        summary: compactGoalsSummary(goals, state.tokens.turn, state.stream.panelists.length),
+      },
+      showSummary: true,
       streamCap,
-      plannedRows: compactRows + STATUS_LINE_ROWS + streamCap,
+      plannedRows: compactRows + fixed + streamCap,
     };
   }
 
@@ -264,6 +353,7 @@ export function layoutForHeight(
   return {
     visible: true,
     goals: { kind: 'hidden' },
+    showSummary: false,
     streamCap,
     plannedRows: STATUS_LINE_ROWS + streamCap,
   };

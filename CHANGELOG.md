@@ -15,6 +15,25 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   resumed goal's contract from the persisted `workTrace` (niche: the in-run contract
   is already kept in memory; only cross-session resume benefits). Optional.
 
+## [3.29.6]
+
+### Changed — the live orchestration view is now legible (agents, not jargon)
+- **Goals show what they're actually doing.** The cryptic `◐ ic` (an internal
+  routing-tier id) is replaced by a real one-line goal title derived from your
+  request (work-contract objective → intent → your message), with the tier + risk
+  demoted to a dim `ic · medium` badge.
+- **Agent-centric counters.** The status line now leads with how many agents are
+  working (`1 agent` / `3 agents`, or "Waiting on N models" in panel mode) instead
+  of the low-signal `29 steps` (kept as a dim "N tool calls" detail). Each agent row
+  shows what it's doing (its live work label), tokens, and elapsed time.
+- **A bottom summary line:** `▸ 1 goal · 4 agents · 9.4k tok · 22s`. When a request
+  escalates through tiers it honestly reads "2 phases" (not inflated to "2 goals").
+- **Graceful collapse** on short terminals (summarized to one agent-led line, or
+  hidden with the count still on the status line) — never overflows the viewport.
+- Counts are never fabricated: the agent number equals the real models in flight.
+  (Today that's 1 sequentially, up to ~4 in panel mode — a true many-agent/parallel
+  fan-out engine is a separate, future feature, not faked here.)
+
 ## [3.29.5]
 
 ### Fixed — new-user readiness sweep (first-run + in-chat)

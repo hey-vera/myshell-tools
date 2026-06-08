@@ -29,11 +29,15 @@ export {
 export {
   layoutForHeight,
   compactGoalsSummary,
+  summarizeTurn,
+  totalAgentCount,
+  goalsAreSequentialPhases,
   goalCardRows,
   streamWrappedRows,
   tailStreamToRows,
   INPUT_ROWS,
   STATUS_LINE_ROWS,
+  SUMMARY_LINE_ROWS,
   PANEL_BORDER_ROWS,
   SAFETY_MARGIN_ROWS,
 } from './layout.js';

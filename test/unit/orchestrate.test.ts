@@ -248,6 +248,22 @@ describe('orchestrate — happy path (claude available)', () => {
     }
   });
 
+  it('tier-start carries a human goal title (Phase 2) and the classified risk badge', async () => {
+    const events = await collectEvents(
+      orchestrate('refactor the auth middleware', deps, new AbortController().signal),
+    );
+    const tierStart = events.find((e) => e.type === 'tier-start');
+    assert.ok(tierStart !== undefined);
+    if (tierStart.type === 'tier-start') {
+      // Title is sourced truthfully (objective/intent/task) — for this fresh,
+      // contract-less turn it derives from the task itself, capped to one line.
+      assert.ok(tierStart.title !== undefined && tierStart.title.length > 0);
+      assert.match(tierStart.title, /refactor the auth middleware/i);
+      // The classified risk rides along for the dim "tier · risk" badge.
+      assert.ok(tierStart.risk !== undefined);
+    }
+  });
+
   it('final event has success=true and correct output', async () => {
     const events = await collectEvents(
       orchestrate('refactor X', deps, new AbortController().signal),

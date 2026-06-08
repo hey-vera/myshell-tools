@@ -17,7 +17,7 @@
  * correctness is covered by stream-filter.test.ts, never re-done here.
  */
 
-import type { Tier } from '../../core/types.js';
+import type { Risk, Tier } from '../../core/types.js';
 import type { ProviderId } from '../../providers/port.js';
 import type { ErrorCategory } from '../../providers/errors.js';
 
@@ -63,10 +63,27 @@ export interface AgentView {
 /** A unit of work (a tier attempt) shown in the live status region. */
 export interface GoalView {
   readonly id: string;
+  /**
+   * The HEADLINE label shown bold on the goal card. The human goal title when the
+   * engine supplied one (Phase 2 — work objective / intent goal / capped task),
+   * else the bare tier id (`worker`/`ic`/`manager`) as a fail-soft fallback. Never
+   * blank, never fabricated.
+   */
   readonly label: string;
   readonly state: AgentRunState;
   readonly tokens: number;
   readonly agents: readonly AgentView[];
+  /**
+   * The routing TIER this goal ran at — kept distinct from `label` so the view can
+   * render it as the dim "tier · risk" secondary badge even when `label` is a human
+   * title. Always present (the tier is always known at tier-start).
+   */
+  readonly tier: Tier;
+  /**
+   * The classified RISK for the dim badge ("ic · medium"). A real classifier
+   * measurement; absent → the badge shows the tier only (never a fabricated risk).
+   */
+  readonly risk?: Risk;
 }
 
 /** The execution phase that drives the live status line / spinner verb. */
@@ -210,6 +227,10 @@ export type Action =
       readonly model: string;
       readonly attempt: number;
       readonly verbosity: Verbosity;
+      /** Human goal label (Phase 2); absent → the reducer labels with the tier. */
+      readonly title?: string;
+      /** Classified risk for the dim "tier · risk" badge; absent → tier-only badge. */
+      readonly risk?: Risk;
     }
   // --- already-cleaned prose chunk (envelope already stripped by 3b's filter) ---
   | { readonly type: 'stream/prose'; readonly text: string }

@@ -17,11 +17,15 @@ import assert from 'node:assert/strict';
 import {
   layoutForHeight,
   compactGoalsSummary,
+  summarizeTurn,
+  totalAgentCount,
+  goalsAreSequentialPhases,
   goalCardRows,
   streamWrappedRows,
   tailStreamToRows,
   INPUT_ROWS,
   STATUS_LINE_ROWS,
+  SUMMARY_LINE_ROWS,
   PANEL_BORDER_ROWS,
   SAFETY_MARGIN_ROWS,
 } from '../../src/interface/ui/index.ts';
@@ -43,6 +47,8 @@ function goal(over: Partial<GoalView> = {}): GoalView {
     state: over.state ?? 'running',
     tokens: over.tokens ?? 3100,
     agents: over.agents ?? [agent()],
+    tier: over.tier ?? 'ic',
+    ...(over.risk !== undefined ? { risk: over.risk } : {}),
   };
 }
 
@@ -99,7 +105,7 @@ describe('layoutForHeight — full cards when they fit', () => {
 // ---------------------------------------------------------------------------
 
 describe('layoutForHeight — stream truncation to last K', () => {
-  it('caps the live stream to the rows left after the (full) panel + status line', () => {
+  it('caps the live stream to the rows left after the (full) panel + summary + status line', () => {
     // One goal, one agent → full panel = 2 borders + 1 header + 1 agent = 4 rows.
     const goals = [goal({ agents: [agent()] })];
     // Ask for a 50-line stream on a height where only a few lines fit.
@@ -108,7 +114,9 @@ describe('layoutForHeight — stream truncation to last K', () => {
     const budget = rows - INPUT_ROWS - SAFETY_MARGIN_ROWS; // 8
     const panelRows = PANEL_BORDER_ROWS + 1 + 1; // 4
     assert.equal(plan.goals.kind, 'full');
-    assert.equal(plan.streamCap, budget - panelRows - STATUS_LINE_ROWS); // 8-4-1 = 3
+    assert.equal(plan.showSummary, true);
+    // The agent-centric summary line now consumes one budgeted row.
+    assert.equal(plan.streamCap, budget - panelRows - SUMMARY_LINE_ROWS - STATUS_LINE_ROWS); // 8-4-1-1 = 2
     // never exceeds the budget
     assert.ok(plan.plannedRows + INPUT_ROWS <= rows, `plannedRows=${plan.plannedRows}`);
   });
@@ -121,16 +129,18 @@ describe('layoutForHeight — stream truncation to last K', () => {
 describe('layoutForHeight — COLLAPSE to compact summary under pressure', () => {
   it('collapses many full cards to a one-line summary when they would overflow', () => {
     const goals = [
-      goal({ id: 'a', state: 'running', agents: [agent(), agent(), agent()] }),
-      goal({ id: 'b', state: 'running', agents: [agent(), agent()] }),
-      goal({ id: 'c', state: 'queued', agents: [agent({ state: 'queued' })] }),
+      goal({ id: 'a', label: 'A', state: 'running', agents: [agent(), agent(), agent()] }),
+      goal({ id: 'b', label: 'B', state: 'running', agents: [agent(), agent()] }),
+      goal({ id: 'c', label: 'C', state: 'queued', agents: [agent({ state: 'queued' })] }),
     ];
     // Full panel would be 2 + (1+3) + (1+2) + (1+1) = 11 rows; squeeze the budget.
-    const rows = 9; // budget = 9-3-1 = 5; full(11)+status > 5 → compact
+    const rows = 9; // budget = 9-3-1 = 5; full(11)+summary+status > 5 → compact(3)+summary(1)+status(1)=5
     const plan = layoutForHeight(active(goals, '', 4200), rows, 1);
     assert.equal(plan.goals.kind, 'compact');
     if (plan.goals.kind === 'compact') {
+      // distinct labels → "3 goals" (not phases), and the summary LEADS with agents.
       assert.match(plan.goals.summary, /3 goals/);
+      assert.match(plan.goals.summary, /6 agents/); // 3+2+1 real AgentViews
       assert.match(plan.goals.summary, /2 running/);
       assert.match(plan.goals.summary, /1 queued/);
       assert.match(plan.goals.summary, /↓ 4\.2k tok/);
@@ -138,15 +148,16 @@ describe('layoutForHeight — COLLAPSE to compact summary under pressure', () =>
     assert.ok(plan.plannedRows + INPUT_ROWS <= rows);
   });
 
-  it('compactGoalsSummary counts real goal states', () => {
+  it('compactGoalsSummary counts real goal states + agents, leading with agents', () => {
     const goals = [
-      goal({ state: 'running' }),
-      goal({ state: 'done' }),
-      goal({ state: 'failed' }),
-      goal({ state: 'queued' }),
+      goal({ label: 'A', state: 'running' }),
+      goal({ label: 'B', state: 'done' }),
+      goal({ label: 'C', state: 'failed' }),
+      goal({ label: 'D', state: 'queued' }),
     ];
     const s = compactGoalsSummary(goals, 12_400);
     assert.match(s, /4 goals/);
+    assert.match(s, /4 agents/); // one agent per goal
     assert.match(s, /1 running/);
     assert.match(s, /1 done/);
     assert.match(s, /1 failed/);
@@ -154,8 +165,71 @@ describe('layoutForHeight — COLLAPSE to compact summary under pressure', () =>
     assert.match(s, /↓ 12\.4k tok/);
   });
 
+  it('compactGoalsSummary says "phases" when stacked cards share a title, and counts panel candidates', () => {
+    const goals = [
+      goal({ id: 'p1', label: 'Fix the flaky test', state: 'done' }),
+      goal({ id: 'p2', label: 'Fix the flaky test', state: 'running' }),
+    ];
+    const s = compactGoalsSummary(goals, 3300, 1); // +1 panel candidate
+    assert.match(s, /2 phases/);
+    assert.match(s, /3 agents/); // 2 goal agents + 1 panelist
+  });
+
   it('pluralises a single goal', () => {
     assert.match(compactGoalsSummary([goal()], 0), /^1 goal /);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// agent-centric summary line (Phase 1)
+// ---------------------------------------------------------------------------
+
+describe('summarizeTurn — agent-centric one-glance summary', () => {
+  it('counts a single goal + single agent honestly', () => {
+    const s = summarizeTurn(active([goal()], '', 1200), 51);
+    assert.equal(s, '▸ 1 goal · 1 agent · 1.2k tok · 51s');
+  });
+
+  it('says "phases" (not goals) when stacked cards share a title', () => {
+    const goals = [
+      goal({ id: 'p1', label: 'Fix the flaky test', state: 'done' }),
+      goal({ id: 'p2', label: 'Fix the flaky test', state: 'running' }),
+    ];
+    const s = summarizeTurn(active(goals, '', 3300), 40);
+    assert.match(s, /▸ 2 phases · 2 agents/);
+    assert.doesNotMatch(s, /goals/);
+  });
+
+  it('says "goals" when stacked cards have distinct titles', () => {
+    const goals = [goal({ id: 'a', label: 'A' }), goal({ id: 'b', label: 'B' })];
+    assert.match(summarizeTurn(active(goals, '', 0)), /▸ 2 goals · 2 agents/);
+  });
+
+  it('omits the elapsed when absent/0, never fabricating seconds', () => {
+    const s = summarizeTurn(active([goal()], '', 500));
+    assert.equal(s, '▸ 1 goal · 1 agent · 500 tok');
+  });
+
+  it('totalAgentCount sums goal agents + panel candidates (real, never fabricated)', () => {
+    const goals = [goal({ agents: [agent(), agent()] })];
+    const st: UiState = {
+      ...active(goals),
+      stream: { ...initialState.stream, panelists: [agent(), agent()] },
+    };
+    assert.equal(totalAgentCount(st), 4); // 2 goal agents + 2 panelists
+  });
+
+  it('goalsAreSequentialPhases is false for 0/1 goals and distinct-title goals', () => {
+    assert.equal(goalsAreSequentialPhases([]), false);
+    assert.equal(goalsAreSequentialPhases([goal()]), false);
+    assert.equal(
+      goalsAreSequentialPhases([goal({ id: 'a', label: 'A' }), goal({ id: 'b', label: 'B' })]),
+      false,
+    );
+    assert.equal(
+      goalsAreSequentialPhases([goal({ id: 'a', label: 'X' }), goal({ id: 'b', label: 'X' })]),
+      true,
+    );
   });
 });
 

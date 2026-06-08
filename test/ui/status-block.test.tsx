@@ -32,20 +32,37 @@ function goal(over: Partial<GoalView> = {}): GoalView {
     state: over.state ?? 'running',
     tokens: over.tokens ?? 3100,
     agents: over.agents ?? [agent()],
+    tier: over.tier ?? 'ic',
+    ...(over.risk !== undefined ? { risk: over.risk } : {}),
   };
 }
 function active(goals: readonly GoalView[], over: Partial<UiState> = {}): UiState {
   return { ...initialState, turnActive: true, goals, ...over };
 }
 
-test('GoalCard renders the label, a state glyph, and the token meter', () => {
+test('GoalCard renders the human TITLE, a dim "tier · risk · N agent" badge, glyph, and the token meter', () => {
   const { lastFrame } = render(
-    <GoalCard goal={goal({ state: 'running', tokens: 3100 })} color={false} />,
+    <GoalCard
+      goal={goal({ label: 'Refactor the auth middleware', tier: 'ic', risk: 'medium', state: 'running', tokens: 3100 })}
+      color={false}
+    />,
   );
   const frame = lastFrame() ?? '';
-  assert.match(frame, /Refactor auth flow/);
+  // The bold human title leads (replaces the cryptic bare tier id "ic").
+  assert.match(frame, /Refactor the auth middleware/);
+  // The demoted tier + risk + agent-count badge.
+  assert.match(frame, /ic · medium · 1 agent/);
   assert.match(frame, /◐/); // running glyph
   assert.match(frame, /↓ ~3\.1k tokens/);
+});
+
+test('GoalCard badge shows the tier only when no risk was classified (never fabricated)', () => {
+  const { lastFrame } = render(
+    <GoalCard goal={goal({ label: 'Fix the flaky test', tier: 'manager', state: 'running' })} color={false} />,
+  );
+  const frame = lastFrame() ?? '';
+  assert.match(frame, /manager · 1 agent/);
+  assert.doesNotMatch(frame, /medium|high|low|critical/);
 });
 
 test('AgentRow renders the tree row: provider/model, glyph, state, tokens', () => {
@@ -145,17 +162,32 @@ test('StatusLine renders the "Waiting on N models" wording in panel mode', () =>
   assert.match(frame, /esc to interrupt/);
 });
 
-test('StatusLine renders the non-panel "Thinking…" verb with step + token estimate', () => {
+test('StatusLine LEADS with the agent count, demoting steps to a dim "N tool calls" detail', () => {
   const state: UiState = {
     ...initialState,
     turnActive: true,
+    goals: [goal({ state: 'running', agents: [agent({ state: 'running' })] })],
     stream: { ...initialState.stream, phase: 'streaming', workLabel: 'Thinking', stepCount: 3, streamedChars: 4000 },
   };
   const { lastFrame } = render(<StatusLine state={state} frame="⠙" elapsedSecs={6} color={false} />);
   const frame = lastFrame() ?? '';
-  assert.match(frame, /Thinking… 3 steps/);
+  // Agent count headlines; tool calls are the demoted detail (no longer "N steps").
+  assert.match(frame, /Thinking…/);
+  assert.match(frame, /1 agent · 3 tool calls/);
+  assert.doesNotMatch(frame, /3 steps/);
   assert.match(frame, /↓ ~1k tokens/);
   assert.match(frame, /· 6s/);
+});
+
+test('StatusLine pluralises agents + tool calls and counts panel candidates', () => {
+  const state: UiState = {
+    ...initialState,
+    turnActive: true,
+    goals: [goal({ state: 'running', agents: [agent({ state: 'running' }), agent({ state: 'done' })] })],
+    stream: { ...initialState.stream, phase: 'streaming', workLabel: 'Thinking', stepCount: 1 },
+  };
+  const { lastFrame } = render(<StatusLine state={state} frame="⠙" color={false} />);
+  assert.match(lastFrame() ?? '', /2 agents · 1 tool call/);
 });
 
 test('StatusBlock COLLAPSES to the compact summary at a small height', () => {
@@ -164,16 +196,43 @@ test('StatusBlock COLLAPSES to the compact summary at a small height', () => {
     goal({ id: 'b', state: 'running', agents: [agent({ state: 'running' }), agent({ state: 'running' })] }),
     goal({ id: 'c', state: 'queued', agents: [agent({ state: 'queued' })] }),
   ];
+  // distinct labels so the summary says "goals" (not phases).
+  goals[0] = { ...goals[0]!, label: 'A' };
+  goals[1] = { ...goals[1]!, label: 'B' };
+  goals[2] = { ...goals[2]!, label: 'C' };
   const state = active(goals, { tokens: { turn: 4200, session: 4200 } });
   // A small height forces the compact one-line summary instead of full cards.
   const { lastFrame } = render(<StatusBlock state={state} color={false} rows={9} />);
   const frame = lastFrame() ?? '';
   assert.match(frame, /3 goals/);
+  assert.match(frame, /6 agents/); // 3+2+1 real AgentViews, leading the summary
   assert.match(frame, /2 running/);
   assert.match(frame, /1 queued/);
   assert.match(frame, /↓ 4\.2k tok/);
   // the full per-agent tree must NOT be present in the collapsed form
   assert.doesNotMatch(frame, /├─/);
+});
+
+test('StatusBlock renders the agent-centric SUMMARY line under the GOALS panel', () => {
+  const state = active([goal({ state: 'running', tokens: 1200, agents: [agent({ state: 'running' })] })], {
+    tokens: { turn: 1200, session: 1200 },
+  });
+  const { lastFrame } = render(<StatusBlock state={state} color={false} rows={40} />);
+  const frame = lastFrame() ?? '';
+  assert.match(frame, /▸ 1 goal · 1 agent · 1\.2k tok/);
+});
+
+test('StatusBlock SUMMARY says "phases" when stacked cards share a title (honest count)', () => {
+  const state = active(
+    [
+      goal({ id: 'p1', label: 'Fix the flaky test', state: 'done' }),
+      goal({ id: 'p2', label: 'Fix the flaky test', tier: 'manager', state: 'running' }),
+    ],
+    { tokens: { turn: 3300, session: 3300 } },
+  );
+  const { lastFrame } = render(<StatusBlock state={state} color={false} rows={40} />);
+  const frame = lastFrame() ?? '';
+  assert.match(frame, /▸ 2 phases · 2 agents/);
 });
 
 test('StatusBlock with an injected clock shows a deterministic elapsed', async () => {

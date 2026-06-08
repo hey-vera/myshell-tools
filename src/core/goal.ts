@@ -39,6 +39,19 @@ export interface GoalStep {
   readonly reason: string;
 }
 
+/**
+ * Cap an arbitrary multi-line string to a single, whitespace-collapsed line of at
+ * most `n` visible characters, appending `…` when it had to be cut. Pure, never
+ * throws. Shared by {@link formatGoalProgress} and the tier-start goal-title
+ * derivation (orchestrate.ts) so the two render labels the SAME way — never
+ * fabricates text, only trims real input.
+ */
+export function capGoalLabel(s: string, n = 72): string {
+  const clean = s.replace(/\s+/g, ' ').trim();
+  if (clean.length <= n) return clean;
+  return `${clean.slice(0, Math.max(0, n - 1)).trimEnd()}…`;
+}
+
 /** Default ceiling on autonomous turns — generous but finite. */
 export const DEFAULT_MAX_GOAL_ITERATIONS = 8;
 
@@ -122,11 +135,7 @@ export function formatGoalProgress(opts: {
     if (n < 1_000_000) return `${(n / 1000).toFixed(1)}k`;
     return `${(n / 1_000_000).toFixed(1)}M`;
   };
-  const oneLine = (s: string): string => s.replace(/\s+/g, ' ').trim();
-  const cap = (s: string, n: number): string => {
-    const clean = oneLine(s);
-    return clean.length <= n ? clean : `${clean.slice(0, Math.max(0, n - 1)).trimEnd()}…`;
-  };
+  const cap = (s: string, n: number): string => capGoalLabel(s, n);
   const latestCheckpoint =
     opts.contract?.checkpoints !== undefined && opts.contract.checkpoints.length > 0
       ? opts.contract.checkpoints[opts.contract.checkpoints.length - 1]?.summary

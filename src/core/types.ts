@@ -651,6 +651,23 @@ export type CoreEvent =
       readonly provider: ProviderId;
       readonly model: string;
       readonly attempt: number;
+      /**
+       * A human, one-line GOAL LABEL for the live status panel (orchestration-UX
+       * redesign Phase 2). Derived from the cheapest TRUTHFUL signal already in
+       * scope at the emit site — the work-contract `objective`, else the intent
+       * frame's `goal`, else the capped user task. Capped to ~72 visible chars by
+       * `capGoalLabel`. NEVER fabricated; absent on a turn with no usable signal,
+       * in which case the renderer falls back to the bare tier id. The tier itself
+       * stays the dim secondary badge alongside this title.
+       */
+      readonly title?: string;
+      /**
+       * The turn's classified RISK (low/medium/high/critical), passed through for
+       * the dim "tier · risk" secondary badge on the goal card. A real measurement
+       * from the classifier (never fabricated); absent → the badge shows the tier
+       * only. Phase 2 of the orchestration-UX redesign.
+       */
+      readonly risk?: Risk;
     }
   | {
       readonly type: 'provider-event';

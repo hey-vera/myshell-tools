@@ -444,6 +444,40 @@ describe('ui reduce — tier-start', () => {
     assert.equal(s.goals[0]?.state, 'running');
     assert.equal(s.goals[0]?.agents[0]?.provider, 'claude');
     assert.equal(s.committed.length, 0);
+    // No title supplied → the label fails soft to the bare tier id, and the tier
+    // is also carried for the dim badge.
+    assert.equal(s.goals[0]?.label, 'ic');
+    assert.equal(s.goals[0]?.tier, 'ic');
+  });
+
+  it('Phase 2: a supplied title becomes the goal LABEL; tier + risk ride along as the badge', () => {
+    const s = reduce(initialState, {
+      type: 'tier-start',
+      tier: 'ic',
+      provider: 'claude',
+      model: 'sonnet',
+      attempt: 1,
+      verbosity: 'normal',
+      title: 'Refactor the auth middleware',
+      risk: 'medium',
+    });
+    assert.equal(s.goals[0]?.label, 'Refactor the auth middleware');
+    assert.equal(s.goals[0]?.tier, 'ic');
+    assert.equal(s.goals[0]?.risk, 'medium');
+  });
+
+  it('Phase 2: an empty title still fails soft to the tier id (never a blank label)', () => {
+    const s = reduce(initialState, {
+      type: 'tier-start',
+      tier: 'manager',
+      provider: 'codex',
+      model: 'gpt-5',
+      attempt: 1,
+      verbosity: 'normal',
+      title: '',
+    });
+    assert.equal(s.goals[0]?.label, 'manager');
+    assert.equal(s.goals[0]?.tier, 'manager');
   });
 
   it('verbose mode: commits the ▶ tier line and uses the verbose workLabel', () => {

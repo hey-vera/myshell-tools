@@ -222,10 +222,15 @@ export function reduce(state: UiState, action: Action): UiState {
       };
       const goal: GoalView = {
         id: `${action.tier}#${action.attempt}`,
-        label: action.tier,
+        // Phase 2: lead with the human goal title when the engine supplied one;
+        // fail soft to the bare tier id so the card is never blank and the count
+        // is never fabricated. The tier/risk ride along for the dim badge.
+        label: action.title !== undefined && action.title.length > 0 ? action.title : action.tier,
         state: 'running',
         tokens: 0,
         agents: [agent],
+        tier: action.tier,
+        ...(action.risk !== undefined ? { risk: action.risk } : {}),
       };
       let next: UiState = {
         ...state,

@@ -29,6 +29,8 @@ import { panelLabel, type PanelistState } from '../../ui/theme.js';
 import { pad, truncateToWidth } from '../../ui/tui.js';
 import {
   layoutForHeight,
+  summarizeTurn,
+  totalAgentCount,
   INPUT_ROWS,
   type GoalsMode,
 } from './layout.js';
@@ -106,6 +108,10 @@ export interface AgentRowProps {
   /** Elapsed seconds for a running agent's `· Ns` suffix (injected, never
    *  Date.now). Omitted/0 → no suffix. */
   readonly elapsedSecs?: number;
+  /** "What it's doing" for a RUNNING agent — the live stream.workLabel (e.g.
+   *  "Thinking"), shown in place of the bare "running" word. Omitted/non-running →
+   *  the run-state word. Never fabricated; it is the real current work label. */
+  readonly workLabel?: string;
   readonly color?: boolean;
 }
 
@@ -130,7 +136,7 @@ function agentStateWord(state: AgentRunState): string {
  * provider/model + state glyph + state word + token count, plus an elapsed
  * `· Ns` only for a RUNNING agent (from the injected clock).
  */
-export function AgentRow({ agent, last, elapsedSecs, color = true }: AgentRowProps): React.ReactElement {
+export function AgentRow({ agent, last, elapsedSecs, workLabel, color = true }: AgentRowProps): React.ReactElement {
   const branch = last ? '└─' : '├─';
   const glyph = stateGlyph(agent.state);
   const glyphProps = stateColorProps(agent.state, color);
@@ -138,7 +144,12 @@ export function AgentRow({ agent, last, elapsedSecs, color = true }: AgentRowPro
   // a long provider/model never eats into the state glyph and the tree stays
   // aligned, exactly as box() keeps its border aligned.
   const name = pad(truncateToWidth(`${agent.provider}/${agent.model}`, 16), 16);
-  const word = agentStateWord(agent.state);
+  // "what it's doing": for a RUNNING agent, prefer the live work label (real,
+  // injected) over the bare "running" word; everyone else shows the run word.
+  const word =
+    agent.state === 'running' && workLabel !== undefined && workLabel.length > 0
+      ? workLabel
+      : agentStateWord(agent.state);
   const tok = agent.tokens > 0 ? `${formatTokens(agent.tokens)} tok` : '';
   const elapsed =
     agent.state === 'running' && elapsedSecs !== undefined && elapsedSecs > 0
@@ -165,23 +176,39 @@ export interface GoalCardProps {
   readonly goal: GoalView;
   /** Elapsed seconds for the goal's running agents (injected). */
   readonly elapsedSecs?: number;
+  /** The running agent's "what it's doing" label (stream.workLabel / last tool),
+   *  surfaced on the RUNNING agent row only. Omitted → the row shows its run word. */
+  readonly workLabel?: string;
   readonly color?: boolean;
 }
 
 /**
- * One goal: a header line (state glyph + label + the goal's `↓ ~Nk tokens`)
- * followed by one {@link AgentRow} per agent. Mirrors the design:
- *   `◐ Refactor auth flow                       ↓ ~3.1k tokens`
- *   `   ├─ claude/opus   ✓ done       1.8k tok`
+ * The dim "tier · risk" secondary badge text for a goal card header, e.g.
+ * `ic · medium`. The tier is always known; the risk is appended only when the
+ * classifier supplied one (never fabricated). PURE.
  */
-export function GoalCard({ goal, elapsedSecs, color = true }: GoalCardProps): React.ReactElement {
+function goalBadge(goal: GoalView): string {
+  return goal.risk !== undefined ? `${goal.tier} · ${goal.risk}` : goal.tier;
+}
+
+/**
+ * One goal: a header line (state glyph + bold human TITLE + dim "tier · risk"
+ * badge + agent count + the goal's `↓ ~Nk tokens`) followed by one
+ * {@link AgentRow} per agent. Mirrors the redesign:
+ *   `▸ Refactor the auth middleware   ic · medium · 1 agent   ↓ ~3.1k tokens`
+ *   `   └─ claude/opus   ◐ running    reading… 1.8k tok · 12s`
+ */
+export function GoalCard({ goal, elapsedSecs, workLabel, color = true }: GoalCardProps): React.ReactElement {
   const glyph = stateGlyph(goal.state);
   const glyphProps = stateColorProps(goal.state, color);
+  const n = goal.agents.length;
+  const badge = `${goalBadge(goal)} · ${n} agent${n === 1 ? '' : 's'}`;
   return (
     <Box flexDirection="column">
       <Box>
         <Text {...glyphProps}>{glyph}</Text>
         <Text bold={color}>{` ${goal.label}`}</Text>
+        <Text dimColor={color}>{`   ${badge}`}</Text>
         <Text>{'  '}</Text>
         <TokenMeter tokens={goal.tokens} color={color} />
       </Box>
@@ -191,6 +218,7 @@ export function GoalCard({ goal, elapsedSecs, color = true }: GoalCardProps): Re
           agent={agent}
           last={i === goal.agents.length - 1}
           {...(elapsedSecs !== undefined ? { elapsedSecs } : {})}
+          {...(workLabel !== undefined ? { workLabel } : {})}
           color={color}
         />
       ))}
@@ -205,6 +233,8 @@ export function GoalCard({ goal, elapsedSecs, color = true }: GoalCardProps): Re
 interface PanelsProps {
   readonly mode: GoalsMode;
   readonly elapsedSecs?: number;
+  /** The live "what it's doing" label for running agents (stream.workLabel). */
+  readonly workLabel?: string;
   readonly color?: boolean;
 }
 
@@ -214,7 +244,7 @@ interface PanelsProps {
  * `hidden` renders nothing (the caller drops the panel under height pressure).
  * The rounded border + cyan "GOALS" title mirror tui.panel()'s look.
  */
-export function Panels({ mode, elapsedSecs, color = true }: PanelsProps): React.ReactElement | null {
+export function Panels({ mode, elapsedSecs, workLabel, color = true }: PanelsProps): React.ReactElement | null {
   if (mode.kind === 'hidden') return null;
   const borderProps = color ? { borderColor: 'gray' as const } : {};
   return (
@@ -226,6 +256,7 @@ export function Panels({ mode, elapsedSecs, color = true }: PanelsProps): React.
               key={goal.id}
               goal={goal}
               {...(elapsedSecs !== undefined ? { elapsedSecs } : {})}
+              {...(workLabel !== undefined ? { workLabel } : {})}
               color={color}
             />
           ))
@@ -258,28 +289,35 @@ export interface StatusLineProps {
  */
 export function StatusLine({ state, frame, elapsedSecs, color = true }: StatusLineProps): React.ReactElement {
   const s = state.stream;
-  let verb: string;
+  const elapsed = elapsedSecs !== undefined && elapsedSecs > 0 ? ` · ${elapsedSecs}s` : '';
   if (s.phase === 'panel' || s.phase === 'synthesis') {
+    // Panel mode keeps the already-agent-shaped panelLabel ("Waiting on N
+    // models · claude ✓ · codex …" / "Synthesizing N answers…").
     const panelists = s.panelists.map((p) => ({
       provider: String(p.provider),
       state: (p.state === 'done' ? 'done' : 'running') as PanelistState,
     }));
-    verb = panelLabel(panelists, s.synthesizing, color);
-  } else {
-    const steps = `${s.stepCount} step${s.stepCount === 1 ? '' : 's'}`;
-    if (s.streamedChars > 0) {
-      const approxTok = formatTokens(Math.ceil(s.streamedChars / 4));
-      verb = `${s.workLabel}… ${steps} · ↓ ~${approxTok} tokens`;
-    } else {
-      verb = `${s.workLabel}… ${steps}`;
-    }
+    const verb = panelLabel(panelists, s.synthesizing, color);
+    return (
+      <Box>
+        <Text {...(color ? { color: 'cyan' as const } : {})}>{frame}</Text>
+        <Text>{` ${verb}${elapsed}`}</Text>
+        <Text dimColor={color}>{'   esc to interrupt'}</Text>
+      </Box>
+    );
   }
-  const elapsed = elapsedSecs !== undefined && elapsedSecs > 0 ? ` · ${elapsedSecs}s` : '';
+  // Non-panel: LEAD with the real agent count; demote the per-tier tool-call count
+  // (the old "N steps") to a DIM detail. The agent count is derived (1–4 today),
+  // never fabricated. "29 steps" → "29 tool calls". Tokens stay a dim suffix.
+  const nAgents = totalAgentCount(state);
+  const agentStr = `${nAgents} agent${nAgents === 1 ? '' : 's'}`;
+  const steps = `${s.stepCount} tool call${s.stepCount === 1 ? '' : 's'}`;
+  const approxTok = s.streamedChars > 0 ? ` · ↓ ~${formatTokens(Math.ceil(s.streamedChars / 4))} tokens` : '';
   return (
     <Box>
       <Text {...(color ? { color: 'cyan' as const } : {})}>{frame}</Text>
-      <Text>{` ${verb}${elapsed}`}</Text>
-      <Text dimColor={color}>{'   esc to interrupt'}</Text>
+      <Text>{` ${s.workLabel}…`}</Text>
+      <Text dimColor={color}>{`  ${agentStr} · ${steps}${approxTok}${elapsed}   esc to interrupt`}</Text>
     </Box>
   );
 }
@@ -373,13 +411,24 @@ export function StatusBlock({
 
   const frame = SPINNER_FRAMES[frameIndex] ?? SPINNER_FRAMES[0] ?? '⠋';
 
+  // The live "what it's doing" label rides onto the RUNNING agent row (real
+  // stream.workLabel — "Thinking" in normal mode, the verbose tier label in
+  // verbose). Only meaningful while the non-panel stream is active.
+  const liveWorkLabel = state.stream.workLabel;
+
   return (
     <Box flexDirection="column">
       <Panels
         mode={plan.goals}
         {...(elapsedSecs !== undefined ? { elapsedSecs } : {})}
+        {...(liveWorkLabel.length > 0 ? { workLabel: liveWorkLabel } : {})}
         color={color}
       />
+      {plan.showSummary ? (
+        <Text {...(color ? { color: 'cyan' as const } : {})}>
+          {summarizeTurn(state, elapsedSecs)}
+        </Text>
+      ) : null}
       <StatusLine
         state={state}
         frame={frame}

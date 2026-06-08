@@ -70,6 +70,10 @@ export function coreEventToActions(
           model: ev.model,
           attempt: ev.attempt,
           verbosity,
+          // Human goal label (Phase 2) — copied through verbatim when the engine
+          // supplied one (already capped/truthful); absent → the reducer falls
+          // back to the bare tier id, never fabricating a title.
+          ...(ev.title !== undefined ? { title: ev.title } : {}),
         },
       ];
 
