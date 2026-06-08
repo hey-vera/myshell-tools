@@ -15,6 +15,13 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   resumed goal's contract from the persisted `workTrace` (niche: the in-run contract
   is already kept in memory; only cross-session resume benefits). Optional.
 
+## [3.32.0]
+
+### Added — parked goals & to-do lists
+- Capture work you are NOT doing right now as a PARKED goal with its own to-do list. `/todo <text>` parks a goal; the menu shows a **Parked** section with each goal's to-do count (e.g. "Redesign feed · 3/8 to-dos"); `/goals` lists Active/Queued/Parked; `/goals show|go|drop` and `[g] Manage goals` let you view/check off/promote/remove. A to-do is always a step of a goal — nothing floats.
+- **Promoting a parked goal re-validates it.** "Go" hands the goal to the adaptive brain (not the stored list), so a stale/changed to-do list is re-checked against current reality before anything runs — never executed blindly. To-dos are marked done only on real evidence, never inferred.
+- Persists across sessions (per-project and global scopes), reusing the same hardened atomic/corrupt-recovery storage as memory.
+
 ## [3.31.0]
 
 ### Internal — bounded concurrent multi-goal scheduler (default-off flag)

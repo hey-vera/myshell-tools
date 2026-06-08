@@ -40,6 +40,16 @@ import { refreshCapabilities } from '../core/model-capability-refresh.js';
 import { createCapabilityRefreshPort } from '../infra/model-capability-port.js';
 import { nodeRepoScanPort } from '../infra/repo-scan.js';
 import { createFileUserMemoryStore, resolveProjectKey } from '../infra/user-memory-store.js';
+import { createFileGoalStore } from '../infra/goal-store.js';
+import {
+  runGoalsList,
+  runTodoCreate,
+  renderGoalExpanded,
+  parseGoalsCommand,
+  parseTodoCommand,
+  listParked,
+  parkedAt,
+} from '../commands/goals.js';
 import {
   runRemember,
   runForget,
@@ -142,7 +152,7 @@ import {
 } from './menu-questions.js';
 import { runQuestionSelector } from './menu-question-flow.js';
 import { runRawProviderSession } from './menu-raw-session.js';
-import { runManage, runImportNative } from './menu-conversations.js';
+import { runManage, runImportNative, runManageGoals } from './menu-conversations.js';
 import { runWelcome } from './menu-welcome.js';
 import {
   runModeSelect,
@@ -1201,6 +1211,8 @@ export async function runChatLoop(
         '  /retry        — regenerate my last answer\n' +
         '  /edit         — edit one of your recent messages and re-run from there\n' +
         '  /goal <text>  — work autonomously until the goal is done (Ctrl+C to stop)\n' +
+        '  /todo <text>  — park a goal + its to-do for later (/goals to manage)\n' +
+        '  /goals        — list goals by state; show/go/drop a parked one\n' +
         '  /mode         — quality vs speed (Efficient / Balanced / Max)\n' +
         '  /memory       — see, edit, export, or delete what I remember (/forget to remove)\n' +
         '  /recap        — short recap of where this conversation left off\n' +
@@ -1722,6 +1734,12 @@ export async function runChatLoop(
         }
         return memoryProjectKey;
       };
+
+      // ---- Goal / to-do store (Phase 5a, .tmp-vision-todos.md) ----------------
+      // The persistent home for goals in any lifecycle state. A "to-do list" is a
+      // PARKED goal's roadmap — nothing floats. Fail-soft, shares the two-scope
+      // project key with memory. No model call to create/manage a manual to-do.
+      const goalStore = createFileGoalStore({ clock: ctx.clock });
       const resolveTurnMemory = async (task: string): Promise<string> => {
         // Kill-switch: no read/inject when memory is off.
         if (mutableCtx.config.memory === false) return '';
@@ -1852,7 +1870,13 @@ export async function runChatLoop(
       // stale parked roadmap. The decomposition/validation step (a separate next
       // phase) owns that gate. Until that lands, the flag is dark and this
       // sequential loop is the only goal runner.
+      // Set true when the most recent runGoalLoop reached GOAL_COMPLETE (the model
+      // verified the goal is done). Used by the PROMOTE path to mark a promoted
+      // parked goal `done` ONLY on real completion evidence — never inferred from a
+      // clean return / ESC / ceiling. Reset at the top of each runGoalLoop call.
+      let lastGoalCompleted = false;
       const runGoalLoop = async (goalText: string): Promise<boolean> => {
+        lastGoalCompleted = false;
         let goalContract = capContract({ version: 1, objective: goalText });
         // Title a still-untitled conversation from the goal (no-op if already set).
         const gMeta = (await ctx.store.list()).find((m) => m.id === convId);
@@ -2062,6 +2086,7 @@ export async function runChatLoop(
           });
           if (step.action !== 'continue') {
             const mark = step.action === 'complete' ? '✓' : '■';
+            if (step.action === 'complete') lastGoalCompleted = true;
             out.write(dim(`\n  ${mark} ${step.reason}.\n`, out.color));
             break;
           }
@@ -2145,13 +2170,104 @@ export async function runChatLoop(
       }
 
       // ---- /goal — explicit autonomous loop -----------------------------------
-      if (line.startsWith('/goal')) {
+      // Exact `/goal`/`/goal <text>` ONLY — so `/goals …` is NOT swallowed here
+      // and falls through to its own dispatch below.
+      if (line === '/goal' || line.startsWith('/goal ')) {
         const goalText = line.slice('/goal'.length).trim();
         if (goalText.length === 0) {
           out.write(dim('  Usage: /goal <what you want achieved> — I work autonomously until it\'s done (Ctrl+C to stop).\n', out.color));
           return 'continue';
         }
         if (await runGoalLoop(goalText)) return control.result;
+        return 'continue';
+      }
+
+      // ---- /todo — create a PARKED goal / check off a to-do -------------------
+      // Manual, subscription-clean (no model call). `/todo <text>` parks a goal;
+      // `/todo done|block <g> <n>` marks roadmap item #n of parked goal #g. The
+      // numbers are 1-based and match the `/goals` listing order.
+      if (line === '/todo' || line.startsWith('/todo ')) {
+        const arg = line.slice('/todo'.length).trim();
+        const cmd = parseTodoCommand(arg);
+        if (cmd.kind === 'usage') {
+          out.write(
+            dim('  Usage: /todo <what you want done>  ·  /todo done <g> <n>  ·  /todo block <g> <n>\n', out.color),
+          );
+          return 'continue';
+        }
+        if (cmd.kind === 'create') {
+          await runTodoCreate({
+            store: goalStore,
+            out,
+            text: cmd.text,
+            projectKey: await resolveProjectKeyOnce(),
+            conversationId: convId,
+          });
+          return 'continue';
+        }
+        // mark: done | blocked on parked goal #g, item #n. Honesty: a to-do is
+        // marked done only on this EXPLICIT user check-off (real evidence) — the
+        // store records, never infers from silence.
+        const parkedForMark = await listParked(goalStore);
+        const goalForMark = parkedAt(parkedForMark, cmd.g);
+        if (goalForMark === null) {
+          out.write(dim(`  No parked goal #${cmd.g}. Run /goals to see the list.\n`, out.color));
+          return 'continue';
+        }
+        const updated = await goalStore.setRoadmapItemStatus(goalForMark.id, cmd.n - 1, cmd.status);
+        if (updated === null) {
+          out.write(dim(`  Goal "${goalForMark.title}" has no to-do #${cmd.n}.\n`, out.color));
+        } else {
+          const verb = cmd.status === 'done' ? 'Checked off' : 'Flagged blocked';
+          out.write(`  ${verb} to-do #${cmd.n} of "${updated.title}".\n`);
+        }
+        return 'continue';
+      }
+
+      // ---- /goals — list by state, expand, promote, drop ----------------------
+      if (line === '/goals' || line.startsWith('/goals ')) {
+        const arg = line.slice('/goals'.length).trim();
+        const cmd = parseGoalsCommand(arg);
+        if (cmd.kind === 'usage') {
+          out.write(
+            dim('  Usage: /goals  ·  /goals show <n>  ·  /goals go <n>  ·  /goals drop <n>\n', out.color),
+          );
+          return 'continue';
+        }
+        if (cmd.kind === 'list') {
+          await runGoalsList({ store: goalStore, out, nowIso: ctx.clock.isoNow(), projectKey: await resolveProjectKeyOnce() });
+          return 'continue';
+        }
+        const parkedGoals = await listParked(goalStore);
+        const target = parkedAt(parkedGoals, cmd.n);
+        if (target === null) {
+          out.write(dim(`  No parked goal #${cmd.n}. Run /goals to see the list.\n`, out.color));
+          return 'continue';
+        }
+        if (cmd.kind === 'show') {
+          renderGoalExpanded(target, out);
+          return 'continue';
+        }
+        if (cmd.kind === 'drop') {
+          // Never silent-delete: the user asked explicitly, so confirm + report.
+          await goalStore.remove(target.id);
+          out.write(`  Dropped goal "${target.title}".\n`);
+          return 'continue';
+        }
+        // cmd.kind === 'go' — PROMOTE. Hand the goal TITLE to runGoalLoop, which
+        // runs the adaptive brain. The parked roadmap is PROVISIONAL: the brain
+        // RE-VALIDATES it against current reality before acting (re-validation is
+        // inherent to runGoalLoop) — we deliberately do NOT execute the stored
+        // roadmap directly. Mark `running` for the duration; mark `done` ONLY if
+        // the loop reached real GOAL_COMPLETE (never inferred), else leave it
+        // running for the user to revisit.
+        await goalStore.setState(target.id, 'running');
+        out.write(dim(`  Promoting "${target.title}" — re-validating its to-dos against the current state…\n`, out.color));
+        const shouldBreak = await runGoalLoop(target.title);
+        if (lastGoalCompleted) {
+          await goalStore.setState(target.id, 'done');
+        }
+        if (shouldBreak) return control.result;
         return 'continue';
       }
 
@@ -2686,12 +2802,17 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
     let spend = summarizeSpend(await readLedger(ctx.cwd), ctx.clock.isoNow());
     let spendDirty = false;
 
+    // Goal/to-do store for the menu's Parked-goals section + [g] manage flow.
+    // Same persistent home + injected clock as the chat-loop store; fail-soft.
+    const menuGoalStore = createFileGoalStore({ clock: ctx.clock });
+
     while (true) {
       if (spendDirty) {
         spend = summarizeSpend(await readLedger(ctx.cwd), ctx.clock.isoNow());
         spendDirty = false;
       }
       const metas = await ctx.store.list();
+      const parkedGoals = await menuGoalStore.list({ state: 'parked' }).catch(() => []);
       // Render the menu chrome inside an EPHEMERAL FRAME. On the Ink path this paints
       // the whole menu into a bounded NON-<Static> live region that is REPLACED in
       // place every loop iteration — instead of appending ~30 fresh permanent
@@ -2699,7 +2820,7 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
       // cause). On the legacy stdout / test sinks beginFrame/endFrame are no-ops, so
       // the byte stream is unchanged.
       out.beginFrame?.();
-      await renderMainScreen(ctx, mutableCtx, metas, spend, out, updateInfo, claudeTokenInfo, runningUnderNpx, ctx.healthIssues ?? []);
+      await renderMainScreen(ctx, mutableCtx, metas, spend, out, updateInfo, claudeTokenInfo, runningUnderNpx, ctx.healthIssues ?? [], parkedGoals);
 
       out.write('> ');
       // Paint the frame (menu + prompt) as the live region before blocking on the
@@ -2788,6 +2909,14 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
       // ---- [e] Manage conversations -------------------------------------------
       if (key === 'e') {
         await runManage(ctx, out, readLine, confirm, inkReadKey);
+        continue;
+      }
+
+      // ---- [g] Manage goals (only meaningful when parked goals exist) ---------
+      if (key === 'g') {
+        await runManageGoals(ctx, menuGoalStore, out, readLine, confirm, inkReadKey);
+        out.write(dim('\nPress any key to return to the menu.\n', out.color));
+        await readMenuKey(out, readLine, undefined, false, inkReadKey);
         continue;
       }
 

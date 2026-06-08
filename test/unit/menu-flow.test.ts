@@ -48,6 +48,7 @@ import type { EnvironmentStatus } from '../../src/providers/detect.ts';
 import type { AppConfig } from '../../src/infra/config.ts';
 import { loadConfig } from '../../src/infra/config.ts';
 import { resolveStateHome } from '../../src/infra/state-dir.ts';
+import { createFileGoalStore } from '../../src/infra/goal-store.ts';
 import { homedir } from 'node:os';
 
 /**
@@ -6766,5 +6767,118 @@ describe('history-after-truncate excludes the tail (no stale leak into the next 
       !fedToReRun.some((e) => e.content.includes('STALE ANSWER TOKEN')),
       'the re-run turn never sees the truncated stale answer',
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Phase 5a — goals / to-dos: park, render, and the PROMOTE hand-off routes
+// through runGoalLoop (the adaptive brain), NEVER a direct roadmap exec.
+// ---------------------------------------------------------------------------
+
+describe('startMenu — goals: /todo parks + Parked section renders', () => {
+  it('parks a goal via /todo and shows it in the menu Parked section', async () => {
+    await withStateHome(join(tmpdir(), `goals-park-${randomUUID()}`), async () => {
+      const clock = makeFakeClock();
+      const store = makeStore(clock);
+      const sink = makeSink();
+      const ctx = makeCtx(
+        {
+          readLine: makeScriptedReader([
+            'n',
+            '/todo redesign the activity feed',
+            '/exit',
+            'q', // back at the menu, the Parked section now renders
+          ]),
+        },
+        clock,
+        store,
+      );
+
+      await startMenu(ctx, sink);
+
+      // The store the menu used resolves to the same temp home (withStateHome).
+      const goalStore = createFileGoalStore({ clock });
+      const parked = await goalStore.list({ state: 'parked' });
+      assert.equal(parked.length, 1, 'one parked goal exists');
+      assert.ok(parked[0]?.title.includes('redesign the activity feed'));
+
+      // The menu re-render after /exit shows the Parked section + the [g] entry.
+      assert.ok(sink.buf.includes('Goals · Parked'), 'menu renders the Parked section');
+      assert.ok(sink.buf.includes('Manage goals'), 'the [g] Manage goals entry appears');
+    });
+  });
+
+  it('the Parked section is ABSENT when there are no parked goals', async () => {
+    await withStateHome(join(tmpdir(), `goals-empty-${randomUUID()}`), async () => {
+      const sink = makeSink();
+      const ctx = makeCtx({ readLine: makeScriptedReader(['q']) });
+      await startMenu(ctx, sink);
+      assert.ok(!sink.buf.includes('Goals · Parked'), 'no Parked section when empty');
+      assert.ok(!sink.buf.includes('Manage goals'), 'no [g] entry when empty');
+    });
+  });
+});
+
+describe('startMenu — goals: /goals go promotes THROUGH runGoalLoop (the brain)', () => {
+  it('routes a promoted parked goal through the goal runner, not a direct roadmap exec', async () => {
+    await withStateHome(join(tmpdir(), `goals-promote-${randomUUID()}`), async () => {
+      const prompts: string[] = [];
+      const provider: Provider = {
+        id: 'claude',
+        async detect() {
+          return {
+            id: 'claude',
+            installed: true,
+            version: '1.0.0',
+            authenticated: true,
+            plan: null,
+            binaryPath: null,
+            availableModels: ['model-a'],
+          };
+        },
+        async *run(req: ProviderRequest, _signal: AbortSignal): AsyncIterable<ProviderEvent> {
+          prompts.push(req.prompt);
+          yield { type: 'text', delta: 'Working on it.' };
+          yield { type: 'done', text: `Working on it.\n${CONFIDENCE_ENVELOPE}`, usage: FAKE_USAGE, raw: {} };
+        },
+      };
+
+      const clock = makeFakeClock();
+      const store = makeStore(clock);
+      const sink = makeSink();
+      const ctx = makeCtx(
+        {
+          providers: { claude: provider },
+          readLine: makeScriptedReader([
+            'n',
+            '/todo ship the login page',
+            '/goals go 1', // PROMOTE → runGoalLoop → orchestrate → provider
+            '/exit',
+            'q',
+          ]),
+        },
+        clock,
+        store,
+      );
+
+      await startMenu(ctx, sink);
+
+      // PROVE the promote went through the goal runner: orchestrate built a
+      // goal-turn prompt ("Goal: ...") and called the provider. A direct roadmap
+      // exec would never produce a goal-turn prompt nor call the model.
+      assert.ok(
+        prompts.some((p) => p.includes('Goal: ship the login page')),
+        'promote ran the goal through runGoalLoop (goal-turn prompt reached the provider)',
+      );
+
+      // And the stored goal left the `parked` state (promote flipped it). Because
+      // the fake never emits GOAL_COMPLETE, it must NOT be marked done (honest —
+      // completion is never inferred); it stays `running` after the run.
+      const goalStore = createFileGoalStore({ clock });
+      const all = await goalStore.list();
+      assert.equal(all.length, 1);
+      assert.notEqual(all[0]?.state, 'parked', 'promote flipped the goal out of parked');
+      assert.notEqual(all[0]?.state, 'done', 'never inferred done without GOAL_COMPLETE evidence');
+    });
   });
 });

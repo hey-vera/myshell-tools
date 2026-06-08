@@ -20,6 +20,10 @@ import { type Confirm, readMenuKey } from './menu-key-confirm.js';
 import { type LineReader } from './menu-readline.js';
 import { relativeTime, renderConversationList } from './menu-display.js';
 import { yesNoHint } from './menu-questions.js';
+import type { GoalStore } from '../infra/goal-store.js';
+import { renderGoalExpanded } from '../commands/goals.js';
+import { formatGoalRow } from '../core/goal-todo.js';
+import { dim, bold } from '../ui/theme.js';
 
 // ---------------------------------------------------------------------------
 // Manage conversations screen
@@ -130,6 +134,104 @@ export async function runManage(
     }
   }
   // else: back
+}
+
+// ---------------------------------------------------------------------------
+// Manage goals screen (Phase 5a, .tmp-vision-todos.md §5)
+// ---------------------------------------------------------------------------
+
+/**
+ * The `[g]` Manage-goals screen: list PARKED goals, expand one to see + check off
+ * its to-dos (its roadmap), mark a to-do done/blocked, or drop a goal. Numbered,
+ * single-key entry, the SAME injected-readLine seam every other manage screen
+ * uses — testable without a TTY.
+ *
+ * PROMOTION is deliberately NOT executed here. Per the owner's hard rule, a parked
+ * goal's to-dos are PROVISIONAL and must be RE-VALIDATED by the brain before any
+ * action — which happens only in the chat loop's `runGoalLoop` (the adaptive
+ * brain runner). So this screen points the user at the single brain-routed promote
+ * path `/goals go <n>` in chat; there is no menu path that runs a stored roadmap.
+ */
+export async function runManageGoals(
+  ctx: MenuContext,
+  store: GoalStore,
+  out: OutputSink,
+  readLine: () => Promise<string | null>,
+  confirm: Confirm,
+  inkReadKey?: () => Promise<string>,
+): Promise<void> {
+  const nowIso = ctx.clock.isoNow();
+  const parked = await store.list({ state: 'parked' }).catch(() => []);
+  if (parked.length === 0) {
+    out.write(dim('\n  No parked goals. Park one in chat with /todo <what you want done>.\n\n', out.color));
+    return;
+  }
+
+  out.write('\n' + separator('Goals · Parked') + '\n');
+  parked.forEach((g, i) => {
+    out.write(`  ${i + 1}. ${formatGoalRow(g, nowIso)}\n`);
+  });
+  out.write(
+    '\n  ' +
+      dim('[s <n>] show to-dos  [d <n>] check off  [x <n>] drop  ·  promote in chat: /goals go <n>  ·  [Enter] Back', out.color) +
+      '\n\n',
+  );
+
+  out.write('> ');
+  const key = await readMenuKey(out, readLine, undefined, false, inkReadKey);
+  if (key === null || key.length === 0) return;
+
+  if (key === 's') {
+    out.write('Show to-dos for goal number: ');
+    const n = parseInt((await readLine()) ?? '', 10);
+    const goal = !Number.isNaN(n) ? parked[n - 1] : undefined;
+    if (goal !== undefined) {
+      out.write('\n');
+      renderGoalExpanded(goal, out);
+    } else {
+      out.write(dim('  No such goal.\n', out.color));
+    }
+  } else if (key === 'd') {
+    out.write('Check off a to-do — goal number: ');
+    const g = parseInt((await readLine()) ?? '', 10);
+    const goal = !Number.isNaN(g) ? parked[g - 1] : undefined;
+    if (goal === undefined) {
+      out.write(dim('  No such goal.\n', out.color));
+    } else {
+      out.write('\n');
+      renderGoalExpanded(goal, out);
+      out.write('To-do number to mark done: ');
+      const n = parseInt((await readLine()) ?? '', 10);
+      if (!Number.isNaN(n) && n >= 1 && n <= goal.roadmap.length) {
+        // Honest: a to-do is done only on this EXPLICIT user check-off (evidence).
+        const updated = await store.setRoadmapItemStatus(goal.id, n - 1, 'done');
+        out.write(
+          updated !== null
+            ? `${bold('  ✓', out.color)} Checked off to-do #${n} of "${updated.title}".\n`
+            : dim('  Could not update that to-do.\n', out.color),
+        );
+      } else {
+        out.write(dim('  No such to-do.\n', out.color));
+      }
+    }
+  } else if (key === 'x') {
+    out.write('Drop goal number: ');
+    const n = parseInt((await readLine()) ?? '', 10);
+    const goal = !Number.isNaN(n) ? parked[n - 1] : undefined;
+    if (goal !== undefined) {
+      // Never silent-delete: explicit confirm before removing captured intent.
+      out.write(`Drop "${goal.title}"? ${yesNoHint('strict', out.color)} `);
+      if (await confirm(false, { requireExplicit: true })) {
+        await store.remove(goal.id);
+        out.write('Dropped.\n');
+      } else {
+        out.write('Cancelled.\n');
+      }
+    } else {
+      out.write(dim('  No such goal.\n', out.color));
+    }
+  }
+  // else: back. (parked re-read only on entry; the menu re-renders on return.)
 }
 
 // ---------------------------------------------------------------------------

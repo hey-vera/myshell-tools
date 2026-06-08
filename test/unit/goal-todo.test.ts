@@ -1,0 +1,151 @@
+/**
+ * test/unit/goal-todo.test.ts — the PURE shaping/formatting core (core/goal-todo.ts).
+ * No I/O, no clock — `nowIso` is injected. Table-tested.
+ */
+
+import { describe, it } from 'node:test';
+import assert from 'node:assert/strict';
+
+import {
+  capGoal,
+  capRoadmap,
+  roadmapProgress,
+  formatTodoCount,
+  ageInDays,
+  isStale,
+  goalGlyph,
+  formatGoalRow,
+  formatRoadmapLines,
+  selectGoals,
+  ROADMAP_LIMIT,
+  type Goal,
+} from '../../src/core/goal-todo.ts';
+import type { RoadmapItem } from '../../src/core/work-contract.ts';
+
+function makeGoal(overrides: Partial<Goal> = {}): Goal {
+  return {
+    version: 1,
+    id: 'goal_1',
+    title: 'Redesign feed',
+    state: 'parked',
+    source: 'user-explicit',
+    roadmap: [],
+    scope: 'project',
+    projectKey: 'repo#abcd1234',
+    conversationId: null,
+    createdAt: '2026-06-01T00:00:00.000Z',
+    lastTouched: '2026-06-01T00:00:00.000Z',
+    ...overrides,
+  };
+}
+
+const ITEMS = (statuses: RoadmapItem['status'][]): RoadmapItem[] =>
+  statuses.map((status, i) => ({ id: `r${i}`, text: `step ${i}`, status }));
+
+describe('roadmapProgress + formatTodoCount', () => {
+  it('counts done / total / blocked', () => {
+    const p = roadmapProgress(ITEMS(['done', 'done', 'pending', 'blocked']));
+    assert.deepEqual(p, { done: 2, total: 4, blocked: 1 });
+  });
+
+  it('formats "3/8 to-dos" (plural) and "1/1 to-do" (singular)', () => {
+    assert.equal(formatTodoCount(ITEMS(['done', 'done', 'done', 'pending', 'pending', 'pending', 'pending', 'pending'])), '3/8 to-dos');
+    assert.equal(formatTodoCount(ITEMS(['pending'])), '0/1 to-do');
+    assert.equal(formatTodoCount([]), '0/0 to-dos');
+  });
+});
+
+describe('ageInDays + isStale', () => {
+  it('computes whole days between two ISO times', () => {
+    assert.equal(ageInDays('2026-06-01T00:00:00.000Z', '2026-06-11T00:00:00.000Z'), 10);
+    assert.equal(ageInDays('2026-06-11T00:00:00.000Z', '2026-06-01T00:00:00.000Z'), 0); // now <= then
+    assert.equal(ageInDays('garbage', '2026-06-11T00:00:00.000Z'), 0); // unparseable → 0
+  });
+
+  it('isStale at the 30-day window', () => {
+    const fresh = makeGoal({ lastTouched: '2026-06-01T00:00:00.000Z' });
+    assert.equal(isStale(fresh, '2026-06-20T00:00:00.000Z'), false);
+    assert.equal(isStale(fresh, '2026-07-05T00:00:00.000Z'), true);
+  });
+});
+
+describe('goalGlyph', () => {
+  it('reuses the StatusBlock vocabulary by state', () => {
+    assert.equal(goalGlyph(makeGoal({ state: 'done' })), '✓');
+    assert.equal(goalGlyph(makeGoal({ state: 'failed' })), '✗');
+    assert.equal(goalGlyph(makeGoal({ state: 'running' })), '◐');
+    assert.equal(goalGlyph(makeGoal({ state: 'queued' })), '○');
+    assert.equal(goalGlyph(makeGoal({ state: 'parked' })), '◷');
+  });
+
+  it('a parked goal with a blocked to-do gets the ⚠ flag', () => {
+    assert.equal(goalGlyph(makeGoal({ state: 'parked', roadmap: ITEMS(['blocked']) })), '⚠');
+  });
+});
+
+describe('formatGoalRow', () => {
+  it('renders the concise themed row with a to-do count', () => {
+    const g = makeGoal({ roadmap: ITEMS(['done', 'done', 'done', 'pending', 'pending', 'pending', 'pending', 'pending']) });
+    const row = formatGoalRow(g, '2026-06-02T00:00:00.000Z');
+    assert.match(row, /◷ Redesign feed · 3\/8 to-dos · parked · this repo/);
+  });
+
+  it('shows the blocker text and age when blocked + stale + global', () => {
+    const g = makeGoal({
+      scope: 'global',
+      projectKey: null,
+      roadmap: [{ id: 'r1', text: 'needs the windowing lib decision', status: 'blocked' }],
+      lastTouched: '2026-06-01T00:00:00.000Z',
+    });
+    const row = formatGoalRow(g, '2026-07-05T00:00:00.000Z');
+    assert.match(row, /⚠ Redesign feed/);
+    assert.match(row, /blocked: needs the windowing lib decision/);
+    assert.match(row, /parked \d+d ago/);
+    assert.match(row, /global/);
+  });
+});
+
+describe('formatRoadmapLines', () => {
+  it('renders numbered [✓]/[ ]/[⚠] checkboxes', () => {
+    const lines = formatRoadmapLines(ITEMS(['done', 'pending', 'blocked', 'active']));
+    assert.match(lines[0]!, /1\. \[✓\] step 0/);
+    assert.match(lines[1]!, /2\. \[ \] step 1/);
+    assert.match(lines[2]!, /3\. \[⚠\] step 2/);
+    assert.match(lines[3]!, /4\. \[ \] step 3/); // active renders as an open box
+  });
+});
+
+describe('capGoal + capRoadmap (defensive shaping)', () => {
+  it('caps roadmap to ROADMAP_LIMIT and normalises bad statuses', () => {
+    const tooMany = Array.from({ length: 20 }, (_, i) => ({ id: `r${i}`, text: `s${i}`, status: 'weird' }));
+    const capped = capRoadmap(tooMany);
+    assert.equal(capped.length, ROADMAP_LIMIT);
+    assert.equal(capped[0]?.status, 'pending'); // bad status → pending
+  });
+
+  it('a malformed goal falls back to safe defaults rather than throwing', () => {
+    const bad = capGoal({ state: 'nonsense', scope: 'nope', roadmap: 'not-an-array' } as unknown as Goal);
+    assert.equal(bad.state, 'parked');
+    assert.equal(bad.scope, 'project');
+    assert.deepEqual(bad.roadmap, []);
+    assert.equal(bad.version, 1);
+  });
+
+  it('a global goal never carries a projectKey', () => {
+    const g = capGoal(makeGoal({ scope: 'global', projectKey: 'leak#1' }));
+    assert.equal(g.projectKey, null);
+  });
+});
+
+describe('selectGoals', () => {
+  it('filters by state and scope without mutating the input', () => {
+    const goals = [
+      makeGoal({ id: 'goal_1', state: 'parked', scope: 'project', projectKey: 'p#1' }),
+      makeGoal({ id: 'goal_2', state: 'running', scope: 'global', projectKey: null }),
+    ];
+    assert.equal(selectGoals(goals, { state: 'parked' }).length, 1);
+    assert.equal(selectGoals(goals, { scope: 'global' }).length, 1);
+    assert.equal(selectGoals(goals).length, 2);
+    assert.equal(goals.length, 2); // unchanged
+  });
+});

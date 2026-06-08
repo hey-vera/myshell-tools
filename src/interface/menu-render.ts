@@ -18,6 +18,8 @@ import { box, separator, menu } from '../ui/tui.js';
 import { dim, yellow } from '../ui/theme.js';
 import type { OutputSink } from './render.js';
 import type { MenuContext } from './menu.js';
+import type { Goal } from '../core/goal-todo.js';
+import { renderParkedSection } from '../commands/goals.js';
 import { resolveAutoMode, autoModeReason } from './menu-auto-mode.js';
 import {
   versionStatusLabel,
@@ -37,6 +39,7 @@ export async function renderMainScreen(
   claudeTokenInfo?: ClaudeTokenStatus | null,
   runningUnderNpx = false,
   healthIssues: readonly HealthIssue[] = [],
+  parkedGoals: readonly Goal[] = [],
 ): Promise<void> {
   out.write('\n');
 
@@ -128,6 +131,16 @@ export async function renderMainScreen(
   }
   out.write('\n');
 
+  // Goals — a PARKED-goals section, shown ONLY when there are parked goals (no
+  // clutter when empty). Each row carries its to-do count, e.g.
+  // "◷ Redesign feed · 3/8 to-dos · parked · this repo". Stale goals dim. A
+  // parked goal's to-dos ARE its roadmap — nothing floats. (vision doc §5.)
+  const parkedLines = renderParkedSection(parkedGoals, ctx.clock.isoNow(), out.color);
+  if (parkedLines.length > 0) {
+    for (const line of parkedLines) out.write(`${line}\n`);
+    out.write('\n');
+  }
+
   // Auth section — always include the opencode [o] entry so users can discover
   // and connect opencode even before it is installed. Label parallels the other
   // two providers; when opencode isn't installed yet, the handler offers to
@@ -159,6 +172,11 @@ export async function renderMainScreen(
       { key: 'i', label: 'Resume a Claude/Codex session', section: 'Conversations' },
       { key: 'r', label: 'Raw provider session', section: 'Conversations' },
       ...authEntries,
+      // [g] Manage goals — shown only when there are parked goals (no clutter for
+      // a brand-new user with none).
+      ...(parkedGoals.length > 0
+        ? [{ key: 'g', label: 'Manage goals', section: 'Options' }]
+        : []),
       { key: 's', label: 'Settings', section: 'Options' },
       { key: 'd', label: 'Diagnose', section: 'Options' },
       { key: '$', label: 'Usage (tokens)', section: 'Options' },
