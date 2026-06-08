@@ -34,6 +34,25 @@ export interface OutputSink {
    * need no implementation — callers invoke it as `out.flush?.()`.
    */
   flush?(): void;
+  /**
+   * OPTIONAL: open an EPHEMERAL FRAME. Between `beginFrame()` and `endFrame()`,
+   * `write()` accumulates into a frame buffer that `endFrame()` flushes as a SINGLE
+   * REPLACE of a bounded live region (NOT an append). Used for transient,
+   * fully-redrawn-every-iteration chrome such as the interactive MENU: instead of
+   * committing ~30 fresh permanent lines per keypress (unbounded `<Static>` growth
+   * → progressive lag), the menu repaints in place. No-op on sinks without a live
+   * region (legacy stdout / test sinks → unchanged byte-for-byte). Callers invoke
+   * as `out.beginFrame?.()` / `out.endFrame?.()`.
+   */
+  beginFrame?(): void;
+  endFrame?(): void;
+  /**
+   * Promote the CURRENT live-frame region into the permanent transcript and clear
+   * the live region. Called when the menu hands off to a sub-flow so the just-shown
+   * menu lingers in scrollback above the sub-flow's output (legacy scrolling-TTY
+   * parity). No-op on sinks without a live region. Invoked as `out.promoteFrame?.()`.
+   */
+  promoteFrame?(): void;
 }
 
 // ---------------------------------------------------------------------------

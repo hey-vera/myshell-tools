@@ -546,6 +546,13 @@ function AppBody({
         <Static items={committed}>
           {(item) => <CommittedLine key={item.key} line={item.line} color={color} />}
         </Static>
+        {uiState.chrome.length > 0 ? (
+          <Box flexDirection="column">
+            {uiState.chrome.map((line, index) => (
+              <CommittedLine key={index} line={line} color={color} />
+            ))}
+          </Box>
+        ) : null}
         <StatusBlock
           state={uiState}
           color={color}

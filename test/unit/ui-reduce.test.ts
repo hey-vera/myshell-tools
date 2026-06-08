@@ -400,6 +400,35 @@ describe('ui reduce — turn/start + commit/raw (persistent state)', () => {
     assert.equal(s.committed[1]?.kind, 'prose');
   });
 
+  it('chrome/replace swaps the ephemeral live region WHOLE without touching committed[]', () => {
+    // The menu-lag fix: the menu redraws into the bounded `chrome` live region
+    // (replaced each frame), NOT committed[]. So N replaces keep committed[] empty
+    // and chrome[] holding only the latest frame.
+    let s = initialState;
+    for (let i = 0; i < 10; i++) {
+      s = reduce(s, { type: 'chrome/replace', lines: ['menu', `frame ${i}`] });
+    }
+    assert.equal(s.committed.length, 0, 'committed[] must not grow across chrome/replace');
+    assert.deepEqual(s.chrome.map((l) => l.text), ['menu', 'frame 9']);
+    assert.equal(s.chrome[0]?.kind, 'raw');
+  });
+
+  it('chrome/promote folds the live region into committed[] and clears chrome', () => {
+    let s = reduce(initialState, { type: 'chrome/replace', lines: ['menu a', 'menu b'] });
+    s = reduce(s, { type: 'chrome/promote' });
+    assert.deepEqual(s.chrome, []);
+    assert.deepEqual(s.committed.map((l) => l.text), ['menu a', 'menu b']);
+    // A subsequent commit/raw appends BELOW the promoted menu (append-only intact).
+    s = reduce(s, { type: 'commit/raw', text: 'after' });
+    assert.deepEqual(s.committed.map((l) => l.text), ['menu a', 'menu b', 'after']);
+  });
+
+  it('turn/start clears any lingering menu chrome (menu → chat handoff)', () => {
+    let s = reduce(initialState, { type: 'chrome/replace', lines: ['stale menu'] });
+    s = reduce(s, { type: 'turn/start' });
+    assert.deepEqual(s.chrome, [], 'turn/start must clear the ephemeral menu chrome');
+  });
+
   it('session tokens ACCUMULATE across turns separated by turn/start', () => {
     const tier = (): Action => ({
       type: 'stream/flush-tier',

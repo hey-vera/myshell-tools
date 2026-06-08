@@ -2582,9 +2582,19 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
         spendDirty = false;
       }
       const metas = await ctx.store.list();
+      // Render the menu chrome inside an EPHEMERAL FRAME. On the Ink path this paints
+      // the whole menu into a bounded NON-<Static> live region that is REPLACED in
+      // place every loop iteration — instead of appending ~30 fresh permanent
+      // <Static> items per keypress (the progressive-lag / duplicate-menu root
+      // cause). On the legacy stdout / test sinks beginFrame/endFrame are no-ops, so
+      // the byte stream is unchanged.
+      out.beginFrame?.();
       await renderMainScreen(ctx, mutableCtx, metas, spend, out, updateInfo, claudeTokenInfo, runningUnderNpx, ctx.healthIssues ?? []);
 
       out.write('> ');
+      // Paint the frame (menu + prompt) as the live region before blocking on the
+      // key. readMenuKey's internal out.flush?.() is then a no-op (nothing pending).
+      out.endFrame?.();
       // Single keypress on a real TTY (press the letter, no Enter); line read in
       // pipes/tests. '' = Enter/no-op → re-render; null = Ctrl-C/EOF → exit. On
       // the Ink path read ONE key through Ink's own input pipeline (inkReadKey) so
@@ -2598,9 +2608,17 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
       }
 
       // ---- Enter / no-op key → just re-render the menu ------------------------
+      // The live frame stays as-is; the next iteration's beginFrame/endFrame
+      // REPLACES it in place — zero <Static> growth across no-op keypresses.
       if (key === '') {
         continue;
       }
+
+      // A real action key was pressed: PROMOTE the just-shown menu frame into the
+      // permanent transcript so it lingers in scrollback above the sub-flow / chat
+      // output (legacy scrolling-TTY parity), then the sub-flow's own out.write
+      // commits below it. No-op on legacy/test sinks.
+      out.promoteFrame?.();
 
       // ---- [q] Quit -----------------------------------------------------------
       if (key === 'q') {

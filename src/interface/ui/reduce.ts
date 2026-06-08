@@ -127,6 +127,9 @@ export function reduce(state: UiState, action: Action): UiState {
       return {
         ...state,
         goals: [],
+        // Clear any ephemeral menu/frame chrome — a turn means we left the menu,
+        // so the live-frame region must not linger above the streaming answer.
+        chrome: [],
         stream: initialStreamView,
         // Flip turnActive TRUE the instant a turn begins so the live status block
         // / spinner appears immediately on submit. Previously this stayed false
@@ -147,6 +150,26 @@ export function reduce(state: UiState, action: Action): UiState {
     //    no out.write chrome is lost between turns.
     case 'commit/raw':
       return commit(state, { kind: 'raw', text: action.text });
+
+    // -- chrome/replace: swap the ephemeral live-frame region wholesale. The menu
+    //    loop redraws its full chrome every keypress; routing it here (instead of
+    //    commit/raw) means the frame REPLACES the prior one in a bounded NON-<Static>
+    //    box rather than appending ~30 permanent items per redraw. committed[] is
+    //    untouched, so the append-only transcript invariant holds and the menu lag
+    //    (unbounded <Static> growth) is gone.
+    case 'chrome/replace':
+      return { ...state, chrome: action.lines.map((text) => ({ kind: 'raw' as const, text })) };
+
+    // -- chrome/clear: empty the live-frame region (menu → chat / sub-flow handoff).
+    case 'chrome/clear':
+      return state.chrome.length === 0 ? state : { ...state, chrome: [] };
+
+    // -- chrome/promote: fold the live-frame region into committed[] and clear it
+    //    (menu → sub-flow handoff: the menu lingers in scrollback, legacy parity).
+    case 'chrome/promote':
+      return state.chrome.length === 0
+        ? state
+        : { ...state, committed: [...state.committed, ...state.chrome], chrome: [] };
 
     // -- classifier metadata: only a visible line under verbose AND MYSHELL_DEBUG.
     //    render.ts gates the classified line purely on process.env.MYSHELL_DEBUG

@@ -119,15 +119,48 @@ export function createInkOutputSink(
   opts: { readonly color: boolean; readonly isTty: boolean },
 ): OutputSink {
   let pending = '';
+  // EPHEMERAL FRAME state. When `frame !== null`, write() routes whole lines into
+  // `frame` (the live-frame buffer) instead of committing them; endFrame() flushes
+  // it as ONE `chrome/replace` (replace, not append) so a fully-redrawn-every-key
+  // surface (the menu) repaints in a bounded NON-<Static> region. This is the
+  // menu-lag fix: committed[] no longer grows ~30 items per keypress.
+  let frame: string[] | null = null;
   return {
     write(s: string): void {
       pending += s;
       let nl = pending.indexOf('\n');
       while (nl !== -1) {
-        store.dispatch({ type: 'commit/raw', text: pending.slice(0, nl) });
+        const line = pending.slice(0, nl);
+        if (frame !== null) frame.push(line);
+        else store.dispatch({ type: 'commit/raw', text: line });
         pending = pending.slice(nl + 1);
         nl = pending.indexOf('\n');
       }
+    },
+    // Open an ephemeral frame: subsequent write() lines accumulate in `frame`
+    // (replacing the prior frame's content) rather than committing. Re-entrant-safe
+    // (a second beginFrame keeps the buffer); the menu loop pairs each begin/end.
+    beginFrame(): void {
+      if (frame === null) frame = [];
+    },
+    // Flush the ephemeral frame: any buffered partial line is folded in, then the
+    // whole frame REPLACES state.chrome (NON-<Static>, repaints in place). An empty
+    // frame clears the region. After this, write() resumes committing as normal.
+    endFrame(): void {
+      if (frame === null) return;
+      if (pending !== '') {
+        frame.push(pending);
+        pending = '';
+      }
+      const lines = frame;
+      frame = null;
+      store.dispatch({ type: 'chrome/replace', lines });
+    },
+    // Promote the painted live-frame region into the permanent transcript (and
+    // clear it) — the menu→sub-flow handoff so the menu lingers in scrollback like
+    // the legacy TTY. No-op when no frame is painted.
+    promoteFrame(): void {
+      store.dispatch({ type: 'chrome/promote' });
     },
     // Commit any buffered partial line (a prompt written WITHOUT a trailing
     // newline) as its own committed `<Static>` item so it becomes visible before
@@ -135,10 +168,16 @@ export function createInkOutputSink(
     // space prompts (e.g. "Sign in to claude? ") would sit in `pending` forever
     // and the question would never render on the Ink path.
     flush(): void {
-      if (pending !== '') {
+      if (pending === '') return;
+      // Inside a frame, the trailing partial belongs to the live-frame region (e.g.
+      // the menu's "> " prompt), not the permanent transcript — buffer it in the
+      // frame so endFrame() paints it in place. Outside a frame, commit as before.
+      if (frame !== null) {
+        frame.push(pending);
+      } else {
         store.dispatch({ type: 'commit/raw', text: pending });
-        pending = '';
       }
+      pending = '';
     },
     get color(): boolean {
       return opts.color;

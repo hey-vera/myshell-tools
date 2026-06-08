@@ -87,6 +87,73 @@ test('createInkOutputSink flush() commits pending partial line; no-op when empty
   assert.deepEqual(chrome(), ['Sign in to claude? (Y/n) ']);
 });
 
+test('MENU-LAG FIX: ephemeral frame REPLACES the live region; committed[] stays flat across N menu redraws', () => {
+  // The interactive menu redraws its full chrome (~30 lines) on EVERY loop
+  // iteration. Before the fix, each redraw committed those lines to the
+  // append-only committed[] (→ unbounded <Static> growth → progressive lag and
+  // duplicate menus). With beginFrame()/endFrame() the menu paints into the
+  // bounded NON-<Static> `chrome` live region, REPLACED each frame, so committed[]
+  // does NOT grow as the user navigates with no-op (re-render) keypresses.
+  const bridge = createInkAppBridge();
+  let last: UiState | null = null;
+  bridge._setUiState = (s) => { last = s; };
+  const store = createInkStore(bridge);
+  const out = createInkOutputSink(store, { color: false, isTty: true });
+
+  const committedLen = (): number => last?.committed.length ?? 0;
+  const chromeLines = (): string[] => (last?.chrome ?? []).map((l) => l.text);
+
+  // Simulate 50 menu redraws (50 no-op keypresses → 50 re-render loop iterations).
+  for (let i = 0; i < 50; i++) {
+    out.beginFrame?.();
+    out.write('myshell-tools v3\n');
+    out.write('  Recent\n');
+    out.write('  [n] New  [c] Continue  [q] Quit\n');
+    out.write('> '); // unterminated prompt — folded into the frame on endFrame
+    out.endFrame?.();
+  }
+
+  // committed[] NEVER grew across the 50 redraws (the lag root cause is gone).
+  assert.equal(committedLen(), 0, `committed[] grew across menu redraws: ${committedLen()}`);
+  // The live region holds exactly ONE current frame (4 lines incl. the prompt),
+  // not 50×4 — it was REPLACED each time, never appended.
+  assert.deepEqual(chromeLines(), [
+    'myshell-tools v3',
+    '  Recent',
+    '  [n] New  [c] Continue  [q] Quit',
+    '> ',
+  ]);
+});
+
+test('MENU-LAG FIX: promoteFrame() folds the live frame into committed[] (sub-flow handoff, legacy scrollback parity)', () => {
+  const bridge = createInkAppBridge();
+  let last: UiState | null = null;
+  bridge._setUiState = (s) => { last = s; };
+  const store = createInkStore(bridge);
+  const out = createInkOutputSink(store, { color: false, isTty: true });
+
+  const committed = (): string[] => (last?.committed ?? []).map((l) => l.text);
+  const chromeLines = (): string[] => (last?.chrome ?? []).map((l) => l.text);
+
+  // Paint a menu frame (live region only — committed stays empty).
+  out.beginFrame?.();
+  out.write('menu line 1\n');
+  out.write('menu line 2\n');
+  out.endFrame?.();
+  assert.deepEqual(committed(), []);
+  assert.deepEqual(chromeLines(), ['menu line 1', 'menu line 2']);
+
+  // A real action key: promote the frame into the transcript (it lingers in
+  // scrollback above the sub-flow), then the sub-flow commits below it.
+  out.promoteFrame?.();
+  assert.deepEqual(chromeLines(), []);
+  assert.deepEqual(committed(), ['menu line 1', 'menu line 2']);
+
+  // Sub-flow output now commits as normal (append-only) BELOW the promoted menu.
+  out.write('sub-flow output\n');
+  assert.deepEqual(committed(), ['menu line 1', 'menu line 2', 'sub-flow output']);
+});
+
 test('createInkLineReader resolves nextLine() with submitted input (FIFO)', async () => {
   const bridge = createInkAppBridge();
   const reader = createInkLineReader(bridge);

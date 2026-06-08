@@ -15,6 +15,16 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   resumed goal's contract from the persisted `workTrace` (niche: the in-run contract
   is already kept in memory; only cross-session resume benefits). Optional.
 
+## [3.29.7]
+
+### Fixed — snappy menu (no more creeping lag)
+- The interactive menu redrew its full ~30-line screen into the **append-only**
+  transcript on every keypress, so the rendered list grew unbounded and the menu
+  got progressively laggier the longer you used it. The menu (and other transient
+  chrome) now repaints in a bounded ephemeral region that's replaced in place, so
+  navigation stays fast no matter how long the session runs. (The committed
+  transcript and scrollback are unchanged; menus still linger above sub-flows.)
+
 ## [3.29.6]
 
 ### Changed — the live orchestration view is now legible (agents, not jargon)

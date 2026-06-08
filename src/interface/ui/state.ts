@@ -142,6 +142,16 @@ export interface TokenView {
  */
 export interface UiState {
   readonly committed: readonly TranscriptLine[];
+  /**
+   * The EPHEMERAL "live frame" region: transient chrome (e.g. the interactive
+   * MENU) that is REDRAWN whole on every loop iteration and must NOT accumulate in
+   * the append-only `committed[]` transcript. It is rendered in a normal (NON
+   * `<Static>`) `<Box>` so each frame REPLACES the previous one in place, instead
+   * of committing ~30 fresh `<Static>` items per keypress (the menu-lag root
+   * cause). The impure OutputSink fills it between `beginFrame()`/`endFrame()`;
+   * `endFrame()` REPLACES the whole array (never appends). Empty between frames.
+   */
+  readonly chrome: readonly TranscriptLine[];
   readonly goals: readonly GoalView[];
   readonly stream: StreamView;
   readonly turnActive: boolean;
@@ -169,6 +179,7 @@ export const initialStreamView: StreamView = {
 
 export const initialState: UiState = {
   committed: [],
+  chrome: [],
   goals: [],
   stream: initialStreamView,
   turnActive: false,
@@ -200,6 +211,20 @@ export type Action =
   //     committed transcript the reducer prose commits feed. One growing source
   //     of truth → no out.write chrome is lost and <Static> stays monotonic.
   | { readonly type: 'commit/raw'; readonly text: string }
+  // --- chrome/replace: REPLACE the ephemeral live-frame region (state.chrome)
+  //     with a whole fresh set of lines. Used by the menu loop (via the
+  //     OutputSink's beginFrame/endFrame) so the interactive menu is repainted in
+  //     a bounded NON-<Static> region instead of appending ~30 committed items per
+  //     keypress. Replaces — never appends — so chrome[] does NOT grow with redraws.
+  | { readonly type: 'chrome/replace'; readonly lines: readonly string[] }
+  // --- chrome/clear: empty the ephemeral live-frame region (on exiting a frame
+  //     into a non-frame surface, e.g. when the menu hands off to chat/a sub-flow).
+  | { readonly type: 'chrome/clear' }
+  // --- chrome/promote: move the CURRENT live-frame region into the permanent
+  //     committed transcript and clear the live region. Used when the menu hands
+  //     off to a sub-flow so the just-shown menu lingers in scrollback above the
+  //     sub-flow output (legacy-TTY parity) WITHOUT re-buffering its text.
+  | { readonly type: 'chrome/promote' }
   // --- classifier metadata (verbose/MYSHELL_DEBUG only) ---
   | {
       readonly type: 'classified';
