@@ -94,21 +94,44 @@ export function createInkOutputSink(
 
 /**
  * Build a {@link LineReader} whose `nextLine()` resolves with the next line the
- * user submits in the Ink input box. Submitted lines that arrive before they are
- * awaited are buffered (FIFO), mirroring {@link createLineReader}'s pipe-drain
- * fix.
+ * user submits in the Ink input box. This is the Step-2a READ-SIDE: it matches
+ * the legacy {@link createLineReader} semantics exactly for the line/capture/
+ * drain surface; only `suspend()`/`resume()` remain Step-2b stubs.
  *
- * Step 1 implements only `nextLine()` + buffering + `close()`. The remaining
- * LineReader methods are type-complete minimal stubs — full suspend/resume
- * child-handoff and mid-turn typed-ahead capture/queue semantics come in Step 2.
+ * Semantics mirrored from menu-readline.ts `createLineReader`:
+ *  - Submitted lines are `.trim()`-ed (the legacy `rl.on('line')` trims `raw`).
+ *  - A blank line is DROPPED while capture is active (a bare Enter is not a
+ *    queued turn), and is delivered as `''` to a normal `nextLine()` waiter (the
+ *    legacy reader delivers the trimmed empty string when capture is off).
+ *  - `beginCapture(onLine)` is EXCLUSIVE — it throws if a capture is already
+ *    active — and routes every non-blank submitted line to `onLine` instead of
+ *    the buffer/waiters. Returns an idempotent detach.
+ *  - `currentLine()` returns the InputBox's in-progress edit buffer.
+ *  - `drainBuffered()`/`clearBuffered()` operate on the unconsumed line buffer.
+ *  - `close()` resolves every pending/future `nextLine()` with `null`.
+ *  - Each submitted non-blank line is also seeded into the InputBox history so a
+ *    fresh box (e.g. after a remount) keeps Up/Down history.
+ *
+ * `suspend()`/`resume()` stay as Step-1/2b stubs (the inherited-stdio child
+ * handoff is Step 2b); the read-side works without them.
  */
 export function createInkLineReader(bridge: InkAppBridge): LineReader {
   const buffered: string[] = [];
   const waiters: Array<(value: string | null) => void> = [];
   let closed = false;
+  // When non-null, a model turn is active and full non-blank lines typed
+  // mid-turn are routed here (typed-ahead capture) instead of buffer/waiters.
+  let capture: ((line: string) => void) | null = null;
 
-  bridge.onSubmit((line: string) => {
+  bridge.onSubmit((raw: string) => {
     if (closed) return;
+    const line = raw.trim();
+    if (capture !== null) {
+      // Mid-turn typed-ahead: blank lines dropped (a bare Enter is not a queued
+      // turn); non-blank lines go to the capture sink, never to buffer/waiters.
+      if (line !== '') capture(line);
+      return;
+    }
     const waiter = waiters.shift();
     if (waiter !== undefined) waiter(line);
     else buffered.push(line);
@@ -125,14 +148,14 @@ export function createInkLineReader(bridge: InkAppBridge): LineReader {
         waiters.push(resolve);
       });
     },
-    // TODO(step 2): release stdin so an inherited-stdio child owns the TTY —
+    // TODO(step 2b): release stdin so an inherited-stdio child owns the TTY —
     // drive Ink's OWN setRawMode(false), not process.stdin's.
     suspend(): void {
-      /* TODO(step 2) */
+      /* TODO(step 2b) */
     },
-    // TODO(step 2): re-arm Ink's raw input after a child handoff.
+    // TODO(step 2b): re-arm Ink's raw input after a child handoff.
     resume(): void {
-      /* TODO(step 2) */
+      /* TODO(step 2b) */
     },
     close(): void {
       closed = true;
@@ -141,16 +164,24 @@ export function createInkLineReader(bridge: InkAppBridge): LineReader {
         if (waiter !== undefined) waiter(null);
       }
     },
-    // TODO(step 2): route mid-turn typed-ahead lines to `onLine` instead of the
-    // nextLine() buffer/waiters (exclusive capture, blank lines dropped).
-    beginCapture(_onLine: (line: string) => void): () => void {
-      return () => {
-        /* TODO(step 2) */
+    beginCapture(onLine: (line: string) => void): () => void {
+      // Exclusive: a second concurrent capture owner would be a real bug (two
+      // turns claiming mid-turn input at once). Throw rather than silently steal.
+      if (capture !== null) {
+        throw new Error('createInkLineReader: capture already active');
+      }
+      capture = onLine;
+      let detached = false;
+      return (): void => {
+        if (detached) return;
+        detached = true;
+        if (capture === onLine) capture = null;
       };
     },
-    // TODO(step 2): mirror the in-progress Ink input value for managed chrome.
     currentLine(): string {
-      return '';
+      // Mirror the InputBox's in-progress edit buffer (the legacy reader returns
+      // readline's `.line`).
+      return bridge.input.currentLine();
     },
     drainBuffered(): string[] {
       const drained = buffered.slice();
@@ -200,7 +231,14 @@ export function mountInk(opts: InkMountOptions): InkMountHandle {
   const out = createInkOutputSink(bridge, { color: opts.color, isTty: opts.isTty });
   const reader = createInkLineReader(bridge);
 
-  const instance = render(<App bridge={bridge} />, {
+  const instance = render(
+    <App
+      bridge={bridge}
+      color={opts.color}
+      isTty={opts.isTty}
+      {...(typeof process.stdout.columns === 'number' ? { columns: process.stdout.columns } : {})}
+    />,
+    {
     // Pass a custom stdin (e.g. the /dev/tty ReadStream) when supplied so Ink
     // reads raw input from the controlling terminal. `render` accepts a Node
     // ReadStream; the KeyInputStream slice is a structural superset for our use.

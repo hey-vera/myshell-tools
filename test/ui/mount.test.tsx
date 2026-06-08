@@ -55,16 +55,80 @@ test('createInkLineReader resolves nextLine() with submitted input (FIFO)', asyn
 
   // Awaiter-before-line
   const pending = reader.nextLine();
-  bridge._submit?.('hello');
+  bridge.input._submit?.('hello');
   assert.equal(await pending, 'hello');
 
   // Line-before-awaiter (buffered)
-  bridge._submit?.('a');
-  bridge._submit?.('b');
+  bridge.input._submit?.('a');
+  bridge.input._submit?.('b');
   assert.equal(await reader.nextLine(), 'a');
   assert.deepEqual(reader.drainBuffered(), ['b']);
 
   // close() makes every future call resolve null
   reader.close();
+  assert.equal(await reader.nextLine(), null);
+});
+
+test('createInkLineReader trims submitted lines (matches legacy createLineReader)', async () => {
+  const bridge = createInkAppBridge();
+  const reader = createInkLineReader(bridge);
+  const pending = reader.nextLine();
+  bridge.input._submit?.('  spaced  ');
+  assert.equal(await pending, 'spaced');
+});
+
+test('createInkLineReader currentLine() mirrors the InputBox in-progress buffer', () => {
+  const bridge = createInkAppBridge();
+  const reader = createInkLineReader(bridge);
+  assert.equal(reader.currentLine(), '');
+  // Simulate the InputBox attaching its imperative API.
+  bridge.input.attach({ currentLine: () => 'typing…' });
+  assert.equal(reader.currentLine(), 'typing…');
+});
+
+test('createInkLineReader beginCapture routes submits to onLine, drops blanks, is exclusive', () => {
+  const bridge = createInkAppBridge();
+  const reader = createInkLineReader(bridge);
+  const captured: string[] = [];
+  const stop = reader.beginCapture((l) => captured.push(l));
+
+  bridge.input._submit?.('queued-1');
+  bridge.input._submit?.('   '); // blank → dropped
+  bridge.input._submit?.('queued-2');
+  assert.deepEqual(captured, ['queued-1', 'queued-2']);
+  // Nothing leaked into the nextLine buffer.
+  assert.deepEqual(reader.drainBuffered(), []);
+
+  // Exclusive: a second beginCapture throws while one is active.
+  assert.throws(() => reader.beginCapture(() => {}), /capture already active/);
+
+  // After detach, submits flow back to the buffer.
+  stop();
+  bridge.input._submit?.('normal');
+  assert.deepEqual(reader.drainBuffered(), ['normal']);
+
+  // Detach is idempotent.
+  stop();
+});
+
+test('createInkLineReader drainBuffered returns+empties; clearBuffered empties silently', () => {
+  const bridge = createInkAppBridge();
+  const reader = createInkLineReader(bridge);
+  bridge.input._submit?.('a');
+  bridge.input._submit?.('b');
+  assert.deepEqual(reader.drainBuffered(), ['a', 'b']);
+  assert.deepEqual(reader.drainBuffered(), []);
+
+  bridge.input._submit?.('c');
+  reader.clearBuffered();
+  assert.deepEqual(reader.drainBuffered(), []);
+});
+
+test('createInkLineReader ignores submits after close()', async () => {
+  const bridge = createInkAppBridge();
+  const reader = createInkLineReader(bridge);
+  reader.close();
+  bridge.input._submit?.('too late');
+  assert.deepEqual(reader.drainBuffered(), []);
   assert.equal(await reader.nextLine(), null);
 });

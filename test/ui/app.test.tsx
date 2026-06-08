@@ -21,7 +21,7 @@ test('committed lines appear in the transcript', async () => {
   const { lastFrame } = render(<App bridge={bridge} />);
   bridge.commit('hello from the sink');
   // Allow Ink to flush a render tick.
-  await new Promise((r) => setTimeout(r, 20));
+  await new Promise((r) => setTimeout(r, 50));
   assert.ok(
     lastFrame()?.includes('hello from the sink'),
     `expected committed line in frame, got:\n${lastFrame()}`,
