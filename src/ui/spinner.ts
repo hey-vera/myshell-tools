@@ -17,8 +17,14 @@ import type { OutputSink } from '../interface/render.js';
 // Frame set (braille dots — deterministic cycle, no Math.random)
 // ---------------------------------------------------------------------------
 
-const FRAMES: readonly string[] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
-const FRAME_INTERVAL_MS = 80;
+/** The braille spinner frames. Exported so the Ink status line animates the
+ *  SAME glyph cycle as the legacy TTY spinner (one animation owner per surface). */
+export const SPINNER_FRAMES: readonly string[] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+const FRAMES: readonly string[] = SPINNER_FRAMES;
+/** The spinner's per-frame interval (ms). Exported so the Ink animation ticks at
+ *  the same cadence as the legacy spinner. */
+export const SPINNER_FRAME_INTERVAL_MS = 80;
+const FRAME_INTERVAL_MS = SPINNER_FRAME_INTERVAL_MS;
 const TICKS_PER_SECOND = Math.round(1000 / FRAME_INTERVAL_MS);
 
 // ---------------------------------------------------------------------------

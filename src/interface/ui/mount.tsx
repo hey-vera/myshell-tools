@@ -378,6 +378,8 @@ export function mountInk(opts: InkMountOptions): InkMountHandle {
       color={opts.color}
       isTty={opts.isTty}
       {...(typeof process.stdout.columns === 'number' ? { columns: process.stdout.columns } : {})}
+      {...(typeof process.stdout.rows === 'number' ? { rows: process.stdout.rows } : {})}
+      clock={() => Date.now()}
     />,
     {
     // Pass a custom stdin (e.g. the /dev/tty ReadStream) when supplied so Ink

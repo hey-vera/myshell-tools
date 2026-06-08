@@ -27,6 +27,15 @@ export {
   renderStreamInk,
 } from './run-stream.js';
 export {
+  layoutForHeight,
+  compactGoalsSummary,
+  goalCardRows,
+  INPUT_ROWS,
+  STATUS_LINE_ROWS,
+  PANEL_BORDER_ROWS,
+  SAFETY_MARGIN_ROWS,
+} from './layout.js';
+export {
   initialState,
   initialStreamView,
   type Action,

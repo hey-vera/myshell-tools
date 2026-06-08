@@ -18,6 +18,7 @@ import React, { useEffect, useState } from 'react';
 import { Box, Static, Text } from 'ink';
 import { InputBox, createInputBoxBridge, type InputBoxBridge } from './InputBox.js';
 import { Stream, CommittedLine } from './Stream.js';
+import { StatusBlock } from './StatusBlock.js';
 import type { TranscriptLine, UiState } from './state.js';
 
 /**
@@ -133,6 +134,15 @@ export interface AppProps {
   readonly isTty?: boolean;
   /** Terminal width for the input box (defaults to stdout columns at render). */
   readonly columns?: number | undefined;
+  /** Terminal height (rows) for the StatusBlock height cap. Defaults to stdout
+   *  rows at mount; mount backfills it so it is always >= 2. */
+  readonly rows?: number | undefined;
+  /**
+   * An INJECTED wall-clock (ms) for the StatusBlock's live elapsed `· Ns` (never
+   * `Date.now` inside the React tree). Supplied by the impure mount boundary.
+   * Omitted in tests → no fabricated elapsed.
+   */
+  readonly clock?: (() => number) | undefined;
 }
 
 /**
@@ -141,7 +151,14 @@ export interface AppProps {
  * indicator). The transcript region is unchanged from Step 1; all input editing
  * now lives in {@link InputBox}.
  */
-export function App({ bridge, color = true, isTty = true, columns }: AppProps): React.ReactElement {
+export function App({
+  bridge,
+  color = true,
+  isTty = true,
+  columns,
+  rows,
+  clock,
+}: AppProps): React.ReactElement {
   const [lines, setLines] = useState<string[]>([]);
   // The structured reducer snapshot (STEP 3b). `null` until the Node side pushes
   // one — until then the App uses the plain string `lines` transcript (Step 1).
@@ -174,6 +191,12 @@ export function App({ bridge, color = true, isTty = true, columns }: AppProps): 
         <Static items={committed}>
           {(item) => <CommittedLine key={item.key} line={item.line} color={color} />}
         </Static>
+        <StatusBlock
+          state={uiState}
+          color={color}
+          {...(rows !== undefined ? { rows } : {})}
+          {...(clock !== undefined ? { clock } : {})}
+        />
         <Stream buffer={uiState.stream.buffer} color={color} />
         <InputBox
           bridge={bridge.input}

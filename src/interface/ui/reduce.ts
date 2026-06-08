@@ -49,6 +49,44 @@ function resetTierCounters(): Partial<StreamView> {
   return { stepCount: 0, streamedChars: 0, attemptHadProse: false };
 }
 
+/**
+ * Settle the last still-`running` goal (and its agents) to a terminal state at a
+ * non-panel tier boundary / final, attributing `tierTokens` to it. The status
+ * panels read goal/agent `state` + `tokens` to show the ✓/✗ glyph and the
+ * `↓ ~Nk tok` readout; without this the cards would sit "running" forever.
+ * Sequential turns own exactly one running goal at a time, so flipping the LAST
+ * running one (the active attempt) is the faithful mirror of render.ts settling
+ * the current tier. Panel candidates are settled via `stream.panelists`, not
+ * here, so panel goals are left untouched. Pure; returns a new array.
+ */
+function settleActiveGoal(
+  goals: readonly GoalView[],
+  finalState: 'done' | 'failed',
+  tierTokens: number,
+): readonly GoalView[] {
+  let idx = -1;
+  for (let i = goals.length - 1; i >= 0; i -= 1) {
+    if (goals[i]?.state === 'running') {
+      idx = i;
+      break;
+    }
+  }
+  if (idx === -1) return goals;
+  return goals.map((goal, i) => {
+    if (i !== idx) return goal;
+    return {
+      ...goal,
+      state: finalState,
+      tokens: goal.tokens + tierTokens,
+      agents: goal.agents.map((agent) =>
+        agent.state === 'running'
+          ? { ...agent, state: finalState, tokens: agent.tokens + tierTokens }
+          : agent,
+      ),
+    };
+  });
+}
+
 // ---------------------------------------------------------------------------
 // reduce
 // ---------------------------------------------------------------------------
@@ -245,6 +283,7 @@ export function reduce(state: UiState, action: Action): UiState {
       const attemptHadProse = state.stream.attemptHadProse;
       next = {
         ...next,
+        goals: settleActiveGoal(next.goals, action.success ? 'done' : 'failed', tierTokens),
         tokens: { turn: next.tokens.turn + tierTokens, session: next.tokens.session + tierTokens },
         stream: {
           ...next.stream,
@@ -334,9 +373,13 @@ export function reduce(state: UiState, action: Action): UiState {
       if (state.stream.buffer.length > 0) {
         next = commit(next, { kind: 'prose', text: state.stream.buffer });
       }
-      // The turn is over: clear live status + mark inactive.
+      // The turn is over: clear live status + mark inactive. Any goal still
+      // `running` (e.g. a turn that ended without a non-panel tier boundary, or
+      // a failure) settles to the turn's outcome so a late reader of the final
+      // state sees a coherent goal glyph rather than a stuck `running` card.
       next = {
         ...next,
+        goals: settleActiveGoal(next.goals, action.success ? 'done' : 'failed', 0),
         turnActive: false,
         stream: { ...initialStreamView, buffer: '' },
       };
