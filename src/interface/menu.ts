@@ -2243,7 +2243,14 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
   // `(events, out, verbosity, turnInput)`). Null off the Ink path → runChatLoop
   // takes the legacy renderStream turn path unchanged.
   let inkRenderTurn: import('./run.js').TurnRenderer | undefined;
-  if (ctx.readLine === undefined && inkEnabled(process.env, ctx.config)) {
+  // TTY guard (critical for default-ON safety): Ink must mount ONLY for a real
+  // interactive terminal. When stdout/stdin are NOT a TTY (piped, CI, dumb
+  // terminal), fall through to the LEGACY path exactly as before — Ink's
+  // live-region render would corrupt a pipe and break CI. Matches the legacy
+  // raw-mode interactivity test (out.isTty && process.stdin.isTTY === true).
+  // Tests inject ctx.readLine, so they bypass this whole branch regardless.
+  const interactiveTty = out.isTty === true && process.stdin.isTTY === true;
+  if (ctx.readLine === undefined && interactiveTty && inkEnabled(process.env, ctx.config)) {
     const { mountInk } = await import('./ui/mount.js');
     inkHandle = mountInk({ color: out.color, isTty: out.isTty });
     // Render the menu/chat OUTPUT and read INPUT through the Ink adapters by

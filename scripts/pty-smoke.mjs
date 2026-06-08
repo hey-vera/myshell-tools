@@ -8,6 +8,13 @@
  *
  * Primary check: a pasted multi-word line is committed EXACTLY ONCE (the readline
  * `prompt:''` fix, CHANGELOG 3.18.1) — never duplicated on a second prompt row.
+ *
+ * PINNED TO LEGACY: the npm `smoke:pty` script sets MYSHELL_INK=0 so this keeps
+ * exercising the LEGACY raw-mode renderer (the doubled-paste fix + single-key
+ * nav) even though Ink is now the DEFAULT (3.28.0). The legacy path is retained
+ * as the opt-out fallback for one release, so this coverage stays valuable. The
+ * spawn below inherits this process's env, so MYSHELL_INK=0 reaches `node CLI`.
+ * The DEFAULT (Ink) path is covered by smoke:pty:ink + test:ui + smoke:pty:handoff.
  */
 import { spawn, spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';

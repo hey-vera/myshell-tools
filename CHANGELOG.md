@@ -15,6 +15,33 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   resumed goal's contract from the persisted `workTrace` (niche: the in-run contract
   is already kept in memory; only cross-session resume benefits). Optional.
 
+## [3.28.0]
+
+### Changed — the orchestration-terminal Ink UI is now the default
+- The new Ink-rendered interface is mounted by default on an interactive terminal.
+  It is a mission-control surface, not just a prettier prompt:
+  - **Live panels** for the current goal, the agents/models in flight, and a
+    running token tally — so a long, multi-model turn is legible while it runs.
+  - **Streaming that doesn't corrupt your input:** model output renders in its own
+    live region instead of fighting the prompt line, so a paste or typed-ahead
+    line is never garbled mid-stream.
+  - **Single-key navigation** in the menu and the in-chat `/mode` / `/style`
+    pickers (one keypress, no Enter), and **ESC interrupts the in-flight turn**
+    and leaves you at the prompt (distinct from Ctrl+C → menu → exit).
+- **Legacy renderer retained as the opt-out for this release.** Set
+  `MYSHELL_INK=0` (also `false`/`off`/`no`, case-insensitive) — or
+  `experimentalInk: false` in config — to run the previous raw-mode renderer
+  byte-for-byte. Kept as the safety fallback for one release; not yet removed.
+- **Non-TTY stays on legacy, always.** Ink mounts ONLY when both stdout and stdin
+  are a real interactive TTY. Piped input, CI, and dumb terminals fall through to
+  the legacy path unchanged, so scripts and pipelines are unaffected.
+- Built incrementally behind the `MYSHELL_INK` flag before being promoted to the
+  default: parity-proven against the legacy renderer, adversarially reviewed
+  (6 bugs found and fixed), covered by the main + UI test suites, and verified
+  end-to-end under a real pseudo-terminal (`smoke:pty:ink`). The legacy
+  fallback's raw-mode behaviors (single-keypress nav, the doubled-paste fix)
+  remain covered by `smoke:pty`, now pinned to `MYSHELL_INK=0`.
+
 ## [3.27.2]
 
 ### Fixed — self-update lands on the copy that's actually running

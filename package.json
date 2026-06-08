@@ -1,6 +1,6 @@
 {
   "name": "myshell-tools",
-  "version": "3.27.2",
+  "version": "3.28.0",
   "type": "module",
   "bin": {
     "myshell-tools": "dist/cli.js",
@@ -22,7 +22,7 @@
     "test:integration": "node --test \"test/integration/**/*.test.ts\"",
     "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
     "prepublishOnly": "npm run clean && npm run typecheck && npm run lint && npm run build",
-    "smoke:pty": "node scripts/pty-smoke.mjs",
+    "smoke:pty": "MYSHELL_INK=0 node scripts/pty-smoke.mjs",
     "smoke:pty:handoff": "node scripts/pty-smoke-handoff.mjs",
     "smoke:pty:ink": "node scripts/pty-smoke-ink.mjs"
   },
