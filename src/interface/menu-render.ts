@@ -15,7 +15,7 @@ import type { ClaudeTokenStatus } from '../infra/credentials.js';
 import type { HealthIssue } from '../infra/health.js';
 import { modeLabel } from '../core/policy.js';
 import { box, separator, menu } from '../ui/tui.js';
-import { dim } from '../ui/theme.js';
+import { dim, yellow } from '../ui/theme.js';
 import type { OutputSink } from './render.js';
 import type { MenuContext } from './menu.js';
 import { resolveAutoMode, autoModeReason } from './menu-auto-mode.js';
@@ -24,6 +24,7 @@ import {
   renderHeaderLines,
   renderBudgetLine,
   renderConversationList,
+  hasAnyAuthenticatedProvider,
 } from './menu-display.js';
 
 export async function renderMainScreen(
@@ -72,11 +73,27 @@ export async function renderMainScreen(
   }
   if (healthIssues.length > 0) out.write('\n');
 
+  // Sign-in call-to-action — only when NO provider is authenticated. A brand-new
+  // user otherwise gets no clear next step: the sign-in status is buried in the
+  // header box and the recent-runs line invites [n], which just bounces them into
+  // an auth prompt. One prominent, themed line names the exact keys to start.
+  const authed = hasAnyAuthenticatedProvider(mutableCtx.env);
+  if (!authed) {
+    out.write(
+      '  ' +
+        yellow(
+          '⚠ Not signed in yet — press [j] Claude · [k] Codex · [o] opencode to get started',
+          out.color,
+        ) +
+        '\n\n',
+    );
+  }
+
   // Budget line — real ledger data, never fabricated. The SpendSummary is
   // computed by the caller and cached across keystrokes (the ledger only
   // changes when a task completes), so navigating the menu never re-parses the
   // unbounded ledger.jsonl on every keypress.
-  out.write('  ' + renderBudgetLine(spend, out.color) + '\n');
+  out.write('  ' + renderBudgetLine(spend, out.color, authed) + '\n');
 
   // Mode line — visible and one keystroke to change (no settings dive). Shows the
   // effective mode: the user's explicit choice, else the subscription-derived auto

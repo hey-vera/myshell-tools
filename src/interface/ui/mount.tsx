@@ -129,6 +129,17 @@ export function createInkOutputSink(
         nl = pending.indexOf('\n');
       }
     },
+    // Commit any buffered partial line (a prompt written WITHOUT a trailing
+    // newline) as its own committed `<Static>` item so it becomes visible before
+    // we block on input; a no-op when nothing is pending. Without this, trailing-
+    // space prompts (e.g. "Sign in to claude? ") would sit in `pending` forever
+    // and the question would never render on the Ink path.
+    flush(): void {
+      if (pending !== '') {
+        store.dispatch({ type: 'commit/raw', text: pending });
+        pending = '';
+      }
+    },
     get color(): boolean {
       return opts.color;
     },

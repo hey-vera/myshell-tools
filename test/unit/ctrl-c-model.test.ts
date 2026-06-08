@@ -14,7 +14,9 @@ import assert from 'node:assert/strict';
 
 import {
   shouldEscapeRawSession,
+  runRawProviderSession,
 } from '../../src/interface/menu-raw-session.ts';
+import type { EnvironmentStatus, ProviderStatus } from '../../src/providers/detect.ts';
 import {
   countRecentInterrupts,
   interpretInterrupt,
@@ -303,6 +305,53 @@ describe('shouldEscapeRawSession', () => {
   it('count=1 is false and count=2 is true (boundary)', () => {
     assert.strictEqual(shouldEscapeRawSession(1), false);
     assert.strictEqual(shouldEscapeRawSession(2), true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// runRawProviderSession — empty/Enter cancel feedback (UX fix)
+// ---------------------------------------------------------------------------
+
+describe('runRawProviderSession — Enter cancels with visible feedback', () => {
+  function provider(over: Partial<ProviderStatus> = {}): ProviderStatus {
+    return {
+      id: 'claude',
+      installed: true,
+      version: '1.0.0',
+      authenticated: true,
+      plan: null,
+      binaryPath: '/usr/bin/claude',
+      availableModels: [],
+      ...over,
+    };
+  }
+  function env(): EnvironmentStatus {
+    return {
+      claude: provider({ id: 'claude' }),
+      codex: provider({ id: 'codex', installed: false, binaryPath: null }),
+      opencode: provider({ id: 'opencode', installed: false, binaryPath: null }),
+      hasAnyProvider: true,
+      platform: process.platform,
+    };
+  }
+
+  it('writes "Cancelled." when the user presses bare Enter at the provider pick', async () => {
+    const writes: string[] = [];
+    const out = { write: (s: string) => writes.push(s), color: false, isTty: false };
+    // inkReadKey returns a bare Enter → readMenuKey resolves '' → empty branch.
+    await runRawProviderSession(
+      out,
+      async () => null,
+      env(),
+      undefined,
+      async () => '\r',
+    );
+    const all = writes.join('');
+    // The action resolves visibly (no silent return) — same wording as the
+    // out-of-range branch.
+    assert.match(all, /Cancelled\./);
+    // It must NOT have proceeded to launch anything.
+    assert.doesNotMatch(all, /Launching/);
   });
 });
 

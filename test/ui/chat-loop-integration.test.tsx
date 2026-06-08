@@ -222,6 +222,15 @@ test('runChatLoop drives a chat turn end-to-end through the Ink adapters', async
     entries.some((e) => e.role === 'assistant' && e.content.includes(answer)),
     'assistant answer persisted',
   );
+
+  // (d) FIX 2: the legacy idle input prompt (renderInputPrompt — a caret or a
+  //     box-bordered string with embedded cursor escapes) is NEVER committed to
+  //     the Ink transcript. On the Ink path the real <InputBox> renders the
+  //     prompt; writing the legacy string would accumulate broken <Static> chrome.
+  const allCommitted = lastState.committed.map((l) => l.text).join('\n');
+  assert.ok(!allCommitted.includes('❯'), 'no legacy caret prompt in the Ink transcript');
+  assert.ok(!/[╭╰│]/.test(allCommitted), 'no legacy input-box borders in the Ink transcript');
+  assert.ok(!allCommitted.includes('\x1b[1A'), 'no legacy cursor-move escapes in the Ink transcript');
 });
 
 // ---------------------------------------------------------------------------

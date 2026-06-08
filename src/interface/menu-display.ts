@@ -162,6 +162,19 @@ export function isRunningUnderNpx(
  *   is near expiry or expired, ONE concise warning line is appended. Computed by
  *   the caller (startMenu) so this function stays pure and I/O-free.
  */
+/**
+ * True when AT LEAST ONE provider (claude / codex / opencode) is signed in.
+ *
+ * Pure — reads only the per-provider `authenticated` flags from EnvironmentStatus
+ * (the same real fields the header box renders). Used to decide whether the menu
+ * shows the "you must sign in" call-to-action: a brand-new user with no signed-in
+ * provider needs a clear next step, but once any provider is authed the CTA is
+ * silenced.
+ */
+export function hasAnyAuthenticatedProvider(env: EnvironmentStatus): boolean {
+  return env.claude.authenticated || env.codex.authenticated || env.opencode.authenticated;
+}
+
 export function renderHeaderLines(
   env: EnvironmentStatus,
   _version: string,
@@ -225,9 +238,16 @@ export function renderHeaderLines(
  * @param spend - Output of summarizeSpend() over real ledger entries.
  * @param color - When false, no ANSI escape codes are emitted.
  */
-export function renderBudgetLine(spend: SpendSummary, _color: boolean): string {
+export function renderBudgetLine(
+  spend: SpendSummary,
+  _color: boolean,
+  authed = true,
+): string {
   if (spend.calls === 0) {
-    return 'No runs yet — press n to start';
+    // When no provider is signed in yet, "press n to start" is a trap: [n]
+    // bounces a brand-new user into an auth prompt. Point them at sign-in
+    // instead; the prominent CTA above carries the per-provider keys.
+    return authed ? 'No runs yet — press n to start' : 'Sign in to begin';
   }
   const callWord = spend.todayCalls === 1 ? 'call' : 'calls';
   const todayPart = 'Today: ' + String(spend.todayCalls) + ' ' + callWord + ' · ' + formatTokens(spend.todayTokens) + ' tokens';

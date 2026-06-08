@@ -25,6 +25,15 @@ export interface OutputSink {
   write(s: string): void;
   readonly color: boolean;
   readonly isTty: boolean;
+  /**
+   * OPTIONAL: commit any buffered, not-yet-newline-terminated text so it becomes
+   * visible NOW. Needed by sinks that only render on a `\n` (e.g. the Ink sink,
+   * which buffers a trailing partial line in `pending`): an unterminated prompt
+   * written immediately before a blocking input read would otherwise never show.
+   * Optional so legacy stdout sinks and test sinks (which write through directly)
+   * need no implementation — callers invoke it as `out.flush?.()`.
+   */
+  flush?(): void;
 }
 
 // ---------------------------------------------------------------------------

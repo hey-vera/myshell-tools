@@ -15,6 +15,30 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   resumed goal's contract from the persisted `workTrace` (niche: the in-run contract
   is already kept in memory; only cross-session resume benefits). Optional.
 
+## [3.29.5]
+
+### Fixed — new-user readiness sweep (first-run + in-chat)
+- **First-run setup questions are now visible.** The Ink output only rendered text
+  once a newline arrived, so the welcome prompts ("Install …? / Sign in? / pick a
+  Mode / set default shell? / check for updates?") — written without a trailing
+  newline — never showed, leaving a brand-new user pressing keys on invisible
+  questions. The output now flushes any pending prompt before waiting for input.
+- **No more garbled duplicate input box during a chat.** The chat loop was writing
+  the *legacy* boxed prompt (raw cursor escapes) into the Ink screen every turn,
+  stacking a broken box above the real composer. That write is now skipped on the
+  Ink path (the real composer already renders the prompt).
+- **"Sign in first" call-to-action.** When no provider is signed in, the menu now
+  shows `⚠ Not signed in yet — press [j] Claude · [k] Codex · [o] opencode to get
+  started`, and the empty-state line says "Sign in to begin" instead of inviting a
+  chat that would just bounce to auth.
+- **Immediate feedback when a turn starts.** The `⠋ Thinking…` status line now
+  appears the instant you submit, instead of a multi-second frozen-looking gap
+  before the first model event.
+- **Report views don't vanish.** `[d] Diagnose` and `[$] Usage` now wait for a
+  keypress before redrawing the menu, so the output is readable.
+- **Raw provider session** ([r]) now says "Cancelled." (and shows `[Enter] cancel`)
+  instead of silently returning on Enter.
+
 ## [3.29.4]
 
 ### Fixed — the menu now shows it's waiting for input

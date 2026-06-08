@@ -128,7 +128,16 @@ export function reduce(state: UiState, action: Action): UiState {
         ...state,
         goals: [],
         stream: initialStreamView,
-        turnActive: false,
+        // Flip turnActive TRUE the instant a turn begins so the live status block
+        // / spinner appears immediately on submit. Previously this stayed false
+        // until the first real event (classified/intent/phase/tier-start), which
+        // can be seconds away (classification + cold provider spawn), leaving the
+        // UI looking frozen. With turnActive true and the fresh initialStreamView
+        // (phase 'idle', workLabel 'Thinking', 0 steps), StatusBlock renders a
+        // sensible "⠋ Thinking… 0 steps   esc to interrupt" line — no goals panel
+        // yet (it stays hidden until goals arrive), never empty, never a crash.
+        // turn/final still settles turnActive back to false.
+        turnActive: true,
         tokens: { turn: 0, session: state.tokens.session },
       };
 

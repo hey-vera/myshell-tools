@@ -153,6 +153,9 @@ export async function confirmViaKey(
   stdin: KeyInputStream = process.stdin as unknown as KeyInputStream,
   requireExplicit = false,
 ): Promise<boolean> {
+  // Surface any unterminated prompt (e.g. "Set as default? (y/N) ") before we
+  // block on the keypress (no-op for legacy/test sinks without flush).
+  out.flush?.();
   for (;;) {
     const key = await readSingleKey(stdin);
     const verdict = interpretYesNoKey(key, defaultYes, requireExplicit);
@@ -199,6 +202,9 @@ export async function readMenuKey(
   // legacy path is unchanged (byte-identical).
   inkReadKey?: () => Promise<string>,
 ): Promise<string | null> {
+  // Make any just-written, not-yet-newline-terminated prompt visible before we
+  // block on a key (no-op for legacy/test sinks that lack flush).
+  out.flush?.();
   if (inkReadKey !== undefined) {
     try {
       const raw = await inkReadKey();
@@ -298,6 +304,8 @@ async function confirmViaInkKey(
   inkReadKey: () => Promise<string>,
   requireExplicit: boolean,
 ): Promise<boolean> {
+  // Surface any unterminated prompt before blocking on the Ink keypress read.
+  out.flush?.();
   for (;;) {
     const key = await inkReadKey();
     const verdict = interpretYesNoKey(key, defaultYes, requireExplicit);

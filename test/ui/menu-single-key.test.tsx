@@ -112,6 +112,62 @@ test('bare Enter is a no-op (re-render) and Ctrl-C exits on the Ink menu', async
 // A y/n confirm resolves on a single keypress under Ink.
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// FIX 1: readMenuKey / confirm flush any unterminated prompt BEFORE blocking on
+// input, so a trailing-space prompt becomes visible on a flush-aware (Ink) sink.
+// ---------------------------------------------------------------------------
+
+function makeFlushSpyOut(): {
+  sink: OutputSink;
+  events: string[];
+} {
+  const events: string[] = [];
+  const sink: OutputSink = {
+    write(s: string): void {
+      events.push('write:' + s);
+    },
+    flush(): void {
+      events.push('flush');
+    },
+    get color(): boolean {
+      return false;
+    },
+    get isTty(): boolean {
+      return true;
+    },
+  };
+  return { sink, events };
+}
+
+test('readMenuKey flushes the sink before blocking on the key read', async () => {
+  const { sink, events } = makeFlushSpyOut();
+  let readStarted = false;
+  const inkReadKey = (): Promise<string> => {
+    readStarted = true;
+    // flush must already have happened by the time the read is reached.
+    assert.deepEqual(events, ['flush']);
+    return Promise.resolve('n');
+  };
+  const choice = await readMenuKey(sink, () => new Promise<string | null>(() => {}), undefined, false, inkReadKey);
+  assert.equal(choice, 'n');
+  assert.ok(readStarted);
+  // flush ran before the echo write of the chosen key.
+  assert.equal(events[0], 'flush');
+  assert.ok(events.includes('write:n\n'));
+});
+
+test('confirm flushes the sink before blocking on the key read', async () => {
+  const { sink, events } = makeFlushSpyOut();
+  const inkReadKey = (): Promise<string> => {
+    assert.deepEqual(events, ['flush']);
+    return Promise.resolve('y');
+  };
+  const confirm = makeConfirm(sink, () => new Promise<string | null>(() => {}), undefined, false, inkReadKey);
+  const verdict = await confirm(true);
+  assert.equal(verdict, true);
+  assert.equal(events[0], 'flush');
+});
+
 test('a y/n confirm resolves on a single y keypress under Ink', async () => {
   const bridge = createInkAppBridge();
   const { stdin } = render(<App bridge={bridge} color={false} isTty={true} columns={60} />);

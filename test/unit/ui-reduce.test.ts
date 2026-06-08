@@ -356,7 +356,27 @@ describe('ui reduce — turn/start + commit/raw (persistent state)', () => {
     // per-turn slice reset.
     assert.deepEqual(started.goals, []);
     assert.deepEqual(started.stream, initialStreamView);
-    assert.equal(started.turnActive, false);
+    // turnActive flips TRUE the instant the turn begins (UX fix: live status /
+    // spinner appears immediately on submit, before the first real event) — it
+    // no longer waits for classified/intent/phase/tier-start.
+    assert.equal(started.turnActive, true);
+  });
+
+  it('turn/start sets turnActive true and turn/final settles it back to false', () => {
+    // Fresh idle state → turn/start must make the turn active immediately so the
+    // status block / spinner renders on submit (no frozen gap before tier-start).
+    const started = reduce(initialState, { type: 'turn/start' });
+    assert.equal(started.turnActive, true);
+    // …and turn/final must settle it back to false (turn ends → idle UI).
+    const final = reduce(started, {
+      type: 'turn/final',
+      success: true,
+      tier: 'ic',
+      attempts: 1,
+      sessionId: 's',
+      verbosity: 'normal',
+    });
+    assert.equal(final.turnActive, false);
   });
 
   it('commit/raw appends a raw chrome line to the SAME committed transcript', () => {

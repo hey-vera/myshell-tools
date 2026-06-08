@@ -1108,11 +1108,16 @@ export async function runChatLoop(
         isTty: out.isTty,
         columns: promptColumns,
       });
-      out.write(renderInputPrompt({
-        color: out.color,
-        isTty: out.isTty,
-        columns: promptColumns,
-      }));
+      // On the Ink path the real <InputBox> composer renders the prompt; writing
+      // the legacy multi-line box string (embedded ANSI cursor moves + borders)
+      // into the Ink sink would commit broken <Static> chrome above it each turn.
+      if (!inkPath) {
+        out.write(renderInputPrompt({
+          color: out.color,
+          isTty: out.isTty,
+          columns: promptColumns,
+        }));
+      }
 
       // Race readLine() against a loopBreak signal from the SIGINT handler.
       // When Ctrl+C fires (to-menu or exit-app), loopBreaker is called with the
@@ -1141,7 +1146,7 @@ export async function runChatLoop(
 
       // EOF → exit the chat loop gracefully
       if (line === null) break;
-      if (promptIsBoxed) out.write('\n');
+      if (!inkPath && promptIsBoxed) out.write('\n');
 
       if (line.length === 0) continue;
 
@@ -2775,12 +2780,16 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
       // ---- [d] Doctor ---------------------------------------------------------
       if (key === 'd') {
         await runDoctor(out);
+        out.write(dim('\nPress any key to return to the menu.\n', out.color));
+        await readMenuKey(out, readLine, undefined, false, inkReadKey);
         continue;
       }
 
       // ---- [$] Cost -----------------------------------------------------------
       if (key === '$') {
         await runCost(ctx.cwd, out);
+        out.write(dim('\nPress any key to return to the menu.\n', out.color));
+        await readMenuKey(out, readLine, undefined, false, inkReadKey);
         continue;
       }
 

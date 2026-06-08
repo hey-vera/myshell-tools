@@ -57,6 +57,36 @@ test('createInkOutputSink commits whole lines (as raw chrome) and buffers partia
   assert.deepEqual(chrome(), ['one', 'two', 'partial']);
 });
 
+test('createInkOutputSink flush() commits pending partial line; no-op when empty', () => {
+  // FIX 1: an unterminated prompt (no trailing \n) sits in `pending` and would
+  // never render — flush() commits it as a raw line so it's visible before a
+  // blocking input read. flush() with nothing pending must not emit a phantom line.
+  const bridge = createInkAppBridge();
+  let last: UiState | null = null;
+  bridge._setUiState = (s) => { last = s; };
+  const store = createInkStore(bridge);
+  const out = createInkOutputSink(store, { color: false, isTty: true });
+
+  const chrome = (): string[] =>
+    (last?.committed ?? []).filter((l) => l.kind === 'raw').map((l) => l.text);
+
+  // No-op when empty (no pending, nothing committed yet).
+  out.flush?.();
+  assert.deepEqual(chrome(), []);
+
+  // A trailing-space prompt with no newline — buffered, not yet visible.
+  out.write('Sign in to claude? (Y/n) ');
+  assert.deepEqual(chrome(), []);
+
+  // flush() makes it visible as its own committed raw line.
+  out.flush?.();
+  assert.deepEqual(chrome(), ['Sign in to claude? (Y/n) ']);
+
+  // A second flush with nothing pending is a no-op (no duplicate / empty line).
+  out.flush?.();
+  assert.deepEqual(chrome(), ['Sign in to claude? (Y/n) ']);
+});
+
 test('createInkLineReader resolves nextLine() with submitted input (FIFO)', async () => {
   const bridge = createInkAppBridge();
   const reader = createInkLineReader(bridge);

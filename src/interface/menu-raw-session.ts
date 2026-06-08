@@ -70,10 +70,16 @@ export async function runRawProviderSession(
   }
 
   const choiceLines = choices.map((c, i) => `  [${i + 1}] ${c.label}`).join('\n');
-  out.write(`\nOpen raw session with:\n${choiceLines}\n\n> `);
+  out.write(`\nOpen raw session with:\n${choiceLines}\n\n[Enter] cancel\n> `);
   const choice = await readMenuKey(out, readLine, undefined, false, inkReadKey);
   if (choice === null) return;
-  if (choice.length === 0) return;
+  // Empty input (bare Enter) = cancel. Write visible feedback so the action
+  // resolves on screen instead of silently dropping back to the menu (matching
+  // the out-of-range "Cancelled." branch below).
+  if (choice.length === 0) {
+    out.write('Cancelled.\n');
+    return;
+  }
 
   const idx = parseInt(choice, 10) - 1;
   const selected = choices[idx];

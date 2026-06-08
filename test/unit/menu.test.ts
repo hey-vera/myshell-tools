@@ -22,6 +22,7 @@ import {
   renderBudgetLine,
   versionStatusLabel,
   isRunningUnderNpx,
+  hasAnyAuthenticatedProvider,
 } from '../../src/interface/menu-display.ts';
 import { planRetryTruncation, recentUserMessages } from '../../src/interface/menu-message-redo.ts';
 import { CHAT_SLASH_COMMANDS } from '../../src/interface/menu-completion.ts';
@@ -495,6 +496,23 @@ describe('renderBudgetLine', () => {
     assert.ok(line.toLowerCase().includes('no runs yet'), `expected "no runs yet" in: "${line}"`);
   });
 
+  it('shows "press n to start" empty-state when a provider IS signed in', () => {
+    const line = renderBudgetLine(makeSpend({ calls: 0 }), false, true);
+    assert.ok(line.includes('press n to start'), `expected "press n to start" in: "${line}"`);
+  });
+
+  it('shows the sign-in variant empty-state when NO provider is signed in', () => {
+    const line = renderBudgetLine(makeSpend({ calls: 0 }), false, false);
+    assert.ok(
+      line.toLowerCase().includes('sign in to begin'),
+      `expected "Sign in to begin" in: "${line}"`,
+    );
+    assert.ok(
+      !line.includes('press n to start'),
+      `unauthenticated empty-state must NOT push "press n to start": "${line}"`,
+    );
+  });
+
   it('shows NO dollar figure (subscription tool — tokens only)', () => {
     const cases = [
       makeSpend({ calls: 0 }),
@@ -552,6 +570,43 @@ describe('renderBudgetLine', () => {
       const line = renderBudgetLine(spend, false);
       assertNoForbidden(line, 'renderBudgetLine');
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// hasAnyAuthenticatedProvider
+// ---------------------------------------------------------------------------
+
+describe('hasAnyAuthenticatedProvider', () => {
+  it('is false when no provider is authenticated', () => {
+    assert.equal(hasAnyAuthenticatedProvider(FAKE_ENV_NONE_INSTALLED), false);
+  });
+
+  it('is true when at least one provider is authenticated', () => {
+    assert.equal(hasAnyAuthenticatedProvider(FAKE_ENV_BOTH_INSTALLED), true);
+    assert.equal(hasAnyAuthenticatedProvider(FAKE_ENV_INSTALLED_NOT_AUTHED), true);
+  });
+
+  it('is false when providers are installed but none signed in', () => {
+    const installedNoneAuthed: EnvironmentStatus = {
+      claude: makeProvider('claude', { installed: true, authenticated: false }),
+      codex: makeProvider('codex', { installed: true, authenticated: false }),
+      opencode: OPENCODE_NOT_INSTALLED,
+      hasAnyProvider: true,
+      platform: 'linux',
+    };
+    assert.equal(hasAnyAuthenticatedProvider(installedNoneAuthed), false);
+  });
+
+  it('is true when only opencode is authenticated', () => {
+    const opencodeOnly: EnvironmentStatus = {
+      claude: makeProvider('claude', { installed: false }),
+      codex: makeProvider('codex', { installed: false }),
+      opencode: makeProvider('opencode', { installed: true, authenticated: true }),
+      hasAnyProvider: true,
+      platform: 'linux',
+    };
+    assert.equal(hasAnyAuthenticatedProvider(opencodeOnly), true);
   });
 });
 
