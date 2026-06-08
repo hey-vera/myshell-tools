@@ -42,6 +42,11 @@ export async function runWelcome(
     },
   ) => Promise<number>,
   detectEnvironmentFn: () => Promise<EnvironmentStatus>,
+  // Single-key reader for the Ink path. When provided, the mode-select keypress
+  // resolves on a SINGLE key through Ink's own input pipeline (the legacy raw
+  // single-key feel). The install/sign-in/default-shell/update confirms are already
+  // single-key via the passed-in `confirm`. Absent → legacy path is byte-identical.
+  inkReadKey?: () => Promise<string>,
 ): Promise<AppConfig> {
   // Use the mutable env so re-detection after installs is visible downstream.
   let env = ctx.env;
@@ -141,7 +146,7 @@ export async function runWelcome(
   out.write(
     `\nMode — [1] ${modeLabel('cost-saver')}  [2] ${modeLabel('balanced')}  [3] ${modeLabel('quality-first')}  (Enter = auto from your subscription): `,
   );
-  const modeKey = await readMenuKey(out, readLine);
+  const modeKey = await readMenuKey(out, readLine, undefined, false, inkReadKey);
 
   // EOF during setup — save bare onboarded config and return
   if (modeKey === null) {

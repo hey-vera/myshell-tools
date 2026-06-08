@@ -30,6 +30,13 @@ export async function runManage(
   out: OutputSink,
   readLine: () => Promise<string | null>,
   confirm: Confirm,
+  // Single-key reader for the Ink path. When provided, the [p]/[t]/[r]/[x]/Back
+  // menu choice resolves on a SINGLE keypress through Ink's own input pipeline
+  // (the legacy raw single-key feel) instead of a line read. The per-action number
+  // / text / rename prompts stay on the line editor (they are not menu choices).
+  // The delete confirm is already single-key via the passed-in `confirm` (built
+  // with the Ink reader upstream). Absent → legacy path is byte-identical.
+  inkReadKey?: () => Promise<string>,
 ): Promise<void> {
   // Inner helper to re-fetch and re-render the conversation list.
   async function renderList(): Promise<ConversationMeta[]> {
@@ -54,7 +61,7 @@ export async function runManage(
   metas = await renderList();
 
   out.write('> ');
-  const key = await readMenuKey(out, readLine);
+  const key = await readMenuKey(out, readLine, undefined, false, inkReadKey);
 
   // EOF → treat as back
   if (key === null) return;
@@ -162,6 +169,10 @@ export async function runImportNative(
   // EXPERIMENTAL Ink turn renderer — forwarded to runChatLoop so an imported
   // session's chat also renders through Ink. Absent off the Ink path (unchanged).
   inkRenderTurn?: import('./run.js').TurnRenderer,
+  // Single-key reader for the Ink path — forwarded to runChatLoop so the imported
+  // session's in-chat /mode and /style menus are single-key under Ink. The number-
+  // pick prompt above stays on the line editor. Absent → legacy path unchanged.
+  inkReadKey?: () => Promise<string>,
 ): Promise<'menu' | 'exit'> {
   const env = { ...process.env, ...replitPersistentEnv(process.env, ctx.cwd) };
   const sessions = await listRecentNativeSessions({ env, limit: 9 });
@@ -202,5 +213,5 @@ export async function runImportNative(
 
   // Enter the chat loop for the newly imported conversation.
   // Return value propagates the 'exit' signal to the caller (startMenu).
-  return runChatLoop(ctx, mutableCtx, id, out, readLine, loginFn, detectEnvironmentFn, confirm, suspendStdin, lineReader, inkRenderTurn);
+  return runChatLoop(ctx, mutableCtx, id, out, readLine, loginFn, detectEnvironmentFn, confirm, suspendStdin, lineReader, inkRenderTurn, inkReadKey);
 }

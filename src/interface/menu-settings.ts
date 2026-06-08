@@ -53,6 +53,10 @@ export async function runModeSelect(
   readLine: () => Promise<string | null>,
   autoMode: Mode = 'balanced',
   env?: EnvironmentStatus,
+  // Single-key reader for the Ink path. When provided, the menu choice resolves on
+  // a SINGLE keypress through Ink's own input pipeline (matching the legacy raw
+  // single-key feel) instead of a line read. Absent → legacy path is byte-identical.
+  inkReadKey?: () => Promise<string>,
 ): Promise<AppConfig> {
   // Effective mode = explicit choice, else the subscription-derived auto default.
   const effective = config.mode ?? autoMode;
@@ -78,7 +82,7 @@ export async function runModeSelect(
   out.write('\n' + lines.filter((l) => l !== '').join('\n') + '\n\n');
 
   out.write('[1/2/3/4 to change, Enter to keep] ');
-  const key = await readMenuKey(out, readLine);
+  const key = await readMenuKey(out, readLine, undefined, false, inkReadKey);
 
   // EOF / Enter → keep current mode
   let newMode = config.mode;
@@ -124,6 +128,8 @@ async function runVerbositySelect(
   config: AppConfig,
   out: OutputSink,
   readLine: () => Promise<string | null>,
+  // Single-key reader for the Ink path (see runModeSelect). Absent → legacy path.
+  inkReadKey?: () => Promise<string>,
 ): Promise<AppConfig> {
   const current = config.verbosity ?? 'normal';
   const settingsLines = [
@@ -137,7 +143,7 @@ async function runVerbositySelect(
   out.write('\n' + box('Settings', settingsLines) + '\n\n');
 
   out.write('[1/2/3 to change, Enter to keep] ');
-  const key = await readMenuKey(out, readLine);
+  const key = await readMenuKey(out, readLine, undefined, false, inkReadKey);
 
   // EOF / Enter → keep current
   let newVerbosity = config.verbosity;
@@ -185,6 +191,8 @@ export async function runStyleSelect(
   out: OutputSink,
   readLine: () => Promise<string | null>,
   autoMode: Mode,
+  // Single-key reader for the Ink path (see runModeSelect). Absent → legacy path.
+  inkReadKey?: () => Promise<string>,
 ): Promise<AppConfig> {
   const effMode = config.mode ?? autoMode;
   const resolved = resolvePartnerStyle(config, effMode);
@@ -201,7 +209,7 @@ export async function runStyleSelect(
   out.write('\n' + box('Settings', settingsLines) + '\n\n');
 
   out.write('[1/2/3/4 to change, Enter to keep] ');
-  const key = await readMenuKey(out, readLine);
+  const key = await readMenuKey(out, readLine, undefined, false, inkReadKey);
 
   // EOF / Enter → keep current.
   let newStyle: PartnerStyle | undefined = config.partnerStyle;
@@ -275,6 +283,10 @@ export async function runSettings(
   mutableCtx: { config: AppConfig; env: EnvironmentStatus },
   out: OutputSink,
   readLine: () => Promise<string | null>,
+  // Single-key reader for the Ink path. Threaded into the top-level Settings menu
+  // read AND into every sub-dialog (mode/verbosity/style) so ALL menu navigation is
+  // single-key under Ink. Absent → legacy path is byte-identical.
+  inkReadKey?: () => Promise<string>,
 ): Promise<void> {
   const cfg = mutableCtx.config;
   const autoMode = resolveAutoMode(mutableCtx.env);
@@ -301,13 +313,13 @@ export async function runSettings(
   out.write('\n' + box('Settings', settingsLines) + '\n\n');
 
   out.write('> ');
-  const key = await readMenuKey(out, readLine);
+  const key = await readMenuKey(out, readLine, undefined, false, inkReadKey);
 
   // EOF or Enter → back, no change
   if (key === null || key.length === 0) return;
 
   if (key === '1') {
-    mutableCtx.config = await runModeSelect(mutableCtx.config, out, readLine, autoMode, mutableCtx.env);
+    mutableCtx.config = await runModeSelect(mutableCtx.config, out, readLine, autoMode, mutableCtx.env, inkReadKey);
   } else if (key === '2') {
     mutableCtx.config = await toggleDefaultShell(mutableCtx.config, out);
   } else if (key === '3') {
@@ -315,7 +327,7 @@ export async function runSettings(
   } else if (key === '4') {
     mutableCtx.config = await toggleNativeSessions(mutableCtx.config, out);
   } else if (key === '5') {
-    mutableCtx.config = await runVerbositySelect(mutableCtx.config, out, readLine);
+    mutableCtx.config = await runVerbositySelect(mutableCtx.config, out, readLine, inkReadKey);
   } else if (key === '6') {
     mutableCtx.config = await toggleSmartRoute(mutableCtx.config, out);
   } else if (key === '7') {
@@ -327,7 +339,7 @@ export async function runSettings(
   } else if (key === 'a') {
     mutableCtx.config = await toggleAutoGoal(mutableCtx.config, out);
   } else if (key === 'b') {
-    mutableCtx.config = await runStyleSelect(mutableCtx.config, out, readLine, autoMode);
+    mutableCtx.config = await runStyleSelect(mutableCtx.config, out, readLine, autoMode, inkReadKey);
   } else if (key === 'c') {
     mutableCtx.config = await toggleMemory(mutableCtx.config, out);
   } else if (key === 'd') {

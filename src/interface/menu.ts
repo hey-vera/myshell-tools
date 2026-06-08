@@ -513,6 +513,12 @@ export async function runChatLoop(
   // overlay TurnInputSurface) is SUPPRESSED because Ink owns that surface. Absent
   // (the default, flag-off and test paths) → the legacy turn path is unchanged.
   inkRenderTurn?: import('./run.js').TurnRenderer,
+  // Single-key reader for the Ink path (the same reader the main menu uses). When
+  // provided, the in-chat /mode and /style menu choices resolve on a SINGLE
+  // keypress through Ink's own input pipeline (matching the menu's single-key
+  // feel). Chat-message input stays on the full line editor. Absent → the legacy
+  // line-mode path is byte-identical.
+  inkReadKey?: () => Promise<string>,
 ): Promise<'menu' | 'exit'> {
   // -------------------------------------------------------------------------
   // RECAP (Phase 7, docs/recap-feature-5.5.md) — a ※ orientation line on resume
@@ -1231,6 +1237,7 @@ export async function runChatLoop(
         out,
         readLine,
         resolveAutoMode(mutableCtx.env),
+        inkReadKey,
       );
       return 'continue';
     }
@@ -1239,7 +1246,7 @@ export async function runChatLoop(
     // home [m], so there is one source of truth and never a global/per-chat drift.
     if (line === '/mode') {
       const autoMode = resolveAutoMode(mutableCtx.env);
-      mutableCtx.config = await runModeSelect(mutableCtx.config, out, readLine, autoMode, mutableCtx.env);
+      mutableCtx.config = await runModeSelect(mutableCtx.config, out, readLine, autoMode, mutableCtx.env, inkReadKey);
       return 'continue';
     }
 
@@ -2435,7 +2442,7 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
 
     // ---- First-run welcome (AFTER the update check) -------------------------
     if (!mutableCtx.config.onboarded) {
-      mutableCtx.config = await runWelcome(ctx, out, readLine, confirm, suspendStdin, mutableCtx.config, installProviderFn, loginFn, detectEnvironmentFn);
+      mutableCtx.config = await runWelcome(ctx, out, readLine, confirm, suspendStdin, mutableCtx.config, installProviderFn, loginFn, detectEnvironmentFn, inkReadKey);
       // Re-detect after onboarding so the first main screen shows the REAL post-login
       // status (e.g. codex now "ready" if the user signed in during setup).
       mutableCtx.env = await detectEnvironmentFn();
@@ -2502,7 +2509,7 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
         // (conversations.ts append()), so create an untitled conversation and drop
         // straight into it.
         const meta = await ctx.store.create('');
-        const chatResult = await runChatLoop(ctx, mutableCtx, meta.id, out, readLine, loginFn, detectEnvironmentFn, confirm, suspendStdin, lineReader, inkRenderTurn);
+        const chatResult = await runChatLoop(ctx, mutableCtx, meta.id, out, readLine, loginFn, detectEnvironmentFn, confirm, suspendStdin, lineReader, inkRenderTurn, inkReadKey);
         spendDirty = true; // a task may have run — refresh the spend summary
         if (chatResult === 'exit') break;
         continue;
@@ -2516,7 +2523,7 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
           if (!(await promptForAuthBeforeChat(out, readLine, mutableCtx, loginFn, detectEnvironmentFn, confirm, suspendStdin, inkReadKey))) {
             continue;
           }
-          const chatResult = await runChatLoop(ctx, mutableCtx, latest.id, out, readLine, loginFn, detectEnvironmentFn, confirm, suspendStdin, lineReader, inkRenderTurn);
+          const chatResult = await runChatLoop(ctx, mutableCtx, latest.id, out, readLine, loginFn, detectEnvironmentFn, confirm, suspendStdin, lineReader, inkRenderTurn, inkReadKey);
           spendDirty = true; // a task may have run — refresh the spend summary
           if (chatResult === 'exit') break;
         } else {
@@ -2533,7 +2540,7 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
           if (!(await promptForAuthBeforeChat(out, readLine, mutableCtx, loginFn, detectEnvironmentFn, confirm, suspendStdin, inkReadKey))) {
             continue;
           }
-          const chatResult = await runChatLoop(ctx, mutableCtx, target.id, out, readLine, loginFn, detectEnvironmentFn, confirm, suspendStdin, lineReader, inkRenderTurn);
+          const chatResult = await runChatLoop(ctx, mutableCtx, target.id, out, readLine, loginFn, detectEnvironmentFn, confirm, suspendStdin, lineReader, inkRenderTurn, inkReadKey);
           spendDirty = true; // a task may have run — refresh the spend summary
           if (chatResult === 'exit') break;
         } else {
@@ -2544,13 +2551,13 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
 
       // ---- [e] Manage conversations -------------------------------------------
       if (key === 'e') {
-        await runManage(ctx, out, readLine, confirm);
+        await runManage(ctx, out, readLine, confirm, inkReadKey);
         continue;
       }
 
       // ---- [i] Import a native conversation -----------------------------------
       if (key === 'i') {
-        const importResult = await runImportNative(ctx, mutableCtx, out, readLine, loginFn, detectEnvironmentFn, confirm, suspendStdin, lineReader, inkRenderTurn);
+        const importResult = await runImportNative(ctx, mutableCtx, out, readLine, loginFn, detectEnvironmentFn, confirm, suspendStdin, lineReader, inkRenderTurn, inkReadKey);
         spendDirty = true; // an imported session may run a task — refresh spend
         if (importResult === 'exit') break;
         continue;
@@ -2558,7 +2565,7 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
 
       // ---- [r] Open a raw provider session ------------------------------------
       if (key === 'r') {
-        await runRawProviderSession(out, readLine, mutableCtx.env, suspendStdin);
+        await runRawProviderSession(out, readLine, mutableCtx.env, suspendStdin, inkReadKey);
         continue;
       }
 
@@ -2652,13 +2659,13 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
       // ---- [m] Change mode (direct — no settings dive) ------------------------
       if (key === 'm') {
         const autoMode = resolveAutoMode(mutableCtx.env);
-        mutableCtx.config = await runModeSelect(mutableCtx.config, out, readLine, autoMode, mutableCtx.env);
+        mutableCtx.config = await runModeSelect(mutableCtx.config, out, readLine, autoMode, mutableCtx.env, inkReadKey);
         continue;
       }
 
       // ---- [s] Settings -------------------------------------------------------
       if (key === 's') {
-        await runSettings(ctx, mutableCtx, out, readLine);
+        await runSettings(ctx, mutableCtx, out, readLine, inkReadKey);
         continue;
       }
 

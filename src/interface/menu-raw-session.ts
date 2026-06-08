@@ -52,6 +52,10 @@ export async function runRawProviderSession(
   readLine: () => Promise<string | null>,
   env: EnvironmentStatus,
   suspendStdin?: () => () => void,
+  // Single-key reader for the Ink path. When provided, the provider-pick keypress
+  // resolves on a SINGLE key through Ink's own input pipeline (the legacy raw
+  // single-key feel). Absent → legacy path is byte-identical.
+  inkReadKey?: () => Promise<string>,
 ): Promise<void> {
   const choices: Array<{ label: string; bin: string }> = [];
   for (const ps of [env.claude, env.codex, env.opencode]) {
@@ -67,7 +71,7 @@ export async function runRawProviderSession(
 
   const choiceLines = choices.map((c, i) => `  [${i + 1}] ${c.label}`).join('\n');
   out.write(`\nOpen raw session with:\n${choiceLines}\n\n> `);
-  const choice = await readMenuKey(out, readLine);
+  const choice = await readMenuKey(out, readLine, undefined, false, inkReadKey);
   if (choice === null) return;
   if (choice.length === 0) return;
 
