@@ -22,7 +22,7 @@ import type { Policy, Tier } from './types.js';
 import type { Provider, ProviderId, ProviderRequest, SandboxLevel } from '../providers/port.js';
 import { route } from './route.js';
 import { buildIntentPrompt, parseIntentFrame } from './intent.js';
-import type { IntentExtractor, IntentFrame } from './intent.js';
+import type { IntentExtractor, IntentExtraction } from './intent.js';
 
 /** Everything the extractor needs to pick and run the cheapest model. */
 export interface IntentExtractorDeps {
@@ -46,7 +46,7 @@ const INTENT_SANDBOX: SandboxLevel = 'read-only';
  * `makeRouteClassifier` exactly.
  */
 export function makeIntentExtractor(deps: IntentExtractorDeps): IntentExtractor {
-  return async (task: string, signal: AbortSignal): Promise<IntentFrame | null> => {
+  return async (task: string, signal: AbortSignal): Promise<IntentExtraction> => {
     const pool = (Object.keys(deps.providers) as ProviderId[]).filter(
       (id) => deps.providers[id] !== undefined,
     );
@@ -81,14 +81,30 @@ export function makeIntentExtractor(deps: IntentExtractorDeps): IntentExtractor 
     };
 
     let finalText: string | undefined;
+    let usage: { inputTokens: number; outputTokens: number } | undefined;
     try {
       for await (const ev of provider.run(req, signal)) {
-        if (ev.type === 'done') finalText = ev.text;
-        else if (ev.type === 'error') return null;
+        if (ev.type === 'done') {
+          finalText = ev.text;
+          // Surface the REAL measured token usage (tokens-not-dollars) so the
+          // brain's codebase-scrape round can show real numbers on its tier-done
+          // rather than a hardcoded 0 (vision-brain §5).
+          if (ev.usage !== undefined) {
+            usage = { inputTokens: ev.usage.inputTokens, outputTokens: ev.usage.outputTokens };
+          }
+        } else if (ev.type === 'error') return null;
       }
     } catch {
       return null;
     }
-    return parseIntentFrame(finalText);
+    const frame = parseIntentFrame(finalText);
+    // Carry usage alongside the frame (backward-compatible IntentExtraction union).
+    // When usage is unavailable, return the bare frame (consumers see usage:
+    // undefined and omit the token figure rather than print a false 0).
+    if (usage !== undefined) {
+      const withUsage: IntentExtraction = { frame, usage };
+      return withUsage;
+    }
+    return frame;
   };
 }

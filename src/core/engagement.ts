@@ -338,7 +338,7 @@ export function forkBudget(engagementBias: -1 | 0 | 1, memoryBias: -1 | 0 | 1): 
 // Thresholds (base bars; bias LOWERS them — §3.4 step 3)
 // ---------------------------------------------------------------------------
 
-const PLAN_T = 2;
+export const PLAN_T = 2;
 const INVEST_T = 2;
 const RESEARCH_T = 2;
 

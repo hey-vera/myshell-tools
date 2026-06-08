@@ -15,6 +15,26 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   resumed goal's contract from the persisted `workTrace` (niche: the in-run contract
   is already kept in memory; only cross-session resume benefits). Optional.
 
+## [3.30.0]
+
+### Added — the partner thinks before it acts (adaptive confidence, Phase 1)
+- myshell no longer turns every message straight into a goal and barrels into
+  execution. It now assesses its **confidence** in understanding your request and
+  adapts:
+  - **Genuinely unsure + answerable from the code?** It investigates first —
+    factoring in the project layout — then re-assesses, narrating honestly what
+    it's doing (it does not claim to read files it didn't).
+  - **A big / ambiguous build?** It reflects back the plan and asks "sound good?"
+    *before* spending a turn executing.
+  - **Everyday, clearly-understood requests (and quick questions)?** They flow
+    straight through, exactly as fast as before — no extra step, no extra cost.
+- It's adaptive, not a rigid gate: it only pauses or digs in when that genuinely
+  helps; small clear tasks (even irreversible ones) just get done. Bounded
+  (at most one investigation round in this phase), ESC-cancelable, and costs are
+  reported truthfully.
+- Foundation for what's next: deeper code reads, web research (Codex), and
+  concurrent multi-goal orchestration build on this loop.
+
 ## [3.29.7]
 
 ### Fixed — snappy menu (no more creeping lag)

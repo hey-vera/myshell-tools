@@ -240,12 +240,18 @@ describe('orchestrate intent/engagement blocks reach a panel prompt', () => {
       },
     });
 
+    // High confidence + a non-substantial single-clause task so the brain's
+    // adaptive loop returns `answer` (no investigate/reflect_confirm gate) and the
+    // turn reaches the panel branch — which is what this test exercises (the
+    // INTENT/ENGAGEMENT block threading into the panel candidate prompt). The
+    // recalibrated brain (Fix 2) reflect_confirms a MEASURED substantial build, so
+    // this test deliberately uses a clearly-understood, modest-scope turn.
     const frame: IntentFrame = {
       version: 1,
       goal: 'rebuild the homepage as I envisioned',
       kind: 'design',
       doneWhen: 'matches the 2010-youtube mock',
-      confidence: 'medium',
+      confidence: 'high',
       source: 'model',
     };
 
@@ -258,7 +264,7 @@ describe('orchestrate intent/engagement blocks reach a panel prompt', () => {
 
     await collect(
       orchestrate(
-        'rebuild the entire homepage as I envisioned, an old-2010 YouTube social feel, end to end',
+        'rebuild the homepage, give it an old-2010 YouTube social feel and a video feed',
         deps,
         new AbortController().signal,
       ),

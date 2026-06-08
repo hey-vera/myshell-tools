@@ -502,7 +502,7 @@ export interface OrchestrateDeps {
   readonly intentExtractor?: (
     task: string,
     signal: AbortSignal,
-  ) => Promise<import('./intent.js').IntentFrame | null>;
+  ) => Promise<import('./intent.js').IntentExtraction>;
   /**
    * Optional model-brained route classifier. When wired, orchestrate consults it
    * ONLY on turns the deterministic keyword classifier couldn't route (no tier

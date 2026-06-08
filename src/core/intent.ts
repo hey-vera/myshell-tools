@@ -61,14 +61,50 @@ export interface IntentFrame {
 }
 
 /**
+ * Token usage of an extraction run (tokens-not-dollars contract). Typed inline
+ * (structurally identical to providers/port `Usage`) to keep intent.ts a PURE
+ * leaf module with no provider import.
+ */
+export interface IntentUsage {
+  readonly inputTokens: number;
+  readonly outputTokens: number;
+}
+
+/**
+ * What an {@link IntentExtractor} resolves to. Backward-compatible UNION: a bare
+ * `IntentFrame | null` (every existing caller/mock), OR an object carrying the
+ * frame plus the REAL measured token `usage` of the extraction run (the brain's
+ * codebase-scrape round threads this onto its `tier-done` — tokens-not-dollars,
+ * never a hardcoded 0). Normalize with {@link normalizeExtraction}.
+ */
+export type IntentExtraction =
+  | IntentFrame
+  | null
+  | { readonly frame: IntentFrame | null; readonly usage?: IntentUsage };
+
+/**
  * The injected port (mirrors `ModelClassifier`, `router.ts:59-62`). Given a task,
- * returns a parsed frame, or `null` on ANY failure (no extractor, parse error,
- * timeout, garbled output). Never throws — the caller falls back to rules.
+ * returns a parsed frame (optionally with usage), or `null` on ANY failure (no
+ * extractor, parse error, timeout, garbled output). Never throws — the caller
+ * falls back to rules.
  */
 export type IntentExtractor = (
   task: string,
   signal: AbortSignal,
-) => Promise<IntentFrame | null>;
+) => Promise<IntentExtraction>;
+
+/**
+ * Normalize an {@link IntentExtraction} to `{ frame, usage }`. Accepts the bare
+ * `IntentFrame | null` legacy shape (usage undefined) or the richer object shape.
+ * PURE; never throws.
+ */
+export function normalizeExtraction(
+  r: IntentExtraction,
+): { frame: IntentFrame | null; usage?: IntentUsage } {
+  if (r === null) return { frame: null };
+  if ('frame' in r) return r.usage !== undefined ? { frame: r.frame, usage: r.usage } : { frame: r.frame };
+  return { frame: r };
+}
 
 // ---------------------------------------------------------------------------
 // Caps (mirror work-contract.ts) — defensive, never throw
