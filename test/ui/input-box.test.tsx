@@ -51,6 +51,31 @@ test('non-TTY InputBox renders a plain caret (no border)', () => {
   assert.ok(!frame.includes('\x1b['), `expected NO ANSI, got:\n${frame}`);
 });
 
+test('hidden InputBox (visible=false) renders the minimal menu prompt, not the composer', () => {
+  const bridge = createInputBoxBridge();
+  const { lastFrame } = render(
+    <InputBox bridge={bridge} color={true} isTty={true} columns={60} visible={false} />,
+  );
+  const frame = plain(lastFrame());
+  assert.ok(frame.includes('❯'), `expected the menu-prompt caret, got:\n${frame}`);
+  assert.ok(frame.includes('press a key'), `expected the single-key hint, got:\n${frame}`);
+  // NOT the full composer: no chat rule, no Mode chip, no free-text placeholder.
+  assert.ok(!frame.includes('─ chat '), `menu prompt must NOT show the chat rule, got:\n${frame}`);
+  assert.ok(!frame.includes('┌ Mode'), `menu prompt must NOT show the Mode chip, got:\n${frame}`);
+  assert.ok(!frame.includes('Type a message'), `menu prompt must NOT imply free-text typing, got:\n${frame}`);
+});
+
+test('hidden InputBox degrades to a bare caret (non-TTY / NO_COLOR), never blank', () => {
+  const bridge = createInputBoxBridge();
+  const { lastFrame } = render(
+    <InputBox bridge={bridge} color={false} isTty={false} columns={60} visible={false} />,
+  );
+  const frame = lastFrame() ?? '';
+  assert.ok(frame.includes('❯'), `expected a bare caret affordance, got:\n${frame}`);
+  assert.ok(!frame.includes('\x1b['), `expected NO ANSI in the degraded prompt, got:\n${frame}`);
+  assert.ok(frame.trim() !== '', 'degraded prompt must not be blank');
+});
+
 test('typing updates the visible line', async () => {
   const bridge = createInputBoxBridge();
   const { lastFrame, stdin } = render(

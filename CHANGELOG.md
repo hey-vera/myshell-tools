@@ -15,6 +15,18 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   resumed goal's contract from the persisted `workTrace` (niche: the in-run contract
   is already kept in memory; only cross-session resume benefits). Optional.
 
+## [3.29.4]
+
+### Fixed — the menu now shows it's waiting for input
+- Removing the composer from the menu in 3.29.3 left no input affordance — the menu
+  ended with no prompt, so it read like finished output rather than something
+  waiting for a keypress. The menu (and the auth/settings sub-flows) now show a
+  minimal dim **`❯ press a key`** prompt. The full chat composer still appears only
+  inside a conversation; on the menu you get just the single-key prompt. (The
+  composer that briefly appeared at startup in 3.29.3 was the *previous* version
+  rendering before the auto-update relaunched — it does not happen once you're on
+  3.29.3+.)
+
 ## [3.29.3]
 
 ### Fixed — from live use in the data-tools shell

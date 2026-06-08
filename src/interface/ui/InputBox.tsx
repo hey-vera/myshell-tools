@@ -47,6 +47,9 @@ import type { InkStdinControl } from './App.js';
 const INPUT_BOX_MIN_COLUMNS = 32;
 const CARET = '❯';
 const PLACEHOLDER = 'Type a message...';
+/** The minimal menu-prompt hint shown when the composer is hidden (chatActive
+ *  false). SINGLE-KEY selection — must NOT imply free-text typing. */
+const MENU_HINT = 'press a key';
 const INFO_FALLBACK = 'Mode Balanced · /goal · /help · /back';
 /** Gutter under the `❯ ` caret for continuation rows of a multiline buffer. */
 const CONT_GUTTER = '… ';
@@ -130,12 +133,14 @@ export interface InputBoxProps {
   readonly info?: string | undefined;
   /**
    * Whether the composer CHROME is rendered. `true` (default) → the full chat
-   * surface (bordered box / caret) is shown — used during an ACTIVE CHAT. `false`
-   * → the box renders NOTHING (no `─ chat ─┌ … ┐` rule, no `❯` caret) but the
-   * editor's `useInput` + `useStdin` hooks stay mounted and ACTIVE, so Ink keeps
-   * raw mode armed and the LineReader's suspend()/resume() stdin control stays
-   * registered. The App passes `chatActive` here: the composer appears ONLY in a
-   * chat conversation, never in the menu / auth-login / settings sub-flows.
+   * surface (bordered box / caret / Mode chip) is shown — used during an ACTIVE
+   * CHAT. `false` → the box renders a MINIMAL one-line menu prompt (`❯ press a
+   * key`, no `─ chat ─┌ … ┐` rule, no Mode chip) so the user sees input is awaited
+   * at the menu; the editor's `useInput` + `useStdin` hooks stay mounted and ACTIVE,
+   * so Ink keeps raw mode armed and the LineReader's suspend()/resume() stdin
+   * control stays registered. The App passes `chatActive` here: the full composer
+   * appears ONLY in a chat conversation, the menu prompt in the menu / auth-login /
+   * settings sub-flows.
    */
   readonly visible?: boolean;
   /**
@@ -504,13 +509,24 @@ export function InputBox({
   // -------------------------------------------------------------------------
 
   // Composer hidden (NOT a chat conversation: menu / auth-login / settings). Render
-  // NO chrome — the `useInput`/`useStdin` hooks above stay mounted and active, so
-  // Ink keeps raw mode armed (menu single-key nav via <KeyCapture> works) and the
-  // LineReader's suspend()/resume() stdin control stays registered. We MUST keep an
-  // empty <Box> (not literal null) so this component still returns a ReactElement —
-  // and so a re-mount isn't forced when toggling visibility (the hooks persist).
+  // a MINIMAL single-line prompt affordance — a dim `❯ press a key` — so the user
+  // sees input is awaited (the menu is single-key: you press one bracketed key, you
+  // do NOT type+Enter, so the hint must NOT imply free-text typing). NO full-width
+  // rules and NO Mode chip here — that's the composer, reserved for an active chat.
+  // The `useInput`/`useStdin` hooks above stay mounted and active, so Ink keeps raw
+  // mode armed (menu single-key nav via <KeyCapture> works) and the LineReader's
+  // suspend()/resume() stdin control stays registered. We keep ONE <Box> line (not
+  // literal null) so this component still returns a ReactElement — and so a re-mount
+  // isn't forced when toggling visibility (the hooks persist).
   if (!visible) {
-    return <Box />;
+    // Non-TTY / NO_COLOR / very-narrow degrades to a bare caret (no colour codes),
+    // mirroring the composer's plain-caret fallback — never a crash, never blank.
+    const canColor = isTty && color;
+    return (
+      <Box>
+        <Text>{canColor ? `${dim(CARET, color)} ${dim(MENU_HINT, color)}` : CARET}</Text>
+      </Box>
+    );
   }
 
   // Split the edit buffer into its display rows. The caret row/col is derived

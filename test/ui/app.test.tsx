@@ -10,31 +10,37 @@ import React from 'react';
 import { render } from 'ink-testing-library';
 import { App, ErrorBoundary, createInkAppBridge } from '../../src/interface/ui/App.js';
 
-test('idle <App> hides the composer until a chat is active (default chatActive=false)', () => {
+test('idle <App> shows the minimal menu prompt, not the full composer (default chatActive=false)', () => {
   const bridge = createInkAppBridge();
   const { lastFrame } = render(<App bridge={bridge} />);
   const frame = lastFrame() ?? '';
-  // The app opens at the MENU: no chat composer (no caret, no `─ chat ─` rule).
-  assert.ok(!frame.includes('❯'), `expected NO caret in the idle/menu frame, got:\n${frame}`);
-  assert.ok(!frame.includes('─ chat '), `expected NO chat rule in the idle/menu frame, got:\n${frame}`);
+  // The app opens at the MENU: a minimal `❯ press a key` affordance so the user
+  // sees input is awaited — but NOT the full composer (no `─ chat ─` rule/chip).
+  assert.ok(frame.includes('❯'), `expected the menu-prompt caret in the idle/menu frame, got:\n${frame}`);
+  assert.ok(frame.includes('press a key'), `expected the menu-prompt hint, got:\n${frame}`);
+  assert.ok(!frame.includes('─ chat '), `expected NO chat composer rule in the idle/menu frame, got:\n${frame}`);
+  assert.ok(!frame.includes('Type a message'), `menu prompt must NOT imply free-text typing, got:\n${frame}`);
 });
 
-test('composer appears only when chatActive is set true, and hides again on false', async () => {
+test('full composer appears only when chatActive is true; menu prompt shown when false', async () => {
   const bridge = createInkAppBridge();
   const { lastFrame } = render(<App bridge={bridge} />);
   await new Promise((r) => setTimeout(r, 20));
-  // Hidden while at the menu.
-  assert.ok(!(lastFrame() ?? '').includes('❯'), `composer must be hidden before chatActive=true:\n${lastFrame()}`);
+  // At the menu: the minimal prompt, NOT the full composer.
+  assert.ok((lastFrame() ?? '').includes('press a key'), `menu prompt must show before chatActive=true:\n${lastFrame()}`);
+  assert.ok(!(lastFrame() ?? '').includes('─ chat '), `composer rule must be hidden at the menu:\n${lastFrame()}`);
 
-  // Entering a chat conversation shows the composer.
+  // Entering a chat conversation shows the FULL composer (chat rule + placeholder).
   bridge.setChatActive(true);
   await new Promise((r) => setTimeout(r, 20));
-  assert.ok((lastFrame() ?? '').includes('❯'), `composer must appear when chatActive=true:\n${lastFrame()}`);
+  assert.ok((lastFrame() ?? '').includes('─ chat '), `full composer must appear when chatActive=true:\n${lastFrame()}`);
+  assert.ok(!(lastFrame() ?? '').includes('press a key'), `menu hint must be gone in the composer:\n${lastFrame()}`);
 
-  // Returning to the menu hides it again.
+  // Returning to the menu hides the composer and restores the menu prompt.
   bridge.setChatActive(false);
   await new Promise((r) => setTimeout(r, 20));
-  assert.ok(!(lastFrame() ?? '').includes('❯'), `composer must hide again when chatActive=false:\n${lastFrame()}`);
+  assert.ok(!(lastFrame() ?? '').includes('─ chat '), `composer rule must hide again when chatActive=false:\n${lastFrame()}`);
+  assert.ok((lastFrame() ?? '').includes('press a key'), `menu prompt must return when chatActive=false:\n${lastFrame()}`);
 });
 
 test('setChatActive is a safe no-op before the App mounts', () => {
