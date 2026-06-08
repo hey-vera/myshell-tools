@@ -15,6 +15,25 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   resumed goal's contract from the persisted `workTrace` (niche: the in-run contract
   is already kept in memory; only cross-session resume benefits). Optional.
 
+## [3.27.2]
+
+### Fixed — self-update lands on the copy that's actually running
+- The auto-updater ran `npm install -g myshell-tools@latest`, which installs into
+  npm's *global* prefix — but the `myshell-tools` on the user's PATH can live under
+  a *different* prefix (a version-manager shim dir, an earlier global install, etc.).
+  When that happened the update landed somewhere the user never executes and the
+  running copy stayed stale, so the tool honestly reported "Updated to X, but the
+  active `myshell-tools` on your PATH is still Y" and stayed put — every launch.
+  - **Targets the running install:** the updater now derives the npm prefix that
+    owns the *currently-running* binary (from the realpath of the running entry)
+    and passes `npm install -g --prefix <that>`, so the update lands on the copy
+    that's executing. Conservative + fail-soft: anything that doesn't match a
+    global-install shape (local dev checkout, npx cache) falls back to plain `-g`,
+    so it's never worse than before. (`src/infra/update-prefix.ts`, unit-tested.)
+  - **Self-diagnosing mismatch:** if a mismatch still occurs, the message now names
+    the *actual path* of the stale binary (`which`/`where myshell-tools`) so you can
+    remove it or fix PATH order without guessing.
+
 ## [3.27.1]
 
 ### Fixed — runtime Node floor (don't warn/block Node 20 users)

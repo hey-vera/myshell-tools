@@ -239,6 +239,15 @@ export interface MenuContext {
    */
   readonly activeVersion?: () => Promise<string | null>;
   /**
+   * Optional injected resolver for the filesystem path of the active
+   * `myshell-tools` on PATH (production: `which`/`where myshell-tools`). Used
+   * ONLY to enrich the post-update version-mismatch message so the user can see
+   * WHERE the stale binary lives. Additive — never affects the success path.
+   *
+   * Returns the active binary path, or null when it cannot be resolved.
+   */
+  readonly activeBinPath?: () => Promise<string | null>;
+  /**
    * Optional injected relaunch function for testing. When provided, `startMenu`
    * uses this instead of the real `execa('myshell-tools', …)` re-exec.
    *
@@ -2176,6 +2185,7 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
   const checkForUpdateFn = ctx.checkForUpdate;
   const updateSelfFn = ctx.updateSelf;
   const activeVersionFn = ctx.activeVersion;
+  const activeBinPathFn = ctx.activeBinPath;
   const relaunchFn = ctx.relaunch;
   // npx context: real detection from the running script path, or test override.
   const runningUnderNpx =
@@ -2301,9 +2311,22 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
                 const activeLine = activeVersion !== null
                   ? `the active \`myshell-tools\` on your PATH is still ${activeVersion}.`
                   : 'the active `myshell-tools` on your PATH could not be verified.';
+                // Self-diagnose: when we can resolve WHERE the stale binary
+                // lives, name it so the user can act without guessing. Fail-soft.
+                let binLine = '';
+                if (activeBinPathFn !== undefined) {
+                  const binPath = await activeBinPathFn().catch(() => null);
+                  if (binPath !== null) {
+                    const ver = activeVersion !== null ? activeVersion : 'the old version';
+                    binLine =
+                      `     Active binary: ${binPath}  ← still ${ver}; ` +
+                      `remove it or put your npm global bin first on PATH.\n`;
+                  }
+                }
                 out.write(
                   `\n  ⚠️  Updated to ${toV}, but ${activeLine}\n` +
                     `     Fix your PATH or run: which myshell-tools\n` +
+                    binLine +
                     `     Staying on ${fromV} in this process for now.\n\n`,
                 );
                 return false;

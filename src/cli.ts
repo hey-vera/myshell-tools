@@ -7,7 +7,10 @@
  */
 
 import { createRequire } from 'node:module';
+import { realpathSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { execa } from 'execa';
+import { prefixForRunningEntry } from './infra/update-prefix.js';
 import { systemClock } from './infra/clock.js';
 import { createSessionWriter } from './infra/session.js';
 import { createLedger, readLedger } from './infra/ledger.js';
@@ -584,8 +587,23 @@ async function main(): Promise<void> {
       healthIssues,
       checkForUpdate: () => checkForUpdate({ currentVersion: version, now: Date.now() }),
       updateSelf: async (updateOut) => {
+        // Build the npm args, targeting the prefix that owns the *running*
+        // binary when we can confidently derive it — so the update lands on the
+        // copy that's actually executing, not just npm's global prefix. Any
+        // failure to derive falls back to plain `-g`, so this is never worse
+        // than the old behaviour.
+        let installArgs = ['install', '-g', 'myshell-tools@latest'];
         try {
-          const result = await execa('npm', ['install', '-g', 'myshell-tools@latest'], {
+          const entry = realpathSync(fileURLToPath(import.meta.url));
+          const prefix = prefixForRunningEntry(entry);
+          if (prefix !== null) {
+            installArgs = ['install', '-g', '--prefix', prefix, 'myshell-tools@latest'];
+          }
+        } catch {
+          // Derivation failed — keep the plain `-g` args.
+        }
+        try {
+          const result = await execa('npm', installArgs, {
             stdio: 'inherit',
             reject: false,
           });
@@ -603,6 +621,20 @@ async function main(): Promise<void> {
           if (result.exitCode !== 0) return null;
           const active = result.stdout.trim();
           return active.length > 0 ? active : null;
+        } catch {
+          return null;
+        }
+      },
+      activeBinPath: async () => {
+        // Resolve WHERE the active `myshell-tools` on PATH lives, so a post-update
+        // version mismatch can point the user at the stale copy. `which`/`where`
+        // may print several lines (PATH shadowing) — take the first. Fail-soft.
+        try {
+          const finder = process.platform === 'win32' ? 'where' : 'which';
+          const result = await execa(finder, ['myshell-tools'], { reject: false });
+          if (result.exitCode !== 0) return null;
+          const first = result.stdout.split(/\r?\n/)[0]?.trim() ?? '';
+          return first.length > 0 ? first : null;
         } catch {
           return null;
         }
