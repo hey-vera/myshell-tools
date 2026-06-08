@@ -216,6 +216,188 @@ describe('ui reduce — phase / panel / synthesis', () => {
     );
     // Still in panel phase (the collapsed status line), not 'thinking'.
     assert.equal(s.stream.phase, 'panel');
+    // H2: in panel mode the candidate is represented ONLY as a panelist — NO
+    // per-candidate goal card is created (else N-1 cards would sit stuck running).
+    assert.equal(s.goals.length, 0);
+  });
+});
+
+describe('ui reduce — H2: panel turns leave no goal stuck running', () => {
+  /** A panel candidate tier-done (flips a panelist, accounts tokens, no goal). */
+  function candidateDone(tokens: number): Action {
+    return {
+      type: 'stream/flush-tier',
+      tier: 'ic',
+      success: true,
+      confidence: 0.8,
+      inputTokens: tokens,
+      outputTokens: 0,
+      durationMs: 10,
+      panelCandidate: true,
+      verbosity: 'normal',
+    };
+  }
+
+  it('a 3-candidate panel turn ends with ZERO goals/agents running and tokens attributed', () => {
+    // Drive panel → 3×tier-start → 3×candidate-done → synthesis, then snapshot the
+    // LIVE panel state BEFORE final (final clears the live stream by design).
+    const beforeFinal = run([
+      { type: 'phase/panel', participants: ['claude', 'codex', 'opencode'] },
+      { type: 'tier-start', tier: 'ic', provider: 'claude', model: 'a', attempt: 1, verbosity: 'normal' },
+      { type: 'tier-start', tier: 'ic', provider: 'codex', model: 'b', attempt: 1, verbosity: 'normal' },
+      { type: 'tier-start', tier: 'ic', provider: 'opencode', model: 'c', attempt: 1, verbosity: 'normal' },
+      candidateDone(10),
+      candidateDone(20),
+      candidateDone(30),
+      { type: 'phase/synthesis', count: 3 },
+      { type: 'stream/prose', text: 'Synthesized answer.' },
+    ]);
+    // NO goal cards were ever created for the panel candidates (the H2 fix).
+    assert.equal(beforeFinal.goals.length, 0);
+    // All three candidates settled as done panelists (no panelist left running).
+    assert.deepEqual(beforeFinal.stream.panelists.map((p) => p.state), ['done', 'done', 'done']);
+    // Tokens attributed across the candidate dones.
+    assert.equal(beforeFinal.tokens.turn, 60);
+
+    const s = reduce(beforeFinal, {
+      type: 'turn/final',
+      success: true,
+      tier: 'ic',
+      attempts: 1,
+      sessionId: 'sess',
+      verbosity: 'normal',
+    });
+    // FINAL STATE: zero goals/agents stuck running (the core H2 assertion).
+    assert.equal(s.goals.length, 0);
+    assert.equal(s.goals.filter((g) => g.state === 'running').length, 0);
+    assert.equal(
+      s.goals.flatMap((g) => g.agents).filter((a) => a.state === 'running').length,
+      0,
+    );
+    assert.equal(s.tokens.turn, 60);
+    assert.equal(s.tokens.session, 60);
+    // The synthesized prose committed.
+    assert.ok(lines(s).includes('Synthesized answer.'));
+    assert.equal(s.turnActive, false);
+  });
+
+  it('a sequential 2-tier turn still settles BOTH goals (no stuck running)', () => {
+    const flush = (success: boolean): Action => ({
+      type: 'stream/flush-tier',
+      tier: 'ic',
+      success,
+      confidence: 0.9,
+      inputTokens: 100,
+      outputTokens: 0,
+      durationMs: 10,
+      panelCandidate: false,
+      verbosity: 'normal',
+    });
+    const s = run([
+      { type: 'tier-start', tier: 'ic', provider: 'claude', model: 'a', attempt: 1, verbosity: 'normal' },
+      { type: 'stream/prose', text: 'first' },
+      flush(false), // first tier fails → escalation
+      { type: 'tier-start', tier: 'manager', provider: 'claude', model: 'b', attempt: 2, verbosity: 'normal' },
+      { type: 'stream/prose', text: 'second' },
+      flush(true), // second tier succeeds
+      {
+        type: 'turn/final',
+        success: true,
+        tier: 'manager',
+        attempts: 2,
+        sessionId: 'sess',
+        verbosity: 'normal',
+      },
+    ]);
+    assert.equal(s.goals.length, 2);
+    assert.deepEqual(s.goals.map((g) => g.state), ['failed', 'done']);
+    assert.equal(s.goals.flatMap((g) => g.agents).filter((a) => a.state === 'running').length, 0);
+    assert.equal(s.tokens.turn, 200);
+  });
+});
+
+describe('ui reduce — turn/start + commit/raw (persistent state)', () => {
+  it('turn/start resets the per-turn slice but PRESERVES committed[] and session tokens', () => {
+    // Build a state with committed lines + session tokens + a stuck running goal.
+    const afterTurn1 = run([
+      { type: 'tier-start', tier: 'ic', provider: 'claude', model: 'a', attempt: 1, verbosity: 'normal' },
+      { type: 'stream/prose', text: 'answer one' },
+      {
+        type: 'stream/flush-tier',
+        tier: 'ic',
+        success: true,
+        confidence: 0.9,
+        inputTokens: 100,
+        outputTokens: 50,
+        durationMs: 1,
+        panelCandidate: false,
+        verbosity: 'normal',
+      },
+      {
+        type: 'turn/final',
+        success: true,
+        tier: 'ic',
+        attempts: 1,
+        sessionId: 's',
+        verbosity: 'normal',
+      },
+    ]);
+    assert.equal(afterTurn1.tokens.session, 150);
+    const committedBefore = afterTurn1.committed.length;
+    assert.ok(committedBefore > 0);
+
+    const started = reduce(afterTurn1, { type: 'turn/start' });
+    // committed[] preserved (NEVER shrinks — append-only <Static>).
+    assert.deepEqual(started.committed, afterTurn1.committed);
+    assert.equal(started.committed.length, committedBefore);
+    // session tokens carried forward; per-turn counter reset.
+    assert.equal(started.tokens.session, 150);
+    assert.equal(started.tokens.turn, 0);
+    // per-turn slice reset.
+    assert.deepEqual(started.goals, []);
+    assert.deepEqual(started.stream, initialStreamView);
+    assert.equal(started.turnActive, false);
+  });
+
+  it('commit/raw appends a raw chrome line to the SAME committed transcript', () => {
+    const s = run([
+      { type: 'commit/raw', text: '> user prompt' },
+      { type: 'stream/prose', text: 'reply' },
+      {
+        type: 'stream/flush-tier',
+        tier: 'ic',
+        success: true,
+        confidence: 0.9,
+        inputTokens: 1,
+        outputTokens: 1,
+        durationMs: 1,
+        panelCandidate: false,
+        verbosity: 'normal',
+      },
+    ]);
+    assert.deepEqual(lines(s), ['> user prompt', 'reply']);
+    assert.equal(s.committed[0]?.kind, 'raw');
+    assert.equal(s.committed[1]?.kind, 'prose');
+  });
+
+  it('session tokens ACCUMULATE across turns separated by turn/start', () => {
+    const tier = (): Action => ({
+      type: 'stream/flush-tier',
+      tier: 'ic',
+      success: true,
+      confidence: 0.9,
+      inputTokens: 100,
+      outputTokens: 0,
+      durationMs: 1,
+      panelCandidate: false,
+      verbosity: 'normal',
+    });
+    let s = run([tier()]);
+    assert.equal(s.tokens.session, 100);
+    s = reduce(s, { type: 'turn/start' });
+    s = reduce(s, tier());
+    assert.equal(s.tokens.session, 200);
+    assert.equal(s.tokens.turn, 100);
   });
 });
 

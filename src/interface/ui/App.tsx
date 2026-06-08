@@ -300,9 +300,21 @@ export function App({
     if (resolver != null) resolver(rawKey);
   };
 
-  // Structured mode: render committed lines (write-once via <Static>, coloured by
-  // kind) plus the live answer buffer (<Stream>, repaints as prose streams). The
+  // Structured mode (the single source of truth once the Node side has pushed any
+  // state): render committed lines (write-once via <Static>, coloured by kind)
+  // plus the live answer buffer (<Stream>, repaints as prose streams). The
   // <Static> item is a {line,key} pair so a stable React key survives appends.
+  //
+  // committed[] is the ONE growing transcript: BOTH the reducer's prose/chrome
+  // commits AND the OutputSink's out.write chrome (a `commit/raw` action) append
+  // to it, and a `turn/start` between turns resets only the per-turn slice while
+  // PRESERVING committed[]. So this array is MONOTONICALLY NON-DECREASING across
+  // turns — it never shrinks then regrows, which is exactly what Ink 6's <Static>
+  // append-only contract requires (the old per-turn reset re-triggered the
+  // scrollback-duplication bug). The `uiState !== null` check is therefore no
+  // longer a one-way latch that LOSES chrome: the string `lines` path below is
+  // only the pre-first-state fallback (e.g. the idle skeleton before any state),
+  // and committed[] is the sole <Static> source the instant a turn or chrome lands.
   if (uiState !== null) {
     const committed: Array<{ readonly line: TranscriptLine; readonly key: number }> =
       uiState.committed.map((line, index) => ({ line, key: index }));

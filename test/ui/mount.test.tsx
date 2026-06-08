@@ -10,8 +10,12 @@ import {
   backfillTerminalSize,
   createInkOutputSink,
   createInkLineReader,
+  createInkStore,
+  createTurnDriver,
 } from '../../src/interface/ui/mount.js';
 import { createInkAppBridge } from '../../src/interface/ui/App.js';
+import type { CoreEvent } from '../../src/core/types.js';
+import type { UiState } from '../../src/interface/ui/index.js';
 
 test('backfillTerminalSize fills a zero-width stream from env, else 80x24', () => {
   const zero: { columns?: number; rows?: number } = { columns: 0, rows: 0 };
@@ -30,23 +34,27 @@ test('backfillTerminalSize fills a zero-width stream from env, else 80x24', () =
   assert.equal(ok.columns, 100);
 });
 
-test('createInkOutputSink commits whole lines and buffers partials', () => {
+test('createInkOutputSink commits whole lines (as raw chrome) and buffers partials', () => {
+  // The sink now dispatches `commit/raw` actions into the persistent InkStore, so
+  // out.write chrome feeds the SAME growing committed[] transcript the reducer
+  // prose feeds — one monotonic <Static> source (the C1/C2 fix).
   const bridge = createInkAppBridge();
-  const committed: string[] = [];
-  bridge._setLines = (fn) => {
-    const next = fn([]);
-    committed.push(next[next.length - 1] as string);
-  };
-  const out = createInkOutputSink(bridge, { color: false, isTty: true });
+  let last: UiState | null = null;
+  bridge._setUiState = (s) => { last = s; };
+  const store = createInkStore(bridge);
+  const out = createInkOutputSink(store, { color: false, isTty: true });
   assert.equal(out.color, false);
   assert.equal(out.isTty, true);
 
+  const chrome = (): string[] =>
+    (last?.committed ?? []).filter((l) => l.kind === 'raw').map((l) => l.text);
+
   out.write('one\ntwo\n');
-  assert.deepEqual(committed, ['one', 'two']);
+  assert.deepEqual(chrome(), ['one', 'two']);
   out.write('par'); // partial — not yet committed
-  assert.deepEqual(committed, ['one', 'two']);
+  assert.deepEqual(chrome(), ['one', 'two']);
   out.write('tial\n');
-  assert.deepEqual(committed, ['one', 'two', 'partial']);
+  assert.deepEqual(chrome(), ['one', 'two', 'partial']);
 });
 
 test('createInkLineReader resolves nextLine() with submitted input (FIFO)', async () => {
@@ -131,4 +139,95 @@ test('createInkLineReader ignores submits after close()', async () => {
   bridge.input._submit?.('too late');
   assert.deepEqual(reader.drainBuffered(), []);
   assert.equal(await reader.nextLine(), null);
+});
+
+// ---------------------------------------------------------------------------
+// C1/C2 REGRESSION — persistent state across ≥3 consecutive turns through ONE
+// mounted store + turn driver (NOT rebuilt per turn — rebuilding is exactly what
+// hid the bug). Asserts:
+//   - prior turns' committed lines PERSIST;
+//   - committed[] is MONOTONICALLY NON-DECREASING across turns (the <Static>
+//     append-only contract — it never shrinks then regrows);
+//   - tokens.session ACCUMULATES across turns;
+//   - an out.write chrome line written BETWEEN turns appears in committed[] and
+//     SURVIVES the next turn.
+// ---------------------------------------------------------------------------
+
+/** A minimal one-tier turn producing `answer` prose and 150 (100+50) tokens. */
+function makeTurnStream(answer: string): AsyncIterable<CoreEvent> {
+  const events: CoreEvent[] = [
+    { type: 'tier-start', tier: 'ic', provider: 'claude', model: 'm', attempt: 1 },
+    { type: 'provider-event', tier: 'ic', event: { type: 'text', delta: answer } },
+    { type: 'tier-done', tier: 'ic', success: true, confidence: 0.9, costUsd: 0, inputTokens: 100, outputTokens: 50, durationMs: 1 },
+    { type: 'final', success: true, output: answer, tier: 'ic', totalCostUsd: 0, sessionId: 's', attempts: 1 },
+  ];
+  return (async function* () { for (const e of events) yield e; })();
+}
+
+test('persistent store: ≥3 consecutive turns keep committed[] monotonic, accumulate session tokens, and never lose inter-turn chrome', async () => {
+  const bridge = createInkAppBridge();
+  let last: UiState | null = null;
+  bridge._setUiState = (s) => { last = s; };
+
+  const store = createInkStore(bridge);
+  const out = createInkOutputSink(store, { color: false, isTty: true });
+  // SYNCHRONOUS flush so the throttled prose lands deterministically in the fold.
+  const renderTurn = createTurnDriver(store, { color: false, isTty: true });
+
+  const lens = (): readonly { kind: string; text: string }[] => last?.committed ?? [];
+  let prevLen = 0;
+  const assertGrew = (): void => {
+    assert.ok(lens().length >= prevLen, `committed[] shrank: ${prevLen} -> ${lens().length}`);
+    prevLen = lens().length;
+  };
+
+  const answers = ['Turn one answer.', 'Turn two answer.', 'Turn three answer.'];
+  const sessionTotals: number[] = [];
+
+  for (let i = 0; i < answers.length; i += 1) {
+    // Inter-turn chrome (the echoed prompt / ※ recap analogue) written via the sink.
+    out.write(`> chrome before turn ${i + 1}\n`);
+    assertGrew();
+    // committed[] must already contain EVERY prior turn's prose + chrome.
+    for (let j = 0; j < i; j += 1) {
+      assert.ok(
+        lens().some((l) => l.kind === 'prose' && l.text.includes(answers[j]!)),
+        `prior turn ${j + 1} prose lost after entering turn ${i + 1}`,
+      );
+      assert.ok(
+        lens().some((l) => l.kind === 'raw' && l.text.includes(`chrome before turn ${j + 1}`)),
+        `prior chrome ${j + 1} lost after entering turn ${i + 1}`,
+      );
+    }
+
+    // Note: createTurnDriver dispatches turn/start; with synchronous internal
+    // flush behaviour the default ~40ms timer is unref'd. Drive with the real
+    // driver and await its completion (events are finite).
+    await renderTurn(makeTurnStream(answers[i]!), { verbosity: 'normal' });
+    assertGrew();
+
+    // This turn's prose + completion line are now committed.
+    assert.ok(
+      lens().some((l) => l.kind === 'prose' && l.text.includes(answers[i]!)),
+      `turn ${i + 1} prose not committed`,
+    );
+    sessionTotals.push(last!.tokens.session);
+    // Per-turn token counter is reset each turn by turn/start.
+    assert.equal(last!.tokens.turn, 150, `turn ${i + 1} per-turn tokens`);
+  }
+
+  // tokens.session ACCUMULATES across turns (150, 300, 450) — never de-cumulates.
+  assert.deepEqual(sessionTotals, [150, 300, 450]);
+
+  // The chrome written between turns survived every subsequent turn.
+  for (let j = 0; j < answers.length; j += 1) {
+    assert.ok(
+      lens().some((l) => l.kind === 'raw' && l.text.includes(`chrome before turn ${j + 1}`)),
+      `chrome ${j + 1} did not survive to the end`,
+    );
+    assert.ok(
+      lens().some((l) => l.kind === 'prose' && l.text.includes(answers[j]!)),
+      `turn ${j + 1} prose did not survive to the end`,
+    );
+  }
 });

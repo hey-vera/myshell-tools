@@ -26,12 +26,14 @@ import { runChatLoop } from '../../src/interface/menu.js';
 import type { MenuContext } from '../../src/interface/menu.js';
 import type { TurnRenderer } from '../../src/interface/run.js';
 import { createInkAppBridge } from '../../src/interface/ui/App.js';
-import { createInkOutputSink, createInkLineReader } from '../../src/interface/ui/mount.js';
 import {
-  reduce,
+  createInkOutputSink,
+  createInkLineReader,
+  createInkStore,
+  createTurnDriver,
+} from '../../src/interface/ui/mount.js';
+import {
   initialState,
-  renderStreamInk,
-  type Action,
   type UiState,
 } from '../../src/interface/ui/index.js';
 import type { Clock, LedgerWriter, SessionEntry, SessionWriter } from '../../src/core/types.js';
@@ -123,22 +125,18 @@ function makeLedger(): LedgerWriter {
 // Build the Ink adapters EXACTLY as startMenu's flag-on path does.
 // ---------------------------------------------------------------------------
 
-/** The createTurnDriver shape from mount.tsx, inlined so the test owns the
- * reducer state and can assert the final snapshot. Mirrors production 1:1. */
+/** Wrap the PRODUCTION createTurnDriver (persistent InkStore) as a TurnRenderer
+ *  so the test exercises the exact flag-on path startMenu wires — ONE persistent
+ *  state spanning chrome + turns, never a per-turn fold. */
 function makeInkTurn(
-  bridge: ReturnType<typeof createInkAppBridge>,
+  store: ReturnType<typeof createInkStore>,
   onState: (s: UiState) => void,
 ): TurnRenderer {
+  const drive = createTurnDriver(store, { color: false, isTty: true });
   return (events, _sink, verbosity) => {
-    let state: UiState = initialState;
-    bridge.pushState(state);
-    onState(state);
-    const dispatch = (a: Action): void => {
-      state = reduce(state, a);
-      bridge.pushState(state);
-      onState(state);
-    };
-    return renderStreamInk(events, dispatch, { color: false, isTty: true, verbosity });
+    const p = drive(events, { verbosity });
+    onState(store.getState());
+    return p.then((r) => { onState(store.getState()); return r; });
   };
 }
 
@@ -171,16 +169,16 @@ test('runChatLoop drives a chat turn end-to-end through the Ink adapters', async
   const ctx = makeCtx(store, clock, answer);
   const mutableCtx = { config: ctx.config, env: ctx.env };
 
-  // The Ink rendering+input layer (the production adapters).
+  // The Ink rendering+input layer (the production adapters): ONE persistent store
+  // shared by the OutputSink chrome and the streaming turn driver.
   const bridge = createInkAppBridge();
-  const out = createInkOutputSink(bridge, { color: false, isTty: true });
+  const inkStore = createInkStore(bridge);
+  const out = createInkOutputSink(inkStore, { color: false, isTty: true });
   const reader = createInkLineReader(bridge);
-  const committed: string[] = [];
-  // Capture committed transcript lines the OutputSink pushes (menu/chat chrome).
-  bridge._setLines = (fn) => { const next = fn([]); const last = next[next.length - 1]; if (typeof last === 'string') committed.push(last); };
 
   let lastState: UiState = initialState;
-  const inkRenderTurn = makeInkTurn(bridge, (s) => { lastState = s; });
+  bridge._setUiState = (s) => { lastState = s; };
+  const inkRenderTurn = makeInkTurn(inkStore, (s) => { lastState = s; });
 
   // readLine resolves with the user's submissions: one message, then /back.
   const reads = [answer === '' ? 'hi' : 'please answer', '/back'];
@@ -233,8 +231,9 @@ test('runChatLoop drives a chat turn end-to-end through the Ink adapters', async
 
 test('inkRenderTurn (createTurnDriver shape) folds CoreEvents into the transcript', async () => {
   const bridge = createInkAppBridge();
+  const store = createInkStore(bridge);
   let last: UiState = initialState;
-  const renderTurn = makeInkTurn(bridge, (s) => { last = s; });
+  const renderTurn = makeInkTurn(store, (s) => { last = s; });
 
   async function* stream() {
     yield { type: 'tier-start', tier: 'ic', provider: 'claude', model: 'm', attempt: 1 } as const;

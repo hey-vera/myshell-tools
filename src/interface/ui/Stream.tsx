@@ -83,7 +83,8 @@ function committedLineColor(kind: TranscriptLine['kind']): string | undefined {
     case 'completion':
       return undefined; // dim (applied via dimColor on the <Text>), not a hue
     case 'prose':
-      return undefined;
+    case 'raw':
+      return undefined; // raw chrome carries its own ANSI; paint verbatim
   }
 }
 

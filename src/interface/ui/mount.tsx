@@ -65,17 +65,57 @@ export function backfillTerminalSize(
 }
 
 // ---------------------------------------------------------------------------
+// 1b. Persistent reducer store (ONE UiState across the whole session)
+// ---------------------------------------------------------------------------
+
+/**
+ * The single persistent reducer store the mount owns: ONE {@link UiState} that
+ * spans EVERY turn of the session, plus a `dispatch` that folds an {@link Action}
+ * and pushes the new snapshot to the App. This is the C1/C2 fix: the transcript
+ * (`committed[]`) and the session-cumulative token total live HERE and are NEVER
+ * reset to `initialState` between turns — a `turn/start` action resets only the
+ * per-turn slice. The OutputSink chrome (`commit/raw`) and the streaming turn
+ * driver BOTH dispatch into this same store, so there is ONE growing transcript
+ * feeding `<Static>` (it only ever GROWS — append-only).
+ */
+export interface InkStore {
+  /** The current persistent snapshot. */
+  getState(): UiState;
+  /** Fold one action and push the new snapshot to the App. */
+  dispatch(action: Action): void;
+}
+
+/** Build the persistent store, seeding the App with the initial snapshot so the
+ *  structured (committed[]-backed) branch is the single `<Static>` source from
+ *  mount — never the pre-first-state string fallback once a turn or chrome
+ *  arrives. */
+export function createInkStore(bridge: InkAppBridge): InkStore {
+  let state: UiState = initialState;
+  bridge.pushState(state);
+  return {
+    getState: () => state,
+    dispatch(action: Action): void {
+      state = reduce(state, action);
+      bridge.pushState(state);
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
 // 2. OutputSink adapter
 // ---------------------------------------------------------------------------
 
 /**
- * An {@link OutputSink} whose `write(s)` commits transcript lines into the Ink
- * App via the bridge. Writes are split on newlines so each committed line is a
+ * An {@link OutputSink} whose `write(s)` commits chrome transcript lines into the
+ * SAME persistent {@link InkStore} the streaming turn driver folds into (via a
+ * `commit/raw` action), so out.write chrome and reducer prose share ONE growing
+ * `committed[]` transcript — no chrome is lost between turns (C1) and `<Static>`
+ * only ever grows (C2). Writes are split on newlines so each committed line is a
  * separate `<Static>` item; a trailing partial line (no newline yet) is buffered
  * and flushed when its newline arrives. `color`/`isTty` mirror the real stdout.
  */
 export function createInkOutputSink(
-  bridge: InkAppBridge,
+  store: InkStore,
   opts: { readonly color: boolean; readonly isTty: boolean },
 ): OutputSink {
   let pending = '';
@@ -84,7 +124,7 @@ export function createInkOutputSink(
       pending += s;
       let nl = pending.indexOf('\n');
       while (nl !== -1) {
-        bridge.commit(pending.slice(0, nl));
+        store.dispatch({ type: 'commit/raw', text: pending.slice(0, nl) });
         pending = pending.slice(nl + 1);
         nl = pending.indexOf('\n');
       }
@@ -289,14 +329,18 @@ export function createInkLineReader(bridge: InkAppBridge): LineReader {
  * `AsyncIterable<CoreEvent>` and returns the SAME `{ success, final?,
  * rateLimitedProviders }` shape, so the menu loop can swap it in 1:1.
  *
- * The reducer state is held HERE (a plain fold, no React) and pushed to the App
- * via `bridge.pushState` after each dispatch; `renderStreamInk` owns the throttle
- * (so high-frequency prose deltas coalesce before they reach React). `elapsedSecs`
- * is injected by the caller (the menu's spinner clock) so the success line's
- * `· Ns` suffix stays honest and the driver stays hermetically testable.
+ * The reducer state is the SINGLE persistent {@link InkStore} the mount owns (NOT
+ * a fresh per-turn fold) — the C1/C2 fix. Each turn begins with a `turn/start`
+ * action that resets ONLY the per-turn slice (live stream, goals, turnActive, the
+ * per-turn token counter) while PRESERVING `committed[]` and the session token
+ * total, so the transcript carries forward and `<Static>` only ever grows.
+ * `renderStreamInk` owns the throttle (so high-frequency prose deltas coalesce
+ * before they reach React). `elapsedSecs` is injected by the caller (the menu's
+ * spinner clock) so the success line's `· Ns` suffix stays honest and the driver
+ * stays hermetically testable.
  */
-function createTurnDriver(
-  bridge: InkAppBridge,
+export function createTurnDriver(
+  store: InkStore,
   base: { readonly color: boolean; readonly isTty: boolean },
 ): (
   events: AsyncIterable<CoreEvent>,
@@ -307,13 +351,9 @@ function createTurnDriver(
   rateLimitedProviders: readonly ProviderId[];
 }> {
   return async (events, opts = {}) => {
-    let state: UiState = initialState;
-    bridge.pushState(state);
-    const dispatch = (action: Action): void => {
-      state = reduce(state, action);
-      bridge.pushState(state);
-    };
-    return renderStreamInk(events, dispatch, {
+    // Reset ONLY the per-turn slice; committed[] and tokens.session carry forward.
+    store.dispatch({ type: 'turn/start' });
+    return renderStreamInk(events, store.dispatch, {
       color: base.color,
       isTty: base.isTty,
       ...(opts.verbosity !== undefined ? { verbosity: opts.verbosity } : {}),
@@ -376,9 +416,13 @@ export function mountInk(opts: InkMountOptions): InkMountHandle {
   backfillTerminalSize();
 
   const bridge = createInkAppBridge();
-  const out = createInkOutputSink(bridge, { color: opts.color, isTty: opts.isTty });
+  // The SINGLE persistent reducer store (one UiState across every turn). The
+  // OutputSink chrome and the streaming turn driver BOTH fold into it, so there is
+  // ONE growing committed[] transcript feeding <Static> (append-only across turns).
+  const store = createInkStore(bridge);
+  const out = createInkOutputSink(store, { color: opts.color, isTty: opts.isTty });
   const reader = createInkLineReader(bridge);
-  const renderTurn = createTurnDriver(bridge, { color: opts.color, isTty: opts.isTty });
+  const renderTurn = createTurnDriver(store, { color: opts.color, isTty: opts.isTty });
 
   const instance = render(
     <App

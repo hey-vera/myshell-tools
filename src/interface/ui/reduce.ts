@@ -87,12 +87,58 @@ function settleActiveGoal(
   });
 }
 
+/**
+ * Settle EVERY still-`running` goal (and its running agents) to a terminal state
+ * at `turn/final` (H2 belt-and-suspenders). Sequential tiers settle one-by-one at
+ * their boundaries so normally only the last is left running; but a turn that
+ * ended with more than one running goal (a defensive case) must not leave any
+ * stuck `◐ running` in the final snapshot. No token attribution here (tier tokens
+ * were attributed at each tier-done). Pure; returns a new array.
+ */
+function settleAllRunningGoals(
+  goals: readonly GoalView[],
+  finalState: 'done' | 'failed',
+): readonly GoalView[] {
+  if (!goals.some((g) => g.state === 'running' || g.agents.some((a) => a.state === 'running'))) {
+    return goals;
+  }
+  return goals.map((goal) => ({
+    ...goal,
+    state: goal.state === 'running' ? finalState : goal.state,
+    agents: goal.agents.map((agent) =>
+      agent.state === 'running' ? { ...agent, state: finalState } : agent,
+    ),
+  }));
+}
+
 // ---------------------------------------------------------------------------
 // reduce
 // ---------------------------------------------------------------------------
 
 export function reduce(state: UiState, action: Action): UiState {
   switch (action.type) {
+    // -- turn/start: reset ONLY the per-turn slice (live stream, goals,
+    //    turnActive, the per-turn token counter) while PRESERVING the committed
+    //    transcript AND the session-cumulative token total. This is the single
+    //    persistent-state lever: across turns committed[] only ever grows (Ink's
+    //    append-only <Static> contract) and session tokens accumulate. A fresh
+    //    stream view is used (initialStreamView), exactly the slice a turn owns.
+    case 'turn/start':
+      return {
+        ...state,
+        goals: [],
+        stream: initialStreamView,
+        turnActive: false,
+        tokens: { turn: 0, session: state.tokens.session },
+      };
+
+    // -- commit/raw: append ONE already-final chrome line (whatever the impure
+    //    OutputSink wrote) into the SAME committed transcript the reducer prose
+    //    commits feed. One growing source of truth → <Static> stays monotonic and
+    //    no out.write chrome is lost between turns.
+    case 'commit/raw':
+      return commit(state, { kind: 'raw', text: action.text });
+
     // -- classifier metadata: only a visible line under verbose AND MYSHELL_DEBUG.
     //    render.ts gates the classified line purely on process.env.MYSHELL_DEBUG
     //    (independent of verbosity); we thread that as `debug`.
@@ -151,6 +197,13 @@ export function reduce(state: UiState, action: Action): UiState {
         ];
       }
       const workLabel = isVerbose ? `${action.tier} (${action.provider}/${action.model})` : 'Thinking';
+      // H2 fix: in PANEL mode the running candidates are represented SOLELY by
+      // stream.panelists (the StatusLine's panelLabel reads them). We do NOT push
+      // a per-candidate GoalView here, because each candidate's tier-done is a
+      // panelCandidate flush that flips a PANELIST, never a goal — so N goal cards
+      // would be left stuck '◐ running' after the panel turn. Outside panel mode
+      // (sequential tiers) each tier owns exactly one goal, settled at its
+      // boundary / final. So we append a goal only when NOT in panel mode.
       const agent: AgentView = {
         provider: action.provider,
         model: action.model,
@@ -168,7 +221,7 @@ export function reduce(state: UiState, action: Action): UiState {
       let next: UiState = {
         ...state,
         turnActive: true,
-        goals: [...state.goals, goal],
+        goals: inPanel ? state.goals : [...state.goals, goal],
         stream: {
           ...state.stream,
           ...resetTierCounters(),
@@ -379,7 +432,7 @@ export function reduce(state: UiState, action: Action): UiState {
       // state sees a coherent goal glyph rather than a stuck `running` card.
       next = {
         ...next,
-        goals: settleActiveGoal(next.goals, action.success ? 'done' : 'failed', 0),
+        goals: settleAllRunningGoals(next.goals, action.success ? 'done' : 'failed'),
         turnActive: false,
         stream: { ...initialStreamView, buffer: '' },
       };

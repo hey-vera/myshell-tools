@@ -33,6 +33,9 @@ import type { ErrorCategory } from '../../providers/errors.js';
  */
 export interface TranscriptLine {
   readonly kind:
+    | 'raw' // a chrome line the impure OutputSink wrote (echoed prompt, ※ recap,
+    //        resume transcript, inter-turn menu chrome, /mode output, etc.); the
+    //        text already carries any ANSI styling — the view paints it verbatim.
     | 'prose' // committed model answer prose
     | 'notice' // a dim ⋮ panel-header / hedge notice
     | 'warn' // a yellow [warn] line (e.g. spend-unknown)
@@ -167,6 +170,19 @@ export type Verbosity = 'quiet' | 'normal' | 'verbose';
 // ---------------------------------------------------------------------------
 
 export type Action =
+  // --- turn/start: reset ONLY the per-turn slice (stream, goals, turn-active,
+  //     per-turn token counter) at the START of a turn, PRESERVING committed[]
+  //     and tokens.session. This is what makes ONE persistent UiState span every
+  //     turn of a session: the transcript and the session token total carry
+  //     forward (session tokens ACCUMULATE), so <Static>'s committed[] only ever
+  //     GROWS across turns (never shrinks/regrows — Ink 6's append-only contract).
+  | { readonly type: 'turn/start' }
+  // --- commit/raw: append ONE already-final chrome line (text the impure
+  //     OutputSink wrote — echoed prompt, the ※ recap, resume transcript,
+  //     inter-turn menu chrome, /mode output, error notices) into the SAME
+  //     committed transcript the reducer prose commits feed. One growing source
+  //     of truth → no out.write chrome is lost and <Static> stays monotonic.
+  | { readonly type: 'commit/raw'; readonly text: string }
   // --- classifier metadata (verbose/MYSHELL_DEBUG only) ---
   | {
       readonly type: 'classified';
