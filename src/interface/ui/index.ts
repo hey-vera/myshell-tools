@@ -30,6 +30,8 @@ export {
   layoutForHeight,
   compactGoalsSummary,
   goalCardRows,
+  streamWrappedRows,
+  tailStreamToRows,
   INPUT_ROWS,
   STATUS_LINE_ROWS,
   PANEL_BORDER_ROWS,

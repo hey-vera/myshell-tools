@@ -115,7 +115,18 @@ export function runInteractiveChild(
   }
 
   // POSIX pipe-stdin shell: hand the child /dev/tty as fd0 so it reads real keys.
-  const child = spawn(bin, [...args], { stdio: [stdin, 'inherit', 'inherit'], env });
+  // spawn() can throw SYNCHRONOUSLY (EMFILE, ENOENT on a bad bin, etc.) BEFORE the
+  // exit/error handlers attach — in that case the /dev/tty fd we opened would never
+  // be closed (a fd leak across repeated logins). Guard it: on a synchronous throw,
+  // close the fd via cleanup() and return an inert handle (done → null, kill → noop),
+  // matching the "never rejects" contract.
+  let child: ReturnType<typeof spawn>;
+  try {
+    child = spawn(bin, [...args], { stdio: [stdin, 'inherit', 'inherit'], env });
+  } catch {
+    cleanup();
+    return { done: Promise.resolve(null), kill: () => {} };
+  }
   const done = new Promise<number | null>((resolve) => {
     child.on('exit', (code) => {
       cleanup();

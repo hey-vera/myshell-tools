@@ -18,6 +18,8 @@ import {
   layoutForHeight,
   compactGoalsSummary,
   goalCardRows,
+  streamWrappedRows,
+  tailStreamToRows,
   INPUT_ROWS,
   STATUS_LINE_ROWS,
   PANEL_BORDER_ROWS,
@@ -188,6 +190,52 @@ describe('layoutForHeight — extreme pressure', () => {
 // ---------------------------------------------------------------------------
 // the load-bearing invariant — exhaustive sweep
 // ---------------------------------------------------------------------------
+
+describe('streamWrappedRows — wrapped row count at a width (item 2)', () => {
+  it('is 0 for an empty buffer', () => {
+    assert.equal(streamWrappedRows('', 80), 0);
+  });
+
+  it('counts the ● marker on the first row only', () => {
+    // 79 visible chars + the 2-col marker = 81 → wraps to 2 rows at width 80.
+    assert.equal(streamWrappedRows('a'.repeat(79), 80), 2);
+    // 78 + 2 = 80 → exactly one row.
+    assert.equal(streamWrappedRows('a'.repeat(78), 80), 1);
+  });
+
+  it('sums per-line wrapping (each \\n is a new line, blanks count 1)', () => {
+    // line0: 10 + marker(2) = 12 → 1 row at 80; line1: empty → 1; line2: 10 → 1.
+    assert.equal(streamWrappedRows('1234567890\n\n1234567890', 80), 3);
+    // A long second line wraps: 120 chars at width 40 → 3 rows; line0 (5+2) → 1.
+    assert.equal(streamWrappedRows('hello\n' + 'b'.repeat(120), 40), 1 + 3);
+  });
+});
+
+describe('tailStreamToRows — keep the last K wrapped rows (item 2)', () => {
+  it('returns the whole buffer when it already fits', () => {
+    assert.equal(tailStreamToRows('one\ntwo\nthree', 80, 10), 'one\ntwo\nthree');
+  });
+
+  it("returns '' when the cap is 0 or the buffer is empty", () => {
+    assert.equal(tailStreamToRows('anything', 80, 0), '');
+    assert.equal(tailStreamToRows('', 80, 5), '');
+  });
+
+  it('keeps the TAIL (newest) lines and the result never exceeds the cap', () => {
+    const buffer = 'l1\nl2\nl3\nl4\nl5';
+    const capped = tailStreamToRows(buffer, 80, 2);
+    assert.equal(capped, 'l4\nl5', 'keeps the last two source lines');
+    assert.ok(streamWrappedRows(capped, 80) <= 2 + 1, 'capped rows stay within budget (+marker)');
+    assert.ok(!capped.includes('l1'));
+  });
+
+  it('keeps a single tall last line rather than dropping everything', () => {
+    const buffer = 'short\n' + 'x'.repeat(200); // last line wraps to many rows
+    const capped = tailStreamToRows(buffer, 40, 2);
+    assert.ok(capped.startsWith('x'), 'keeps the (tall) last line even when it exceeds the cap');
+    assert.ok(!capped.includes('short'));
+  });
+});
 
 describe('layoutForHeight — invariant: dynamic region <= viewport across all heights', () => {
   it('never plans more rows than the viewport allows, for many goal shapes × heights', () => {

@@ -15,6 +15,34 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   resumed goal's contract from the persisted `workTrace` (niche: the in-run contract
   is already kept in memory; only cross-session resume benefits). Optional.
 
+## [3.29.2]
+
+### Fixed — reliability hardening from a full end-to-end audit
+- **The chat could "get stuck" with a spinning cursor and lost output.** If the
+  model event stream threw mid-turn (an internal invariant, a store/ledger
+  rejection), the renderer skipped its cleanup — the spinner's timer leaked and
+  repainted forever and held-back prose was lost. Spinner-stop + final flush are
+  now in a `finally`, guaranteed on both normal completion and a thrown stream
+  (the error still propagates so the turn reports `[error]`). Applies to both the
+  Ink and legacy render paths.
+- **Long streaming answers could re-introduce the scrollback "double-box" glitch.**
+  The live answer region was rendered without the height cap the layout planner
+  computes, so an answer taller than the viewport overflowed and Ink re-emitted it
+  into scrollback. The live region is now truncated to its height budget (newest
+  lines kept, like a terminal scrolling up).
+- **The UI now tracks terminal resizes.** Dimensions were sampled once at mount;
+  after a resize the layout cap and composer width went stale. A SIGWINCH listener
+  now re-measures (and recovers a 0/1-column PTY).
+- **A render error no longer wedges the terminal.** A new error boundary catches a
+  render/reducer throw, restores cooked mode, resolves any pending key read, closes
+  the reader, and shows a concise `[error] interface crashed: …` line — instead of
+  leaving stdin stuck in raw mode.
+- **A corrupt conversation store no longer crashes the menu mid-chat.** Every
+  per-turn history load (normal turn, question answer, goal loop, post-login retry)
+  now degrades fail-soft to an empty thread with a one-line notice.
+- **No file-descriptor leak on a failed interactive spawn.** If spawning the vendor
+  child throws synchronously, the `/dev/tty` fd opened for it is now always closed.
+
 ## [3.29.1]
 
 ### Fixed — interactive sign-in / passthrough now reaches the terminal in pipe-stdin shells

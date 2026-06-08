@@ -570,7 +570,8 @@ export async function renderStream(
     spinnerActive = true;
   }
 
-  for await (const ev of events) {
+  try {
+    for await (const ev of events) {
     switch (ev.type) {
       case 'classified': {
         // Only emit the classifier metadata line in debug mode — it's useful for
@@ -954,12 +955,19 @@ export async function renderStream(
         break;
       }
     }
+    }
+  } finally {
+    // Guaranteed cleanup on BOTH the normal end-of-stream AND a thrown event
+    // stream (orchestrate's invariant throws, an awaited store/ledger rejection):
+    // stop the spinner so its setInterval can't leak and repaint forever, and
+    // flush any held-back prose so it is never lost. Both are idempotent
+    // (stopSpinner no-ops when inactive; EnvelopeFilter.flush no-ops once
+    // exhausted), so the normal-path flush in the `final` case above is not
+    // double-emitted. The error (if any) re-propagates after this block so
+    // runTask still sees it and prints `[error]`.
+    stopSpinner();
+    prose.flush();
   }
-
-  // Safety: ensure the spinner is stopped and any buffered prose is flushed if
-  // the stream ended without a terminal event.
-  stopSpinner();
-  prose.flush();
 
   const rl = [...rateLimitedProviders];
   if (finalEvent !== undefined) {

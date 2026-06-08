@@ -19,6 +19,8 @@ import { Box, Static, Text, useInput, useStdout } from 'ink';
 import { InputBox, createInputBoxBridge, type InputBoxBridge } from './InputBox.js';
 import { Stream, CommittedLine } from './Stream.js';
 import { StatusBlock } from './StatusBlock.js';
+import { layoutForHeight, streamWrappedRows, tailStreamToRows } from './layout.js';
+import { backfillTerminalSize } from './mount.js';
 import type { TranscriptLine, UiState } from './state.js';
 
 export interface InputBoxInfo {
@@ -212,6 +214,67 @@ export function createInkAppBridge(): InkAppBridge {
   return bridge;
 }
 
+// ---------------------------------------------------------------------------
+// ErrorBoundary — keep a render/reducer throw from leaving the TTY in raw mode.
+// ---------------------------------------------------------------------------
+
+interface ErrorBoundaryProps {
+  /** The teardown to run on a caught render error — mirrors mount.tsx's unmount:
+   *  resolve any pending readKey with '\x03', close the reader (resolve nextLine
+   *  waiters with null), and restore cooked mode. Best-effort; never throws. */
+  readonly onError: (error: Error) => void;
+  /** Emit colour in the fallback line (mirrors OutputSink.color). Default true. */
+  readonly color?: boolean;
+  readonly children?: React.ReactNode;
+}
+
+interface ErrorBoundaryState {
+  readonly error: Error | null;
+}
+
+/**
+ * A minimal React error boundary around the App body. If `reduce()` or any view
+ * throws during render, Ink would otherwise unmount UNCAUGHT — the pending
+ * readKey() resolver would never resolve and reader.close() would never run,
+ * leaving stdin in raw mode and any awaiting read hung. This boundary catches the
+ * throw, renders a concise fallback line, and invokes the SAME teardown the
+ * unmount path does (via `onError`), so a render crash degrades cleanly instead of
+ * wedging the terminal.
+ */
+export class ErrorBoundary extends React.Component<ErrorBoundaryProps, ErrorBoundaryState> {
+  constructor(props: ErrorBoundaryProps) {
+    super(props);
+    this.state = { error: null };
+  }
+
+  static getDerivedStateFromError(error: Error): ErrorBoundaryState {
+    return { error };
+  }
+
+  override componentDidCatch(error: Error): void {
+    // Run the unmount-path teardown so the TTY is restored and no reader hangs.
+    try {
+      this.props.onError(error);
+    } catch {
+      /* teardown is best-effort — never re-throw out of the boundary */
+    }
+  }
+
+  override render(): React.ReactNode {
+    const { error } = this.state;
+    if (error !== null) {
+      const color = this.props.color ?? true;
+      const message = error.message || String(error);
+      return (
+        <Box>
+          <Text {...(color ? { color: 'red' as const } : {})}>{`[error] interface crashed: ${message}`}</Text>
+        </Box>
+      );
+    }
+    return this.props.children;
+  }
+}
+
 export interface AppProps {
   readonly bridge: InkAppBridge;
   /** Emit ANSI colour in the input box (mirrors OutputSink.color). Default true. */
@@ -229,6 +292,15 @@ export interface AppProps {
    * Omitted in tests → no fabricated elapsed.
    */
   readonly clock?: (() => number) | undefined;
+  /**
+   * Injected by mount.tsx: the part of the unmount-path teardown the React tree
+   * cannot do itself — close the LineReader (resolve every pending/future
+   * nextLine() with null) and unmount the Ink instance. The {@link ErrorBoundary}
+   * calls this after it has restored cooked mode + resolved any pending readKey,
+   * so a render/reducer throw tears down exactly like a normal unmount. Omitted in
+   * tests → the boundary still restores the TTY but skips reader/instance teardown.
+   */
+  readonly onFatalError?: ((error: Error) => void) | undefined;
 }
 
 /**
@@ -295,12 +367,47 @@ function KeyCapture({
 }
 
 /**
- * The Ink chat app: a write-once `<Static>` transcript above a pinned, real
+ * The Ink chat app, wrapped in an {@link ErrorBoundary} so a render/reducer throw
+ * restores the TTY (cooked mode, resolved readKey, closed reader) instead of
+ * leaving stdin wedged in raw mode. The boundary's teardown mirrors mount.tsx's
+ * unmount path: resolve any pending readKey with '\x03' + restore cooked mode here
+ * (the bits the React tree owns), then delegate reader.close()/instance.unmount()
+ * to the injected `onFatalError`.
+ */
+export function App(props: AppProps): React.ReactElement {
+  const { bridge, color = true, onFatalError } = props;
+  const onBoundaryError = (error: Error): void => {
+    // 1. Resolve a pending single-key read so the awaiting readMenuKey/confirm does
+    //    not orphan and hang forever (mount.tsx unmount M1). Null the resolver
+    //    BEFORE invoking so a double-resolve is a safe no-op.
+    const pendingKey = bridge._keyResolver;
+    bridge._keyResolver = null;
+    if (pendingKey != null) pendingKey('\x03');
+    // 2. Restore cooked mode via Ink's stdin control (never process.stdin directly),
+    //    if one is attached — so the terminal is not left in raw mode.
+    try {
+      bridge.stdinControl?.setRawMode(false);
+    } catch {
+      /* best-effort */
+    }
+    // 3. Delegate the rest of the unmount-path teardown (reader.close() + Ink
+    //    instance.unmount()) to the mount boundary.
+    onFatalError?.(error);
+  };
+  return (
+    <ErrorBoundary onError={onBoundaryError} color={color}>
+      <AppBody {...props} />
+    </ErrorBoundary>
+  );
+}
+
+/**
+ * The Ink chat app body: a write-once `<Static>` transcript above a pinned, real
  * `<InputBox>` editor (cursor movement, history, multiline-compose, queued
  * indicator). The transcript region is unchanged from Step 1; all input editing
  * now lives in {@link InputBox}.
  */
-export function App({
+function AppBody({
   bridge,
   color = true,
   isTty = true,
@@ -320,6 +427,11 @@ export function App({
   // inactive and <KeyCapture> consumes the next key (see bridge.readKey()).
   const [awaitingKey, setAwaitingKey] = useState(false);
   const [inputInfo, setInputInfo] = useState<InputBoxInfo | null>(null);
+  // Bumped on every SIGWINCH (terminal resize). Ink's useStdout does NOT subscribe
+  // to 'resize', so without this the cached columns/rows below would go stale after
+  // a resize — the layout cap + InputBox width would never re-measure. The counter
+  // is read in the render body so a bump forces a re-render that re-reads stdout.
+  const [, setResizeNonce] = useState(0);
   const inputInfoText = formatInputBoxInfo(inputInfo);
   const liveColumns = columns ?? stdout.columns ?? process.stdout.columns ?? 80;
   const liveRows = rows ?? stdout.rows ?? process.stdout.rows ?? 24;
@@ -340,6 +452,24 @@ export function App({
       bridge._setAwaitingKey = undefined;
     };
   }, [bridge]);
+
+  // Subscribe to terminal resizes (SIGWINCH). Ink's useStdout does not, so after a
+  // resize the cached liveColumns/liveRows (read once per render above) go stale —
+  // the layout cap and InputBox width would never re-measure. On each resize we
+  // re-apply backfillTerminalSize (so a resize down to columns 0/1, common under
+  // `script`/odd PTYs, recovers to a sane 80×24) and bump a nonce to force ONE
+  // re-render that re-reads stdout. The bump is a no-op idempotent state set guarded
+  // by the listener firing only on real resize events, so there is no render loop.
+  useEffect(() => {
+    const onResize = (): void => {
+      backfillTerminalSize(stdout);
+      setResizeNonce((n) => n + 1);
+    };
+    stdout.on('resize', onResize);
+    return () => {
+      stdout.off('resize', onResize);
+    };
+  }, [stdout]);
 
   // Deliver exactly one captured key to the pending readKey() resolver, then exit
   // capture mode so the InputBox editor resumes. Guards against a double-fire (the
@@ -370,6 +500,16 @@ export function App({
   if (uiState !== null) {
     const committed: Array<{ readonly line: TranscriptLine; readonly key: number }> =
       uiState.committed.map((line, index) => ({ line, key: index }));
+    // Cap the live <Stream> to the layout's height budget (scrollback-dup guard):
+    // measure the buffer's TRUE wrapped-row count at the live width, feed it into
+    // the SAME layoutForHeight planner the StatusBlock uses (so the budget is
+    // accurate), then render only the LAST `streamCap` wrapped rows. An empty
+    // buffer → 0 rows → renders nothing; a buffer that fits → streamCap >= rows →
+    // rendered whole. This keeps the always-visible dynamic region <= the viewport
+    // so Ink never re-emits the overflow into the scrollback on every repaint.
+    const streamLines = streamWrappedRows(uiState.stream.buffer, liveColumns);
+    const plan = layoutForHeight(uiState, liveRows, streamLines);
+    const cappedStreamBuffer = tailStreamToRows(uiState.stream.buffer, liveColumns, plan.streamCap);
     return (
       <Box flexDirection="column">
         <Static items={committed}>
@@ -379,9 +519,10 @@ export function App({
           state={uiState}
           color={color}
           rows={liveRows}
+          streamLines={streamLines}
           {...(clock !== undefined ? { clock } : {})}
         />
-        <Stream buffer={uiState.stream.buffer} color={color} />
+        <Stream buffer={cappedStreamBuffer} color={color} />
         <InputBox
           bridge={bridge.input}
           color={color}

@@ -432,6 +432,26 @@ export function mountInk(opts: InkMountOptions): InkMountHandle {
   const reader = createInkLineReader(bridge);
   const renderTurn = createTurnDriver(store, { color: opts.color, isTty: opts.isTty });
 
+  // The ErrorBoundary's teardown needs reader.close() + instance.unmount(), but the
+  // Ink instance doesn't exist until render() returns. A forward-declared holder
+  // lets the App's onFatalError reach it once it's assigned (the boundary only
+  // fires on a later render throw, by which time instance is set).
+  let inkInstance: ReturnType<typeof render> | null = null;
+  const onFatalError = (_error: Error): void => {
+    // Resolve every pending/future nextLine() with null and tear down the React
+    // tree — the same teardown unmount() runs. Best-effort; never re-throws.
+    try {
+      reader.close();
+    } catch {
+      /* best-effort */
+    }
+    try {
+      inkInstance?.unmount();
+    } catch {
+      /* best-effort */
+    }
+  };
+
   const instance = render(
     <App
       bridge={bridge}
@@ -440,6 +460,7 @@ export function mountInk(opts: InkMountOptions): InkMountHandle {
       {...(typeof process.stdout.columns === 'number' ? { columns: process.stdout.columns } : {})}
       {...(typeof process.stdout.rows === 'number' ? { rows: process.stdout.rows } : {})}
       clock={() => Date.now()}
+      onFatalError={onFatalError}
     />,
     {
       // Pass a custom stdin (e.g. the /dev/tty ReadStream) when supplied so Ink
@@ -450,6 +471,7 @@ export function mountInk(opts: InkMountOptions): InkMountHandle {
         : {}),
     },
   );
+  inkInstance = instance;
 
   return {
     out,

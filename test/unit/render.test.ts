@@ -1745,3 +1745,72 @@ describe('renderStream — inline markdown over a split-across-deltas stream', (
     assert.ok(!/\x1b\[/.test(joined), 'no ANSI escapes in pipe');
   });
 });
+
+// ---------------------------------------------------------------------------
+// item 1 — guaranteed cleanup (stopSpinner + final prose flush) on a THROWN
+// event stream. The finally block must run so held-back prose isn't lost and the
+// spinner's setInterval can't leak; the error must STILL propagate so runTask
+// prints [error].
+// ---------------------------------------------------------------------------
+
+describe('renderStream — cleanup on a thrown event stream (item 1)', () => {
+  it('flushes held-back prose and re-throws when the stream throws mid-turn', async () => {
+    const sink = makeSink();
+    async function* throwingStream(): AsyncIterable<CoreEvent> {
+      yield { type: 'tier-start', tier: 'ic', provider: 'claude', model: 'opus', attempt: 0 } as CoreEvent;
+      // Prose is buffered by the EnvelopeFilter (a trailing fragment is held back
+      // until flush). It must survive the throw via the finally flush.
+      yield { type: 'provider-event', event: { type: 'text', delta: 'Partial answer held back' } } as CoreEvent;
+      throw new Error('orchestrate invariant violated: synthetic');
+    }
+
+    await assert.rejects(
+      () => renderStream(throwingStream(), sink),
+      /orchestrate invariant violated/,
+      'the error must propagate so runTask sees it and prints [error]',
+    );
+
+    const joined = sink.buf.join('');
+    assert.ok(
+      joined.includes('Partial answer held back'),
+      `held-back prose must be flushed in the finally even on a throw, got:\n${joined}`,
+    );
+  });
+
+  it('does not double-flush prose when the stream ends normally', async () => {
+    const sink = makeSink();
+    const events: CoreEvent[] = [
+      { type: 'tier-start', tier: 'ic', provider: 'claude', model: 'opus', attempt: 0 } as CoreEvent,
+      { type: 'provider-event', event: { type: 'text', delta: 'Hello world.' } } as CoreEvent,
+      {
+        type: 'tier-done',
+        tier: 'ic',
+        provider: 'claude',
+        model: 'opus',
+        success: true,
+        confidence: 0.9,
+        inputTokens: 10,
+        outputTokens: 5,
+        durationMs: 1,
+        attempt: 0,
+      } as CoreEvent,
+      {
+        type: 'final',
+        success: true,
+        output: 'Hello world.',
+        tier: 'ic',
+        totalCostUsd: 0,
+        sessionId: 's',
+        attempts: 1,
+        provider: 'claude',
+      } as CoreEvent,
+    ];
+    const result = await renderStream(makeStream(events), sink);
+    assert.equal(result.success, true);
+    const joined = sink.buf.join('');
+    // The prose appears exactly once (no duplication from a normal-path flush plus
+    // a finally flush).
+    const occurrences = joined.split('Hello world.').length - 1;
+    assert.equal(occurrences, 1, `prose must appear exactly once, got ${occurrences}:\n${joined}`);
+  });
+});

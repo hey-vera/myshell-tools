@@ -29,7 +29,65 @@
  */
 
 import { formatTokens } from '../../infra/insights.js';
+import { visibleLength } from '../../ui/tui.js';
 import type { GoalView, UiState } from './state.js';
+
+// ---------------------------------------------------------------------------
+// Live <Stream> wrapping — how many terminal ROWS the live answer buffer
+// occupies at a given width, and how to truncate it to its LAST K rows.
+// ---------------------------------------------------------------------------
+
+/** The streaming `● ` marker the <Stream> view prepends to the buffer's first
+ *  visual line (cyan dot + space). It costs 2 columns on that first row only. */
+const STREAM_MARKER_COLUMNS = 2;
+
+/**
+ * Count the terminal ROWS the live <Stream> buffer wraps to at `columns` width,
+ * accounting for the `● ` marker on the very first row. Each `\n`-separated
+ * source line wraps to `ceil(width / columns)` rows (a blank line is one row).
+ * PURE. `columns < 1` is treated as 1 so the count never divides by zero.
+ */
+export function streamWrappedRows(buffer: string, columns: number): number {
+  if (buffer.length === 0) return 0;
+  const cols = Math.max(1, Math.floor(columns));
+  const lines = buffer.split('\n');
+  let rows = 0;
+  for (let i = 0; i < lines.length; i++) {
+    const extra = i === 0 ? STREAM_MARKER_COLUMNS : 0;
+    const width = visibleLength(lines[i] ?? '') + extra;
+    rows += Math.max(1, Math.ceil(width / cols));
+  }
+  return rows;
+}
+
+/**
+ * Truncate the live <Stream> buffer so it occupies at most `cap` wrapped rows at
+ * `columns` width, keeping the buffer's TAIL (the newest prose, like a terminal
+ * scrolling up). Returns the original buffer when it already fits, '' when `cap`
+ * is 0. Truncation is done on whole `\n`-separated source lines from the end;
+ * when even a single source line is too tall for the cap we keep that last line
+ * and let Ink wrap it (the cap is a budget guard, not a hard pixel clip). PURE.
+ */
+export function tailStreamToRows(buffer: string, columns: number, cap: number): string {
+  if (buffer.length === 0 || cap <= 0) return '';
+  const cols = Math.max(1, Math.floor(columns));
+  if (streamWrappedRows(buffer, cols) <= cap) return buffer;
+  const lines = buffer.split('\n');
+  // Accumulate source lines from the END until adding one more would exceed cap.
+  // Each line's row cost ignores the first-row marker (the marker only lands on
+  // whatever ends up being the first visible line, a small over-count that keeps
+  // us safely UNDER budget rather than over).
+  const kept: string[] = [];
+  let rows = 0;
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const lineRows = Math.max(1, Math.ceil(visibleLength(lines[i] ?? '') / cols));
+    if (kept.length > 0 && rows + lineRows > cap) break;
+    kept.unshift(lines[i] ?? '');
+    rows += lineRows;
+    if (rows >= cap) break;
+  }
+  return kept.join('\n');
+}
 
 // ---------------------------------------------------------------------------
 // Row constants

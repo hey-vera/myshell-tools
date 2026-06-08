@@ -242,7 +242,8 @@ export async function renderStreamInk(
     dispatch(action);
   }
 
-  for await (const ev of events) {
+  try {
+    for await (const ev of events) {
     if (ev.type === 'provider-event') {
       const pe = ev.event;
       if (pe.type === 'text') {
@@ -344,13 +345,19 @@ export async function renderStreamInk(
         break;
       }
     }
+    }
+  } finally {
+    // Guaranteed cleanup on BOTH the normal end-of-stream AND a thrown event
+    // stream (mirrors render.ts's finally): flush the per-tier EnvelopeFilter and
+    // drain/flush any throttled prose so nothing held back is lost even when the
+    // loop throws. All three are idempotent (flush no-ops once exhausted; drain
+    // returns '' which queueProse ignores; flushPendingProse no-ops with an empty
+    // buffer), so the normal-path flush in the `final` case is not double-emitted.
+    // The error (if any) re-propagates after this block so runTask still sees it.
+    prose.flush();
+    drainProse();
+    flushPendingProse();
   }
-
-  // Safety: stream ended without a terminal event — flush any buffered prose so
-  // nothing is lost (render.ts: prose.flush() after the loop).
-  prose.flush();
-  drainProse();
-  flushPendingProse();
 
   const rl = [...rateLimitedProviders];
   if (finalEvent !== undefined) {

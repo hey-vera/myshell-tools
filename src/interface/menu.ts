@@ -1411,8 +1411,16 @@ export async function runChatLoop(
       // Load prior history before each turn so the provider receives conversation
       // context. load() returns only the entries persisted so far — the current
       // user turn is appended by orchestrate() after this point, so there is no
-      // double-inclusion risk.
-      const priorHistory = await ctx.store.load(convId);
+      // double-inclusion risk. Fail-soft: a corrupt/unreadable store must degrade
+      // to an empty thread with a one-line dim notice, never crash runChatLoop /
+      // startMenu (matches the resume-path load guard above).
+      let priorHistory: SessionEntry[] = [];
+      try {
+        priorHistory = await ctx.store.load(convId);
+      } catch {
+        priorHistory = [];
+        out.write(dim("  Couldn't read prior history — continuing without it.\n", out.color));
+      }
 
       // Resolve the capability summary once per session (await here so the
       // synchronous buildDeps below can read the memoized value). Fail-soft → undefined.
@@ -1751,8 +1759,15 @@ export async function runChatLoop(
           questionTurns++;
 
           // Reload history (the question turn was persisted by orchestrate) and
-          // rebuild deps so the answer turn replays the full thread.
-          const answerHistory = await ctx.store.load(convId);
+          // rebuild deps so the answer turn replays the full thread. Fail-soft: a
+          // corrupt store degrades to an empty thread + a dim notice, never crashes.
+          let answerHistory: SessionEntry[] = [];
+          try {
+            answerHistory = await ctx.store.load(convId);
+          } catch {
+            answerHistory = [];
+            out.write(dim("  Couldn't read prior history — continuing without it.\n", out.color));
+          }
           const answerDeps: OrchestrateDeps = buildDeps(
             answerHistory,
             await resolveTurnMemory(answerLine),
@@ -1826,8 +1841,17 @@ export async function runChatLoop(
               out.color,
             ),
           );
+          // Fail-soft history load: a corrupt store degrades to an empty thread +
+          // a dim notice rather than crashing the goal loop / startMenu.
+          let goalHistory: SessionEntry[] = [];
+          try {
+            goalHistory = await ctx.store.load(convId);
+          } catch {
+            goalHistory = [];
+            out.write(dim("  Couldn't read prior history — continuing without it.\n", out.color));
+          }
           const goalDeps = buildDeps(
-            await ctx.store.load(convId),
+            goalHistory,
             await resolveTurnMemory(goalText),
             await resolveEnvironmentOnce(),
           );
@@ -2072,8 +2096,17 @@ export async function runChatLoop(
           // Bug 5 fix: re-detect with the freshly-authenticated env so the retry
           // deps reflect the now-signed-in provider (not the stale pre-login state).
           mutableCtx.env = await detectEnvironmentFn();
+          // Fail-soft history load: a corrupt store degrades to an empty thread +
+          // a dim notice rather than crashing the retry path / startMenu.
+          let retryHistory: SessionEntry[] = [];
+          try {
+            retryHistory = await ctx.store.load(convId);
+          } catch {
+            retryHistory = [];
+            out.write(dim("  Couldn't read prior history — continuing without it.\n", out.color));
+          }
           const retryDepsBase = buildDeps(
-            await ctx.store.load(convId),
+            retryHistory,
             await resolveTurnMemory(line),
             await resolveEnvironmentOnce(),
           );

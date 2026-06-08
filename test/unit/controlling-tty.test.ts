@@ -13,7 +13,7 @@ import { describe, it, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 
-import { resolveInteractiveChildStdin } from '../../src/infra/controlling-tty.ts';
+import { resolveInteractiveChildStdin, runInteractiveChild } from '../../src/infra/controlling-tty.ts';
 
 const realIsTTY = process.stdin.isTTY;
 const realOpenSync = fs.openSync;
@@ -81,5 +81,28 @@ describe('resolveInteractiveChildStdin', () => {
     const r = resolveInteractiveChildStdin();
     assert.equal(r.stdin, 'inherit');
     r.cleanup(); // no-op, must not throw
+  });
+});
+
+describe('runInteractiveChild — POSIX fd branch spawn-throw guard (item 6)', () => {
+  it('closes the /dev/tty fd and returns an inert handle when spawn throws synchronously', async () => {
+    if (process.platform === 'win32') return; // POSIX fd branch only
+    setStdinIsTTY(false); // force the /dev/tty fd branch (not 'inherit')
+    let closed = -1;
+    (fs as unknown as { openSync: typeof fs.openSync }).openSync = (() => 88) as typeof fs.openSync;
+    (fs as unknown as { closeSync: typeof fs.closeSync }).closeSync = ((fd: number) => {
+      closed = fd;
+    }) as typeof fs.closeSync;
+
+    // A bin containing a NUL byte makes child_process.spawn throw SYNCHRONOUSLY
+    // (ERR_INVALID_ARG_VALUE) before the exit/error handlers attach — the exact
+    // class of synchronous failure (EMFILE etc.) the guard protects against.
+    const handle = runInteractiveChild('bad\0bin', []);
+
+    // The opened /dev/tty fd must be closed via cleanup() — no fd leak.
+    assert.equal(closed, 88, 'cleanup() must close the opened /dev/tty fd on a synchronous spawn throw');
+    // done resolves to null (never rejects) and kill is a safe no-op.
+    assert.equal(await handle.done, null);
+    handle.kill(); // must not throw
   });
 });
