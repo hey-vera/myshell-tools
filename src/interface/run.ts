@@ -67,12 +67,18 @@ export async function runTask(
   // Optional render seam. Defaults to the legacy renderStream so every existing
   // caller is unchanged; the Ink path passes a renderStreamInk-backed renderer.
   render?: TurnRenderer,
+  // Optional CoreEvent producer override. Defaults to a single `orchestrate(...)`
+  // call (today's path, byte-for-byte). The bounded multi-goal SCHEDULER wiring
+  // passes its merged goalId-tagged `runSchedule(...)` stream here so the SAME
+  // renderer/return-shape drives the multi-goal StatusBlock. Purely additive: when
+  // absent, behaviour is identical to before.
+  events?: AsyncIterable<CoreEvent>,
 ): Promise<RunTaskResult> {
   try {
     const renderTurn: TurnRenderer =
       render ??
-      ((events, sink, v, ti) => renderStream(events, sink, v, undefined, ti));
-    const result = await renderTurn(orchestrate(task, deps, signal), out, verbosity, turnInput);
+      ((evs, sink, v, ti) => renderStream(evs, sink, v, undefined, ti));
+    const result = await renderTurn(events ?? orchestrate(task, deps, signal), out, verbosity, turnInput);
     return {
       code: result.success ? 0 : 1,
       ...(result.final !== undefined ? { final: result.final } : {}),

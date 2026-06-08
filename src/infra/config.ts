@@ -181,6 +181,17 @@ export interface AppConfig {
    */
   experimentalInk?: boolean;
   /**
+   * EXPERIMENTAL bounded concurrent multi-goal SCHEDULER (default off). When true
+   * (or with `MYSHELL_SCHEDULER` truthy in the environment), the /goal runner
+   * routes the confirmed goal through `runSchedule` (src/core/scheduler.ts)
+   * instead of the sequential single-goal loop. This phase decomposes to exactly
+   * ONE brain-validated GoalSpec, so live behaviour matches the sequential path;
+   * it exercises the merge/cancel seam ahead of real >1-goal decomposition. The
+   * legacy path is unchanged when this is absent/false. See
+   * src/interface/ui/scheduler-flag.ts.
+   */
+  experimentalScheduler?: boolean;
+  /**
    * Per-user "first-touch explainer shown" flags (whole-tool-finish-5.5.md §0.1).
    * Absent → nothing shown yet (each surface explains itself once on first
    * encounter). Each key flips to true the first time that surface is met.

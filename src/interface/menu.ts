@@ -126,6 +126,9 @@ import {
   resolveRawKeyInput,
 } from './menu-readline.js';
 import { inkEnabled } from './ui/flag.js';
+import { schedulerEnabled } from './ui/scheduler-flag.js';
+import { runSchedule, type GoalSpec, type RunGoalPhase } from '../core/scheduler.js';
+import { orchestrate } from '../core/orchestrate.js';
 import {
   type Confirm,
   attachChatTurnKeyListener,
@@ -890,6 +893,10 @@ export async function runChatLoop(
     taskDeps: OrchestrateDeps,
     signal: AbortSignal,
     verbosity: Verbosity,
+    // Optional CoreEvent producer override — the bounded scheduler passes its
+    // merged goalId-tagged stream here so it rides the SAME renderer + input
+    // hooks as a normal turn. Absent → the default single-orchestrate path.
+    events?: AsyncIterable<CoreEvent>,
   ): Promise<Awaited<ReturnType<typeof runTask>>> => {
     // Fresh interrupt state for THIS task (a prior turn's ESC must not leak).
     interruptedByEsc = false;
@@ -935,7 +942,7 @@ export async function runChatLoop(
       });
     }
     try {
-      return await runTask(taskLine, taskDeps, out, signal, verbosity, turnInput, inkRenderTurn);
+      return await runTask(taskLine, taskDeps, out, signal, verbosity, turnInput, inkRenderTurn, events);
     } finally {
       detachEsc();
       if (inkSetInterrupt !== undefined) inkSetInterrupt(null);
@@ -1826,6 +1833,25 @@ export async function runChatLoop(
       // ceiling and Esc. Returns true when the outer chat loop should break
       // (Ctrl+C → menu/exit). Closes over the per-turn buildDeps + the shared
       // currentAc/control.exit/control.menu/control.result flags.
+      //
+      // NEXT PHASE: the BOUNDED CONCURRENT MULTI-GOAL SCHEDULER wires in HERE.
+      // When `schedulerEnabled(process.env, mutableCtx.config)` is true (see
+      // src/interface/ui/scheduler-flag.ts) AND a confirmed plan has been
+      // decomposed into >1 brain-validated GoalSpec, this single-goal sequential
+      // loop is replaced by a call to `runSchedule(goalSpecs, deps, signal)`
+      // (src/core/scheduler.ts): build `deps.runGoal = (spec, sig) =>
+      // orchestrate(buildGoalTask(spec.title, 0, contract), buildDeps(...), sig)`,
+      // pass `deps.authedProviders` from the env, `deps.sleep`/`deps.now` from
+      // ctx.clock, and thread `currentAc.signal` for ESC fan-out. The merged
+      // goalId-tagged CoreEvent stream is fed to the SAME renderStreamInk path
+      // this loop already uses, so the multi-goal StatusBlock renders it.
+      //
+      // HARD CONSTRAINT (owner): goals promoted from a PARKED state MUST be
+      // re-validated by the brain BEFORE being assembled into goalSpecs here —
+      // the scheduler runs specs verbatim and has no path that auto-executes a
+      // stale parked roadmap. The decomposition/validation step (a separate next
+      // phase) owns that gate. Until that lands, the flag is dark and this
+      // sequential loop is the only goal runner.
       const runGoalLoop = async (goalText: string): Promise<boolean> => {
         let goalContract = capContract({ version: 1, objective: goalText });
         // Title a still-untitled conversation from the goal (no-op if already set).
@@ -1833,6 +1859,90 @@ export async function runChatLoop(
         if (gMeta !== undefined && gMeta.title.trim().length === 0) {
           await ctx.store.rename(convId, goalText.length <= 80 ? goalText : goalText.slice(0, 80));
         }
+
+        // ---- FLAG-GATED: bounded concurrent multi-goal SCHEDULER --------------
+        // DEFAULT OFF. When the user has opted in (MYSHELL_SCHEDULER / config), run
+        // the goal through `runSchedule` instead of the sequential loop. This phase
+        // DECOMPOSES TO EXACTLY ONE brain-validated GoalSpec (the confirmed goal the
+        // user just typed) — so the live behaviour matches today's single-goal path
+        // (one goal, one phase, the same renderStreamInk path), only routed through
+        // the scheduler's merge/cancel machinery so the seam is exercised end-to-end
+        // ahead of real >1-goal decomposition.
+        //
+        // HARD CONSTRAINT (owner): the scheduler runs specs VERBATIM. We pass ONLY
+        // the goal the user explicitly confirmed THIS turn — there is NO path here
+        // that promotes a parked/stale roadmap into a spec. Multi-goal decomposition
+        // (a separate next phase) must brain-revalidate any parked goal BEFORE it
+        // becomes a GoalSpec; this single-spec wiring deliberately does not.
+        if (schedulerEnabled(process.env, mutableCtx.config)) {
+          const authedProviders: ProviderId[] = [];
+          if (mutableCtx.env.claude.authenticated) authedProviders.push('claude');
+          if (mutableCtx.env.codex.authenticated) authedProviders.push('codex');
+          if (mutableCtx.env.opencode.authenticated) authedProviders.push('opencode');
+
+          // Decompose-to-1: the single brain-validated goal the user confirmed.
+          const goalSpecs: GoalSpec[] = [{ id: 'g0', title: goalText }];
+
+          // Per-goal phase runner: ONE orchestrate() per phase (orchestrate stays
+          // the per-phase engine, untouched). Reloads history per phase like the
+          // sequential loop so the model sees its own progress.
+          const runGoal: RunGoalPhase = (spec, sig) => {
+            const phaseDeps = (async (): Promise<OrchestrateDeps> => {
+              let hist: SessionEntry[] = [];
+              try {
+                hist = await ctx.store.load(convId);
+              } catch {
+                hist = [];
+              }
+              return buildDeps(
+                hist,
+                await resolveTurnMemory(spec.title),
+                await resolveEnvironmentOnce(),
+              );
+            })();
+            // Wrap the async-deps resolution into the generator (orchestrate needs
+            // resolved deps); keep the per-phase task contracted like the loop.
+            return (async function* (): AsyncGenerator<CoreEvent> {
+              const d = await phaseDeps;
+              const task = buildGoalTask(spec.title, 0, goalContract);
+              yield* orchestrate(
+                task,
+                { ...d, workContract: goalContract, goalTurn: true },
+                sig,
+              );
+            })();
+          };
+
+          const schedAc = new AbortController();
+          currentAc = schedAc;
+          out.write(
+            dim('\n  Working autonomously (concurrent scheduler). Ctrl+C / Esc to stop.\n\n', out.color),
+          );
+          try {
+            await runTaskWithInputHooks(
+              goalText,
+              buildDeps([]),
+              schedAc.signal,
+              mutableCtx.config.verbosity ?? 'normal',
+              // Feed the merged goalId-tagged scheduler stream to the SAME renderer.
+              runSchedule(
+                goalSpecs,
+                { runGoal, authedProviders },
+                schedAc.signal,
+              ),
+            );
+          } finally {
+            currentAc = null;
+          }
+          if (control.exit) { control.result = 'exit'; return true; }
+          if (control.menu) { control.result = 'menu'; return true; }
+          if (interruptedByEsc && queuedTurns.length > 0) {
+            renderDiscardedQueue(out, queuedTurns.length, 'interrupt');
+            queuedTurns.length = 0;
+          }
+          return false;
+        }
+
         // Turns are the honest bound on a subscription (no per-token bill to cap).
         const ceilings: GoalCeilings = { maxIterations: DEFAULT_MAX_GOAL_ITERATIONS };
         out.write(

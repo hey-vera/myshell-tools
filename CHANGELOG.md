@@ -15,6 +15,11 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   resumed goal's contract from the persisted `workTrace` (niche: the in-run contract
   is already kept in memory; only cross-session resume benefits). Optional.
 
+## [3.31.0]
+
+### Internal — bounded concurrent multi-goal scheduler (default-off flag)
+- Landed the engine that will run several goals at once within your subscription's real ceiling (2–4 active, the rest queued), behind a default-off experimental flag — no live behavior change yet. It fans out ESC cancellation to all active goals, isolates a failing goal from its siblings, recovers concurrency after rate-limit cooldowns, and reports honest per-goal progress. Adversarially reviewed (caught + fixed a hang-on-ESC and a sibling-leak-on-throw) and proven not to hang or leak. The visible multi-goal experience (plan decomposition + confirm panel) builds on this next.
+
 ## [3.30.1]
 
 ### Internal — multi-goal display foundation (no user-visible change yet)
