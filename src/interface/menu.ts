@@ -349,9 +349,10 @@ async function promptForAuthBeforeChat(
   detectEnvironmentFn: () => Promise<EnvironmentStatus>,
   confirm: Confirm,
   suspendStdin?: () => () => void,
-  // Force a line read for the provider-pick keypress on the Ink path (Ink owns
-  // the raw TTY). Default false → the legacy single-key pick is unchanged.
-  forceLineKey = false,
+  // Single-key reader for the provider-pick keypress on the Ink path (read ONE key
+  // through Ink's own input pipeline instead of the raw TTY, which Ink owns).
+  // Absent → the legacy single-key pick is unchanged.
+  inkReadKey?: () => Promise<string>,
 ): Promise<boolean> {
   if (hasAuthenticatedProvider(mutableCtx.env)) return true;
 
@@ -382,7 +383,7 @@ async function promptForAuthBeforeChat(
 
   const choiceText = choices.map((c) => `[${c.key}] ${c.label}`).join('  ');
   out.write(`\nNo provider signed in yet. Sign in now? ${choiceText}  [Enter] back\n> `);
-  const key = await readMenuKey(out, readLine, undefined, forceLineKey);
+  const key = await readMenuKey(out, readLine, undefined, false, inkReadKey);
   if (key === null || key.length === 0) return false;
 
   const choice = choices.find((c) => c.key === key);
@@ -2296,10 +2297,13 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
   }
 
   // Single-key yes/no confirm (Enter = default, y/n decide instantly on a TTY)
-  // with a line-mode fallback for piped input / tests. On the Ink path force
-  // line-mode: Ink owns the raw TTY, so a single-key raw read would fight it —
-  // the confirm resolves from the Ink reader's submitted line instead.
-  const confirm = makeConfirm(out, readLine, ctx.confirm, inkHandle !== null);
+  // with a line-mode fallback for piped input / tests. On the Ink path the confirm
+  // reads a SINGLE key through Ink's own input pipeline (inkHandle.readKey) so y/n
+  // decide instantly — matching the legacy feel — instead of grabbing the raw TTY
+  // (which would fight Ink). forceLine stays false; inkReadKey owns the Ink path.
+  const inkReadKey: (() => Promise<string>) | undefined =
+    inkHandle !== null ? () => inkHandle.readKey() : undefined;
+  const confirm = makeConfirm(out, readLine, ctx.confirm, false, inkReadKey);
   // Lets the login flow release stdin while an inherited-stdio child (e.g.
   // `claude auth login`) owns the terminal, then take it back. Returns the
   // resume callback. Only wired for the real reader — the injected/test path
@@ -2468,9 +2472,10 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
       out.write('> ');
       // Single keypress on a real TTY (press the letter, no Enter); line read in
       // pipes/tests. '' = Enter/no-op → re-render; null = Ctrl-C/EOF → exit. On
-      // the Ink path force a line read (Ink owns the raw TTY; the menu choice is
-      // the next submitted line — type the letter + Enter).
-      const key = await readMenuKey(out, readLine, undefined, inkHandle !== null);
+      // the Ink path read ONE key through Ink's own input pipeline (inkReadKey) so
+      // menu nav is instant single-key — matching the legacy feel — without
+      // grabbing the raw TTY (which would fight Ink).
+      const key = await readMenuKey(out, readLine, undefined, false, inkReadKey);
 
       // ---- EOF / close — exit gracefully (FIX 1: no ERR_USE_AFTER_CLOSE) ----
       if (key === null) {
@@ -2489,7 +2494,7 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
 
       // ---- [n] New conversation -----------------------------------------------
       if (key === 'n') {
-        if (!(await promptForAuthBeforeChat(out, readLine, mutableCtx, loginFn, detectEnvironmentFn, confirm, suspendStdin, inkHandle !== null))) {
+        if (!(await promptForAuthBeforeChat(out, readLine, mutableCtx, loginFn, detectEnvironmentFn, confirm, suspendStdin, inkReadKey))) {
           continue;
         }
         // No up-front "name your chat" prompt — a real chat shell just opens and
@@ -2508,7 +2513,7 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
         const all = await ctx.store.list();
         const latest = all[0];
         if (latest !== undefined) {
-          if (!(await promptForAuthBeforeChat(out, readLine, mutableCtx, loginFn, detectEnvironmentFn, confirm, suspendStdin, inkHandle !== null))) {
+          if (!(await promptForAuthBeforeChat(out, readLine, mutableCtx, loginFn, detectEnvironmentFn, confirm, suspendStdin, inkReadKey))) {
             continue;
           }
           const chatResult = await runChatLoop(ctx, mutableCtx, latest.id, out, readLine, loginFn, detectEnvironmentFn, confirm, suspendStdin, lineReader, inkRenderTurn);
@@ -2525,7 +2530,7 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
       if (!Number.isNaN(digit) && digit >= 1 && digit <= 9) {
         const target = metas[digit - 1];
         if (target !== undefined) {
-          if (!(await promptForAuthBeforeChat(out, readLine, mutableCtx, loginFn, detectEnvironmentFn, confirm, suspendStdin, inkHandle !== null))) {
+          if (!(await promptForAuthBeforeChat(out, readLine, mutableCtx, loginFn, detectEnvironmentFn, confirm, suspendStdin, inkReadKey))) {
             continue;
           }
           const chatResult = await runChatLoop(ctx, mutableCtx, target.id, out, readLine, loginFn, detectEnvironmentFn, confirm, suspendStdin, lineReader, inkRenderTurn);

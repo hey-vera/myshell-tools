@@ -330,6 +330,14 @@ export interface InkMountHandle {
   readonly out: OutputSink;
   readonly reader: LineReader;
   /**
+   * Read EXACTLY ONE keypress through Ink's own input pipeline (the menu/confirm
+   * single-key nav on the Ink path). Resolves with a legacy-`readSingleKey`-shaped
+   * string (`'n'`, `'\r'`, `'\x1b'`, `'\x03'`, …) so `readMenuKey`/`confirmViaKey`
+   * interpret it unchanged. The InputBox editor goes inactive for the duration and
+   * resumes cleanly after exactly one key. See {@link InkAppBridge.readKey}.
+   */
+  readKey(): Promise<string>;
+  /**
    * Drive one model turn's CoreEvent stream into the reducer-backed transcript
    * (the STEP-3b streaming path). Same return shape as render.ts `renderStream`.
    */
@@ -393,6 +401,7 @@ export function mountInk(opts: InkMountOptions): InkMountHandle {
   return {
     out,
     reader,
+    readKey: () => bridge.readKey(),
     renderTurn,
     waitUntilExit: async () => {
       await instance.waitUntilExit();

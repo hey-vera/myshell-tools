@@ -189,11 +189,32 @@ export async function readMenuKey(
   readLine: () => Promise<string | null>,
   stdin: KeyInputStream = process.stdin as unknown as KeyInputStream,
   // When true, skip raw-keypress reads entirely and resolve the choice from a
-  // full line read. Used by the Ink path, where Ink OWNS process.stdin in raw
-  // mode: grabbing the TTY for a single raw read would fight Ink's input hook.
-  // Default false → the legacy single-keypress path is byte-identical.
+  // full line read. Used by the Ink path ONLY when no single-key reader is wired
+  // (the fallback). Default false → the legacy single-keypress path is byte-identical.
   forceLine = false,
+  // Single-key reader for the Ink path. When provided, read ONE key through Ink's
+  // own input pipeline (resolving a legacy-readSingleKey-shaped string) instead of
+  // grabbing the raw TTY (which would fight Ink). The interpretation below is the
+  // SAME as the legacy raw read, so menu nav feels identical. When absent, the
+  // legacy path is unchanged (byte-identical).
+  inkReadKey?: () => Promise<string>,
 ): Promise<string | null> {
+  if (inkReadKey !== undefined) {
+    try {
+      const raw = await inkReadKey();
+      if (raw === '\x03' || raw === '\x04') return null; // Ctrl-C / Ctrl-D → exit
+      if (raw === '\r' || raw === '\n') return ''; // bare Enter → no-op (re-render)
+      if (raw.length === 1 && raw >= ' ') {
+        const choice = raw.toLowerCase();
+        out.write(choice + '\n'); // echo (Ink's editor was inactive for this read)
+        return choice;
+      }
+      return ''; // arrows / escape / other non-printables → no-op
+    } catch {
+      // Any Ink read hiccup falls back to a full line read (type the letter + Enter).
+      return normalizeMenuKey(await readLine());
+    }
+  }
   if (forceLine) return normalizeMenuKey(await readLine());
   const inputs = rawKeyInputs(out, stdin);
   if (inputs.length === 0) return normalizeMenuKey(await readLine());
@@ -231,14 +252,27 @@ export function makeConfirm(
   readLine: () => Promise<string | null>,
   injected?: Confirm,
   // When true, never do a single-key raw read — confirm from a full line read.
-  // The Ink path passes this for the same reason as readMenuKey's forceLine:
-  // Ink owns the raw TTY. Default false → legacy single-key confirm unchanged.
+  // The Ink path passes this ONLY when no single-key reader is wired (the
+  // fallback). Default false → legacy single-key confirm unchanged.
   forceLine = false,
+  // Single-key reader for the Ink path. When provided, the confirm decides on a
+  // SINGLE keypress read through Ink's own input pipeline (y/n decide instantly,
+  // Enter takes the default) — matching the legacy single-key confirm feel — using
+  // the SAME interpretYesNoKey core. When absent, the legacy path is unchanged.
+  inkReadKey?: () => Promise<string>,
 ): Confirm {
   if (injected !== undefined) return injected;
 
   return async (defaultYes: boolean, opts?: { requireExplicit?: boolean }): Promise<boolean> => {
     const requireExplicit = opts?.requireExplicit ?? false;
+    if (inkReadKey !== undefined) {
+      try {
+        return await confirmViaInkKey(out, defaultYes, inkReadKey, requireExplicit);
+      } catch {
+        // Any Ink read hiccup falls back to a full line read.
+      }
+      return parseYesNo(normalizeMenuKey(await readLine()), defaultYes, requireExplicit);
+    }
     for (const input of (forceLine ? [] : rawKeyInputs(out))) {
       try {
         return await confirmViaKey(out, defaultYes, input, requireExplicit);
@@ -249,4 +283,32 @@ export function makeConfirm(
     }
     return parseYesNo(normalizeMenuKey(await readLine()), defaultYes, requireExplicit);
   };
+}
+
+/**
+ * The Ink twin of {@link confirmViaKey}: drive a single-key yes/no confirm whose
+ * keystrokes come from Ink's own input pipeline (`inkReadKey`, which resolves a
+ * legacy-`readSingleKey`-shaped string) instead of a raw `process.stdin`. Same
+ * decision core ({@link interpretYesNoKey}), same echo + Ctrl-C → SIGINT
+ * semantics, so a confirm on the Ink path behaves exactly like the legacy one.
+ */
+async function confirmViaInkKey(
+  out: OutputSink,
+  defaultYes: boolean,
+  inkReadKey: () => Promise<string>,
+  requireExplicit: boolean,
+): Promise<boolean> {
+  for (;;) {
+    const key = await inkReadKey();
+    const verdict = interpretYesNoKey(key, defaultYes, requireExplicit);
+    if (verdict === 'ignore') continue;
+    if (verdict === 'abort') {
+      out.write('\n');
+      process.kill(process.pid, 'SIGINT');
+      return defaultYes;
+    }
+    const yes = verdict === 'yes';
+    out.write((yes ? 'y' : 'n') + '\n');
+    return yes;
+  }
 }
