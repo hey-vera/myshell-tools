@@ -22,8 +22,8 @@ import assert from 'node:assert/strict';
 import {
   pickCopyText,
   renderConversationMarkdown,
-  cleanAssistantText,
 } from '../../src/interface/render.ts';
+import { cleanAssistantText } from '../../src/interface/stream-filter.ts';
 import {
   runCopyCommand,
   runExportCommand,

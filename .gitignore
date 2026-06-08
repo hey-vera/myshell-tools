@@ -12,3 +12,6 @@ coverage
 
 # git worktrees
 .wt/
+
+# Claude agent worktrees (isolated, throwaway)
+.claude/worktrees/
