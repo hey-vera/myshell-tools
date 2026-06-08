@@ -130,10 +130,33 @@ export const SAFETY_MARGIN_ROWS = 1;
 // Plan shape
 // ---------------------------------------------------------------------------
 
+/**
+ * One row in the GOALS panel body (multi-goal collapse). The body is an ORDERED
+ * list of these, summing to a known row count so the cap invariant still holds:
+ *  - `card`   : a goal rendered as a full card (header + one row per agent).
+ *  - `header` : a goal collapsed to a single header line (agent rows dropped) —
+ *               used for running/done goals under height pressure.
+ *  - `coalesced-queued` : ONE line summarising N queued goals
+ *               (`○ a · ○ b · +K more queued`).
+ *  - `coalesced-done`   : ONE line summarising N done/failed goals
+ *               (`✓ N done`), used under pressure.
+ */
+export type GoalRow =
+  | { readonly kind: 'card'; readonly goal: GoalView }
+  | { readonly kind: 'header'; readonly goal: GoalView }
+  | { readonly kind: 'coalesced-queued'; readonly goals: readonly GoalView[] }
+  | { readonly kind: 'coalesced-done'; readonly done: number; readonly failed: number };
+
 /** How the GOALS panel is laid out for the available height. */
 export type GoalsMode =
-  /** Every goal as a full card with its agent rows. */
-  | { readonly kind: 'full'; readonly goals: readonly GoalView[] }
+  /**
+   * The bordered GOALS panel. `rows` is the ORDERED body plan (cards, collapsed
+   * headers, coalesced queued/done lines); `goals` is the subset rendered as FULL
+   * cards (kept for back-compat with callers/tests that read the expanded set).
+   * When everything fits, `rows` is one `card` per goal and `goals` is every goal
+   * — byte-for-byte today's behaviour.
+   */
+  | { readonly kind: 'full'; readonly goals: readonly GoalView[]; readonly rows: readonly GoalRow[] }
   /** A single summary row replacing the cards (height pressure). */
   | { readonly kind: 'compact'; readonly summary: string }
   /** No room for the panel at all (extreme pressure) — only the status line shows. */
@@ -168,10 +191,127 @@ export function goalCardRows(goal: GoalView): number {
   return 1 + goal.agents.length;
 }
 
+/** Rows a single {@link GoalRow} occupies in the panel body. PURE. */
+function goalRowHeight(row: GoalRow): number {
+  switch (row.kind) {
+    case 'card':
+      return goalCardRows(row.goal);
+    case 'header':
+    case 'coalesced-queued':
+    case 'coalesced-done':
+      return 1;
+  }
+}
+
+/** Total body rows for an ordered {@link GoalRow} plan. PURE. */
+export function goalRowsHeight(rows: readonly GoalRow[]): number {
+  return rows.reduce((sum, r) => sum + goalRowHeight(r), 0);
+}
+
 /** Total rows the full-card GOALS panel would occupy (borders + every card). */
 function fullPanelRows(goals: readonly GoalView[]): number {
   const body = goals.reduce((sum, g) => sum + goalCardRows(g), 0);
   return PANEL_BORDER_ROWS + body;
+}
+
+/**
+ * Build the coalesced-queued ONE-line text for the panel body, e.g.
+ * `○ Add tests · ○ Wire CI · +6 more queued`. Lists labels until the line would
+ * grow long, then rolls the rest into `+K more queued`. Always one row. PURE.
+ */
+export function coalescedQueuedLine(goals: readonly GoalView[], maxLabels = 3): string {
+  if (goals.length === 0) return '';
+  const shown = goals.slice(0, Math.max(1, maxLabels));
+  const rest = goals.length - shown.length;
+  const parts = shown.map((g) => `○ ${g.label}`);
+  if (rest > 0) parts.push(`+${rest} more queued`);
+  else if (shown.length > 0) parts[parts.length - 1] = `${parts[parts.length - 1]} queued`;
+  return parts.join(' · ');
+}
+
+// ---------------------------------------------------------------------------
+// planGoalsPanel — the cap-preserving multi-goal collapse (design §3 / §4)
+// ---------------------------------------------------------------------------
+
+/**
+ * Plan the GOALS panel BODY for a given row `budget` (the rows available for the
+ * body, i.e. excluding the 2 border rows). Implements the design's collapse
+ * order so MANY goals never overflow the viewport:
+ *
+ *   1. running goals expanded (full cards), newest-active first, up to budget;
+ *   2. running goals that don't fit → collapse to a 1-line header (drop agents);
+ *   3. done/failed goals → 1 line each, then coalesced to `✓ N done` under pressure;
+ *   4. queued goals → always coalesced to ONE `○ a · ○ b · +K more queued` row.
+ *
+ * Returns the ordered {@link GoalRow} plan whose summed height is GUARANTEED
+ * `<= budget` (the caller adds the 2 border rows). For the common case (every
+ * goal fits as a full card) it returns one `card` per goal — byte-for-byte the
+ * prior behaviour. PURE; never mutates inputs.
+ *
+ * When the body cannot fit even the most-collapsed form in `budget`, returns
+ * `null` so the caller falls through to the existing compact one-liner.
+ */
+export function planGoalsPanel(goals: readonly GoalView[], budget: number): readonly GoalRow[] | null {
+  if (goals.length === 0) return [];
+  if (budget < 1) return null;
+
+  const running = goals.filter((g) => g.state === 'running');
+  const terminal = goals.filter((g) => g.state === 'done' || g.state === 'failed');
+  const queued = goals.filter((g) => g.state === 'queued');
+  const doneCount = terminal.filter((g) => g.state === 'done').length;
+  const failedCount = terminal.filter((g) => g.state === 'failed').length;
+
+  // Fast path: everything fits as full cards (today's behaviour for ≤ a few goals).
+  const allCards: GoalRow[] = goals.map((g) => ({ kind: 'card' as const, goal: g }));
+  if (goalRowsHeight(allCards) <= budget) return allCards;
+
+  // The MINIMUM footprint: one header per running goal + at most one coalesced-
+  // done line + at most one coalesced-queued line. If even that overflows the
+  // budget, give up (caller falls to the compact one-liner).
+  const minRows =
+    running.length + (terminal.length > 0 ? 1 : 0) + (queued.length > 0 ? 1 : 0);
+  if (minRows > budget) return null;
+
+  // Reserve rows for the always-coalesced queued line + the done summary, then
+  // spend the rest expanding running goals to full cards (newest-active first).
+  const reservedQueued = queued.length > 0 ? 1 : 0;
+  const reservedDone = terminal.length > 0 ? 1 : 0;
+  const runningBudget = budget - reservedQueued - reservedDone;
+
+  // Each running goal costs at least its header (1 row); expanding to a card adds
+  // its agent rows. Lay them down as headers first (cheapest), then upgrade the
+  // most-recent ones to full cards while the budget allows.
+  const runningRows: GoalRow[] = running.map((g) => ({ kind: 'header' as const, goal: g }));
+  let used = running.length; // every running goal starts as a 1-row header
+  // Upgrade from the END (newest-active) toward the front.
+  for (let i = running.length - 1; i >= 0; i -= 1) {
+    const g = running[i];
+    if (g === undefined) continue;
+    const extra = goalCardRows(g) - 1; // agent rows added by expanding
+    if (extra > 0 && used + extra <= runningBudget) {
+      runningRows[i] = { kind: 'card', goal: g };
+      used += extra;
+    }
+  }
+
+  const rows: GoalRow[] = [...runningRows];
+  if (terminal.length > 0) {
+    rows.push({ kind: 'coalesced-done', done: doneCount, failed: failedCount });
+  }
+  if (queued.length > 0) {
+    rows.push({ kind: 'coalesced-queued', goals: queued });
+  }
+  // Final guard: the plan never exceeds the budget (it cannot by construction,
+  // but assert-by-truncation keeps the invariant total even if budgets change).
+  if (goalRowsHeight(rows) > budget) {
+    // Demote expanded cards back to headers until it fits.
+    for (let i = 0; i < rows.length && goalRowsHeight(rows) > budget; i += 1) {
+      const r = rows[i];
+      if (r !== undefined && r.kind === 'card') rows[i] = { kind: 'header', goal: r.goal };
+    }
+    if (goalRowsHeight(rows) > budget) return null;
+  }
+  return rows;
 }
 
 /**
@@ -321,11 +461,38 @@ export function layoutForHeight(
     const streamCap = Math.max(0, Math.min(streamLines, budget - fullPlusFixed));
     return {
       visible: true,
-      goals: { kind: 'full', goals },
+      goals: { kind: 'full', goals, rows: goals.map((g) => ({ kind: 'card' as const, goal: g })) },
       showSummary: true,
       streamCap,
       plannedRows: fullRows + fixed + streamCap,
     };
+  }
+
+  // Step 2.5 (multi-goal collapse): the full cards overflow, but the panel may
+  // still fit if running goals collapse to headers and queued/done coalesce into
+  // single lines (design §3/§4). Budget the BODY (panel rows minus the 2 borders
+  // and the mandatory status+summary lines) and let planGoalsPanel pack it. This
+  // keeps MANY goals visible (12+) without ever exceeding the viewport. Only runs
+  // when the all-full path above didn't fit, so the single-/few-goal behaviour is
+  // untouched.
+  const bodyBudget = budget - PANEL_BORDER_ROWS - fixed;
+  if (hasGoals && bodyBudget >= 1) {
+    const plan = planGoalsPanel(goals, bodyBudget);
+    if (plan !== null && plan.length > 0) {
+      const bodyRows = goalRowsHeight(plan);
+      const panelRows = PANEL_BORDER_ROWS + bodyRows;
+      const cardGoals = plan
+        .filter((r): r is Extract<GoalRow, { kind: 'card' }> => r.kind === 'card')
+        .map((r) => r.goal);
+      const streamCap = Math.max(0, Math.min(streamLines, budget - panelRows - fixed));
+      return {
+        visible: true,
+        goals: { kind: 'full', goals: cardGoals, rows: plan },
+        showSummary: true,
+        streamCap,
+        plannedRows: panelRows + fixed + streamCap,
+      };
+    }
   }
 
   // Step 3: collapse cards to the one-line summary (PANEL_BORDER_ROWS + 1 summary

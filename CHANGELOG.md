@@ -15,6 +15,11 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   resumed goal's contract from the persisted `workTrace` (niche: the in-run contract
   is already kept in memory; only cross-session resume benefits). Optional.
 
+## [3.30.1]
+
+### Internal — multi-goal display foundation (no user-visible change yet)
+- Added the additive `goalId` event seam + state/render support for showing MULTIPLE concurrent goals (each with phase X/Y, agents, queued/running/done) and graceful collapse on small terminals — all proven byte-identical to today while there is still one goal per turn. Groundwork for the upcoming concurrent multi-goal scheduler.
+
 ## [3.30.0]
 
 ### Added — the partner thinks before it acts (adaptive confidence, Phase 1)

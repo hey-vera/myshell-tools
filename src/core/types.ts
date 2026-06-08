@@ -652,6 +652,16 @@ export type CoreEvent =
       readonly model: string;
       readonly attempt: number;
       /**
+       * OPTIONAL stable goal identifier (multi-goal seam). When a future bounded
+       * scheduler fans out several goals it stamps each re-emitted event with the
+       * owning goal's id, so the reducer can key distinct goal cards rather than
+       * collapsing every tier into the lone sequential goal. PURELY ADDITIVE:
+       * `orchestrate` never sets it, so on today's single-goal-per-turn path it is
+       * always absent and the reducer falls back to its existing per-tier keying —
+       * byte-for-byte unchanged. Never fabricated.
+       */
+      readonly goalId?: string;
+      /**
        * A human, one-line GOAL LABEL for the live status panel (orchestration-UX
        * redesign Phase 2). Derived from the cheapest TRUTHFUL signal already in
        * scope at the emit site — the work-contract `objective`, else the intent
@@ -673,12 +683,19 @@ export type CoreEvent =
       readonly type: 'provider-event';
       readonly tier: Tier;
       readonly event: import('../providers/port.js').ProviderEvent;
+      /** OPTIONAL multi-goal seam — see `tier-start.goalId`. Stamped by the future
+       *  scheduler; absent on today's single-goal path. Purely additive. */
+      readonly goalId?: string;
     }
   | {
       readonly type: 'tier-done';
       readonly tier: Tier;
       readonly success: boolean;
       readonly confidence: number | null;
+      /** OPTIONAL multi-goal seam — see `tier-start.goalId`. Lets the reducer
+       *  settle the goal this tier belongs to when several run concurrently.
+       *  Absent on today's single-goal path. Purely additive. */
+      readonly goalId?: string;
       /** Estimated USD — retained for the ledger and the on-demand `cost` view;
        *  NOT shown on the hot path (this is a subscription tool, not API-billed). */
       readonly costUsd: number;
@@ -748,4 +765,33 @@ export type CoreEvent =
        * the confidence bar. Absent on a normal, fully-accepted success.
        */
       readonly bestEffort?: true;
+      /** OPTIONAL multi-goal seam — see `tier-start.goalId`. Marks which goal's
+       *  phase finished when several run concurrently. Absent on today's single-
+       *  goal path. Purely additive. */
+      readonly goalId?: string;
+    }
+  | {
+      /**
+       * MULTI-GOAL SEAM (additive): the scheduler declares a goal it intends to run
+       * up front so a QUEUED goal card appears immediately, before any tier starts.
+       * `id` is the stable goalId stamped on that goal's later tier-start/done
+       * events; `title` is its human card label. Never emitted today (orchestrate
+       * does not produce it), so the single-goal path is unaffected; an unknown
+       * event type is ignored by every existing consumer.
+       */
+      readonly type: 'goal-enqueue';
+      readonly id: string;
+      readonly title: string;
+    }
+  | {
+      /**
+       * MULTI-GOAL SEAM (additive): the scheduler reports a goal's phase progress
+       * (`current` of `total`) — a TRUTHFUL denominator (the planned phase count),
+       * surfaced as the "phase X/Y" badge. Keyed by `goalId`. Never emitted today,
+       * so the single-goal path is unaffected; ignored by existing consumers.
+       */
+      readonly type: 'goal-phase';
+      readonly goalId: string;
+      readonly current: number;
+      readonly total: number;
     };

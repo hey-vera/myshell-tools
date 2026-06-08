@@ -84,6 +84,14 @@ export interface GoalView {
    * measurement; absent → the badge shows the tier only (never a fabricated risk).
    */
   readonly risk?: Risk;
+  /**
+   * OPTIONAL per-goal PHASE progress (multi-goal seam). `current`/`total` come
+   * from a future scheduler's `goal-phase` event — a TRUTHFUL denominator (the
+   * planned phase count), so the card can show a "phase X/Y" badge. Absent →
+   * no phase badge is rendered (never fabricated, matching the `risk?` pattern).
+   * Never set on today's single-goal path (no `goal-phase` event is emitted).
+   */
+  readonly phase?: { readonly current: number; readonly total: number };
 }
 
 /** The execution phase that drives the live status line / spinner verb. */
@@ -256,6 +264,14 @@ export type Action =
       readonly title?: string;
       /** Classified risk for the dim "tier · risk" badge; absent → tier-only badge. */
       readonly risk?: Risk;
+      /**
+       * OPTIONAL multi-goal seam: the stable goal id this tier belongs to. When
+       * present and it matches an already-enqueued/running goal, the reducer
+       * attaches the tier to THAT goal (flipping a queued goal to running) instead
+       * of appending a fresh per-tier goal; absent → today's per-tier keying,
+       * byte-for-byte unchanged. Never set on the single-goal path.
+       */
+      readonly goalId?: string;
     }
   // --- already-cleaned prose chunk (envelope already stripped by 3b's filter) ---
   | { readonly type: 'stream/prose'; readonly text: string }
@@ -281,6 +297,28 @@ export type Action =
        *  it flips a panelist and accounts tokens but does NOT commit/reset prose. */
       readonly panelCandidate: boolean;
       readonly verbosity: Verbosity;
+      /**
+       * OPTIONAL multi-goal seam: settle the goal matching this id when several
+       * run concurrently. Absent → settle the lone running goal (today's exact
+       * behaviour). Never set on the single-goal path.
+       */
+      readonly goalId?: string;
+    }
+  // --- goal/enqueue: append a QUEUED goal card (multi-goal seam). Additive — no
+  //     emitter produces the source goal-enqueue event today, so this never fires
+  //     on the single-goal path. ---
+  | {
+      readonly type: 'goal/enqueue';
+      readonly goalId: string;
+      readonly label: string;
+    }
+  // --- goal/phase: set a goal's phase {current,total} for the "phase X/Y" badge
+  //     (multi-goal seam). Additive — no emitter today. ---
+  | {
+      readonly type: 'goal/phase';
+      readonly goalId: string;
+      readonly current: number;
+      readonly total: number;
     }
   // --- escalation to a stronger tier ---
   | {

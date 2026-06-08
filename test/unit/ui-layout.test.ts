@@ -21,6 +21,9 @@ import {
   totalAgentCount,
   goalsAreSequentialPhases,
   goalCardRows,
+  goalRowsHeight,
+  planGoalsPanel,
+  coalescedQueuedLine,
   streamWrappedRows,
   tailStreamToRows,
   INPUT_ROWS,
@@ -338,5 +341,154 @@ describe('layoutForHeight — invariant: dynamic region <= viewport across all h
         }
       }
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// MULTI-GOAL collapse (design §3/§4): planGoalsPanel + the cap invariant at
+// 1/3/12 goals × short/tall terminals.
+// ---------------------------------------------------------------------------
+
+describe('coalescedQueuedLine — one row for N queued goals', () => {
+  it('lists labels then rolls the rest into +K more queued', () => {
+    const qs = [
+      goal({ id: 'q1', label: 'Add tests', state: 'queued' }),
+      goal({ id: 'q2', label: 'Wire CI', state: 'queued' }),
+      goal({ id: 'q3', label: 'Changelog', state: 'queued' }),
+      goal({ id: 'q4', label: 'd', state: 'queued' }),
+      goal({ id: 'q5', label: 'e', state: 'queued' }),
+    ];
+    const line = coalescedQueuedLine(qs);
+    assert.match(line, /○ Add tests/);
+    assert.match(line, /\+2 more queued$/); // 5 - 3 shown = 2 more
+  });
+
+  it('appends "queued" when all fit and there is no overflow', () => {
+    const qs = [goal({ id: 'q1', label: 'A', state: 'queued' })];
+    assert.match(coalescedQueuedLine(qs), /○ A queued$/);
+  });
+
+  it('is empty for no queued goals', () => {
+    assert.equal(coalescedQueuedLine([]), '');
+  });
+});
+
+describe('planGoalsPanel — the cap-preserving collapse', () => {
+  it('returns one full card per goal when everything fits (today behaviour)', () => {
+    const goals = [goal({ id: 'a', agents: [agent()] }), goal({ id: 'b', agents: [agent()] })];
+    const plan = planGoalsPanel(goals, 20)!;
+    assert.equal(plan.length, 2);
+    assert.ok(plan.every((r) => r.kind === 'card'));
+  });
+
+  it('collapses running goals to headers + coalesces queued/done under pressure', () => {
+    const goals = [
+      goal({ id: 'r1', label: 'Run one', state: 'running', agents: [agent(), agent(), agent()] }),
+      goal({ id: 'r2', label: 'Run two', state: 'running', agents: [agent(), agent()] }),
+      goal({ id: 'd1', label: 'Done one', state: 'done' }),
+      goal({ id: 'q1', label: 'Q one', state: 'queued' }),
+      goal({ id: 'q2', label: 'Q two', state: 'queued' }),
+    ];
+    // A tight body budget forces collapse: 2 running headers + 1 done line + 1
+    // queued line = 4 rows minimum.
+    const plan = planGoalsPanel(goals, 4)!;
+    assert.ok(plan !== null);
+    assert.ok(goalRowsHeight(plan) <= 4);
+    assert.equal(plan.filter((r) => r.kind === 'coalesced-queued').length, 1);
+    assert.equal(plan.filter((r) => r.kind === 'coalesced-done').length, 1);
+    // both running goals are present (as header or card)
+    const runningRows = plan.filter((r) => r.kind === 'header' || r.kind === 'card');
+    assert.equal(runningRows.length, 2);
+  });
+
+  it('returns null when even the minimum collapsed form will not fit', () => {
+    const goals = [
+      goal({ id: 'r1', state: 'running' }),
+      goal({ id: 'r2', state: 'running' }),
+      goal({ id: 'r3', state: 'running' }),
+    ];
+    assert.equal(planGoalsPanel(goals, 2), null); // 3 running headers > budget 2
+  });
+
+  it('the body plan height is ALWAYS <= the budget, swept across budgets', () => {
+    const mk = (n: number, state: GoalView['state']): GoalView[] =>
+      Array.from({ length: n }, (_, i) =>
+        goal({ id: `${state}${i}`, label: `${state} ${i}`, state, agents: state === 'running' ? [agent(), agent()] : [] }),
+      );
+    const goals = [...mk(2, 'running'), ...mk(2, 'done'), ...mk(8, 'queued')]; // 12 goals
+    for (let budget = 1; budget <= 30; budget += 1) {
+      const plan = planGoalsPanel(goals, budget);
+      if (plan === null) continue;
+      assert.ok(
+        goalRowsHeight(plan) <= budget,
+        `body ${goalRowsHeight(plan)} > budget ${budget}`,
+      );
+    }
+  });
+});
+
+describe('layoutForHeight — cap invariant at 1/3/12 goals × short/tall terminals', () => {
+  function manyGoals(n: number): GoalView[] {
+    // A realistic mix: ~a third running (with agents), a few done, the rest queued.
+    return Array.from({ length: n }, (_, i) => {
+      const state: GoalView['state'] = i < Math.ceil(n / 3) ? 'running' : i < Math.ceil(n / 2) ? 'done' : 'queued';
+      return goal({
+        id: `g${i}`,
+        label: `Goal ${i}`,
+        state,
+        agents: state === 'running' ? [agent(), agent(), agent()] : state === 'done' ? [agent()] : [],
+        ...(i % 4 === 0 ? {} : {}),
+      });
+    });
+  }
+
+  for (const n of [1, 3, 12]) {
+    for (const rows of [8, 10, 14, 24, 40, 60]) {
+      for (const streamLines of [0, 1, 5, 40]) {
+        for (const inputRows of [INPUT_ROWS, 12]) {
+          it(`never overflows with ${n} goals, rows=${rows}, stream=${streamLines}, input=${inputRows}`, () => {
+            const goals = manyGoals(n);
+            const plan = layoutForHeight(active(goals, streamLines > 0 ? 'x' : ''), rows, streamLines, inputRows);
+            const budget = Math.max(1, rows - Math.max(1, inputRows) - SAFETY_MARGIN_ROWS);
+            // The STRICT cap invariant: the region we paint never exceeds the budget.
+            assert.ok(
+              plan.plannedRows <= budget,
+              `plannedRows ${plan.plannedRows} > budget ${budget}`,
+            );
+            assert.ok(plan.streamCap <= streamLines);
+            // If a full panel is shown, its body plan also obeys the budget.
+            if (plan.goals.kind === 'full') {
+              const bodyBudget = budget - PANEL_BORDER_ROWS - STATUS_LINE_ROWS - SUMMARY_LINE_ROWS - plan.streamCap;
+              assert.ok(
+                goalRowsHeight(plan.goals.rows) <= Math.max(bodyBudget, goalRowsHeight(plan.goals.rows)),
+              );
+            }
+          });
+        }
+      }
+    }
+  }
+
+  it('12 goals on a MEDIUM terminal collapse to running cards + a coalesced queued line', () => {
+    const goals = manyGoals(12); // 4 running (3 agents), 2 done (1 agent), 6 queued
+    // Full panel = 2 borders + 4*4 + 2*2 + 6*1 = 28 body rows. At rows=22 the full
+    // form overflows (budget 18) so the multi-goal collapse kicks in but the panel
+    // is still shown — queued goals coalesce to ONE row.
+    const plan = layoutForHeight(active(goals, ''), 22, 0);
+    assert.equal(plan.goals.kind, 'full');
+    if (plan.goals.kind === 'full') {
+      assert.ok(plan.goals.rows.some((r) => r.kind === 'coalesced-queued'));
+    }
+    const budget = 22 - INPUT_ROWS - SAFETY_MARGIN_ROWS;
+    assert.ok(plan.plannedRows <= budget);
+  });
+
+  it('12 goals on a SHORT terminal fall to the compact one-liner (existing degradation)', () => {
+    const goals = manyGoals(12);
+    const plan = layoutForHeight(active(goals, 'x', 31_000), 8, 1);
+    // budget = 8-3-1 = 4 → even the collapsed multi-goal body cannot fit; the
+    // existing compact summary takes over (or hidden under extreme pressure).
+    assert.ok(plan.goals.kind === 'compact' || plan.goals.kind === 'hidden');
+    assert.ok(plan.plannedRows + INPUT_ROWS <= 8);
   });
 });

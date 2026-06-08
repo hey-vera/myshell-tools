@@ -31,6 +31,7 @@ import {
   layoutForHeight,
   summarizeTurn,
   totalAgentCount,
+  coalescedQueuedLine,
   INPUT_ROWS,
   type GoalsMode,
 } from './layout.js';
@@ -188,7 +189,14 @@ export interface GoalCardProps {
  * classifier supplied one (never fabricated). PURE.
  */
 function goalBadge(goal: GoalView): string {
-  return goal.risk !== undefined ? `${goal.tier} · ${goal.risk}` : goal.tier;
+  const base = goal.risk !== undefined ? `${goal.tier} · ${goal.risk}` : goal.tier;
+  // Per-goal PHASE badge (multi-goal seam): append "· phase X/Y" only when the
+  // scheduler supplied a phase with a real denominator (total > 0). Never
+  // fabricated — absent on today's single-goal path (no goal-phase event).
+  if (goal.phase !== undefined && goal.phase.total > 0) {
+    return `${base} · phase ${goal.phase.current}/${goal.phase.total}`;
+  }
+  return base;
 }
 
 /**
@@ -227,6 +235,38 @@ export function GoalCard({ goal, elapsedSecs, workLabel, color = true }: GoalCar
 }
 
 // ---------------------------------------------------------------------------
+// GoalHeaderLine — a goal collapsed to a SINGLE header line (agent rows dropped
+// under height pressure). Same header as GoalCard, no agent tree beneath it.
+// ---------------------------------------------------------------------------
+
+export interface GoalHeaderLineProps {
+  readonly goal: GoalView;
+  readonly color?: boolean;
+}
+
+/**
+ * One collapsed goal: just the header line (state glyph + bold label + dim
+ * "tier · risk · N agent" badge + token meter), used for running/done goals when
+ * there isn't room to expand their agent rows. Exactly the GoalCard header,
+ * minus the {@link AgentRow} children — so it always costs one terminal row.
+ */
+export function GoalHeaderLine({ goal, color = true }: GoalHeaderLineProps): React.ReactElement {
+  const glyph = stateGlyph(goal.state);
+  const glyphProps = stateColorProps(goal.state, color);
+  const n = goal.agents.length;
+  const badge = `${goalBadge(goal)} · ${n} agent${n === 1 ? '' : 's'}`;
+  return (
+    <Box>
+      <Text {...glyphProps}>{glyph}</Text>
+      <Text bold={color}>{` ${goal.label}`}</Text>
+      <Text dimColor={color}>{`   ${badge}`}</Text>
+      <Text>{'  '}</Text>
+      <TokenMeter tokens={goal.tokens} color={color} />
+    </Box>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Panels — the GOALS panel body (full or compact), driven by the layout plan.
 // ---------------------------------------------------------------------------
 
@@ -251,15 +291,41 @@ export function Panels({ mode, elapsedSecs, workLabel, color = true }: PanelsPro
     <Box flexDirection="column" borderStyle="round" {...borderProps} paddingX={1}>
       <Text {...(color ? { color: 'cyan' as const } : {})}>GOALS</Text>
       {mode.kind === 'full'
-        ? mode.goals.map((goal) => (
-            <GoalCard
-              key={goal.id}
-              goal={goal}
-              {...(elapsedSecs !== undefined ? { elapsedSecs } : {})}
-              {...(workLabel !== undefined ? { workLabel } : {})}
-              color={color}
-            />
-          ))
+        ? mode.rows.map((row, i) => {
+            // The ordered body plan: full cards, collapsed headers, and coalesced
+            // queued/done lines — each painted as exactly the rows the layout
+            // budgeted, so the panel can never overflow the viewport.
+            if (row.kind === 'card') {
+              return (
+                <GoalCard
+                  key={row.goal.id}
+                  goal={row.goal}
+                  {...(elapsedSecs !== undefined ? { elapsedSecs } : {})}
+                  {...(workLabel !== undefined ? { workLabel } : {})}
+                  color={color}
+                />
+              );
+            }
+            if (row.kind === 'header') {
+              return <GoalHeaderLine key={row.goal.id} goal={row.goal} color={color} />;
+            }
+            if (row.kind === 'coalesced-queued') {
+              return (
+                <Text key={`queued#${i}`} dimColor={color}>
+                  {coalescedQueuedLine(row.goals)}
+                </Text>
+              );
+            }
+            // coalesced-done: a one-line `✓ N done[ · ✗ M failed]` roll-up.
+            const parts: string[] = [];
+            if (row.done > 0) parts.push(`${GLYPHS.success} ${row.done} done`);
+            if (row.failed > 0) parts.push(`${GLYPHS.fail} ${row.failed} failed`);
+            return (
+              <Text key={`done#${i}`} dimColor={color}>
+                {parts.join(' · ')}
+              </Text>
+            );
+          })
         : <Text dimColor={color}>{mode.summary}</Text>}
     </Box>
   );

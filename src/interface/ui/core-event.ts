@@ -74,6 +74,9 @@ export function coreEventToActions(
           // supplied one (already capped/truthful); absent → the reducer falls
           // back to the bare tier id, never fabricating a title.
           ...(ev.title !== undefined ? { title: ev.title } : {}),
+          // Multi-goal seam: pass the goalId through when the (future) scheduler
+          // stamped one; absent → the reducer's per-tier keying is unchanged.
+          ...(ev.goalId !== undefined ? { goalId: ev.goalId } : {}),
         },
       ];
 
@@ -110,7 +113,18 @@ export function coreEventToActions(
           // 3b overrides for panel candidates.
           panelCandidate: false,
           verbosity,
+          // Multi-goal seam: pass the goalId through so flush-tier settles the
+          // right goal; absent → settle the lone running goal (today's behaviour).
+          ...(ev.goalId !== undefined ? { goalId: ev.goalId } : {}),
         },
+      ];
+
+    case 'goal-enqueue':
+      return [{ type: 'goal/enqueue', goalId: ev.id, label: ev.title }];
+
+    case 'goal-phase':
+      return [
+        { type: 'goal/phase', goalId: ev.goalId, current: ev.current, total: ev.total },
       ];
 
     case 'escalate':

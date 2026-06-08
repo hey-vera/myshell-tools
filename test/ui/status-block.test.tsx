@@ -14,11 +14,13 @@ import { render } from 'ink-testing-library';
 import {
   StatusBlock,
   GoalCard,
+  GoalHeaderLine,
   AgentRow,
   StatusLine,
   Panels,
   TokenMeter,
 } from '../../src/interface/ui/StatusBlock.js';
+import { planGoalsPanel } from '../../src/interface/ui/layout.js';
 import { initialState } from '../../src/interface/ui/index.js';
 import type { AgentView, GoalView, UiState } from '../../src/interface/ui/index.js';
 
@@ -34,6 +36,7 @@ function goal(over: Partial<GoalView> = {}): GoalView {
     agents: over.agents ?? [agent()],
     tier: over.tier ?? 'ic',
     ...(over.risk !== undefined ? { risk: over.risk } : {}),
+    ...(over.phase !== undefined ? { phase: over.phase } : {}),
   };
 }
 function active(goals: readonly GoalView[], over: Partial<UiState> = {}): UiState {
@@ -245,4 +248,76 @@ test('StatusBlock with an injected clock shows a deterministic elapsed', async (
   now = 16_000;
   await new Promise((r) => setTimeout(r, 120));
   assert.match(lastFrame() ?? '', /· 6s/);
+});
+
+// ---------------------------------------------------------------------------
+// MULTI-GOAL render (design §3): concurrent cards, phase badge, collapse.
+// ---------------------------------------------------------------------------
+
+test('GoalCard renders a "phase X/Y" badge when phase is present', () => {
+  const { lastFrame } = render(
+    <GoalCard
+      goal={goal({ label: 'Refactor auth', tier: 'ic', risk: 'medium', state: 'running', phase: { current: 7, total: 12 } })}
+      color={false}
+    />,
+  );
+  assert.match(lastFrame() ?? '', /phase 7\/12/);
+});
+
+test('GoalCard renders NO phase badge when phase is absent (never fabricated)', () => {
+  const { lastFrame } = render(<GoalCard goal={goal({ label: 'Plain goal' })} color={false} />);
+  assert.doesNotMatch(lastFrame() ?? '', /phase/);
+});
+
+test('GoalCard renders NO phase badge when total is 0 (no honest denominator)', () => {
+  const { lastFrame } = render(
+    <GoalCard goal={goal({ phase: { current: 0, total: 0 } })} color={false} />,
+  );
+  assert.doesNotMatch(lastFrame() ?? '', /phase/);
+});
+
+test('StatusBlock renders MULTIPLE concurrent running goals as distinct cards', () => {
+  const state = active(
+    [
+      goal({ id: 'g1', label: 'Refactor the auth middleware', state: 'running', phase: { current: 7, total: 12 }, agents: [agent({ state: 'running' }), agent({ provider: 'codex', model: 'gpt-5', state: 'running' })] }),
+      goal({ id: 'g2', label: 'Add integration tests', state: 'running', phase: { current: 1, total: 5 }, agents: [agent({ state: 'running' })] }),
+      goal({ id: 'g3', label: 'Update the API docs', state: 'queued', agents: [] }),
+    ],
+    { tokens: { turn: 16_700, session: 16_700 } },
+  );
+  const { lastFrame } = render(<StatusBlock state={state} color={false} rows={40} />);
+  const frame = lastFrame() ?? '';
+  assert.match(frame, /Refactor the auth middleware/);
+  assert.match(frame, /Add integration tests/);
+  assert.match(frame, /Update the API docs/);
+  assert.match(frame, /phase 7\/12/);
+  assert.match(frame, /phase 1\/5/);
+  // the summary aggregates: 3 goals (distinct titles), and counts agents.
+  assert.match(frame, /▸ 3 goals · 3 agents/);
+});
+
+test('GoalHeaderLine renders a one-line collapsed header (no agent tree)', () => {
+  const { lastFrame } = render(
+    <GoalHeaderLine goal={goal({ label: 'Collapsed goal', state: 'running', agents: [agent(), agent()] })} color={false} />,
+  );
+  const frame = lastFrame() ?? '';
+  assert.match(frame, /Collapsed goal/);
+  assert.match(frame, /2 agents/);
+  // exactly one rendered row — no └─/├─ agent tree branches
+  assert.doesNotMatch(frame, /├─|└─/);
+});
+
+test('Panels renders a coalesced-queued line for many queued goals', () => {
+  const goals: GoalView[] = [
+    goal({ id: 'r1', label: 'Running', state: 'running', agents: [agent({ state: 'running' })] }),
+    goal({ id: 'q1', label: 'Q one', state: 'queued', agents: [] }),
+    goal({ id: 'q2', label: 'Q two', state: 'queued', agents: [] }),
+    goal({ id: 'q3', label: 'Q three', state: 'queued', agents: [] }),
+    goal({ id: 'q4', label: 'Q four', state: 'queued', agents: [] }),
+  ];
+  const plan = planGoalsPanel(goals, 3)!; // forces collapse: header + coalesced-queued
+  const { lastFrame } = render(<Panels mode={{ kind: 'full', goals: [], rows: plan }} color={false} />);
+  const frame = lastFrame() ?? '';
+  assert.match(frame, /○ Q one/);
+  assert.match(frame, /more queued/);
 });

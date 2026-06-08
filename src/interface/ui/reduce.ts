@@ -63,12 +63,28 @@ function settleActiveGoal(
   goals: readonly GoalView[],
   finalState: 'done' | 'failed',
   tierTokens: number,
+  goalId?: string,
 ): readonly GoalView[] {
   let idx = -1;
-  for (let i = goals.length - 1; i >= 0; i -= 1) {
-    if (goals[i]?.state === 'running') {
-      idx = i;
-      break;
+  if (goalId !== undefined) {
+    // Multi-goal seam: settle the goal that OWNS this tier (keyed by id) so the
+    // right card flips when several run concurrently. Fail-soft: if no goal
+    // carries the id, fall through to the lone-running search below.
+    idx = goals.findIndex((g) => g.id === goalId && g.state === 'running');
+    if (idx === -1) {
+      // The keyed goal isn't running (already settled / never started) — nothing
+      // to flip for this id; do NOT touch another goal.
+      if (goals.some((g) => g.id === goalId)) return goals;
+    }
+  }
+  if (idx === -1 && goalId === undefined) {
+    // Single-goal path (today): settle the LAST still-running goal — the active
+    // sequential attempt. Byte-for-byte the original behaviour.
+    for (let i = goals.length - 1; i >= 0; i -= 1) {
+      if (goals[i]?.state === 'running') {
+        idx = i;
+        break;
+      }
     }
   }
   if (idx === -1) return goals;
@@ -243,8 +259,21 @@ export function reduce(state: UiState, action: Action): UiState {
         tokens: 0,
         attempt: action.attempt,
       };
+      // Multi-goal seam: when the event carries a stable goalId that matches an
+      // already-enqueued/running goal, ATTACH this tier to THAT goal (flip a
+      // queued goal to running, push the agent) instead of appending a fresh
+      // per-tier card — this is what lets several goals run concurrently. When
+      // goalId is ABSENT (today's single-goal path) we take the original branch
+      // verbatim: append one goal per tier-start (outside panel mode). Never
+      // mutates input arrays.
+      const existingIdx =
+        action.goalId !== undefined
+          ? state.goals.findIndex((g) => g.id === action.goalId)
+          : -1;
       const goal: GoalView = {
-        id: `${action.tier}#${action.attempt}`,
+        // Key off the scheduler-assigned goalId when present (stable across the
+        // goal's phases); else the original per-tier id, byte-for-byte unchanged.
+        id: action.goalId !== undefined ? action.goalId : `${action.tier}#${action.attempt}`,
         // Phase 2: lead with the human goal title when the engine supplied one;
         // fail soft to the bare tier id so the card is never blank and the count
         // is never fabricated. The tier/risk ride along for the dim badge.
@@ -255,10 +284,32 @@ export function reduce(state: UiState, action: Action): UiState {
         tier: action.tier,
         ...(action.risk !== undefined ? { risk: action.risk } : {}),
       };
+      let nextGoals: readonly GoalView[];
+      if (inPanel) {
+        nextGoals = state.goals;
+      } else if (existingIdx !== -1) {
+        // Attach to the matched goal: flip it running, push the new agent, keep
+        // its existing phase/label/risk unless this tier-start supplies a title.
+        nextGoals = state.goals.map((g, i) => {
+          if (i !== existingIdx) return g;
+          const label =
+            action.title !== undefined && action.title.length > 0 ? action.title : g.label;
+          return {
+            ...g,
+            label,
+            state: 'running' as const,
+            tier: action.tier,
+            ...(action.risk !== undefined ? { risk: action.risk } : {}),
+            agents: [...g.agents, agent],
+          };
+        });
+      } else {
+        nextGoals = [...state.goals, goal];
+      }
       let next: UiState = {
         ...state,
         turnActive: true,
-        goals: inPanel ? state.goals : [...state.goals, goal],
+        goals: nextGoals,
         stream: {
           ...state.stream,
           ...resetTierCounters(),
@@ -276,6 +327,42 @@ export function reduce(state: UiState, action: Action): UiState {
         });
       }
       return next;
+    }
+
+    // -- goal/enqueue: append a QUEUED goal card (multi-goal seam). Marks the
+    //    goal visible before any tier starts so the user sees "queued" up front.
+    //    Keyed by the scheduler-assigned goalId (which a later tier-start re-uses
+    //    to flip it running). Idempotent: a duplicate id is ignored rather than
+    //    appended twice. No emitter produces the source event today, so this is
+    //    never reached on the single-goal path.
+    case 'goal/enqueue': {
+      if (state.goals.some((g) => g.id === action.goalId)) return state;
+      const goal: GoalView = {
+        id: action.goalId,
+        label: action.label.length > 0 ? action.label : action.goalId,
+        state: 'queued',
+        tokens: 0,
+        agents: [],
+        // A queued goal has no routed tier yet; default to the lightest tier for
+        // the dim badge (the real tier lands when its tier-start attaches).
+        tier: 'worker',
+      };
+      return { ...state, turnActive: true, goals: [...state.goals, goal] };
+    }
+
+    // -- goal/phase: set a goal's phase {current,total} for the "phase X/Y" badge
+    //    (multi-goal seam). Fail-soft: an unknown goalId is a no-op (never creates
+    //    a phantom goal). No emitter today → never reached on the single-goal path.
+    case 'goal/phase': {
+      if (!state.goals.some((g) => g.id === action.goalId)) return state;
+      return {
+        ...state,
+        goals: state.goals.map((g) =>
+          g.id === action.goalId
+            ? { ...g, phase: { current: action.current, total: action.total } }
+            : g,
+        ),
+      };
     }
 
     // -- prose: already-cleaned. Apply render.ts's fresh-line heuristics, then
@@ -379,7 +466,12 @@ export function reduce(state: UiState, action: Action): UiState {
       const attemptHadProse = state.stream.attemptHadProse;
       next = {
         ...next,
-        goals: settleActiveGoal(next.goals, action.success ? 'done' : 'failed', tierTokens),
+        goals: settleActiveGoal(
+          next.goals,
+          action.success ? 'done' : 'failed',
+          tierTokens,
+          action.goalId,
+        ),
         tokens: { turn: next.tokens.turn + tierTokens, session: next.tokens.session + tierTokens },
         stream: {
           ...next.stream,

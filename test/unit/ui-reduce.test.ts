@@ -1133,3 +1133,228 @@ describe('ui reduce — immutability', () => {
     assert.equal(s.tokens.turn, 1000);
   });
 });
+
+// ---------------------------------------------------------------------------
+// MULTI-GOAL SEAM (additive) — goalId keying, concurrent goals, phase, enqueue.
+// The ABSOLUTE requirement: with no goalId emitted (today) the reducer behaves
+// byte-for-byte as before. These suites prove the parity AND the new behaviour.
+// ---------------------------------------------------------------------------
+
+describe('ui reduce — multi-goal: no-goalId PARITY guard', () => {
+  /** A scripted single-goal turn with NO goalId anywhere (today's event shape). */
+  const events: CoreEvent[] = [
+    { type: 'classified', classification: { tier: 'ic', risk: 'low', rationale: 'chat' } },
+    { type: 'tier-start', tier: 'ic', provider: 'claude', model: 'sonnet', attempt: 1 },
+    { type: 'provider-event', tier: 'ic', event: { type: 'tool', name: 'read', phase: 'start' } },
+    { type: 'provider-event', tier: 'ic', event: { type: 'text', delta: 'Answer.' } },
+    {
+      type: 'tier-done',
+      tier: 'ic',
+      success: true,
+      confidence: 0.9,
+      costUsd: 0,
+      inputTokens: 500,
+      outputTokens: 500,
+      durationMs: 1000,
+    },
+    {
+      type: 'final',
+      success: true,
+      output: 'Answer.',
+      tier: 'ic',
+      totalCostUsd: 0,
+      sessionId: 'S',
+      attempts: 1,
+    },
+  ];
+
+  function drive(evs: readonly CoreEvent[]): UiState {
+    let s: UiState = initialState;
+    for (const ev of evs) {
+      for (const a of coreEventToActions(ev, 'normal')) s = reduce(s, a);
+      if (ev.type === 'provider-event' && ev.event.type === 'text') {
+        s = reduce(s, { type: 'stream/prose', text: ev.event.delta });
+      }
+    }
+    return s;
+  }
+
+  it('a no-goalId stream reduces to a state with ONE per-tier goal keyed tier#attempt', () => {
+    const s = drive(events);
+    assert.equal(s.goals.length, 1);
+    assert.equal(s.goals[0]?.id, 'ic#1'); // the original per-tier key, unchanged
+    assert.equal(s.goals[0]?.state, 'done');
+    assert.equal(s.goals[0]?.phase, undefined); // never fabricated
+    assert.deepEqual(lines(s), ['Answer.', '✓ done · 1k tokens']);
+  });
+
+  it('mapping a no-goalId event NEVER attaches a goalId to the actions', () => {
+    const startActions = coreEventToActions(events[1]!, 'normal');
+    assert.equal('goalId' in startActions[0]!, false);
+    const doneActions = coreEventToActions(events[4]!, 'normal');
+    assert.equal('goalId' in doneActions[0]!, false);
+  });
+
+  it('settle-by-goalId path is dormant: the lone running goal still settles at flush', () => {
+    // Drive only through tier-done (no final) — the goal must be settled to done
+    // exactly as the original last-running-goal logic did.
+    const s = drive(events.slice(0, 5));
+    assert.equal(s.goals[0]?.state, 'done');
+  });
+});
+
+describe('ui reduce — multi-goal: goal/enqueue + goal/phase actions', () => {
+  it('goal/enqueue appends a QUEUED goal card keyed by goalId', () => {
+    const s = run([
+      { type: 'turn/start' },
+      { type: 'goal/enqueue', goalId: 'g1', label: 'Refactor auth' },
+    ]);
+    assert.equal(s.goals.length, 1);
+    assert.equal(s.goals[0]?.id, 'g1');
+    assert.equal(s.goals[0]?.label, 'Refactor auth');
+    assert.equal(s.goals[0]?.state, 'queued');
+    assert.equal(s.goals[0]?.agents.length, 0);
+  });
+
+  it('goal/enqueue is idempotent on a duplicate id', () => {
+    const s = run([
+      { type: 'goal/enqueue', goalId: 'g1', label: 'A' },
+      { type: 'goal/enqueue', goalId: 'g1', label: 'A again' },
+    ]);
+    assert.equal(s.goals.length, 1);
+    assert.equal(s.goals[0]?.label, 'A'); // first wins, no duplicate
+  });
+
+  it('goal/phase sets a goal phase {current,total}', () => {
+    const s = run([
+      { type: 'goal/enqueue', goalId: 'g1', label: 'A' },
+      { type: 'goal/phase', goalId: 'g1', current: 7, total: 12 },
+    ]);
+    assert.deepEqual(s.goals[0]?.phase, { current: 7, total: 12 });
+  });
+
+  it('goal/phase for an UNKNOWN goalId is a no-op (no phantom goal)', () => {
+    const s = run([{ type: 'goal/phase', goalId: 'ghost', current: 1, total: 5 }]);
+    assert.equal(s.goals.length, 0);
+  });
+});
+
+describe('ui reduce — multi-goal: concurrent running goals keyed by goalId', () => {
+  it('a tier-start with a goalId matching a queued goal flips THAT goal running', () => {
+    const s = run([
+      { type: 'turn/start' },
+      { type: 'goal/enqueue', goalId: 'g1', label: 'Goal one' },
+      { type: 'goal/enqueue', goalId: 'g2', label: 'Goal two' },
+      {
+        type: 'tier-start',
+        tier: 'ic',
+        provider: 'claude',
+        model: 'opus',
+        attempt: 1,
+        verbosity: 'normal',
+        goalId: 'g1',
+      },
+    ]);
+    assert.equal(s.goals.length, 2); // no new card appended — attached to g1
+    const g1 = s.goals.find((g) => g.id === 'g1');
+    const g2 = s.goals.find((g) => g.id === 'g2');
+    assert.equal(g1?.state, 'running');
+    assert.equal(g1?.agents.length, 1);
+    assert.equal(g2?.state, 'queued'); // untouched
+  });
+
+  it('TWO goals can be running concurrently', () => {
+    const start = (goalId: string): Action => ({
+      type: 'tier-start',
+      tier: 'ic',
+      provider: 'claude',
+      model: 'opus',
+      attempt: 1,
+      verbosity: 'normal',
+      goalId,
+    });
+    const s = run([
+      { type: 'goal/enqueue', goalId: 'g1', label: 'One' },
+      { type: 'goal/enqueue', goalId: 'g2', label: 'Two' },
+      start('g1'),
+      start('g2'),
+    ]);
+    const running = s.goals.filter((g) => g.state === 'running');
+    assert.equal(running.length, 2);
+  });
+
+  it('flush-tier with a goalId settles ONLY the matching goal, leaving the other running', () => {
+    const start = (goalId: string): Action => ({
+      type: 'tier-start',
+      tier: 'ic',
+      provider: 'claude',
+      model: 'opus',
+      attempt: 1,
+      verbosity: 'normal',
+      goalId,
+    });
+    const done = (goalId: string): Action => ({
+      type: 'stream/flush-tier',
+      tier: 'ic',
+      success: true,
+      confidence: 0.9,
+      inputTokens: 100,
+      outputTokens: 100,
+      durationMs: 10,
+      panelCandidate: false,
+      verbosity: 'normal',
+      goalId,
+    });
+    const s = run([
+      { type: 'goal/enqueue', goalId: 'g1', label: 'One' },
+      { type: 'goal/enqueue', goalId: 'g2', label: 'Two' },
+      start('g1'),
+      start('g2'),
+      done('g1'),
+    ]);
+    assert.equal(s.goals.find((g) => g.id === 'g1')?.state, 'done');
+    assert.equal(s.goals.find((g) => g.id === 'g2')?.state, 'running'); // not touched
+    assert.equal(s.goals.find((g) => g.id === 'g1')?.tokens, 200);
+  });
+
+  it('a tier-start with a NEW goalId (not enqueued) appends a fresh running goal keyed by it', () => {
+    const s = run([
+      {
+        type: 'tier-start',
+        tier: 'manager',
+        provider: 'claude',
+        model: 'opus',
+        attempt: 1,
+        verbosity: 'normal',
+        title: 'Big goal',
+        goalId: 'gX',
+      },
+    ]);
+    assert.equal(s.goals.length, 1);
+    assert.equal(s.goals[0]?.id, 'gX');
+    assert.equal(s.goals[0]?.label, 'Big goal');
+    assert.equal(s.goals[0]?.state, 'running');
+  });
+
+  it('the goal-enqueue / goal-phase CoreEvents map to the right actions', () => {
+    const enq = coreEventToActions(
+      { type: 'goal-enqueue', id: 'g1', title: 'Refactor' },
+      'normal',
+    );
+    assert.deepEqual(enq, [{ type: 'goal/enqueue', goalId: 'g1', label: 'Refactor' }]);
+    const ph = coreEventToActions(
+      { type: 'goal-phase', goalId: 'g1', current: 3, total: 8 },
+      'normal',
+    );
+    assert.deepEqual(ph, [{ type: 'goal/phase', goalId: 'g1', current: 3, total: 8 }]);
+  });
+
+  it('a tier-start CoreEvent WITH goalId threads it onto the action', () => {
+    const acts = coreEventToActions(
+      { type: 'tier-start', tier: 'ic', provider: 'claude', model: 'opus', attempt: 1, goalId: 'g7' },
+      'normal',
+    );
+    assert.equal(acts[0]?.type, 'tier-start');
+    if (acts[0]?.type === 'tier-start') assert.equal(acts[0].goalId, 'g7');
+  });
+});
