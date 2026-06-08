@@ -188,7 +188,13 @@ export async function readMenuKey(
   out: OutputSink,
   readLine: () => Promise<string | null>,
   stdin: KeyInputStream = process.stdin as unknown as KeyInputStream,
+  // When true, skip raw-keypress reads entirely and resolve the choice from a
+  // full line read. Used by the Ink path, where Ink OWNS process.stdin in raw
+  // mode: grabbing the TTY for a single raw read would fight Ink's input hook.
+  // Default false → the legacy single-keypress path is byte-identical.
+  forceLine = false,
 ): Promise<string | null> {
+  if (forceLine) return normalizeMenuKey(await readLine());
   const inputs = rawKeyInputs(out, stdin);
   if (inputs.length === 0) return normalizeMenuKey(await readLine());
   for (const input of inputs) {
@@ -224,12 +230,16 @@ export function makeConfirm(
   out: OutputSink,
   readLine: () => Promise<string | null>,
   injected?: Confirm,
+  // When true, never do a single-key raw read — confirm from a full line read.
+  // The Ink path passes this for the same reason as readMenuKey's forceLine:
+  // Ink owns the raw TTY. Default false → legacy single-key confirm unchanged.
+  forceLine = false,
 ): Confirm {
   if (injected !== undefined) return injected;
 
   return async (defaultYes: boolean, opts?: { requireExplicit?: boolean }): Promise<boolean> => {
     const requireExplicit = opts?.requireExplicit ?? false;
-    for (const input of rawKeyInputs(out)) {
+    for (const input of (forceLine ? [] : rawKeyInputs(out))) {
       try {
         return await confirmViaKey(out, defaultYes, input, requireExplicit);
       } catch {

@@ -159,6 +159,9 @@ export async function runImportNative(
   confirm: Confirm,
   suspendStdin?: () => () => void,
   lineReader?: LineReader | null,
+  // EXPERIMENTAL Ink turn renderer — forwarded to runChatLoop so an imported
+  // session's chat also renders through Ink. Absent off the Ink path (unchanged).
+  inkRenderTurn?: import('./run.js').TurnRenderer,
 ): Promise<'menu' | 'exit'> {
   const env = { ...process.env, ...replitPersistentEnv(process.env, ctx.cwd) };
   const sessions = await listRecentNativeSessions({ env, limit: 9 });
@@ -199,5 +202,5 @@ export async function runImportNative(
 
   // Enter the chat loop for the newly imported conversation.
   // Return value propagates the 'exit' signal to the caller (startMenu).
-  return runChatLoop(ctx, mutableCtx, id, out, readLine, loginFn, detectEnvironmentFn, confirm, suspendStdin, lineReader);
+  return runChatLoop(ctx, mutableCtx, id, out, readLine, loginFn, detectEnvironmentFn, confirm, suspendStdin, lineReader, inkRenderTurn);
 }

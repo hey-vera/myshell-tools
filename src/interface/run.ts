@@ -12,6 +12,25 @@ import { orchestrate } from '../core/orchestrate.js';
 import type { OutputSink, TurnInputSurface, Verbosity } from './render.js';
 import { renderStream } from './render.js';
 
+/**
+ * The streaming-render seam runTask drives a turn through. `renderStream` (the
+ * legacy terminal renderer) is the default; the Ink path injects
+ * `handle.renderTurn` (the reducer-backed renderStreamInk driver), which has the
+ * SAME `{ success, final?, rateLimitedProviders }` return shape. Parameterizing
+ * here — rather than forking runChatLoop — is what lets ONE conversation loop be
+ * driven by either renderer.
+ */
+export type TurnRenderer = (
+  events: AsyncIterable<CoreEvent>,
+  out: OutputSink,
+  verbosity: Verbosity,
+  turnInput: TurnInputSurface | null | undefined,
+) => Promise<{
+  success: boolean;
+  final?: Extract<CoreEvent, { type: 'final' }>;
+  rateLimitedProviders: readonly import('../providers/port.js').ProviderId[];
+}>;
+
 /** Result returned by {@link runTask}. */
 export interface RunTaskResult {
   /** Exit code: 0 on success, 1 on failure or error. */
@@ -45,9 +64,15 @@ export async function runTask(
   signal: AbortSignal,
   verbosity: Verbosity = 'normal',
   turnInput?: TurnInputSurface | null,
+  // Optional render seam. Defaults to the legacy renderStream so every existing
+  // caller is unchanged; the Ink path passes a renderStreamInk-backed renderer.
+  render?: TurnRenderer,
 ): Promise<RunTaskResult> {
   try {
-    const result = await renderStream(orchestrate(task, deps, signal), out, verbosity, undefined, turnInput);
+    const renderTurn: TurnRenderer =
+      render ??
+      ((events, sink, v, ti) => renderStream(events, sink, v, undefined, ti));
+    const result = await renderTurn(orchestrate(task, deps, signal), out, verbosity, turnInput);
     return {
       code: result.success ? 0 : 1,
       ...(result.final !== undefined ? { final: result.final } : {}),

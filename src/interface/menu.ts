@@ -349,6 +349,9 @@ async function promptForAuthBeforeChat(
   detectEnvironmentFn: () => Promise<EnvironmentStatus>,
   confirm: Confirm,
   suspendStdin?: () => () => void,
+  // Force a line read for the provider-pick keypress on the Ink path (Ink owns
+  // the raw TTY). Default false → the legacy single-key pick is unchanged.
+  forceLineKey = false,
 ): Promise<boolean> {
   if (hasAuthenticatedProvider(mutableCtx.env)) return true;
 
@@ -379,7 +382,7 @@ async function promptForAuthBeforeChat(
 
   const choiceText = choices.map((c) => `[${c.key}] ${c.label}`).join('  ');
   out.write(`\nNo provider signed in yet. Sign in now? ${choiceText}  [Enter] back\n> `);
-  const key = await readMenuKey(out, readLine);
+  const key = await readMenuKey(out, readLine, undefined, forceLineKey);
   if (key === null || key.length === 0) return false;
 
   const choice = choices.find((c) => c.key === key);
@@ -503,6 +506,12 @@ export async function runChatLoop(
   // capture/queueing during a turn. Null on the injected-readLine test path —
   // queueing then degrades off (no second stdin owner is invented for tests).
   lineReader?: LineReader | null,
+  // EXPERIMENTAL Ink path. When provided, turns render through this driver (the
+  // reducer-backed renderStreamInk) INSTEAD of the legacy renderStream, and the
+  // legacy raw-mode turn chrome (the process.stdin ESC listener + the ANSI
+  // overlay TurnInputSurface) is SUPPRESSED because Ink owns that surface. Absent
+  // (the default, flag-off and test paths) → the legacy turn path is unchanged.
+  inkRenderTurn?: import('./run.js').TurnRenderer,
 ): Promise<'menu' | 'exit'> {
   // -------------------------------------------------------------------------
   // RECAP (Phase 7, docs/recap-feature-5.5.md) — a ※ orientation line on resume
@@ -828,11 +837,18 @@ export async function runChatLoop(
   const interruptTimes: number[] = [];
   const INTERRUPT_WINDOW_MS = 1_500;
 
+  // True on the EXPERIMENTAL Ink path — turns render via inkRenderTurn and Ink
+  // owns the input surface, so the legacy raw-mode turn chrome (process.stdin ESC
+  // listener + ANSI overlay) must NOT engage (it would fight Ink's render).
+  const inkPath = inkRenderTurn !== undefined;
+
   // Stdin used by the scoped ESC listener. Only the real readLine path (where
   // the LineReader owns process.stdin) gets a live listener; the injected-test
-  // path leaves this absent so attachChatTurnKeyListener degrades to a no-op.
+  // path leaves this absent so attachChatTurnKeyListener degrades to a no-op. On
+  // the Ink path it is also absent (Ink owns process.stdin; a raw listener here
+  // would fight it).
   const turnKeyStdin: KeyInputStream | undefined =
-    lineReader !== undefined && lineReader !== null
+    !inkPath && lineReader !== undefined && lineReader !== null
       ? (process.stdin as unknown as KeyInputStream)
       : undefined;
 
@@ -850,7 +866,13 @@ export async function runChatLoop(
   ): Promise<Awaited<ReturnType<typeof runTask>>> => {
     // Fresh interrupt state for THIS task (a prior turn's ESC must not leak).
     interruptedByEsc = false;
-    const turnInput = createTurnInputSurface(out, { columns: process.stdout.columns });
+    // The ANSI overlay TurnInputSurface paints directly to `out` with cursor
+    // moves — correct over the legacy renderer, but it would corrupt the Ink
+    // render (Ink owns the live region). On the Ink path it stays null; the Ink
+    // StatusBlock/Stream render the spinner + queued indicator instead.
+    const turnInput = inkPath
+      ? null
+      : createTurnInputSurface(out, { columns: process.stdout.columns });
     // Typed-ahead capture (only when the real LineReader owns stdin).
     const stopCapture =
       lineReader !== undefined && lineReader !== null
@@ -874,7 +896,7 @@ export async function runChatLoop(
           })
         : (): void => {};
     try {
-      return await runTask(taskLine, taskDeps, out, signal, verbosity, turnInput);
+      return await runTask(taskLine, taskDeps, out, signal, verbosity, turnInput, inkRenderTurn);
     } finally {
       detachEsc();
       if (stopCapture !== null) stopCapture();
@@ -2179,28 +2201,30 @@ export async function runChatLoop(
  * that EOF resolves gracefully instead of throwing.
  */
 export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void> {
-  // EXPERIMENTAL Ink UI (Step 1, default OFF). When the flag is on AND we are
-  // not under an injected test reader, mount the minimal Ink skeleton instead of
-  // the legacy raw-mode loop. The Ink mount is behind a DYNAMIC import so the
-  // default (flag-off) path never loads ink/react and pays zero startup cost.
-  // When the flag is off this whole block is a single false branch — the legacy
-  // path below runs byte-identically.
+  // EXPERIMENTAL Ink UI (Step 5, default OFF). When the flag is on AND we are not
+  // under an injected test reader, mount the Ink rendering+input layer and drive
+  // the REAL menu/chat loop through it: the SAME business logic below runs, but
+  // `out`/`readLine`/`lineReader` are the Ink adapters and turns render via the
+  // reducer-backed `renderStreamInk` (handle.renderTurn) instead of renderStream.
+  // The Ink mount is behind a DYNAMIC import so the default (flag-off) path never
+  // loads ink/react and pays zero startup cost. When the flag is off, `inkHandle`
+  // stays null and EVERY Ink-gated branch below is a single false test — the
+  // legacy path runs byte-identically.
+  let inkHandle: import('./ui/mount.js').InkMountHandle | null = null;
+  // The Ink turn renderer, adapted to the runTask TurnRenderer shape (the Ink
+  // handle's renderTurn takes `(events, opts)`; runTask passes
+  // `(events, out, verbosity, turnInput)`). Null off the Ink path → runChatLoop
+  // takes the legacy renderStream turn path unchanged.
+  let inkRenderTurn: import('./run.js').TurnRenderer | undefined;
   if (ctx.readLine === undefined && inkEnabled(process.env, ctx.config)) {
     const { mountInk } = await import('./ui/mount.js');
-    const handle = mountInk({ color: out.color, isTty: out.isTty });
-    try {
-      // Minimal Step-1 loop: echo submitted lines into the transcript so the
-      // skeleton is observably alive. The real menu/chat wiring lands in later
-      // steps; `:quit` exits.
-      for (;;) {
-        const line = await handle.reader.nextLine();
-        if (line === null || line === ':quit') break;
-        handle.out.write(`${line}\n`);
-      }
-    } finally {
-      handle.unmount();
-    }
-    return;
+    inkHandle = mountInk({ color: out.color, isTty: out.isTty });
+    // Render the menu/chat OUTPUT and read INPUT through the Ink adapters by
+    // reassigning the seam bindings the shared loop below already uses.
+    out = inkHandle.out;
+    const handle = inkHandle;
+    inkRenderTurn = (events, _sink, verbosity) =>
+      handle.renderTurn(events, { verbosity });
   }
 
   // Resolve injected seams — use the real implementations when not provided.
@@ -2218,12 +2242,19 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
       ? ctx.runningUnderNpx
       : isRunningUnderNpx(process.argv[1], process.env);
 
-  // Build the readLine function — either injected (for tests) or backed by a
-  // real readline interface driven by the event-driven LineReader queue.
+  // Build the readLine function — either injected (for tests), the Ink reader, or
+  // backed by a real readline interface driven by the event-driven LineReader queue.
   let readLine: () => Promise<string | null>;
   let lineReader: LineReader | null = null;
 
-  if (ctx.readLine !== undefined) {
+  if (inkHandle !== null) {
+    // Ink path: the Ink LineReader IS a full LineReader (nextLine/suspend/resume/
+    // beginCapture/currentLine/close), so it drives both the menu reads and the
+    // chat loop's typed-ahead capture — no second stdin owner, no readline.
+    lineReader = inkHandle.reader;
+    const reader = lineReader;
+    readLine = () => reader.nextLine();
+  } else if (ctx.readLine !== undefined) {
     // Injected reader — no real readline needed.
     readLine = ctx.readLine;
   } else {
@@ -2265,8 +2296,10 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
   }
 
   // Single-key yes/no confirm (Enter = default, y/n decide instantly on a TTY)
-  // with a line-mode fallback for piped input / tests.
-  const confirm = makeConfirm(out, readLine, ctx.confirm);
+  // with a line-mode fallback for piped input / tests. On the Ink path force
+  // line-mode: Ink owns the raw TTY, so a single-key raw read would fight it —
+  // the confirm resolves from the Ink reader's submitted line instead.
+  const confirm = makeConfirm(out, readLine, ctx.confirm, inkHandle !== null);
   // Lets the login flow release stdin while an inherited-stdio child (e.g.
   // `claude auth login`) owns the terminal, then take it back. Returns the
   // resume callback. Only wired for the real reader — the injected/test path
@@ -2434,8 +2467,10 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
 
       out.write('> ');
       // Single keypress on a real TTY (press the letter, no Enter); line read in
-      // pipes/tests. '' = Enter/no-op → re-render; null = Ctrl-C/EOF → exit.
-      const key = await readMenuKey(out, readLine);
+      // pipes/tests. '' = Enter/no-op → re-render; null = Ctrl-C/EOF → exit. On
+      // the Ink path force a line read (Ink owns the raw TTY; the menu choice is
+      // the next submitted line — type the letter + Enter).
+      const key = await readMenuKey(out, readLine, undefined, inkHandle !== null);
 
       // ---- EOF / close — exit gracefully (FIX 1: no ERR_USE_AFTER_CLOSE) ----
       if (key === null) {
@@ -2454,7 +2489,7 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
 
       // ---- [n] New conversation -----------------------------------------------
       if (key === 'n') {
-        if (!(await promptForAuthBeforeChat(out, readLine, mutableCtx, loginFn, detectEnvironmentFn, confirm, suspendStdin))) {
+        if (!(await promptForAuthBeforeChat(out, readLine, mutableCtx, loginFn, detectEnvironmentFn, confirm, suspendStdin, inkHandle !== null))) {
           continue;
         }
         // No up-front "name your chat" prompt — a real chat shell just opens and
@@ -2462,7 +2497,7 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
         // (conversations.ts append()), so create an untitled conversation and drop
         // straight into it.
         const meta = await ctx.store.create('');
-        const chatResult = await runChatLoop(ctx, mutableCtx, meta.id, out, readLine, loginFn, detectEnvironmentFn, confirm, suspendStdin, lineReader);
+        const chatResult = await runChatLoop(ctx, mutableCtx, meta.id, out, readLine, loginFn, detectEnvironmentFn, confirm, suspendStdin, lineReader, inkRenderTurn);
         spendDirty = true; // a task may have run — refresh the spend summary
         if (chatResult === 'exit') break;
         continue;
@@ -2473,10 +2508,10 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
         const all = await ctx.store.list();
         const latest = all[0];
         if (latest !== undefined) {
-          if (!(await promptForAuthBeforeChat(out, readLine, mutableCtx, loginFn, detectEnvironmentFn, confirm, suspendStdin))) {
+          if (!(await promptForAuthBeforeChat(out, readLine, mutableCtx, loginFn, detectEnvironmentFn, confirm, suspendStdin, inkHandle !== null))) {
             continue;
           }
-          const chatResult = await runChatLoop(ctx, mutableCtx, latest.id, out, readLine, loginFn, detectEnvironmentFn, confirm, suspendStdin, lineReader);
+          const chatResult = await runChatLoop(ctx, mutableCtx, latest.id, out, readLine, loginFn, detectEnvironmentFn, confirm, suspendStdin, lineReader, inkRenderTurn);
           spendDirty = true; // a task may have run — refresh the spend summary
           if (chatResult === 'exit') break;
         } else {
@@ -2490,10 +2525,10 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
       if (!Number.isNaN(digit) && digit >= 1 && digit <= 9) {
         const target = metas[digit - 1];
         if (target !== undefined) {
-          if (!(await promptForAuthBeforeChat(out, readLine, mutableCtx, loginFn, detectEnvironmentFn, confirm, suspendStdin))) {
+          if (!(await promptForAuthBeforeChat(out, readLine, mutableCtx, loginFn, detectEnvironmentFn, confirm, suspendStdin, inkHandle !== null))) {
             continue;
           }
-          const chatResult = await runChatLoop(ctx, mutableCtx, target.id, out, readLine, loginFn, detectEnvironmentFn, confirm, suspendStdin, lineReader);
+          const chatResult = await runChatLoop(ctx, mutableCtx, target.id, out, readLine, loginFn, detectEnvironmentFn, confirm, suspendStdin, lineReader, inkRenderTurn);
           spendDirty = true; // a task may have run — refresh the spend summary
           if (chatResult === 'exit') break;
         } else {
@@ -2510,7 +2545,7 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
 
       // ---- [i] Import a native conversation -----------------------------------
       if (key === 'i') {
-        const importResult = await runImportNative(ctx, mutableCtx, out, readLine, loginFn, detectEnvironmentFn, confirm, suspendStdin, lineReader);
+        const importResult = await runImportNative(ctx, mutableCtx, out, readLine, loginFn, detectEnvironmentFn, confirm, suspendStdin, lineReader, inkRenderTurn);
         spendDirty = true; // an imported session may run a task — refresh spend
         if (importResult === 'exit') break;
         continue;
@@ -2640,6 +2675,13 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
       }
     }
   } finally {
-    lineReader?.close();
+    // On the Ink path the reader is `inkHandle.reader`; unmount() closes it AND
+    // tears down the Ink render, so don't also call lineReader.close() (it would
+    // be redundant). Off the Ink path, close the legacy reader as before.
+    if (inkHandle !== null) {
+      inkHandle.unmount();
+    } else {
+      lineReader?.close();
+    }
   }
 }
