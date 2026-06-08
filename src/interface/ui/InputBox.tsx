@@ -32,8 +32,9 @@
  */
 
 import React, { useEffect, useState } from 'react';
-import { Box, Text, useInput } from 'ink';
+import { Box, Text, useInput, useStdin } from 'ink';
 import { dim, cyan } from '../../ui/theme.js';
+import type { InkStdinControl } from './App.js';
 
 /** Min/max box width — mirrors render.ts INPUT_BOX_MIN/MAX_COLUMNS. */
 const INPUT_BOX_MIN_COLUMNS = 32;
@@ -108,6 +109,18 @@ export interface InputBoxProps {
   readonly color: boolean;
   readonly isTty: boolean;
   readonly columns?: number | undefined;
+  /**
+   * When true the editor is SUSPENDED for an inherited-stdio child handoff: its
+   * `useInput` goes `isActive: false` so Ink relinquishes its raw-mode refcount
+   * and the child becomes the sole reader of the TTY. Default false.
+   */
+  readonly suspended?: boolean;
+  /**
+   * Register the Ink-side stdin control (raw-mode toggle + stream pause/resume)
+   * the LineReader's suspend()/resume() drive. Called from inside `useStdin()`
+   * on mount; called with `null` on unmount. Optional (tests may omit it).
+   */
+  readonly onStdinControl?: ((control: InkStdinControl | null) => void) | undefined;
 }
 
 function boxWidth(columns: number | undefined): number {
@@ -135,7 +148,15 @@ function wordRight(text: string, pos: number): number {
  * The real input editor. Renders the bordered box (TTY+colour) or a plain caret
  * (non-TTY / NO_COLOR), exactly mirroring render.ts `canRenderInputBox`.
  */
-export function InputBox({ bridge, color, isTty, columns }: InputBoxProps): React.ReactElement {
+export function InputBox({
+  bridge,
+  color,
+  isTty,
+  columns,
+  suspended = false,
+  onStdinControl,
+}: InputBoxProps): React.ReactElement {
+  const { setRawMode, isRawModeSupported } = useStdin();
   const [value, setValue] = useState('');
   const [cursor, setCursor] = useState(0);
   const [queued, setQueued] = useState(0);
@@ -157,6 +178,31 @@ export function InputBox({ bridge, color, isTty, columns }: InputBoxProps): Reac
       bridge._onQueued = undefined;
     };
   }, [bridge]);
+
+  // Register the Ink-side stdin control so the LineReader's suspend()/resume()
+  // can drive INK's raw-mode toggle (NOT process.stdin's — Ink re-applies its own
+  // on every render and would fight the child). Captured from inside useStdin() so
+  // the /dev/tty fallback stream passed to render() is handled for free. We do NOT
+  // expose stream pause/resume: Ink 6 reads via a `'readable'` listener it
+  // adds/removes by raw-mode refcount, so the isActive toggle alone releases and
+  // re-primes the stream; pausing/resuming would switch it to flowing mode and
+  // break those reads.
+  useEffect(() => {
+    if (onStdinControl === undefined) return;
+    const control: InkStdinControl = {
+      setRawMode: (v: boolean): void => {
+        // Best-effort: Ink's setRawMode throws if raw mode is unsupported.
+        try {
+          if (isRawModeSupported) setRawMode(v);
+        } catch {
+          /* raw mode unsupported on this stream */
+        }
+      },
+      isRawModeSupported,
+    };
+    onStdinControl(control);
+    return () => onStdinControl(null);
+  }, [onStdinControl, setRawMode, isRawModeSupported]);
 
   const replace = (next: string, nextCursor: number): void => {
     setValue(next);
@@ -254,7 +300,9 @@ export function InputBox({ bridge, color, isTty, columns }: InputBoxProps): Reac
       replace(value.slice(0, cursor) + input + value.slice(cursor), cursor + input.length);
       return;
     }
-  });
+    // When `suspended`, this handler is inert (isActive:false below also stops Ink
+    // from delivering input), so an inherited-stdio child owns the TTY alone.
+  }, { isActive: !suspended });
 
   // -------------------------------------------------------------------------
   // Rendering

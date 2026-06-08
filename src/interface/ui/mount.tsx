@@ -122,10 +122,28 @@ export function createInkLineReader(bridge: InkAppBridge): LineReader {
   // When non-null, a model turn is active and full non-blank lines typed
   // mid-turn are routed here (typed-ahead capture) instead of buffer/waiters.
   let capture: ((line: string) => void) | null = null;
+  // Suspend/resume state for the inherited-stdio child handoff (Step 2b).
+  let suspended = false;
+  // The ~250ms blank-line suppression window after resume(): an inherited-stdio
+  // child (e.g. `claude auth login`) often leaves its submit Enter queued as it
+  // exits; drop only that immediate blank line so it never auto-answers the next
+  // prompt. Mirrors menu-readline.ts `suppressEmptyUntil`/`suppressGeneration`.
+  let suppressEmptyUntil = 0;
+  let suppressGeneration = 0;
 
   bridge.onSubmit((raw: string) => {
     if (closed) return;
     const line = raw.trim();
+    if (line === '' && Date.now() <= suppressEmptyUntil) {
+      // The child's trailing submit-Enter (or a stray newline from re-priming raw
+      // mode). Drop exactly this one blank line so the next prompt is not auto-
+      // answered with an empty submission. Matches the legacy rl.on('line') quirk.
+      suppressEmptyUntil = 0;
+      suppressGeneration += 1;
+      return;
+    }
+    suppressEmptyUntil = 0;
+    suppressGeneration += 1;
     if (capture !== null) {
       // Mid-turn typed-ahead: blank lines dropped (a bare Enter is not a queued
       // turn); non-blank lines go to the capture sink, never to buffer/waiters.
@@ -148,14 +166,70 @@ export function createInkLineReader(bridge: InkAppBridge): LineReader {
         waiters.push(resolve);
       });
     },
-    // TODO(step 2b): release stdin so an inherited-stdio child owns the TTY —
-    // drive Ink's OWN setRawMode(false), not process.stdin's.
+    // Release the TTY so an inherited-stdio child (e.g. `claude auth login`)
+    // becomes the SOLE reader of fd0. The Ink analogue of menu-readline.ts
+    // `suspend()`.
+    //
+    // Ink 6 reads input via a `'readable'` listener (NOT flowing-mode `data`):
+    // its `useInput` raw-mode refcount, when it hits 0, REMOVES that listener,
+    // sets cooked mode and `unref()`s — so flipping the InputBox's `useInput` to
+    // isActive:false is what truly releases the stream. We therefore do NOT
+    // `pause()`/`resume()` the stream (that would switch it to flowing mode and
+    // break Ink's readable-mode reads — the cause of a dead input after resume),
+    // and we drive INK's OWN `setRawMode` (never process.stdin's, which Ink
+    // re-applies on its next render and would fight the child).
+    //
+    // Idempotent: a no-op second call.
     suspend(): void {
-      /* TODO(step 2b) */
+      if (suspended) return;
+      suspended = true;
+      // 1. Make the input hook inactive. On Ink's next effect pass its raw-mode
+      //    refcount drops to 0 → readable listener removed, cooked mode, unref:
+      //    the child becomes the sole reader of fd0.
+      bridge.setSuspended(true);
+      // 2. Belt-and-suspenders: force cooked mode NOW via Ink's setRawMode so the
+      //    child sees a cooked TTY even before React re-renders. This decrements
+      //    Ink's refcount to 0 (removing the readable listener immediately); the
+      //    pending isActive:false effect's own setRawMode(false) then no-ops
+      //    (Ink guards refcount===0), so the count stays consistent. Best-effort.
+      bridge.stdinControl?.setRawMode(false);
+      // 3. Drop any line we'd already buffered (e.g. a stray Enter) so it can't
+      //    bleed into the next prompt after the child exits. Matches legacy.
+      buffered.length = 0;
     },
-    // TODO(step 2b): re-arm Ink's raw input after a child handoff.
+    // Take the TTY back after the inherited-stdio child exited. The Ink analogue
+    // of menu-readline.ts `resume()`: re-activate the input hook (Ink re-adds its
+    // `'readable'` listener + re-takes raw mode + `ref()`s on the refcount 0→1
+    // transition — this IS the re-prime, replacing the legacy setRawMode off→on
+    // cycle that re-armed libuv's flowing read handle), and arm the ~250ms
+    // blank-line suppression so the child's trailing submit-Enter doesn't
+    // auto-submit an empty line. Idempotent.
     resume(): void {
-      /* TODO(step 2b) */
+      if (!suspended) return;
+      suspended = false;
+      // 1. Drop any line the child left buffered (typically the trailing Enter the
+      //    user pressed to submit a pasted code) so it can't desync the next prompt.
+      buffered.length = 0;
+      // 2. Arm the blank-line suppression window. TTY-only in legacy; here we gate
+      //    on Ink's raw-mode support (its TTY signal). A bare Enter that lands in
+      //    this window is dropped, not delivered as an empty submission.
+      const control = bridge.stdinControl;
+      if (control === null || control.isRawModeSupported) {
+        suppressEmptyUntil = Date.now() + 250;
+        const generation = suppressGeneration;
+        setTimeout(() => {
+          if (suppressGeneration === generation) {
+            suppressEmptyUntil = 0;
+            buffered.length = 0;
+          }
+        }, 250).unref?.();
+      }
+      // 3. Re-activate Ink's input hook. On the refcount 0→1 transition Ink
+      //    re-adds the `'readable'` listener and re-enables raw mode, so the FIRST
+      //    keypress after resume is read (the historical first-paste-after-login
+      //    regression guard). No manual stream resume — that would break readable
+      //    mode.
+      bridge.setSuspended(false);
     },
     close(): void {
       closed = true;
