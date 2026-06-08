@@ -20,11 +20,13 @@ import assert from 'node:assert/strict';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
+import fs from 'node:fs';
+import tty from 'node:tty';
 
 import { EventEmitter } from 'node:events';
 import { startMenu } from '../../src/interface/menu.ts';
 import { parseYesNo, interpretYesNoKey, yesNoHint } from '../../src/interface/menu-questions.ts';
-import { readSingleKey, createLineReader, normalizeMenuKey } from '../../src/interface/menu-readline.ts';
+import { readSingleKey, createLineReader, normalizeMenuKey, resolveRawKeyInput, __resetControllingTtyRawInputForTest } from '../../src/interface/menu-readline.ts';
 import { readMenuKey, confirmViaKey, attachChatTurnKeyListener } from '../../src/interface/menu-key-confirm.ts';
 import { defaultAliasHint, autoUpdateEnabled } from '../../src/interface/menu-display.ts';
 import { completeSlash, CHAT_SLASH_COMMANDS, classifyCompletion, completeSlashArg, fuzzyRank, expandPathToken, matchPathEntries, completeChat, CHAT_SLASH_ARG_MAP } from '../../src/interface/menu-completion.ts';
@@ -1524,6 +1526,53 @@ describe('readSingleKey — single raw keypress', () => {
     assert.deepEqual(f.rawCalls, [true, false], 'raw mode must be restored on close');
     assert.equal(f.listenerCount('data'), 0, 'reader data listener must be removed on close');
     assert.equal(f.listenerCount('close'), 0, 'reader close listener must be removed on close');
+  });
+});
+
+describe('resolveRawKeyInput — legacy raw stream capability', () => {
+  const ttySink = { write(): void {}, color: false, isTty: true } as unknown as OutputSink;
+  const nonTtySink = { write(): void {}, color: false, isTty: false } as unknown as OutputSink;
+
+  it('returns stdin when stdout is a TTY and stdin is raw-capable', () => {
+    const stdin = asStream(new FakeKeyStream([]));
+    stdin.isTTY = true;
+    assert.equal(resolveRawKeyInput(ttySink, stdin), stdin);
+  });
+
+  it('returns null when stdout is not a TTY', () => {
+    const stdin = asStream(new FakeKeyStream([]));
+    stdin.isTTY = true;
+    assert.equal(resolveRawKeyInput(nonTtySink, stdin), null);
+  });
+
+  it('falls back to cached /dev/tty when stdin is not raw-capable', () => {
+    __resetControllingTtyRawInputForTest();
+    const stdin = asStream(new FakeKeyStream([]));
+    stdin.isTTY = false;
+    const fallback = asStream(new FakeKeyStream([]));
+    fallback.isTTY = true;
+    const originalOpenSync = fs.openSync;
+    const originalReadStream = tty.ReadStream;
+    let openedPath = '';
+    try {
+      (fs as unknown as { openSync: typeof fs.openSync }).openSync = ((path: fs.PathLike, flags: string | number) => {
+        openedPath = String(path);
+        assert.equal(flags, 'r');
+        return 123;
+      }) as typeof fs.openSync;
+      (tty as unknown as { ReadStream: new (fd: number) => KeyInputStream }).ReadStream =
+        function FakeReadStream(fd: number): KeyInputStream {
+          assert.equal(fd, 123);
+          return fallback;
+        } as unknown as new (fd: number) => KeyInputStream;
+
+      assert.equal(resolveRawKeyInput(ttySink, stdin), fallback);
+      assert.equal(openedPath, '/dev/tty');
+    } finally {
+      (fs as unknown as { openSync: typeof fs.openSync }).openSync = originalOpenSync;
+      (tty as unknown as { ReadStream: typeof tty.ReadStream }).ReadStream = originalReadStream;
+      __resetControllingTtyRawInputForTest();
+    }
   });
 });
 

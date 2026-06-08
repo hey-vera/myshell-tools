@@ -9,7 +9,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import React from 'react';
 import { render } from 'ink-testing-library';
-import { InputBox, createInputBoxBridge } from '../../src/interface/ui/InputBox.js';
+import { InputBox, composerRules, createInputBoxBridge } from '../../src/interface/ui/InputBox.js';
+import { visibleLength } from '../../src/ui/tui.js';
 
 // Raw input sequences (what a terminal sends).
 const ENTER = '\r';
@@ -22,14 +23,20 @@ const ALT_ENTER = '\x1b\r'; // Meta+Return
 
 const tick = (): Promise<void> => new Promise((r) => setTimeout(r, 50));
 
-test('idle InputBox renders the caret (bordered, TTY+colour)', () => {
+/** Strip ANSI SGR colour codes so frame assertions match the visible glyphs. */
+const plain = (s: string | undefined): string => (s ?? '').replace(/\x1b\[[0-9;]*m/g, '');
+
+test('idle InputBox renders the full-width composer and info chip (TTY+colour)', () => {
   const bridge = createInputBoxBridge();
   const { lastFrame } = render(
     <InputBox bridge={bridge} color={true} isTty={true} columns={60} />,
   );
-  const frame = lastFrame() ?? '';
+  const frame = plain(lastFrame());
   assert.ok(frame.includes('❯'), `expected caret, got:\n${frame}`);
-  assert.ok(frame.includes('✦'), `expected box corner glyph, got:\n${frame}`);
+  assert.ok(frame.includes('─ chat '), `expected chat rule, got:\n${frame}`);
+  assert.ok(frame.includes('┌ Mode Balanced · /goal · /help · /back ┐'), `expected info chip, got:\n${frame}`);
+  assert.ok(frame.includes('Type a message...'), `expected placeholder, got:\n${frame}`);
+  assert.ok(!frame.includes('✦'), `old mini-box glyph must not render, got:\n${frame}`);
 });
 
 test('non-TTY InputBox renders a plain caret (no border)', () => {
@@ -39,7 +46,9 @@ test('non-TTY InputBox renders a plain caret (no border)', () => {
   );
   const frame = lastFrame() ?? '';
   assert.ok(frame.includes('❯'), `expected caret, got:\n${frame}`);
-  assert.ok(!frame.includes('✦'), `expected NO box corner, got:\n${frame}`);
+  assert.ok(!frame.includes('┌'), `expected NO info chip, got:\n${frame}`);
+  assert.ok(!frame.includes('─ chat'), `expected NO rule, got:\n${frame}`);
+  assert.ok(!frame.includes('\x1b['), `expected NO ANSI, got:\n${frame}`);
 });
 
 test('typing updates the visible line', async () => {
@@ -173,10 +182,7 @@ test('Alt+Enter inserts a newline; plain Enter then submits the multiline value'
 // FIX 1 — multiline vertical rendering
 // ---------------------------------------------------------------------------
 
-/** Strip ANSI SGR colour codes so frame assertions match the visible glyphs. */
-const plain = (s: string | undefined): string => (s ?? '').replace(/\x1b\[[0-9;]*m/g, '');
-
-test('multiline buffer renders TWO bordered rows (caret on row 1, gutter on row 2)', async () => {
+test('multiline buffer renders adjacent composer rows (caret on row 1, gutter on row 2)', async () => {
   const bridge = createInputBoxBridge();
   bridge.onSubmit(() => {});
   const { lastFrame, stdin } = render(
@@ -189,7 +195,7 @@ test('multiline buffer renders TWO bordered rows (caret on row 1, gutter on row 
   stdin.write('line2');
   await tick();
   const frame = plain(lastFrame());
-  // Both lines appear, on separate rows, inside the box.
+  // Both lines appear, on separate rows, inside the composer.
   assert.ok(frame.includes('❯ line1'), `expected caret row, got:\n${frame}`);
   assert.ok(frame.includes('… line2'), `expected continuation row, got:\n${frame}`);
   // The two logical rows render on different physical lines.
@@ -197,9 +203,10 @@ test('multiline buffer renders TWO bordered rows (caret on row 1, gutter on row 
   const r1 = rows.findIndex((r) => r.includes('line1'));
   const r2 = rows.findIndex((r) => r.includes('line2'));
   assert.ok(r1 !== -1 && r2 !== -1 && r2 === r1 + 1, `rows should be adjacent, got:\n${frame}`);
-  // Box still frames the (now taller) input.
-  assert.ok(frame.includes('✦'), `expected box corner, got:\n${frame}`);
-  assert.ok(frame.includes('╰'), `expected box bottom, got:\n${frame}`);
+  // Full-width rules still frame the (now taller) input, without old side rails.
+  assert.ok(frame.includes('─ chat '), `expected top rule, got:\n${frame}`);
+  assert.ok(frame.includes('└'), `expected chip bottom, got:\n${frame}`);
+  assert.ok(!frame.includes('│'), `expected no old side rails, got:\n${frame}`);
 });
 
 test('multiline submit sends the full \\n-joined buffer', async () => {
@@ -349,6 +356,28 @@ test('queued indicator appears when setQueued(N) is called', async () => {
   );
   bridge.setQueued(3);
   await tick();
-  const frame = lastFrame() ?? '';
+  const frame = plain(lastFrame());
   assert.ok(frame.includes('queued (3)'), `expected queued indicator, got:\n${frame}`);
+  const rows = frame.split('\n');
+  const queuedRow = rows.findIndex((r) => r.includes('queued (3)'));
+  assert.ok(queuedRow > 0, `queued row should sit below top rule, got:\n${frame}`);
+  assert.ok(rows.slice(queuedRow + 1).some((r) => r.includes('└')), `queued row should sit above bottom rule, got:\n${frame}`);
+});
+
+test('composerRules pins the mode chip and grows past the old 84-column clamp', () => {
+  const rules = composerRules(100, 'Mode Balanced · /goal · /help · /back', false);
+  assert.equal(visibleLength(rules.top), 100);
+  assert.equal(visibleLength(rules.bottom), 100);
+  assert.ok(rules.top.includes('┌ Mode Balanced · /goal · /help · /back ┐'), `got:\n${rules.top}`);
+});
+
+test('NO_COLOR InputBox falls back to plain caret without chip or ANSI', () => {
+  const bridge = createInputBoxBridge();
+  const { lastFrame } = render(
+    <InputBox bridge={bridge} color={false} isTty={true} columns={60} />,
+  );
+  const frame = lastFrame() ?? '';
+  assert.ok(frame.includes('❯'), `expected caret, got:\n${frame}`);
+  assert.ok(!frame.includes('┌'), `expected no chip, got:\n${frame}`);
+  assert.ok(!frame.includes('\x1b['), `expected no ANSI, got:\n${frame}`);
 });

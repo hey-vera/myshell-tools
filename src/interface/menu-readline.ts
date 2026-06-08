@@ -293,14 +293,26 @@ function controllingTtyRawInput(out: OutputSink): KeyInputStream | null {
   return controllingTtyInput;
 }
 
+export function resolveRawKeyInput(
+  out: OutputSink,
+  stdin: KeyInputStream = process.stdin as unknown as KeyInputStream,
+): KeyInputStream | null {
+  if (!out.isTty) return null;
+  if (canReadRawKey(out, stdin)) return stdin;
+  const fallback = controllingTtyRawInput(out);
+  return fallback !== null && canReadRawKey(out, fallback) ? fallback : null;
+}
+
 export function rawKeyInputs(
   out: OutputSink,
   stdin: KeyInputStream = process.stdin as unknown as KeyInputStream,
 ): KeyInputStream[] {
-  if (!out.isTty) return [];
-  if (canReadRawKey(out, stdin)) return [stdin];
-  const fallback = controllingTtyRawInput(out);
-  return fallback !== null && canReadRawKey(out, fallback) ? [fallback] : [];
+  const input = resolveRawKeyInput(out, stdin);
+  return input === null ? [] : [input];
+}
+
+export function __resetControllingTtyRawInputForTest(): void {
+  controllingTtyInput = undefined;
 }
 
 export function normalizeMenuKey(input: string | null): string | null {

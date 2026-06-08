@@ -17,7 +17,7 @@
  *   PANEL: the live "Waiting on N models" panel status line renders during the
  *     panel turn (≥2 candidates).
  *   GOALS: the bordered GOALS box + an agent tree row render mid-turn.
- *   INPUT BOX: the ✦/❯ input box border is intact (not broken/duplicated) while
+ *   COMPOSER: the full-width chat rail + blue info chip + ❯ caret is intact (not broken/duplicated) while
  *     streaming — checked against the ATOMIC last-synchronized Ink frame (the true
  *     on-screen repaint), which is independent of terminal height (a tall, non-
  *     scrolled viewport legitimately retains prior-frame chrome rows in the replay
@@ -69,8 +69,8 @@ const { Terminal } = require('@xterm/headless');
 
 // MYSHELL_INK on (any flag-gated path is live) + a sane width so Ink doesn't wrap
 // every line to one column.
-// FORCE_COLOR:1 so Ink/chalk emit SGR under the PTY and the REAL bordered ✦ input
-// box renders (the inner mounts color:true). @xterm/headless folds SGR into cell
+// FORCE_COLOR:1 so Ink/chalk emit SGR under the PTY and the REAL full-width composer
+// (dim chat rail + blue info chip) renders (the inner mounts color:true). @xterm/headless folds SGR into cell
 // attributes, so the reconstructed TEXT is colour-independent.
 const env = { ...process.env, MYSHELL_INK: '1', COLUMNS: String(COLS), LINES: String(ROWS), FORCE_COLOR: '1' };
 const cmd = `${TSX} ${INNER}`;
@@ -287,28 +287,30 @@ record('GOALS: bordered GOALS panel box rendered', sawGoalsTitle && sawGoalsBord
 record('GOALS: at least one agent tree row rendered', sawAgentRow,
   sawAgentRow ? '' : firstMatch(goalsText, /[├└]/));
 
-// --- INPUT BOX integrity while streaming: a clean ✦ top border + caret row + a
-// bottom border, forming ONE contiguous, intact box pinned at the bottom of the
-// ATOMIC live Ink frame (not broken, split, or duplicated). We inspect the LAST
-// synchronized Ink frame at the GOALS-open moment (the exact atomic repaint Ink
-// committed) rather than the replayed viewport, because how many stale prior-frame
-// border rows linger in a non-scrolled viewport is purely a function of terminal
-// height (Ink erases only its dynamic region; committed chrome scrolls into history
-// — on a short terminal it scrolls away, on a tall one it lingers in the replay),
-// NOT a render bug. The atomic frame is the height-independent truth. In it the box
-// must be the LAST three drawn rows — `╭… ✦╮`, `│ ❯`, `╰…╯` — AND the ✦ top border
-// + caret must each appear EXACTLY ONCE (Ink repaints the pinned box in place,
-// never duplicating it within one frame).
+// --- COMPOSER integrity while streaming: the full-width composer is ONE
+// contiguous, intact surface pinned at the bottom of the ATOMIC live Ink frame
+// (not broken, split, or duplicated). The composer is three drawn rows:
+//   top   — `─ chat ───…───┌ Mode … · /goal · /help · /back ┐`  (dim rail + blue chip)
+//   caret — `❯ <input or placeholder>`                          (cyan caret, no rail)
+//   bottom— `───…───└────────┘`                                 (dim rule + blue chip base)
+// We inspect the LAST synchronized Ink frame at the GOALS-open moment (the exact
+// atomic repaint Ink committed) rather than the replayed viewport, because how many
+// stale prior-frame rows linger in a non-scrolled viewport is purely a function of
+// terminal height (Ink erases only its dynamic region; committed chrome scrolls into
+// history — on a short terminal it scrolls away, on a tall one it lingers in the
+// replay), NOT a render bug. The atomic frame is the height-independent truth. In it
+// the composer must be the LAST three drawn rows AND the chip top + caret must each
+// appear EXACTLY ONCE (Ink repaints the pinned composer in place, never duplicating).
 const liveFrame = lastInkFrameAt('GOALS_OPEN');
 const fTail = liveFrame.slice(-3);
-const tailTop = /^╭─+ ✦╮$/.test(fTail[0] ?? '');
-const tailCaret = /^│\s*❯/.test(fTail[1] ?? '');
-const tailBottom = /^╰─+╯$/.test(fTail[2] ?? '');
+const tailTop = /^─ chat ─+┌ .* ┐$/.test(fTail[0] ?? '');
+const tailCaret = /^❯ /.test(fTail[1] ?? '');
+const tailBottom = /^─+└─+┘$/.test(fTail[2] ?? '');
 const frameText = liveFrame.join('\n');
-const frameTopBorders = (frameText.match(/╭─+ ✦╮/g) || []).length;
-const frameCarets = (frameText.match(/│\s*❯/g) || []).length;
+const frameTopBorders = (frameText.match(/─ chat ─+┌ [^┐]* ┐/g) || []).length;
+const frameCarets = (frameText.match(/❯/g) || []).length;
 record(
-  'INPUT BOX: ✦/❯ border intact + pinned while streaming (single contiguous box)',
+  'COMPOSER: full-width chat rail + blue info chip + ❯ caret intact + pinned while streaming (single contiguous surface)',
   tailTop && tailCaret && tailBottom && frameTopBorders === 1 && frameCarets === 1,
   `top=${tailTop} caret=${tailCaret} bottom=${tailBottom} uniqueTop=${frameTopBorders} uniqueCaret=${frameCarets}`,
 );

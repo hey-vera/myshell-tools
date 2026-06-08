@@ -38,6 +38,11 @@ export function yellow(text: string, color: boolean): string {
   return color ? `\x1b[33m${text}\x1b[0m` : text;
 }
 
+/** Blue text (structural accent / composer rail). */
+export function blue(text: string, color: boolean): string {
+  return color ? `\x1b[34m${text}\x1b[0m` : text;
+}
+
 /** Cyan text (informational accent). */
 export function cyan(text: string, color: boolean): string {
   return color ? `\x1b[36m${text}\x1b[0m` : text;

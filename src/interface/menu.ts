@@ -123,6 +123,7 @@ import {
   type ReadlineEchoController,
   type KeyInputStream,
   createLineReader,
+  resolveRawKeyInput,
 } from './menu-readline.js';
 import { inkEnabled } from './ui/flag.js';
 import {
@@ -525,6 +526,7 @@ export async function runChatLoop(
   // raw-mode ESC→`currentAc.abort()` listener (the InputBox routes a bare ESC to
   // the installed handler). Absent (legacy/test paths) → no-op, byte-identical.
   inkSetInterrupt?: (handler: (() => void) | null) => void,
+  inkSetInputInfo?: (info: { readonly mode: string; readonly hints: readonly string[] } | null) => void,
 ): Promise<'menu' | 'exit'> {
   // -------------------------------------------------------------------------
   // RECAP (Phase 7, docs/recap-feature-5.5.md) — a ※ orientation line on resume
@@ -791,12 +793,16 @@ export async function runChatLoop(
     const entryMode = modeLabel(
       mutableCtx.config.mode ?? resolveAutoMode(mutableCtx.env),
     );
-    out.write(
-      dim(
-        `Type a message and press Enter.  Mode: ${entryMode} (/mode)  ·  /goal  ·  /help  ·  /back\n`,
-        out.color,
-      ),
-    );
+    if (inkSetInputInfo !== undefined) {
+      inkSetInputInfo({ mode: entryMode, hints: ['/goal', '/help', '/back'] });
+    } else {
+      out.write(
+        dim(
+          `Type a message and press Enter.  Mode: ${entryMode} (/mode)  ·  /goal  ·  /help  ·  /back\n`,
+          out.color,
+        ),
+      );
+    }
   }
 
   // EXPERIMENTAL Local Outcome Learner (opt-in via config.learnRouting; default
@@ -2243,16 +2249,15 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
   // `(events, out, verbosity, turnInput)`). Null off the Ink path → runChatLoop
   // takes the legacy renderStream turn path unchanged.
   let inkRenderTurn: import('./run.js').TurnRenderer | undefined;
-  // TTY guard (critical for default-ON safety): Ink must mount ONLY for a real
-  // interactive terminal. When stdout/stdin are NOT a TTY (piped, CI, dumb
-  // terminal), fall through to the LEGACY path exactly as before — Ink's
-  // live-region render would corrupt a pipe and break CI. Matches the legacy
-  // raw-mode interactivity test (out.isTty && process.stdin.isTTY === true).
+  // TTY guard (critical for default-ON safety): Ink must mount ONLY when stdout is
+  // a terminal AND legacy raw-key input can read from the same raw stream it would
+  // use for single-key menus. In Replit shells process.stdin may not be a raw TTY,
+  // but /dev/tty is; resolveRawKeyInput mirrors rawKeyInputs() exactly.
   // Tests inject ctx.readLine, so they bypass this whole branch regardless.
-  const interactiveTty = out.isTty === true && process.stdin.isTTY === true;
-  if (ctx.readLine === undefined && interactiveTty && inkEnabled(process.env, ctx.config)) {
+  const inkRawInput = ctx.readLine === undefined ? resolveRawKeyInput(out) : null;
+  if (ctx.readLine === undefined && out.isTty === true && inkRawInput !== null && inkEnabled(process.env, ctx.config)) {
     const { mountInk } = await import('./ui/mount.js');
-    inkHandle = mountInk({ color: out.color, isTty: out.isTty });
+    inkHandle = mountInk({ color: out.color, isTty: out.isTty, stdin: inkRawInput });
     // Render the menu/chat OUTPUT and read INPUT through the Ink adapters by
     // reassigning the seam bindings the shared loop below already uses.
     out = inkHandle.out;
@@ -2341,6 +2346,9 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
   // path so runChatLoop's legacy ESC path is byte-identical.
   const inkSetInterrupt: ((handler: (() => void) | null) => void) | undefined =
     inkHandle !== null ? (handler) => inkHandle.setInterrupt(handler) : undefined;
+  const inkSetInputInfo:
+    | ((info: { readonly mode: string; readonly hints: readonly string[] } | null) => void)
+    | undefined = inkHandle !== null ? (info) => inkHandle.setInputInfo(info) : undefined;
   const confirm = makeConfirm(out, readLine, ctx.confirm, false, inkReadKey);
   // Lets the login flow release stdin while an inherited-stdio child (e.g.
   // `claude auth login`) owns the terminal, then take it back. Returns the
@@ -2540,7 +2548,7 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
         // (conversations.ts append()), so create an untitled conversation and drop
         // straight into it.
         const meta = await ctx.store.create('');
-        const chatResult = await runChatLoop(ctx, mutableCtx, meta.id, out, readLine, loginFn, detectEnvironmentFn, confirm, suspendStdin, lineReader, inkRenderTurn, inkReadKey, inkSetInterrupt);
+        const chatResult = await runChatLoop(ctx, mutableCtx, meta.id, out, readLine, loginFn, detectEnvironmentFn, confirm, suspendStdin, lineReader, inkRenderTurn, inkReadKey, inkSetInterrupt, inkSetInputInfo);
         spendDirty = true; // a task may have run — refresh the spend summary
         if (chatResult === 'exit') break;
         continue;
@@ -2554,7 +2562,7 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
           if (!(await promptForAuthBeforeChat(out, readLine, mutableCtx, loginFn, detectEnvironmentFn, confirm, suspendStdin, inkReadKey))) {
             continue;
           }
-          const chatResult = await runChatLoop(ctx, mutableCtx, latest.id, out, readLine, loginFn, detectEnvironmentFn, confirm, suspendStdin, lineReader, inkRenderTurn, inkReadKey, inkSetInterrupt);
+          const chatResult = await runChatLoop(ctx, mutableCtx, latest.id, out, readLine, loginFn, detectEnvironmentFn, confirm, suspendStdin, lineReader, inkRenderTurn, inkReadKey, inkSetInterrupt, inkSetInputInfo);
           spendDirty = true; // a task may have run — refresh the spend summary
           if (chatResult === 'exit') break;
         } else {
@@ -2571,7 +2579,7 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
           if (!(await promptForAuthBeforeChat(out, readLine, mutableCtx, loginFn, detectEnvironmentFn, confirm, suspendStdin, inkReadKey))) {
             continue;
           }
-          const chatResult = await runChatLoop(ctx, mutableCtx, target.id, out, readLine, loginFn, detectEnvironmentFn, confirm, suspendStdin, lineReader, inkRenderTurn, inkReadKey, inkSetInterrupt);
+          const chatResult = await runChatLoop(ctx, mutableCtx, target.id, out, readLine, loginFn, detectEnvironmentFn, confirm, suspendStdin, lineReader, inkRenderTurn, inkReadKey, inkSetInterrupt, inkSetInputInfo);
           spendDirty = true; // a task may have run — refresh the spend summary
           if (chatResult === 'exit') break;
         } else {
@@ -2588,7 +2596,7 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
 
       // ---- [i] Import a native conversation -----------------------------------
       if (key === 'i') {
-        const importResult = await runImportNative(ctx, mutableCtx, out, readLine, loginFn, detectEnvironmentFn, confirm, suspendStdin, lineReader, inkRenderTurn, inkReadKey, inkSetInterrupt);
+        const importResult = await runImportNative(ctx, mutableCtx, out, readLine, loginFn, detectEnvironmentFn, confirm, suspendStdin, lineReader, inkRenderTurn, inkReadKey, inkSetInterrupt, inkSetInputInfo);
         spendDirty = true; // an imported session may run a task — refresh spend
         if (importResult === 'exit') break;
         continue;

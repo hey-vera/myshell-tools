@@ -9,7 +9,7 @@
 
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { turnMarker, isPlainMode, GLYPHS, formatRecapLine, type TurnState } from '../../src/ui/theme.ts';
+import { turnMarker, isPlainMode, GLYPHS, formatRecapLine, blue, type TurnState } from '../../src/ui/theme.ts';
 
 const DOT = '●'; // ● U+25CF BLACK CIRCLE
 
@@ -83,6 +83,16 @@ describe('theme — formatRecapLine', () => {
   it('returns "" for an empty / whitespace-only body', () => {
     assert.equal(formatRecapLine('', false), '');
     assert.equal(formatRecapLine('   ', false), '');
+  });
+});
+
+describe('theme — blue', () => {
+  it('emits ANSI 34m when colour is ON', () => {
+    assert.equal(blue('x', true), '\x1b[34mx\x1b[0m');
+  });
+
+  it('degrades to plain text when colour is OFF', () => {
+    assert.equal(blue('x', false), 'x');
   });
 });
 

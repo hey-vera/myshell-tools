@@ -23,7 +23,7 @@ import type { OutputSink } from '../stream-filter.js';
 import type { LineReader, KeyInputStream } from '../menu-readline.js';
 import type { CoreEvent } from '../../core/types.js';
 import type { ProviderId } from '../../providers/port.js';
-import { App, createInkAppBridge, type InkAppBridge } from './App.js';
+import { App, createInkAppBridge, type InkAppBridge, type InputBoxInfo } from './App.js';
 import {
   reduce,
   initialState,
@@ -384,6 +384,7 @@ export interface InkMountHandle {
    * {@link InkAppBridge.setInterrupt}.
    */
   setInterrupt(handler: (() => void) | null): void;
+  setInputInfo(info: InputBoxInfo | null): void;
   /**
    * Drive one model turn's CoreEvent stream into the reducer-backed transcript
    * (the STEP-3b streaming path). Same return shape as render.ts `renderStream`.
@@ -441,19 +442,21 @@ export function mountInk(opts: InkMountOptions): InkMountHandle {
       clock={() => Date.now()}
     />,
     {
-    // Pass a custom stdin (e.g. the /dev/tty ReadStream) when supplied so Ink
-    // reads raw input from the controlling terminal. `render` accepts a Node
-    // ReadStream; the KeyInputStream slice is a structural superset for our use.
-    ...(opts.stdin !== undefined
-      ? { stdin: opts.stdin as unknown as NodeJS.ReadStream }
-      : {}),
-  });
+      // Pass a custom stdin (e.g. the /dev/tty ReadStream) when supplied so Ink
+      // reads raw input from the controlling terminal. `render` accepts a Node
+      // ReadStream; the KeyInputStream slice is a structural superset for our use.
+      ...(opts.stdin !== undefined
+        ? { stdin: opts.stdin as unknown as NodeJS.ReadStream }
+        : {}),
+    },
+  );
 
   return {
     out,
     reader,
     readKey: () => bridge.readKey(),
     setInterrupt: (handler) => bridge.setInterrupt(handler),
+    setInputInfo: (info) => bridge.setInputInfo(info),
     renderTurn,
     waitUntilExit: async () => {
       await instance.waitUntilExit();

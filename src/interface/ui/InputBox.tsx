@@ -39,14 +39,15 @@
 
 import React, { useEffect, useState } from 'react';
 import { Box, Text, useInput, useStdin } from 'ink';
-import { dim, cyan } from '../../ui/theme.js';
+import { dim, cyan, blue } from '../../ui/theme.js';
+import { truncateToWidth, visibleLength } from '../../ui/tui.js';
 import type { InkStdinControl } from './App.js';
 
-/** Min/max box width — mirrors render.ts INPUT_BOX_MIN/MAX_COLUMNS. */
+/** Below this, fall back to the plain caret surface. */
 const INPUT_BOX_MIN_COLUMNS = 32;
-const INPUT_BOX_MAX_COLUMNS = 84;
-const INPUT_BOX_GLYPH = '✦';
 const CARET = '❯';
+const PLACEHOLDER = 'Type a message...';
+const INFO_FALLBACK = 'Mode Balanced · /goal · /help · /back';
 /** Gutter under the `❯ ` caret for continuation rows of a multiline buffer. */
 const CONT_GUTTER = '… ';
 /**
@@ -125,6 +126,8 @@ export interface InputBoxProps {
   readonly color: boolean;
   readonly isTty: boolean;
   readonly columns?: number | undefined;
+  /** Right-pinned composer chip. Omitted keeps the default chat hints. */
+  readonly info?: string | undefined;
   /**
    * When true the editor is SUSPENDED for an inherited-stdio child handoff: its
    * `useInput` goes `isActive: false` so Ink relinquishes its raw-mode refcount
@@ -179,9 +182,25 @@ interface KeyCaptureFlagsLike {
   readonly tab?: boolean;
 }
 
-function boxWidth(columns: number | undefined): number {
-  const width = columns ?? 80;
-  return Math.max(INPUT_BOX_MIN_COLUMNS, Math.min(INPUT_BOX_MAX_COLUMNS, width));
+function composerWidth(columns: number | undefined): number {
+  return Math.max(INPUT_BOX_MIN_COLUMNS, columns ?? 80);
+}
+
+function fitInputLine(line: string, width: number): string {
+  return truncateToWidth(line, Math.max(0, width));
+}
+
+export function composerRules(width: number, info: string, color: boolean): { top: string; bottom: string } {
+  const chipText = ` ${truncateToWidth(info, Math.max(12, width - 12))} `;
+  const topChip = `┌${chipText}┐`;
+  const bottomChip = `└${'─'.repeat(visibleLength(chipText))}┘`;
+  const leftTop = '─ chat ';
+  const topFill = Math.max(1, width - visibleLength(leftTop) - visibleLength(topChip));
+  const bottomFill = Math.max(1, width - visibleLength(bottomChip));
+  return {
+    top: `${dim(leftTop + '─'.repeat(topFill), color)}${blue(topChip, color)}`,
+    bottom: `${dim('─'.repeat(bottomFill), color)}${blue(bottomChip, color)}`,
+  };
 }
 
 /** Index of the start of the word at or before `pos` (word = run of non-spaces). */
@@ -238,6 +257,7 @@ export function InputBox({
   color,
   isTty,
   columns,
+  info,
   suspended = false,
   onStdinControl,
   onEscape,
@@ -498,27 +518,24 @@ export function InputBox({
     );
   }
 
-  const outerWidth = boxWidth(columns);
-  const innerWidth = outerWidth - 2;
-  const topFill = Math.max(1, innerWidth - INPUT_BOX_GLYPH.length - 1);
-  const top = `╭${'─'.repeat(topFill)} ${INPUT_BOX_GLYPH}╮`;
-  const bottom = `╰${'─'.repeat(innerWidth)}╯`;
+  const width = composerWidth(columns);
+  const inputWidth = Math.max(1, width - 2);
+  const rules = composerRules(width, info ?? INFO_FALLBACK, color);
 
   return (
     <Box flexDirection="column">
-      <Text>{dim(top, color)}</Text>
+      <Text>{rules.top}</Text>
       {queued > 0 ? (
-        <Box>
-          <Text>{dim('│ ', color)}</Text>
-          <Text>{dim(`⏎ queued (${queued})`, color)}</Text>
-        </Box>
+        <Text>{dim(`⏎ queued (${queued})`, color)}</Text>
       ) : (
         shownRows.map((line, i) => {
           const absRow = firstShown + i;
           // First buffer row carries the cyan `❯` caret; continuation rows get a
           // dim gutter aligned under it so the multiline block reads as one input.
+          const isFirst = absRow === 0;
+          const display = line === '' && isFirst ? dim(PLACEHOLDER, color) : fitInputLine(line, inputWidth - 2);
           const gutter =
-            absRow === 0 ? (
+            isFirst ? (
               <Text>
                 {cyan(CARET, color)}
                 {' '}
@@ -528,14 +545,13 @@ export function InputBox({
             );
           return (
             <Box key={absRow}>
-              <Text>{dim('│ ', color)}</Text>
               {gutter}
-              <Text>{line}</Text>
+              <Text>{display}</Text>
             </Box>
           );
         })
       )}
-      <Text>{dim(bottom, color)}</Text>
+      <Text>{rules.bottom}</Text>
     </Box>
   );
 }

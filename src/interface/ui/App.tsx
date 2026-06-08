@@ -15,11 +15,21 @@
  */
 
 import React, { useEffect, useState } from 'react';
-import { Box, Static, Text, useInput } from 'ink';
+import { Box, Static, Text, useInput, useStdout } from 'ink';
 import { InputBox, createInputBoxBridge, type InputBoxBridge } from './InputBox.js';
 import { Stream, CommittedLine } from './Stream.js';
 import { StatusBlock } from './StatusBlock.js';
 import type { TranscriptLine, UiState } from './state.js';
+
+export interface InputBoxInfo {
+  readonly mode: string;
+  readonly hints: readonly string[];
+}
+
+function formatInputBoxInfo(info: InputBoxInfo | null): string | undefined {
+  if (info === null) return undefined;
+  return `Mode ${info.mode} · ${info.hints.join(' · ')}`;
+}
 
 /**
  * The Ink-side control surface the LineReader's `suspend()`/`resume()` need to
@@ -77,6 +87,7 @@ export interface InkAppBridge {
    * by the LineReader's `suspend()`/`resume()`. No-op before the App mounts.
    */
   setSuspended(value: boolean): void;
+  setInputInfo(info: InputBoxInfo | null): void;
   /**
    * Read EXACTLY ONE keypress through Ink's OWN input pipeline (no competing raw
    * `process.stdin` listener that would fight Ink). Resolves with a string shaped
@@ -128,6 +139,7 @@ export interface InkAppBridge {
     | ((fn: (prev: string[]) => string[]) => void)
     | undefined;
   /** @internal set by App on mount */ _setSuspended?: ((value: boolean) => void) | undefined;
+  /** @internal set by App on mount */ _setInputInfo?: ((value: InputBoxInfo | null) => void) | undefined;
   /** @internal set by App on mount */ _setUiState?: ((state: UiState) => void) | undefined;
   /** @internal set by App on mount: flip the single-key capture state */
   _setAwaitingKey?: ((value: boolean) => void) | undefined;
@@ -163,6 +175,9 @@ export function createInkAppBridge(): InkAppBridge {
     },
     setSuspended(value: boolean): void {
       bridge._setSuspended?.(value);
+    },
+    setInputInfo(info: InputBoxInfo | null): void {
+      bridge._setInputInfo?.(info);
     },
     readKey(): Promise<string> {
       // Exactly-one-key guarantee: a second readKey() while one is pending would
@@ -293,6 +308,7 @@ export function App({
   rows,
   clock,
 }: AppProps): React.ReactElement {
+  const { stdout } = useStdout();
   const [lines, setLines] = useState<string[]>([]);
   // The structured reducer snapshot (STEP 3b). `null` until the Node side pushes
   // one — until then the App uses the plain string `lines` transcript (Step 1).
@@ -303,17 +319,23 @@ export function App({
   // When true, a single-key menu/confirm read is pending: the InputBox editor goes
   // inactive and <KeyCapture> consumes the next key (see bridge.readKey()).
   const [awaitingKey, setAwaitingKey] = useState(false);
+  const [inputInfo, setInputInfo] = useState<InputBoxInfo | null>(null);
+  const inputInfoText = formatInputBoxInfo(inputInfo);
+  const liveColumns = columns ?? stdout.columns ?? process.stdout.columns ?? 80;
+  const liveRows = rows ?? stdout.rows ?? process.stdout.rows ?? 24;
 
   // Wire the bridge to this component's state on mount so the Node-side
   // OutputSink can push committed lines in and the LineReader can toggle suspend.
   useEffect(() => {
     bridge._setLines = setLines;
     bridge._setSuspended = setSuspended;
+    bridge._setInputInfo = setInputInfo;
     bridge._setUiState = setUiState;
     bridge._setAwaitingKey = setAwaitingKey;
     return () => {
       bridge._setLines = undefined;
       bridge._setSuspended = undefined;
+      bridge._setInputInfo = undefined;
       bridge._setUiState = undefined;
       bridge._setAwaitingKey = undefined;
     };
@@ -356,7 +378,7 @@ export function App({
         <StatusBlock
           state={uiState}
           color={color}
-          {...(rows !== undefined ? { rows } : {})}
+          rows={liveRows}
           {...(clock !== undefined ? { clock } : {})}
         />
         <Stream buffer={uiState.stream.buffer} color={color} />
@@ -364,7 +386,8 @@ export function App({
           bridge={bridge.input}
           color={color}
           isTty={isTty}
-          columns={columns}
+          columns={liveColumns}
+          info={inputInfoText}
           suspended={suspended || awaitingKey}
           onStdinControl={bridge.attachStdinControl}
           onEscape={() => bridge.interrupt()}
@@ -383,7 +406,8 @@ export function App({
         bridge={bridge.input}
         color={color}
         isTty={isTty}
-        columns={columns}
+        columns={liveColumns}
+        info={inputInfoText}
         suspended={suspended || awaitingKey}
         onStdinControl={bridge.attachStdinControl}
         onEscape={() => bridge.interrupt()}

@@ -15,6 +15,40 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   resumed goal's contract from the persisted `workTrace` (niche: the in-run contract
   is already kept in memory; only cross-session resume benefits). Optional.
 
+## [3.29.0]
+
+### Fixed — the Ink UI now actually activates in Replit/data-tools shells
+- **Root cause of "the new UI never showed up":** the mount gate required BOTH
+  stdout *and* `process.stdin` to be TTYs. In wrapper shells (e.g. Steve Moraco's
+  `data-tools`/`replit-tools`) `process.stdin` is not a raw TTY even though the
+  terminal is fully interactive — so Ink never mounted and you saw the legacy
+  renderer. The gate now mirrors the legacy raw-key path exactly: a new
+  `resolveRawKeyInput()` returns `process.stdin` when it's raw-capable, else the
+  cached `/dev/tty` `ReadStream`, else `null`. Ink mounts when stdout is a TTY and
+  that stream exists, and is fed to Ink as its `stdin`. Pipes/CI (stdout not a TTY)
+  still fall through to the legacy/cooked path, so nothing about non-interactive
+  use changes.
+
+### Changed — redesigned, full-width orchestration composer
+- The chat input is no longer a narrow rounded box. It is now a **full-width
+  composer**: a dim `─ chat ───…` rule across the terminal with a **right-pinned
+  blue info chip** showing the current mode and command hints
+  (`┌ Mode Balanced · /goal · /help · /back ┐`), the `❯` caret line, and a closing
+  full-width rule. The mode/hints line that used to scroll away in the transcript
+  is now pinned to the composer and updates live. An empty composer shows a dim
+  `Type a message...` placeholder.
+- The composer recomputes its width on terminal resize, and degrades cleanly to a
+  plain `❯ value` surface under `NO_COLOR`, a non-TTY, or a narrow (<32 col)
+  terminal.
+
+### Internal
+- New `blue` theme primitive (ANSI 34) alongside the existing colour helpers.
+- `smoke:pty:ink` composer assertion updated to the new full-width shape, and
+  `smoke:pty:handoff` made wedge-aware: the documented PTY job-control race (an
+  inherited-stdio child briefly owning the foreground process group) is retried,
+  while any attempt that resumes is still asserted hard so a genuine regression
+  fails.
+
 ## [3.28.0]
 
 ### Changed — the orchestration-terminal Ink UI is now the default
