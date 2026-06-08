@@ -15,6 +15,21 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   resumed goal's contract from the persisted `workTrace` (niche: the in-run contract
   is already kept in memory; only cross-session resume benefits). Optional.
 
+## [3.29.1]
+
+### Fixed — interactive sign-in / passthrough now reaches the terminal in pipe-stdin shells
+- **Follow-up to the 3.29.0 activation fix (caught in adversarial review before it
+  shipped live).** Once the Ink UI mounts in a wrapper shell where `process.stdin`
+  is a pipe (it reads `/dev/tty` instead), spawning an interactive child with
+  `stdio:'inherit'` handed the child the *pipe* as its input — so `claude /login`'s
+  "paste code here" prompt and the raw `claude`/`codex` passthrough session would
+  receive **no keystrokes** and hang. Interactive children now read from `/dev/tty`
+  (the real controlling terminal) when `process.stdin` isn't a TTY, via a new
+  `runInteractiveChild()` helper used by both the login flow and the raw-session
+  passthrough. On a normal terminal (`process.stdin` is a TTY), Windows, or a true
+  non-interactive/CI run, behaviour is unchanged (`inherit`) — including vendor
+  binary resolution (PATH / Windows `.cmd`), which still goes through execa.
+
 ## [3.29.0]
 
 ### Fixed — the Ink UI now actually activates in Replit/data-tools shells

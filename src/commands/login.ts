@@ -39,8 +39,8 @@
  * may have left in our store, so it can't shadow claude's own fresh credential.
  */
 
-import { execa } from 'execa';
 import type { OutputSink } from '../interface/render.js';
+import { runInteractiveChild } from '../infra/controlling-tty.js';
 import type { ProviderId } from '../providers/port.js';
 import { detectProvider, getInstallCommand } from '../providers/detect.js';
 import { bold, dim, green, red } from '../ui/theme.js';
@@ -210,13 +210,8 @@ async function runCodeMethodForProvider(
   try {
     // Run the vendor sign-in interactively. We intentionally ignore the exit code
     // (it's unreliable — see below) and verify via a real credential probe instead.
-    await execa(bin, [...args], {
-      stdin: 'inherit',
-      stdout: 'inherit',
-      stderr: 'inherit',
-      reject: false,
-      env: childEnv,
-    });
+    // runInteractiveChild hands the child /dev/tty as stdin in a pipe-stdin shell.
+    await runInteractiveChild(bin, args, { env: childEnv }).done;
   } finally {
     resumeStdin?.();
   }
@@ -348,27 +343,21 @@ export async function runLogin(
         );
       }
       const resumeStdin = opts?.suspendStdin?.();
-      let result;
+      let exitCode: number | null;
       try {
-        result = await execa(bin, [...args], {
-          stdin: 'inherit',
-          stdout: 'inherit',
-          stderr: 'inherit',
-          reject: false,
-          env: childEnv,
-        });
+        exitCode = await runInteractiveChild(bin, args, { env: childEnv }).done;
       } finally {
         resumeStdin?.();
       }
 
-      if (result.exitCode === 0) {
+      if (exitCode === 0) {
         const authenticated = await verifyPostLogin(out, id, childEnv, cwd);
         if (!authenticated) {
           out.write(red(`✗ ${id} exited successfully, but is still not signed in.\n`, out.color));
         }
       } else {
         out.write(
-          red(`✗ ${id} sign-in did not complete (exit ${result.exitCode ?? 'unknown'}).\n`, out.color),
+          red(`✗ ${id} sign-in did not complete (exit ${exitCode ?? 'unknown'}).\n`, out.color),
         );
         // The classic container failure mode is a dead localhost callback.
         // When an interactive readline is available, offer to immediately retry

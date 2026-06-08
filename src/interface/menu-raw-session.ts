@@ -5,11 +5,11 @@
  * CLI directly (stdio:inherit) and hand over the terminal until it exits.
  */
 
-import { execa } from 'execa';
 import type { EnvironmentStatus } from '../providers/detect.js';
 import type { OutputSink } from './render.js';
 import { readMenuKey } from './menu-key-confirm.js';
 import { countRecentInterrupts } from './menu-display.js';
+import { runInteractiveChild } from '../infra/controlling-tty.js';
 
 /**
  * Decide whether a raw-session SIGINT count warrants escaping back to the menu.
@@ -90,12 +90,14 @@ export async function runRawProviderSession(
     out.write('(Ctrl+C twice quickly → back to the myshell menu)\n');
   }
 
-  // stdio:'inherit' hands the terminal to the native CLI so its interactive
-  // session runs in place. reject:false so we return to menu on any exit code.
+  // Hand the terminal to the native CLI so its interactive session runs in place.
+  // runInteractiveChild gives the child /dev/tty as stdin in a pipe-stdin wrapper
+  // shell (data-tools) so it reads real keystrokes — a no-op ('inherit') on a normal
+  // terminal. stdout/stderr stay inherited; it never rejects (return to menu on any exit).
   // Suspend the menu reader so it cannot race the inherited-stdio child for keys.
   const resumeStdin = suspendStdin?.();
   try {
-    const subprocess = execa(bin, [], { stdio: 'inherit', reject: false });
+    const subprocess = runInteractiveChild(bin, []);
 
     // Unix-only: register the rapid-double-Ctrl+C escape handler.
     // On Windows: skip entirely — SIGINT/process-group semantics differ and
@@ -120,13 +122,13 @@ export async function runRawProviderSession(
 
       process.on('SIGINT', rawSigintHandler);
       try {
-        await subprocess;
+        await subprocess.done;
       } finally {
         process.removeListener('SIGINT', rawSigintHandler);
       }
     } else {
       // Windows: no SIGINT handler — await the child normally.
-      await subprocess;
+      await subprocess.done;
     }
   } finally {
     // Resume the menu reader only after the inherited child and SIGINT handler are gone.
