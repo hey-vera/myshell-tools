@@ -519,6 +519,12 @@ export async function runChatLoop(
   // feel). Chat-message input stays on the full line editor. Absent → the legacy
   // line-mode path is byte-identical.
   inkReadKey?: () => Promise<string>,
+  // Ink turn-interrupt seam. When provided (the Ink path), runTaskWithInputHooks
+  // installs a handler that aborts the in-flight turn's AbortController for the
+  // duration of each turn and clears it after — the Ink twin of the legacy
+  // raw-mode ESC→`currentAc.abort()` listener (the InputBox routes a bare ESC to
+  // the installed handler). Absent (legacy/test paths) → no-op, byte-identical.
+  inkSetInterrupt?: (handler: (() => void) | null) => void,
 ): Promise<'menu' | 'exit'> {
   // -------------------------------------------------------------------------
   // RECAP (Phase 7, docs/recap-feature-5.5.md) — a ※ orientation line on resume
@@ -902,10 +908,23 @@ export async function runChatLoop(
             }
           })
         : (): void => {};
+    // Ink-path interrupt: install a handler the InputBox routes a bare ESC to. It
+    // mirrors the legacy ESC semantics exactly — mark the turn interrupted-by-ESC
+    // (so decidePostTurn discards the typed-ahead queue) and abort THIS turn's
+    // AbortController, staying at the chat prompt (never the Ctrl+C window, never
+    // back to the menu). Cleared in `finally` so an idle-prompt ESC is a no-op.
+    // No-op off the Ink path (inkSetInterrupt undefined).
+    if (inkSetInterrupt !== undefined) {
+      inkSetInterrupt(() => {
+        interruptedByEsc = true;
+        currentAc?.abort();
+      });
+    }
     try {
       return await runTask(taskLine, taskDeps, out, signal, verbosity, turnInput, inkRenderTurn);
     } finally {
       detachEsc();
+      if (inkSetInterrupt !== undefined) inkSetInterrupt(null);
       if (stopCapture !== null) stopCapture();
       turnInput?.clear();
     }
@@ -2310,6 +2329,11 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
   // (which would fight Ink). forceLine stays false; inkReadKey owns the Ink path.
   const inkReadKey: (() => Promise<string>) | undefined =
     inkHandle !== null ? () => inkHandle.readKey() : undefined;
+  // Ink turn-interrupt setter — installs/clears the per-turn ESC→abort handler on
+  // the App bridge (the InputBox routes a bare ESC to it). Undefined off the Ink
+  // path so runChatLoop's legacy ESC path is byte-identical.
+  const inkSetInterrupt: ((handler: (() => void) | null) => void) | undefined =
+    inkHandle !== null ? (handler) => inkHandle.setInterrupt(handler) : undefined;
   const confirm = makeConfirm(out, readLine, ctx.confirm, false, inkReadKey);
   // Lets the login flow release stdin while an inherited-stdio child (e.g.
   // `claude auth login`) owns the terminal, then take it back. Returns the
@@ -2509,7 +2533,7 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
         // (conversations.ts append()), so create an untitled conversation and drop
         // straight into it.
         const meta = await ctx.store.create('');
-        const chatResult = await runChatLoop(ctx, mutableCtx, meta.id, out, readLine, loginFn, detectEnvironmentFn, confirm, suspendStdin, lineReader, inkRenderTurn, inkReadKey);
+        const chatResult = await runChatLoop(ctx, mutableCtx, meta.id, out, readLine, loginFn, detectEnvironmentFn, confirm, suspendStdin, lineReader, inkRenderTurn, inkReadKey, inkSetInterrupt);
         spendDirty = true; // a task may have run — refresh the spend summary
         if (chatResult === 'exit') break;
         continue;
@@ -2523,7 +2547,7 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
           if (!(await promptForAuthBeforeChat(out, readLine, mutableCtx, loginFn, detectEnvironmentFn, confirm, suspendStdin, inkReadKey))) {
             continue;
           }
-          const chatResult = await runChatLoop(ctx, mutableCtx, latest.id, out, readLine, loginFn, detectEnvironmentFn, confirm, suspendStdin, lineReader, inkRenderTurn, inkReadKey);
+          const chatResult = await runChatLoop(ctx, mutableCtx, latest.id, out, readLine, loginFn, detectEnvironmentFn, confirm, suspendStdin, lineReader, inkRenderTurn, inkReadKey, inkSetInterrupt);
           spendDirty = true; // a task may have run — refresh the spend summary
           if (chatResult === 'exit') break;
         } else {
@@ -2540,7 +2564,7 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
           if (!(await promptForAuthBeforeChat(out, readLine, mutableCtx, loginFn, detectEnvironmentFn, confirm, suspendStdin, inkReadKey))) {
             continue;
           }
-          const chatResult = await runChatLoop(ctx, mutableCtx, target.id, out, readLine, loginFn, detectEnvironmentFn, confirm, suspendStdin, lineReader, inkRenderTurn, inkReadKey);
+          const chatResult = await runChatLoop(ctx, mutableCtx, target.id, out, readLine, loginFn, detectEnvironmentFn, confirm, suspendStdin, lineReader, inkRenderTurn, inkReadKey, inkSetInterrupt);
           spendDirty = true; // a task may have run — refresh the spend summary
           if (chatResult === 'exit') break;
         } else {
@@ -2557,7 +2581,7 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
 
       // ---- [i] Import a native conversation -----------------------------------
       if (key === 'i') {
-        const importResult = await runImportNative(ctx, mutableCtx, out, readLine, loginFn, detectEnvironmentFn, confirm, suspendStdin, lineReader, inkRenderTurn, inkReadKey);
+        const importResult = await runImportNative(ctx, mutableCtx, out, readLine, loginFn, detectEnvironmentFn, confirm, suspendStdin, lineReader, inkRenderTurn, inkReadKey, inkSetInterrupt);
         spendDirty = true; // an imported session may run a task — refresh spend
         if (importResult === 'exit') break;
         continue;

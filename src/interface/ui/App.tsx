@@ -99,6 +99,23 @@ export interface InkAppBridge {
    */
   readKey(): Promise<string>;
   /**
+   * Set (or clear with `null`) the turn-interrupt handler. While a model turn is
+   * in flight the menu loop installs a handler that aborts the turn's
+   * AbortController (the Ink twin of the legacy raw-mode ESC→`currentAc.abort()`
+   * listener); it clears the handler when the turn settles. When a handler is set,
+   * the `<InputBox>` treats a bare ESC as "interrupt this turn" instead of an edit
+   * — typed-ahead characters still queue, only ESC interrupts. `null` (idle) → ESC
+   * is a no-op at the prompt (no regression).
+   */
+  setInterrupt(handler: (() => void) | null): void;
+  /**
+   * Invoke the installed turn-interrupt handler if one is set. Returns `true` when
+   * a handler ran (ESC was consumed as an interrupt), `false` when idle (no handler
+   * → the caller should not treat ESC as an interrupt). Called by the `<InputBox>`
+   * on a bare ESC keypress during a turn.
+   */
+  interrupt(): boolean;
+  /**
    * Register the Ink-side stdin control (raw-mode toggle + stream pause/resume).
    * The `<InputBox>` calls this from inside `useStdin()` on mount; the LineReader
    * reads it in `suspend()`/`resume()`. `null` after unmount.
@@ -117,6 +134,9 @@ export interface InkAppBridge {
   /** @internal the pending single-key resolver, set by readKey(), consumed (once)
    *  by the App's capture hook. Cleared after exactly one key is delivered. */
   _keyResolver?: ((key: string) => void) | null;
+  /** @internal the installed turn-interrupt handler, set by setInterrupt(); read
+   *  by the InputBox's bare-ESC branch. `null`/undefined when idle. */
+  _interrupt?: (() => void) | null;
   /** @internal the attached Ink stdin control */ _stdinControl?: InkStdinControl | null;
 }
 
@@ -131,6 +151,7 @@ export function createInkAppBridge(): InkAppBridge {
     input,
     _stdinControl: null,
     _keyResolver: null,
+    _interrupt: null,
     commit(line: string): void {
       bridge._setLines?.((prev) => [...prev, line]);
     },
@@ -156,6 +177,15 @@ export function createInkAppBridge(): InkAppBridge {
         // the capture hook becomes active and consumes the next key.
         bridge._setAwaitingKey?.(true);
       });
+    },
+    setInterrupt(handler: (() => void) | null): void {
+      bridge._interrupt = handler;
+    },
+    interrupt(): boolean {
+      const handler = bridge._interrupt;
+      if (handler == null) return false;
+      handler();
+      return true;
     },
     attachStdinControl(control: InkStdinControl | null): void {
       bridge._stdinControl = control;
@@ -337,6 +367,9 @@ export function App({
           columns={columns}
           suspended={suspended || awaitingKey}
           onStdinControl={bridge.attachStdinControl}
+          onEscape={() => bridge.interrupt()}
+          readPending={() => bridge._keyResolver != null}
+          onReadKey={(input, key) => onCapturedKey(normalizeInkKey(input, key))}
         />
         {awaitingKey && !suspended ? <KeyCapture resolve={onCapturedKey} /> : null}
       </Box>
@@ -353,6 +386,9 @@ export function App({
         columns={columns}
         suspended={suspended || awaitingKey}
         onStdinControl={bridge.attachStdinControl}
+        onEscape={() => bridge.interrupt()}
+        readPending={() => bridge._keyResolver != null}
+        onReadKey={(input, key) => onCapturedKey(normalizeInkKey(input, key))}
       />
       {awaitingKey && !suspended ? <KeyCapture resolve={onCapturedKey} /> : null}
     </Box>

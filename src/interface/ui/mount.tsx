@@ -378,6 +378,13 @@ export interface InkMountHandle {
    */
   readKey(): Promise<string>;
   /**
+   * Install (or clear with `null`) the turn-interrupt handler on the App bridge.
+   * The menu loop sets it to abort the in-flight turn for the duration of each Ink
+   * turn; the `<InputBox>` routes a bare ESC to it (H1). See
+   * {@link InkAppBridge.setInterrupt}.
+   */
+  setInterrupt(handler: (() => void) | null): void;
+  /**
    * Drive one model turn's CoreEvent stream into the reducer-backed transcript
    * (the STEP-3b streaming path). Same return shape as render.ts `renderStream`.
    */
@@ -446,11 +453,23 @@ export function mountInk(opts: InkMountOptions): InkMountHandle {
     out,
     reader,
     readKey: () => bridge.readKey(),
+    setInterrupt: (handler) => bridge.setInterrupt(handler),
     renderTurn,
     waitUntilExit: async () => {
       await instance.waitUntilExit();
     },
     unmount(): void {
+      // Resolve a pending single-key read (App.readKey()) BEFORE tearing down the
+      // React tree, else the awaiting readMenuKey/confirmViaInkKey orphans and
+      // hangs forever (M1). The sentinel is '\x03' (Ctrl-C/ETX): readMenuKey maps
+      // it to `null` (the caller exits) and confirmViaInkKey's interpretYesNoKey
+      // maps it to 'abort' (cancel) — both treat a teardown as a clean cancel/exit
+      // rather than looping for another key (which '' would cause confirm to do).
+      // Null the resolver BEFORE invoking it so a double-resolve is a safe no-op.
+      const pendingKey = bridge._keyResolver;
+      bridge._keyResolver = null;
+      if (pendingKey != null) pendingKey('\x03');
+      // reader.close() resolves every pending/future nextLine() waiter with null.
       reader.close();
       instance.unmount();
     },

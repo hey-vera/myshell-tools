@@ -137,6 +137,46 @@ export interface InputBoxProps {
    * on mount; called with `null` on unmount. Optional (tests may omit it).
    */
   readonly onStdinControl?: ((control: InkStdinControl | null) => void) | undefined;
+  /**
+   * Bare-ESC handler. When a model turn is in flight the App installs a turn
+   * interrupt; on a bare ESC the editor calls this INSTEAD of editing. Returns
+   * `true` when the ESC was consumed as an interrupt (a turn was aborted) so the
+   * editor must not also treat ESC as input; `false` when idle (no turn) → ESC is
+   * a no-op at the prompt, exactly as before. Typed-ahead characters are NOT
+   * affected: only the bare ESC key routes here, normal chars still queue. Optional.
+   */
+  readonly onEscape?: (() => boolean) | undefined;
+  /**
+   * Returns `true` while a single-key menu/confirm read is pending (the App's
+   * `readKey()`). The editor's input handler stops editing while this is true so a
+   * key that arrives in the sub-frame window after `readKey()` flips `awaitingKey`
+   * — but before the `isActive:false` re-render propagates — cannot mutate the edit
+   * buffer. Optional (tests/Step-1 paths may omit it). See App.readKey().
+   */
+  readonly readPending?: (() => boolean) | undefined;
+  /**
+   * Resolve a pending single-key read with a key delivered to the editor's
+   * `useInput` in the sub-frame window BEFORE the dedicated `<KeyCapture>` hook has
+   * mounted (M2). The App wires this to its key-capture resolver (which nulls the
+   * resolver first, so a later double-delivery via KeyCapture is a safe no-op). The
+   * editor itself never mutates for such a key — it is forwarded here instead. Only
+   * called while `readPending()` is true. Optional. See App.readKey()/KeyCapture.
+   */
+  readonly onReadKey?: ((input: string, key: KeyCaptureFlagsLike) => void) | undefined;
+}
+
+/** The slice of Ink's `key` object {@link InputBoxProps.onReadKey} forwards (a
+ *  structural match for App's KeyCaptureFlags — kept local to avoid an import
+ *  cycle through App, which imports InkStdinControl from here). */
+interface KeyCaptureFlagsLike {
+  readonly return?: boolean;
+  readonly escape?: boolean;
+  readonly ctrl?: boolean;
+  readonly upArrow?: boolean;
+  readonly downArrow?: boolean;
+  readonly leftArrow?: boolean;
+  readonly rightArrow?: boolean;
+  readonly tab?: boolean;
 }
 
 function boxWidth(columns: number | undefined): number {
@@ -200,6 +240,9 @@ export function InputBox({
   columns,
   suspended = false,
   onStdinControl,
+  onEscape,
+  readPending,
+  onReadKey,
 }: InputBoxProps): React.ReactElement {
   const { setRawMode, isRawModeSupported } = useStdin();
   const [value, setValue] = useState('');
@@ -269,6 +312,30 @@ export function InputBox({
   };
 
   useInput((input, key) => {
+    // --- Sub-frame mode-switch guard (M2) ------------------------------------
+    // A single-key menu/confirm read (App.readKey()) flips `awaitingKey` on, which
+    // sets this box's `isActive:false` — but only on the NEXT render+effect pass.
+    // A key delivered in that sub-frame window would otherwise land here and mutate
+    // the editor (a stray char + the read waits for the NEXT key). Bail at the very
+    // top so the editor consumes nothing while a read is pending, and FORWARD the
+    // key to resolve the read directly (the dedicated <KeyCapture> hook has not
+    // mounted yet in this sub-frame). onReadKey nulls the resolver before resolving,
+    // so a later double-delivery via KeyCapture is a safe no-op. The editor itself
+    // never mutates for this key.
+    if (readPending?.() === true) {
+      onReadKey?.(input, key as KeyCaptureFlagsLike);
+      return;
+    }
+
+    // --- Bare ESC → interrupt the in-flight turn (H1) ------------------------
+    // During a model turn the App installs an interrupt handler (the Ink twin of
+    // the legacy raw-mode ESC→currentAc.abort()). A BARE Escape keypress routes
+    // there and aborts the turn instead of editing. Only the standalone Escape key
+    // is intercepted (key.escape && no input payload): typed-ahead characters and
+    // Alt-chord escapes are untouched, so the typed-ahead queue is preserved. When
+    // idle (no handler installed) onEscape returns false → ESC is a no-op as before.
+    if (key.escape && input === '' && onEscape?.() === true) return;
+
     // --- Submit vs newline ---------------------------------------------------
     if (key.return) {
       if (key.meta) {
