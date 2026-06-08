@@ -169,6 +169,179 @@ test('Alt+Enter inserts a newline; plain Enter then submits the multiline value'
   assert.deepEqual(submitted, ['line1\nline2']);
 });
 
+// ---------------------------------------------------------------------------
+// FIX 1 — multiline vertical rendering
+// ---------------------------------------------------------------------------
+
+/** Strip ANSI SGR colour codes so frame assertions match the visible glyphs. */
+const plain = (s: string | undefined): string => (s ?? '').replace(/\x1b\[[0-9;]*m/g, '');
+
+test('multiline buffer renders TWO bordered rows (caret on row 1, gutter on row 2)', async () => {
+  const bridge = createInputBoxBridge();
+  bridge.onSubmit(() => {});
+  const { lastFrame, stdin } = render(
+    <InputBox bridge={bridge} color={true} isTty={true} columns={60} />,
+  );
+  stdin.write('line1');
+  await tick();
+  stdin.write(ALT_ENTER);
+  await tick();
+  stdin.write('line2');
+  await tick();
+  const frame = plain(lastFrame());
+  // Both lines appear, on separate rows, inside the box.
+  assert.ok(frame.includes('❯ line1'), `expected caret row, got:\n${frame}`);
+  assert.ok(frame.includes('… line2'), `expected continuation row, got:\n${frame}`);
+  // The two logical rows render on different physical lines.
+  const rows = frame.split('\n');
+  const r1 = rows.findIndex((r) => r.includes('line1'));
+  const r2 = rows.findIndex((r) => r.includes('line2'));
+  assert.ok(r1 !== -1 && r2 !== -1 && r2 === r1 + 1, `rows should be adjacent, got:\n${frame}`);
+  // Box still frames the (now taller) input.
+  assert.ok(frame.includes('✦'), `expected box corner, got:\n${frame}`);
+  assert.ok(frame.includes('╰'), `expected box bottom, got:\n${frame}`);
+});
+
+test('multiline submit sends the full \\n-joined buffer', async () => {
+  const bridge = createInputBoxBridge();
+  const submitted: string[] = [];
+  bridge.onSubmit((l) => submitted.push(l));
+  const { stdin } = render(
+    <InputBox bridge={bridge} color={true} isTty={true} columns={60} />,
+  );
+  stdin.write('a');
+  await tick();
+  stdin.write(ALT_ENTER);
+  await tick();
+  stdin.write('b');
+  await tick();
+  stdin.write(ENTER);
+  await tick();
+  assert.deepEqual(submitted, ['a\nb']);
+});
+
+test('Up/Down move the caret between rows on a multiline buffer (not history)', async () => {
+  const bridge = createInputBoxBridge();
+  bridge.seedHistory(['old-line']); // history exists but must NOT trigger mid-buffer
+  bridge.onSubmit(() => {});
+  const { stdin } = render(
+    <InputBox bridge={bridge} color={true} isTty={true} columns={60} />,
+  );
+  stdin.write('aaa');
+  await tick();
+  stdin.write(ALT_ENTER);
+  await tick();
+  stdin.write('bbb'); // buffer "aaa\nbbb", cursor at end (row 1, col 3)
+  await tick();
+  // Up → row 0 col 3 (no history navigation while a row is above).
+  stdin.write(UP);
+  await tick();
+  assert.equal(bridge.currentLine(), 'aaa\nbbb', 'Up within buffer must not change the value');
+  // Insert at the moved caret to prove it landed on row 0.
+  stdin.write('X'); // "aaaX\nbbb"
+  await tick();
+  assert.equal(bridge.currentLine(), 'aaaX\nbbb');
+  // Up again from the FIRST row falls through to history.
+  stdin.write(UP);
+  await tick();
+  assert.equal(bridge.currentLine(), 'old-line');
+});
+
+// ---------------------------------------------------------------------------
+// FIX 2 — paste ending in a newline auto-submits
+// ---------------------------------------------------------------------------
+
+test('paste ending in CR auto-submits on the FIRST write (auth-code case)', async () => {
+  const bridge = createInputBoxBridge();
+  const submitted: string[] = [];
+  bridge.onSubmit((l) => submitted.push(l));
+  const { stdin } = render(
+    <InputBox bridge={bridge} color={true} isTty={true} columns={60} />,
+  );
+  stdin.write('authcode123\r'); // one paste chunk ending in CR
+  await tick();
+  assert.deepEqual(submitted, ['authcode123'], 'paste should submit without a second Enter');
+  assert.equal(bridge.currentLine(), '', 'editor should be cleared after submit');
+});
+
+test('paste ending in LF auto-submits', async () => {
+  const bridge = createInputBoxBridge();
+  const submitted: string[] = [];
+  bridge.onSubmit((l) => submitted.push(l));
+  const { stdin } = render(
+    <InputBox bridge={bridge} color={true} isTty={true} columns={60} />,
+  );
+  stdin.write('hello world\n');
+  await tick();
+  assert.deepEqual(submitted, ['hello world']);
+});
+
+test('paste with INTERNAL newline + trailing newline inserts then submits', async () => {
+  const bridge = createInputBoxBridge();
+  const submitted: string[] = [];
+  bridge.onSubmit((l) => submitted.push(l));
+  const { stdin } = render(
+    <InputBox bridge={bridge} color={true} isTty={true} columns={60} />,
+  );
+  stdin.write('line1\nline2\r'); // internal \n composed, trailing \r submits
+  await tick();
+  assert.deepEqual(submitted, ['line1\nline2']);
+});
+
+test('paste with ONLY internal newlines (no trailing) does NOT submit', async () => {
+  const bridge = createInputBoxBridge();
+  const submitted: string[] = [];
+  bridge.onSubmit((l) => submitted.push(l));
+  const { stdin } = render(
+    <InputBox bridge={bridge} color={true} isTty={true} columns={60} />,
+  );
+  stdin.write('line1\nline2'); // no trailing newline → stays in the buffer
+  await tick();
+  assert.deepEqual(submitted, [], 'internal-only newline paste must not submit');
+  assert.equal(bridge.currentLine(), 'line1\nline2');
+});
+
+test('paste ending in CRLF submits a single clean line (no stray \\r)', async () => {
+  const bridge = createInputBoxBridge();
+  const submitted: string[] = [];
+  bridge.onSubmit((l) => submitted.push(l));
+  const { stdin } = render(
+    <InputBox bridge={bridge} color={true} isTty={true} columns={60} />,
+  );
+  stdin.write('code456\r\n');
+  await tick();
+  assert.deepEqual(submitted, ['code456']);
+});
+
+test('Alt+Enter still inserts a newline and does NOT submit', async () => {
+  const bridge = createInputBoxBridge();
+  const submitted: string[] = [];
+  bridge.onSubmit((l) => submitted.push(l));
+  const { stdin } = render(
+    <InputBox bridge={bridge} color={true} isTty={true} columns={60} />,
+  );
+  stdin.write('keep');
+  await tick();
+  stdin.write(ALT_ENTER);
+  await tick();
+  assert.deepEqual(submitted, [], 'Alt+Enter must not submit');
+  assert.equal(bridge.currentLine(), 'keep\n');
+});
+
+test('plain single Enter still submits typed input (no paste path interference)', async () => {
+  const bridge = createInputBoxBridge();
+  const submitted: string[] = [];
+  bridge.onSubmit((l) => submitted.push(l));
+  const { stdin } = render(
+    <InputBox bridge={bridge} color={true} isTty={true} columns={60} />,
+  );
+  stdin.write('typed');
+  await tick();
+  stdin.write(ENTER);
+  await tick();
+  assert.deepEqual(submitted, ['typed']);
+});
+
 test('queued indicator appears when setQueued(N) is called', async () => {
   const bridge = createInputBoxBridge();
   const { lastFrame } = render(

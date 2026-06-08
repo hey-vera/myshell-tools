@@ -21,7 +21,13 @@
  * editor keeps a single edit buffer that MAY contain `\n`:
  *   - plain Enter (`key.return` without meta) SUBMITS the whole buffer;
  *   - Alt/Option+Enter (`key.return && key.meta`) INSERTS a newline;
- *   - a paste whose chunk contains `\n` inserts those newlines verbatim.
+ *   - a paste whose chunk contains INTERNAL `\n` inserts those newlines verbatim
+ *     (multiline compose); a paste whose chunk ENDS in CR/LF inserts the
+ *     preceding text and then SUBMITS, mirroring a real terminal paste of
+ *     "authcode\r" and how readline submits on the trailing newline.
+ * The bordered box GROWS VERTICALLY to show every row of the buffer (caret on
+ * the first row, a dim `… ` gutter on continuation rows), capped at
+ * MAX_VISIBLE_ROWS so a huge paste can't blow past the viewport.
  * On submit the buffer is passed UNTRIMMED to the bridge; the LineReader applies
  * the same `.trim()` the legacy `createLineReader` does, so downstream semantics
  * are byte-identical to the legacy single-line case (a plain typed line has no
@@ -41,6 +47,16 @@ const INPUT_BOX_MIN_COLUMNS = 32;
 const INPUT_BOX_MAX_COLUMNS = 84;
 const INPUT_BOX_GLYPH = '✦';
 const CARET = '❯';
+/** Gutter under the `❯ ` caret for continuation rows of a multiline buffer. */
+const CONT_GUTTER = '… ';
+/**
+ * Cap on the number of buffer rows the box renders at once so a huge paste can't
+ * blow past the viewport. When the buffer has more rows than this we show the
+ * LAST N rows (keeping the caret row visible), mirroring a terminal editor that
+ * scrolls. The caret always falls within the shown window because the cursor is
+ * at the very end of a fresh paste (and edits keep it on a visible row).
+ */
+const MAX_VISIBLE_ROWS = 10;
 
 /**
  * The imperative editor handle the LineReader/menu side uses to read in-progress
@@ -145,6 +161,35 @@ function wordRight(text: string, pos: number): number {
 }
 
 /**
+ * Map a flat cursor index into `(row, col)` over the `\n`-split rows of `text`.
+ * `row` is the 0-based line containing the cursor; `col` is the offset within
+ * that line (0..line.length). A cursor sitting exactly on a `\n` belongs to the
+ * END of the preceding line (col === line.length), matching a terminal editor.
+ */
+function cursorRowCol(text: string, cursor: number): { row: number; col: number } {
+  let row = 0;
+  let lineStart = 0;
+  for (let i = 0; i < cursor; i++) {
+    if (text[i] === '\n') {
+      row++;
+      lineStart = i + 1;
+    }
+  }
+  return { row, col: cursor - lineStart };
+}
+
+/** Flat index of the start of `row` (0-based) in the `\n`-split `text`. */
+function rowStartIndex(text: string, row: number): number {
+  let idx = 0;
+  for (let r = 0; r < row; r++) {
+    const nl = text.indexOf('\n', idx);
+    if (nl === -1) return idx; // fewer rows than requested → last row start
+    idx = nl + 1;
+  }
+  return idx;
+}
+
+/**
  * The real input editor. Renders the bordered box (TTY+colour) or a plain caret
  * (non-TTY / NO_COLOR), exactly mirroring render.ts `canRenderInputBox`.
  */
@@ -209,25 +254,34 @@ export function InputBox({
     setCursor(Math.max(0, Math.min(next.length, nextCursor)));
   };
 
+  // Commit `submitted` as a line: record non-blank history, clear the editor,
+  // and notify the bridge. Shared by plain-Enter and the paste-trailing-newline
+  // path so both have byte-identical submit semantics (the reader trims).
+  const submit = (submitted: string): void => {
+    if (submitted.trim() !== '') {
+      setHistory((h) => (h[h.length - 1] === submitted ? h : [...h, submitted]));
+    }
+    setValue('');
+    setCursor(0);
+    setHistIndex(null);
+    setDraft('');
+    bridge._submit?.(submitted);
+  };
+
   useInput((input, key) => {
     // --- Submit vs newline ---------------------------------------------------
     if (key.return) {
       if (key.meta) {
-        // Alt/Option+Enter → insert a newline (multiline compose).
+        // Alt/Option+Enter → insert a newline (multiline compose). This is the
+        // intentional chord and NEVER submits, even on a multiline buffer.
         replace(value.slice(0, cursor) + '\n' + value.slice(cursor), cursor + 1);
         return;
       }
-      const submitted = value;
-      // Record non-blank submissions in history (no consecutive duplicate),
-      // matching readline's removeHistoryDuplicates-style behaviour.
-      if (submitted.trim() !== '') {
-        setHistory((h) => (h[h.length - 1] === submitted ? h : [...h, submitted]));
-      }
-      setValue('');
-      setCursor(0);
-      setHistIndex(null);
-      setDraft('');
-      bridge._submit?.(submitted);
+      // A plain single Enter keypress submits the whole (possibly multiline)
+      // buffer. `key.return` is only set for a SINGLE-char `\r`/`\x1b\r` keypress
+      // (Ink's parseKeypress matches `s === '\r'` exactly) — a multi-char paste
+      // ending in `\r` does NOT set key.return; that case is handled below.
+      submit(value);
       return;
     }
 
@@ -256,18 +310,35 @@ export function InputBox({
       else setCursor(Math.min(value.length, cursor + 1));
       return;
     }
-    // Home / End (Ctrl+A / Ctrl+E too — readline's emacs bindings).
+    // Home / End (Ctrl+A / Ctrl+E too — readline's emacs bindings). On a
+    // multiline buffer these move to the start/end of the CURRENT row.
     if ((key.ctrl && input === 'a') || (input === '\x01')) {
-      setCursor(0);
+      const { row } = cursorRowCol(value, cursor);
+      setCursor(rowStartIndex(value, row));
       return;
     }
     if ((key.ctrl && input === 'e') || (input === '\x05')) {
-      setCursor(value.length);
+      const { row } = cursorRowCol(value, cursor);
+      const start = rowStartIndex(value, row);
+      const nl = value.indexOf('\n', start);
+      setCursor(nl === -1 ? value.length : nl);
       return;
     }
 
-    // --- History (Up/Down) ---------------------------------------------------
+    // --- Up/Down: multiline cursor movement, else history --------------------
+    // On a multiline buffer Up/Down move the caret between rows (preserving the
+    // column where possible). Only when the caret is already on the FIRST row
+    // (Up) or LAST row (Down) do we fall through to history navigation — so a
+    // single-line buffer behaves exactly as before.
     if (key.upArrow) {
+      const { row, col } = cursorRowCol(value, cursor);
+      if (row > 0) {
+        const prevStart = rowStartIndex(value, row - 1);
+        const prevNl = value.indexOf('\n', prevStart);
+        const prevLen = (prevNl === -1 ? value.length : prevNl) - prevStart;
+        setCursor(prevStart + Math.min(col, prevLen));
+        return;
+      }
       if (history.length === 0) return;
       if (histIndex === null) {
         setDraft(value);
@@ -282,6 +353,15 @@ export function InputBox({
       return;
     }
     if (key.downArrow) {
+      const { row, col } = cursorRowCol(value, cursor);
+      const totalRows = value.split('\n').length;
+      if (row < totalRows - 1) {
+        const nextStart = rowStartIndex(value, row + 1);
+        const nextNl = value.indexOf('\n', nextStart);
+        const nextLen = (nextNl === -1 ? value.length : nextNl) - nextStart;
+        setCursor(nextStart + Math.min(col, nextLen));
+        return;
+      }
       if (histIndex === null) return;
       if (histIndex < history.length - 1) {
         const idx = histIndex + 1;
@@ -297,6 +377,23 @@ export function InputBox({
 
     // --- Printable input (incl. pasted chunks with embedded newlines) --------
     if (input && !key.ctrl && !key.meta) {
+      // Paste-trailing-newline submit (residual risk #3, the auth-code-paste
+      // case). Ink delivers a paste as ONE useInput call carrying the whole
+      // chunk as `input`; a single keypress carries one char (and Enter/Alt+Enter
+      // are handled above via key.return, never reaching here). So we treat a
+      // multi-char chunk whose content ENDS in CR or LF as: insert the preceding
+      // text, then SUBMIT — mirroring a real terminal paste of "code\r" and the
+      // way readline submits on the trailing newline. Internal newlines (no
+      // trailing one) are inserted verbatim for multiline compose.
+      const isPaste = input.length > 1;
+      if (isPaste && (input.endsWith('\r') || input.endsWith('\n'))) {
+        const body = input.slice(0, -1);
+        // A leading CR of a CRLF-terminated paste ("code\r\n") would otherwise
+        // leave a stray '\r'; normalize a trailing CRLF to a single submit.
+        const cleaned = body.endsWith('\r') ? body.slice(0, -1) : body;
+        submit(value.slice(0, cursor) + cleaned + value.slice(cursor));
+        return;
+      }
       replace(value.slice(0, cursor) + input + value.slice(cursor), cursor + input.length);
       return;
     }
@@ -308,13 +405,28 @@ export function InputBox({
   // Rendering
   // -------------------------------------------------------------------------
 
+  // Split the edit buffer into its display rows. The caret row/col is derived
+  // from the flat cursor so movement lands on the correct row. When the buffer
+  // has more rows than the height cap, show the LAST MAX_VISIBLE_ROWS rows so a
+  // huge paste can't blow past the viewport (terminal-editor scroll feel); the
+  // caret sits at the buffer end after a paste, so it stays within the window.
+  const allRows = value.split('\n');
+  const overflow = allRows.length > MAX_VISIBLE_ROWS;
+  const firstShown = overflow ? allRows.length - MAX_VISIBLE_ROWS : 0;
+  const shownRows = allRows.slice(firstShown);
+
   // Plain caret for non-TTY / NO_COLOR / narrow terminals (mirrors
-  // render.ts canRenderInputBox → `❯ value`).
+  // render.ts canRenderInputBox → `❯ value`). Multiline buffers render the
+  // first row after the caret and each continuation row under a gutter.
   const canBox = isTty && color && (columns ?? 80) >= INPUT_BOX_MIN_COLUMNS;
   if (!canBox) {
     return (
-      <Box>
-        <Text>{`${CARET} ${value}`}</Text>
+      <Box flexDirection="column">
+        {shownRows.map((line, i) => {
+          const absRow = firstShown + i;
+          const prefix = absRow === 0 ? `${CARET} ` : CONT_GUTTER;
+          return <Text key={absRow}>{`${prefix}${line}`}</Text>;
+        })}
       </Box>
     );
   }
@@ -328,17 +440,34 @@ export function InputBox({
   return (
     <Box flexDirection="column">
       <Text>{dim(top, color)}</Text>
-      <Box>
-        <Text>{dim('│ ', color)}</Text>
-        {queued > 0 ? (
+      {queued > 0 ? (
+        <Box>
+          <Text>{dim('│ ', color)}</Text>
           <Text>{dim(`⏎ queued (${queued})`, color)}</Text>
-        ) : (
-          <Text>
-            {cyan(CARET, color)}
-            {` ${value}`}
-          </Text>
-        )}
-      </Box>
+        </Box>
+      ) : (
+        shownRows.map((line, i) => {
+          const absRow = firstShown + i;
+          // First buffer row carries the cyan `❯` caret; continuation rows get a
+          // dim gutter aligned under it so the multiline block reads as one input.
+          const gutter =
+            absRow === 0 ? (
+              <Text>
+                {cyan(CARET, color)}
+                {' '}
+              </Text>
+            ) : (
+              <Text>{dim(CONT_GUTTER, color)}</Text>
+            );
+          return (
+            <Box key={absRow}>
+              <Text>{dim('│ ', color)}</Text>
+              {gutter}
+              <Text>{line}</Text>
+            </Box>
+          );
+        })
+      )}
       <Text>{dim(bottom, color)}</Text>
     </Box>
   );
