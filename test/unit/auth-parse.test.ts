@@ -20,7 +20,50 @@ import {
   credentialFileIndicatesAuth,
   foldRateLimitTier,
   rateLimitTierFromCreds,
+  decodeJwtClaims,
+  codexPlanFromAuthJson,
+  resolveCodexAuthPath,
+  opencodePlanFromAuthJson,
 } from '../../src/providers/detect.ts';
+
+// ---------------------------------------------------------------------------
+// JWT fixture builder — make an UNSIGNED test JWT carrying the given claims.
+// header.payload.signature, payload base64url-encoded. The signature segment is
+// a placeholder (we never verify it — see decodeJwtClaims). This mirrors the
+// real codex/opencode token shape (chatgpt_plan_type lives under the
+// `https://api.openai.com/auth` claim) WITHOUT embedding any real token.
+// ---------------------------------------------------------------------------
+
+function b64url(obj: unknown): string {
+  return Buffer.from(JSON.stringify(obj), 'utf8')
+    .toString('base64')
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/, '');
+}
+
+function makeJwt(claims: Record<string, unknown>): string {
+  const header = b64url({ alg: 'RS256', typ: 'JWT' });
+  const payload = b64url(claims);
+  return `${header}.${payload}.fake-signature-not-verified`;
+}
+
+/** A codex auth.json with a ChatGPT OAuth login carrying a given plan_type. */
+function codexAuthJson(planType: string | null): string {
+  const authClaim: Record<string, unknown> = { chatgpt_account_id: 'acc-123' };
+  if (planType !== null) authClaim['chatgpt_plan_type'] = planType;
+  return JSON.stringify({
+    auth_mode: 'chatgpt',
+    OPENAI_API_KEY: null,
+    tokens: {
+      id_token: makeJwt({ 'https://api.openai.com/auth': authClaim, sub: 'x' }),
+      access_token: makeJwt({ 'https://api.openai.com/auth': authClaim }),
+      refresh_token: 'rt',
+      account_id: 'acc-123',
+    },
+    last_refresh: '2026-06-02T17:13:29Z',
+  });
+}
 
 // ---------------------------------------------------------------------------
 // parseClaudeAuth
@@ -605,5 +648,158 @@ describe('parseClaudeAuth — enriches the Max plan from status-JSON rateLimitTi
   it('subscriptionType max, no rateLimitTier → plain "max" (fail-soft)', () => {
     const stdout = JSON.stringify({ loggedIn: true, subscriptionType: 'max' });
     assert.equal(parseClaudeAuth(stdout, '', 0).plan, 'max');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// decodeJwtClaims — defensive, no-signature-trust claim decode
+// ---------------------------------------------------------------------------
+
+describe('decodeJwtClaims — reads the payload, never trusts the signature', () => {
+  it('decodes a well-formed JWT payload to its claims object', () => {
+    const tok = makeJwt({ plan: 'pro', n: 1, nested: { a: true } });
+    const claims = decodeJwtClaims(tok);
+    assert.deepEqual(claims, { plan: 'pro', n: 1, nested: { a: true } });
+  });
+
+  it('decodes base64url-encoded payloads needing padding', () => {
+    // A claim set whose base64 length is not a multiple of 4 before padding.
+    const tok = makeJwt({ a: 'abc' });
+    assert.deepEqual(decodeJwtClaims(tok), { a: 'abc' });
+  });
+
+  it('returns null for non-JWT / malformed input (fail-soft, never throws)', () => {
+    assert.doesNotThrow(() => decodeJwtClaims('not-a-jwt'));
+    assert.equal(decodeJwtClaims('not-a-jwt'), null);
+    assert.equal(decodeJwtClaims(''), null);
+    // 'two' is not base64-decodable JSON → null (a single segment, no payload).
+    assert.equal(decodeJwtClaims('only.two'), null);
+    assert.equal(decodeJwtClaims('header.@@@not-base64@@@.sig'), null);
+  });
+
+  it('returns null when the payload is valid base64 but not a JSON object', () => {
+    const tok = `h.${Buffer.from('"a string"', 'utf8').toString('base64url')}.s`;
+    assert.equal(decodeJwtClaims(tok), null);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// codexPlanFromAuthJson — surfaces the REAL ChatGPT plan from codex auth.json
+// (chatgpt_plan_type in the OAuth token claim). No fabrication.
+// ---------------------------------------------------------------------------
+
+describe('codexPlanFromAuthJson — reads chatgpt_plan_type from the token claim', () => {
+  it('surfaces the plan when the id_token carries chatgpt_plan_type', () => {
+    assert.equal(codexPlanFromAuthJson(codexAuthJson('pro')), 'pro');
+  });
+
+  it('lowercases + trims the plan label', () => {
+    const raw = codexAuthJson('  PLUS  ');
+    assert.equal(codexPlanFromAuthJson(raw), 'plus');
+  });
+
+  it('surfaces "prolite" verbatim (real owner account shape)', () => {
+    assert.equal(codexPlanFromAuthJson(codexAuthJson('prolite')), 'prolite');
+  });
+
+  it('falls back to access_token when id_token lacks the claim', () => {
+    const authClaim = { chatgpt_plan_type: 'free' };
+    const raw = JSON.stringify({
+      auth_mode: 'chatgpt',
+      tokens: {
+        id_token: makeJwt({ sub: 'x' }), // no auth claim
+        access_token: makeJwt({ 'https://api.openai.com/auth': authClaim }),
+      },
+    });
+    assert.equal(codexPlanFromAuthJson(raw), 'free');
+  });
+
+  it('returns null when no token carries a plan claim (API-key login)', () => {
+    const raw = JSON.stringify({
+      auth_mode: 'apikey',
+      OPENAI_API_KEY: 'sk-xxx',
+      tokens: { id_token: '', access_token: '' },
+    });
+    assert.equal(codexPlanFromAuthJson(raw), null);
+  });
+
+  it('returns null when the plan claim is present but empty', () => {
+    assert.equal(codexPlanFromAuthJson(codexAuthJson('')), null);
+    assert.equal(codexPlanFromAuthJson(codexAuthJson('   ')), null);
+  });
+
+  it('returns null on missing tokens / garbage / non-object (fail-soft, never throws)', () => {
+    assert.doesNotThrow(() => codexPlanFromAuthJson('not json %%%'));
+    assert.equal(codexPlanFromAuthJson('not json %%%'), null);
+    assert.equal(codexPlanFromAuthJson('{}'), null);
+    assert.equal(codexPlanFromAuthJson('null'), null);
+    assert.equal(codexPlanFromAuthJson('[]'), null);
+    assert.equal(codexPlanFromAuthJson(JSON.stringify({ tokens: null })), null);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// resolveCodexAuthPath — honours CODEX_HOME, then persistent dir, then ~/.codex
+// ---------------------------------------------------------------------------
+
+describe('resolveCodexAuthPath', () => {
+  it('uses $CODEX_HOME/auth.json when CODEX_HOME is set', () => {
+    const p = resolveCodexAuthPath({ CODEX_HOME: '/persist/codex' }, '/work', '/home/u');
+    assert.equal(p, '/persist/codex/auth.json');
+  });
+
+  it('falls back to ~/.codex/auth.json when CODEX_HOME is unset and no persistent dir', () => {
+    // cwd points somewhere with no .replit-tools/.codex-persistent/auth.json.
+    const p = resolveCodexAuthPath({}, '/nonexistent-cwd-xyz', '/home/u');
+    assert.equal(p, '/home/u/.codex/auth.json');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// opencodePlanFromAuthJson — TRUTHFUL: surfaces a ChatGPT plan ONLY when an
+// oauth credential's token genuinely carries one; otherwise null (no fabrication
+// for api/gateway keys like OpenCode Zen).
+// ---------------------------------------------------------------------------
+
+describe('opencodePlanFromAuthJson — only a genuinely-present oauth plan claim', () => {
+  it('surfaces "provider: plan" when an oauth credential token carries a plan claim', () => {
+    const raw = JSON.stringify({
+      openai: {
+        type: 'oauth',
+        access: makeJwt({ 'https://api.openai.com/auth': { chatgpt_plan_type: 'pro' } }),
+        refresh: 'r',
+        expires: 123,
+      },
+    });
+    assert.equal(opencodePlanFromAuthJson(raw), 'openai: pro');
+  });
+
+  it('returns null for an api/gateway key (e.g. OpenCode Zen) — no plan is stored', () => {
+    const raw = JSON.stringify({
+      opencode: { type: 'api', key: 'sk-zen-xxx' },
+    });
+    assert.equal(opencodePlanFromAuthJson(raw), null);
+  });
+
+  it('returns null for an oauth credential whose token has no plan claim', () => {
+    const raw = JSON.stringify({
+      anthropic: { type: 'oauth', access: makeJwt({ sub: 'x' }), refresh: 'r', expires: 1 },
+    });
+    assert.equal(opencodePlanFromAuthJson(raw), null);
+  });
+
+  it('returns null for an oauth credential with a non-JWT access value', () => {
+    const raw = JSON.stringify({
+      anthropic: { type: 'oauth', access: 'opaque-token', refresh: 'r', expires: 1 },
+    });
+    assert.equal(opencodePlanFromAuthJson(raw), null);
+  });
+
+  it('returns null on empty / garbage / non-object input (fail-soft, never throws)', () => {
+    assert.doesNotThrow(() => opencodePlanFromAuthJson('not json %%%'));
+    assert.equal(opencodePlanFromAuthJson('not json %%%'), null);
+    assert.equal(opencodePlanFromAuthJson('{}'), null);
+    assert.equal(opencodePlanFromAuthJson('null'), null);
+    assert.equal(opencodePlanFromAuthJson('[]'), null);
   });
 });

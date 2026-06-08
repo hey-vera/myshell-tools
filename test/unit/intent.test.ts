@@ -294,6 +294,31 @@ describe('buildIntentPrompt', () => {
     assert.ok(/ONLY a JSON object/i.test(p));
     assert.ok(/Do NOT do the work/i.test(p));
   });
+
+  it('PHASE 1: instructs SOLUTION-SPACE reasoning before forks (ATA 2502.04485)', () => {
+    const p = buildIntentPrompt('make the activity feed load real data');
+    assert.ok(/SOLUTION-SPACE/i.test(p), 'enumerate distinct approaches first');
+    assert.ok(/genuinely DIFFERENT ways/i.test(p));
+    // forks must be the REAL competing approaches with a one-line tradeoff + a default.
+    assert.ok(/one-line tradeoff/i.test(p));
+    assert.ok(/recommended default/i.test(p));
+    // and it must reject generic category menus explicitly.
+    assert.ok(/generic category menu/i.test(p) || /fixing \/ adding/i.test(p));
+  });
+
+  it('PHASE 1: GROUNDED — with a repo map appended, demands real files + forbids invention', () => {
+    const grounded = buildIntentPrompt(
+      'make the feed real\n\n--- ENVIRONMENT (repo map, for grounding) ---\nsrc/feed/page.tsx',
+    );
+    assert.ok(/GROUND every approach/i.test(grounded), 'grounds approaches in the real map');
+    assert.ok(/NEVER invent a file/i.test(grounded), 'honesty: no hallucinated files');
+  });
+
+  it('PHASE 1: UNGROUNDED — with no repo map, falls back to honest generic phrasing', () => {
+    const ungrounded = buildIntentPrompt('make the feed real');
+    assert.ok(/No repo map is provided/i.test(ungrounded));
+    assert.ok(/do NOT invent\b/i.test(ungrounded), 'honesty: no invented filenames when blind');
+  });
 });
 
 describe('renderIntentBlock', () => {

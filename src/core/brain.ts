@@ -330,26 +330,145 @@ export function maxRoundsFor(style: 'direct' | 'balanced' | 'collaborative' | un
 // ---------------------------------------------------------------------------
 
 const REFLECT_CONFIRM_ID = 'plan_confirm';
-const REFLECT_PROMPT_CAP = 400;
+const REFLECT_PROMPT_CAP = 700;
+const MAX_PLAN_STEPS = 4;
 
 /**
- * Build a deterministic `reflect_confirm` QuestionSet from the (grounded) frame.
- * The prompt REFLECTS the real goal + doneWhen the extractor produced — "Here's
- * what I'll do: <goal>. Done when: <doneWhen>. Go ahead?" — with `[Go] · [Edit] ·
- * [No]` options and `allowFreeText` so an Edit carries the user's correction. It
- * NEVER fabricates a plan it didn't derive. Returns `null` when there is no usable
- * goal to reflect (the caller then falls through to `answer`). PURE; never throws.
+ * PHASE 4 — map the brain's `Confidence` tuple to ONE honest, word-based line
+ * (research §4 / Devin's surfaced confidence). NO fabricated number/percentage
+ * (the honesty-lint guard forbids them); just an honest phrase derived from the
+ * SAME tuple `decideNextMove` already computed. Re-measured after a codebase round
+ * (groundedness flips), so the line legitimately rises after investigation.
+ *
+ * The mapping is deterministic and total:
+ *   - low understanding         → "still forming a view — let me confirm the shape first"
+ *   - medium, not yet grounded  → "fairly confident I understand this"
+ *   - medium, grounded          → "confident I understand this after checking the layout"
+ *   - high                      → "confident I understand what you want"
+ * High stakes appends an honest caution. PURE; never throws.
  */
-export function buildReflectConfirm(frame: IntentFrame | undefined): QuestionSet | null {
-  const goal = frame?.goal?.trim();
-  if (goal === undefined || goal.length === 0) return null;
-
-  const lines: string[] = [`Here's what I understand you want: ${goal}.`];
-  const doneWhen = frame?.doneWhen?.trim();
-  if (doneWhen !== undefined && doneWhen.length > 0) {
-    lines.push(`I'll treat it as done when: ${doneWhen}.`);
+export function confidenceLine(conf: Confidence | undefined): string {
+  if (conf === undefined) return '';
+  let base: string;
+  if (conf.understanding === 'low') {
+    base = 'Still forming a view — let me confirm the shape before I build';
+  } else if (conf.understanding === 'high') {
+    base = 'Confident I understand what you want';
+  } else if (conf.groundedness === 'grounded') {
+    base = 'Confident I understand this after checking the project layout';
+  } else {
+    base = 'Fairly confident I understand this';
   }
-  lines.push('Want me to go ahead?');
+  if (conf.stakes === 'high') {
+    base += "; flagging that this is high-stakes, so I'll confirm first";
+  }
+  return base;
+}
+
+/**
+ * PHASE 2 — derive a grounded, per-area mini-PLAN (2–4 steps) from the frame +
+ * repo-map, for the proactive reflect_confirm proposal (research §5 / Copilot
+ * Workspace's per-file plan, Cursor's editable plan). HONESTY (the arch guard's
+ * groundedness rule): steps are built ONLY from REAL frame content (constraints,
+ * the resolved fork defaults, doneWhen) — never a fabricated filename or step. When
+ * the frame carries no plannable substance, returns `[]` and the caller falls back
+ * to the simpler honest goal/doneWhen proposal. PURE; never throws.
+ *
+ * `grounded` toggles the phrasing precision: when a codebase round actually ran
+ * (groundedness === 'grounded') the plan may reference the repo areas the extractor
+ * named in its fork options; otherwise it stays method-level and generic.
+ */
+function derivePlanSteps(frame: IntentFrame, grounded: boolean): string[] {
+  const steps: string[] = [];
+
+  // 1) The resolved DEFAULT for each genuine fork — "assuming X (say so for Y)".
+  //    This is the proactive "I picked a lane" move: we state the chosen approach
+  //    rather than ask, and invite a correction. Only forks with a real default
+  //    contribute (no fabrication).
+  for (const fork of frame.forks ?? []) {
+    const def = fork.assumeIfUnasked?.trim();
+    if (def !== undefined && def.length > 0) {
+      const alt = (fork.options ?? [])
+        .map((o) => o.trim())
+        .find((o) => o.length > 0 && o !== def);
+      steps.push(alt !== undefined ? `Go with ${def} (say so if you'd rather ${alt})` : `Go with ${def}`);
+    }
+    if (steps.length >= MAX_PLAN_STEPS) break;
+  }
+
+  // 2) Honor each hard constraint as an explicit plan step (real, frame-sourced).
+  if (steps.length < MAX_PLAN_STEPS) {
+    for (const c of frame.constraints ?? []) {
+      const ct = c.trim();
+      if (ct.length > 0) steps.push(`Respect: ${ct}`);
+      if (steps.length >= MAX_PLAN_STEPS) break;
+    }
+  }
+
+  // 3) Close on the success criterion when one was inferred.
+  const doneWhen = frame.doneWhen?.trim();
+  if (steps.length < MAX_PLAN_STEPS && doneWhen !== undefined && doneWhen.length > 0) {
+    steps.push(`Verify it's done: ${doneWhen}`);
+  }
+
+  // The `grounded` flag is reserved for repo-area phrasing; today the frame's own
+  // fork options already carry the repo-grounded references (intent.ts grounds them
+  // when a map was present), so no extra fabrication is introduced either way.
+  void grounded;
+  return steps.slice(0, MAX_PLAN_STEPS);
+}
+
+/** Options accepted by {@link buildReflectConfirm} — all optional + backward-compatible. */
+export interface ReflectConfirmOptions {
+  /** The brain's confidence tuple, surfaced as ONE honest line (Phase 4). */
+  readonly conf?: Confidence;
+  /** Whether a codebase round ran — sharpens the plan's grounded phrasing (Phase 2). */
+  readonly grounded?: boolean;
+}
+
+/**
+ * Build a deterministic, PROACTIVE `reflect_confirm` QuestionSet from the (grounded)
+ * frame (Phase 2 + Phase 4). Instead of a hesitant goal-echo, it reads as a senior
+ * proposal: an honest confidence line, the goal, a 2–4-step per-area PLAN with the
+ * chosen default for each fork, and "Go?" — with `[Go] · [Edit] · [No]` options and
+ * `allowFreeText` so an Edit carries the user's correction (the editable-artifact
+ * seam). It NEVER fabricates a plan it didn't derive: when the frame has no plannable
+ * substance it falls back to the simpler honest goal/doneWhen proposal. Returns
+ * `null` when there is no usable goal to reflect (the caller then falls through to
+ * `answer`). PURE; never throws.
+ *
+ * Backward-compatible: callers passing only the frame get the proactive proposal
+ * without a confidence line (the existing brain.test fixtures).
+ */
+export function buildReflectConfirm(
+  frame: IntentFrame | undefined,
+  opts: ReflectConfirmOptions = {},
+): QuestionSet | null {
+  const goal = frame?.goal?.trim();
+  if (frame === undefined || goal === undefined || goal.length === 0) return null;
+
+  const lines: string[] = [];
+
+  // PHASE 4 — surface the honest confidence line first, when supplied.
+  const confLine = confidenceLine(opts.conf);
+  if (confLine.length > 0) lines.push(`${confLine}.`);
+
+  // PHASE 2 — a grounded mini-plan when the frame has plannable substance, phrased
+  // proactively ("I'm aligned — here's my plan: 1) … 2) …. Go?"). Otherwise the
+  // honest simpler proposal (goal + doneWhen).
+  const steps = derivePlanSteps(frame, opts.grounded === true);
+  if (steps.length > 0) {
+    lines.push(`I'm aligned on ${goal}. Here's my plan:`);
+    steps.forEach((step, i) => lines.push(`${i + 1}) ${step}.`));
+    lines.push('Go?');
+  } else {
+    lines.push(`Here's what I understand you want: ${goal}.`);
+    const doneWhen = frame.doneWhen?.trim();
+    if (doneWhen !== undefined && doneWhen.length > 0) {
+      lines.push(`I'll treat it as done when: ${doneWhen}.`);
+    }
+    lines.push('Want me to go ahead?');
+  }
   const prompt = lines.join(' ').slice(0, REFLECT_PROMPT_CAP);
 
   return {

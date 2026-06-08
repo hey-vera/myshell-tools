@@ -742,6 +742,64 @@ describe('deriveAskFromForks', () => {
       ['Postgres', 'MySQL'],
     );
   });
+
+  it('PHASE 1b: REJECTS a generic order-taker menu fork (proceeds on assumption instead)', () => {
+    // A shallow "are you fixing / adding?" menu is NOT a senior fork — it must be
+    // dropped so the partner states its assumption rather than surface a vacuous ask.
+    const f = frame({
+      goal: 'work on the app',
+      confidence: 'low',
+      forks: [
+        {
+          id: 'F1',
+          question: 'Are you trying to fix something or add a feature?',
+          options: ['fixing something broken', 'adding a new feature', 'polishing the UI'],
+        },
+      ],
+    });
+    const plan = planEngagement(
+      signals({ classification: CLS('ic'), engagementBias: 1, task: 'work on the app', frame: f }),
+    );
+    assert.equal(
+      deriveAskFromForks(f, plan),
+      null,
+      'a generic open-menu fork is rejected, not surfaced as an ask',
+    );
+  });
+
+  it('PHASE 1b: a code-grounded fork survives and tags the recommended default', () => {
+    // The senior-grade fork: real competing approaches with tradeoffs + a default.
+    // Phrased as a genuine preference fork (a non-investigable decision the user
+    // owns) so the engagement layer budgets the ask; the OPTIONS stay repo-grounded.
+    const f = frame({
+      goal: 'make the feed load real data',
+      confidence: 'low',
+      forks: [
+        {
+          id: 'F1',
+          question: 'Which approach would you prefer for loading the feed?',
+          options: [
+            'Server-Component streaming in app/feed/page.tsx — fewer round-trips',
+            'Client SWR via a new /api/feed route — simpler, more requests',
+          ],
+          assumeIfUnasked: 'Server-Component streaming in app/feed/page.tsx — fewer round-trips',
+        },
+      ],
+    });
+    const plan = planEngagement(
+      signals({ classification: CLS('ic'), engagementBias: 1, task: 'make the feed load real data', frame: f }),
+    );
+    const qs = deriveAskFromForks(f, plan);
+    assert.ok(qs !== null);
+    const opts = qs.questions[0]?.options ?? [];
+    assert.equal(opts.length, 2, 'both real approaches are carried as options');
+    assert.ok(
+      opts[0]?.label.includes('app/feed/page.tsx'),
+      'options name the real repo file (grounded, not generic)',
+    );
+    assert.equal(opts[0]?.description, 'recommended', 'the stated default is marked recommended');
+    assert.equal(opts[1]?.description, undefined, 'the non-default option is not marked');
+  });
 });
 
 // ---------------------------------------------------------------------------

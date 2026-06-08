@@ -16,12 +16,14 @@ import {
   confidenceTooLowToAct,
   genuinelyAmbiguous,
   buildReflectConfirm,
+  confidenceLine,
   understandingImproved,
   maxRoundsFor,
   CODEBASE_NARRATION,
   MAX_ROUNDS_DEFAULT,
   MAX_ROUNDS_COLLABORATIVE,
   type BrainLoopState,
+  type Confidence,
 } from '../../src/core/brain.ts';
 import { planEngagement } from '../../src/core/engagement.ts';
 import type { EngagementSignals } from '../../src/core/engagement.ts';
@@ -365,6 +367,31 @@ describe('brain.decideNextMove — medium-confidence fast path (CALIBRATION #1)'
 });
 
 // ---------------------------------------------------------------------------
+// FAST-PATH PRESERVATION (the 3.30.0 calibration) — the Phase 1/2/4 upgrades
+// enrich the CONTENT at the EXISTING decision points; they add NO new trigger
+// and must NOT make an ordinary turn loop or confirm. These assert the move on
+// the FIRST assessment is `answer` (zero extra rounds, zero confirm) for both a
+// trivial turn and a model-measured-MEDIUM build turn.
+// ---------------------------------------------------------------------------
+describe('brain — fast-path preservation after the depth upgrades', () => {
+  it('a TRIVIAL turn answers immediately — zero rounds, zero confirm', () => {
+    const f = frame({ confidence: 'low', source: 'skipped', goal: 'hi' });
+    const s = signals({ task: 'hi', classification: classification({ tier: 'worker', risk: 'low' }) });
+    const plan = planEngagement(s);
+    const move = decideNextMove(assessConfidence(f, s), f, s, plan, state(), noAsk);
+    assert.equal(move.kind, 'answer');
+  });
+
+  it('a model-measured MEDIUM build turn answers immediately — no investigate, no reflect_confirm', () => {
+    const f = frame({ confidence: 'medium', source: 'model', kind: 'coding', goal: 'add a filter to the list view' });
+    const s = signals({ frame: f, task: 'add a filter to the list view', classification: classification({ tier: 'ic', risk: 'low' }) });
+    const plan = planEngagement(s);
+    const move = decideNextMove(assessConfidence(f, s, 'unread'), f, s, plan, state(), noAsk);
+    assert.equal(move.kind, 'answer', 'medium build: no extra round, no confirm gate');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // reflect_confirm proposal + bounds helpers
 // ---------------------------------------------------------------------------
 
@@ -382,6 +409,103 @@ describe('brain.buildReflectConfirm', () => {
   it('returns null with no usable goal (never fabricates)', () => {
     assert.equal(buildReflectConfirm(undefined), null);
     assert.equal(buildReflectConfirm(frame({ goal: '   ' })), null);
+  });
+
+  it('PHASE 2: emits a PROACTIVE grounded multi-step plan from real forks/constraints/doneWhen', () => {
+    const f = frame({
+      goal: 'make the feed load real data',
+      confidence: 'low',
+      source: 'model',
+      forks: [
+        {
+          id: 'F1',
+          question: 'How should the feed load data?',
+          options: [
+            'Server-Component streaming in src/feed/page.tsx',
+            'Client SWR via a new /api/feed route',
+          ],
+          assumeIfUnasked: 'Server-Component streaming in src/feed/page.tsx',
+        },
+      ],
+      constraints: ['Node 22'],
+      doneWhen: 'loading + empty states render',
+    });
+    const qs = buildReflectConfirm(f, { grounded: true });
+    assert.ok(qs !== null);
+    const p = qs!.questions[0]!.prompt;
+    assert.ok(/I'm aligned/i.test(p), 'reads as a proactive proposal, not a hesitant echo');
+    // grounded per-area plan steps: the chosen default + the constraint + done-when.
+    assert.ok(p.includes('Server-Component streaming in src/feed/page.tsx'), 'states the chosen default (grounded file)');
+    assert.ok(/say so if you'd rather Client SWR/i.test(p), 'invites a correction to the alternative');
+    assert.ok(p.includes('Node 22'), 'honors the real constraint as a step');
+    assert.ok(p.includes('loading + empty states render'), 'closes on the real done-when');
+    assert.ok(/\b1\)/.test(p) && /\b2\)/.test(p), 'numbered multi-step plan');
+    assert.ok(/Go\?/.test(p), 'ends with the go gate');
+    // never fabricates: the plan only contains frame-sourced substance.
+    assert.deepEqual(qs!.questions[0]!.options.map((o) => o.label), ['Go', 'Edit', 'No']);
+  });
+
+  it('PHASE 2: falls back to the honest simple proposal when the frame has no plannable substance', () => {
+    // No forks, no constraints, no doneWhen → no plan steps → honest goal-echo.
+    const qs = buildReflectConfirm(frame({ goal: 'tidy the imports', confidence: 'low', source: 'model' }));
+    assert.ok(qs !== null);
+    const p = qs!.questions[0]!.prompt;
+    assert.ok(p.includes("Here's what I understand you want: tidy the imports"), 'honest simple proposal');
+    assert.ok(!/Here's my plan/i.test(p), 'no fabricated plan when there is no substance');
+  });
+
+  it('PHASE 4: surfaces the honest confidence line when a tuple is supplied', () => {
+    const f = frame({ goal: 'rebuild billing', confidence: 'medium', source: 'model' });
+    const conf: Confidence = { understanding: 'medium', groundedness: 'grounded', stakes: 'low' };
+    const qs = buildReflectConfirm(f, { conf, grounded: true });
+    const p = qs!.questions[0]!.prompt;
+    assert.ok(/Confident I understand this after checking the project layout/i.test(p));
+    assert.ok(!/\d+%/.test(p), 'HONESTY: no fabricated percentage');
+  });
+});
+
+describe('brain.confidenceLine — PHASE 4 (honest, no numbers)', () => {
+  const mk = (over: Partial<Confidence>): Confidence => ({
+    understanding: 'medium',
+    groundedness: 'unread',
+    stakes: 'low',
+    ...over,
+  });
+
+  it('low understanding → still-forming phrasing', () => {
+    assert.ok(/still forming a view/i.test(confidenceLine(mk({ understanding: 'low' }))));
+  });
+
+  it('medium + ungrounded → fairly confident', () => {
+    assert.equal(confidenceLine(mk({ understanding: 'medium', groundedness: 'unread' })), 'Fairly confident I understand this');
+  });
+
+  it('medium + grounded → confident after checking the layout (rose after the round)', () => {
+    assert.ok(/after checking the project layout/i.test(confidenceLine(mk({ understanding: 'medium', groundedness: 'grounded' }))));
+  });
+
+  it('high understanding → confident', () => {
+    assert.ok(/Confident I understand what you want/i.test(confidenceLine(mk({ understanding: 'high' }))));
+  });
+
+  it('high stakes appends an honest caution', () => {
+    assert.ok(/high-stakes/i.test(confidenceLine(mk({ understanding: 'high', stakes: 'high' }))));
+  });
+
+  it('maps the EXACT tuple decideNextMove computes — never a fabricated number', () => {
+    for (const u of ['low', 'medium', 'high'] as const) {
+      for (const g of ['unread', 'grounded'] as const) {
+        for (const s of ['low', 'high'] as const) {
+          const line = confidenceLine({ understanding: u, groundedness: g, stakes: s });
+          assert.ok(line.length > 0);
+          assert.ok(!/\d/.test(line), 'no digits/percentages in the honest line');
+        }
+      }
+    }
+  });
+
+  it('returns "" for an absent tuple', () => {
+    assert.equal(confidenceLine(undefined), '');
   });
 });
 

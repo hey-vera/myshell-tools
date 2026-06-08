@@ -15,6 +15,16 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   resumed goal's contract from the persisted `workTrace` (niche: the in-run contract
   is already kept in memory; only cross-session resume benefits). Optional.
 
+## [3.33.0]
+
+### Changed — the partner asks + proposes like a senior engineer
+- When it needs a decision, it now reasons in SOLUTION space first — it offers the 2–4 genuinely different WAYS to build the thing, each naming real files/areas with a one-line tradeoff and a recommended default (not a generic "build / debug / review" menu). Grounded in the actual repo; it never invents a filename it has not seen.
+- When it proposes, it aligns proactively with a real plan: "I understand and I am aligned — here is my plan: 1) … 2) … 3) …. Go?" (still Go / Edit / No), instead of just echoing the goal.
+- It surfaces its confidence in plain words ("fairly confident I understand this" / "still forming a view — let me look first") — never a fabricated number. Everyday and clearly-understood turns are unchanged and just as fast; this only enriches the moments it already asks or proposes (no new model calls — it reuses the same gated step, subscription-clean).
+
+### Added — codex / opencode plan shown in the banner (when truthfully known)
+- The banner now shows codex's ChatGPT plan when it is present in the local auth token (e.g. "codex: ready (pro)"), alongside claude's tier. Read from local credentials only — no API call, never fabricated; if a provider's plan is not in its local creds (e.g. opencode's key-based auth), it honestly stays "ready".
+
 ## [3.32.0]
 
 ### Added — parked goals & to-do lists

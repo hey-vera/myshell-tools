@@ -545,16 +545,38 @@ export function deriveAskFromForks(
 
   const budget = Math.min(plan.asks, ASK_CAP, forks.length);
   const questions: Question[] = [];
-  for (let i = 0; i < budget; i++) {
-    const fork = forks[i];
+  for (const fork of forks) {
+    if (questions.length >= budget) break;
     if (fork === undefined) continue;
     const promptText = fork.question.trim();
     if (promptText.length === 0) continue;
-    const options = (fork.options ?? [])
+    // PHASE 1b — REJECT a shallow/generic order-taker menu ("are you fixing /
+    // adding / polishing / integrating?"). A generic fork is NOT a senior-grade
+    // architectural choice; we skip it and proceed on the stated assumption rather
+    // than surface a vacuous question. Same predicate the vision-triage uses — one
+    // source of truth for "this fork is a generic menu, not a genuine fork".
+    if (isGenericOpenMenuForkText(fork.question, fork.options)) continue;
+
+    // Carry the REAL competing approaches as the selectable options. The extractor
+    // already phrases each as "<approach> — <one-line tradeoff>" and orders them
+    // best-first (intent.ts solution-space prompt), so option 1 is the recommended
+    // default — we tag it so the multiple-choice ask reads as a senior proposal,
+    // not a bare list. NO fabrication: every label is the extractor's own text.
+    const rawOptions = (fork.options ?? [])
       .map((o) => o.trim())
       .filter((o) => o.length > 0)
-      .slice(0, 4)
-      .map((o) => ({ label: o }));
+      .slice(0, 4);
+    const recommended =
+      fork.assumeIfUnasked !== undefined && fork.assumeIfUnasked.trim().length > 0
+        ? fork.assumeIfUnasked.trim()
+        : rawOptions[0];
+    const options = rawOptions.map((label, i) => {
+      // Mark the recommended approach (matches the stated default, or option 1).
+      const isRec =
+        recommended !== undefined &&
+        (label === recommended || (i === 0 && !rawOptions.includes(recommended)));
+      return isRec ? { label, description: 'recommended' } : { label };
+    });
     questions.push({
       id: fork.id,
       prompt: promptText,
@@ -581,9 +603,9 @@ const ACTION_INSTRUCTION: Partial<Record<EngagementAction, string>> = {
     'Reflect the goal in ONE short line so the user can correct you, then proceed — do not parrot the request.',
   PLAN_FIRST: 'Produce a short plan/roadmap, then act on it — do not over-plan small work.',
   DISCUSS_OPTIONS:
-    'Present 2–3 approaches with tradeoffs and recommend one before committing to an irreversible step.',
+    'Present the 2–4 genuinely-different WAYS to build this — each naming the REAL files/components it would touch (from the repo map; never invent one) plus a one-line tradeoff — and recommend one before an irreversible step. No generic "fix/add/polish" menus.',
   ASK_CLARIFYING:
-    'If a genuine fork remains that would materially change the result, ask it once; otherwise state your assumption and proceed.',
+    'If a genuine fork remains, ask it ONCE as a multiple-choice between the concrete repo-grounded approaches (each with its tradeoff) and mark your recommended default; otherwise state your assumption and proceed.',
 };
 
 /**

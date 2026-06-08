@@ -22,6 +22,7 @@
  */
 
 import { readFile } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { execa } from 'execa';
@@ -180,11 +181,15 @@ export function foldRateLimitTier(
  * "logged in" (case-insensitive). The haystack is built from both streams
  * because `codex login status` writes to stderr in practice.
  *
- * Plan: null — codex login status does not expose a subscription/plan label.
+ * Plan: null — `codex login status` text output does not expose a
+ * subscription/plan label. The honest ChatGPT plan IS available, but only from
+ * codex's on-disk `auth.json` token claim (see {@link codexPlanFromAuthJson});
+ * detectProvider folds that in after this parse. We deliberately do NOT fabricate
+ * a plan here.
  * Conservative: on any unexpected output, authenticated stays false and plan is null.
  *
  * @remarks Codex has no plan/subscription field in `codex login status` output.
- *   plan is always null; it is never fabricated.
+ *   plan is always null from THIS function; it is never fabricated.
  */
 export function parseCodexAuth(
   stdout: string,
@@ -200,6 +205,114 @@ export function parseCodexAuth(
   const authenticated = haystack.includes('logged in');
 
   return { authenticated, plan: null };
+}
+
+/**
+ * Decode the CLAIMS payload of a JWT WITHOUT verifying its signature.
+ *
+ * We only ever read non-sensitive DISPLAY claims (e.g. a plan-type string) from a
+ * token that codex itself already trusts on disk — we are not authenticating with
+ * it, so no signature trust is needed. The token material is never logged and
+ * never returned; only the parsed claims object is.
+ *
+ * A JWT is `header.payload.signature`; the payload is base64url-encoded JSON. This
+ * is fully fail-soft: any malformed token (wrong segment count, bad base64, non-JSON,
+ * non-object) returns null. Pure / never throws.
+ *
+ * @param token - A JWT string (or anything; non-JWTs simply return null).
+ */
+export function decodeJwtClaims(token: string): Record<string, unknown> | null {
+  try {
+    if (typeof token !== 'string') return null;
+    const parts = token.split('.');
+    if (parts.length < 2) return null;
+    const payload = parts[1];
+    if (typeof payload !== 'string' || payload.length === 0) return null;
+    // base64url → base64, then pad to a multiple of 4.
+    let b64 = payload.replace(/-/g, '+').replace(/_/g, '/');
+    while (b64.length % 4 !== 0) b64 += '=';
+    const json = Buffer.from(b64, 'base64').toString('utf8');
+    const parsed = JSON.parse(json) as unknown;
+    if (typeof parsed !== 'object' || parsed === null) return null;
+    return parsed as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Extract the honest ChatGPT plan/tier label from codex's on-disk `auth.json`.
+ *
+ * What is TRUTHFULLY available locally (no metered API call): when codex is signed
+ * in via ChatGPT (`auth_mode === "chatgpt"`), it stores OAuth tokens under
+ * `tokens.{id_token,access_token}`. Both are JWTs whose `https://api.openai.com/auth`
+ * claim carries `chatgpt_plan_type` — the real account plan (e.g. "pro", "plus",
+ * "prolite", "free", "team"). We decode that claim (no signature trust — see
+ * {@link decodeJwtClaims}) and return it verbatim, lowercased+trimmed, so the banner
+ * can show the user's actual ChatGPT plan exactly like claude's tier.
+ *
+ * HONESTY: returns the plan string ONLY when it is genuinely present in the token
+ * claim. When codex is signed in with an API key (`auth_mode` other than chatgpt,
+ * or no decodable plan claim) there is NO subscription plan to show → returns null,
+ * and the banner stays at plain "ready". We never fabricate a tier and never log the
+ * token. Pure / fail-soft: any missing field / parse error returns null; never throws.
+ *
+ * @param rawAuthJson - the raw contents of codex's `auth.json`.
+ */
+export function codexPlanFromAuthJson(rawAuthJson: string): string | null {
+  try {
+    const parsed = JSON.parse(rawAuthJson) as unknown;
+    if (typeof parsed !== 'object' || parsed === null) return null;
+    const obj = parsed as Record<string, unknown>;
+
+    const tokens = obj['tokens'];
+    if (typeof tokens !== 'object' || tokens === null) return null;
+    const tk = tokens as Record<string, unknown>;
+
+    // Prefer the id_token, fall back to the access_token — both carry the claim.
+    for (const key of ['id_token', 'access_token']) {
+      const token = tk[key];
+      if (typeof token !== 'string' || token.length === 0) continue;
+      const claims = decodeJwtClaims(token);
+      if (claims === null) continue;
+      const authClaim = claims['https://api.openai.com/auth'];
+      if (typeof authClaim !== 'object' || authClaim === null) continue;
+      const planType = (authClaim as Record<string, unknown>)['chatgpt_plan_type'];
+      if (typeof planType === 'string' && planType.trim().length > 0) {
+        return planType.trim().toLowerCase();
+      }
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Resolve where codex's `auth.json` lives — the same way codex / the rest of this
+ * codebase does (mirrors model-capability-port.resolveCodexHome):
+ *   1. explicit `CODEX_HOME` env var when set;
+ *   2. else the Replit-persistent `.replit-tools/.codex-persistent` dir when it
+ *      actually holds an auth.json;
+ *   3. else `~/.codex`.
+ * Pure-ish (reads env + existsSync). Never throws.
+ */
+export function resolveCodexAuthPath(
+  env: NodeJS.ProcessEnv,
+  cwd: string,
+  home: string = homedir(),
+): string {
+  const explicit = env['CODEX_HOME'];
+  if (typeof explicit === 'string' && explicit.length > 0) {
+    return join(explicit, 'auth.json');
+  }
+  try {
+    const persistent = join(cwd, '.replit-tools', '.codex-persistent');
+    if (existsSync(join(persistent, 'auth.json'))) return join(persistent, 'auth.json');
+  } catch {
+    // ignore — fall through to the default home.
+  }
+  return join(home, '.codex', 'auth.json');
 }
 
 /**
@@ -265,8 +378,10 @@ export function rateLimitTierFromCreds(rawCredsJson: string): string | null {
  * remains true, authenticated false, plan null.
  *
  * For 'codex': runs `codex --version` to confirm the binary is present, then
- * `codex login status` to determine real auth state. Plan is always null because
- * `codex login status` does not expose subscription information.
+ * `codex login status` to determine real auth state. `codex login status` text
+ * exposes no plan, but when authenticated we read codex's on-disk auth.json and
+ * surface the real ChatGPT plan from its OAuth token claim (chatgpt_plan_type) —
+ * see codexPlanFromAuthJson; null for an API-key login or when no claim is present.
  * On spawn failure of the status command, falls back gracefully: installed
  * remains true, authenticated false, plan null.
  *
@@ -276,7 +391,9 @@ export function rateLimitTierFromCreds(rawCredsJson: string): string | null {
  * one recognized credential (`type === "oauth"` OR `type === "api"`). myshell never
  * sees or stores that secret — opencode does — so an API-key credential (e.g.
  * OpenCode Zen) counts: opencode then brokers many models (e.g. Kimi via
- * opencode-go). Plan is always null (opencode exposes no tier).
+ * opencode-go). Plan is null for an api/gateway credential (opencode stores no tier
+ * for it); the one honest exception is an oauth credential whose token carries a
+ * ChatGPT plan claim, which opencodePlanFromAuthJson surfaces.
  */
 export async function detectProvider(
   id: 'claude' | 'codex' | 'opencode',
@@ -411,7 +528,7 @@ export async function detectProvider(
     if (result.exitCode === 0) {
       // Binary confirmed present — now probe real auth state.
       let authenticated = false;
-      const plan: string | null = null; // codex login status never exposes plan
+      let plan: string | null = null; // `codex login status` text exposes no plan
 
       try {
         const authResult = await execa('codex', ['login', 'status'], {
@@ -427,6 +544,23 @@ export async function detectProvider(
         authenticated = parsed.authenticated;
       } catch {
         // Spawn failure — leave authenticated false, plan null
+      }
+
+      // Plan/tier enrichment (honest, no metered call): `codex login status` text
+      // doesn't expose the ChatGPT plan, but codex's on-disk auth.json stores OAuth
+      // tokens whose JWT claim carries `chatgpt_plan_type` (e.g. "pro"/"plus"/"free").
+      // Read that ONE display string from the local file so the banner can show the
+      // user's real ChatGPT plan like claude's. Only when authenticated; fail-soft —
+      // any missing file / API-key login / parse failure leaves plan null (plain
+      // "ready"), never a fabricated tier. The token itself is never read out or logged.
+      if (authenticated) {
+        try {
+          const authPath = resolveCodexAuthPath(codexChildEnv, cwd);
+          const raw = await readFile(authPath, 'utf8');
+          plan = codexPlanFromAuthJson(raw);
+        } catch {
+          // File missing/unreadable — leave plan null (plain "ready").
+        }
       }
 
       return {
@@ -506,6 +640,57 @@ export function opencodeCredentialCount(rawAuthJson: string): number {
 }
 
 /**
+ * Derive a TRUTHFUL plan/tier label from opencode's on-disk `auth.json`.
+ *
+ * What is honestly available — and what is NOT:
+ *  - opencode's auth.json `Info` union is `{type:"oauth", access, refresh, expires}`
+ *    | `{type:"api", key}` | `{type:"wellknown", ...}`. It stores ONLY the
+ *    credential TYPE and the secret — there is NO `plan` / `tier` / `subscription`
+ *    field. (Verified against the opencode binary's auth schema.) So an OpenCode
+ *    Zen / gateway `api` key carries NO plan we could read — pricing is a billing
+ *    relationship with the gateway, not something opencode persists. We do NOT
+ *    fabricate a "$10/mo"/"Zen" tier: there is nothing local to read it from.
+ *  - The ONE honest exception: when the user signed opencode into a ChatGPT/OpenAI
+ *    account, opencode stores an `oauth` credential whose `access` token is the SAME
+ *    kind of JWT codex stores, carrying `https://api.openai.com/auth.chatgpt_plan_type`.
+ *    When such a claim is genuinely decodable we surface it (e.g. "openai: pro"),
+ *    keyed by the provider id so it's clear which connected account it describes.
+ *
+ * Returns null when no credential carries a decodable plan claim → the banner
+ * stays at plain "ready" (honest: opencode is connected, but we can't name a tier).
+ * Pure / fail-soft: any parse error returns null; the token is never logged. Never throws.
+ *
+ * @param rawAuthJson - the raw contents of opencode's auth.json.
+ */
+export function opencodePlanFromAuthJson(rawAuthJson: string): string | null {
+  try {
+    const parsed = JSON.parse(rawAuthJson) as unknown;
+    if (typeof parsed !== 'object' || parsed === null) return null;
+    for (const [providerId, value] of Object.entries(parsed as Record<string, unknown>)) {
+      if (typeof value !== 'object' || value === null) continue;
+      const v = value as Record<string, unknown>;
+      if (v['type'] !== 'oauth') continue;
+      // An oauth credential's `access` token MAY be a ChatGPT/OpenAI JWT that
+      // carries the account plan. Decode defensively (no signature trust) and
+      // surface only a genuinely-present plan claim.
+      const access = v['access'];
+      if (typeof access !== 'string' || access.length === 0) continue;
+      const claims = decodeJwtClaims(access);
+      if (claims === null) continue;
+      const authClaim = claims['https://api.openai.com/auth'];
+      if (typeof authClaim !== 'object' || authClaim === null) continue;
+      const planType = (authClaim as Record<string, unknown>)['chatgpt_plan_type'];
+      if (typeof planType === 'string' && planType.trim().length > 0) {
+        return `${providerId}: ${planType.trim().toLowerCase()}`;
+      }
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Resolve where opencode's `auth.json` lives — the same way opencode does:
  * `$XDG_DATA_HOME/opencode/auth.json` when XDG_DATA_HOME is set (Replit points it
  * at the persistent workspace via replitPersistentEnv), else
@@ -566,9 +751,18 @@ async function detectOpencodeProvider(
       // provider key (e.g. OpenCode Zen) counts. `opencode auth list` only prints a
       // count, not the per-credential type, so we read auth.json directly.
       let authenticated = false;
+      let plan: string | null = null;
       try {
         const raw = await readFile(resolveOpencodeAuthPath(env), 'utf8');
         authenticated = parseOpencodeAuth(raw).authenticated;
+        // Plan/tier (honest, no metered call): opencode's auth.json stores only the
+        // credential TYPE + secret — there is NO plan/tier field for a gateway/api
+        // key (e.g. OpenCode Zen), so we do NOT invent one. The sole truthful case
+        // is an oauth credential whose token carries a ChatGPT plan claim, which
+        // opencodePlanFromAuthJson surfaces (else null → plain "ready").
+        if (authenticated) {
+          plan = opencodePlanFromAuthJson(raw);
+        }
       } catch {
         // File missing/unreadable — leave authenticated false (offer sign-in,
         // don't pretend).
@@ -599,7 +793,7 @@ async function detectOpencodeProvider(
         version: (result.stdout as string).trim(),
         binaryPath: 'opencode',
         authenticated,
-        plan: null,
+        plan,
         availableModels,
       };
     }

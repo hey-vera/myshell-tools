@@ -409,7 +409,10 @@ export async function* orchestrate(
         // Deterministic, grounded confirm built from the (now-grounded) frame's
         // real goal/doneWhen. Falls through to `answer` when there is no usable
         // goal to reflect (never fabricate a plan).
-        const proposal = buildReflectConfirm(intentFrame);
+        const proposal = buildReflectConfirm(intentFrame, {
+          conf,
+          grounded: brainGroundedness === 'grounded',
+        });
         if (proposal !== null) brainTerminalQuestion = proposal;
         break brainLoop;
       }
@@ -548,7 +551,10 @@ export async function* orchestrate(
         if (finalMove.kind === 'ask') {
           brainTerminalQuestion = finalMove.questions;
         } else if (finalMove.kind === 'reflect_confirm') {
-          const proposal = buildReflectConfirm(intentFrame);
+          const proposal = buildReflectConfirm(intentFrame, {
+            conf: finalConf,
+            grounded: brainGroundedness === 'grounded',
+          });
           if (proposal !== null) brainTerminalQuestion = proposal;
         }
         break brainLoop;

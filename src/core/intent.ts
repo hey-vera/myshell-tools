@@ -229,15 +229,57 @@ export function capIntentFrame(frame: IntentFrame): IntentFrame {
 // ---------------------------------------------------------------------------
 
 /**
+ * The marker the brain's codebase-scrape round prepends the repo-map/ENVIRONMENT
+ * block with when it RE-EXTRACTS intent on the enriched task (orchestrate.ts a2b).
+ * `buildIntentPrompt` detects it to flip on the GROUNDED solution-space instructions
+ * — so forks name REAL files/components from the map instead of generic labels.
+ * Kept here (not imported) so intent.ts stays a pure leaf with no orchestrate edge.
+ */
+const ENVIRONMENT_GROUNDING_MARKER = '--- ENVIRONMENT (repo map';
+
+/**
  * Build the one-shot intent-extraction prompt. Deliberately small and read-only:
- * the extractor model only buckets understanding, it never does the work. The
- * strict JSON-only instruction keeps {@link parseIntentFrame} robust.
+ * the extractor model only buckets understanding + the solution forks, it never
+ * does the work. The strict JSON-only instruction keeps {@link parseIntentFrame}
+ * robust.
+ *
+ * SOLUTION-SPACE FORKS (research §2 / ATA, arXiv 2502.04485): the model is told to
+ * FIRST reason in the space of SOLUTIONS — enumerate the 2–4 genuinely-different
+ * WAYS the thing could be built — and only THEN derive forks whose options ARE
+ * those real approaches, each with a one-line tradeoff and a recommended default.
+ * That is the difference between "are you fixing or adding?" (a generic menu, which
+ * the engagement layer REJECTS) and "Server-Components streaming (A) vs client SWR
+ * (B) — A streams from the RSC boundary, B adds a /api/feed route + useSWR".
+ *
+ * GROUNDING (research §1c, the honesty rule): when the message carries the appended
+ * repo-map/ENVIRONMENT block (the brain's codebase round — detected via
+ * {@link ENVIRONMENT_GROUNDING_MARKER}), the model is instructed to name the REAL
+ * files/components/conventions from that map in its approaches — and NEVER to cite a
+ * file it has not seen. With no map present it falls back to honest, generic phrasing
+ * (no invented filenames). NO new model call: this only reshapes the CONTENT of the
+ * single gated extraction myshell already makes.
  */
 export function buildIntentPrompt(task: string): string {
+  const grounded = task.includes(ENVIRONMENT_GROUNDING_MARKER);
+  const groundingLine = grounded
+    ? 'A repo map / ENVIRONMENT block is included below. GROUND every approach and ' +
+      'fork option in the REAL files, components, and conventions named there — cite ' +
+      'concrete paths (e.g. "src/feed/page.tsx"). NEVER invent a file you do not see in the map.'
+    : 'No repo map is provided. Keep approaches HONEST and generic (describe the ' +
+      'method, e.g. "stream server-side" vs "fetch client-side") — do NOT invent ' +
+      'specific filenames or components you have not seen.';
   return [
     'You extract the INTENT of a user message for a CLI work assistant. Read the',
     'message and produce a small structured frame of what the user is actually',
     'trying to achieve. Do NOT do the work or answer the message.',
+    '',
+    'THINK IN SOLUTION-SPACE FIRST (do this silently, before filling the frame):',
+    '  enumerate the 2-4 genuinely DIFFERENT ways this could be built given the',
+    '  context — different architectures/approaches, not trivial variations. Then',
+    '  turn each real decision among them into a fork whose OPTIONS are those',
+    '  approaches. A good fork SPLITS the live approaches; a bad fork is a generic',
+    '  category menu ("are you fixing / adding / polishing?") — never emit those.',
+    `  ${groundingLine}`,
     '',
     'Fill these fields (omit any you genuinely cannot infer — do NOT invent):',
     '  goal       — the intended OUTCOME in one line (free text, required).',
@@ -246,15 +288,22 @@ export function buildIntentPrompt(task: string): string {
     '  nonGoals   — up to 3 things explicitly OUT of scope, when the user signaled one.',
     '  doneWhen   — what "done" looks like, when inferable.',
     '  forks      — up to 3 GENUINE decision forks whose different answers would',
-    '               MATERIALLY change the result. For each: a short question, 2-4',
-    '               options when enumerable, and assumeIfUnasked (the reasonable',
-    '               default to state and proceed on if not asked). Do NOT list minor',
-    '               uncertainties — only real forks.',
+    '               MATERIALLY change the result. For each: a short question; 2-4',
+    '               options that are the REAL competing approaches, each phrased as',
+    '               "<approach> — <one-line tradeoff>" (name concrete files/components',
+    '               when a repo map is provided); and assumeIfUnasked = the SINGLE',
+    '               recommended default to state and proceed on if not asked. Order',
+    '               options best-first so option 1 is your recommendation. Do NOT list',
+    '               minor uncertainties or generic category menus — only real forks',
+    '               between distinct approaches.',
     '  confidence — high | medium | low: how sure you are you understood the GOAL.',
     '',
     'Reply with ONLY a JSON object, nothing else:',
     '{"goal":"...","kind":"coding","constraints":[],"nonGoals":[],"doneWhen":"",',
-    ' "forks":[{"id":"F1","question":"...","options":["a","b"],"assumeIfUnasked":"a"}],',
+    ' "forks":[{"id":"F1","question":"How should the feed load data?",',
+    '   "options":["Server-Component streaming — fewer round-trips, RSC-only",',
+    '              "Client SWR fetch — simpler, needs a /api route"],',
+    '   "assumeIfUnasked":"Server-Component streaming"}],',
     ' "confidence":"medium"}',
     '',
     `Message: ${task}`,
