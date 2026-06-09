@@ -181,6 +181,19 @@ export interface AppConfig {
    */
   experimentalInk?: boolean;
   /**
+   * GLOBAL BASIC-MODE escape hatch (default off → full intelligence ON). The six
+   * intelligence subsystems (governor, verify, taste, judgment, trust, tribunal) are
+   * ON BY DEFAULT at the CLI entry point so the tool is automatic and frictionless.
+   * Set this to true (or `MYSHELL_BASIC` truthy in the environment) to drop back to
+   * plain mode — ALL six resolve to false. Per-feature env opt-outs
+   * (`MYSHELL_<FEATURE>` ∈ {'0','false','off','no'}) and per-feature config opt-outs
+   * (`experimental<Feature> === false`) still disable an individual subsystem. The
+   * pure per-feature flag helpers keep their opt-in semantics (so the flag-off
+   * neutrality suites stay byte-identical); this switch lives at the composition
+   * root. See src/interface/ui/experimental-default.ts.
+   */
+  experimentalBasic?: boolean;
+  /**
    * EXPERIMENTAL bounded concurrent multi-goal SCHEDULER (default off). When true
    * (or with `MYSHELL_SCHEDULER` truthy in the environment), the /goal runner
    * routes the confirmed goal through `runSchedule` (src/core/scheduler.ts)

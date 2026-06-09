@@ -15,6 +15,32 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   resumed goal's contract from the persisted `workTrace` (niche: the in-run contract
   is already kept in memory; only cross-session resume benefits). Optional.
 
+## [3.46.0]
+
+### Changed — the intelligence is ON by default: automatic, frictionless
+
+- **The full intelligence now ships ON by default** — no env vars, no flag-flipping. The
+  Governor, the verification ladder, learned taste, the plural judgment poll, the trust
+  surface, and the Rival Tribunal all engage automatically. The Governor is the
+  always-on spine that keeps this safe: it caps per-turn spend, auto-adapts the budget to
+  your subscription tier, and admits the expensive cross-vendor levers only when they're
+  warranted — so default-on is disciplined, not reckless. Cross-vendor features (poll,
+  tribunal) need ≥2 vendors connected and otherwise degrade honestly to single-vendor.
+- **`src/interface/ui/experimental-default.ts`** — the composition-root resolver
+  (`experimentalEnabledByDefault`). Priority: explicit per-feature opt-IN
+  (`MYSHELL_X` ∈ {1,true,on,yes} / `config.experimentalX === true`) wins — ON even in
+  basic mode; then global basic mode → OFF; then explicit opt-OUT (`MYSHELL_X` ∈
+  {0,false,off,no} / `config.experimentalX === false`) → OFF; absent → ON. It composes
+  the existing pure opt-in helpers, so they stay production-used (no orphan, no weakened
+  guard).
+- **Escape hatches**: disable any single subsystem with `MYSHELL_<NAME>=0` (or
+  `config.experimentalX: false`); disable them all at once with `MYSHELL_BASIC=1` (or
+  `config.experimentalBasic: true`) for a plain run.
+- The concurrent multi-goal scheduler (`MYSHELL_SCHEDULER`) remains OPT-IN — it is a
+  quota multiplier, not a single-turn intelligence lever.
+- Flag-OFF neutrality intact: the opt-out path is byte-for-byte today's behavior
+  (characterization + oracle suites unchanged), so basic mode is a clean escape hatch.
+
 ## [3.45.1]
 
 ### Changed — all-flags-ON composition audit: honesty fix + regression guard

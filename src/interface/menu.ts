@@ -146,6 +146,7 @@ import { governorEnabled } from './ui/governor-flag.js';
 import { verifyEnabled } from './ui/verify-flag.js';
 import { trustEnabled } from './ui/trust-flag.js';
 import { tribunalEnabled } from './ui/tribunal-flag.js';
+import { experimentalEnabledByDefault } from './ui/experimental-default.js';
 import { nodeVerifyPort } from '../infra/verify-port.js';
 import { nodeWorktreePort } from '../infra/worktree.js';
 import { runSchedule, type GoalSpec, type RunGoalPhase } from '../core/scheduler.js';
@@ -1735,12 +1736,20 @@ export async function runChatLoop(
           // TOOL-STATE / ABOUT block (tool self-awareness) — present only when the
           // pure renderer produced a non-empty block (it always does given a version).
           ...(toolStateContext.length > 0 ? { toolStateContext } : {}),
-          // PERFORMANCE GOVERNOR (Phase 2 skeleton) — opt-in, DEFAULT OFF. Resolved
-          // by the pure governorEnabled(env, config) flag; when off (the default),
+          // PERFORMANCE GOVERNOR (Phase 2 skeleton) — DEFAULT ON at the entry point
+          // (frictionless). Resolved by the composition-root default-on resolver;
+          // disabled only by an explicit opt-out (MYSHELL_GOVERNOR ∈ {0,false,off,no}
+          // OR config.experimentalGovernor===false) or global basic mode. When off,
           // orchestrate short-circuits before consulting the governor so the
-          // admission path is byte-for-byte unchanged. Present only when true (so
-          // the absent-default keeps the field off entirely).
-          ...(governorEnabled(process.env, mutableCtx.config)
+          // admission path is byte-for-byte unchanged. Present only when true (so the
+          // off state keeps the field off entirely).
+          ...(experimentalEnabledByDefault(
+            process.env,
+            mutableCtx.config,
+            'MYSHELL_GOVERNOR',
+            mutableCtx.config.experimentalGovernor,
+            governorEnabled,
+          )
             ? {
                 governorEnabled: true,
                 // REAL live pressure (master-plan PHASE 4 — closing the Phase-2
@@ -1757,43 +1766,70 @@ export async function runChatLoop(
                 governorPressure: currentPressure(),
               }
             : {}),
-          // VERIFICATION CENTERPIECE (master-plan PHASE 3) — opt-in, DEFAULT OFF.
-          // Resolved by the pure verifyEnabled(env, config) flag. When ON, inject the
+          // VERIFICATION CENTERPIECE (master-plan PHASE 3) — DEFAULT ON at the entry
+          // point (frictionless). Resolved by the composition-root default-on resolver;
+          // disabled only by an explicit opt-out (MYSHELL_VERIFY ∈ {0,false,off,no} OR
+          // config.experimentalVerify===false) or global basic mode. When ON, inject the
           // impure VerifyPort (git-diff + bounded test-runner) + the conservative
           // built-in floor level ('tests' — tests-first, the free signal). The verify
           // stage runs at the turn's accept point and surfaces an honest four-state
-          // receipt. When OFF (the default) the port is absent → verifyStage returns
+          // receipt. When OFF the port is absent → verifyStage returns
           // undefined → the accept path is byte-for-byte unchanged (the
           // characterization + oracle suites prove that neutrality). The Governor's
           // `verify` lever, when its flag is also on, refines the level per turn.
-          ...(verifyEnabled(process.env, mutableCtx.config)
+          ...(experimentalEnabledByDefault(
+            process.env,
+            mutableCtx.config,
+            'MYSHELL_VERIFY',
+            mutableCtx.config.experimentalVerify,
+            verifyEnabled,
+          )
             ? {
                 verifyPort: nodeVerifyPort,
                 verifyLevel: 'tests' as const,
                 verifyTestTimeoutMs: Math.min(ctx.timeoutMs, 120_000),
               }
             : {}),
-          // THE TRUST SURFACE (master-plan PHASE 8) — opt-in, DEFAULT OFF. Resolved by
-          // the pure trustEnabled(env, config) flag. When ON, the accept-point receipt
-          // is UPGRADED from the bare verify line into the consolidated, auditable
-          // trust receipt (auditable confidence + verify + an honest self-audit),
-          // composed PURELY from the real signals already on the turn (no new model
-          // call). When OFF (the default) the accept path emits EXACTLY today's single
-          // verify line — byte-for-byte neutrality (the characterization + oracle
-          // suites prove it). The underlying signals are themselves flag-gated, so with
-          // all flags off the trust surface is doubly dark.
-          ...(trustEnabled(process.env, mutableCtx.config) ? { trustEnabled: true } : {}),
-          // THE RIVAL TRIBUNAL (master-plan PHASE 9) — opt-in, DEFAULT OFF. Resolved by
-          // the pure tribunalEnabled(env, config) flag. When ON, inject the flag + the
-          // impure WorktreePort (git-worktree isolation) so a genuine load-bearing
-          // implementation fork with ≥2 distinct authed vendors can be settled by a
-          // build-off (each vendor builds its approach in its own worktree; tests +
-          // cross-review pick an honest winner). When OFF (the default) both are absent
+          // THE TRUST SURFACE (master-plan PHASE 8) — DEFAULT ON at the entry point
+          // (frictionless). Resolved by the composition-root default-on resolver;
+          // disabled only by an explicit opt-out (MYSHELL_TRUST ∈ {0,false,off,no} OR
+          // config.experimentalTrust===false) or global basic mode. When ON, the
+          // accept-point receipt is UPGRADED from the bare verify line into the
+          // consolidated, auditable trust receipt (auditable confidence + verify + an
+          // honest self-audit), composed PURELY from the real signals already on the
+          // turn (no new model call). When OFF the accept path emits EXACTLY today's
+          // single verify line — byte-for-byte neutrality. The underlying signals are
+          // themselves resolved the same way, so in global basic mode the surface is
+          // doubly dark.
+          ...(experimentalEnabledByDefault(
+            process.env,
+            mutableCtx.config,
+            'MYSHELL_TRUST',
+            mutableCtx.config.experimentalTrust,
+            trustEnabled,
+          )
+            ? { trustEnabled: true }
+            : {}),
+          // THE RIVAL TRIBUNAL (master-plan PHASE 9) — DEFAULT ON at the entry point
+          // (frictionless). Resolved by the composition-root default-on resolver;
+          // disabled only by an explicit opt-out (MYSHELL_TRIBUNAL ∈ {0,false,off,no}
+          // OR config.experimentalTribunal===false) or global basic mode. When ON,
+          // inject the flag + the impure WorktreePort (git-worktree isolation) so a
+          // genuine load-bearing implementation fork with ≥2 distinct authed vendors
+          // can be settled by a build-off (each vendor builds its approach in its own
+          // worktree; tests + cross-review pick an honest winner). When OFF both are
+          // absent
           // → orchestrate's tribunal branch is structurally unreachable → the turn
           // delegates to the normal work-call BYTE-FOR-BYTE as today (the
           // characterization + oracle suites prove that neutrality). It still degrades
           // honestly at runtime (no fabricated rival) whenever any precondition fails.
-          ...(tribunalEnabled(process.env, mutableCtx.config)
+          ...(experimentalEnabledByDefault(
+            process.env,
+            mutableCtx.config,
+            'MYSHELL_TRIBUNAL',
+            mutableCtx.config.experimentalTribunal,
+            tribunalEnabled,
+          )
             ? {
                 tribunalEnabled: true,
                 worktreePort: nodeWorktreePort,
@@ -1892,11 +1928,26 @@ export async function runChatLoop(
       // skipped before it ever touches disk. Fully fail-soft: a corrupt/missing
       // ledger degrades to no-bias, never breaks a turn. No model call, no
       // embeddings, no metered service — subscription-clean.
-      const tasteOn = tasteEnabled(process.env, mutableCtx.config);
+      const tasteOn = experimentalEnabledByDefault(
+        process.env,
+        mutableCtx.config,
+        'MYSHELL_TASTE',
+        mutableCtx.config.experimentalTaste,
+        tasteEnabled,
+      );
       // THE FREE JUDGMENT LAYER flag (master-plan PHASE 5; core/judgment-flag.ts).
-      // DEFAULT OFF: when off, deps.judgmentEnabled is never set → the brain's
-      // `decideNextMove` returns BYTE-FOR-BYTE today's moves (no push_back).
-      const judgmentOn = judgmentEnabled(process.env, mutableCtx.config);
+      // DEFAULT ON at the entry point (frictionless): resolved by the composition-root
+      // default-on resolver. Disabled only by explicit opt-out (MYSHELL_JUDGMENT ∈
+      // {0,false,off,no} OR config.experimentalJudgment===false) or global basic mode.
+      // When off, deps.judgmentEnabled is never set → the brain's `decideNextMove`
+      // returns BYTE-FOR-BYTE today's moves (no push_back).
+      const judgmentOn = experimentalEnabledByDefault(
+        process.env,
+        mutableCtx.config,
+        'MYSHELL_JUDGMENT',
+        mutableCtx.config.experimentalJudgment,
+        judgmentEnabled,
+      );
       const tasteLedger = createFileTasteLedger({ clock: ctx.clock });
       // The subject of the last surfaced fork/proposal — so an observed answer can
       // be recorded against the decision it resolved. Set when a question/confirm
