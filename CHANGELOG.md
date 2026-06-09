@@ -15,6 +15,15 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   resumed goal's contract from the persisted `workTrace` (niche: the in-run contract
   is already kept in memory; only cross-session resume benefits). Optional.
 
+## [3.35.0]
+
+### Changed — big-picture moments now use your strongest model (the "Oracle")
+- When a turn is genuinely substantial — a plan, an architecture call, a real explanation — its reasoning is now routed to the STRONGEST model you have admissible (e.g. Claude Opus), so the partner's most important thinking runs on the best brain you already pay for. You can see it in the live tier/agent display.
+- Cost-disciplined: it only escalates on substantial turns (trivial/quick/everyday turns are byte-for-byte unchanged on the normal tier — zero extra cost), and it respects your Mode — Max escalates freely, Balanced only when the call is also high-stakes/uncertain, Efficient never. Degrades to the normal tier under rate-limit pressure or when the strong model is unavailable. No new model calls, subscription-clean.
+
+### Fixed — friendly plan label in the banner
+- The codex plan now shows a clean name (e.g. "codex: ready (Pro)") instead of the raw token slug ("prolite"). Known plans get a friendly label; unknown ones are title-cased. Read from local creds only, never fabricated.
+
 ## [3.34.0]
 
 ### Changed — the partner explains like an elite engineer, not a manual

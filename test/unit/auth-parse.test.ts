@@ -689,17 +689,21 @@ describe('decodeJwtClaims — reads the payload, never trusts the signature', ()
 // ---------------------------------------------------------------------------
 
 describe('codexPlanFromAuthJson — reads chatgpt_plan_type from the token claim', () => {
-  it('surfaces the plan when the id_token carries chatgpt_plan_type', () => {
-    assert.equal(codexPlanFromAuthJson(codexAuthJson('pro')), 'pro');
+  it('surfaces the plan as a friendly label when the id_token carries chatgpt_plan_type', () => {
+    assert.equal(codexPlanFromAuthJson(codexAuthJson('pro')), 'Pro');
   });
 
-  it('lowercases + trims the plan label', () => {
+  it('normalizes + trims the plan label to a friendly name', () => {
     const raw = codexAuthJson('  PLUS  ');
-    assert.equal(codexPlanFromAuthJson(raw), 'plus');
+    assert.equal(codexPlanFromAuthJson(raw), 'Plus');
   });
 
-  it('surfaces "prolite" verbatim (real owner account shape)', () => {
-    assert.equal(codexPlanFromAuthJson(codexAuthJson('prolite')), 'prolite');
+  it('maps the owner account slug "prolite" to its friendly label "Pro"', () => {
+    assert.equal(codexPlanFromAuthJson(codexAuthJson('prolite')), 'Pro');
+  });
+
+  it('title-cases an unknown slug instead of showing the raw token', () => {
+    assert.equal(codexPlanFromAuthJson(codexAuthJson('pro_max')), 'Pro Max');
   });
 
   it('falls back to access_token when id_token lacks the claim', () => {
@@ -711,7 +715,7 @@ describe('codexPlanFromAuthJson — reads chatgpt_plan_type from the token claim
         access_token: makeJwt({ 'https://api.openai.com/auth': authClaim }),
       },
     });
-    assert.equal(codexPlanFromAuthJson(raw), 'free');
+    assert.equal(codexPlanFromAuthJson(raw), 'Free');
   });
 
   it('returns null when no token carries a plan claim (API-key login)', () => {

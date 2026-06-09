@@ -23,8 +23,29 @@ import type { Assessment, Classification, Policy, Tier } from './types.js';
 import type { PlanInfo } from './policy.js';
 import type { ProviderId } from '../providers/port.js';
 
-/** What prompted the tier request — shapes how readily `adaptive` opens manager. */
-export type FlagshipTrigger = 'initial' | 'confidence' | 'review' | 'failure';
+/**
+ * What prompted the tier request — shapes how readily `adaptive` opens manager.
+ *
+ * - `initial`    : the as-classified tier on the first route (manager only when the
+ *                  turn justifies it via risk/confidence — never manager-first off a
+ *                  soft classification).
+ * - `confidence` : orchestrate decided the turn is under-confident → an earned ask.
+ * - `review`     : a reviewer (or an upstream architecture gate) asked to escalate.
+ * - `failure`    : every vendor at the tier failed → "this is hard, bring the flagship".
+ * - `oracle`     : the ORACLE move — route THIS turn's main reasoning to the strongest
+ *                  admissible model because it is a SUBSTANTIAL / explanatory / plan /
+ *                  insight turn (the moment that most warrants the best brain). It is
+ *                  deliberately NOT an "earned trigger": under `adaptive` (Balanced) it
+ *                  must still justify itself via the SAME risk/confidence criteria as
+ *                  `initial`, so Balanced escalates the Oracle moment only when the turn
+ *                  is ALSO high-stakes / low-confidence (conservative — quota-aware). Max
+ *                  (`always-eligible`) opens it on every substantial turn; Efficient
+ *                  (`never-auto`) never does. The substantial gate itself lives in
+ *                  orchestrate (the same `directive.substantial` predicate the
+ *                  explanatory-depth + grounded-recommendation directives use), so a
+ *                  trivial / quick turn never even requests the Oracle.
+ */
+export type FlagshipTrigger = 'initial' | 'confidence' | 'review' | 'failure' | 'oracle';
 
 export interface FlagshipContext {
   /** The tier we'd like to run (only `'manager'` requests are gated here). */
@@ -129,9 +150,13 @@ export function authorizeTier(ctx: FlagshipContext): FlagshipDecision {
   // "Earned" triggers are justifications in themselves: orchestrate only passes
   // 'confidence' once it has decided the turn is under-confident, 'review' once a
   // reviewer asked to escalate, and 'failure' once every vendor at the tier has
-  // failed (a genuine "this is hard — bring the flagship" signal). 'initial' is the
-  // only trigger that must justify itself via risk/confidence — we never open
-  // manager-first for a merely manager-classified, low-risk prompt.
+  // failed (a genuine "this is hard — bring the flagship" signal). 'initial' and
+  // 'oracle' are the triggers that must justify themselves via risk/confidence — we
+  // never open manager-first for a merely manager-classified, low-risk prompt, and
+  // (the Oracle move) Balanced escalates a SUBSTANTIAL turn's reasoning to the
+  // flagship only when that turn is ALSO high-stakes / low-confidence, staying
+  // quota-conservative. Max ('always-eligible', handled above) opens the Oracle on
+  // every substantial turn; Efficient ('never-auto', handled above) never does.
   const earnedTrigger = trigger === 'review' || trigger === 'confidence' || trigger === 'failure';
   const justified = earnedTrigger || highStakes || assessment?.escalate === true || lowConfidence;
 

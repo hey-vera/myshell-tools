@@ -134,6 +134,73 @@ describe('authorizeTier — Balanced (adaptive)', () => {
   });
 });
 
+describe('authorizeTier — ORACLE trigger (substantial-turn escalation)', () => {
+  // The Oracle ('oracle' trigger) routes a SUBSTANTIAL turn's reasoning to the
+  // strongest admissible model. It must NOT be self-justifying under adaptive
+  // (Balanced) — it obeys the SAME risk/confidence + budget + free-plan gating as
+  // the initial route — while Max admits it on every substantial turn and Efficient
+  // never does. (The substantial gate itself is in orchestrate; here we prove the
+  // admission half: mode + budget + cooldown/free-plan pressure all degrade it.)
+
+  it('Max admits the Oracle on a low-risk substantial turn (aggressive)', () => {
+    const d = authorizeTier(ctx({ policy: MAX, classification: classification('low'), trigger: 'oracle' }));
+    assert.equal(d.allowed, true);
+    assert.equal(d.tier, 'manager');
+  });
+
+  it('Efficient never admits the Oracle, even on a critical turn', () => {
+    const d = authorizeTier(ctx({ policy: EFFICIENT, classification: classification('critical'), trigger: 'oracle' }));
+    assert.equal(d.allowed, false);
+    assert.equal(d.tier, 'ic');
+  });
+
+  it('Balanced does NOT escalate the Oracle on a low-risk, confident turn (conservative)', () => {
+    const d = authorizeTier(
+      ctx({
+        policy: BALANCED,
+        classification: classification('low'),
+        assessment: assessment({ confidence: 0.95 }),
+        trigger: 'oracle',
+      }),
+    );
+    assert.equal(d.allowed, false);
+    assert.equal(d.tier, 'ic');
+  });
+
+  it('Balanced escalates the Oracle when the substantial turn is ALSO high-risk', () => {
+    const d = authorizeTier(ctx({ policy: BALANCED, classification: classification('high'), trigger: 'oracle' }));
+    assert.equal(d.allowed, true);
+    assert.equal(d.tier, 'manager');
+  });
+
+  it('Balanced Oracle DEGRADES under attempt-budget pressure (no hammering)', () => {
+    const d = authorizeTier(
+      ctx({
+        policy: BALANCED,
+        classification: classification('high'),
+        trigger: 'oracle',
+        flagshipAttemptsThisTurn: 1,
+      }),
+    );
+    assert.equal(d.allowed, false);
+    assert.equal(d.tier, 'ic');
+  });
+
+  it('Balanced Oracle is vetoed by an observed free plan (quota guard)', () => {
+    const d = authorizeTier(
+      ctx({
+        policy: BALANCED,
+        classification: classification('high'),
+        trigger: 'oracle',
+        planInfos: { claude: planInfo('free') },
+        candidateProviders: ['claude'],
+      }),
+    );
+    assert.equal(d.allowed, false);
+    assert.equal(d.tier, 'ic');
+  });
+});
+
 describe('authorizeTier — Balanced plan veto (Honesty Contract)', () => {
   it('vetoes the flagship when the only observed plan is free', () => {
     const d = authorizeTier(

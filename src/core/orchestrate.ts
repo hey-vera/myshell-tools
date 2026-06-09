@@ -1107,6 +1107,45 @@ export async function* orchestrate(
     }
   }
 
+  // ORACLE move (elite-review item 4 / research Phase 5): route the BIG-PICTURE,
+  // planning, insight moment of a turn to the user's STRONGEST admissible model, so
+  // the partner's most important reasoning runs on the best brain they already pay
+  // for. This is a PURE ROUTING decision — no new model call, no new prompt; it only
+  // lifts THIS turn's tier request to manager before the route() resolve below, and
+  // the existing tier/agent display then SHOWS the strong model so the user can see
+  // it was used.
+  //
+  // COST DISCIPLINE — fires ONLY on the moments that genuinely warrant it:
+  //   - Gated by the SAME `directive.substantial` predicate that gates the
+  //     explanatory-depth directive + grounded-recommendation validator
+  //     (turn-directive.ts decideSubstantial → isTrivial-EXEMPT). A trivial / quick /
+  //     everyday turn has substantial=false → this block is skipped entirely, so the
+  //     normal/cheap tier and the fast path are byte-for-byte unchanged (zero extra
+  //     cost on the common turn).
+  //   - RESPECTS THE USER'S MODE and every budget/pressure/cooldown signal because
+  //     the escalation is gated by the EXISTING `admitManager` / `authorizeTier`
+  //     machinery (the 'oracle' trigger):
+  //       · Efficient ('never-auto')      → denied → no escalation, ever.
+  //       · Max       ('always-eligible') → admitted → every substantial turn reaches
+  //                                          the flagship (aggressive, as intended).
+  //       · Balanced  ('adaptive')        → admitted only when the turn is ALSO
+  //                                          high/critical risk, under-confidence, or a
+  //                                          self-reported escalate (the 'oracle'
+  //                                          trigger is NOT self-justifying), AND the
+  //                                          per-turn flagship-attempt budget isn't
+  //                                          spent AND no observed free plan vetoes it.
+  //     So under rate-limit pressure (attempt budget) or a tight (free) plan it DEGRADES
+  //     to the normal tier rather than hammering the flagship.
+  //   - Falls back gracefully: when the flagship isn't admitted/available the tier is
+  //     left unchanged and route() resolves the normal tier (and if no manager model is
+  //     reachable, route() degrades to the best available model). Never strands a turn.
+  //
+  // Skipped when already at manager (the initial route / vision-triage already opened
+  // it — no double work) and when the turn isn't substantial.
+  if (directive.substantial === true && currentTier !== 'manager' && admitManager('oracle').allowed) {
+    currentTier = 'manager';
+  }
+
   // -------------------------------------------------------------------------
   // (f) Main orchestration loop
   // -------------------------------------------------------------------------

@@ -259,6 +259,33 @@ export function decodeJwtClaims(token: string): Record<string, unknown> | null {
  *
  * @param rawAuthJson - the raw contents of codex's `auth.json`.
  */
+/**
+ * Map a raw `chatgpt_plan_type` slug to a clean display label for the banner.
+ * Known OpenAI plan slugs get a friendly name — including `prolite`, the slug the
+ * owner's "Pro" (5x) plan reports, which myshell's own mode-detect already reads as
+ * Pro. Unknown slugs are title-cased so the banner never shows a raw lowercase
+ * token (e.g. "pro_max" → "Pro Max"). Pure; honest (it relabels, never invents).
+ */
+function prettyChatgptPlan(slug: string): string {
+  const s = slug.trim().toLowerCase().replace(/^chatgpt[_-]/, '');
+  const MAP: Record<string, string> = {
+    free: 'Free',
+    plus: 'Plus',
+    pro: 'Pro',
+    prolite: 'Pro',
+    team: 'Team',
+    business: 'Business',
+    enterprise: 'Enterprise',
+    edu: 'Edu',
+  };
+  if (MAP[s] !== undefined) return MAP[s];
+  return s
+    .split(/[_\s-]+/)
+    .filter((w) => w.length > 0)
+    .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+    .join(' ');
+}
+
 export function codexPlanFromAuthJson(rawAuthJson: string): string | null {
   try {
     const parsed = JSON.parse(rawAuthJson) as unknown;
@@ -279,7 +306,7 @@ export function codexPlanFromAuthJson(rawAuthJson: string): string | null {
       if (typeof authClaim !== 'object' || authClaim === null) continue;
       const planType = (authClaim as Record<string, unknown>)['chatgpt_plan_type'];
       if (typeof planType === 'string' && planType.trim().length > 0) {
-        return planType.trim().toLowerCase();
+        return prettyChatgptPlan(planType);
       }
     }
     return null;
