@@ -31,6 +31,7 @@ import {
   allocate,
   autoPostureForMode,
   pollPermittedConservative,
+  tribunalPermittedConservative,
   type TaskShape,
   type AllocateInput,
   type AllocationPlan,
@@ -576,5 +577,99 @@ describe('governor.pollPermittedConservative — the Governor-OFF built-in defau
     assert.strictEqual(pollPermittedConservative(false, 2), false);
     assert.strictEqual(pollPermittedConservative(true, 1), false);
     assert.strictEqual(pollPermittedConservative(false, 1), false);
+  });
+});
+
+// ===========================================================================
+// THE RIVAL TRIBUNAL (master-plan PHASE 9) — the tightest cross-vendor lever
+// ===========================================================================
+
+describe('governor.allocate — Rival Tribunal tripwires', () => {
+  // A genuine decision turn (substantial, low stakes → `decide` shape).
+  function decideInput(over: Partial<AllocateInput> = {}): AllocateInput {
+    const s = signals({ task: 'should we build the cache as in-process LRU or Redis-backed?' });
+    const conf = assessConfidence(frame({ confidence: 'high' }), s);
+    return allocInput({ signals: s, conf, substantial: true, repoOriented: true, ...over });
+  }
+
+  it('LOCK: tribunal is recorded in `locked` (never `levers`) when <2 vendors', () => {
+    const plan = allocate(decideInput({ mode: 'quality-first', authedProviderCount: 1 }));
+    assert.ok(['decide', 'risky'].includes(plan.shape), `precondition: a buildable decision shape (got ${plan.shape})`);
+    assert.ok(plan.locked.includes('tribunal'), 'tribunal is locked honestly with a single vendor');
+    assert.ok(!plan.levers.includes('tribunal'), 'a locked tribunal is NEVER spent');
+    assert.strictEqual(plan.tribunalAllowed, false);
+  });
+
+  it('NEVER granted when the budget is below 3 (balanced/Pro = budget 2)', () => {
+    const plan = allocate(decideInput({ mode: 'balanced', authedProviderCount: 2 }));
+    assert.ok(plan.turnCallBudget < 3, `precondition: budget < 3 (got ${plan.turnCallBudget})`);
+    assert.strictEqual(plan.tribunalAllowed, false, 'a build-off needs budget ≥ 3 (two builds + cross-review)');
+    assert.ok(!plan.levers.includes('tribunal'));
+  });
+
+  it('GRANTED on a repoOriented decide fork at budget ≥ 3 — the headline path, poll yields', () => {
+    // The reachability proof: a buildable IMPLEMENTATION fork (repoOriented decide) with
+    // ≥2 vendors + a Max budget + critic-not-firing → the tribunal FIRES and the poll
+    // yields to it. This is the path the Governor-ON bug used to silently disable.
+    const plan = allocate(decideInput({ mode: 'quality-first', authedProviderCount: 2 }));
+    assert.ok(['decide', 'risky'].includes(plan.shape), `precondition: buildable decision shape (got ${plan.shape})`);
+    assert.ok(plan.turnCallBudget >= 3, `precondition: budget ≥ 3 (got ${plan.turnCallBudget})`);
+    assert.strictEqual(plan.tribunalAllowed, true, 'the tribunal fires on a repoOriented fork at sufficient budget');
+    assert.ok(plan.levers.includes('tribunal'), 'the tribunal is a recorded spent lever');
+    assert.strictEqual(plan.pollAllowed, false, 'the poll yields when the tribunal took the cross-vendor unit');
+    assert.ok(!plan.levers.includes('poll'), 'poll and tribunal never both fire');
+    assert.ok(plan.levers.length <= plan.turnCallBudget, 'the tribunal never blows the hard budget');
+  });
+
+  it('NEVER granted alongside the poll (mutual exclusion — they share the one unit)', () => {
+    // A pure-decision fork (NOT repoOriented) goes to the poll, never the tribunal —
+    // and on a repoOriented fork the tribunal takes it and the poll yields. Either way
+    // the two cross-vendor decision levers are disjoint and never both in `levers`.
+    const pure = allocate(decideInput({ mode: 'quality-first', authedProviderCount: 2, repoOriented: false }));
+    assert.strictEqual(pure.pollAllowed, true, 'a pure-decision fork goes to the poll');
+    assert.strictEqual(pure.tribunalAllowed, false, 'the tribunal never fires on a pure-decision fork');
+    assert.ok(!(pure.levers.includes('poll') && pure.levers.includes('tribunal')), 'poll and tribunal never both fire');
+
+    const build = allocate(decideInput({ mode: 'quality-first', authedProviderCount: 2, repoOriented: true }));
+    assert.strictEqual(build.tribunalAllowed, true, 'a repoOriented fork goes to the tribunal');
+    assert.strictEqual(build.pollAllowed, false, 'the poll yields to the tribunal');
+    assert.ok(!(build.levers.includes('poll') && build.levers.includes('tribunal')), 'poll and tribunal never both fire');
+  });
+
+  it('the POLL fires (tribunal yields) when budget < TRIBUNAL_MIN_BUDGET on a repoOriented fork', () => {
+    // Pro tier (budget 2) on a repoOriented decide fork: the tribunal can't afford two
+    // builds + cross-review (< 3), so it yields and the poll takes the fork instead —
+    // the lower-budget tiers keep the cheaper plural-judgment lever.
+    const plan = allocate(decideInput({ mode: 'balanced', authedProviderCount: 2 }));
+    assert.ok(['decide', 'risky'].includes(plan.shape), `precondition: buildable decision shape (got ${plan.shape})`);
+    assert.ok(plan.turnCallBudget < 3, `precondition: budget < 3 (got ${plan.turnCallBudget})`);
+    assert.strictEqual(plan.tribunalAllowed, false, 'the tribunal yields below TRIBUNAL_MIN_BUDGET');
+    assert.strictEqual(plan.pollAllowed, true, 'the poll takes the fork at the lower budget');
+    assert.ok(plan.levers.includes('poll'));
+    assert.ok(!plan.levers.includes('tribunal'));
+  });
+
+  it('the POLL fires (tribunal never) on a NON-repoOriented decide fork (pure-decision domain)', () => {
+    // A pure-decision fork (not repoOriented) is the poll's domain — there is no rival
+    // code to build — so even at a Max budget the tribunal never fires; the poll does.
+    const plan = allocate(decideInput({ mode: 'quality-first', authedProviderCount: 2, repoOriented: false }));
+    assert.ok(['decide', 'risky'].includes(plan.shape), `precondition: buildable decision shape (got ${plan.shape})`);
+    assert.strictEqual(plan.tribunalAllowed, false, 'no build-off on a pure-decision fork');
+    assert.strictEqual(plan.pollAllowed, true, 'the poll fires on the pure-decision fork');
+    assert.ok(plan.levers.includes('poll'));
+    assert.ok(!plan.levers.includes('tribunal'));
+  });
+
+  it('Free (cost-saver) NEVER grants the tribunal', () => {
+    const plan = allocate(decideInput({ mode: 'cost-saver', authedProviderCount: 2 }));
+    assert.strictEqual(plan.tribunalAllowed, false, 'the frugal allowance never auto-opens an expensive lever');
+    assert.ok(!plan.levers.includes('tribunal'));
+  });
+
+  it('tribunalPermittedConservative (Governor-OFF) grants ONLY on a high-stakes fork with ≥2 vendors', () => {
+    assert.strictEqual(tribunalPermittedConservative(true, 2), true);
+    assert.strictEqual(tribunalPermittedConservative(false, 2), false);
+    assert.strictEqual(tribunalPermittedConservative(true, 1), false);
+    assert.strictEqual(tribunalPermittedConservative(false, 1), false);
   });
 });

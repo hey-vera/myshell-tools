@@ -15,6 +15,34 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   resumed goal's contract from the persisted `workTrace` (niche: the in-run contract
   is already kept in memory; only cross-session resume benefits). Optional.
 
+## [3.45.0]
+
+### Added — the Rival Tribunal: cross-vendor build-off, flag-off
+
+- **The Rival Tribunal** (`src/core/tribunal.ts` + `src/infra/worktree.ts`): on a
+  genuine load-bearing implementation fork, two rival vendors each build a REAL diff in
+  their own isolated git worktree; the tests-first ladder culls a failing build, each
+  rival's diff is cross-red-teamed by the OTHER vendor (reusing the diff-scoped critic),
+  and the brain adjudicates an honest winner — or `chosen=null` when there is no clear
+  one. Never fabricates a second rival, never claims a winner without real test verdicts.
+- **Honest single-vendor degradation**: with fewer than two authed vendors (or a dirty /
+  non-git tree) there is no rival — the turn falls through to the normal single build +
+  verification ladder and says so. The tribunal lever sits in the Governor's `locked`
+  set, never granted.
+- **Governor-gated as the most expensive lever**: `tribunalAllowed` is granted only on a
+  substantial repo-oriented decide fork, with ≥2 vendors, off cost-saver, and enough
+  budget (the Max-tier allowance) — mutually exclusive with the judgment poll and the
+  critic over the one cross-vendor unit. The two cross-vendor decision levers are now
+  disjoint by domain (poll weighs pure decisions; the tribunal builds implementation
+  forks), so enabling the Governor no longer preempts the tribunal.
+- **Worktree safety**: a fresh worktree symlinks `node_modules` from the main tree and
+  NEVER runs `npm install` (the package-firewall lockfile gotcha); both worktrees are
+  torn down in a `finally`, including on abort.
+- **Flag** `MYSHELL_TRIBUNAL` / `config.experimentalTribunal` (default OFF). Tests use
+  fake vendor builds + fake worktree/verify ports — zero live model calls; the one
+  real-git test runs in a throwaway tmp repo.
+- Flag-off neutrality preserved: characterization + oracle suites byte-identical.
+
 ## [3.44.0]
 
 ### Added — the trust surface: auditable, honest "what just happened", flag-off

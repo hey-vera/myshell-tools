@@ -145,7 +145,9 @@ import { schedulerEnabled } from './ui/scheduler-flag.js';
 import { governorEnabled } from './ui/governor-flag.js';
 import { verifyEnabled } from './ui/verify-flag.js';
 import { trustEnabled } from './ui/trust-flag.js';
+import { tribunalEnabled } from './ui/tribunal-flag.js';
 import { nodeVerifyPort } from '../infra/verify-port.js';
+import { nodeWorktreePort } from '../infra/worktree.js';
 import { runSchedule, type GoalSpec, type RunGoalPhase } from '../core/scheduler.js';
 import { decompose } from '../core/decompose.js';
 import { orchestrate } from '../core/orchestrate.js';
@@ -1781,6 +1783,22 @@ export async function runChatLoop(
           // suites prove it). The underlying signals are themselves flag-gated, so with
           // all flags off the trust surface is doubly dark.
           ...(trustEnabled(process.env, mutableCtx.config) ? { trustEnabled: true } : {}),
+          // THE RIVAL TRIBUNAL (master-plan PHASE 9) — opt-in, DEFAULT OFF. Resolved by
+          // the pure tribunalEnabled(env, config) flag. When ON, inject the flag + the
+          // impure WorktreePort (git-worktree isolation) so a genuine load-bearing
+          // implementation fork with ≥2 distinct authed vendors can be settled by a
+          // build-off (each vendor builds its approach in its own worktree; tests +
+          // cross-review pick an honest winner). When OFF (the default) both are absent
+          // → orchestrate's tribunal branch is structurally unreachable → the turn
+          // delegates to the normal work-call BYTE-FOR-BYTE as today (the
+          // characterization + oracle suites prove that neutrality). It still degrades
+          // honestly at runtime (no fabricated rival) whenever any precondition fails.
+          ...(tribunalEnabled(process.env, mutableCtx.config)
+            ? {
+                tribunalEnabled: true,
+                worktreePort: nodeWorktreePort,
+              }
+            : {}),
         };
       };
 
@@ -2178,7 +2196,17 @@ export async function runChatLoop(
               const task = buildGoalTask(spec.title, 0, goalSpecContract);
               yield* orchestrate(
                 task,
-                { ...d, workContract: goalSpecContract, goalTurn: true },
+                {
+                  ...d,
+                  workContract: goalSpecContract,
+                  goalTurn: true,
+                  // PHASE 9: when a goal carries an isolated worktree cwd (the Rival
+                  // Tribunal built one for it), run the goal IN that worktree so a
+                  // per-rival build never touches the shared tree. Absent → the shared
+                  // repo cwd, today's behavior (fully additive — byte-for-byte unchanged
+                  // for every non-tribunal goal).
+                  ...(spec.worktreeCwd !== undefined ? { cwd: spec.worktreeCwd } : {}),
+                },
                 sig,
               );
             })();

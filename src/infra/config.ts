@@ -259,6 +259,20 @@ export interface AppConfig {
    */
   experimentalJudgment?: boolean;
   /**
+   * EXPERIMENTAL RIVAL TRIBUNAL (default off; master-plan PHASE 9). When true (or with
+   * `MYSHELL_TRIBUNAL` truthy in the environment), a genuine load-bearing IMPLEMENTATION
+   * fork with ≥2 distinct authed vendors may be settled by a build-off: each vendor
+   * BUILDS its assigned approach as a real diff in its OWN isolated git worktree, the
+   * project's own tests cull a broken build, each rival's diff is cross-red-teamed by
+   * the other vendor, and an HONEST winner (or `chosen=null`) is adjudicated from real
+   * verdicts. NEVER fabricates a rival; degrades honestly to the normal single-vendor
+   * work-call when <2 vendors / no buildable fork / a worktree can't be created. The
+   * legacy path is byte-identical when this is absent/false (orchestrate's tribunal
+   * branch is structurally unreachable). See src/interface/ui/tribunal-flag.ts /
+   * src/core/tribunal.ts.
+   */
+  experimentalTribunal?: boolean;
+  /**
    * Per-user "first-touch explainer shown" flags (whole-tool-finish-5.5.md §0.1).
    * Absent → nothing shown yet (each surface explains itself once on first
    * encounter). Each key flips to true the first time that surface is met.

@@ -238,6 +238,19 @@ export interface AllocationPlan {
    * applies a conservative built-in default (a high-stakes genuine fork + ≥2 vendors).
    */
   readonly pollAllowed: boolean;
+  /**
+   * Whether THE RIVAL TRIBUNAL is permitted to fire this turn (master-plan PHASE 9).
+   * The TIGHTEST cross-vendor gate: two vendors each BUILD the same fork in isolated
+   * worktrees (two builds + two cross-reviews — the costliest lever), so it is granted
+   * ONLY when the shape is a buildable decision fork (`decide`/`risky`) AND ≥2 vendors
+   * are authed AND the mode isn't frugal AND the `turnCallBudget` has room for the
+   * build+review runs (≥ {@link TRIBUNAL_MIN_BUDGET}) AND the poll did NOT take the
+   * cross-vendor unit this turn (mutual exclusion — poll and tribunal never both fire).
+   * This is the BUDGET authority; the buildable fork itself is still required by
+   * `planTribunal`. When the Governor is OFF the caller applies a conservative built-in
+   * (a high-stakes implementation fork + ≥2 vendors).
+   */
+  readonly tribunalAllowed: boolean;
   /** The requested concurrency / activeLimit. PHASE 2: always `1` (single goal). */
   readonly concurrency: number;
   /**
@@ -518,6 +531,7 @@ function pollAllowedForShape(
   turnCallBudget: number,
   spent: number,
   criticChosen: boolean,
+  tribunalChosen: boolean,
 ): boolean {
   if (!crossVendor) return false;
   if (mode === 'cost-saver') return false;
@@ -526,6 +540,11 @@ function pollAllowedForShape(
   // turn → poll; a build/verify turn → critic). If the critic already took the
   // cross-vendor unit this turn, the poll yields.
   if (criticChosen) return false;
+  // The poll and the tribunal also share the ONE cross-vendor unit and NEVER both
+  // fire. The tribunal is the higher-value lever on a buildable implementation fork
+  // and is computed FIRST; when it took this turn's cross-vendor unit, the poll
+  // yields (the poll keeps the pure-decision forks + the lower-budget tiers).
+  if (tribunalChosen) return false;
   // Budget room for the candidate calls: at least POLL_MIN_BUDGET total, and a unit
   // beyond what the core answer (+ any Oracle) already spent.
   return turnCallBudget >= POLL_MIN_BUDGET && spent < turnCallBudget;
@@ -542,6 +561,72 @@ function pollAllowedForShape(
  * @param authedProviderCount - distinct authed vendors (≥2 to be plural).
  */
 export function pollPermittedConservative(
+  highStakes: boolean,
+  authedProviderCount: number,
+): boolean {
+  return highStakes && authedVendorCount(authedProviderCount);
+}
+
+/** A Rival Tribunal needs at least this much budget for its build + review runs. */
+const TRIBUNAL_MIN_BUDGET = 3;
+
+/**
+ * Whether THE RIVAL TRIBUNAL is permitted for this shape/mode/budget (master-plan
+ * PHASE 9) — the TIGHTEST gate of all the cross-vendor levers. Two rivals each BUILD
+ * the same fork in isolation, then get tests-culled + cross-reviewed (the costliest
+ * spend), so it fires only when:
+ *   - the shape is a genuine buildable DECISION fork (`decide`, or a `risky` fork) —
+ *     never on `quick`/`explain`/`build`/`investigate`;
+ *   - the turn is an IMPLEMENTATION fork (`repoOriented`) — a build-off only makes
+ *     sense when the decision resolves to RIVAL CODE to build; a pure-decision fork
+ *     (not repo-oriented) is the JUDGMENT POLL's domain, never the tribunal's. This
+ *     is the by-domain split that keeps the two cross-vendor decision levers disjoint
+ *     (mirroring orchestrate: the tribunal owns the implementation fork, the poll the
+ *     pure-decision fork) so the poll can never silently preempt the tribunal;
+ *   - ≥2 vendors are authenticated (a build-off REQUIRES a real second rival — never
+ *     fabricated; single-vendor turns degrade honestly to the normal build);
+ *   - the mode is NOT frugal (`cost-saver`/Free never auto-opens an expensive lever);
+ *   - the `turnCallBudget` has room for the build + review runs (≥ {@link
+ *     TRIBUNAL_MIN_BUDGET});
+ *   - the critic did NOT already take this turn's cross-vendor unit — the tribunal and
+ *     the critic NEVER both fire (they share the one cross-vendor unit).
+ * This is the BUDGET authority; the buildable fork itself is still required by
+ * `planTribunal`. Pushes a `reasons` entry on each refusal via the caller.
+ */
+function tribunalAllowedForShape(
+  shape: TaskShape,
+  mode: Mode,
+  crossVendor: boolean,
+  turnCallBudget: number,
+  repoOriented: boolean,
+  criticChosen: boolean,
+): boolean {
+  if (!crossVendor) return false;
+  if (mode === 'cost-saver') return false;
+  if (shape !== 'decide' && shape !== 'risky') return false;
+  // THE IMPLEMENTATION-FORK requirement: a build-off is only the right lever when the
+  // decision resolves to rival CODE to build. A pure-decision fork (not repoOriented)
+  // belongs to the judgment poll, not the tribunal.
+  if (!repoOriented) return false;
+  // Mutual exclusion with the critic — the build-off NEVER fires alongside the critic
+  // (which reviewed a diff): both draw the one cross-vendor unit.
+  if (criticChosen) return false;
+  // The tightest budget bar: enough room for both builds + the cross-reviews.
+  return turnCallBudget >= TRIBUNAL_MIN_BUDGET;
+}
+
+/**
+ * The CONSERVATIVE BUILT-IN tribunal gate used when the Governor is OFF (master-plan
+ * PHASE 9 off-default contract): with no Governor coordinating the budget, the tribunal
+ * fires only on a HIGH-STAKES genuine implementation fork with ≥2 vendors — the
+ * narrowest honest default (tighter than the poll's, since a build-off is costlier).
+ * PURE. The CALLER still requires `planTribunal` to find a real ≥2-option buildable
+ * fork + ≥2 distinct vendors, so this is the stakes/vendor gate only.
+ *
+ * @param highStakes - the brain's `conf.stakes === 'high'` read (risk/irreversible).
+ * @param authedProviderCount - distinct authed vendors (≥2 for a real build-off).
+ */
+export function tribunalPermittedConservative(
   highStakes: boolean,
   authedProviderCount: number,
 ): boolean {
@@ -621,12 +706,47 @@ export function allocate(input: AllocateInput): AllocationPlan {
   // diff, so `criticWillFire` is false there → the poll is free to take the unit.)
   const criticWillFire = verifyForShape(shape, input.conf, crossVendor, true) === 'tests+critic';
 
+  // THE RIVAL TRIBUNAL — the DECISION-time BUILD-OFF cross-vendor lever (master-plan
+  // PHASE 9), the tightest-gated. Computed BEFORE the poll so the two cross-vendor
+  // decision levers are disjoint BY DOMAIN (mirroring orchestrate): a buildable
+  // IMPLEMENTATION fork (`repoOriented` decide/risky) at sufficient budget is the
+  // tribunal's — it BUILDS the rivals; a pure-decision fork is the poll's — it WEIGHS
+  // them. They never both fire (they share the one cross-vendor unit). The tribunal
+  // needs the most budget (two builds + two cross-reviews), so only a generous budget
+  // (Max=3) clears TRIBUNAL_MIN_BUDGET — at the lower tiers the poll takes the fork
+  // instead. The buildable fork itself is still required by planTribunal; this is the
+  // budget authority only.
+  const tribunalAllowed = tribunalAllowedForShape(
+    shape,
+    input.mode,
+    crossVendor,
+    turnCallBudget,
+    input.repoOriented,
+    criticWillFire,
+  );
+  if (tribunalAllowed) {
+    levers.push('tribunal');
+    spent += 1;
+    reasons.push('rival tribunal — load-bearing build fork; building it both ways and letting tests + cross-review pick');
+  } else if ((shape === 'decide' || shape === 'risky') && input.mode !== 'cost-saver') {
+    if (!crossVendor) {
+      // Surfaced as a LOCK below (the cross-vendor cell path); no double reason here.
+    } else if (criticWillFire) {
+      reasons.push('rival tribunal refused — the critic took this turn’s cross-vendor unit (tribunal and critic never both fire)');
+    } else if (!input.repoOriented) {
+      reasons.push('rival tribunal refused — a pure-decision fork goes to the judgment poll (no rival code to build)');
+    } else {
+      reasons.push('rival tribunal refused — budget too tight for two builds + cross-review');
+    }
+  }
+
   // PLURAL JUDGMENT POLL — the DECISION-time cross-vendor lever (master-plan PHASE 7).
-  // Allocated BEFORE the Oracle on a decision turn: plural independent judgment beats
-  // ONE strong author for a *decision*, so the poll is the higher-value decide lever
-  // and claims the cross-vendor unit first; the Oracle then takes a further unit only
-  // if budget remains (Max=3 fits core+poll+oracle; Balanced=2 fits core+poll, oracle
-  // yields). The poll never fires alongside the critic (criticWillFire gates it).
+  // Allocated AFTER the tribunal but BEFORE the Oracle on a decision turn: plural
+  // independent judgment beats ONE strong author for a *decision*, so the poll is the
+  // higher-value decide lever and claims the cross-vendor unit first (over the Oracle);
+  // the Oracle then takes a further unit only if budget remains (Max=3 fits
+  // core+poll+oracle; Balanced=2 fits core+poll, oracle yields). The poll yields to the
+  // tribunal (the buildable-fork lever) and never fires alongside the critic.
   const pollAllowed = pollAllowedForShape(
     shape,
     input.mode,
@@ -634,13 +754,16 @@ export function allocate(input: AllocateInput): AllocationPlan {
     turnCallBudget,
     spent,
     criticWillFire,
+    tribunalAllowed,
   );
   if (pollAllowed) {
     levers.push('poll');
     spent += 1;
     reasons.push('judgment poll — genuine decision; weighing 2+ independent vendor minds');
   } else if ((shape === 'decide' || shape === 'risky') && crossVendor && input.mode !== 'cost-saver') {
-    if (criticWillFire) {
+    if (tribunalAllowed) {
+      reasons.push('judgment poll refused — the rival tribunal took this turn’s cross-vendor unit (poll and tribunal never both fire)');
+    } else if (criticWillFire) {
       reasons.push('judgment poll refused — the critic took this turn’s cross-vendor unit (poll and critic never both fire)');
     } else {
       reasons.push('judgment poll refused — budget too tight for the candidate calls');
@@ -698,6 +821,16 @@ export function allocate(input: AllocateInput): AllocationPlan {
     }
   }
 
+  // THE RIVAL TRIBUNAL LOCK (master-plan PHASE 9) — the build-off is a cross-vendor
+  // lever, so on a buildable decision shape (`decide`/`risky`) with FEWER than 2
+  // vendors it is LOCKED, recorded honestly (never spent, never nagged). With ≥2
+  // vendors the grant/refusal was already recorded above; the lock surface here is
+  // ONLY the single-vendor truth (so the receipt never shows a fake build-off).
+  if ((shape === 'decide' || shape === 'risky') && !crossVendor && !locked.includes('tribunal')) {
+    locked.push('tribunal');
+    reasons.push('tribunal locked — a build-off needs a 2nd vendor (single-vendor: honest, not nagged)');
+  }
+
   // PLURAL JUDGMENT POLL (master-plan PHASE 7) — the decision-time cross-vendor
   // lever. Granted only on a genuine decision turn with ≥2 vendors, a non-frugal
   // mode, and budget room for the candidate calls. The poll and the critic never
@@ -718,6 +851,7 @@ export function allocate(input: AllocateInput): AllocationPlan {
     locked,
     reasons,
     pollAllowed,
+    tribunalAllowed,
   };
 }
 

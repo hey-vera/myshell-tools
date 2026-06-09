@@ -74,6 +74,14 @@ export interface GoalSpec {
    */
   readonly preferredProvider?: ProviderId;
   /**
+   * The isolated git-worktree cwd this goal runs IN, when the Rival Tribunal
+   * (master-plan PHASE 9; core/tribunal.ts) built one for it. ABSENT → the goal
+   * runs in the shared repo cwd, today's behavior — fully additive/optional, so a
+   * non-tribunal goal is byte-for-byte unchanged. The live runGoal wrapper threads
+   * this onto `deps.cwd` so a per-rival build never touches the shared tree.
+   */
+  readonly worktreeCwd?: string;
+  /**
    * The ids of the goals this goal DEPENDS ON. A goal is RUNNABLE only once every
    * goal in `dependsOn` has finished SUCCESSFULLY; until then it stays queued (it
    * is never one of the `activeLimit` started up front). If ANY dependency FAILS

@@ -58,13 +58,18 @@ import {
   type JudgmentContext,
   type PollSurface,
 } from './brain.js';
-import { allocate, pollPermittedConservative, type AllocationPlan } from './governor.js';
+import { allocate, pollPermittedConservative, tribunalPermittedConservative, type AllocationPlan } from './governor.js';
 import {
   planJudgment,
   runJudgmentPoll,
   type JudgmentDecision,
   type JudgmentOption,
 } from './judgment-poll.js';
+import {
+  planTribunal,
+  runTribunal,
+  type TribunalDecision,
+} from './tribunal.js';
 import { autoModeForPlanInfos, type PlanInfo } from './policy.js';
 import { pressureFromSignals } from './capability-budget.js';
 import { ENVIRONMENT_BLOCK_CHAR_CAP } from './repo-map.js';
@@ -116,6 +121,22 @@ function judgmentDecisionFromFrame(frame: IntentFrame | undefined): JudgmentDeci
     return null;
   } catch {
     return null;
+  }
+}
+
+/**
+ * Whether THIS turn is a genuine IMPLEMENTATION fork the Rival Tribunal can build
+ * (master-plan PHASE 9). PURE; never throws. A tribunal BUILDS code both ways, so it
+ * only applies to a code-change/build-oriented turn (`directive.repoOriented`) that
+ * also carries a substantial decision (`directive.substantial`) — a real fork between
+ * two ways to BUILD the same thing, not a pure prose/answer decision (which is the
+ * poll's domain). Returns false otherwise → no tribunal (the poll / normal flow run).
+ */
+function isImplementationFork(directive: { substantial: boolean; repoOriented: boolean }): boolean {
+  try {
+    return directive.repoOriented === true && directive.substantial === true;
+  } catch {
+    return false;
   }
 }
 
@@ -693,6 +714,12 @@ export async function* orchestrate(
       : task);
   const goalTitle = capGoalLabel(goalTitleRaw, 72);
 
+  // Whether the plural judgment poll FORMED + ran this turn — the mutual-exclusion
+  // signal the Rival Tribunal (PHASE 9, below) reads so the poll and the tribunal
+  // NEVER both fire (they share the one cross-vendor unit; the poll weighs the
+  // decision, the tribunal builds it). False unless a poll plan genuinely ran.
+  let pollFired = false;
+
   // -------------------------------------------------------------------------
   // (a3d) THE PLURAL JUDGMENT POLL — the GATED half of the judgment superpower
   //       (master-plan PHASE 7 / .tmp-master-judgment.md Part 1). A bounded ONE-SHOT
@@ -764,6 +791,7 @@ export async function* orchestrate(
           // Run the poll (its events stream as panel-style liveness; the generator
           // RETURNS the deterministic synthesis). It NEVER appends to the session or
           // emits a user-facing final — the surfacing below owns that.
+          pollFired = true;
           const pollResult = yield* runJudgmentPoll(deps, pollPlan, signal);
           if (!signal.aborted && pollResult.completed) {
             const synthesis = pollResult.synthesis;
@@ -815,6 +843,123 @@ export async function* orchestrate(
         } catch {
           // FAIL-SOFT: a poll error degrades to no-poll + the existing flow. The turn
           // proceeds exactly as it would have without the poll (never broken).
+        }
+      }
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // (a3e) THE RIVAL TRIBUNAL — the GATED build-off (master-plan PHASE 9). A SIBLING of
+  //       the judgment poll, MUTUALLY EXCLUSIVE with it: it fires ONLY when the poll
+  //       did NOT (`!pollFired`). On a genuine load-bearing IMPLEMENTATION fork it has
+  //       each of two DISTINCT vendors actually BUILD its approach as a real diff in
+  //       its OWN isolated git worktree, then lets REALITY adjudicate — the project's
+  //       own tests cull a broken build, each diff is cross-red-teamed by the other
+  //       vendor, and an HONEST winner (or `chosen=null`) is composed from real
+  //       verdicts. It informs the DECISION (the worktrees are torn down); the
+  //       subsequent normal work-call builds the chosen approach for real.
+  //
+  //       FIRES ONLY when ALL hold: the tribunal flag is ON · a worktreePort is wired ·
+  //       the turn is NOT trivial · it carries a genuine non-investigable fork
+  //       (`hasGenuineFork`) · it is an IMPLEMENTATION fork (`isImplementationFork` —
+  //       repoOriented + substantial) · that fork has ≥2 buildable options
+  //       (`judgmentDecisionFromFrame`) · ≥2 DISTINCT vendors are authed
+  //       (`planTribunal`) · the poll did NOT fire (`!pollFired`) · AND the Governor
+  //       permits the spend (ON → the allocation's `tribunalAllowed`; OFF → the
+  //       conservative built-in: a high-stakes implementation fork + ≥2 vendors).
+  //       SINGLE-VENDOR / no buildable fork / no worktree → degrade HONESTLY (the
+  //       normal work-call, never a fabricated rival). FAIL-SOFT: any error degrades to
+  //       the existing flow. FLAG-OFF (or no worktreePort): this whole block is skipped
+  //       → byte-for-byte today's behavior (the characterization + oracle suites prove
+  //       it; both run with the tribunal flag OFF).
+  if (
+    deps.tribunalEnabled === true &&
+    deps.worktreePort !== undefined &&
+    !pollFired &&
+    !isTrivial(engagementSignals) &&
+    hasGenuineFork(engagementSignals) &&
+    isImplementationFork(directive)
+  ) {
+    const decision = judgmentDecisionFromFrame(intentFrame);
+    if (decision !== null) {
+      // The Governor owns the spend. When ON, read its `tribunalAllowed` (the same pure
+      // allocation, identical inputs). When OFF, the conservative built-in: a high-
+      // stakes implementation fork + ≥2 vendors.
+      const tribConf = assessConfidence(intentFrame, engagementSignals, brainGroundedness);
+      const authedCount = (deps.authenticatedProviders ?? []).length;
+      let tribunalPermitted: boolean;
+      if (deps.governorEnabled === true) {
+        const pInfos: PlanInfo[] =
+          deps.planInfos !== undefined
+            ? (Object.values(deps.planInfos).filter((p) => p !== undefined) as PlanInfo[])
+            : [];
+        const gMode = pInfos.length > 0 ? autoModeForPlanInfos(pInfos) : modeFromPolicy(deps.policy);
+        tribunalPermitted = allocate({
+          conf: tribConf,
+          frame: intentFrame,
+          signals: engagementSignals,
+          plan: engagementPlan,
+          substantial: directive.substantial,
+          repoOriented: directive.repoOriented,
+          mode: gMode,
+          authedProviderCount: authedCount,
+          pressure: deps.governorPressure ?? pressureFromSignals({}),
+          maxRounds: maxRoundsFor(deps.partnerStyle),
+        }).tribunalAllowed;
+      } else {
+        tribunalPermitted = tribunalPermittedConservative(tribConf.stakes === 'high', authedCount);
+      }
+
+      const tribunalDecision: TribunalDecision = {
+        question: decision.question,
+        options: decision.options,
+      };
+      const tribunalPlan = tribunalPermitted
+        ? planTribunal({
+            decision: tribunalDecision,
+            tier: classification.tier,
+            classification,
+            authenticatedProviders: deps.authenticatedProviders ?? [],
+            task,
+          })
+        : null;
+
+      if (tribunalPlan !== null) {
+        try {
+          // Run the build-off (its events stream as panel-style liveness; the generator
+          // RETURNS the deterministic synthesis). It tears down its own worktrees and
+          // NEVER emits a user-facing `final` — the surfacing below owns that.
+          const tribunalResult = yield* runTribunal(deps, tribunalPlan, signal);
+          if (!signal.aborted && tribunalResult.completed) {
+            const synthesis = tribunalResult.synthesis;
+            if (synthesis.chosenVendor !== null) {
+              // A REAL winner emerged from real verdicts — name it honestly. The
+              // subsequent normal work-call builds the chosen approach for real.
+              const winnerLabel =
+                tribunalDecision.options.find((o) => o.id === synthesis.chosenOptionId)?.label ??
+                synthesis.chosenOptionId ??
+                '';
+              yield {
+                type: 'notice',
+                level: 'info',
+                message:
+                  `Rival tribunal: ${synthesis.chosenVendor}'s approach won` +
+                  (winnerLabel.length > 0 ? ` — ${winnerLabel}` : '') +
+                  ` · ${synthesis.rationale}`,
+              };
+            } else {
+              // AMBIGUOUS — the build-off could not separate the two approaches by real
+              // verdicts. Surface the genuine fork honestly (the call is the user's),
+              // exactly like a poll SPLIT — never a fabricated winner.
+              yield {
+                type: 'notice',
+                level: 'info',
+                message: `Rival tribunal: no clear winner — ${synthesis.rationale}`,
+              };
+            }
+          }
+        } catch {
+          // FAIL-SOFT: a tribunal error degrades to the existing flow (never broken).
         }
       }
     }

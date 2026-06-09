@@ -709,6 +709,28 @@ export interface OrchestrateDeps {
    * is an absent line — never a fabricated basis.
    */
   readonly trustEnabled?: boolean;
+  /**
+   * EXPERIMENTAL — whether THE RIVAL TRIBUNAL (master-plan PHASE 9; core/tribunal.ts)
+   * is permitted to fire this turn. Resolved by the impure caller via the pure
+   * `tribunalEnabled(env, config)` flag (src/interface/ui/tribunal-flag.ts).
+   *
+   * DEFAULT OFF (absent/false): orchestrate's tribunal branch is structurally
+   * unreachable — the turn falls straight through to the normal work-call, BYTE-FOR-
+   * BYTE today's behavior (the characterization + oracle suites prove that neutrality).
+   * When true AND a buildable implementation fork + ≥2 distinct authed vendors + the
+   * Governor permits it, two rivals build the SAME fork in isolated worktrees, get
+   * tests-culled + cross-red-teamed, and an honest winner (or `chosen=null`) is
+   * adjudicated. NEVER fabricates a rival; degrades honestly to the single-vendor flow.
+   */
+  readonly tribunalEnabled?: boolean;
+  /**
+   * The isolated-git-worktree port the Rival Tribunal runs each rival's build in
+   * (master-plan PHASE 9). Impure (git/fs/exec); production impl is
+   * src/infra/worktree.ts. Read ONLY on the tribunal path (which is itself gated by
+   * {@link tribunalEnabled}); absent → the tribunal cannot form (degrades to the
+   * normal work-call). Type-only import keeps types.ts a leaf module.
+   */
+  readonly worktreePort?: import('./tribunal.js').WorktreePort;
 }
 
 /**
