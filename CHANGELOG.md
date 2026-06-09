@@ -15,6 +15,23 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   resumed goal's contract from the persisted `workTrace` (niche: the in-run contract
   is already kept in memory; only cross-session resume benefits). Optional.
 
+## [3.50.0]
+
+### Fixed — the menu paints instantly: first-paint no longer blocks on disk
+
+- **Launch is now instant.** `startMenu` previously awaited reading the unbounded spend
+  ledger (+ token-capture date + conversation/goal lists) BEFORE drawing the first frame,
+  so the menu felt slow to appear and worse as the ledger grew. Now the full menu skeleton
+  — header, banners, the action menu, the prompt — paints synchronously with `Loading
+  usage…` / `loading…` placeholders, and the spend sum, token date, and lists fill
+  asynchronously (in parallel), repainting in place via the existing single-dispatch frame
+  path. The unbounded ledger is never on the first-paint path again.
+- **Accuracy preserved**: `summarizeSpend` still reads the full ledger (no truncation) —
+  just off the first-paint path. Fills are fail-soft (errors degrade to "—", never crash).
+- **Safely gated**: the paint-first behavior applies only on the Ink live-region sink; the
+  legacy/stdout path keeps its exact prior byte output, and a guard prevents a late fill
+  from repainting over an active sub-flow. (Completes the deferred follow-up from 3.48.0.)
+
 ## [3.49.0]
 
 ### Changed — see everything happening: live-action status, honest tokens, no clutter

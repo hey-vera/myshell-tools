@@ -242,7 +242,14 @@ export function renderBudgetLine(
   spend: SpendSummary,
   _color: boolean,
   authed = true,
+  loading = false,
 ): string {
+  // Transient first-paint placeholder: the unbounded ledger sum is computed
+  // async AFTER the first frame, so the very first paint shows this instead of
+  // blocking on disk. Replaced in place once the real summary resolves.
+  if (loading) {
+    return 'Loading usage…';
+  }
   if (spend.calls === 0) {
     // When no provider is signed in yet, "press n to start" is a trap: [n]
     // bounces a brand-new user into an auth prompt. Point them at sign-in

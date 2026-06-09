@@ -3164,61 +3164,126 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
     }
 
     // ---- B. Main screen loop -------------------------------------------------
-    // Compute Claude token lifetime once per launch (real disk read, or injected
-    // value from ctx for tests). Passed to renderMainScreen so renderHeaderLines
-    // stays pure.
-    let claudeTokenInfo: ClaudeTokenStatus | null | undefined;
-    if (ctx.claudeTokenInfo !== undefined) {
-      // Injected by tests (including explicit null to suppress warning).
-      claudeTokenInfo = ctx.claudeTokenInfo;
-    } else {
-      // Real path: load from disk. Never throws; null when no capture date stored.
-      const capturedAt = await loadClaudeTokenCapturedAt().catch(() => undefined);
-      claudeTokenInfo = claudeTokenStatus(capturedAt, Date.now());
-    }
-
-    // Spend summary is cached and only recomputed when the ledger may have
-    // changed (after a task runs). Avoids re-reading the unbounded ledger.jsonl
-    // on every keystroke — the menu hot path stays O(1) in ledger size.
-    let spend = summarizeSpend(await readLedger(ctx.cwd), ctx.clock.isoNow());
-    let spendDirty = false;
+    // PAINT FIRST, FILL ASYNC. The first frame used to block behind three serial
+    // disk reads — the Claude token capture date, the UNBOUNDED ledger.jsonl sum
+    // (grows forever → felt slower over time), and the conversation/parked-goal
+    // lists. None of those gate a useful first paint: the menu skeleton (header,
+    // mode line, the scannable action menu) is identical regardless. So on the
+    // Ink live-region path we paint the skeleton with transient placeholders, then
+    // fill the cached fields asynchronously and repaint in place via the SAME
+    // chrome/replace single-dispatch frame path. On legacy stdout / test sinks
+    // (no beginFrame → no live region) we keep the original synchronous
+    // await-before-paint flow so the byte stream and test behavior are unchanged.
+    const liveRegion = out.beginFrame !== undefined;
 
     // Goal/to-do store for the menu's Parked-goals section + [g] manage flow.
     // Same persistent home + injected clock as the chat-loop store; fail-soft.
     const menuGoalStore = createFileGoalStore({ clock: ctx.clock });
 
-    // The conversation + parked-goal lists are cached EXACTLY like `spend`: they
-    // are re-read from disk only after an action that may have mutated them
-    // (`listDirty`), not on every no-op keypress / re-render. On Replit's slow FS
-    // the two per-iteration `list()` calls were felt as nav lag (Enter just
-    // re-rendered the menu, yet re-hit disk twice). Seed once before the loop.
-    let metas = await ctx.store.list();
-    let parkedGoals = await menuGoalStore.list({ state: 'parked' }).catch(() => []);
+    // Cached, dirty-tracked state — the menu hot path stays O(1) in ledger size:
+    // recomputed only when a flag says the underlying data may have changed.
+    const emptySpend = summarizeSpend([], ctx.clock.isoNow());
+    let claudeTokenInfo: ClaudeTokenStatus | null | undefined;
+    let spend = emptySpend;
+    let metas: Awaited<ReturnType<typeof ctx.store.list>> = [];
+    let parkedGoals: Awaited<ReturnType<typeof menuGoalStore.list>> = [];
+    let spendDirty = false;
     let listDirty = false;
+    // First-paint placeholders are active until the async fills resolve. On the
+    // legacy/sync path they're satisfied immediately below (never seen).
+    let spendLoading = true;
+    let listsLoading = true;
+
+    // Tests (and any caller) may inject the token status to skip the disk read.
+    if (ctx.claudeTokenInfo !== undefined) {
+      claudeTokenInfo = ctx.claudeTokenInfo;
+    }
+
+    // Resolve the three reads. On the sync path they all complete before the first
+    // paint (placeholders never render). On the live-region path the loop kicks
+    // these off AFTER the first paint and each repaints when it lands.
+    const fillToken = async (): Promise<void> => {
+      if (ctx.claudeTokenInfo !== undefined) return;
+      const capturedAt = await loadClaudeTokenCapturedAt().catch(() => undefined);
+      claudeTokenInfo = claudeTokenStatus(capturedAt, Date.now());
+    };
+    const fillSpend = async (): Promise<void> => {
+      // summarizeSpend needs the FULL ledger for an accurate total — never tail-
+      // truncate. Kept accurate but OFF the first-paint path (computed here, after).
+      spend = summarizeSpend(await readLedger(ctx.cwd).catch(() => []), ctx.clock.isoNow());
+      spendLoading = false;
+    };
+    const fillLists = async (): Promise<void> => {
+      metas = await ctx.store.list().catch(() => []);
+      parkedGoals = await menuGoalStore.list({ state: 'parked' }).catch(() => []);
+      listsLoading = false;
+    };
+
+    if (!liveRegion) {
+      // Legacy / test path — identical to the original: fully resolved before paint.
+      await Promise.all([fillToken(), fillSpend(), fillLists()]);
+    }
+
+    // `inMainMenu` gates async-fill repaints: a fill that lands while we're inside a
+    // sub-flow (chat, settings, …) must NOT paint the menu over it. Toggled around
+    // every sub-flow below.
+    let inMainMenu = true;
+    let started = false; // first frame painted yet?
+
+    const paintMenu = async (): Promise<void> => {
+      // Render the menu chrome inside an EPHEMERAL FRAME. On the Ink path this paints
+      // the whole menu into a bounded NON-<Static> live region that is REPLACED in
+      // place every frame — instead of appending ~30 fresh permanent <Static> items
+      // per keypress (the progressive-lag / duplicate-menu root cause). On legacy /
+      // test sinks beginFrame/endFrame are no-ops, so the byte stream is unchanged.
+      out.beginFrame?.();
+      await renderMainScreen(
+        ctx, mutableCtx, metas, spend, out, updateInfo, claudeTokenInfo,
+        runningUnderNpx, ctx.healthIssues ?? [], parkedGoals,
+        spendLoading, listsLoading,
+      );
+      out.write('> ');
+      out.endFrame?.();
+    };
+
+    // Repaint triggered by an async fill resolving: only on the live-region path,
+    // only once the first frame is up, and only while we're sitting on the menu.
+    const repaintIfActive = (): void => {
+      if (!liveRegion || !started || !inMainMenu) return;
+      void paintMenu();
+    };
 
     while (true) {
+      // We're sitting on the menu again — late async fills may repaint here.
+      inMainMenu = true;
       if (spendDirty) {
-        spend = summarizeSpend(await readLedger(ctx.cwd), ctx.clock.isoNow());
+        spend = summarizeSpend(await readLedger(ctx.cwd).catch(() => []), ctx.clock.isoNow());
+        spendLoading = false;
         spendDirty = false;
       }
       if (listDirty) {
-        metas = await ctx.store.list();
+        metas = await ctx.store.list().catch(() => []);
         parkedGoals = await menuGoalStore.list({ state: 'parked' }).catch(() => []);
+        listsLoading = false;
         listDirty = false;
       }
-      // Render the menu chrome inside an EPHEMERAL FRAME. On the Ink path this paints
-      // the whole menu into a bounded NON-<Static> live region that is REPLACED in
-      // place every loop iteration — instead of appending ~30 fresh permanent
-      // <Static> items per keypress (the progressive-lag / duplicate-menu root
-      // cause). On the legacy stdout / test sinks beginFrame/endFrame are no-ops, so
-      // the byte stream is unchanged.
-      out.beginFrame?.();
-      await renderMainScreen(ctx, mutableCtx, metas, spend, out, updateInfo, claudeTokenInfo, runningUnderNpx, ctx.healthIssues ?? [], parkedGoals);
 
-      out.write('> ');
       // Paint the frame (menu + prompt) as the live region before blocking on the
       // key. readMenuKey's internal out.flush?.() is then a no-op (nothing pending).
-      out.endFrame?.();
+      await paintMenu();
+
+      // FIRST PAINT IS UP — now kick off the slow disk reads (live-region path
+      // only; the sync path already resolved them above). Each fill updates its
+      // cached field, clears its placeholder, and repaints the live frame in place
+      // via the same chrome/replace path. Fail-soft inside each fill (never throws).
+      // Fired once, right after the very first frame.
+      if (liveRegion && !started) {
+        void fillToken().then(repaintIfActive);
+        void fillSpend().then(repaintIfActive);
+        void fillLists().then(repaintIfActive);
+      }
+      started = true;
+
       // Single keypress on a real TTY (press the letter, no Enter); line read in
       // pipes/tests. '' = Enter/no-op → re-render; null = Ctrl-C/EOF → exit. On
       // the Ink path read ONE key through Ink's own input pipeline (inkReadKey) so
@@ -3243,6 +3308,9 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
       // output (legacy scrolling-TTY parity), then the sub-flow's own out.write
       // commits below it. No-op on legacy/test sinks.
       out.promoteFrame?.();
+      // Leaving the menu for a sub-flow — suppress any late async-fill repaint so it
+      // can't paint the menu over the sub-flow's output. Re-enabled at loop top.
+      inMainMenu = false;
 
       // ---- [q] Quit -----------------------------------------------------------
       if (key === 'q') {

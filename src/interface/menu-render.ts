@@ -40,6 +40,12 @@ export async function renderMainScreen(
   runningUnderNpx = false,
   healthIssues: readonly HealthIssue[] = [],
   parkedGoals: readonly Goal[] = [],
+  // Transient first-paint flags: when set, the (unbounded) spend ledger sum and
+  // the conversation/parked-goal lists haven't been read from disk yet, so paint
+  // a "loading…" placeholder instead of blocking the first frame on disk I/O.
+  // Both default false → identical content once the async fills resolve.
+  spendLoading = false,
+  listsLoading = false,
 ): Promise<void> {
   out.write('\n');
 
@@ -96,7 +102,7 @@ export async function renderMainScreen(
   // computed by the caller and cached across keystrokes (the ledger only
   // changes when a task completes), so navigating the menu never re-parses the
   // unbounded ledger.jsonl on every keypress.
-  out.write('  ' + renderBudgetLine(spend, out.color, authed) + '\n');
+  out.write('  ' + renderBudgetLine(spend, out.color, authed, spendLoading) + '\n');
 
   // Mode line — visible and one keystroke to change (no settings dive). Shows the
   // effective mode: the user's explicit choice, else the subscription-derived auto
@@ -122,7 +128,11 @@ export async function renderMainScreen(
   out.write(separator('Recent') + '\n');
   const nowMs = ctx.clock.now();
   const convLines = renderConversationList(metas, nowMs, out.color);
-  if (convLines.length === 0) {
+  if (listsLoading) {
+    // Lists not yet read from disk (first-paint). A neutral placeholder avoids
+    // the misleading "(no conversations yet)" before the real list resolves.
+    out.write('  ' + dim('loading…', out.color) + '\n');
+  } else if (convLines.length === 0) {
     out.write('  (no conversations yet)\n');
   } else {
     for (const line of convLines) {
