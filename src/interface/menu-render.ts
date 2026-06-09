@@ -187,6 +187,7 @@ export async function renderMainScreen(
       ...(parkedGoals.length > 0
         ? [{ key: 'g', label: 'Manage goals', section: 'Options' }]
         : []),
+      { key: 'm', label: 'Change mode', section: 'Options' },
       { key: 's', label: 'Settings', section: 'Options' },
       { key: 'd', label: 'Diagnose', section: 'Options' },
       { key: '$', label: 'Usage (tokens)', section: 'Options' },

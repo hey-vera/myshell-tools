@@ -9,8 +9,12 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
+import * as fs from 'node:fs';
+import os from 'node:os';
+import { join } from 'node:path';
 import type { LedgerEntry } from '../../src/core/types.ts';
-import { formatCostReport } from '../../src/commands/cost.ts';
+import { formatCostReport, runCost } from '../../src/commands/cost.ts';
+import type { OutputSink } from '../../src/interface/render.ts';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -229,5 +233,32 @@ describe('formatCostReport — honest total label', () => {
   it('shows tokens and never a dollar figure (honest for subscription auth)', () => {
     const output = formatCostReport(entries, false).join('\n');
     assert.ok(!/\$\d/.test(output), `must not show any dollar amount:\n${output}`);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// FIX 5 — runCost fails soft on a non-ENOENT ledger error
+// ---------------------------------------------------------------------------
+
+describe('runCost — fail-soft on a throwing readLedger (FIX 5)', () => {
+  it('does not throw (and would not crash the [$] menu) when the ledger read errors', async () => {
+    // Make the ledger FILE path actually be a DIRECTORY, so readLedger's readFile
+    // throws EISDIR (a non-ENOENT error it re-throws) — the exact exposure the [$]
+    // menu handler had with no try/catch. runCost must absorb it and return cleanly.
+    const tmp = await fs.promises.mkdtemp(join(os.tmpdir(), 'myshell-cost-'));
+    // <cwd>/.myshell-tools/ledger.jsonl — create it as a directory.
+    await fs.promises.mkdir(join(tmp, '.myshell-tools', 'ledger.jsonl'), { recursive: true });
+
+    let wrote = '';
+    const out: OutputSink = { write: (s: string) => { wrote += s; }, color: false, isTty: false };
+
+    let code: number | undefined;
+    await assert.doesNotReject(async () => {
+      code = await runCost(tmp, out);
+    }, 'runCost must not throw on a non-ENOENT ledger error');
+    assert.equal(code, 0, 'runCost still returns 0 (informational, never an error exit)');
+    assert.ok(wrote.length > 0, 'a friendly note is written instead of crashing');
+
+    await fs.promises.rm(tmp, { recursive: true, force: true });
   });
 });

@@ -334,6 +334,18 @@ async function main(): Promise<void> {
           out.color,
         ),
       );
+    } else if ((r?.action === 'expired-no-refresh' || r?.action === 'failed') && out.isTty) {
+      // The refresh token is gone (expired-no-refresh) or the refresh endpoint/write
+      // failed — the user MUST re-login. Surface a one-line, actionable pointer at
+      // startup so they don't only learn indirectly via "not signed in" later. Dim,
+      // non-blocking, fail-soft: the command still runs (it'll just hit the not-
+      // signed-in path if it needs Claude).
+      out.write(
+        dimText(
+          `Claude session expired — run: myshell-tools login claude --code\n`,
+          out.color,
+        ),
+      );
     }
   }
 

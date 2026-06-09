@@ -1491,16 +1491,14 @@ export async function runChatLoop(
         ...(mutableCtx.config.hedge === true ? { hedgePolicy: 'on' as const } : {}),
       };
 
-      // ---- Bug 4 fix: no-provider gate ----------------------------------------
-      // Check whether any provider is actually authenticated before dispatching a
-      // task that is doomed to fail. opencode now reports authenticated only when a
-      // real provider/subscription is configured (no more installed-means-ready).
-      if (!hasAuthenticatedProvider(mutableCtx.env)) {
-        out.write(
-          '\n[info] No signed-in provider yet — type /back or press Ctrl+C twice to return, then [j] Claude / [k] Codex / [o] opencode to sign in.\n',
-        );
-        return 'continue';
-      }
+      // NOTE (Bug 4 / FIX 3): the no-provider gate used to sit HERE, BEFORE the
+      // local-only slash dispatch (/memory, /forget, /goals, /todo, /remember) below.
+      // Those commands run entirely LOCALLY (no model call), so gating them here made
+      // them print "No signed-in provider yet" and do nothing. The gate now lives just
+      // before the metered orchestrate/work path (search "no-provider gate" below) so
+      // the local commands work even when no provider is authed, while every command
+      // that actually needs a model still gates. (Goal loops are model-needing and
+      // self-gate inside runGoalLoop.)
 
       // Load prior history before each turn so the provider receives conversation
       // context. load() returns only the entries persisted so far — the current
@@ -2206,6 +2204,15 @@ export async function runChatLoop(
       //                 sites pass a concise label formed from RAW chat text via
       //                 formGoalLabel(), fixing the "raw ramble as title" bug.
       const runGoalLoop = async (goalText: string, goalLabel: string = goalText): Promise<boolean> => {
+        // FIX 3: a goal loop is model-needing. /goal and /goals go dispatch BEFORE the
+        // relocated no-provider gate, so self-gate here — no provider means the loop
+        // would only fail. Returns false (don't break the chat loop) after a notice.
+        if (!hasAuthenticatedProvider(mutableCtx.env)) {
+          out.write(
+            '\n[info] No signed-in provider yet — type /back or press Ctrl+C twice to return, then [j] Claude / [k] Codex / [o] opencode to sign in.\n',
+          );
+          return false;
+        }
         lastGoalCompleted = false;
         let goalContract = capContract({ version: 1, objective: goalLabel });
         // Title a still-untitled conversation from the concise goal label (no-op if
@@ -2675,6 +2682,20 @@ export async function runChatLoop(
         if (tasteOn && isImmediateRephrase(priorDecision, line)) {
           void recordTaste('immediate_rephrase', priorDecision, line);
         }
+      }
+
+      // ---- Bug 4 fix / FIX 3: no-provider gate (relocated) --------------------
+      // Check whether any provider is actually authenticated before dispatching a
+      // task that is doomed to fail. opencode now reports authenticated only when a
+      // real provider/subscription is configured (no more installed-means-ready).
+      // Relocated to HERE (just before the metered orchestrate path) so the local-
+      // only slash commands above (/memory, /forget, /goals, /todo, /remember) run
+      // without a provider; only the model-needing chat turn is gated.
+      if (!hasAuthenticatedProvider(mutableCtx.env)) {
+        out.write(
+          '\n[info] No signed-in provider yet — type /back or press Ctrl+C twice to return, then [j] Claude / [k] Codex / [o] opencode to sign in.\n',
+        );
+        return 'continue';
       }
 
       const depsBase = buildDeps(

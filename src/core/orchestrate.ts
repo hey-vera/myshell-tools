@@ -721,6 +721,16 @@ export async function* orchestrate(
   // decision, the tribunal builds it). False unless a poll plan genuinely ran.
   let pollFired = false;
 
+  // The REAL metered spend incurred by a judgment poll or rival tribunal this turn
+  // (each makes 2+ real provider calls and RETURNS a measured totalCostUsd). The
+  // honesty contract for the terminal `final.totalCostUsd` is "real sum across all
+  // runs", so we accumulate any pre-work-call cross-vendor spend HERE and seed the
+  // work-call loop (priorCostUsd) / the push_back terminal-final with it. 0 unless a
+  // poll/tribunal genuinely ran → byte-for-byte today's behaviour on every other path.
+  // Added exactly once per run (poll OR tribunal — they are mutually exclusive), so
+  // never double-counted.
+  let priorCrossVendorCostUsd = 0;
+
   // -------------------------------------------------------------------------
   // (a3d) THE PLURAL JUDGMENT POLL — the GATED half of the judgment superpower
   //       (master-plan PHASE 7 / .tmp-master-judgment.md Part 1). A bounded ONE-SHOT
@@ -794,6 +804,11 @@ export async function* orchestrate(
           // emits a user-facing final — the surfacing below owns that.
           pollFired = true;
           const pollResult = yield* runJudgmentPoll(deps, pollPlan, signal);
+          // HONESTY CONTRACT: fold the poll's REAL measured spend into the turn's
+          // running cross-vendor cost so the terminal final reports the true sum.
+          // The ledger already records these calls (so displayed tokens are correct);
+          // this carries the same spend into final.totalCostUsd for future consumers.
+          priorCrossVendorCostUsd += pollResult.totalCostUsd;
           if (!signal.aborted && pollResult.completed) {
             const synthesis = pollResult.synthesis;
             // FEED THE BRAIN: the agreement dimension calibrates confidence honestly.
@@ -931,6 +946,10 @@ export async function* orchestrate(
           // RETURNS the deterministic synthesis). It tears down its own worktrees and
           // NEVER emits a user-facing `final` — the surfacing below owns that.
           const tribunalResult = yield* runTribunal(deps, tribunalPlan, signal);
+          // HONESTY CONTRACT: fold the tribunal's REAL measured spend into the turn's
+          // running cross-vendor cost (same rationale as the poll above; mutually
+          // exclusive with it, so this is added exactly once per turn).
+          priorCrossVendorCostUsd += tribunalResult.totalCostUsd;
           if (!signal.aborted && tribunalResult.completed) {
             const synthesis = tribunalResult.synthesis;
             if (synthesis.chosenVendor !== null) {
@@ -1017,7 +1036,10 @@ export async function* orchestrate(
       success: true,
       output: '',
       tier: classification.tier,
-      totalCostUsd: 0,
+      // HONESTY CONTRACT: the model never runs on this terminal-ask path, but a poll/
+      // tribunal MAY have run (e.g. a poll SPLIT → push_back), making real metered
+      // calls. Report their measured spend (0 when none ran → byte-for-byte today).
+      totalCostUsd: priorCrossVendorCostUsd,
       sessionId: deps.session.id,
       attempts: 0,
       questions: terminalQuestion,
@@ -1444,6 +1466,11 @@ export async function* orchestrate(
     wantsWebSearch,
     hasImageAttachment,
     startTier: currentTier,
+    // HONESTY CONTRACT: seed the work-call loop's cost counter with any prior metered
+    // cross-vendor spend (poll/tribunal) so the terminal final.totalCostUsd is the
+    // true sum across every metered run this turn. Optional + defaults to 0 in the
+    // loop, so when no poll/tribunal ran this is omitted → byte-for-byte today.
+    ...(priorCrossVendorCostUsd > 0 ? { priorCostUsd: priorCrossVendorCostUsd } : {}),
     // THE TRUST SURFACE (master-plan PHASE 8): thread the trust flag + the brain's
     // FINAL confidence so the accept-point receipt can compose an AUDITABLE confidence
     // line from real signals. Both are read ONLY when the trust flag is ON; flag-off

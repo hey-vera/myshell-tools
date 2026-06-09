@@ -6,6 +6,30 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+## [3.58.0] - 2026-06-09
+
+### Fixed
+- **Local commands work before you sign in** — `/memory`, `/forget`, `/goals`, `/todo`,
+  `/remember` run entirely locally, but the no-provider gate sat in front of them, so
+  they printed "No signed-in provider yet" and did nothing. The gate now sits just
+  before the model path, so local commands work unauthenticated while anything needing
+  a model still gates.
+- **Expired Claude session tells you what to do** — when the OAuth refresh token is gone
+  (a true re-login is required), startup now prints an actionable one-liner naming the
+  login command instead of silently proceeding to a later "not signed in".
+- **`/todo` and `/goals` now tab-complete** — both were dispatchable and in `/help` but
+  missing from completion.
+- **The Usage screen (`[$]`) can't crash the menu** — a non-ENOENT ledger read error
+  (e.g. a permission/IO issue) now fails soft with a note instead of escaping and
+  taking down the menu.
+- **`[m] Change mode` is now listed in the menu** — the handler existed but wasn't
+  shown, so it was only reachable via Settings or `/mode`.
+- **Honest total cost across cross-vendor turns** — `final.totalCostUsd` excluded the
+  spend of a judgment poll or rival tribunal (it could even report 0 after real calls).
+  It now sums prior cross-vendor cost (additive/optional — no behavior change when no
+  poll/tribunal ran). Latent today (the token display reads the ledger, which was
+  already correct), fixed for any future consumer of the field.
+
 ## [3.57.0] - 2026-06-09
 
 ### Fixed

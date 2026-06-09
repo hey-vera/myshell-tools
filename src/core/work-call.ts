@@ -485,6 +485,17 @@ export interface WorkCallInput {
    * {@link trustEnabled} is true; absent → no confidence line (never fabricated).
    */
   readonly brainConfidence?: import('./brain.js').Confidence;
+  /**
+   * Prior metered spend already incurred THIS turn BEFORE the work-call loop runs —
+   * e.g. a judgment poll or rival tribunal that made real provider calls and returned
+   * a measured `totalCostUsd`. The loop SEEDS its own `totalCostUsd` from this so the
+   * terminal `final.totalCostUsd` is the HONEST sum across every metered run this turn
+   * (the honesty contract: "real sum across all runs"). OPTIONAL — when absent it
+   * defaults to 0, so the loop behaves byte-for-byte identically to before (no
+   * double-counting: the poll/tribunal cost is added here exactly once, and the
+   * poll/tribunal generators never re-enter this loop). Read ONLY here, in (e).
+   */
+  readonly priorCostUsd?: number;
 }
 
 /**
@@ -519,6 +530,7 @@ export async function* runWorkCall(input: WorkCallInput): AsyncGenerator<CoreEve
     verifyLevel,
     trustEnabled,
     brainConfidence,
+    priorCostUsd,
   } = input;
 
   // -------------------------------------------------------------------------
@@ -527,7 +539,9 @@ export async function* runWorkCall(input: WorkCallInput): AsyncGenerator<CoreEve
   let currentTier: Tier = startTier;
   let managerNotes: string | undefined;
   let attempts = 0;
-  let totalCostUsd = 0;
+  // Seed from any prior metered spend this turn (poll/tribunal). Defaults to 0 when
+  // absent → byte-for-byte the prior path; the prior cost is folded in exactly once.
+  let totalCostUsd = priorCostUsd ?? 0;
   let lastOutput = '';
   let acceptedRun: AcceptedRunSessionData | undefined;
   /** Track the last error category across all attempts (for the failing final). */

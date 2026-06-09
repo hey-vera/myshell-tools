@@ -129,7 +129,19 @@ export function formatCostReport(entries: LedgerEntry[], color = false): string[
  * Never calls process.exit — that is handled exclusively by src/cli.ts.
  */
 export async function runCost(cwd: string, out: OutputSink): Promise<number> {
-  const entries = await readLedger(cwd);
+  // FIX 5: readLedger re-throws non-ENOENT errors (a permission/IO fault on the
+  // ledger file). The home menu's [$] handler has no catch, so an escaping error
+  // would crash the whole menu. Fail soft here — matching the menu's own spend read
+  // (`.catch(() => [])`) — so a broken ledger prints a friendly note and returns
+  // cleanly to the menu instead of taking it down. A missing ledger already reads as
+  // [] inside readLedger, so this only changes the genuine-error path.
+  let entries: Awaited<ReturnType<typeof readLedger>>;
+  try {
+    entries = await readLedger(cwd);
+  } catch {
+    out.write('Could not read the usage ledger right now — try again later.\n');
+    return 0;
+  }
   const lines = formatCostReport(entries, out.color);
   for (const line of lines) {
     out.write(line + '\n');

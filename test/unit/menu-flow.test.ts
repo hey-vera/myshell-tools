@@ -24,7 +24,7 @@ import fs from 'node:fs';
 import tty from 'node:tty';
 
 import { EventEmitter } from 'node:events';
-import { startMenu } from '../../src/interface/menu.ts';
+import { startMenu, runChatLoop } from '../../src/interface/menu.ts';
 import { parseYesNo, interpretYesNoKey, yesNoHint } from '../../src/interface/menu-questions.ts';
 import { readSingleKey, createLineReader, normalizeMenuKey, resolveRawKeyInput, __resetControllingTtyRawInputForTest } from '../../src/interface/menu-readline.ts';
 import { readMenuKey, confirmViaKey, attachChatTurnKeyListener } from '../../src/interface/menu-key-confirm.ts';
@@ -6970,5 +6970,45 @@ describe('startMenu — goals: /goals go promotes THROUGH runGoalLoop (the brain
       assert.notEqual(all[0]?.state, 'parked', 'promote flipped the goal out of parked');
       assert.notEqual(all[0]?.state, 'done', 'never inferred done without GOAL_COMPLETE evidence');
     });
+  });
+});
+
+// ===========================================================================
+// FIX 3 — local-only slash commands work with NO authenticated provider, while
+//          model-needing turns still hit the no-provider gate.
+// ===========================================================================
+
+describe('runChatLoop — local-only slash commands bypass the no-provider gate (FIX 3)', () => {
+  // An env with a provider INSTALLED but NOT authenticated (the realistic case:
+  // auth lapsed mid-session). hasAuthenticatedProvider(env) is false.
+  const NO_AUTH_ENV: EnvironmentStatus = {
+    ...FAKE_ENV,
+    claude: { ...FAKE_ENV.claude, authenticated: false },
+    hasAnyProvider: false,
+  };
+
+  async function driveChat(lines: ReadonlyArray<string | null>): Promise<string> {
+    const clock = makeFakeClock();
+    const store = makeStore(clock);
+    const sink = makeSink();
+    const meta = await store.create('FIX3 conv');
+    const ctx = makeCtx({ readLine: makeScriptedReader(lines) }, clock, store);
+    const mutableCtx = { config: ctx.config, env: NO_AUTH_ENV };
+    const noopLogin = async (): Promise<number> => 0;
+    const detect = async (): Promise<EnvironmentStatus> => NO_AUTH_ENV;
+    const confirm = async (): Promise<boolean> => false;
+    await runChatLoop(ctx, mutableCtx, meta.id, sink, makeScriptedReader(lines), noopLogin, detect, confirm);
+    return sink.buf;
+  }
+
+  it('/memory runs locally (no "No signed-in provider" notice) when unauthed', async () => {
+    const buf = await driveChat(['/memory', '/exit']);
+    assert.ok(!buf.includes('No signed-in provider'), '/memory must NOT be swallowed by the gate');
+    assert.ok(/memor/i.test(buf), '/memory produced its local output');
+  });
+
+  it('a model-needing chat turn STILL gates when unauthed', async () => {
+    const buf = await driveChat(['please refactor the auth module', '/exit']);
+    assert.ok(buf.includes('No signed-in provider'), 'a real chat turn must still hit the gate');
   });
 });

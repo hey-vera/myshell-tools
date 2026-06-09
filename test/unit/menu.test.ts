@@ -934,3 +934,36 @@ describe('CHAT_SLASH_COMMANDS includes /retry and /edit', () => {
     assert.ok(CHAT_SLASH_COMMANDS.includes('/edit'));
   });
 });
+
+// FIX 4 — /todo and /goals are dispatched in runOneChatInput and listed in /help, so
+// they must also be tab-completable. They were previously omitted.
+describe('CHAT_SLASH_COMMANDS includes /todo and /goals (FIX 4)', () => {
+  it('registers both goal-management verbs for tab-completion', () => {
+    assert.ok(CHAT_SLASH_COMMANDS.includes('/todo'), '/todo must be completable');
+    assert.ok(CHAT_SLASH_COMMANDS.includes('/goals'), '/goals must be completable');
+  });
+
+  it('matches the dispatched chat slash-command set (no phantom, no missing)', () => {
+    // The full set of slash verbs runOneChatInput dispatches + the always-present
+    // navigation/help verbs. Kept in lockstep with the dispatch in menu.ts.
+    const dispatched = [
+      '/help',
+      '/retry',
+      '/edit',
+      '/style',
+      '/mode',
+      '/goal',
+      '/goals',
+      '/todo',
+      '/recap',
+      '/copy',
+      '/export',
+      '/remember',
+      '/forget',
+      '/memory',
+      '/back',
+      '/exit',
+    ].sort();
+    assert.deepEqual([...CHAT_SLASH_COMMANDS].sort(), dispatched);
+  });
+});
