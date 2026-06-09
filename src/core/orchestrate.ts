@@ -54,6 +54,7 @@ import {
   understandingImproved,
   buildReflectConfirm,
   type Groundedness,
+  type Confidence,
   type JudgmentContext,
   type PollSurface,
 } from './brain.js';
@@ -286,6 +287,13 @@ export async function* orchestrate(
   //       terminalQuestion derivation.
   let brainTerminalQuestion: QuestionSet | undefined;
   let brainGroundedness: Groundedness = 'unread';
+  // THE TRUST SURFACE (master-plan PHASE 8): capture the brain's FINAL confidence
+  // tuple on the work-call path so the accept-point trust receipt can compose an
+  // AUDITABLE confidence line from the SAME real signals the brain computed (its
+  // understanding/groundedness/stakes, and — when a poll ran — the cross-vendor
+  // agreement). It is read ONLY when the trust flag is ON (and then only to PRESENT
+  // the real signal); absent/flag-off it changes nothing.
+  let brainConfidence: Confidence | undefined;
   {
     const repoPresentForScrape =
       depsArg.environmentContext !== undefined && depsArg.environmentContext.length > 0;
@@ -338,6 +346,9 @@ export async function* orchestrate(
       );
 
       if (move.kind === 'answer') {
+        // The work-call path: record the brain's final confidence so the accept-point
+        // trust receipt can ground it (read only when the trust flag is ON).
+        brainConfidence = conf;
         break brainLoop;
       }
       if (move.kind === 'ask') {
@@ -759,6 +770,13 @@ export async function* orchestrate(
             // FEED THE BRAIN: the agreement dimension calibrates confidence honestly.
             // (Absent on the no-poll path; here a poll genuinely ran.)
             const agreedConf = applyAgreement(pollConf, synthesis.agreement);
+            // THE TRUST SURFACE (PHASE 8): a real poll ran, so its agreement is a REAL
+            // signal — record it onto the brain's confidence so that IF this turn
+            // proceeds to the work-call (consensus / lean-that-agrees), the accept-point
+            // trust receipt surfaces the genuine cross-vendor agreement. On a push_back
+            // the work-call never runs, so this is harmless there. Read only when the
+            // trust flag is ON; never fabricated (agreement is present only post-poll).
+            brainConfidence = agreedConf;
 
             // COLLABORATIVE SURFACING:
             //  - SPLIT / LEAN-AGAINST → activate push_back via the poll_split source.
@@ -1271,6 +1289,12 @@ export async function* orchestrate(
     wantsWebSearch,
     hasImageAttachment,
     startTier: currentTier,
+    // THE TRUST SURFACE (master-plan PHASE 8): thread the trust flag + the brain's
+    // FINAL confidence so the accept-point receipt can compose an AUDITABLE confidence
+    // line from real signals. Both are read ONLY when the trust flag is ON; flag-off
+    // (the default) → the accept path is byte-for-byte today's single verify line.
+    ...(deps.trustEnabled === true ? { trustEnabled: true } : {}),
+    ...(brainConfidence !== undefined ? { brainConfidence } : {}),
     // VERIFY LEVEL (master-plan PHASE 3): when the Governor is ON, its `verify`
     // lever is authoritative (gated by shape/stakes/vendors/budget); when OFF, fall
     // back to the conservative built-in default the caller computed onto

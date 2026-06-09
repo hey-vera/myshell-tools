@@ -693,6 +693,22 @@ export interface OrchestrateDeps {
    * own conservative default. Read only when {@link verifyPort} is present.
    */
   readonly verifyTestTimeoutMs?: number;
+  /**
+   * EXPERIMENTAL — whether THE TRUST SURFACE (master-plan PHASE 8; core/trust-receipt.ts)
+   * consolidates the accept-point receipt into the scannable auditable-confidence +
+   * verify + self-audit block. Resolved by the impure caller via the pure
+   * `trustEnabled(env, config)` flag (src/interface/ui/trust-flag.ts).
+   *
+   * DEFAULT OFF (absent/false): the accept path emits EXACTLY today's verify-receipt
+   * notice (one line, when verification ran; nothing otherwise) — BYTE-FOR-BYTE today's
+   * output (the characterization + oracle suites prove that neutrality). When true: the
+   * single verify line is UPGRADED into the consolidated trust receipt, composed PURELY
+   * from the real signals already on the turn (no new model call) and surfacing ONLY
+   * signals that genuinely occurred. The underlying signals are themselves flag-gated
+   * (verify needs MYSHELL_VERIFY, agreement needs MYSHELL_JUDGMENT), so an absent signal
+   * is an absent line — never a fabricated basis.
+   */
+  readonly trustEnabled?: boolean;
 }
 
 /**

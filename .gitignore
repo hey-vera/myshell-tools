@@ -15,3 +15,6 @@ coverage
 
 # Claude agent worktrees (isolated, throwaway)
 .claude/worktrees/
+
+# scratch design/planning docs
+.tmp-*

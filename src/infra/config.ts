@@ -217,6 +217,19 @@ export interface AppConfig {
    */
   experimentalVerify?: boolean;
   /**
+   * EXPERIMENTAL TRUST SURFACE (default off; master-plan PHASE 8). When true (or with
+   * `MYSHELL_TRUST` truthy in the environment), the accept-point receipt is UPGRADED
+   * from the bare verify line into the consolidated, AUDITABLE trust receipt — an
+   * auditable confidence line (the confidence statement pointed at its real grounds:
+   * files changed, tests passing/failing, independent models agreeing), the four-state
+   * `verified` line, and an honest SELF-AUDIT of what the turn did NOT do (didn't run
+   * tests / didn't cross-check). Composed PURELY from the real signals already on the
+   * turn (no new model call); surfaces ONLY signals that genuinely occurred (absent
+   * signal ⇒ absent line). The accept path is BYTE-FOR-BYTE unchanged when this is
+   * absent/false. See src/interface/ui/trust-flag.ts / src/core/trust-receipt.ts.
+   */
+  experimentalTrust?: boolean;
+  /**
    * EXPERIMENTAL LEARNED-TASTE LEDGER (default off; the Phase-7 free judgment
    * layer). When true (or with `MYSHELL_TASTE` truthy in the environment), the
    * chat loop RECORDS observed decision signals (fork choices, push-back outcomes,

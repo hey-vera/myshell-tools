@@ -67,6 +67,13 @@ import {
   type TestRunResult,
 } from './verify.js';
 import { defaultVerifyLevel } from './verify-policy.js';
+import { confidenceLine } from './brain.js';
+import {
+  composeTrustReceipt,
+  trustReceiptLines,
+  isEmptyReceipt,
+  type TrustSignals,
+} from './trust-receipt.js';
 import type { WorkContract } from './work-contract.js';
 import { capContract, shouldMaterializeContract, isCleanObjectiveTask } from './work-contract.js';
 import type { IntentFrame } from './intent.js';
@@ -408,6 +415,7 @@ export async function verifyStage(
     return {
       verified,
       changedFiles,
+      ...(diff.files.length > 0 ? { changedPaths: diff.files } : {}),
       ...(testCommandLabel !== undefined ? { testCommand: testCommandLabel } : {}),
       ...(testRun !== undefined ? { testRun } : {}),
       ...(critic !== undefined ? { critic } : {}),
@@ -462,6 +470,21 @@ export interface WorkCallInput {
    * to `'tests'` (tests-first, the free signal — never a fabricated pass).
    */
   readonly verifyLevel?: import('./verify.js').VerifyLevel;
+  /**
+   * THE TRUST SURFACE (master-plan PHASE 8). When true, the accept-point receipt is
+   * UPGRADED from the bare verify line into the consolidated, auditable trust receipt
+   * (auditable confidence + verify + self-audit), composed PURELY from the real
+   * signals already on the turn. DEFAULT (absent/false) → the accept path emits
+   * EXACTLY today's single verify-receipt notice (byte-for-byte neutrality).
+   */
+  readonly trustEnabled?: boolean;
+  /**
+   * The brain's FINAL confidence tuple for THIS turn (understanding / groundedness /
+   * stakes / optional cross-vendor agreement). Threaded so the trust receipt can
+   * point the confidence statement at its real grounds. Read ONLY when
+   * {@link trustEnabled} is true; absent → no confidence line (never fabricated).
+   */
+  readonly brainConfidence?: import('./brain.js').Confidence;
 }
 
 /**
@@ -494,6 +517,8 @@ export async function* runWorkCall(input: WorkCallInput): AsyncGenerator<CoreEve
     hasImageAttachment,
     startTier,
     verifyLevel,
+    trustEnabled,
+    brainConfidence,
   } = input;
 
   // -------------------------------------------------------------------------
@@ -1748,7 +1773,40 @@ export async function* runWorkCall(input: WorkCallInput): AsyncGenerator<CoreEve
       const memoryProposal = memoryProposalFor(lastOutput);
       // --- THE VERIFY STAGE (fail-soft; never breaks the turn) -----------------
       const verifyOutcome = await runVerifyAtAccept();
-      if (verifyOutcome !== undefined) {
+      if (trustEnabled === true) {
+        // THE TRUST SURFACE (master-plan PHASE 8): UPGRADE the bare verify line into
+        // the consolidated, AUDITABLE trust receipt — auditable confidence + the
+        // four-state verify line + an honest self-audit of what it did NOT do —
+        // composed PURELY from the real signals already on this turn (no new model
+        // call). It surfaces ONLY signals that genuinely occurred: an absent verify
+        // ⇒ no verify line; an absent poll ⇒ no agreement ground; no grounded files
+        // ⇒ no file claim; a `reviewed` verdict never reads as `passing`. When NOTHING
+        // is real (no verify outcome AND no confidence), the receipt is empty and we
+        // emit nothing — the same neutrality as the bare path.
+        const trustSignals: TrustSignals = {
+          ...(brainConfidence !== undefined ? { confidence: brainConfidence } : {}),
+          ...(verifyOutcome !== undefined ? { verify: verifyOutcome } : {}),
+          // The real grounding: the repo-relative paths the diff ACTUALLY touched
+          // (the verify stage's `changedPaths`, honestly absent when no diff ran). We
+          // list the real files the turn changed — never a fabricated file name.
+          ...(verifyOutcome?.changedPaths !== undefined && verifyOutcome.changedPaths.length > 0
+            ? { groundedFiles: verifyOutcome.changedPaths }
+            : {}),
+          ...(deps.authenticatedProviders !== undefined
+            ? { authedProviderCount: deps.authenticatedProviders.length }
+            : {}),
+        };
+        const confBase = confidenceLine(brainConfidence);
+        const receipt = composeTrustReceipt(trustSignals, confBase);
+        if (!isEmptyReceipt(receipt)) {
+          // A failing test is the one real warning; the consolidated receipt stays
+          // informational otherwise (the verify line itself carries the ✗).
+          const level = verifyOutcome?.verified === 'failing' ? 'warn' : 'info';
+          for (const message of trustReceiptLines(receipt)) {
+            yield { type: 'notice', level, message };
+          }
+        }
+      } else if (verifyOutcome !== undefined) {
         yield {
           type: 'notice',
           // A failing test is a real warning; everything else is informational.

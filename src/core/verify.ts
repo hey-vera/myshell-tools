@@ -193,6 +193,14 @@ export interface VerifyOutcome {
   /** The number of files the diff touched (0 ⇒ no verification ran). */
   readonly changedFiles: number;
   /**
+   * The repo-relative paths the diff actually touched (the REAL grounding for the
+   * trust receipt's auditable confidence line). Present only when a diff was captured
+   * (changedFiles > 0); ABSENT/empty otherwise — never a fabricated file name. The
+   * trust surface (core/trust-receipt.ts) lists these so confidence points at real
+   * files the turn genuinely changed, never a claim it didn't earn.
+   */
+  readonly changedPaths?: readonly string[];
+  /**
    * A short, honest reason the verdict is what it is — surfaced in the receipt for
    * the non-`passing` states (e.g. "no test command detected", "tests timed out").
    */

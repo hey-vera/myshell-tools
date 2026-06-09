@@ -15,6 +15,22 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   resumed goal's contract from the persisted `workTrace` (niche: the in-run contract
   is already kept in memory; only cross-session resume benefits). Optional.
 
+## [3.44.0]
+
+### Added — the trust surface: auditable, honest "what just happened", flag-off
+
+- **Trust receipt** (`src/core/trust-receipt.ts`): a pure composer that turns a
+  finished turn into an auditable "what just happened" line. Confidence is grounded
+  in a fixed, honest order — files actually changed, then the real test verdict, then
+  the real cross-vendor agreement — never asserted from vibes. A self-audit names the
+  gaps (what was not verified) but only fires when anchored to a real turn (at least
+  one positive signal present), so an empty turn produces an empty receipt rather than
+  a bare "didn't verify" line.
+- **Flag** `MYSHELL_TRUST` / `config.experimentalTrust` (default OFF), mirroring the
+  other experimental subsystems.
+- 31 new tests pin the no-fabrication properties.
+- Flag-off neutrality preserved: characterization + oracle suites byte-identical.
+
 ## [3.43.0]
 
 ### Added — plural judgment: the cross-vendor judgment superpower, flag-off

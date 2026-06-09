@@ -144,6 +144,7 @@ import { inkEnabled } from './ui/flag.js';
 import { schedulerEnabled } from './ui/scheduler-flag.js';
 import { governorEnabled } from './ui/governor-flag.js';
 import { verifyEnabled } from './ui/verify-flag.js';
+import { trustEnabled } from './ui/trust-flag.js';
 import { nodeVerifyPort } from '../infra/verify-port.js';
 import { runSchedule, type GoalSpec, type RunGoalPhase } from '../core/scheduler.js';
 import { decompose } from '../core/decompose.js';
@@ -1770,6 +1771,16 @@ export async function runChatLoop(
                 verifyTestTimeoutMs: Math.min(ctx.timeoutMs, 120_000),
               }
             : {}),
+          // THE TRUST SURFACE (master-plan PHASE 8) — opt-in, DEFAULT OFF. Resolved by
+          // the pure trustEnabled(env, config) flag. When ON, the accept-point receipt
+          // is UPGRADED from the bare verify line into the consolidated, auditable
+          // trust receipt (auditable confidence + verify + an honest self-audit),
+          // composed PURELY from the real signals already on the turn (no new model
+          // call). When OFF (the default) the accept path emits EXACTLY today's single
+          // verify line — byte-for-byte neutrality (the characterization + oracle
+          // suites prove it). The underlying signals are themselves flag-gated, so with
+          // all flags off the trust surface is doubly dark.
+          ...(trustEnabled(process.env, mutableCtx.config) ? { trustEnabled: true } : {}),
         };
       };
 
