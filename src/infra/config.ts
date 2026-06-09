@@ -192,6 +192,19 @@ export interface AppConfig {
    */
   experimentalScheduler?: boolean;
   /**
+   * EXPERIMENTAL PERFORMANCE GOVERNOR (default off). When true (or with
+   * `MYSHELL_GOVERNOR` truthy in the environment), orchestrate consults the pure
+   * Performance Governor (src/core/governor.ts) ONCE per turn at the admission
+   * seam: it classifies the task shape and returns an AllocationPlan (a hard
+   * tier-adaptive per-turn call budget + which existing levers — model tier, depth,
+   * verbosity — to spend on by quality-per-token). In Phase 2 the governor
+   * COORDINATES the existing Oracle tier request through the SAME
+   * authorizeTier/admitManager gates — it never bypasses them. The admission path
+   * is BYTE-FOR-BYTE unchanged when this is absent/false. See
+   * src/interface/ui/governor-flag.ts.
+   */
+  experimentalGovernor?: boolean;
+  /**
    * Per-user "first-touch explainer shown" flags (whole-tool-finish-5.5.md §0.1).
    * Absent → nothing shown yet (each surface explains itself once on first
    * encounter). Each key flips to true the first time that surface is met.

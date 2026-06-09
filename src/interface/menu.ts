@@ -137,6 +137,7 @@ import {
 } from './menu-readline.js';
 import { inkEnabled } from './ui/flag.js';
 import { schedulerEnabled } from './ui/scheduler-flag.js';
+import { governorEnabled } from './ui/governor-flag.js';
 import { runSchedule, type GoalSpec, type RunGoalPhase } from '../core/scheduler.js';
 import { decompose } from '../core/decompose.js';
 import { orchestrate } from '../core/orchestrate.js';
@@ -1685,6 +1686,14 @@ export async function runChatLoop(
           // TOOL-STATE / ABOUT block (tool self-awareness) — present only when the
           // pure renderer produced a non-empty block (it always does given a version).
           ...(toolStateContext.length > 0 ? { toolStateContext } : {}),
+          // PERFORMANCE GOVERNOR (Phase 2 skeleton) — opt-in, DEFAULT OFF. Resolved
+          // by the pure governorEnabled(env, config) flag; when off (the default),
+          // orchestrate short-circuits before consulting the governor so the
+          // admission path is byte-for-byte unchanged. Present only when true (so
+          // the absent-default keeps the field off entirely).
+          ...(governorEnabled(process.env, mutableCtx.config)
+            ? { governorEnabled: true }
+            : {}),
         };
       };
 

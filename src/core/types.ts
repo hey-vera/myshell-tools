@@ -588,6 +588,21 @@ export interface OrchestrateDeps {
    * sequential path is used. See Policy.hedgePolicy.
    */
   readonly sleep?: (ms: number) => Promise<void>;
+  /**
+   * EXPERIMENTAL — whether the PERFORMANCE GOVERNOR (core/governor.ts) is consulted
+   * at the orchestrate admission seam this turn. Resolved by the impure caller via
+   * the pure `governorEnabled(env, config)` flag (src/interface/ui/governor-flag.ts)
+   * and threaded here so core stays pure (no process.env read in core/).
+   *
+   * DEFAULT OFF (absent/false): orchestrate SHORT-CIRCUITS before consulting the
+   * governor — it computes no AllocationPlan and applies none, so every emitted
+   * CoreEvent / tier request / prompt is BYTE-FOR-BYTE today's (the flag-off
+   * neutrality the characterization tests prove). When true: the governor is
+   * consulted ONCE per turn; in Phase 2 it COORDINATES the existing Oracle tier
+   * request through the SAME authorizeTier/admitManager gates — it never bypasses a
+   * gate and never opens a tier the gate would deny.
+   */
+  readonly governorEnabled?: boolean;
 }
 
 /**

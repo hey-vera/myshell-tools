@@ -15,6 +15,13 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   resumed goal's contract from the persisted `workTrace` (niche: the in-run contract
   is already kept in memory; only cross-session resume benefits). Optional.
 
+## [3.38.0]
+
+### Added — the Performance Governor (the spine), flag-off
+- A new pure src/core/governor.ts consulted once per turn at the admission seam, returning a typed AllocationPlan: the task SHAPE (quick/explain/build/investigate/decide/risky, from existing predicates), a hard tier-adaptive per-turn call budget (Free 1 / Pro 2 / Max 3, shrunk honestly by live pressure), and which levers to spend within it — chosen by expected quality-per-token, with an auditable reasons[] refusal/grant trail. Its anti-drift act is REFUSING wasteful levers against the objective.
+- It COORDINATES the existing gates, never bypasses them: it can only make the tier request equally or more conservative; authorizeTier/admitManager still decide. Cross-vendor levers are marked locked and auto-unlock at 2 connected vendors (fully 10/10 single-vendor). Phase-2 active levers: model tier, depth, verbosity; verification/poll/tribunal/concurrency are reserved cells that later phases light up.
+- Flag-gated MYSHELL_GOVERNOR (or config.experimentalGovernor), default OFF = byte-for-byte today behavior (orchestrate short-circuits before consulting it; proven by the unchanged Phase-1 characterization suite). Deterministic invariant tests pin: trivial=>budget 1/no escalation, levers<=budget, locked-never-chosen<2-vendors, pressure shrinks honestly.
+
 ## [3.37.1]
 
 ### Changed — internal: extract the work-call seam (behavior-preserving)
