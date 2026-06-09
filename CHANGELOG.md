@@ -15,6 +15,22 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   resumed goal's contract from the persisted `workTrace` (niche: the in-run contract
   is already kept in memory; only cross-session resume benefits). Optional.
 
+## [3.45.1]
+
+### Changed — all-flags-ON composition audit: honesty fix + regression guard
+
+- **Auditable-reasons honesty**: on a budget-starved risky/repo turn the Governor could
+  record that "the critic took this turn's cross-vendor unit" in a refusal reason even
+  when the critic did not ultimately fire (the oracle had taken the last unit). Reworded
+  the two affected reasons to state the critic's *domain/priority* ("this diff turn
+  belongs to the diff-scoped critic; verification has priority") — true regardless of
+  final budget. Behavior unchanged; only the audit-trail string is now accurate.
+- **`test/unit/governor-composition.test.ts`**: a new exhaustive sweep (every shape ×
+  mode × vendor-count × pressure) pinning the all-flags-ON invariants — the
+  `levers.length <= turnCallBudget` hard cap, {critic, poll, tribunal} mutual exclusion,
+  no cross-vendor lever below two vendors, and cost-saver opening no paid lever. Locks
+  down the composition an integration audit verified safe.
+
 ## [3.45.0]
 
 ### Added — the Rival Tribunal: cross-vendor build-off, flag-off

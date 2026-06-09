@@ -732,7 +732,7 @@ export function allocate(input: AllocateInput): AllocationPlan {
     if (!crossVendor) {
       // Surfaced as a LOCK below (the cross-vendor cell path); no double reason here.
     } else if (criticWillFire) {
-      reasons.push('rival tribunal refused — the critic took this turn’s cross-vendor unit (tribunal and critic never both fire)');
+      reasons.push('rival tribunal refused — this risky diff turn belongs to the diff-scoped critic; verification has priority over a build-off (they never both fire)');
     } else if (!input.repoOriented) {
       reasons.push('rival tribunal refused — a pure-decision fork goes to the judgment poll (no rival code to build)');
     } else {
@@ -764,7 +764,7 @@ export function allocate(input: AllocateInput): AllocationPlan {
     if (tribunalAllowed) {
       reasons.push('judgment poll refused — the rival tribunal took this turn’s cross-vendor unit (poll and tribunal never both fire)');
     } else if (criticWillFire) {
-      reasons.push('judgment poll refused — the critic took this turn’s cross-vendor unit (poll and critic never both fire)');
+      reasons.push('judgment poll refused — this diff turn belongs to the diff-scoped critic; verification has priority over the poll (they never both fire)');
     } else {
       reasons.push('judgment poll refused — budget too tight for the candidate calls');
     }
