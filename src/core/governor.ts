@@ -311,6 +311,38 @@ function baseBudgetForMode(mode: Mode): number {
 }
 
 /**
+ * The plan-adaptive AUTO posture word for the detected strongest tier (master-plan
+ * PHASE 4 / experience §3.2 — the tier-adaptive auto-mode the user explicitly asked
+ * for: "smart auto mode should auto-adapt to their subscription types"). This is a
+ * PURE display projection of the SAME `Mode` the budget is derived from, so the
+ * honest label can NEVER drift from the actual `turnCallBudget` the governor sets:
+ *
+ *   - quality-first (Max)        → 'full'         (budget 3, all in-budget levers)
+ *   - balanced     (Pro / none)  → 'balanced'     (budget 2; unknown plan → this
+ *                                                  SAFE middle, never 'full')
+ *   - cost-saver   (Free)        → 'conservative' (budget 1, no paid levers)
+ *
+ * The crucial honesty contract: an UNKNOWN / undetected plan resolves (via
+ * `autoModeForPlanInfos`) to `balanced` → 'balanced' — never to 'full'. We never
+ * assume Max. The display layer pairs this word with the plan label it already
+ * renders ("Auto · Max plan → full" / "Auto · Free plan → conservative"); this
+ * helper supplies ONLY the adaptive-intent word, it does NOT re-detect the plan.
+ */
+export type AutoPosture = 'full' | 'balanced' | 'conservative';
+
+export function autoPostureForMode(mode: Mode): AutoPosture {
+  switch (mode) {
+    case 'quality-first':
+      return 'full';
+    case 'cost-saver':
+      return 'conservative';
+    case 'balanced':
+    default:
+      return 'balanced';
+  }
+}
+
+/**
  * Shrink the allowance by live pressure, HONESTLY (perf doc §3.1): a Max account
  * under heavy 429 pressure drops toward a frugal budget — and never silently. The
  * floor is 1 (the core answer is un-sheddable). `effectiveBudget = max(1, base −

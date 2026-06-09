@@ -29,6 +29,7 @@ import assert from 'node:assert/strict';
 import {
   classifyTaskShape,
   allocate,
+  autoPostureForMode,
   type TaskShape,
   type AllocateInput,
   type AllocationPlan,
@@ -37,6 +38,8 @@ import {
   type Verify,
   type Lever,
 } from '../../src/core/governor.ts';
+import { autoModeForPlanInfos, classifyPlan } from '../../src/core/policy.ts';
+import { pressureFromSignals } from '../../src/core/capability-budget.ts';
 import { assessConfidence, maxRoundsFor, type Confidence } from '../../src/core/brain.ts';
 import type { EngagementSignals, EngagementPlan } from '../../src/core/engagement.ts';
 import { planEngagement } from '../../src/core/engagement.ts';
@@ -362,5 +365,137 @@ describe('governor.allocate — invariant tripwires', () => {
     for (const l of levers) {
       assert.ok(['oracle', 'depth', 'critic', 'poll', 'tribunal'].includes(l));
     }
+  });
+});
+
+// ===========================================================================
+// C) PHASE 4 — SUBSCRIPTION-ADAPTIVE AUTO BUDGET (Part A)
+//
+// The user's explicit ask: "smart auto mode should auto-adapt to their
+// subscription types." The budget DERIVES from the detected strongest tier:
+// Free ⇒ conservative (budget 1, no paid levers), Pro ⇒ balanced (2), Max ⇒
+// full (3). An UNKNOWN / undetected plan resolves to the SAFE conservative middle
+// (balanced/2) — NEVER Max. These exercise the REAL detect→mode seam
+// (autoModeForPlanInfos over classified PlanInfos) so the budget can never be
+// detached from the detected subscription.
+// ===========================================================================
+
+describe('governor — subscription-adaptive auto budget (Phase 4 Part A)', () => {
+  // A non-trivial build turn (so the budget is the tier base, not the quick=1
+  // short-circuit) — the population whose budget the tier actually sets.
+  function buildPlanFor(mode: AllocateInput['mode']): AllocationPlan {
+    const s = signals({ task: 'add a logout button to the navbar' });
+    const conf = assessConfidence(frame({ confidence: 'high' }), s);
+    return allocate(allocInput({ signals: s, conf, repoOriented: true, mode }));
+  }
+
+  it('Max plan ⇒ full budget 3 (the detected Max tier → quality-first → 3)', () => {
+    const mode = autoModeForPlanInfos([classifyPlan('claude max 20x')]);
+    assert.strictEqual(mode, 'quality-first', 'precondition: a Max plan → quality-first');
+    assert.strictEqual(buildPlanFor(mode).turnCallBudget, 3, 'Max ⇒ budget 3 (full)');
+  });
+
+  it('Pro plan ⇒ balanced budget 2 (the detected Pro tier → balanced → 2)', () => {
+    const mode = autoModeForPlanInfos([classifyPlan('pro')]);
+    assert.strictEqual(mode, 'balanced', 'precondition: a Pro plan → balanced');
+    assert.strictEqual(buildPlanFor(mode).turnCallBudget, 2, 'Pro ⇒ budget 2 (balanced)');
+  });
+
+  it('Free plan ⇒ conservative budget 1 AND no paid levers (no Oracle even on decide)', () => {
+    const mode = autoModeForPlanInfos([classifyPlan('free')]);
+    assert.strictEqual(mode, 'cost-saver', 'precondition: a Free plan → cost-saver');
+    const build = buildPlanFor(mode);
+    assert.strictEqual(build.turnCallBudget, 1, 'Free ⇒ budget 1 (conservative)');
+    // A Free decision turn must STILL never open the paid strong model.
+    const s = signals({ task: 'should we use Redux or Context?' });
+    const conf = assessConfidence(frame({ confidence: 'high' }), s);
+    const decide = allocate(allocInput({ signals: s, conf, substantial: true, mode }));
+    assert.strictEqual(decide.shape, 'decide');
+    assert.strictEqual(decide.tierRequest, 'ic', 'Free never requests the Oracle (no paid lever)');
+    assert.ok(!decide.levers.includes('oracle'));
+    assert.ok(!decide.levers.includes('critic'), 'Free opens no paid cross-vendor lever');
+  });
+
+  it('UNKNOWN / undetected plan ⇒ the SAFE conservative middle (budget 2), NEVER Max', () => {
+    // CLI reported NO plan → classifyPlan → confidence 'none' → autoModeForPlanInfos
+    // resolves to 'balanced' (the safe middle), NOT 'quality-first'. The budget must
+    // be 2 (never the Max 3) — we never assume Max on an undetected plan.
+    const mode = autoModeForPlanInfos([classifyPlan(null)]);
+    assert.strictEqual(mode, 'balanced', 'precondition: no plan signal → balanced (safe middle)');
+    const plan = buildPlanFor(mode);
+    assert.strictEqual(plan.turnCallBudget, 2, 'unknown plan ⇒ safe middle budget 2, never Max 3');
+    assert.notStrictEqual(plan.turnCallBudget, 3, 'an undetected plan never gets the Max budget');
+  });
+
+  it('single-vendor: the budget adapts to THAT one vendor’s detected plan', () => {
+    // One authed vendor on a Free plan → cost-saver → frugal budget 1; the same
+    // single vendor on a Max plan → quality-first → 3. The adaptation tracks the one
+    // detected plan, with no cross-vendor assumption.
+    const freeMode = autoModeForPlanInfos([classifyPlan('claude free')]);
+    const maxMode = autoModeForPlanInfos([classifyPlan('claude max 5x')]);
+    assert.strictEqual(buildPlanFor(freeMode).turnCallBudget, 1, 'single Free vendor → 1');
+    assert.strictEqual(buildPlanFor(maxMode).turnCallBudget, 3, 'single Max vendor → 3');
+  });
+
+  it('the honest AUTO POSTURE label is a pure projection of the SAME mode (never overstates)', () => {
+    // The label must match the budget the governor actually sets, by construction.
+    assert.strictEqual(autoPostureForMode('quality-first'), 'full'); //   budget 3
+    assert.strictEqual(autoPostureForMode('balanced'), 'balanced'); //    budget 2
+    assert.strictEqual(autoPostureForMode('cost-saver'), 'conservative'); // budget 1
+    // The crucial honesty: an unknown plan → balanced → 'balanced', never 'full'.
+    assert.strictEqual(
+      autoPostureForMode(autoModeForPlanInfos([classifyPlan(null)])),
+      'balanced',
+      'undetected plan → balanced posture, never the Max "full"',
+    );
+  });
+});
+
+// ===========================================================================
+// D) PHASE 4 — REAL PRESSURE SHRINKS THE BUDGET, FROM THE REAL SIGNAL (Part B)
+//
+// Phase 2 fed the governor an honest 0 (no real signal threaded). Phase 4 threads
+// the REAL pressure dimension the caller observes — the count of providers in
+// rate-limit cooldown (real 429s this session), via `pressureFromSignals` — into
+// the consult. These assert the budget shrinks UNDER that real pressure and that
+// the pressure value is SOURCED FROM the real signal (pressureFromSignals over the
+// cooled-provider count), not fabricated.
+// ===========================================================================
+
+describe('governor — real pressure shrinks the budget honestly (Phase 4 Part B)', () => {
+  function maxDecide(pressure: AllocateInput['pressure']): AllocationPlan {
+    const s = signals({ task: 'should we use Redux or Context?' });
+    const conf = assessConfidence(frame({ confidence: 'high' }), s);
+    return allocate(allocInput({ signals: s, conf, substantial: true, mode: 'quality-first', pressure }));
+  }
+
+  it('the pressure input is SOURCED from the real signal (pressureFromSignals over cooled count)', () => {
+    // The exact computation the caller performs at the admission consult: the count
+    // of providers in rate-limit cooldown mapped by the pure pressureFromSignals.
+    // Asserting the governor consumes THIS value (not a fabricated one) is the
+    // honesty contract of Part B.
+    const realPressureTwoCooled = pressureFromSignals({ rateLimitedProviderCount: 2 });
+    assert.strictEqual(realPressureTwoCooled, 2, 'two cooled providers → real pressure 2');
+    const plan = maxDecide(realPressureTwoCooled);
+    assert.strictEqual(plan.turnCallBudget, 1, 'Max 3 shrinks to 1 under real pressure 2');
+    assert.ok(
+      plan.reasons.some((r) => /conserving|pressure/i.test(r)),
+      'the honest shrink is surfaced in reasons',
+    );
+  });
+
+  it('NO real pressure (no cooled providers) ⇒ the full tier budget, byte-identical to Phase-2 zero', () => {
+    const realZero = pressureFromSignals({ rateLimitedProviderCount: 0 });
+    assert.strictEqual(realZero, 0, 'no cooled providers → real pressure 0');
+    // The honest-zero (deps.governorPressure absent) path is pressureFromSignals({}).
+    assert.strictEqual(pressureFromSignals({}), 0, 'absent signal → honest 0');
+    assert.strictEqual(maxDecide(realZero).turnCallBudget, 3, 'no pressure → the full Max budget 3');
+  });
+
+  it('graduated: real pressure 1 shrinks Max 3→2; pressure 3 floors it at 1 (never 0)', () => {
+    assert.strictEqual(maxDecide(pressureFromSignals({ rateLimitedProviderCount: 1 })).turnCallBudget, 2);
+    assert.strictEqual(maxDecide(pressureFromSignals({ rateLimitedProviderCount: 3 })).turnCallBudget, 1);
+    // The core answer is un-sheddable: the budget floors at 1, never 0.
+    assert.strictEqual(maxDecide(3).turnCallBudget, 1, 'budget floors at 1 (core answer never shed)');
   });
 });

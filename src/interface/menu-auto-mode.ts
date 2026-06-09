@@ -14,6 +14,7 @@ import {
 } from '../core/policy.js';
 import type { PlanInfo } from '../core/policy.js';
 import type { Mode } from '../core/policy.js';
+import { autoPostureForMode } from '../core/governor.js';
 import { dim } from '../ui/theme.js';
 
 export const PROVIDER_LABEL: Record<string, string> = {
@@ -65,12 +66,21 @@ export function hasAuthenticatedProvider(env: EnvironmentStatus): boolean {
  * plan it stays clean ("auto") rather than nagging "no plan reported" on every
  * screen — the full per-provider story (including who reported nothing) lives on
  * the mode screen's "Auto detected" breakdown, not here.
+ *
+ * TIER-ADAPTIVE AUTO (master-plan PHASE 4 / experience §3.2): the suffix names the
+ * adaptive POSTURE the detected tier sets — "→ full" (Max), "→ balanced" (Pro /
+ * unknown — the SAFE middle, never assumed Max), "→ conservative" (Free). The word
+ * is a pure projection of the SAME `Mode` the Governor derives its budget from
+ * (`autoPostureForMode`), so the label can never overstate what the plan actually
+ * buys. The LABEL is always-on (honest display of the auto intent); the budget
+ * ADAPTATION it describes is Governor behaviour, gated by the Governor flag.
  */
 export function autoModeReason(env: EnvironmentStatus): string {
-  const observed = authedProviderPlans(env)
-    .map((p) => p.info)
-    .filter((i) => i.confidence === 'observed');
-  return observed.length === 0 ? 'auto' : `auto · ${describePlanSet(observed)}`;
+  const infos = authedProviderPlans(env).map((p) => p.info);
+  const observed = infos.filter((i) => i.confidence === 'observed');
+  const posture = autoPostureForMode(autoModeForPlanInfos(infos));
+  const planPart = observed.length === 0 ? 'auto' : `auto · ${describePlanSet(observed)}`;
+  return `${planPart} → ${posture}`;
 }
 
 /**
@@ -112,7 +122,10 @@ export function renderAutoDetected(env: EnvironmentStatus, color: boolean): stri
   }
 
   lines.push(
-    dim(`    → ${describePlanSet(plans.map((p) => p.info))} ⇒ ${modeLabel(mode)}`, color),
+    dim(
+      `    → ${describePlanSet(plans.map((p) => p.info))} ⇒ ${modeLabel(mode)} → ${autoPostureForMode(mode)}`,
+      color,
+    ),
   );
   return lines;
 }

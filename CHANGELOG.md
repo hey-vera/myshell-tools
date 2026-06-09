@@ -15,6 +15,14 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   resumed goal's contract from the persisted `workTrace` (niche: the in-run contract
   is already kept in memory; only cross-session resume benefits). Optional.
 
+## [3.42.0]
+
+### Added — subscription-adaptive AUTO budget + real pressure threading (enriches the Governor, flag-off)
+- The AUTO mode now sizes the Governor per-turn budget to the DETECTED subscription tier: Max plan -> full (budget 3, paid levers eligible), Pro -> balanced (2), Free -> conservative (1, Oracle vetoed). An unknown/undetected plan resolves to balanced (2) and is NEVER assumed Max. Single-vendor adapts to that one vendor plan; cross-vendor levers stay locked until 2 vendors. Reuses the existing detect.ts/policy.ts plan signals — no new probe, no new model call.
+- Honest posture label (always-on display, pure projection of the same Mode the budget derives from, so it can never overstate): e.g. Mode: Max (auto - 1 Max 20x -> full), Mode: Efficient (auto - 1 Free -> conservative), (auto -> balanced) when undetected.
+- Real pressure threading: the Governor budget now shrinks under genuine pressure (effectiveBudget = max(1, base - pressure)). REAL signal wired = rate-limit cooldown count (providers currently in 429 cooldown this session — the same signal shedding already consumes). Honestly still 0: token/quota headroom (subscription CLIs expose no quota readout — documented, never fabricated).
+- All of this rides the existing MYSHELL_GOVERNOR / config.experimentalGovernor flag (no new flag). Governor OFF = byte-for-byte unchanged (governorPressure set only when ON; the characterization + oracle suites are byte-identical and pass). The honest mode label is pure display, independent of the flag.
+
 ## [3.41.0]
 
 ### Added — the free judgment layer: a partner with its own honest judgment, flag-off

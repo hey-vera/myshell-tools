@@ -1012,11 +1012,17 @@ export async function* orchestrate(
       repoOriented: directive.repoOriented,
       mode: governorMode,
       authedProviderCount: (deps.authenticatedProviders ?? []).length,
-      // No live token-budget probe exists on subscription CLIs (the honest
-      // default): pressure is reactive after the first 429. orchestrate does not
-      // thread a rate-limit signal today, so we read the honest zero — the
-      // governor never fabricates pressure. (Phase 4 threads the real signal.)
-      pressure: pressureFromSignals({}),
+      // REAL live pressure (master-plan PHASE 4 — closing the Phase-2 honest-zero
+      // gap). The caller observes a genuine pressure dimension — how many providers
+      // are in rate-limit cooldown RIGHT NOW (real 429s this session) — and threads
+      // it on `deps.governorPressure` (computed via `pressureFromSignals` over the
+      // live cooldown map). When present it shrinks the budget under genuine
+      // pressure; ABSENT (one-shot runs / no cooldowns) → the honest zero, exactly
+      // as Phase 2 read it (`pressureFromSignals({})`). The governor NEVER fabricates
+      // pressure: the only real dimension wired is the rate-limit cooldown count;
+      // no token-budget readout exists on subscription CLIs, so that dimension stays
+      // an honest 0 (documented at the caller's compute site), exactly as Phase 2 did.
+      pressure: deps.governorPressure ?? pressureFromSignals({}),
       maxRounds: maxRoundsFor(deps.partnerStyle),
     });
   }

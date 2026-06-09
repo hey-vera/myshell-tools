@@ -109,7 +109,7 @@ import { makeRouteClassifier } from '../core/route-classifier.js';
 import { makeIntentExtractor } from '../core/intent-extractor.js';
 import { shouldShowFirstTouch, markSeen, FIRST_TOUCH_LINES } from '../core/first-touch.js';
 import { teach } from '../core/teach.js';
-import { decideShed, pressureFromSignals } from '../core/capability-budget.js';
+import { decideShed, pressureFromSignals, type QuotaPressure } from '../core/capability-budget.js';
 import type { UpdateCheckResult } from '../infra/update-check.js';
 import type { ClaudeTokenStatus } from '../infra/credentials.js';
 import { loadClaudeTokenCapturedAt, claudeTokenStatus } from '../infra/credentials.js';
@@ -675,14 +675,23 @@ export async function runChatLoop(
   // → CORE ANSWER always survives. Recomputed each turn so a cooldown expiring
   // restores full capability. Shared by resolveRecap (recap rung), buildDeps
   // (intent rung) and resolveTurnMemory (memory rung).
-  const currentShedPlan = (): ReturnType<typeof decideShed> => {
+  // The REAL live quota pressure (0–3) the conversation layer observes — the count
+  // of providers currently in rate-limit cooldown (real 429s this session), mapped
+  // by the SAME pure `pressureFromSignals` the shed plan uses. This is the ONE real,
+  // free, in-process pressure dimension available on subscription CLIs (there is no
+  // token-budget readout, so that dimension stays an honest 0 inside
+  // `pressureFromSignals`). Shared by `currentShedPlan` (the quota-shed ladder) and
+  // `buildDeps` (the Governor's `governorPressure`), so both read the SAME signal and
+  // the governor shrinks its per-turn budget under the same genuine pressure.
+  const currentPressure = (): QuotaPressure => {
     const nowMs = ctx.clock.now();
     let cooledCount = 0;
     for (const until of providerCooldownUntil.values()) {
       if (until > nowMs) cooledCount++;
     }
-    return decideShed(pressureFromSignals({ rateLimitedProviderCount: cooledCount }));
+    return pressureFromSignals({ rateLimitedProviderCount: cooledCount });
   };
+  const currentShedPlan = (): ReturnType<typeof decideShed> => decideShed(currentPressure());
 
   /**
    * Produce the recap text to show: the fresh cache when not stale, otherwise a
@@ -1729,7 +1738,21 @@ export async function runChatLoop(
           // admission path is byte-for-byte unchanged. Present only when true (so
           // the absent-default keeps the field off entirely).
           ...(governorEnabled(process.env, mutableCtx.config)
-            ? { governorEnabled: true }
+            ? {
+                governorEnabled: true,
+                // REAL live pressure (master-plan PHASE 4 — closing the Phase-2
+                // honest-zero gap). The governor's per-turn budget shrinks under
+                // genuine 429 pressure. The ONE real, observable dimension on
+                // subscription CLIs: how many providers are in rate-limit cooldown
+                // right now (the SAME `currentPressure` signal `decideShed` reads).
+                // There is NO token-budget readout on subscription auth, so that
+                // dimension stays an honest 0 inside `pressureFromSignals` — never
+                // fabricated. Only set when the Governor flag is ON, so the off path
+                // is byte-for-byte unchanged. A 0 here is the same as absent (the
+                // consult falls back to the honest zero either way), so it never
+                // changes a no-pressure turn.
+                governorPressure: currentPressure(),
+              }
             : {}),
           // VERIFICATION CENTERPIECE (master-plan PHASE 3) — opt-in, DEFAULT OFF.
           // Resolved by the pure verifyEnabled(env, config) flag. When ON, inject the

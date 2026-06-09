@@ -642,6 +642,29 @@ export interface OrchestrateDeps {
    */
   readonly governorEnabled?: boolean;
   /**
+   * EXPERIMENTAL — the REAL live rate-limit pressure (0–3) for the Performance
+   * Governor consult (master-plan PHASE 4 — closing the Phase-2 honest-zero gap).
+   *
+   * Phase 2 deliberately fed the governor `pressureFromSignals({})` = an honest 0
+   * because orchestrate did not thread a real rate-limit signal. The caller (the
+   * conversation layer) DOES observe one: how many providers are currently in
+   * rate-limit cooldown right now (the same `pressureFromSignals` over the live
+   * `providerCooldownUntil` cooldown map it already computes for `decideShed`). It
+   * passes that REAL pressure here so the governor shrinks the per-turn budget under
+   * genuine 429 pressure (`effectiveBudget = max(1, base − pressure)`), and the
+   * mode/spend surface says so honestly.
+   *
+   * This is a `QuotaPressure` (0–3); the structural inline type keeps types.ts a
+   * leaf module. ABSENT (the default, one-shot runs, and ALWAYS when the Governor
+   * flag is off) → the consult falls back to the honest zero exactly as Phase 2 did,
+   * so the field changes nothing when the Governor is off. NEVER fabricated: it is a
+   * count of providers observed to have hit a real 429 this session, not a guess.
+   * The pressure DIMENSIONS that are real (rate-limit cooldown count) vs honestly
+   * still 0 (no token-budget readout exists on subscription CLIs) are documented at
+   * the caller's compute site.
+   */
+  readonly governorPressure?: 0 | 1 | 2 | 3;
+  /**
    * EXPERIMENTAL — the injected VERIFICATION PORT (master-plan PHASE 3, the
    * centerpiece). The impure git-diff + test-detection + bounded test-runner
    * (src/infra/verify-port.ts), wrapped fail-soft exactly like RepoScanPort. PRESENT

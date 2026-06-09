@@ -153,3 +153,46 @@ describe('renderMainScreen — sign-in call-to-action', () => {
     assert.ok(!out.includes('Sign in to begin'), 'authed menu must not show "Sign in to begin"');
   });
 });
+
+// ---------------------------------------------------------------------------
+// TIER-ADAPTIVE AUTO MODE — the honest posture label (master-plan PHASE 4 / A)
+//
+// The auto mode line names the adaptive POSTURE the detected tier sets — "→ full"
+// (Max), "→ balanced" (Pro / undetected — the SAFE middle), "→ conservative"
+// (Free). The word is a pure projection of the same mode the Governor derives its
+// budget from, so the always-on LABEL can never overstate what the plan buys.
+// Crucially: an undetected plan never reads as the Max "full".
+// ---------------------------------------------------------------------------
+
+function envWithClaudePlan(plan: string | null): EnvironmentStatus {
+  return {
+    claude: { ...makeProvider('claude', { installed: true, authenticated: true }), plan },
+    codex: makeProvider('codex', { installed: true, authenticated: false }),
+    opencode: makeProvider('opencode', { installed: false }),
+    hasAnyProvider: true,
+    platform: 'linux',
+  };
+}
+
+describe('renderMainScreen — tier-adaptive auto posture label', () => {
+  it('Max plan → the auto line reads "→ full"', async () => {
+    const out = await render(envWithClaudePlan('claude max 20x'));
+    assert.ok(out.includes('(auto'), 'mode line shows the auto indicator');
+    assert.ok(out.includes('→ full'), `Max plan must read "→ full"; got:\n${out}`);
+  });
+
+  it('Free plan → the auto line reads "→ conservative" (frugal, said plainly)', async () => {
+    const out = await render(envWithClaudePlan('claude free'));
+    assert.ok(out.includes('→ conservative'), `Free plan must read "→ conservative"; got:\n${out}`);
+    assert.ok(!out.includes('→ full'), 'a Free plan never reads as the Max "full"');
+  });
+
+  it('undetected plan → "→ balanced" (the SAFE middle), NEVER "→ full"', async () => {
+    // Claude authed but the CLI reported no plan (plan: null) → balanced posture.
+    const out = await render(envWithClaudePlan(null));
+    assert.ok(out.includes('→ balanced'), `undetected plan must read "→ balanced"; got:\n${out}`);
+    assert.ok(!out.includes('→ full'), 'an undetected plan must never assume the Max "full"');
+    // And it must not nag the compact line with "no plan reported".
+    assert.ok(!out.includes('no plan reported'), 'compact line never nags about a missing plan');
+  });
+});
