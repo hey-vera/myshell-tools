@@ -6,6 +6,18 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+## [3.55.0] - 2026-06-09
+
+### Fixed
+- **Settings no longer silently erase other config keys** (data-loss bug). Each
+  Settings toggle rebuilt the config from a hand-listed allow-list and the file was
+  blind-overwritten, so any key not in that list was permanently dropped on the next
+  toggle — including `codebaseAwareness` (the privacy kill-switch, which would
+  silently flip back ON), dismissed first-touch hints (`seen`), and every config-set
+  `experimental*` flag. Every setter now spreads the full prior config and changes
+  only its one field; clears omit the key cleanly (no `undefined`). Found via a
+  multi-agent audit.
+
 ## [3.54.0] - 2026-06-09
 
 ### Fixed

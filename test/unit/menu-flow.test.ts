@@ -4956,6 +4956,53 @@ describe('startMenu — update notifier: banner, [u], auto-update', () => {
     assert.equal(persisted.learnRouting, true, 'toggling panel must NOT drop learnRouting');
   });
 
+  // The HIGH-severity silent-data-loss regression: a setter that rebuilt config
+  // from an allow-list erased every key it didn't list — including the
+  // codebaseAwareness PRIVACY kill-switch (silently flipping it back ON), the
+  // `seen` first-touch flags, and the config-set experimental* flags. Toggle a
+  // representative setting (mode) through saveConfig→loadConfig and assert ALL of
+  // them survive unchanged.
+  it('[s] → [1] mode change PRESERVES codebaseAwareness, seen, and experimental* flags', async () => {
+    const sink = makeSink();
+    const dir = join(tmpdir(), `menu-preserve-privacy-${randomUUID()}`);
+    const config: AppConfig = {
+      onboarded: true,
+      setAsDefault: false,
+      codebaseAwareness: false, // the privacy kill-switch — must NOT silently re-enable
+      experimentalTaste: true, // a config-set experimental flag
+      experimentalJudgment: true,
+      seen: { memorySave: true, recap: true }, // dismissed first-touch hints
+    };
+    const ctx = makeCtx({
+      config,
+      cwd: dir,
+      readLine: makeScriptedReader(['s', '1', '3', 'q']), // settings → [1] mode → [3] quality-first → quit
+    });
+
+    const persisted = await withStateHome(dir, async () => {
+      await assert.doesNotReject(() => startMenu(ctx, sink));
+      return readPersistedConfig();
+    });
+
+    assert.equal(persisted.mode, 'quality-first', 'the mode change itself must take effect');
+    assert.equal(
+      persisted.codebaseAwareness,
+      false,
+      'changing mode must NOT silently re-enable the codebaseAwareness privacy kill-switch',
+    );
+    assert.equal(persisted.experimentalTaste, true, 'experimentalTaste must survive a mode change');
+    assert.equal(
+      persisted.experimentalJudgment,
+      true,
+      'experimentalJudgment must survive a mode change',
+    );
+    assert.deepEqual(
+      persisted.seen,
+      { memorySave: true, recap: true },
+      'dismissed first-touch hints (seen) must survive a mode change',
+    );
+  });
+
   // ---- Wizard auto-update prompt ------------------------------------------
 
   it('welcome wizard shows auto-update prompt after set-as-default', async () => {

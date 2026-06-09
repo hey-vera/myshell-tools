@@ -4,9 +4,14 @@
  * The Settings screen: the mode/verbosity/partner-style selectors and the
  * feature toggles (default-shell, auto-update, native sessions, smart routing,
  * panel, hedge, learned routing, auto-goal, memory, intent engine). Each
- * dialog reads a single key via {@link readMenuKey}, rebuilds AppConfig with a
- * conditional spread, persists via {@link saveConfig}, and returns the updated
- * config. No shared module state — every call is isolated.
+ * dialog reads a single key via {@link readMenuKey}, then builds the next
+ * AppConfig by spreading the FULL prior config and changing only the field it
+ * owns (via {@link withOptional}), persists via {@link saveConfig}, and returns
+ * the updated config. Spreading the whole config is load-bearing: a setter must
+ * never drop a key it doesn't know about (e.g. the codebaseAwareness privacy
+ * kill-switch, `seen` first-touch flags, or the experimental* flags) — doing so
+ * would silently erase it on the next toggle. No shared module state — every
+ * call is isolated.
  */
 
 import type { AppConfig } from '../infra/config.js';
@@ -24,27 +29,36 @@ import { resolveAutoMode, renderAutoDetected } from './menu-auto-mode.js';
 import { readMenuKey } from './menu-key-confirm.js';
 
 /**
- * Preserve the USER MEMORY config keys (Phase 4, §9) across a Settings toggle
- * that reconstructs `AppConfig` from scratch. The toggle functions deliberately
- * rebuild config with only the keys they know so unknown keys stay minimal; this
- * spread keeps the memory keys from being silently dropped when another setting
- * is flipped. Only explicit memory:false (the kill-switch) and any set advanced
- * keys are carried — absence means defaults (memory on).
+ * Set an OPTIONAL config field while preserving every other key.
+ *
+ * The bug this guards against (HIGH severity, silent data loss): the old setters
+ * rebuilt `AppConfig` from a hand-listed allow-list, so any key NOT in the list
+ * (`codebaseAwareness` — the privacy kill-switch — `seen`, and all nine
+ * `experimental*` flags) was permanently erased on the next toggle. The fix is to
+ * spread the FULL prior `config` as the base so nothing is ever dropped.
+ *
+ * For default-having optional fields, `value === undefined` means "fall back to
+ * the default", which must be persisted as the ABSENCE of the key — not as
+ * `key: undefined` (that would violate `exactOptionalPropertyTypes` and write a
+ * meaningless null-ish key). So when clearing, we rebuild the object from the
+ * prior config's entries MINUS this key, yielding an object where the key is
+ * genuinely omitted (no `delete`, no `key: undefined`).
  */
-function preserveMemoryKeys(config: AppConfig): Partial<AppConfig> {
-  return {
-    ...(config.memory === false ? { memory: false } : {}),
-    ...(config.memoryDefaultScope !== undefined ? { memoryDefaultScope: config.memoryDefaultScope } : {}),
-    ...(config.memoryApproval !== undefined ? { memoryApproval: config.memoryApproval } : {}),
-    ...(config.memoryDecayDays !== undefined ? { memoryDecayDays: config.memoryDecayDays } : {}),
-    ...(config.memoryMaxFactsPerScope !== undefined
-      ? { memoryMaxFactsPerScope: config.memoryMaxFactsPerScope }
-      : {}),
-    // Intent engine is default-ON, so only the explicit-OFF kill-switch is
-    // persisted; carried through every settings toggle so flipping an unrelated
-    // setting never silently re-enables it (same discipline as memory:false).
-    ...(config.intentEngine === false ? { intentEngine: false } : {}),
-  };
+function withOptional<K extends keyof AppConfig>(
+  config: AppConfig,
+  key: K,
+  value: AppConfig[K] | undefined,
+): AppConfig {
+  if (value === undefined) {
+    // Clearing → omit the key entirely (default applies on next load). Rebuild
+    // from entries so every OTHER key (codebaseAwareness, seen, experimental*)
+    // is preserved while this one is dropped.
+    const entries = Object.entries(config).filter(([k]) => k !== key);
+    return Object.fromEntries(entries) as AppConfig;
+  }
+  // Setting → spread the full prior config (preserving every other key) and
+  // overwrite only this field.
+  return { ...config, [key]: value };
 }
 
 export async function runModeSelect(
@@ -91,23 +105,11 @@ export async function runModeSelect(
   else if (key === '3') newMode = 'quality-first';
   else if (key === '4') newMode = undefined; // clear pin → auto
 
-  const updated: AppConfig = {
-    onboarded: config.onboarded,
-    setAsDefault: config.setAsDefault,
-    ...(newMode !== undefined ? { mode: newMode } : {}),
-    // Preserve other prefs so changing mode doesn't silently reset them.
-    ...(config.autoUpdate === false ? { autoUpdate: false } : {}),
-    ...(config.nativeSessions === true ? { nativeSessions: true } : {}),
-    ...(config.verbosity !== undefined ? { verbosity: config.verbosity } : {}),
-    ...(config.timeoutMs !== undefined ? { timeoutMs: config.timeoutMs } : {}),
-    ...(config.smartRoute === false ? { smartRoute: false } : {}),
-    ...(config.panel === true ? { panel: true } : {}),
-    ...(config.learnRouting === true ? { learnRouting: true } : {}),
-    ...(config.hedge === true ? { hedge: true } : {}),
-    ...(config.autoGoal === true ? { autoGoal: true } : {}),
-    ...(config.partnerStyle !== undefined ? { partnerStyle: config.partnerStyle } : {}),
-    ...preserveMemoryKeys(config),
-  };
+  // Spread the FULL prior config so no key is ever dropped, then set only the
+  // field this dialog owns. `mode === undefined` means "Auto" → omit the key
+  // entirely (don't write `mode: undefined`, which violates
+  // exactOptionalPropertyTypes and would be a meaningless on-disk key).
+  const updated: AppConfig = withOptional(config, 'mode', newMode);
 
   await saveConfig(updated);
   out.write(`Mode: ${modeLabel(newMode ?? autoMode)}${newMode === undefined ? ' (auto)' : ''}\n`);
@@ -151,22 +153,7 @@ async function runVerbositySelect(
   else if (key === '2') newVerbosity = 'normal';
   else if (key === '3') newVerbosity = 'verbose';
 
-  const updated: AppConfig = {
-    onboarded: config.onboarded,
-    setAsDefault: config.setAsDefault,
-    ...(config.mode !== undefined ? { mode: config.mode } : {}),
-    ...(config.autoUpdate === false ? { autoUpdate: false } : {}),
-    ...(config.nativeSessions === true ? { nativeSessions: true } : {}),
-    ...(newVerbosity !== undefined ? { verbosity: newVerbosity } : {}),
-    ...(config.timeoutMs !== undefined ? { timeoutMs: config.timeoutMs } : {}),
-    ...(config.smartRoute === false ? { smartRoute: false } : {}),
-    ...(config.panel === true ? { panel: true } : {}),
-    ...(config.learnRouting === true ? { learnRouting: true } : {}),
-    ...(config.hedge === true ? { hedge: true } : {}),
-    ...(config.autoGoal === true ? { autoGoal: true } : {}),
-    ...(config.partnerStyle !== undefined ? { partnerStyle: config.partnerStyle } : {}),
-    ...preserveMemoryKeys(config),
-  };
+  const updated: AppConfig = withOptional(config, 'verbosity', newVerbosity);
 
   await saveConfig(updated);
   out.write(`Output detail set to: ${newVerbosity ?? 'normal'}\n`);
@@ -218,21 +205,7 @@ export async function runStyleSelect(
   else if (key === '3') newStyle = 'collaborative';
   else if (key === '4') newStyle = undefined; // clear explicit override → auto
 
-  const updated: AppConfig = {
-    onboarded: config.onboarded,
-    setAsDefault: config.setAsDefault,
-    ...(config.mode !== undefined ? { mode: config.mode } : {}),
-    ...(config.autoUpdate === false ? { autoUpdate: false } : {}),
-    ...(config.nativeSessions === true ? { nativeSessions: true } : {}),
-    ...(config.verbosity !== undefined ? { verbosity: config.verbosity } : {}),
-    ...(config.timeoutMs !== undefined ? { timeoutMs: config.timeoutMs } : {}),
-    ...(config.smartRoute === false ? { smartRoute: false } : {}),
-    ...(config.panel === true ? { panel: true } : {}),
-    ...(config.learnRouting === true ? { learnRouting: true } : {}),
-    ...(config.hedge === true ? { hedge: true } : {}),
-    ...(newStyle !== undefined ? { partnerStyle: newStyle } : {}),
-    ...preserveMemoryKeys(config),
-  };
+  const updated: AppConfig = withOptional(config, 'partnerStyle', newStyle);
 
   await saveConfig(updated);
   out.write(
@@ -257,23 +230,8 @@ async function toggleDefaultShell(
   // Only adopt the new state if the hook write succeeded; otherwise keep the old.
   const setAsDefault = code === 0 ? enable : config.setAsDefault;
 
-  const updated: AppConfig = {
-    onboarded: config.onboarded,
-    setAsDefault,
-    ...(config.mode !== undefined ? { mode: config.mode } : {}),
-    // Preserve other prefs so toggling default-shell doesn't silently reset them.
-    ...(config.autoUpdate === false ? { autoUpdate: false } : {}),
-    ...(config.nativeSessions === true ? { nativeSessions: true } : {}),
-    ...(config.verbosity !== undefined ? { verbosity: config.verbosity } : {}),
-    ...(config.timeoutMs !== undefined ? { timeoutMs: config.timeoutMs } : {}),
-    ...(config.smartRoute === false ? { smartRoute: false } : {}),
-    ...(config.panel === true ? { panel: true } : {}),
-    ...(config.learnRouting === true ? { learnRouting: true } : {}),
-    ...(config.hedge === true ? { hedge: true } : {}),
-    ...(config.autoGoal === true ? { autoGoal: true } : {}),
-    ...(config.partnerStyle !== undefined ? { partnerStyle: config.partnerStyle } : {}),
-    ...preserveMemoryKeys(config),
-  };
+  // Spread the full prior config so no key is dropped; set only setAsDefault.
+  const updated: AppConfig = { ...config, setAsDefault };
   await saveConfig(updated);
   return updated;
 }
@@ -361,27 +319,9 @@ export async function runSettings(
 async function toggleIntentEngine(config: AppConfig, out: OutputSink): Promise<AppConfig> {
   const currentlyEnabled = config.intentEngine !== false;
   const enable = !currentlyEnabled;
-  const updated: AppConfig = {
-    onboarded: config.onboarded,
-    setAsDefault: config.setAsDefault,
-    ...(config.mode !== undefined ? { mode: config.mode } : {}),
-    ...(config.autoUpdate === false ? { autoUpdate: false } : {}),
-    ...(config.nativeSessions === true ? { nativeSessions: true } : {}),
-    ...(config.verbosity !== undefined ? { verbosity: config.verbosity } : {}),
-    ...(config.timeoutMs !== undefined ? { timeoutMs: config.timeoutMs } : {}),
-    ...(config.smartRoute === false ? { smartRoute: false } : {}),
-    ...(config.panel === true ? { panel: true } : {}),
-    ...(config.learnRouting === true ? { learnRouting: true } : {}),
-    ...(config.hedge === true ? { hedge: true } : {}),
-    ...(config.autoGoal === true ? { autoGoal: true } : {}),
-    ...(config.partnerStyle !== undefined ? { partnerStyle: config.partnerStyle } : {}),
-    ...preserveMemoryKeys(config),
-    // Persist only the explicit-OFF; absent means default-on.
-    ...(!enable ? { intentEngine: false } : {}),
-  };
-  // preserveMemoryKeys carried the OLD intentEngine flag; the trailing spread
-  // above is authoritative (or its absence when re-enabling).
-  if (enable) delete (updated as { intentEngine?: boolean }).intentEngine;
+  // Persist only the explicit-OFF; absent means default-on. Spreading the full
+  // prior config preserves every other key.
+  const updated: AppConfig = withOptional(config, 'intentEngine', enable ? undefined : false);
   await saveConfig(updated);
   out.write(`Intent engine: ${enable ? 'on' : 'off'}\n`);
   return updated;
@@ -398,27 +338,9 @@ async function toggleIntentEngine(config: AppConfig, out: OutputSink): Promise<A
 async function toggleMemory(config: AppConfig, out: OutputSink): Promise<AppConfig> {
   const currentlyEnabled = config.memory !== false;
   const enable = !currentlyEnabled;
-  const updated: AppConfig = {
-    onboarded: config.onboarded,
-    setAsDefault: config.setAsDefault,
-    ...(config.mode !== undefined ? { mode: config.mode } : {}),
-    ...(config.autoUpdate === false ? { autoUpdate: false } : {}),
-    ...(config.nativeSessions === true ? { nativeSessions: true } : {}),
-    ...(config.verbosity !== undefined ? { verbosity: config.verbosity } : {}),
-    ...(config.timeoutMs !== undefined ? { timeoutMs: config.timeoutMs } : {}),
-    ...(config.smartRoute === false ? { smartRoute: false } : {}),
-    ...(config.panel === true ? { panel: true } : {}),
-    ...(config.learnRouting === true ? { learnRouting: true } : {}),
-    ...(config.hedge === true ? { hedge: true } : {}),
-    ...(config.autoGoal === true ? { autoGoal: true } : {}),
-    ...(config.partnerStyle !== undefined ? { partnerStyle: config.partnerStyle } : {}),
-    ...preserveMemoryKeys(config),
-    // Persist only the explicit-OFF; absent means default-on.
-    ...(!enable ? { memory: false } : {}),
-  };
-  // preserveMemoryKeys carried the OLD memory flag; the trailing spread above is
-  // the authoritative new value (or its absence when re-enabling).
-  if (enable) delete (updated as { memory?: boolean }).memory;
+  // Persist only the explicit-OFF; absent means default-on. Spreading the full
+  // prior config preserves every other key (including the advanced memory* keys).
+  const updated: AppConfig = withOptional(config, 'memory', enable ? undefined : false);
   await saveConfig(updated);
   out.write(`Memory: ${enable ? 'on' : 'off'}\n`);
   return updated;
@@ -437,23 +359,9 @@ async function toggleSmartRoute(config: AppConfig, out: OutputSink): Promise<App
   // Default-on: enabled unless explicitly false (mirrors auto-update).
   const currentlyEnabled = config.smartRoute !== false;
   const enable = !currentlyEnabled;
-  const updated: AppConfig = {
-    onboarded: config.onboarded,
-    setAsDefault: config.setAsDefault,
-    ...(config.mode !== undefined ? { mode: config.mode } : {}),
-    ...(config.autoUpdate === false ? { autoUpdate: false } : {}),
-    ...(config.nativeSessions === true ? { nativeSessions: true } : {}),
-    ...(config.verbosity !== undefined ? { verbosity: config.verbosity } : {}),
-    ...(config.timeoutMs !== undefined ? { timeoutMs: config.timeoutMs } : {}),
-    // Persist only the explicit-OFF; absent means default-on.
-    ...(!enable ? { smartRoute: false } : {}),
-    ...(config.panel === true ? { panel: true } : {}),
-    ...(config.learnRouting === true ? { learnRouting: true } : {}),
-    ...(config.hedge === true ? { hedge: true } : {}),
-    ...(config.autoGoal === true ? { autoGoal: true } : {}),
-    ...(config.partnerStyle !== undefined ? { partnerStyle: config.partnerStyle } : {}),
-    ...preserveMemoryKeys(config),
-  };
+  // Persist only the explicit-OFF; absent means default-on. Full-config spread
+  // preserves every other key.
+  const updated: AppConfig = withOptional(config, 'smartRoute', enable ? undefined : false);
   await saveConfig(updated);
   out.write(`Smart routing: ${enable ? 'on' : 'off'}\n`);
   return updated;
@@ -471,22 +379,9 @@ async function toggleAutoUpdate(config: AppConfig, out: OutputSink): Promise<App
   // Currently enabled when autoUpdate !== false (undefined counts as on)
   const currentlyEnabled = config.autoUpdate !== false;
   const enable = !currentlyEnabled;
-  const updated: AppConfig = {
-    onboarded: config.onboarded,
-    setAsDefault: config.setAsDefault,
-    ...(config.mode !== undefined ? { mode: config.mode } : {}),
-    ...(!enable ? { autoUpdate: false } : {}),
-    ...(config.nativeSessions === true ? { nativeSessions: true } : {}),
-    ...(config.verbosity !== undefined ? { verbosity: config.verbosity } : {}),
-    ...(config.timeoutMs !== undefined ? { timeoutMs: config.timeoutMs } : {}),
-    ...(config.smartRoute === false ? { smartRoute: false } : {}),
-    ...(config.panel === true ? { panel: true } : {}),
-    ...(config.learnRouting === true ? { learnRouting: true } : {}),
-    ...(config.hedge === true ? { hedge: true } : {}),
-    ...(config.autoGoal === true ? { autoGoal: true } : {}),
-    ...(config.partnerStyle !== undefined ? { partnerStyle: config.partnerStyle } : {}),
-    ...preserveMemoryKeys(config),
-  };
+  // Persist only the explicit-OFF; absent means default-on. Full-config spread
+  // preserves every other key.
+  const updated: AppConfig = withOptional(config, 'autoUpdate', enable ? undefined : false);
   await saveConfig(updated);
   out.write(`Update on launch: ${enable ? 'on' : 'off'}\n`);
   return updated;
@@ -503,22 +398,9 @@ async function toggleAutoUpdate(config: AppConfig, out: OutputSink): Promise<App
  */
 async function toggleNativeSessions(config: AppConfig, out: OutputSink): Promise<AppConfig> {
   const enable = config.nativeSessions !== true;
-  const updated: AppConfig = {
-    onboarded: config.onboarded,
-    setAsDefault: config.setAsDefault,
-    ...(config.mode !== undefined ? { mode: config.mode } : {}),
-    ...(config.autoUpdate === false ? { autoUpdate: false } : {}),
-    ...(enable ? { nativeSessions: true } : {}),
-    ...(config.verbosity !== undefined ? { verbosity: config.verbosity } : {}),
-    ...(config.timeoutMs !== undefined ? { timeoutMs: config.timeoutMs } : {}),
-    ...(config.smartRoute === false ? { smartRoute: false } : {}),
-    ...(config.panel === true ? { panel: true } : {}),
-    ...(config.learnRouting === true ? { learnRouting: true } : {}),
-    ...(config.hedge === true ? { hedge: true } : {}),
-    ...(config.autoGoal === true ? { autoGoal: true } : {}),
-    ...(config.partnerStyle !== undefined ? { partnerStyle: config.partnerStyle } : {}),
-    ...preserveMemoryKeys(config),
-  };
+  // Default-off: persist only the explicit-ON; absent means off. Full-config
+  // spread preserves every other key.
+  const updated: AppConfig = withOptional(config, 'nativeSessions', enable ? true : undefined);
   await saveConfig(updated);
   out.write(`Native sessions (experimental): ${enable ? 'on' : 'off'}\n`);
   return updated;
@@ -534,22 +416,9 @@ async function toggleNativeSessions(config: AppConfig, out: OutputSink): Promise
  */
 async function togglePanel(config: AppConfig, out: OutputSink): Promise<AppConfig> {
   const enable = config.panel !== true;
-  const updated: AppConfig = {
-    onboarded: config.onboarded,
-    setAsDefault: config.setAsDefault,
-    ...(config.mode !== undefined ? { mode: config.mode } : {}),
-    ...(config.autoUpdate === false ? { autoUpdate: false } : {}),
-    ...(config.nativeSessions === true ? { nativeSessions: true } : {}),
-    ...(config.verbosity !== undefined ? { verbosity: config.verbosity } : {}),
-    ...(config.timeoutMs !== undefined ? { timeoutMs: config.timeoutMs } : {}),
-    ...(config.smartRoute === false ? { smartRoute: false } : {}),
-    ...(enable ? { panel: true } : {}),
-    ...(config.learnRouting === true ? { learnRouting: true } : {}),
-    ...(config.hedge === true ? { hedge: true } : {}),
-    ...(config.autoGoal === true ? { autoGoal: true } : {}),
-    ...(config.partnerStyle !== undefined ? { partnerStyle: config.partnerStyle } : {}),
-    ...preserveMemoryKeys(config),
-  };
+  // Default-off: persist only the explicit-ON. Full-config spread preserves
+  // every other key.
+  const updated: AppConfig = withOptional(config, 'panel', enable ? true : undefined);
   await saveConfig(updated);
   out.write(`Panel (experimental): ${enable ? 'on' : 'off'}\n`);
   return updated;
@@ -566,22 +435,9 @@ async function togglePanel(config: AppConfig, out: OutputSink): Promise<AppConfi
  */
 async function toggleHedge(config: AppConfig, out: OutputSink): Promise<AppConfig> {
   const enable = config.hedge !== true;
-  const updated: AppConfig = {
-    onboarded: config.onboarded,
-    setAsDefault: config.setAsDefault,
-    ...(config.mode !== undefined ? { mode: config.mode } : {}),
-    ...(config.autoUpdate === false ? { autoUpdate: false } : {}),
-    ...(config.nativeSessions === true ? { nativeSessions: true } : {}),
-    ...(config.verbosity !== undefined ? { verbosity: config.verbosity } : {}),
-    ...(config.timeoutMs !== undefined ? { timeoutMs: config.timeoutMs } : {}),
-    ...(config.smartRoute === false ? { smartRoute: false } : {}),
-    ...(config.panel === true ? { panel: true } : {}),
-    ...(config.learnRouting === true ? { learnRouting: true } : {}),
-    ...(enable ? { hedge: true } : {}),
-    ...(config.autoGoal === true ? { autoGoal: true } : {}),
-    ...(config.partnerStyle !== undefined ? { partnerStyle: config.partnerStyle } : {}),
-    ...preserveMemoryKeys(config),
-  };
+  // Default-off: persist only the explicit-ON. Full-config spread preserves
+  // every other key.
+  const updated: AppConfig = withOptional(config, 'hedge', enable ? true : undefined);
   await saveConfig(updated);
   out.write(`Hedged escalation (experimental): ${enable ? 'on' : 'off'}\n`);
   return updated;
@@ -596,22 +452,9 @@ async function toggleHedge(config: AppConfig, out: OutputSink): Promise<AppConfi
  */
 async function toggleLearnRouting(config: AppConfig, out: OutputSink): Promise<AppConfig> {
   const enable = config.learnRouting !== true;
-  const updated: AppConfig = {
-    onboarded: config.onboarded,
-    setAsDefault: config.setAsDefault,
-    ...(config.mode !== undefined ? { mode: config.mode } : {}),
-    ...(config.autoUpdate === false ? { autoUpdate: false } : {}),
-    ...(config.nativeSessions === true ? { nativeSessions: true } : {}),
-    ...(config.verbosity !== undefined ? { verbosity: config.verbosity } : {}),
-    ...(config.timeoutMs !== undefined ? { timeoutMs: config.timeoutMs } : {}),
-    ...(config.smartRoute === false ? { smartRoute: false } : {}),
-    ...(config.panel === true ? { panel: true } : {}),
-    ...(enable ? { learnRouting: true } : {}),
-    ...(config.hedge === true ? { hedge: true } : {}),
-    ...(config.autoGoal === true ? { autoGoal: true } : {}),
-    ...(config.partnerStyle !== undefined ? { partnerStyle: config.partnerStyle } : {}),
-    ...preserveMemoryKeys(config),
-  };
+  // Default-off: persist only the explicit-ON. Full-config spread preserves
+  // every other key.
+  const updated: AppConfig = withOptional(config, 'learnRouting', enable ? true : undefined);
   await saveConfig(updated);
   out.write(`Learned routing (experimental): ${enable ? 'on' : 'off'}\n`);
   return updated;
@@ -626,20 +469,9 @@ async function toggleLearnRouting(config: AppConfig, out: OutputSink): Promise<A
  */
 async function toggleAutoGoal(config: AppConfig, out: OutputSink): Promise<AppConfig> {
   const enable = config.autoGoal !== true;
-  const updated: AppConfig = {
-    onboarded: config.onboarded,
-    setAsDefault: config.setAsDefault,
-    ...(config.mode !== undefined ? { mode: config.mode } : {}),
-    ...(config.autoUpdate === false ? { autoUpdate: false } : {}),
-    ...(config.nativeSessions === true ? { nativeSessions: true } : {}),
-    ...(config.verbosity !== undefined ? { verbosity: config.verbosity } : {}),
-    ...(config.timeoutMs !== undefined ? { timeoutMs: config.timeoutMs } : {}),
-    ...(config.smartRoute === false ? { smartRoute: false } : {}),
-    ...(config.panel === true ? { panel: true } : {}),
-    ...(config.learnRouting === true ? { learnRouting: true } : {}),
-    ...(config.hedge === true ? { hedge: true } : {}),
-    ...(enable ? { autoGoal: true } : {}),
-  };
+  // Default-off: persist only the explicit-ON. Full-config spread preserves
+  // every other key.
+  const updated: AppConfig = withOptional(config, 'autoGoal', enable ? true : undefined);
   await saveConfig(updated);
   out.write(`Auto-goal (quality-first): ${enable ? 'on' : 'off'}\n`);
   return updated;

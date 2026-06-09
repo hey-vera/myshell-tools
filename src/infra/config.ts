@@ -349,6 +349,18 @@ export async function loadConfig(homeDir?: string): Promise<AppConfig> {
 /**
  * Persist the app config atomically.  Creates the `.myshell-tools` directory
  * if it does not exist.
+ *
+ * CONTRACT (silent-data-loss guard): this writes EXACTLY the object it is given —
+ * it does NOT read-merge the on-disk file. That is deliberate. Callers (the
+ * Settings setters) now build the next config by spreading the FULL prior config
+ * (`{ ...config, <field>: <value> }`), so the in-memory object is authoritative
+ * and already carries every key — including ones the setter doesn't know about
+ * (codebaseAwareness, seen, experimental*). A read-merge here would be the WRONG
+ * fix: it could resurrect a key a caller intentionally removed (e.g. clearing
+ * `mode` for Auto, or clearing `memory: false` when re-enabling memory), turning
+ * an intended clear into a no-op. The safety net is structural instead — the
+ * spread in the setters plus loadConfig's `{ ...DEFAULTS, ...parsed }` round-trip
+ * (which preserves every on-disk key) — not a lossy merge in the writer.
  */
 export async function saveConfig(config: AppConfig, homeDir?: string): Promise<void> {
   const home = homeDir ?? defaultStateHome();
