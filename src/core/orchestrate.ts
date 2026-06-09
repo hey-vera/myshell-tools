@@ -169,6 +169,12 @@ export async function* orchestrate(
     classification,
     routePlan,
     engagementBias: depsArg.partnerStyle !== undefined ? engagementBiasOf(depsArg.partnerStyle) : 0,
+    // The learned-taste ask-vs-proceed dial (judgment doc §4.3.1). Fed by the
+    // interface layer from the taste ledger ONLY when the taste flag is ON; absent
+    // → 0 (the dial is unmoved, so engagement is byte-identical to the pre-taste
+    // path). This is the REAL `EngagementSignals.memoryBias` seam (engagement.ts:73),
+    // wired-but-unfed until now.
+    ...(depsArg.memoryBias !== undefined ? { memoryBias: depsArg.memoryBias } : {}),
     task,
   });
   let engagementSignals: EngagementSignals = buildEngagementSignals(intentFrame);

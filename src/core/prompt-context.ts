@@ -65,6 +65,14 @@ export interface ContextBlockOptions {
    */
   readonly memoryContext?: string;
   /**
+   * Pre-rendered, capped LEARNED-TASTE playbook block (judgment doc Part 4, the
+   * Phase-7 free layer; core/taste.ts `renderTastePlaybook`). undefined → omit.
+   * The user's OBSERVED past decisions, rendered right AFTER MEMORY as a prior (a
+   * lean, not a rule — its footer enforces explicit > learned). Produced only when
+   * the taste flag is ON (core/taste-flag.ts); absent → byte-identical prompts.
+   */
+  readonly tasteContext?: string;
+  /**
    * Pre-rendered, truthful WORK STATE block (adaptive-partner-v2-5.6.md §2.3 B):
    * objective / evidence-backed done / model-stated next / blocked, derived from
    * accepted prior turns' workTrace by `deriveWorkStateFromHistory`. undefined →
@@ -131,7 +139,7 @@ export function partnerNudge(style: PartnerStyle): string {
  *
  * Canonical block order (master plan §MF1; ENVIRONMENT prepended in E1;
  * TOOL-STATE adjacent to ENVIRONMENT; WORK STATE after MEMORY, AP2-B §2.3 B):
- *   ENVIRONMENT → TOOL-STATE → MEMORY → WORK STATE → INTENT → ENGAGEMENT → (partner posture nudge)
+ *   ENVIRONMENT → TOOL-STATE → MEMORY → LEARNED TASTE → WORK STATE → INTENT → ENGAGEMENT → (partner posture nudge)
  *
  * Each block is independently present/absent. The returned string is inserted by
  * every prompt builder at the same point: AFTER system, BEFORE "CONVERSATION SO
@@ -158,6 +166,15 @@ export function assembleContextBlocks(opts: ContextBlockOptions): string {
   const memory = opts.memoryContext?.trim();
   if (memory !== undefined && memory.length > 0) {
     blocks.push(memory);
+  }
+
+  // LEARNED TASTE — the user's OBSERVED past decisions, rendered right AFTER
+  // MEMORY as a prior (a lean, not a rule). Its own footer enforces explicit >
+  // learned, so a fresh instruction this turn always overrides it. Present only
+  // when the taste flag is ON (the producer returns '' otherwise).
+  const taste = opts.tasteContext?.trim();
+  if (taste !== undefined && taste.length > 0) {
+    blocks.push(taste);
   }
 
   // WORK STATE — task/session continuity (what's done / what's next), distinct from

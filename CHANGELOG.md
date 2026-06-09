@@ -15,6 +15,13 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   resumed goal's contract from the persisted `workTrace` (niche: the in-run contract
   is already kept in memory; only cross-session resume benefits). Optional.
 
+## [3.39.0]
+
+### Added — learned-taste ledger (free judgment layer), flag-off
+- The compounding moat: myshell now learns your taste from OBSERVED signals only (never inferred opinions). New src/core/taste.ts (pure: TasteEvent schema where source is structurally pinned to observed, distill -> {memoryBias, playbook}), src/infra/taste-ledger.ts (append-only JSONL via the same atomic primitive the cost ledger uses, 0o600, project-scoped via deriveProjectKey, fail-soft). Records fork choices + immediate rephrases today; the schema also covers push-back + accept-unchanged signals that activate when those (later) seams land.
+- Feeds the real, previously-unfed EngagementSignals.memoryBias seam (a bounded +/-1 calibration, never a takeover) and injects a distilled LEARNED-TASTE block at prompt assembly (order: ENVIRONMENT -> TOOL-STATE -> MEMORY -> LEARNED TASTE -> WORK STATE -> INTENT -> ENGAGEMENT; explicit always beats learned).
+- Flag-gated MYSHELL_TASTE / config.experimentalTaste, DEFAULT OFF = byte-for-byte today behavior (proven: the Phase-1 characterization + oracle suites are unchanged and pass). Subscription-clean (local JSONL, no deps, no embeddings, no metered calls). Honesty held: observed-only (the write boundary drops anything unvalidatable), project-scoped (a project fact never leaks to another repo), fail-soft (a corrupt ledger degrades to no-bias, never throws into a turn).
+
 ## [3.38.0]
 
 ### Added — the Performance Governor (the spine), flag-off

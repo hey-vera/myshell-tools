@@ -148,6 +148,31 @@ describe('assembleContextBlocks', () => {
     assert.equal(withEmpty, withoutKey);
   });
 
+  const TASTE =
+    'LEARNED TASTE (this user\'s OBSERVED past decisions — a prior, not a rule):\n- data fetching: server\n\nLean toward these where they apply; an explicit instruction this turn wins.';
+
+  it('renders the LEARNED TASTE block after MEMORY / before WORK STATE + INTENT', () => {
+    const out = assembleContextBlocks({
+      memoryContext: MEM,
+      tasteContext: TASTE,
+      workStateContext: WORKSTATE,
+      intentFrame: INTENT,
+    });
+    const iMem = out.indexOf(MEM);
+    const iTaste = out.indexOf(TASTE);
+    const iWork = out.indexOf(WORKSTATE);
+    assert.ok(iMem >= 0);
+    assert.ok(iTaste > iMem, 'LEARNED TASTE follows MEMORY');
+    assert.ok(iWork > iTaste, 'WORK STATE follows LEARNED TASTE');
+  });
+
+  it('omits LEARNED TASTE cleanly when absent/whitespace (flag-off → byte-identical)', () => {
+    const withoutKey = assembleContextBlocks({ memoryContext: MEM });
+    assert.equal(withoutKey.includes('LEARNED TASTE'), false);
+    const withEmpty = assembleContextBlocks({ tasteContext: '   ', memoryContext: MEM });
+    assert.equal(withEmpty, withoutKey);
+  });
+
   it('joins present blocks with a blank line and trims each', () => {
     const out = assembleContextBlocks({
       memoryContext: `\n${MEM}\n`,

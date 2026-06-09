@@ -546,6 +546,7 @@ export async function* runWorkCall(input: WorkCallInput): AsyncGenerator<CoreEve
         ...(deps.environmentContext !== undefined ? { environmentContext: deps.environmentContext } : {}),
         ...(deps.toolStateContext !== undefined ? { toolStateContext: deps.toolStateContext } : {}),
         ...(deps.memoryContext !== undefined ? { memoryContext: deps.memoryContext } : {}),
+        ...(deps.tasteContext !== undefined ? { tasteContext: deps.tasteContext } : {}),
         ...(deps.workStateContext !== undefined ? { workStateContext: deps.workStateContext } : {}),
         ...(deps.visionTriageContext !== undefined ? { visionTriageContext: deps.visionTriageContext } : {}),
         ...(deps.intentFrame !== undefined ? { intentFrame: deps.intentFrame } : {}),

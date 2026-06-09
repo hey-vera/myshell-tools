@@ -205,6 +205,19 @@ export interface AppConfig {
    */
   experimentalGovernor?: boolean;
   /**
+   * EXPERIMENTAL LEARNED-TASTE LEDGER (default off; the Phase-7 free judgment
+   * layer). When true (or with `MYSHELL_TASTE` truthy in the environment), the
+   * chat loop RECORDS observed decision signals (fork choices, push-back outcomes,
+   * accept-unchanged vs. immediate-edit/rephrase) into an append-only JSONL ledger
+   * (src/infra/taste-ledger.ts) and RECALLS a distilled taste playbook that feeds
+   * the `memoryBias` ask-vs-proceed dial + a short taste-context prompt block.
+   * Records ONLY observed signals (never inferred), project-scoped via
+   * deriveProjectKey, fail-soft (a corrupt/missing ledger degrades to no-bias). The
+   * legacy path is byte-identical when this is absent/false. See
+   * src/core/taste-flag.ts / src/core/taste.ts.
+   */
+  experimentalTaste?: boolean;
+  /**
    * Per-user "first-touch explainer shown" flags (whole-tool-finish-5.5.md §0.1).
    * Absent → nothing shown yet (each surface explains itself once on first
    * encounter). Each key flips to true the first time that surface is met.

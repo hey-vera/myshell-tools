@@ -160,6 +160,7 @@ function contextFromDeps(deps: OrchestrateDeps): ContextBlockOptions | undefined
   if (deps.environmentContext !== undefined) ctx.environmentContext = deps.environmentContext;
   if (deps.toolStateContext !== undefined) ctx.toolStateContext = deps.toolStateContext;
   if (deps.memoryContext !== undefined) ctx.memoryContext = deps.memoryContext;
+  if (deps.tasteContext !== undefined) ctx.tasteContext = deps.tasteContext;
   if (deps.workStateContext !== undefined) ctx.workStateContext = deps.workStateContext;
   if (deps.visionTriageContext !== undefined) ctx.visionTriageContext = deps.visionTriageContext;
   if (deps.intentFrame !== undefined) ctx.intentFrame = deps.intentFrame;

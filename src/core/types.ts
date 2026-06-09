@@ -427,6 +427,24 @@ export interface OrchestrateDeps {
    */
   readonly memoryContext?: string;
   /**
+   * Pre-rendered, capped LEARNED-TASTE playbook block (judgment doc Part 4, the
+   * Phase-7 free layer). The user's OBSERVED past decisions, distilled by
+   * core/taste.ts and threaded here so taste rides sequential, hedge, AND panel
+   * prompts via `assembleContextBlocks` (rendered right after MEMORY). Produced by
+   * the interface layer ONLY when the taste flag (core/taste-flag.ts) is ON;
+   * absent → byte-identical prompts. PURE derivation: NO model call, no metered
+   * service, no embeddings — local append-only JSONL (infra/taste-ledger.ts).
+   */
+  readonly tasteContext?: string;
+  /**
+   * The ask-vs-proceed nudge fed into `EngagementSignals.memoryBias` (the
+   * already-wired ±1 dial, engagement.ts:73). Derived from the learned-taste
+   * ledger's accept/correct history (core/taste.ts `distillTaste`). Bounded ±1
+   * (a calibration, never a takeover). Present only when the taste flag is ON;
+   * absent → 0 (the dial is unmoved, byte-identical engagement decisions).
+   */
+  readonly memoryBias?: -1 | 0 | 1;
+  /**
    * Pre-rendered, truthful WORK STATE block (adaptive-partner-v2-5.6.md §2.3 B):
    * objective / evidence-backed done / model-stated next / blocked, derived from
    * accepted prior turns' persisted `workTrace` by `deriveWorkStateFromHistory`

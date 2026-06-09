@@ -40,6 +40,9 @@ import { refreshCapabilities } from '../core/model-capability-refresh.js';
 import { createCapabilityRefreshPort } from '../infra/model-capability-port.js';
 import { nodeRepoScanPort } from '../infra/repo-scan.js';
 import { createFileUserMemoryStore, resolveProjectKey } from '../infra/user-memory-store.js';
+import { createFileTasteLedger } from '../infra/taste-ledger.js';
+import { tasteEnabled } from '../core/taste-flag.js';
+import { renderTastePlaybook, isImmediateRephrase, type TasteSignal } from '../core/taste.js';
 import { createFileGoalStore } from '../infra/goal-store.js';
 import {
   runGoalsList,
@@ -1484,6 +1487,11 @@ export async function runChatLoop(
         // within a session — see resolveEnvironmentOnce below) and threaded here so
         // orientation rides sequential, hedge, AND panel prompts. Absent → omit.
         environmentContext?: string,
+        // LEARNED-TASTE recall for this turn (Phase-7 free layer), computed per-turn
+        // by resolveTurnTaste below ONLY when the taste flag is ON. `tasteContext` is
+        // the distilled playbook prompt block; `memoryBias` is the ±1 ask-vs-proceed
+        // dial fed into EngagementSignals.memoryBias. Absent → byte-identical path.
+        taste?: { tasteContext?: string; memoryBias?: -1 | 0 | 1 },
       ): OrchestrateDeps => {
         // Build per-provider advertised model sets from the live env so route()
         // can prefer a model the CLI actually advertises. Only include installed
@@ -1673,6 +1681,18 @@ export async function runChatLoop(
           // USER MEMORY block (Phase 4, §7) — present only when memory is on AND
           // facts survived the inject-time gate + relevance selection.
           ...(memoryContext !== undefined && memoryContext.length > 0 ? { memoryContext } : {}),
+          // LEARNED-TASTE playbook block + ask-vs-proceed dial (Phase-7 free layer).
+          // Present ONLY when the taste flag is ON and the distill produced a
+          // non-empty playbook / non-zero bias (resolveTurnTaste returns {} when the
+          // flag is off → byte-identical prompts + unmoved engagement). The block
+          // rides sequential/hedge/panel via assembleContextBlocks; memoryBias feeds
+          // EngagementSignals.memoryBias (the wired-but-unfed dial).
+          ...(taste?.tasteContext !== undefined && taste.tasteContext.length > 0
+            ? { tasteContext: taste.tasteContext }
+            : {}),
+          ...(taste?.memoryBias !== undefined && taste.memoryBias !== 0
+            ? { memoryBias: taste.memoryBias }
+            : {}),
           // WORK STATE block (AP2-B §2.3 B) — present only when an accepted prior
           // turn carried a trusted workTrace (resumed/continuing chat). Truthful or
           // absent; pure derivation from the loaded history, no model call.
@@ -1779,6 +1799,63 @@ export async function runChatLoop(
         return resolved.block;
       };
 
+      // ---- LEARNED-TASTE LEDGER (Phase-7 free layer, judgment doc Part 4) ------
+      // Append-only JSONL of OBSERVED decisions (fork choices, push-back outcomes,
+      // accept-unchanged vs. immediate-edit/rephrase). FLAG-GATED OFF by default
+      // (core/taste-flag.ts): when off, recall returns the EMPTY playbook (no
+      // tasteContext block, memoryBias 0 → byte-identical path) AND recording is
+      // skipped before it ever touches disk. Fully fail-soft: a corrupt/missing
+      // ledger degrades to no-bias, never breaks a turn. No model call, no
+      // embeddings, no metered service — subscription-clean.
+      const tasteOn = tasteEnabled(process.env, mutableCtx.config);
+      const tasteLedger = createFileTasteLedger({ clock: ctx.clock });
+      // The subject of the last surfaced fork/proposal — so an observed answer can
+      // be recorded against the decision it resolved. Set when a question/confirm
+      // is surfaced; consumed when the user answers. Bounded, observed-only.
+      let lastDecisionSubject: string | undefined;
+      // Recall is project-scoped + task-agnostic in the free layer (the playbook is
+      // the user's recurring calls, not task-relevance-filtered); no `task` arg.
+      const resolveTurnTaste = async (): Promise<{
+        tasteContext?: string;
+        memoryBias?: -1 | 0 | 1;
+      }> => {
+        if (!tasteOn) return {}; // flag OFF → zero behavior change
+        try {
+          const projectKey = await resolveProjectKeyOnce();
+          const playbook = await tasteLedger.recall(projectKey);
+          const block = renderTastePlaybook(playbook);
+          return {
+            ...(block.length > 0 ? { tasteContext: block } : {}),
+            ...(playbook.memoryBias !== 0 ? { memoryBias: playbook.memoryBias } : {}),
+          };
+        } catch {
+          return {}; // fail-soft: any recall failure → no bias, turn proceeds
+        }
+      };
+      // Record one OBSERVED taste signal (never inferred). Flag-gated + fail-soft;
+      // the ledger's own normalizeTasteEvent drops anything unvalidatable, so no
+      // fabricated fact can land. subject/choice are bounded at the write boundary.
+      const recordTaste = async (
+        signal: TasteSignal,
+        subject: string,
+        choice: string,
+        detail?: string,
+      ): Promise<void> => {
+        if (!tasteOn) return; // flag OFF → recording inert (file never created)
+        try {
+          const projectKey = await resolveProjectKeyOnce();
+          await tasteLedger.record({
+            signal,
+            subject,
+            choice,
+            ...(detail !== undefined ? { detail } : {}),
+            projectKey,
+          });
+        } catch {
+          // A failed taste write must never break a turn (fail-soft).
+        }
+      };
+
       // ---- ENVIRONMENT / repo-map (E1, codebase-awareness §1.2) ---------------
       // Gather the deterministic orientation block ONCE per chat session — the
       // repo map is stable within a session, so (unlike memory) we do NOT regather
@@ -1815,6 +1892,17 @@ export async function runChatLoop(
 
           questionTurns++;
 
+          // OBSERVED taste signal (Phase-7 free layer): the user just made a real
+          // call on a genuine fork the engine surfaced. Record subject=the decision
+          // (first question's prompt), choice=their actual answer. Flag-gated +
+          // fail-soft; never inferred. Remember the subject so an immediate edit/
+          // rephrase next turn can be attributed to this same decision.
+          const forkSubject = pending.questions.questions[0]?.prompt;
+          if (forkSubject !== undefined && forkSubject.length > 0) {
+            lastDecisionSubject = forkSubject;
+            void recordTaste('fork_choice', forkSubject, answerLine);
+          }
+
           // Reload history (the question turn was persisted by orchestrate) and
           // rebuild deps so the answer turn replays the full thread. Fail-soft: a
           // corrupt store degrades to an empty thread + a dim notice, never crashes.
@@ -1829,6 +1917,7 @@ export async function runChatLoop(
             answerHistory,
             await resolveTurnMemory(answerLine),
             await resolveEnvironmentOnce(),
+            await resolveTurnTaste(),
           );
 
           const answerAc = new AbortController();
@@ -2328,10 +2417,24 @@ export async function runChatLoop(
         return 'continue';
       }
 
+      // OBSERVED immediate-rephrase (Phase-7 free layer): if a fork was just
+      // surfaced and this turn re-states that decision differently, the partner
+      // misread it — a strong miss signal (judgment §4.2). Conservative,
+      // deterministic overlap test (core/taste.ts); flag-gated + fail-soft. We
+      // consume the pending subject once, whatever the outcome, so it never leaks.
+      if (lastDecisionSubject !== undefined) {
+        const priorDecision = lastDecisionSubject;
+        lastDecisionSubject = undefined;
+        if (tasteOn && isImmediateRephrase(priorDecision, line)) {
+          void recordTaste('immediate_rephrase', priorDecision, line);
+        }
+      }
+
       const depsBase = buildDeps(
         priorHistory,
         await resolveTurnMemory(line),
         await resolveEnvironmentOnce(),
+        await resolveTurnTaste(),
       );
       // Image attachments (audit #4, image scope): the IMPURE existence check lives
       // here in the interface layer (fs allowed). The pure extractor finds candidate
