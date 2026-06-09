@@ -6,6 +6,25 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+## [3.51.0] - 2026-06-09
+
+### Fixed
+- **Claude replies now stream live, word-by-word** — the biggest "I can't see it
+  happening" gap. The Claude provider was spawned without `--include-partial-messages`
+  and the parser only handled complete `assistant` messages, so a whole reply landed
+  as one block at the end (after a silent "Thinking…"). Now the CLI streams raw API
+  token deltas (`stream_event`/`content_block_delta`/`text_delta`) and the parser
+  emits one `text` event per delta — prose paints as the model writes it.
+  - De-doubled cleanly: visible prose is built entirely from `text` deltas, so the
+    redundant per-block `assistant` text event is no longer emitted (the `assistant`
+    event still owns `tool_use` → tool events). Thinking/signature deltas are not
+    surfaced as prose. Stateless, fixture-verified (`claude-parse` contract suite).
+- **Claude tool actions now show a target** — a `tool_use` block's `input` yields a
+  live-action `detail` (`file_path`/`path`/`command`/`pattern`), so the status line
+  reads "editing src/auth/mw.ts" / "running …" instead of a bare verb. Claude now
+  matches codex/opencode, which already supplied a target. Fail-soft: omitted when no
+  recognizable field is present.
+
 ### Pending
 - Cross-OS CI execution (requires a public remote).
 - Installer: PowerShell-Core profile support + PowerShell interactive guard; don't

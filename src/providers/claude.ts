@@ -1,9 +1,12 @@
 /**
  * src/providers/claude.ts — Claude CLI adapter implementing the Provider port.
  *
- * Spawns `claude -p --output-format stream-json --verbose` via execa v9,
- * delivers the prompt via STDIN (never as an argv argument), and streams
- * parsed ProviderEvents to the caller as they arrive.
+ * Spawns `claude -p --output-format stream-json --verbose
+ * --include-partial-messages` via execa v9, delivers the prompt via STDIN
+ * (never as an argv argument), and streams parsed ProviderEvents to the caller
+ * as they arrive. `--include-partial-messages` makes the CLI emit raw API SSE
+ * token deltas (wrapped in `stream_event`) so prose streams live word-by-word
+ * instead of arriving all-at-once in the terminal `result`.
  *
  * Sandbox enforcement:
  *  The `req.sandbox` privilege level is mapped to real Claude CLI flags (see
@@ -129,6 +132,10 @@ export function buildClaudeArgs(req: ProviderRequest): string[] {
     '--output-format',
     'stream-json',
     '--verbose',
+    // Emit raw API SSE token deltas (wrapped in `stream_event`) so prose streams
+    // live word-by-word in the TUI instead of arriving all-at-once in the
+    // terminal `result`. Requires --output-format=stream-json (we pass it above).
+    '--include-partial-messages',
     '--model',
     toClaudeModelArg(req.model),
     // Runaway safety rail: a generous global spend ceiling so the model

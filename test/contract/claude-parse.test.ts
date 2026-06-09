@@ -170,3 +170,128 @@ describe('parseClaudeLine — edge cases', () => {
     assert.equal(toolEv.phase, 'start');
   });
 });
+
+// ---------------------------------------------------------------------------
+// Partial-message streaming (stream_event deltas) — the live-token contract
+// ---------------------------------------------------------------------------
+
+describe('parseClaudeLine — stream_event partial messages', () => {
+  it('(a) a content_block_delta text_delta line → one text event with the delta', () => {
+    const line = JSON.stringify({
+      type: 'stream_event',
+      event: { type: 'content_block_delta', index: 1, delta: { type: 'text_delta', text: 'hello ' } },
+    });
+    const events = parseClaudeLine(line);
+    assert.equal(events.length, 1);
+    assert.equal(events[0]!.type, 'text');
+    const te = events[0] as Extract<ProviderEvent, { type: 'text' }>;
+    assert.equal(te.delta, 'hello ');
+  });
+
+  it('(b) thinking/signature/structural stream_event subtypes → [] (no prose leak)', () => {
+    const cases: unknown[] = [
+      { type: 'stream_event', event: { type: 'content_block_delta', index: 0, delta: { type: 'thinking_delta', thinking: 'secret reasoning' } } },
+      { type: 'stream_event', event: { type: 'content_block_delta', index: 0, delta: { type: 'signature_delta', signature: 'AAA=' } } },
+      { type: 'stream_event', event: { type: 'content_block_delta', index: 1, delta: { type: 'input_json_delta', partial_json: '{"a":' } } },
+      { type: 'stream_event', event: { type: 'message_start', message: { content: [] } } },
+      { type: 'stream_event', event: { type: 'content_block_start', index: 1, content_block: { type: 'text', text: '' } } },
+      { type: 'stream_event', event: { type: 'content_block_stop', index: 1 } },
+      { type: 'stream_event', event: { type: 'message_delta', delta: { stop_reason: 'end_turn' }, usage: { output_tokens: 44 } } },
+      { type: 'stream_event', event: { type: 'message_stop' } },
+    ];
+    for (const c of cases) {
+      assert.deepEqual(parseClaudeLine(JSON.stringify(c)), [], `expected [] for ${JSON.stringify(c)}`);
+    }
+  });
+
+  it('(b2) returns [] for malformed stream_event shapes (defensive, never throws)', () => {
+    assert.deepEqual(parseClaudeLine(JSON.stringify({ type: 'stream_event' })), []);
+    assert.deepEqual(parseClaudeLine(JSON.stringify({ type: 'stream_event', event: null })), []);
+    assert.deepEqual(parseClaudeLine(JSON.stringify({ type: 'stream_event', event: { type: 'content_block_delta' } })), []);
+    assert.deepEqual(
+      parseClaudeLine(JSON.stringify({ type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta' } } })),
+      [],
+    );
+  });
+
+  it('(c) an assistant event with a text block → NO text event (dedup regression guard)', () => {
+    const line = JSON.stringify({
+      type: 'assistant',
+      message: { content: [{ type: 'text', text: 'pong' }], usage: { input_tokens: 1, output_tokens: 1 } },
+    });
+    const events = parseClaudeLine(line);
+    const textEvents = events.filter((e) => e.type === 'text');
+    assert.equal(textEvents.length, 0, 'assistant text block must NOT emit a text event (deltas own prose)');
+    assert.equal(events.length, 0, 'a text-only assistant event yields no events at all');
+  });
+
+  it('(d) assistant tool_use with input.file_path → one tool event with the derived detail', () => {
+    const line = JSON.stringify({
+      type: 'assistant',
+      message: { content: [{ type: 'tool_use', name: 'Edit', input: { file_path: 'src/auth/mw.ts' } }] },
+    });
+    const events = parseClaudeLine(line);
+    assert.equal(events.length, 1);
+    const toolEv = events[0] as Extract<ProviderEvent, { type: 'tool' }>;
+    assert.equal(toolEv.type, 'tool');
+    assert.equal(toolEv.name, 'Edit');
+    assert.equal(toolEv.phase, 'start');
+    assert.equal(toolEv.detail, 'src/auth/mw.ts');
+  });
+
+  it('(d2) detail falls back path → command → pattern in order', () => {
+    const pathEv = parseClaudeLine(JSON.stringify({
+      type: 'assistant', message: { content: [{ type: 'tool_use', name: 'X', input: { path: '/a/b' } }] },
+    }))[0] as Extract<ProviderEvent, { type: 'tool' }>;
+    assert.equal(pathEv.detail, '/a/b');
+
+    const cmdEv = parseClaudeLine(JSON.stringify({
+      type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Bash', input: { command: 'ls -la' } }] },
+    }))[0] as Extract<ProviderEvent, { type: 'tool' }>;
+    assert.equal(cmdEv.detail, 'ls -la');
+
+    const patEv = parseClaudeLine(JSON.stringify({
+      type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Grep', input: { pattern: 'TODO' } }] },
+    }))[0] as Extract<ProviderEvent, { type: 'tool' }>;
+    assert.equal(patEv.detail, 'TODO');
+  });
+
+  it('(e) tool_use with no recognizable input field → tool event with detail omitted', () => {
+    const line = JSON.stringify({
+      type: 'assistant',
+      message: { content: [{ type: 'tool_use', name: 'Bash', input: { foo: 'bar' } }] },
+    });
+    const events = parseClaudeLine(line);
+    assert.equal(events.length, 1);
+    const toolEv = events[0] as Extract<ProviderEvent, { type: 'tool' }>;
+    assert.equal(toolEv.type, 'tool');
+    assert.equal(toolEv.name, 'Bash');
+    assert.ok(!('detail' in toolEv), 'detail must be omitted when no recognizable input field');
+  });
+
+  it('(f) end-to-end capture-shaped lines → exactly one text "hello there friend", no thinking', () => {
+    const lines = [
+      { type: 'stream_event', event: { type: 'message_start', message: { content: [] } } },
+      { type: 'stream_event', event: { type: 'content_block_start', index: 0, content_block: { type: 'thinking', thinking: '', signature: '' } } },
+      { type: 'stream_event', event: { type: 'content_block_delta', index: 0, delta: { type: 'thinking_delta', thinking: 'The user is asking me to reply.' } } },
+      { type: 'stream_event', event: { type: 'content_block_delta', index: 0, delta: { type: 'signature_delta', signature: 'AAA=' } } },
+      { type: 'assistant', message: { content: [{ type: 'thinking', thinking: 'The user is asking me to reply.', signature: 'AAA=' }] } },
+      { type: 'stream_event', event: { type: 'content_block_stop', index: 0 } },
+      { type: 'stream_event', event: { type: 'content_block_start', index: 1, content_block: { type: 'text', text: '' } } },
+      { type: 'stream_event', event: { type: 'content_block_delta', index: 1, delta: { type: 'text_delta', text: 'hello ' } } },
+      { type: 'stream_event', event: { type: 'content_block_delta', index: 1, delta: { type: 'text_delta', text: 'there friend' } } },
+      { type: 'assistant', message: { content: [{ type: 'text', text: 'hello there friend' }] } },
+      { type: 'stream_event', event: { type: 'content_block_stop', index: 1 } },
+      { type: 'stream_event', event: { type: 'message_delta', delta: { stop_reason: 'end_turn' }, usage: { output_tokens: 44 } } },
+      { type: 'stream_event', event: { type: 'message_stop' } },
+    ];
+    const events = lines.flatMap((l) => parseClaudeLine(JSON.stringify(l)));
+    const textEvents = events.filter(
+      (e): e is Extract<ProviderEvent, { type: 'text' }> => e.type === 'text',
+    );
+    assert.equal(textEvents.length, 2, 'one text event per text_delta, none from the assistant block');
+    const prose = textEvents.map((e) => e.delta).join('');
+    assert.equal(prose, 'hello there friend');
+    assert.ok(!prose.includes('asking me to reply'), 'thinking must not leak into prose');
+  });
+});

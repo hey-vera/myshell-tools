@@ -27,9 +27,17 @@ describe('buildClaudeArgs', () => {
     // (the CLI has no --max-turns), so it is part of the default arg set. The
     // default sandbox is workspace-write → --permission-mode acceptEdits (appended
     // last), without which headless writes would deadlock on permission prompts.
-    assert.deepEqual(args, ['-p', '--output-format', 'stream-json', '--verbose', '--model', 'sonnet', '--max-budget-usd', '25', '--permission-mode', 'acceptEdits']);
+    assert.deepEqual(args, ['-p', '--output-format', 'stream-json', '--verbose', '--include-partial-messages', '--model', 'sonnet', '--max-budget-usd', '25', '--permission-mode', 'acceptEdits']);
     assert.ok(!args.includes('--session-id'), 'no --session-id when sessionId is unset');
     assert.ok(!args.includes('--resume'), 'no --resume when sessionId is unset');
+  });
+
+  it('always passes --include-partial-messages right after --verbose (live token streaming)', () => {
+    const args = buildClaudeArgs(makeReq());
+    const i = args.indexOf('--include-partial-messages');
+    assert.ok(i >= 0, 'must include --include-partial-messages on every run');
+    assert.strictEqual(args[i - 1], '--verbose', '--include-partial-messages sits right after --verbose');
+    assert.ok(i < args.indexOf('--model'), 'partial-messages flag precedes --model');
   });
 
   it('NEVER adds the codex web_search override even when webSearch is set (Codex-only feature)', () => {
