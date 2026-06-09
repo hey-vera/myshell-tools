@@ -15,6 +15,11 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   resumed goal's contract from the persisted `workTrace` (niche: the in-run contract
   is already kept in memory; only cross-session resume benefits). Optional.
 
+## [3.36.0]
+
+### Internal — plan decomposition + dependency-aware scheduling (default-off flag)
+- The engine that turns a confirmed plan into several goals running concurrently: decomposes only when parts are genuinely independent (a single/sequential plan stays ONE goal, so concurrency never wastes quota), runs independent goals in parallel while dependents queue, blocks dependents of a failed prerequisite, and re-validates each goal through the brain. Behind the default-off experimental flag — no behavior change until you turn it on. Groundwork for the visible multi-goal experience.
+
 ## [3.35.0]
 
 ### Changed — big-picture moments now use your strongest model (the "Oracle")

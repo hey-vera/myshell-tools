@@ -73,6 +73,19 @@ export interface GoalSpec {
    * throttled provider. Absent → no preference (scheduled on availability order).
    */
   readonly preferredProvider?: ProviderId;
+  /**
+   * The ids of the goals this goal DEPENDS ON. A goal is RUNNABLE only once every
+   * goal in `dependsOn` has finished SUCCESSFULLY; until then it stays queued (it
+   * is never one of the `activeLimit` started up front). If ANY dependency FAILS
+   * (a non-rate-limit failure or a crash), this goal is BLOCKED — it never runs,
+   * and the scheduler emits an honest skipped `final` for it (don't run a goal
+   * whose prerequisite failed). Absent/empty → no dependencies (a root goal that
+   * can start immediately). The DAG is validated by {@link decompose} before it
+   * reaches here (cycles rejected, unknown deps dropped); the scheduler is also
+   * defensive (an unknown dep id is treated as a never-satisfied edge that the
+   * decompose-side validation should already have removed).
+   */
+  readonly dependsOn?: readonly string[];
 }
 
 /** Input to the PURE {@link planSchedule}. */
@@ -345,6 +358,32 @@ export async function* runSchedule(
   let totalRuns = 0;
   let ceilingHit = false;
 
+  // ---- DEPENDENCY-DAG bookkeeping ---------------------------------------
+  // A goal is RUNNABLE only when every id in its `dependsOn` has finished
+  // SUCCESSFULLY. If any dependency FAILS, the goal is BLOCKED (never run). We
+  // track each goal's terminal outcome here; `depsSatisfied`/`depFailed` read it.
+  //
+  // HONESTY: a failed prerequisite must NOT silently drop its dependents — we
+  // emit an explicit skipped `final` for each blocked goal so the user sees that
+  // it did not run and WHY. The block CASCADES transitively (a dependent of a
+  // blocked goal is itself blocked).
+  type Outcome = 'ok' | 'failed';
+  const goalOutcome = new Map<string, Outcome>();
+  const blocked = new Set<string>();
+  // The set of valid goal ids — an unknown dep edge is treated as never-satisfied
+  // (decompose-side validation should already have dropped it; we are defensive).
+  const knownIds = new Set<string>(goalSpecs.map((s) => s.id));
+  // Map a spec's dependsOn to the known subset (ignore self/unknown ids defensively).
+  const depsOf = (spec: GoalSpec): readonly string[] =>
+    (spec.dependsOn ?? []).filter((d) => d !== spec.id && knownIds.has(d));
+
+  // True when EVERY dependency of `spec` has finished successfully.
+  const depsSatisfied = (spec: GoalSpec): boolean =>
+    depsOf(spec).every((d) => goalOutcome.get(d) === 'ok');
+  // True when AT LEAST ONE dependency of `spec` has FAILED (→ this goal is blocked).
+  const depFailed = (spec: GoalSpec): boolean =>
+    depsOf(spec).some((d) => goalOutcome.get(d) === 'failed' || blocked.has(d));
+
   // Parent/child cancellation fan-out (hedge.ts:556 pattern): the caller's signal
   // aborting cancels EVERY active child; queued goals then never start.
   const onAbort = (): void => {
@@ -407,15 +446,20 @@ export async function* runSchedule(
   const takeNextReady = (nowMs: number): GoalSpec | undefined => {
     const available = availableAfterCooldown(deps.authedProviders, cooldownUntil, nowMs);
     const availableSet = new Set<ProviderId>(available);
+    // A queued goal is RUNNABLE only when its backoff window has elapsed AND all of
+    // its dependencies have finished successfully (DAG gate). A goal whose deps have
+    // FAILED is already removed from the queue (cascaded to blocked); we re-check
+    // depsSatisfied here defensively so a not-yet-ready dependency never starts.
+    const ready = (q: QueuedGoal): boolean => q.readyAt <= nowMs && depsSatisfied(q.spec);
     // First pass: a ready goal whose preferred provider is NOT cooling down.
     let idx = queue.findIndex(
       (q) =>
-        q.readyAt <= nowMs &&
+        ready(q) &&
         (q.spec.preferredProvider === undefined || availableSet.has(q.spec.preferredProvider)),
     );
     // Second pass: any ready goal (don't strand work just because every provider
     // is cooling — availableAfterCooldown already never strands).
-    if (idx === -1) idx = queue.findIndex((q) => q.readyAt <= nowMs);
+    if (idx === -1) idx = queue.findIndex((q) => ready(q));
     if (idx === -1) return undefined;
     const [picked] = queue.splice(idx, 1);
     return picked?.spec;
@@ -459,6 +503,56 @@ export async function* runSchedule(
       requeueCount: nextCount,
       readyAt: nowMs + requeueBackoffMs(priorRequeues),
     });
+  };
+
+  // Record a goal's TERMINAL outcome (ok / failed) and CASCADE the DAG: any queued
+  // goal that now has a failed-or-blocked dependency is BLOCKED — removed from the
+  // queue and reported with an honest skipped `final` so it never runs and the user
+  // sees WHY. The block propagates transitively (a dependent of a blocked goal is
+  // itself blocked). PURE bookkeeping + queue mutation; returns the skipped finals
+  // to yield (this helper cannot itself yield — it is called from the generator).
+  const recordOutcome = (id: string, kind: Outcome): CoreEvent[] => {
+    goalOutcome.set(id, kind);
+    const events: CoreEvent[] = [];
+    // Fixpoint: keep blocking dependents until no queued goal newly qualifies.
+    let changed = true;
+    while (changed) {
+      changed = false;
+      for (let i = queue.length - 1; i >= 0; i--) {
+        const q = queue[i];
+        if (q === undefined) continue;
+        if (depFailed(q.spec)) {
+          // This queued goal has a failed/blocked prerequisite → block it.
+          queue.splice(i, 1);
+          blocked.add(q.spec.id);
+          changed = true;
+          // Advance its phase counter to its (planned) total so the card reads
+          // done-not-run rather than stuck mid-phase.
+          phaseCurrent.set(q.spec.id, phaseTotal.get(q.spec.id) ?? 1);
+          events.push(
+            tagEvent(
+              {
+                type: 'final',
+                success: false,
+                output: `goal "${q.spec.title}" skipped — a prerequisite goal failed`,
+                tier: 'ic',
+                totalCostUsd: 0,
+                sessionId: '',
+                attempts: 0,
+              },
+              q.spec.id,
+            ),
+          );
+          events.push({
+            type: 'goal-phase',
+            goalId: q.spec.id,
+            current: phaseCurrent.get(q.spec.id) ?? 1,
+            total: phaseTotal.get(q.spec.id) ?? 1,
+          });
+        }
+      }
+    }
+    return events;
   };
 
   // Initial fill.
@@ -587,6 +681,9 @@ export async function* runSchedule(
             total: phaseTotal.get(id) ?? 1,
           };
         }
+        // A crash is a TERMINAL failure → record it and CASCADE: block + skip any
+        // dependents (don't run a goal whose prerequisite failed).
+        for (const blockedEv of recordOutcome(id, 'failed')) yield blockedEv;
         if (!signal.aborted) {
           fillSlots();
           for (const [wid, w] of workers) if (!pending.has(wid)) pending.set(wid, step(wid, w.gen));
@@ -598,9 +695,13 @@ export async function* runSchedule(
 
       if (result.done) {
         // Generator returned without a `final` (defensive: orchestrate always emits
-        // one, but a fake/edge generator may not). Retire the goal.
+        // one, but a fake/edge generator may not). Retire the goal. With NO success
+        // evidence we treat it as a failed prerequisite (HONESTY: never run a
+        // dependent off a goal that produced no verified completion) — record +
+        // cascade-block any dependents.
         pending.delete(id);
         workers.delete(id);
+        for (const blockedEv of recordOutcome(id, 'failed')) yield blockedEv;
         if (!signal.aborted) {
           fillSlots();
           for (const [wid, w] of workers) if (!pending.has(wid)) pending.set(wid, step(wid, w.gen));
@@ -642,6 +743,12 @@ export async function* runSchedule(
             current: phaseCurrent.get(worker.spec.id) ?? 1,
             total: phaseTotal.get(worker.spec.id) ?? 1,
           };
+          // TERMINAL outcome for the DAG: a SUCCESSFUL final UNLOCKS dependents; a
+          // non-rate-limit FAILURE BLOCKS them (skip + honest final). Recorded
+          // BEFORE fillSlots so a freed dependent only starts once its deps are ok.
+          for (const blockedEv of recordOutcome(worker.spec.id, ev.success ? 'ok' : 'failed')) {
+            yield blockedEv;
+          }
         }
 
         if (!signal.aborted) {

@@ -138,6 +138,7 @@ import {
 import { inkEnabled } from './ui/flag.js';
 import { schedulerEnabled } from './ui/scheduler-flag.js';
 import { runSchedule, type GoalSpec, type RunGoalPhase } from '../core/scheduler.js';
+import { decompose } from '../core/decompose.js';
 import { orchestrate } from '../core/orchestrate.js';
 import {
   type Confirm,
@@ -1904,12 +1905,58 @@ export async function runChatLoop(
           if (mutableCtx.env.codex.authenticated) authedProviders.push('codex');
           if (mutableCtx.env.opencode.authenticated) authedProviders.push('opencode');
 
-          // Decompose-to-1: the single brain-validated goal the user confirmed.
-          const goalSpecs: GoalSpec[] = [{ id: 'g0', title: goalText }];
+          const schedAc = new AbortController();
+          currentAc = schedAc;
+
+          // ---- PLAN DECOMPOSITION ------------------------------------------
+          // Turn the CONFIRMED plan into N brain-validated GoalSpecs + a dependency
+          // DAG via ONE model call at the strongest admissible tier (decompose()
+          // reuses route()/the provider machinery; subscription-clean, fail-soft).
+          // COST HONESTY: decompose() returns ONE goal for a genuinely
+          // sequential/single plan — it never forces fan-out — so a non-splittable
+          // confirmed plan runs exactly like today's single-goal path, just routed
+          // through the scheduler's merge/cancel machinery.
+          const decomposeBaseDeps = buildDeps([]);
+          let goalSpecs: GoalSpec[];
+          try {
+            goalSpecs = await decompose(
+              goalText,
+              {
+                ...(decomposeBaseDeps.environmentContext !== undefined &&
+                decomposeBaseDeps.environmentContext.length > 0
+                  ? { repoMap: decomposeBaseDeps.environmentContext }
+                  : {}),
+              },
+              {
+                providers: decomposeBaseDeps.providers,
+                policy: decomposeBaseDeps.policy,
+                cwd: decomposeBaseDeps.cwd,
+                timeoutMs: decomposeBaseDeps.timeoutMs,
+                ...(decomposeBaseDeps.availableModels !== undefined
+                  ? { availableModels: decomposeBaseDeps.availableModels }
+                  : {}),
+                ...(decomposeBaseDeps.authenticatedProviders !== undefined
+                  ? { authenticatedProviders: decomposeBaseDeps.authenticatedProviders }
+                  : {}),
+              },
+              schedAc.signal,
+            );
+          } catch {
+            // decompose() is fail-soft, but never let a decomposition hiccup abort
+            // the goal run — degrade to the single-goal whole-plan spec.
+            goalSpecs = [{ id: 'g0', title: goalText }];
+          }
 
           // Per-goal phase runner: ONE orchestrate() per phase (orchestrate stays
           // the per-phase engine, untouched). Reloads history per phase like the
           // sequential loop so the model sees its own progress.
+          //
+          // HARD CONSTRAINT (owner): each goal is run THROUGH THE BRAIN — every
+          // spec is handed to orchestrate (goalTurn:true), which re-runs intent/
+          // brain validation on the spec title before acting. So a goal carved out
+          // of a plan (or, later, promoted from a parked roadmap) is re-validated
+          // here at run time; the scheduler never executes a raw stored roadmap.
+          // Each goal gets its OWN per-goal contract seeded from its own title.
           const runGoal: RunGoalPhase = (spec, sig) => {
             const phaseDeps = (async (): Promise<OrchestrateDeps> => {
               let hist: SessionEntry[] = [];
@@ -1925,20 +1972,21 @@ export async function runChatLoop(
               );
             })();
             // Wrap the async-deps resolution into the generator (orchestrate needs
-            // resolved deps); keep the per-phase task contracted like the loop.
+            // resolved deps); keep the per-phase task contracted like the loop. The
+            // per-goal contract is seeded from THIS goal's title (not the whole
+            // plan), so the brain validates + works each goal on its own terms.
+            const goalSpecContract = capContract({ version: 1, objective: spec.title });
             return (async function* (): AsyncGenerator<CoreEvent> {
               const d = await phaseDeps;
-              const task = buildGoalTask(spec.title, 0, goalContract);
+              const task = buildGoalTask(spec.title, 0, goalSpecContract);
               yield* orchestrate(
                 task,
-                { ...d, workContract: goalContract, goalTurn: true },
+                { ...d, workContract: goalSpecContract, goalTurn: true },
                 sig,
               );
             })();
           };
 
-          const schedAc = new AbortController();
-          currentAc = schedAc;
           out.write(
             dim('\n  Working autonomously (concurrent scheduler). Ctrl+C / Esc to stop.\n\n', out.color),
           );

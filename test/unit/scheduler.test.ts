@@ -982,3 +982,222 @@ describe('runSchedule — goalId tagging is correct under genuine race interleav
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// runSchedule — DEPENDENCY-DAG scheduling
+// ---------------------------------------------------------------------------
+
+/** GoalSpecs with explicit dependsOn edges. */
+function dep(id: string, title: string, dependsOn: string[] = []): GoalSpec {
+  return dependsOn.length > 0 ? { id, title, dependsOn } : { id, title };
+}
+
+describe('runSchedule — DAG: a dependent goal QUEUES until its dependency finishes', () => {
+  it('a depends on nothing; b depends on a → b starts only AFTER a finishes', async () => {
+    const time = makeFakeTime();
+    const order: string[] = [];
+    let releaseA!: () => void;
+    const holdA = new Promise<void>((r) => (releaseA = r));
+    const runGoal = makeRunGoal({
+      a: { hold: holdA, onStart: () => order.push('a-start') },
+      b: { onStart: () => order.push('b-start') },
+    });
+    const deps: ScheduleDeps = {
+      runGoal,
+      authedProviders: ['claude', 'codex'], // ceiling 2 — but b must STILL wait on a
+      now: time.now,
+      sleep: time.sleep,
+    };
+    const gen = runSchedule([dep('a', 'goal a'), dep('b', 'goal b', ['a'])], deps, new AbortController().signal);
+
+    const collected: CoreEvent[] = [];
+    const next = async (): Promise<CoreEvent | undefined> => {
+      const r = await gen.next();
+      if (r.done) return undefined;
+      collected.push(r.value);
+      return r.value;
+    };
+
+    // Pull until a has started. Even with a free slot, b must NOT start (dep gate).
+    let aStarted = false;
+    while (!aStarted) {
+      const ev = await next();
+      assert.ok(ev !== undefined, 'stream ended before a started');
+      if (ev.type === 'tier-start' && ev.goalId === 'a') aStarted = true;
+    }
+    assert.equal(order.includes('b-start'), false, 'b started before its dependency a finished');
+
+    // Release a → it finishes → b becomes runnable and starts.
+    releaseA();
+    for (;;) {
+      const ev = await next();
+      if (ev === undefined) break;
+    }
+
+    // b ran strictly after a finished.
+    assert.ok(order.includes('a-start'));
+    assert.ok(order.includes('b-start'), 'b never ran after its dependency completed');
+    const finals = collected.filter((e): e is Extract<CoreEvent, { type: 'final' }> => e.type === 'final');
+    assert.deepEqual(finals.map((f) => f.goalId).sort(), ['a', 'b']);
+    assert.ok(finals.every((f) => f.success === true));
+  });
+});
+
+describe('runSchedule — DAG: independent goals run CONCURRENTLY; dependents queue', () => {
+  it('a, b independent (run together); c depends on both (runs last)', async () => {
+    const time = makeFakeTime();
+    const started: string[] = [];
+    let releaseA!: () => void;
+    let releaseB!: () => void;
+    const holdA = new Promise<void>((r) => (releaseA = r));
+    const holdB = new Promise<void>((r) => (releaseB = r));
+    const runGoal = makeRunGoal({
+      a: { hold: holdA, onStart: () => started.push('a') },
+      b: { hold: holdB, onStart: () => started.push('b') },
+      c: { onStart: () => started.push('c') },
+    });
+    const deps: ScheduleDeps = {
+      runGoal,
+      authedProviders: ['claude', 'codex'], // ceiling 2 → a and b run concurrently
+      now: time.now,
+      sleep: time.sleep,
+    };
+    const gen = runSchedule(
+      [dep('a', 'goal a'), dep('b', 'goal b'), dep('c', 'goal c', ['a', 'b'])],
+      deps,
+      new AbortController().signal,
+    );
+    const collected: CoreEvent[] = [];
+    const next = async (): Promise<CoreEvent | undefined> => {
+      const r = await gen.next();
+      if (r.done) return undefined;
+      collected.push(r.value);
+      return r.value;
+    };
+
+    const seenStart = new Set<string>();
+    while (seenStart.size < 2) {
+      const ev = await next();
+      assert.ok(ev !== undefined, 'stream ended before both independent goals started');
+      if (ev.type === 'tier-start' && ev.goalId !== undefined) seenStart.add(ev.goalId);
+    }
+    // a and b run concurrently; c has NOT started (both deps still open).
+    assert.deepEqual([...seenStart].sort(), ['a', 'b']);
+    assert.equal(started.includes('c'), false, 'c started before both prerequisites finished');
+
+    releaseA();
+    releaseB();
+    for (;;) {
+      const ev = await next();
+      if (ev === undefined) break;
+    }
+    assert.ok(started.includes('c'), 'c never ran after both prerequisites completed');
+    const finals = collected.filter((e): e is Extract<CoreEvent, { type: 'final' }> => e.type === 'final');
+    assert.deepEqual(finals.map((f) => f.goalId).sort(), ['a', 'b', 'c']);
+    assert.ok(finals.every((f) => f.success === true));
+  });
+});
+
+describe('runSchedule — DAG: a FAILED dependency BLOCKS its dependents (skip, never run)', () => {
+  it('a fails → b (depends on a) is skipped with an honest final and never starts', async () => {
+    const time = makeFakeTime();
+    const started: string[] = [];
+    const runGoal = makeRunGoal({
+      a: { success: false, onStart: () => started.push('a') }, // fails (non-rate-limit)
+      b: { onStart: () => started.push('b') },
+    });
+    const deps: ScheduleDeps = {
+      runGoal,
+      authedProviders: ['claude', 'codex'],
+      now: time.now,
+      sleep: time.sleep,
+    };
+    const events = await drain(
+      runSchedule([dep('a', 'goal a'), dep('b', 'goal b', ['a'])], deps, new AbortController().signal),
+    );
+
+    // b NEVER started (its prerequisite failed).
+    assert.equal(started.includes('b'), false, 'b ran despite its dependency failing');
+    assert.ok(started.includes('a'));
+
+    const finals = events.filter((e): e is Extract<CoreEvent, { type: 'final' }> => e.type === 'final');
+    const aFinal = finals.find((f) => f.goalId === 'a');
+    const bFinal = finals.find((f) => f.goalId === 'b');
+    assert.ok(aFinal !== undefined && aFinal.success === false, 'a should report a failed final');
+    assert.ok(bFinal !== undefined && bFinal.success === false, 'b should report a skipped final');
+    assert.match(bFinal.output, /prerequisite/i, 'b final should explain the prerequisite failure');
+  });
+
+  it('cascades transitively: a fails → b blocked → c (depends on b) also blocked', async () => {
+    const time = makeFakeTime();
+    const started: string[] = [];
+    const runGoal = makeRunGoal({
+      a: { success: false, onStart: () => started.push('a') },
+      b: { onStart: () => started.push('b') },
+      c: { onStart: () => started.push('c') },
+    });
+    const deps: ScheduleDeps = {
+      runGoal,
+      authedProviders: ['claude'],
+      now: time.now,
+      sleep: time.sleep,
+    };
+    const events = await drain(
+      runSchedule(
+        [dep('a', 'goal a'), dep('b', 'goal b', ['a']), dep('c', 'goal c', ['b'])],
+        deps,
+        new AbortController().signal,
+      ),
+    );
+    assert.deepEqual(started, ['a'], 'only a ran; b and c were blocked transitively');
+    const finals = events.filter((e): e is Extract<CoreEvent, { type: 'final' }> => e.type === 'final');
+    assert.deepEqual(finals.map((f) => f.goalId).sort(), ['a', 'b', 'c']);
+    assert.ok(finals.every((f) => f.success === false));
+  });
+});
+
+describe('runSchedule — DAG: a crashed dependency BLOCKS its dependents', () => {
+  it('a throws → b (depends on a) is skipped, never started', async () => {
+    const time = makeFakeTime();
+    const started: string[] = [];
+    const runGoal: ScheduleDeps['runGoal'] = async function* (spec) {
+      started.push(spec.id);
+      if (spec.id === 'a') throw new Error('boom');
+      yield { type: 'final', success: true, output: 'ok', tier: 'ic', totalCostUsd: 0, sessionId: 's', attempts: 1 };
+    };
+    const deps: ScheduleDeps = {
+      runGoal,
+      authedProviders: ['claude'],
+      now: time.now,
+      sleep: time.sleep,
+    };
+    const events = await drain(
+      runSchedule([dep('a', 'goal a'), dep('b', 'goal b', ['a'])], deps, new AbortController().signal),
+    );
+    assert.equal(started.includes('b'), false, 'b ran despite a crashing');
+    const finals = events.filter((e): e is Extract<CoreEvent, { type: 'final' }> => e.type === 'final');
+    assert.ok(finals.every((f) => f.success === false));
+    assert.deepEqual(finals.map((f) => f.goalId).sort(), ['a', 'b']);
+  });
+});
+
+describe('runSchedule — DAG: an unknown dependency edge is treated defensively', () => {
+  it('a goal whose dep id does not exist still runs (unknown deps are no-ops)', async () => {
+    const time = makeFakeTime();
+    const runGoal = makeRunGoal({ a: {} });
+    const deps: ScheduleDeps = {
+      runGoal,
+      authedProviders: ['claude'],
+      now: time.now,
+      sleep: time.sleep,
+    };
+    // 'a' depends on 'ghost' which is not in the spec list — defensively ignored.
+    const events = await drain(
+      runSchedule([dep('a', 'goal a', ['ghost'])], deps, new AbortController().signal),
+    );
+    const finals = events.filter((e): e is Extract<CoreEvent, { type: 'final' }> => e.type === 'final');
+    assert.equal(finals.length, 1);
+    assert.equal(finals[0]?.goalId, 'a');
+    assert.equal(finals[0]?.success, true);
+  });
+});
