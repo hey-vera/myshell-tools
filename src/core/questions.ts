@@ -176,6 +176,62 @@ export function isKeepGoingOffer(qs: QuestionSet): boolean {
 // ---------------------------------------------------------------------------
 
 /**
+ * Serialize a {@link QuestionSet} into clean, human-readable plain text — the
+ * SAME shape the interactive selector prints to the screen
+ * ({@link import('../interface/menu-question-flow.js').runQuestionSelector}):
+ * each question's prompt on its own line followed by its numbered options
+ * (`  [N] label — description`).
+ *
+ * This is the canonical "what the assistant ASKED" text persisted as the
+ * assistant turn's content for a terminal/clarifying ask, so that
+ *   (a) the resume transcript renders the actual question (not an empty body
+ *       filtered out by renderResumeTranscript), and
+ *   (b) the next turn's compactHistory carries a meaningful `Assistant:` line
+ *       telling the model what it asked, against which the user's reply lands.
+ *
+ * Deliberately contains NO `ask_user` envelope JSON and NO control markup, so it
+ * never trips the envelope strippers and never leaks raw JSON into history.
+ *
+ * Pure / never throws. Returns '' for an empty/malformed set.
+ *
+ * @param qs - The question set the assistant is asking.
+ */
+export function serializeQuestionSet(qs: QuestionSet): string {
+  try {
+    if (qs === null || typeof qs !== 'object' || !Array.isArray(qs.questions)) {
+      return '';
+    }
+    const blocks: string[] = [];
+    for (const q of qs.questions) {
+      if (q === null || typeof q !== 'object') continue;
+      const prompt = typeof q.prompt === 'string' ? q.prompt.trim() : '';
+      if (prompt.length === 0) continue;
+      const lines: string[] = [prompt];
+      const options = Array.isArray(q.options) ? q.options : [];
+      for (let i = 0; i < options.length; i++) {
+        const opt = options[i];
+        if (opt === undefined || opt === null) continue;
+        const label = typeof opt.label === 'string' ? opt.label : '';
+        const desc =
+          typeof opt.description === 'string' && opt.description.trim().length > 0
+            ? ` — ${opt.description.trim()}`
+            : '';
+        lines.push(`  [${i + 1}] ${label}${desc}`);
+      }
+      if (q.allowFreeText === true) {
+        lines.push(`  [${options.length + 1}] type your own`);
+      }
+      blocks.push(lines.join('\n'));
+    }
+    // Questions in one set are separated by a blank line, mirroring the
+    // per-question spacing the on-screen selector emits.
+    return blocks.join('\n\n');
+  } catch {
+    return '';
+  }
+}
+
+/**
  * Build the deterministic next-turn text fed back into the conversation after
  * the user answers a {@link QuestionSet}.
  *

@@ -860,17 +860,27 @@ export async function renderStream(
       case 'final': {
         finalEvent = ev;
         stopSpinner();
-        // Flush any held-back prose (envelope already stripped) before the
-        // completion/error line so the conversation reads in order.
-        prose.flush();
 
         if (ev.canceled === true) {
+          // CANCEL: a canceled answer is incomplete (the user hit ESC) and is
+          // neither persisted (work-call.ts does not appendAcceptedAssistant on
+          // cancel) nor part of the conversation record. So do NOT flush the
+          // held-back partial prose — DISCARD it and go straight to "■ Cancelled".
+          // This mirrors the Ink reducer, which drops the uncommitted live buffer
+          // on cancel (reduce.ts turn/final), keeping screen == store == replay.
+          // (Already-streamed bytes are transient terminal output, like the
+          // spinner — only the not-yet-committed tail is ours to drop.)
+          prose.discard();
           if (!isQuiet) {
             // Dim turn dot + the existing `■ Cancelled` glyph line.
             out.write(`\n${completionDot('cancel')}${dim('■ Cancelled', c)}\n`);
           }
           break;
         }
+
+        // Flush any held-back prose (envelope already stripped) before the
+        // completion/error line so the conversation reads in order.
+        prose.flush();
 
         if (!ev.success) {
           if (ev.errorCategory === 'timeout') {

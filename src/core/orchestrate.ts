@@ -38,6 +38,7 @@ import { authorizeTier } from './flagship.js';
 import type { FlagshipTrigger, FlagshipDecision } from './flagship.js';
 import { withMemoryProposalAttached } from './orchestrate-memory.js';
 import { compactHistory } from './history.js';
+import { serializeQuestionSet } from './questions.js';
 import { planPanel, runPanel } from './ensemble.js';
 import { planHedge, runHedged } from './hedge.js';
 import { capContract, shouldMaterializeContract, isCleanObjectiveTask } from './work-contract.js';
@@ -993,13 +994,22 @@ export async function* orchestrate(
       role: 'user',
       content: task,
     });
+    // Persist the rendered question AS the assistant turn's content — clean
+    // plain text (prompt + numbered options), the SAME shape the on-screen
+    // selector prints (serializeQuestionSet mirrors runQuestionSelector). This
+    // keeps screen == store == replay: the resume transcript shows the actual
+    // question (no longer filtered out as an empty body) and the next turn's
+    // compactHistory carries a meaningful `Assistant:` line so the model knows
+    // what it asked when the user's reply lands. No envelope JSON / control
+    // markup is included, so the strippers never touch it.
+    const askContent = serializeQuestionSet(terminalQuestion);
     await deps.session.append({
       timestamp: deps.clock.isoNow(),
       role: 'assistant',
-      content: '',
+      content: askContent,
       ...(workTrace !== undefined ? { workTrace } : {}),
       // Current-engine turn: stamp the behavior version so a resumed chat does not
-      // quarantine this (empty, terminal-ask) turn on the version axis (AP2-F §3).
+      // quarantine this terminal-ask turn on the version axis (AP2-F §3).
       engineBehaviorVersion: ENGINE_BEHAVIOR_VERSION,
     });
     yield {

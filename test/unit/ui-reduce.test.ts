@@ -154,6 +154,70 @@ describe('ui reduce — prose accumulation + tier flush', () => {
   });
 });
 
+describe('ui reduce — turn/final cancel drops the uncommitted partial answer (BUG 2)', () => {
+  // A mid-stream ESC: prose streamed into stream.buffer but NO tier-done
+  // committed it. On a canceled final the reducer must DROP that partial buffer
+  // (never commit it) and show only "■ Cancelled" — screen == store == replay,
+  // matching work-call.ts (which does not persist a canceled answer).
+  it('canceled final with a non-empty buffer commits only "■ Cancelled", not the partial prose', () => {
+    const mid = run([{ type: 'stream/prose', text: 'Partial work that the user aborted.' }]);
+    assert.equal(mid.stream.buffer, 'Partial work that the user aborted.');
+    assert.equal(mid.committed.length, 0);
+
+    const s = reduce(mid, {
+      type: 'turn/final',
+      success: false,
+      canceled: true,
+      tier: 'ic',
+      attempts: 1,
+      sessionId: 'cancel-sess',
+      verbosity: 'normal',
+    });
+
+    // The partial prose was NOT committed…
+    assert.ok(
+      !lines(s).some((l) => l.includes('Partial work')),
+      `canceled turn must not commit partial prose, got: ${JSON.stringify(lines(s))}`,
+    );
+    // …only the calm cancel line is, and the live buffer is cleared.
+    assert.deepEqual(lines(s), ['■ Cancelled']);
+    assert.equal(s.stream.buffer, '');
+    assert.equal(s.turnActive, false);
+  });
+
+  it('quiet verbosity: canceled final commits nothing at all (no partial, no line)', () => {
+    const mid = run([{ type: 'stream/prose', text: 'half an answer' }]);
+    const s = reduce(mid, {
+      type: 'turn/final',
+      success: false,
+      canceled: true,
+      tier: 'ic',
+      attempts: 1,
+      sessionId: 'c',
+      verbosity: 'quiet',
+    });
+    assert.equal(s.committed.length, 0);
+    assert.equal(s.stream.buffer, '');
+  });
+
+  it('a NON-canceled final still flushes the buffered prose as today (regression guard)', () => {
+    const mid = run([{ type: 'stream/prose', text: 'A complete answer.' }]);
+    const s = reduce(mid, {
+      type: 'turn/final',
+      success: true,
+      tier: 'ic',
+      attempts: 1,
+      sessionId: 'ok',
+      verbosity: 'normal',
+    });
+    assert.ok(
+      lines(s).includes('A complete answer.'),
+      `successful final must still commit the prose, got: ${JSON.stringify(lines(s))}`,
+    );
+    assert.equal(s.stream.buffer, '');
+  });
+});
+
 describe('ui reduce — phase / panel / synthesis', () => {
   it('phase panel seeds panelists as running and enters panel phase', () => {
     const s = reduce(initialState, {

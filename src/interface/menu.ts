@@ -2102,9 +2102,10 @@ export async function runChatLoop(
             }
           }
 
-          // Reload history (the question turn was persisted by orchestrate) and
-          // rebuild deps so the answer turn replays the full thread. Fail-soft: a
-          // corrupt store degrades to an empty thread + a dim notice, never crashes.
+          // Reload history (orchestrate persisted the question turn with the
+          // question TEXT as its assistant content) and rebuild deps so the answer
+          // turn replays the full thread — the model sees what it asked. Fail-soft:
+          // a corrupt store degrades to an empty thread + a dim notice, never crashes.
           let answerHistory: SessionEntry[] = [];
           try {
             answerHistory = await ctx.store.load(convId);

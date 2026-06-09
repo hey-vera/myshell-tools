@@ -6,6 +6,22 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+## [3.56.0] - 2026-06-09
+
+### Fixed
+- **Clarifying questions are now saved to the conversation** — when the assistant
+  asked you a question, the turn was stored with an EMPTY body, so on resume you saw
+  your reply but not what was asked, and on the next turn the model had no record of
+  its own question (it answered your reply blind). The question + options are now
+  persisted as clean plain text, so resume shows it and the model remembers what it
+  asked. (This is the adaptive partner's core "ask a sharp question" path.)
+- **Canceling a turn mid-stream no longer leaves a phantom half-answer** — on ESC the
+  partial reply was shown but never saved, so the on-screen transcript silently
+  diverged from the stored conversation (and a truncated, abandoned answer could
+  pollute the next turn's context). Now a canceled turn drops the uncommitted partial
+  cleanly — screen, store, and resume all agree — matching the brain-loop cancel path.
+  Applied consistently across the Ink and legacy renderers.
+
 ## [3.55.0] - 2026-06-09
 
 ### Fixed

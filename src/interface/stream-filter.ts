@@ -382,4 +382,16 @@ export class EnvelopeFilter {
     }
     this.flushed = this.full.length;
   }
+
+  /** DISCARD any held-back, not-yet-flushed tail WITHOUT emitting it. Used on a
+   *  mid-stream CANCEL: a canceled answer is incomplete (the user hit ESC) and is
+   *  neither persisted nor part of the conversation record, so the renderer must
+   *  not flush the held-back trailing prose at the cancel `final`. Already-emitted
+   *  bytes cannot be unwritten (live streaming is transient terminal output, like
+   *  the spinner), but this guarantees the FINAL flush adds nothing on cancel —
+   *  keeping the legacy path consistent with the Ink reducer, which drops the
+   *  uncommitted live buffer on cancel. Idempotent. */
+  discard(): void {
+    this.flushed = this.full.length;
+  }
 }

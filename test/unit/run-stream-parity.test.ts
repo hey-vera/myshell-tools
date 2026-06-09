@@ -56,6 +56,22 @@
  *       point AND stripped (N2). No completion/cancel/best-effort/timeout line
  *       glues — those all carry a leading `\n`.
  *
+ *   N6. (mid-stream CANCEL ONLY) prose that streamed into the LIVE region but was
+ *       never committed at a tier boundary before the user hit ESC is TRANSIENT in
+ *       both paths and is NOT part of the persisted conversation (work-call.ts does
+ *       not append a canceled answer; renderResumeTranscript/compactHistory never
+ *       see it). The two paths express that transient prose differently: legacy
+ *       `renderStream` streamed it live byte-by-byte to the terminal (it cannot be
+ *       unwritten — like the spinner, it is transient terminal chrome, cf. N3),
+ *       whereas the Ink reducer held it in the uncommitted `stream.buffer` and
+ *       DROPS it on cancel (reduce.ts turn/final) so it never reaches the committed
+ *       transcript. Both then show the SAME committed outcome: the "■ Cancelled"
+ *       line and nothing persisted. So for the cancel fixture we compare only the
+ *       COMMITTED outcome lines (everything from "■ Cancelled" onward), dropping the
+ *       transient pre-cancel live prose from the legacy side. This is the
+ *       audited "don't commit a partial answer on cancel" behaviour (screen ==
+ *       store == replay); a real divergence in the cancel OUTCOME line still fails.
+ *
  *   N5. (verbose tool/reasoning interleave ONLY) the comparison is made on the
  *       MULTISET of lines, not their order. This is the one INTENTIONAL, loudly-
  *       documented architectural divergence: in legacy renderStream everything is
@@ -225,6 +241,17 @@ interface Fixture {
   /** Verbosities for which the comparison is on the line MULTISET, not order
    *  (N5 — the verbose live-region interleave divergence). Default: none. */
   readonly orderInsensitive?: readonly Verbosity[];
+  /** N6: a mid-stream cancel — compare only the COMMITTED outcome lines (from
+   *  "■ Cancelled" onward), dropping transient pre-cancel live prose. Default false. */
+  readonly cancelOutcomeOnly?: boolean;
+}
+
+/** N6: keep only the committed cancel-outcome tail (from the "■ Cancelled" line
+ *  onward); drop any transient pre-cancel live prose. When there is no cancel
+ *  line (quiet mode suppresses it) the committed outcome is empty. */
+function cancelOutcomeLines(lines: readonly string[]): string[] {
+  const idx = lines.findIndex((l) => l.includes('■ Cancelled'));
+  return idx === -1 ? [] : lines.slice(idx);
 }
 
 const NORMAL_STREAM: CoreEvent[] = [
@@ -354,7 +381,7 @@ const FIXTURES: readonly Fixture[] = [
   { name: 'notices (error + warn + hedge)', events: NOTICES_STREAM },
   { name: 'multi-tier token accounting', events: MULTI_TIER_TOKENS_STREAM },
   { name: 'failure final (auth, actionable error)', events: FAILURE_STREAM },
-  { name: 'cancel final', events: CANCEL_STREAM },
+  { name: 'cancel final', events: CANCEL_STREAM, cancelOutcomeOnly: true },
   { name: 'timeout final', events: TIMEOUT_STREAM },
   { name: 'best-effort final', events: BEST_EFFORT_STREAM },
   { name: 'question final (ask_user stripped, no completion line)', events: QUESTION_STREAM },
@@ -370,8 +397,16 @@ describe('renderStreamInk — parity with legacy renderStream (visible text)', (
   for (const fx of FIXTURES) {
     for (const verbosity of fx.verbosities ?? ALL_VERBOSITIES) {
       it(`${fx.name} — ${verbosity}: same visible lines`, async () => {
-        const legacy = await runLegacy(fx.events, verbosity, false);
-        const { lines, result } = await runInk(fx.events, verbosity, false);
+        let legacy = await runLegacy(fx.events, verbosity, false);
+        const ink = await runInk(fx.events, verbosity, false);
+        let lines = ink.lines;
+        const result = ink.result;
+        if (fx.cancelOutcomeOnly === true) {
+          // N6: compare only the committed cancel-outcome lines (transient
+          // pre-cancel live prose is dropped from both sides).
+          legacy = cancelOutcomeLines(legacy);
+          lines = cancelOutcomeLines(lines);
+        }
         const orderless = (fx.orderInsensitive ?? []).includes(verbosity);
         const sort = (xs: string[]): string[] => [...xs].sort();
         assert.deepEqual(

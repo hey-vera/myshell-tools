@@ -600,8 +600,16 @@ export function reduce(state: UiState, action: Action): UiState {
       const isVerbose = action.verbosity === 'verbose';
       const isQuiet = action.verbosity === 'quiet';
       // Flush any held-back prose first (render.ts: prose.flush() before the line).
+      // EXCEPT on cancel: a canceled answer is incomplete (the user hit ESC), and
+      // orchestrate does NOT persist it (work-call.ts yields a canceled final with
+      // no appendAcceptedAssistant). Committing the partial prose here would make
+      // screen ≠ store ≠ replay and pollute the next turn's history with abandoned
+      // work. So drop the buffer on cancel and go straight to "■ Cancelled" — this
+      // mirrors the brain-loop cancel path, which already leaves the store clean.
+      // The legacy renderStream cancel path (render.ts) is kept in lockstep so
+      // run-stream-parity stays byte-identical.
       let next: UiState = state;
-      if (state.stream.buffer.length > 0) {
+      if (!action.canceled && state.stream.buffer.length > 0) {
         next = commit(next, { kind: 'prose', text: state.stream.buffer });
       }
       // The turn is over: clear live status + mark inactive. Any goal still

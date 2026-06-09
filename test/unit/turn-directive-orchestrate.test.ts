@@ -19,6 +19,8 @@ import assert from 'node:assert/strict';
 
 import { orchestrate } from '../../src/core/orchestrate.ts';
 import { DEFAULT_POLICY } from '../../src/core/policy.ts';
+import { compactHistory } from '../../src/core/history.ts';
+import { renderResumeTranscript } from '../../src/interface/render.ts';
 import type {
   Clock,
   SessionWriter,
@@ -146,10 +148,33 @@ describe('orchestrate pre-provider terminal ask (A1)', () => {
     assert.equal(final.totalCostUsd, 0, 'zero cost');
     assert.ok(final.questions !== undefined, 'carries the structured QuestionSet');
     assert.equal(final.questions.questions[0]?.id, 'F1');
-    // user + empty assistant entry appended symmetrically with the model-ask path.
+    // user + assistant entry appended symmetrically with the model-ask path.
     assert.equal(session.entries.filter((e) => e.role === 'user').length, 1);
     const assistant = session.entries.find((e) => e.role === 'assistant');
-    assert.ok(assistant !== undefined && assistant.content === '');
+    assert.ok(assistant !== undefined, 'an assistant turn is persisted');
+    // BUG 1 FIX: the assistant turn now carries the QUESTION TEXT (clean plain
+    // text — the prompt + numbered options), NOT an empty body. This is what the
+    // user SAW; persisting it keeps screen == store == replay.
+    assert.notEqual(assistant.content, '', 'the question turn must NOT be empty');
+    assert.match(assistant.content, /Which tone do you prefer for the announcement\?/);
+    assert.match(assistant.content, /\[1\] Playful/);
+    assert.match(assistant.content, /\[2\] Formal/);
+    // Clean text only — no ask_user envelope JSON / control markup leaked in.
+    assert.ok(!assistant.content.includes('ask_user'), 'no envelope JSON in the stored content');
+    assert.ok(!assistant.content.includes('{'), 'no JSON braces in the stored content');
+
+    // (a) RESUME: the persisted question survives renderResumeTranscript (it is
+    // NOT filtered out as an empty body, the old bug) — the resumed thread shows
+    // both the user's ask AND what the assistant asked back.
+    const resume = renderResumeTranscript(session.entries);
+    assert.match(resume, /Which tone do you prefer/);
+    assert.match(resume, /launch announcement copy/);
+
+    // (b) NEXT-TURN HISTORY: compactHistory includes the question as the
+    // Assistant: line, so the model answering the user's reply knows what it asked.
+    const history = compactHistory(session.entries);
+    assert.match(history, /Assistant: Which tone do you prefer/);
+    assert.ok(!/Assistant:\s*$/m.test(history), 'the assistant history line is not bodyless');
   });
 
   it('does NOT pre-ask on an investigable generic-menu fork (runs the provider)', async () => {

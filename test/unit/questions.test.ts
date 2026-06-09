@@ -8,7 +8,7 @@
 
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { parseQuestions, formatAnswers, isKeepGoingOffer } from '../../src/core/questions.ts';
+import { parseQuestions, formatAnswers, isKeepGoingOffer, serializeQuestionSet } from '../../src/core/questions.ts';
 import type { QuestionSet } from '../../src/core/types.ts';
 
 // ---------------------------------------------------------------------------
@@ -195,6 +195,68 @@ describe('formatAnswers', () => {
 
   it('returns empty string when nothing was answered', () => {
     assert.equal(formatAnswers(qs, {}), '');
+  });
+});
+
+describe('serializeQuestionSet — clean plain-text rendering (BUG 1)', () => {
+  it('renders prompt + numbered options, mirroring the on-screen selector', () => {
+    const qs: QuestionSet = {
+      questions: [
+        {
+          id: 'tone',
+          prompt: 'Which tone?',
+          options: [{ label: 'Playful' }, { label: 'Formal', description: 'buttoned-up' }],
+          multiSelect: false,
+          allowFreeText: false,
+        },
+      ],
+    };
+    assert.equal(
+      serializeQuestionSet(qs),
+      'Which tone?\n  [1] Playful\n  [2] Formal — buttoned-up',
+    );
+  });
+
+  it('appends a "type your own" line when free text is allowed', () => {
+    const qs: QuestionSet = {
+      questions: [
+        { id: 'q', prompt: 'Pick?', options: [{ label: 'a' }, { label: 'b' }], multiSelect: false, allowFreeText: true },
+      ],
+    };
+    assert.equal(serializeQuestionSet(qs), 'Pick?\n  [1] a\n  [2] b\n  [3] type your own');
+  });
+
+  it('separates multiple questions with a blank line', () => {
+    const qs: QuestionSet = {
+      questions: [
+        { id: 'q1', prompt: 'First?', options: [{ label: 'a' }, { label: 'b' }], multiSelect: false, allowFreeText: false },
+        { id: 'q2', prompt: 'Second?', options: [{ label: 'c' }, { label: 'd' }], multiSelect: false, allowFreeText: false },
+      ],
+    };
+    assert.equal(
+      serializeQuestionSet(qs),
+      'First?\n  [1] a\n  [2] b\n\nSecond?\n  [1] c\n  [2] d',
+    );
+  });
+
+  it('contains NO ask_user envelope JSON / control markup (history-safe)', () => {
+    const qs: QuestionSet = {
+      questions: [
+        { id: 'q', prompt: 'Pick?', options: [{ label: 'a' }, { label: 'b' }], multiSelect: false, allowFreeText: true },
+      ],
+    };
+    const text = serializeQuestionSet(qs);
+    assert.ok(!text.includes('ask_user'));
+    assert.ok(!text.includes('{'));
+    assert.ok(!text.includes('}'));
+  });
+
+  it('returns "" for an empty/malformed set (never throws)', () => {
+    assert.equal(serializeQuestionSet({ questions: [] }), '');
+    // @ts-expect-error — deliberately malformed input to prove fail-soft.
+    assert.equal(serializeQuestionSet(null), '');
+    // @ts-expect-error — deliberately malformed input to prove fail-soft.
+    assert.equal(serializeQuestionSet({}), '');
   });
 });
 
