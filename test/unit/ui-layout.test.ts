@@ -96,6 +96,19 @@ describe('layoutForHeight — full cards when they fit', () => {
     assert.equal(plan.streamCap, 1);
   });
 
+  it('shows the turn-summary line only for MULTIPLE goals (not a single goal)', () => {
+    // One goal → no summary line (it would only restate the GoalCard's "1 agent").
+    const one = layoutForHeight(active([goal({ id: 'a' })], 'x'), 40, 1);
+    assert.equal(one.showSummary, false);
+    // Two goals → the aggregating summary line is shown.
+    const two = layoutForHeight(
+      active([goal({ id: 'a' }), goal({ id: 'b', label: 'Add tests' })], 'x'),
+      40,
+      1,
+    );
+    assert.equal(two.showSummary, true);
+  });
+
   it('goalCardRows = 1 header + one row per agent', () => {
     assert.equal(goalCardRows(goal({ agents: [agent()] })), 2);
     assert.equal(goalCardRows(goal({ agents: [agent(), agent(), agent()] })), 4);
@@ -117,9 +130,10 @@ describe('layoutForHeight — stream truncation to last K', () => {
     const budget = rows - INPUT_ROWS - SAFETY_MARGIN_ROWS; // 8
     const panelRows = PANEL_BORDER_ROWS + 1 + 1; // 4
     assert.equal(plan.goals.kind, 'full');
-    assert.equal(plan.showSummary, true);
-    // The agent-centric summary line now consumes one budgeted row.
-    assert.equal(plan.streamCap, budget - panelRows - SUMMARY_LINE_ROWS - STATUS_LINE_ROWS); // 8-4-1-1 = 2
+    // A SINGLE goal drops the turn-summary line (it would just restate "1 agent"
+    // already shown by the GoalCard header + nested AgentRow), so it costs 0 rows.
+    assert.equal(plan.showSummary, false);
+    assert.equal(plan.streamCap, budget - panelRows - STATUS_LINE_ROWS); // 8-4-1 = 3
     // never exceeds the budget
     assert.ok(plan.plannedRows + INPUT_ROWS <= rows, `plannedRows=${plan.plannedRows}`);
   });
@@ -211,6 +225,13 @@ describe('summarizeTurn — agent-centric one-glance summary', () => {
   it('omits the elapsed when absent/0, never fabricating seconds', () => {
     const s = summarizeTurn(active([goal()], '', 500));
     assert.equal(s, '▸ 1 goal · 1 agent · 500 tok');
+  });
+
+  it('omits the token segment entirely until the turn total is real (> 0)', () => {
+    // Mid-run with no real usage yet (turn tokens 0): NO "0 tok" / fabricated figure.
+    const s = summarizeTurn(active([goal({ id: 'a' }), goal({ id: 'b', label: 'B' })], '', 0), 12);
+    assert.doesNotMatch(s, /tok/);
+    assert.equal(s, '▸ 2 goals · 2 agents · 12s');
   });
 
   it('totalAgentCount sums goal agents + panel candidates (real, never fabricated)', () => {

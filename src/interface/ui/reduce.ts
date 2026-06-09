@@ -127,6 +127,34 @@ function settleAllRunningGoals(
   }));
 }
 
+/**
+ * Map a REAL tool name to a friendly present-tense verb for the live action line.
+ * Only HONEST, unambiguous mappings are made; anything unrecognised returns the
+ * raw tool name verbatim (never an invented verb). The provider tool names seen in
+ * practice: Claude exposes the literal tool names (Edit/Write/Read/Bash/Grep/Glob/
+ * …); codex emits coarse activity kinds (command_execution / file_change /
+ * mcp_tool_call); opencode emits its own tool names. PURE.
+ */
+function toolVerb(name: string): string {
+  const n = name.toLowerCase();
+  // file edits / writes
+  if (n === 'edit' || n === 'write' || n === 'multiedit' || n === 'notebookedit' || n === 'file_change') {
+    return 'editing';
+  }
+  // reads
+  if (n === 'read' || n === 'notebookread') return 'reading';
+  // shell / command execution
+  if (n === 'bash' || n === 'command_execution' || n === 'shell') return 'running';
+  // search
+  if (n === 'grep' || n === 'glob' || n === 'search' || n === 'list' || n === 'ls') return 'searching';
+  // web
+  if (n === 'webfetch' || n === 'fetch') return 'fetching';
+  if (n === 'websearch') return 'searching the web';
+  // a tool-call to another tool/server — show the raw name (honest, not invented).
+  // Default: the raw tool name (never fabricated).
+  return name;
+}
+
 // ---------------------------------------------------------------------------
 // reduce
 // ---------------------------------------------------------------------------
@@ -395,9 +423,18 @@ export function reduce(state: UiState, action: Action): UiState {
       if (action.verbosity === 'verbose') {
         return commit(state, { kind: 'telemetry', text: `[tool] ${action.name} ${action.phase}` });
       }
+      // Capture the LIVE action from the real tool event (the single most useful
+      // real-time signal): a friendly verb mapped from the tool NAME plus the real
+      // TARGET only when the event actually carried one (`detail`). This is live-
+      // status only — it commits NO transcript line and is confined to StreamView.
+      const currentTool: { readonly verb: string; readonly target?: string } =
+        action.detail !== undefined && action.detail.length > 0
+          ? { verb: toolVerb(action.name), target: action.detail }
+          : { verb: toolVerb(action.name) };
       return withStream(state, {
         stepCount: state.stream.stepCount + 1,
         toolSinceProse: true,
+        currentTool,
       });
     }
 
@@ -464,6 +501,12 @@ export function reduce(state: UiState, action: Action): UiState {
         next = commit(next, { kind: 'prose', text: state.stream.buffer });
       }
       const attemptHadProse = state.stream.attemptHadProse;
+      // The tier's live action is over — DROP `currentTool` (destructure it out
+      // rather than set it to undefined, which exactOptionalPropertyTypes forbids)
+      // so the next tier's status line falls back to "Thinking" until its first
+      // tool fires (never a stale verb).
+      const { currentTool: _clearedTool, ...streamWithoutTool } = next.stream;
+      void _clearedTool;
       next = {
         ...next,
         goals: settleActiveGoal(
@@ -474,7 +517,7 @@ export function reduce(state: UiState, action: Action): UiState {
         ),
         tokens: { turn: next.tokens.turn + tierTokens, session: next.tokens.session + tierTokens },
         stream: {
-          ...next.stream,
+          ...streamWithoutTool,
           buffer: '',
           attemptHadProse: false,
           toolSinceProse: false,

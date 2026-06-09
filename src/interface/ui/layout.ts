@@ -359,7 +359,12 @@ export function summarizeTurn(state: UiState, elapsedSecs?: number): string {
   const unitStr = `${nUnits} ${noun}${nUnits === 1 ? '' : 's'}`;
   const nAgents = totalAgentCount(state);
   const agentStr = `${nAgents} agent${nAgents === 1 ? '' : 's'}`;
-  const parts = [`▸ ${unitStr}`, agentStr, `${formatTokens(state.tokens.turn)} tok`];
+  const parts = [`▸ ${unitStr}`, agentStr];
+  // The token segment appears ONLY once the turn total is genuinely > 0 (real
+  // usage, populated at a tier-done / final). Mid-run there is no honest token
+  // figure for the Claude subscription provider, so the segment is omitted rather
+  // than showing a fabricated/zero "0 tok".
+  if (state.tokens.turn > 0) parts.push(`${formatTokens(state.tokens.turn)} tok`);
   if (elapsedSecs !== undefined && elapsedSecs > 0) parts.push(`${elapsedSecs}s`);
   return parts.join(' · ');
 }
@@ -447,11 +452,15 @@ export function layoutForHeight(
   const goals = state.goals;
   const hasGoals = goals.length > 0;
   const fullRows = hasGoals ? fullPanelRows(goals) : 0;
-  // The agent-centric summary line rides ABOVE the status line whenever the GOALS
-  // panel is visible (full or compact); it is part of the budget so it can never
-  // push the dynamic region past the viewport. It is dropped (0 rows) in the
-  // hidden-panel degradation step, exactly like the panel itself.
-  const summaryRows = hasGoals ? SUMMARY_LINE_ROWS : 0;
+  // The agent-centric turn-summary line ("▸ N goals · M agents · …") is shown ONLY
+  // when there is more than ONE goal to AGGREGATE. With a single goal it is a pure
+  // duplicate of the GoalCard header + nested AgentRow (which already say "1 agent")
+  // and the StatusLine (which carries the unique tool-call count), so it is dropped
+  // — three lines no longer restate the same "1 agent". When shown, it rides ABOVE
+  // the status line and is part of the budget (so it can never push the dynamic
+  // region past the viewport) and is dropped (0 rows) in the hidden-panel step.
+  const showSummaryLine = hasGoals && goals.length > 1;
+  const summaryRows = showSummaryLine ? SUMMARY_LINE_ROWS : 0;
   const fixed = STATUS_LINE_ROWS + summaryRows;
 
   // Step 1 + 2: try full cards. The status line + summary line are mandatory when
@@ -462,7 +471,7 @@ export function layoutForHeight(
     return {
       visible: true,
       goals: { kind: 'full', goals, rows: goals.map((g) => ({ kind: 'card' as const, goal: g })) },
-      showSummary: true,
+      showSummary: showSummaryLine,
       streamCap,
       plannedRows: fullRows + fixed + streamCap,
     };
@@ -488,7 +497,7 @@ export function layoutForHeight(
       return {
         visible: true,
         goals: { kind: 'full', goals: cardGoals, rows: plan },
-        showSummary: true,
+        showSummary: showSummaryLine,
         streamCap,
         plannedRows: panelRows + fixed + streamCap,
       };
@@ -508,7 +517,7 @@ export function layoutForHeight(
         kind: 'compact',
         summary: compactGoalsSummary(goals, state.tokens.turn, state.stream.panelists.length),
       },
-      showSummary: true,
+      showSummary: showSummaryLine,
       streamCap,
       plannedRows: compactRows + fixed + streamCap,
     };

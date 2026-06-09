@@ -95,6 +95,37 @@ test('AgentRow shows an elapsed · Ns only for a RUNNING agent', () => {
   assert.doesNotMatch(done() ?? '', /· 6s/);
 });
 
+test('AgentRow LEADS a running agent with the live action (verb + target) when given one', () => {
+  const { lastFrame } = render(
+    <AgentRow
+      agent={agent({ provider: 'claude', model: 'opus', state: 'running', tokens: 0 })}
+      last
+      elapsedSecs={12}
+      workLabel="Thinking"
+      liveAction="editing src/auth/mw.ts"
+      color={false}
+    />,
+  );
+  const frame = lastFrame() ?? '';
+  assert.match(frame, /claude\/opus/);
+  assert.match(frame, /editing src\/auth\/mw\.ts/);
+  // The live action replaces the bare "running" word and the "Thinking" fallback.
+  assert.doesNotMatch(frame, /running/);
+  assert.match(frame, /· 12s/);
+});
+
+test('AgentRow falls back to the workLabel when no live action is present', () => {
+  const { lastFrame } = render(
+    <AgentRow
+      agent={agent({ state: 'running', tokens: 0 })}
+      last
+      workLabel="Thinking"
+      color={false}
+    />,
+  );
+  assert.match(lastFrame() ?? '', /Thinking/);
+});
+
 test('TokenMeter renders the compact ↓ ~Nk tokens readout', () => {
   const { lastFrame } = render(<TokenMeter tokens={3100} color={false} />);
   assert.match(lastFrame() ?? '', /↓ ~3\.1k tokens/);
@@ -165,24 +196,50 @@ test('StatusLine renders the "Waiting on N models" wording in panel mode', () =>
   assert.match(frame, /esc to interrupt/);
 });
 
-test('StatusLine LEADS with the agent count, demoting steps to a dim "N tool calls" detail', () => {
+test('StatusLine falls back to "Thinking" + tool-call count when no tool is active, and shows NO fabricated token', () => {
   const state: UiState = {
     ...initialState,
     turnActive: true,
     goals: [goal({ state: 'running', agents: [agent({ state: 'running' })] })],
+    // streamedChars is non-zero but must NOT produce a token figure (it was a
+    // fabricated streamedChars/4 proxy; real tokens only appear when known/>0).
     stream: { ...initialState.stream, phase: 'streaming', workLabel: 'Thinking', stepCount: 3, streamedChars: 4000 },
   };
   const { lastFrame } = render(<StatusLine state={state} frame="⠙" elapsedSecs={6} color={false} />);
   const frame = lastFrame() ?? '';
-  // Agent count headlines; tool calls are the demoted detail (no longer "N steps").
   assert.match(frame, /Thinking…/);
-  assert.match(frame, /1 agent · 3 tool calls/);
+  assert.match(frame, /3 tool calls/);
   assert.doesNotMatch(frame, /3 steps/);
-  assert.match(frame, /↓ ~1k tokens/);
+  // NO token figure mid-run (the fabricated ~Nk proxy is gone).
+  assert.doesNotMatch(frame, /tokens/);
+  assert.doesNotMatch(frame, /~1k/);
   assert.match(frame, /· 6s/);
 });
 
-test('StatusLine pluralises agents + tool calls and counts panel candidates', () => {
+test('StatusLine LEADS with the live ACTION (real tool verb + target) when a tool is active', () => {
+  const state: UiState = {
+    ...initialState,
+    turnActive: true,
+    goals: [goal({ state: 'running', agents: [agent({ state: 'running' })] })],
+    stream: {
+      ...initialState.stream,
+      phase: 'streaming',
+      workLabel: 'Thinking',
+      stepCount: 28,
+      currentTool: { verb: 'editing', target: 'src/auth/mw.ts' },
+    },
+  };
+  const { lastFrame } = render(<StatusLine state={state} frame="⠹" elapsedSecs={59} color={false} />);
+  const frame = lastFrame() ?? '';
+  // The action leads (not "Thinking"); the real tool-call count + elapsed follow.
+  assert.match(frame, /editing src\/auth\/mw\.ts…/);
+  assert.match(frame, /28 tool calls/);
+  assert.match(frame, /· 59s/);
+  assert.match(frame, /esc to interrupt/);
+  assert.doesNotMatch(frame, /tokens/);
+});
+
+test('StatusLine pluralises the tool-call count', () => {
   const state: UiState = {
     ...initialState,
     turnActive: true,
@@ -190,7 +247,7 @@ test('StatusLine pluralises agents + tool calls and counts panel candidates', ()
     stream: { ...initialState.stream, phase: 'streaming', workLabel: 'Thinking', stepCount: 1 },
   };
   const { lastFrame } = render(<StatusLine state={state} frame="⠙" color={false} />);
-  assert.match(lastFrame() ?? '', /2 agents · 1 tool call/);
+  assert.match(lastFrame() ?? '', /1 tool call(?!s)/);
 });
 
 test('StatusBlock COLLAPSES to the compact summary at a small height', () => {
@@ -216,13 +273,47 @@ test('StatusBlock COLLAPSES to the compact summary at a small height', () => {
   assert.doesNotMatch(frame, /├─/);
 });
 
-test('StatusBlock renders the agent-centric SUMMARY line under the GOALS panel', () => {
+test('StatusBlock renders the agent-centric SUMMARY line under the GOALS panel for MULTIPLE goals', () => {
+  const state = active(
+    [
+      goal({ id: 'a', label: 'A', state: 'running', agents: [agent({ state: 'running' })] }),
+      goal({ id: 'b', label: 'B', state: 'running', agents: [agent({ state: 'running' })] }),
+    ],
+    { tokens: { turn: 1200, session: 1200 } },
+  );
+  const { lastFrame } = render(<StatusBlock state={state} color={false} rows={40} />);
+  const frame = lastFrame() ?? '';
+  assert.match(frame, /▸ 2 goals · 2 agents · 1\.2k tok/);
+});
+
+test('StatusBlock DROPS the redundant turn-summary line for a SINGLE goal (no thrice-restated "1 agent")', () => {
   const state = active([goal({ state: 'running', tokens: 1200, agents: [agent({ state: 'running' })] })], {
     tokens: { turn: 1200, session: 1200 },
   });
   const { lastFrame } = render(<StatusBlock state={state} color={false} rows={40} />);
   const frame = lastFrame() ?? '';
-  assert.match(frame, /▸ 1 goal · 1 agent · 1\.2k tok/);
+  // The GoalCard header (with its nested AgentRow) and the StatusLine remain; the
+  // middle "▸ 1 goal · 1 agent · …" summary line is gone.
+  assert.doesNotMatch(frame, /▸ 1 goal/);
+  assert.match(frame, /GOALS/);
+});
+
+test('StatusBlock surfaces the live action (currentTool) on the running agent row and the status line', () => {
+  const state = active([goal({ state: 'running', tokens: 0, agents: [agent({ state: 'running', tokens: 0 })] })], {
+    stream: {
+      ...initialState.stream,
+      phase: 'streaming',
+      workLabel: 'Thinking',
+      stepCount: 12,
+      currentTool: { verb: 'editing', target: 'src/auth/mw.ts' },
+    },
+  });
+  const { lastFrame } = render(<StatusBlock state={state} color={false} rows={40} />);
+  const frame = lastFrame() ?? '';
+  assert.match(frame, /editing src\/auth\/mw\.ts/);
+  assert.match(frame, /12 tool calls/);
+  // No fabricated token figure anywhere mid-run.
+  assert.doesNotMatch(frame, /tokens/);
 });
 
 test('StatusBlock SUMMARY says "phases" when stacked cards share a title (honest count)', () => {

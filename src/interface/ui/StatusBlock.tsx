@@ -30,13 +30,33 @@ import { pad, truncateToWidth } from '../../ui/tui.js';
 import {
   layoutForHeight,
   summarizeTurn,
-  totalAgentCount,
   coalescedQueuedLine,
   INPUT_ROWS,
   type GoalsMode,
   type StatusLayout,
 } from './layout.js';
 import type { AgentView, AgentRunState, GoalView, UiState } from './state.js';
+
+// ---------------------------------------------------------------------------
+// currentTool → a scannable live-action label
+// ---------------------------------------------------------------------------
+
+/**
+ * Render the live action (`stream.currentTool`) as a scannable `verb target`
+ * string, e.g. `editing src/auth/mw.ts` or just `running` when no real target was
+ * supplied. The target is shown ONLY when genuinely present (never fabricated) and
+ * is width-bounded so a long path/command never blows the status line. Returns ''
+ * for an absent/empty action so callers fall back to the real workLabel. PURE.
+ */
+function liveActionLabel(
+  currentTool: { readonly verb: string; readonly target?: string } | undefined,
+): string {
+  if (currentTool === undefined || currentTool.verb.length === 0) return '';
+  if (currentTool.target !== undefined && currentTool.target.length > 0) {
+    return `${currentTool.verb} ${truncateToWidth(currentTool.target, 40)}`;
+  }
+  return currentTool.verb;
+}
 
 // ---------------------------------------------------------------------------
 // state glyphs
@@ -114,6 +134,11 @@ export interface AgentRowProps {
    *  "Thinking"), shown in place of the bare "running" word. Omitted/non-running →
    *  the run-state word. Never fabricated; it is the real current work label. */
   readonly workLabel?: string;
+  /** The LIVE action label ("editing src/auth/mw.ts" / "running") from the real
+   *  most-recent tool event, preferred over {@link workLabel} for a RUNNING agent.
+   *  Omitted/empty → falls back to workLabel then the run-state word. Real, never
+   *  fabricated (target shown only when the tool event supplied one). */
+  readonly liveAction?: string;
   readonly color?: boolean;
 }
 
@@ -138,7 +163,7 @@ function agentStateWord(state: AgentRunState): string {
  * provider/model + state glyph + state word + token count, plus an elapsed
  * `· Ns` only for a RUNNING agent (from the injected clock).
  */
-export function AgentRow({ agent, last, elapsedSecs, workLabel, color = true }: AgentRowProps): React.ReactElement {
+export function AgentRow({ agent, last, elapsedSecs, workLabel, liveAction, color = true }: AgentRowProps): React.ReactElement {
   const branch = last ? '└─' : '├─';
   const glyph = stateGlyph(agent.state);
   const glyphProps = stateColorProps(agent.state, color);
@@ -146,17 +171,29 @@ export function AgentRow({ agent, last, elapsedSecs, workLabel, color = true }: 
   // a long provider/model never eats into the state glyph and the tree stays
   // aligned, exactly as box() keeps its border aligned.
   const name = pad(truncateToWidth(`${agent.provider}/${agent.model}`, 16), 16);
-  // "what it's doing": for a RUNNING agent, prefer the live work label (real,
-  // injected) over the bare "running" word; everyone else shows the run word.
+  // "what it's doing": for a RUNNING agent, LEAD with the live action (the real
+  // tool verb + target, e.g. "editing src/auth/mw.ts"), then the live work label
+  // ("Thinking"), then the bare "running" word; everyone else shows the run word.
+  // All three are real — the live action comes straight from the tool event.
+  const liveWord =
+    liveAction !== undefined && liveAction.length > 0
+      ? liveAction
+      : workLabel !== undefined && workLabel.length > 0
+        ? workLabel
+        : '';
   const word =
-    agent.state === 'running' && workLabel !== undefined && workLabel.length > 0
-      ? workLabel
-      : agentStateWord(agent.state);
+    agent.state === 'running' && liveWord.length > 0 ? liveWord : agentStateWord(agent.state);
+  // Tokens are shown ONLY when genuinely > 0 (real, post-tier-done); never a
+  // fabricated/zero figure. The elapsed `· Ns` is a real injected clock value and
+  // shows for ANY running agent — independent of whether tokens are known yet
+  // (so a live-action row mid-run still shows how long it has been going).
   const tok = agent.tokens > 0 ? `${formatTokens(agent.tokens)} tok` : '';
-  const elapsed =
-    agent.state === 'running' && elapsedSecs !== undefined && elapsedSecs > 0
-      ? ` · ${elapsedSecs}s`
-      : '';
+  const showElapsed =
+    agent.state === 'running' && elapsedSecs !== undefined && elapsedSecs > 0;
+  // Build the dim trailing detail from whichever real signals exist. The elapsed
+  // always reads as `· Ns` (a leading `· ` even when it stands alone, so a live-
+  // action row mid-run shows `editing … · 12s`); tokens lead when present.
+  const trailing = tok !== '' ? (showElapsed ? `${tok} · ${elapsedSecs}s` : tok) : showElapsed ? `· ${elapsedSecs}s` : '';
   // queued agents read fully dim (nothing running yet); others keep the prose.
   const dimRow = color && agent.state === 'queued';
   return (
@@ -165,7 +202,7 @@ export function AgentRow({ agent, last, elapsedSecs, workLabel, color = true }: 
       <Text dimColor={dimRow}>{`${name} `}</Text>
       <Text {...glyphProps}>{glyph}</Text>
       <Text dimColor={dimRow}>{` ${word.padEnd(8)}`}</Text>
-      {tok !== '' ? <Text dimColor={color}>{`  ${tok}${elapsed}`}</Text> : null}
+      {trailing !== '' ? <Text dimColor={color}>{`  ${trailing}`}</Text> : null}
     </Box>
   );
 }
@@ -181,6 +218,9 @@ export interface GoalCardProps {
   /** The running agent's "what it's doing" label (stream.workLabel / last tool),
    *  surfaced on the RUNNING agent row only. Omitted → the row shows its run word. */
   readonly workLabel?: string;
+  /** The live action label (real tool verb + target) for the RUNNING agent row,
+   *  preferred over {@link workLabel}. Omitted → falls back to workLabel. */
+  readonly liveAction?: string;
   readonly color?: boolean;
 }
 
@@ -207,7 +247,7 @@ function goalBadge(goal: GoalView): string {
  *   `▸ Refactor the auth middleware   ic · medium · 1 agent   ↓ ~3.1k tokens`
  *   `   └─ claude/opus   ◐ running    reading… 1.8k tok · 12s`
  */
-export function GoalCard({ goal, elapsedSecs, workLabel, color = true }: GoalCardProps): React.ReactElement {
+export function GoalCard({ goal, elapsedSecs, workLabel, liveAction, color = true }: GoalCardProps): React.ReactElement {
   const glyph = stateGlyph(goal.state);
   const glyphProps = stateColorProps(goal.state, color);
   const n = goal.agents.length;
@@ -218,8 +258,12 @@ export function GoalCard({ goal, elapsedSecs, workLabel, color = true }: GoalCar
         <Text {...glyphProps}>{glyph}</Text>
         <Text bold={color}>{` ${goal.label}`}</Text>
         <Text dimColor={color}>{`   ${badge}`}</Text>
-        <Text>{'  '}</Text>
-        <TokenMeter tokens={goal.tokens} color={color} />
+        {goal.tokens > 0 ? (
+          <>
+            <Text>{'  '}</Text>
+            <TokenMeter tokens={goal.tokens} color={color} />
+          </>
+        ) : null}
       </Box>
       {goal.agents.map((agent, i) => (
         <AgentRow
@@ -228,6 +272,7 @@ export function GoalCard({ goal, elapsedSecs, workLabel, color = true }: GoalCar
           last={i === goal.agents.length - 1}
           {...(elapsedSecs !== undefined ? { elapsedSecs } : {})}
           {...(workLabel !== undefined ? { workLabel } : {})}
+          {...(liveAction !== undefined ? { liveAction } : {})}
           color={color}
         />
       ))}
@@ -261,8 +306,12 @@ export function GoalHeaderLine({ goal, color = true }: GoalHeaderLineProps): Rea
       <Text {...glyphProps}>{glyph}</Text>
       <Text bold={color}>{` ${goal.label}`}</Text>
       <Text dimColor={color}>{`   ${badge}`}</Text>
-      <Text>{'  '}</Text>
-      <TokenMeter tokens={goal.tokens} color={color} />
+      {goal.tokens > 0 ? (
+        <>
+          <Text>{'  '}</Text>
+          <TokenMeter tokens={goal.tokens} color={color} />
+        </>
+      ) : null}
     </Box>
   );
 }
@@ -276,6 +325,8 @@ interface PanelsProps {
   readonly elapsedSecs?: number;
   /** The live "what it's doing" label for running agents (stream.workLabel). */
   readonly workLabel?: string;
+  /** The live action label (real tool verb + target) for running agents. */
+  readonly liveAction?: string;
   readonly color?: boolean;
 }
 
@@ -285,7 +336,7 @@ interface PanelsProps {
  * `hidden` renders nothing (the caller drops the panel under height pressure).
  * The rounded border + cyan "GOALS" title mirror tui.panel()'s look.
  */
-function PanelsImpl({ mode, elapsedSecs, workLabel, color = true }: PanelsProps): React.ReactElement | null {
+function PanelsImpl({ mode, elapsedSecs, workLabel, liveAction, color = true }: PanelsProps): React.ReactElement | null {
   if (mode.kind === 'hidden') return null;
   const borderProps = color ? { borderColor: 'gray' as const } : {};
   return (
@@ -303,6 +354,7 @@ function PanelsImpl({ mode, elapsedSecs, workLabel, color = true }: PanelsProps)
                   goal={row.goal}
                   {...(elapsedSecs !== undefined ? { elapsedSecs } : {})}
                   {...(workLabel !== undefined ? { workLabel } : {})}
+                  {...(liveAction !== undefined ? { liveAction } : {})}
                   color={color}
                 />
               );
@@ -424,18 +476,21 @@ export function StatusLine({ state, frame, elapsedSecs, color = true }: StatusLi
       </Box>
     );
   }
-  // Non-panel: LEAD with the real agent count; demote the per-tier tool-call count
-  // (the old "N steps") to a DIM detail. The agent count is derived (1–4 today),
-  // never fabricated. "29 steps" → "29 tool calls". Tokens stay a dim suffix.
-  const nAgents = totalAgentCount(state);
-  const agentStr = `${nAgents} agent${nAgents === 1 ? '' : 's'}`;
+  // Non-panel: LEAD with the live ACTION — the single most informative real-time
+  // signal — i.e. the real tool verb + target ("editing src/auth/mw.ts") from the
+  // most recent tool event; fall back to the real workLabel ("Thinking") when no
+  // tool is active. Then the demoted, DIM detail: the per-tier tool-call count
+  // ("N tool calls") and elapsed `· Ns`. NO token figure is shown here: mid-run
+  // there is no honest token count for the Claude subscription provider, so we
+  // never render the old fabricated `streamedChars/4` proxy.
+  const liveAction = liveActionLabel(s.currentTool);
+  const headline = liveAction.length > 0 ? liveAction : s.workLabel;
   const steps = `${s.stepCount} tool call${s.stepCount === 1 ? '' : 's'}`;
-  const approxTok = s.streamedChars > 0 ? ` · ↓ ~${formatTokens(Math.ceil(s.streamedChars / 4))} tokens` : '';
   return (
     <Box>
       <Text {...(color ? { color: 'cyan' as const } : {})}>{frame}</Text>
-      <Text>{` ${s.workLabel}…`}</Text>
-      <Text dimColor={color}>{`  ${agentStr} · ${steps}${approxTok}${elapsed}   esc to interrupt`}</Text>
+      <Text>{` ${headline}…`}</Text>
+      <Text dimColor={color}>{`  ${steps}${elapsed}   esc to interrupt`}</Text>
     </Box>
   );
 }
@@ -547,6 +602,11 @@ export function StatusBlock({
   // stream.workLabel — "Thinking" in normal mode, the verbose tier label in
   // verbose). Only meaningful while the non-panel stream is active.
   const liveWorkLabel = state.stream.workLabel;
+  // The live ACTION (real tool verb + optional target) leads the RUNNING agent row
+  // when a tool is active — the "see what's happening" signal. Real, never
+  // fabricated; empty when no tool has fired this tier (then the row falls back to
+  // the work label).
+  const liveAction = liveActionLabel(state.stream.currentTool);
 
   return (
     <Box flexDirection="column">
@@ -554,6 +614,7 @@ export function StatusBlock({
         mode={plan.goals}
         {...(elapsedSecs !== undefined ? { elapsedSecs } : {})}
         {...(liveWorkLabel.length > 0 ? { workLabel: liveWorkLabel } : {})}
+        {...(liveAction.length > 0 ? { liveAction } : {})}
         color={color}
       />
       {plan.showSummary ? (

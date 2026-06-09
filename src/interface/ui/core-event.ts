@@ -85,7 +85,18 @@ export function coreEventToActions(
       // text → handled by the impure EnvelopeFilter in 3b (NOT here).
       // usage / done → accounted via tier-done / final.
       if (pe.type === 'tool') {
-        return [{ type: 'stream/tool', name: pe.name, phase: pe.phase, verbosity }];
+        return [
+          {
+            type: 'stream/tool',
+            name: pe.name,
+            phase: pe.phase,
+            verbosity,
+            // Carry the real target through ONLY when the provider supplied one
+            // (codex/opencode `detail`); absent for the Claude subscription
+            // provider, so its live action shows the verb alone (no fabrication).
+            ...(pe.detail !== undefined && pe.detail.length > 0 ? { detail: pe.detail } : {}),
+          },
+        ];
       }
       if (pe.type === 'reasoning') {
         return [{ type: 'stream/reasoning', text: pe.delta, verbosity }];

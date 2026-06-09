@@ -15,6 +15,26 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   resumed goal's contract from the persisted `workTrace` (niche: the in-run contract
   is already kept in memory; only cross-session resume benefits). Optional.
 
+## [3.49.0]
+
+### Changed — see everything happening: live-action status, honest tokens, no clutter
+
+- **Lead with the live action.** The status line and the running agent row now show what's
+  actually happening right now — "editing src/auth/mw.ts", "running tests", "searching" —
+  by capturing the active tool's name (and target, when the provider supplies one) that was
+  previously thrown away. Falls back to the real "Thinking" when no tool is active. A
+  friendly verb map (Edit/Write→editing, Read→reading, Bash→running, Grep/Glob→searching)
+  keeps it scannable; unmapped tools show their raw name — never invented.
+- **No more fabricated token number.** The live "↓ ~N tokens" was a character-count proxy
+  (`streamedChars ÷ 4`), not real usage — and for the Claude subscription there is NO
+  mid-stream token data at all. Removed it. Real tokens now appear ONLY where genuinely
+  known: the agent/goal rows after their tier completes, the turn summary once > 0, and the
+  final "✓ done · N tokens". Mid-run shows the work, not a fake count.
+- **Less clutter.** The redundant turn-summary line ("▸ 1 goal · 1 agent · …") no longer
+  renders for a single goal — it only appears when there are multiple goals to aggregate.
+- `currentTool` is live-status state only (never enters the committed transcript), so the
+  run-stream parity contract holds.
+
 ## [3.48.0]
 
 ### Fixed — the TUI feels instant: render-performance pass (no visible change)

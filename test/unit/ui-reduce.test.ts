@@ -534,6 +534,53 @@ describe('ui reduce — tool / reasoning verbosity', () => {
     assert.equal(n.stream.toolSinceProse, true);
   });
 
+  it('captures the LIVE action (currentTool) from a real tool event, mapping the name to a verb', () => {
+    // A real tool name maps to a friendly verb; with NO detail there is no target
+    // (the Claude subscription provider supplies none — never fabricated).
+    const edit = reduce(initialState, { type: 'stream/tool', name: 'Edit', phase: 'start', verbosity: 'normal' });
+    assert.deepEqual(edit.stream.currentTool, { verb: 'editing' });
+    const read = reduce(initialState, { type: 'stream/tool', name: 'Read', phase: 'start', verbosity: 'normal' });
+    assert.deepEqual(read.stream.currentTool, { verb: 'reading' });
+    const bash = reduce(initialState, { type: 'stream/tool', name: 'Bash', phase: 'start', verbosity: 'normal' });
+    assert.deepEqual(bash.stream.currentTool, { verb: 'running' });
+    // An unmapped tool name surfaces verbatim (never invented).
+    const custom = reduce(initialState, { type: 'stream/tool', name: 'CustomMcpTool', phase: 'start', verbosity: 'normal' });
+    assert.deepEqual(custom.stream.currentTool, { verb: 'CustomMcpTool' });
+  });
+
+  it('includes the real TARGET only when the tool event supplied a detail', () => {
+    const withTarget = reduce(initialState, {
+      type: 'stream/tool',
+      name: 'file_change',
+      phase: 'end',
+      verbosity: 'normal',
+      detail: 'src/auth/mw.ts',
+    });
+    assert.deepEqual(withTarget.stream.currentTool, { verb: 'editing', target: 'src/auth/mw.ts' });
+  });
+
+  it('clears currentTool at a (non-panel) tier boundary so no stale verb lingers', () => {
+    const afterTool = reduce(initialState, { type: 'stream/tool', name: 'Edit', phase: 'start', verbosity: 'normal' });
+    assert.notEqual(afterTool.stream.currentTool, undefined);
+    const settled = reduce(afterTool, {
+      type: 'stream/flush-tier',
+      tier: 'ic',
+      success: true,
+      confidence: 0.9,
+      inputTokens: 10,
+      outputTokens: 20,
+      durationMs: 5,
+      panelCandidate: false,
+      verbosity: 'normal',
+    });
+    assert.equal(settled.stream.currentTool, undefined);
+  });
+
+  it('verbose tool events do NOT set currentTool (they commit a [tool] line instead)', () => {
+    const v = reduce(initialState, { type: 'stream/tool', name: 'Edit', phase: 'start', verbosity: 'verbose' });
+    assert.equal(v.stream.currentTool, undefined);
+  });
+
   it('verbose reasoning commits the raw delta; normal commits nothing', () => {
     const v = reduce(initialState, { type: 'stream/reasoning', text: 'thinking…', verbosity: 'verbose' });
     assert.deepEqual(lines(v), ['thinking…']);
@@ -937,6 +984,15 @@ describe('coreEventToActions — mapping fidelity', () => {
       'normal',
     );
     assert.deepEqual(tool, [{ type: 'stream/tool', name: 'ls', phase: 'start', verbosity: 'normal' }]);
+    // A tool event carrying a real `detail` (codex/opencode) threads it through as
+    // the action's optional target; an absent detail (Claude) omits it.
+    const toolWithDetail = coreEventToActions(
+      { type: 'provider-event', tier: 'ic', event: { type: 'tool', name: 'file_change', phase: 'end', detail: 'src/x.ts' } },
+      'normal',
+    );
+    assert.deepEqual(toolWithDetail, [
+      { type: 'stream/tool', name: 'file_change', phase: 'end', verbosity: 'normal', detail: 'src/x.ts' },
+    ]);
     const reasoning = coreEventToActions(
       { type: 'provider-event', tier: 'ic', event: { type: 'reasoning', delta: 'hmm' } },
       'verbose',

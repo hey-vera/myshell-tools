@@ -119,6 +119,20 @@ export interface StreamView {
   readonly synthesizing: { readonly count: number } | null;
   /** render.ts `workLabel` — the spinner verb ("Thinking" / verbose tier label). */
   readonly workLabel: string;
+  /**
+   * The LIVE action the agent is currently performing, derived SOLELY from the
+   * most recent real `tool` provider-event (never fabricated): a friendly `verb`
+   * mapped from the tool name (Edit/Write→"editing", Read→"reading",
+   * Bash→"running", Grep/Glob→"searching", …) — or the raw tool name when no
+   * honest mapping exists — and an OPTIONAL `target` (file path / command) carried
+   * ONLY when the provider event actually supplied one (`detail`). The Claude
+   * subscription provider supplies no `detail`, so its tool events surface the verb
+   * alone (no fabricated target). This is LIVE-STATUS state only — it is NEVER
+   * committed to the transcript and never emits a transcript line. Absent until the
+   * first tool event of a tier; cleared at each tier boundary. The status line
+   * leads with it when present, else falls back to {@link workLabel}.
+   */
+  readonly currentTool?: { readonly verb: string; readonly target?: string };
   /** render.ts `toolSinceProse` — a tool ran since the last prose delta, so the
    *  next prose delta starts on a fresh line. */
   readonly toolSinceProse: boolean;
@@ -281,6 +295,13 @@ export type Action =
       readonly name: string;
       readonly phase: 'start' | 'end';
       readonly verbosity: Verbosity;
+      /**
+       * OPTIONAL real target the tool acted on (a file path / command / title),
+       * copied verbatim from the provider event's `detail` when present (codex /
+       * opencode supply it; the Claude subscription provider does NOT). Absent →
+       * the live action surfaces the verb alone, never a fabricated target.
+       */
+      readonly detail?: string;
     }
   // --- a reasoning delta (verbose prints it; normal keeps the spinner alive) ---
   | { readonly type: 'stream/reasoning'; readonly text: string; readonly verbosity: Verbosity }
