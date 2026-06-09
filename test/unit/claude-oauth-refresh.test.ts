@@ -295,6 +295,55 @@ describe('fetchRefreshedToken (live local server)', () => {
     }
   });
 
+  it('treats a 200 with absent expires_in as MALFORMED (null), not a 0-second token', async () => {
+    const { url, server } = await serve(200, JSON.stringify({ access_token: 'a', refresh_token: 'r' }));
+    try {
+      // Writing this back would mint expiresAt = now + 0 → instantly stale →
+      // refresh storm. The fetch must report failure instead.
+      assert.equal(await fetchRefreshedToken('x', url), null);
+    } finally {
+      server.close();
+    }
+  });
+
+  it('treats a 200 with expires_in <= 0 as MALFORMED (null)', async () => {
+    const { url, server } = await serve(200, JSON.stringify({ access_token: 'a', expires_in: 0 }));
+    try {
+      assert.equal(await fetchRefreshedToken('x', url), null);
+    } finally {
+      server.close();
+    }
+  });
+
+  it('end-to-end: a malformed (expires_in:0) 200 is treated as failure — no stale write, cooldown applies, no storm', async () => {
+    const { url, server } = await serve(200, JSON.stringify({ access_token: 'fresh', expires_in: 0 }));
+    const home = await mkdtemp(join(tmpdir(), 'oauth-malformed-'));
+    const credsPath = join(home, '.credentials.json');
+    const original = JSON.stringify({ claudeAiOauth: { accessToken: 'old', refreshToken: 'r', expiresAt: NOW - HOUR } });
+    await writeFile(credsPath, original, 'utf8');
+    try {
+      const r1 = await refreshClaudeOauthIfNeeded({
+        home, credsPath, nowMs: NOW,
+        fetcher: (rt) => fetchRefreshedToken(rt, url),
+      });
+      // Not 'refreshed' with a 0-second token — failed, with the cooldown path.
+      assert.equal(r1.action, 'failed');
+      assert.equal(await readFile(credsPath, 'utf8'), original, 'no instantly-stale token written');
+      assert.ok(existsSync(join(home, '.myshell-tools', '.claude-refresh-failed')), 'cooldown marker dropped');
+
+      // The very next launch must NOT hit the endpoint again → no refresh storm.
+      let called = false;
+      const r2 = await refreshClaudeOauthIfNeeded({
+        home, credsPath, nowMs: NOW + 60_000,
+        fetcher: async () => { called = true; return null; },
+      });
+      assert.equal(r2.action, 'cooldown');
+      assert.equal(called, false, 'cooldown prevents the per-launch refresh storm');
+    } finally {
+      server.close();
+    }
+  });
+
   it('end-to-end: refreshClaudeOauthIfNeeded uses the real fetch to rewrite creds', async () => {
     const { url, server } = await serve(
       200,

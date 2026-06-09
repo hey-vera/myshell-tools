@@ -531,9 +531,11 @@ describe('renderBudgetLine', () => {
     assert.ok(line.includes('89k'), `expected all-time tokens "89k" in: "${line}"`);
   });
 
-  it('shows the today call count (singular/plural) when calls > 0', () => {
-    assert.ok(renderBudgetLine(makeSpend({ calls: 3, todayCalls: 3, todayTokens: 100 }), false).includes('3 calls'));
-    assert.ok(renderBudgetLine(makeSpend({ calls: 1, todayCalls: 1, todayTokens: 100 }), false).includes('1 call'));
+  it('shows the today provider-call count (singular/plural) when calls > 0', () => {
+    // Honest label: every model invocation (reviewers, critics, poll candidates),
+    // not just the user's turns — so it reads "provider call(s)", not bare "calls".
+    assert.ok(renderBudgetLine(makeSpend({ calls: 3, todayCalls: 3, todayTokens: 100 }), false).includes('3 provider calls'));
+    assert.ok(renderBudgetLine(makeSpend({ calls: 1, todayCalls: 1, todayTokens: 100 }), false).includes('1 provider call'));
   });
 
   it('includes "Today:" prefix when calls > 0', () => {

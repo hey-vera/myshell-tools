@@ -211,12 +211,20 @@ export async function fetchRefreshedToken(
     if (typeof data !== 'object' || data === null) return null;
     const d = data as Record<string, unknown>;
     if (typeof d['access_token'] !== 'string' || d['access_token'].length === 0) return null;
+    // A 200 without a positive `expires_in` is MALFORMED: writing it back would
+    // mint an instantly-stale token (`expiresAt = now + 0`), so the very next
+    // launch would decide to refresh AGAIN — and because the success path clears
+    // the failure cooldown, there'd be no backoff (a per-launch refresh storm
+    // against a broken endpoint). Treat it as a failed fetch instead (→ null), so
+    // the caller's `failed` + cooldown path applies and we back off cleanly.
+    const expiresInSec = typeof d['expires_in'] === 'number' ? d['expires_in'] : 0;
+    if (!(expiresInSec > 0)) return null;
     return {
       accessToken: d['access_token'],
       ...(typeof d['refresh_token'] === 'string' && d['refresh_token'].length > 0
         ? { refreshToken: d['refresh_token'] }
         : {}),
-      expiresInSec: typeof d['expires_in'] === 'number' ? d['expires_in'] : 0,
+      expiresInSec,
     };
   } catch {
     return null;

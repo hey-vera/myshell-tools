@@ -161,3 +161,69 @@ export function compactHistory(
     return '';
   }
 }
+
+// ---------------------------------------------------------------------------
+// Truncation reporting (honesty seam)
+// ---------------------------------------------------------------------------
+
+export interface HistoryTruncationInfo {
+  /** True when compactHistory would drop ≥1 whole turn from `entries`. */
+  readonly truncated: boolean;
+  /** How many whole turns compactHistory would omit (0 when not truncated). */
+  readonly droppedTurns: number;
+}
+
+/**
+ * Report whether {@link compactHistory} would drop whole turns from `entries`,
+ * and how many — WITHOUT changing what compactHistory returns. The resume path
+ * shows the full scrollback, but the model only receives compactHistory's recent
+ * window; this seam lets the UI surface a quiet, honest note when those diverge.
+ *
+ * Uses the SAME bounds as compactHistory (maxTurns windowing, then maxChars
+ * oldest-first dropping) so the count can never disagree with what was sent.
+ * A single over-long final turn is character-truncated in place (not a dropped
+ * turn), so it is NOT counted here — only whole omitted turns are.
+ *
+ * Pure: no I/O, no Date, no Math.random. Never throws.
+ */
+export function historyTruncationInfo(
+  entries: readonly SessionEntry[],
+  opts?: CompactHistoryOptions,
+): HistoryTruncationInfo {
+  try {
+    if (!Array.isArray(entries) || entries.length === 0) {
+      return { truncated: false, droppedTurns: 0 };
+    }
+
+    const maxChars = opts?.maxChars ?? DEFAULT_MAX_CHARS;
+    const maxTurns = opts?.maxTurns ?? DEFAULT_MAX_TURNS;
+
+    // (1) maxTurns windowing drops the oldest turns beyond the window.
+    const droppedByTurns = Math.max(0, entries.length - maxTurns);
+    const window = entries.slice(-maxTurns);
+
+    // (2) maxChars then drops oldest turns first until under budget — mirror the
+    //     exact loop in compactHistory so the count matches what was sent.
+    const formatted: string[] = window.map((entry) => {
+      const label = roleLabel(entry.role);
+      const rawContent =
+        entry.role === 'assistant' ? stripAssistantReplayControls(entry.content) : entry.content;
+      return `${label}: ${rawContent.trim()}`;
+    });
+
+    // Mirror compactHistory's drop loop, but stop before emptying the array: a
+    // single over-budget final turn is character-truncated IN PLACE (kept), not
+    // dropped, so it must not be counted as a dropped turn.
+    let kept = formatted.slice();
+    let droppedByChars = 0;
+    while (kept.length > 1 && kept.join('\n\n').length > maxChars) {
+      kept = kept.slice(1);
+      droppedByChars += 1;
+    }
+
+    const droppedTurns = droppedByTurns + droppedByChars;
+    return { truncated: droppedTurns > 0, droppedTurns };
+  } catch {
+    return { truncated: false, droppedTurns: 0 };
+  }
+}

@@ -5,7 +5,7 @@
 
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { compactHistory } from '../../src/core/history.ts';
+import { compactHistory, historyTruncationInfo } from '../../src/core/history.ts';
 import type { SessionEntry } from '../../src/core/types.ts';
 
 // ---------------------------------------------------------------------------
@@ -391,5 +391,54 @@ describe('compactHistory — combined maxTurns + maxChars', () => {
     // The first entry alone is ~211 chars, too big. Second is ~62, fits.
     assert.ok(result.includes('b'.repeat(50)), 'Newer entry should fit');
     assert.ok(!result.includes('a'.repeat(200)), 'Older entry should be dropped');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// historyTruncationInfo — honesty seam (reports what compactHistory drops)
+// ---------------------------------------------------------------------------
+
+describe('historyTruncationInfo', () => {
+  it('reports no truncation for empty input', () => {
+    assert.deepEqual(historyTruncationInfo([]), { truncated: false, droppedTurns: 0 });
+  });
+
+  it('reports no truncation when within both bounds', () => {
+    const entries = [makeEntry('user', 'hi'), makeEntry('assistant', 'hello')];
+    assert.deepEqual(historyTruncationInfo(entries), { truncated: false, droppedTurns: 0 });
+  });
+
+  it('reports turns dropped by the maxTurns window', () => {
+    const entries: SessionEntry[] = [];
+    for (let i = 1; i <= 20; i++) entries.push(makeEntry('user', `msg-${i}`));
+    const info = historyTruncationInfo(entries, { maxTurns: 12, maxChars: 6000 });
+    assert.equal(info.truncated, true);
+    assert.equal(info.droppedTurns, 8, '20 - 12 = 8 turns outside the window');
+  });
+
+  it('reports turns dropped by the maxChars budget', () => {
+    const entries: SessionEntry[] = [
+      makeEntry('user', 'old: ' + 'a'.repeat(200)),
+      makeEntry('user', 'new: ' + 'b'.repeat(50)),
+    ];
+    const info = historyTruncationInfo(entries, { maxTurns: 12, maxChars: 100 });
+    assert.equal(info.truncated, true);
+    assert.equal(info.droppedTurns, 1, 'the over-budget older turn is dropped');
+  });
+
+  it('does NOT count a single over-long final turn as a dropped turn', () => {
+    const entries = [makeEntry('user', 'x'.repeat(500))];
+    const info = historyTruncationInfo(entries, { maxTurns: 12, maxChars: 100 });
+    assert.deepEqual(info, { truncated: false, droppedTurns: 0 });
+  });
+
+  it('agrees with compactHistory: count matches turns actually omitted', () => {
+    const entries: SessionEntry[] = [];
+    for (let i = 1; i <= 20; i++) entries.push(makeEntry('user', `msg-${i}-end`));
+    const info = historyTruncationInfo(entries, { maxTurns: 3, maxChars: 6000 });
+    const out = compactHistory(entries, { maxTurns: 3, maxChars: 6000 });
+    assert.equal(info.droppedTurns, 17);
+    assert.ok(!out.includes('msg-17-end'), 'compactHistory omits the 17 older turns');
+    assert.ok(out.includes('msg-18-end'), 'compactHistory keeps the recent window');
   });
 });

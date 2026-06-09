@@ -6,6 +6,21 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+## [3.59.0] - 2026-06-09
+
+### Fixed
+- **No OAuth refresh storm on a malformed token response** — a 200 with no/zero
+  `expires_in` used to write an instantly-expired token and clear the cooldown, so
+  every launch re-refreshed. It's now treated as a failed refresh (cooldown applies).
+- **Resume tells you when older turns fall out of the model's context** — long threads
+  silently fed the model only a recent window while showing the full scrollback. Resume
+  now prints a one-time dim note when older turns are outside the model's window, so you
+  know it isn't seeing everything above.
+- **"Today: N provider calls"** — the menu count includes internal sub-calls (reviewers,
+  diff critics, poll candidates), so it's relabeled from "calls" to "provider calls" to
+  be honest about what it counts (it was never your turn count).
+- Pruned the unbounded interrupt-timestamp array (memory hygiene on long sessions).
+
 ## [3.58.0] - 2026-06-09
 
 ### Fixed

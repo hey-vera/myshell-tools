@@ -256,7 +256,12 @@ export function renderBudgetLine(
     // instead; the prominent CTA above carries the per-provider keys.
     return authed ? 'No runs yet — press n to start' : 'Sign in to begin';
   }
-  const callWord = spend.todayCalls === 1 ? 'call' : 'calls';
+  // "provider calls" (not "calls") is the honest label: the ledger counts EVERY
+  // model invocation — reviewer runs, diff critics, poll candidates, synthetic
+  // entries — not just the user's own turns. They're real provider invocations,
+  // but bare "calls" reads as "your turns", which would over-count what the user
+  // issued. The tokens figure beside it is correct as-is.
+  const callWord = spend.todayCalls === 1 ? 'provider call' : 'provider calls';
   const todayPart = 'Today: ' + String(spend.todayCalls) + ' ' + callWord + ' · ' + formatTokens(spend.todayTokens) + ' tokens';
   const totalPart = formatTokens(spend.totalTokens) + ' tokens all-time';
   return todayPart + '   ·   ' + totalPart;

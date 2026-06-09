@@ -83,6 +83,7 @@ import type { PlanInfo } from '../core/policy.js';
 import type { Mode } from '../core/policy.js';
 import { planNativeSession } from '../core/native-session.js';
 import { decideHistoryPolicy } from '../core/turn-directive.js';
+import { historyTruncationInfo } from '../core/history.js';
 import { availableAfterCooldown, cooldownExpiry } from '../core/cooldown.js';
 import { learnProviderOrder, learnModelOutcomeOrder } from '../core/routing-memory.js';
 import type { OutputSink, TurnInputSurface, Verbosity } from './render.js';
@@ -808,6 +809,21 @@ export async function runChatLoop(
       if (transcript.length > 0) {
         out.write('\n' + transcript + '\n');
       }
+      // Honesty: the transcript above shows the WHOLE scrollback, but the model
+      // only receives compactHistory's recent window. When that compaction drops
+      // whole turns, say so once — quietly — so the user knows the model isn't
+      // seeing everything above. Uses the same bounds as the actual replay, so
+      // the note can't disagree with what was sent. Non-alarming, dim, one line.
+      const trunc = historyTruncationInfo(priorEntries);
+      if (trunc.truncated) {
+        const turnWord = trunc.droppedTurns === 1 ? 'turn' : 'turns';
+        out.write(
+          dim(
+            `  ※ ${trunc.droppedTurns} older ${turnWord} above are outside the model's context window — it sees the recent part.\n`,
+            out.color,
+          ),
+        );
+      }
     }
   }
 
@@ -1084,6 +1100,16 @@ export async function runChatLoop(
   const sigintHandler = (): void => {
     const now = ctx.clock.now();
     interruptTimes.push(now);
+    // Prune entries older than the window so the array can't grow unbounded over
+    // a long session — countRecentInterrupts only ever looks at the recent window,
+    // so anything older is dead weight. Keep it tiny and in place.
+    const cutoff = now - INTERRUPT_WINDOW_MS;
+    let writeIdx = 0;
+    for (let readIdx = 0; readIdx < interruptTimes.length; readIdx += 1) {
+      const t = interruptTimes[readIdx];
+      if (t !== undefined && t >= cutoff) interruptTimes[writeIdx++] = t;
+    }
+    interruptTimes.length = writeIdx;
     const count = countRecentInterrupts(interruptTimes, now, INTERRUPT_WINDOW_MS);
     const action = interpretInterrupt(count, currentAc !== null);
 
