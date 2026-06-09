@@ -62,6 +62,7 @@ import { getStateDir } from './infra/paths.js';
 import { isPricingStale } from './infra/pricing.js';
 import { runDoctor } from './commands/doctor.js';
 import { runCost } from './commands/cost.js';
+import { runEvalCommand } from './commands/eval.js';
 import { runMemoryCli } from './commands/memory.js';
 import { runLogin } from './commands/login.js';
 import { runInstall } from './commands/install.js';
@@ -157,6 +158,9 @@ Commands:
                     claude, device code for codex) — best inside containers /
                     over SSH. Add --browser to force the localhost flow.
   cost              Show real spend from the ledger with a per-model breakdown
+  eval              Run the frozen answer-quality ruler (Phase 0). Opt-in + cost-
+                    stated: prints the cost and exits unless you pass --yes. Add
+                    --compare to diff the latest two stored runs (no model calls).
   install           Write a guarded startup hook to your shell rc file so new
                     interactive shells launch myshell-tools automatically
   uninstall         Remove the startup hook written by "install"
@@ -364,6 +368,71 @@ async function main(): Promise<void> {
 
   if (args[0] === 'cost') {
     process.exit(await runCost(cwd, out));
+  }
+
+  // ---- Eval: the owner-invoked answer-quality ruler (Phase 0) ----------------
+  // Reads-only on `--compare`; otherwise opt-in + cost-stated, and spends quota
+  // ONLY with `--yes`. Reuses the SAME real answer path (orchestrate via buildDeps)
+  // and the cross-vendor provider machinery — no API key, no metered eval service.
+  if (args[0] === 'eval') {
+    const evalArgs = args.slice(1);
+    // `--compare` is read-only — skip provider detection entirely.
+    if (evalArgs.includes('--compare')) {
+      process.exit(
+        await runEvalCommand(
+          evalArgs,
+          {
+            cwd,
+            version,
+            nowIso: () => systemClock.isoNow(),
+            providers: {},
+            policy: DEFAULT_POLICY,
+            timeoutMs: DEFAULT_TIMEOUT_MS,
+            authenticatedProviders: [],
+            // --compare is read-only and returns before any run; this is never called.
+            makeDeps: () => {
+              throw new Error('compare mode does not run prompts');
+            },
+          },
+          out,
+          new AbortController().signal,
+        ),
+      );
+    }
+    const [env, config] = await Promise.all([detectEnvironment(), loadConfig()]);
+    const resolvedMode = config.mode ?? autoModeForPlans(
+      [env.claude, env.codex, env.opencode]
+        .filter((p) => p.authenticated)
+        .map((p) => p.plan),
+    );
+    const policy = POLICY_PRESETS[resolvedMode];
+    const providers = buildProviders(cwd, env);
+    const authenticatedProviders: import('./providers/port.js').ProviderId[] = [];
+    if (env.claude.authenticated) authenticatedProviders.push('claude');
+    if (env.codex.authenticated) authenticatedProviders.push('codex');
+    if (env.opencode.authenticated) authenticatedProviders.push('opencode');
+    const availableModels: Partial<Record<import('./providers/port.js').ProviderId, readonly string[]>> = {};
+    if (env.claude.installed && env.claude.availableModels.length > 0) availableModels['claude'] = env.claude.availableModels;
+    if (env.codex.installed && env.codex.availableModels.length > 0) availableModels['codex'] = env.codex.availableModels;
+    if (env.opencode.installed && env.opencode.availableModels.length > 0) availableModels['opencode'] = env.opencode.availableModels;
+    const code = await runEvalCommand(
+      evalArgs,
+      {
+        cwd,
+        version,
+        nowIso: () => systemClock.isoNow(),
+        providers,
+        policy,
+        timeoutMs: resolveTimeoutMs(config),
+        authenticatedProviders,
+        ...(Object.keys(availableModels).length > 0 ? { availableModels } : {}),
+        // Fresh deps per prompt — same real answer path the `run` subcommand uses.
+        makeDeps: () => buildDeps(cwd, env, policy, resolveTimeoutMs(config)),
+      },
+      out,
+      new AbortController().signal,
+    );
+    process.exit(code);
   }
 
   // ---- Memory one-shot subcommands (Phase 5, memory doc §8(a)) ---------------

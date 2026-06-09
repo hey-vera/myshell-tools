@@ -15,6 +15,13 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   resumed goal's contract from the persisted `workTrace` (niche: the in-run contract
   is already kept in memory; only cross-session resume benefits). Optional.
 
+## [3.37.0]
+
+### Added — `myshell eval`: measure the partner's answer quality (the ruler)
+- A frozen 20-prompt eval suite + a cross-vendor judge that scores the partner's real answers on 7 dimensions (understanding, judgment, clarity, proactivity, correctness, honesty, conciseness) — so quality is a tracked NUMBER, not a vibe. The judge runs on a DIFFERENT vendor than the one that answered (honestly falls back to same-vendor, labeled, when only one is connected); an unjudged prompt is recorded as such, never a fabricated score.
+- Opt-in + cost-stated: `myshell eval` prints the cost (~40 model calls) and exits without spending; `myshell eval --yes` runs + stores a timestamped result; `myshell eval --compare` diffs the last two runs. Never auto-runs. Subscription-clean (your own provider seats, no API key, no metered eval service).
+- This is the foundation the quality work is measured against, going forward.
+
 ## [3.36.0]
 
 ### Internal — plan decomposition + dependency-aware scheduling (default-off flag)

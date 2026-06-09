@@ -40,3 +40,12 @@ export function getSessionFile(cwd: string): string {
 export function getLedgerFile(cwd: string): string {
   return join(getStateDir(cwd), 'ledger.jsonl');
 }
+
+/**
+ * Returns the path to the eval-results JSONL file (Phase 0, the ruler). One
+ * timestamped RunResult per line, append-only, so runs can be compared over time.
+ * Path: <cwd>/.myshell-tools/eval-results.jsonl
+ */
+export function getEvalResultsFile(cwd: string): string {
+  return join(getStateDir(cwd), 'eval-results.jsonl');
+}
