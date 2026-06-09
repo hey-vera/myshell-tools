@@ -201,10 +201,6 @@ function composerWidth(columns: number | undefined): number {
   return Math.max(INPUT_BOX_MIN_COLUMNS, columns ?? 80);
 }
 
-function fitInputLine(line: string, width: number): string {
-  return truncateToWidth(line, Math.max(0, width));
-}
-
 export function composerRules(width: number, info: string, color: boolean): { top: string; bottom: string } {
   const chipText = ` ${truncateToWidth(info, Math.max(12, width - 12))} `;
   const topChip = `┌${chipText}┐`;
@@ -569,8 +565,14 @@ export function InputBox({
           const absRow = firstShown + i;
           // First buffer row carries the cyan `❯` caret; continuation rows get a
           // dim gutter aligned under it so the multiline block reads as one input.
+          // The line `<Text>` soft-wraps inside a width-bounded box so a long
+          // logical row spills onto multiple physical rows (the box grows
+          // vertically) instead of being hard-truncated with an ellipsis — the
+          // owner sees everything they type. The 2-col caret/gutter sits in a
+          // fixed-width sibling so wrapped continuation rows stay aligned.
           const isFirst = absRow === 0;
-          const display = line === '' && isFirst ? dim(PLACEHOLDER, color) : fitInputLine(line, inputWidth - 2);
+          const isPlaceholder = line === '' && isFirst;
+          const display = isPlaceholder ? dim(PLACEHOLDER, color) : line;
           const gutter =
             isFirst ? (
               <Text>
@@ -583,7 +585,9 @@ export function InputBox({
           return (
             <Box key={absRow}>
               {gutter}
-              <Text>{display}</Text>
+              <Box width={Math.max(1, inputWidth - 2)}>
+                <Text wrap={isPlaceholder ? 'truncate-end' : 'wrap'}>{display}</Text>
+              </Box>
             </Box>
           );
         })

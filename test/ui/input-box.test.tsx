@@ -234,6 +234,42 @@ test('multiline buffer renders adjacent composer rows (caret on row 1, gutter on
   assert.ok(!frame.includes('│'), `expected no old side rails, got:\n${frame}`);
 });
 
+test('a long single-line input WRAPS across multiple physical rows (no ellipsis clip)', async () => {
+  const bridge = createInputBoxBridge();
+  bridge.onSubmit(() => {});
+  const columns = 40;
+  const { lastFrame, stdin } = render(
+    <InputBox bridge={bridge} color={true} isTty={true} columns={columns} />,
+  );
+  // One logical line (no '\n') far longer than the box's inner width.
+  const long = 'wordwordword '.repeat(8).trim(); // ~103 chars, no newlines
+  stdin.write(long);
+  await tick();
+  assert.equal(bridge.currentLine(), long, 'buffer holds the full single line');
+  const frame = plain(lastFrame());
+  // The text spills onto multiple physical rows: more than one frame row carries
+  // a chunk of the input. Count rows that contain part of the wrapped word run.
+  const contentRows = frame
+    .split('\n')
+    .filter((r) => r.includes('word'));
+  // The INPUT rows must NOT be hard-truncated with an ellipsis (the info chip in
+  // the top rule may legitimately ellipsize — that's chrome, not the buffer).
+  assert.ok(
+    !contentRows.some((r) => r.includes('…')),
+    `long input rows should wrap, not clip with an ellipsis, got:\n${frame}`,
+  );
+  assert.ok(
+    contentRows.length >= 2,
+    `long single line should occupy >=2 physical rows, got ${contentRows.length}:\n${frame}`,
+  );
+  // The whole text is recoverable from the frame (nothing dropped).
+  const reassembled = contentRows.map((r) => r.replace(/[❯…]/g, '').replace(/\s+/g, '')).join('');
+  assert.ok(
+    reassembled.includes('wordwordword'),
+    `wrapped rows should preserve the input text, got:\n${frame}`,
+  );
+});
+
 test('multiline submit sends the full \\n-joined buffer', async () => {
   const bridge = createInputBoxBridge();
   const submitted: string[] = [];

@@ -6,6 +6,16 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+## [3.53.0] - 2026-06-09
+
+### Fixed
+- **The chat input box now word-wraps** — long messages were hard-truncated with an
+  ellipsis at the box width, so you couldn't see what you were typing. Now a long
+  line soft-wraps within the box and the bordered composer grows vertically; the
+  `❯` caret stays on the first row and wrapped continuation lines indent under the
+  gutter (no repeated caret). (Up/Down still step `\n`-delimited logical rows, not
+  visual wrapped rows — no cursor-glyph change.)
+
 ## [3.52.0] - 2026-06-09
 
 ### Fixed
