@@ -669,19 +669,26 @@ export function reduce(state: UiState, action: Action): UiState {
             'treat the above as unverified.',
         });
       }
+      // Token segment honesty: providers map missing usage to 0, and formatTokens(0)
+      // === '0', so an absent-usage turn would otherwise read "0 tokens". Omit the
+      // `· N tokens` segment when the turn total is 0 — matching summarizeTurn /
+      // StatusLine, which only show tokens once the figure is genuinely > 0.
+      const hasTokens = next.tokens.turn > 0;
       if (isVerbose) {
+        const tokenSeg = hasTokens ? `${tokenStr} tokens, ` : '';
         next = commit(next, {
           kind: 'completion',
           text:
-            `Success — tier: ${action.tier}, ${tokenStr} tokens, ` +
+            `Success — tier: ${action.tier}, ${tokenSeg}` +
             `attempts: ${action.attempts}, session: ${action.sessionId}`,
         });
       } else if (!isQuiet) {
         const secs = action.elapsedSecs ?? 0;
         const elapsedStr = secs > 0 ? ` · ${secs}s` : '';
+        const tokenSeg = hasTokens ? ` · ${tokenStr} tokens` : '';
         next = commit(next, {
           kind: 'completion',
-          text: `✓ done · ${tokenStr} tokens${elapsedStr}`,
+          text: `✓ done${tokenSeg}${elapsedStr}`,
         });
       }
       return next;

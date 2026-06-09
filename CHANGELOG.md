@@ -6,6 +6,26 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+## [3.54.0] - 2026-06-09
+
+### Fixed
+- **Clarifying-question pickers and `/edit` prompts are now visible** — on the Ink
+  TUI the action cue ("Pick one, or Enter to skip:", "Type your answer:", "Pick a
+  number…", "New message…") was written without a trailing newline, so it sat unseen
+  until you submitted — you were parked at a blank composer not knowing a picker was
+  waiting. The Ink `readLine` now flushes pending output before reading (the same
+  pattern key-confirm already used), so the cue shows while you decide.
+- **Resume is instant again** — "Continue / Resume" awaited the recap model call
+  before enabling input, so it could stall up to 8s before you could type (the 3.52.0
+  manager-tier recap made this heavier). The composer now goes live immediately and
+  the recap resolves concurrently, printing the `※ recap` line when ready; a guard
+  suppresses a late recap write if you've already left the conversation (its side
+  effects — stored recap + smart title — still complete).
+- **Turn-end line no longer claims "· 0 tokens"** — when a turn reports no usage, the
+  completion line now reads `✓ done` / `✓ done · 3s` instead of `✓ done · 0 tokens`,
+  matching the honesty already enforced on the live status surfaces (mirrored across
+  the Ink and legacy renderers to preserve run-stream parity).
+
 ## [3.53.0] - 2026-06-09
 
 ### Fixed

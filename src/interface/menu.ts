@@ -811,26 +811,21 @@ export async function runChatLoop(
     }
   }
 
-  // Recap on resume: replace the weak tail-echo with a real ※ recap line when one
-  // is available; otherwise stay silent (prior behaviour with no recap).
-  {
-    let recapText: string | null = null;
-    try {
-      recapText = await resolveRecap(false);
-    } catch {
-      recapText = null; // fail-soft: a recap failure must never block resume
-    }
-    if (recapText !== null) {
-      // First-touch explainer for the ※ glyph, once ever, printed ABOVE the recap.
-      await showFirstTouch('recap');
-      out.write('\n  ' + formatRecapLine(recapText, out.color) + '\n\n');
-    }
-  }
+  // Conversation-live guard: true while this resume's chat loop is active, cleared
+  // in the loop's finally. Read by the concurrent recap write below so a recap that
+  // resolves AFTER the user has already left the conversation can't print into the
+  // menu/sub-flow that replaced it.
+  let conversationLive = true;
 
   // One quiet orientation line on entry — NOT a per-turn label. Real chat shells
   // (claude, gpt) don't relabel the prompt every turn; they show a clean caret and
   // let you just type. Shown once; the caret below carries every turn after. The
   // active mode is shown here too so it's always visible in-conversation.
+  //
+  // Ordered BEFORE the recap (below) so the composer goes live INSTANTLY on resume —
+  // the recap can require a MANAGER-tier model call (up to RECAP_TIMEOUT_MS) and must
+  // never block the user from typing. The recap resolves concurrently and prints when
+  // ready (a beat after the prompt is already live; instant input beats perfect order).
   {
     const entryMode = modeLabel(
       mutableCtx.config.mode ?? resolveAutoMode(mutableCtx.env),
@@ -849,6 +844,33 @@ export async function runChatLoop(
       );
     }
   }
+
+  // Recap on resume: replace the weak tail-echo with a real ※ recap line when one
+  // is available; otherwise stay silent (prior behaviour with no recap). Resolved
+  // CONCURRENTLY (NOT awaited here) so a stale-cache recap's MANAGER-tier model call
+  // can't stall input — the composer is already live (above). resolveRecap's side
+  // effects (storing the fresh recap + the smart title) still happen. Fail-soft: any
+  // error is swallowed, never thrown, never blocks. The write is gated on the
+  // conversation still being live (`conversationLive`, cleared in the loop's finally)
+  // so a late recap that resolves AFTER the user has left can't corrupt the menu.
+  const recapResolved: Promise<void> = (async (): Promise<void> => {
+    let recapText: string | null = null;
+    try {
+      recapText = await resolveRecap(false);
+    } catch {
+      recapText = null; // fail-soft: a recap failure must never block resume
+    }
+    if (recapText !== null && conversationLive) {
+      // First-touch explainer for the ※ glyph, once ever, printed ABOVE the recap.
+      await showFirstTouch('recap');
+      if (conversationLive) {
+        out.write('\n  ' + formatRecapLine(recapText, out.color) + '\n\n');
+      }
+    }
+  })();
+  // Surface (and swallow) any rejection so the floating promise never trips an
+  // unhandled-rejection; the loop awaits it in finally to settle side effects.
+  recapResolved.catch(() => {});
 
   // EXPERIMENTAL Local Outcome Learner (opt-in via config.learnRouting; default
   // off → this whole block is skipped, zero behaviour change). Read the ledger
@@ -1208,6 +1230,13 @@ export async function runChatLoop(
   } finally {
     process.removeListener('SIGINT', sigintHandler);
     loopBreaker = null;
+    // Mark the conversation no longer live FIRST so a still-pending concurrent recap
+    // (fired on resume) sees the gate closed and skips its write into the menu.
+    conversationLive = false;
+    // Let the concurrent recap settle so its side effects (storing the fresh recap +
+    // the smart title) complete; the write itself is already gated out above. Never
+    // throws (the promise swallows its own errors).
+    await recapResolved;
     // Hide the chat composer on exit (back to the menu / app exit) so it never
     // lingers in the menu or sub-flows. Mirrors the entry inkSetChatActive(true).
     inkSetChatActive?.(false);
@@ -2964,7 +2993,13 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
     // chat loop's typed-ahead capture — no second stdin owner, no readline.
     lineReader = inkHandle.reader;
     const reader = lineReader;
-    readLine = () => reader.nextLine();
+    // Commit any pending newline-LESS prompt (e.g. "Pick one, or Enter to skip: ")
+    // BEFORE blocking on input, so the action cue is visible while we wait. flush()
+    // is a no-op when nothing is pending, so newline-terminated flows are unaffected.
+    readLine = () => {
+      out.flush?.();
+      return reader.nextLine();
+    };
   } else if (ctx.readLine !== undefined) {
     // Injected reader — no real readline needed.
     readLine = ctx.readLine;
@@ -3003,7 +3038,12 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
     lineReader = createLineReader(rl, process.stdin as unknown as KeyInputStream, readlineEcho);
     const reader = lineReader;
     // All prompt text is already written to `out` before readLine() is called.
-    readLine = () => reader.nextLine();
+    // flush() is a no-op on the legacy sink (it writes straight to stdout, no
+    // pending buffer); kept symmetric with the Ink path above.
+    readLine = () => {
+      out.flush?.();
+      return reader.nextLine();
+    };
   }
 
   // Single-key yes/no confirm (Enter = default, y/n decide instantly on a TTY)

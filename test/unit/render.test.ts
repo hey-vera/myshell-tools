@@ -1412,16 +1412,32 @@ describe('renderStream — completion line carries the final-state dot/colour', 
     ];
   }
 
-  it('success → green ● and an elapsed suffix on the normal done line', async () => {
+  it('success → green ● on the normal done line (token segment omitted when usage is 0)', async () => {
     const sink = makeColorTtySink();
     const events = streamWith({
       type: 'final', success: true, output: 'Answer.', tier: 'ic', totalCostUsd: 0, sessionId: 's', attempts: 1,
     });
     await renderStream(makeStream(events), sink, 'normal');
     const joined = sink.buf.join('');
-    // Completion line: green ● + dim "✓ done · …".
+    // Completion line: green ● + dim "✓ done". No usage was reported (runningTokens
+    // === 0) → the "· N tokens" segment is OMITTED (honesty parity with the live
+    // surfaces), so the line reads "✓ done", never "✓ done · 0 tokens".
     assert.ok(joined.includes(`\x1b[32m${DOT}\x1b[0m `), 'green ● on the success completion line');
-    assert.ok(joined.includes('✓ done · '), 'success line uses the new "✓ done · N tokens" form');
+    assert.ok(joined.includes('✓ done'), 'success line uses the "✓ done" form');
+    assert.ok(!joined.includes('0 tokens'), 'no misleading "0 tokens" when usage is absent');
+  });
+
+  it('success done line INCLUDES the "· N tokens" segment when usage was reported', async () => {
+    const sink = makeColorTtySink();
+    const events: CoreEvent[] = [
+      { type: 'tier-start', tier: 'ic', provider: 'claude', model: 'm', attempt: 1 },
+      { type: 'provider-event', tier: 'ic', event: { type: 'text', delta: 'Answer.' } },
+      { type: 'tier-done', tier: 'ic', success: true, confidence: 0.9, costUsd: 0, inputTokens: 900, outputTokens: 100, durationMs: 1 },
+      { type: 'final', success: true, output: 'Answer.', tier: 'ic', totalCostUsd: 0, sessionId: 's', attempts: 1 },
+    ];
+    await renderStream(makeStream(events), sink, 'normal');
+    const joined = sink.buf.join('');
+    assert.ok(/✓ done · 1k tokens/.test(joined), `success line carries the token segment, got:\n${JSON.stringify(joined)}`);
   });
 
   it('appends the spinner elapsed (· Ns) to the normal success line when time passed', async () => {
@@ -1438,7 +1454,8 @@ describe('renderStream — completion line carries the final-state dot/colour', 
       }
       await renderStream(timedStream(), sink, 'normal');
       const joined = sink.buf.join('');
-      assert.ok(/✓ done · .* · 2s/.test(joined), `success line carries elapsed "· 2s", got:\n${JSON.stringify(joined)}`);
+      // No usage reported → token segment omitted; the elapsed suffix still appears.
+      assert.ok(/✓ done · 2s/.test(joined), `success line carries elapsed "· 2s", got:\n${JSON.stringify(joined)}`);
     } finally {
       mock.timers.reset();
     }

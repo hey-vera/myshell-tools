@@ -257,3 +257,108 @@ test('inkRenderTurn (createTurnDriver shape) folds CoreEvents into the transcrip
   const text = last.committed.map((l) => l.text).join('\n');
   assert.ok(text.includes('Hello world.'), `expected committed prose, got:\n${text}`);
 });
+
+// ---------------------------------------------------------------------------
+// BUG 2: resume must enable input IMMEDIATELY and resolve the recap CONCURRENTLY,
+// never blocking the composer on the (up-to-8s, MANAGER-tier) recap model call.
+// ---------------------------------------------------------------------------
+
+test('BUG 2: resume enables the chat composer BEFORE the recap model call resolves', async () => {
+  const clock = makeClock();
+
+  // A conversation that IS recap-eligible (messageCount >= 3) with NO cached recap
+  // → resolveRecap(false) will treat it as stale and make a model call. We seed the
+  // store directly so the resume path hits the slow-recap branch.
+  const convId = 'resume-conv';
+  const seededEntries: SessionEntry[] = [
+    { timestamp: clock.isoNow(), role: 'user', content: 'first question' },
+    { timestamp: clock.isoNow(), role: 'assistant', content: 'first answer' },
+    { timestamp: clock.isoNow(), role: 'user', content: 'second question' },
+    { timestamp: clock.isoNow(), role: 'assistant', content: 'second answer' },
+  ];
+  const meta: ConversationMeta = {
+    id: convId, title: 'first question', createdAt: clock.isoNow(), updatedAt: clock.isoNow(),
+    messageCount: 4, pinned: false, category: null, recap: null,
+  };
+  const store: ConversationStore = {
+    async list() { return [meta]; },
+    async create() { return meta; },
+    async load() { return [...seededEntries]; },
+    async rename() {},
+    async remove() {},
+    writer() { return { id: convId, async append() {} }; },
+    async setPinned() {},
+    async setCategory() {},
+    async setRecap() {},
+    async truncateAfter() { return 0; },
+  };
+
+  // A recap provider whose run() BLOCKS on a gate we control — modelling the slow,
+  // up-to-8s MANAGER-tier recap call. Until released, the recap promise stays pending.
+  let releaseGate: () => void = () => {};
+  const gate = new Promise<void>((resolve) => { releaseGate = resolve; });
+  const slowProvider: Provider = {
+    id: 'claude',
+    async detect() {
+      return { id: 'claude', installed: true, version: '1.0.0', authenticated: true, plan: null, binaryPath: null, availableModels: ['model-a'] };
+    },
+    async *run(): AsyncIterable<ProviderEvent> {
+      await gate; // block until the test releases it
+      yield { type: 'done', text: 'recap: we discussed X and Y.', usage: FAKE_USAGE, raw: {} };
+    },
+  };
+
+  const ctx: MenuContext = {
+    version: '2.0.0', clock, ledger: makeLedger(), providers: { claude: slowProvider },
+    env: FAKE_ENV, store,
+    config: { onboarded: true, setAsDefault: false, smartRoute: false } as AppConfig,
+    cwd: join(tmpdir(), `ink-resume-${randomUUID()}`), sandbox: 'workspace-write', timeoutMs: 5_000,
+    installProvider: async () => true, login: async () => 0,
+  };
+  const mutableCtx = { config: ctx.config, env: ctx.env };
+
+  const bridge = createInkAppBridge();
+  const inkStore = createInkStore(bridge);
+  const out = createInkOutputSink(inkStore, { color: false, isTty: true });
+  const reader = createInkLineReader(bridge);
+  const inkRenderTurn = makeInkTurn(inkStore, () => {});
+
+  // Record the ORDER of chat-active activation vs recap completion.
+  const events: string[] = [];
+  const inkSetChatActive = (active: boolean): void => {
+    if (active) events.push('chat-active');
+  };
+
+  // The user immediately leaves (/back) — no chat turn — so the ONLY model call on
+  // this path is the (gated) recap. readLine waits until input is "enabled", then
+  // returns /back. By the time readLine is invoked, the composer must already be live.
+  let inputOffered = false;
+  const readLine = async (): Promise<string | null> => {
+    inputOffered = true;
+    // The composer must have been enabled BEFORE input is offered — proving resume
+    // did not block on the still-pending recap.
+    assert.ok(events.includes('chat-active'), 'chat composer enabled before input is offered');
+    assert.ok(!events.includes('recap-done'), 'input offered while the recap is still pending (not blocked)');
+    return '/back';
+  };
+
+  const loopPromise = runChatLoop(
+    ctx, mutableCtx, convId, out, readLine, ctx.login!, async () => ctx.env,
+    async () => false, undefined, reader, inkRenderTurn,
+    undefined, undefined, undefined, inkSetChatActive,
+  );
+
+  // Let microtasks flush so the loop reaches readLine. The recap is STILL gated.
+  await new Promise((r) => setTimeout(r, 20));
+  assert.ok(inputOffered, 'input was offered without waiting for the recap to resolve');
+
+  // Now release the gate; the concurrent recap resolves and the loop settles.
+  events.push('recap-done');
+  releaseGate();
+  const result = await loopPromise;
+  assert.equal(result, 'menu', '/back returns control to the menu');
+
+  // The composer was enabled FIRST (instant input), before the recap completed.
+  assert.equal(events[0], 'chat-active', 'chat-active fired first');
+  assert.ok(events.indexOf('chat-active') < events.indexOf('recap-done'), 'input enabled before recap done');
+});

@@ -932,11 +932,13 @@ export async function renderStream(
         // Success: a single minimal completion line in normal/verbose; nothing
         // in quiet.
         if (isVerbose) {
-          // Green turn dot owns the success final-state colour.
+          // Green turn dot owns the success final-state colour. Token segment omitted
+          // when 0 (no usage reported) — parity with the Ink reducer line.
+          const verboseTokenSeg = runningTokens > 0 ? `${formatTokens(runningTokens)} tokens, ` : '';
           out.write(
             `\n${completionDot('success')}${bold(green('Success', c), c)} — ` +
             `tier: ${ev.tier}, ` +
-            `${formatTokens(runningTokens)} tokens, ` +
+            `${verboseTokenSeg}` +
             `attempts: ${ev.attempts}, ` +
             `session: ${ev.sessionId}\n`,
           );
@@ -947,9 +949,14 @@ export async function renderStream(
           // suffix is omitted, keeping piped output stable.
           const secs = spinner.elapsed();
           const elapsedStr = secs > 0 ? ` · ${secs}s` : '';
+          // Token-segment honesty: providers map missing usage to 0, and
+          // formatTokens(0) === '0'. Omit the `· N tokens` segment when the running
+          // total is 0 so the line reads "✓ done" (+ elapsed), never "✓ done · 0
+          // tokens" — matching summarizeTurn / StatusLine and the Ink reducer line.
+          const tokenSeg = runningTokens > 0 ? ` · ${formatTokens(runningTokens)} tokens` : '';
           out.write(
             `\n${completionDot('success')}` +
-            `${dim(`✓ done · ${formatTokens(runningTokens)} tokens${elapsedStr}`, c)}\n`,
+            `${dim(`✓ done${tokenSeg}${elapsedStr}`, c)}\n`,
           );
         }
         break;

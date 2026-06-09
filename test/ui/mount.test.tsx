@@ -87,6 +87,56 @@ test('createInkOutputSink flush() commits pending partial line; no-op when empty
   assert.deepEqual(chrome(), ['Sign in to claude? (Y/n) ']);
 });
 
+test('BUG 1: Ink readLine wrapper flushes the pending prompt cue BEFORE awaiting input', async () => {
+  // The question-selector / /edit flows write a trailing-space prompt with NO
+  // newline (e.g. "Pick one, or Enter to skip: ") then immediately await readLine().
+  // Without flushing, that cue sits invisibly in `pending` and the user is parked at
+  // a blank composer. menu.ts wraps the Ink reader as:
+  //   readLine = () => { out.flush?.(); return reader.nextLine(); };
+  // This test models that exact composition and proves the cue is COMMITTED (visible)
+  // before nextLine resolves.
+  const bridge = createInkAppBridge();
+  let last: UiState | null = null;
+  bridge._setUiState = (s) => { last = s; };
+  const store = createInkStore(bridge);
+  const out = createInkOutputSink(store, { color: false, isTty: true });
+  const reader = createInkLineReader(bridge);
+
+  const chrome = (): string[] =>
+    (last?.committed ?? []).filter((l) => l.kind === 'raw').map((l) => l.text);
+
+  // Exactly the menu.ts Ink-path wrapper.
+  const readLine = (): Promise<string | null> => {
+    out.flush?.();
+    return reader.nextLine();
+  };
+
+  // The numbered options render (newline-terminated) — then the action cue WITHOUT
+  // a newline, which would otherwise be invisible.
+  out.write('  1. fix the bug\n  2. add the test\n');
+  out.write('Pick one, or Enter to skip: ');
+  // Before readLine, the cue is still buffered (not committed).
+  assert.deepEqual(chrome(), ['  1. fix the bug', '  2. add the test']);
+
+  // Invoke the wrapper; it must flush the cue to the committed transcript BEFORE
+  // the line resolves.
+  const linePromise = readLine();
+  assert.deepEqual(chrome(), [
+    '  1. fix the bug',
+    '  2. add the test',
+    'Pick one, or Enter to skip: ',
+  ]);
+
+  // Now the user submits; the line resolves and no extra/duplicate lines appear.
+  bridge.input._submit?.('2');
+  assert.equal(await linePromise, '2');
+  assert.deepEqual(chrome(), [
+    '  1. fix the bug',
+    '  2. add the test',
+    'Pick one, or Enter to skip: ',
+  ]);
+});
+
 test('MENU-LAG FIX: ephemeral frame REPLACES the live region; committed[] stays flat across N menu redraws', () => {
   // The interactive menu redraws its full chrome (~30 lines) on EVERY loop
   // iteration. Before the fix, each redraw committed those lines to the

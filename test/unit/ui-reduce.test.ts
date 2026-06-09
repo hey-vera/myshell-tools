@@ -795,8 +795,10 @@ describe('ui reduce — final', () => {
     assert.equal(s.stream.buffer, '');
     assert.equal(s.stream.phase, 'idle');
     assert.equal(s.stream.panelists.length, 0);
-    // 'final answer' prose then the success completion line.
-    assert.deepEqual(lines(s), ['final answer', '✓ done · 0 tokens']);
+    // 'final answer' prose then the success completion line. No usage was accounted
+    // this turn (tokens.turn === 0), so the token segment is OMITTED (honesty parity
+    // with summarizeTurn / StatusLine) — the line reads "✓ done", not "✓ done · 0 tokens".
+    assert.deepEqual(lines(s), ['final answer', '✓ done']);
   });
 
   it('normal success commits "✓ done · N tokens" with elapsed suffix when provided', () => {
@@ -817,9 +819,37 @@ describe('ui reduce — final', () => {
     assert.deepEqual(lines(s), ['✓ done · 1k tokens · 7s']);
   });
 
-  it('verbose success commits the "Success — tier:…" line', () => {
+  it('normal success OMITS the token segment when no usage was reported (tokens.turn === 0)', () => {
+    // Providers map missing usage to 0; formatTokens(0) === '0'. The completion line
+    // must NOT read "✓ done · 0 tokens" — it reads "✓ done" (+ elapsed when present).
+    const noTokens = reduce(initialState, finalAction({}));
+    assert.deepEqual(lines(noTokens), ['✓ done']);
+    const noTokensWithElapsed = reduce(initialState, finalAction({ elapsedSecs: 3 }));
+    assert.deepEqual(lines(noTokensWithElapsed), ['✓ done · 3s']);
+  });
+
+  it('verbose success commits the "Success — tier:…" line (token segment omitted at 0)', () => {
     const s = reduce(initialState, finalAction({ verbosity: 'verbose' }));
-    assert.deepEqual(lines(s), ['Success — tier: ic, 0 tokens, attempts: 1, session: sess-1']);
+    // No usage accounted (tokens.turn === 0) → the "N tokens" segment is omitted here too.
+    assert.deepEqual(lines(s), ['Success — tier: ic, attempts: 1, session: sess-1']);
+  });
+
+  it('verbose success INCLUDES the token segment when tokens.turn > 0', () => {
+    const s = run([
+      {
+        type: 'stream/flush-tier',
+        tier: 'ic',
+        success: true,
+        confidence: 0.9,
+        inputTokens: 900,
+        outputTokens: 100,
+        durationMs: 100,
+        panelCandidate: false,
+        verbosity: 'normal',
+      },
+      finalAction({ verbosity: 'verbose' }),
+    ]);
+    assert.deepEqual(lines(s), ['Success — tier: ic, 1k tokens, attempts: 1, session: sess-1']);
   });
 
   it('quiet success commits NO completion line', () => {
@@ -840,7 +870,7 @@ describe('ui reduce — final', () => {
     const s = reduce(initialState, finalAction({ bestEffort: true }));
     assert.deepEqual(lines(s), [
       'Best-effort answer — reached the attempt limit without a fully-confident result; treat the above as unverified.',
-      '✓ done · 0 tokens',
+      '✓ done',
     ]);
   });
 
