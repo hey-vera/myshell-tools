@@ -24,6 +24,7 @@ import {
   deriveProjectKey,
   type TasteLedger,
 } from '../../src/infra/taste-ledger.ts';
+import { classifyPushBackAnswer } from '../../src/core/brain.ts';
 import type { Clock } from '../../src/core/types.ts';
 
 function makeFakeClock(startIso = '2026-06-09T00:00:00.000Z'): Clock & { setIso(iso: string): void } {
@@ -90,6 +91,43 @@ describe('record → recall round-trip', () => {
     const pb = await ledger.recall(null);
     assert.equal(pb.memoryBias, 0);
     assert.deepEqual(pb.lines, []);
+  });
+
+  // The FREE JUDGMENT LAYER push-back resolution point (master-judgment §4.2): the
+  // user's accept/reject of a push_back, classified by the brain's pure
+  // `classifyPushBackAnswer`, round-trips into the ledger as pushback_accept /
+  // pushback_reject and distills correctly (the signals that shipped INERT in
+  // 3.39.0, now ACTIVATED). This proves the activation path end-to-end at the data
+  // level — the same mapping menu.ts wires at the resolution point.
+  it('push-back accept/reject (via classifyPushBackAnswer) round-trips and distills', async () => {
+    const subject = 'before I build — this is irreversible. Want me to stage it?';
+    // The user accepts the partner's call twice → +2 proceed lean → bias +1.
+    for (const answer of ['Go with your call', 'Go with your call']) {
+      const verdict = classifyPushBackAnswer(answer);
+      assert.equal(verdict, 'accept');
+      await ledger.record({ signal: 'pushback_accept', subject, choice: answer, projectKey: null });
+    }
+    // A reject is recorded as the ask-lean signal.
+    const rejVerdict = classifyPushBackAnswer('Do it my way');
+    assert.equal(rejVerdict, 'reject');
+    await ledger.record({ signal: 'pushback_reject', subject, choice: 'Do it my way', projectKey: null });
+
+    const all = await ledger.readAll();
+    assert.equal(all.length, 3);
+    const signalsSeen = all.map((e) => e.signal).sort();
+    assert.deepEqual(signalsSeen, ['pushback_accept', 'pushback_accept', 'pushback_reject']);
+
+    const pb = await ledger.recall(null);
+    // 2 accept (+2) + 1 reject (-1) = +1 net → below the +2 bias threshold → 0.
+    assert.equal(pb.memoryBias, 0);
+    // The push-back subject becomes a distilled taste line (a choice-bearing signal).
+    assert.ok(pb.lines.length >= 1, 'push-back outcomes contribute distilled lines');
+  });
+
+  it('an ambiguous push-back answer (Explain/free-text) classifies null → not recorded as a pushback signal', () => {
+    // The honesty floor: only the unambiguous structured calls are taste signals.
+    assert.equal(classifyPushBackAnswer('Explain'), null);
+    assert.equal(classifyPushBackAnswer('actually do something completely different'), null);
   });
 });
 

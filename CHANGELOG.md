@@ -15,6 +15,15 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   resumed goal's contract from the persisted `workTrace` (niche: the in-run contract
   is already kept in memory; only cross-session resume benefits). Optional.
 
+## [3.41.0]
+
+### Added — the free judgment layer: a partner with its own honest judgment, flag-off
+- A new push_back brain move (sibling of reflect_confirm): the partner proactively CHALLENGES a planned move, but ONLY with a grounded, nameable cause — never generic hedging. Sources: (a) a correctness/irreversibility RED FLAG (the existing isIrreversible signal coincident with non-high understanding — about to do the hard-to-undo thing while still uncertain of the goal), and (b) a LEARNED-TASTE VIOLATION (the planned default contradicts the recorded taste playbook, naming both halves: you have preferred X here, this would do Y). The poll-split source is a later gated phase (extension point left). When no source grounds out, push_back STAYS SILENT — silence is the default.
+- Activates the pushback_accept / pushback_reject taste signals that shipped inert in 3.39.0: when you accept or reject a push-back, that outcome is recorded, so the partner learns whether its judgment is trusted.
+- Ask-calibration: the existing genuine-fork ask spine (hasGenuineFork/forkBudget/ASK_CAP) is reused verbatim — push_back is purely additive and never converts a proceed into an ask. The 3.30.0 calibration (trivial/medium fast-path, no nag) is preserved exactly.
+- Flag-gated MYSHELL_JUDGMENT / config.experimentalJudgment, DEFAULT OFF = byte-for-byte today behavior (flag-on-with-no-reason deep-equals flag-off; the Phase-1 characterization + oracle suites are byte-identical and pass). No new model calls, subscription-clean.
+- Honesty held: never manufactures a disagreement; push_back requires a real nameable reason or stays silent; never fabricates a taste violation (returns null unless it can point at the specific recorded call).
+
 ## [3.40.0]
 
 ### Added — the verification centerpiece: trustworthy "done", flag-off

@@ -195,6 +195,21 @@ export interface BrainLoopState {
 }
 
 /**
+ * The grounded source a `push_back` was fired from (master-judgment §2.2). Always
+ * a REAL, nameable signal — never a vibe. The third source (a judgment-poll SPLIT)
+ * is a LATER gated phase; the union leaves a clean extension point for it but this
+ * phase emits only the two free sources.
+ */
+type PushBackSource =
+  /** A correctness / irreversibility RED FLAG (reuses the existing stakes signal). */
+  | 'red_flag'
+  /** A LEARNED-TASTE VIOLATION (the planned default contradicts the taste playbook). */
+  | 'taste_violation';
+// FUTURE (gated phase): | 'poll_split' — a cross-vendor judgment-poll SPLIT/LEAN
+// against the user's stated approach. Add the source + a `reason` builder for it
+// when the plural poll ships; the `push_back` move + recording site already accept it.
+
+/**
  * The brain's per-iteration decision. The LOOP picks one of these each round; the
  * impure loop in orchestrate executes it.
  *   - `answer`         — confident enough; run today's single sequential pass.
@@ -203,12 +218,27 @@ export interface BrainLoopState {
  *   - `reflect_confirm`— investigated but still a judgment call / high stakes:
  *                        reflect a grounded plan and confirm before acting.
  *   - `ask`            — a GENUINE non-investigable fork the code can't settle.
+ *   - `push_back`      — the FREE judgment layer (master-judgment §2): a single,
+ *                        grounded, falsifiable CHALLENGE with a NAMED cause and a
+ *                        concrete recommendation, then it yields to the user. Fires
+ *                        ONLY under the narrow grounded-reason gate (§2.2); silence
+ *                        is correct when no real reason exists. Flag-gated OFF.
  */
 export type BrainMove =
   | { readonly kind: 'answer' }
   | { readonly kind: 'investigate'; readonly tool: InvestigationKind; readonly narration: string }
   | { readonly kind: 'reflect_confirm' }
-  | { readonly kind: 'ask'; readonly questions: QuestionSet };
+  | { readonly kind: 'ask'; readonly questions: QuestionSet }
+  | {
+      readonly kind: 'push_back';
+      readonly source: PushBackSource;
+      /** The specific, nameable reason surfaced to the user (never vague). */
+      readonly reason: string;
+      /** The concrete recommendation the partner is making. */
+      readonly recommendation: string;
+      /** The deterministic challenge QuestionSet (sibling of reflect_confirm). */
+      readonly questions: QuestionSet;
+    };
 
 /** Default round budgets (vision-brain §5). */
 export const MAX_ROUNDS_DEFAULT = 2;
@@ -222,6 +252,261 @@ export const MAX_ROUNDS_COLLABORATIVE = 3;
  * that didn't happen. (The deeper targeted Read/Grep pass is Phase 2.)
  */
 export const CODEBASE_NARRATION = 'Factoring in the project layout…';
+
+// ---------------------------------------------------------------------------
+// THE FREE JUDGMENT LAYER (master-judgment §2) — the `push_back` grounded gate
+// ---------------------------------------------------------------------------
+
+/**
+ * The judgment context the caller threads in so the (otherwise pure) policy can
+ * evaluate the `push_back` grounded-reason gate. BACKWARD-COMPATIBLE: every field
+ * is optional and the whole argument is optional, so every existing caller/test
+ * (which passes nothing) is byte-for-byte unchanged. `enabled` is the flag
+ * (`judgmentEnabled`); when false/absent the policy NEVER offers `push_back` and
+ * the ask calibration is unchanged — the OFF-GUARANTEE.
+ */
+export interface JudgmentContext {
+  /** The flag (src/core/judgment-flag.ts). DEFAULT false → push_back never fires. */
+  readonly enabled: boolean;
+  /**
+   * The distilled LEARNED-TASTE playbook lines (`<subject>: <the call>` strings,
+   * from core/taste.ts `distillTaste`). Used ONLY to detect a taste VIOLATION —
+   * the planned default contradicts a recorded high-support call. Absent/empty →
+   * the taste-violation source can never fire (no fabricated violation).
+   */
+  readonly tasteLines?: readonly string[];
+}
+
+/** The push_back challenge question id (lets the wiring layer detect + record it). */
+const PUSHBACK_ID = 'push_back';
+/** Cap on the surfaced push_back prompt (matches REFLECT_PROMPT_CAP below). */
+const PUSHBACK_PROMPT_CAP = 700;
+
+/**
+ * Detect a LEARNED-TASTE VIOLATION (master-judgment §2.2 source 2 / §4.3.3): the
+ * frame's planned default for a genuine fork CONTRADICTS a recorded taste line.
+ *
+ * GROUNDED + NAMEABLE, never fabricated. A taste line is `"<subject>: <the call>"`
+ * (taste.ts render). A violation requires BOTH:
+ *   - the playbook records a concrete call the user keeps making, AND
+ *   - the frame intends to do the OPPOSITE — i.e. the planned default (a fork's
+ *     `assumeIfUnasked`) matches the violated approach while an ALTERNATIVE option
+ *     on that same fork matches the user's recorded call.
+ * We match on the recorded CALL token appearing in a fork OPTION the partner did
+ * NOT pick as the default, while the default differs from it. This is deliberately
+ * conservative: if we cannot point at the specific fork + the specific recorded
+ * call the default departs from, we return null (silence). Pure; never throws.
+ *
+ * Returns the {recorded, planned} pair so the caller can name BOTH halves
+ * ("you've preferred X here; this would do Y") — a real, checkable reason.
+ */
+export function detectTasteViolation(
+  frame: IntentFrame | undefined,
+  tasteLines: readonly string[] | undefined,
+): { readonly recorded: string; readonly planned: string } | null {
+  try {
+    if (frame === undefined) return null;
+    const lines = tasteLines ?? [];
+    if (lines.length === 0) return null;
+    const forks = frame.forks ?? [];
+    if (forks.length === 0) return null;
+
+    // The recorded CALLS the user keeps making (the part after "subject: ").
+    const recordedCalls = lines
+      .map((l) => {
+        const i = l.indexOf(':');
+        const call = (i >= 0 ? l.slice(i + 1) : l).trim();
+        return call;
+      })
+      .filter((c) => c.length >= 3);
+    if (recordedCalls.length === 0) return null;
+
+    for (const fork of forks) {
+      const planned = fork.assumeIfUnasked?.trim();
+      if (planned === undefined || planned.length === 0) continue;
+      const options = (fork.options ?? []).map((o) => o.trim()).filter((o) => o.length > 0);
+
+      for (const recorded of recordedCalls) {
+        // The default does NOT already honour the recorded call …
+        if (overlaps(planned, recorded)) continue;
+        // … AND an ALTERNATIVE option on this same fork DOES match it (so the
+        // partner had the user's preferred approach available and skipped it).
+        const altMatches = options.some((o) => o !== planned && overlaps(o, recorded));
+        if (altMatches) {
+          return { recorded, planned };
+        }
+      }
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/** Conservative directional token-overlap: does `text` express the `call`? Pure. */
+function overlaps(text: string, call: string): boolean {
+  const t = text.toLowerCase();
+  const c = call.toLowerCase();
+  if (t.includes(c) || c.includes(t)) return true;
+  const callToks = new Set(
+    c
+      .replace(/[^\p{L}\p{N}\s]/gu, ' ')
+      .split(/\s+/)
+      .filter((w) => w.length >= 4),
+  );
+  if (callToks.size === 0) return false;
+  const textToks = new Set(
+    t
+      .replace(/[^\p{L}\p{N}\s]/gu, ' ')
+      .split(/\s+/)
+      .filter((w) => w.length >= 4),
+  );
+  let inter = 0;
+  for (const w of callToks) if (textToks.has(w)) inter++;
+  // Require a MAJORITY of the (content) call tokens to appear — conservative, so a
+  // single incidental shared word never trips a fabricated "violation".
+  return inter / callToks.size >= 0.5;
+}
+
+/**
+ * The grounded-reason detector for `push_back` (master-judgment §2.2). PURE, total,
+ * never throws. Returns the move payload (source + a NAMED reason + a concrete
+ * recommendation + the challenge QuestionSet) ONLY when a real, checkable reason
+ * exists; otherwise null (silence is correct — the honesty non-negotiable).
+ *
+ * It fires only on a SUBSTANTIAL turn and ONLY from a real source, in priority:
+ *   1) RED FLAG — the action is irreversible (the existing `isIrreversible`
+ *      reversibility signal) AND understanding is NOT high (so there is genuine
+ *      uncertainty making the irreversible action risky). A clearly-understood
+ *      irreversible task is NOT pushed back on (it flows straight through today and
+ *      must keep doing so) — push_back requires the irreversibility to COINCIDE
+ *      with an uncertain goal, the real "about to do the hard-to-undo thing without
+ *      being sure" case. We name the specific irreversible action + recommend a
+ *      reversible/staged check first.
+ *   2) TASTE VIOLATION — `detectTasteViolation` found a fork whose planned default
+ *      departs from a recorded user call (a real, nameable departure).
+ *
+ * The recommendation is built from REAL frame/signal content; it never invents a
+ * filename or an approach the frame did not carry. When neither source grounds out,
+ * returns null and the partner proceeds silently.
+ */
+function detectPushBack(
+  conf: Confidence,
+  frame: IntentFrame | undefined,
+  signals: EngagementSignals,
+  plan: EngagementPlan,
+  judgment: JudgmentContext,
+): Extract<BrainMove, { kind: 'push_back' }> | null {
+  // Narrow gate clause 1: only substantial turns (never on small clear work).
+  if (!substantialBuild(signals, plan)) return null;
+
+  // ---- Source 1: correctness / irreversibility RED FLAG ----------------------
+  // Reuse the EXISTING reversibility signal (engagement.ts isIrreversible) + the
+  // EXISTING understanding tuple — invent NO new detector. Fire ONLY when the
+  // hard-to-undo action coincides with a non-high understanding (genuine doubt).
+  if (isIrreversible(signals.task) && conf.understanding !== 'high') {
+    const action = signals.task.trim();
+    const reason = `this looks irreversible / hard to undo, and I'm not fully certain of the goal yet`;
+    const recommendation = `do a reversible dry-run / staged check first, then commit`;
+    return {
+      kind: 'push_back',
+      source: 'red_flag',
+      reason,
+      recommendation,
+      questions: buildPushBack(reason, recommendation, action),
+    };
+  }
+
+  // ---- Source 2: LEARNED-TASTE VIOLATION -------------------------------------
+  // ONLY when the flag-on caller supplied playbook lines AND a concrete departure
+  // is detectable. Never fabricated: `detectTasteViolation` returns null unless it
+  // can point at the specific recorded call the planned default departs from.
+  const violation = detectTasteViolation(frame, judgment.tasteLines);
+  if (violation !== null) {
+    const reason = `you've consistently preferred "${violation.recorded}" here, but this would do "${violation.planned}"`;
+    const recommendation = `go with "${violation.recorded}" (your usual call)`;
+    return {
+      kind: 'push_back',
+      source: 'taste_violation',
+      reason,
+      recommendation,
+      questions: buildPushBack(reason, recommendation, frame?.goal?.trim() ?? signals.task),
+    };
+  }
+
+  return null;
+}
+
+/**
+ * Build the deterministic `push_back` QuestionSet (sibling of buildReflectConfirm).
+ * It surfaces the SPECIFIC reason + the recommendation, then yields to the user as
+ * a sharp, one-tap, correctable challenge: `[Do it your way] · [Go with my call] ·
+ * [Explain]`, `allowFreeText` so the user can re-ground it. NEVER vague hedging:
+ * the prompt always carries the named cause. PURE; never throws.
+ *
+ * Option order makes the user's ORIGINAL ask the easy default (an override, never a
+ * block): "Do it your way" first. The partner's recommendation is the second
+ * option. So a push_back that the user ignores costs them one tap to proceed
+ * exactly as they asked.
+ */
+export function buildPushBack(reason: string, recommendation: string, subject: string): QuestionSet {
+  const subj = (subject ?? '').trim();
+  const head = subj.length > 0 ? `On ${subj}: ` : '';
+  const prompt = `${head}before I build — ${reason}. I'd ${recommendation}. Want me to do that, or proceed as you asked?`.slice(
+    0,
+    PUSHBACK_PROMPT_CAP,
+  );
+  return {
+    questions: [
+      {
+        id: PUSHBACK_ID,
+        prompt,
+        options: [
+          { label: 'Do it my way' },
+          { label: 'Go with your call' },
+          { label: 'Explain' },
+        ],
+        multiSelect: false,
+        allowFreeText: true,
+      },
+    ],
+  };
+}
+
+/**
+ * Whether an answered question is the `push_back` challenge (so the wiring layer
+ * records pushback_accept/pushback_reject, not a fork_choice). Pure; never throws.
+ */
+export function isPushBackQuestionSet(qs: QuestionSet | undefined): boolean {
+  try {
+    return qs?.questions?.[0]?.id === PUSHBACK_ID;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Classify the user's answer to a `push_back` as ACCEPT (they took the partner's
+ * recommendation) or REJECT (they stuck with their original ask), for the taste
+ * ledger (master-judgment §4.2). Returns 'accept' | 'reject' | null (null = an
+ * ambiguous free-text answer we don't record, erring toward not learning a
+ * fabricated signal). Pure; never throws.
+ *
+ * The deterministic options are `Do it my way` (reject) / `Go with your call`
+ * (accept) / `Explain` (neither — null). A free-text answer is null (we record only
+ * the unambiguous structured calls — the honesty floor).
+ */
+export function classifyPushBackAnswer(answer: string): 'accept' | 'reject' | null {
+  try {
+    const a = (answer ?? '').trim().toLowerCase();
+    if (a.length === 0) return null;
+    if (a === 'go with your call') return 'accept';
+    if (a === 'do it my way') return 'reject';
+    return null; // 'Explain' or any free-text → not an unambiguous taste signal
+  } catch {
+    return null;
+  }
+}
 
 /**
  * The per-iteration policy (vision-brain §3 `decideNextMove`). PURE, total, never
@@ -257,10 +542,16 @@ export function decideNextMove(
   plan: EngagementPlan,
   state: BrainLoopState,
   deriveAsk: () => QuestionSet | null,
+  // OPTIONAL + default-disabled: the FREE judgment layer context (master-judgment
+  // §2). BACKWARD-COMPATIBLE — every existing caller/test passes nothing, so the
+  // policy is byte-for-byte unchanged. When `judgment.enabled` is false/absent the
+  // new `push_back` arm is NEVER reached (the OFF-GUARANTEE).
+  judgment: JudgmentContext = { enabled: false },
 ): BrainMove {
   // 0) TRIVIAL FAST-PATH — unchanged from today; NEVER loops, NEVER investigates.
   //    This is the hard fast-path guard: a greeting / quick question / trivial
-  //    turn short-circuits here with zero extra rounds, latency, or cost.
+  //    turn short-circuits here with zero extra rounds, latency, or cost. (push_back
+  //    is gated on `substantialBuild`, so a trivial/medium turn never reaches it.)
   if (isTrivial(signals)) return { kind: 'answer' };
 
   // 1) GENUINE NON-INVESTIGABLE FORK always wins — a real judgment call (vision/
@@ -288,6 +579,21 @@ export function decideNextMove(
     isInvestigable(signals)
   ) {
     return { kind: 'investigate', tool: 'codebase', narration: CODEBASE_NARRATION };
+  }
+
+  // 2.5) THE FREE JUDGMENT LAYER — `push_back` (master-judgment §2). ADDITIVE, RARE,
+  //      flag-gated OFF. It fires ONLY when the layer is enabled AND there is a
+  //      grounded, NAMEABLE reason (a correctness/irreversibility RED FLAG, or a
+  //      LEARNED-TASTE VIOLATION) — `detectPushBack` returns null otherwise, so
+  //      SILENCE is the default and the existing arms below run UNCHANGED. It sits
+  //      AFTER the genuine-fork ask (a real fork the user must answer wins) and AFTER
+  //      the investigation budget (we ground first, THEN form a view to push back
+  //      with), and it pre-empts the reflect_confirm/answer arms only with a real
+  //      cause. When the flag is off OR no reason grounds out, this is a no-op and
+  //      `decideNextMove` returns BYTE-FOR-BYTE today's move.
+  if (judgment.enabled) {
+    const pushBack = detectPushBack(conf, frame, signals, plan, judgment);
+    if (pushBack !== null) return pushBack;
   }
 
   // 3) A genuine JUDGMENT CALL worth a plan → reflect a grounded plan and confirm.

@@ -230,6 +230,22 @@ export interface AppConfig {
    */
   experimentalTaste?: boolean;
   /**
+   * EXPERIMENTAL FREE JUDGMENT LAYER (default off; the master-plan PHASE 5 free
+   * arms). When true (or with `MYSHELL_JUDGMENT` truthy in the environment), the
+   * adaptive brain may emit a NARROWLY-gated `push_back` move — a single, grounded,
+   * falsifiable challenge fired ONLY when there is a real, nameable reason (a
+   * correctness/irreversibility RED FLAG, or a LEARNED-TASTE VIOLATION of the
+   * distilled taste playbook); with no grounded reason it stays silent — and the
+   * existing ask-vs-proceed calibration is sharpened (ask SHARPLY on a genuine fork,
+   * otherwise proceed-and-state the assumption). No new model call: pure decision
+   * logic + recording into the taste ledger (pushback_accept/pushback_reject). The
+   * existing decideNextMove calibration (trivial/medium fast-path, no nag) is
+   * preserved exactly — push_back is additive and RARE. `decideNextMove` returns
+   * BYTE-FOR-BYTE today's moves when this is absent/false. See
+   * src/core/judgment-flag.ts / src/core/brain.ts.
+   */
+  experimentalJudgment?: boolean;
+  /**
    * Per-user "first-touch explainer shown" flags (whole-tool-finish-5.5.md §0.1).
    * Absent → nothing shown yet (each surface explains itself once on first
    * encounter). Each key flips to true the first time that surface is met.

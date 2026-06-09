@@ -42,6 +42,8 @@ import { nodeRepoScanPort } from '../infra/repo-scan.js';
 import { createFileUserMemoryStore, resolveProjectKey } from '../infra/user-memory-store.js';
 import { createFileTasteLedger } from '../infra/taste-ledger.js';
 import { tasteEnabled } from '../core/taste-flag.js';
+import { judgmentEnabled } from '../core/judgment-flag.js';
+import { isPushBackQuestionSet, classifyPushBackAnswer } from '../core/brain.js';
 import { renderTastePlaybook, isImmediateRephrase, type TasteSignal } from '../core/taste.js';
 import { createFileGoalStore } from '../infra/goal-store.js';
 import {
@@ -1493,7 +1495,11 @@ export async function runChatLoop(
         // by resolveTurnTaste below ONLY when the taste flag is ON. `tasteContext` is
         // the distilled playbook prompt block; `memoryBias` is the ±1 ask-vs-proceed
         // dial fed into EngagementSignals.memoryBias. Absent → byte-identical path.
-        taste?: { tasteContext?: string; memoryBias?: -1 | 0 | 1 },
+        taste?: {
+          tasteContext?: string;
+          memoryBias?: -1 | 0 | 1;
+          tastePlaybookLines?: readonly string[];
+        },
       ): OrchestrateDeps => {
         // Build per-provider advertised model sets from the live env so route()
         // can prefer a model the CLI actually advertises. Only include installed
@@ -1695,6 +1701,15 @@ export async function runChatLoop(
           ...(taste?.memoryBias !== undefined && taste.memoryBias !== 0
             ? { memoryBias: taste.memoryBias }
             : {}),
+          // THE FREE JUDGMENT LAYER (master-plan PHASE 5). Enable the brain's
+          // `push_back` capability ONLY when the judgment flag is ON; pass the
+          // structured taste lines so the taste-violation source can name the
+          // specific recorded call. Both absent when the flag is off → the brain's
+          // decideNextMove is byte-for-byte today's path (the OFF-GUARANTEE).
+          ...(judgmentOn ? { judgmentEnabled: true } : {}),
+          ...(taste?.tastePlaybookLines !== undefined && taste.tastePlaybookLines.length > 0
+            ? { tastePlaybookLines: taste.tastePlaybookLines }
+            : {}),
           // WORK STATE block (AP2-B §2.3 B) — present only when an accepted prior
           // turn carried a trusted workTrace (resumed/continuing chat). Truthful or
           // absent; pure derivation from the loaded history, no model call.
@@ -1826,6 +1841,10 @@ export async function runChatLoop(
       // ledger degrades to no-bias, never breaks a turn. No model call, no
       // embeddings, no metered service — subscription-clean.
       const tasteOn = tasteEnabled(process.env, mutableCtx.config);
+      // THE FREE JUDGMENT LAYER flag (master-plan PHASE 5; core/judgment-flag.ts).
+      // DEFAULT OFF: when off, deps.judgmentEnabled is never set → the brain's
+      // `decideNextMove` returns BYTE-FOR-BYTE today's moves (no push_back).
+      const judgmentOn = judgmentEnabled(process.env, mutableCtx.config);
       const tasteLedger = createFileTasteLedger({ clock: ctx.clock });
       // The subject of the last surfaced fork/proposal — so an observed answer can
       // be recorded against the decision it resolved. Set when a question/confirm
@@ -1836,6 +1855,7 @@ export async function runChatLoop(
       const resolveTurnTaste = async (): Promise<{
         tasteContext?: string;
         memoryBias?: -1 | 0 | 1;
+        tastePlaybookLines?: readonly string[];
       }> => {
         if (!tasteOn) return {}; // flag OFF → zero behavior change
         try {
@@ -1845,6 +1865,13 @@ export async function runChatLoop(
           return {
             ...(block.length > 0 ? { tasteContext: block } : {}),
             ...(playbook.memoryBias !== 0 ? { memoryBias: playbook.memoryBias } : {}),
+            // The STRUCTURED playbook lines feed the push_back taste-violation source
+            // (master-judgment §2.2 source 2) — but ONLY when the judgment flag is
+            // also ON. When judgment is off, omit them (no effect; the brain never
+            // reaches the taste-violation arm anyway).
+            ...(judgmentOn && playbook.lines.length > 0
+              ? { tastePlaybookLines: playbook.lines }
+              : {}),
           };
         } catch {
           return {}; // fail-soft: any recall failure → no bias, turn proceeds
@@ -1910,15 +1937,35 @@ export async function runChatLoop(
 
           questionTurns++;
 
-          // OBSERVED taste signal (Phase-7 free layer): the user just made a real
-          // call on a genuine fork the engine surfaced. Record subject=the decision
-          // (first question's prompt), choice=their actual answer. Flag-gated +
-          // fail-soft; never inferred. Remember the subject so an immediate edit/
-          // rephrase next turn can be attributed to this same decision.
+          // OBSERVED taste signal (Phase-7 free layer + master-judgment §2/§4.2):
+          // the user just made a real call on a decision the engine surfaced. Record
+          // subject=the decision (first question's prompt), choice=their actual
+          // answer. Flag-gated + fail-soft; never inferred. Remember the subject so
+          // an immediate edit/rephrase next turn can be attributed to this decision.
           const forkSubject = pending.questions.questions[0]?.prompt;
           if (forkSubject !== undefined && forkSubject.length > 0) {
             lastDecisionSubject = forkSubject;
-            void recordTaste('fork_choice', forkSubject, answerLine);
+            if (isPushBackQuestionSet(pending.questions)) {
+              // THE PUSH-BACK RESOLUTION POINT (master-judgment §4.2): the partner
+              // fired a grounded `push_back`; the user just resolved it. Record
+              // whether its judgment was TRUSTED — accept (took our call) /
+              // reject (stuck with theirs). This is how the partner LEARNS whether
+              // its push-backs are valued (the pushback_accept/reject signals that
+              // shipped INERT in 3.39.0 — activated here). An ambiguous answer
+              // (Explain / free text) is classified null and NOT recorded (no
+              // fabricated signal) — we still log a plain fork_choice for it so the
+              // decision itself is captured.
+              const verdict = classifyPushBackAnswer(answerLine);
+              if (verdict === 'accept') {
+                void recordTaste('pushback_accept', forkSubject, answerLine);
+              } else if (verdict === 'reject') {
+                void recordTaste('pushback_reject', forkSubject, answerLine);
+              } else {
+                void recordTaste('fork_choice', forkSubject, answerLine);
+              }
+            } else {
+              void recordTaste('fork_choice', forkSubject, answerLine);
+            }
           }
 
           // Reload history (the question turn was persisted by orchestrate) and

@@ -445,6 +445,26 @@ export interface OrchestrateDeps {
    */
   readonly memoryBias?: -1 | 0 | 1;
   /**
+   * THE FREE JUDGMENT LAYER flag (master-plan PHASE 5; src/core/judgment-flag.ts).
+   * When true (the caller resolved `judgmentEnabled(env, config)`), the adaptive
+   * brain may emit a NARROWLY-gated `push_back` move. DEFAULT (absent/false) → the
+   * brain's `decideNextMove` returns BYTE-FOR-BYTE today's moves (push_back never
+   * offered; ask calibration unchanged) — the OFF-GUARANTEE. Set only by the
+   * interface layer when the judgment flag is ON.
+   */
+  readonly judgmentEnabled?: boolean;
+  /**
+   * The distilled LEARNED-TASTE playbook lines (`<subject>: <call>` strings from
+   * core/taste.ts `distillTaste`) for THIS turn. Threaded so the `push_back`
+   * taste-violation source can name the specific recorded call the planned default
+   * departs from (master-judgment §2.2 source 2). Present only when BOTH the taste
+   * flag and the judgment flag are ON and the distill produced lines; absent → the
+   * taste-violation source can never fire (no fabricated violation). PURE data: no
+   * model call. Distinct from `tasteContext` (the rendered prompt block) — this is
+   * the STRUCTURED lines the brain reasons over.
+   */
+  readonly tastePlaybookLines?: readonly string[];
+  /**
    * Pre-rendered, truthful WORK STATE block (adaptive-partner-v2-5.6.md §2.3 B):
    * objective / evidence-backed done / model-stated next / blocked, derived from
    * accepted prior turns' persisted `workTrace` by `deriveWorkStateFromHistory`

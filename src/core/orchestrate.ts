@@ -53,6 +53,7 @@ import {
   understandingImproved,
   buildReflectConfirm,
   type Groundedness,
+  type JudgmentContext,
 } from './brain.js';
 import { allocate, type AllocationPlan } from './governor.js';
 import { autoModeForPlanInfos, type PlanInfo } from './policy.js';
@@ -220,6 +221,18 @@ export async function* orchestrate(
     const maxRounds = maxRoundsFor(depsArg.partnerStyle);
     let rounds = 0;
 
+    // THE FREE JUDGMENT LAYER context (master-judgment §2). Built ONCE from deps and
+    // threaded into every decideNextMove call. `enabled` defaults false (the
+    // interface layer sets `depsArg.judgmentEnabled` only when the flag is ON), so
+    // when absent the `push_back` arm is NEVER reached — the OFF-GUARANTEE. The
+    // taste lines feed the taste-violation source (absent → that source can't fire).
+    const judgmentContext: JudgmentContext = {
+      enabled: depsArg.judgmentEnabled === true,
+      ...(depsArg.tastePlaybookLines !== undefined
+        ? { tasteLines: depsArg.tastePlaybookLines }
+        : {}),
+    };
+
     // The brain loop is bounded by maxRounds investigation rounds; the +1 trip is
     // the terminal assessment that resolves to answer/ask/reflect_confirm.
     brainLoop: for (;;) {
@@ -247,12 +260,22 @@ export async function* orchestrate(
         engagementPlan,
         { rounds, groundedness: brainGroundedness, optedOutOfDeepDive, maxRounds },
         () => deriveAskFromForks(intentFrame, engagementPlan),
+        judgmentContext,
       );
 
       if (move.kind === 'answer') {
         break brainLoop;
       }
       if (move.kind === 'ask') {
+        brainTerminalQuestion = move.questions;
+        break brainLoop;
+      }
+      if (move.kind === 'push_back') {
+        // THE FREE JUDGMENT LAYER (master-judgment §2). A grounded, NAMED challenge
+        // rides the SAME zero-token terminal seam as ask/reflect_confirm: the
+        // deterministic QuestionSet surfaces the SPECIFIC reason + recommendation,
+        // then yields to the user. The wiring layer (menu.ts) records the user's
+        // accept/reject as a taste signal at the resolution point.
         brainTerminalQuestion = move.questions;
         break brainLoop;
       }
@@ -398,8 +421,10 @@ export async function* orchestrate(
           engagementPlan,
           { rounds, groundedness: brainGroundedness, optedOutOfDeepDive, maxRounds },
           () => deriveAskFromForks(intentFrame, engagementPlan),
+          judgmentContext,
         );
-        if (finalMove.kind === 'ask') {
+        if (finalMove.kind === 'ask' || finalMove.kind === 'push_back') {
+          // ask OR the grounded push_back challenge — both ride the terminal seam.
           brainTerminalQuestion = finalMove.questions;
         } else if (finalMove.kind === 'reflect_confirm') {
           const proposal = buildReflectConfirm(intentFrame, {
