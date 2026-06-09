@@ -19,6 +19,7 @@
 import type { WorkContract } from './work-contract.js';
 import { renderContractForPrompt } from './work-contract.js';
 import { lastJsonObjectBoundsWithKey } from './json-envelope.js';
+import { deriveGoal } from './intent.js';
 
 /** What the model's last reply signalled about the goal. */
 export type GoalSignal = 'complete' | 'continue' | 'missing';
@@ -50,6 +51,27 @@ export function capGoalLabel(s: string, n = 72): string {
   const clean = s.replace(/\s+/g, ' ').trim();
   if (clean.length <= n) return clean;
   return `${clean.slice(0, Math.max(0, n - 1)).trimEnd()}…`;
+}
+
+/**
+ * Form a CONCISE goal label/objective from an intent-extractor result + the raw
+ * user text. Used only for the DISPLAYED title and the anti-drift contract
+ * OBJECTIVE — never for the work input (the full raw text is still what the model
+ * is asked to do). Fail-soft fallback chain, never throws:
+ *
+ *   1. a non-empty extracted `frameGoal` → capped to one tidy line;
+ *   2. else `deriveGoal(rawText)` (deterministic first sentence/line) → capped;
+ *   3. else the raw text verbatim (today's behaviour — never crash, never block).
+ *
+ * Pure: the (optional, cheap, already-fail-soft) model call that produces
+ * `frameGoal` happens in the caller; this is the pure shaping of its result.
+ */
+export function formConciseGoalLabel(frameGoal: string | undefined | null, rawText: string): string {
+  const fromFrame = (frameGoal ?? '').replace(/\s+/g, ' ').trim();
+  if (fromFrame.length > 0) return capGoalLabel(fromFrame, 72);
+  const derived = deriveGoal(rawText).trim();
+  if (derived.length > 0) return capGoalLabel(derived, 72);
+  return rawText;
 }
 
 /** Default ceiling on autonomous turns — generous but finite. */

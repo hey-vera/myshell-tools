@@ -859,6 +859,17 @@ describe('startMenu — auto-goal smart autonomy', () => {
       },
       async *run(req: ProviderRequest, _signal: AbortSignal): AsyncIterable<ProviderEvent> {
         prompts.push(req.prompt);
+        // The auto-engage path now forms a CONCISE goal label first via the SAME
+        // cheap worker-tier intent extractor: that read-only call carries the
+        // distinctive "You extract the INTENT" preamble. Answer it with a tidy
+        // one-line frame goal that DIFFERS from the rambling raw text, so the test
+        // proves the panel title/objective becomes concise.
+        if (req.prompt.includes('You extract the INTENT of a user message')) {
+          const frame = JSON.stringify({ goal: 'Design the architecture', confidence: 'high' });
+          yield { type: 'text', delta: frame };
+          yield { type: 'done', text: frame, usage: FAKE_USAGE, raw: {} };
+          return;
+        }
         yield { type: 'text', delta: 'Done.\nGOAL_COMPLETE' };
         yield {
           type: 'done',
@@ -879,13 +890,17 @@ describe('startMenu — auto-goal smart autonomy', () => {
       smartRoute: false,
       autoGoal: true,
     };
+    // A deliberately rambling raw message: the work must still receive it verbatim,
+    // while the title/objective is the concise extracted label.
+    const rambling =
+      'so yea i think we should review and design the architecture now, lots to think about here, anyway lets just do it';
     const ctx = makeCtx(
       {
         config,
         providers: { claude: provider },
         readLine: makeScriptedReader([
           'n',
-          'review and design the architecture',
+          rambling,
           '/exit',
           'q',
         ]),
@@ -896,10 +911,29 @@ describe('startMenu — auto-goal smart autonomy', () => {
 
     await startMenu(ctx, sink);
 
-    assert.equal(prompts.length, 1, 'auto-goal should run the existing goal loop once');
+    // The cheap intent extraction (concise-label formation) ran as a SEPARATE
+    // worker-tier call, distinguishable by its preamble; the remaining prompts are
+    // the goal turn(s). (We don't pin the goal-turn COUNT: orchestrate's own
+    // review/verification heuristics may add a same-turn call for manager-tier
+    // architecture work — orthogonal to this fix.)
+    const extractorCalls = prompts.filter((p) => p.includes('You extract the INTENT of a user message'));
+    const goalPrompts = prompts.filter((p) => !p.includes('You extract the INTENT of a user message'));
+    assert.equal(extractorCalls.length, 1, 'concise-label formation makes exactly one cheap extractor call');
+    assert.ok(goalPrompts.length >= 1, 'auto-goal must enter the goal loop');
+    // CRITICAL: the WORK task still carries the FULL raw user text verbatim.
     assert.ok(
-      prompts[0]?.includes('Goal: review and design the architecture'),
-      'auto-goal must call runGoalLoop instead of the normal single task',
+      goalPrompts.every((p) => p.includes(`Goal: ${rambling}`)),
+      'auto-goal work task must keep the full raw user text as the goal input',
+    );
+    // The contract OBJECTIVE rendered into the work prompt is the CONCISE extracted
+    // label, NOT the rambling raw text.
+    assert.ok(
+      goalPrompts.every((p) => p.includes('OBJECTIVE: Design the architecture')),
+      'the contract objective must be the concise extracted label, not the raw ramble',
+    );
+    assert.ok(
+      !goalPrompts.some((p) => p.includes(`OBJECTIVE: ${rambling}`)),
+      'the rambling raw text must NOT appear as the contract objective',
     );
     assert.ok(
       sink.buf.includes("Working autonomously until it's done (up to 8 turns). Ctrl+C to stop."),
@@ -997,7 +1031,16 @@ describe('startMenu — auto-goal smart autonomy', () => {
           availableModels: ['model-a'],
         };
       },
-      async *run(_req: ProviderRequest, signal: AbortSignal): AsyncIterable<ProviderEvent> {
+      async *run(req: ProviderRequest, signal: AbortSignal): AsyncIterable<ProviderEvent> {
+        // The concise-label intent extraction runs first (read-only worker tier);
+        // answer it instantly so the Ctrl+C dance below exercises the GOAL turn,
+        // exactly as before this path formed a concise title.
+        if (req.prompt.includes('You extract the INTENT of a user message')) {
+          const frame = JSON.stringify({ goal: 'Design the architecture', confidence: 'high' });
+          yield { type: 'text', delta: frame };
+          yield { type: 'done', text: frame, usage: FAKE_USAGE, raw: {} };
+          return;
+        }
         callCount++;
         setImmediate(() => process.emit('SIGINT'));
         await new Promise<void>((resolve) => {

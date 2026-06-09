@@ -15,6 +15,21 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   resumed goal's contract from the persisted `workTrace` (niche: the in-run contract
   is already kept in memory; only cross-session resume benefits). Optional.
 
+## [3.47.0]
+
+### Fixed — smart goal titles: a concise objective, not your raw chat text
+
+- When chat auto-engages a goal, the goal title/objective is now a **concise,
+  professionally-formed goal** (e.g. "Build out the frontend skeleton") instead of the
+  user's raw verbatim message ("so yea i think the frontend is a decent skeleton to build
+  into, so yea…"). It reuses the existing cheap worker-tier intent extractor to form the
+  label, falling back deterministically (`deriveGoal` → raw text) and never blocking —
+  the extractor is skipped entirely when the intent engine is off or under quota pressure.
+- The concise label drives only the displayed title + the work-contract objective; the
+  **full raw message still drives the actual work** every turn (intent is never lost).
+- `src/core/goal.ts` gains the pure, tested `formConciseGoalLabel(frameGoal, rawText)`;
+  `runGoalLoop` now threads a separate `goalLabel` from the work task.
+
 ## [3.46.0]
 
 ### Changed — the intelligence is ON by default: automatic, frictionless

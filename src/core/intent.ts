@@ -409,7 +409,7 @@ function inferKind(task: string): string {
 }
 
 /** First sentence/line of the task, capped — a deterministic goal placeholder. */
-function deriveGoal(task: string): string {
+export function deriveGoal(task: string): string {
   const trimmed = task.trim();
   if (trimmed.length === 0) return '';
   // First line, then first sentence within it.

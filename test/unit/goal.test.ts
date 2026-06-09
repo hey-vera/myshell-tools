@@ -14,6 +14,7 @@ import {
   parseGoalContinueText,
   decideGoalNext,
   formatGoalProgress,
+  formConciseGoalLabel,
   DEFAULT_MAX_GOAL_ITERATIONS,
 } from '../../src/core/goal.ts';
 
@@ -278,5 +279,51 @@ describe('formatGoalProgress', () => {
       formatGoalProgress({ turn: -1, maxTurns: -1, elapsedMs: -5, tokensThisRun: -10 }),
       'goal: goal · turn 1/1 · current: turn 1 of 1 · 0 tokens · 0s',
     );
+  });
+});
+
+describe('formConciseGoalLabel', () => {
+  const rambling =
+    'so yea i think the frontend is a decent skeleton to build into, so yea lets just go for it and flesh out the pages and stuff';
+
+  it('uses a non-empty extracted frame goal, capped to one tidy line', () => {
+    // A long extractor goal is collapsed + capped to <= 72 visible chars with an ellipsis.
+    const longGoal =
+      'Build out the frontend skeleton into fully fleshed-out pages with routing and shared layout components';
+    const label = formConciseGoalLabel(longGoal, rambling);
+    assert.ok(label.length <= 72, 'capped to 72 visible characters');
+    assert.ok(label.startsWith('Build out the frontend skeleton'), 'preserves the real extracted goal');
+    assert.ok(label.endsWith('…'), 'marks the truncation');
+  });
+
+  it('collapses whitespace in a short extracted goal and returns it unchanged otherwise', () => {
+    assert.equal(formConciseGoalLabel('  Build out the\n  frontend skeleton  ', rambling), 'Build out the frontend skeleton');
+  });
+
+  it('falls back to deriveGoal (first sentence/line) when the frame goal is empty/null', () => {
+    // No frame goal → deterministic first-sentence of the raw text, NOT the whole ramble.
+    const derived = formConciseGoalLabel(undefined, 'Build the login page. Then wire validation and tests later.');
+    assert.equal(derived, 'Build the login page.');
+    // null behaves the same as undefined.
+    assert.equal(
+      formConciseGoalLabel(null, 'Build the login page. Then wire validation and tests later.'),
+      'Build the login page.',
+    );
+    // An all-whitespace frame goal also falls through to deriveGoal.
+    assert.equal(
+      formConciseGoalLabel('   \n  ', 'Build the login page. Then wire validation.'),
+      'Build the login page.',
+    );
+  });
+
+  it('falls back to the raw text verbatim when both the frame goal and deriveGoal are empty', () => {
+    // deriveGoal('') === '' → final fallback returns the raw text exactly (today's behaviour).
+    assert.equal(formConciseGoalLabel(undefined, ''), '');
+    assert.equal(formConciseGoalLabel('', '   '), '   ');
+  });
+
+  it('never throws on odd inputs', () => {
+    assert.doesNotThrow(() => formConciseGoalLabel(undefined, rambling));
+    assert.doesNotThrow(() => formConciseGoalLabel('goal', ''));
   });
 });

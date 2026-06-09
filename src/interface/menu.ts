@@ -21,7 +21,7 @@ import fs from 'node:fs';
 import { join } from 'node:path';
 import { Writable } from 'node:stream';
 import type { Clock, CoreEvent, LedgerWriter, OrchestrateDeps, SessionEntry, SessionWriter, Tier } from '../core/types.js';
-import { buildGoalTask, parseGoalSignal, parseGoalContinueText, decideGoalNext, formatGoalProgress, DEFAULT_MAX_GOAL_ITERATIONS, stripTrailingGoalConfidenceEnvelope } from '../core/goal.js';
+import { buildGoalTask, parseGoalSignal, parseGoalContinueText, decideGoalNext, formatGoalProgress, DEFAULT_MAX_GOAL_ITERATIONS, stripTrailingGoalConfidenceEnvelope, formConciseGoalLabel } from '../core/goal.js';
 import type { GoalCeilings } from '../core/goal.js';
 import { appendCheckpointFromContinue, capContract } from '../core/work-contract.js';
 import { deriveWorkStateFromHistory, renderWorkStateBlock } from '../core/work-state.js';
@@ -107,6 +107,7 @@ import { makeRecapGenerator } from '../core/recap-generator.js';
 import { isRecapStale, recapEligible, parseRecap } from '../core/recap.js';
 import { makeRouteClassifier } from '../core/route-classifier.js';
 import { makeIntentExtractor } from '../core/intent-extractor.js';
+import { normalizeExtraction } from '../core/intent.js';
 import { shouldShowFirstTouch, markSeen, FIRST_TOUCH_LINES } from '../core/first-touch.js';
 import { teach } from '../core/teach.js';
 import { decideShed, pressureFromSignals, type QuotaPressure } from '../core/capability-budget.js';
@@ -2142,13 +2143,45 @@ export async function runChatLoop(
       // parked goal `done` ONLY on real completion evidence — never inferred from a
       // clean return / ESC / ceiling. Reset at the top of each runGoalLoop call.
       let lastGoalCompleted = false;
-      const runGoalLoop = async (goalText: string): Promise<boolean> => {
+      // Form a CONCISE goal LABEL from the raw user text — used ONLY for the
+      // displayed panel title, the conversation title, and the anti-drift contract
+      // OBJECTIVE. The actual work still receives the FULL raw text as its task, so
+      // no user intent is lost. Reuses the EXACT cheap, read-only, fail-soft intent
+      // extractor chat would otherwise build (buildDeps([]).intentExtractor) at the
+      // worker tier — no new flag, no metered service. Every failure mode (no
+      // extractor, null/empty frame, throw) degrades through deriveGoal to the raw
+      // text (today's behaviour). Never throws.
+      const formGoalLabel = async (rawText: string): Promise<string> => {
+        try {
+          const extractor = buildDeps([]).intentExtractor;
+          if (extractor === undefined) return formConciseGoalLabel(undefined, rawText);
+          const labelAc = new AbortController();
+          const extraction = await extractor(rawText, labelAc.signal);
+          const frame = normalizeExtraction(extraction).frame;
+          return formConciseGoalLabel(frame?.goal, rawText);
+        } catch {
+          return formConciseGoalLabel(undefined, rawText);
+        }
+      };
+      // `runGoalLoop(goalText, goalLabel?)`:
+      //   • goalText  — the FULL work input, passed verbatim to every goal turn
+      //                 (buildGoalTask) so the model never loses the user's intent.
+      //   • goalLabel — the CONCISE one-line title used ONLY for the panel/card
+      //                 title, the conversation title, and the anti-drift contract
+      //                 OBJECTIVE. When omitted (explicit `/goal <text>` and the
+      //                 brain-validated promote path, where the text is already a
+      //                 deliberate, concise goal) it defaults to goalText — today's
+      //                 behaviour. The chat AUTO-ENGAGE / timeout-chunk / keep-going
+      //                 sites pass a concise label formed from RAW chat text via
+      //                 formGoalLabel(), fixing the "raw ramble as title" bug.
+      const runGoalLoop = async (goalText: string, goalLabel: string = goalText): Promise<boolean> => {
         lastGoalCompleted = false;
-        let goalContract = capContract({ version: 1, objective: goalText });
-        // Title a still-untitled conversation from the goal (no-op if already set).
+        let goalContract = capContract({ version: 1, objective: goalLabel });
+        // Title a still-untitled conversation from the concise goal label (no-op if
+        // already set).
         const gMeta = (await ctx.store.list()).find((m) => m.id === convId);
         if (gMeta !== undefined && gMeta.title.trim().length === 0) {
-          await ctx.store.rename(convId, goalText.length <= 80 ? goalText : goalText.slice(0, 80));
+          await ctx.store.rename(convId, goalLabel.length <= 80 ? goalLabel : goalLabel.slice(0, 80));
         }
 
         // ---- FLAG-GATED: bounded concurrent multi-goal SCHEDULER --------------
@@ -2209,7 +2242,12 @@ export async function runChatLoop(
             );
           } catch {
             // decompose() is fail-soft, but never let a decomposition hiccup abort
-            // the goal run — degrade to the single-goal whole-plan spec.
+            // the goal run — degrade to the single-goal whole-plan spec. The
+            // scheduler runs specs VERBATIM and `spec.title` doubles as this fallback
+            // spec's WORK INPUT (buildGoalTask(spec.title, …) in runGoal below), so it
+            // MUST stay the full raw text here — never the concise label — or the
+            // work would lose the user's full intent. (Concise-label titling for the
+            // flag-off-by-default scheduler path is out of scope for this fix.)
             goalSpecs = [{ id: 'g0', title: goalText }];
           }
 
@@ -2315,7 +2353,7 @@ export async function runChatLoop(
                 maxTurns: ceilings.maxIterations,
                 elapsedMs: ctx.clock.now() - goalStartMs,
                 tokensThisRun,
-                objective: goalText,
+                objective: goalLabel,
                 contract: goalContract,
               })}\n`,
               out.color,
@@ -2632,7 +2670,9 @@ export async function runChatLoop(
           autoGoalEnabled: true,
         });
         if (autonomy.kind === 'auto_engage') {
-          if (await runGoalLoop(line)) return control.result;
+          // Auto-engaging on RAW chat text: form a concise title/objective from it
+          // (the full `line` stays the work input). Fail-soft → raw text.
+          if (await runGoalLoop(line, await formGoalLabel(line))) return control.result;
           return 'continue';
         }
       }
@@ -2753,7 +2793,8 @@ export async function runChatLoop(
         out.write('\n  ' + dim('I can keep working on it autonomously, step by step.', out.color) + '\n');
         out.write(`  Keep working on it autonomously, step by step, until it's done? ${yesNoHint('yes', out.color)} `);
         if (await confirm(true)) {
-          if (await runGoalLoop(line)) return control.result;
+          // Chunking a timed-out RAW chat ask: concise title, full `line` as work.
+          if (await runGoalLoop(line, await formGoalLabel(line))) return control.result;
         }
         return 'continue';
       }
@@ -2772,7 +2813,9 @@ export async function runChatLoop(
         out.write('\n  ' + dim("I can keep working on this autonomously until it's done.", out.color) + '\n');
         out.write(`  Keep going? ${yesNoHint('yes', out.color)} `);
         if (await confirm(true)) {
-          if (await runGoalLoop(line)) return control.result;
+          // Accepting the model's keep-going offer on the ORIGINAL raw ask: concise
+          // title, full `line` as work.
+          if (await runGoalLoop(line, await formGoalLabel(line))) return control.result;
         }
         return 'continue';
       }
