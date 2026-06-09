@@ -205,11 +205,22 @@ export async function renderStreamInk(
   let synthesizing = false;
   let finalEvent: Extract<CoreEvent, { type: 'final' }> | undefined;
 
-  // --- throttle: coalesce prose chunks into one merged stream/prose action ---
+  // --- throttle: coalesce prose chunks into one merged stream/prose action, AND
+  //     coalesce bursts of NON-VERBOSE tool-step bumps into the same flush tick ---
   let pendingProse = '';
+  // Buffered NON-VERBOSE `stream/tool` actions. In normal/quiet verbosity a tool
+  // event only bumps `stream.stepCount` (a live-status counter; it commits NO
+  // transcript line — see reduce.ts), so its dispatch is order-INDEPENDENT of the
+  // transcript. A burst of 28 tool calls otherwise fired 28 immediate dispatches =
+  // 28 full re-renders. Buffering them and dispatching the whole burst inside ONE
+  // scheduled flush callback lets React batch the setStates into a SINGLE re-render
+  // while preserving the EXACT final state (still one +1 per tool event). Verbose
+  // tool events commit a `[tool]` line and stay immediate via dispatchStructural so
+  // their transcript ordering is untouched.
+  let pendingSteps: Action[] = [];
   let cancelPending: (() => void) | null = null;
 
-  function flushPendingProse(): void {
+  function flushPending(): void {
     if (cancelPending !== null) {
       cancelPending();
       cancelPending = null;
@@ -219,14 +230,31 @@ export async function renderStreamInk(
       pendingProse = '';
       dispatch({ type: 'stream/prose', text });
     }
+    if (pendingSteps.length > 0) {
+      const steps = pendingSteps;
+      pendingSteps = [];
+      for (const step of steps) dispatch(step);
+    }
+  }
+
+  function ensureScheduled(): void {
+    if (cancelPending === null) {
+      cancelPending = scheduleFlush(flushPending);
+    }
   }
 
   function queueProse(chunk: string): void {
     if (chunk.length === 0) return;
     pendingProse += chunk;
-    if (cancelPending === null) {
-      cancelPending = scheduleFlush(flushPendingProse);
-    }
+    ensureScheduled();
+  }
+
+  /** Buffer a coalescable NON-VERBOSE tool-step bump so a burst flushes as one
+   *  re-render. The action carries no transcript commit, so deferring it never
+   *  reorders the committed transcript. */
+  function queueStep(action: Action): void {
+    pendingSteps.push(action);
+    ensureScheduled();
   }
 
   /** Drain whatever the EnvelopeFilter just emitted into the throttle buffer. */
@@ -234,11 +262,11 @@ export async function renderStreamInk(
     queueProse(sink.drain());
   }
 
-  /** Dispatch a structural action, flushing any throttled prose FIRST so the
-   *  transcript ordering (prose then chrome) is preserved exactly as render.ts
+  /** Dispatch a structural action, flushing any throttled prose + steps FIRST so
+   *  the transcript ordering (prose then chrome) is preserved exactly as render.ts
    *  writes it. */
   function dispatchStructural(action: Action): void {
-    flushPendingProse();
+    flushPending();
     dispatch(action);
   }
 
@@ -259,9 +287,17 @@ export async function renderStreamInk(
         rateLimitedProviders.add(currentProvider);
         continue;
       }
-      // tool / reasoning → structural actions; usage/done produce none.
+      // tool / reasoning → structural actions; usage/done produce none. A
+      // NON-VERBOSE `stream/tool` is a pure stepCount bump (no transcript commit),
+      // so it is COALESCED via queueStep — a burst of tool calls flushes as one
+      // re-render. Every other action (incl. verbose tool, which commits a `[tool]`
+      // line) keeps its immediate, order-preserving dispatchStructural.
       for (const action of coreEventToActions(ev, verbosity, debug)) {
-        dispatchStructural(action);
+        if (action.type === 'stream/tool' && action.verbosity !== 'verbose') {
+          queueStep(action);
+        } else {
+          dispatchStructural(action);
+        }
       }
       continue;
     }
@@ -299,7 +335,7 @@ export async function renderStreamInk(
           // tier, mirroring render.ts (prose.finishAttempt(); prose = new …).
           prose.finishAttempt();
           drainProse();
-          flushPendingProse();
+          flushPending();
           prose = new EnvelopeFilter(sink, proseStyler);
         }
         // Map then override panelCandidate (the pure mapper defaults it false).
@@ -317,7 +353,7 @@ export async function renderStreamInk(
         // line, exactly as render.ts does (prose.flush() then the line).
         prose.flush();
         drainProse();
-        flushPendingProse();
+        flushPending();
         // Enrich the pure turn/final action with the impure inputs the reducer
         // cannot derive: the real elapsed seconds and the actionable error string.
         const [base] = coreEventToActions(ev, verbosity, debug);
@@ -351,12 +387,12 @@ export async function renderStreamInk(
     // stream (mirrors render.ts's finally): flush the per-tier EnvelopeFilter and
     // drain/flush any throttled prose so nothing held back is lost even when the
     // loop throws. All three are idempotent (flush no-ops once exhausted; drain
-    // returns '' which queueProse ignores; flushPendingProse no-ops with an empty
-    // buffer), so the normal-path flush in the `final` case is not double-emitted.
+    // returns '' which queueProse ignores; flushPending no-ops with empty buffers),
+    // so the normal-path flush in the `final` case is not double-emitted.
     // The error (if any) re-propagates after this block so runTask still sees it.
     prose.flush();
     drainProse();
-    flushPendingProse();
+    flushPending();
   }
 
   const rl = [...rateLimitedProviders];

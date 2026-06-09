@@ -3187,13 +3187,25 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
     // Same persistent home + injected clock as the chat-loop store; fail-soft.
     const menuGoalStore = createFileGoalStore({ clock: ctx.clock });
 
+    // The conversation + parked-goal lists are cached EXACTLY like `spend`: they
+    // are re-read from disk only after an action that may have mutated them
+    // (`listDirty`), not on every no-op keypress / re-render. On Replit's slow FS
+    // the two per-iteration `list()` calls were felt as nav lag (Enter just
+    // re-rendered the menu, yet re-hit disk twice). Seed once before the loop.
+    let metas = await ctx.store.list();
+    let parkedGoals = await menuGoalStore.list({ state: 'parked' }).catch(() => []);
+    let listDirty = false;
+
     while (true) {
       if (spendDirty) {
         spend = summarizeSpend(await readLedger(ctx.cwd), ctx.clock.isoNow());
         spendDirty = false;
       }
-      const metas = await ctx.store.list();
-      const parkedGoals = await menuGoalStore.list({ state: 'parked' }).catch(() => []);
+      if (listDirty) {
+        metas = await ctx.store.list();
+        parkedGoals = await menuGoalStore.list({ state: 'parked' }).catch(() => []);
+        listDirty = false;
+      }
       // Render the menu chrome inside an EPHEMERAL FRAME. On the Ink path this paints
       // the whole menu into a bounded NON-<Static> live region that is REPLACED in
       // place every loop iteration — instead of appending ~30 fresh permanent
@@ -3249,6 +3261,7 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
         const meta = await ctx.store.create('');
         const chatResult = await runChatLoop(ctx, mutableCtx, meta.id, out, readLine, loginFn, detectEnvironmentFn, confirm, suspendStdin, lineReader, inkRenderTurn, inkReadKey, inkSetInterrupt, inkSetInputInfo, inkSetChatActive);
         spendDirty = true; // a task may have run — refresh the spend summary
+        listDirty = true; // a new conversation was created (and goals may be parked)
         if (chatResult === 'exit') break;
         continue;
       }
@@ -3263,6 +3276,7 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
           }
           const chatResult = await runChatLoop(ctx, mutableCtx, latest.id, out, readLine, loginFn, detectEnvironmentFn, confirm, suspendStdin, lineReader, inkRenderTurn, inkReadKey, inkSetInterrupt, inkSetInputInfo, inkSetChatActive);
           spendDirty = true; // a task may have run — refresh the spend summary
+          listDirty = true; // conversation order/goals may have changed
           if (chatResult === 'exit') break;
         } else {
           out.write('No conversations yet. Press n to start one.\n');
@@ -3280,6 +3294,7 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
           }
           const chatResult = await runChatLoop(ctx, mutableCtx, target.id, out, readLine, loginFn, detectEnvironmentFn, confirm, suspendStdin, lineReader, inkRenderTurn, inkReadKey, inkSetInterrupt, inkSetInputInfo, inkSetChatActive);
           spendDirty = true; // a task may have run — refresh the spend summary
+          listDirty = true; // conversation order/goals may have changed
           if (chatResult === 'exit') break;
         } else {
           out.write(`No conversation at position ${digit}.\n`);
@@ -3290,12 +3305,14 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
       // ---- [e] Manage conversations -------------------------------------------
       if (key === 'e') {
         await runManage(ctx, out, readLine, confirm, inkReadKey);
+        listDirty = true; // manage can rename/delete conversations
         continue;
       }
 
       // ---- [g] Manage goals (only meaningful when parked goals exist) ---------
       if (key === 'g') {
         await runManageGoals(ctx, menuGoalStore, out, readLine, confirm, inkReadKey);
+        listDirty = true; // manage-goals can unpark/delete parked goals
         out.write(dim('\nPress any key to return to the menu.\n', out.color));
         await readMenuKey(out, readLine, undefined, false, inkReadKey);
         continue;
@@ -3305,6 +3322,7 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
       if (key === 'i') {
         const importResult = await runImportNative(ctx, mutableCtx, out, readLine, loginFn, detectEnvironmentFn, confirm, suspendStdin, lineReader, inkRenderTurn, inkReadKey, inkSetInterrupt, inkSetInputInfo, inkSetChatActive);
         spendDirty = true; // an imported session may run a task — refresh spend
+        listDirty = true; // the import created a conversation
         if (importResult === 'exit') break;
         continue;
       }

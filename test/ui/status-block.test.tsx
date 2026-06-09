@@ -244,9 +244,11 @@ test('StatusBlock with an injected clock shows a deterministic elapsed', async (
   let now = 10_000;
   const clock = () => now;
   const { lastFrame } = render(<StatusBlock state={state} color={false} rows={40} clock={clock} />);
-  // advance the injected clock past the first interval tick (80ms frame cadence)
+  // advance the injected clock past the first elapsed tick (the elapsed `· Ns`
+  // recomputes on a 1Hz interval — whole seconds only — now that the fast 80ms
+  // braille frame lives in its own leaf and no longer drives the elapsed tick)
   now = 16_000;
-  await new Promise((r) => setTimeout(r, 120));
+  await new Promise((r) => setTimeout(r, 1100));
   assert.match(lastFrame() ?? '', /· 6s/);
 });
 

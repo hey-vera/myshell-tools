@@ -14,7 +14,7 @@
  * without React knowing about Node streams.
  */
 
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { Box, Static, Text, useInput, useStdout } from 'ink';
 import { InputBox, createInputBoxBridge, type InputBoxBridge } from './InputBox.js';
 import { Stream, CommittedLine } from './Stream.js';
@@ -495,6 +495,39 @@ function AppBody({
     };
   }, [stdout]);
 
+  // Derive the live status-region layout ONCE per real content change, memoized so
+  // an 80ms spinner tick (now owned by the SpinnerStatusLine leaf, not this tree)
+  // and any re-render that does NOT change the inputs below reuses the prior plan
+  // instead of re-walking the (growing) stream buffer + re-running the planner
+  // TWICE (App + StatusBlock). The same `plan` reference is threaded into
+  // <StatusBlock>, so its <Panels> memo stays stable across ticks. The memo key is
+  // the FULL set of inputs that affect the plan/stream output — buffer, geometry,
+  // and the reducer fields layoutForHeight reads (turnActive, goals, tokens.turn,
+  // the panelist count) — so a real update never reuses a stale plan.
+  //
+  // layoutForHeight is PURE, so memoizing the caller cannot change its return value
+  // (ui-layout.test.ts stays green); this only avoids recomputing an identical plan.
+  const liveLayout = useMemo(() => {
+    if (uiState === null) return null;
+    const streamLines = streamWrappedRows(uiState.stream.buffer, liveColumns);
+    const plan = layoutForHeight(uiState, liveRows, streamLines, INPUT_ROWS_MAX);
+    const cappedStreamBuffer = tailStreamToRows(uiState.stream.buffer, liveColumns, plan.streamCap);
+    return { streamLines, plan, cappedStreamBuffer };
+    // The keys are EXACTLY the inputs layoutForHeight / streamWrappedRows /
+    // tailStreamToRows read: the live buffer, the geometry, and the reducer fields
+    // the planner consults (turnActive gates visibility; goals drive the panel
+    // plan; tokens.turn + panelists feed the compact summary / agent count). A push
+    // that changes none of these (e.g. a chrome-only commit) safely reuses the plan.
+  }, [
+    uiState?.stream.buffer,
+    uiState?.turnActive,
+    uiState?.goals,
+    uiState?.tokens.turn,
+    uiState?.stream.panelists,
+    liveColumns,
+    liveRows,
+  ]);
+
   // Deliver exactly one captured key to the pending readKey() resolver, then exit
   // capture mode so the InputBox editor resumes. Guards against a double-fire (the
   // resolver is nulled before resolving, so a stray second event is a no-op) — the
@@ -521,26 +554,21 @@ function AppBody({
   // longer a one-way latch that LOSES chrome: the string `lines` path below is
   // only the pre-first-state fallback (e.g. the idle skeleton before any state),
   // and committed[] is the sole <Static> source the instant a turn or chrome lands.
-  if (uiState !== null) {
+  if (uiState !== null && liveLayout !== null) {
     const committed: Array<{ readonly line: TranscriptLine; readonly key: number }> =
       uiState.committed.map((line, index) => ({ line, key: index }));
-    // Cap the live <Stream> to the layout's height budget (scrollback-dup guard):
-    // measure the buffer's TRUE wrapped-row count at the live width, feed it into
-    // the SAME layoutForHeight planner the StatusBlock uses (so the budget is
-    // accurate), then render only the LAST `streamCap` wrapped rows. An empty
-    // buffer → 0 rows → renders nothing; a buffer that fits → streamCap >= rows →
-    // rendered whole. This keeps the always-visible dynamic region <= the viewport
-    // so Ink never re-emits the overflow into the scrollback on every repaint.
-    const streamLines = streamWrappedRows(uiState.stream.buffer, liveColumns);
-    // Reserve the InputBox's WORST-CASE rendered height (a multiline/pasted
-    // composer renders up to MAX_VISIBLE_ROWS + 2 borders), not the single-line
-    // default, so a tall composer + panel + stream can never exceed the viewport
-    // and re-trigger Ink's scrollback duplication. The composer's live buffer is
-    // private InputBox state (see layout.ts INPUT_ROWS_MAX for the tradeoff). The
-    // SAME value is threaded into StatusBlock so its panel plan and this stream
-    // cap agree.
-    const plan = layoutForHeight(uiState, liveRows, streamLines, INPUT_ROWS_MAX);
-    const cappedStreamBuffer = tailStreamToRows(uiState.stream.buffer, liveColumns, plan.streamCap);
+    // The live-status layout was computed ONCE above (memoized): `streamLines` is
+    // the buffer's TRUE wrapped-row count at the live width; `plan` is the SAME
+    // layoutForHeight result the StatusBlock now consumes via a prop (no second
+    // pass); `cappedStreamBuffer` is the buffer truncated to the plan's `streamCap`
+    // last wrapped rows. An empty buffer → 0 rows → renders nothing; a buffer that
+    // fits → rendered whole. This keeps the always-visible dynamic region <= the
+    // viewport so Ink never re-emits the overflow into the scrollback on repaint.
+    //
+    // INPUT_ROWS_MAX reserves the InputBox's WORST-CASE rendered height (multiline/
+    // pasted composer = MAX_VISIBLE_ROWS + 2 borders); the SAME plan flows into
+    // StatusBlock so its panel plan and this stream cap agree (see layout.ts).
+    const { streamLines, plan, cappedStreamBuffer } = liveLayout;
     return (
       <Box flexDirection="column">
         <Static items={committed}>
@@ -559,6 +587,7 @@ function AppBody({
           rows={liveRows}
           streamLines={streamLines}
           inputRows={INPUT_ROWS_MAX}
+          plan={plan}
           {...(clock !== undefined ? { clock } : {})}
         />
         <Stream buffer={cappedStreamBuffer} color={color} />

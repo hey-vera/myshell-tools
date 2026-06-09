@@ -15,6 +15,27 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   resumed goal's contract from the persisted `workTrace` (niche: the in-run contract
   is already kept in memory; only cross-session resume benefits). Optional.
 
+## [3.48.0]
+
+### Fixed — the TUI feels instant: render-performance pass (no visible change)
+
+- **The live UI no longer gets laggier the longer a turn runs.** Root cause: the layout
+  planner ran twice per render, and an 80ms spinner/elapsed interval re-rendered the
+  entire Ink tree (recomputing layout over a growing buffer each tick).
+- **Single memoized layout pass** — `AppBody` computes the layout once in a `useMemo`
+  keyed on real content inputs and threads it to `StatusBlock` as a prop (the duplicate
+  second pass is gone). The 80ms braille spinner moved to its own leaf component, so a
+  frame tick repaints one line instead of the whole tree; elapsed seconds recompute at
+  1Hz. `Panels` is now memoized.
+- **Tool-event coalescing** — bursts of tool-call step-count bumps flush through the same
+  scheduler seam as prose, batching into one re-render instead of one per tool call.
+- **No per-keystroke disk reads** — the menu loop's conversation + parked-goal lists are
+  now cached behind a dirty flag (mirroring the spend cache), so a plain keypress reuses
+  them instead of hitting disk twice.
+- Rendered output is byte-identical at any frame (pure structural change); ui-layout +
+  run-stream parity + smokes all green. (Deferred follow-up: paint a menu skeleton before
+  the spend/ledger reads so first-paint is instant too.)
+
 ## [3.47.0]
 
 ### Fixed — smart goal titles: a concise objective, not your raw chat text

@@ -34,6 +34,7 @@ import {
   coalescedQueuedLine,
   INPUT_ROWS,
   type GoalsMode,
+  type StatusLayout,
 } from './layout.js';
 import type { AgentView, AgentRunState, GoalView, UiState } from './state.js';
 
@@ -284,7 +285,7 @@ interface PanelsProps {
  * `hidden` renders nothing (the caller drops the panel under height pressure).
  * The rounded border + cyan "GOALS" title mirror tui.panel()'s look.
  */
-export function Panels({ mode, elapsedSecs, workLabel, color = true }: PanelsProps): React.ReactElement | null {
+function PanelsImpl({ mode, elapsedSecs, workLabel, color = true }: PanelsProps): React.ReactElement | null {
   if (mode.kind === 'hidden') return null;
   const borderProps = color ? { borderColor: 'gray' as const } : {};
   return (
@@ -331,6 +332,16 @@ export function Panels({ mode, elapsedSecs, workLabel, color = true }: PanelsPro
   );
 }
 
+/**
+ * The bordered GOALS panel, memoized so a parent re-render with UNCHANGED props
+ * (e.g. the 1Hz elapsed bump when nothing in the panel changed, or any state push
+ * that doesn't touch the goals/mode) skips re-rendering the whole goal tree. The
+ * props are shallow-comparable: `mode` is `plan.goals` (referentially stable while
+ * the memoized layout plan is stable), and the rest are primitives. Pure view —
+ * memoizing never changes its output.
+ */
+export const Panels = React.memo(PanelsImpl);
+
 // ---------------------------------------------------------------------------
 // StatusLine — the spinner + phase verb + interrupt hint
 // ---------------------------------------------------------------------------
@@ -342,6 +353,47 @@ export interface StatusLineProps {
   /** Elapsed seconds the turn has been visible (injected) → the `· Ns` suffix. */
   readonly elapsedSecs?: number;
   readonly color?: boolean;
+}
+
+interface SpinnerStatusLineProps {
+  readonly state: UiState;
+  /** Elapsed seconds the turn has been visible (injected) → the `· Ns` suffix. */
+  readonly elapsedSecs?: number;
+  readonly color?: boolean;
+}
+
+/**
+ * The self-animating live status line — the SOLE owner of the fast (80ms) braille
+ * spinner frame on the Ink surface. It keeps the frame index in its OWN
+ * `useState`/interval so a frame tick repaints ONLY this one line, NOT the parent
+ * StatusBlock / GOALS panel (the perf fix: an 80ms tick no longer re-walks the
+ * stream buffer or re-runs the layout planner). The elapsed `· Ns` is still driven
+ * by the slower (1Hz) parent tick via the `elapsedSecs` prop. Renders byte-identical
+ * output to the prior {@link StatusLine} (same braille cycle, same verb, same
+ * elapsed) — the smokes that scrape the braille frame + `· Ns` see no change.
+ */
+function SpinnerStatusLine({ state, elapsedSecs, color = true }: SpinnerStatusLineProps): React.ReactElement {
+  const [frameIndex, setFrameIndex] = useState(0);
+  useEffect(() => {
+    if (!state.turnActive) {
+      setFrameIndex(0);
+      return;
+    }
+    const timer = setInterval(() => {
+      setFrameIndex((i) => (i + 1) % SPINNER_FRAMES.length);
+    }, SPINNER_FRAME_INTERVAL_MS);
+    if (typeof timer === 'object' && typeof timer.unref === 'function') timer.unref();
+    return () => clearInterval(timer);
+  }, [state.turnActive]);
+  const frame = SPINNER_FRAMES[frameIndex] ?? SPINNER_FRAMES[0] ?? '⠋';
+  return (
+    <StatusLine
+      state={state}
+      frame={frame}
+      {...(elapsedSecs !== undefined ? { elapsedSecs } : {})}
+      color={color}
+    />
+  );
 }
 
 /**
@@ -411,6 +463,14 @@ export interface StatusBlockProps {
    *  height). MUST match what <App> passes to its own layoutForHeight so the panel
    *  plan and the stream cap agree. Defaults to the single-line {@link INPUT_ROWS}. */
   readonly inputRows?: number;
+  /**
+   * The PRE-COMPUTED layout plan. <App> computes the plan ONCE (memoized on the
+   * real content inputs) and threads it down so this block does NOT run a second
+   * full `layoutForHeight` pass per render (the perf fix). When omitted (tests that
+   * render <StatusBlock> directly), the block falls back to computing the plan
+   * itself from `rows`/`streamLines`/`inputRows` — byte-identical to before.
+   */
+  readonly plan?: StatusLayout;
   readonly color?: boolean;
 }
 
@@ -431,51 +491,57 @@ export function StatusBlock({
   rows = 24,
   streamLines,
   inputRows,
+  plan: planProp,
   color = true,
 }: StatusBlockProps): React.ReactElement | null {
-  const [frameIndex, setFrameIndex] = useState(0);
-  // The injected clock, sampled on each tick → elapsed `· Ns`. `turnStartMs` is
-  // captured the first tick of a turn so elapsed counts from when the block
-  // became visible (mirrors the legacy spinner's tick-derived elapsed). Both are
-  // refs (not state) so sampling the clock never schedules an extra render beyond
-  // the frame tick that already repaints.
+  // The injected clock, sampled once per SECOND → elapsed `· Ns`. `turnStartRef`
+  // is captured the first tick of a turn so elapsed counts from when the block
+  // became visible. The fast (80ms) braille frame is NO LONGER owned here — it
+  // lives in the {@link SpinnerStatusLine} leaf so an animation tick repaints one
+  // line, not this whole block (and never re-runs the layout planner). This block
+  // now only re-renders on a real state push or the 1Hz elapsed bump.
   const turnStartRef = React.useRef<number | null>(null);
   const [elapsedSecs, setElapsedSecs] = useState<number | undefined>(undefined);
 
-  // The ONE animation owner: advance the braille frame on a cheap interval while
-  // the turn is active, AND (when a clock is injected) recompute elapsed from it.
-  // Stops + resets when the turn ends so an idle UI has zero timers.
+  // The 1Hz elapsed-seconds tick (when a clock is injected). Stops + resets when
+  // the turn ends so an idle UI has zero timers. The cadence is now 1s, not 80ms:
+  // elapsed only changes whole seconds, so a slower interval renders identically
+  // while cutting this block's tick-driven re-renders by ~12x.
   useEffect(() => {
     if (!state.turnActive) {
-      setFrameIndex(0);
       turnStartRef.current = null;
       setElapsedSecs(undefined);
       return;
     }
-    if (clock !== undefined && turnStartRef.current === null) {
+    if (clock === undefined) {
+      return;
+    }
+    if (turnStartRef.current === null) {
       turnStartRef.current = clock();
       setElapsedSecs(0);
     }
     const timer = setInterval(() => {
-      setFrameIndex((i) => (i + 1) % SPINNER_FRAMES.length);
-      if (clock !== undefined && turnStartRef.current !== null) {
+      if (turnStartRef.current !== null) {
         const secs = Math.floor((clock() - turnStartRef.current) / 1000);
         setElapsedSecs(secs >= 0 ? secs : 0);
       }
-    }, SPINNER_FRAME_INTERVAL_MS);
+    }, 1000);
     if (typeof timer === 'object' && typeof timer.unref === 'function') timer.unref();
     return () => clearInterval(timer);
   }, [state.turnActive, clock]);
 
-  const plan = layoutForHeight(
-    state,
-    rows,
-    streamLines ?? (state.stream.buffer.length > 0 ? 1 : 0),
-    inputRows ?? INPUT_ROWS,
-  );
+  // Use the plan threaded down from <App> (computed ONCE, memoized) when present;
+  // otherwise (a direct <StatusBlock> render in tests) compute it here so the
+  // standalone behaviour is byte-identical to before.
+  const plan =
+    planProp ??
+    layoutForHeight(
+      state,
+      rows,
+      streamLines ?? (state.stream.buffer.length > 0 ? 1 : 0),
+      inputRows ?? INPUT_ROWS,
+    );
   if (!plan.visible) return null;
-
-  const frame = SPINNER_FRAMES[frameIndex] ?? SPINNER_FRAMES[0] ?? '⠋';
 
   // The live "what it's doing" label rides onto the RUNNING agent row (real
   // stream.workLabel — "Thinking" in normal mode, the verbose tier label in
@@ -495,9 +561,8 @@ export function StatusBlock({
           {summarizeTurn(state, elapsedSecs)}
         </Text>
       ) : null}
-      <StatusLine
+      <SpinnerStatusLine
         state={state}
-        frame={frame}
         {...(elapsedSecs !== undefined ? { elapsedSecs } : {})}
         color={color}
       />
