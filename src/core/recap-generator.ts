@@ -2,17 +2,20 @@
  * src/core/recap-generator.ts — build a live RecapGenerator from providers.
  *
  * recap.ts decides + defines the recap (prompt builder, parse, staleness); this
- * module supplies the optional model pass that PRODUCES the text. A near-twin of
- * `intent-extractor.ts`: route to the CHEAPEST tier (worker), send the small
- * `buildRecapPrompt` read-only with a SHORT timeout, take the final text, and
- * `parseRecap` it. Every failure mode — no provider, route throws, the run errors
- * or times out, empty/unusable output — returns null, so the caller falls straight
- * back to the prior resume behaviour (the title). It never throws and never writes.
+ * module supplies the optional model pass that PRODUCES the text. Route to the
+ * MANAGER tier (the strongest model), send the small `buildRecapPrompt` read-only
+ * with a SHORT timeout, take the final text, and `parseRecapResult` it into a
+ * structured {title, recap}. Every failure mode — no provider, route throws, the
+ * run errors or times out, empty/unusable output — returns null, so the caller
+ * falls straight back to the prior resume behaviour (the title). It never throws
+ * and never writes.
  *
- * Cost discipline: a recap is a single cheap worker-tier read-only pass, gated by
- * `isRecapStale` so a fresh cache costs ZERO model calls. Subscription-auth only:
- * this reuses the existing provider machinery — no API key, no embeddings, no
- * metered service.
+ * Cost discipline: this is the ONE pass a normal chat actually shows in the Recent
+ * card (title + state line), so it is written by a capable model — but it is gated
+ * by `isRecapStale` (a fresh cache costs ZERO model calls) and the quota-shed
+ * `recapRefresh` gate so it stays INFREQUENT, never every turn. Subscription-auth
+ * only: this reuses the existing provider machinery — no API key, no embeddings,
+ * no metered service.
  *
  * Purity: no fs/path/child_process imports — the I/O lives in the injected
  * provider, exactly like intent-extractor.ts. A thin, testable composer.
@@ -21,7 +24,7 @@
 import type { Policy, SessionEntry, Tier } from './types.js';
 import type { Provider, ProviderId, ProviderRequest, SandboxLevel } from '../providers/port.js';
 import { route } from './route.js';
-import { buildRecapPrompt, parseRecap } from './recap.js';
+import { buildRecapPrompt, parseRecapResult, type RecapResult } from './recap.js';
 
 /** Everything the generator needs to pick and run the cheapest model. */
 export interface RecapGeneratorDeps {
@@ -34,15 +37,23 @@ export interface RecapGeneratorDeps {
   readonly authenticatedProviders?: readonly ProviderId[];
 }
 
-/** Recap generation always runs at the cheapest tier — it only orients. */
-const RECAP_TIER: Tier = 'worker';
+/**
+ * Recap generation runs at the MANAGER tier (the strongest model). This pass is
+ * the one a normal chat actually shows in the Recent card — it produces both the
+ * professional conversation TITLE and the honest STATE line — so it must be
+ * written by a capable model reading the conversation against the product-vision /
+ * quality bar, not the cheapest worker that parrots the last reply. Kept
+ * INFREQUENT by the staleness + quota-shed gates (isRecapStale / recapRefresh),
+ * so a fresh cache still costs ZERO model calls.
+ */
+const RECAP_TIER: Tier = 'manager';
 /** It reads a transcript and emits a string — it never touches files. */
 const RECAP_SANDBOX: SandboxLevel = 'read-only';
 
 /**
- * Build a {@link RecapGenerator} backed by the cheapest available provider.
- * Returns a function that takes the conversation history and resolves to a recap
- * string, or `null` on ANY failure. Mirrors `makeIntentExtractor` exactly.
+ * Build a {@link RecapGenerator} backed by the manager-tier (strongest) provider.
+ * Returns a function that takes the conversation history and resolves to a
+ * {@link RecapResult} ({title, recap}), or `null` on ANY failure.
  *
  * The returned generator accepts the raw {@link SessionEntry} history and builds
  * the (truncated) recap prompt internally, so the menu only has to inject the
@@ -50,8 +61,8 @@ const RECAP_SANDBOX: SandboxLevel = 'read-only';
  */
 export function makeRecapGenerator(
   deps: RecapGeneratorDeps,
-): (history: readonly SessionEntry[], signal: AbortSignal) => Promise<string | null> {
-  return async (history: readonly SessionEntry[], signal: AbortSignal): Promise<string | null> => {
+): (history: readonly SessionEntry[], signal: AbortSignal) => Promise<RecapResult | null> {
+  return async (history: readonly SessionEntry[], signal: AbortSignal): Promise<RecapResult | null> => {
     const prompt = buildRecapPrompt(history);
     if (prompt.trim().length === 0) return null;
 
@@ -97,6 +108,6 @@ export function makeRecapGenerator(
     } catch {
       return null;
     }
-    return parseRecap(finalText);
+    return parseRecapResult(finalText);
   };
 }

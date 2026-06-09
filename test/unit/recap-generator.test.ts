@@ -63,17 +63,25 @@ describe('makeRecapGenerator', () => {
     assert.equal(sink.req, undefined, 'never calls the provider on empty history');
   });
 
-  it('parses + normalises the recap from the done event', async () => {
+  it('parses + normalises the structured {title, recap} from the done event', async () => {
     const provider = fakeProvider([
-      { type: 'done', text: '※ recap: Migrating auth to JWT; next: expiry tests.', raw: {} },
+      {
+        type: 'done',
+        text: 'TITLE: Auth → JWT migration\nSTATE: Migrating auth to JWT; next: expiry tests.',
+        raw: {},
+      },
     ]);
     const gen = makeRecapGenerator(baseDeps(provider));
-    assert.equal(await gen(HISTORY, SIGNAL), 'Migrating auth to JWT; next: expiry tests.');
+    const out = await gen(HISTORY, SIGNAL);
+    assert.deepEqual(out, {
+      title: 'Auth → JWT migration',
+      recap: 'Migrating auth to JWT; next: expiry tests.',
+    });
   });
 
-  it('runs worker-tier, read-only, with the recap prompt embedding the transcript', async () => {
+  it('runs read-only, with the recap prompt embedding the transcript', async () => {
     const sink: { req?: ProviderRequest } = {};
-    const provider = fakeProvider([{ type: 'done', text: 'ok', raw: {} }], sink);
+    const provider = fakeProvider([{ type: 'done', text: 'STATE: ok now; next: keep going.', raw: {} }], sink);
     const gen = makeRecapGenerator(baseDeps(provider));
     await gen(HISTORY, SIGNAL);
     assert.ok(sink.req !== undefined);

@@ -21,6 +21,7 @@
 
 import type { SessionEntry } from './types.js';
 import { compactHistory } from './history.js';
+import { ELITE_VOICE_PREAMBLE } from './prompt.js';
 
 // ---------------------------------------------------------------------------
 // Tunables (mirror the design §5.1)
@@ -32,6 +33,8 @@ export const RECAP_MIN_TURNS = 3;
 const RECAP_STALE_AFTER_TURNS = 3;
 /** Hard cap on the rendered recap body (the design's ≤240 chars). */
 export const RECAP_MAX_CHARS = 240;
+/** Hard cap on the model-written TITLE (a crisp objective, not a sentence). */
+export const RECAP_TITLE_MAX_CHARS = 64;
 
 // ---------------------------------------------------------------------------
 // Staleness — the cache/cost lever (§5.1). PURE.
@@ -91,30 +94,41 @@ export function buildRecapHistoryBlock(history: readonly SessionEntry[]): string
 }
 
 /**
- * Build the one-shot recap-generation prompt. Small, read-only, and structured
- * after the Anthropic session-memory cookbook distillation (§1.4): goal · state ·
- * next, plus one concrete anchor (file/decision/blocker) when present. Asks for
- * the USER-facing form (1–3 short lines, ≤RECAP_MAX_CHARS, no markdown chrome),
- * NOT a model-facing compaction summary. Returns '' when there is nothing to
- * summarize. Sibling of `buildIntentPrompt`. PURE.
+ * Build the one-shot recap-generation prompt. This is read by a CAPABLE
+ * (manager-tier) model — so it is given the product-vision / quality bar persona
+ * first (the reused {@link ELITE_VOICE_PREAMBLE}), then asked to produce BOTH:
+ *   - a professional TITLE: a crisp objective naming the actual project/goal, the
+ *     way a senior engineer/PM would label the thread — NEVER an echo of the
+ *     user's phrasing, NEVER a "we/this conversation" preamble; and
+ *   - a STATE recap: where the work actually stands + the immediate next step, in
+ *     1–2 sentences — NEVER an echo of the last assistant or user message.
+ * The reply is a tagged two-part text (`TITLE:` / `STATE:`) so {@link parseRecapResult}
+ * can split it fail-soft. Returns '' when there is nothing to summarize. PURE.
  */
 export function buildRecapPrompt(history: readonly SessionEntry[]): string {
   const block = buildRecapHistoryBlock(history);
   if (block.trim().length === 0) return '';
   return [
-    'You write a one-line ORIENTATION RECAP for the USER returning to a CLI work',
-    'conversation. Read the transcript and say WHERE WE WERE — distil the arc of the',
-    'work, never echo the last message verbatim.',
+    ELITE_VOICE_PREAMBLE,
     '',
-    'Cover, as a single compact note (≤3 short lines, no markdown, no bullets):',
-    '  goal  — what the user is ultimately trying to achieve;',
-    '  state — what has been done / decided so far;',
-    '  next  — the immediate next step or open question;',
-    'plus ONE concrete anchor (a file, a decision, or a blocker) if one is present.',
+    'Using that bar, you are labelling a CLI work conversation for the user so the',
+    'thread reads like a senior engineer or PM titled and summarised it. Read the',
+    'transcript and figure out what this work is REALLY about, then return EXACTLY',
+    'two tagged lines and nothing else:',
     '',
-    `Keep it under ${RECAP_MAX_CHARS} characters. Write plain prose orienting the`,
-    'user ("…; next: write the token-expiry tests"). Do NOT do the work, do NOT',
-    'add a preamble, and reply with ONLY the recap text — nothing else.',
+    'TITLE: <a crisp, professional objective that names the actual project or goal>',
+    'STATE: <where the work stands now + the immediate next step, 1–2 sentences>',
+    '',
+    'Hard rules:',
+    `  - TITLE: ≤${RECAP_TITLE_MAX_CHARS} characters. Name the OBJECTIVE (e.g.`,
+    '    "heyvera — YouTube-scale video platform"), not a topic-less restatement of',
+    "    what the user typed. NEVER echo the user's opening phrasing. NO leading",
+    '    "we"/"this conversation"/"the user" preamble. No trailing punctuation.',
+    `  - STATE: ≤${RECAP_MAX_CHARS} characters, plain prose, no markdown, no bullets.`,
+    '    Say what has been done/decided and the next step. NEVER echo or paraphrase',
+    "    the last assistant or user message — distil the arc, don't parrot the reply.",
+    '  - Do NOT do the work. Do NOT add any preamble, explanation, or extra lines.',
+    '    Reply with ONLY the two tagged lines.',
     '',
     'TRANSCRIPT:',
     block,
@@ -148,4 +162,89 @@ export function parseRecap(text: string | undefined | null): string | null {
     s = s.slice(0, RECAP_MAX_CHARS - 1).trimEnd() + '…';
   }
   return s;
+}
+
+// ---------------------------------------------------------------------------
+// Structured {title, recap} parse — the manager pass produces BOTH in one call.
+// ---------------------------------------------------------------------------
+
+/**
+ * The structured product of one manager-tier recap pass: a professional `title`
+ * (the conversation objective) and a `recap` (the state/next orientation line).
+ * `title` is null when the model didn't emit a usable one, so the caller keeps
+ * its provisional/stub title rather than clobbering it.
+ */
+export interface RecapResult {
+  readonly title: string | null;
+  readonly recap: string;
+}
+
+/**
+ * Normalise the model-written TITLE into a clean conversation title, or null when
+ * unusable. Strips a leading "TITLE:" label / marker glyph, collapses whitespace,
+ * drops a "we/you/this conversation/the user" preamble (so the title reads as an
+ * objective, not a narration), removes wrapping quotes + trailing punctuation, and
+ * bounds to {@link RECAP_TITLE_MAX_CHARS} on a word boundary. PURE; never throws.
+ */
+function parseRecapTitle(raw: string | undefined | null): string | null {
+  if (typeof raw !== 'string') return null;
+  let s = raw.replace(/\s+/g, ' ').trim();
+  s = s.replace(/^[※⏺*\-•]\s*/u, '');
+  s = s.replace(/^title\s*[:\-—]\s*/i, '').trim();
+  // Strip surrounding quotes the model sometimes wraps a title in.
+  s = s.replace(/^["'“”]+/, '').replace(/["'“”]+$/, '').trim();
+  if (s.length === 0) return null;
+  // Drop a leading conversational framing so the title is an objective, not a
+  // narration — only when it leaves a usable remainder.
+  const reframed = s.replace(
+    /^(?:we(?:'ve| have| are| were)?|you(?:'ve| have| are| were)?|i(?:'ve| have| am| was)?|this conversation(?: is| was)?|the (?:user|thread))\b[\s:,-]*/i,
+    '',
+  );
+  if (reframed.trim().length >= 3) s = reframed.trim();
+  // Strip trailing sentence punctuation — a title is a label, not a sentence.
+  s = s.replace(/[.;,]+$/, '').trim();
+  if (s.length < 3) return null;
+  if (s.length > RECAP_TITLE_MAX_CHARS) {
+    s = s.slice(0, RECAP_TITLE_MAX_CHARS).replace(/\s+\S*$/, '').trim();
+    if (s.length === 0) return null;
+  }
+  return s.charAt(0).toUpperCase() + s.slice(1);
+}
+
+/**
+ * Parse the manager pass's tagged `TITLE:` / `STATE:` reply into a {@link
+ * RecapResult}, or null when no usable recap could be extracted. Fail-soft and
+ * tolerant of the model dropping the tags:
+ *   - finds the `STATE:` line for the recap, falling back to the whole reply (run
+ *     through {@link parseRecap}) when the tag is absent;
+ *   - finds the `TITLE:` line for the title (null when absent/unusable);
+ *   - returns null only when the recap itself can't be salvaged, so the caller
+ *     falls straight back to today's behaviour and NEVER crashes.
+ * PURE; never throws.
+ */
+export function parseRecapResult(text: string | undefined | null): RecapResult | null {
+  if (typeof text !== 'string') return null;
+  const trimmed = text.trim();
+  if (trimmed.length === 0) return null;
+
+  const titleMatch = trimmed.match(/(?:^|\n)\s*title\s*[:\-—]\s*(.+)/i);
+  const stateMatch = trimmed.match(/(?:^|\n)\s*state\s*[:\-—]\s*([\s\S]+)/i);
+
+  // Recap body: the STATE line if tagged, else the whole reply (less any TITLE
+  // line) so an untagged reply still yields a usable recap.
+  let recapSource: string;
+  if (stateMatch?.[1] !== undefined) {
+    recapSource = stateMatch[1];
+  } else if (titleMatch !== null) {
+    // Tagged title but no state → drop the title line, recap from the remainder.
+    recapSource = trimmed.replace(/(?:^|\n)\s*title\s*[:\-—]\s*.*(\n|$)/i, '\n');
+  } else {
+    recapSource = trimmed;
+  }
+
+  const recap = parseRecap(recapSource);
+  if (recap === null) return null;
+
+  const title = parseRecapTitle(titleMatch?.[1]);
+  return { title, recap };
 }

@@ -6,6 +6,25 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+## [3.52.0] - 2026-06-09
+
+### Fixed
+- **Conversation titles & recaps are now written by a smart model, like a senior
+  engineer would** — the third pass at "it made a goal of what I typed." The two
+  prior fixes patched the autonomous `/goal` path, but a normal chat never touches
+  it: the Recent-card title was a raw `.slice(0,80)` of your first message (later a
+  regex clause-slice of a recap), and the dim state line was a **worker-tier** (cheapest
+  model) recap that routinely parroted the assistant's last reply. Now ONE
+  manager-tier pass, led by the product-vision/quality-bar persona (`ELITE_VOICE`),
+  writes BOTH a professional **title** (a crisp objective that names the actual
+  project — never an echo, no "we/this conversation" preamble) and an honest **state**
+  line (what's done + the next step — never a parrot of the last message).
+  - Reuses the existing provider/route machinery at the manager tier (subscription
+    OAuth — no API keys, no metered calls). Fail-soft: an unparseable reply falls back
+    to prior behavior, never crashes. Cost stays bounded — the existing staleness
+    (every ≥3 turns) and quota-shed gates are preserved, so the manager call is
+    infrequent, and one call produces both title and recap.
+
 ## [3.51.0] - 2026-06-09
 
 ### Fixed

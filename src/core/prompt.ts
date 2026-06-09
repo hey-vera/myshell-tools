@@ -63,7 +63,7 @@ waits). When nothing durable came up, simply omit "remember_user".`;
  * facet, never sycophancy. Prose-shaping only: it directs HOW to say true things,
  * never instructs inventing facts.
  */
-const ELITE_VOICE_PREAMBLE = `\
+export const ELITE_VOICE_PREAMBLE = `\
 Be the partner a sharp builder wishes they had: someone who actually gets what
 they're trying to do, makes the hard parts suddenly make sense, and is always a
 step ahead. Don't just answer — orient. Lead with the insight that reframes the

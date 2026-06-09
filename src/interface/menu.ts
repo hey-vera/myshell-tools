@@ -93,7 +93,7 @@ import {
   renderQueuedIndicator,
   renderResumeTranscript,
 } from './render.js';
-import { deriveTitleFromRecap, isStubTitle } from '../infra/conversations.js';
+import { isStubTitle } from '../infra/conversations.js';
 import { systemClipboardPort, type ClipboardPort } from '../infra/clipboard.js';
 import { resolveStateHome } from '../infra/state-dir.js';
 import { resolveImageAttachments } from '../infra/attachments.js';
@@ -104,7 +104,7 @@ import { runDoctor } from '../commands/doctor.js';
 import { runCost } from '../commands/cost.js';
 import { dim, bold, formatRecapLine } from '../ui/theme.js';
 import { makeRecapGenerator } from '../core/recap-generator.js';
-import { isRecapStale, recapEligible, parseRecap } from '../core/recap.js';
+import { isRecapStale, recapEligible, type RecapResult } from '../core/recap.js';
 import { makeRouteClassifier } from '../core/route-classifier.js';
 import { makeIntentExtractor } from '../core/intent-extractor.js';
 import { normalizeExtraction } from '../core/intent.js';
@@ -575,7 +575,7 @@ export async function runChatLoop(
    * Mirrors the worker-tier provider selection in buildDeps.
    */
   const buildRecapGenerator = ():
-    | ((history: readonly SessionEntry[], signal: AbortSignal) => Promise<string | null>)
+    | ((history: readonly SessionEntry[], signal: AbortSignal) => Promise<RecapResult | null>)
     | null => {
     if (!hasAuthenticatedProvider(mutableCtx.env)) return null;
     const effectiveMode: Mode = mutableCtx.config.mode ?? resolveAutoMode(mutableCtx.env);
@@ -732,35 +732,36 @@ export async function runChatLoop(
     } catch {
       return cached.length > 0 ? cached : null;
     }
-    let fresh: string | null = null;
+    let fresh: RecapResult | null = null;
     try {
       fresh = await generate(entries, new AbortController().signal);
     } catch {
       fresh = null;
     }
-    const normalised = parseRecap(fresh);
-    if (normalised === null) {
+    if (fresh === null) {
       // Generation failed/empty — fall back to a stale cache or nothing. NEVER block.
       return cached.length > 0 ? cached : null;
     }
+    const normalised = fresh.recap;
     try {
       await ctx.store.setRecap(convId, normalised, messageCount);
     } catch {
       // Caching is best-effort; show the recap even if persisting it failed.
     }
-    // Semantic auto-naming (real-chat gap #5): the recap is the existing topic
-    // summary, so when we just (re)generated one and the title is still an
-    // auto-derived STUB (first-words of the opening message), upgrade the title
-    // to a clean topic phrase distilled from the recap — NO new model call, it
-    // rides the recap we already made. Fail-soft + guarded so a deliberate name
-    // is never clobbered and there is no churn (only rename when it differs).
+    // Smart auto-naming: the SAME manager pass that wrote the state line also
+    // produced a professional TITLE (a crisp objective, not an echo of the user's
+    // phrasing). When the title is still an auto-derived STUB (the first-words
+    // truncation of the opening message), upgrade it to the model title — no extra
+    // model call, it rides the one pass we already made. Fail-soft + guarded so a
+    // deliberate name is never clobbered and there is no churn (only rename when it
+    // differs).
     try {
-      const semantic = deriveTitleFromRecap(normalised);
-      if (semantic !== null) {
+      const smartTitle = fresh.title;
+      if (smartTitle !== null) {
         const firstUser = entries.find((e) => e.role === 'user')?.content ?? null;
         const currentTitle = meta?.title ?? '';
-        if (isStubTitle(currentTitle, firstUser) && semantic !== currentTitle.trim()) {
-          await ctx.store.rename(convId, semantic);
+        if (isStubTitle(currentTitle, firstUser) && smartTitle !== currentTitle.trim()) {
+          await ctx.store.rename(convId, smartTitle);
         }
       }
     } catch {
