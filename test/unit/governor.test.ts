@@ -30,6 +30,7 @@ import {
   classifyTaskShape,
   allocate,
   autoPostureForMode,
+  pollPermittedConservative,
   type TaskShape,
   type AllocateInput,
   type AllocationPlan,
@@ -497,5 +498,83 @@ describe('governor — real pressure shrinks the budget honestly (Phase 4 Part B
     assert.strictEqual(maxDecide(pressureFromSignals({ rateLimitedProviderCount: 3 })).turnCallBudget, 1);
     // The core answer is un-sheddable: the budget floors at 1, never 0.
     assert.strictEqual(maxDecide(3).turnCallBudget, 1, 'budget floors at 1 (core answer never shed)');
+  });
+});
+
+// ===========================================================================
+// H) THE PLURAL JUDGMENT POLL gate (master-plan PHASE 7 / judgment §5.3)
+// ===========================================================================
+
+describe('governor.allocate — the judgment poll lever', () => {
+  // A genuine DECISION turn: substantial, NOT high-stakes (so shape is `decide`,
+  // not `risky`), repo-oriented, with a fork.
+  function decideInput(over: Partial<AllocateInput> = {}): AllocateInput {
+    const f = frame({ confidence: 'medium', source: 'model' });
+    const s = signals({ frame: f, task: 'should the feed stream server-side or fetch client-side?' });
+    return allocInput({
+      signals: s,
+      frame: f,
+      conf: assessConfidence(f, s),
+      substantial: true,
+      repoOriented: false,
+      ...over,
+    });
+  }
+
+  it('GRANTS the poll on a decide turn with ≥2 vendors + budget (Balanced/Max)', () => {
+    const plan = allocate(decideInput({ mode: 'balanced', authedProviderCount: 2 }));
+    assert.strictEqual(plan.shape, 'decide');
+    assert.strictEqual(plan.pollAllowed, true);
+    assert.ok(plan.levers.includes('poll'), 'the poll is a recorded spent lever');
+    assert.ok(plan.levers.length <= plan.turnCallBudget, 'poll never blows the hard budget');
+  });
+
+  it('SINGLE-VENDOR → pollAllowed false (no plural poll; locked surfaced honestly)', () => {
+    const plan = allocate(decideInput({ mode: 'balanced', authedProviderCount: 1 }));
+    assert.strictEqual(plan.pollAllowed, false);
+    assert.ok(!plan.levers.includes('poll'));
+    assert.ok(plan.locked.includes('poll'), 'the locked poll cell is honest, not nagged');
+  });
+
+  it('FRUGAL (cost-saver/Free) NEVER opens the poll', () => {
+    const plan = allocate(decideInput({ mode: 'cost-saver', authedProviderCount: 2 }));
+    assert.strictEqual(plan.pollAllowed, false);
+    assert.ok(!plan.levers.includes('poll'));
+  });
+
+  it('NO BUDGET (pressure shrinks below the poll minimum) → no poll', () => {
+    // Balanced base 2, pressure 1 → budget 1 < POLL_MIN_BUDGET (2) → refused.
+    const plan = allocate(decideInput({ mode: 'balanced', authedProviderCount: 2, pressure: 1 }));
+    assert.strictEqual(plan.turnCallBudget, 1);
+    assert.strictEqual(plan.pollAllowed, false);
+    assert.ok(plan.reasons.some((r) => /poll refused/i.test(r)), 'records the refusal reason');
+  });
+
+  it('the poll and the critic NEVER both fire (a build/risky turn → critic, not poll)', () => {
+    // A high-stakes diff turn classifies `risky` and earns the critic; the poll yields.
+    const s = signals({ task: 'rewrite the auth token refresh', classification: classification({ risk: 'high' }) });
+    const conf = assessConfidence(frame({ confidence: 'low' }), s);
+    const plan = allocate(allocInput({ signals: s, conf, repoOriented: true, mode: 'quality-first', authedProviderCount: 2 }));
+    assert.strictEqual(plan.verify, 'tests+critic');
+    assert.ok(plan.levers.includes('critic'));
+    assert.ok(!plan.levers.includes('poll'), 'poll and critic never both fire on one turn');
+    assert.ok(plan.levers.length <= plan.turnCallBudget);
+  });
+
+  it('a non-decision shape (build/explain/quick) never grants the poll', () => {
+    const build = allocate(allocInput({ repoOriented: true, mode: 'balanced', authedProviderCount: 2 }));
+    assert.notStrictEqual(build.shape, 'decide');
+    assert.strictEqual(build.pollAllowed, false);
+  });
+});
+
+describe('governor.pollPermittedConservative — the Governor-OFF built-in default', () => {
+  it('grants ONLY on a high-stakes fork with ≥2 vendors', () => {
+    assert.strictEqual(pollPermittedConservative(true, 2), true);
+  });
+  it('denies on low stakes, or <2 vendors', () => {
+    assert.strictEqual(pollPermittedConservative(false, 2), false);
+    assert.strictEqual(pollPermittedConservative(true, 1), false);
+    assert.strictEqual(pollPermittedConservative(false, 1), false);
   });
 });

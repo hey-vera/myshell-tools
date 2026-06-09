@@ -15,6 +15,15 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   resumed goal's contract from the persisted `workTrace` (niche: the in-run contract
   is already kept in memory; only cross-session resume benefits). Optional.
 
+## [3.43.0]
+
+### Added — plural judgment: the cross-vendor judgment superpower, flag-off
+- On a genuine decision-fork (>=2 named options, non-trivial, a real fork), myshell can poll its independent vendor minds ONE SHOT, no cross-talk, and tally their structured choices deterministically into CONSENSUS / LEAN / SPLIT. This is NOT a debate/council (iterated argument flips correct answers) — it is bounded plural judgment: agreement = earned multi-perspective confidence, disagreement = a genuine fork surfaced to you.
+- THE honesty inversion: there is NO synthesizer model run — the tally is pure, so the synthesizer is STRUCTURALLY incapable of resolving a real SPLIT (a split returns chosen:null and is surfaced with both sides reasoning). One lone mind is never consensus; a lean that agrees with you never manufactures a challenge; a verdict whose choice isnt a real option id is dropped (no hallucinated choices).
+- Feeds an optional agreement dimension into the brain confidence tuple (consensus raises understanding with a real receipt — "the other models I checked independently agree"; split caps at medium and forces a surface; absent when no poll ran, never fabricated). Activates push_back poll_split: a SPLIT or a LEAN-against-your-approach becomes a grounded challenge.
+- Reuses the panel internals verbatim (runCandidate/mergeCandidates/cost+ledger accounting parameterized, not duplicated). Governor-gated: granted only on decide/risky forks with >=2 vendors + budget room; poll and critic never both fire (plural judgment beats one strong author on a decision turn). Single-vendor: no poll — degrades honestly to the partner own judgment (push_back); the poll is surfaced as locked, never faked with one vendor.
+- Flag-gated MYSHELL_JUDGMENT (the gated half of the judgment system push_back began), DEFAULT OFF = byte-for-byte today behavior (characterization + oracle byte-identical). Subscription-clean (reuses existing routing, no API keys), fail-soft (a poll error => no-poll + the existing flow).
+
 ## [3.42.0]
 
 ### Added — subscription-adaptive AUTO budget + real pressure threading (enriches the Governor, flag-off)

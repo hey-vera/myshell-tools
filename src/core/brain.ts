@@ -57,6 +57,19 @@ export type Groundedness = 'unread' | 'grounded';
 type Stakes = 'low' | 'high';
 
 /**
+ * The cross-vendor PLURAL-JUDGMENT signal (master-judgment §1.4) — the ONE optional
+ * dimension the gated poll feeds into the tuple. Set ONLY when a poll actually ran:
+ *   - `consensus` — all polled vendors independently agreed → earned multi-perspective
+ *      confidence (RAISES understanding, with a real receipt).
+ *   - `lean`      — a majority with a dissent → state the lean, name the dissent.
+ *   - `split`     — strong minds genuinely divided → CAPS understanding at medium and
+ *      forces a surface (the meta-signal outranks any one mind's certainty).
+ * ABSENT when no poll ran — the dimension is then simply not present (never fabricated
+ * high; a missing agreement signal is honestly missing, judgment §6.2). PURE data.
+ */
+export type Agreement = 'consensus' | 'lean' | 'split';
+
+/**
  * The brain's per-turn confidence, composed PURE from signals already in scope.
  * `understanding` + `stakes` are read directly from the existing predicates;
  * `groundedness` is the ONE genuinely-new bit of state the loop tracks (it flips
@@ -66,6 +79,13 @@ export interface Confidence {
   readonly understanding: Understanding;
   readonly groundedness: Groundedness;
   readonly stakes: Stakes;
+  /**
+   * The cross-vendor agreement signal from a judgment poll (master-judgment §1.4).
+   * ABSENT (undefined) when no poll ran — honestly missing, never fabricated. When
+   * present it calibrates `understanding` (consensus raises toward high; split caps
+   * at medium) — see {@link applyAgreement}.
+   */
+  readonly agreement?: Agreement;
 }
 
 /**
@@ -119,6 +139,37 @@ export function assessConfidence(
   }
 
   return { understanding, groundedness, stakes };
+}
+
+/**
+ * Compose a judgment poll's agreement signal INTO an existing confidence tuple
+ * (master-judgment §1.4). PURE; never throws. Called ONLY when a poll actually ran;
+ * the no-poll path never touches this, so `assessConfidence`'s output is byte-for-byte
+ * unchanged when judgment is off (the OFF-GUARANTEE).
+ *
+ * The honest composition:
+ *   - CONSENSUS RAISES understanding toward `high` — and ONLY because real independent
+ *     minds concurred. A medium → high lift is earned; a low understanding rises to
+ *     medium (a consensus on a fork we barely understood is still only fairly sure of
+ *     the GOAL — we never claim full understanding off agreement alone).
+ *   - SPLIT CAPS understanding at `medium` — the meta-signal (strong minds disagree)
+ *     outranks any single mind's certainty, forcing the surface/ask arm.
+ *   - LEAN leaves understanding as-is (a majority is informative but not decisive);
+ *     it is surfaced as "state the lean + the dissent", not a confidence change.
+ *
+ * `agreement` is recorded on the returned tuple either way (so `confidenceLine` and
+ * the surfacing decision can read the REAL signal).
+ */
+export function applyAgreement(conf: Confidence, agreement: Agreement): Confidence {
+  let understanding = conf.understanding;
+  if (agreement === 'consensus') {
+    // Earned multi-perspective lift: low→medium, medium→high (high stays high).
+    understanding = understanding === 'low' ? 'medium' : understanding === 'medium' ? 'high' : 'high';
+  } else if (agreement === 'split') {
+    // The disagreement meta-signal caps understanding at medium and forces a surface.
+    if (understanding === 'high') understanding = 'medium';
+  }
+  return { ...conf, understanding, agreement };
 }
 
 /**
@@ -204,10 +255,15 @@ type PushBackSource =
   /** A correctness / irreversibility RED FLAG (reuses the existing stakes signal). */
   | 'red_flag'
   /** A LEARNED-TASTE VIOLATION (the planned default contradicts the taste playbook). */
-  | 'taste_violation';
-// FUTURE (gated phase): | 'poll_split' — a cross-vendor judgment-poll SPLIT/LEAN
-// against the user's stated approach. Add the source + a `reason` builder for it
-// when the plural poll ships; the `push_back` move + recording site already accept it.
+  | 'taste_violation'
+  /**
+   * A cross-vendor JUDGMENT-POLL SPLIT or a strong LEAN AGAINST the user's stated
+   * approach (master-judgment §1.5 / §2.2 source 3 — the GATED phase, now ACTIVE).
+   * The strongest independent minds don't favor what was asked, so the partner
+   * surfaces a grounded, falsifiable challenge. NEVER fabricated: it fires only when
+   * a real poll produced a real split/lean-against (the `pollAgreement` signal).
+   */
+  | 'poll_split';
 
 /**
  * The brain's per-iteration decision. The LOOP picks one of these each round; the
@@ -275,6 +331,35 @@ export interface JudgmentContext {
    * the taste-violation source can never fire (no fabricated violation).
    */
   readonly tasteLines?: readonly string[];
+  /**
+   * The cross-vendor JUDGMENT-POLL surface (master-judgment §1.5) — present ONLY when
+   * a real plural poll ran AND produced a SPLIT or a LEAN AGAINST the user's stated
+   * approach. Absent → the `poll_split` push_back source can NEVER fire (no fabricated
+   * disagreement). It carries the real reasoning of each side so the challenge names a
+   * checkable cause, never a vibe. The CALLER (orchestrate) builds this from the
+   * deterministic `synthesizeJudgment` result; the brain only surfaces it.
+   */
+  readonly pollSurface?: PollSurface;
+}
+
+/**
+ * A grounded cross-vendor poll disagreement against the user's stated approach
+ * (master-judgment §1.5). Every field is REAL, derived from the deterministic tally
+ * — never inferred. Present only when a poll genuinely split or leaned against the
+ * user, so a `push_back` built from it always carries a checkable reason.
+ */
+export interface PollSurface {
+  /** The honest tally state: a genuine `split`, or a `lean` AGAINST the user. */
+  readonly agreement: 'split' | 'lean';
+  /** The decision the poll weighed, in plain language (the fork question). */
+  readonly question: string;
+  /** The approach the user stated/assumed (the one the poll did NOT favor). */
+  readonly userApproach: string;
+  /**
+   * The approach the poll favored or split toward, with which vendors backed it —
+   * a short, real, human phrase (e.g. "Codex and Claude lean to dependency injection").
+   */
+  readonly favored: string;
 }
 
 /** The push_back challenge question id (lets the wiring layer detect + record it). */
@@ -434,7 +519,64 @@ function detectPushBack(
     };
   }
 
+  // ---- Source 3: cross-vendor JUDGMENT-POLL SPLIT / LEAN-AGAINST -------------
+  // GATED phase, now ACTIVE. Fire ONLY when a REAL poll produced a split or a lean
+  // AGAINST the user's stated approach (`judgment.pollSurface` present). NEVER
+  // fabricated: the caller sets `pollSurface` only from the deterministic tally, so
+  // the partner never manufactures a disagreement to look thorough. The challenge
+  // names BOTH sides' real positions + which vendors backed the alternative.
+  const surface = detectPollSplit(judgment.pollSurface);
+  if (surface !== null) {
+    return {
+      kind: 'push_back',
+      source: 'poll_split',
+      reason: surface.reason,
+      recommendation: surface.recommendation,
+      questions: buildPushBack(surface.reason, surface.recommendation, surface.subject),
+    };
+  }
+
   return null;
+}
+
+/**
+ * Build a grounded `push_back` cause from a cross-vendor poll surface (master-judgment
+ * §1.5 / §2.2 source 3). PURE; never throws. Returns null when no poll surface exists
+ * (silence — no fabricated disagreement) or when it is incoherent (missing fields).
+ *
+ * The reason NAMES the real divide: a genuine SPLIT ("strong models split — it's
+ * genuinely your call") vs a LEAN AGAINST ("the models I checked would avoid X and
+ * favor Y"). The recommendation points at the favored alternative, never a vibe.
+ */
+function detectPollSplit(
+  surface: PollSurface | undefined,
+): { reason: string; recommendation: string; subject: string } | null {
+  try {
+    if (surface === undefined || surface === null || typeof surface !== 'object') return null;
+    const question = (surface.question ?? '').trim();
+    const userApproach = (surface.userApproach ?? '').trim();
+    const favored = (surface.favored ?? '').trim();
+    if (favored.length === 0) return null;
+    const subject = question.length > 0 ? question : userApproach;
+
+    if (surface.agreement === 'split') {
+      const reason =
+        userApproach.length > 0
+          ? `I put this to the other models and they genuinely split — "${userApproach}" isn't the obvious call`
+          : `I put this to the other models and they genuinely split — this isn't the obvious call`;
+      const recommendation = `weigh in — ${favored}, or stay with your approach`;
+      return { reason, recommendation, subject };
+    }
+    // lean AGAINST the user's stated approach
+    const reason =
+      userApproach.length > 0
+        ? `the models I checked would avoid "${userApproach}" here — ${favored}`
+        : `the models I checked lean the other way — ${favored}`;
+    const recommendation = `go with the cross-model lean (${favored})`;
+    return { reason, recommendation, subject };
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -655,6 +797,19 @@ const MAX_PLAN_STEPS = 4;
  */
 export function confidenceLine(conf: Confidence | undefined): string {
   if (conf === undefined) return '';
+  // PLURAL-JUDGMENT branch (master-judgment §1.4) — a poll ran, so the confidence
+  // line is backed by REAL cross-vendor evidence and SAYS so (the one place a
+  // confidence claim is plural). This is honest: `agreement` is set only when a poll
+  // actually ran; CONSENSUS is an earned, plural receipt, SPLIT is calibrated
+  // uncertainty the partner names rather than hides.
+  if (conf.agreement === 'consensus') {
+    let base = 'Confident — the other models I checked independently agree on this approach';
+    if (conf.stakes === 'high') base += "; high-stakes, so I'll confirm first";
+    return base;
+  }
+  if (conf.agreement === 'split') {
+    return "This is a real fork — strong models split on it, so it's genuinely your call";
+  }
   let base: string;
   if (conf.understanding === 'low') {
     base = 'Still forming a view — let me confirm the shape before I build';
@@ -664,6 +819,9 @@ export function confidenceLine(conf: Confidence | undefined): string {
     base = 'Confident I understand this after checking the project layout';
   } else {
     base = 'Fairly confident I understand this';
+  }
+  if (conf.agreement === 'lean') {
+    base += '; the other models I checked mostly lean this way, with one dissent';
   }
   if (conf.stakes === 'high') {
     base += "; flagging that this is high-stakes, so I'll confirm first";

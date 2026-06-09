@@ -154,7 +154,7 @@ export function planPanel(opts: {
  * Returns `undefined` when no context applies (the prompt is then byte-for-byte
  * identical to the pre-seam panel prompt). PURE.
  */
-function contextFromDeps(deps: OrchestrateDeps): ContextBlockOptions | undefined {
+export function contextFromDeps(deps: OrchestrateDeps): ContextBlockOptions | undefined {
   const ctx: { -readonly [K in keyof ContextBlockOptions]?: ContextBlockOptions[K] } = {};
   if (deps.partnerStyle !== undefined) ctx.partnerStyle = deps.partnerStyle;
   if (deps.environmentContext !== undefined) ctx.environmentContext = deps.environmentContext;
@@ -394,7 +394,7 @@ async function* streamProvider(
 }
 
 /** The measured outcome of one panel candidate run. */
-interface CandidateOutcome {
+export interface CandidateOutcome {
   readonly provider: ProviderId;
   readonly model: string;
   readonly finalText: string | undefined;
@@ -427,7 +427,26 @@ interface CandidateOutcome {
  * stream, and dumping N candidates' raw prose (plus their JSON envelopes) would
  * corrupt the display. The terminal `text` is still captured for synthesis + ledger.
  */
-async function* runCandidate(
+/**
+ * Per-candidate overrides that let a SIBLING one-shot poll (the judgment poll,
+ * master-plan PHASE 7) reuse this executor verbatim while asking a DIFFERENT
+ * question. Absent → byte-for-byte the panel candidate (the spec's audit parity):
+ *   - `prompt`   : the exact provider prompt to send. When omitted, the panel
+ *                  candidate prompt is built from `task` (unchanged). The judgment
+ *                  poll passes the DECISION framed as a judgment question instead.
+ *   - `taskKind` : the ledger Stage-4 outcome class. When omitted, `'implementation'`
+ *                  (the panel candidate's kind, unchanged); the poll passes
+ *                  `'judgment'` so its runs are a distinct outcome class.
+ * The reasoning-effort selection, cost accounting, liveness streaming, abort
+ * handling, and `CandidateOutcome` shape are IDENTICAL across both callers — only
+ * the prompt + the recorded taskKind differ, exactly as judgment §1.2 demands.
+ */
+export interface CandidateOverrides {
+  readonly prompt?: string;
+  readonly taskKind?: TaskKind;
+}
+
+export async function* runCandidate(
   task: string,
   deps: OrchestrateDeps,
   plan: PanelPlan,
@@ -435,6 +454,7 @@ async function* runCandidate(
   signal: AbortSignal,
   historyContext: string | undefined,
   capability: PanelCapabilityInput,
+  overrides: CandidateOverrides = {},
 ): AsyncGenerator<CoreEvent, CandidateOutcome> {
   const decision = route(
     plan.tier,
@@ -457,8 +477,10 @@ async function* runCandidate(
   // resolved (candidates stay at plan.tier — never the lifted manager ceiling), so
   // this never opens manager. undefined → no registry / no efforts → no flag.
   // Independent panel candidates are always 'implementation' (diversity, not
-  // adjudication) — recorded on the ledger for Stage 4 outcome learning.
-  const taskKind: TaskKind = 'implementation';
+  // adjudication) — recorded on the ledger for Stage 4 outcome learning. The
+  // judgment poll overrides this to 'judgment' (it weighs a decision, not an
+  // implementation); absent → 'implementation', byte-for-byte the panel default.
+  const taskKind: TaskKind = overrides.taskKind ?? 'implementation';
   const reasoningEffort = panelEffort(deps, plan, candidate, decision.model, decision.tier, taskKind);
 
   let finalText: string | undefined;
@@ -488,12 +510,17 @@ async function* runCandidate(
 
   const req: import('../providers/port.js').ProviderRequest = {
     model: decision.model,
-    prompt: buildPanelCandidatePrompt(
-      decision.tier,
-      task,
-      historyContext,
-      contextFromDeps(deps),
-    ),
+    // The injected poll prompt (the DECISION framed as a judgment question) when
+    // supplied; otherwise the panel candidate prompt built from the task (byte-
+    // for-byte the panel default — the audit-parity contract).
+    prompt:
+      overrides.prompt ??
+      buildPanelCandidatePrompt(
+        decision.tier,
+        task,
+        historyContext,
+        contextFromDeps(deps),
+      ),
     cwd: deps.cwd,
     sandbox: deps.sandbox,
     timeoutMs: deps.timeoutMs,
@@ -571,7 +598,7 @@ async function* runCandidate(
  * first), which is also the order the renderer ticks panelists down. The returned
  * outcomes array is the FULL set (every candidate), preserved for synthesis.
  */
-async function* mergeCandidates(
+export async function* mergeCandidates(
   gens: ReadonlyArray<AsyncGenerator<CoreEvent, CandidateOutcome>>,
   onOutcome: (outcome: CandidateOutcome) => AsyncGenerator<CoreEvent>,
 ): AsyncGenerator<CoreEvent, CandidateOutcome[]> {

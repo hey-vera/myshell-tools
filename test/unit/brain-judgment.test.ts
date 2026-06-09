@@ -14,6 +14,8 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   assessConfidence,
+  applyAgreement,
+  confidenceLine,
   decideNextMove,
   detectTasteViolation,
   buildPushBack,
@@ -21,6 +23,7 @@ import {
   classifyPushBackAnswer,
   type JudgmentContext,
   type BrainLoopState,
+  type PollSurface,
 } from '../../src/core/brain.ts';
 import { judgmentEnabled } from '../../src/core/judgment-flag.ts';
 import { planEngagement } from '../../src/core/engagement.ts';
@@ -476,5 +479,128 @@ describe('classifyPushBackAnswer / isPushBackQuestionSet', () => {
     assert.equal(q.options[0]?.label, 'Do it my way', 'override is the easy first option');
     assert.equal(q.options[1]?.label, 'Go with your call');
     assert.equal(q.allowFreeText, true, 'free text lets the user re-ground the decision');
+  });
+});
+
+// ===========================================================================
+// SOURCE 3 — the GATED cross-vendor JUDGMENT-POLL split/lean (poll_split)
+// ===========================================================================
+
+const SPLIT_SURFACE: PollSurface = {
+  agreement: 'split',
+  question: 'how should the feed load data?',
+  userApproach: 'client-side fetch',
+  favored: 'claude → server component; codex → edge cache',
+};
+const LEAN_AGAINST_SURFACE: PollSurface = {
+  agreement: 'lean',
+  question: 'how should the feed load data?',
+  userApproach: 'client-side fetch',
+  favored: 'claude & codex lean to server component',
+};
+
+describe('push_back — poll_split source (the gated cross-vendor disagreement)', () => {
+  it('FIRES on a real SPLIT against the user, only when a pollSurface is present', () => {
+    const f = frame({ confidence: 'medium', source: 'model', goal: 'wire the feed data' });
+    const s = substantialSignals({ frame: f, task: 'wire the feed data to the api' });
+    const plan = planEngagement(s);
+    const conf = assessConfidence(f, s);
+    const move = decideNextMove(conf, f, s, plan, state(), noAsk, {
+      enabled: true,
+      pollSurface: SPLIT_SURFACE,
+    });
+    assert.equal(move.kind, 'push_back');
+    if (move.kind === 'push_back') {
+      assert.equal(move.source, 'poll_split');
+      assert.ok(move.reason.length > 0 && /split/i.test(move.reason));
+      assert.ok(isPushBackQuestionSet(move.questions));
+    }
+  });
+
+  it('FIRES on a strong LEAN AGAINST the user', () => {
+    const f = frame({ confidence: 'medium', source: 'model', goal: 'wire the feed data' });
+    const s = substantialSignals({ frame: f, task: 'wire the feed data to the api' });
+    const plan = planEngagement(s);
+    const conf = assessConfidence(f, s);
+    const move = decideNextMove(conf, f, s, plan, state(), noAsk, {
+      enabled: true,
+      pollSurface: LEAN_AGAINST_SURFACE,
+    });
+    assert.equal(move.kind, 'push_back');
+    if (move.kind === 'push_back') assert.equal(move.source, 'poll_split');
+  });
+
+  it('NO manufactured disagreement: with NO pollSurface, the poll_split source never fires', () => {
+    const f = frame({ confidence: 'medium', source: 'model', goal: 'wire the feed data' });
+    const s = substantialSignals({ frame: f, task: 'wire the feed data' });
+    const plan = planEngagement(s);
+    const conf = assessConfidence(f, s);
+    // enabled but no pollSurface, no taste lines, not irreversible → no push_back.
+    const move = decideNextMove(conf, f, s, plan, state(), noAsk, { enabled: true });
+    assert.notEqual(move.kind, 'push_back');
+  });
+
+  it('flag OFF → never fires even with a pollSurface present (the OFF-GUARANTEE)', () => {
+    const f = frame({ confidence: 'medium', source: 'model', goal: 'wire the feed data' });
+    const s = substantialSignals({ frame: f, task: 'wire the feed data' });
+    const plan = planEngagement(s);
+    const conf = assessConfidence(f, s);
+    const move = decideNextMove(conf, f, s, plan, state(), noAsk, {
+      enabled: false,
+      pollSurface: SPLIT_SURFACE,
+    });
+    assert.notEqual(move.kind, 'push_back');
+  });
+});
+
+// ===========================================================================
+// THE AGREEMENT DIMENSION → confidence wiring (master-judgment §1.4)
+// ===========================================================================
+
+describe('applyAgreement — feeds the confidence tuple honestly', () => {
+  it('ABSENT when no poll ran: assessConfidence never sets agreement (honestly missing)', () => {
+    const f = frame({ confidence: 'medium', source: 'model' });
+    const s = signals({ frame: f });
+    const conf = assessConfidence(f, s);
+    assert.equal(conf.agreement, undefined, 'no poll → the dimension is absent, not fabricated');
+  });
+
+  it('CONSENSUS raises understanding toward high (earned, plural)', () => {
+    const base = { understanding: 'medium' as const, groundedness: 'unread' as const, stakes: 'low' as const };
+    const c = applyAgreement(base, 'consensus');
+    assert.equal(c.understanding, 'high');
+    assert.equal(c.agreement, 'consensus');
+  });
+
+  it('SPLIT caps understanding at medium (the disagreement meta-signal outranks one mind)', () => {
+    const base = { understanding: 'high' as const, groundedness: 'grounded' as const, stakes: 'low' as const };
+    const c = applyAgreement(base, 'split');
+    assert.equal(c.understanding, 'medium');
+    assert.equal(c.agreement, 'split');
+  });
+
+  it('LEAN records the signal without forcing an understanding change', () => {
+    const base = { understanding: 'medium' as const, groundedness: 'unread' as const, stakes: 'low' as const };
+    const c = applyAgreement(base, 'lean');
+    assert.equal(c.understanding, 'medium');
+    assert.equal(c.agreement, 'lean');
+  });
+
+  it('confidenceLine surfaces a PLURAL receipt on consensus and a fork on split', () => {
+    const consensus = applyAgreement(
+      { understanding: 'medium', groundedness: 'unread', stakes: 'low' },
+      'consensus',
+    );
+    assert.match(confidenceLine(consensus), /independently agree/i);
+    const split = applyAgreement(
+      { understanding: 'high', groundedness: 'grounded', stakes: 'low' },
+      'split',
+    );
+    assert.match(confidenceLine(split), /real fork|your call/i);
+  });
+
+  it('a no-agreement confidence line is byte-for-byte unchanged (neutrality)', () => {
+    const plain = { understanding: 'medium' as const, groundedness: 'unread' as const, stakes: 'low' as const };
+    assert.equal(confidenceLine(plain), 'Fairly confident I understand this');
   });
 });

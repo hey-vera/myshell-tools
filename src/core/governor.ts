@@ -226,6 +226,18 @@ export interface AllocationPlan {
   readonly verbosity: Verbosity;
   /** The verification level. PHASE 2: always `'none'` (machinery not built yet). */
   readonly verify: Verify;
+  /**
+   * Whether the PLURAL JUDGMENT POLL is permitted to fire this turn (master-plan
+   * PHASE 7 / judgment §5.3). The poll is an EXPENSIVE cross-vendor lever (N candidate
+   * calls), so the Governor OWNS whether it fires: judgment proposes (a genuine fork),
+   * the Governor disposes. True ONLY when the shape warrants a decision poll
+   * (`decide`/`risky`) AND ≥2 vendors are authed AND the `turnCallBudget` has room for
+   * the candidate calls AND the mode isn't frugal. The actual poll STILL only forms
+   * when `planJudgment` finds a real ≥2-option fork + ≥2 distinct vendors — this gate
+   * is the BUDGET authority, not the fork detector. When the Governor is OFF the caller
+   * applies a conservative built-in default (a high-stakes genuine fork + ≥2 vendors).
+   */
+  readonly pollAllowed: boolean;
   /** The requested concurrency / activeLimit. PHASE 2: always `1` (single goal). */
   readonly concurrency: number;
   /**
@@ -483,6 +495,59 @@ function verifyForShape(
   return wantsCritic ? 'tests+critic' : 'tests';
 }
 
+/** A decision poll needs at least this much budget room for its candidate calls. */
+const POLL_MIN_BUDGET = 2;
+
+/**
+ * Whether the PLURAL JUDGMENT POLL is permitted for this shape/mode/budget (master-
+ * plan PHASE 7 / judgment §5.3). The poll is the costliest decision-time lever, so it
+ * fires only when:
+ *   - the shape is a genuine DECISION turn (`decide`, or a `risky` fork) — never on
+ *     `quick`/`explain`/`build`/`investigate` (a build is the critic's turn, not the
+ *     poll's; the two share the one budget and never both fire);
+ *   - ≥2 vendors are authenticated (plural judgment requires plurality — single-vendor
+ *     turns degrade honestly to single-mind judgment, never a faked second voice);
+ *   - the mode is NOT frugal (`cost-saver`/Free never auto-opens an expensive lever);
+ *   - the `turnCallBudget` has room for the candidate calls (≥ {@link POLL_MIN_BUDGET}).
+ * This is the BUDGET authority; the fork itself is still required by `planJudgment`.
+ */
+function pollAllowedForShape(
+  shape: TaskShape,
+  mode: Mode,
+  crossVendor: boolean,
+  turnCallBudget: number,
+  spent: number,
+  criticChosen: boolean,
+): boolean {
+  if (!crossVendor) return false;
+  if (mode === 'cost-saver') return false;
+  if (shape !== 'decide' && shape !== 'risky') return false;
+  // The poll and the critic share the ONE budget and NEVER both fire (a decision
+  // turn → poll; a build/verify turn → critic). If the critic already took the
+  // cross-vendor unit this turn, the poll yields.
+  if (criticChosen) return false;
+  // Budget room for the candidate calls: at least POLL_MIN_BUDGET total, and a unit
+  // beyond what the core answer (+ any Oracle) already spent.
+  return turnCallBudget >= POLL_MIN_BUDGET && spent < turnCallBudget;
+}
+
+/**
+ * The CONSERVATIVE BUILT-IN poll gate used when the Governor is OFF (master-plan
+ * PHASE 7 single-vendor / off-default contract): with no Governor coordinating the
+ * budget, the poll fires only on a HIGH-STAKES genuine fork with ≥2 vendors — the
+ * narrowest honest default. PURE. The CALLER still requires `planJudgment` to find a
+ * real ≥2-option fork + ≥2 distinct vendors, so this is the stakes/vendor gate only.
+ *
+ * @param highStakes - the brain's `conf.stakes === 'high'` read (risk/irreversible).
+ * @param authedProviderCount - distinct authed vendors (≥2 to be plural).
+ */
+export function pollPermittedConservative(
+  highStakes: boolean,
+  authedProviderCount: number,
+): boolean {
+  return highStakes && authedVendorCount(authedProviderCount);
+}
+
 /**
  * THE ALLOCATION — a PURE function `allocate(input) → AllocationPlan` (perf doc
  * §3.2). Total, fail-soft, ZERO tokens to compute. It:
@@ -549,6 +614,39 @@ export function allocate(input: AllocateInput): AllocationPlan {
     reasons.push('depth refused — no budget left for an investigation round');
   }
 
+  // Will the diff-scoped CRITIC fire this turn? Precomputed here (before the Oracle)
+  // so the poll/critic mutual exclusion is decided coherently: a build/risky diff
+  // turn is the CRITIC's cross-vendor turn, a decision turn is the POLL's. The two
+  // never both fire and never both claim the budget. (A `decide` turn produces no
+  // diff, so `criticWillFire` is false there → the poll is free to take the unit.)
+  const criticWillFire = verifyForShape(shape, input.conf, crossVendor, true) === 'tests+critic';
+
+  // PLURAL JUDGMENT POLL — the DECISION-time cross-vendor lever (master-plan PHASE 7).
+  // Allocated BEFORE the Oracle on a decision turn: plural independent judgment beats
+  // ONE strong author for a *decision*, so the poll is the higher-value decide lever
+  // and claims the cross-vendor unit first; the Oracle then takes a further unit only
+  // if budget remains (Max=3 fits core+poll+oracle; Balanced=2 fits core+poll, oracle
+  // yields). The poll never fires alongside the critic (criticWillFire gates it).
+  const pollAllowed = pollAllowedForShape(
+    shape,
+    input.mode,
+    crossVendor,
+    turnCallBudget,
+    spent,
+    criticWillFire,
+  );
+  if (pollAllowed) {
+    levers.push('poll');
+    spent += 1;
+    reasons.push('judgment poll — genuine decision; weighing 2+ independent vendor minds');
+  } else if ((shape === 'decide' || shape === 'risky') && crossVendor && input.mode !== 'cost-saver') {
+    if (criticWillFire) {
+      reasons.push('judgment poll refused — the critic took this turn’s cross-vendor unit (poll and critic never both fire)');
+    } else {
+      reasons.push('judgment poll refused — budget too tight for the candidate calls');
+    }
+  }
+
   // MODEL TIER — request the Oracle only when the shape/mode earns it AND a unit
   // of the budget remains. Otherwise REFUSE it explicitly (the anti-drift act).
   let tierRequest: TierRequest = 'ic';
@@ -600,6 +698,11 @@ export function allocate(input: AllocateInput): AllocationPlan {
     }
   }
 
+  // PLURAL JUDGMENT POLL (master-plan PHASE 7) — the decision-time cross-vendor
+  // lever. Granted only on a genuine decision turn with ≥2 vendors, a non-frugal
+  // mode, and budget room for the candidate calls. The poll and the critic never
+  // both fire (a `decide` turn produces no diff to critique; a `build`/`risky` turn
+  // is the critic's, not the poll's) — they share the one budget by construction.
   // CONCURRENCY — declared-but-inactive cell in Phase 2.
   const concurrency = 1;
 
@@ -614,6 +717,7 @@ export function allocate(input: AllocateInput): AllocationPlan {
     levers,
     locked,
     reasons,
+    pollAllowed,
   };
 }
 

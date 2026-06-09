@@ -44,18 +44,26 @@ import { capContract, shouldMaterializeContract, isCleanObjectiveTask } from './
 import type { IntentFrame } from './intent.js';
 import { shouldExtractIntent, rulesIntentFrame, renderIntentBlock, normalizeExtraction } from './intent.js';
 import { capGoalLabel } from './goal.js';
-import { planEngagement, seedFromIntentAndPlan, renderEngagementBlock, deriveAskFromForks } from './engagement.js';
+import { planEngagement, seedFromIntentAndPlan, renderEngagementBlock, deriveAskFromForks, isTrivial, hasGenuineFork } from './engagement.js';
 import type { EngagementSignals } from './engagement.js';
 import {
   assessConfidence,
+  applyAgreement,
   decideNextMove,
   maxRoundsFor,
   understandingImproved,
   buildReflectConfirm,
   type Groundedness,
   type JudgmentContext,
+  type PollSurface,
 } from './brain.js';
-import { allocate, type AllocationPlan } from './governor.js';
+import { allocate, pollPermittedConservative, type AllocationPlan } from './governor.js';
+import {
+  planJudgment,
+  runJudgmentPoll,
+  type JudgmentDecision,
+  type JudgmentOption,
+} from './judgment-poll.js';
 import { autoModeForPlanInfos, type PlanInfo } from './policy.js';
 import { pressureFromSignals } from './capability-budget.js';
 import { ENVIRONMENT_BLOCK_CHAR_CAP } from './repo-map.js';
@@ -86,6 +94,72 @@ import { renderVisionTriageBlock } from './vision-triage.js';
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
+
+/**
+ * Build a {@link JudgmentDecision} from the intent frame's FIRST genuine solution-
+ * space fork with ≥2 named options (master-plan PHASE 7 trigger). PURE; never throws.
+ * Returns null when no such fork exists — the poll then never forms (no new fork
+ * detector; we reuse the SAME `IntentFork` the ask-vs-proceed spine already trusts).
+ */
+function judgmentDecisionFromFrame(frame: IntentFrame | undefined): JudgmentDecision | null {
+  try {
+    const forks = frame?.forks ?? [];
+    for (const fork of forks) {
+      const opts = (fork.options ?? [])
+        .map((o, i): JudgmentOption => ({ id: `${fork.id}:${i}`, label: o }))
+        .filter((o) => o.label.trim().length > 0);
+      if (opts.length >= 2 && fork.question.trim().length > 0) {
+        return { question: fork.question, options: opts };
+      }
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Map a poll synthesis + the decision to a {@link PollSurface} the brain can push
+ * back from — but ONLY when the poll genuinely SPLIT, or LEANED AGAINST the user's
+ * stated/assumed approach. PURE; never throws. Returns null otherwise (CONSENSUS, or
+ * a lean that AGREES with the user) so the partner never manufactures a disagreement.
+ *
+ * The user's approach is the fork's `assumeIfUnasked` default (the lane the partner
+ * would otherwise take). A LEAN is "against" only when its chosen option is NOT that
+ * default; a SPLIT is always surfaced (the call is genuinely the user's).
+ */
+function pollSurfaceFromSynthesis(
+  synthesis: { agreement: 'consensus' | 'lean' | 'split'; chosen: string | null; tally: ReadonlyArray<{ optionId: string; vendors: readonly string[] }> },
+  decision: JudgmentDecision,
+  userApproach: string,
+): PollSurface | null {
+  try {
+    const labelFor = (id: string | null): string =>
+      decision.options.find((o) => o.id === id)?.label ?? '';
+    if (synthesis.agreement === 'split') {
+      // Name the two leading sides + which vendors backed each (real, from the tally).
+      const top = synthesis.tally.slice(0, 2);
+      const favored = top
+        .map((t) => `${t.vendors.join(' & ')} → ${labelFor(t.optionId)}`)
+        .filter((s) => s.trim().length > 0)
+        .join('; ');
+      if (favored.length === 0) return null;
+      return { agreement: 'split', question: decision.question, userApproach, favored };
+    }
+    if (synthesis.agreement === 'lean' && synthesis.chosen !== null) {
+      const chosenLabel = labelFor(synthesis.chosen);
+      // A lean that AGREES with the user's default is NOT a push-back cause.
+      if (chosenLabel.trim().length === 0) return null;
+      if (userApproach.trim().length > 0 && chosenLabel.trim() === userApproach.trim()) return null;
+      const backers = synthesis.tally.find((t) => t.optionId === synthesis.chosen)?.vendors ?? [];
+      const favored = backers.length > 0 ? `${backers.join(' & ')} lean to ${chosenLabel}` : chosenLabel;
+      return { agreement: 'lean', question: decision.question, userApproach, favored };
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
 
 /**
  * Orchestrate a task through the bounded escalation + review loop.
@@ -607,6 +681,126 @@ export async function* orchestrate(
       ? intentFrame.goal
       : task);
   const goalTitle = capGoalLabel(goalTitleRaw, 72);
+
+  // -------------------------------------------------------------------------
+  // (a3d) THE PLURAL JUDGMENT POLL — the GATED half of the judgment superpower
+  //       (master-plan PHASE 7 / .tmp-master-judgment.md Part 1). A bounded ONE-SHOT
+  //       cross-vendor poll on a genuine DECISION → deterministic tally → honest
+  //       synthesis → collaborative surfacing. It is the PRE-FLIGHT: it fires BEFORE
+  //       the terminal-ask gate + the work call, so a SPLIT/LEAN-against can surface
+  //       a grounded push_back and a CONSENSUS can raise earned confidence.
+  //
+  //       FIRES ONLY when ALL hold (every clause an EXISTING predicate — no new fork
+  //       detector): the judgment flag is ON · the turn is NOT trivial · it carries a
+  //       genuine non-investigable fork (`hasGenuineFork`) · that fork has ≥2 named
+  //       options (`judgmentDecisionFromFrame`) · ≥2 DISTINCT vendors are authed
+  //       (`planJudgment`) · AND the Governor permits the spend (when ON, the
+  //       allocation's `pollAllowed`; when OFF, the conservative built-in — a high-
+  //       stakes genuine fork + ≥2 vendors). ONE poll per turn; it draws from the one
+  //       turnCallBudget. SINGLE-VENDOR degrades HONESTLY (planJudgment returns null →
+  //       no poll → the existing single-mind flow). FAIL-SOFT: any poll error degrades
+  //       to no-poll (the existing flow), NEVER breaks the turn. FLAG-OFF: this whole
+  //       block is skipped → decideNextMove byte-for-byte today's behavior.
+  if (
+    deps.judgmentEnabled === true &&
+    !isTrivial(engagementSignals) &&
+    hasGenuineFork(engagementSignals)
+  ) {
+    const decision = judgmentDecisionFromFrame(intentFrame);
+    if (decision !== null) {
+      // The Governor owns the spend. When ON, read its `pollAllowed` (the same pure
+      // allocation the e2 consult computes — pure + cheap, identical inputs). When
+      // OFF, the conservative built-in: a high-stakes genuine fork + ≥2 vendors.
+      const pollConf = assessConfidence(intentFrame, engagementSignals, brainGroundedness);
+      const authedCount = (deps.authenticatedProviders ?? []).length;
+      let pollPermitted: boolean;
+      if (deps.governorEnabled === true) {
+        const pInfos: PlanInfo[] =
+          deps.planInfos !== undefined
+            ? (Object.values(deps.planInfos).filter((p) => p !== undefined) as PlanInfo[])
+            : [];
+        const gMode = pInfos.length > 0 ? autoModeForPlanInfos(pInfos) : modeFromPolicy(deps.policy);
+        pollPermitted = allocate({
+          conf: pollConf,
+          frame: intentFrame,
+          signals: engagementSignals,
+          plan: engagementPlan,
+          substantial: directive.substantial,
+          repoOriented: directive.repoOriented,
+          mode: gMode,
+          authedProviderCount: authedCount,
+          pressure: deps.governorPressure ?? pressureFromSignals({}),
+          maxRounds: maxRoundsFor(deps.partnerStyle),
+        }).pollAllowed;
+      } else {
+        pollPermitted = pollPermittedConservative(pollConf.stakes === 'high', authedCount);
+      }
+
+      const pollPlan = pollPermitted
+        ? planJudgment({
+            decision,
+            tier: classification.tier,
+            classification,
+            authenticatedProviders: deps.authenticatedProviders ?? [],
+            ...(deps.policy.maxPanelProviders !== undefined
+              ? { maxCandidates: deps.policy.maxPanelProviders }
+              : {}),
+          })
+        : null;
+
+      if (pollPlan !== null) {
+        try {
+          // Run the poll (its events stream as panel-style liveness; the generator
+          // RETURNS the deterministic synthesis). It NEVER appends to the session or
+          // emits a user-facing final — the surfacing below owns that.
+          const pollResult = yield* runJudgmentPoll(deps, pollPlan, signal);
+          if (!signal.aborted && pollResult.completed) {
+            const synthesis = pollResult.synthesis;
+            // FEED THE BRAIN: the agreement dimension calibrates confidence honestly.
+            // (Absent on the no-poll path; here a poll genuinely ran.)
+            const agreedConf = applyAgreement(pollConf, synthesis.agreement);
+
+            // COLLABORATIVE SURFACING:
+            //  - SPLIT / LEAN-AGAINST → activate push_back via the poll_split source.
+            //  - CONSENSUS / a lean that AGREES → proceed (state, don't ask): we leave
+            //    the existing brainTerminalQuestion untouched (the brain already chose).
+            const userApproach =
+              (intentFrame?.forks ?? [])
+                .find((f) => decision.question === f.question)
+                ?.assumeIfUnasked?.trim() ?? '';
+            const pollSurface = pollSurfaceFromSynthesis(synthesis, decision, userApproach);
+            if (pollSurface !== null) {
+              const pollJudgment: JudgmentContext = {
+                enabled: true,
+                ...(depsArg.tastePlaybookLines !== undefined
+                  ? { tasteLines: depsArg.tastePlaybookLines }
+                  : {}),
+                pollSurface,
+              };
+              const pollMove = decideNextMove(
+                agreedConf,
+                intentFrame,
+                engagementSignals,
+                engagementPlan,
+                { rounds: 0, groundedness: brainGroundedness, optedOutOfDeepDive: depsArg.partnerStyle === 'direct', maxRounds: maxRoundsFor(depsArg.partnerStyle) },
+                () => deriveAskFromForks(intentFrame, engagementPlan),
+                pollJudgment,
+              );
+              if (pollMove.kind === 'push_back') {
+                // The grounded cross-vendor challenge takes precedence over whatever
+                // the pre-poll brain chose — strong minds disagree, so the user's
+                // input genuinely changes the call.
+                brainTerminalQuestion = pollMove.questions;
+              }
+            }
+          }
+        } catch {
+          // FAIL-SOFT: a poll error degrades to no-poll + the existing flow. The turn
+          // proceeds exactly as it would have without the poll (never broken).
+        }
+      }
+    }
+  }
 
   // -------------------------------------------------------------------------
   // (a4) PRE-PROVIDER TERMINAL ASK (adaptive-partner-v2-5.6.md §2.2 A1).

@@ -130,6 +130,14 @@ export type TaskKind =
   | 'review'
   | 'architecture'
   | 'large-context'
+  /**
+   * A cross-vendor JUDGMENT-POLL run (master-plan PHASE 7 / judgment §1.2): an
+   * independent vendor weighing a *decision* (which approach), not building or
+   * reviewing an implementation. Recorded on the ledger so poll runs are a
+   * distinct Stage-4 outcome class. All registry equality checks fall through
+   * safely (a poll never routes large-context/architecture special-cases).
+   */
+  | 'judgment'
   | 'unknown';
 
 /**
