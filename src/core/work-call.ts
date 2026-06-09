@@ -1,0 +1,1537 @@
+/**
+ * src/core/work-call.ts — the `runWorkCall` stage (Phase 1 seam).
+ *
+ * This is the WORK-CALL EXECUTION REGION carved out of orchestrate() as a single,
+ * cohesive, named stage. It owns the bounded escalation + review loop:
+ *
+ *   route → streamProvider → collectProviderRun → append accepted assistant →
+ *   retry/failover by tier → usage/cost accounting → emit CoreEvents
+ *
+ * It is a behaviour-PRESERVING extraction: it yields the SAME CoreEvents in the
+ * SAME order as the inlined loop did, and mutates only its own internal loop state.
+ * The seam exists so the later master-plan subsystems (the Governor, the
+ * verification centerpiece, the judgment poll) plug in at one named boundary
+ * instead of inside a 2200-line generator. Phase 1 builds ONLY the seam + the
+ * empty `verifyStage` slot — NO new behaviour.
+ *
+ * WHAT FLOWS IN (`WorkCallInput`): the live, already-computed turn context —
+ *   - the immutable signals: task, deps, signal, classification, routePlan,
+ *     directive, intentFrame, engagementPlan, goalTitle, workTrace,
+ *     incomingWorkContract, available providers, mode, taskSignals,
+ *     capabilityContext, historyContext, wantsWebSearch, hasImageAttachment;
+ *   - the RESOLVED starting tier (`startTier`) — the admission gates in
+ *     orchestrate() (admitManager / authorizeTier / the Oracle escalation) keep
+ *     their authority and run BEFORE this stage; this stage receives the tier they
+ *     chose. It re-derives its own `admitManager` over its loop-local mutable tier
+ *     for the IN-LOOP escalation/failover/review admission decisions (identical
+ *     body to the preamble's, closing over the live loop tier — exactly as the
+ *     inlined closure did).
+ *
+ * WHAT FLOWS OUT: the yielded CoreEvent stream (classified is emitted by
+ * orchestrate before this stage; this stage emits tier-start/provider-event/
+ * tier-done/escalate/failover/notice/final). The terminal `final` event is the
+ * stage's only "return value"; the accepted-assistant append + ledger records are
+ * side-effects on the injected ports. The stage returns (the generator completes)
+ * after emitting exactly one terminal `final`.
+ *
+ * Purity rules (enforced by test/arch/guards.test.ts), identical to orchestrate.ts:
+ *  - No imports of fs / path / child_process
+ *  - No console.* calls
+ *  - No Date.now() / Math.random() / new Date() — use deps.clock
+ *  - No process.exit()
+ */
+
+import type { CoreEvent, OrchestrateDeps, Tier, Classification, Assessment, Policy } from './types.js';
+import type { CliError, Usage, ProviderRequest, Provider, ProviderId } from '../providers/port.js';
+import { route, clampTier, type CapabilityRouteContext, type CapabilityTaskSignals } from './route.js';
+import type { Mode } from './policy.js';
+import { shouldReview, effortForDecision } from './orchestrate-signals.js';
+import { authorizeTier } from './flagship.js';
+import type { FlagshipTrigger, FlagshipDecision } from './flagship.js';
+import { buildPrompt } from './prompt.js';
+import { assess } from './assess.js';
+import { parseQuestions } from './questions.js';
+import { memoryProposalFor } from './orchestrate-memory.js';
+import { getModelPricing, calculateCost } from '../infra/pricing.js';
+import { nextTierUp, pickReviewer } from './escalate.js';
+import { buildReviewPrompt, parseReviewVerdict } from './review.js';
+import type { WorkContract } from './work-contract.js';
+import { capContract, shouldMaterializeContract, isCleanObjectiveTask } from './work-contract.js';
+import type { IntentFrame } from './intent.js';
+import type { EngagementPlan } from './engagement.js';
+import { deriveAskFromForks } from './engagement.js';
+import type { TurnDirective } from './turn-directive.js';
+import {
+  validateTurnOutput,
+  shouldAppendGroundedFallback,
+  GENERIC_MENU_REPAIR_NOTE,
+  GROUNDED_RECOMMENDATION_REPAIR_NOTE,
+  GROUNDED_RECOMMENDATION_FALLBACK,
+} from './turn-directive.js';
+import {
+  extractDiscoverySignals,
+  discoveryWarrantsManager,
+  discoveryWarrantsReview,
+  discoveryEscalationReason,
+  type DiscoverySignal,
+} from './discovery.js';
+import { ENGINE_BEHAVIOR_VERSION } from './engine-version.js';
+
+// ---------------------------------------------------------------------------
+// Private streaming helpers (moved verbatim from orchestrate.ts — they are used
+// ONLY by the work-call loop). ensemble.ts keeps its own independent copies.
+// ---------------------------------------------------------------------------
+
+interface StreamOutcome {
+  finalText: string | undefined;
+  errored: CliError | undefined;
+  usage: Usage | undefined;
+  providerCostUsd: number | undefined;
+  /** Provider-assigned session/thread id captured from the `done` event, if any. */
+  sessionId: string | undefined;
+  canceled: boolean;
+  /** True only when the signal was already aborted before streaming started. */
+  canceledBeforeStream: boolean;
+}
+
+interface AcceptedRunSessionData {
+  readonly content: string;
+  readonly tier: Tier;
+  readonly provider: ProviderId;
+  readonly model: string;
+  readonly confidence: number | null;
+  readonly costUsd: number;
+  readonly durationMs: number;
+  readonly sessionId?: string;
+  readonly workTrace?: WorkContract;
+}
+
+async function appendAcceptedAssistant(
+  deps: OrchestrateDeps,
+  run: AcceptedRunSessionData,
+): Promise<void> {
+  await deps.session.append({
+    timestamp: deps.clock.isoNow(),
+    role: 'assistant',
+    content: run.content,
+    tier: run.tier,
+    provider: run.provider,
+    model: run.model,
+    confidence: run.confidence,
+    costUsd: run.costUsd,
+    durationMs: run.durationMs,
+    ...(run.sessionId !== undefined ? { sessionId: run.sessionId } : {}),
+    ...(run.workTrace !== undefined ? { workTrace: run.workTrace } : {}),
+    // Stamp the engine BEHAVIOR version (AP2-F / Stage 6, §3, §4) so a later turn
+    // can identify this as CURRENT-engine prose and NOT quarantine it on the
+    // version axis. Absent on legacy/pre-fix entries → quarantine candidate.
+    engineBehaviorVersion: ENGINE_BEHAVIOR_VERSION,
+  });
+}
+
+/**
+ * Stream a single provider run, yielding `{type:'provider-event', tier, event}`
+ * for every event, while accumulating `finalText`, `usage`, `providerCostUsd`,
+ * and `errored`.  Cancellation via `signal` is detected both before and after
+ * each event; on cancellation the generator returns immediately with
+ * `canceled: true` (no notice/final events — the caller emits those).
+ */
+async function* streamProvider(
+  provider: Provider,
+  req: ProviderRequest,
+  tier: Tier,
+  signal: AbortSignal,
+): AsyncGenerator<CoreEvent, StreamOutcome> {
+  let finalText: string | undefined;
+  let errored: CliError | undefined;
+  let usage: Usage | undefined;
+  let providerCostUsd: number | undefined;
+  let sessionId: string | undefined;
+
+  // Pre-stream abort check
+  if (signal.aborted) {
+    return { finalText, errored, usage, providerCostUsd, sessionId, canceled: true, canceledBeforeStream: true };
+  }
+
+  for await (const ev of provider.run(req, signal)) {
+    yield { type: 'provider-event', tier, event: ev };
+
+    if (ev.type === 'done') {
+      finalText = ev.text;
+      // done.usage is the authoritative accumulated total.
+      if (ev.usage !== undefined) {
+        usage = ev.usage;
+      }
+      if (ev.costUsd !== undefined) {
+        providerCostUsd = ev.costUsd;
+      }
+      if (ev.sessionId !== undefined && ev.sessionId.length > 0) {
+        sessionId = ev.sessionId;
+      }
+    } else if (ev.type === 'error') {
+      errored = ev.error;
+    } else if (ev.type === 'usage' && usage === undefined) {
+      usage = ev.usage;
+    }
+
+    if (signal.aborted) {
+      return { finalText, errored, usage, providerCostUsd, sessionId, canceled: true, canceledBeforeStream: false };
+    }
+  }
+
+  return { finalText, errored, usage, providerCostUsd, sessionId, canceled: false, canceledBeforeStream: false };
+}
+
+/**
+ * Consume a provider run for terminal data only. Internal control-plane runs
+ * such as cross-vendor review must not stream their prose to the renderer.
+ */
+async function collectProviderRun(
+  provider: Provider,
+  req: ProviderRequest,
+  signal: AbortSignal,
+): Promise<StreamOutcome> {
+  let finalText: string | undefined;
+  let errored: CliError | undefined;
+  let usage: Usage | undefined;
+  let providerCostUsd: number | undefined;
+  let sessionId: string | undefined;
+
+  if (signal.aborted) {
+    return { finalText, errored, usage, providerCostUsd, sessionId, canceled: true, canceledBeforeStream: true };
+  }
+
+  for await (const ev of provider.run(req, signal)) {
+    if (ev.type === 'done') {
+      finalText = ev.text;
+      // done.usage is the authoritative accumulated total.
+      if (ev.usage !== undefined) {
+        usage = ev.usage;
+      }
+      if (ev.costUsd !== undefined) {
+        providerCostUsd = ev.costUsd;
+      }
+      if (ev.sessionId !== undefined && ev.sessionId.length > 0) {
+        sessionId = ev.sessionId;
+      }
+    } else if (ev.type === 'error') {
+      errored = ev.error;
+    } else if (ev.type === 'usage' && usage === undefined) {
+      usage = ev.usage;
+    }
+
+    if (signal.aborted) {
+      return { finalText, errored, usage, providerCostUsd, sessionId, canceled: true, canceledBeforeStream: false };
+    }
+  }
+
+  return { finalText, errored, usage, providerCostUsd, sessionId, canceled: false, canceledBeforeStream: false };
+}
+
+// ---------------------------------------------------------------------------
+// The verifyStage SLOT (Phase 1 — empty placeholder)
+// ---------------------------------------------------------------------------
+
+/**
+ * Inputs the verification stage will read when Phase 3 fills this slot. Built now
+ * (empty-bodied) so the seam shape is stable and the call site is fixed.
+ */
+export interface VerifyStageContext {
+  /** The accepted answer text for this turn (the candidate "done"). */
+  readonly output: string;
+  /** The provider that produced it (for cross-vendor reviewer selection). */
+  readonly provider: ProviderId;
+  /** The tier it ran at. */
+  readonly tier: Tier;
+}
+
+/**
+ * verifyStage — THE PHASE-3 VERIFICATION SLOT.
+ *
+ * Phase 1 INTENTIONALLY leaves this a no-op pass-through. It exists so that the
+ * single most important later phase (the verification centerpiece: change-capture
+ * → tests-first → diff-scoped rival critic → the honest four-state `verified`
+ * dimension, master-plan PHASE 3) plugs in at ONE named boundary, positioned
+ * exactly where a turn's "done" is about to be accepted.
+ *
+ * It currently does NOTHING and changes NOTHING — it neither reads the diff nor
+ * runs tests nor calls a critic nor mutates the event stream. Wiring real
+ * verification here is explicitly OUT OF SCOPE for Phase 1 (NO new behaviour, NO
+ * Governor, NO verification logic yet). When Phase 3 lands, this becomes an async
+ * generator that may yield verify-related CoreEvents and return a `verified`
+ * signal; until then the work-call loop does not call it on the hot path (calling
+ * an empty stage would still be a behaviour-neutral no-op, but Phase 1 keeps the
+ * loop byte-for-byte identical and only RESERVES the slot here).
+ *
+ * @see master-plan PHASE 3 — THE CENTERPIECE · change-capture + verify
+ */
+// Phase-1 placeholder: declared async so Phase 3 can fill it with the verify
+// generator/awaitable shape without changing the call-site signature. Currently a
+// deliberate no-op (no await needed yet).
+export async function verifyStage(_ctx: VerifyStageContext): Promise<void> {
+  // Phase 3 fills this. Phase 1: deliberate no-op (behaviour-preserving seam).
+}
+
+// ---------------------------------------------------------------------------
+// runWorkCall — the extracted work-call stage
+// ---------------------------------------------------------------------------
+
+/**
+ * The live, already-computed turn context handed to {@link runWorkCall}. Every
+ * field is read (never recomputed) by the stage; this is exactly the set of
+ * closure variables the inlined loop referenced.
+ */
+export interface WorkCallInput {
+  readonly task: string;
+  readonly deps: OrchestrateDeps;
+  readonly signal: AbortSignal;
+  readonly classification: Classification;
+  readonly routePlan: boolean;
+  readonly directive: TurnDirective;
+  readonly intentFrame: IntentFrame | undefined;
+  readonly engagementPlan: EngagementPlan;
+  readonly goalTitle: string;
+  readonly workTrace: WorkContract | undefined;
+  readonly incomingWorkContract: WorkContract | undefined;
+  readonly available: ProviderId[];
+  readonly mode: Mode;
+  readonly taskSignals: CapabilityTaskSignals;
+  readonly capabilityContext: CapabilityRouteContext | undefined;
+  readonly historyContext: string | undefined;
+  readonly wantsWebSearch: boolean;
+  readonly hasImageAttachment: boolean;
+  /**
+   * The RESOLVED starting tier from orchestrate()'s admission gates (admitManager
+   * / authorizeTier / the Oracle escalation). Those gates keep their authority and
+   * run BEFORE this stage; the stage starts the loop at the tier they chose.
+   */
+  readonly startTier: Tier;
+}
+
+/**
+ * runWorkCall — the bounded escalation + review work loop, extracted verbatim from
+ * orchestrate(). Yields the SAME CoreEvent stream in the SAME order as the inlined
+ * loop. Owns ONLY its internal loop state (the tier, attempt/cost/notes counters,
+ * the per-tier tried sets, the failover pool, the review/revise budgets). The
+ * admission GATES are NOT relocated — `admitManager` here is the in-loop admission
+ * wrapper over the loop-local tier, identical to the inlined closure.
+ */
+export async function* runWorkCall(input: WorkCallInput): AsyncGenerator<CoreEvent> {
+  const {
+    task,
+    deps,
+    signal,
+    classification,
+    routePlan,
+    directive,
+    intentFrame,
+    engagementPlan,
+    goalTitle,
+    workTrace,
+    incomingWorkContract,
+    available,
+    mode,
+    taskSignals,
+    capabilityContext,
+    historyContext,
+    wantsWebSearch,
+    hasImageAttachment,
+    startTier,
+  } = input;
+
+  // -------------------------------------------------------------------------
+  // (e) Loop state — owned by this stage.
+  // -------------------------------------------------------------------------
+  let currentTier: Tier = startTier;
+  let managerNotes: string | undefined;
+  let attempts = 0;
+  let totalCostUsd = 0;
+  let lastOutput = '';
+  let acceptedRun: AcceptedRunSessionData | undefined;
+  /** Track the last error category across all attempts (for the failing final). */
+  let lastErroredCategory: import('../providers/port.js').CliError['category'] | undefined;
+  /** Track the last attempted provider (for the failing final). */
+  let lastAttemptedProvider: ProviderId | undefined;
+  /**
+   * Manager-tier attempts used this turn — the quota guard for adaptive flagship
+   * admission (Balanced earns a bounded number of flagship passes per turn). The
+   * orchestrate() admission gates ran with this at 0 (they never increment it); the
+   * loop starts it at 0 here, identical to the inlined path.
+   */
+  let flagshipAttemptsThisTurn = 0;
+
+  /**
+   * Generic-open-menu repair budget (adaptive-partner-v2-5.6.md §2.2 A2). The
+   * `reject_generic_open_menu` validator may fire ONCE per turn: when a successful
+   * answer is the order-taker menu, we re-run the SAME tier once with a manager-
+   * style repair note. Bounded at 1 (distinct from MAX_REVISE_RETRIES, which is
+   * the reviewer-revise budget) so it never adds a second metered call on a turn
+   * that already passed. A repaired answer that still fails is KEPT (never
+   * discarded) — the best-effort accept paths below preserve a usable answer.
+   */
+  let genericMenuRepairs = 0;
+  const MAX_VALIDATOR_REPAIRS = 1;
+
+  /**
+   * Per-tier set of providers that have already been tried, used by the
+   * cross-vendor failover logic so we never retry the same provider twice
+   * within a tier on consecutive execution failures.
+   */
+  const triedByTier = new Map<Tier, Set<ProviderId>>();
+
+  /**
+   * When non-null, the next iteration must route among only these providers
+   * (the remaining untried vendors at the current tier).  Cleared after use.
+   */
+  let failoverPool: ProviderId[] | null = null;
+
+  /**
+   * Track which attempt indices have already been reviewed so that re-runs
+   * (e.g. after a revise verdict) are not reviewed a second time and we
+   * cannot enter an infinite review loop.
+   */
+  const reviewedAttempts = new Set<number>();
+
+  /**
+   * How many times a reviewer's `revise` verdict has triggered a same-tier
+   * re-run this turn. A `revise` re-executes the ENTIRE (often expensive)
+   * investigation against the same model with feedback notes; left unbounded it
+   * can drive the loop to exhaust `maxAttempts` re-doing the same heavy work and
+   * then discard the result. We allow ONE revise re-run (apply the notes once);
+   * beyond that, blind re-execution is wasteful — escalate to a stronger tier if
+   * admission allows, otherwise accept the best answer we already have.
+   */
+  let reviseRetries = 0;
+  const MAX_REVISE_RETRIES = 1;
+
+  /**
+   * Adaptive flagship admission for a manager request at the current decision
+   * point. Closes over the live `currentTier` and `flagshipAttemptsThisTurn`.
+   * Returns the full decision (tier + allowed + reason) so callers can surface an
+   * honest notice on denial. Scopes the free-plan veto to the eligible
+   * (authenticated, cooldown-filtered) candidate providers. This is the IN-LOOP
+   * admission wrapper — identical body to orchestrate()'s preamble closure; the
+   * gates' authority is unchanged, it just reads the loop-local live tier.
+   */
+  const admitManager = (trigger: FlagshipTrigger, assessmentArg?: Assessment): FlagshipDecision =>
+    authorizeTier({
+      requestedTier: 'manager',
+      currentTier,
+      classification,
+      ...(assessmentArg !== undefined ? { assessment: assessmentArg } : {}),
+      policy: deps.policy,
+      ...(deps.planInfos !== undefined ? { planInfos: deps.planInfos } : {}),
+      ...(deps.authenticatedProviders !== undefined
+        ? { candidateProviders: deps.authenticatedProviders }
+        : {}),
+      flagshipAttemptsThisTurn,
+      trigger,
+    });
+
+  // -------------------------------------------------------------------------
+  // (f) Main orchestration loop
+  // -------------------------------------------------------------------------
+  mainLoop: while (attempts < deps.policy.maxAttempts) {
+    attempts++;
+
+    // --- Route for current tier ---
+    // When a failoverPool is set (previous failure, untried vendors remain),
+    // route among only those vendors for this one iteration, then clear the pool.
+    const routePool = failoverPool ?? available;
+    failoverPool = null;
+    // When currentTier is 'manager' we have ALREADY passed adaptive admission
+    // (initial gate or an earned escalation gate), so route() must not re-clamp it
+    // back down via the static maxTier safety net — lift the ceiling to 'manager'
+    // for this resolve. For worker/ic, the static policy (and its maxTier) applies.
+    const effPolicy: Policy =
+      currentTier === 'manager' ? { ...deps.policy, maxTier: 'manager' } : deps.policy;
+    // Learned, observed-only provider order for the tier we're routing (the
+    // Local Outcome Learner). Absent → routing is unchanged. We key on
+    // currentTier (the requested tier); route() applies it after its own clamp,
+    // and an entry for a tier the run clamps away simply finds no eligible match
+    // and falls through to the static order.
+    const decision = route(
+      currentTier,
+      routePool,
+      effPolicy,
+      deps.availableModels,
+      deps.authenticatedProviders,
+      deps.learnedProviderOrder?.[currentTier],
+      capabilityContext,
+    );
+
+    // Reasoning effort for THIS run, selected against the resolved model's
+    // capability facts (capability registry §3/§5). decision.tier is the tier the
+    // policy ALREADY granted (after route()'s clamp), so this can never open
+    // manager or exceed policy. undefined when no registry / no efforts → no flag.
+    const reasoningEffort = effortForDecision(
+      deps.capabilityRegistry,
+      decision.provider,
+      decision.model,
+      decision.tier,
+      mode,
+      taskSignals,
+    );
+
+    // Count a flagship attempt the moment the run resolves to the manager tier
+    // (the quota guard read by subsequent admission decisions this turn).
+    if (decision.tier === 'manager') {
+      flagshipAttemptsThisTurn++;
+    }
+
+    // Record this provider as tried at this tier.
+    let tierTried = triedByTier.get(currentTier);
+    if (tierTried === undefined) {
+      tierTried = new Set();
+      triedByTier.set(currentTier, tierTried);
+    }
+    tierTried.add(decision.provider);
+    lastAttemptedProvider = decision.provider;
+
+    const provider = deps.providers[decision.provider];
+    if (provider === undefined) {
+      yield {
+        type: 'notice',
+        level: 'error',
+        message: `Provider "${decision.provider}" was selected by route() but is not present in deps.providers.`,
+      };
+      break mainLoop;
+    }
+
+    // --- Native session decision (EXPERIMENTAL, opt-in) ---
+    // Use native continuity only when this tier's provider has a plan. Otherwise
+    // (no plan for this provider) fall back to replaying the compacted history —
+    // so switching providers never loses context.
+    //
+    // STALE-HISTORY HARDENING (AP2-F / Stage 6, §3 "Native session caveat"): when
+    // this turn's directive quarantines the history (a prior assistant turn was a
+    // generic menu OR predates the enforced-ask engine version), do NOT resume the
+    // provider's NATIVE session — it holds the SERVER-SIDE memory of that poisoned/
+    // legacy prose, which would few-shot the old order-taker behavior straight past
+    // the cleaned replay. Forcing the replay path means the model sees the
+    // QUARANTINED/cleaned history, not the provider's stale memory. This is a NARROW
+    // per-turn policy: clean turns keep native sessions exactly as before. menu.ts
+    // already withholds the plan entirely on a quarantined turn (planNativeSession
+    // gets the policy); this is the in-orchestrate backstop so the directive remains
+    // authoritative even if a plan slipped through. Fail-soft: no plan → no-op.
+    const quarantined =
+      directive.historyPolicy.replayMode === 'quarantine_assistant_prose';
+    const nativePlan = quarantined
+      ? undefined
+      : deps.nativeSession?.find((p) => p.provider === decision.provider);
+    const useNative = nativePlan !== undefined;
+
+    // --- Build prompt (with optional reviewer feedback on retry + history context) ---
+    // Bug 4 fix: inject managerNotes whenever defined, not just when currentTier === 'ic'.
+    // When using a native session, skip the replayed history — the provider holds it.
+    // Use decision.tier (the tier route() actually resolved, AFTER any maxTier
+    // clamp) — not the requested currentTier — so the persona prompt always
+    // matches the model that runs (e.g. balanced clamps manager→ic: we must use
+    // the IC persona on the sonnet model, never the manager persona).
+    const prompt = buildPrompt(
+      decision.tier,
+      task,
+      managerNotes,
+      useNative ? undefined : historyContext,
+      {
+        ...(deps.goalTurn === true ? { goalTurn: true } : {}),
+        // EXPLANATORY DEPTH (review §2d/§7): the expanded "make it land" directive
+        // fires ONLY on a substantial/explanatory turn, reusing the SAME
+        // `directive.substantial` predicate the grounded-recommendation validator
+        // uses (turn-directive.ts decideSubstantial → isTrivial-exempt). A trivial
+        // / quick-factual turn has substantial=false → the block is omitted and the
+        // fast path stays crisp.
+        ...(directive.substantial === true ? { explanatory: true } : {}),
+        ...(deps.partnerStyle !== undefined ? { partnerStyle: deps.partnerStyle } : {}),
+        ...(deps.environmentContext !== undefined ? { environmentContext: deps.environmentContext } : {}),
+        ...(deps.toolStateContext !== undefined ? { toolStateContext: deps.toolStateContext } : {}),
+        ...(deps.memoryContext !== undefined ? { memoryContext: deps.memoryContext } : {}),
+        ...(deps.workStateContext !== undefined ? { workStateContext: deps.workStateContext } : {}),
+        ...(deps.visionTriageContext !== undefined ? { visionTriageContext: deps.visionTriageContext } : {}),
+        ...(deps.intentFrame !== undefined ? { intentFrame: deps.intentFrame } : {}),
+        ...(deps.engagementPlan !== undefined ? { engagementPlan: deps.engagementPlan } : {}),
+      },
+    );
+
+    // --- Yield tier-start ---
+    yield {
+      type: 'tier-start',
+      tier: decision.tier,
+      provider: decision.provider,
+      model: decision.model,
+      attempt: attempts,
+      ...(goalTitle.length > 0 ? { title: goalTitle } : {}),
+      risk: classification.risk,
+    };
+
+    // --- Build request and record start time ---
+    const req: ProviderRequest = {
+      model: decision.model,
+      prompt,
+      cwd: deps.cwd,
+      sandbox: deps.sandbox,
+      timeoutMs: deps.timeoutMs,
+      ...(nativePlan !== undefined
+        ? { sessionId: nativePlan.sessionId, resume: nativePlan.resume }
+        : {}),
+      ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
+      ...(wantsWebSearch ? { webSearch: true } : {}),
+      // Image attachments (audit #4): threaded onto the request ONLY when the turn
+      // genuinely carries image input (the interface layer extracted + confirmed
+      // existence). Adapters that support images attach one CLI flag per path
+      // (codex `-i`, opencode `-f`); claude ignores them (fail-soft). Absent → the
+      // field is omitted entirely (byte-for-byte unchanged).
+      ...(hasImageAttachment && deps.attachments !== undefined
+        ? { attachments: deps.attachments }
+        : {}),
+    };
+    const start = deps.clock.now();
+
+    // --- Stream provider events ---
+    const outcome = yield* streamProvider(provider, req, decision.tier, signal);
+
+    if (outcome.canceled) {
+      yield { type: 'notice', level: 'warn', message: 'cancelled' };
+      yield {
+        type: 'final',
+        success: false,
+        output: outcome.canceledBeforeStream
+          ? 'Task was cancelled before it started.'
+          : 'Task was cancelled.',
+        tier: decision.tier,
+        totalCostUsd,
+        sessionId: deps.session.id,
+        attempts,
+        ...(outcome.canceled ? { canceled: true } : {}),
+        ...(lastAttemptedProvider !== undefined ? { provider: lastAttemptedProvider } : {}),
+      };
+      return;
+    }
+
+    const { finalText, usage, providerCostUsd } = outcome;
+
+    // Empty-output guard (Goal 4 — fail safe on malformed/empty model output):
+    // a provider can exit cleanly (no error event) yet stream NOTHING usable —
+    // an empty or whitespace-only `done.text`. Accepting that as a clean success
+    // renders a blank "✓ done · 0 tokens" turn with no answer, which reads as if
+    // the work were finished when in fact the model produced nothing. Treat it as
+    // a synthetic `model`-category error so the SAME decision tree below (cross-
+    // vendor failover → escalate → honest fail) handles it exactly like any other
+    // provider failure. A run that produced real text is byte-for-byte unaffected.
+    const emptyOutput =
+      outcome.errored === undefined &&
+      !outcome.canceled &&
+      (finalText ?? '').trim().length === 0;
+    const errored: CliError | undefined = emptyOutput
+      ? {
+          category: 'model',
+          recoverable: true,
+          message: 'The model returned an empty response.',
+          suggestion: 'Retry, or rephrase the request — the provider produced no output.',
+        }
+      : outcome.errored;
+
+    // Track last error for failing final event.
+    if (errored !== undefined) {
+      lastErroredCategory = errored.category;
+    }
+
+    // --- Compute duration + cost ---
+    const durationMs = deps.clock.now() - start;
+    const success = errored == null;
+
+    const pricing = getModelPricing(decision.provider, decision.model);
+    const usd =
+      providerCostUsd ??
+      (usage !== undefined && pricing !== undefined
+        ? calculateCost(usage.inputTokens, usage.outputTokens, pricing)
+        : 0);
+    totalCostUsd += usd;
+
+    // --- Assess output ---
+    const assessment = assess(finalText ?? '');
+
+    // --- DISCOVERY-DRIVEN ESCALATION SIGNALS (adaptive-partner-v2-5.6.md §2.5 D,
+    //     Stage 4). PURE extraction from the provider OUTPUT TEXT + the parsed
+    //     confidence envelope — NO extra model pass, NO new agent stack. The
+    //     signals feed the EXISTING review / escalation gates below, bounded by
+    //     `authorizeTier` (manager) and `panelPolicy` (panel) — discovery can never
+    //     bypass those. The low-confidence threshold is the SAME risk-indexed
+    //     escalate bar the confidence gate uses, so the two agree on "low". On a
+    //     clean, confident, local answer this is [] and nothing below changes. */
+    const discoverySignals: readonly DiscoverySignal[] = success
+      ? extractDiscoverySignals(
+          finalText ?? '',
+          assessment,
+          deps.policy.escalateBelowConfidence[classification.risk],
+        )
+      : [];
+
+    // --- Record in ledger ---
+    await deps.ledger.record({
+      timestamp: deps.clock.isoNow(),
+      sessionId: deps.session.id,
+      taskId: deps.clock.uuid(),
+      provider: decision.provider,
+      model: decision.model,
+      tier: decision.tier,
+      inputTokens: usage?.inputTokens ?? 0,
+      outputTokens: usage?.outputTokens ?? 0,
+      cachedInputTokens: usage?.cachedInputTokens ?? 0,
+      usd,
+      durationMs,
+      success,
+      ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
+      // Record the SAME taskKind orchestrate derived for routing (Stage 4, §2
+      // Layer 3) so the model-level outcome learner weighs this run by task type.
+      taskKind: taskSignals.taskKind,
+    });
+
+    // --- Yield tier-done ---
+    yield {
+      type: 'tier-done',
+      tier: decision.tier,
+      success,
+      confidence: assessment.confidence,
+      costUsd: usd,
+      inputTokens: usage?.inputTokens ?? 0,
+      outputTokens: usage?.outputTokens ?? 0,
+      durationMs,
+    };
+
+    lastOutput = finalText ?? (errored?.message ?? '');
+    if (success) {
+      acceptedRun = {
+        content: lastOutput,
+        tier: decision.tier,
+        provider: decision.provider,
+        model: decision.model,
+        confidence: assessment.confidence,
+        costUsd: usd,
+        durationMs,
+        ...(outcome.sessionId !== undefined ? { sessionId: outcome.sessionId } : {}),
+        ...(workTrace !== undefined ? { workTrace } : {}),
+      };
+    }
+
+    // -----------------------------------------------------------------------
+    // 0a) GENERIC-OPEN-MENU REPAIR (adaptive-partner-v2-5.6.md §2.2 A2).
+    // -----------------------------------------------------------------------
+    // A successful answer that is the order-taker "are you fixing / adding /
+    // polishing / integrating?" menu is the exact live failure mode. When the
+    // directive's validator fires (and the model did NOT emit a legitimate
+    // structured ask_user block, which the short-circuit below owns), re-run the
+    // SAME tier ONCE with a manager-style repair note appended. This costs one
+    // retry ONLY on the live failure — never on a passing turn — and is bounded
+    // (MAX_VALIDATOR_REPAIRS = 1). The current `acceptedRun`/`lastOutput` are left
+    // in place: if the repaired answer is no better, the best-effort accept paths
+    // below KEEP a usable answer rather than discarding it as Failed.
+    // The generic-menu (§2.2 A2) and grounded-recommendation (§2.6 E) validators
+    // SHARE this single repair budget — together they retry at most once, so we
+    // never multiply provider calls. validateTurnOutput returns the FIRST failure;
+    // we pick the matching repair note so the retry gets targeted feedback.
+    const rawValidatorFailure =
+      success && genericMenuRepairs < MAX_VALIDATOR_REPAIRS && parseQuestions(finalText ?? '') === null
+        ? validateTurnOutput(finalText ?? '', directive)
+        : null;
+    // The grounded-recommendation repair DEFERS to the review pipeline: when this
+    // turn will be cross-vendor reviewed (high/critical risk, or the model asked for
+    // review), the reviewer's revise verdict is the STRONGER, already-budgeted
+    // correction — preempting it with a local repair would waste the shared budget
+    // and double-correct. The generic-menu failure is a hard order-taker failure
+    // mode and is repaired regardless. (When review will NOT run, the grounded
+    // repair fires here as the only correction.)
+    const validatorFailure =
+      rawValidatorFailure !== null &&
+      rawValidatorFailure.kind === 'ungrounded_recommendation' &&
+      shouldReview(classification, assessment, deps.policy.reviewPolicy)
+        ? null
+        : rawValidatorFailure;
+    if (validatorFailure !== null) {
+      genericMenuRepairs++;
+      const repairNote =
+        validatorFailure.kind === 'ungrounded_recommendation'
+          ? GROUNDED_RECOMMENDATION_REPAIR_NOTE
+          : GENERIC_MENU_REPAIR_NOTE;
+      managerNotes =
+        managerNotes !== undefined && managerNotes.length > 0
+          ? `${managerNotes}\n\n${repairNote}`
+          : repairNote;
+      yield {
+        type: 'notice',
+        level: 'info',
+        message:
+          validatorFailure.kind === 'ungrounded_recommendation'
+            ? 'Reworking an ungrounded answer into a grounded recommendation.'
+            : 'Reworking a generic task-category menu into a grounded recommendation.',
+      };
+      continue mainLoop;
+    }
+
+    // -----------------------------------------------------------------------
+    // 0b) GROUNDED-RECOMMENDATION TRUTHFUL FALLBACK (§2.6 E, AP2-E).
+    // -----------------------------------------------------------------------
+    // If we reach here on a successful turn, the validator either passed OR the
+    // shared one-retry budget is exhausted. When the grounded-recommendation
+    // validator STILL fails (a substantial turn left ungrounded after the retry),
+    // append the DETERMINISTIC truthful wrapper — but ONLY when it is literally
+    // true (no recommendation could be grounded, and it is not already an honest
+    // "can't see the repo"). We NEVER fabricate grounding; this only states the
+    // honest next step. The fallback is appended to the kept answer (lastOutput +
+    // acceptedRun.content) so every downstream final carries it. We DEFER it when a
+    // review will run (the reviewer may replace this output — appending now would
+    // wrap a soon-discarded answer); on a reviewed turn the grounded repair is also
+    // deferred, so review owns the correction end-to-end.
+    if (
+      success &&
+      parseQuestions(finalText ?? '') === null &&
+      !shouldReview(classification, assessment, deps.policy.reviewPolicy) &&
+      shouldAppendGroundedFallback(lastOutput, directive)
+    ) {
+      lastOutput =
+        lastOutput.length > 0
+          ? `${lastOutput}\n\n${GROUNDED_RECOMMENDATION_FALLBACK}`
+          : GROUNDED_RECOMMENDATION_FALLBACK;
+      if (acceptedRun !== undefined) {
+        acceptedRun = { ...acceptedRun, content: lastOutput };
+      }
+    }
+
+    // -----------------------------------------------------------------------
+    // 0) Structured question short-circuit (ask_user)
+    // -----------------------------------------------------------------------
+    // If the model ended its turn by asking the user a structured question
+    // instead of completing work, that is a COMPLETE turn that needs a reply —
+    // not low-confidence work. Yield a successful final carrying the questions
+    // and return WITHOUT escalating or reviewing. The confidence envelope is
+    // ignored for this turn (the two are mutually exclusive per prompt.ts).
+    if (success) {
+      // Prefer the model's own ask_user block. When APE planned an ASK_CLARIFYING
+      // at a genuine fork but the model did NOT ask, derive the structured
+      // question from the frame's fork so the planned fork is never silently
+      // dropped (intent §5.4 / APE §6.2). The derivation is bounded by ASK_CAP and
+      // only fires on the FIRST attempt (a derived ask is terminal — it short-
+      // circuits the turn exactly like a model ask, no escalate/review).
+      const modelQuestions = parseQuestions(finalText ?? '');
+      const derivedQuestions =
+        modelQuestions === null &&
+        attempts === 1 &&
+        engagementPlan.actions.includes('ASK_CLARIFYING')
+          ? deriveAskFromForks(intentFrame, engagementPlan)
+          : null;
+      const questions = modelQuestions ?? derivedQuestions;
+      if (questions !== null) {
+        if (acceptedRun === undefined) {
+          throw new Error('orchestrate invariant violated: question final without accepted run');
+        }
+        await appendAcceptedAssistant(deps, acceptedRun);
+        yield {
+          type: 'final',
+          success: true,
+          output: lastOutput,
+          tier: currentTier,
+          totalCostUsd,
+          sessionId: deps.session.id,
+          attempts,
+          questions,
+        };
+        return;
+      }
+    }
+
+    // -----------------------------------------------------------------------
+    // Decision tree
+    // -----------------------------------------------------------------------
+
+    // 1) Provider failure → try cross-vendor failover first; escalate only when
+    //    all vendors at this tier have been exhausted.
+    if (!success) {
+      // Bug 1 fix: auth errors are terminal — a missing credential cannot be
+      // fixed by switching provider or escalating tier.  Short-circuit now.
+      if (errored !== undefined && errored.category === 'auth') {
+        yield {
+          type: 'final',
+          success: false,
+          output: lastOutput,
+          tier: currentTier,
+          totalCostUsd,
+          sessionId: deps.session.id,
+          attempts,
+          errorCategory: 'auth',
+          provider: decision.provider,
+        };
+        return;
+      }
+
+      // Timeouts are terminal for THIS task: do NOT cross-vendor fail over and do
+      // NOT escalate the tier. Re-running the same (too-broad) task on another
+      // vendor at the same tier just doubles the wall-clock and the spend for the
+      // same likely-to-time-out work — exactly the runaway we are fixing. Stop
+      // here with an actionable notice. (Fast crashes and other recoverable
+      // errors keep the existing failover/escalation behaviour below.)
+      if (errored !== undefined && errored.category === 'timeout') {
+        // Honest-spend judgment call (Goal 3): a timeout SIGKILLs the child before
+        // the CLI emits its terminal usage/result, so claude-parse produces no
+        // usage. The LedgerEntry schema (types.ts) holds only numeric token/usd
+        // fields — it cannot represent "unknown". We do NOT fabricate a number:
+        // the ledger entry was recorded above with success:false and the real
+        // parsed usage (0 when none arrived before the kill). When nothing was
+        // parsed, the recorded $0 is NOT a real cost — the run very likely burned
+        // the user's subscription — so we surface that explicitly here rather than
+        // letting the UI render "0 tokens / $0 / free". When partial usage DID
+        // arrive before the kill, we trust it and make no unknown-spend claim.
+        const parsedNoUsage =
+          usage === undefined && providerCostUsd === undefined;
+        if (parsedNoUsage) {
+          yield {
+            type: 'notice',
+            level: 'warn',
+            message:
+              'Spend unknown — the process was killed before reporting usage; the recorded $0 is not a real cost (the run may still have consumed your subscription).',
+          };
+        }
+        yield {
+          type: 'notice',
+          level: 'warn',
+          message:
+            'Timed out before the model finished. Not retrying on another vendor (the same work would likely time out again and double the cost). The task may be too broad — narrow it, or raise the timeout in Settings.',
+        };
+        yield {
+          type: 'final',
+          success: false,
+          output: lastOutput,
+          tier: currentTier,
+          totalCostUsd,
+          sessionId: deps.session.id,
+          attempts,
+          errorCategory: 'timeout',
+          provider: decision.provider,
+        };
+        return;
+      }
+
+      // Compute which providers haven't been tried at this tier yet.
+      const triedAtTier = triedByTier.get(currentTier) ?? new Set<ProviderId>();
+      let remaining = available.filter((id) => !triedAtTier.has(id));
+      // Don't fail over to a provider that isn't signed in — it would just fail
+      // again with "not signed in" and burn an attempt. When we have real auth
+      // info, restrict the failover pool to authenticated providers; if that
+      // leaves nothing, we escalate/stop instead of attempting a doomed vendor.
+      // (When auth info is absent/empty we keep the prior behaviour and try an
+      // untried vendor anyway — auth may have changed since detection.)
+      const authedProviders = deps.authenticatedProviders;
+      if (authedProviders !== undefined && authedProviders.length > 0) {
+        remaining = remaining.filter((id) => authedProviders.includes(id));
+      }
+
+      if (remaining.length > 0) {
+        // Failover to an untried vendor at the same tier only when there is
+        // still room for another attempt.
+        // Bug 3 fix: only emit the failover event when another iteration can
+        // actually execute — i.e., when attempts < maxAttempts.  At the ceiling
+        // the next loop condition (attempts < maxAttempts) would be false, so the
+        // promised failover run would never happen; don't mislead the caller.
+        if (attempts < deps.policy.maxAttempts) {
+          // Peek at what route() would pick from the remaining pool so we can
+          // name the target provider in the failover event. Use the SAME effective
+          // policy as the actual run (manager ceiling lifted when authorized), so
+          // the previewed target matches what the next iteration really routes.
+          const nextDecision = route(
+            currentTier,
+            remaining,
+            effPolicy,
+            deps.availableModels,
+            deps.authenticatedProviders,
+            deps.learnedProviderOrder?.[currentTier],
+            capabilityContext,
+          );
+          yield {
+            type: 'failover',
+            from: decision.provider,
+            to: nextDecision.provider,
+            tier: currentTier,
+            reason: errored?.message ?? 'execution failure',
+          };
+          // Signal the next iteration to route among only the remaining vendors.
+          failoverPool = remaining;
+          continue mainLoop;
+        }
+        // Reached maxAttempts with untried vendors — fall through to escalate/break.
+      }
+
+      // All vendors at this tier have been tried (or maxAttempts reached) — escalate or break.
+      // Adaptive admission: a failure escalation to the flagship is an EARNED
+      // trigger, but Efficient (never-auto) and a free-plan veto deny it; in that
+      // case fall back to the static ceiling (clampTier) — preserving the prior
+      // effective behaviour (e.g. Efficient worker→ic).
+      if (currentTier !== 'manager') {
+        const target: Tier = admitManager('failure').allowed
+          ? 'manager'
+          : clampTier('manager', deps.policy.maxTier);
+        if (target === currentTier) {
+          break mainLoop; // ceiling reached — cannot escalate further
+        }
+        yield { type: 'escalate', from: currentTier, to: target, reason: 'execution failure' };
+        currentTier = target;
+        continue mainLoop;
+      } else {
+        break mainLoop; // already at manager; emit failing final below
+      }
+    }
+
+    // 2) Cross-vendor review for high/critical risk or needsReview — any tier
+    //    Guard: each attempt is reviewed at most once (prevents infinite loops).
+    //    Guard: skip review if the only available reviewer is the same vendor
+    //           (cross-vendor review is required; same-vendor-only → skip).
+    //
+    //    DISCOVERY (§2.5 D): a discovery worth a second vendor's eyes (a
+    //    high-stakes surface, a cross-cutting change, or a verified wider root
+    //    cause) ADDS a review trigger — but only as far as the user's reviewPolicy
+    //    already permits. We AND-gate the discovery path on reviewPolicy !== 'off'
+    //    so discovery can never review a turn the user turned review OFF for; and
+    //    the same `!reviewedAttempts.has` + cross-vendor guards below still bound
+    //    it to at most one review per attempt. A passing turn with no discovery
+    //    signal sees the original `shouldReview` decision unchanged.
+    const discoveryWantsReview =
+      deps.policy.reviewPolicy !== 'off' && discoveryWarrantsReview(discoverySignals);
+    if (
+      (shouldReview(classification, assessment, deps.policy.reviewPolicy) ||
+        discoveryWantsReview) &&
+      !reviewedAttempts.has(attempts)
+    ) {
+      // Pick the reviewer from AUTHENTICATED (and, since the conversation layer
+      // already cooldown-filters that list, un-throttled) providers when we know
+      // them — never route a review to a signed-out or cooled-down vendor. Falls
+      // back to all available providers only when auth state is unknown.
+      const reviewerPool =
+        deps.authenticatedProviders !== undefined && deps.authenticatedProviders.length > 0
+          ? available.filter((id) => (deps.authenticatedProviders as readonly ProviderId[]).includes(id))
+          : available;
+      const reviewerId = pickReviewer(reviewerPool, decision.provider);
+      // Only proceed with a DIFFERENT-vendor reviewer (cross-vendor requirement).
+      const reviewerProvider =
+        reviewerId !== null && reviewerId !== decision.provider
+          ? deps.providers[reviewerId]
+          : undefined;
+
+      if (reviewerId !== null && reviewerProvider !== undefined) {
+        reviewedAttempts.add(attempts);
+        yield {
+          type: 'notice',
+          level: 'info',
+          message: `Review by ${reviewerId} (cross-vendor)`,
+        };
+
+        // Route the reviewer at the flagship tier — through the SAME adaptive
+        // admission gate as every other manager step, so it isn't a back door.
+        // When admitted (e.g. high/critical risk, which is exactly when review
+        // fires), lift the ceiling so the reviewer runs the strong model; when
+        // denied, route() clamps it to the policy ceiling. Either way we use the
+        // RESOLVED reviewDecision.tier everywhere below — never a hard-coded
+        // 'manager' — so events/ledger never claim a tier the model didn't run.
+        // Note: the review is gated through admission for honest labelling and the
+        // never-auto / free-plan cases, but it does NOT consume the per-turn
+        // flagship ESCALATION budget — review is a distinct, separately-bounded
+        // mechanism (once per attempt, cross-vendor required). Counting it here
+        // would let a high-risk review starve the task's own escalation pass.
+        const reviewAdmission = admitManager('review', assessment);
+        const reviewPolicy: Policy = reviewAdmission.allowed
+          ? { ...deps.policy, maxTier: 'manager' }
+          : deps.policy;
+        // The reviewer pool is a single provider, so the learned order can only
+        // confirm it (never reorder a one-element pool) — passed for consistency
+        // so every route() call site threads the same learned snapshot.
+        // Review is a 'review' taskKind regardless of the work turn's kind — the
+        // reviewer's job is critique. Build a review-flavoured capability context
+        // so capability-fit + effort selection treat it as such. Absent registry →
+        // undefined → route() unchanged (byte-for-byte).
+        const reviewModelOutcomeOrder = deps.modelOutcomeOrderByTaskKind?.['review'];
+        const reviewCapabilityContext: CapabilityRouteContext | undefined =
+          deps.capabilityRegistry !== undefined
+            ? {
+                registry: deps.capabilityRegistry,
+                taskSignals: { ...taskSignals, taskKind: 'review' },
+                mode,
+                ...(reviewModelOutcomeOrder !== undefined
+                  ? { modelOutcomeOrder: reviewModelOutcomeOrder }
+                  : {}),
+              }
+            : undefined;
+        const reviewDecision = route(
+          'manager',
+          [reviewerId],
+          reviewPolicy,
+          deps.availableModels,
+          deps.authenticatedProviders,
+          deps.learnedProviderOrder?.['manager'],
+          reviewCapabilityContext,
+        );
+        const reviewTier = reviewDecision.tier;
+        // Reasoning effort for the reviewer run, against the resolved reviewer
+        // model. reviewTier is the tier admission already granted to the reviewer,
+        // so this never opens manager or exceeds policy. undefined → no flag.
+        const reviewEffort = effortForDecision(
+          deps.capabilityRegistry,
+          reviewerId,
+          reviewDecision.model,
+          reviewTier,
+          mode,
+          { ...taskSignals, taskKind: 'review' },
+        );
+        const reviewContractDecision = shouldMaterializeContract({
+          classification,
+          routePlan,
+          context: 'normal',
+          reviewWillRun: true,
+        });
+        const reviewContract =
+          incomingWorkContract !== undefined
+            ? incomingWorkContract
+            : isCleanObjectiveTask(task)
+              ? capContract({ version: 1, objective: task })
+              : undefined;
+        const reviewPrompt =
+          reviewContractDecision.criteria && reviewContract !== undefined
+            ? buildReviewPrompt(task, lastOutput, reviewContract)
+            : buildReviewPrompt(task, lastOutput);
+
+        // Yield tier-start for review run
+        yield {
+          type: 'tier-start',
+          tier: reviewTier,
+          provider: reviewerId,
+          model: reviewDecision.model,
+          attempt: attempts,
+          ...(goalTitle.length > 0 ? { title: goalTitle } : {}),
+          risk: classification.risk,
+        };
+
+        const reviewReq: ProviderRequest = {
+          model: reviewDecision.model,
+          prompt: reviewPrompt,
+          cwd: deps.cwd,
+          sandbox: deps.sandbox,
+          timeoutMs: deps.timeoutMs,
+          ...(reviewEffort !== undefined ? { reasoningEffort: reviewEffort } : {}),
+          // Provider-capability parity (audit): the reviewer judges THIS turn's
+          // output, so it must see the SAME capability inputs the sequential work
+          // request carried — otherwise a reviewer of a vision turn can't see the
+          // attached image, and a reviewer of a current-facts turn can't verify the
+          // claim against live info. Mirror both signals from the work request:
+          //   • webSearch — when the turn genuinely needed external/current facts
+          //     (`wantsWebSearch`, driven by the engagement WEB_RESEARCH flag), the
+          //     reviewer needs the same live-info access to validate, not rubber-stamp
+          //     or falsely reject, current-fact answers. Codex honours it; others
+          //     fail-soft ignore it.
+          //   • attachments — when the turn genuinely carries image input, the
+          //     reviewer must SEE the image to judge a vision answer. Omitted entirely
+          //     on text-only turns → byte-for-byte unchanged.
+          ...(wantsWebSearch ? { webSearch: true } : {}),
+          ...(hasImageAttachment && deps.attachments !== undefined
+            ? { attachments: deps.attachments }
+            : {}),
+        };
+        const reviewStart = deps.clock.now();
+
+        // --- Consume reviewer events without surfacing internal prose ---
+        const reviewOutcome = await collectProviderRun(reviewerProvider, reviewReq, signal);
+
+        if (reviewOutcome.canceled) {
+          yield { type: 'notice', level: 'warn', message: 'cancelled' };
+          yield {
+            type: 'final',
+            success: false,
+            output: 'Task was cancelled.',
+            tier: currentTier,
+            totalCostUsd,
+            sessionId: deps.session.id,
+            attempts,
+            ...(reviewOutcome.canceled ? { canceled: true } : {}),
+            ...(lastAttemptedProvider !== undefined ? { provider: lastAttemptedProvider } : {}),
+          };
+          return;
+        }
+
+        const reviewDurationMs = deps.clock.now() - reviewStart;
+        const reviewSuccess = reviewOutcome.errored == null;
+
+        const reviewPricing = getModelPricing(reviewerId, reviewDecision.model);
+        const reviewUsd =
+          reviewOutcome.providerCostUsd ??
+          (reviewOutcome.usage !== undefined && reviewPricing !== undefined
+            ? calculateCost(reviewOutcome.usage.inputTokens, reviewOutcome.usage.outputTokens, reviewPricing)
+            : 0);
+        totalCostUsd += reviewUsd;
+
+        // Record reviewer run in ledger
+        await deps.ledger.record({
+          timestamp: deps.clock.isoNow(),
+          sessionId: deps.session.id,
+          taskId: deps.clock.uuid(),
+          provider: reviewerId,
+          model: reviewDecision.model,
+          tier: reviewTier,
+          inputTokens: reviewOutcome.usage?.inputTokens ?? 0,
+          outputTokens: reviewOutcome.usage?.outputTokens ?? 0,
+          cachedInputTokens: reviewOutcome.usage?.cachedInputTokens ?? 0,
+          usd: reviewUsd,
+          durationMs: reviewDurationMs,
+          success: reviewSuccess,
+          ...(reviewEffort !== undefined ? { reasoningEffort: reviewEffort } : {}),
+          // The reviewer run is always a 'review' taskKind (Stage 4).
+          taskKind: 'review',
+        });
+
+        // Yield tier-done for reviewer
+        yield {
+          type: 'tier-done',
+          tier: reviewTier,
+          success: reviewSuccess,
+          confidence: null,
+          costUsd: reviewUsd,
+          inputTokens: reviewOutcome.usage?.inputTokens ?? 0,
+          outputTokens: reviewOutcome.usage?.outputTokens ?? 0,
+          durationMs: reviewDurationMs,
+        };
+
+        // Parse verdict and act on it
+        const verdict = parseReviewVerdict(reviewOutcome.finalText ?? '');
+
+        // Risk-indexed fail-open: when parsing failed (verdict.parsed === false)
+        // AND the task is high/critical risk, do NOT silently auto-approve —
+        // escalate (or warn if already at manager) rather than letting
+        // unparseable output pass as approved.
+        if (!verdict.parsed && (classification.risk === 'high' || classification.risk === 'critical')) {
+          // Escalate to the flagship to adjudicate — but only if admission allows it
+          // (high/critical risk justifies it under adaptive; a free-plan veto or spent
+          // attempt budget can still deny). When denied, fall through to the honest
+          // "inconclusive — not auto-approving" failing final rather than escalating.
+          if (currentTier !== 'manager' && admitManager('review', assessment).allowed) {
+            yield {
+              type: 'notice',
+              level: 'warn',
+              message: 'review inconclusive — not auto-approving',
+            };
+            yield { type: 'escalate', from: currentTier, to: 'manager', reason: 'review inconclusive' };
+            currentTier = 'manager';
+            continue mainLoop;
+          } else {
+            // Already at manager (top tier): a high/critical-risk review came back
+            // inconclusive and there is no higher tier to escalate to. Do NOT ship
+            // it as a clean success — surface the inconclusive result honestly.
+            yield {
+              type: 'notice',
+              level: 'warn',
+              message: 'review inconclusive — not auto-approving',
+            };
+            yield {
+              type: 'final',
+              success: false,
+              output: lastOutput,
+              tier: currentTier,
+              totalCostUsd,
+              sessionId: deps.session.id,
+              attempts,
+              ...(lastAttemptedProvider !== undefined ? { provider: lastAttemptedProvider } : {}),
+            };
+            return;
+          }
+        } else {
+          yield {
+            type: 'notice',
+            level: 'info',
+            message: `Review verdict: ${verdict.verdict}`,
+          };
+
+          if (verdict.verdict === 'approve') {
+            if (acceptedRun === undefined) {
+              throw new Error('orchestrate invariant violated: approved final without accepted run');
+            }
+            await appendAcceptedAssistant(deps, acceptedRun);
+            {
+              const memoryProposal = memoryProposalFor(lastOutput);
+              yield {
+                type: 'final',
+                success: true,
+                output: lastOutput,
+                tier: currentTier,
+                totalCostUsd,
+                sessionId: deps.session.id,
+                attempts,
+                ...(memoryProposal !== undefined ? { memoryProposal } : {}),
+              };
+            }
+            return;
+          }
+
+          if (verdict.verdict === 'revise') {
+            // Bound blind re-execution. The first revise applies the reviewer's
+            // notes and re-runs the same tier once. A SECOND revise would re-run
+            // the same expensive investigation against the same model again — the
+            // 160k-token runaway. Instead, treat a persistent revise like an
+            // escalate: hand it to a stronger tier when admission allows; if we
+            // can't escalate, accept the best answer we already have (the accept
+            // path below), never blind-loop to exhaustion.
+            if (reviseRetries < MAX_REVISE_RETRIES) {
+              reviseRetries++;
+              managerNotes = verdict.notes;
+              continue mainLoop;
+            }
+            const escalateTo = nextTierUp(currentTier);
+            const escalateBlocked =
+              escalateTo === 'manager' ? !admitManager('review', assessment).allowed : false;
+            if (escalateTo !== null && !escalateBlocked) {
+              managerNotes = verdict.notes;
+              yield {
+                type: 'escalate',
+                from: currentTier,
+                to: escalateTo,
+                reason: 'review revise (bounded re-execution)',
+              };
+              currentTier = escalateTo;
+              continue mainLoop;
+            }
+            // Can't escalate (top tier, or admission denied) — accept the best
+            // result rather than re-running the same model again.
+            yield {
+              type: 'notice',
+              level: 'warn',
+              message:
+                'reviewer asked for further revision but the cheaper re-run budget is spent — accepting best result',
+            };
+            if (acceptedRun === undefined) {
+              throw new Error('orchestrate invariant violated: revise-accept final without accepted run');
+            }
+            await appendAcceptedAssistant(deps, acceptedRun);
+            {
+              const memoryProposal = memoryProposalFor(lastOutput);
+              yield {
+                type: 'final',
+                success: true,
+                output: lastOutput,
+                tier: currentTier,
+                totalCostUsd,
+                sessionId: deps.session.id,
+                attempts,
+                bestEffort: true,
+                ...(memoryProposal !== undefined ? { memoryProposal } : {}),
+              };
+            }
+            return;
+          }
+
+          // verdict === 'escalate'
+          const escalateTo = nextTierUp(currentTier);
+          // Adaptive admission negates a flagship escalation the reviewer asked for
+          // when this mode/turn doesn't admit manager (Efficient, free-plan veto, or
+          // attempt budget spent). Accept the current result rather than re-running
+          // the same model. (Escalation to 'ic' is always allowed.)
+          const reviewEscalateBlocked =
+            escalateTo === 'manager' ? !admitManager('review', assessment).allowed : false;
+          if (escalateTo !== null && reviewEscalateBlocked) {
+            yield {
+              type: 'notice',
+              level: 'warn',
+              message: 'reviewer requested escalation but the policy tier ceiling is reached — accepting best result',
+            };
+            if (acceptedRun === undefined) {
+              throw new Error('orchestrate invariant violated: ceiling-accepted final without accepted run');
+            }
+            await appendAcceptedAssistant(deps, acceptedRun);
+            {
+              const memoryProposal = memoryProposalFor(lastOutput);
+              yield {
+                type: 'final',
+                success: true,
+                output: lastOutput,
+                tier: currentTier,
+                totalCostUsd,
+                sessionId: deps.session.id,
+                attempts,
+                // Honesty: the reviewer wanted a stronger tier and policy denied
+                // it. We accept the best result rather than re-running, but flag it
+                // best-effort so the user can tell this apart from a clean,
+                // fully-verified success.
+                bestEffort: true,
+                ...(memoryProposal !== undefined ? { memoryProposal } : {}),
+              };
+            }
+            return;
+          }
+          if (escalateTo === null) {
+            // Bug 2 fix: already at the top tier — reviewer requested escalation
+            // but there is nowhere higher to go.  Yield an honest warn + failing
+            // final instead of silently looping until maxAttempts.
+            yield {
+              type: 'notice',
+              level: 'warn',
+              message: 'reviewer requested escalation but already at the top tier — accepting best result',
+            };
+            yield {
+              type: 'final',
+              success: false,
+              output: lastOutput,
+              tier: currentTier,
+              totalCostUsd,
+              sessionId: deps.session.id,
+              attempts,
+              ...(lastAttemptedProvider !== undefined ? { provider: lastAttemptedProvider } : {}),
+            };
+            return;
+          }
+          yield { type: 'escalate', from: currentTier, to: escalateTo, reason: 'reviewer escalation' };
+          currentTier = escalateTo;
+          continue mainLoop;
+        }
+      }
+    }
+
+    // 3) Confidence-based escalation (+ DISCOVERY-DRIVEN escalation, §2.5 D)
+    const threshold = deps.policy.escalateBelowConfidence[classification.risk];
+    // A discovery indicating high-risk or cross-cutting blast radius (a
+    // high-confidence wider root cause, a cross-cutting change, or a high-stakes
+    // surface) is a §2.5 D reason to REQUEST a manager escalation — the engine
+    // deliberately changes scope when investigation finds the real work is bigger.
+    // It only sets `needEsc`; whether manager actually opens is STILL decided by
+    // `admitManager`/`authorizeTier` below (free-plan veto, Efficient never-auto,
+    // and the per-turn flagship budget remain the sole authority). A merely-larger
+    // BUT-LOCAL fix (a medium-confidence larger_bug with no cross-cutting/high-
+    // stakes signal) does NOT trip this — it stays at the current tier and is just
+    // done, per §2.5 D ("just do the larger fix when it is local/reversible").
+    const discoveryWantsEscalation = discoveryWarrantsManager(discoverySignals);
+    const needEsc =
+      assessment.escalate ||
+      discoveryWantsEscalation ||
+      (assessment.confidence !== null && assessment.confidence < threshold);
+
+    const nextTier = nextTierUp(currentTier);
+    // The tier we'd actually escalate to, or null if escalation wouldn't change the
+    // running model. For a flagship (manager) step, adaptive admission decides:
+    // under Balanced this confidence trigger is justified, but a free-plan veto or a
+    // spent attempt budget can still deny it. Escalation to 'ic' (from worker) is
+    // always allowed; the static clamp guards that legacy case.
+    const confAdmission: FlagshipDecision | null =
+      nextTier === 'manager' ? admitManager('confidence', assessment) : null;
+    const escalateTo: Tier | null =
+      nextTier === 'manager'
+        ? confAdmission?.allowed
+          ? 'manager'
+          : null
+        : nextTier !== null && clampTier(nextTier, deps.policy.maxTier) !== currentTier
+          ? nextTier
+          : null;
+    if (needEsc && escalateTo !== null) {
+      // Prefer a discovery-driven reason when a discovery (not low confidence)
+      // drove this escalation — the `escalate` event IS the notice of the real
+      // additional run that the next loop iteration starts at the higher tier, so
+      // it is the honest place to name WHY scope widened (no fake "escalating…"
+      // without a run). Falls back to the model's own reason / low confidence.
+      const discoveryReason = discoveryWantsEscalation
+        ? discoveryEscalationReason(discoverySignals)
+        : undefined;
+      const escalateReason =
+        discoveryReason ??
+        (assessment.reason !== 'model provided no reason' &&
+        assessment.reason !== 'no confidence envelope'
+          ? assessment.reason
+          : 'low confidence');
+      yield {
+        type: 'escalate',
+        from: currentTier,
+        to: escalateTo,
+        reason: escalateReason,
+      };
+      currentTier = escalateTo;
+      continue mainLoop;
+    }
+
+    // Honest notice: the turn WANTED to escalate to the flagship (low confidence /
+    // escalate signal) but adaptive admission denied it (Efficient, free-plan veto,
+    // or the per-turn flagship budget is spent). Surface why, so a low-confidence
+    // result isn't silently accepted as if it were fully trusted.
+    if (needEsc && confAdmission !== null && !confAdmission.allowed) {
+      yield {
+        type: 'notice',
+        level: 'warn',
+        message: `accepting best available result — ${confAdmission.reason}`,
+      };
+    }
+
+    // 4) Accept — everything checks out (or the flagship was warranted but denied)
+    //
+    // verifyStage SLOT (Phase 3): this accept point is exactly where the
+    // verification centerpiece runs — the turn is about to be accepted as "done",
+    // so a Phase-3 change-capture → tests-first → diff-scoped critic check belongs
+    // HERE, gating the `verified` dimension on a real signal. Phase 1 reserves the
+    // slot but does NOT call it (keeping the loop byte-for-byte identical); see
+    // verifyStage() above for the contract Phase 3 will fill.
+    if (acceptedRun === undefined) {
+      throw new Error('orchestrate invariant violated: successful final without accepted run');
+    }
+    await appendAcceptedAssistant(deps, acceptedRun);
+    {
+      const memoryProposal = memoryProposalFor(lastOutput);
+      yield {
+        type: 'final',
+        success: true,
+        output: lastOutput,
+        tier: currentTier,
+        totalCostUsd,
+        sessionId: deps.session.id,
+        attempts,
+        ...(memoryProposal !== undefined ? { memoryProposal } : {}),
+      };
+    }
+    return;
+  }
+
+  // -------------------------------------------------------------------------
+  // Loop exhausted or broke out on failure.
+  //
+  // CARDINAL RULE — never discard a usable answer as "Failed". The bounded
+  // escalation/review loop can run out of attempts (e.g. a reviewer kept asking
+  // to `revise`, or low confidence kept retrying the same tier) WITHOUT ever
+  // reaching a clean accept. If a provider run nonetheless produced a substantive
+  // answer (`acceptedRun` is set only on an errorless run, and its content is
+  // non-empty), that answer is the user's best result — returning success:false
+  // here throws away good work AND hides it behind a "Failed" banner.
+  //
+  // So: when a substantive accepted answer exists, return it as a BEST-EFFORT
+  // success — persist it to the session like any accepted turn, attach any
+  // model-proposed memory, and flag `bestEffort` so the renderer notes honestly
+  // that it exhausted the loop / stayed under the confidence bar (not a clean
+  // success, but real work the user can use). success:false is reserved for
+  // GENUINE failure: no usable output (provider/auth/timeout errors, empty text).
+  // Those terminal paths already returned above with their own honest finals; the
+  // only way to reach here with no acceptedRun is the `break mainLoop` on an
+  // error with no untried vendor — that correctly still fails below.
+  // -------------------------------------------------------------------------
+  if (acceptedRun !== undefined && acceptedRun.content.trim().length > 0) {
+    await appendAcceptedAssistant(deps, acceptedRun);
+    const memoryProposal = memoryProposalFor(acceptedRun.content);
+    yield {
+      type: 'final',
+      success: true,
+      output: acceptedRun.content,
+      tier: currentTier,
+      totalCostUsd,
+      sessionId: deps.session.id,
+      attempts,
+      bestEffort: true,
+      ...(memoryProposal !== undefined ? { memoryProposal } : {}),
+    };
+    return;
+  }
+
+  yield {
+    type: 'final',
+    success: false,
+    output: lastOutput,
+    tier: currentTier,
+    totalCostUsd,
+    sessionId: deps.session.id,
+    attempts,
+    ...(lastErroredCategory !== undefined ? { errorCategory: lastErroredCategory } : {}),
+    ...(lastAttemptedProvider !== undefined ? { provider: lastAttemptedProvider } : {}),
+  };
+}

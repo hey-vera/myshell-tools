@@ -15,6 +15,11 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   resumed goal's contract from the persisted `workTrace` (niche: the in-run contract
   is already kept in memory; only cross-session resume benefits). Optional.
 
+## [3.37.1]
+
+### Changed — internal: extract the work-call seam (behavior-preserving)
+- Refactored orchestrate() so the per-attempt work-execution loop (route -> stream -> collect -> accept -> retry/failover) is now a cohesive, named runWorkCall stage in src/core/work-call.ts, with an explicit empty verifyStage slot reserved where Phase 3 verification will plug in. orchestrate.ts shrank 2249->979 lines. Admission gates (authorizeTier/admitManager/Oracle) keep their authority and run before the stage. Zero observable behavior change — pinned by 10 new characterization tests that pass identically before and after extraction. This is the seam the Governor + verification + judgment subsystems plug into.
+
 ## [3.37.0]
 
 ### Added — `myshell eval`: measure the partner's answer quality (the ruler)
