@@ -141,6 +141,8 @@ import {
 import { inkEnabled } from './ui/flag.js';
 import { schedulerEnabled } from './ui/scheduler-flag.js';
 import { governorEnabled } from './ui/governor-flag.js';
+import { verifyEnabled } from './ui/verify-flag.js';
+import { nodeVerifyPort } from '../infra/verify-port.js';
 import { runSchedule, type GoalSpec, type RunGoalPhase } from '../core/scheduler.js';
 import { decompose } from '../core/decompose.js';
 import { orchestrate } from '../core/orchestrate.js';
@@ -1713,6 +1715,22 @@ export async function runChatLoop(
           // the absent-default keeps the field off entirely).
           ...(governorEnabled(process.env, mutableCtx.config)
             ? { governorEnabled: true }
+            : {}),
+          // VERIFICATION CENTERPIECE (master-plan PHASE 3) — opt-in, DEFAULT OFF.
+          // Resolved by the pure verifyEnabled(env, config) flag. When ON, inject the
+          // impure VerifyPort (git-diff + bounded test-runner) + the conservative
+          // built-in floor level ('tests' — tests-first, the free signal). The verify
+          // stage runs at the turn's accept point and surfaces an honest four-state
+          // receipt. When OFF (the default) the port is absent → verifyStage returns
+          // undefined → the accept path is byte-for-byte unchanged (the
+          // characterization + oracle suites prove that neutrality). The Governor's
+          // `verify` lever, when its flag is also on, refines the level per turn.
+          ...(verifyEnabled(process.env, mutableCtx.config)
+            ? {
+                verifyPort: nodeVerifyPort,
+                verifyLevel: 'tests' as const,
+                verifyTestTimeoutMs: Math.min(ctx.timeoutMs, 120_000),
+              }
             : {}),
         };
       };

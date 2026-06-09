@@ -205,6 +205,18 @@ export interface AppConfig {
    */
   experimentalGovernor?: boolean;
   /**
+   * EXPERIMENTAL VERIFICATION CENTERPIECE (default off; master-plan PHASE 3). When
+   * true (or with `MYSHELL_VERIFY` truthy in the environment), a code-changing turn
+   * runs a graduated, honest verify stage at the accept point: capture the diff →
+   * tests-first (FREE local exec) → ONE diff-scoped cross-vendor critic when the
+   * Governor's `verify` lever (or the conservative built-in default) selects it →
+   * an honest four-state `verified` result {unverified|reviewed|passing|failing} +
+   * a concise receipt. Subscription-only (tests = free; critic = a seat the user
+   * owns). The accept path is BYTE-FOR-BYTE unchanged when this is absent/false (the
+   * verify port is simply not injected). See src/interface/ui/verify-flag.ts.
+   */
+  experimentalVerify?: boolean;
+  /**
    * EXPERIMENTAL LEARNED-TASTE LEDGER (default off; the Phase-7 free judgment
    * layer). When true (or with `MYSHELL_TASTE` truthy in the environment), the
    * chat loop RECORDS observed decision signals (fork choices, push-back outcomes,

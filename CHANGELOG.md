@@ -15,6 +15,16 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   resumed goal's contract from the persisted `workTrace` (niche: the in-run contract
   is already kept in memory; only cross-session resume benefits). Optional.
 
+## [3.40.0]
+
+### Added — the verification centerpiece: trustworthy "done", flag-off
+- After a turn produces a code change, a graduated, honest verification runs in the work-call verifyStage and surfaces an honest four-state receipt: passing (real tests executed green) / failing / reviewed (a critic looked, no tests — weak signal) / unverified (nothing ran). It NEVER claims passing without tests that actually ran green; reviewed never reads as passing.
+- Tests-first (FREE local exec, the strongest+cheapest signal, always before any model call): conservative test-command detection (package.json test script, or pytest/cargo/go when their manifest exists; nothing clear => honest unverified, never a fabricated pass), run via execa with a hard timeout, output captured, non-destructive, fail-soft (a crash => unverified, never a faked pass).
+- Diff-scoped cross-vendor critic (the ONE paid lever, Governor-gated): buildDiffReviewPrompt reviews the actual DIFF + test output, not prose; routed to a DIFFERENT vendor via the existing pickReviewer; one critic max/turn; tests own pass/fail (critic annotates). Single-vendor: tests-first reaches real passing/failing with one vendor; the critic falls back to the same vendor LABELLED self-check (weak signal), never sold as cross-vendor.
+- Activates the Governor verify lever (non-diff=>none, diff=>tests, high-stakes/risky diff + 2 vendors + budget=>tests+critic). Governor-off default policy (verify-policy.ts): tests-first floor, critic only on a large diff (>=5 files) with 2 vendors, never trivial.
+- Flag-gated MYSHELL_VERIFY / config.experimentalVerify, DEFAULT OFF => verifyStage is the byte-for-byte no-op it was (the Phase-1 characterization + oracle suites are byte-identical and pass). Subscription-clean (critic uses existing routing, no API keys, no new deps).
+- Honest gap: change-capture falls back to git diff HEAD (acceptEdits already wrote the files; the turn-scoped edited-files signal isnt tracked yet), so on a dirty tree the diff may be broader than this-turn-only; the port accepts an editedFiles arg for when that signal lands.
+
 ## [3.39.0]
 
 ### Added — learned-taste ledger (free judgment layer), flag-off

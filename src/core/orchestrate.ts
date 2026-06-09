@@ -1046,6 +1046,16 @@ export async function* orchestrate(
     wantsWebSearch,
     hasImageAttachment,
     startTier: currentTier,
+    // VERIFY LEVEL (master-plan PHASE 3): when the Governor is ON, its `verify`
+    // lever is authoritative (gated by shape/stakes/vendors/budget); when OFF, fall
+    // back to the conservative built-in default the caller computed onto
+    // deps.verifyLevel. The verify stage itself only runs when deps.verifyPort is
+    // present (the flag gate) — this field merely chooses HOW FAR up the ladder.
+    ...(governorPlan !== undefined
+      ? { verifyLevel: governorPlan.verify }
+      : deps.verifyLevel !== undefined
+        ? { verifyLevel: deps.verifyLevel }
+        : {}),
   });
 
 }

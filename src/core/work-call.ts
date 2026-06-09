@@ -55,6 +55,18 @@ import { memoryProposalFor } from './orchestrate-memory.js';
 import { getModelPricing, calculateCost } from '../infra/pricing.js';
 import { nextTierUp, pickReviewer } from './escalate.js';
 import { buildReviewPrompt, parseReviewVerdict } from './review.js';
+import {
+  unverified,
+  stateFromTestRun,
+  composeVerifiedState,
+  buildDiffReviewPrompt,
+  buildVerifyReceipt,
+  levelWantsCritic,
+  type VerifyOutcome,
+  type VerifiedState,
+  type TestRunResult,
+} from './verify.js';
+import { defaultVerifyLevel } from './verify-policy.js';
 import type { WorkContract } from './work-contract.js';
 import { capContract, shouldMaterializeContract, isCleanObjectiveTask } from './work-contract.js';
 import type { IntentFrame } from './intent.js';
@@ -233,8 +245,12 @@ async function collectProviderRun(
 // ---------------------------------------------------------------------------
 
 /**
- * Inputs the verification stage will read when Phase 3 fills this slot. Built now
- * (empty-bodied) so the seam shape is stable and the call site is fixed.
+ * Inputs the verification stage reads at the turn's accept point (master-plan
+ * PHASE 3). The first three fields are the original Phase-1 reserved shape; the
+ * rest are OPTIONAL — the verify stage runs ONLY when they are supplied (i.e. the
+ * verify flag is ON and the impure {@link VerifyPort} was injected onto deps).
+ * Absent → verifyStage returns `undefined` and is the byte-for-byte no-op it was
+ * (the characterization + oracle suites prove this neutrality).
  */
 export interface VerifyStageContext {
   /** The accepted answer text for this turn (the candidate "done"). */
@@ -243,33 +259,165 @@ export interface VerifyStageContext {
   readonly provider: ProviderId;
   /** The tier it ran at. */
   readonly tier: Tier;
+  /**
+   * The injected verification port (impure git-diff + test exec). PRESENT ONLY when
+   * the verify flag is ON. Absent ⇒ verification does not run (the no-op default).
+   */
+  readonly port?: import('./verify.js').VerifyPort;
+  /** The verification level (the Governor's `verify` lever, or the built-in default). */
+  readonly level?: import('./verify.js').VerifyLevel;
+  /** The original user task (for the diff-scoped critic prompt orientation). */
+  readonly task?: string;
+  /** The project cwd to capture the diff / run tests in. */
+  readonly cwd?: string;
+  /** The bounded test-run timeout (ms). */
+  readonly testTimeoutMs?: number;
+  /** The authenticated providers available for the cross-vendor critic. */
+  readonly available?: readonly ProviderId[];
+  /**
+   * A "run a one-shot provider" port the critic uses — supplied by the work-call
+   * loop (it owns `collectProviderRun` + routing). When absent, the critic cannot
+   * run and the stage degrades to tests-only (still honest). PURE injection: the
+   * stage never imports a provider directly.
+   */
+  readonly runCritic?: (input: CriticRunInput) => Promise<CriticRunOutput | undefined>;
 }
 
+/** What the work-call loop needs to run a diff-scoped critic on the stage's behalf. */
+export interface CriticRunInput {
+  /** The reviewer provider chosen by pickReviewer (a different vendor when possible). */
+  readonly reviewer: ProviderId;
+  /** The fully-built diff-scoped review prompt. */
+  readonly prompt: string;
+}
+
+/** The critic's outcome the stage maps into the receipt. */
+export interface CriticRunOutput {
+  /** Whether a real, parseable verdict was produced (never fabricated). */
+  readonly ran: boolean;
+}
+
+const VERIFY_DEFAULT_TEST_TIMEOUT_MS = 120_000;
+
 /**
- * verifyStage — THE PHASE-3 VERIFICATION SLOT.
+ * verifyStage — THE VERIFICATION CENTERPIECE (master-plan PHASE 3).
  *
- * Phase 1 INTENTIONALLY leaves this a no-op pass-through. It exists so that the
- * single most important later phase (the verification centerpiece: change-capture
- * → tests-first → diff-scoped rival critic → the honest four-state `verified`
- * dimension, master-plan PHASE 3) plugs in at ONE named boundary, positioned
- * exactly where a turn's "done" is about to be accepted.
+ * Runs at the turn's accept point, AFTER the answer is accepted as the candidate
+ * "done" and BEFORE the receipt is surfaced. It runs a GRADUATED, HONEST check and
+ * returns the honest four-state {@link VerifyOutcome} ({unverified|reviewed|passing
+ * |failing}), which the loop turns into a receipt notice. It NEVER mutates the
+ * accepted answer and NEVER breaks the turn (every step is fail-soft; a crash
+ * degrades to `unverified` + an honest note).
  *
- * It currently does NOTHING and changes NOTHING — it neither reads the diff nor
- * runs tests nor calls a critic nor mutates the event stream. Wiring real
- * verification here is explicitly OUT OF SCOPE for Phase 1 (NO new behaviour, NO
- * Governor, NO verification logic yet). When Phase 3 lands, this becomes an async
- * generator that may yield verify-related CoreEvents and return a `verified`
- * signal; until then the work-call loop does not call it on the hot path (calling
- * an empty stage would still be a behaviour-neutral no-op, but Phase 1 keeps the
- * loop byte-for-byte identical and only RESERVES the slot here).
+ * THE GRADUATED LADDER (strict cost order):
+ *   1. CHANGE-CAPTURE — capture the diff THIS turn produced (the turn's real
+ *      edited-files signal when known, else `git diff` of the working tree). An
+ *      EMPTY diff ⇒ NO verification (`unverified`, satisfying the no-diff⇒no-verify
+ *      invariant). FREE.
+ *   2. TESTS-FIRST — detect the project's test command CONSERVATIVELY and run it
+ *      bounded/non-destructive. Green⇒`passing`, red⇒`failing`, no-command/timeout
+ *      ⇒ honest `unverified (...)` — NEVER a fabricated pass. FREE local exec, always
+ *      tried before any model call.
+ *   3. DIFF-SCOPED CRITIC — only when the level selects a critic (`tests+critic`/
+ *      `reviewed`): ONE cross-vendor critic reviews the DIFF + the TEST OUTPUT (not
+ *      prose), routed to a different vendor when possible (labelled same-vendor
+ *      fallback when only one vendor is connected). With tests, the critic
+ *      ANNOTATES (tests own pass/fail); with no tests, the critic ⇒ `reviewed`.
+ *
+ * RETURNS `undefined` (the no-op) when verification is not armed — no port, no
+ * level, or `level === 'none'` — so the flag-off path is byte-for-byte unchanged.
  *
  * @see master-plan PHASE 3 — THE CENTERPIECE · change-capture + verify
  */
-// Phase-1 placeholder: declared async so Phase 3 can fill it with the verify
-// generator/awaitable shape without changing the call-site signature. Currently a
-// deliberate no-op (no await needed yet).
-export async function verifyStage(_ctx: VerifyStageContext): Promise<void> {
-  // Phase 3 fills this. Phase 1: deliberate no-op (behaviour-preserving seam).
+export async function verifyStage(
+  ctx: VerifyStageContext,
+): Promise<VerifyOutcome | undefined> {
+  // NO-OP GUARD (the flag-off / unarmed neutrality): without a port, a level, or a
+  // cwd, verification does not run — return undefined exactly as Phase 1 did.
+  const { port, level, cwd } = ctx;
+  if (port === undefined || level === undefined || level === 'none' || cwd === undefined) {
+    return undefined;
+  }
+
+  try {
+    // -- 1. CHANGE-CAPTURE (free) --------------------------------------------
+    const diff = await port.captureDiff(cwd).catch(() => ({ files: [], patch: '' }));
+    if (diff.files.length === 0) {
+      // Empty diff ⇒ no verification ran (the honest default, no-diff⇒no-verify).
+      return unverified('no code change to verify', 0);
+    }
+    const changedFiles = diff.files.length;
+
+    // BUILT-IN DEFAULT UPGRADE (Governor OFF): when the level is the bare `'tests'`
+    // floor, the conservative built-in policy MAY add a critic — but ONLY on a large
+    // diff with ≥2 vendors, NEVER on a trivial change. When the Governor is ON it has
+    // already chosen `tests+critic`/`reviewed` deliberately (by stakes), so we never
+    // downgrade its decision; we only upgrade the bare floor.
+    const effectiveLevel =
+      level === 'tests'
+        ? defaultVerifyLevel({
+            highStakes: false, // stakes are the Governor's job; the floor uses size only
+            changedFiles,
+            authedProviderCount: (ctx.available ?? []).length,
+          })
+        : level;
+
+    // -- 2. TESTS-FIRST (free local exec — always tried before any model call) --
+    const detected = await port.detectTestCommand(cwd).catch(() => null);
+    let testState: VerifiedState | undefined;
+    let testRun: TestRunResult | undefined;
+    let testCommandLabel: string | undefined;
+    let testReason: string | undefined;
+    if (detected === null) {
+      testReason = 'no test command detected';
+    } else {
+      testCommandLabel = detected.label;
+      const timeout = ctx.testTimeoutMs ?? VERIFY_DEFAULT_TEST_TIMEOUT_MS;
+      testRun = await port
+        .runTests(cwd, detected, timeout)
+        .catch(() => ({ outcome: 'errored' as const, output: '', durationMs: 0 }));
+      if (testRun.outcome === 'green' || testRun.outcome === 'red') {
+        testState = stateFromTestRun(testRun);
+      } else if (testRun.outcome === 'timeout') {
+        testReason = `tests timed out (${testCommandLabel})`;
+      } else {
+        testReason = `tests could not run (${testCommandLabel})`;
+      }
+    }
+
+    // -- 3. DIFF-SCOPED CROSS-VENDOR CRITIC (the ONE paid lever, gated) -------
+    let critic: VerifyOutcome['critic'] | undefined;
+    if (levelWantsCritic(effectiveLevel) && ctx.runCritic !== undefined) {
+      const available = ctx.available ?? [];
+      const reviewer = pickReviewer([...available], ctx.provider);
+      if (reviewer !== null) {
+        const prompt = buildDiffReviewPrompt({
+          task: ctx.task ?? '',
+          diff: diff.patch,
+          ...(testRun !== undefined ? { testOutput: testRun.output, testOutcome: testRun.outcome } : {}),
+        });
+        const out = await ctx.runCritic({ reviewer, prompt }).catch(() => undefined);
+        if (out !== undefined && out.ran) {
+          critic = { vendor: reviewer, sameVendor: reviewer === ctx.provider };
+        }
+      }
+    }
+
+    // -- 4. COMPOSE THE HONEST FOUR-STATE + the outcome ----------------------
+    const verified = composeVerifiedState(testState, critic !== undefined);
+    return {
+      verified,
+      changedFiles,
+      ...(testCommandLabel !== undefined ? { testCommand: testCommandLabel } : {}),
+      ...(testRun !== undefined ? { testRun } : {}),
+      ...(critic !== undefined ? { critic } : {}),
+      ...(verified === 'unverified' && testReason !== undefined ? { note: testReason } : {}),
+    };
+  } catch {
+    // FAIL-SOFT: any unexpected crash in verification degrades to unverified +
+    // an honest note — NEVER breaks the turn.
+    return unverified('verification could not complete', 0);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -306,6 +454,14 @@ export interface WorkCallInput {
    * run BEFORE this stage; the stage starts the loop at the tier they chose.
    */
   readonly startTier: Tier;
+  /**
+   * The RESOLVED verification level for this turn (master-plan PHASE 3). orchestrate
+   * sets this from the Governor's `verify` lever when the Governor is ON, else from
+   * the conservative built-in default policy (or `deps.verifyLevel`). Read by the
+   * verify stage ONLY when `deps.verifyPort` is present. Absent → the stage defaults
+   * to `'tests'` (tests-first, the free signal — never a fabricated pass).
+   */
+  readonly verifyLevel?: import('./verify.js').VerifyLevel;
 }
 
 /**
@@ -337,6 +493,7 @@ export async function* runWorkCall(input: WorkCallInput): AsyncGenerator<CoreEve
     wantsWebSearch,
     hasImageAttachment,
     startTier,
+    verifyLevel,
   } = input;
 
   // -------------------------------------------------------------------------
@@ -427,6 +584,122 @@ export async function* runWorkCall(input: WorkCallInput): AsyncGenerator<CoreEve
       flagshipAttemptsThisTurn,
       trigger,
     });
+
+  // -------------------------------------------------------------------------
+  // (e2) THE VERIFY STAGE runner (master-plan PHASE 3) — armed ONLY when the
+  // verify flag injected `deps.verifyPort`. When absent, verifyStage returns
+  // undefined and this is a behaviour-neutral no-op (the flag-off neutrality the
+  // characterization + oracle suites prove). FAIL-SOFT throughout — a crash in
+  // verification degrades to an honest `unverified` note and NEVER breaks the turn.
+  //
+  // The critic (the ONE paid lever) runs ONLY when the resolved verify level
+  // selects it (the Governor's `verify` lever, or the conservative built-in
+  // default). It reuses the SAME cross-vendor reviewer routing the review block
+  // uses (route → collectProviderRun → ledger → parseReviewVerdict) so the diff
+  // critic is a real, parseable verdict — never fabricated — and its cost is
+  // accounted into `totalCostUsd` + the ledger exactly like the inline reviewer.
+  const runVerifyAtAccept = async (): Promise<VerifyOutcome | undefined> => {
+    if (deps.verifyPort === undefined) return undefined;
+    // The critic-runner the verify stage calls. Returns { ran:true } only on a
+    // genuinely parseable verdict; a broken/absent reviewer → { ran:false } so the
+    // four-state never claims `reviewed` off a non-verdict.
+    const runCritic = async (
+      input: CriticRunInput,
+    ): Promise<CriticRunOutput | undefined> => {
+      const reviewerProvider = deps.providers[input.reviewer];
+      if (reviewerProvider === undefined) return { ran: false };
+      try {
+        const reviewModelOutcomeOrder = deps.modelOutcomeOrderByTaskKind?.['review'];
+        const reviewCapabilityContext: CapabilityRouteContext | undefined =
+          deps.capabilityRegistry !== undefined
+            ? {
+                registry: deps.capabilityRegistry,
+                taskSignals: { ...taskSignals, taskKind: 'review' },
+                mode,
+                ...(reviewModelOutcomeOrder !== undefined
+                  ? { modelOutcomeOrder: reviewModelOutcomeOrder }
+                  : {}),
+              }
+            : undefined;
+        const reviewDecision = route(
+          'manager',
+          [input.reviewer],
+          deps.policy,
+          deps.availableModels,
+          deps.authenticatedProviders,
+          deps.learnedProviderOrder?.['manager'],
+          reviewCapabilityContext,
+        );
+        const reviewEffort = effortForDecision(
+          deps.capabilityRegistry,
+          input.reviewer,
+          reviewDecision.model,
+          reviewDecision.tier,
+          mode,
+          { ...taskSignals, taskKind: 'review' },
+        );
+        const reviewReq: ProviderRequest = {
+          model: reviewDecision.model,
+          prompt: input.prompt,
+          cwd: deps.cwd,
+          sandbox: deps.sandbox,
+          timeoutMs: deps.timeoutMs,
+          ...(reviewEffort !== undefined ? { reasoningEffort: reviewEffort } : {}),
+        };
+        const reviewStart = deps.clock.now();
+        const reviewOutcome = await collectProviderRun(reviewerProvider, reviewReq, signal);
+        const reviewDurationMs = deps.clock.now() - reviewStart;
+        if (reviewOutcome.canceled || reviewOutcome.errored != null) {
+          return { ran: false };
+        }
+        const reviewPricing = getModelPricing(input.reviewer, reviewDecision.model);
+        const reviewUsd =
+          reviewOutcome.providerCostUsd ??
+          (reviewOutcome.usage !== undefined && reviewPricing !== undefined
+            ? calculateCost(
+                reviewOutcome.usage.inputTokens,
+                reviewOutcome.usage.outputTokens,
+                reviewPricing,
+              )
+            : 0);
+        totalCostUsd += reviewUsd;
+        await deps.ledger.record({
+          timestamp: deps.clock.isoNow(),
+          sessionId: deps.session.id,
+          taskId: deps.clock.uuid(),
+          provider: input.reviewer,
+          model: reviewDecision.model,
+          tier: reviewDecision.tier,
+          inputTokens: reviewOutcome.usage?.inputTokens ?? 0,
+          outputTokens: reviewOutcome.usage?.outputTokens ?? 0,
+          cachedInputTokens: reviewOutcome.usage?.cachedInputTokens ?? 0,
+          usd: reviewUsd,
+          durationMs: reviewDurationMs,
+          success: true,
+          ...(reviewEffort !== undefined ? { reasoningEffort: reviewEffort } : {}),
+          taskKind: 'review',
+        });
+        const verdict = parseReviewVerdict(reviewOutcome.finalText ?? '');
+        // A real, parseable verdict ⇒ the critic genuinely ran.
+        return { ran: verdict.parsed === true };
+      } catch {
+        return { ran: false };
+      }
+    };
+
+    return verifyStage({
+      output: lastOutput,
+      provider: acceptedRun?.provider ?? lastAttemptedProvider ?? available[0] ?? 'claude',
+      tier: currentTier,
+      port: deps.verifyPort,
+      level: verifyLevel ?? deps.verifyLevel ?? 'tests',
+      task,
+      cwd: deps.cwd,
+      ...(deps.verifyTestTimeoutMs !== undefined ? { testTimeoutMs: deps.verifyTestTimeoutMs } : {}),
+      available: deps.authenticatedProviders ?? available,
+      runCritic,
+    });
+  };
 
   // -------------------------------------------------------------------------
   // (f) Main orchestration loop
@@ -1460,18 +1733,29 @@ export async function* runWorkCall(input: WorkCallInput): AsyncGenerator<CoreEve
 
     // 4) Accept — everything checks out (or the flagship was warranted but denied)
     //
-    // verifyStage SLOT (Phase 3): this accept point is exactly where the
-    // verification centerpiece runs — the turn is about to be accepted as "done",
-    // so a Phase-3 change-capture → tests-first → diff-scoped critic check belongs
-    // HERE, gating the `verified` dimension on a real signal. Phase 1 reserves the
-    // slot but does NOT call it (keeping the loop byte-for-byte identical); see
-    // verifyStage() above for the contract Phase 3 will fill.
+    // verifyStage SLOT (Phase 3, NOW FILLED): this accept point is exactly where the
+    // verification centerpiece runs — the turn is about to be accepted as "done", so
+    // change-capture → tests-first → an optional diff-scoped critic runs HERE and the
+    // honest four-state `verified` receipt is surfaced. The stage is FLAG-GATED: when
+    // `deps.verifyPort` is absent (the default), verifyStage returns undefined and
+    // this is byte-for-byte the pre-Phase-3 accept path (the characterization + oracle
+    // suites prove that neutrality).
     if (acceptedRun === undefined) {
       throw new Error('orchestrate invariant violated: successful final without accepted run');
     }
     await appendAcceptedAssistant(deps, acceptedRun);
     {
       const memoryProposal = memoryProposalFor(lastOutput);
+      // --- THE VERIFY STAGE (fail-soft; never breaks the turn) -----------------
+      const verifyOutcome = await runVerifyAtAccept();
+      if (verifyOutcome !== undefined) {
+        yield {
+          type: 'notice',
+          // A failing test is a real warning; everything else is informational.
+          level: verifyOutcome.verified === 'failing' ? 'warn' : 'info',
+          message: buildVerifyReceipt(verifyOutcome),
+        };
+      }
       yield {
         type: 'final',
         success: true,

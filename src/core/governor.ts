@@ -175,10 +175,16 @@ export type TierRequest = 'ic' | 'oracle';
 export type Verbosity = 'terse' | 'laddered' | 'deep';
 
 /**
- * The verification lever. PHASE 2: always `'none'` (the machinery does not exist
- * yet — Phase 3 lands change-capture + tests + the cross-vendor critic, at which
- * point `allocate` starts returning the non-`'none'` values it already encodes). A
- * declared-but-inactive cell, by design.
+ * The verification lever (master-plan PHASE 3 — now ACTIVE). The verify stage
+ * (work-call.ts → core/verify.ts) reads this to decide how far up the cost ladder
+ * to climb:
+ *   - `none`         : skip verification (non-diff shapes; the stage's diff-gate
+ *                      also bypasses it on an empty diff regardless of this value).
+ *   - `tests`        : tests-first only (FREE local exec), no critic.
+ *   - `tests+critic` : tests-first, then ONE diff-scoped cross-vendor critic.
+ *   - `reviewed`     : the critic is the primary signal (when no tests exist).
+ * This is the SAME vocabulary as core/verify.ts::VerifyLevel — the two are kept in
+ * lockstep so the Governor's plan threads straight into the verify stage.
  */
 export type Verify = 'none' | 'tests' | 'tests+critic' | 'reviewed';
 
@@ -404,6 +410,48 @@ function crossVendorLeverForShape(shape: TaskShape): Lever | null {
 }
 
 /**
+ * Whether the SHAPE produces a diff worth verifying (master-plan PHASE 3). Only
+ * code-changing shapes are verification-eligible: `build` and `risky` clearly
+ * change code; `investigate` may produce a fix. `quick`/`explain`/`decide` do not
+ * produce a diff to test (the stage's own diff-gate is the final authority — an
+ * empty diff is `unverified` regardless of this).
+ */
+function shapeProducesDiff(shape: TaskShape): boolean {
+  return shape === 'build' || shape === 'risky' || shape === 'investigate';
+}
+
+/**
+ * The verification LEVEL for this turn (master-plan PHASE 3 / §2.3 firing policy),
+ * graduated and tests-first-free:
+ *   - non-diff shape → `'none'` (nothing to verify).
+ *   - diff shape, low stakes, NOT a large diff, OR <2 vendors → `'tests'`
+ *     (tests-first only — the free signal; never opens a paid critic).
+ *   - diff shape AND (high stakes OR the shape is `risky`) AND ≥2 vendors AND a
+ *     metered unit remains in the budget → `'tests+critic'` (tests-first, then ONE
+ *     diff-scoped cross-vendor critic). The critic is the ONE paid lever; it is
+ *     gated by stakes + vendor count + the hard budget, never blanket-on, never on
+ *     a trivial change.
+ *
+ * `criticUnitAvailable` is whether a unit of `turnCallBudget` remains after the
+ * core answer (+ any Oracle) — the critic draws from the same single counter, so it
+ * can never multiplicatively blow quota.
+ */
+function verifyForShape(
+  shape: TaskShape,
+  conf: AllocateInput['conf'],
+  crossVendor: boolean,
+  criticUnitAvailable: boolean,
+): Verify {
+  if (!shapeProducesDiff(shape)) return 'none';
+  // High-stakes (or an explicitly risky shape) earns the diff-scoped critic when a
+  // 2nd vendor is connected AND the budget affords the extra metered unit.
+  const wantsCritic = (conf.stakes === 'high' || shape === 'risky')
+    && crossVendor
+    && criticUnitAvailable;
+  return wantsCritic ? 'tests+critic' : 'tests';
+}
+
+/**
  * THE ALLOCATION — a PURE function `allocate(input) → AllocationPlan` (perf doc
  * §3.2). Total, fail-soft, ZERO tokens to compute. It:
  *
@@ -487,23 +535,40 @@ export function allocate(input: AllocateInput): AllocationPlan {
     reasons.push(`oracle refused — ${shape} does not warrant the strong model (efficiency)`);
   }
 
-  // CROSS-VENDOR CELL — declared but INACTIVE in Phase 2. We record the LOCK
-  // honestly when the shape would have drawn a cross-vendor lever but <2 vendors
-  // are authed; we never SPEND it (no verification/poll/tribunal machinery yet).
+  // VERIFICATION — the master-plan PHASE 3 lever, now ACTIVE. Tests-first is free
+  // (it draws NO metered unit — local exec); the diff-scoped critic is the ONE paid
+  // lever and draws a unit of the budget. It is gated by stakes + vendor count + the
+  // hard budget, so it can never blanket-on or multiplicatively blow quota.
+  const criticUnitAvailable = spent < turnCallBudget;
+  const verify: Verify = verifyForShape(shape, input.conf, crossVendor, criticUnitAvailable);
+  if (verify === 'tests+critic') {
+    // The critic is a metered cross-vendor lever — record it spending a budget unit.
+    levers.push('critic');
+    spent += 1;
+    reasons.push('critic — diff-scoped cross-vendor check (high stakes / risky change)');
+  } else if (verify === 'tests') {
+    if (shapeProducesDiff(shape)) {
+      reasons.push('verify tests-first — free local exec is the strongest cheap signal');
+    }
+  }
+
+  // CROSS-VENDOR CELL — the critic above is the verification turn's cross-vendor
+  // lever. For shapes whose cross-vendor cell is something else (the `decide` poll,
+  // a later phase), or when the critic was NOT chosen, record the LOCK/reservation
+  // honestly so the single-vendor surface is truthful and never nagged.
   const cvLever = crossVendorLeverForShape(shape);
-  if (cvLever !== null && CROSS_VENDOR_LEVERS.has(cvLever)) {
+  if (cvLever !== null && CROSS_VENDOR_LEVERS.has(cvLever) && verify !== 'tests+critic') {
     if (!crossVendor) {
       locked.push(cvLever);
       reasons.push(`${cvLever} locked — needs a 2nd vendor (single-vendor: honest, not nagged)`);
-    } else {
-      // ≥2 vendors: the cell is REACHABLE but its machinery is not built in Phase 2,
-      // so it is reserved (not spent). The reason makes the reservation honest.
+    } else if (cvLever !== 'critic') {
+      // ≥2 vendors: a non-critic cross-vendor cell (the poll) is REACHABLE but its
+      // machinery lands in a later phase, so it is reserved (not spent).
       reasons.push(`${cvLever} reserved — eligible with ≥2 vendors, lands in a later phase`);
     }
   }
 
-  // VERIFICATION + CONCURRENCY — declared-but-inactive cells in Phase 2.
-  const verify: Verify = 'none';
+  // CONCURRENCY — declared-but-inactive cell in Phase 2.
   const concurrency = 1;
 
   return {

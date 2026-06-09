@@ -286,15 +286,61 @@ describe('governor.allocate — invariant tripwires', () => {
     );
   });
 
-  it('PHASE 2: verify is always none and concurrency always 1 (declared-but-inactive)', () => {
+  it('PHASE 3: verify is tests-first on a diff shape, none on non-diff; concurrency always 1', () => {
     const modes: Mode[] = ['cost-saver', 'balanced', 'quality-first'];
     for (const mode of modes) {
-      for (const ro of [false, true]) {
-        const plan = allocate(allocInput({ mode, repoOriented: ro }));
-        assert.strictEqual(plan.verify, 'none', `verify is inactive in Phase 2 (${plan.shape}/${mode})`);
-        assert.strictEqual(plan.concurrency, 1, `concurrency is single-goal in Phase 2 (${plan.shape}/${mode})`);
-      }
+      // Non-diff shape (a clearly-understood plain answer — not repo-oriented, high
+      // confidence so it is NOT `investigate`) → no verification.
+      const s = signals({ task: 'what is a closure in JS?' });
+      const conf = assessConfidence(frame({ confidence: 'high' }), s);
+      const explain = allocate(allocInput({ mode, signals: s, conf, repoOriented: false }));
+      assert.strictEqual(explain.shape, 'explain', `the no-diff case is the explain shape (${mode})`);
+      assert.strictEqual(explain.verify, 'none', `non-diff shape skips verify (${explain.shape}/${mode})`);
+      // Diff shape (build) single-vendor low-stakes → tests-first only, no paid critic.
+      const build = allocate(
+        allocInput({ mode, signals: s, conf, repoOriented: true, authedProviderCount: 1 }),
+      );
+      assert.strictEqual(build.verify, 'tests', `build verifies tests-first (${build.shape}/${mode})`);
+      assert.ok(!build.levers.includes('critic'), 'single-vendor low-stakes never opens a paid critic');
+      // Concurrency stays single-goal (Phase 6 lights it up).
+      assert.strictEqual(explain.concurrency, 1, `concurrency is single-goal (${explain.shape}/${mode})`);
+      assert.strictEqual(build.concurrency, 1, `concurrency is single-goal (${build.shape}/${mode})`);
     }
+  });
+
+  it('PHASE 3: high-stakes diff + 2 vendors + budget → tests+critic (the one paid lever)', () => {
+    const s = signals({ task: 'rewrite the auth token refresh', classification: classification({ risk: 'high' }) });
+    const conf = assessConfidence(frame({ confidence: 'low' }), s);
+    const plan = allocate(
+      allocInput({
+        signals: s,
+        conf,
+        repoOriented: true,
+        mode: 'quality-first',
+        authedProviderCount: 2,
+      }),
+    );
+    // High stakes makes this `risky`; with 2 vendors + a Max budget the critic fires.
+    assert.strictEqual(plan.verify, 'tests+critic', 'high-stakes diff earns the diff-scoped critic');
+    assert.ok(plan.levers.includes('critic'), 'the critic is recorded as a spent lever');
+    assert.ok(plan.levers.length <= plan.turnCallBudget, 'levers never exceed the hard budget');
+  });
+
+  it('PHASE 3: single-vendor high-stakes diff stays tests-only (no faked cross-vendor critic)', () => {
+    const s = signals({ task: 'rewrite the auth token refresh', classification: classification({ risk: 'high' }) });
+    const conf = assessConfidence(frame({ confidence: 'low' }), s);
+    const plan = allocate(
+      allocInput({
+        signals: s,
+        conf,
+        repoOriented: true,
+        mode: 'quality-first',
+        authedProviderCount: 1,
+      }),
+    );
+    assert.strictEqual(plan.verify, 'tests', 'one vendor → tests-first only, never a faked critic');
+    assert.ok(!plan.levers.includes('critic'), 'no cross-vendor critic with a single vendor');
+    assert.ok(plan.locked.includes('critic'), 'the locked critic cell is surfaced honestly');
   });
 
   it('every allocation records auditable reasons (the refusal/grant trail)', () => {

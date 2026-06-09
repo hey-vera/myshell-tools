@@ -621,6 +621,35 @@ export interface OrchestrateDeps {
    * gate and never opens a tier the gate would deny.
    */
   readonly governorEnabled?: boolean;
+  /**
+   * EXPERIMENTAL — the injected VERIFICATION PORT (master-plan PHASE 3, the
+   * centerpiece). The impure git-diff + test-detection + bounded test-runner
+   * (src/infra/verify-port.ts), wrapped fail-soft exactly like RepoScanPort. PRESENT
+   * ONLY when the verify flag is ON (`verifyEnabled(env, config)`); ABSENT (the
+   * default) → the verify stage is never armed and the work-call accept path is
+   * BYTE-FOR-BYTE today's (the flag-off neutrality the characterization + oracle
+   * suites prove). When present, the verify stage runs at the turn's accept point:
+   * capture the diff → tests-first (free) → ONE diff-scoped cross-vendor critic when
+   * the level selects it → the honest four-state `verified` result + a receipt.
+   * Type-only import to keep types.ts a leaf module.
+   */
+  readonly verifyPort?: import('./verify.js').VerifyPort;
+  /**
+   * The verification level for THIS turn (the SAME vocabulary the Governor's
+   * `verify` lever encodes). Resolved by the caller from the Governor's
+   * AllocationPlan when the Governor flag is ON, else from the conservative
+   * built-in default policy (core/verify-policy.ts). Read by the verify stage ONLY
+   * when {@link verifyPort} is present; absent → defaults to `'tests'` (tests-first,
+   * the free signal, never a fabricated pass). NEVER opens a critic on a trivial /
+   * no-diff turn (the stage's own diff-gate + the level both bypass it).
+   */
+  readonly verifyLevel?: import('./verify.js').VerifyLevel;
+  /**
+   * The bounded timeout (ms) for the verify stage's test run. Resolved by the
+   * caller (a sensible multiple of the turn timeout, capped). Absent → the stage's
+   * own conservative default. Read only when {@link verifyPort} is present.
+   */
+  readonly verifyTestTimeoutMs?: number;
 }
 
 /**
