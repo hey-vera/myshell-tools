@@ -15,6 +15,14 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   resumed goal's contract from the persisted `workTrace` (niche: the in-run contract
   is already kept in memory; only cross-session resume benefits). Optional.
 
+## [3.34.0]
+
+### Changed — the partner explains like an elite engineer, not a manual
+- It now leads with the INTUITIVE point (what this means + why it matters, in plain language a non-expert gets) and then LAYERS the technical detail a dev needs — so backend wiring, dependencies, and long-term consequences actually LAND for anyone, while staying precise for experts. No more jargon lists.
+- More PROACTIVE: it orients instead of just answering — connects the task to your larger goal, flags what you are about to get wrong before you hit it, and surfaces the non-obvious win you did not think to ask for, with a real point of view (not just a recommendation).
+- An elite VOICE: "make a non-expert feel smart and an expert feel met" — warm because it is clear and candid, never because it flatters (brutal honesty preserved).
+- The depth only kicks in when a turn genuinely warrants it; quick questions stay crisp and instant. All prompt-level — no new model calls, subscription-clean, and it never fabricates a file/fact/number to make an explanation tidier.
+
 ## [3.33.0]
 
 ### Changed — the partner asks + proposes like a senior engineer

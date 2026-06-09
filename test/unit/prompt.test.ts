@@ -558,6 +558,176 @@ describe('buildPrompt — proactive research judgment', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Elite voice + adaptive-explanation ladder + think-past (review items 1-3)
+// ---------------------------------------------------------------------------
+
+describe('buildPrompt — elite VOICE preamble (review §5)', () => {
+  for (const tier of TIERS) {
+    it(`${tier}: carries the "partner a sharp builder wishes they had" voice`, () => {
+      const result = buildPrompt(tier, 'task');
+      assert.ok(
+        result.includes('partner a sharp builder wishes they had'),
+        `${tier} prompt should carry the elite voice preamble`,
+      );
+      assert.ok(
+        result.includes('makes the hard parts suddenly make sense'),
+        `${tier} prompt should promise to make hard parts make sense`,
+      );
+      assert.ok(
+        result.includes('NOW I get it'),
+        `${tier} prompt should target the "oh — NOW I get it" feeling`,
+      );
+    });
+
+    it(`${tier}: keeps brutal honesty as a facet, not flattery (elite ≠ sycophancy)`, () => {
+      const result = buildPrompt(tier, 'task');
+      // The preamble must explicitly disclaim flattery, AND the brutal-honesty
+      // block must still be present (it is not replaced by the warmer voice).
+      assert.ok(
+        result.includes('never because you flatter'),
+        `${tier} preamble should disclaim flattery`,
+      );
+      assert.ok(
+        result.includes('no sycophancy or flattery'),
+        `${tier} prompt must retain the brutal-honesty block alongside the elite voice`,
+      );
+    });
+
+    it(`${tier}: the voice preamble sits ABOVE the brutal-honesty block`, () => {
+      const result = buildPrompt(tier, 'task');
+      const voiceIdx = result.indexOf('partner a sharp builder wishes they had');
+      const honestyIdx = result.indexOf('respectful brutal honesty');
+      assert.ok(voiceIdx >= 0 && honestyIdx >= 0);
+      assert.ok(voiceIdx < honestyIdx, `${tier}: elite voice precedes brutal honesty`);
+    });
+  }
+});
+
+describe('buildPrompt — adaptive-explanation ladder (review §2, the #1 ask)', () => {
+  for (const tier of TIERS) {
+    it(`${tier}: carries the intuitive-first → technical ladder`, () => {
+      const result = buildPrompt(tier, 'task');
+      assert.ok(
+        result.includes('Explain on a ladder'),
+        `${tier} prompt should carry the explanation ladder`,
+      );
+      assert.ok(
+        /plain-language sentence a smart non-expert would get/i.test(result),
+        `${tier} ladder should lead with an intuitive plain-language sentence`,
+      );
+      assert.ok(
+        /THEN layer the precise technical detail/i.test(result),
+        `${tier} ladder should layer technical detail for the engineer`,
+      );
+      assert.ok(
+        /what depends on what and what breaks if it'?s skipped/i.test(result),
+        `${tier} ladder should make the dependency/long-term picture land`,
+      );
+    });
+
+    it(`${tier}: the ladder SELF-GATES (no padded ELI5 on trivial/quick-factual)`, () => {
+      const result = buildPrompt(tier, 'task');
+      assert.ok(
+        result.includes('SELF-GATE'),
+        `${tier} ladder must be explicitly self-gating`,
+      );
+      assert.ok(
+        /one-line question gets a one-line answer/i.test(result),
+        `${tier} ladder must protect the fast path (one-line in → one-line out)`,
+      );
+      assert.ok(
+        /never[\s\S]{0,40}padded ELI5 essay/i.test(result),
+        `${tier} ladder must forbid a padded ELI5 essay`,
+      );
+    });
+
+    it(`${tier}: plain-language is for the WHY, never condescension`, () => {
+      const result = buildPrompt(tier, 'task');
+      assert.ok(
+        /never talking\s*down/i.test(result),
+        `${tier} ladder must forbid talking down`,
+      );
+      assert.ok(
+        /match the user'?s own register, one notch up/i.test(result),
+        `${tier} ladder must mirror the user's register one notch up`,
+      );
+    });
+  }
+});
+
+describe('buildPrompt — think-past-the-question proactive directive (review §3)', () => {
+  for (const tier of TIERS) {
+    it(`${tier}: instructs anticipating the next problem from injected context`, () => {
+      const result = buildPrompt(tier, 'task');
+      assert.ok(
+        result.includes('Think past the question'),
+        `${tier} prompt should carry the think-past-the-question directive`,
+      );
+      assert.ok(
+        /memory, work-state, repo-map and\s+recap blocks/i.test(result),
+        `${tier} directive should activate the already-injected context blocks`,
+      );
+      assert.ok(
+        /second-order risk|cheap win|sinks the rest/i.test(result),
+        `${tier} directive should surface the non-obvious`,
+      );
+    });
+
+    it(`${tier}: the proactive directive self-gates (no brain dump, not on trivial)`, () => {
+      const result = buildPrompt(tier, 'task');
+      assert.ok(
+        /never a brain dump, and never on a trivial\s+turn/i.test(result),
+        `${tier} directive must cap anticipations and skip trivial turns`,
+      );
+    });
+  }
+});
+
+describe('buildPrompt — explanatory depth is gated on substantial turns (fast-path proof)', () => {
+  const DEPTH_MARKER = 'THIS TURN HAS REAL DEPTH';
+
+  for (const tier of TIERS) {
+    it(`${tier}: composes the expanded depth directive ONLY when explanatory:true`, () => {
+      const deep = buildPrompt(tier, 'task', undefined, undefined, { explanatory: true });
+      assert.ok(deep.includes(DEPTH_MARKER), `${tier}: substantial turn gets the depth directive`);
+      assert.ok(
+        /bolded\s+one-line takeaway/i.test(deep),
+        `${tier}: depth directive demands a bolded plain-language takeaway`,
+      );
+      assert.ok(
+        /never fabricate a fact, file, or\s+number/i.test(deep),
+        `${tier}: depth directive forbids fabrication (honesty preserved)`,
+      );
+    });
+
+    it(`${tier}: OMITS the expanded depth directive on a trivial turn (no explanatory flag)`, () => {
+      const trivial = buildPrompt(tier, 'what time is it');
+      assert.ok(
+        !trivial.includes(DEPTH_MARKER),
+        `${tier}: a trivial turn must NOT carry the expanded depth directive`,
+      );
+    });
+
+    it(`${tier}: explanatory:false is byte-identical to omitting the flag`, () => {
+      const off = buildPrompt(tier, 'task', undefined, undefined, { explanatory: false });
+      const none = buildPrompt(tier, 'task');
+      assert.equal(off, none, `${tier}: explanatory:false must not change the prompt`);
+    });
+  }
+
+  it('the depth directive places the takeaway demand after the persona, before Task', () => {
+    const result = buildPrompt('ic', 'plan the migration', undefined, undefined, {
+      explanatory: true,
+    });
+    const personaIdx = result.indexOf('individual-contributor');
+    const depthIdx = result.indexOf(DEPTH_MARKER);
+    const taskIdx = result.indexOf('Task:');
+    assert.ok(personaIdx < depthIdx, 'depth directive after persona');
+    assert.ok(depthIdx < taskIdx, 'depth directive before Task');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Phase 5 — the memory capture instruction (remember_user)
 // ---------------------------------------------------------------------------
 

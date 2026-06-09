@@ -1214,6 +1214,13 @@ export async function* orchestrate(
       useNative ? undefined : historyContext,
       {
         ...(deps.goalTurn === true ? { goalTurn: true } : {}),
+        // EXPLANATORY DEPTH (review §2d/§7): the expanded "make it land" directive
+        // fires ONLY on a substantial/explanatory turn, reusing the SAME
+        // `directive.substantial` predicate the grounded-recommendation validator
+        // uses (turn-directive.ts decideSubstantial → isTrivial-exempt). A trivial
+        // / quick-factual turn has substantial=false → the block is omitted and the
+        // fast path stays crisp.
+        ...(directive.substantial === true ? { explanatory: true } : {}),
         ...(deps.partnerStyle !== undefined ? { partnerStyle: deps.partnerStyle } : {}),
         ...(deps.environmentContext !== undefined ? { environmentContext: deps.environmentContext } : {}),
         ...(deps.toolStateContext !== undefined ? { toolStateContext: deps.toolStateContext } : {}),
