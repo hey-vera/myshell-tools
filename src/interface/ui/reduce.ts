@@ -28,6 +28,7 @@ import {
   type TranscriptLine,
   type UiState,
   initialStreamView,
+  PROSE_BUFFER_CAP,
 } from './state.js';
 
 // ---------------------------------------------------------------------------
@@ -401,12 +402,24 @@ export function reduce(state: UiState, action: Action): UiState {
     //    before the very first delta).
     case 'stream/prose': {
       const s = state.stream;
-      let buffer = s.buffer;
-      if (s.breakBeforeNextProse && s.proseStarted) buffer += '\n';
-      if (s.toolSinceProse && s.proseStarted) buffer += '\n';
-      buffer += action.text;
+      // Build the fresh-line prefix (a tier boundary / a tool ran since last prose
+      // inserts a single '\n' before resumed text — but never before the very first
+      // delta). Apply it IDENTICALLY to the full accumulator and the display tail so
+      // the committed prose and the displayed prose carry the same line breaks.
+      let prefix = '';
+      if (s.breakBeforeNextProse && s.proseStarted) prefix += '\n';
+      if (s.toolSinceProse && s.proseStarted) prefix += '\n';
+      const delta = prefix + action.text;
+      // proseFull is the COMPLETE prose this tier — committed verbatim at the tier
+      // boundary so the transcript stays the full answer. buffer is the capped
+      // DISPLAY tail (only the tail is ever shown), so a very long turn can't grow
+      // the per-tick layout work / memory unboundedly (BUG 2).
+      const proseFull = s.proseFull + delta;
+      const grown = s.buffer + delta;
+      const buffer = grown.length > PROSE_BUFFER_CAP ? grown.slice(grown.length - PROSE_BUFFER_CAP) : grown;
       return withStream(state, {
         buffer,
+        proseFull,
         phase: 'streaming',
         proseStarted: true,
         attemptHadProse: true,
@@ -495,10 +508,12 @@ export function reduce(state: UiState, action: Action): UiState {
         return next;
       }
 
-      // Normal tier boundary: commit buffered prose, then reset the stream tail.
+      // Normal tier boundary: commit the FULL buffered prose (proseFull — NOT the
+      // capped display `buffer`, so the committed transcript stays the COMPLETE
+      // answer even when the live buffer was capped), then reset the stream tail.
       let next: UiState = state;
-      if (state.stream.buffer.length > 0) {
-        next = commit(next, { kind: 'prose', text: state.stream.buffer });
+      if (state.stream.proseFull.length > 0) {
+        next = commit(next, { kind: 'prose', text: state.stream.proseFull });
       }
       const attemptHadProse = state.stream.attemptHadProse;
       // The tier's live action is over — DROP `currentTool` (destructure it out
@@ -519,6 +534,7 @@ export function reduce(state: UiState, action: Action): UiState {
         stream: {
           ...streamWithoutTool,
           buffer: '',
+          proseFull: '',
           attemptHadProse: false,
           toolSinceProse: false,
           // A tier boundary crossed mid-answer → the NEXT tier's first prose starts
@@ -609,8 +625,8 @@ export function reduce(state: UiState, action: Action): UiState {
       // The legacy renderStream cancel path (render.ts) is kept in lockstep so
       // run-stream-parity stays byte-identical.
       let next: UiState = state;
-      if (!action.canceled && state.stream.buffer.length > 0) {
-        next = commit(next, { kind: 'prose', text: state.stream.buffer });
+      if (!action.canceled && state.stream.proseFull.length > 0) {
+        next = commit(next, { kind: 'prose', text: state.stream.proseFull });
       }
       // The turn is over: clear live status + mark inactive. Any goal still
       // `running` (e.g. a turn that ended without a non-panel tier boundary, or

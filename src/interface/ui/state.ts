@@ -104,8 +104,25 @@ export type StreamPhase = 'idle' | 'thinking' | 'panel' | 'synthesis' | 'streami
  * streamedChars, panelMode/panelists/synthesizing, the tool/break flags).
  */
 export interface StreamView {
-  /** Cleaned prose streamed in the current tier, not yet committed. */
+  /**
+   * The DISPLAY tail of the cleaned prose streamed in the current tier, CAPPED to
+   * the last {@link PROSE_BUFFER_CAP} chars so a very long single turn cannot grow
+   * it unboundedly (App re-walks it with streamWrappedRows/tailStreamToRows on every
+   * ~40ms flush — O(buffer) per tick). Only the TAIL is ever displayed (the layout
+   * caps it to streamCap rows), so capping the live buffer is invisible. The FULL,
+   * uncapped prose lives in {@link proseFull} and is what gets COMMITTED at the tier
+   * boundary / final — so the committed transcript stays the COMPLETE answer.
+   */
   readonly buffer: string;
+  /**
+   * The COMPLETE, uncapped prose accumulated this tier — the source of the committed
+   * transcript line at a tier boundary / final (NOT {@link buffer}, which is the
+   * capped display tail). Reset to '' together with `buffer` at every tier boundary /
+   * final. Keeping the full prose here (rather than committing the capped `buffer`)
+   * is what lets us cap the transient live buffer WITHOUT ever dropping committed
+   * content (screen ≠ store regression guard).
+   */
+  readonly proseFull: string;
   readonly phase: StreamPhase;
   /** render.ts `stepCount` — tool/reasoning steps in the current tier. */
   readonly stepCount: number;
@@ -184,8 +201,18 @@ export interface UiState {
 // initial state
 // ---------------------------------------------------------------------------
 
+/**
+ * Cap on the LIVE display {@link StreamView.buffer} length (chars). Sized to cover
+ * a wide viewport many times over (~viewport*4 wrapped rows ≈ a few hundred rows ×
+ * ~80 cols), so the displayed tail is never starved while the buffer can't grow
+ * unboundedly within a single long turn. ONLY the live buffer is capped — the full
+ * prose committed at a tier boundary lives in {@link StreamView.proseFull}.
+ */
+export const PROSE_BUFFER_CAP = 16384;
+
 export const initialStreamView: StreamView = {
   buffer: '',
+  proseFull: '',
   phase: 'idle',
   stepCount: 0,
   streamedChars: 0,

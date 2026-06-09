@@ -19,7 +19,7 @@ import { Box, Static, Text, useInput, useStdout } from 'ink';
 import { InputBox, createInputBoxBridge, type InputBoxBridge } from './InputBox.js';
 import { Stream, CommittedLine } from './Stream.js';
 import { StatusBlock } from './StatusBlock.js';
-import { layoutForHeight, streamWrappedRows, tailStreamToRows, INPUT_ROWS_MAX } from './layout.js';
+import { layoutForHeight, streamWrappedRows, tailStreamToRows, INPUT_ROWS } from './layout.js';
 import { backfillTerminalSize } from './mount.js';
 import type { TranscriptLine, UiState } from './state.js';
 
@@ -449,6 +449,15 @@ function AppBody({
   // at the menu, and auth/login/settings sub-flows run with the composer hidden.
   // Toggled by the menu loop via bridge.setChatActive() at runChatLoop entry/exit.
   const [chatActive, setChatActive] = useState(false);
+  // The <InputBox>'s TRUE rendered PHYSICAL height (wrapped body + borders),
+  // reported up via onMeasureRows (BUG 1). A wrapped/pasted composer occupies more
+  // physical rows than the old constant INPUT_ROWS_MAX assumed (it counted 1
+  // physical row per shown logical row), which let the dynamic region overflow the
+  // viewport and re-trigger Ink's scrollback-duplication glitch. Threading the
+  // MEASURED height into layoutForHeight lets the planner shrink the stream/status
+  // region to make room so total dynamic rows <= viewport, ALWAYS. Defaults to the
+  // single-line INPUT_ROWS until the first measurement lands.
+  const [inputBoxRows, setInputBoxRows] = useState(INPUT_ROWS);
   // Bumped on every SIGWINCH (terminal resize). Ink's useStdout does NOT subscribe
   // to 'resize', so without this the cached columns/rows below would go stale after
   // a resize — the layout cap + InputBox width would never re-measure. The counter
@@ -510,7 +519,23 @@ function AppBody({
   const liveLayout = useMemo(() => {
     if (uiState === null) return null;
     const streamLines = streamWrappedRows(uiState.stream.buffer, liveColumns);
-    const plan = layoutForHeight(uiState, liveRows, streamLines, INPUT_ROWS_MAX);
+    // BUG 3: the live-frame chrome[] region (the menu's ~30-line frame) renders in a
+    // plain <Box> between <Static> and StatusBlock but was OUTSIDE the height budget.
+    // turn/start clears chrome (a turn and the menu frame should never coexist — see
+    // reduce.ts), but any OTHER action that flips turnActive true (tier-start, panel,
+    // …) leaves a lingering frame; if a turn then paints StatusBlock+Stream the total
+    // (chrome + plannedRows + input) could exceed the viewport → the duplication
+    // glitch. So we SUBTRACT chrome.length from the rows budget here, at the render
+    // boundary that emits BOTH regions — provably enforcing total <= viewport
+    // independent of reducer event ordering.
+    const chromeRows = uiState.chrome.length;
+    const budgetRows = Math.max(2, liveRows - chromeRows);
+    // BUG 1: reserve the InputBox's MEASURED physical height (not the constant
+    // INPUT_ROWS_MAX) so a wrapped/pasted composer cannot push the dynamic region
+    // past the viewport. The planner shrinks the stream/status region to fit; the
+    // InputBox itself caps its own visible physical rows to the viewport (keeping
+    // the caret/tail row) for an extreme paste, so the total is ALWAYS <= viewport.
+    const plan = layoutForHeight(uiState, budgetRows, streamLines, inputBoxRows);
     const cappedStreamBuffer = tailStreamToRows(uiState.stream.buffer, liveColumns, plan.streamCap);
     return { streamLines, plan, cappedStreamBuffer };
     // The keys are EXACTLY the inputs layoutForHeight / streamWrappedRows /
@@ -524,8 +549,10 @@ function AppBody({
     uiState?.goals,
     uiState?.tokens.turn,
     uiState?.stream.panelists,
+    uiState?.chrome,
     liveColumns,
     liveRows,
+    inputBoxRows,
   ]);
 
   // Deliver exactly one captured key to the pending readKey() resolver, then exit
@@ -565,9 +592,11 @@ function AppBody({
     // fits → rendered whole. This keeps the always-visible dynamic region <= the
     // viewport so Ink never re-emits the overflow into the scrollback on repaint.
     //
-    // INPUT_ROWS_MAX reserves the InputBox's WORST-CASE rendered height (multiline/
-    // pasted composer = MAX_VISIBLE_ROWS + 2 borders); the SAME plan flows into
-    // StatusBlock so its panel plan and this stream cap agree (see layout.ts).
+    // `inputBoxRows` is the InputBox's MEASURED physical height (wrapped body +
+    // borders, reported via onMeasureRows — BUG 1), reserved by layoutForHeight so a
+    // wrapped/pasted composer can never push the dynamic region past the viewport;
+    // the SAME plan flows into StatusBlock so its panel plan and this stream cap
+    // agree (see layout.ts).
     const { streamLines, plan, cappedStreamBuffer } = liveLayout;
     return (
       <Box flexDirection="column">
@@ -586,7 +615,7 @@ function AppBody({
           color={color}
           rows={liveRows}
           streamLines={streamLines}
-          inputRows={INPUT_ROWS_MAX}
+          inputRows={inputBoxRows}
           plan={plan}
           {...(clock !== undefined ? { clock } : {})}
         />
@@ -596,6 +625,8 @@ function AppBody({
           color={color}
           isTty={isTty}
           columns={liveColumns}
+          rows={liveRows}
+          onMeasureRows={setInputBoxRows}
           info={inputInfoText}
           visible={chatActive}
           suspended={suspended || awaitingKey}
@@ -617,6 +648,7 @@ function AppBody({
         color={color}
         isTty={isTty}
         columns={liveColumns}
+        rows={liveRows}
         info={inputInfoText}
         visible={chatActive}
         suspended={suspended || awaitingKey}

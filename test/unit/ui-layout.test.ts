@@ -34,6 +34,13 @@ import {
 } from '../../src/interface/ui/index.ts';
 import { initialState } from '../../src/interface/ui/index.ts';
 import type { AgentView, GoalView, UiState } from '../../src/interface/ui/index.ts';
+import {
+  composerPhysicalRows,
+  composerShownPlan,
+  composerContentWidth,
+  INPUT_BORDER_ROWS,
+  INPUT_BODY_MAX_LOGICAL_ROWS,
+} from '../../src/interface/ui/layout.ts';
 
 // ---------------------------------------------------------------------------
 // builders
@@ -511,5 +518,106 @@ describe('layoutForHeight — cap invariant at 1/3/12 goals × short/tall termin
     // existing compact summary takes over (or hidden under extreme pressure).
     assert.ok(plan.goals.kind === 'compact' || plan.goals.kind === 'hidden');
     assert.ok(plan.plannedRows + INPUT_ROWS <= 8);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// BUG 1 — wrapped composer rows must be measured (not assumed 1 physical row per
+// shown logical row) and the full dynamic region (stream+status+input+chrome)
+// must still fit the viewport. The regression: the word-wrap feature let a long
+// logical row soft-wrap to several PHYSICAL rows, so a full composer occupied far
+// more than the old constant INPUT_ROWS_MAX(12) reserved → overflow → duplication.
+// ---------------------------------------------------------------------------
+
+describe('composerPhysicalRows — TRUE wrapped composer height (BUG 1)', () => {
+  it('a single short line is 1 body row + 2 borders', () => {
+    assert.equal(composerPhysicalRows('hi', 80), INPUT_BORDER_ROWS + 1);
+  });
+
+  it('a long logical row soft-wraps to multiple physical rows', () => {
+    const content = composerContentWidth(80); // the box wrap width at 80 cols
+    // One logical line ~2.5× the content width wraps to 3 physical rows.
+    const long = 'a'.repeat(content * 2 + 5);
+    assert.equal(composerPhysicalRows(long, 80), INPUT_BORDER_ROWS + 3);
+  });
+
+  it('measures > INPUT_ROWS_MAX(12) for 10 shown rows that each wrap ×2', () => {
+    const content = composerContentWidth(80);
+    // 10 logical rows, each ~1.5× the content width → each wraps to 2 physical rows.
+    const row = 'b'.repeat(content + 5);
+    const value = Array.from({ length: INPUT_BODY_MAX_LOGICAL_ROWS }, () => row).join('\n');
+    const measured = composerPhysicalRows(value, 80);
+    // 10 shown rows × 2 physical + 2 borders = 22 — well past the constant 12.
+    assert.equal(measured, INPUT_BODY_MAX_LOGICAL_ROWS * 2 + INPUT_BORDER_ROWS);
+    assert.ok(measured > 12, `measured ${measured} should exceed the legacy constant 12`);
+  });
+
+  it('feeding the MEASURED count to layoutForHeight keeps total dynamic <= viewport', () => {
+    const content = composerContentWidth(80);
+    const row = 'c'.repeat(content + 5); // each shown row wraps ×2
+    const value = Array.from({ length: INPUT_BODY_MAX_LOGICAL_ROWS }, () => row).join('\n');
+    const rows = 30;
+    const inputRows = composerPhysicalRows(value, 80, rows); // 22
+    const goals = [goal(), goal({ id: 'g2', label: 'Wire CI', agents: [agent(), agent({ provider: 'codex' })] })];
+    const plan = layoutForHeight(active(goals, 'x'.repeat(400), 9000), rows, 8, inputRows);
+    // The no-overflow invariant: panel + status + summary + stream + INPUT all fit.
+    assert.ok(
+      plan.plannedRows + inputRows + SAFETY_MARGIN_ROWS <= rows,
+      `plannedRows ${plan.plannedRows} + input ${inputRows} + margin > ${rows}`,
+    );
+    // The planner shrank the stream/status region to make room for the tall input.
+    assert.ok(inputRows > 12, 'this case must exercise an input taller than the old constant');
+  });
+
+  it('EXTREME paste: input alone caps to the viewport, keeps the caret/tail row, total <= viewport', () => {
+    const rows = 12;
+    // 40 logical rows, each itself wrapping ×3 → the raw wrapped body is ~120 rows,
+    // far past the 12-row viewport.
+    const content = composerContentWidth(80);
+    const fat = 'd'.repeat(content * 2 + 1); // wraps ×3
+    const value = Array.from({ length: 40 }, () => fat).join('\n');
+    const inputRows = composerPhysicalRows(value, 80, rows);
+    // The whole box (body + borders) never exceeds the viewport.
+    assert.ok(inputRows <= rows, `input ${inputRows} must be <= viewport ${rows}`);
+    // And it leaves room for the safety margin + at least the status line.
+    assert.ok(inputRows <= rows - SAFETY_MARGIN_ROWS, 'input leaves the safety margin');
+    // The shown plan keeps the LAST logical row visible (caret/tail stays on screen).
+    const planShown = composerShownPlan(value, 80, rows);
+    const allRows = value.split('\n');
+    assert.equal(planShown.shown[planShown.shown.length - 1], allRows[allRows.length - 1]);
+    // The full layout with this capped input still never exceeds the viewport.
+    const plan = layoutForHeight(active([goal()], 'p'.repeat(200), 5000), rows, 4, inputRows);
+    assert.ok(plan.plannedRows + inputRows + SAFETY_MARGIN_ROWS <= rows || plan.plannedRows <= 1);
+    assert.ok(plan.plannedRows + inputRows <= rows, `total ${plan.plannedRows + inputRows} > viewport ${rows}`);
+  });
+
+  it('composerShownPlan caps at MAX_VISIBLE_ROWS logical rows when no viewport cap', () => {
+    const value = Array.from({ length: 25 }, (_, i) => `line ${i}`).join('\n');
+    const plan = composerShownPlan(value, 80);
+    assert.equal(plan.shown.length, INPUT_BODY_MAX_LOGICAL_ROWS);
+    // Tail-anchored: the last shown row is the buffer's last logical row.
+    assert.equal(plan.shown[plan.shown.length - 1], 'line 24');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// BUG 3 — the chrome[] live-frame region rendered OUTSIDE the height budget. The
+// fix subtracts chrome.length from the rows budget at the App render boundary; here
+// we prove the invariant holds when chrome and an active turn coexist by passing the
+// reduced budget into the planner (the exact wiring App does).
+// ---------------------------------------------------------------------------
+
+describe('chrome[] is inside the height budget (BUG 3)', () => {
+  it('subtracting chrome.length keeps chrome + dynamic + input <= viewport', () => {
+    const rows = 24;
+    const chromeRows = 18; // a tall lingering menu frame
+    const inputRows = INPUT_ROWS;
+    const goals = [goal(), goal({ id: 'g2', label: 'b' }), goal({ id: 'g3', label: 'c' })];
+    // App computes the plan against rows MINUS chrome (max-floored at 2 like App).
+    const budgetRows = Math.max(2, rows - chromeRows);
+    const plan = layoutForHeight(active(goals, 'x'.repeat(300), 4000), budgetRows, 6, inputRows);
+    // The full on-screen total — chrome + the planned dynamic region + input — fits.
+    const total = chromeRows + plan.plannedRows + inputRows;
+    assert.ok(total <= rows, `chrome ${chromeRows} + planned ${plan.plannedRows} + input ${inputRows} = ${total} > ${rows}`);
   });
 });

@@ -34,6 +34,7 @@ import {
   type Verbosity,
 } from '../../src/interface/ui/index.ts';
 import type { CoreEvent } from '../../src/core/types.ts';
+import { PROSE_BUFFER_CAP } from '../../src/interface/ui/state.ts';
 
 // Touch every re-exported type so the barrel's full surface is type-checked here
 // (the value re-exports are exercised by the suites below).
@@ -154,7 +155,82 @@ describe('ui reduce — prose accumulation + tier flush', () => {
   });
 });
 
-describe('ui reduce — turn/final cancel drops the uncommitted partial answer (BUG 2)', () => {
+describe('ui reduce — live stream.buffer is capped, committed prose stays COMPLETE (BUG 2)', () => {
+  // A very long single turn must not grow stream.buffer unboundedly (App re-walks
+  // it on every coalesced flush — O(buffer) per tick). Only the TAIL is displayed,
+  // so the live buffer is capped to PROSE_BUFFER_CAP; the FULL prose lives in
+  // proseFull and is what gets committed — so the transcript stays the whole answer.
+  it('caps stream.buffer to PROSE_BUFFER_CAP within a tier', () => {
+    // Stream far more than the cap, in chunks.
+    const chunk = 'x'.repeat(4096);
+    const actions: Action[] = [];
+    for (let i = 0; i < 10; i += 1) actions.push({ type: 'stream/prose', text: chunk });
+    const s = run(actions);
+    // 40KB streamed, but the live display buffer is capped.
+    assert.ok(s.stream.buffer.length <= PROSE_BUFFER_CAP, `buffer ${s.stream.buffer.length} > cap ${PROSE_BUFFER_CAP}`);
+    // The full prose is retained out of band for the commit.
+    assert.equal(s.stream.proseFull.length, chunk.length * 10);
+    // The displayed buffer is the TAIL of the full prose (terminal-scroll feel).
+    assert.equal(s.stream.buffer, s.stream.proseFull.slice(s.stream.proseFull.length - s.stream.buffer.length));
+  });
+
+  it('flush-tier commits the FULL prose even when the live buffer was capped', () => {
+    const chunk = 'y'.repeat(5000);
+    const actions: Action[] = [];
+    for (let i = 0; i < 8; i += 1) actions.push({ type: 'stream/prose', text: chunk });
+    actions.push({
+      type: 'stream/flush-tier',
+      tier: 'ic',
+      success: true,
+      confidence: 0.9,
+      inputTokens: 1,
+      outputTokens: 1,
+      durationMs: 1,
+      panelCandidate: false,
+      verbosity: 'normal',
+    });
+    const s = run(actions);
+    // The committed transcript line is the COMPLETE 40KB prose, not the capped tail.
+    assert.equal(s.committed.length, 1);
+    assert.equal(s.committed[0]?.kind, 'prose');
+    assert.equal(s.committed[0]?.text.length, chunk.length * 8);
+    assert.equal(s.committed[0]?.text, chunk.repeat(8));
+    // Both the live buffer and the full accumulator reset at the boundary.
+    assert.equal(s.stream.buffer, '');
+    assert.equal(s.stream.proseFull, '');
+  });
+
+  it('turn/final commits the FULL prose even when the live buffer was capped', () => {
+    const chunk = 'z'.repeat(6000);
+    const actions: Action[] = [];
+    for (let i = 0; i < 6; i += 1) actions.push({ type: 'stream/prose', text: chunk });
+    actions.push({
+      type: 'turn/final',
+      success: true,
+      tier: 'ic',
+      attempts: 1,
+      sessionId: 'sess-1',
+      verbosity: 'normal',
+    });
+    const s = run(actions);
+    // The committed prose line carries the COMPLETE 36KB answer.
+    const prose = s.committed.find((l) => l.kind === 'prose');
+    assert.ok(prose !== undefined, 'prose must be committed at final');
+    assert.equal(prose?.text.length, chunk.length * 6);
+    assert.equal(prose?.text, chunk.repeat(6));
+  });
+
+  it('a small turn under the cap is unchanged: buffer === proseFull', () => {
+    const s = run([
+      { type: 'stream/prose', text: 'Hello ' },
+      { type: 'stream/prose', text: 'world.' },
+    ]);
+    assert.equal(s.stream.buffer, 'Hello world.');
+    assert.equal(s.stream.proseFull, 'Hello world.');
+  });
+});
+
+describe('ui reduce — turn/final cancel drops the uncommitted partial answer (BUG 2 cancel)', () => {
   // A mid-stream ESC: prose streamed into stream.buffer but NO tier-done
   // committed it. On a canceled final the reducer must DROP that partial buffer
   // (never commit it) and show only "■ Cancelled" — screen == store == replay,

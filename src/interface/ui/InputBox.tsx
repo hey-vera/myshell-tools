@@ -41,6 +41,7 @@ import React, { useEffect, useState } from 'react';
 import { Box, Text, useInput, useStdin } from 'ink';
 import { dim, cyan, blue } from '../../ui/theme.js';
 import { truncateToWidth, visibleLength } from '../../ui/tui.js';
+import { composerShownPlan, INPUT_BORDER_ROWS } from './layout.js';
 import type { InkStdinControl } from './App.js';
 
 /** Below this, fall back to the plain caret surface. */
@@ -53,14 +54,10 @@ const MENU_HINT = 'press a key';
 const INFO_FALLBACK = 'Mode Balanced · /goal · /help · /back';
 /** Gutter under the `❯ ` caret for continuation rows of a multiline buffer. */
 const CONT_GUTTER = '… ';
-/**
- * Cap on the number of buffer rows the box renders at once so a huge paste can't
- * blow past the viewport. When the buffer has more rows than this we show the
- * LAST N rows (keeping the caret row visible), mirroring a terminal editor that
- * scrolls. The caret always falls within the shown window because the cursor is
- * at the very end of a fresh paste (and edits keep it on a visible row).
- */
-const MAX_VISIBLE_ROWS = 10;
+// The cap on how many LOGICAL buffer rows the box shows at once (so a huge paste
+// can't blow past the viewport) now lives in layout.ts as
+// INPUT_BODY_MAX_LOGICAL_ROWS and is applied — together with the wrapped-physical
+// viewport cap — by composerShownPlan(), the SAME helper the height budget uses.
 
 /**
  * The imperative editor handle the LineReader/menu side uses to read in-progress
@@ -181,6 +178,23 @@ export interface InputBoxProps {
    * called while `readPending()` is true. Optional. See App.readKey()/KeyCapture.
    */
   readonly onReadKey?: ((input: string, key: KeyCaptureFlagsLike) => void) | undefined;
+  /**
+   * The terminal HEIGHT (rows). When the composer's wrapped physical height would
+   * alone exceed the viewport (an extreme multiline paste of very long lines), the
+   * editor caps its visible PHYSICAL rows to what fits and scrolls to the buffer
+   * TAIL so the caret/last row stays visible. Omitted → no viewport cap (the box
+   * grows freely, as before). Threaded from App's live rows. Optional.
+   */
+  readonly rows?: number | undefined;
+  /**
+   * Report the composer's TRUE rendered PHYSICAL row count (wrapped body + the 2
+   * borders) up to the App, which feeds it into the height-budget planner so the
+   * dynamic region (panel + stream + this box) never exceeds the viewport. Called
+   * whenever the measured height changes (on edits / width / rows changes). The
+   * value equals {@link composerPhysicalRows}; App defaults to the single-line
+   * {@link INPUT_ROWS} before the first measurement. Optional (tests may omit it).
+   */
+  readonly onMeasureRows?: ((rows: number) => void) | undefined;
 }
 
 /** The slice of Ink's `key` object {@link InputBoxProps.onReadKey} forwards (a
@@ -275,6 +289,8 @@ export function InputBox({
   onEscape,
   readPending,
   onReadKey,
+  rows,
+  onMeasureRows,
 }: InputBoxProps): React.ReactElement {
   const { setRawMode, isRawModeSupported } = useStdin();
   const [value, setValue] = useState('');
@@ -504,6 +520,32 @@ export function InputBox({
   // Rendering
   // -------------------------------------------------------------------------
 
+  // The shown-rows plan (the SAME pure helper the height budget uses) — computed
+  // unconditionally (before any early return) so the measurement effect below runs
+  // on EVERY render path and the React hook order never changes.
+  const shownPlan = composerShownPlan(value, columns ?? 80, rows);
+  const firstShown = shownPlan.firstShown;
+  const shownRows = shownPlan.shown;
+  const canBox = isTty && color && (columns ?? 80) >= INPUT_BOX_MIN_COLUMNS;
+
+  // The TRUE rendered PHYSICAL height to report up to App's height-budget planner
+  // (BUG 1): when hidden (menu prompt) the box is ONE plain row; the bordered box
+  // draws `physical` wrapped body rows between its 2 rule rows; the `⏎ queued (N)`
+  // indicator collapses the body to ONE row; the plain (non-box) fallback has NO
+  // borders. App defaults to INPUT_ROWS before the first measurement. This effect is
+  // placed ABOVE all early returns so the hook order is identical on every path
+  // (React forbids a changing hook count between renders).
+  const measuredRows = !visible
+    ? 1
+    : queued > 0
+      ? 1 + INPUT_BORDER_ROWS
+      : canBox
+        ? shownPlan.physical + INPUT_BORDER_ROWS
+        : shownPlan.physical;
+  useEffect(() => {
+    onMeasureRows?.(measuredRows);
+  }, [onMeasureRows, measuredRows]);
+
   // Composer hidden (NOT a chat conversation: menu / auth-login / settings). Render
   // a MINIMAL single-line prompt affordance — a dim `❯ press a key` — so the user
   // sees input is awaited (the menu is single-key: you press one bracketed key, you
@@ -525,20 +567,12 @@ export function InputBox({
     );
   }
 
-  // Split the edit buffer into its display rows. The caret row/col is derived
-  // from the flat cursor so movement lands on the correct row. When the buffer
-  // has more rows than the height cap, show the LAST MAX_VISIBLE_ROWS rows so a
-  // huge paste can't blow past the viewport (terminal-editor scroll feel); the
-  // caret sits at the buffer end after a paste, so it stays within the window.
-  const allRows = value.split('\n');
-  const overflow = allRows.length > MAX_VISIBLE_ROWS;
-  const firstShown = overflow ? allRows.length - MAX_VISIBLE_ROWS : 0;
-  const shownRows = allRows.slice(firstShown);
-
-  // Plain caret for non-TTY / NO_COLOR / narrow terminals (mirrors
-  // render.ts canRenderInputBox → `❯ value`). Multiline buffers render the
-  // first row after the caret and each continuation row under a gutter.
-  const canBox = isTty && color && (columns ?? 80) >= INPUT_BOX_MIN_COLUMNS;
+  // The display rows (shownPlan) and `canBox` were computed above (before the early
+  // returns) so the measurement effect's hook order is stable. The caret row/col is
+  // derived from the flat cursor so movement lands on the correct row; the tail
+  // logical rows shown — and their wrapped physical height — fit the viewport, so a
+  // huge/long paste can't blow past it AND the reported height matches the planner's
+  // reservation exactly.
   if (!canBox) {
     return (
       <Box flexDirection="column">
@@ -554,6 +588,9 @@ export function InputBox({
   const width = composerWidth(columns);
   const inputWidth = Math.max(1, width - 2);
   const rules = composerRules(width, info ?? INFO_FALLBACK, color);
+  // NOTE: composerContentWidth(columns) === inputWidth - 2 — the SAME wrap width
+  // used by composerShownPlan above, so the rendered physical height equals the
+  // measured (reported) height to the row.
 
   return (
     <Box flexDirection="column">

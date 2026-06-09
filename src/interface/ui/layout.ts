@@ -97,21 +97,108 @@ export function tailStreamToRows(buffer: string, columns: number, cap: number): 
  *  border. The single-line default; a multiline/pasted composer is taller. */
 export const INPUT_ROWS = 3;
 /**
- * WORST-CASE rows the pinned <InputBox> can occupy: its top + bottom border (2)
- * plus the editor's own MAX_VISIBLE_ROWS body cap (InputBox.tsx clamps a huge
- * paste to its last 10 visible rows). The layout budget reserves this so a tall
- * composer + panel + stream can never exceed the viewport and re-trigger the
- * Ink scrollback-duplication bug.
- *
- * Tradeoff (documented): we reserve the worst case rather than the composer's
- * LIVE height. The alternative — lifting the InputBox's private edit-buffer row
- * count up to App — would couple a per-keystroke child setState into the parent
- * render on every edit, which is materially more invasive than this constant and
- * buys only a few extra stream rows while the composer is short. Over-reserving
- * is the SAFE direction (it only shrinks the live <Stream> tail a little); under-
- * reserving is the bug we are fixing. Keep INPUT_ROWS_MAX = MAX_VISIBLE_ROWS + 2.
+ * The composer body's MAX_VISIBLE_ROWS cap (InputBox.tsx clamps a huge paste to
+ * its last N *logical* rows). Kept here so the layout budget and the editor agree
+ * on the same constant. NOTE: each shown logical row may SOFT-WRAP to several
+ * PHYSICAL rows (the word-wrap feature), so this is NOT the worst-case physical
+ * height — see {@link composerPhysicalRows}, which measures the TRUE wrapped count.
  */
-export const INPUT_ROWS_MAX = 12;
+export const INPUT_BODY_MAX_LOGICAL_ROWS = 10;
+/** The 2 rounded-border rows of the composer (top rule + bottom rule). */
+export const INPUT_BORDER_ROWS = 2;
+// ---------------------------------------------------------------------------
+// composerPhysicalRows — the TRUE wrapped physical height of the <InputBox>
+// ---------------------------------------------------------------------------
+
+/**
+ * The content width of the composer's word-wrapping <Box> at a given terminal
+ * `columns`, mirroring InputBox.tsx EXACTLY: the box is `composerWidth - 2` wide
+ * (`composerWidth = max(32, columns)`), and the per-row `<Box width={inputWidth-2}>`
+ * that wraps the text is 2 columns narrower still (the caret/gutter sits in a
+ * fixed 2-col sibling). So the wrap width is `max(1, max(32, columns) - 4)`. PURE.
+ */
+export function composerContentWidth(columns: number): number {
+  const composerWidth = Math.max(32, Math.floor(columns));
+  const inputWidth = Math.max(1, composerWidth - 2);
+  return Math.max(1, inputWidth - 2);
+}
+
+/**
+ * The TRUE number of PHYSICAL terminal rows the pinned <InputBox> composer will
+ * occupy for edit buffer `value` at terminal `columns`, accounting for the
+ * word-wrap feature (each shown logical row soft-wraps to `ceil(width / content)`
+ * physical rows) plus the 2 border rows. This is the value the height budget must
+ * reserve: the old constant (MAX_VISIBLE_ROWS + 2 = 12) assumed 1 physical row per
+ * shown logical row and so UNDER-reserved a wrapped/pasted composer → the
+ * scrollback-duplication overflow.
+ *
+ * The editor shows at most {@link INPUT_BODY_MAX_LOGICAL_ROWS} LOGICAL rows (its
+ * tail, keeping the caret visible). When `viewportRows` is supplied and even the
+ * shown wrapped body would not fit the viewport (an extreme paste of very long
+ * lines), the PHYSICAL body is further capped to `viewportRows - borders -
+ * SAFETY_MARGIN_ROWS` so the input ALONE can never exceed the viewport — the
+ * editor scrolls to its TAIL (the caret/last row stays visible). Always returns
+ * at least {@link INPUT_ROWS} (one caret row + 2 borders). PURE.
+ *
+ * The companion {@link composerShownPlan} returns the SAME physical body count
+ * (minus borders) plus the exact logical rows InputBox renders, so the measured
+ * budget count and the rendered height are identical to the row.
+ */
+export function composerPhysicalRows(value: string, columns: number, viewportRows?: number): number {
+  return INPUT_BORDER_ROWS + composerShownPlan(value, columns, viewportRows).physical;
+}
+
+/**
+ * Plan exactly which logical rows the composer SHOWS (its tail) and the PHYSICAL
+ * row count they wrap to, so InputBox rendering and the height budget agree to the
+ * row. Selection order:
+ *   1. take at most {@link INPUT_BODY_MAX_LOGICAL_ROWS} LOGICAL rows from the END;
+ *   2. if a `viewportRows` cap is given and the wrapped PHYSICAL body still would
+ *      exceed `viewportRows - borders - margin`, drop logical rows from the FRONT
+ *      of the shown window until the physical body fits (always keep the LAST row,
+ *      so the caret/tail stays visible — an extreme paste scrolls to its end).
+ *
+ * Returns the `firstShown` absolute index (so the caret-on-row-0 logic survives),
+ * the shown logical lines, and their total `physical` (wrapped) row count. PURE.
+ */
+export function composerShownPlan(
+  value: string,
+  columns: number,
+  viewportRows?: number,
+): { readonly firstShown: number; readonly shown: readonly string[]; readonly physical: number } {
+  const content = composerContentWidth(columns);
+  const logical = value.split('\n');
+  const rowPhysical = (line: string): number => Math.max(1, Math.ceil(visibleLength(line) / content));
+  // Step 1: the last MAX_VISIBLE_ROWS logical rows.
+  let firstShown =
+    logical.length > INPUT_BODY_MAX_LOGICAL_ROWS ? logical.length - INPUT_BODY_MAX_LOGICAL_ROWS : 0;
+  // Step 2: tighten to the physical viewport cap (keep the caret/last row).
+  if (viewportRows !== undefined) {
+    const maxBody = Math.max(1, Math.floor(viewportRows) - INPUT_BORDER_ROWS - SAFETY_MARGIN_ROWS);
+    // Drop logical rows from the front of the window until the physical body fits.
+    let physical = 0;
+    for (let i = firstShown; i < logical.length; i += 1) physical += rowPhysical(logical[i] ?? '');
+    while (firstShown < logical.length - 1 && physical > maxBody) {
+      physical -= rowPhysical(logical[firstShown] ?? '');
+      firstShown += 1;
+    }
+    // The single surviving (last) row may itself wrap taller than maxBody (one very
+    // long pasted line). That residual is accepted: Ink wraps it and the box grows,
+    // but it is the unavoidable minimum (we always keep the caret row). The budget
+    // floor below clamps the REPORTED physical count to maxBody so the planner still
+    // never plans past the viewport; the few extra wrapped rows of a single giant
+    // line are the documented over-spill cost of always showing the caret.
+  }
+  const shown = logical.slice(firstShown);
+  let physical = 0;
+  for (const line of shown) physical += rowPhysical(line);
+  physical = Math.max(1, physical);
+  if (viewportRows !== undefined) {
+    const maxBody = Math.max(1, Math.floor(viewportRows) - INPUT_BORDER_ROWS - SAFETY_MARGIN_ROWS);
+    physical = Math.min(physical, maxBody);
+  }
+  return { firstShown, shown, physical };
+}
 /** Rows the spinner / "Waiting on N models" status line occupies. */
 export const STATUS_LINE_ROWS = 1;
 /**
@@ -428,9 +515,9 @@ export function compactGoalsSummary(
  * @param streamLines - how many lines the live <Stream> buffer currently has
  *   (the consumer passes the wrapped line count; defaults to a 1-line estimate).
  * @param inputRows - rows the pinned <InputBox> will actually occupy this frame
- *   (the consumer passes the composer's rendered height, e.g. {@link INPUT_ROWS_MAX}
- *   for a multiline/pasted buffer). Defaults to {@link INPUT_ROWS} so existing
- *   callers/tests keep the single-line budget unchanged.
+ *   (the consumer passes the composer's MEASURED wrapped physical height via
+ *   {@link composerPhysicalRows} for a multiline/pasted buffer). Defaults to
+ *   {@link INPUT_ROWS} so existing callers/tests keep the single-line budget.
  */
 export function layoutForHeight(
   state: UiState,

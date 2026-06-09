@@ -6,6 +6,25 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+## [3.57.0] - 2026-06-09
+
+### Fixed
+- **No more duplicated/garbled blocks when the input box grows** — the word-wrap added
+  in 3.53.0 let the composer wrap to more physical rows than the layout planner had
+  reserved, which could push the live region past the viewport and re-trigger the
+  scrollback-duplication glitch the planner exists to prevent. The planner now measures
+  the composer's TRUE wrapped height and shrinks the stream/status region to fit, so the
+  dynamic region never overflows; an extreme paste scrolls the composer to keep the
+  caret visible. (Residual edge: a single unbroken line longer than the whole viewport
+  can still spill a couple rows — caret stays visible by design.)
+- **Long single turns stay snappy** — the live prose buffer grew without bound within a
+  turn and was re-wrapped in full on every ~40ms flush. It's now capped to the visible
+  tail (the complete prose is still committed to the transcript intact), removing the
+  latency/memory creep on very long replies.
+- **Menu chrome can't overflow into an active turn** — the menu's live frame is now
+  subtracted from the layout budget so it can never coexist with a painting turn and
+  blow the viewport.
+
 ## [3.56.0] - 2026-06-09
 
 ### Fixed
