@@ -2259,6 +2259,16 @@ export async function runChatLoop(
       // (and we belt-and-suspender catch here too) so a verification can never crash
       // the goal loop and can never fake-pass. `acceptance` (the goal's goalAcceptance,
       // when set) orients the diff-scoped task. Returns the honest VerifyOutcome.
+      // The per-to-do / goal-level verification. HARD-BOUNDED so it can NEVER hang the
+      // manager cycle: the test runner is given an explicit timeout, AND the whole
+      // verifyStage call is raced against a wall-clock cap. A hanging test command
+      // (e.g. one that spawns sub-processes the runner's own timeout can't fully tear
+      // down) would otherwise stall the cycle forever (observed live: a goal stuck
+      // `running`, no verdict, 360s+). On the cap we degrade to an HONEST `unverified`
+      // ("verification timed out") and the cycle moves on — never a fabricated pass,
+      // never a hang. (The losing test process is abandoned; it's reaped on CLI exit.)
+      const VERIFY_TEST_TIMEOUT_MS = Math.min(ctx.timeoutMs, 120_000);
+      const VERIFY_HARD_CAP_MS = Math.min(ctx.timeoutMs, 150_000);
       const runGoalVerification = async (
         acceptance: string | undefined,
       ): Promise<import('../core/verify.js').VerifyOutcome> => {
@@ -2267,19 +2277,29 @@ export async function runChatLoop(
           if (mutableCtx.env.claude.authenticated) authed.push('claude');
           if (mutableCtx.env.codex.authenticated) authed.push('codex');
           if (mutableCtx.env.opencode.authenticated) authed.push('opencode');
-          const outcome = await verifyStage({
+          let capTimer: ReturnType<typeof setTimeout> | undefined;
+          const capped = new Promise<import('../core/verify.js').VerifyOutcome>((resolve) => {
+            capTimer = setTimeout(
+              () => resolve({ verified: 'unverified', changedFiles: 0, note: 'verification timed out' }),
+              VERIFY_HARD_CAP_MS,
+            );
+          });
+          const verify = verifyStage({
             output: '',
             provider: authed[0] ?? 'claude',
             tier: 'worker',
             port: nodeVerifyPort,
             level: 'tests', // tests-first only — the honest free signal (no critic call)
             cwd: ctx.cwd,
+            testTimeoutMs: VERIFY_TEST_TIMEOUT_MS, // bound the test runner itself
             ...(acceptance !== undefined && acceptance.length > 0 ? { task: acceptance } : {}),
             available: authed,
-          });
-          // verifyStage returns undefined only when unarmed (no port/level/cwd); here
-          // it is always armed, but be defensive — an absent outcome ⇒ honest unverified.
-          return outcome ?? { verified: 'unverified', changedFiles: 0, note: 'verification did not run' };
+          }).then((o) => o ?? { verified: 'unverified' as const, changedFiles: 0, note: 'verification did not run' });
+          // Race: whichever settles first wins; clear the cap timer either way so it
+          // can't keep the event loop alive.
+          const outcome = await Promise.race([verify, capped]);
+          if (capTimer !== undefined) clearTimeout(capTimer);
+          return outcome;
         } catch {
           return { verified: 'unverified', changedFiles: 0, note: 'verification could not complete' };
         }

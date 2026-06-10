@@ -6,6 +6,19 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+## [3.77.0] - 2026-06-10
+
+### Fixed (the manager cycle can never hang on verification)
+- **A goal can no longer get stuck `running` forever.** Live end-to-end testing found
+  the manager cycle could hang on the verify step: a test command that spawns
+  sub-processes can outlive the test runner's own timeout (the runner kills its direct
+  child, but grandchildren holding the output pipe keep the call from resolving), which
+  stalled the cycle indefinitely — no verdict, the goal stuck `running`. Verification is
+  now hard-bounded: the test runner is given an explicit timeout AND the whole verify
+  call is raced against a wall-clock cap. On the cap it degrades to an honest
+  `unverified` ("verification timed out") and the cycle moves on — never a fabricated
+  pass, never a hang.
+
 ## [3.76.0] - 2026-06-10
 
 ### Added (the first plan emits structure too — not just the re-plan)
