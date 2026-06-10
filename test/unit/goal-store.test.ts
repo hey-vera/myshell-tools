@@ -177,6 +177,88 @@ describe('goal-store — CRUD round-trip', () => {
     assert.equal((await stat(itemPath)).mode & 0o777, 0o600);
   });
 
+  it('setRoadmapItemVerdict persists EXACTLY the passed verdict, keyed by itemId (atomic, bumps lastTouched)', async () => {
+    const g = await store.create({
+      title: 'manager cycle',
+      roadmap: [
+        { id: 'r1', text: 'one', status: 'pending' },
+        { id: 'r2', text: 'two', status: 'pending' },
+      ],
+    });
+    assert.equal(g.roadmap[0]?.verdict, undefined);
+    clock.setIso('2026-06-08T00:00:00.000Z');
+    const after = await store.setRoadmapItemVerdict(g.id, 'r1', {
+      state: 'passing',
+      receipt: '✓ tests passing (npm test, 2100ms)',
+      at: '2026-06-08T00:00:00.000Z',
+      changedPaths: ['src/foo.ts'],
+    });
+    assert.equal(after?.roadmap[0]?.verdict?.state, 'passing');
+    assert.equal(after?.roadmap[0]?.verdict?.receipt, '✓ tests passing (npm test, 2100ms)');
+    assert.deepEqual(after?.roadmap[0]?.verdict?.changedPaths, ['src/foo.ts']);
+    // r2 is untouched (keyed by itemId, not a blanket write).
+    assert.equal(after?.roadmap[1]?.verdict, undefined);
+    assert.equal(after?.lastTouched, '2026-06-08T00:00:00.000Z');
+    // Survives the round-trip to disk.
+    const reloaded = await store.get(g.id);
+    assert.equal(reloaded?.roadmap[0]?.verdict?.state, 'passing');
+  });
+
+  it('setRoadmapItemVerdict records a failing/unverified verdict verbatim — never green-washed', async () => {
+    const g = await store.create({
+      title: 'wip',
+      roadmap: [{ id: 'r1', text: 'one', status: 'pending' }],
+    });
+    const failing = await store.setRoadmapItemVerdict(g.id, 'r1', {
+      state: 'failing',
+      receipt: '✗ tests failing',
+      at: '2026-06-08T00:00:00.000Z',
+    });
+    assert.equal(failing?.roadmap[0]?.verdict?.state, 'failing');
+    const unver = await store.setRoadmapItemVerdict(g.id, 'r1', {
+      state: 'unverified',
+      receipt: '⚠ no code change to verify',
+      at: '2026-06-08T00:00:00.000Z',
+    });
+    assert.equal(unver?.roadmap[0]?.verdict?.state, 'unverified');
+  });
+
+  it('setRoadmapItemVerdict returns null for an unknown goal id or unknown itemId', async () => {
+    const g = await store.create({
+      title: 't',
+      roadmap: [{ id: 'r1', text: 'one', status: 'pending' }],
+    });
+    assert.equal(
+      await store.setRoadmapItemVerdict('goal_nope', 'r1', {
+        state: 'passing',
+        receipt: 'x',
+        at: '2026-06-08T00:00:00.000Z',
+      }),
+      null,
+    );
+    assert.equal(
+      await store.setRoadmapItemVerdict(g.id, 'no-such-item', {
+        state: 'passing',
+        receipt: 'x',
+        at: '2026-06-08T00:00:00.000Z',
+      }),
+      null,
+    );
+  });
+
+  it('setRoadmapItemVerdict drops a malformed verdict state via capRoadmapItem (never fabricated green)', async () => {
+    const g = await store.create({
+      title: 'guard',
+      roadmap: [{ id: 'r1', text: 'one', status: 'pending' }],
+    });
+    const after = await store.setRoadmapItemVerdict(g.id, 'r1', {
+      state: 'totally-bogus' as unknown as 'passing',
+      receipt: 'x',
+      at: '2026-06-08T00:00:00.000Z',
+    });
+    assert.equal(after?.roadmap[0]?.verdict, undefined);
+  });
+
   it('setRoadmapItemStatus checks off one to-do (evidence-backed, never inferred)', async () => {
     const g = await store.create({
       title: 't',

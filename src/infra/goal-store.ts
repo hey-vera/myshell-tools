@@ -47,7 +47,12 @@ import {
   type GoalState,
   type GoalVerdict,
 } from '../core/goal-todo.js';
-import { capRoadmapItem, type RoadmapItem, type RoadmapStatus } from '../core/work-contract.js';
+import {
+  capRoadmapItem,
+  type RoadmapItem,
+  type RoadmapItemVerdict,
+  type RoadmapStatus,
+} from '../core/work-contract.js';
 
 // Re-export the two-scope helpers so callers share ONE definition with the
 // memory store (the vision doc's "reuse verbatim" — not a second copy).
@@ -264,6 +269,26 @@ export interface GoalStore {
    */
   setGoalVerdict(id: string, verdict: GoalVerdict): Promise<Goal | null>;
   /**
+   * Record the evidence-backed verdict for ONE to-do, keyed by RoadmapItem.id
+   * (never array index). Bumps `lastTouched`. Returns the updated goal, or null
+   * if id/itemId is unknown.
+   *
+   * HARD anti-fabrication rule (the honesty boundary is sacred): this is the ONLY
+   * write path for a RoadmapItem's `verdict`, and the value persisted is EXACTLY
+   * what the caller passes — a verdict the caller computed from a REAL
+   * {@link VerifyOutcome} (a real git-diff + the project's own test run). It
+   * mirrors setGoalVerdict exactly one level down: `setRoadmapItemStatus`,
+   * `updateRoadmapItem`, `addRoadmapItem`, and `reorderRoadmap` all deliberately
+   * have NO per-item verdict-write path, so a model's claim can never reach this
+   * field except as a real, evidence-backed verdict the verify phase produced.
+   * capRoadmapItem caps/omits an invalid state (never green-washed) on round-trip.
+   */
+  setRoadmapItemVerdict(
+    id: string,
+    itemId: string,
+    verdict: RoadmapItemVerdict,
+  ): Promise<Goal | null>;
+  /**
    * Set the status of roadmap item #index (0-based) of a goal. Bumps
    * `lastTouched`. Returns the updated goal, or null if id/index is unknown.
    * Honesty: callers mark `done` only on real evidence (a manual user check-off
@@ -416,6 +441,28 @@ export function createFileGoalStore(opts: {
         // malformed verdict can never green-wash — the honesty boundary survives the
         // round-trip. lastTouched bumps so the board reflects the verdict immediately.
         const updated = capGoal({ ...target, goalVerdict: verdict, lastTouched: clock.isoNow() });
+        await persistGoal(home, updated);
+        await writeIndex(home, goals.map((g) => (g.id === id ? updated : g)));
+        return updated;
+      });
+    },
+
+    async setRoadmapItemVerdict(id, itemId, verdict): Promise<Goal | null> {
+      if (!isValidId(id)) return null;
+      await ensureDirs(home);
+      return withLock(getIndexLockPath(home), async () => {
+        const goals = await readIndexLocked(home, onWarning);
+        const target = goals.find((g) => g.id === id);
+        if (target === undefined) return null;
+        if (!target.roadmap.some((it) => it.id === itemId)) return null;
+        // The ONLY per-item verdict write path. The value is EXACTLY the caller's
+        // (computed from a real VerifyOutcome); capRoadmapItem omits an invalid
+        // state so a malformed verdict can never green-wash — the honesty boundary
+        // survives the round-trip. Keyed by RoadmapItem.id, never array index.
+        const nextRoadmap = target.roadmap.map((it) =>
+          it.id === itemId ? { ...it, verdict } : it,
+        );
+        const updated = capGoal({ ...target, roadmap: nextRoadmap, lastTouched: clock.isoNow() });
         await persistGoal(home, updated);
         await writeIndex(home, goals.map((g) => (g.id === id ? updated : g)));
         return updated;

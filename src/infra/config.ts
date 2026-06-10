@@ -338,6 +338,21 @@ export interface AppConfig {
    */
   experimentalTrulyComplete?: boolean;
   /**
+   * EXPERIMENTAL PER-GOAL MANAGER CYCLE (default off). When true (or with
+   * `MYSHELL_MANAGER` truthy in the environment) AND an activated goal has a real,
+   * non-empty roadmap, runGoalLoop DRIVES execution by the goal's to-do list
+   * (elite-partner Part 7, Shape C): pick the next actionable to-do → run ONE
+   * worker turn scoped to it → run a REAL tests-only verification → record the
+   * honest per-item verdict (evidence-only) → mark it done only when the verdict
+   * is passing/reviewed, else spawn a bounded fix-it to-do. When every item is
+   * verified-done the EXISTING goal-level verified-done gate decides whether the
+   * goal can settle `done`. Bounded by the turn ceiling + a fix-it cap; fully
+   * fail-soft; never fabricates a pass. When this is absent/false (or the goal has
+   * no roadmap) runGoalLoop is byte-for-byte today's free turn loop. See
+   * src/interface/ui/manager-flag.ts / src/core/goal-manager.ts.
+   */
+  experimentalManager?: boolean;
+  /**
    * Per-user "first-touch explainer shown" flags (whole-tool-finish-5.5.md §0.1).
    * Absent → nothing shown yet (each surface explains itself once on first
    * encounter). Each key flips to true the first time that surface is met.

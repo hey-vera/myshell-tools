@@ -6,7 +6,20 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
-## [3.65.0] - 2026-06-10
+## [3.66.0] - 2026-06-10
+
+### Added (elite planning-partner build — the per-goal manager cycle)
+- **An activated goal now executes its own to-do list to verified-done** (behind
+  `MYSHELL_MANAGER`, default off). When a goal with a to-do list is activated, the
+  partner drives it like a manager: runs each to-do as a worker, **verifies each one with
+  real evidence** (the test/build engine's honest 4-state), marks it done only when
+  passing/reviewed, and **spawns a fix-it to-do** (bounded) when it isn't — until every
+  to-do is verified and the goal-level acceptance check passes. The board shows live
+  per-to-do progress. Bounded (hard iteration + fix-it caps — never loops forever),
+  fail-soft (a verify error → unverified → not done, never a fake pass), honest receipts
+  throughout. Flag-off / goals without a to-do list → today's behavior, byte-identical.
+
+
 
 ### Added (elite planning-partner build — verified-done, the anti-fabrication backbone)
 - **A goal can no longer be "done" just because the model said so** (behind

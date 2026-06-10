@@ -24,7 +24,14 @@ import type { Clock, CoreEvent, LedgerWriter, OrchestrateDeps, SessionEntry, Ses
 import { buildGoalTask, parseGoalSignal, parseGoalContinueText, decideGoalNext, formatGoalProgress, DEFAULT_MAX_GOAL_ITERATIONS, stripTrailingGoalConfidenceEnvelope, formConciseGoalLabel } from '../core/goal.js';
 import type { GoalCeilings } from '../core/goal.js';
 import { appendCheckpointFromContinue, capContract } from '../core/work-contract.js';
-import type { RoadmapItem } from '../core/work-contract.js';
+import type { RoadmapItem, RoadmapItemVerdict } from '../core/work-contract.js';
+import { managerCycleEnabled } from './ui/manager-flag.js';
+import {
+  pickNextTodo,
+  buildTodoTask,
+  managerCycleComplete,
+  fixItTodo,
+} from '../core/goal-manager.js';
 import { deriveWorkStateFromHistory, renderWorkStateBlock } from '../core/work-state.js';
 import { isKeepGoingOffer } from '../core/questions.js';
 import { decideAutonomyOffer } from '../core/autonomy.js';
@@ -48,6 +55,7 @@ import { isPushBackQuestionSet, classifyPushBackAnswer } from '../core/brain.js'
 import { renderTastePlaybook, isImmediateRephrase, type TasteSignal } from '../core/taste.js';
 import { createFileGoalStore } from '../infra/goal-store.js';
 import { goalGlyph, roadmapProgress, goalVerdictTag, goalVerdictFromOutcome, isGoalVerifiedDone } from '../core/goal-todo.js';
+import { buildVerifyReceipt } from '../core/verify.js';
 import type { Goal } from '../core/goal-todo.js';
 import { boardEnabled } from './ui/board-flag.js';
 import { autoStageEnabled } from './ui/auto-goal-flag.js';
@@ -2807,6 +2815,229 @@ export async function runChatLoop(
             queuedTurns.length = 0;
           }
           return false;
+        }
+
+        // ---- FLAG-GATED: PER-GOAL MANAGER CYCLE (elite-partner Part 7) --------
+        // DEFAULT OFF. When the manager flag is ON *and* this run is tied to a
+        // stored goal that has a REAL, non-empty roadmap (a to-do list), DRIVE
+        // execution by that to-do list instead of the free GOAL_COMPLETE loop.
+        // Each cycle: pickNextTodo → ONE worker turn scoped to that to-do → a REAL
+        // tests-only verification (the SAME verify seam the goal-completion gate
+        // uses) → record the honest per-item verdict (evidence-only, via
+        // setRoadmapItemVerdict) → mark it done when passing/reviewed, else spawn a
+        // bounded fix-it to-do. When every item is verified-done, run the EXISTING
+        // goal-level verified-done gate before the goal can settle `done`.
+        //
+        // BOUNDEDNESS: the loop is hard-capped by the SAME turn ceiling the free
+        // loop uses (maxIterations) — every worker turn AND every verification
+        // counts against it, so a multi-todo goal can never run away — plus a
+        // per-item fix-it depth cap (fixItTodo returns null at the cap). HONESTY:
+        // an item is `done` ONLY when its verdict.state ∈ {passing,reviewed} from a
+        // REAL VerifyOutcome (empty diff ⇒ unverified ⇒ NOT done); a worker/verify
+        // error degrades to `unverified` (fix-it or move on), never a fake pass,
+        // never a crash, never an infinite loop. Flag OFF or no roadmap ⇒ this
+        // block is skipped entirely → today's free loop, byte-for-byte.
+        const managerOn = managerCycleEnabled(process.env, mutableCtx.config);
+        const cycleGoalId = opts?.goalId;
+        if (managerOn && cycleGoalId !== undefined) {
+          const stored = (await goalStore.get(cycleGoalId).catch(() => null)) ?? null;
+          if (stored !== null && stored.roadmap.length > 0) {
+            // Build the per-item verdict from a REAL VerifyOutcome — the SOLE honest
+            // source (mirrors goalVerdictFromOutcome but carries the real
+            // changedPaths so the per-item receipt is fully grounded). Never
+            // upgrades the state; never fabricates a path.
+            const verdictFromOutcome = (
+              outcome: import('../core/verify.js').VerifyOutcome,
+            ): RoadmapItemVerdict => ({
+              state: outcome.verified,
+              receipt: buildVerifyReceipt(outcome),
+              at: ctx.clock.isoNow(),
+              ...(outcome.changedPaths !== undefined && outcome.changedPaths.length > 0
+                ? { changedPaths: outcome.changedPaths }
+                : {}),
+            });
+            // Run ONE worker turn scoped to a single to-do, reusing the SAME
+            // machinery the free loop uses (history reload + memory + env →
+            // buildDeps → runTaskWithInputHooks). Returns the turn result. Fully
+            // honors Ctrl+C / Esc via the shared control flags (checked by the
+            // caller after each turn).
+            const runOneWorkerTurn = async (
+              task: string,
+            ): Promise<Awaited<ReturnType<typeof runTaskWithInputHooks>>> => {
+              let hist: SessionEntry[] = [];
+              try {
+                hist = await ctx.store.load(convId);
+              } catch {
+                hist = [];
+              }
+              const deps = buildDeps(
+                hist,
+                await resolveTurnMemory(task),
+                await resolveEnvironmentOnce(),
+              );
+              const ac = new AbortController();
+              currentAc = ac;
+              const result = await runTaskWithInputHooks(
+                task,
+                { ...deps, workContract: goalContract, goalTurn: true },
+                ac.signal,
+                mutableCtx.config.verbosity ?? 'normal',
+              );
+              currentAc = null;
+              noteRateLimit(result);
+              return result;
+            };
+
+            out.write(
+              dim(
+                `\n  Executing the to-do list (${String(stored.roadmap.length)} to-dos, manager cycle). Ctrl+C / Esc to stop.\n\n`,
+                out.color,
+              ),
+            );
+
+            // The live working copy of the roadmap — refreshed from the store after
+            // every mutation so pickNextTodo always sees the truth (incl. spawned
+            // fix-it items). Bounded by the turn ceiling: each worker turn consumes
+            // one unit of the SAME budget the free loop uses.
+            let roadmap: readonly RoadmapItem[] = stored.roadmap;
+            let usedTurns = 0;
+            let stoppedEarly = false;
+            for (; usedTurns < DEFAULT_MAX_GOAL_ITERATIONS; ) {
+              const next = pickNextTodo(roadmap);
+              if (next === null) break; // every item verified-done (or only-blocked)
+
+              const prog = roadmapProgress(roadmap);
+              out.write(
+                dim(
+                  `  ▸ to-do ${String(prog.done + 1)}/${String(prog.total)}: ${next.text}\n`,
+                  out.color,
+                ),
+              );
+
+              // ONE worker turn on this to-do.
+              const turn = await runOneWorkerTurn(buildTodoTask(stored, next));
+              usedTurns += 1;
+              if (control.exit) { control.result = 'exit'; return true; }
+              if (control.menu) { control.result = 'menu'; return true; }
+              if (interruptedByEsc) {
+                if (queuedTurns.length > 0) {
+                  renderDiscardedQueue(out, queuedTurns.length, 'interrupt');
+                  queuedTurns.length = 0;
+                }
+                stoppedEarly = true;
+                break;
+              }
+              // A worker turn that asks a question can't be auto-verified — surface
+              // it and stop the cycle honestly (the goal stays open).
+              if (turn.final?.success === true && turn.final.questions !== undefined) {
+                out.write(
+                  dim('\n  The to-do needs your input before it can continue.\n', out.color),
+                );
+                await runStructuredQuestionFlow(turn.final);
+                if (control.exit) { control.result = 'exit'; return true; }
+                if (control.menu) { control.result = 'menu'; return true; }
+                stoppedEarly = true;
+                break;
+              }
+
+              // REAL tests-only verification of THIS to-do, anchored to its
+              // acceptanceCriterion when present. Same engine, same honesty: empty
+              // diff ⇒ unverified; a crash ⇒ unverified. Never a fabricated pass.
+              const outcome = await runGoalVerification(next.acceptanceCriterion);
+              const verdict = verdictFromOutcome(outcome);
+              // The ONLY per-item evidence write. Fail-soft: a store miss never
+              // breaks the cycle.
+              await goalStore
+                .setRoadmapItemVerdict(cycleGoalId, next.id, verdict)
+                .catch(() => null);
+
+              const itemDone = verdict.state === 'passing' || verdict.state === 'reviewed';
+              if (itemDone) {
+                // Mark the item done by its CURRENT index (the verdict already
+                // landed via the itemId-keyed write above). Fail-soft.
+                const idx = roadmap.findIndex((it) => it.id === next.id);
+                if (idx >= 0) {
+                  await goalStore.setRoadmapItemStatus(cycleGoalId, idx, 'done').catch(() => null);
+                }
+                out.write(dim(`    ✓ verified — ${verdict.receipt}\n`, out.color));
+              } else {
+                // failing / unverified ⇒ the to-do is NOT done. Self-heal with a
+                // bounded fix-it to-do carrying the failure note; at the depth cap
+                // fixItTodo returns null and we stop honestly on this item (move on
+                // to the next actionable one — but mark this one so pickNextTodo
+                // won't pick it forever: a fix-it failure with no spawn left means
+                // the item can't be auto-advanced, so we leave it as-is and the
+                // cap/ceiling ends the run honestly).
+                const fix = fixItTodo(next, verdict.receipt);
+                if (fix !== null) {
+                  await goalStore.addRoadmapItem(cycleGoalId, fix).catch(() => null);
+                  out.write(
+                    dim(
+                      `    ⚠ not verified — ${verdict.receipt}. Spawned a fix-it to-do.\n`,
+                      out.color,
+                    ),
+                  );
+                } else {
+                  // Cap reached for this item: can't spawn another fix. Block it so
+                  // pickNextTodo skips it (needs user input) — never an infinite
+                  // retry of the same unverifiable step.
+                  const idx = roadmap.findIndex((it) => it.id === next.id);
+                  if (idx >= 0) {
+                    await goalStore
+                      .setRoadmapItemStatus(cycleGoalId, idx, 'blocked')
+                      .catch(() => null);
+                  }
+                  out.write(
+                    dim(
+                      `    ⚠ not verified — ${verdict.receipt}. Fix-it cap reached; needs your input.\n`,
+                      out.color,
+                    ),
+                  );
+                }
+              }
+
+              // Refresh the live roadmap from the store (picks up the verdict, the
+              // done/blocked status, and any spawned fix-it) and reflect live
+              // progress on the board after each item.
+              const refreshed = await goalStore.get(cycleGoalId).catch(() => null);
+              if (refreshed !== null && refreshed !== undefined) roadmap = refreshed.roadmap;
+              await syncBoard();
+            }
+
+            // Honest receipt + the goal-level gate. The goal can settle `done` ONLY
+            // when EVERY to-do is verified-done AND the existing goal-level
+            // verified-done gate (P4) passes against goalAcceptance. Otherwise the
+            // goal stays open with an honest count — never fake green.
+            const finalGoal = (await goalStore.get(cycleGoalId).catch(() => null)) ?? stored;
+            const cycleDone = managerCycleComplete(finalGoal);
+            const finalProg = roadmapProgress(finalGoal.roadmap);
+            if (!cycleDone || stoppedEarly) {
+              const why = stoppedEarly
+                ? 'stopped'
+                : usedTurns >= DEFAULT_MAX_GOAL_ITERATIONS
+                  ? 'reached the work budget'
+                  : 'some to-dos need input';
+              out.write(
+                dim(
+                  `\n  ${why} — ${String(finalProg.done)}/${String(finalProg.total)} to-dos verified. Keeping the goal open.\n`,
+                  out.color,
+                ),
+              );
+              lastGoalCompleted = false;
+              return false;
+            }
+            // Every to-do verified-done → the goal-level gate decides `done`. Reuses
+            // gateGoalCompletion (verifies cumulative changes + persists the goal
+            // verdict + syncs the board) — the model's word never reaches it.
+            out.write(
+              dim(
+                `\n  All ${String(finalProg.total)} to-dos verified — running the goal-level acceptance check…\n`,
+                out.color,
+              ),
+            );
+            lastGoalCompleted = await gateGoalCompletion(cycleGoalId, opts?.goalAcceptance);
+            return false;
+          }
         }
 
         // Turns are the honest bound on a subscription (no per-token bill to cap).
