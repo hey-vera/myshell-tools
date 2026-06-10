@@ -62,7 +62,13 @@ export function resolveOversight(
       const mapped = ENV_LEVELS[v];
       if (mapped !== undefined) return mapped;
     }
-    if (config?.oversight !== undefined) return config.oversight;
+    // VALIDATE the config value too — `loadConfig` JSON.parses without field checks, so a
+    // hand-edited / corrupted `"oversight": "bogus"` must fall to the safe default, not pass
+    // through verbatim (honouring this function's "any surprise → the safe default" contract).
+    const fromConfig = config?.oversight;
+    if (fromConfig === 'review-all' || fromConfig === 'checkpoint' || fromConfig === 'autonomous') {
+      return fromConfig;
+    }
     return 'checkpoint';
   } catch {
     return 'checkpoint';

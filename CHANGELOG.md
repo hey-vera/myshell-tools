@@ -6,6 +6,25 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+## [3.91.0] - 2026-06-10
+
+### Fixed (adversarial hardening pass — three real defects found by audit)
+- **Honest counts when the goal cap trims a plan (radical-honesty fix).** When the planner
+  proposed more than the goal cap allows, the dropped goal's `TODO`/`APPROACH`/`WHY`/`ALT`
+  lines fell through onto the last *kept* goal — inflating the headline to-do count, showing
+  to-dos under a goal that never proposed them, and miscounting the "N more not shown" note.
+  The parser now suppresses a dropped goal's following lines entirely (the whole goal is
+  disclosed wholesale via the dropped-goals count), so every number the proposal shows is true.
+- **Data-scoped standing rules now actually fire.** The standing-rules gate re-classified an
+  already-classified category, and the bare word `data` isn't in the data keyword list (the
+  entry is `'data '` with a trailing space) — so it round-tripped to `general` and silently
+  bypassed a user's data `block`/`pause` rule. The gate now passes the category through
+  (narrowing to a valid category), so a "never touch database migrations" rule is honoured.
+- **Corrupted oversight config falls to the safe default.** `resolveOversight` returned a
+  hand-edited/corrupt `config.oversight` verbatim instead of validating it; a typo'd value
+  could silently drop a cautious user's per-diff review. It now validates the config value
+  against the three real levels (matching how the env value is already validated).
+
 ## [3.90.0] - 2026-06-10
 
 ### Changed (the partner is an advisor, not a yes-man — master-plan Phase 5c)

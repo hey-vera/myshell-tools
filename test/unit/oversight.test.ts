@@ -45,6 +45,19 @@ describe('resolveOversight — the execution-autonomy level', () => {
     assert.equal(resolveOversight({}, { MYSHELL_OVERSIGHT: 'PROPOSE' }), 'checkpoint');
   });
 
+  it('ignores a CORRUPTED config value and falls to the safe default', () => {
+    // loadConfig JSON.parses without field validation, so a hand-edited/corrupted
+    // `"oversight": "bogus"` must NOT pass through verbatim — it falls to 'checkpoint'.
+    assert.equal(resolveOversight({ oversight: 'bogus' as never }, {}), 'checkpoint');
+    assert.equal(resolveOversight({ oversight: '' as never }, {}), 'checkpoint');
+    assert.equal(resolveOversight({ oversight: 123 as never }, {}), 'checkpoint');
+    // A valid env value still wins over a corrupted config value.
+    assert.equal(
+      resolveOversight({ oversight: 'bogus' as never }, { MYSHELL_OVERSIGHT: 'autonomous' }),
+      'autonomous',
+    );
+  });
+
   it('ignores an unknown env value and falls back to config/default', () => {
     assert.equal(resolveOversight({ oversight: 'review-all' }, { MYSHELL_OVERSIGHT: 'bogus' }), 'review-all');
     assert.equal(resolveOversight({}, { MYSHELL_OVERSIGHT: 'bogus' }), 'checkpoint');

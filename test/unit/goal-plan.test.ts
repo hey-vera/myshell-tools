@@ -147,6 +147,36 @@ describe('parseGoalPlan — substantial → stage', () => {
     assert.ok((out?.dropped?.perGoalTodos.size ?? 0) > 0, 'per-goal dropped to-dos recorded');
   });
 
+  it('a DROPPED goal does not bleed its to-dos into the last KEPT goal (honest counts)', () => {
+    // Regression: when the goal cap is hit, the over-cap GOAL line is dropped — but its
+    // following TODO/APPROACH lines must NOT fall through onto the last kept goal. Build
+    // MAX_GOALS+1 goals, each with exactly ONE todo (well under the todo cap), so any
+    // absorption is unmistakable.
+    const lines = ['JUDGMENT: stage'];
+    for (let g = 0; g <= GOAL_PLAN_MAX_GOALS; g += 1) {
+      lines.push(`GOAL: Goal number ${g}`);
+      lines.push(`APPROACH: approach ${g}`);
+      lines.push(`WHY: why ${g}`);
+      lines.push(`TODO: only todo ${g}`);
+    }
+    const out = parseGoalPlan(lines.join('\n'));
+    assert.ok(out !== null);
+    assert.equal(out?.goals.length, GOAL_PLAN_MAX_GOALS, 'exactly the cap kept');
+    const lastKept = out?.goals[GOAL_PLAN_MAX_GOALS - 1];
+    assert.equal(lastKept?.todos.length, 1, 'last kept goal keeps ONLY its own to-do');
+    assert.equal(lastKept?.todos[0]?.text, `only todo ${GOAL_PLAN_MAX_GOALS - 1}`, 'its own to-do, not the dropped goal\'s');
+    // The dropped goal's to-do is genuinely gone — not absorbed anywhere.
+    const allTodos = (out?.goals ?? []).flatMap((g) => g.todos.map((t) => t.text));
+    assert.ok(!allTodos.includes(`only todo ${GOAL_PLAN_MAX_GOALS}`), 'dropped goal to-do absorbed nowhere');
+    assert.equal(allTodos.length, GOAL_PLAN_MAX_GOALS, 'headline to-do count is honest (one per kept goal)');
+    // The dropped GOAL is disclosed wholesale; its to-do must NOT inflate a kept goal's
+    // per-goal dropped-todo count (that note is reserved for a goal exceeding its OWN cap).
+    assert.equal(out?.dropped?.goals, 1, 'one goal over the cap');
+    assert.equal(out?.dropped?.perGoalTodos.size, 0, 'no kept goal exceeded its OWN todo cap');
+    // The last kept goal keeps its own approach, not the dropped goal's.
+    assert.equal(lastKept?.approach?.chosen, `approach ${GOAL_PLAN_MAX_GOALS - 1}`, 'own approach, not absorbed');
+  });
+
   it('a within-cap plan reports NO dropped field (additive — byte-identical)', () => {
     const out = parseGoalPlan('JUDGMENT: stage\nGOAL: Ship it\nTODO: step one\nTODO: step two');
     assert.ok(out !== null);

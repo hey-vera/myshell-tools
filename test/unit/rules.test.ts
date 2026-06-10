@@ -138,6 +138,20 @@ describe('ruleMatches / matchRules — the pure gate predicate', () => {
     const fired = matchRules(rules, { category: 'security' });
     assert.deepEqual(fired.map((r) => r.kind), ['block', 'pause', 'prefer']);
   });
+
+  it('a DATA-category rule fires for a goal already classified as data (gate must not re-classify)', () => {
+    // Regression for the gate double-classify bug: the standing-rules gate is handed an
+    // ALREADY-classified category. matchRules must fire a data rule when given 'data'
+    // directly. (The gate previously re-ran classifyCategory('data') → 'general' because
+    // the data keyword list holds 'data ' WITH a trailing space, so the bare word missed
+    // and a user's data block rule was silently bypassed.)
+    const dataBlock = [mkRule({ id: 'rule_data', kind: 'block', trigger: { category: 'data' } })];
+    const fired = matchRules(dataBlock, { category: 'data', text: 'add a database migration' });
+    assert.deepEqual(fired.map((r) => r.kind), ['block'], 'data block rule fires on a data goal');
+    // Lock in the exact cause: classifying the already-classified word 'data' loses it.
+    assert.equal(classifyCategory('data'), 'general', 're-classifying the bare category word drops it — why the gate must pass it through');
+    assert.equal(classifyCategory('add a database migration'), 'data', 'classifying the real title is correct');
+  });
 });
 
 describe('formatRulesForContext — the rulesContext render', () => {

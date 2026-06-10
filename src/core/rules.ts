@@ -115,7 +115,7 @@ function capScope(value: unknown): RuleScope {
   return typeof value === 'string' && VALID_SCOPES.has(value) ? (value as RuleScope) : 'project';
 }
 
-function capCategory(value: unknown): RuleCategory | undefined {
+export function capCategory(value: unknown): RuleCategory | undefined {
   return typeof value === 'string' && VALID_CATEGORIES.has(value)
     ? (value as RuleCategory)
     : undefined;

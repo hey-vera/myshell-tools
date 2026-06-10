@@ -63,6 +63,7 @@ import {
   selectRulesForScope,
   matchRules,
   classifyCategory,
+  capCategory,
   type Rule,
 } from '../core/rules.js';
 import {
@@ -3153,8 +3154,15 @@ export async function runChatLoop(
       }): Promise<'go' | 'stop'> => {
         let matched: Rule[] = [];
         try {
+          // `args.category` is ALREADY a classified category (both callers pass
+          // classifyCategory(...) output) — re-classifying it here was a bug: the bare word
+          // 'data' is NOT in the data keyword list ('data ' has a trailing space), so it
+          // round-tripped to 'general' and silently disabled data-scoped rules. Pass it
+          // through, only NARROWING to a valid RuleCategory (capCategory) so a corrupt
+          // stored value falls out rather than mis-keying the gate.
+          const gateCategory = capCategory(args.category);
           matched = matchRules(activeRulesSnapshot, {
-            ...(args.category !== undefined ? { category: classifyCategory(args.category) } : {}),
+            ...(gateCategory !== undefined ? { category: gateCategory } : {}),
             ...(args.paths !== undefined ? { paths: args.paths } : {}),
             text: args.text,
           });

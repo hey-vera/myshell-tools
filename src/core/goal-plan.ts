@@ -320,6 +320,12 @@ export function parseGoalPlan(raw: string | undefined | null): GoalPlan | null {
   // respected the caps → no `dropped` field → byte-identical.
   let droppedGoals = 0;
   const droppedTodosByGoal = new Map<number, number>();
+  // True once we're inside a GOAL that the cap DROPPED. Its following APPROACH/WHY/
+  // ALT/TODO lines must NOT fall through onto the last KEPT goal — that would absorb a
+  // dropped goal's to-dos into a surviving one, over-counting the headline to-do total
+  // and misattributing steps (a radical-honesty violation). The whole dropped goal is
+  // disclosed wholesale via `droppedGoals`, so its lines are simply suppressed here.
+  let inDroppedGoal = false;
 
   for (const line of rawLines) {
     const trimmed = line.trim();
@@ -344,13 +350,16 @@ export function parseGoalPlan(raw: string | undefined | null): GoalPlan | null {
       if (value.length === 0) continue;
       if (goals.length >= GOAL_PLAN_MAX_GOALS) {
         droppedGoals += 1; // over the goal cap — record it, never silently drop
+        inDroppedGoal = true; // suppress this dropped goal's following APPROACH/WHY/ALT/TODO
         continue;
       }
       goals.push({ title: capLen(value, GOAL_PLAN_TITLE_MAX_CHARS), todos: [] });
+      inDroppedGoal = false; // a KEPT goal — its following lines attach here
       continue;
     }
     if (tag === 'approach') {
       if (value.length === 0) continue;
+      if (inDroppedGoal) continue; // belongs to a dropped goal — never attach to the last kept one
       const current = goals[goals.length - 1];
       if (current === undefined) continue; // an APPROACH before any GOAL is dropped
       if (current.chosen === undefined) current.chosen = capLen(value, GOAL_PLAN_APPROACH_MAX_CHARS);
@@ -358,6 +367,7 @@ export function parseGoalPlan(raw: string | undefined | null): GoalPlan | null {
     }
     if (tag === 'why') {
       if (value.length === 0) continue;
+      if (inDroppedGoal) continue; // belongs to a dropped goal — never attach to the last kept one
       const current = goals[goals.length - 1];
       if (current === undefined) continue; // a WHY before any GOAL is dropped
       if (current.rationale === undefined) current.rationale = capLen(value, GOAL_PLAN_APPROACH_MAX_CHARS);
@@ -365,6 +375,7 @@ export function parseGoalPlan(raw: string | undefined | null): GoalPlan | null {
     }
     if (tag === 'alt') {
       if (value.length === 0) continue;
+      if (inDroppedGoal) continue; // belongs to a dropped goal — never attach to the last kept one
       const current = goals[goals.length - 1];
       if (current === undefined) continue; // an ALT before any GOAL is dropped
       if (current.alternatives === undefined) {
@@ -383,6 +394,7 @@ export function parseGoalPlan(raw: string | undefined | null): GoalPlan | null {
     }
     if (tag === 'todo') {
       if (value.length === 0) continue;
+      if (inDroppedGoal) continue; // a dropped goal's to-do — suppress (the whole goal is disclosed)
       const current = goals[goals.length - 1];
       if (current === undefined) continue; // a TODO before any GOAL is dropped
       if (current.todos.length >= GOAL_PLAN_MAX_TODOS) {
