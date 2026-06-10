@@ -226,18 +226,18 @@ describe('understanding pass — the menu grounding wiring (Part 2)', () => {
     return { understandingRan, highStakes, modelToPlanner };
   }
 
-  it('understanding OFF (default) ⇒ pass never runs, planner gets NO model (ungrounded)', async () => {
+  it('understanding OFF (explicit opt-out) ⇒ pass never runs, planner gets NO model (ungrounded)', async () => {
     const pass = async (): Promise<SystemModel | null> => MODEL;
-    const r = await simulate({}, {}, 'build the whole auth system', pass);
+    const r = await simulate({ MYSHELL_UNDERSTANDING: '0' }, {}, 'build the whole auth system', pass);
     assert.equal(r.understandingRan, false);
-    assert.equal(r.modelToPlanner, undefined, 'planner ungrounded when understanding off');
+    assert.equal(r.modelToPlanner, undefined, 'planner ungrounded when understanding opted out');
   });
 
-  it('understanding ON (opt-in) ⇒ pass runs, planner grounded', async () => {
+  it('understanding ON by default ⇒ pass runs, planner grounded', async () => {
     const pass = async (): Promise<SystemModel | null> => MODEL;
-    const r = await simulate({ MYSHELL_UNDERSTANDING: '1' }, {}, 'build the whole auth system', pass);
+    const r = await simulate({}, {}, 'build the whole auth system', pass);
     assert.equal(r.understandingRan, true);
-    assert.equal(r.modelToPlanner, MODEL, 'planner grounded when understanding on');
+    assert.equal(r.modelToPlanner, MODEL, 'planner grounded by default (cache-ahead in the live menu)');
   });
 
   it('understanding ON + substantial ⇒ pass runs, planner gets the SystemModel', async () => {

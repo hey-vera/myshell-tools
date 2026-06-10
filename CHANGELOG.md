@@ -6,6 +6,24 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+## [3.70.0] - 2026-06-10
+
+### Changed (whole-picture understanding is now ON by default — with zero added latency)
+- **The understanding pass now runs CACHE-AHEAD and is on by default**, completing the
+  elite-partner vision: all five capabilities ship default-on. The pass is never run on
+  a turn's critical path (its latency is too variable). Instead the planner grounds the
+  current turn from a warm, per-project system model when one is cached, and a
+  **non-blocking background warm** (generous budget, deduped, fail-soft, pressure-gated)
+  refreshes the model to ground the *next* planning moment. The first substantial turn
+  on a project plans ungrounded (exactly as before) and warms in the background;
+  subsequent turns are grounded — for free. Understanding writes only to an in-memory
+  cache (no UI output), so a background run can never race the visible turn. Turn it off
+  with `MYSHELL_UNDERSTANDING=0` (or `experimentalUnderstanding: false`).
+- Live-validated: the background warm reliably produces a senior-level system model
+  (real module interconnections, the actual hard constraints — including the
+  anti-fabrication and subscription-OAuth rules — and sharp open questions) in ~40–45s,
+  entirely off the conversation's critical path.
+
 ## [3.69.0] - 2026-06-10
 
 ### Changed (opt-in understanding pass — bounded + faster)

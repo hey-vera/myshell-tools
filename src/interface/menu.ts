@@ -788,6 +788,7 @@ export async function runChatLoop(
   const buildUnderstandingPass = (
     repoContext: string,
     highStakes: boolean,
+    timeoutMs?: number,
   ): ((task: string, signal: AbortSignal) => Promise<SystemModel | null>) | null => {
     if (!hasAuthenticatedProvider(mutableCtx.env)) return null;
     const effectiveMode: Mode = mutableCtx.config.mode ?? resolveAutoMode(mutableCtx.env);
@@ -807,12 +808,11 @@ export async function runChatLoop(
     if (mutableCtx.env.codex.authenticated) authenticatedProviders.push('codex');
     if (mutableCtx.env.opencode.authenticated) authenticatedProviders.push('opencode');
     // The BOUNDED map-grounded pass (understanding.ts) reads at most a couple of
-    // files and reasons primarily from the repo orientation; live-measured at ~23s
-    // on a large repo, so give it 30s headroom to FINISH (a timeout yields no 'done'
-    // event → null → ungrounded, so finishing is what matters). Still post-turn +
-    // fail-soft + cached per project, so the full pass is paid at most once per
-    // UNDERSTANDING_REFRESH_TURNS planning moments.
-    const UNDERSTANDING_TIMEOUT_MS = 30_000;
+    // files and reasons primarily from the repo orientation. Caller picks the budget:
+    // the CACHE-AHEAD warm runs in the BACKGROUND (never blocks a turn), so it gets a
+    // generous default; a (legacy) synchronous caller can pass a tighter one. A
+    // timeout yields no 'done' event → null → ungrounded, so finishing is what matters.
+    const UNDERSTANDING_TIMEOUT_MS = timeoutMs ?? 120_000;
     return makeUnderstandingPass({
       providers: ctx.providers,
       policy,
@@ -2314,16 +2314,44 @@ export async function runChatLoop(
       // Mint sequential roadmap ids (r1, r2, …) for a freshly-staged goal's todos.
       const todosToRoadmap = (todos: readonly string[]): RoadmapItem[] =>
         todos.map((text, i) => ({ id: `r${i + 1}`, text, status: 'pending' as const }));
-      // SESSION CACHE of the per-project SystemModel. The understanding pass is a
-      // ~20s manager-tier investigation, and a project's whole-picture shape is
-      // largely stable across a session — recomputing it on every substantial turn
-      // is pure waste (subscription quota + post-turn latency). Cache it per project
-      // key and refresh only every UNDERSTANDING_REFRESH_TURNS planning moments, so
-      // the planner stays grounded while the cost of grounding is amortized. In-
-      // process + session-scoped; never persisted.
+      // CACHE-AHEAD SystemModel (per project, session-scoped, in-memory). The
+      // understanding pass is a manager-tier investigation with VARIABLE latency
+      // (live-measured 20s..>30s on a real repo) — far too unreliable to run on a
+      // turn's critical path. So we NEVER block on it: the planner grounds THIS turn
+      // from a warm cache (or runs ungrounded if cold, exactly as today), and a
+      // BACKGROUND warm (generous budget, not awaited, fail-soft, deduped per key)
+      // grounds the NEXT planning moment. Understanding writes ONLY to this cache (no
+      // UI output), so a background run can never race the visible turn. Refresh
+      // every UNDERSTANDING_REFRESH_TURNS auto-stage attempts to catch in-session
+      // drift. This is what lets whole-picture grounding ride WITHOUT latency.
       const UNDERSTANDING_REFRESH_TURNS = 5;
-      const systemModelCache = new Map<string, { model: SystemModel; atCount: number }>();
-      let understandingCount = 0;
+      const systemModelCache = new Map<string, { model: SystemModel; atTurn: number }>();
+      const understandingWarmInFlight = new Set<string>();
+      let autoStageTurns = 0;
+      // Kick off a NON-BLOCKING background warm of the project's SystemModel. Deduped
+      // (one warm per key at a time), fail-soft (any error → stays ungrounded until a
+      // later warm lands), generous timeout (it never blocks a turn). Pure side effect
+      // into systemModelCache; emits nothing to the UI.
+      const warmUnderstanding = (cacheKey: string, line: string): void => {
+        if (understandingWarmInFlight.has(cacheKey)) return;
+        understandingWarmInFlight.add(cacheKey);
+        void (async (): Promise<void> => {
+          try {
+            const risk = classify(line).risk;
+            const highStakes = risk === 'high' || risk === 'critical';
+            const repoContext = await resolveEnvironmentOnce().catch(() => '');
+            const pass = buildUnderstandingPass(repoContext, highStakes); // generous bg budget
+            if (pass !== null) {
+              const model = (await pass(line, new AbortController().signal)) ?? undefined;
+              if (model !== undefined) systemModelCache.set(cacheKey, { model, atTurn: autoStageTurns });
+            }
+          } catch {
+            /* fail-soft: stays ungrounded until a future warm lands */
+          } finally {
+            understandingWarmInFlight.delete(cacheKey);
+          }
+        })();
+      };
       // Run the planning brain for ONE settled turn and act on its verdict. Gated
       // (by the caller) on: the flag, a NON-TRIVIAL turn (hasTierEvidence — a real
       // engagement signal, never a "sounds good?"), and quota pressure below the
@@ -2338,39 +2366,23 @@ export async function runChatLoop(
         // dedicated Governor allocate() poll at this post-turn seam; this is the
         // honest, in-process pressure signal the rest of the loop already reads.)
         if (currentPressure() >= 3) return;
-        // WHOLE-PICTURE UNDERSTANDING (Part 2), gated + fail-soft. When the
-        // understanding flag is on, FIRST run a manager-tier read-only investigation
-        // of the REAL system (one amortized pass per planning moment) and ground the
-        // planner in the resulting SystemModel. The investigation is given the
-        // session repo map to orient on the real tree, and opts into web search only
-        // for high-stakes work (classify().risk ∈ {high,critical}) on a web-capable
-        // provider. ANY failure/timeout/empty → systemModel stays undefined → the
-        // planner runs UNGROUNDED, exactly as when understanding is off. Never blocks.
+        autoStageTurns += 1;
+        // WHOLE-PICTURE UNDERSTANDING (Part 2) — CACHE-AHEAD, never blocking. When the
+        // flag is on, the planner is grounded from a WARM per-project SystemModel if
+        // one is fresh; otherwise it runs UNGROUNDED this turn (exactly as when
+        // understanding is off) and we kick off a BACKGROUND warm to ground the NEXT
+        // planning moment. The understanding pass is NEVER awaited on the turn's
+        // critical path (its latency is too variable), so it adds ZERO latency here.
         let systemModel: SystemModel | undefined;
         if (understandingOn) {
-          // Reuse a fresh-enough cached SystemModel for this project before paying
-          // the full ~20s pass again (refresh every UNDERSTANDING_REFRESH_TURNS).
           const cacheKey = (await resolveProjectKeyOnce()) ?? '∅global';
           const cached = systemModelCache.get(cacheKey);
-          const fresh = cached !== undefined && understandingCount - cached.atCount < UNDERSTANDING_REFRESH_TURNS;
+          const fresh =
+            cached !== undefined && autoStageTurns - cached.atTurn < UNDERSTANDING_REFRESH_TURNS;
           if (fresh) {
-            systemModel = cached.model;
+            systemModel = cached.model; // ground THIS turn from the warm cache
           } else {
-            const risk = classify(line).risk;
-            const highStakes = risk === 'high' || risk === 'critical';
-            const repoContext = await resolveEnvironmentOnce().catch(() => '');
-            const understandingPass = buildUnderstandingPass(repoContext, highStakes);
-            if (understandingPass !== null) {
-              try {
-                systemModel = (await understandingPass(line, new AbortController().signal)) ?? undefined;
-              } catch {
-                systemModel = undefined;
-              }
-            }
-            understandingCount += 1;
-            if (systemModel !== undefined) {
-              systemModelCache.set(cacheKey, { model: systemModel, atCount: understandingCount });
-            }
+            warmUnderstanding(cacheKey, line); // ungrounded now; grounded next time
           }
         }
         const planner = buildGoalPlanner(systemModel);
