@@ -18,11 +18,26 @@ import {
   AgentRow,
   StatusLine,
   Panels,
+  BoardPanel,
+  BoardRow,
   TokenMeter,
 } from '../../src/interface/ui/StatusBlock.js';
 import { planGoalsPanel } from '../../src/interface/ui/layout.js';
-import { initialState } from '../../src/interface/ui/index.js';
-import type { AgentView, GoalView, UiState } from '../../src/interface/ui/index.js';
+import { reduce, initialState } from '../../src/interface/ui/index.js';
+import type { AgentView, GoalBoardRow, GoalView, UiState } from '../../src/interface/ui/index.js';
+
+function boardRow(over: Partial<GoalBoardRow> = {}): GoalBoardRow {
+  return {
+    id: over.id ?? 'goal_a',
+    title: over.title ?? 'Redesign feed',
+    state: over.state ?? 'parked',
+    done: over.done ?? 3,
+    total: over.total ?? 8,
+    glyph: over.glyph ?? '◷',
+    scope: over.scope ?? 'project',
+    agents: over.agents ?? 0,
+  };
+}
 
 function agent(over: Partial<AgentView> = {}): AgentView {
   return { provider: 'claude', model: 'opus', state: 'done', tokens: 1800, attempt: 0, ...over };
@@ -413,4 +428,85 @@ test('Panels renders a coalesced-queued line for many queued goals', () => {
   const frame = lastFrame() ?? '';
   assert.match(frame, /○ Q one/);
   assert.match(frame, /more queued/);
+});
+
+// ---------------------------------------------------------------------------
+// Elite-partner Phase 1 — the persistent BOARD + fake-card suppression
+// ---------------------------------------------------------------------------
+
+test('BoardRow renders glyph · title · N/M to-dos · state · scope', () => {
+  const { lastFrame } = render(
+    <BoardRow row={boardRow({ title: 'Redesign feed', done: 3, total: 8, scope: 'project' })} color={false} />,
+  );
+  const frame = lastFrame() ?? '';
+  assert.match(frame, /◷/);
+  assert.match(frame, /Redesign feed/);
+  assert.match(frame, /3\/8 to-dos/);
+  assert.match(frame, /parked/);
+  assert.match(frame, /this repo/);
+});
+
+test('BoardRow surfaces a REAL live agent count only when running', () => {
+  const running = render(<BoardRow row={boardRow({ state: 'running', glyph: '◐', agents: 2 })} color={false} />);
+  assert.match(running.lastFrame() ?? '', /2 agents/);
+  const parked = render(<BoardRow row={boardRow({ agents: 0 })} color={false} />);
+  assert.doesNotMatch(parked.lastFrame() ?? '', /agent/);
+});
+
+test('BoardPanel shows the BOARD title, one row per goal, and a +K more overflow line', () => {
+  const { lastFrame } = render(
+    <BoardPanel
+      plan={{ shown: [boardRow({ id: 'a', title: 'A' }), boardRow({ id: 'b', title: 'B' })], overflow: 4 }}
+      color={false}
+    />,
+  );
+  const frame = lastFrame() ?? '';
+  assert.match(frame, /BOARD/);
+  assert.match(frame, /A/);
+  assert.match(frame, /B/);
+  assert.match(frame, /\+4 more/);
+});
+
+test('board ON: the persistent board renders across turns even when IDLE', () => {
+  const state = reduce(initialState, { type: 'board/sync', rows: [boardRow({ title: 'Ship it' })], enabled: true });
+  // idle (turnActive false) but the board is on + non-empty.
+  const { lastFrame } = render(<StatusBlock state={state} color={false} rows={24} />);
+  const frame = lastFrame() ?? '';
+  assert.match(frame, /BOARD/);
+  assert.match(frame, /Ship it/);
+});
+
+test('board ON: an ordinary turn does NOT render a "GOALS ▸ <message>" card', () => {
+  // The board is on; a tier-start arrives carrying the raw user message as `title`
+  // (what orchestrate's `?? task` fabricates). The live card must NOT surface it.
+  const raw = 'please refactor the auth middleware and also fix the failing tests';
+  let state = reduce(initialState, { type: 'board/sync', rows: [boardRow()], enabled: true });
+  state = reduce(state, {
+    type: 'tier-start', tier: 'ic', provider: 'claude', model: 'opus', attempt: 1,
+    verbosity: 'normal', title: raw,
+  });
+  const { lastFrame } = render(<StatusBlock state={state} color={false} rows={40} />);
+  const frame = lastFrame() ?? '';
+  // The fake raw-message card is GONE; the live region reads "WORKING", not "GOALS".
+  assert.doesNotMatch(frame, new RegExp(raw.slice(0, 20)));
+  assert.match(frame, /WORKING/);
+  assert.doesNotMatch(frame, /\bGOALS\b/);
+  // The honest per-turn label is the tier.
+  assert.match(frame, /\bic\b/);
+});
+
+test('board OFF (default): idle is an empty frame and the live header stays "GOALS" (byte-identical)', () => {
+  // idle, flag off → empty frame.
+  const idle = render(<StatusBlock state={initialState} color={false} rows={24} />);
+  assert.equal((idle.lastFrame() ?? '').trim(), '');
+  // active with a title, flag off → the title IS the card label and the header is GOALS.
+  const state: UiState = { ...initialState, turnActive: true, goals: [
+    { id: 'mid#0', label: 'Refactor the auth middleware', state: 'running', tokens: 0, agents: [], tier: 'ic' },
+  ] };
+  const active = render(<StatusBlock state={state} color={false} rows={40} />);
+  const frame = active.lastFrame() ?? '';
+  assert.match(frame, /GOALS/);
+  assert.doesNotMatch(frame, /WORKING/);
+  assert.doesNotMatch(frame, /BOARD/);
+  assert.match(frame, /Refactor the auth middleware/);
 });

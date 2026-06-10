@@ -25,6 +25,7 @@ import {
   type Action,
   type AgentRunState,
   type AgentView,
+  type GoalBoardRow,
   type GoalView,
   type StreamPhase,
   type StreamView,
@@ -42,6 +43,7 @@ type _SurfaceCheck = [
   Action,
   AgentRunState,
   AgentView,
+  GoalBoardRow,
   GoalView,
   StreamPhase,
   StreamView,
@@ -1582,5 +1584,97 @@ describe('ui reduce — multi-goal: concurrent running goals keyed by goalId', (
     );
     assert.equal(acts[0]?.type, 'tier-start');
     if (acts[0]?.type === 'tier-start') assert.equal(acts[0].goalId, 'g7');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Elite-partner Phase 1 — the REAL PERSISTENT BOARD (board/sync) + the fake-card
+// suppression when the board is ON. The reducer is pure; the board is additive
+// chrome that, when OFF (default), leaves every transition byte-identical.
+// ---------------------------------------------------------------------------
+
+const boardRow = (over: Partial<GoalBoardRow> = {}): GoalBoardRow => ({
+  id: 'goal_a',
+  title: 'Redesign feed',
+  state: 'parked',
+  done: 3,
+  total: 8,
+  glyph: '◷',
+  scope: 'project',
+  agents: 0,
+  ...over,
+});
+
+describe('ui reduce — board/sync (persistent board)', () => {
+  it('default state carries an empty board + boardEnabled false (byte-identical baseline)', () => {
+    assert.deepEqual(initialState.board, []);
+    assert.equal(initialState.boardEnabled, false);
+  });
+
+  it('board/sync REPLACES the board and flips boardEnabled (pure replace)', () => {
+    const rows = [boardRow(), boardRow({ id: 'goal_b', title: 'Add tests', state: 'queued' })];
+    const s = reduce(initialState, { type: 'board/sync', rows, enabled: true });
+    assert.equal(s.board.length, 2);
+    assert.equal(s.board[0]?.title, 'Redesign feed');
+    assert.equal(s.boardEnabled, true);
+    // A second sync REPLACES (never appends).
+    const s2 = reduce(s, { type: 'board/sync', rows: [boardRow({ id: 'goal_c', title: 'X' })], enabled: true });
+    assert.equal(s2.board.length, 1);
+    assert.equal(s2.board[0]?.id, 'goal_c');
+  });
+
+  it('a running goal in state.goals gives the matching board row its REAL live agent count', () => {
+    // Spin up a running goal keyed by goalId with two agents on it.
+    let s = reduce(initialState, {
+      type: 'tier-start', tier: 'ic', provider: 'claude', model: 'opus', attempt: 1,
+      verbosity: 'normal', goalId: 'goal_run',
+    });
+    s = reduce(s, {
+      type: 'tier-start', tier: 'ic', provider: 'codex', model: 'gpt-5', attempt: 1,
+      verbosity: 'normal', goalId: 'goal_run',
+    });
+    assert.equal(s.goals[0]?.agents.length, 2);
+    // The synced snapshot carries agents:0 for that goal; the reducer re-derives 2.
+    const synced = reduce(s, {
+      type: 'board/sync',
+      rows: [boardRow({ id: 'goal_run', state: 'running', agents: 0 }), boardRow({ id: 'goal_idle' })],
+      enabled: true,
+    });
+    assert.equal(synced.board.find((r) => r.id === 'goal_run')?.agents, 2);
+    // A goal not running this turn keeps 0 (never fabricated).
+    assert.equal(synced.board.find((r) => r.id === 'goal_idle')?.agents, 0);
+  });
+
+  it('the board SURVIVES turn/start and turn/final without clearing (cross-turn)', () => {
+    const synced = reduce(initialState, { type: 'board/sync', rows: [boardRow()], enabled: true });
+    const afterStart = reduce(synced, { type: 'turn/start' });
+    assert.equal(afterStart.board.length, 1, 'turn/start preserves the board');
+    assert.equal(afterStart.boardEnabled, true);
+    const afterFinal = reduce(afterStart, {
+      type: 'turn/final', success: true, tier: 'ic', attempts: 1, sessionId: 's', verbosity: 'normal',
+    });
+    assert.equal(afterFinal.turnActive, false);
+    assert.equal(afterFinal.board.length, 1, 'turn/final (turnActive→false) does NOT clear the board');
+    assert.equal(afterFinal.boardEnabled, true);
+  });
+
+  it('board ON: a tier-start with a raw-message title does NOT surface it as the goal label (no fake card)', () => {
+    const on = reduce(initialState, { type: 'board/sync', rows: [], enabled: true });
+    const s = reduce(on, {
+      type: 'tier-start', tier: 'ic', provider: 'claude', model: 'opus', attempt: 1,
+      verbosity: 'normal', title: 'please refactor the auth middleware and also fix the tests',
+    });
+    // The label is the honest TIER, never the raw message.
+    assert.equal(s.goals[0]?.label, 'ic');
+    assert.notEqual(s.goals[0]?.label, 'please refactor the auth middleware and also fix the tests');
+  });
+
+  it('board OFF (default): a tier-start title still becomes the label — byte-identical to today', () => {
+    const s = reduce(initialState, {
+      type: 'tier-start', tier: 'ic', provider: 'claude', model: 'opus', attempt: 1,
+      verbosity: 'normal', title: 'Refactor the auth middleware',
+    });
+    assert.equal(s.goals[0]?.label, 'Refactor the auth middleware');
+    assert.equal(s.boardEnabled, false);
   });
 });

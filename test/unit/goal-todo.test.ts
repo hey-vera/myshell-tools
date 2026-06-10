@@ -19,8 +19,9 @@ import {
   selectGoals,
   ROADMAP_LIMIT,
   type Goal,
+  type GoalVerdict,
 } from '../../src/core/goal-todo.ts';
-import type { RoadmapItem } from '../../src/core/work-contract.ts';
+import type { RoadmapItem, RoadmapItemVerdict, RoadmapItemApproach } from '../../src/core/work-contract.ts';
 
 function makeGoal(overrides: Partial<Goal> = {}): Goal {
   return {
@@ -147,5 +148,228 @@ describe('selectGoals', () => {
     assert.equal(selectGoals(goals, { scope: 'global' }).length, 1);
     assert.equal(selectGoals(goals).length, 2);
     assert.equal(goals.length, 2); // unchanged
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Phase 2 data-model: capGoal + capRoadmap new fields
+// ---------------------------------------------------------------------------
+
+describe('capGoal — Phase 2 goalAcceptance + goalVerdict', () => {
+  it('a goal WITHOUT the new fields round-trips byte-identically (regression guard)', () => {
+    const g = makeGoal({
+      roadmap: ITEMS(['pending', 'done']),
+    });
+    const capped = capGoal(g);
+    // Ensure none of the new optional fields leak in when not present.
+    assert.equal('goalAcceptance' in capped, false);
+    assert.equal('goalVerdict' in capped, false);
+    // All existing fields unchanged.
+    assert.equal(capped.id, g.id);
+    assert.equal(capped.title, g.title);
+    assert.equal(capped.state, g.state);
+    assert.deepEqual(capped.roadmap, g.roadmap);
+  });
+
+  it('goalAcceptance is preserved and capped to 400 chars', () => {
+    const long = 'A'.repeat(500);
+    const g = capGoal(makeGoal({ goalAcceptance: long } as Goal));
+    assert.equal(g.goalAcceptance?.length, 400);
+  });
+
+  it('goalAcceptance is omitted when absent', () => {
+    const g = capGoal(makeGoal());
+    assert.equal('goalAcceptance' in g, false);
+  });
+
+  it('goalVerdict round-trips a valid verdict', () => {
+    const verdict: GoalVerdict = {
+      state: 'passing',
+      receipt: '✓ tests passing (npm test, 1200ms)',
+      at: '2026-06-10T12:00:00.000Z',
+    };
+    const g = capGoal(makeGoal({ goalVerdict: verdict } as Goal));
+    assert.deepEqual(g.goalVerdict, verdict);
+  });
+
+  it('goalVerdict is omitted when verdict.state is invalid (anti-fabrication)', () => {
+    const badVerdict = { state: 'invented', receipt: 'fake', at: '2026-06-10T12:00:00.000Z' };
+    const g = capGoal(makeGoal({ goalVerdict: badVerdict } as unknown as Goal));
+    assert.equal('goalVerdict' in g, false);
+  });
+
+  it('goalVerdict.receipt is capped to 400 chars', () => {
+    const verdict: GoalVerdict = {
+      state: 'reviewed',
+      receipt: 'R'.repeat(600),
+      at: '2026-06-10T12:00:00.000Z',
+    };
+    const g = capGoal(makeGoal({ goalVerdict: verdict } as Goal));
+    assert.equal(g.goalVerdict?.receipt.length, 400);
+  });
+
+  it('goalVerdict with missing state is dropped, not thrown', () => {
+    const noState = { receipt: 'some receipt', at: '2026-06-10T12:00:00.000Z' };
+    assert.doesNotThrow(() => capGoal(makeGoal({ goalVerdict: noState } as unknown as Goal)));
+    const g = capGoal(makeGoal({ goalVerdict: noState } as unknown as Goal));
+    assert.equal('goalVerdict' in g, false);
+  });
+
+  it('all four valid verdict states are preserved', () => {
+    for (const state of ['unverified', 'reviewed', 'passing', 'failing'] as const) {
+      const g = capGoal(makeGoal({
+        goalVerdict: { state, receipt: 'r', at: '2026-06-10T12:00:00.000Z' },
+      } as Goal));
+      assert.equal(g.goalVerdict?.state, state, `state '${state}' should be preserved`);
+    }
+  });
+});
+
+describe('capRoadmap + capGoal — Phase 2 RoadmapItem new fields', () => {
+  it('a RoadmapItem WITHOUT the new fields round-trips byte-identically (regression guard)', () => {
+    const item: RoadmapItem = { id: 'r1', text: 'step one', status: 'pending' };
+    const [capped] = capRoadmap([item]);
+    assert.deepEqual(capped, item);
+    assert.equal('acceptanceCriterion' in (capped ?? {}), false);
+    assert.equal('verdict' in (capped ?? {}), false);
+    assert.equal('approach' in (capped ?? {}), false);
+  });
+
+  it('acceptanceCriterion is preserved and capped to 400 chars', () => {
+    const item: RoadmapItem = {
+      id: 'r1', text: 'fix the bug', status: 'pending',
+      acceptanceCriterion: 'B'.repeat(500),
+    };
+    const [capped] = capRoadmap([item]);
+    assert.equal(capped?.acceptanceCriterion?.length, 400);
+  });
+
+  it('acceptanceCriterion is omitted when absent', () => {
+    const [capped] = capRoadmap([{ id: 'r1', text: 'x', status: 'pending' }]);
+    assert.equal('acceptanceCriterion' in (capped ?? {}), false);
+  });
+
+  it('verdict round-trips all four valid states', () => {
+    for (const state of ['unverified', 'reviewed', 'passing', 'failing'] as const) {
+      const verdict: RoadmapItemVerdict = {
+        state,
+        receipt: '✓ tests passing',
+        at: '2026-06-10T12:00:00.000Z',
+      };
+      const [capped] = capRoadmap([{ id: 'r1', text: 'x', status: 'pending', verdict }]);
+      assert.equal(capped?.verdict?.state, state, `state '${state}' should be preserved`);
+    }
+  });
+
+  it('verdict is dropped when state is invalid (anti-fabrication)', () => {
+    const item = {
+      id: 'r1', text: 'x', status: 'pending',
+      verdict: { state: 'made-up', receipt: 'lies', at: '2026-06-10T12:00:00.000Z' },
+    };
+    const [capped] = capRoadmap([item]);
+    assert.equal('verdict' in (capped ?? {}), false);
+  });
+
+  it('verdict.receipt is capped to 400 chars', () => {
+    const verdict: RoadmapItemVerdict = {
+      state: 'failing',
+      receipt: 'F'.repeat(600),
+      at: '2026-06-10T12:00:00.000Z',
+    };
+    const [capped] = capRoadmap([{ id: 'r1', text: 'x', status: 'pending', verdict }]);
+    assert.equal(capped?.verdict?.receipt.length, 400);
+  });
+
+  it('verdict.changedPaths is bounded to 20 items and each path capped to 200 chars', () => {
+    const verdict: RoadmapItemVerdict = {
+      state: 'passing',
+      receipt: 'ok',
+      at: '2026-06-10T12:00:00.000Z',
+      changedPaths: Array.from({ length: 30 }, (_, i) => `${'p'.repeat(250)}/file${i}.ts`),
+    };
+    const [capped] = capRoadmap([{ id: 'r1', text: 'x', status: 'pending', verdict }]);
+    assert.equal(capped?.verdict?.changedPaths?.length, 20);
+    assert.ok((capped?.verdict?.changedPaths?.[0]?.length ?? 0) <= 200);
+  });
+
+  it('approach round-trips chosen + rationale + alternatives', () => {
+    const approach: RoadmapItemApproach = {
+      chosen: 'Use a hash map',
+      rationale: 'O(1) lookup vs O(n) scan',
+      alternatives: ['linear scan', 'sorted array'],
+    };
+    const [capped] = capRoadmap([{ id: 'r1', text: 'x', status: 'pending', approach }]);
+    assert.deepEqual(capped?.approach, approach);
+  });
+
+  it('approach is omitted when chosen is empty', () => {
+    const approach = { chosen: '', rationale: 'some rationale', alternatives: [] };
+    const [capped] = capRoadmap([{ id: 'r1', text: 'x', status: 'pending', approach }]);
+    assert.equal('approach' in (capped ?? {}), false);
+  });
+
+  it('approach.chosen and rationale are capped to 400 chars each', () => {
+    const approach: RoadmapItemApproach = {
+      chosen: 'C'.repeat(500),
+      rationale: 'R'.repeat(500),
+    };
+    const [capped] = capRoadmap([{ id: 'r1', text: 'x', status: 'pending', approach }]);
+    assert.equal(capped?.approach?.chosen.length, 400);
+    assert.equal(capped?.approach?.rationale.length, 400);
+  });
+
+  it('approach.alternatives is bounded to 8 items and each capped to 160 chars', () => {
+    const approach: RoadmapItemApproach = {
+      chosen: 'best',
+      rationale: 'why',
+      alternatives: Array.from({ length: 12 }, (_, i) => 'A'.repeat(200) + i),
+    };
+    const [capped] = capRoadmap([{ id: 'r1', text: 'x', status: 'pending', approach }]);
+    assert.equal(capped?.approach?.alternatives?.length, 8);
+    assert.ok((capped?.approach?.alternatives?.[0]?.length ?? 0) <= 160);
+  });
+
+  it('verdict.state: all invalid values are dropped without throwing', () => {
+    for (const bad of ['', 'PASSING', 'true', null, 42, {}]) {
+      const item = {
+        id: 'r1', text: 'x', status: 'pending',
+        verdict: { state: bad, receipt: 'r', at: '2026-06-10T00:00:00.000Z' },
+      };
+      assert.doesNotThrow(() => capRoadmap([item]));
+      const [capped] = capRoadmap([item]);
+      assert.equal('verdict' in (capped ?? {}), false, `invalid state=${JSON.stringify(bad)} must be dropped`);
+    }
+  });
+
+  it('a goal with new roadmap fields round-trips through capGoal unchanged', () => {
+    const verdict: RoadmapItemVerdict = {
+      state: 'passing',
+      receipt: '✓ tests passing (npm test, 800ms)',
+      at: '2026-06-10T12:00:00.000Z',
+      changedPaths: ['src/core/goal-todo.ts'],
+    };
+    const approach: RoadmapItemApproach = {
+      chosen: 'functional update',
+      rationale: 'immutable, testable',
+    };
+    const g = makeGoal({
+      goalAcceptance: 'All tests green and board shows correct verdicts',
+      goalVerdict: {
+        state: 'passing',
+        receipt: '✓ tests passing',
+        at: '2026-06-10T12:00:00.000Z',
+      } as GoalVerdict,
+      roadmap: [{
+        id: 'r1', text: 'implement cap', status: 'done',
+        acceptanceCriterion: 'capRoadmapItem handles all 4 verdict states',
+        verdict,
+        approach,
+      }],
+    } as Goal);
+    const capped = capGoal(g);
+    assert.equal(capped.goalAcceptance, g.goalAcceptance);
+    assert.deepEqual(capped.goalVerdict, (g as Goal).goalVerdict);
+    assert.deepEqual(capped.roadmap[0]?.verdict, verdict);
+    assert.deepEqual(capped.roadmap[0]?.approach, approach);
   });
 });

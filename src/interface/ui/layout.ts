@@ -30,7 +30,7 @@
 
 import { formatTokens } from '../../infra/insights.js';
 import { visibleLength } from '../../ui/tui.js';
-import type { GoalView, UiState } from './state.js';
+import type { GoalBoardRow, GoalView, UiState } from './state.js';
 
 // ---------------------------------------------------------------------------
 // Live <Stream> wrapping — how many terminal ROWS the live answer buffer
@@ -212,6 +212,13 @@ export const SUMMARY_LINE_ROWS = 1;
 export const PANEL_BORDER_ROWS = 2;
 /** Rows we keep as breathing room so the region never butts the very top edge. */
 export const SAFETY_MARGIN_ROWS = 1;
+/**
+ * The chrome rows of the persistent BOARD panel: the 2 rounded-border rows + the
+ * 1-row "BOARD" title line. The board body (one row per shown goal + an optional
+ * `+K more` overflow line) is budgeted on top of these. Kept here so the layout
+ * budget and the StatusBlock board renderer agree on the same constant.
+ */
+export const BOARD_CHROME_ROWS = 3;
 
 // ---------------------------------------------------------------------------
 // Plan shape
@@ -267,6 +274,16 @@ export interface StatusLayout {
   /** The total rows this plan paints (block + status line + stream), EXCLUDING
    *  the input box — provably <= the height budget passed in. For assertions. */
   readonly plannedRows: number;
+  /**
+   * The persistent BOARD plan (Elite-partner Phase 1) — present (non-null) ONLY
+   * when `state.boardEnabled && state.board.length > 0` AND the board fits the
+   * height budget; null otherwise (flag off, empty board, or no room). The board
+   * renders INDEPENDENT of `turnActive` (the one change to the idle-collapse rule),
+   * so it shows across turns. Its rows are part of `plannedRows`, so the dynamic
+   * region (board + goals panel + status line + stream) is still provably <= the
+   * viewport. Null on the flag-off path → byte-for-byte today's layout.
+   */
+  readonly board: BoardPlan | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -489,6 +506,40 @@ export function compactGoalsSummary(
 }
 
 // ---------------------------------------------------------------------------
+// planBoard — the persistent goal BOARD plan (Elite-partner Phase 1)
+// ---------------------------------------------------------------------------
+
+/**
+ * The persistent goal BOARD plan for a given row `budget` (the rows available for
+ * the board BODY, i.e. excluding the {@link BOARD_CHROME_ROWS} border+title). The
+ * board is a flat, cross-turn projection of the GoalStore: each shown goal is one
+ * row; when there are more goals than fit, the overflow rolls into a single
+ * `+K more` line so a 20-goal board NEVER overflows the viewport (the same
+ * height-discipline as {@link planGoalsPanel}). PURE; never mutates input.
+ *
+ * Returns `null` when even one row + the overflow line cannot fit `budget` (the
+ * caller then hides the board entirely). When every goal fits, `shown` is the
+ * whole board and `overflow` is 0.
+ */
+export interface BoardPlan {
+  readonly shown: readonly GoalBoardRow[];
+  readonly overflow: number;
+}
+
+export function planBoard(board: readonly GoalBoardRow[], budget: number): BoardPlan | null {
+  if (board.length === 0) return null;
+  if (budget < 1) return null;
+  // Everything fits as one row each.
+  if (board.length <= budget) return { shown: board, overflow: 0 };
+  // Reserve ONE row for the `+K more` overflow line; show as many goals as the
+  // rest of the budget allows (active goals — running/queued — lead, since the
+  // store returns newest-touched first and the board wants the live work on top).
+  const showCount = Math.max(0, budget - 1);
+  if (showCount < 1) return null;
+  return { shown: board.slice(0, showCount), overflow: board.length - showCount };
+}
+
+// ---------------------------------------------------------------------------
 // layoutForHeight — the planner
 // ---------------------------------------------------------------------------
 
@@ -525,16 +576,61 @@ export function layoutForHeight(
   streamLines = state.stream.buffer.length > 0 ? 1 : 0,
   inputRows: number = INPUT_ROWS,
 ): StatusLayout {
-  if (!state.turnActive) {
-    return { visible: false, goals: { kind: 'hidden' }, showSummary: false, streamCap: 0, plannedRows: 0 };
+  // The full viewport budget the dynamic region (board + panel + status line +
+  // stream) may occupy: the viewport minus the always-present input box minus a
+  // safety margin. Floored at 1 so at least one row always survives.
+  const fullBudget = Math.max(1, rows - Math.max(1, Math.floor(inputRows)) - SAFETY_MARGIN_ROWS);
+
+  // Elite-partner Phase 1: the persistent BOARD renders INDEPENDENT of turnActive
+  // (the one change to the idle-collapse rule). Plan it FIRST and reserve its rows
+  // off the budget so the live goals panel / stream get whatever remains — the
+  // board can never push the dynamic region past the viewport. The board plans only
+  // when the flag is ON and the store snapshot is non-empty; otherwise it is null
+  // and every path below is byte-for-byte today's. The board is capped to at most
+  // ~⅓ of the viewport (and ≥1 body row) so a 20-goal board never starves a live
+  // turn's panel/stream while still showing the work across turns.
+  const boardOn = state.boardEnabled && state.board.length > 0;
+  let board: BoardPlan | null = null;
+  let boardRows = 0;
+  if (boardOn) {
+    const boardCapBody = Math.max(1, Math.floor(rows / 3) - BOARD_CHROME_ROWS);
+    const boardBodyBudget = Math.min(boardCapBody, Math.max(0, fullBudget - BOARD_CHROME_ROWS));
+    const planned = boardBodyBudget >= 1 ? planBoard(state.board, boardBodyBudget) : null;
+    if (planned !== null) {
+      board = planned;
+      boardRows = BOARD_CHROME_ROWS + planned.shown.length + (planned.overflow > 0 ? 1 : 0);
+    }
   }
 
-  // The budget the dynamic region (panel + status line + stream) may occupy: the
-  // viewport minus the always-present input box minus a safety margin. Floored at
-  // 1 so the status line always survives. `inputRows` is the composer's ACTUAL
-  // rendered height (single-line default; worst-case for a tall/pasted buffer) so
-  // a multiline composer cannot push the dynamic region past the viewport.
-  const budget = Math.max(1, rows - Math.max(1, Math.floor(inputRows)) - SAFETY_MARGIN_ROWS);
+  // When no turn is active the live goals panel / status line / stream all collapse
+  // to nothing (today's calm idle). With the board on, the region stays VISIBLE
+  // showing ONLY the board across turns; with the board off this is byte-for-byte
+  // the original idle-collapse (visible:false, nothing painted).
+  if (!state.turnActive) {
+    if (board !== null) {
+      return {
+        visible: true,
+        goals: { kind: 'hidden' },
+        showSummary: false,
+        streamCap: 0,
+        plannedRows: boardRows,
+        board,
+      };
+    }
+    return {
+      visible: false,
+      goals: { kind: 'hidden' },
+      showSummary: false,
+      streamCap: 0,
+      plannedRows: 0,
+      board: null,
+    };
+  }
+
+  // The budget the LIVE region (panel + status line + stream) may occupy: the full
+  // budget minus whatever the board reserved. Floored at 1 so the status line
+  // always survives. When the board is off, `boardRows` is 0 → identical to today.
+  const budget = Math.max(1, fullBudget - boardRows);
 
   const goals = state.goals;
   const hasGoals = goals.length > 0;
@@ -560,7 +656,8 @@ export function layoutForHeight(
       goals: { kind: 'full', goals, rows: goals.map((g) => ({ kind: 'card' as const, goal: g })) },
       showSummary: showSummaryLine,
       streamCap,
-      plannedRows: fullRows + fixed + streamCap,
+      plannedRows: boardRows + fullRows + fixed + streamCap,
+      board,
     };
   }
 
@@ -586,7 +683,8 @@ export function layoutForHeight(
         goals: { kind: 'full', goals: cardGoals, rows: plan },
         showSummary: showSummaryLine,
         streamCap,
-        plannedRows: panelRows + fixed + streamCap,
+        plannedRows: boardRows + panelRows + fixed + streamCap,
+        board,
       };
     }
   }
@@ -606,7 +704,8 @@ export function layoutForHeight(
       },
       showSummary: showSummaryLine,
       streamCap,
-      plannedRows: compactRows + fixed + streamCap,
+      plannedRows: boardRows + compactRows + fixed + streamCap,
+      board,
     };
   }
 
@@ -618,6 +717,7 @@ export function layoutForHeight(
     goals: { kind: 'hidden' },
     showSummary: false,
     streamCap,
-    plannedRows: STATUS_LINE_ROWS + streamCap,
+    plannedRows: boardRows + STATUS_LINE_ROWS + streamCap,
+    board,
   };
 }

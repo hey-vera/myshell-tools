@@ -16,6 +16,7 @@
 
 import { lastJsonObjectBoundsWithKey, isTrailingNoise } from '../core/json-envelope.js';
 import { GOAL_MARKER_TOKENS, stripTrailingGoalMarker } from '../core/goal.js';
+import type { GoalBoardRow } from './ui/state.js';
 
 // ---------------------------------------------------------------------------
 // OutputSink
@@ -53,6 +54,16 @@ export interface OutputSink {
    * parity). No-op on sinks without a live region. Invoked as `out.promoteFrame?.()`.
    */
   promoteFrame?(): void;
+  /**
+   * OPTIONAL (Elite-partner Phase 1): REPLACE the persistent goal board with a fresh
+   * GoalStore snapshot, flipping the board ON (`enabled`). Only the Ink sink
+   * implements it — it dispatches a `board/sync` action into the reducer store so
+   * the board renders across turns; legacy stdout / test sinks have no live region
+   * and leave it undefined (byte-for-byte unchanged). The menu invokes it as
+   * `out.syncBoard?.(rows)` ONLY when the board flag is on, so when the flag is off
+   * the action never fires and `UiState.boardEnabled` stays false.
+   */
+  syncBoard?(rows: readonly GoalBoardRow[]): void;
 }
 
 // ---------------------------------------------------------------------------

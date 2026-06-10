@@ -550,6 +550,11 @@ function AppBody({
     uiState?.tokens.turn,
     uiState?.stream.panelists,
     uiState?.chrome,
+    // The persistent board (Elite-partner Phase 1) feeds layoutForHeight too: a
+    // board/sync changes the planned region, so the plan must recompute when the
+    // board snapshot or its enabled flag changes (off → these never change → no-op).
+    uiState?.board,
+    uiState?.boardEnabled,
     liveColumns,
     liveRows,
     inputBoxRows,

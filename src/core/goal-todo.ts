@@ -26,6 +26,8 @@
  */
 
 import type { RoadmapItem, RoadmapStatus } from './work-contract.js';
+import { capRoadmapItem } from './work-contract.js';
+import type { VerifiedState } from './verify.js';
 
 // ---------------------------------------------------------------------------
 // The unified goal type
@@ -50,6 +52,19 @@ type GoalSource =
 export type GoalScope = 'global' | 'project';
 
 /**
+ * Goal-level verdict shape — mirrors RoadmapItemVerdict but without
+ * changedPaths (goals aggregate multiple to-dos; paths are per-item).
+ * Reuses the same VerifiedState four-state union (verify.ts).
+ */
+export interface GoalVerdict {
+  readonly state: VerifiedState;
+  /** The honest receipt string from the goal-level acceptance check. */
+  readonly receipt: string;
+  /** ISO timestamp when the verdict was recorded. */
+  readonly at: string;
+}
+
+/**
  * The persisted goal. `roadmap` reuses `RoadmapItem` (work-contract.ts) verbatim
  * — a to-do IS a roadmap item; `done`/`blocked` are existing statuses. `title`
  * maps 1:1 to `WorkContract.objective` / `GoalView.label`.
@@ -68,13 +83,29 @@ export interface Goal {
   readonly conversationId: string | null;
   readonly createdAt: string; // ISO
   readonly lastTouched: string; // ISO — bumped on any state/roadmap change
+  /**
+   * The goal-level end-to-end definition of done. Authored by the manager
+   * tier at goal creation or re-plan; threaded into the goal-level acceptance
+   * check (Part 3, dim a). Optional — goals created before Phase 2 lack it
+   * and continue to work normally.
+   */
+  readonly goalAcceptance?: string;
+  /**
+   * Evidence-backed goal-level verdict. Set only by the goal-manager after
+   * every RoadmapItem.verdict ∈ {passing, reviewed} AND the goal-level
+   * verifyStage check passes against goalAcceptance (Part 3). Never
+   * hand-set by a model — anti-fabrication hard rule.
+   */
+  readonly goalVerdict?: GoalVerdict;
 }
 
 /** Roadmap cap — the SAME bound work-contract.ts enforces (cap 8). */
 export const ROADMAP_LIMIT = 8;
 
 const TITLE_LIMIT = 240;
-const ROADMAP_TEXT_LIMIT = 160;
+// Phase 2 caps for the new goal-level acceptance/verdict fields.
+const GOAL_ACCEPTANCE_LIMIT = 400;
+const GOAL_VERDICT_RECEIPT_LIMIT = 400;
 
 const VALID_STATES: ReadonlySet<string> = new Set<GoalState>([
   'parked',
@@ -82,13 +113,6 @@ const VALID_STATES: ReadonlySet<string> = new Set<GoalState>([
   'running',
   'done',
   'failed',
-]);
-
-const VALID_STATUSES: ReadonlySet<string> = new Set<RoadmapStatus>([
-  'pending',
-  'active',
-  'done',
-  'blocked',
 ]);
 
 const VALID_SOURCES: ReadonlySet<string> = new Set<GoalSource>([
@@ -99,6 +123,13 @@ const VALID_SOURCES: ReadonlySet<string> = new Set<GoalSource>([
 ]);
 
 const VALID_SCOPES: ReadonlySet<string> = new Set<GoalScope>(['global', 'project']);
+
+const VALID_VERIFIED_STATES: ReadonlySet<string> = new Set<VerifiedState>([
+  'unverified',
+  'reviewed',
+  'passing',
+  'failing',
+]);
 
 // ---------------------------------------------------------------------------
 // Defensive shaping (mirrors work-contract.capContract — never throws)
@@ -118,12 +149,6 @@ function capText(value: unknown, limit: number): string {
   return safeString(value).slice(0, limit);
 }
 
-function capRoadmapStatus(value: unknown): RoadmapStatus {
-  return typeof value === 'string' && VALID_STATUSES.has(value)
-    ? (value as RoadmapStatus)
-    : 'pending';
-}
-
 function capState(value: unknown): GoalState {
   return typeof value === 'string' && VALID_STATES.has(value) ? (value as GoalState) : 'parked';
 }
@@ -138,24 +163,21 @@ function capScope(value: unknown): GoalScope {
   return typeof value === 'string' && VALID_SCOPES.has(value) ? (value as GoalScope) : 'project';
 }
 
+function capVerifiedState(value: unknown): VerifiedState | undefined {
+  return typeof value === 'string' && VALID_VERIFIED_STATES.has(value)
+    ? (value as VerifiedState)
+    : undefined;
+}
+
 /**
- * Return a deterministic, capped copy of a roadmap (cap 8, capped text/status).
- * Pure, never throws on malformed input. Mirrors the roadmap branch of
- * `capContract` so a goal's to-dos obey the same bounds as a live contract's.
+ * Return a deterministic, capped copy of a roadmap (cap 8, capped text/status
+ * + the Phase 2 optional fields acceptanceCriterion/verdict/approach).
+ * Pure, never throws on malformed input. Delegates per-item capping to
+ * `capRoadmapItem` (work-contract.ts) so both paths stay in sync.
  */
 export function capRoadmap(roadmap: unknown): RoadmapItem[] {
   if (!Array.isArray(roadmap)) return [];
-  return roadmap.slice(0, ROADMAP_LIMIT).map((item) => {
-    const r =
-      item !== null && typeof item === 'object'
-        ? (item as { readonly id?: unknown; readonly text?: unknown; readonly status?: unknown })
-        : {};
-    return {
-      id: safeString(r.id),
-      text: capText(r.text, ROADMAP_TEXT_LIMIT),
-      status: capRoadmapStatus(r.status),
-    };
-  });
+  return roadmap.slice(0, ROADMAP_LIMIT).map(capRoadmapItem);
 }
 
 /**
@@ -163,6 +185,9 @@ export function capRoadmap(roadmap: unknown): RoadmapItem[] {
  * malformed field falls back to a safe default (state→parked, scope→project)
  * rather than throwing. Used by the store on every read so a hand-edited or
  * partially-written index can never crash a caller.
+ *
+ * Phase 2 additive fields (goalAcceptance, goalVerdict) are omitted when
+ * absent or malformed — an existing Goal without them round-trips identically.
  */
 export function capGoal(g: Goal): Goal {
   const raw = g as unknown;
@@ -171,6 +196,26 @@ export function capGoal(g: Goal): Goal {
       ? (raw as Record<string, unknown>)
       : ({} as Record<string, unknown>);
   const scope = capScope(r['scope']);
+
+  // goalAcceptance — omit if absent; cap length.
+  const ga = r['goalAcceptance'];
+  const cappedGa = ga !== undefined ? capText(ga, GOAL_ACCEPTANCE_LIMIT) : undefined;
+
+  // goalVerdict — omit the whole field if state is missing/invalid (anti-fabrication).
+  let cappedGv: GoalVerdict | undefined;
+  if (r['goalVerdict'] !== undefined && r['goalVerdict'] !== null && typeof r['goalVerdict'] === 'object') {
+    const gv = r['goalVerdict'] as Record<string, unknown>;
+    const state = capVerifiedState(gv['state']);
+    if (state !== undefined) {
+      cappedGv = {
+        state,
+        receipt: capText(gv['receipt'], GOAL_VERDICT_RECEIPT_LIMIT),
+        at: safeString(gv['at']),
+      };
+    }
+    // If state is invalid/missing → cappedGv stays undefined (omit entirely).
+  }
+
   return {
     version: 1,
     id: safeString(r['id']),
@@ -183,6 +228,8 @@ export function capGoal(g: Goal): Goal {
     conversationId: typeof r['conversationId'] === 'string' ? r['conversationId'] : null,
     createdAt: safeString(r['createdAt']),
     lastTouched: safeString(r['lastTouched']),
+    ...(cappedGa !== undefined ? { goalAcceptance: cappedGa } : {}),
+    ...(cappedGv !== undefined ? { goalVerdict: cappedGv } : {}),
   };
 }
 

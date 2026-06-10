@@ -7,13 +7,59 @@
 
 import type { Classification } from './types.js';
 import type { ReviewVerdict } from './review.js';
+import type { VerifiedState } from './verify.js';
 
 export type RoadmapStatus = 'pending' | 'active' | 'done' | 'blocked';
+
+/**
+ * Evidence-backed verdict for a single to-do item. `state` mirrors the
+ * {@link VerifiedState} four-state union from verify.ts. Never hand-set by a
+ * model — only written by the verify stage (Phase 4).
+ */
+export interface RoadmapItemVerdict {
+  readonly state: VerifiedState;
+  /** The honest receipt string from buildVerifyReceipt (verify.ts). */
+  readonly receipt: string;
+  /** The repo-relative paths the diff actually touched (the real grounding). */
+  readonly changedPaths?: readonly string[];
+  /** ISO timestamp when the verdict was recorded. */
+  readonly at: string;
+}
+
+/**
+ * The best-approach record — set by the goal-manager at planning time from
+ * the SystemModel (Phase 5). Kept on the item so the approach can be
+ * interrogated by the approach-quality critic.
+ */
+export interface RoadmapItemApproach {
+  /** The chosen implementation strategy for this to-do. */
+  readonly chosen: string;
+  /** Alternatives the manager considered but did not choose. */
+  readonly alternatives?: readonly string[];
+  /** Why the chosen approach is preferred over the alternatives. */
+  readonly rationale: string;
+}
 
 export interface RoadmapItem {
   readonly id: string;
   readonly text: string;
   readonly status: RoadmapStatus;
+  /**
+   * The explicit, checkable definition of done for this to-do. Authored at
+   * to-do creation by the manager tier; threaded into the critic prompt so
+   * verification is anchored to a real criterion (Part 3a).
+   */
+  readonly acceptanceCriterion?: string;
+  /**
+   * Evidence-backed verdict. Only written by the verify stage — never
+   * hand-set by a model (hard anti-fabrication rule, Part 3a).
+   */
+  readonly verdict?: RoadmapItemVerdict;
+  /**
+   * The best-approach record set by the goal-manager at planning time
+   * (Part 3b). Enables the approach-quality critic question.
+   */
+  readonly approach?: RoadmapItemApproach;
 }
 
 export interface Checkpoint {
@@ -49,6 +95,22 @@ const NOTES_LIMIT = 240;
 const ROADMAP_TEXT_LIMIT = 160;
 const CHECKPOINT_SUMMARY_LIMIT = 160;
 const EVIDENCE_LIMIT = 120;
+// New caps for Phase 2 data-model fields (Part 3 of the architecture).
+const ACCEPTANCE_CRITERION_LIMIT = 400;
+const VERDICT_RECEIPT_LIMIT = 400;
+const VERDICT_PATH_LIMIT = 200;
+const VERDICT_PATHS_LIMIT = 20;
+const APPROACH_CHOSEN_LIMIT = 400;
+const APPROACH_RATIONALE_LIMIT = 400;
+const APPROACH_ALT_LIMIT = 160;
+const APPROACH_ALTS_LIMIT = 8;
+
+const VALID_VERIFIED_STATES: ReadonlySet<string> = new Set<VerifiedState>([
+  'unverified',
+  'reviewed',
+  'passing',
+  'failing',
+]);
 
 const VALID_STATUSES: ReadonlySet<string> = new Set<RoadmapStatus>([
   'pending',
@@ -77,6 +139,87 @@ function capStatus(value: unknown): RoadmapStatus {
     : 'pending';
 }
 
+function capVerifiedState(value: unknown): VerifiedState | undefined {
+  return typeof value === 'string' && VALID_VERIFIED_STATES.has(value)
+    ? (value as VerifiedState)
+    : undefined;
+}
+
+/**
+ * Cap a single RoadmapItem defensively. Handles the three new optional Phase 2
+ * fields (acceptanceCriterion, verdict, approach) with the same fail-soft,
+ * never-throw discipline as the rest of the shapers. Unknown or malformed new
+ * fields are OMITTED rather than defaulted, keeping the shape forward-compatible.
+ * An item that was created WITHOUT the new fields round-trips byte-identically.
+ */
+export function capRoadmapItem(item: unknown): RoadmapItem {
+  const r =
+    item !== null && typeof item === 'object'
+      ? (item as Record<string, unknown>)
+      : ({} as Record<string, unknown>);
+
+  const base: RoadmapItem = {
+    id: safeString(r['id']),
+    text: capText(r['text'], ROADMAP_TEXT_LIMIT),
+    status: capStatus(r['status']),
+  };
+
+  // acceptanceCriterion — omit if absent or empty after capping.
+  const ac = r['acceptanceCriterion'];
+  const cappedAc = ac !== undefined ? capText(ac, ACCEPTANCE_CRITERION_LIMIT) : undefined;
+
+  // verdict — omit the whole field if state is missing or invalid (anti-fabrication).
+  let cappedVerdict: RoadmapItemVerdict | undefined;
+  if (r['verdict'] !== undefined && r['verdict'] !== null && typeof r['verdict'] === 'object') {
+    const v = r['verdict'] as Record<string, unknown>;
+    const state = capVerifiedState(v['state']);
+    if (state !== undefined) {
+      cappedVerdict = {
+        state,
+        receipt: capText(v['receipt'], VERDICT_RECEIPT_LIMIT),
+        at: safeString(v['at']),
+        ...(Array.isArray(v['changedPaths'])
+          ? {
+              changedPaths: v['changedPaths']
+                .slice(0, VERDICT_PATHS_LIMIT)
+                .map((p) => capText(p, VERDICT_PATH_LIMIT)),
+            }
+          : {}),
+      };
+    }
+    // If state is invalid/missing → cappedVerdict stays undefined (omit entirely).
+  }
+
+  // approach — omit the whole field if chosen or rationale is missing.
+  let cappedApproach: RoadmapItemApproach | undefined;
+  if (r['approach'] !== undefined && r['approach'] !== null && typeof r['approach'] === 'object') {
+    const a = r['approach'] as Record<string, unknown>;
+    const chosen = capText(a['chosen'], APPROACH_CHOSEN_LIMIT);
+    const rationale = capText(a['rationale'], APPROACH_RATIONALE_LIMIT);
+    if (chosen.length > 0 && rationale.length > 0) {
+      cappedApproach = {
+        chosen,
+        rationale,
+        ...(Array.isArray(a['alternatives'])
+          ? {
+              alternatives: a['alternatives']
+                .slice(0, APPROACH_ALTS_LIMIT)
+                .map((alt) => capText(alt, APPROACH_ALT_LIMIT)),
+            }
+          : {}),
+      };
+    }
+    // If chosen/rationale missing → cappedApproach stays undefined (omit).
+  }
+
+  return {
+    ...base,
+    ...(cappedAc !== undefined ? { acceptanceCriterion: cappedAc } : {}),
+    ...(cappedVerdict !== undefined ? { verdict: cappedVerdict } : {}),
+    ...(cappedApproach !== undefined ? { approach: cappedApproach } : {}),
+  };
+}
+
 /**
  * Return a deterministic, capped copy of a contract. This function is defensive
  * at runtime and never throws on malformed values.
@@ -95,21 +238,7 @@ export function capContract(c: WorkContract): WorkContract {
       : {};
 
   const roadmap = Array.isArray(raw.roadmap)
-    ? raw.roadmap.slice(0, ROADMAP_LIMIT).map((item) => {
-        const r =
-          item !== null && typeof item === 'object'
-            ? (item as {
-                readonly id?: unknown;
-                readonly text?: unknown;
-                readonly status?: unknown;
-              })
-            : {};
-        return {
-          id: safeString(r.id),
-          text: capText(r.text, ROADMAP_TEXT_LIMIT),
-          status: capStatus(r.status),
-        };
-      })
+    ? raw.roadmap.slice(0, ROADMAP_LIMIT).map(capRoadmapItem)
     : undefined;
 
   const checkpoints = Array.isArray(raw.checkpoints)

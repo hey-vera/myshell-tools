@@ -46,6 +46,10 @@ import { judgmentEnabled } from '../core/judgment-flag.js';
 import { isPushBackQuestionSet, classifyPushBackAnswer } from '../core/brain.js';
 import { renderTastePlaybook, isImmediateRephrase, type TasteSignal } from '../core/taste.js';
 import { createFileGoalStore } from '../infra/goal-store.js';
+import { goalGlyph, roadmapProgress } from '../core/goal-todo.js';
+import type { Goal } from '../core/goal-todo.js';
+import { boardEnabled } from './ui/board-flag.js';
+import type { GoalBoardRow } from './ui/state.js';
 import {
   runGoalsList,
   runTodoCreate,
@@ -1990,6 +1994,57 @@ export async function runChatLoop(
       // PARKED goal's roadmap — nothing floats. Fail-soft, shares the two-scope
       // project key with memory. No model call to create/manage a manual to-do.
       const goalStore = createFileGoalStore({ clock: ctx.clock });
+
+      // ---- Persistent goal BOARD (Elite-partner Phase 1) ----------------------
+      // DEFAULT OFF. When the board flag is ON (MYSHELL_BOARD or
+      // config.experimentalBoard), the live UI suppresses the fake per-turn
+      // "GOALS ▸ <message>" card and paints a REAL persistent board projected from
+      // this store. The board is purely a UI/menu concern: we snapshot the store and
+      // push it into the reducer via `out.syncBoard?.()` (a no-op on legacy/test
+      // sinks, so the flag-off path stays byte-identical). Cheap: a local store read,
+      // no model call. Fully fail-soft (a board read never blocks/breaks a turn).
+      const boardOn = boardEnabled(process.env, mutableCtx.config);
+      // Map one persisted Goal → a flat board row using the PURE goal-todo.ts shapers
+      // (goalGlyph for the lifecycle glyph, roadmapProgress for the to-do counts), so
+      // the projection reuses the same vocabulary as the /goals menu rows. `agents`
+      // is seeded 0 here; the reducer re-derives the LIVE running-agent count from
+      // its own attach-by-goalId truth, so a running goal shows its real agent count.
+      const toBoardRow = (g: Goal): GoalBoardRow => {
+        const prog = roadmapProgress(g.roadmap);
+        return {
+          id: g.id,
+          title: g.title,
+          state: g.state,
+          done: prog.done,
+          total: prog.total,
+          glyph: goalGlyph(g),
+          scope: g.scope,
+          agents: 0,
+        };
+      };
+      // Snapshot the store and push it into the live board. Scoped to the current
+      // project + globals so the board mirrors what /goals lists. Fail-soft: any
+      // store/sink error degrades to no board update (never throws into the turn).
+      const syncBoard = async (): Promise<void> => {
+        if (!boardOn || typeof out.syncBoard !== 'function') return;
+        try {
+          const projectKey = await resolveProjectKeyOnce();
+          const all = await goalStore.list();
+          // Show this project's goals + global goals (drop other projects' rows), so
+          // the board is relevant without leaking unrelated repos' work.
+          const relevant = all.filter(
+            (g) => g.scope === 'global' || g.projectKey === null || g.projectKey === projectKey,
+          );
+          out.syncBoard(relevant.map(toBoardRow));
+        } catch {
+          /* board is best-effort chrome — never block or break a turn */
+        }
+      };
+      // Sync the board at the START of this turn (the chat-loop entry point), so the
+      // persistent board reflects the real store before any work streams. No-op when
+      // the flag is off → byte-identical.
+      await syncBoard();
+
       const resolveTurnMemory = async (task: string): Promise<string> => {
         // Kill-switch: no read/inject when memory is off.
         if (mutableCtx.config.memory === false) return '';
@@ -2689,6 +2744,7 @@ export async function runChatLoop(
             projectKey: await resolveProjectKeyOnce(),
             conversationId: convId,
           });
+          await syncBoard(); // a new parked goal landed → refresh the board
           return 'continue';
         }
         // mark: done | blocked on parked goal #g, item #n. Honesty: a to-do is
@@ -2707,6 +2763,7 @@ export async function runChatLoop(
           const verb = cmd.status === 'done' ? 'Checked off' : 'Flagged blocked';
           out.write(`  ${verb} to-do #${cmd.n} of "${updated.title}".\n`);
         }
+        await syncBoard(); // a to-do status changed → refresh the board's N/M counts
         return 'continue';
       }
 
@@ -2738,6 +2795,7 @@ export async function runChatLoop(
           // Never silent-delete: the user asked explicitly, so confirm + report.
           await goalStore.remove(target.id);
           out.write(`  Dropped goal "${target.title}".\n`);
+          await syncBoard(); // a goal left the store → refresh the board
           return 'continue';
         }
         // cmd.kind === 'go' — PROMOTE. Hand the goal TITLE to runGoalLoop, which
@@ -2748,6 +2806,7 @@ export async function runChatLoop(
         // the loop reached real GOAL_COMPLETE (never inferred), else leave it
         // running for the user to revisit.
         await goalStore.setState(target.id, 'running');
+        await syncBoard(); // goal flipped to running → reflect on the board
         out.write(dim(`  Promoting "${target.title}" — re-validating its to-dos against the current state…\n`, out.color));
         // 4th-report fix: a parked title is RAW user text (runTodoCreate stores the
         // /todo text verbatim, truncated to 80 chars), so it can be a ramble. Form a
@@ -2757,6 +2816,7 @@ export async function runChatLoop(
         if (lastGoalCompleted) {
           await goalStore.setState(target.id, 'done');
         }
+        await syncBoard(); // goal settled (done / still running) → refresh the board
         if (shouldBreak) return control.result;
         return 'continue';
       }

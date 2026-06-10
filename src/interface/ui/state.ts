@@ -94,6 +94,35 @@ export interface GoalView {
   readonly phase?: { readonly current: number; readonly total: number };
 }
 
+/**
+ * One row of the REAL PERSISTENT GOAL BOARD (Elite-partner Phase 1) — a flat,
+ * pure projection of a persisted `Goal` (src/core/goal-todo.ts) plus the LIVE
+ * agent count for a goal that is currently running this turn. The board is
+ * populated by a `board/sync` action the menu dispatches from `goalStore.list()`;
+ * the reducer never reads the store. Every field is REAL (never fabricated):
+ *  - `id`/`title`/`scope` copied from the Goal;
+ *  - `state` the Goal's lifecycle state (`parked|queued|running|done|failed`);
+ *  - `done`/`total` the to-do counts (`roadmapProgress`), so the row can show
+ *    `N/M to-dos`;
+ *  - `glyph` the pre-shaped lifecycle glyph (`goalGlyph`), so the view reuses the
+ *    same vocabulary as the menu rows without re-deriving it;
+ *  - `agents` the live count of running agents attached to this goal THIS turn
+ *    (reusing the reducer's goalId attach branch), 0 when the goal isn't running
+ *    on the current turn — a REAL count, never inflated.
+ * Plain data + serializable; carries no Date/Math.
+ */
+export interface GoalBoardRow {
+  readonly id: string;
+  readonly title: string;
+  readonly state: 'parked' | 'queued' | 'running' | 'done' | 'failed';
+  readonly done: number;
+  readonly total: number;
+  readonly glyph: string;
+  readonly scope: 'global' | 'project';
+  /** Live count of running agents attached to this goal on the current turn. */
+  readonly agents: number;
+}
+
 /** The execution phase that drives the live status line / spinner verb. */
 export type StreamPhase = 'idle' | 'thinking' | 'panel' | 'synthesis' | 'streaming';
 
@@ -195,6 +224,24 @@ export interface UiState {
   readonly stream: StreamView;
   readonly turnActive: boolean;
   readonly tokens: TokenView;
+  /**
+   * The REAL PERSISTENT GOAL BOARD (Elite-partner Phase 1): a flat projection of
+   * the persisted GoalStore, populated by `board/sync` and rendered ACROSS turns
+   * (independent of `turnActive`). Empty `[]` until the menu syncs a snapshot in.
+   * Default `[]` keeps every existing reducer transition byte-identical (the board
+   * is purely additive chrome).
+   */
+  readonly board: readonly GoalBoardRow[];
+  /**
+   * Whether the persistent board feature is ON (the menu flipped it via a
+   * `board/sync` with `enabled: true`). DEFAULT false → byte-for-byte today's UI:
+   * the reducer keeps the `title ?? tier` per-turn label (the fake card) and the
+   * layout/StatusBlock never plan or paint the board. When true, the per-turn
+   * card's raw-message title is suppressed (the live region heads "WORKING") and
+   * the board is painted. Lives on UiState (not env) so the pure reducer/layout
+   * stay env-free and table-testable.
+   */
+  readonly boardEnabled: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -233,6 +280,8 @@ export const initialState: UiState = {
   stream: initialStreamView,
   turnActive: false,
   tokens: { turn: 0, session: 0 },
+  board: [],
+  boardEnabled: false,
 };
 
 // ---------------------------------------------------------------------------
@@ -367,6 +416,21 @@ export type Action =
       readonly goalId: string;
       readonly current: number;
       readonly total: number;
+    }
+  // --- board/sync: REPLACE the persistent goal board with a fresh snapshot of the
+  //     GoalStore (Elite-partner Phase 1). The menu dispatches this — built from
+  //     `goalStore.list()` via pure goal-todo.ts shapers — at chat-loop start and
+  //     after any /todo,/goals mutation. `enabled` flips `UiState.boardEnabled`
+  //     (the menu only ever sends this action when the board flag is on), which is
+  //     what suppresses the fake per-turn card and turns on board rendering. The
+  //     reducer re-derives each row's LIVE agent count from `state.goals` (the
+  //     reducer-owned, real attach-by-goalId truth) — the snapshot's own `agents`
+  //     is ignored for running goals so the count is never stale/fabricated. Pure
+  //     replace (like chrome/replace); never appends. ---
+  | {
+      readonly type: 'board/sync';
+      readonly rows: readonly GoalBoardRow[];
+      readonly enabled: boolean;
     }
   // --- escalation to a stronger tier ---
   | {

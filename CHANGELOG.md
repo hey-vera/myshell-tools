@@ -6,7 +6,24 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
-## [3.60.0] - 2026-06-10
+## [3.61.0] - 2026-06-10
+
+### Added (foundation — the elite planning-partner build, Phase 1+2)
+- **A real, persistent goal board** (behind `MYSHELL_BOARD`, default off): replaces the
+  per-turn "GOALS ▸ <your message>" card that flashed and vanished every turn. The board
+  is sourced from the actual goal store, shows each goal with its to-do progress · state ·
+  scope · live agent count, and **persists across turns** instead of being a throwaway
+  label on the current turn. With the flag on, the live turn region shows honest "WORKING"
+  status (tier/agents), never your raw message dressed up as a goal. Default-off path is
+  byte-identical to today.
+- **"Truly complete" data model**: each to-do can now carry an explicit
+  `acceptanceCriterion` (definition of done), an evidence-backed `verdict`
+  (unverified/reviewed/passing/failing — never hand-set by a model), and a best-approach
+  record; goals carry a goal-level acceptance check. Additive and defensively capped — no
+  behavior change yet; later phases wire verification to enforce that "done" means
+  *verified* done, not claimed.
+
+
 
 ### Fixed
 - **Goals are now written by a smart model, like a senior engineer would** — the real

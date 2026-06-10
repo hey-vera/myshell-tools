@@ -286,6 +286,16 @@ export interface AppConfig {
    */
   experimentalTribunal?: boolean;
   /**
+   * Opt-in for the REAL PERSISTENT GOAL BOARD (Elite-partner Phase 1). Absent/false
+   * → the live status region is byte-for-byte today's, INCLUDING the per-turn
+   * "GOALS ▸ <message>" card. When true (or `MYSHELL_BOARD` ∈ {1,true,on,yes}) the
+   * UI suppresses that fake card, reheads the live region "WORKING", and paints the
+   * persistent board (a projection of the GoalStore) across turns. Purely a UI/menu
+   * concern — no core/orchestrate behaviour changes. See
+   * src/interface/ui/board-flag.ts.
+   */
+  experimentalBoard?: boolean;
+  /**
    * Per-user "first-touch explainer shown" flags (whole-tool-finish-5.5.md §0.1).
    * Absent → nothing shown yet (each surface explains itself once on first
    * encounter). Each key flips to true the first time that surface is met.

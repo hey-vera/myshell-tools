@@ -23,6 +23,7 @@ import { formatTokens } from '../../infra/insights.js';
 import {
   type Action,
   type AgentView,
+  type GoalBoardRow,
   type GoalView,
   type StreamView,
   type TranscriptLine,
@@ -299,14 +300,21 @@ export function reduce(state: UiState, action: Action): UiState {
         action.goalId !== undefined
           ? state.goals.findIndex((g) => g.id === action.goalId)
           : -1;
+      // Elite-partner Phase 1: when the persistent board is ON, the per-turn card
+      // must NOT surface the raw-message `title` (the fake "GOALS ▸ <message>" card)
+      // — the honest current-turn label is the routing TIER (worker/ic/manager). The
+      // raw message lives nowhere on the live card; the real goal lives on the board.
+      // When the board is OFF this is `action.title` verbatim → byte-for-byte today.
+      const honestTitle = state.boardEnabled ? undefined : action.title;
       const goal: GoalView = {
         // Key off the scheduler-assigned goalId when present (stable across the
         // goal's phases); else the original per-tier id, byte-for-byte unchanged.
         id: action.goalId !== undefined ? action.goalId : `${action.tier}#${action.attempt}`,
         // Phase 2: lead with the human goal title when the engine supplied one;
         // fail soft to the bare tier id so the card is never blank and the count
-        // is never fabricated. The tier/risk ride along for the dim badge.
-        label: action.title !== undefined && action.title.length > 0 ? action.title : action.tier,
+        // is never fabricated. The tier/risk ride along for the dim badge. With the
+        // board on, `honestTitle` is undefined → the label is the tier (no raw msg).
+        label: honestTitle !== undefined && honestTitle.length > 0 ? honestTitle : action.tier,
         state: 'running',
         tokens: 0,
         agents: [agent],
@@ -322,7 +330,7 @@ export function reduce(state: UiState, action: Action): UiState {
         nextGoals = state.goals.map((g, i) => {
           if (i !== existingIdx) return g;
           const label =
-            action.title !== undefined && action.title.length > 0 ? action.title : g.label;
+            honestTitle !== undefined && honestTitle.length > 0 ? honestTitle : g.label;
           return {
             ...g,
             label,
@@ -392,6 +400,28 @@ export function reduce(state: UiState, action: Action): UiState {
             : g,
         ),
       };
+    }
+
+    // -- board/sync: REPLACE the persistent goal board with the menu's fresh
+    //    GoalStore snapshot (Elite-partner Phase 1). Pure replace, mirroring the
+    //    chrome/replace pattern. `enabled` flips boardEnabled (the menu only sends
+    //    this action when the board flag is on). For each synced row we re-derive
+    //    the LIVE agent count from `state.goals` — the reducer-owned, REAL
+    //    attach-by-goalId truth (reduce.ts tier-start branch) — so a running goal's
+    //    "N agents" is the actual number of attached agents this turn, never the
+    //    snapshot's stale value. A goal not running on the current turn keeps 0.
+    case 'board/sync': {
+      const liveAgentsById = new Map<string, number>();
+      for (const g of state.goals) {
+        if (g.state === 'running') {
+          liveAgentsById.set(g.id, (liveAgentsById.get(g.id) ?? 0) + g.agents.length);
+        }
+      }
+      const board: GoalBoardRow[] = action.rows.map((row) => {
+        const live = liveAgentsById.get(row.id);
+        return live !== undefined ? { ...row, agents: live } : row;
+      });
+      return { ...state, board, boardEnabled: action.enabled };
     }
 
     // -- prose: already-cleaned. Apply render.ts's fresh-line heuristics, then

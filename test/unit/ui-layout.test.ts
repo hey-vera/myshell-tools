@@ -26,14 +26,16 @@ import {
   coalescedQueuedLine,
   streamWrappedRows,
   tailStreamToRows,
+  planBoard,
   INPUT_ROWS,
   STATUS_LINE_ROWS,
   SUMMARY_LINE_ROWS,
   PANEL_BORDER_ROWS,
   SAFETY_MARGIN_ROWS,
+  BOARD_CHROME_ROWS,
 } from '../../src/interface/ui/index.ts';
 import { initialState } from '../../src/interface/ui/index.ts';
-import type { AgentView, GoalView, UiState } from '../../src/interface/ui/index.ts';
+import type { AgentView, GoalBoardRow, GoalView, UiState } from '../../src/interface/ui/index.ts';
 import {
   composerPhysicalRows,
   composerShownPlan,
@@ -619,5 +621,108 @@ describe('chrome[] is inside the height budget (BUG 3)', () => {
     // The full on-screen total — chrome + the planned dynamic region + input — fits.
     const total = chromeRows + plan.plannedRows + inputRows;
     assert.ok(total <= rows, `chrome ${chromeRows} + planned ${plan.plannedRows} + input ${inputRows} = ${total} > ${rows}`);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Elite-partner Phase 1 — the persistent BOARD plan
+// ---------------------------------------------------------------------------
+
+function boardRow(over: Partial<GoalBoardRow> = {}): GoalBoardRow {
+  return {
+    id: over.id ?? 'goal_a',
+    title: over.title ?? 'Redesign feed',
+    state: over.state ?? 'parked',
+    done: over.done ?? 3,
+    total: over.total ?? 8,
+    glyph: over.glyph ?? '◷',
+    scope: over.scope ?? 'project',
+    agents: over.agents ?? 0,
+  };
+}
+
+function withBoard(board: readonly GoalBoardRow[], turnActive = false, goals: readonly GoalView[] = []): UiState {
+  return { ...initialState, turnActive, goals, board, boardEnabled: true };
+}
+
+describe('planBoard — bounded board body', () => {
+  it('returns null for an empty board or a <1 budget', () => {
+    assert.equal(planBoard([], 10), null);
+    assert.equal(planBoard([boardRow()], 0), null);
+  });
+  it('shows every goal as one row each when they fit', () => {
+    const rows = [boardRow({ id: 'a' }), boardRow({ id: 'b' }), boardRow({ id: 'c' })];
+    const plan = planBoard(rows, 5);
+    assert.ok(plan !== null);
+    assert.equal(plan?.shown.length, 3);
+    assert.equal(plan?.overflow, 0);
+  });
+  it('collapses the overflow into a single +K more line so 20 goals never exceed the budget', () => {
+    const rows = Array.from({ length: 20 }, (_, i) => boardRow({ id: `g${i}` }));
+    const budget = 6;
+    const plan = planBoard(rows, budget);
+    assert.ok(plan !== null);
+    // shown rows + the one overflow line never exceed the budget.
+    const used = (plan?.shown.length ?? 0) + ((plan?.overflow ?? 0) > 0 ? 1 : 0);
+    assert.ok(used <= budget, `used ${used} > budget ${budget}`);
+    assert.equal((plan?.shown.length ?? 0) + (plan?.overflow ?? 0), 20, 'every goal accounted for');
+    assert.ok((plan?.overflow ?? 0) > 0);
+  });
+});
+
+describe('layoutForHeight — persistent board (flag ON)', () => {
+  it('renders the board even when the turn is IDLE (independent of turnActive)', () => {
+    const plan = layoutForHeight(withBoard([boardRow(), boardRow({ id: 'b' })]), 24);
+    assert.equal(plan.visible, true, 'block is visible for the board even when idle');
+    assert.notEqual(plan.board, null);
+    assert.equal(plan.board?.shown.length, 2);
+    // No live goals panel when idle.
+    assert.equal(plan.goals.kind, 'hidden');
+    assert.equal(plan.streamCap, 0);
+  });
+
+  it('shows BOTH the board and the live goals panel during an active turn', () => {
+    const goals = [
+      { id: 'mid#0', label: 'ic', state: 'running' as const, tokens: 0, agents: [], tier: 'ic' as const },
+    ];
+    const plan = layoutForHeight(withBoard([boardRow()], true, goals), 40, 1);
+    assert.equal(plan.visible, true);
+    assert.notEqual(plan.board, null, 'board still planned during a turn');
+    assert.equal(plan.goals.kind, 'full', 'live goals panel also planned');
+  });
+
+  it('a 20-goal board never makes the planned region exceed the viewport (idle)', () => {
+    const rows = Array.from({ length: 20 }, (_, i) => boardRow({ id: `g${i}` }));
+    const viewport = 24;
+    const plan = layoutForHeight(withBoard(rows), viewport, 0, INPUT_ROWS);
+    assert.equal(plan.visible, true);
+    assert.ok(
+      plan.plannedRows + INPUT_ROWS + SAFETY_MARGIN_ROWS <= viewport,
+      `planned ${plan.plannedRows} + input ${INPUT_ROWS} + margin ${SAFETY_MARGIN_ROWS} > ${viewport}`,
+    );
+    // The board self-caps to ~1/3 of the viewport, so it leaves room for a live turn.
+    const boardRowsUsed = BOARD_CHROME_ROWS + (plan.board?.shown.length ?? 0) + ((plan.board?.overflow ?? 0) > 0 ? 1 : 0);
+    assert.equal(plan.plannedRows, boardRowsUsed, 'idle planned rows == the board rows');
+  });
+});
+
+describe('layoutForHeight — board OFF stays byte-identical', () => {
+  it('idle with boardEnabled false hides the whole block (today behaviour)', () => {
+    // Even with board ROWS present, the flag being OFF means no board renders.
+    const offState: UiState = { ...initialState, board: [boardRow()], boardEnabled: false };
+    const plan = layoutForHeight(offState, 24);
+    assert.equal(plan.visible, false);
+    assert.equal(plan.plannedRows, 0);
+    assert.equal(plan.board, null);
+  });
+
+  it('an active turn with the board OFF plans EXACTLY as before (board: null)', () => {
+    const goals = [
+      { id: 'mid#0', label: 'Refactor', state: 'running' as const, tokens: 3100, agents: [], tier: 'ic' as const },
+    ];
+    const off: UiState = { ...initialState, turnActive: true, goals };
+    const plan = layoutForHeight(off, 40, 1);
+    assert.equal(plan.board, null);
+    assert.equal(plan.goals.kind, 'full');
   });
 });

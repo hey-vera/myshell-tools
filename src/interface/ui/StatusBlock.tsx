@@ -32,10 +32,11 @@ import {
   summarizeTurn,
   coalescedQueuedLine,
   INPUT_ROWS,
+  type BoardPlan,
   type GoalsMode,
   type StatusLayout,
 } from './layout.js';
-import type { AgentView, AgentRunState, GoalView, UiState } from './state.js';
+import type { AgentView, AgentRunState, GoalBoardRow, GoalView, UiState } from './state.js';
 
 // ---------------------------------------------------------------------------
 // currentTool → a scannable live-action label
@@ -327,6 +328,12 @@ interface PanelsProps {
   readonly workLabel?: string;
   /** The live action label (real tool verb + target) for running agents. */
   readonly liveAction?: string;
+  /**
+   * The panel title. DEFAULT "GOALS" → byte-for-byte today. When the persistent
+   * board is ON the caller passes "WORKING" so the live per-turn region reads as
+   * honest current-turn status (the real goals live on the BOARD, not here).
+   */
+  readonly header?: string;
   readonly color?: boolean;
 }
 
@@ -336,12 +343,12 @@ interface PanelsProps {
  * `hidden` renders nothing (the caller drops the panel under height pressure).
  * The rounded border + cyan "GOALS" title mirror tui.panel()'s look.
  */
-function PanelsImpl({ mode, elapsedSecs, workLabel, liveAction, color = true }: PanelsProps): React.ReactElement | null {
+function PanelsImpl({ mode, elapsedSecs, workLabel, liveAction, header = 'GOALS', color = true }: PanelsProps): React.ReactElement | null {
   if (mode.kind === 'hidden') return null;
   const borderProps = color ? { borderColor: 'gray' as const } : {};
   return (
     <Box flexDirection="column" borderStyle="round" {...borderProps} paddingX={1}>
-      <Text {...(color ? { color: 'cyan' as const } : {})}>GOALS</Text>
+      <Text {...(color ? { color: 'cyan' as const } : {})}>{header}</Text>
       {mode.kind === 'full'
         ? mode.rows.map((row, i) => {
             // The ordered body plan: full cards, collapsed headers, and coalesced
@@ -393,6 +400,96 @@ function PanelsImpl({ mode, elapsedSecs, workLabel, liveAction, color = true }: 
  * memoizing never changes its output.
  */
 export const Panels = React.memo(PanelsImpl);
+
+// ---------------------------------------------------------------------------
+// BoardPanel — the REAL PERSISTENT GOAL BOARD (Elite-partner Phase 1)
+// ---------------------------------------------------------------------------
+
+/** A short "N/M to-dos" label (singular at total===1), mirroring goal-todo.ts
+ *  `formatTodoCount` for the board row's pre-projected done/total counts. PURE. */
+function boardTodoCount(done: number, total: number): string {
+  const noun = total === 1 ? 'to-do' : 'to-dos';
+  return `${done}/${total} ${noun}`;
+}
+
+/** The Ink colour for a board row's lifecycle glyph (gated on `color`). running →
+ *  cyan, done → green, failed → red, parked/queued → dim. */
+function boardGlyphProps(
+  state: GoalBoardRow['state'],
+  color: boolean,
+): { color?: string; dimColor?: boolean } {
+  if (!color) return {};
+  switch (state) {
+    case 'running':
+      return { color: 'cyan' };
+    case 'done':
+      return { color: 'green' };
+    case 'failed':
+      return { color: 'red' };
+    case 'queued':
+    case 'parked':
+      return { dimColor: true };
+  }
+}
+
+export interface BoardRowProps {
+  readonly row: GoalBoardRow;
+  readonly color?: boolean;
+}
+
+/**
+ * One persistent board row, reusing the GoalStore projection (built via the pure
+ * goal-todo.ts shapers `goalGlyph`/`roadmapProgress`/`formatTodoCount` at sync
+ * time): `<glyph> <title>   N/M to-dos · state · scope[ · K agents]`. The live
+ * agent count rides on the END only when the goal is running THIS turn (the
+ * reducer re-derived it from the real attach-by-goalId truth) — never fabricated.
+ * One terminal row. PURE view.
+ */
+export function BoardRow({ row, color = true }: BoardRowProps): React.ReactElement {
+  const glyphProps = boardGlyphProps(row.state, color);
+  const scope = row.scope === 'global' ? 'global' : 'this repo';
+  const parts = [boardTodoCount(row.done, row.total), row.state, scope];
+  if (row.agents > 0) parts.push(`${row.agents} agent${row.agents === 1 ? '' : 's'}`);
+  return (
+    <Box>
+      <Text {...glyphProps}>{row.glyph}</Text>
+      <Text {...(color ? {} : {})}>{` ${row.title}`}</Text>
+      <Text dimColor={color}>{`   ${parts.join(' · ')}`}</Text>
+    </Box>
+  );
+}
+
+interface BoardPanelProps {
+  readonly plan: BoardPlan;
+  readonly color?: boolean;
+}
+
+/**
+ * The bordered BOARD panel: a cyan "BOARD" title over one {@link BoardRow} per
+ * shown goal, plus a dim `+K more` overflow line when the height budget collapsed
+ * the tail. Painted STRICTLY to the layout's {@link BoardPlan} (so it can never
+ * overflow the viewport) and ACROSS turns (it does not depend on turnActive). The
+ * rounded border mirrors the GOALS/WORKING panel look.
+ */
+function BoardPanelImpl({ plan, color = true }: BoardPanelProps): React.ReactElement {
+  const borderProps = color ? { borderColor: 'gray' as const } : {};
+  return (
+    <Box flexDirection="column" borderStyle="round" {...borderProps} paddingX={1}>
+      <Text {...(color ? { color: 'cyan' as const } : {})}>BOARD</Text>
+      {plan.shown.map((row) => (
+        <BoardRow key={row.id} row={row} color={color} />
+      ))}
+      {plan.overflow > 0 ? (
+        <Text dimColor={color}>{`+${plan.overflow} more`}</Text>
+      ) : null}
+    </Box>
+  );
+}
+
+/** Memoized BOARD panel — a 1Hz elapsed bump or a spinner tick with an UNCHANGED
+ *  plan skips re-rendering the whole board tree (the plan reference is stable while
+ *  the memoized layout plan is). Pure view — memoizing never changes its output. */
+export const BoardPanel = React.memo(BoardPanelImpl);
 
 // ---------------------------------------------------------------------------
 // StatusLine — the spinner + phase verb + interrupt hint
@@ -598,6 +695,18 @@ export function StatusBlock({
     );
   if (!plan.visible) return null;
 
+  // The persistent BOARD (Elite-partner Phase 1) renders ACROSS turns, ABOVE the
+  // live region, painted strictly to the layout's bounded plan. Null on the flag-
+  // off path → nothing extra rendered (byte-for-byte today). When the turn is idle
+  // the live region (Panels / summary / spinner) collapses and ONLY the board shows.
+  const boardEl =
+    plan.board !== null ? <BoardPanel plan={plan.board} color={color} /> : null;
+
+  if (!state.turnActive) {
+    // Idle: the only reason the block is visible is the persistent board.
+    return <Box flexDirection="column">{boardEl}</Box>;
+  }
+
   // The live "what it's doing" label rides onto the RUNNING agent row (real
   // stream.workLabel — "Thinking" in normal mode, the verbose tier label in
   // verbose). Only meaningful while the non-panel stream is active.
@@ -607,11 +716,16 @@ export function StatusBlock({
   // fabricated; empty when no tool has fired this tier (then the row falls back to
   // the work label).
   const liveAction = liveActionLabel(state.stream.currentTool);
+  // With the persistent board ON, the live per-turn region is honest current-turn
+  // status, NOT a goal — so its header reads "WORKING", not "GOALS". Off → "GOALS".
+  const liveHeader = state.boardEnabled ? 'WORKING' : 'GOALS';
 
   return (
     <Box flexDirection="column">
+      {boardEl}
       <Panels
         mode={plan.goals}
+        header={liveHeader}
         {...(elapsedSecs !== undefined ? { elapsedSecs } : {})}
         {...(liveWorkLabel.length > 0 ? { workLabel: liveWorkLabel } : {})}
         {...(liveAction.length > 0 ? { liveAction } : {})}

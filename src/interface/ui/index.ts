@@ -35,6 +35,7 @@ export {
   goalCardRows,
   goalRowsHeight,
   planGoalsPanel,
+  planBoard,
   coalescedQueuedLine,
   streamWrappedRows,
   tailStreamToRows,
@@ -43,6 +44,7 @@ export {
   SUMMARY_LINE_ROWS,
   PANEL_BORDER_ROWS,
   SAFETY_MARGIN_ROWS,
+  BOARD_CHROME_ROWS,
 } from './layout.js';
 export {
   initialState,
@@ -50,6 +52,7 @@ export {
   type Action,
   type AgentRunState,
   type AgentView,
+  type GoalBoardRow,
   type GoalView,
   type StreamPhase,
   type StreamView,

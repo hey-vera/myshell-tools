@@ -29,6 +29,7 @@ import {
   initialState,
   renderStreamInk,
   type Action,
+  type GoalBoardRow,
   type UiState,
   type Verbosity,
 } from './index.js';
@@ -161,6 +162,14 @@ export function createInkOutputSink(
     // the legacy TTY. No-op when no frame is painted.
     promoteFrame(): void {
       store.dispatch({ type: 'chrome/promote' });
+    },
+    // Elite-partner Phase 1: REPLACE the persistent goal board with a fresh
+    // GoalStore snapshot and flip the board ON. The menu calls this ONLY when the
+    // board flag is on (it builds `rows` from goalStore.list() via the pure
+    // goal-todo.ts shapers), so the action — and thus boardEnabled — never fires
+    // when the flag is off. Pure replace into the same persistent store.
+    syncBoard(rows: readonly GoalBoardRow[]): void {
+      store.dispatch({ type: 'board/sync', rows, enabled: true });
     },
     // Commit any buffered partial line (a prompt written WITHOUT a trailing
     // newline) as its own committed `<Static>` item so it becomes visible before
