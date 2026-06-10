@@ -6,7 +6,20 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
-## [3.62.0] - 2026-06-10
+## [3.63.0] - 2026-06-10
+
+### Added (elite planning-partner build — the planning brain, auto-stage)
+- **The partner now judges your conversation and auto-stages real goals** (behind
+  `MYSHELL_AUTO_GOAL`, default off). When you describe substantial work, a manager-tier
+  pass — led by the product-vision/quality-bar persona — decomposes it into one or more
+  professional goals, each with a to-do list, and **stages them as parked goals on the
+  board** (non-destructive; nothing auto-runs). When it's ambiguous/high-stakes it asks a
+  sharp clarifying question instead; a trivial message ("sounds good?") stages nothing and
+  never even pays for a model call. Runs post-reply, non-blocking, fail-soft — the chat is
+  never delayed; honest (never fabricates a goal from a non-substantial turn; staged goals
+  show truthful 0/N to-dos). Flag-off is byte-identical (orchestrate untouched).
+
+
 
 ### Added (elite planning-partner build, Phase 2b — living-plan to-do CRUD)
 - **You can now manage a goal's to-do list directly**: `/todo add <g> <text>`,

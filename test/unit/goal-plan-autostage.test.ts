@@ -1,0 +1,181 @@
+/**
+ * test/unit/goal-plan-autostage.test.ts — the POST-TURN auto-stage behaviour
+ * (Elite-partner Phase 6, the menu.ts wiring contract). Drives the REAL file-backed
+ * GoalStore with the SAME staging logic the menu post-turn slot applies to a judged
+ * GoalPlan, plus a board-sync spy, so it locks in:
+ *   - judgment 'stage'   → parked goals created in the store (born parked,
+ *                          roadmap = todos), then the board is synced.
+ *   - judgment 'none'    → nothing created, board not synced.
+ *   - judgment 'clarify' → nothing created (the question is surfaced elsewhere).
+ *   - the planner-gate truth: flag-off / trivial / max-pressure ⇒ planner NOT
+ *     invoked (no model call).
+ *
+ * Hermetic: temp homeDir + injected Clock, mirroring goal-store.test.ts.
+ */
+
+import { describe, it, beforeEach, afterEach } from 'node:test';
+import assert from 'node:assert/strict';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { randomUUID } from 'node:crypto';
+
+import { createFileGoalStore, type GoalStore } from '../../src/infra/goal-store.ts';
+import type { Clock } from '../../src/core/types.ts';
+import type { GoalPlan } from '../../src/core/goal-plan.ts';
+import type { RoadmapItem } from '../../src/core/work-contract.ts';
+import { autoStageEnabled } from '../../src/interface/ui/auto-goal-flag.ts';
+import { hasTierEvidence } from '../../src/core/classify.ts';
+
+function makeFakeClock(startIso = '2026-06-05T00:00:00.000Z'): Clock {
+  let counter = 0;
+  return {
+    now: () => Date.parse(startIso),
+    isoNow: () => startIso,
+    uuid: () => {
+      counter += 1;
+      return `01HX0000000000000000${String(counter).padStart(6, '0')}`;
+    },
+    random: () => 0.5,
+  };
+}
+
+/**
+ * The EXACT staging logic the menu post-turn slot applies to a judged plan
+ * (mirrors resolveAutoStage's stage branch): born-parked create per goal with the
+ * todos as the roadmap, then a board sync. Returns the count actually staged.
+ */
+async function applyStage(
+  store: GoalStore,
+  plan: GoalPlan,
+  convId: string | null,
+  syncBoard: () => Promise<void>,
+): Promise<number> {
+  if (plan.judgment !== 'stage') {
+    // 'none' / 'clarify' create nothing and never touch the board from staging.
+    return 0;
+  }
+  const todosToRoadmap = (todos: readonly string[]): RoadmapItem[] =>
+    todos.map((text, i) => ({ id: `r${i + 1}`, text, status: 'pending' as const }));
+  let staged = 0;
+  for (const g of plan.goals) {
+    const title = g.title.trim();
+    if (title.length === 0) continue;
+    await store.create({
+      title,
+      roadmap: todosToRoadmap(g.todos),
+      scope: 'global',
+      projectKey: null,
+      conversationId: convId,
+      source: 'auto-staged',
+    });
+    staged += 1;
+  }
+  if (staged > 0) await syncBoard();
+  return staged;
+}
+
+describe('post-turn auto-stage', () => {
+  let home: string;
+  let store: GoalStore;
+
+  beforeEach(async () => {
+    home = await mkdtemp(join(tmpdir(), `autostage-${randomUUID()}-`));
+    store = createFileGoalStore({ homeDir: home, clock: makeFakeClock() });
+  });
+  afterEach(async () => {
+    await rm(home, { recursive: true, force: true });
+  });
+
+  it("judgment 'stage' creates PARKED goals (roadmap = todos) and syncs the board", async () => {
+    const plan: GoalPlan = {
+      judgment: 'stage',
+      vision: 'A real auth system',
+      goals: [
+        { title: 'Build the signup flow', todos: ['Model users', 'Add the endpoint'] },
+        { title: 'Add password reset', todos: ['Wire the reset email'] },
+      ],
+    };
+    let synced = 0;
+    const staged = await applyStage(store, plan, 'conv_1', async () => {
+      synced += 1;
+    });
+    assert.equal(staged, 2);
+    assert.equal(synced, 1, 'board synced once after staging');
+
+    const goals = await store.list();
+    assert.equal(goals.length, 2);
+    // Born parked (non-destructive) — never queued/running.
+    for (const g of goals) {
+      assert.equal(g.state, 'parked', 'staged goals are born parked');
+      assert.equal(g.source, 'auto-staged');
+      assert.equal(g.conversationId, 'conv_1');
+    }
+    const signup = goals.find((g) => g.title === 'Build the signup flow');
+    assert.ok(signup !== undefined);
+    assert.deepEqual(
+      signup?.roadmap.map((it) => it.text),
+      ['Model users', 'Add the endpoint'],
+      'todos became the roadmap',
+    );
+    assert.ok(signup?.roadmap.every((it) => it.status === 'pending'), 'todos start pending');
+  });
+
+  it("judgment 'none' creates nothing and never syncs the board", async () => {
+    const plan: GoalPlan = { judgment: 'none', goals: [] };
+    let synced = 0;
+    const staged = await applyStage(store, plan, null, async () => {
+      synced += 1;
+    });
+    assert.equal(staged, 0);
+    assert.equal(synced, 0);
+    assert.equal((await store.list()).length, 0, 'no goals created on none');
+  });
+
+  it("judgment 'clarify' creates no goals (the question is surfaced, not staged)", async () => {
+    const plan: GoalPlan = {
+      judgment: 'clarify',
+      goals: [],
+      clarifyingQuestion: 'Which database?',
+    };
+    let synced = 0;
+    const staged = await applyStage(store, plan, null, async () => {
+      synced += 1;
+    });
+    assert.equal(staged, 0);
+    assert.equal(synced, 0);
+    assert.equal((await store.list()).length, 0, 'no goals created on clarify');
+  });
+});
+
+describe('planner gate — the menu invocation conditions', () => {
+  // The menu only invokes the planner when: flag ON, a NON-TRIVIAL turn
+  // (hasTierEvidence), and pressure below the ceiling. This locks the pure pieces
+  // of that gate; flag-off OR a trivial turn ⇒ planner never runs.
+  function shouldInvoke(env: NodeJS.ProcessEnv, config: { experimentalAutoGoal?: boolean }, line: string, pressure: number): boolean {
+    return autoStageEnabled(env, config) && hasTierEvidence(line) && pressure < 3;
+  }
+
+  it('flag OFF ⇒ planner not invoked (byte-identical post-turn)', () => {
+    assert.equal(shouldInvoke({}, {}, 'build the whole billing system end to end', 0), false);
+  });
+
+  it('flag ON + trivial turn ⇒ planner not invoked', () => {
+    assert.equal(shouldInvoke({ MYSHELL_AUTO_GOAL: '1' }, {}, 'sounds good?', 0), false);
+    assert.equal(shouldInvoke({ MYSHELL_AUTO_GOAL: '1' }, {}, 'thanks!', 0), false);
+  });
+
+  it('flag ON + substantial turn + pressure below ceiling ⇒ planner invoked', () => {
+    assert.equal(
+      shouldInvoke({ MYSHELL_AUTO_GOAL: '1' }, {}, 'build and ship the whole auth system with token refresh', 0),
+      true,
+    );
+  });
+
+  it('flag ON + substantial turn but pressure at the ceiling ⇒ planner not invoked', () => {
+    assert.equal(
+      shouldInvoke({ MYSHELL_AUTO_GOAL: '1' }, {}, 'build and ship the whole auth system with token refresh', 3),
+      false,
+    );
+  });
+});

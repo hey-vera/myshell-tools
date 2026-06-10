@@ -296,6 +296,18 @@ export interface AppConfig {
    */
   experimentalBoard?: boolean;
   /**
+   * Opt-in for the PLANNING BRAIN / AUTO-STAGE pass (Elite-partner Phase 6).
+   * Absent/false → the post-turn slot is byte-for-byte today's: the partner never
+   * judges a turn for staging and creates no goals automatically. When true (or
+   * `MYSHELL_AUTO_GOAL` ∈ {1,true,on,yes}) the partner judges each substantial
+   * owner turn AFTER the reply settles and — when confident there is real work —
+   * stages professional goals (each with its to-do list) as PARKED (non-
+   * destructive) goals, or surfaces ONE sharp clarifying question when the turn is
+   * genuinely ambiguous. Parked-only; activation stays the judged/explicit gate.
+   * See src/interface/ui/auto-goal-flag.ts / src/core/goal-plan.ts.
+   */
+  experimentalAutoGoal?: boolean;
+  /**
    * Per-user "first-touch explainer shown" flags (whole-tool-finish-5.5.md §0.1).
    * Absent → nothing shown yet (each surface explains itself once on first
    * encounter). Each key flips to true the first time that surface is met.

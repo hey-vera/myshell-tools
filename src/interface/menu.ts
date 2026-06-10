@@ -24,10 +24,11 @@ import type { Clock, CoreEvent, LedgerWriter, OrchestrateDeps, SessionEntry, Ses
 import { buildGoalTask, parseGoalSignal, parseGoalContinueText, decideGoalNext, formatGoalProgress, DEFAULT_MAX_GOAL_ITERATIONS, stripTrailingGoalConfidenceEnvelope, formConciseGoalLabel } from '../core/goal.js';
 import type { GoalCeilings } from '../core/goal.js';
 import { appendCheckpointFromContinue, capContract } from '../core/work-contract.js';
+import type { RoadmapItem } from '../core/work-contract.js';
 import { deriveWorkStateFromHistory, renderWorkStateBlock } from '../core/work-state.js';
 import { isKeepGoingOffer } from '../core/questions.js';
 import { decideAutonomyOffer } from '../core/autonomy.js';
-import { classify } from '../core/classify.js';
+import { classify, hasTierEvidence } from '../core/classify.js';
 import { resolveMemoryContextDetailed } from '../core/memory-injection.js';
 import { buildEnvironmentContext } from '../core/repo-map.js';
 import {
@@ -49,6 +50,7 @@ import { createFileGoalStore } from '../infra/goal-store.js';
 import { goalGlyph, roadmapProgress } from '../core/goal-todo.js';
 import type { Goal } from '../core/goal-todo.js';
 import { boardEnabled } from './ui/board-flag.js';
+import { autoStageEnabled } from './ui/auto-goal-flag.js';
 import type { GoalBoardRow } from './ui/state.js';
 import {
   runGoalsList,
@@ -114,6 +116,8 @@ import { runCost } from '../commands/cost.js';
 import { dim, bold, formatRecapLine } from '../ui/theme.js';
 import { makeRecapGenerator } from '../core/recap-generator.js';
 import { makeGoalObjectiveGenerator } from '../core/goal-objective-generator.js';
+import { makeGoalPlanner } from '../core/goal-plan-generator.js';
+import type { GoalPlan } from '../core/goal-plan.js';
 import { isRecapStale, recapEligible, type RecapResult } from '../core/recap.js';
 import { makeRouteClassifier } from '../core/route-classifier.js';
 import { makeIntentExtractor } from '../core/intent-extractor.js';
@@ -655,6 +659,50 @@ export async function runChatLoop(
       policy,
       cwd: ctx.cwd,
       timeoutMs: Math.min(ctx.timeoutMs, GOAL_OBJECTIVE_TIMEOUT_MS),
+      ...(Object.keys(availableModels).length > 0 ? { availableModels } : {}),
+      ...(authenticatedProviders.length > 0 ? { authenticatedProviders } : {}),
+    });
+  };
+
+  // Build a MANAGER-tier PLANNING BRAIN (Elite-partner Phase 6) from the SAME
+  // env→deps machinery as the recap / goal-objective generators (above). It judges
+  // a substantial owner turn POST-reply and emits a GoalPlan: stage real parked
+  // goals, surface ONE sharp clarifying question, or do nothing. Read by a CAPABLE
+  // model against the reused ELITE_VOICE persona — judging WHAT is real work + how
+  // to decompose it like a senior IS the headline behaviour, not a worker echo.
+  // Subscription-clean (no metered service). Returns null when no provider is
+  // signed in so the caller does nothing. TIGHT timeout — it runs post-turn,
+  // non-blocking, and must never stall the conversation.
+  const buildGoalPlanner = ():
+    | ((userMessage: string, signal: AbortSignal) => Promise<GoalPlan | null>)
+    | null => {
+    if (!hasAuthenticatedProvider(mutableCtx.env)) return null;
+    const effectiveMode: Mode = mutableCtx.config.mode ?? resolveAutoMode(mutableCtx.env);
+    const policy = POLICY_PRESETS[effectiveMode];
+
+    const availableModels: Partial<Record<ProviderId, readonly string[]>> = {};
+    if (mutableCtx.env.claude.installed && mutableCtx.env.claude.availableModels.length > 0) {
+      availableModels['claude'] = mutableCtx.env.claude.availableModels;
+    }
+    if (mutableCtx.env.codex.installed && mutableCtx.env.codex.availableModels.length > 0) {
+      availableModels['codex'] = mutableCtx.env.codex.availableModels;
+    }
+    if (mutableCtx.env.opencode.installed && mutableCtx.env.opencode.availableModels.length > 0) {
+      availableModels['opencode'] = mutableCtx.env.opencode.availableModels;
+    }
+    const authenticatedProviders: ProviderId[] = [];
+    if (mutableCtx.env.claude.authenticated) authenticatedProviders.push('claude');
+    if (mutableCtx.env.codex.authenticated) authenticatedProviders.push('codex');
+    if (mutableCtx.env.opencode.authenticated) authenticatedProviders.push('opencode');
+
+    // TIGHT cap: it runs post-turn (non-blocking), so keep it short enough that a
+    // slow model never delays the next prompt. Fail-soft on timeout → null.
+    const GOAL_PLAN_TIMEOUT_MS = 8_000;
+    return makeGoalPlanner({
+      providers: ctx.providers,
+      policy,
+      cwd: ctx.cwd,
+      timeoutMs: Math.min(ctx.timeoutMs, GOAL_PLAN_TIMEOUT_MS),
       ...(Object.keys(availableModels).length > 0 ? { availableModels } : {}),
       ...(authenticatedProviders.length > 0 ? { authenticatedProviders } : {}),
     });
@@ -2050,6 +2098,80 @@ export async function runChatLoop(
       // the flag is off → byte-identical.
       await syncBoard();
 
+      // ---- Planning brain / AUTO-STAGE (Elite-partner Phase 6) -----------------
+      // DEFAULT OFF. When the auto-goal flag is ON, the partner JUDGES a SUBSTANTIAL
+      // owner turn AFTER the reply settles (post-turn, non-blocking, fail-soft) and
+      // — when confident there is real work — auto-stages professional goals (each
+      // with its to-do list) as PARKED goals (non-destructive), or surfaces ONE
+      // sharp clarifying question when the turn is genuinely ambiguous. A trivial /
+      // conversational turn ("sounds good?") stages NOTHING. Parked-only: activation
+      // stays the judged/explicit gate (never run/executed here).
+      const autoStageOn = autoStageEnabled(process.env, mutableCtx.config);
+      // Mint sequential roadmap ids (r1, r2, …) for a freshly-staged goal's todos.
+      const todosToRoadmap = (todos: readonly string[]): RoadmapItem[] =>
+        todos.map((text, i) => ({ id: `r${i + 1}`, text, status: 'pending' as const }));
+      // Run the planning brain for ONE settled turn and act on its verdict. Gated
+      // (by the caller) on: the flag, a NON-TRIVIAL turn (hasTierEvidence — a real
+      // engagement signal, never a "sounds good?"), and quota pressure below the
+      // ceiling (we skip the extra manager call when every provider is throttled, so
+      // auto-staging never piles onto a quota wall). One manager call per qualifying
+      // turn. Fully fail-soft: ANY error/timeout/empty → do nothing, never block,
+      // never crash the turn.
+      const resolveAutoStage = async (line: string): Promise<void> => {
+        if (!autoStageOn) return;
+        // Quota gate: skip when ALL detected providers are in rate-limit cooldown
+        // (pressure at the 3 ceiling) — honest cost discipline. (We do not have a
+        // dedicated Governor allocate() poll at this post-turn seam; this is the
+        // honest, in-process pressure signal the rest of the loop already reads.)
+        if (currentPressure() >= 3) return;
+        const planner = buildGoalPlanner();
+        if (planner === null) return;
+        let plan: GoalPlan | null = null;
+        try {
+          plan = await planner(line, new AbortController().signal);
+        } catch {
+          plan = null;
+        }
+        if (plan === null || plan.judgment === 'none') return; // frictionless, zero noise
+
+        if (plan.judgment === 'clarify') {
+          // Surface the single sharp question — do NOT auto-create goals here.
+          const q = plan.clarifyingQuestion?.trim();
+          if (q !== undefined && q.length > 0) {
+            out.write('\n' + dim('? ', out.color) + q + '\n');
+          }
+          return;
+        }
+
+        // judgment === 'stage' → born-parked goals (non-destructive), then board sync.
+        const projectKey = await resolveProjectKeyOnce();
+        let staged = 0;
+        for (const g of plan.goals) {
+          const title = g.title.trim();
+          if (title.length === 0) continue;
+          try {
+            await goalStore.create({
+              title,
+              roadmap: todosToRoadmap(g.todos),
+              scope: projectKey !== null ? 'project' : 'global',
+              projectKey,
+              conversationId: convId,
+              // HONEST provenance: these were judged + staged by the planning
+              // brain, NOT typed by the owner — the audit trail must say so.
+              source: 'auto-staged',
+            });
+            staged += 1;
+          } catch {
+            /* one create miss must not block the rest — best-effort staging */
+          }
+        }
+        if (staged === 0) return; // nothing landed → no note (honest)
+        await syncBoard(); // the new parked goals landed → refresh the board
+        // Brief, HONEST one-line note — do not over-announce.
+        const noun = staged === 1 ? 'goal' : 'goals';
+        out.write('\n' + dim(`※ Staged ${String(staged)} ${noun} on the board.`, out.color) + '\n');
+      };
+
       const resolveTurnMemory = async (task: string): Promise<string> => {
         // Kill-switch: no read/inject when memory is off.
         if (mutableCtx.config.memory === false) return '';
@@ -3100,6 +3222,21 @@ export async function runChatLoop(
       if (control.menu) {
         control.result = 'menu';
         return 'menu';
+      }
+
+      // ---- Planning brain / auto-stage (Phase 6) — AFTER the post-turn slot ----
+      // Runs ONLY on a clean, settled SUCCESS turn that did not itself end in a
+      // question (the model's own ask_user already owns the floor in that case).
+      // Gated on the non-trivial engagement signal (hasTierEvidence) so a trivial
+      // "sounds good?" turn NEVER pays for a manager call. Flag-off ⇒ resolveAutoStage
+      // is a no-op ⇒ byte-identical. Fully fail-soft inside resolveAutoStage.
+      if (
+        autoStageOn &&
+        result.final?.success === true &&
+        result.final.questions === undefined &&
+        hasTierEvidence(line)
+      ) {
+        await resolveAutoStage(line);
       }
       return 'continue';
   }
