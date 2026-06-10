@@ -6,6 +6,15 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+## [3.80.0] - 2026-06-10
+
+### Fixed
+- **No more stray "press a key" at startup.** The menu hint was rendering during the
+  brief window where Ink mounts *before* the banner/menu paints (and through the
+  onboarding wizard), so a lone `❯ press a key` flashed at the very top of launch. The
+  hint now appears only when a single-key read is actually pending (the menu / a y-n
+  confirm is awaiting a key), so startup is clean.
+
 ## [3.79.0] - 2026-06-10
 
 ### Added (best-approach — the other half of "truly complete")

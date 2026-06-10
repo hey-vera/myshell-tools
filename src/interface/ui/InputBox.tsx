@@ -141,6 +141,15 @@ export interface InputBoxProps {
    */
   readonly visible?: boolean;
   /**
+   * Whether to render the `❯ press a key` menu hint when the composer is hidden
+   * (`!visible`). The hint should appear ONLY when a single-key read is actually
+   * pending (the menu / a y-n confirm is awaiting a key) — NOT in the pre-menu
+   * mount window (Ink mounts before the banner/menu paints) where it would print a
+   * stray "press a key" at the very top of startup. The App passes `awaitingKey`
+   * here. Default true so callers/tests that omit it keep the prior behavior.
+   */
+  readonly menuKeyAwait?: boolean;
+  /**
    * When true the editor is SUSPENDED for an inherited-stdio child handoff: its
    * `useInput` goes `isActive: false` so Ink relinquishes its raw-mode refcount
    * and the child becomes the sole reader of the TTY. Default false.
@@ -284,6 +293,7 @@ export function InputBox({
   columns,
   info,
   visible = true,
+  menuKeyAwait = true,
   suspended = false,
   onStdinControl,
   onEscape,
@@ -557,6 +567,18 @@ export function InputBox({
   // literal null) so this component still returns a ReactElement — and so a re-mount
   // isn't forced when toggling visibility (the hooks persist).
   if (!visible) {
+    // Show the `❯ press a key` hint ONLY when a single-key read is actually pending
+    // (menuKeyAwait). In the pre-menu mount window (Ink mounts before the banner/menu
+    // paints, nothing awaiting yet) we render a bare reserved line — no stray "press a
+    // key" at the very top of startup — while still returning ONE <Box> so the
+    // useInput/useStdin hooks above stay mounted (raw mode armed, stdin control kept).
+    if (!menuKeyAwait) {
+      return (
+        <Box>
+          <Text> </Text>
+        </Box>
+      );
+    }
     // Non-TTY / NO_COLOR / very-narrow degrades to a bare caret (no colour codes),
     // mirroring the composer's plain-caret fallback — never a crash, never blank.
     const canColor = isTty && color;
