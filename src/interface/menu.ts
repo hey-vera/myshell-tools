@@ -806,9 +806,13 @@ export async function runChatLoop(
     if (mutableCtx.env.claude.authenticated) authenticatedProviders.push('claude');
     if (mutableCtx.env.codex.authenticated) authenticatedProviders.push('codex');
     if (mutableCtx.env.opencode.authenticated) authenticatedProviders.push('opencode');
-    // It reads files to understand the system, so give it a touch more wall-clock
-    // than the planner — still TIGHT (post-turn, non-blocking, fail-soft on timeout).
-    const UNDERSTANDING_TIMEOUT_MS = 20_000;
+    // The BOUNDED map-grounded pass (understanding.ts) reads at most a couple of
+    // files and reasons primarily from the repo orientation; live-measured at ~23s
+    // on a large repo, so give it 30s headroom to FINISH (a timeout yields no 'done'
+    // event → null → ungrounded, so finishing is what matters). Still post-turn +
+    // fail-soft + cached per project, so the full pass is paid at most once per
+    // UNDERSTANDING_REFRESH_TURNS planning moments.
+    const UNDERSTANDING_TIMEOUT_MS = 30_000;
     return makeUnderstandingPass({
       providers: ctx.providers,
       policy,

@@ -6,6 +6,21 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+## [3.69.0] - 2026-06-10
+
+### Changed (opt-in understanding pass — bounded + faster)
+- **The whole-picture understanding pass is now a BOUNDED, map-grounded investigation.**
+  It works primarily from the deterministic repository map and reads at most a couple
+  of files under an explicit time budget, instead of freely exploring the tree (which
+  timed out on a real repo and returned nothing). When it lands it produces a genuinely
+  senior model — real module interconnections, the actual hard constraints, and sharp
+  open questions (e.g. it catches a task aimed at the wrong repo). Its timeout was
+  raised 20s → 30s to give the bounded pass room to finish, and the per-project result
+  is cached for a few planning moments. **Still opt-in** (`MYSHELL_UNDERSTANDING`): the
+  agentic runtime's latency is variable enough that a tight *synchronous* post-turn pass
+  can't be made reliable for default-on — that needs a non-blocking cache-ahead design
+  (run in the background, ground the next planning moment), which is the next step.
+
 ## [3.68.0] - 2026-06-10
 
 ### Changed (elite planning-partner — the vision is now the default experience)
