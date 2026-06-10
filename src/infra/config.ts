@@ -308,6 +308,19 @@ export interface AppConfig {
    */
   experimentalAutoGoal?: boolean;
   /**
+   * Opt-in for the WHOLE-PICTURE UNDERSTANDING PASS (Elite-partner architecture
+   * Part 2). Absent/false → the planning brain runs exactly as today: no system
+   * investigation precedes staging and the planner prompt is byte-for-byte
+   * unchanged. When true (or `MYSHELL_UNDERSTANDING` ∈ {1,true,on,yes}) a manager-
+   * tier, READ-ONLY investigation maps the real system (modules + interconnections,
+   * conventions, hard constraints, genuinely-open questions; web-researched best
+   * practice for high-stakes work) into a SystemModel that GROUNDS the planner so
+   * staged goals reflect whole-picture depth. Fail-soft: a failed/empty pass → the
+   * planner runs ungrounded, never blocked. See src/interface/ui/understanding-flag.ts
+   * / src/core/understanding.ts.
+   */
+  experimentalUnderstanding?: boolean;
+  /**
    * Per-user "first-touch explainer shown" flags (whole-tool-finish-5.5.md §0.1).
    * Absent → nothing shown yet (each surface explains itself once on first
    * encounter). Each key flips to true the first time that surface is met.

@@ -27,6 +27,7 @@
  */
 
 import { ELITE_VOICE_PREAMBLE } from './prompt.js';
+import type { SystemModel } from './understanding.js';
 
 /** Hard cap on the VISION line — a crisp framing, not a paragraph. (Module-local:
  *  an internal shaping bound, never imported elsewhere.) */
@@ -67,11 +68,19 @@ export interface GoalPlan {
  * @param userMessage   the owner's raw turn text (what to judge).
  * @param assistantReply optional — the partner's reply this turn, for context.
  * @param frameGoal     optional — an active goal/objective the turn sits inside.
+ * @param systemModel   optional — the whole-picture understanding of the REAL
+ *                      system (understanding.ts). When present its summary,
+ *                      constraints and open questions are injected so the plan is
+ *                      GROUNDED in the actual codebase (and the clarify questions
+ *                      can draw on the understanding's genuinely-open questions).
+ *                      ABSENT → the prompt is byte-for-byte today's (the planner
+ *                      runs exactly as before the understanding pass existed).
  */
 export function buildGoalPlanPrompt(
   userMessage: string,
   assistantReply?: string,
   frameGoal?: string,
+  systemModel?: SystemModel,
 ): string {
   const text = (userMessage ?? '').trim();
   if (text.length === 0) return '';
@@ -121,8 +130,48 @@ export function buildGoalPlanPrompt(
   if (typeof assistantReply === 'string' && assistantReply.trim().length > 0) {
     lines.push('', "YOUR REPLY THIS TURN (context):", assistantReply.trim());
   }
+  // GROUNDING (optional): the whole-picture understanding of the REAL system. When
+  // present, the plan must be grounded in it — name objectives that fit the actual
+  // modules, respect the hard constraints, and (for clarify) draw on the genuinely-
+  // open questions rather than inventing one. ABSENT → these lines are not added, so
+  // the prompt is byte-for-byte identical to the pre-understanding planner.
+  const grounding = systemModelGrounding(systemModel);
+  if (grounding.length > 0) lines.push('', ...grounding);
   lines.push('', "OWNER'S LATEST TURN:", text);
   return lines.join('\n');
+}
+
+/**
+ * Render the SystemModel into the planner's grounding block, or `[]` when there is
+ * no usable understanding (so the prompt stays byte-for-byte today's). PURE; bounds
+ * what it injects (summary + the constraints + the genuinely-open questions — the
+ * load-bearing grounding for naming + clarifying), never throws.
+ */
+function systemModelGrounding(systemModel: SystemModel | undefined): string[] {
+  if (systemModel === undefined) return [];
+  const out: string[] = [];
+  const summary = systemModel.summary.trim();
+  const constraints = systemModel.constraints.filter((c) => c.trim().length > 0);
+  const openQuestions = systemModel.openQuestions.filter((q) => q.trim().length > 0);
+  if (summary.length === 0 && constraints.length === 0 && openQuestions.length === 0) {
+    return [];
+  }
+  out.push(
+    'WHOLE-PICTURE UNDERSTANDING OF THE REAL SYSTEM (ground the plan in this — name',
+    'objectives that fit these real modules + respect these hard constraints; do NOT',
+    'plan against a system that does not exist here):',
+  );
+  if (summary.length > 0) out.push(`  SYSTEM: ${summary}`);
+  for (const c of constraints) out.push(`  CONSTRAINT: ${c.trim()}`);
+  if (openQuestions.length > 0) {
+    out.push(
+      'GENUINELY-OPEN QUESTIONS the investigation could NOT resolve from the code —',
+      'if the turn is ambiguous, a clarify verdict should draw on THESE real questions',
+      '(never an invented one):',
+    );
+    for (const q of openQuestions) out.push(`  OPENQ: ${q.trim()}`);
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------------------

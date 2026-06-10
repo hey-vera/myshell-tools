@@ -6,7 +6,20 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
-## [3.63.0] - 2026-06-10
+## [3.64.0] - 2026-06-10
+
+### Added (elite planning-partner build — whole-picture understanding pass)
+- **Before staging goals, the partner now builds a real understanding of the situation**
+  (behind `MYSHELL_UNDERSTANDING`, default off): a manager-tier, read-only pass that
+  investigates the actual codebase (modules, conventions, real constraints, open
+  questions) and — for high-stakes work (auth/payments/deploy/production, via the
+  existing risk classifier) — researches current best practice via the provider's native
+  web search. The resulting system model grounds the planner so staged goals reflect
+  expert, whole-picture depth instead of a surface parts-list. Honest (never fabricates
+  modules or citations — omits what it can't determine; open questions can drive the
+  clarify path), fail-soft and non-blocking, and byte-identical when off.
+
+
 
 ### Added (elite planning-partner build — the planning brain, auto-stage)
 - **The partner now judges your conversation and auto-stages real goals** (behind

@@ -25,6 +25,7 @@ import type { Policy, Tier } from './types.js';
 import type { Provider, ProviderId, ProviderRequest, SandboxLevel } from '../providers/port.js';
 import { route } from './route.js';
 import { buildGoalPlanPrompt, parseGoalPlan, type GoalPlan } from './goal-plan.js';
+import type { SystemModel } from './understanding.js';
 
 /** Everything the planner needs to pick and run the manager-tier model. */
 export interface GoalPlanGeneratorDeps {
@@ -35,6 +36,14 @@ export interface GoalPlanGeneratorDeps {
   readonly timeoutMs: number;
   readonly availableModels?: Partial<Record<ProviderId, readonly string[]>>;
   readonly authenticatedProviders?: readonly ProviderId[];
+  /**
+   * Optional whole-picture understanding of the REAL system (understanding.ts).
+   * When present it GROUNDS the planner prompt (the staged goals fit the actual
+   * modules + respect the hard constraints, and a clarify verdict can draw on the
+   * understanding's genuinely-open questions). ABSENT → the planner prompt is byte-
+   * for-byte today's (the planner runs exactly as before understanding existed).
+   */
+  readonly systemModel?: SystemModel;
 }
 
 /**
@@ -59,7 +68,11 @@ export function makeGoalPlanner(
   deps: GoalPlanGeneratorDeps,
 ): (userMessage: string, signal: AbortSignal) => Promise<GoalPlan | null> {
   return async (userMessage: string, signal: AbortSignal): Promise<GoalPlan | null> => {
-    const prompt = buildGoalPlanPrompt(userMessage);
+    // Ground the planner in the whole-picture understanding when one is injected;
+    // absent (the default) → the prompt is byte-for-byte today's. assistantReply /
+    // frameGoal stay undefined here, as before — only the optional systemModel is
+    // threaded through.
+    const prompt = buildGoalPlanPrompt(userMessage, undefined, undefined, deps.systemModel);
     if (prompt.trim().length === 0) return null;
 
     const pool = (Object.keys(deps.providers) as ProviderId[]).filter(

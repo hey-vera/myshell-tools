@@ -25,7 +25,9 @@ import type { Clock } from '../../src/core/types.ts';
 import type { GoalPlan } from '../../src/core/goal-plan.ts';
 import type { RoadmapItem } from '../../src/core/work-contract.ts';
 import { autoStageEnabled } from '../../src/interface/ui/auto-goal-flag.ts';
-import { hasTierEvidence } from '../../src/core/classify.ts';
+import { understandingEnabled } from '../../src/interface/ui/understanding-flag.ts';
+import { classify, hasTierEvidence } from '../../src/core/classify.ts';
+import type { SystemModel } from '../../src/core/understanding.ts';
 
 function makeFakeClock(startIso = '2026-06-05T00:00:00.000Z'): Clock {
   let counter = 0;
@@ -177,5 +179,81 @@ describe('planner gate — the menu invocation conditions', () => {
       shouldInvoke({ MYSHELL_AUTO_GOAL: '1' }, {}, 'build and ship the whole auth system with token refresh', 3),
       false,
     );
+  });
+});
+
+describe('understanding pass — the menu grounding wiring (Part 2)', () => {
+  // Mirrors resolveAutoStage's understanding branch: when the flag is ON we FIRST
+  // run a fail-soft understanding pass, then pass its SystemModel (or undefined) to
+  // the planner. When OFF the understanding pass never runs and the planner is
+  // called with NO model (byte-identical, ungrounded). highStakes rides
+  // classify().risk ∈ {high,critical}. This pure harness captures that contract
+  // without a live model.
+  const MODEL: SystemModel = {
+    summary: 'auth lives in core/oauth',
+    modules: ['core/oauth'],
+    conventions: [],
+    constraints: ['subscription-OAuth only'],
+    openQuestions: [],
+    researchCitations: [],
+  };
+
+  async function simulate(
+    env: NodeJS.ProcessEnv,
+    config: { experimentalUnderstanding?: boolean },
+    line: string,
+    pass: ((task: string) => Promise<SystemModel | null>) | null,
+  ): Promise<{ understandingRan: boolean; highStakes: boolean; modelToPlanner: SystemModel | undefined }> {
+    let understandingRan = false;
+    let modelToPlanner: SystemModel | undefined;
+    const highStakes = ((): boolean => {
+      const r = classify(line).risk;
+      return r === 'high' || r === 'critical';
+    })();
+    if (understandingEnabled(env, config) && pass !== null) {
+      understandingRan = true;
+      try {
+        modelToPlanner = (await pass(line)) ?? undefined;
+      } catch {
+        modelToPlanner = undefined;
+      }
+    }
+    return { understandingRan, highStakes, modelToPlanner };
+  }
+
+  it('understanding OFF ⇒ pass never runs, planner gets NO model (ungrounded)', async () => {
+    const pass = async (): Promise<SystemModel | null> => MODEL;
+    const r = await simulate({}, {}, 'build the whole auth system', pass);
+    assert.equal(r.understandingRan, false);
+    assert.equal(r.modelToPlanner, undefined, 'planner ungrounded when understanding off');
+  });
+
+  it('understanding ON + substantial ⇒ pass runs, planner gets the SystemModel', async () => {
+    const pass = async (): Promise<SystemModel | null> => MODEL;
+    const r = await simulate({ MYSHELL_UNDERSTANDING: '1' }, {}, 'migrate the oauth token refresh', pass);
+    assert.equal(r.understandingRan, true);
+    assert.deepEqual(r.modelToPlanner, MODEL, 'planner grounded in the system model');
+  });
+
+  it('understanding ON but the pass fails ⇒ planner falls back to ungrounded (fail-soft)', async () => {
+    const failing = async (): Promise<SystemModel | null> => {
+      throw new Error('investigation timed out');
+    };
+    const r = await simulate({ MYSHELL_UNDERSTANDING: '1' }, {}, 'migrate the oauth token refresh', failing);
+    assert.equal(r.understandingRan, true);
+    assert.equal(r.modelToPlanner, undefined, 'a failed pass degrades to ungrounded, never blocks');
+  });
+
+  it('understanding ON but the pass returns null ⇒ planner ungrounded', async () => {
+    const nullPass = async (): Promise<SystemModel | null> => null;
+    const r = await simulate({ MYSHELL_UNDERSTANDING: '1' }, {}, 'migrate the oauth token refresh', nullPass);
+    assert.equal(r.modelToPlanner, undefined);
+  });
+
+  it('highStakes rides classify().risk: auth/security ⇒ true; a plain feature ⇒ false', async () => {
+    const auth = await simulate({ MYSHELL_UNDERSTANDING: '1' }, {}, 'rotate the oauth tokens and secrets', async () => MODEL);
+    assert.equal(auth.highStakes, true, 'auth/secrets is high-stakes (web research eligible)');
+    const plain = await simulate({ MYSHELL_UNDERSTANDING: '1' }, {}, 'add a dark mode toggle to the settings page', async () => MODEL);
+    assert.equal(plain.highStakes, false, 'a plain UI feature is not high-stakes');
   });
 });

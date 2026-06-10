@@ -49,6 +49,42 @@ describe('buildGoalPlanPrompt', () => {
     assert.ok(p.includes('here is my reply'), 'carries the assistant reply context');
     assert.ok(p.includes('Ship the platform'), 'carries the active goal frame');
   });
+
+  // ---- SystemModel grounding (Elite-partner Part 2) ------------------------
+  it('with a SystemModel ⇒ injects the whole-picture grounding block', () => {
+    const p = buildGoalPlanPrompt(SUBSTANTIAL, undefined, undefined, {
+      summary: 'auth lives in core/oauth, refreshed in infra/token-store',
+      modules: ['core/oauth'],
+      conventions: ['pure core, impure infra'],
+      constraints: ['subscription-OAuth only, no metered API'],
+      openQuestions: ['eager or lazy refresh?'],
+      researchCitations: [],
+    });
+    assert.ok(/WHOLE-PICTURE UNDERSTANDING/.test(p), 'has the grounding header');
+    assert.ok(p.includes('auth lives in core/oauth'), 'carries the system summary');
+    assert.ok(p.includes('subscription-OAuth only, no metered API'), 'carries the hard constraint');
+    assert.ok(p.includes('eager or lazy refresh?'), 'carries the genuinely-open question for clarify');
+  });
+
+  it('WITHOUT a SystemModel ⇒ byte-for-byte identical to the pre-understanding prompt (regression guard)', () => {
+    const base = buildGoalPlanPrompt(SUBSTANTIAL, 'a reply', 'A frame goal');
+    const withUndefined = buildGoalPlanPrompt(SUBSTANTIAL, 'a reply', 'A frame goal', undefined);
+    assert.equal(withUndefined, base, 'omitting the systemModel must not change the prompt');
+    assert.ok(!/WHOLE-PICTURE UNDERSTANDING/.test(base), 'no grounding header when ungrounded');
+  });
+
+  it('an all-empty SystemModel ⇒ no grounding block (stays byte-identical to ungrounded)', () => {
+    const base = buildGoalPlanPrompt(SUBSTANTIAL);
+    const empty = buildGoalPlanPrompt(SUBSTANTIAL, undefined, undefined, {
+      summary: '   ',
+      modules: [],
+      conventions: [],
+      constraints: ['   '],
+      openQuestions: [''],
+      researchCitations: [],
+    });
+    assert.equal(empty, base, 'a contentless system model injects nothing');
+  });
 });
 
 describe('parseGoalPlan — trivial → none', () => {

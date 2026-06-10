@@ -118,6 +118,9 @@ import { makeRecapGenerator } from '../core/recap-generator.js';
 import { makeGoalObjectiveGenerator } from '../core/goal-objective-generator.js';
 import { makeGoalPlanner } from '../core/goal-plan-generator.js';
 import type { GoalPlan } from '../core/goal-plan.js';
+import { makeUnderstandingPass } from '../core/understanding-generator.js';
+import type { SystemModel } from '../core/understanding.js';
+import { understandingEnabled } from './ui/understanding-flag.js';
 import { isRecapStale, recapEligible, type RecapResult } from '../core/recap.js';
 import { makeRouteClassifier } from '../core/route-classifier.js';
 import { makeIntentExtractor } from '../core/intent-extractor.js';
@@ -673,7 +676,9 @@ export async function runChatLoop(
   // Subscription-clean (no metered service). Returns null when no provider is
   // signed in so the caller does nothing. TIGHT timeout — it runs post-turn,
   // non-blocking, and must never stall the conversation.
-  const buildGoalPlanner = ():
+  const buildGoalPlanner = (
+    systemModel?: SystemModel,
+  ):
     | ((userMessage: string, signal: AbortSignal) => Promise<GoalPlan | null>)
     | null => {
     if (!hasAuthenticatedProvider(mutableCtx.env)) return null;
@@ -705,6 +710,56 @@ export async function runChatLoop(
       timeoutMs: Math.min(ctx.timeoutMs, GOAL_PLAN_TIMEOUT_MS),
       ...(Object.keys(availableModels).length > 0 ? { availableModels } : {}),
       ...(authenticatedProviders.length > 0 ? { authenticatedProviders } : {}),
+      // When the understanding pass produced a SystemModel, GROUND the planner in
+      // it; absent → the planner prompt is byte-for-byte today's.
+      ...(systemModel !== undefined ? { systemModel } : {}),
+    });
+  };
+
+  // ---- WHOLE-PICTURE UNDERSTANDING PASS (Elite-partner Part 2) -------------
+  // Build a manager-tier, READ-ONLY investigation of the REAL system that runs
+  // FIRST (before the planner) when MYSHELL_UNDERSTANDING is on — mapping the
+  // relevant modules + interconnections, conventions, hard constraints, and the
+  // genuinely-open questions into a SystemModel that grounds the planner. Mirrors
+  // buildGoalPlanner exactly (same authed-pool / policy / tight-timeout shape).
+  // Returns null when no provider is signed in → the caller plans ungrounded.
+  // `repoContext` is the deterministic repo-map block (resolved once per session);
+  // `highStakes` rides the EXISTING classify() risk signal so web search fires only
+  // on genuinely high-stakes work (and only on a web-capable provider, inside the
+  // generator). Subscription-clean: webSearch via the provider's native tool only.
+  const buildUnderstandingPass = (
+    repoContext: string,
+    highStakes: boolean,
+  ): ((task: string, signal: AbortSignal) => Promise<SystemModel | null>) | null => {
+    if (!hasAuthenticatedProvider(mutableCtx.env)) return null;
+    const effectiveMode: Mode = mutableCtx.config.mode ?? resolveAutoMode(mutableCtx.env);
+    const policy = POLICY_PRESETS[effectiveMode];
+    const availableModels: Partial<Record<ProviderId, readonly string[]>> = {};
+    if (mutableCtx.env.claude.installed && mutableCtx.env.claude.availableModels.length > 0) {
+      availableModels['claude'] = mutableCtx.env.claude.availableModels;
+    }
+    if (mutableCtx.env.codex.installed && mutableCtx.env.codex.availableModels.length > 0) {
+      availableModels['codex'] = mutableCtx.env.codex.availableModels;
+    }
+    if (mutableCtx.env.opencode.installed && mutableCtx.env.opencode.availableModels.length > 0) {
+      availableModels['opencode'] = mutableCtx.env.opencode.availableModels;
+    }
+    const authenticatedProviders: ProviderId[] = [];
+    if (mutableCtx.env.claude.authenticated) authenticatedProviders.push('claude');
+    if (mutableCtx.env.codex.authenticated) authenticatedProviders.push('codex');
+    if (mutableCtx.env.opencode.authenticated) authenticatedProviders.push('opencode');
+    // It reads files to understand the system, so give it a touch more wall-clock
+    // than the planner — still TIGHT (post-turn, non-blocking, fail-soft on timeout).
+    const UNDERSTANDING_TIMEOUT_MS = 20_000;
+    return makeUnderstandingPass({
+      providers: ctx.providers,
+      policy,
+      cwd: ctx.cwd,
+      timeoutMs: Math.min(ctx.timeoutMs, UNDERSTANDING_TIMEOUT_MS),
+      ...(Object.keys(availableModels).length > 0 ? { availableModels } : {}),
+      ...(authenticatedProviders.length > 0 ? { authenticatedProviders } : {}),
+      ...(repoContext.trim().length > 0 ? { repoContext } : {}),
+      ...(highStakes ? { highStakes: true } : {}),
     });
   };
 
@@ -2107,6 +2162,12 @@ export async function runChatLoop(
       // conversational turn ("sounds good?") stages NOTHING. Parked-only: activation
       // stays the judged/explicit gate (never run/executed here).
       const autoStageOn = autoStageEnabled(process.env, mutableCtx.config);
+      // WHOLE-PICTURE UNDERSTANDING PASS (Elite-partner Part 2). DEFAULT OFF. When
+      // ON, a manager-tier READ-ONLY investigation maps the REAL system FIRST and
+      // its SystemModel grounds the planner so the staged goals reflect whole-picture
+      // depth. OFF → never invoked, SystemModel stays undefined → the planner prompt
+      // is byte-for-byte today's.
+      const understandingOn = understandingEnabled(process.env, mutableCtx.config);
       // Mint sequential roadmap ids (r1, r2, …) for a freshly-staged goal's todos.
       const todosToRoadmap = (todos: readonly string[]): RoadmapItem[] =>
         todos.map((text, i) => ({ id: `r${i + 1}`, text, status: 'pending' as const }));
@@ -2124,7 +2185,29 @@ export async function runChatLoop(
         // dedicated Governor allocate() poll at this post-turn seam; this is the
         // honest, in-process pressure signal the rest of the loop already reads.)
         if (currentPressure() >= 3) return;
-        const planner = buildGoalPlanner();
+        // WHOLE-PICTURE UNDERSTANDING (Part 2), gated + fail-soft. When the
+        // understanding flag is on, FIRST run a manager-tier read-only investigation
+        // of the REAL system (one amortized pass per planning moment) and ground the
+        // planner in the resulting SystemModel. The investigation is given the
+        // session repo map to orient on the real tree, and opts into web search only
+        // for high-stakes work (classify().risk ∈ {high,critical}) on a web-capable
+        // provider. ANY failure/timeout/empty → systemModel stays undefined → the
+        // planner runs UNGROUNDED, exactly as when understanding is off. Never blocks.
+        let systemModel: SystemModel | undefined;
+        if (understandingOn) {
+          const risk = classify(line).risk;
+          const highStakes = risk === 'high' || risk === 'critical';
+          const repoContext = await resolveEnvironmentOnce().catch(() => '');
+          const understandingPass = buildUnderstandingPass(repoContext, highStakes);
+          if (understandingPass !== null) {
+            try {
+              systemModel = (await understandingPass(line, new AbortController().signal)) ?? undefined;
+            } catch {
+              systemModel = undefined;
+            }
+          }
+        }
+        const planner = buildGoalPlanner(systemModel);
         if (planner === null) return;
         let plan: GoalPlan | null = null;
         try {
