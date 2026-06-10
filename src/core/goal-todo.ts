@@ -27,7 +27,8 @@
 
 import type { RoadmapItem, RoadmapStatus } from './work-contract.js';
 import { capRoadmapItem } from './work-contract.js';
-import type { VerifiedState } from './verify.js';
+import type { VerifiedState, VerifyOutcome } from './verify.js';
+import { buildVerifyReceipt } from './verify.js';
 
 // ---------------------------------------------------------------------------
 // The unified goal type
@@ -63,6 +64,33 @@ export interface GoalVerdict {
   readonly receipt: string;
   /** ISO timestamp when the verdict was recorded. */
   readonly at: string;
+}
+
+/**
+ * The honesty boundary, in one pure function: build a {@link GoalVerdict} from a
+ * REAL {@link VerifyOutcome} (the only legitimate source of a verdict state). The
+ * `state` is copied VERBATIM from the outcome's honest four-state — never inferred,
+ * never upgraded — and the receipt is the honest one-line string the verify engine
+ * itself composes (buildVerifyReceipt), so the verdict can never overclaim. `at` is
+ * the injected ISO time (pure — no wall clock here). This is the ONLY constructor
+ * the verified-done gate uses; a model's GOAL_COMPLETE claim never reaches it.
+ */
+export function goalVerdictFromOutcome(outcome: VerifyOutcome, nowIso: string): GoalVerdict {
+  return {
+    state: outcome.verified,
+    receipt: buildVerifyReceipt(outcome),
+    at: nowIso,
+  };
+}
+
+/**
+ * Whether a goal-level verdict counts as VERIFIED DONE — the gate's promote test.
+ * ONLY `passing` (the project's own tests ran GREEN) or `reviewed` (a critic looked,
+ * a weaker-but-real signal) qualify. `failing` and `unverified` (including an empty
+ * diff ⇒ nothing to verify) do NOT — the goal stays open. Pure, total.
+ */
+export function isGoalVerifiedDone(verdict: GoalVerdict): boolean {
+  return verdict.state === 'passing' || verdict.state === 'reviewed';
 }
 
 /**
@@ -296,6 +324,29 @@ export function goalGlyph(goal: Goal): string {
     return roadmapProgress(goal.roadmap).blocked > 0 ? '⚠' : '◷';
   }
   return '○'; // queued
+}
+
+/**
+ * A short, honest verdict tag for a goal's evidence-backed `goalVerdict`, for the
+ * persistent board so completion honesty is VISIBLE: `passing` ⇒ `✓verified`,
+ * `reviewed` ⇒ `~reviewed` (a critic looked, no tests — weaker), `failing` ⇒
+ * `✗failing`, `unverified` ⇒ `⚠unverified`. Returns `undefined` when the goal has
+ * no recorded verdict (nothing to show — never a fabricated tag). Pure, total.
+ */
+export function goalVerdictTag(goal: Goal): string | undefined {
+  const v = goal.goalVerdict;
+  if (v === undefined) return undefined;
+  switch (v.state) {
+    case 'passing':
+      return '✓verified';
+    case 'reviewed':
+      return '~reviewed';
+    case 'failing':
+      return '✗failing';
+    case 'unverified':
+    default:
+      return '⚠unverified';
+  }
 }
 
 /**

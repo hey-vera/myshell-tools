@@ -6,7 +6,21 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
-## [3.64.0] - 2026-06-10
+## [3.65.0] - 2026-06-10
+
+### Added (elite planning-partner build — verified-done, the anti-fabrication backbone)
+- **A goal can no longer be "done" just because the model said so** (behind
+  `MYSHELL_TRULY_COMPLETE`, default off). When a goal loop signals completion, the
+  partner now runs a real verification first (the existing test/build engine's honest
+  4-state) over the goal's actual changes and marks it **done only when the evidence
+  says passing/reviewed**. Failing, unverified, or an empty diff (nothing to verify) →
+  **not done** — the goal stays open with an honest receipt ("tests failing" / "no code
+  change to verify"). The verdict can only be built from a real verification outcome,
+  never from the model's claim; an evidence-only store write path persists it; the board
+  shows the honest verdict (✓verified / ~reviewed / ✗failing / ⚠unverified). Fail-soft
+  (a verify error → unverified → not-done, never a fake pass) and byte-identical when off.
+
+
 
 ### Added (elite planning-partner build — whole-picture understanding pass)
 - **Before staging goals, the partner now builds a real understanding of the situation**

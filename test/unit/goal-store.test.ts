@@ -115,6 +115,68 @@ describe('goal-store — CRUD round-trip', () => {
     assert.equal(await store.setState('goal_doesnotexist', 'done'), null);
   });
 
+  it('setGoalVerdict persists EXACTLY the passed verdict (atomic, bumps lastTouched)', async () => {
+    const g = await store.create({ title: 'ship it' });
+    assert.equal(g.goalVerdict, undefined);
+    clock.setIso('2026-06-07T00:00:00.000Z');
+    const after = await store.setGoalVerdict(g.id, {
+      state: 'passing',
+      receipt: '✓ tests passing (npm test, 4200ms)',
+      at: '2026-06-07T00:00:00.000Z',
+    });
+    assert.equal(after?.goalVerdict?.state, 'passing');
+    assert.equal(after?.goalVerdict?.receipt, '✓ tests passing (npm test, 4200ms)');
+    assert.equal(after?.lastTouched, '2026-06-07T00:00:00.000Z');
+    // Survives the round-trip to disk (the per-goal file is authoritative).
+    const reloaded = await store.get(g.id);
+    assert.equal(reloaded?.goalVerdict?.state, 'passing');
+  });
+
+  it('setGoalVerdict records EXACTLY what is passed — a failing/unverified verdict is never green-washed', async () => {
+    const g = await store.create({ title: 'wip' });
+    const failing = await store.setGoalVerdict(g.id, {
+      state: 'failing',
+      receipt: '✗ tests failing (npm test, 900ms)',
+      at: '2026-06-07T00:00:00.000Z',
+    });
+    assert.equal(failing?.goalVerdict?.state, 'failing');
+    const unver = await store.setGoalVerdict(g.id, {
+      state: 'unverified',
+      receipt: '⚠ unverified — no code change to verify',
+      at: '2026-06-07T00:00:00.000Z',
+    });
+    assert.equal(unver?.goalVerdict?.state, 'unverified');
+  });
+
+  it('setGoalVerdict returns null for an unknown id', async () => {
+    assert.equal(
+      await store.setGoalVerdict('goal_doesnotexist', {
+        state: 'passing',
+        receipt: 'x',
+        at: '2026-06-07T00:00:00.000Z',
+      }),
+      null,
+    );
+  });
+
+  it('a malformed verdict state is OMITTED by capGoal — never a fabricated green', async () => {
+    const g = await store.create({ title: 'guard' });
+    // Force an invalid state past the typed API to prove the store/cap layer drops it.
+    const after = await store.setGoalVerdict(g.id, {
+      state: 'totally-bogus' as unknown as 'passing',
+      receipt: 'x',
+      at: '2026-06-07T00:00:00.000Z',
+    });
+    assert.equal(after?.goalVerdict, undefined);
+  });
+
+  it('setGoalVerdict keeps the goal file 0o600', async () => {
+    const g = await store.create({ title: 'perm' });
+    await store.setGoalVerdict(g.id, { state: 'passing', receipt: 'ok', at: '2026-06-07T00:00:00.000Z' });
+    const itemPath = join(goalsDir(), 'items', `${g.id}.json`);
+    assert.equal((await stat(itemPath)).mode & 0o777, 0o600);
+  });
+
   it('setRoadmapItemStatus checks off one to-do (evidence-backed, never inferred)', async () => {
     const g = await store.create({
       title: 't',

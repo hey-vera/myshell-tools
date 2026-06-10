@@ -450,6 +450,9 @@ export function BoardRow({ row, color = true }: BoardRowProps): React.ReactEleme
   const scope = row.scope === 'global' ? 'global' : 'this repo';
   const parts = [boardTodoCount(row.done, row.total), row.state, scope];
   if (row.agents > 0) parts.push(`${row.agents} agent${row.agents === 1 ? '' : 's'}`);
+  // Honest verdict tag (Elite-partner Part 3) — completion honesty made visible.
+  // Present only when the goal has a REAL recorded verdict (never fabricated).
+  if (row.verdict !== undefined && row.verdict.length > 0) parts.push(row.verdict);
   return (
     <Box>
       <Text {...glyphProps}>{row.glyph}</Text>

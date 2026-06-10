@@ -47,7 +47,7 @@ import { judgmentEnabled } from '../core/judgment-flag.js';
 import { isPushBackQuestionSet, classifyPushBackAnswer } from '../core/brain.js';
 import { renderTastePlaybook, isImmediateRephrase, type TasteSignal } from '../core/taste.js';
 import { createFileGoalStore } from '../infra/goal-store.js';
-import { goalGlyph, roadmapProgress } from '../core/goal-todo.js';
+import { goalGlyph, roadmapProgress, goalVerdictTag, goalVerdictFromOutcome, isGoalVerifiedDone } from '../core/goal-todo.js';
 import type { Goal } from '../core/goal-todo.js';
 import { boardEnabled } from './ui/board-flag.js';
 import { autoStageEnabled } from './ui/auto-goal-flag.js';
@@ -121,6 +121,8 @@ import type { GoalPlan } from '../core/goal-plan.js';
 import { makeUnderstandingPass } from '../core/understanding-generator.js';
 import type { SystemModel } from '../core/understanding.js';
 import { understandingEnabled } from './ui/understanding-flag.js';
+import { verifiedDoneEnabled } from './ui/truly-complete-flag.js';
+import { verifyStage } from '../core/work-call.js';
 import { isRecapStale, recapEligible, type RecapResult } from '../core/recap.js';
 import { makeRouteClassifier } from '../core/route-classifier.js';
 import { makeIntentExtractor } from '../core/intent-extractor.js';
@@ -2119,6 +2121,10 @@ export async function runChatLoop(
       // its own attach-by-goalId truth, so a running goal shows its real agent count.
       const toBoardRow = (g: Goal): GoalBoardRow => {
         const prog = roadmapProgress(g.roadmap);
+        // The honest verdict tag (Elite-partner Part 3) rides on the row ONLY when the
+        // goal has a REAL recorded verdict (goalVerdictTag returns undefined otherwise)
+        // — completion honesty made visible, never a fabricated tag.
+        const verdict = goalVerdictTag(g);
         return {
           id: g.id,
           title: g.title,
@@ -2128,6 +2134,7 @@ export async function runChatLoop(
           glyph: goalGlyph(g),
           scope: g.scope,
           agents: 0,
+          ...(verdict !== undefined ? { verdict } : {}),
         };
       };
       // Snapshot the store and push it into the live board. Scoped to the current
@@ -2152,6 +2159,82 @@ export async function runChatLoop(
       // persistent board reflects the real store before any work streams. No-op when
       // the flag is off → byte-identical.
       await syncBoard();
+
+      // ---- VERIFIED-DONE goal-completion GATE (Elite-partner Part 3) -----------
+      // DEFAULT OFF. When the truly-complete flag is ON, a goal can NO LONGER be
+      // marked `done` just because the model SAID GOAL_COMPLETE — the model's claim
+      // is DEMOTED to a "request to verify". Before a goal settles `done`, a REAL
+      // verification runs over the goal's cumulative changes via the existing
+      // verify.ts engine (git-diff change-capture + the project's own test command →
+      // the honest four-state passing|failing|reviewed|unverified). The goal is
+      // `done` ONLY when the verdict is passing/reviewed; failing/unverified (incl.
+      // an empty diff) keeps it open with an honest receipt — never fake green. The
+      // verdict is the SOLE source of `lastGoalCompleted` when this is on.
+      const verifiedDoneOn = verifiedDoneEnabled(process.env, mutableCtx.config);
+      // Run a REAL verification for the goal-completion gate and map it to a
+      // GoalVerdict, reusing verifyStage (the same change-capture + tests-first +
+      // honest four-state engine the work-call accept point uses). Tests-only
+      // (no critic): the honesty boundary (real test run → real four-state) is fully
+      // preserved without the work-call loop's provider/critic machinery. FAIL-SOFT:
+      // verifyStage wraps every step in try/catch and degrades a crash to `unverified`
+      // (and we belt-and-suspender catch here too) so a verification can never crash
+      // the goal loop and can never fake-pass. `acceptance` (the goal's goalAcceptance,
+      // when set) orients the diff-scoped task. Returns the honest VerifyOutcome.
+      const runGoalVerification = async (
+        acceptance: string | undefined,
+      ): Promise<import('../core/verify.js').VerifyOutcome> => {
+        try {
+          const authed: ProviderId[] = [];
+          if (mutableCtx.env.claude.authenticated) authed.push('claude');
+          if (mutableCtx.env.codex.authenticated) authed.push('codex');
+          if (mutableCtx.env.opencode.authenticated) authed.push('opencode');
+          const outcome = await verifyStage({
+            output: '',
+            provider: authed[0] ?? 'claude',
+            tier: 'worker',
+            port: nodeVerifyPort,
+            level: 'tests', // tests-first only — the honest free signal (no critic call)
+            cwd: ctx.cwd,
+            ...(acceptance !== undefined && acceptance.length > 0 ? { task: acceptance } : {}),
+            available: authed,
+          });
+          // verifyStage returns undefined only when unarmed (no port/level/cwd); here
+          // it is always armed, but be defensive — an absent outcome ⇒ honest unverified.
+          return outcome ?? { verified: 'unverified', changedFiles: 0, note: 'verification did not run' };
+        } catch {
+          return { verified: 'unverified', changedFiles: 0, note: 'verification could not complete' };
+        }
+      };
+      // The gate at the goal's would-be completion point. Runs the real verification,
+      // PERSISTS the honest verdict via the store's single evidence-write path
+      // (setGoalVerdict), and returns whether the goal is TRULY done (verdict ∈
+      // {passing, reviewed}). Emits an honest one-line receipt either way. When the
+      // verdict is NOT verified-done, the goal stays open (the caller leaves it
+      // running) — the model's word is never enough. `goalId` is optional: when the
+      // run isn't tied to a stored goal (e.g. an ephemeral `/goal <text>` run) the
+      // verdict still gates completion, it just isn't persisted.
+      const gateGoalCompletion = async (
+        goalId: string | undefined,
+        acceptance: string | undefined,
+      ): Promise<boolean> => {
+        const outcome = await runGoalVerification(acceptance);
+        const verdict = goalVerdictFromOutcome(outcome, ctx.clock.isoNow());
+        if (goalId !== undefined) {
+          // The ONLY evidence-write path — the verdict is the real VerifyOutcome's,
+          // never the model's claim. Fail-soft: a store error never breaks the loop.
+          await goalStore.setGoalVerdict(goalId, verdict).catch(() => null);
+          await syncBoard(); // the verdict landed → reflect completion honesty on the board
+        }
+        const trulyDone = isGoalVerifiedDone(verdict);
+        if (trulyDone) {
+          out.write(dim(`\n  ✓ verified done — ${verdict.receipt}\n`, out.color));
+        } else {
+          out.write(
+            dim(`\n  ⚠ not verified done — ${verdict.receipt}. Keeping the goal open.\n`, out.color),
+          );
+        }
+        return trulyDone;
+      };
 
       // ---- Planning brain / AUTO-STAGE (Elite-partner Phase 6) -----------------
       // DEFAULT OFF. When the auto-goal flag is ON, the partner JUDGES a SUBSTANTIAL
@@ -2549,7 +2632,20 @@ export async function runChatLoop(
       //                 behaviour. The chat AUTO-ENGAGE / timeout-chunk / keep-going
       //                 sites pass a concise label formed from RAW chat text via
       //                 formGoalLabel(), fixing the "raw ramble as title" bug.
-      const runGoalLoop = async (goalText: string, goalLabel: string = goalText): Promise<boolean> => {
+      //   • opts.goalId / opts.goalAcceptance — the stored goal this run completes
+      //                 (the PROMOTE path) + its goal-level definition of done. Used
+      //                 ONLY by the verified-done gate (Elite-partner Part 3): when
+      //                 the flag is ON and the loop reaches the model's GOAL_COMPLETE,
+      //                 a REAL verification runs and its honest verdict — persisted
+      //                 against goalId — decides `lastGoalCompleted`, not the model's
+      //                 word. Omitted (ephemeral `/goal <text>` runs) ⇒ the verdict
+      //                 still gates completion, it just isn't persisted. When the flag
+      //                 is OFF these are inert and the path is byte-for-byte today's.
+      const runGoalLoop = async (
+        goalText: string,
+        goalLabel: string = goalText,
+        opts?: { readonly goalId?: string; readonly goalAcceptance?: string },
+      ): Promise<boolean> => {
         // FIX 3: a goal loop is model-needing. /goal and /goals go dispatch BEFORE the
         // relocated no-provider gate, so self-gate here — no provider means the loop
         // would only fail. Returns false (don't break the chat loop) after a notice.
@@ -2832,7 +2928,21 @@ export async function runChatLoop(
           });
           if (step.action !== 'continue') {
             const mark = step.action === 'complete' ? '✓' : '■';
-            if (step.action === 'complete') lastGoalCompleted = true;
+            if (step.action === 'complete') {
+              if (verifiedDoneOn) {
+                // VERIFIED-DONE GATE (Elite-partner Part 3): the model's GOAL_COMPLETE
+                // is a REQUEST to verify, NOT the completion. Run a REAL verification
+                // and let its honest verdict — not the model's word — decide. Persists
+                // the verdict against the stored goal (when one is tied to this run)
+                // and only sets `lastGoalCompleted` when the verdict is passing/reviewed.
+                out.write(dim(`\n  ${mark} ${step.reason} — verifying before marking done…\n`, out.color));
+                lastGoalCompleted = await gateGoalCompletion(opts?.goalId, opts?.goalAcceptance);
+                break;
+              }
+              // Flag OFF — today's behaviour exactly: the model's GOAL_COMPLETE settles
+              // the goal `done` (byte-for-byte identical).
+              lastGoalCompleted = true;
+            }
             out.write(dim(`\n  ${mark} ${step.reason}.\n`, out.color));
             break;
           }
@@ -3045,7 +3155,17 @@ export async function runChatLoop(
         // /todo text verbatim, truncated to 80 chars), so it can be a ramble. Form a
         // SMART manager-tier objective for the LABEL while still running the full
         // stored title as the work. fail-soft inside formGoalLabel.
-        const shouldBreak = await runGoalLoop(target.title, await formGoalLabel(target.title));
+        // Pass the stored goal's id + goal-level acceptance so the verified-done gate
+        // (when the flag is ON) verifies the goal's cumulative changes against
+        // goalAcceptance and persists the honest verdict against THIS goal before any
+        // `done`. When the flag is OFF these are inert; the path is byte-identical.
+        const shouldBreak = await runGoalLoop(target.title, await formGoalLabel(target.title), {
+          goalId: target.id,
+          ...(target.goalAcceptance !== undefined ? { goalAcceptance: target.goalAcceptance } : {}),
+        });
+        // `lastGoalCompleted` is now the VERIFIED computation when the gate is ON
+        // (verdict ∈ {passing,reviewed}) — never the model's bare GOAL_COMPLETE word.
+        // failing/unverified ⇒ false ⇒ the goal stays `running` for the user to revisit.
         if (lastGoalCompleted) {
           await goalStore.setState(target.id, 'done');
         }

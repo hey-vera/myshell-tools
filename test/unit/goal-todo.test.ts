@@ -18,10 +18,14 @@ import {
   formatRoadmapLines,
   selectGoals,
   ROADMAP_LIMIT,
+  goalVerdictFromOutcome,
+  isGoalVerifiedDone,
+  goalVerdictTag,
   type Goal,
   type GoalVerdict,
 } from '../../src/core/goal-todo.ts';
 import type { RoadmapItem, RoadmapItemVerdict, RoadmapItemApproach } from '../../src/core/work-contract.ts';
+import type { VerifyOutcome } from '../../src/core/verify.ts';
 
 function makeGoal(overrides: Partial<Goal> = {}): Goal {
   return {
@@ -371,5 +375,72 @@ describe('capRoadmap + capGoal — Phase 2 RoadmapItem new fields', () => {
     assert.deepEqual(capped.goalVerdict, (g as Goal).goalVerdict);
     assert.deepEqual(capped.roadmap[0]?.verdict, verdict);
     assert.deepEqual(capped.roadmap[0]?.approach, approach);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Verified-done gate helpers (Elite-partner Part 3) — the honesty boundary
+// ---------------------------------------------------------------------------
+
+describe('goalVerdictFromOutcome — verdict state comes ONLY from a real VerifyOutcome', () => {
+  const at = '2026-06-07T12:00:00.000Z';
+
+  it('copies the four-state VERBATIM (passing) + an honest receipt', () => {
+    const outcome: VerifyOutcome = {
+      verified: 'passing',
+      changedFiles: 3,
+      changedPaths: ['a.ts', 'b.ts', 'c.ts'],
+      testCommand: 'npm test',
+      testRun: { outcome: 'green', output: '', durationMs: 4200 },
+    };
+    const v = goalVerdictFromOutcome(outcome, at);
+    assert.equal(v.state, 'passing');
+    assert.equal(v.at, at);
+    assert.match(v.receipt, /tests passing/);
+  });
+
+  it('failing stays failing — never upgraded', () => {
+    const outcome: VerifyOutcome = {
+      verified: 'failing',
+      changedFiles: 1,
+      testCommand: 'npm test',
+      testRun: { outcome: 'red', output: 'AssertionError', durationMs: 900 },
+    };
+    const v = goalVerdictFromOutcome(outcome, at);
+    assert.equal(v.state, 'failing');
+    assert.match(v.receipt, /failing/);
+  });
+
+  it('unverified (empty diff) stays unverified with its honest note', () => {
+    const outcome: VerifyOutcome = { verified: 'unverified', changedFiles: 0, note: 'no code change to verify' };
+    const v = goalVerdictFromOutcome(outcome, at);
+    assert.equal(v.state, 'unverified');
+    assert.match(v.receipt, /unverified/);
+  });
+});
+
+describe('isGoalVerifiedDone — only passing/reviewed qualify', () => {
+  const mk = (state: GoalVerdict['state']): GoalVerdict => ({ state, receipt: 'r', at: 'x' });
+  it('passing ⇒ true, reviewed ⇒ true', () => {
+    assert.equal(isGoalVerifiedDone(mk('passing')), true);
+    assert.equal(isGoalVerifiedDone(mk('reviewed')), true);
+  });
+  it('failing ⇒ false, unverified ⇒ false (never done on a weak/absent signal)', () => {
+    assert.equal(isGoalVerifiedDone(mk('failing')), false);
+    assert.equal(isGoalVerifiedDone(mk('unverified')), false);
+  });
+});
+
+describe('goalVerdictTag — honest board tag, only when a real verdict exists', () => {
+  it('returns undefined when the goal has no verdict (never fabricated)', () => {
+    assert.equal(goalVerdictTag(makeGoal()), undefined);
+  });
+  it('maps each four-state to its honest tag', () => {
+    const tag = (state: GoalVerdict['state']) =>
+      goalVerdictTag(makeGoal({ goalVerdict: { state, receipt: 'r', at: 'x' } }));
+    assert.equal(tag('passing'), '✓verified');
+    assert.equal(tag('reviewed'), '~reviewed');
+    assert.equal(tag('failing'), '✗failing');
+    assert.equal(tag('unverified'), '⚠unverified');
   });
 });

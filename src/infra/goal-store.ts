@@ -45,6 +45,7 @@ import {
   type Goal,
   type GoalScope,
   type GoalState,
+  type GoalVerdict,
 } from '../core/goal-todo.js';
 import { capRoadmapItem, type RoadmapItem, type RoadmapStatus } from '../core/work-contract.js';
 
@@ -248,6 +249,21 @@ export interface GoalStore {
    */
   setState(id: string, state: GoalState): Promise<Goal | null>;
   /**
+   * Record the goal-level evidence-backed verdict (Elite-partner Part 3, the
+   * anti-fabrication backbone). Bumps `lastTouched`. Returns the updated goal, or
+   * null if the id is unknown.
+   *
+   * HARD anti-fabrication rule (the honesty boundary is sacred): this is the ONLY
+   * write path for `goalVerdict`, and the value persisted is EXACTLY what the caller
+   * passes — a verdict the caller computed from a REAL {@link VerifyOutcome} (a real
+   * git-diff + the project's own test run). The store NEVER infers, defaults, or
+   * upgrades a verdict; `setState` and the roadmap-CRUD methods deliberately have NO
+   * verdict-write path, so a model's GOAL_COMPLETE claim can never reach this field
+   * except as a real, evidence-backed verdict the verify phase produced. The verdict
+   * is capped defensively by capGoal (an invalid state is omitted, never green-washed).
+   */
+  setGoalVerdict(id: string, verdict: GoalVerdict): Promise<Goal | null>;
+  /**
    * Set the status of roadmap item #index (0-based) of a goal. Bumps
    * `lastTouched`. Returns the updated goal, or null if id/index is unknown.
    * Honesty: callers mark `done` only on real evidence (a manual user check-off
@@ -382,6 +398,24 @@ export function createFileGoalStore(opts: {
         const target = goals.find((g) => g.id === id);
         if (target === undefined) return null;
         const updated = capGoal({ ...target, state, lastTouched: clock.isoNow() });
+        await persistGoal(home, updated);
+        await writeIndex(home, goals.map((g) => (g.id === id ? updated : g)));
+        return updated;
+      });
+    },
+
+    async setGoalVerdict(id, verdict): Promise<Goal | null> {
+      if (!isValidId(id)) return null;
+      await ensureDirs(home);
+      return withLock(getIndexLockPath(home), async () => {
+        const goals = await readIndexLocked(home, onWarning);
+        const target = goals.find((g) => g.id === id);
+        if (target === undefined) return null;
+        // The ONLY write path for goalVerdict. The value is EXACTLY the caller's
+        // (computed from a real VerifyOutcome); capGoal omits an invalid state so a
+        // malformed verdict can never green-wash — the honesty boundary survives the
+        // round-trip. lastTouched bumps so the board reflects the verdict immediately.
+        const updated = capGoal({ ...target, goalVerdict: verdict, lastTouched: clock.isoNow() });
         await persistGoal(home, updated);
         await writeIndex(home, goals.map((g) => (g.id === id ? updated : g)));
         return updated;

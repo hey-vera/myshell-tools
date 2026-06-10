@@ -36,6 +36,7 @@ function boardRow(over: Partial<GoalBoardRow> = {}): GoalBoardRow {
     glyph: over.glyph ?? '◷',
     scope: over.scope ?? 'project',
     agents: over.agents ?? 0,
+    ...(over.verdict !== undefined ? { verdict: over.verdict } : {}),
   };
 }
 
@@ -444,6 +445,22 @@ test('BoardRow renders glyph · title · N/M to-dos · state · scope', () => {
   assert.match(frame, /3\/8 to-dos/);
   assert.match(frame, /parked/);
   assert.match(frame, /this repo/);
+});
+
+test('BoardRow surfaces the honest verdict tag only when a real verdict exists', () => {
+  // Verified-done (passing) ⇒ ✓verified visible.
+  const verified = render(
+    <BoardRow row={boardRow({ title: 'Ship it', verdict: '✓verified' })} color={false} />,
+  );
+  assert.match(verified.lastFrame() ?? '', /✓verified/);
+  // Failing ⇒ ✗failing visible (completion honesty, never hidden).
+  const failing = render(
+    <BoardRow row={boardRow({ title: 'WIP', verdict: '✗failing' })} color={false} />,
+  );
+  assert.match(failing.lastFrame() ?? '', /✗failing/);
+  // No verdict ⇒ no tag (never fabricated).
+  const none = render(<BoardRow row={boardRow({ title: 'No verdict' })} color={false} />);
+  assert.doesNotMatch(none.lastFrame() ?? '', /verified|failing|unverified|reviewed/);
 });
 
 test('BoardRow surfaces a REAL live agent count only when running', () => {

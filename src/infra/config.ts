@@ -321,6 +321,23 @@ export interface AppConfig {
    */
   experimentalUnderstanding?: boolean;
   /**
+   * Opt-in for the VERIFIED-DONE goal-completion GATE (Elite-partner architecture
+   * Part 3, the anti-fabrication backbone). Absent/false → a goal is marked `done`
+   * exactly as today: when the goal loop reaches the model's GOAL_COMPLETE signal
+   * (byte-for-byte identical). When true (or `MYSHELL_TRULY_COMPLETE` ∈
+   * {1,true,on,yes}) the model's GOAL_COMPLETE is DEMOTED to a "request to verify":
+   * before the goal is set `done`, a REAL verification runs over the goal's
+   * cumulative changes (the verify.ts engine — git-diff change-capture + the
+   * project's own test command → the honest four-state passing|failing|reviewed|
+   * unverified). The goal is set `done` ONLY when the verdict is passing/reviewed;
+   * a failing/unverified verdict (including an empty diff) leaves the goal open with
+   * an honest receipt — never fake green. The verdict is persisted as evidence via
+   * the store's single setGoalVerdict write path. Fail-soft: a verification that
+   * errors/times out → unverified → not-done, never crashes the goal loop.
+   * See src/interface/ui/truly-complete-flag.ts / src/core/verify.ts.
+   */
+  experimentalTrulyComplete?: boolean;
+  /**
    * Per-user "first-touch explainer shown" flags (whole-tool-finish-5.5.md §0.1).
    * Absent → nothing shown yet (each surface explains itself once on first
    * encounter). Each key flips to true the first time that surface is met.

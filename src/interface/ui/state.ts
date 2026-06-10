@@ -121,6 +121,13 @@ export interface GoalBoardRow {
   readonly scope: 'global' | 'project';
   /** Live count of running agents attached to this goal on the current turn. */
   readonly agents: number;
+  /**
+   * The goal's honest evidence-backed verdict tag (Elite-partner Part 3) — e.g.
+   * `✓verified` / `~reviewed` / `✗failing` / `⚠unverified`, pre-shaped by the pure
+   * goal-todo.ts `goalVerdictTag` at sync time. Present only when the goal has a
+   * real recorded verdict (never fabricated); absent when none has been computed.
+   */
+  readonly verdict?: string;
 }
 
 /** The execution phase that drives the live status line / spinner verb. */
