@@ -6,6 +6,20 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+## [3.90.0] - 2026-06-10
+
+### Changed (the partner is an advisor, not a yes-man — master-plan Phase 5c)
+- **When you name a way to do something but a materially better path exists, the
+  planner now recommends the better one** instead of dutifully planning what you asked.
+  The planning-brain prompt gains an explicit rule: if the owner stated an approach but
+  a smarter route fits their real goal, make that route the `APPROACH`, say why it wins
+  in `WHY`, and put the owner's stated way in `ALT` — the obvious/familiar pick isn't
+  always best, and the partner no longer defaults to it when the evidence says otherwise.
+  This makes the already-present advisor *voice* (hold opinions, defend with evidence,
+  flag what you're about to get wrong) bite at plan time, where the path is actually chosen.
+- **Surgical + neutrality-safe:** touches ONLY the planning-brain prompt (`goal-plan.ts`),
+  never the work-call path — the two orchestration neutrality proofs stay byte-identical.
+
 ## [3.89.0] - 2026-06-10
 
 ### Fixed (a multi-goal plan now actually runs all its goals — master-plan Phase 5f)
