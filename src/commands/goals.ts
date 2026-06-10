@@ -25,7 +25,12 @@
 
 import type { OutputSink } from '../interface/render.js';
 import { dim, green, bold } from '../ui/theme.js';
-import type { GoalStore } from '../infra/goal-store.js';
+import type {
+  AddRoadmapItemResult,
+  GoalStore,
+  RemoveRoadmapItemResult,
+  RoadmapItemPatch,
+} from '../infra/goal-store.js';
 import {
   formatGoalRow,
   formatTodoCount,
@@ -75,23 +80,80 @@ export function parseGoalsCommand(arg: string): GoalsCommand {
   return { kind: 'usage' };
 }
 
-/** Parse `/todo done|block <g> <n>` and `/todo <text>`. Pure, never throws. */
+/**
+ * Parse the `/todo` subcommands. Pure, never throws. Numbers are 1-based and
+ * match the `/goals` listing order (`g` = parked-goal index, `n` = to-do index):
+ *   - `done|block <g> <n>`        → mark a to-do's status (existing)
+ *   - `add <g> <new text>`        → add a new to-do to existing parked goal #g
+ *   - `edit <g> <n> <new text>`   → patch a to-do's text
+ *   - `move <g> <n> <to-pos>`     → reorder: move to-do #n to position <to-pos>
+ *   - `rm <g> <n>`                → remove a to-do (verified-done is retained)
+ *   - anything else               → create a parked goal from the free text
+ */
 export type TodoCommand =
   | { readonly kind: 'create'; readonly text: string }
   | { readonly kind: 'mark'; readonly status: 'done' | 'blocked'; readonly g: number; readonly n: number }
+  | { readonly kind: 'add'; readonly g: number; readonly text: string }
+  | { readonly kind: 'edit'; readonly g: number; readonly n: number; readonly text: string }
+  | { readonly kind: 'move'; readonly g: number; readonly n: number; readonly to: number }
+  | { readonly kind: 'rm'; readonly g: number; readonly n: number }
   | { readonly kind: 'usage' };
 
 export function parseTodoCommand(arg: string): TodoCommand {
   const trimmed = (arg ?? '').trim();
   if (trimmed === '') return { kind: 'usage' };
-  const m = /^(done|block|blocked)\s+(\d+)\s+(\d+)$/.exec(trimmed);
-  if (m !== null) {
-    const g = Number.parseInt(m[2] ?? '', 10);
-    const n = Number.parseInt(m[3] ?? '', 10);
-    if (Number.isFinite(g) && g >= 1 && Number.isFinite(n) && n >= 1) {
-      return { kind: 'mark', status: m[1] === 'done' ? 'done' : 'blocked', g, n };
+
+  // add <g> <new text> — append a to-do to existing parked goal #g.
+  const add = /^add\s+(\d+)\s+(.+)$/s.exec(trimmed);
+  if (add !== null) {
+    const g = Number.parseInt(add[1] ?? '', 10);
+    const text = (add[2] ?? '').trim();
+    if (Number.isFinite(g) && g >= 1 && text.length > 0) {
+      return { kind: 'add', g, text };
     }
   }
+
+  const mark = /^(done|block|blocked)\s+(\d+)\s+(\d+)$/.exec(trimmed);
+  if (mark !== null) {
+    const g = Number.parseInt(mark[2] ?? '', 10);
+    const n = Number.parseInt(mark[3] ?? '', 10);
+    if (Number.isFinite(g) && g >= 1 && Number.isFinite(n) && n >= 1) {
+      return { kind: 'mark', status: mark[1] === 'done' ? 'done' : 'blocked', g, n };
+    }
+  }
+
+  // edit <g> <n> <new text> — the rest of the line is the new to-do text.
+  const edit = /^edit\s+(\d+)\s+(\d+)\s+(.+)$/s.exec(trimmed);
+  if (edit !== null) {
+    const g = Number.parseInt(edit[1] ?? '', 10);
+    const n = Number.parseInt(edit[2] ?? '', 10);
+    const text = (edit[3] ?? '').trim();
+    if (Number.isFinite(g) && g >= 1 && Number.isFinite(n) && n >= 1 && text.length > 0) {
+      return { kind: 'edit', g, n, text };
+    }
+  }
+
+  // move <g> <n> <to-pos> — reorder to-do #n to 1-based position <to-pos>.
+  const move = /^move\s+(\d+)\s+(\d+)\s+(\d+)$/.exec(trimmed);
+  if (move !== null) {
+    const g = Number.parseInt(move[1] ?? '', 10);
+    const n = Number.parseInt(move[2] ?? '', 10);
+    const to = Number.parseInt(move[3] ?? '', 10);
+    if (Number.isFinite(g) && g >= 1 && Number.isFinite(n) && n >= 1 && Number.isFinite(to) && to >= 1) {
+      return { kind: 'move', g, n, to };
+    }
+  }
+
+  // rm <g> <n> — remove a to-do.
+  const rm = /^rm\s+(\d+)\s+(\d+)$/.exec(trimmed);
+  if (rm !== null) {
+    const g = Number.parseInt(rm[1] ?? '', 10);
+    const n = Number.parseInt(rm[2] ?? '', 10);
+    if (Number.isFinite(g) && g >= 1 && Number.isFinite(n) && n >= 1) {
+      return { kind: 'rm', g, n };
+    }
+  }
+
   return { kind: 'create', text: trimmed };
 }
 
@@ -233,7 +295,7 @@ export function renderGoalExpanded(goal: Goal, out: OutputSink): string {
   }
   lines.push(
     dim(
-      '   /goals go <n> promote · /todo done <g> <n> check off · /todo block <g> <n> · /goals drop <n>',
+      '   /goals go <n> promote · /todo add <g> <text> · /todo done <g> <n> · /todo edit <g> <n> <text> · /todo move <g> <n> <to> · /todo rm <g> <n>',
       out.color,
     ),
   );
@@ -259,4 +321,170 @@ export async function listParked(store: GoalStore): Promise<Goal[]> {
 export function parkedAt(parked: readonly Goal[], n: number): Goal | null {
   if (!Number.isFinite(n) || n < 1 || n > parked.length) return null;
   return parked[n - 1] ?? null;
+}
+
+/**
+ * Resolve a 1-based to-do index into its RoadmapItem.id (the stable key all the
+ * store CRUD uses — never the array index). Returns null when out of range.
+ */
+export function todoIdAt(goal: Goal, n: number): string | null {
+  if (!Number.isFinite(n) || n < 1 || n > goal.roadmap.length) return null;
+  return goal.roadmap[n - 1]?.id ?? null;
+}
+
+// ---------------------------------------------------------------------------
+// Manual to-do CRUD — edit / move / rm (Part 2b: the real /todo consumers).
+// Subscription-clean (no model call): pure local store ops. Each resolves the
+// 1-based (g, n) the user typed into a goal + a RoadmapItem.id, then calls the
+// store CRUD keyed BY id. Returns the printed message string (for testability).
+// ---------------------------------------------------------------------------
+
+/** Mint a fresh, collision-free RoadmapItem id for a new to-do (e.g. `r3`). */
+function nextRoadmapId(goal: Goal): string {
+  const used = new Set(goal.roadmap.map((it) => it.id));
+  for (let i = 1; ; i += 1) {
+    const candidate = `r${i}`;
+    if (!used.has(candidate)) return candidate;
+  }
+}
+
+/** `/todo add <g> <text>` — append a new to-do to existing parked goal #g. */
+export async function runTodoAdd(opts: {
+  readonly store: GoalStore;
+  readonly out: OutputSink;
+  readonly g: number;
+  readonly text: string;
+}): Promise<string> {
+  const parked = await listParked(opts.store);
+  const goal = parkedAt(parked, opts.g);
+  if (goal === null) {
+    const msg = `No parked goal #${opts.g}. Run /goals to see the list.`;
+    opts.out.write(dim(`  ${msg}\n`, opts.out.color));
+    return msg;
+  }
+  const item: RoadmapItem = { id: nextRoadmapId(goal), text: opts.text, status: 'pending' };
+  const result: AddRoadmapItemResult = await opts.store.addRoadmapItem(goal.id, item);
+  if (result.ok) {
+    const msg = `Added a to-do to "${result.goal.title}" (${formatTodoCount(result.goal.roadmap)}).`;
+    opts.out.write(`  ${green('◷', opts.out.color)} ${msg}\n`);
+    return msg;
+  }
+  if (result.reason === 'full') {
+    // Cap-8 reached — the honest "split into a child goal" nudge (Part 4).
+    const msg = `"${result.goal.title}" already has 8 to-dos (the cap). Split the work into a new goal with /todo <text>.`;
+    opts.out.write(dim(`  ${msg}\n`, opts.out.color));
+    return msg;
+  }
+  const msg = `No parked goal #${opts.g}. Run /goals to see the list.`;
+  opts.out.write(dim(`  ${msg}\n`, opts.out.color));
+  return msg;
+}
+
+/** `/todo edit <g> <n> <text>` — patch one to-do's text. */
+export async function runTodoEdit(opts: {
+  readonly store: GoalStore;
+  readonly out: OutputSink;
+  readonly g: number;
+  readonly n: number;
+  readonly text: string;
+}): Promise<string> {
+  const parked = await listParked(opts.store);
+  const goal = parkedAt(parked, opts.g);
+  if (goal === null) {
+    const msg = `No parked goal #${opts.g}. Run /goals to see the list.`;
+    opts.out.write(dim(`  ${msg}\n`, opts.out.color));
+    return msg;
+  }
+  const itemId = todoIdAt(goal, opts.n);
+  if (itemId === null) {
+    const msg = `Goal "${goal.title}" has no to-do #${opts.n}.`;
+    opts.out.write(dim(`  ${msg}\n`, opts.out.color));
+    return msg;
+  }
+  const patch: RoadmapItemPatch = { text: opts.text };
+  const updated = await opts.store.updateRoadmapItem(goal.id, itemId, patch);
+  if (updated === null) {
+    const msg = 'Could not edit that to-do right now.';
+    opts.out.write(`  ${msg}\n`);
+    return msg;
+  }
+  const msg = `Updated to-do #${opts.n} of "${updated.title}".`;
+  opts.out.write(`  ${msg}\n`);
+  return msg;
+}
+
+/** `/todo move <g> <n> <to-pos>` — reorder to-do #n to 1-based position <to>. */
+export async function runTodoMove(opts: {
+  readonly store: GoalStore;
+  readonly out: OutputSink;
+  readonly g: number;
+  readonly n: number;
+  readonly to: number;
+}): Promise<string> {
+  const parked = await listParked(opts.store);
+  const goal = parkedAt(parked, opts.g);
+  if (goal === null) {
+    const msg = `No parked goal #${opts.g}. Run /goals to see the list.`;
+    opts.out.write(dim(`  ${msg}\n`, opts.out.color));
+    return msg;
+  }
+  const moving = goal.roadmap[opts.n - 1];
+  if (moving === undefined) {
+    const msg = `Goal "${goal.title}" has no to-do #${opts.n}.`;
+    opts.out.write(dim(`  ${msg}\n`, opts.out.color));
+    return msg;
+  }
+  // Build the desired full id order: pull #n out, splice it back at <to> (clamped
+  // into range). reorderRoadmap is keyed by id and keeps any omitted item, so a
+  // full explicit order is the cleanest, audit-safe way to express a move.
+  const ids = goal.roadmap.map((it) => it.id);
+  const without = ids.filter((_, i) => i !== opts.n - 1);
+  const target = Math.max(0, Math.min(opts.to - 1, without.length));
+  const orderedIds = [...without.slice(0, target), moving.id, ...without.slice(target)];
+  const updated = await opts.store.reorderRoadmap(goal.id, orderedIds);
+  if (updated === null) {
+    const msg = 'Could not reorder that to-do right now.';
+    opts.out.write(`  ${msg}\n`);
+    return msg;
+  }
+  const msg = `Moved to-do "${moving.text}" to position ${target + 1} of "${updated.title}".`;
+  opts.out.write(`  ${msg}\n`);
+  return msg;
+}
+
+/** `/todo rm <g> <n>` — remove a to-do (a verified-done one is retained). */
+export async function runTodoRemove(opts: {
+  readonly store: GoalStore;
+  readonly out: OutputSink;
+  readonly g: number;
+  readonly n: number;
+}): Promise<string> {
+  const parked = await listParked(opts.store);
+  const goal = parkedAt(parked, opts.g);
+  if (goal === null) {
+    const msg = `No parked goal #${opts.g}. Run /goals to see the list.`;
+    opts.out.write(dim(`  ${msg}\n`, opts.out.color));
+    return msg;
+  }
+  const itemId = todoIdAt(goal, opts.n);
+  if (itemId === null) {
+    const msg = `Goal "${goal.title}" has no to-do #${opts.n}.`;
+    opts.out.write(dim(`  ${msg}\n`, opts.out.color));
+    return msg;
+  }
+  const result: RemoveRoadmapItemResult = await opts.store.removeRoadmapItem(goal.id, itemId);
+  if (result.ok) {
+    const msg = `Removed to-do #${opts.n} of "${result.goal.title}".`;
+    opts.out.write(`  ${msg}\n`);
+    return msg;
+  }
+  if (result.reason === 'retained-verified') {
+    // Audit-trail honesty: a verified-done to-do is kept, not deleted.
+    const msg = `Kept to-do #${opts.n} of "${result.goal.title}" — it's verified done, so the record stays for the audit trail.`;
+    opts.out.write(dim(`  ${msg}\n`, opts.out.color));
+    return msg;
+  }
+  const msg = `Goal "${goal.title}" has no to-do #${opts.n}.`;
+  opts.out.write(dim(`  ${msg}\n`, opts.out.color));
+  return msg;
 }

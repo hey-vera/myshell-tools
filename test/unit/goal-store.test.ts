@@ -257,6 +257,239 @@ describe('goal-store — index recovery', () => {
 // Directory hygiene
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Living-plan to-do CRUD (Phase 2b) — keyed by RoadmapItem.id, audit-preserving
+// ---------------------------------------------------------------------------
+
+describe('goal-store — addRoadmapItem', () => {
+  it('appends a new to-do and bumps lastTouched', async () => {
+    const g = await store.create({
+      title: 't',
+      roadmap: [{ id: 'r1', text: 'one', status: 'pending' }],
+    });
+    clock.setIso('2026-06-06T00:00:00.000Z');
+    const res = await store.addRoadmapItem(g.id, { id: 'r2', text: 'two', status: 'pending' });
+    assert.equal(res.ok, true);
+    assert.ok(res.ok && res.goal.roadmap.length === 2);
+    assert.equal(res.ok && res.goal.roadmap[1]?.id, 'r2');
+    assert.equal(res.ok && res.goal.lastTouched, '2026-06-06T00:00:00.000Z');
+
+    // round-trips through a fresh store (persisted, not just in-memory)
+    const reread = await store.get(g.id);
+    assert.equal(reread?.roadmap.length, 2);
+  });
+
+  it('atIndex inserts at the requested position (clamped)', async () => {
+    const g = await store.create({
+      title: 't',
+      roadmap: [
+        { id: 'r1', text: 'one', status: 'pending' },
+        { id: 'r2', text: 'two', status: 'pending' },
+      ],
+    });
+    const res = await store.addRoadmapItem(g.id, { id: 'r3', text: 'mid', status: 'pending' }, 1);
+    assert.ok(res.ok);
+    assert.deepEqual(res.ok && res.goal.roadmap.map((i) => i.id), ['r1', 'r3', 'r2']);
+
+    // out-of-range atIndex is clamped to append
+    const res2 = await store.addRoadmapItem(g.id, { id: 'r4', text: 'end', status: 'pending' }, 99);
+    assert.ok(res2.ok);
+    assert.equal(res2.ok && res2.goal.roadmap.at(-1)?.id, 'r4');
+  });
+
+  it('rejects when the roadmap is at the cap-8 limit (no-op, reason=full)', async () => {
+    const roadmap = Array.from({ length: 8 }, (_, i) => ({
+      id: `r${i}`,
+      text: `step ${i}`,
+      status: 'pending' as const,
+    }));
+    const g = await store.create({ title: 'full', roadmap });
+    const res = await store.addRoadmapItem(g.id, { id: 'r9', text: 'overflow', status: 'pending' });
+    assert.equal(res.ok, false);
+    assert.equal(!res.ok && res.reason, 'full');
+    const reread = await store.get(g.id);
+    assert.equal(reread?.roadmap.length, 8); // unchanged
+  });
+
+  it('unknown goal id → reason=unknown-goal', async () => {
+    const res = await store.addRoadmapItem('goal_nope', { id: 'x', text: 'x', status: 'pending' });
+    assert.equal(res.ok, false);
+    assert.equal(!res.ok && res.reason, 'unknown-goal');
+  });
+});
+
+describe('goal-store — updateRoadmapItem', () => {
+  it('patches text / acceptanceCriterion / approach, keyed by item id', async () => {
+    const g = await store.create({
+      title: 't',
+      roadmap: [
+        { id: 'r1', text: 'one', status: 'pending' },
+        { id: 'r2', text: 'two', status: 'pending' },
+      ],
+    });
+    const after = await store.updateRoadmapItem(g.id, 'r2', {
+      text: 'two edited',
+      acceptanceCriterion: 'done means the thing works',
+      approach: { chosen: 'A', rationale: 'simplest' },
+    });
+    assert.equal(after?.roadmap[1]?.text, 'two edited');
+    assert.equal(after?.roadmap[1]?.acceptanceCriterion, 'done means the thing works');
+    assert.equal(after?.roadmap[1]?.approach?.chosen, 'A');
+    assert.equal(after?.roadmap[0]?.text, 'one'); // untouched
+  });
+
+  it('does NOT write verdict even if a verdict key is smuggled into the patch', async () => {
+    const g = await store.create({
+      title: 't',
+      roadmap: [{ id: 'r1', text: 'one', status: 'pending' }],
+    });
+    // The patch shape has no `verdict`, but a malicious caller might cast. The
+    // store must never persist a verdict via update (anti-fabrication).
+    const after = await store.updateRoadmapItem(g.id, 'r1', {
+      text: 'edited',
+      // @ts-expect-error — verdict is intentionally NOT part of RoadmapItemPatch
+      verdict: { state: 'passing', receipt: 'fabricated', at: 'now' },
+    });
+    assert.equal(after?.roadmap[0]?.text, 'edited');
+    assert.equal(after?.roadmap[0]?.verdict, undefined);
+  });
+
+  it('returns null for unknown goal or unknown item id', async () => {
+    const g = await store.create({ title: 't', roadmap: [{ id: 'r1', text: 'one', status: 'pending' }] });
+    assert.equal(await store.updateRoadmapItem('goal_nope', 'r1', { text: 'x' }), null);
+    assert.equal(await store.updateRoadmapItem(g.id, 'r999', { text: 'x' }), null);
+  });
+});
+
+describe('goal-store — reorderRoadmap', () => {
+  it('reorders by item id; unknown ids ignored; omitted kept at the end', async () => {
+    const g = await store.create({
+      title: 't',
+      roadmap: [
+        { id: 'r1', text: 'one', status: 'pending' },
+        { id: 'r2', text: 'two', status: 'pending' },
+        { id: 'r3', text: 'three', status: 'pending' },
+      ],
+    });
+    // Ask for r3 first, then r1; omit r2; include a bogus id.
+    const after = await store.reorderRoadmap(g.id, ['r3', 'r1', 'bogus']);
+    assert.deepEqual(after?.roadmap.map((i) => i.id), ['r3', 'r1', 'r2']);
+  });
+
+  it('preserves the audit trail: a verified-done item survives a reorder', async () => {
+    const g = await store.create({
+      title: 't',
+      roadmap: [
+        {
+          id: 'r1',
+          text: 'verified',
+          status: 'done',
+          verdict: { state: 'passing', receipt: 'tests green', at: '2026-06-05T00:00:00.000Z' },
+        },
+        { id: 'r2', text: 'two', status: 'pending' },
+      ],
+    });
+    const after = await store.reorderRoadmap(g.id, ['r2', 'r1']);
+    assert.deepEqual(after?.roadmap.map((i) => i.id), ['r2', 'r1']);
+    assert.equal(after?.roadmap[1]?.verdict?.state, 'passing'); // verdict intact
+  });
+
+  it('returns null for an unknown goal id', async () => {
+    assert.equal(await store.reorderRoadmap('goal_nope', ['r1']), null);
+  });
+});
+
+describe('goal-store — removeRoadmapItem', () => {
+  it('removes an unverified item (keyed by id)', async () => {
+    const g = await store.create({
+      title: 't',
+      roadmap: [
+        { id: 'r1', text: 'one', status: 'pending' },
+        { id: 'r2', text: 'two', status: 'pending' },
+      ],
+    });
+    const res = await store.removeRoadmapItem(g.id, 'r1');
+    assert.equal(res.ok, true);
+    assert.deepEqual(res.ok && res.goal.roadmap.map((i) => i.id), ['r2']);
+  });
+
+  it('removes an item with a failing/unverified verdict (only verified-done is retained)', async () => {
+    const g = await store.create({
+      title: 't',
+      roadmap: [
+        {
+          id: 'r1',
+          text: 'one',
+          status: 'pending',
+          verdict: { state: 'failing', receipt: 'tests red', at: '2026-06-05T00:00:00.000Z' },
+        },
+      ],
+    });
+    const res = await store.removeRoadmapItem(g.id, 'r1');
+    assert.equal(res.ok, true);
+    assert.equal(res.ok && res.goal.roadmap.length, 0);
+  });
+
+  it('RETAINS a verified-done item (passing/reviewed) — audit trail survives plan edits', async () => {
+    const g = await store.create({
+      title: 't',
+      roadmap: [
+        {
+          id: 'r1',
+          text: 'verified',
+          status: 'done',
+          verdict: { state: 'reviewed', receipt: 'critic ok', at: '2026-06-05T00:00:00.000Z' },
+        },
+      ],
+    });
+    const res = await store.removeRoadmapItem(g.id, 'r1');
+    assert.equal(res.ok, false);
+    assert.equal(!res.ok && res.reason, 'retained-verified');
+    const reread = await store.get(g.id);
+    assert.equal(reread?.roadmap.length, 1); // still there
+    assert.equal(reread?.roadmap[0]?.verdict?.state, 'reviewed');
+  });
+
+  it('unknown goal or item id → reason=unknown', async () => {
+    const g = await store.create({ title: 't', roadmap: [{ id: 'r1', text: 'one', status: 'pending' }] });
+    const a = await store.removeRoadmapItem('goal_nope', 'r1');
+    assert.equal(!a.ok && a.reason, 'unknown');
+    const b = await store.removeRoadmapItem(g.id, 'r999');
+    assert.equal(!b.ok && b.reason, 'unknown');
+  });
+});
+
+describe('goal-store — CRUD recovery/atomicity preserved', () => {
+  it('a CRUD write recovers a corrupt index from items/*.json (self-heal still holds)', async () => {
+    const g = await store.create({
+      title: 'survive',
+      roadmap: [{ id: 'r1', text: 'one', status: 'pending' }],
+    });
+    await writeFile(join(goalsDir(), 'index.json'), '{ not valid json', 'utf8');
+
+    let warned = '';
+    const recovering = createFileGoalStore({
+      homeDir,
+      clock,
+      onWarning: (m) => {
+        warned = m;
+      },
+    });
+    // A CRUD op reads the index inside the lock → triggers recovery from items/*.
+    const res = await recovering.addRoadmapItem(g.id, { id: 'r2', text: 'two', status: 'pending' });
+    assert.ok(res.ok);
+    assert.equal(res.ok && res.goal.roadmap.length, 2);
+    assert.match(warned, /Recovered goal index/);
+  });
+
+  it('CRUD goal files stay 0o600 after a mutation', async () => {
+    const g = await store.create({ title: 'x', roadmap: [{ id: 'r1', text: 'one', status: 'pending' }] });
+    await store.addRoadmapItem(g.id, { id: 'r2', text: 'two', status: 'pending' });
+    const itemPath = join(goalsDir(), 'items', `${g.id}.json`);
+    assert.equal((await stat(itemPath)).mode & 0o777, 0o600);
+  });
+});
+
 describe('goal-store — layout', () => {
   it('creates goals/ + items/ and writes one file per goal', async () => {
     await store.create({ title: 'one' });

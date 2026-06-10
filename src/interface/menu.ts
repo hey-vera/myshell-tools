@@ -53,6 +53,10 @@ import type { GoalBoardRow } from './ui/state.js';
 import {
   runGoalsList,
   runTodoCreate,
+  runTodoAdd,
+  runTodoEdit,
+  runTodoMove,
+  runTodoRemove,
   renderGoalExpanded,
   parseGoalsCommand,
   parseTodoCommand,
@@ -1339,6 +1343,7 @@ export async function runChatLoop(
         '  /edit         — edit one of your recent messages and re-run from there\n' +
         '  /goal <text>  — work autonomously until the goal is done (Ctrl+C to stop)\n' +
         '  /todo <text>  — park a goal + its to-do for later (/goals to manage)\n' +
+        '  /todo add|edit|move|rm <g> ... — add, edit, reorder, or remove a to-do\n' +
         '  /goals        — list goals by state; show/go/drop a parked one\n' +
         '  /mode         — quality vs speed (Efficient / Balanced / Max)\n' +
         '  /memory       — see, edit, export, or delete what I remember (/forget to remove)\n' +
@@ -2732,7 +2737,10 @@ export async function runChatLoop(
         const cmd = parseTodoCommand(arg);
         if (cmd.kind === 'usage') {
           out.write(
-            dim('  Usage: /todo <what you want done>  ·  /todo done <g> <n>  ·  /todo block <g> <n>\n', out.color),
+            dim(
+              '  Usage: /todo <what you want done>  ·  /todo add <g> <text>  ·  /todo done|block <g> <n>  ·  /todo edit <g> <n> <text>  ·  /todo move <g> <n> <to>  ·  /todo rm <g> <n>\n',
+              out.color,
+            ),
           );
           return 'continue';
         }
@@ -2745,6 +2753,26 @@ export async function runChatLoop(
             conversationId: convId,
           });
           await syncBoard(); // a new parked goal landed → refresh the board
+          return 'continue';
+        }
+        if (cmd.kind === 'add') {
+          await runTodoAdd({ store: goalStore, out, g: cmd.g, text: cmd.text });
+          await syncBoard(); // a new to-do landed on a goal → refresh the board
+          return 'continue';
+        }
+        if (cmd.kind === 'edit') {
+          await runTodoEdit({ store: goalStore, out, g: cmd.g, n: cmd.n, text: cmd.text });
+          await syncBoard(); // a to-do's text changed → refresh the board
+          return 'continue';
+        }
+        if (cmd.kind === 'move') {
+          await runTodoMove({ store: goalStore, out, g: cmd.g, n: cmd.n, to: cmd.to });
+          await syncBoard(); // the roadmap order changed → refresh the board
+          return 'continue';
+        }
+        if (cmd.kind === 'rm') {
+          await runTodoRemove({ store: goalStore, out, g: cmd.g, n: cmd.n });
+          await syncBoard(); // a to-do left the roadmap → refresh the board's counts
           return 'continue';
         }
         // mark: done | blocked on parked goal #g, item #n. Honesty: a to-do is

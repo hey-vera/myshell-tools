@@ -6,7 +6,20 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
-## [3.61.0] - 2026-06-10
+## [3.62.0] - 2026-06-10
+
+### Added (elite planning-partner build, Phase 2b — living-plan to-do CRUD)
+- **You can now manage a goal's to-do list directly**: `/todo add <g> <text>`,
+  `/todo edit <g> <n> <text>`, `/todo move <g> <n> <to>`, `/todo rm <g> <n>`. All local
+  (no model call), atomic + locked like the rest of the goal store.
+- **The to-do list is now editable infrastructure** (the foundation the upcoming
+  auto-planning + manager phases build on): the store gained add/update/reorder/remove,
+  all keyed by stable to-do id (never array position) so edits never orphan a to-do's
+  identity. Honest audit trail: a **verified-done** to-do is retained on remove rather
+  than silently deleted, and `update` cannot write a verdict (verdicts are evidence-only,
+  written by the verification phase — never hand-set).
+
+
 
 ### Added (foundation — the elite planning-partner build, Phase 1+2)
 - **A real, persistent goal board** (behind `MYSHELL_BOARD`, default off): replaces the

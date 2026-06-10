@@ -38,6 +38,7 @@ import { atomicWrite, withLock } from './atomic.js';
 import { defaultStateHome } from './state-dir.js';
 import { deriveProjectKey, resolveProjectKey } from './user-memory-store.js';
 import {
+  ROADMAP_LIMIT,
   capGoal,
   capRoadmap,
   selectGoals,
@@ -45,7 +46,7 @@ import {
   type GoalScope,
   type GoalState,
 } from '../core/goal-todo.js';
-import type { RoadmapItem, RoadmapStatus } from '../core/work-contract.js';
+import { capRoadmapItem, type RoadmapItem, type RoadmapStatus } from '../core/work-contract.js';
 
 // Re-export the two-scope helpers so callers share ONE definition with the
 // memory store (the vision doc's "reuse verbatim" — not a second copy).
@@ -253,8 +254,73 @@ export interface GoalStore {
    * or an evidence-backed trace transition) — the store records, never infers.
    */
   setRoadmapItemStatus(id: string, index: number, status: RoadmapStatus): Promise<Goal | null>;
+  /**
+   * Insert a new to-do (RoadmapItem) into a goal's roadmap. Bumps `lastTouched`.
+   * `atIndex` (0-based, clamped) chooses the insertion point; omitted = append.
+   * The item is capped via capRoadmapItem (text/status/optional fields). The
+   * roadmap cap (ROADMAP_LIMIT=8) is honoured: a full roadmap is a no-op that
+   * returns `{ ok: false, reason: 'full', goal }` so the caller can surface a
+   * clear "split into a child goal" message. Unknown id → `{ ok: false,
+   * reason: 'unknown-goal' }`. Keyed by RoadmapItem.id, never array index, so a
+   * later reorder/insert never orphans an existing item's identity.
+   */
+  addRoadmapItem(id: string, item: RoadmapItem, atIndex?: number): Promise<AddRoadmapItemResult>;
+  /**
+   * Patch one to-do's editable fields (text / acceptanceCriterion / approach),
+   * keyed by RoadmapItem.id (never array index). Bumps `lastTouched`. Returns the
+   * updated goal, or null if id/itemId is unknown.
+   *
+   * HARD anti-fabrication rule: this NEVER writes `verdict` — verdicts are
+   * evidence-only, written exclusively by the later verify phase. A `verdict`
+   * key on the patch is ignored.
+   */
+  updateRoadmapItem(id: string, itemId: string, patch: RoadmapItemPatch): Promise<Goal | null>;
+  /**
+   * Reorder a goal's roadmap by an ordered list of RoadmapItem.ids. Defensive:
+   * unknown ids are ignored; any existing item whose id is omitted is kept, in
+   * its original relative order, AFTER the listed ones (no item is ever dropped
+   * by a reorder). Bumps `lastTouched`. Returns the updated goal, or null if the
+   * id is unknown.
+   */
+  reorderRoadmap(id: string, orderedItemIds: readonly string[]): Promise<Goal | null>;
+  /**
+   * Remove one to-do by RoadmapItem.id (never array index). Bumps `lastTouched`.
+   *
+   * AUDIT-TRAIL honesty: a verified-done item (verdict.state ∈ {passing,
+   * reviewed}) is NOT hard-deleted — the record of real, verified work must
+   * survive plan edits. Such an item is RETAINED (kept in place); the method
+   * returns `{ ok: false, reason: 'retained-verified', goal }`. A non-verified
+   * item (no verdict, or verdict.state ∈ {unverified, failing}) is removed
+   * normally → `{ ok: true, goal }`. Unknown id/itemId → `{ ok: false,
+   * reason: 'unknown' }`.
+   */
+  removeRoadmapItem(id: string, itemId: string): Promise<RemoveRoadmapItemResult>;
   /** Hard-remove a goal by id (never silent — the caller surfaces it). */
   remove(id: string): Promise<boolean>;
+}
+
+/** The fields a caller may patch on a to-do — NEVER `verdict` (verify-only). */
+export interface RoadmapItemPatch {
+  readonly text?: string;
+  readonly acceptanceCriterion?: string;
+  readonly approach?: RoadmapItem['approach'];
+}
+
+/** Result of {@link GoalStore.addRoadmapItem}. */
+export type AddRoadmapItemResult =
+  | { readonly ok: true; readonly goal: Goal }
+  | { readonly ok: false; readonly reason: 'unknown-goal' }
+  | { readonly ok: false; readonly reason: 'full'; readonly goal: Goal };
+
+/** Result of {@link GoalStore.removeRoadmapItem}. */
+export type RemoveRoadmapItemResult =
+  | { readonly ok: true; readonly goal: Goal }
+  | { readonly ok: false; readonly reason: 'unknown' }
+  | { readonly ok: false; readonly reason: 'retained-verified'; readonly goal: Goal };
+
+/** A verdict that marks an item as real, verified, completed work (audit-trail). */
+function isVerifiedDone(item: RoadmapItem): boolean {
+  return item.verdict?.state === 'passing' || item.verdict?.state === 'reviewed';
 }
 
 export function createFileGoalStore(opts: {
@@ -337,6 +403,116 @@ export function createFileGoalStore(opts: {
         await persistGoal(home, updated);
         await writeIndex(home, goals.map((g) => (g.id === id ? updated : g)));
         return updated;
+      });
+    },
+
+    async addRoadmapItem(id, item, atIndex): Promise<AddRoadmapItemResult> {
+      if (!isValidId(id)) return { ok: false, reason: 'unknown-goal' };
+      await ensureDirs(home);
+      return withLock(getIndexLockPath(home), async () => {
+        const goals = await readIndexLocked(home, onWarning);
+        const target = goals.find((g) => g.id === id);
+        if (target === undefined) return { ok: false, reason: 'unknown-goal' };
+        if (target.roadmap.length >= ROADMAP_LIMIT) {
+          // Cap-full: no-op, but report it so the caller can split into a child
+          // goal (the architecture's cap-8⇒sub-goal escape, Part 4).
+          return { ok: false, reason: 'full', goal: target };
+        }
+        const capped = capRoadmapItem(item);
+        const at =
+          typeof atIndex === 'number' && Number.isFinite(atIndex)
+            ? Math.max(0, Math.min(Math.floor(atIndex), target.roadmap.length))
+            : target.roadmap.length;
+        const nextRoadmap = [
+          ...target.roadmap.slice(0, at),
+          capped,
+          ...target.roadmap.slice(at),
+        ];
+        const updated = capGoal({ ...target, roadmap: nextRoadmap, lastTouched: clock.isoNow() });
+        await persistGoal(home, updated);
+        await writeIndex(home, goals.map((g) => (g.id === id ? updated : g)));
+        return { ok: true, goal: updated };
+      });
+    },
+
+    async updateRoadmapItem(id, itemId, patch): Promise<Goal | null> {
+      if (!isValidId(id)) return null;
+      await ensureDirs(home);
+      return withLock(getIndexLockPath(home), async () => {
+        const goals = await readIndexLocked(home, onWarning);
+        const target = goals.find((g) => g.id === id);
+        if (target === undefined) return null;
+        if (!target.roadmap.some((it) => it.id === itemId)) return null;
+        const nextRoadmap = target.roadmap.map((it) => {
+          if (it.id !== itemId) return it;
+          // Patch ONLY the editable fields. `verdict` is deliberately NOT in the
+          // patch shape and is preserved verbatim from the existing item — there
+          // is no verdict-write path here (anti-fabrication; verify phase owns it).
+          return {
+            ...it,
+            ...(patch.text !== undefined ? { text: patch.text } : {}),
+            ...(patch.acceptanceCriterion !== undefined
+              ? { acceptanceCriterion: patch.acceptanceCriterion }
+              : {}),
+            ...(patch.approach !== undefined ? { approach: patch.approach } : {}),
+          };
+        });
+        const updated = capGoal({ ...target, roadmap: nextRoadmap, lastTouched: clock.isoNow() });
+        await persistGoal(home, updated);
+        await writeIndex(home, goals.map((g) => (g.id === id ? updated : g)));
+        return updated;
+      });
+    },
+
+    async reorderRoadmap(id, orderedItemIds): Promise<Goal | null> {
+      if (!isValidId(id)) return null;
+      await ensureDirs(home);
+      return withLock(getIndexLockPath(home), async () => {
+        const goals = await readIndexLocked(home, onWarning);
+        const target = goals.find((g) => g.id === id);
+        if (target === undefined) return null;
+        const byId = new Map(target.roadmap.map((it) => [it.id, it]));
+        const seen = new Set<string>();
+        const ordered: RoadmapItem[] = [];
+        // Listed ids first (ignore unknown / duplicate ids — defensive).
+        for (const wantedId of orderedItemIds) {
+          const it = byId.get(wantedId);
+          if (it !== undefined && !seen.has(wantedId)) {
+            ordered.push(it);
+            seen.add(wantedId);
+          }
+        }
+        // Any omitted item is kept, in its original relative order, at the end —
+        // a reorder NEVER drops an existing to-do.
+        for (const it of target.roadmap) {
+          if (!seen.has(it.id)) ordered.push(it);
+        }
+        const updated = capGoal({ ...target, roadmap: ordered, lastTouched: clock.isoNow() });
+        await persistGoal(home, updated);
+        await writeIndex(home, goals.map((g) => (g.id === id ? updated : g)));
+        return updated;
+      });
+    },
+
+    async removeRoadmapItem(id, itemId): Promise<RemoveRoadmapItemResult> {
+      if (!isValidId(id)) return { ok: false, reason: 'unknown' };
+      await ensureDirs(home);
+      return withLock(getIndexLockPath(home), async () => {
+        const goals = await readIndexLocked(home, onWarning);
+        const target = goals.find((g) => g.id === id);
+        if (target === undefined) return { ok: false, reason: 'unknown' };
+        const item = target.roadmap.find((it) => it.id === itemId);
+        if (item === undefined) return { ok: false, reason: 'unknown' };
+        if (isVerifiedDone(item)) {
+          // Audit-trail honesty: a verified-done to-do is RETAINED (the record of
+          // real verified work survives plan edits) — never hard-deleted here.
+          return { ok: false, reason: 'retained-verified', goal: target };
+        }
+        const nextRoadmap = target.roadmap.filter((it) => it.id !== itemId);
+        const updated = capGoal({ ...target, roadmap: nextRoadmap, lastTouched: clock.isoNow() });
+        await persistGoal(home, updated);
+        await writeIndex(home, goals.map((g) => (g.id === id ? updated : g)));
+        return { ok: true, goal: updated };
       });
     },
 
