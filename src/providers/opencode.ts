@@ -34,7 +34,6 @@
  *  AsyncIterable<string>.
  */
 
-import { execa } from 'execa';
 import type { Provider, ProviderRequest, ProviderEvent } from './port.js';
 import type { ProviderStatus } from './detect.js';
 import { detectProvider } from './detect.js';
@@ -42,6 +41,7 @@ import { classifyError } from './errors.js';
 import { createOpencodeParser } from './opencode-parse.js';
 import { replitPersistentEnv } from '../infra/credentials.js';
 import type { ReasoningEffort } from '../core/model-capabilities.js';
+import { spawnGuarded, withHangCap, providerHangCapMs } from './hang-cap.js';
 
 // ---------------------------------------------------------------------------
 // Argv builder (pure)
@@ -129,38 +129,73 @@ export function createOpencodeProvider(opts?: { bin?: string }): Provider {
       return detectProvider('opencode');
     },
 
-    async *run(req: ProviderRequest, signal: AbortSignal): AsyncIterable<ProviderEvent> {
-      // Build argv (pure). Pass `-m <provider/model>` when the router resolved a real
-      // opencode model for this tier (selectOpencodeModel picks the best of the user's
-      // REAL available models — free, OpenCode Go, or Zen); a real id contains a slash
-      // (e.g. `opencode-go/kimi-k2.6`), the `'opencode'` placeholder does not, so we
-      // omit -m and let opencode use its configured default. `--variant <level>` is
-      // appended only when a supported reasoning effort was selected (see buildOpencodeArgs).
-      const args = buildOpencodeArgs(req);
-
-      // Point opencode at the Replit-persistent XDG dirs when present so your own
-      // configured provider/subscription (Kimi etc.) is remembered across restarts.
-      const childEnv: NodeJS.ProcessEnv = {
-        ...process.env,
-        ...replitPersistentEnv(process.env, req.cwd),
-      };
-
-      // Spawn with reject:false so we always get the result object (never throws).
-      // cancelSignal wires our AbortSignal directly to execa's termination path.
-      // Prompt is delivered via STDIN (input:), never as an argv argument.
-      const subprocess = execa(bin, args, {
-        cwd: req.cwd,
-        input: req.prompt,      // deliver prompt via STDIN, not argv
-        cancelSignal: signal,
-        timeout: req.timeoutMs,
-        reject: false,
-        env: childEnv,
+    run(req: ProviderRequest, signal: AbortSignal): AsyncIterable<ProviderEvent> {
+      // UNIVERSAL HANG CAP — see hang-cap.ts and the claude.ts adapter for the full
+      // rationale. spawnGuarded makes the child a process-group leader; withHangCap
+      // bounds the whole iteration and, on the safety ceiling, kills the tree and
+      // emits the honest `timeout` event. Happy path is byte-identical.
+      const killers: Array<() => void> = [];
+      const inner = runOpencodeRaw({
+        req,
+        signal,
+        bin,
+        register: (k) => killers.push(k),
       });
+      return withHangCap(inner, {
+        provider: 'opencode',
+        capMs: providerHangCapMs(req.timeoutMs),
+        onCap: () => {
+          for (const k of killers) k();
+        },
+      });
+    },
+  };
+}
 
-      // One parser instance per run — holds the accumulated text/usage/cost closure.
-      const parser = createOpencodeParser();
+/**
+ * The raw opencode spawn + stdout drain — factored out so the public `run` can wrap
+ * it with `withHangCap` while the happy path stays byte-identical.
+ */
+async function* runOpencodeRaw(args0: {
+  req: ProviderRequest;
+  signal: AbortSignal;
+  bin: string;
+  register: (killTree: () => void) => void;
+}): AsyncIterable<ProviderEvent> {
+  const { req, signal, bin, register } = args0;
+  // Build argv (pure). Pass `-m <provider/model>` when the router resolved a real
+  // opencode model for this tier (selectOpencodeModel picks the best of the user's
+  // REAL available models — free, OpenCode Go, or Zen); a real id contains a slash
+  // (e.g. `opencode-go/kimi-k2.6`), the `'opencode'` placeholder does not, so we
+  // omit -m and let opencode use its configured default. `--variant <level>` is
+  // appended only when a supported reasoning effort was selected (see buildOpencodeArgs).
+  const args = buildOpencodeArgs(req);
 
-      let emittedTerminal = false;
+  // Point opencode at the Replit-persistent XDG dirs when present so your own
+  // configured provider/subscription (Kimi etc.) is remembered across restarts.
+  const childEnv: NodeJS.ProcessEnv = {
+    ...process.env,
+    ...replitPersistentEnv(process.env, req.cwd),
+  };
+
+  // Spawn with reject:false so we always get the result object (never throws).
+  // cancelSignal wires our AbortSignal directly to execa's termination path.
+  // Prompt is delivered via STDIN (input:), never as an argv argument.
+  const { subprocess, killTree } = spawnGuarded(bin, args, {
+    cwd: req.cwd,
+    input: req.prompt,      // deliver prompt via STDIN, not argv
+    cancelSignal: signal,
+    timeout: req.timeoutMs,
+    reject: false,
+    env: childEnv,
+  });
+  register(killTree);
+
+  // One parser instance per run — holds the accumulated text/usage/cost closure.
+  const parser = createOpencodeParser();
+
+  {
+    let emittedTerminal = false;
 
       // Stream stdout line by line.
       // execa v9: the subprocess itself is an AsyncIterable that yields one
@@ -222,6 +257,5 @@ export function createOpencodeProvider(opts?: { bin?: string }): Provider {
           yield ev;
         }
       }
-    },
-  };
+  }
 }

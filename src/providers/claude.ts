@@ -33,13 +33,13 @@
  *  yields one string per stdout line.
  */
 
-import { execa } from 'execa';
 import type { Provider, ProviderRequest, ProviderEvent, SandboxLevel } from './port.js';
 import type { ProviderStatus } from './detect.js';
 import { detectProvider } from './detect.js';
 import { classifyError } from './errors.js';
 import { parseClaudeLine } from './claude-parse.js';
 import { loadClaudeToken, claudeEnv, replitPersistentEnv } from '../infra/credentials.js';
+import { spawnGuarded, withHangCap, providerHangCapMs } from './hang-cap.js';
 
 // ---------------------------------------------------------------------------
 // Model alias mapping
@@ -185,36 +185,79 @@ export function createClaudeProvider(opts?: { bin?: string }): Provider {
       return detectProvider('claude');
     },
 
-    async *run(req: ProviderRequest, signal: AbortSignal): AsyncIterable<ProviderEvent> {
-      const args = buildClaudeArgs(req);
-
-      // Load the stored Claude OAuth token and scope it to this child process
-      // only — never written into the global process.env.
-      let childEnv: NodeJS.ProcessEnv = process.env;
-      try {
-        const token = await loadClaudeToken();
-        // Also point claude at the Replit-persistent config dir when present so a
-        // plainly-launched run finds the durable one-time sign-in (replit-tools).
-        childEnv = {
-          ...claudeEnv(process.env, token),
-          ...replitPersistentEnv(process.env, req.cwd),
-        };
-      } catch {
-        // Never throw — fall back to the unmodified env
-      }
-
-      // Spawn with reject:false so we always get the result object (never throws).
-      // cancelSignal wires our AbortSignal directly to execa's termination path.
-      const subprocess = execa(bin, args, {
-        cwd: req.cwd,
-        input: req.prompt,      // deliver prompt via STDIN, not argv
-        cancelSignal: signal,
-        timeout: req.timeoutMs,
-        reject: false,
-        env: childEnv,
+    run(req: ProviderRequest, signal: AbortSignal): AsyncIterable<ProviderEvent> {
+      // UNIVERSAL HANG CAP (hang-cap.ts): the raw spawn+drain below relies on
+      // execa's `timeout`, which SIGKILLs only the DIRECT child — a grandchild
+      // (tool subprocess / MCP server / PTY) holding the stdout pipe can keep the
+      // `for await` from ever resolving. `spawnGuarded` makes the child a process-
+      // group leader so the whole TREE can be force-killed, and `withHangCap` bounds
+      // the ENTIRE iteration: if the safety ceiling elapses with no terminal event,
+      // it kills the tree and emits the honest `timeout` event (never a fake `done`).
+      // The cap is strictly ABOVE req.timeoutMs, so the happy path is byte-identical.
+      const killers: Array<() => void> = [];
+      const inner = runClaudeRaw({
+        req,
+        signal,
+        bin,
+        register: (k) => killers.push(k),
       });
+      return withHangCap(inner, {
+        provider: 'claude',
+        capMs: providerHangCapMs(req.timeoutMs),
+        onCap: () => {
+          for (const k of killers) k();
+        },
+      });
+    },
+  };
+}
 
-      let emittedTerminal = false;
+/**
+ * The raw Claude spawn + stdout drain — the exact behaviour that existed before the
+ * hang cap, factored out so the public `run` can wrap it with `withHangCap` while the
+ * happy path stays byte-identical. `register` hands the caller a `killTree` for the
+ * spawned process group so the cap can force-stop a hung grandchild.
+ */
+async function* runClaudeRaw(args0: {
+  req: ProviderRequest;
+  signal: AbortSignal;
+  bin: string;
+  register: (killTree: () => void) => void;
+}): AsyncIterable<ProviderEvent> {
+  const { req, signal, bin, register } = args0;
+  const args = buildClaudeArgs(req);
+
+  // Load the stored Claude OAuth token and scope it to this child process
+  // only — never written into the global process.env.
+  let childEnv: NodeJS.ProcessEnv = process.env;
+  try {
+    const token = await loadClaudeToken();
+    // Also point claude at the Replit-persistent config dir when present so a
+    // plainly-launched run finds the durable one-time sign-in (replit-tools).
+    childEnv = {
+      ...claudeEnv(process.env, token),
+      ...replitPersistentEnv(process.env, req.cwd),
+    };
+  } catch {
+    // Never throw — fall back to the unmodified env
+  }
+
+  // Spawn with reject:false so we always get the result object (never throws).
+  // cancelSignal wires our AbortSignal directly to execa's termination path.
+  // spawnGuarded adds detached:true (process-group leader) + forceKillAfterDelay so a
+  // timed-out grandchild can be reaped via the whole-group kill the hang cap triggers.
+  const { subprocess, killTree } = spawnGuarded(bin, args, {
+    cwd: req.cwd,
+    input: req.prompt,      // deliver prompt via STDIN, not argv
+    cancelSignal: signal,
+    timeout: req.timeoutMs,
+    reject: false,
+    env: childEnv,
+  });
+  register(killTree);
+
+  {
+    let emittedTerminal = false;
 
       // Stream stdout line by line.
       // execa v9: the subprocess itself is an AsyncIterable that yields one
@@ -282,6 +325,5 @@ export function createClaudeProvider(opts?: { bin?: string }): Provider {
           };
         }
       }
-    },
-  };
+  }
 }

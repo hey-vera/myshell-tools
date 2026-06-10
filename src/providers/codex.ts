@@ -28,7 +28,6 @@
  *  AsyncIterable<string>.
  */
 
-import { execa } from 'execa';
 import type { Provider, ProviderRequest, ProviderEvent, SandboxLevel } from './port.js';
 import type { ProviderStatus } from './detect.js';
 import { detectProvider } from './detect.js';
@@ -36,6 +35,7 @@ import { classifyError } from './errors.js';
 import { createCodexParser } from './codex-parse.js';
 import { replitPersistentEnv } from '../infra/credentials.js';
 import { DECLARATIVE_MODEL_CAPABILITIES, findCapability } from '../core/model-capabilities.js';
+import { spawnGuarded, withHangCap, providerHangCapMs } from './hang-cap.js';
 
 // ---------------------------------------------------------------------------
 // Sandbox argument mapping
@@ -149,31 +149,66 @@ export function createCodexProvider(opts?: { bin?: string }): Provider {
       return detectProvider('codex');
     },
 
-    async *run(req: ProviderRequest, signal: AbortSignal): AsyncIterable<ProviderEvent> {
-      const args = buildCodexArgs(req);
-
-      // Point codex at the Replit-persistent CODEX_HOME when present so a plainly-
-      // launched run finds the durable one-time sign-in (matches replit-tools).
-      const childEnv: NodeJS.ProcessEnv = {
-        ...process.env,
-        ...replitPersistentEnv(process.env, req.cwd),
-      };
-
-      // Spawn with reject:false so we always get the result object (never throws).
-      // cancelSignal wires our AbortSignal directly to execa's termination path.
-      const subprocess = execa(bin, args, {
-        cwd: req.cwd,
-        input: req.prompt,      // deliver prompt via STDIN, not argv
-        cancelSignal: signal,
-        timeout: req.timeoutMs,
-        reject: false,
-        env: childEnv,
+    run(req: ProviderRequest, signal: AbortSignal): AsyncIterable<ProviderEvent> {
+      // UNIVERSAL HANG CAP — see hang-cap.ts and the claude.ts adapter for the full
+      // rationale. spawnGuarded makes the child a process-group leader; withHangCap
+      // bounds the whole iteration and, on the safety ceiling, kills the tree and
+      // emits the honest `timeout` event. Happy path is byte-identical.
+      const killers: Array<() => void> = [];
+      const inner = runCodexRaw({
+        req,
+        signal,
+        bin,
+        register: (k) => killers.push(k),
       });
+      return withHangCap(inner, {
+        provider: 'codex',
+        capMs: providerHangCapMs(req.timeoutMs),
+        onCap: () => {
+          for (const k of killers) k();
+        },
+      });
+    },
+  };
+}
 
-      // One parser instance per run — holds the accumulated text closure.
-      const parseCodexLine = createCodexParser();
+/**
+ * The raw Codex spawn + stdout drain — factored out so the public `run` can wrap it
+ * with `withHangCap` while the happy path stays byte-identical.
+ */
+async function* runCodexRaw(args0: {
+  req: ProviderRequest;
+  signal: AbortSignal;
+  bin: string;
+  register: (killTree: () => void) => void;
+}): AsyncIterable<ProviderEvent> {
+  const { req, signal, bin, register } = args0;
+  const args = buildCodexArgs(req);
 
-      let emittedTerminal = false;
+  // Point codex at the Replit-persistent CODEX_HOME when present so a plainly-
+  // launched run finds the durable one-time sign-in (matches replit-tools).
+  const childEnv: NodeJS.ProcessEnv = {
+    ...process.env,
+    ...replitPersistentEnv(process.env, req.cwd),
+  };
+
+  // Spawn with reject:false so we always get the result object (never throws).
+  // cancelSignal wires our AbortSignal directly to execa's termination path.
+  const { subprocess, killTree } = spawnGuarded(bin, args, {
+    cwd: req.cwd,
+    input: req.prompt,      // deliver prompt via STDIN, not argv
+    cancelSignal: signal,
+    timeout: req.timeoutMs,
+    reject: false,
+    env: childEnv,
+  });
+  register(killTree);
+
+  // One parser instance per run — holds the accumulated text closure.
+  const parseCodexLine = createCodexParser();
+
+  {
+    let emittedTerminal = false;
 
       // Stream stdout line by line.
       // execa v9: the subprocess itself is an AsyncIterable that yields one
@@ -231,6 +266,5 @@ export function createCodexProvider(opts?: { bin?: string }): Provider {
           };
         }
       }
-    },
-  };
+  }
 }

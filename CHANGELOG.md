@@ -6,6 +6,20 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+## [3.82.0] - 2026-06-10
+
+### Fixed (no model call can hang the app — master-plan Phase 1)
+- **A universal hang cap now guards every model call.** 3.77.0 fixed the manager-cycle
+  verify hang, but the same failure — a CLI grandchild (a tool subprocess / MCP server /
+  PTY) holding the output pipe so the call never resolves, which the CLI's own timeout
+  (direct child only) can't kill — lived in *every* provider call (worker turns, the
+  pre-turn intent/understanding passes that block the UI, replan, recap, routing,
+  decompose, panel/hedge). Now every `provider.run` is wrapped at one shared seam: a
+  wall-clock cap (strictly above the normal timeout, so legitimate long turns are
+  byte-identical) that, on a true hang, kills the whole **process group**
+  (`process.kill(-pid)` so grandchildren die too) and emits the honest `timeout` event —
+  never a fabricated "done". No call site can bypass it.
+
 ## [3.81.0] - 2026-06-10
 
 ### Added (the partner knows its own plan)
