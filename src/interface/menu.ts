@@ -105,10 +105,10 @@ import { runDoctor } from '../commands/doctor.js';
 import { runCost } from '../commands/cost.js';
 import { dim, bold, formatRecapLine } from '../ui/theme.js';
 import { makeRecapGenerator } from '../core/recap-generator.js';
+import { makeGoalObjectiveGenerator } from '../core/goal-objective-generator.js';
 import { isRecapStale, recapEligible, type RecapResult } from '../core/recap.js';
 import { makeRouteClassifier } from '../core/route-classifier.js';
 import { makeIntentExtractor } from '../core/intent-extractor.js';
-import { normalizeExtraction } from '../core/intent.js';
 import { shouldShowFirstTouch, markSeen, FIRST_TOUCH_LINES } from '../core/first-touch.js';
 import { teach } from '../core/teach.js';
 import { decideShed, pressureFromSignals, type QuotaPressure } from '../core/capability-budget.js';
@@ -603,6 +603,50 @@ export async function runChatLoop(
       policy,
       cwd: ctx.cwd,
       timeoutMs: Math.min(ctx.timeoutMs, RECAP_TIMEOUT_MS),
+      ...(Object.keys(availableModels).length > 0 ? { availableModels } : {}),
+      ...(authenticatedProviders.length > 0 ? { authenticatedProviders } : {}),
+    });
+  };
+
+  // Build a MANAGER-tier goal-objective former from the SAME env→deps machinery as
+  // the recap generator (above). The objective is the most-seen string of an
+  // autonomous run — the visible `goal: <…>` line, the anti-drift contract
+  // OBJECTIVE, and the conversation title — so it must be named by a CAPABLE model
+  // against the product-vision / quality bar (the reused ELITE_VOICE persona),
+  // never the cheapest worker that echoes the user's raw text. Subscription-clean
+  // (no new flag, no metered service). Returns null when no provider is signed in
+  // so the caller degrades to the deterministic shaper. TIGHT timeout — this runs
+  // ONCE at goal start and must never stall it.
+  const buildGoalObjectiveGenerator = ():
+    | ((rawText: string, signal: AbortSignal) => Promise<string | null>)
+    | null => {
+    if (!hasAuthenticatedProvider(mutableCtx.env)) return null;
+    const effectiveMode: Mode = mutableCtx.config.mode ?? resolveAutoMode(mutableCtx.env);
+    const policy = POLICY_PRESETS[effectiveMode];
+
+    const availableModels: Partial<Record<ProviderId, readonly string[]>> = {};
+    if (mutableCtx.env.claude.installed && mutableCtx.env.claude.availableModels.length > 0) {
+      availableModels['claude'] = mutableCtx.env.claude.availableModels;
+    }
+    if (mutableCtx.env.codex.installed && mutableCtx.env.codex.availableModels.length > 0) {
+      availableModels['codex'] = mutableCtx.env.codex.availableModels;
+    }
+    if (mutableCtx.env.opencode.installed && mutableCtx.env.opencode.availableModels.length > 0) {
+      availableModels['opencode'] = mutableCtx.env.opencode.availableModels;
+    }
+    const authenticatedProviders: ProviderId[] = [];
+    if (mutableCtx.env.claude.authenticated) authenticatedProviders.push('claude');
+    if (mutableCtx.env.codex.authenticated) authenticatedProviders.push('codex');
+    if (mutableCtx.env.opencode.authenticated) authenticatedProviders.push('opencode');
+
+    // TIGHT cap: this gates goal START, so keep it shorter than the recap's 8s so a
+    // slow model can't visibly delay the goal beginning. Fail-soft on timeout.
+    const GOAL_OBJECTIVE_TIMEOUT_MS = 6_000;
+    return makeGoalObjectiveGenerator({
+      providers: ctx.providers,
+      policy,
+      cwd: ctx.cwd,
+      timeoutMs: Math.min(ctx.timeoutMs, GOAL_OBJECTIVE_TIMEOUT_MS),
       ...(Object.keys(availableModels).length > 0 ? { availableModels } : {}),
       ...(authenticatedProviders.length > 0 ? { authenticatedProviders } : {}),
     });
@@ -2198,22 +2242,33 @@ export async function runChatLoop(
       // parked goal `done` ONLY on real completion evidence — never inferred from a
       // clean return / ESC / ceiling. Reset at the top of each runGoalLoop call.
       let lastGoalCompleted = false;
-      // Form a CONCISE goal LABEL from the raw user text — used ONLY for the
-      // displayed panel title, the conversation title, and the anti-drift contract
-      // OBJECTIVE. The actual work still receives the FULL raw text as its task, so
-      // no user intent is lost. Reuses the EXACT cheap, read-only, fail-soft intent
-      // extractor chat would otherwise build (buildDeps([]).intentExtractor) at the
-      // worker tier — no new flag, no metered service. Every failure mode (no
-      // extractor, null/empty frame, throw) degrades through deriveGoal to the raw
-      // text (today's behaviour). Never throws.
+      // Form a SMART, PROFESSIONAL goal OBJECTIVE from the raw user text — used
+      // ONLY for the displayed `goal: <…>` progress line, the conversation title,
+      // and the anti-drift contract OBJECTIVE. The actual work still receives the
+      // FULL raw text as its task, so no user intent is lost.
+      //
+      // 4th-report fix: the user kept seeing their OWN raw phrasing as the goal
+      // ("noob" goals). The cause was that this formed the label at the WORKER tier
+      // with a terse non-vision intent extractor (and the explicit /goal path didn't
+      // form one at all — it echoed the raw text verbatim). Now it routes a MANAGER-
+      // tier pass with the product-vision / quality-bar persona (the SAME machinery
+      // the recap uses) so the objective reads the way a senior engineer/PM would
+      // name it — NEVER an echo of the user's words.
+      //
+      // Latency/cost: ONE pass at goal start, behind a TIGHT timeout
+      // (GOAL_OBJECTIVE_TIMEOUT_MS) and FULLY fail-soft — any error / timeout / no
+      // provider / unusable reply degrades to the deterministic
+      // formConciseGoalLabel(deriveGoal(raw)) shaper, so goal start NEVER blocks or
+      // crashes. Subscription-clean (no new flag, no metered service). Never throws.
       const formGoalLabel = async (rawText: string): Promise<string> => {
         try {
-          const extractor = buildDeps([]).intentExtractor;
-          if (extractor === undefined) return formConciseGoalLabel(undefined, rawText);
+          const formObjective = buildGoalObjectiveGenerator();
+          if (formObjective === null) return formConciseGoalLabel(undefined, rawText);
           const labelAc = new AbortController();
-          const extraction = await extractor(rawText, labelAc.signal);
-          const frame = normalizeExtraction(extraction).frame;
-          return formConciseGoalLabel(frame?.goal, rawText);
+          const objective = await formObjective(rawText, labelAc.signal);
+          // The pure shaper is the final bound/fallback: feed it the SMART objective
+          // (capped/cleaned), or null → it derives from raw text (today's fallback).
+          return formConciseGoalLabel(objective, rawText);
         } catch {
           return formConciseGoalLabel(undefined, rawText);
         }
@@ -2604,7 +2659,12 @@ export async function runChatLoop(
           out.write(dim('  Usage: /goal <what you want achieved> — I work autonomously until it\'s done (Ctrl+C to stop).\n', out.color));
           return 'continue';
         }
-        if (await runGoalLoop(goalText)) return control.result;
+        // 4th-report fix: do NOT default the LABEL to the raw goalText — the old
+        // assumption "explicit /goal text is already concise" is FALSE when the user
+        // rambles, and the raw echo is exactly what they kept seeing as a "noob"
+        // goal. Form a SMART manager-tier objective for the LABEL/title/contract,
+        // while still passing the FULL goalText to the work. fail-soft inside.
+        if (await runGoalLoop(goalText, await formGoalLabel(goalText))) return control.result;
         return 'continue';
       }
 
@@ -2689,7 +2749,11 @@ export async function runChatLoop(
         // running for the user to revisit.
         await goalStore.setState(target.id, 'running');
         out.write(dim(`  Promoting "${target.title}" — re-validating its to-dos against the current state…\n`, out.color));
-        const shouldBreak = await runGoalLoop(target.title);
+        // 4th-report fix: a parked title is RAW user text (runTodoCreate stores the
+        // /todo text verbatim, truncated to 80 chars), so it can be a ramble. Form a
+        // SMART manager-tier objective for the LABEL while still running the full
+        // stored title as the work. fail-soft inside formGoalLabel.
+        const shouldBreak = await runGoalLoop(target.title, await formGoalLabel(target.title));
         if (lastGoalCompleted) {
           await goalStore.setState(target.id, 'done');
         }

@@ -6,6 +6,23 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+## [3.60.0] - 2026-06-10
+
+### Fixed
+- **Goals are now written by a smart model, like a senior engineer would** — the real
+  fix for "it made the goal whatever I typed." 3.52.0 made the conversation *recap*
+  smart but left the GOAL OBJECTIVE on the old path: explicit `/goal <text>` used your
+  raw text verbatim as the goal/title/contract-objective, and auto-engage formed the
+  label with the cheapest (worker-tier) model. Now every goal-label path — `/goal`,
+  auto-engage, timeout-chunk, keep-going, and promote — forms the objective with a
+  **manager-tier model led by the product-vision/quality-bar persona** (`ELITE_VOICE`),
+  producing a crisp professional objective and never an echo (e.g. a rambly "2010
+  youtube but better in rust for millions" becomes "Rust video platform — 2010-YouTube
+  reimagined for millions"). The full text still drives the work; only the
+  objective/title is the smart concise form. Fail-soft with a tight 6s timeout so it
+  never blocks goal start; reuses the subscription provider machinery (no API keys).
+  Validated live against the real model.
+
 ## [3.59.0] - 2026-06-09
 
 ### Fixed

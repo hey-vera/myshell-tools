@@ -621,6 +621,16 @@ describe('startMenu — /goal ask_user stops autonomous loop and surfaces select
         };
       },
       async *run(req: ProviderRequest, _signal: AbortSignal): AsyncIterable<ProviderEvent> {
+        // 4th-report fix: /goal now forms a SMART manager-tier objective for the
+        // LABEL first (core/goal-objective-generator.ts), distinguishable by its
+        // "OBJECTIVE: <a crisp" instruction. Answer it tidily and DON'T count it as
+        // a goal turn — the assertions below are about the goal LOOP, not the label.
+        if (req.prompt.includes('OBJECTIVE: <a crisp')) {
+          const reply = 'OBJECTIVE: Choose the database';
+          yield { type: 'text', delta: reply };
+          yield { type: 'done', text: reply, usage: FAKE_USAGE, raw: {} };
+          return;
+        }
         prompts.push(req.prompt);
         callCount++;
         if (callCount === 1) {
@@ -692,6 +702,16 @@ describe('startMenu — /goal work contract threading', () => {
         };
       },
       async *run(req: ProviderRequest, _signal: AbortSignal): AsyncIterable<ProviderEvent> {
+        // 4th-report fix: /goal forms a SMART manager-tier objective for the LABEL
+        // first; answer that call tidily and don't count it as a goal turn. The
+        // formed objective becomes the contract OBJECTIVE (capitalised by
+        // parseGoalObjective), while the full goalText drives the goal-turn headers.
+        if (req.prompt.includes('OBJECTIVE: <a crisp')) {
+          const reply = 'OBJECTIVE: ship the widget';
+          yield { type: 'text', delta: reply };
+          yield { type: 'done', text: reply, usage: FAKE_USAGE, raw: {} };
+          return;
+        }
         prompts.push(req.prompt);
         callCount++;
         if (callCount === 1) {
@@ -735,7 +755,9 @@ describe('startMenu — /goal work contract threading', () => {
     await startMenu(ctx, sink);
 
     assert.equal(callCount, 2, 'one continue turn plus one complete turn');
-    assert.ok(prompts[0]?.includes('OBJECTIVE: ship the widget'));
+    // The contract OBJECTIVE is the formed label (parseGoalObjective capitalises it),
+    // while the goal-turn header still carries the full raw goalText (asserted below).
+    assert.ok(prompts[0]?.includes('OBJECTIVE: Ship the widget'));
     assert.ok(
       !prompts[0]?.includes('append EXACTLY the following JSON object'),
       'goal turns suppress the normal confidence-envelope requirement',
@@ -744,7 +766,7 @@ describe('startMenu — /goal work contract threading', () => {
       prompts[0]?.includes('Before acting, confirm this turn still directly serves the OBJECTIVE; do not pursue unrelated improvements.'),
     );
     assert.ok(!prompts[0]?.includes("RECENT STEPS (each turn's stated next action):"));
-    assert.ok(prompts[1]?.includes('OBJECTIVE: ship the widget'));
+    assert.ok(prompts[1]?.includes('OBJECTIVE: Ship the widget'));
     assert.ok(prompts[1]?.includes("RECENT STEPS (each turn's stated next action):\n- C1: run the tests"));
     assert.ok(prompts[1]?.includes('Continue working autonomously toward this goal: ship the widget'));
 
@@ -764,7 +786,8 @@ describe('startMenu — /goal work contract threading', () => {
 
     const assistantEntries = persistedEntries.filter((entry) => entry.role === 'assistant');
     assert.equal(assistantEntries.length, 2);
-    assert.equal(assistantEntries[0]?.workTrace?.objective, 'ship the widget');
+    // The workTrace objective is the SMART formed label (capitalised), not the raw text.
+    assert.equal(assistantEntries[0]?.workTrace?.objective, 'Ship the widget');
     assert.equal(assistantEntries[0]?.workTrace?.checkpoints, undefined);
     assert.deepEqual(assistantEntries[1]?.workTrace?.checkpoints, [
       { id: 'C1', summary: 'run the tests' },
@@ -859,15 +882,17 @@ describe('startMenu — auto-goal smart autonomy', () => {
       },
       async *run(req: ProviderRequest, _signal: AbortSignal): AsyncIterable<ProviderEvent> {
         prompts.push(req.prompt);
-        // The auto-engage path now forms a CONCISE goal label first via the SAME
-        // cheap worker-tier intent extractor: that read-only call carries the
-        // distinctive "You extract the INTENT" preamble. Answer it with a tidy
-        // one-line frame goal that DIFFERS from the rambling raw text, so the test
-        // proves the panel title/objective becomes concise.
-        if (req.prompt.includes('You extract the INTENT of a user message')) {
-          const frame = JSON.stringify({ goal: 'Design the architecture', confidence: 'high' });
-          yield { type: 'text', delta: frame };
-          yield { type: 'done', text: frame, usage: FAKE_USAGE, raw: {} };
+        // 4th-report fix: the auto-engage path now forms a SMART goal objective via
+        // the MANAGER-tier former (core/goal-objective-generator.ts) instead of the
+        // old cheap worker-tier intent extractor. That read-only call carries the
+        // distinctive tagged "OBJECTIVE: <a crisp" instruction from
+        // buildGoalObjectivePrompt. Answer it with a tagged objective that DIFFERS
+        // from the rambling raw text, so the test proves the panel title/objective
+        // becomes a crisp professional label, not the user's raw echo.
+        if (req.prompt.includes('OBJECTIVE: <a crisp')) {
+          const reply = 'OBJECTIVE: Design the architecture';
+          yield { type: 'text', delta: reply };
+          yield { type: 'done', text: reply, usage: FAKE_USAGE, raw: {} };
           return;
         }
         yield { type: 'text', delta: 'Done.\nGOAL_COMPLETE' };
@@ -911,14 +936,14 @@ describe('startMenu — auto-goal smart autonomy', () => {
 
     await startMenu(ctx, sink);
 
-    // The cheap intent extraction (concise-label formation) ran as a SEPARATE
-    // worker-tier call, distinguishable by its preamble; the remaining prompts are
-    // the goal turn(s). (We don't pin the goal-turn COUNT: orchestrate's own
-    // review/verification heuristics may add a same-turn call for manager-tier
+    // The SMART objective formation ran as a SEPARATE manager-tier call,
+    // distinguishable by its "OBJECTIVE: <a crisp" instruction; the remaining
+    // prompts are the goal turn(s). (We don't pin the goal-turn COUNT: orchestrate's
+    // own review/verification heuristics may add a same-turn call for manager-tier
     // architecture work — orthogonal to this fix.)
-    const extractorCalls = prompts.filter((p) => p.includes('You extract the INTENT of a user message'));
-    const goalPrompts = prompts.filter((p) => !p.includes('You extract the INTENT of a user message'));
-    assert.equal(extractorCalls.length, 1, 'concise-label formation makes exactly one cheap extractor call');
+    const extractorCalls = prompts.filter((p) => p.includes('OBJECTIVE: <a crisp'));
+    const goalPrompts = prompts.filter((p) => !p.includes('OBJECTIVE: <a crisp'));
+    assert.equal(extractorCalls.length, 1, 'concise-label formation makes exactly one manager-tier objective call');
     assert.ok(goalPrompts.length >= 1, 'auto-goal must enter the goal loop');
     // CRITICAL: the WORK task still carries the FULL raw user text verbatim.
     assert.ok(
@@ -1032,13 +1057,15 @@ describe('startMenu — auto-goal smart autonomy', () => {
         };
       },
       async *run(req: ProviderRequest, signal: AbortSignal): AsyncIterable<ProviderEvent> {
-        // The concise-label intent extraction runs first (read-only worker tier);
-        // answer it instantly so the Ctrl+C dance below exercises the GOAL turn,
-        // exactly as before this path formed a concise title.
-        if (req.prompt.includes('You extract the INTENT of a user message')) {
-          const frame = JSON.stringify({ goal: 'Design the architecture', confidence: 'high' });
-          yield { type: 'text', delta: frame };
-          yield { type: 'done', text: frame, usage: FAKE_USAGE, raw: {} };
+        // 4th-report fix: the SMART objective formation runs FIRST (read-only
+        // manager tier, distinguished by its "OBJECTIVE: <a crisp" instruction);
+        // answer it INSTANTLY so the Ctrl+C dance below exercises the GOAL turn, not
+        // the label call. (Critical: if this call blocked on abort it would hang on
+        // its own AbortController, which Ctrl+C never targets.)
+        if (req.prompt.includes('OBJECTIVE: <a crisp')) {
+          const reply = 'OBJECTIVE: Design the architecture';
+          yield { type: 'text', delta: reply };
+          yield { type: 'done', text: reply, usage: FAKE_USAGE, raw: {} };
           return;
         }
         callCount++;
