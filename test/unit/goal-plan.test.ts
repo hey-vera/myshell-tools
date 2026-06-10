@@ -15,6 +15,8 @@ import {
   buildGoalPlanPrompt,
   parseGoalPlan,
   planTodosToRoadmap,
+  countDroppedTodos,
+  countDroppedGoals,
   GOAL_PLAN_MAX_GOALS,
   GOAL_PLAN_MAX_TODOS,
 } from '../../src/core/goal-plan.ts';
@@ -139,6 +141,16 @@ describe('parseGoalPlan — substantial → stage', () => {
     for (const goal of out?.goals ?? []) {
       assert.ok(goal.todos.length <= GOAL_PLAN_MAX_TODOS, 'todos capped per goal');
     }
+    // Honest cap disclosure (never hide a cap): the over-cap reply records what it dropped.
+    assert.ok(out?.dropped !== undefined, 'over-cap plan reports dropped counts');
+    assert.equal(out?.dropped?.goals, 3, '3 goals over GOAL_PLAN_MAX_GOALS recorded');
+    assert.ok((out?.dropped?.perGoalTodos.size ?? 0) > 0, 'per-goal dropped to-dos recorded');
+  });
+
+  it('a within-cap plan reports NO dropped field (additive — byte-identical)', () => {
+    const out = parseGoalPlan('JUDGMENT: stage\nGOAL: Ship it\nTODO: step one\nTODO: step two');
+    assert.ok(out !== null);
+    assert.equal(out?.dropped, undefined, 'nothing dropped ⇒ no dropped field');
   });
 
   it('does NOT echo the raw phrasing (the model writes professional titles)', () => {
@@ -358,5 +370,34 @@ describe('planTodosToRoadmap — pure index→id translation', () => {
 
   it('handles the empty plan', () => {
     assert.deepEqual(planTodosToRoadmap([]), []);
+  });
+});
+
+describe('countDroppedTodos + countDroppedGoals — cap-transparency helpers', () => {
+  it('returns 0 when the list is within the limit (nothing dropped)', () => {
+    assert.equal(countDroppedTodos(['a', 'b', 'c'], 8), 0);
+    assert.equal(countDroppedTodos([], 8), 0);
+    assert.equal(countDroppedTodos(['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'], 8), 0);
+    assert.equal(countDroppedGoals(['g1', 'g2'], 4), 0);
+  });
+
+  it('returns the positive count of items that exceed the limit', () => {
+    assert.equal(countDroppedTodos(['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i'], 8), 1);
+    assert.equal(countDroppedTodos(['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l'], 8), 4);
+    assert.equal(countDroppedGoals(['g1', 'g2', 'g3', 'g4', 'g5', 'g6'], 4), 2);
+    assert.equal(countDroppedGoals(['g1', 'g2', 'g3', 'g4', 'g5'], GOAL_PLAN_MAX_GOALS), 1);
+  });
+
+  it('clamps to 0 on adversarial input (never throws, never negative)', () => {
+    assert.equal(countDroppedTodos(null as unknown as [], 8), 0);
+    assert.equal(countDroppedTodos(undefined as unknown as [], 8), 0);
+    assert.equal(countDroppedGoals([], 0), 0);
+    assert.equal(countDroppedGoals([], -5), 0); // negative limit ⇒ treats as 0
+  });
+
+  it('matches the GOAL_PLAN_MAX_TODOS cap that parseGoalPlan enforces', () => {
+    // Build a raw over-limit list (12 todos) and check the helper agrees with the cap.
+    const rawTodos = Array.from({ length: 12 }, (_, i) => ({ text: `step ${i}` }));
+    assert.equal(countDroppedTodos(rawTodos, GOAL_PLAN_MAX_TODOS), 12 - GOAL_PLAN_MAX_TODOS);
   });
 });

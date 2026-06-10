@@ -17,6 +17,7 @@ import {
   formatDependencyPhrase,
   formatHeadsUp,
   formatAutoStageNote,
+  type ProposalDroppedCounts,
 } from '../../src/core/goal-proposal.ts';
 import type { GoalPlan } from '../../src/core/goal-plan.ts';
 import type { SystemModel } from '../../src/core/understanding.ts';
@@ -148,6 +149,119 @@ describe('formatAutoStageNote', () => {
   it('returns "" when nothing was staged', () => {
     assert.equal(formatAutoStageNote([], 0), '');
     assert.equal(formatAutoStageNote(['   '], 0), '');
+  });
+});
+
+describe('formatGoalProposal — cap-transparency (dropped hints)', () => {
+  it('appends the honest "kept N steps; M more not shown" line when todos were dropped', () => {
+    const plan: GoalPlan = {
+      judgment: 'stage',
+      goals: [{ title: 'Harden auth', todos: [{ text: 'wire endpoint' }, { text: 'add tests' }] }],
+    };
+    // Goal 0 had 5 more todos that were capped
+    const dropped: ProposalDroppedCounts = { perGoalTodos: new Map([[0, 5]]) };
+    const out = formatGoalProposal(plan, dropped);
+    assert.ok(out.includes('(kept the 2 highest-leverage steps; 5 more not shown)'), 'shows the honest cap note');
+  });
+
+  it('omits the cap note entirely when nothing was dropped (byte-identical to no-hint call)', () => {
+    const plan: GoalPlan = {
+      judgment: 'stage',
+      goals: [{ title: 'Harden auth', todos: [{ text: 'wire endpoint' }] }],
+    };
+    const withNoDropped = formatGoalProposal(plan);
+    const withZeroDropped: ProposalDroppedCounts = { perGoalTodos: new Map([[0, 0]]) };
+    const withExplicitZero = formatGoalProposal(plan, withZeroDropped);
+    assert.ok(!withNoDropped.includes('not shown'), 'no cap note when no hint given');
+    assert.ok(!withExplicitZero.includes('not shown'), 'no cap note when dropped=0');
+    assert.equal(withNoDropped, withExplicitZero, 'byte-identical when dropped=0');
+  });
+
+  it('uses singular "step" when only 1 todo is kept', () => {
+    const plan: GoalPlan = {
+      judgment: 'stage',
+      goals: [{ title: 'G', todos: [{ text: 'only step' }] }],
+    };
+    const dropped: ProposalDroppedCounts = { perGoalTodos: new Map([[0, 3]]) };
+    const out = formatGoalProposal(plan, dropped);
+    assert.ok(out.includes('(kept the 1 highest-leverage step; 3 more not shown)'), 'singular "step"');
+  });
+
+  it('appends the dropped-goal note when goal cap was hit', () => {
+    const plan: GoalPlan = {
+      judgment: 'stage',
+      goals: [
+        { title: 'Goal A', todos: [{ text: 'step 1' }] },
+        { title: 'Goal B', todos: [{ text: 'step 2' }] },
+      ],
+    };
+    const dropped: ProposalDroppedCounts = { goals: 3 };
+    const out = formatGoalProposal(plan, dropped);
+    assert.ok(out.includes('3 additional goals not shown'), 'shows goal-cap note');
+    assert.ok(out.includes('5-goal cap'), 'explains the total cap count');
+  });
+
+  it('uses singular "goal" for exactly 1 dropped goal', () => {
+    const plan: GoalPlan = {
+      judgment: 'stage',
+      goals: [{ title: 'Goal A', todos: [{ text: 'step 1' }] }],
+    };
+    const dropped: ProposalDroppedCounts = { goals: 1 };
+    const out = formatGoalProposal(plan, dropped);
+    assert.ok(out.includes('1 additional goal not shown'), 'singular "goal"');
+  });
+
+  it('omits the goal-cap note entirely when goals=0 (additive — byte-identical)', () => {
+    const plan: GoalPlan = {
+      judgment: 'stage',
+      goals: [{ title: 'G', todos: [{ text: 's' }] }],
+    };
+    const withNoDropped = formatGoalProposal(plan);
+    const withZero = formatGoalProposal(plan, { goals: 0 });
+    assert.ok(!withNoDropped.includes('additional goal'), 'no goal-cap note by default');
+    assert.equal(withNoDropped, withZero, 'byte-identical when goals dropped=0');
+  });
+
+  it('handles both todo and goal drops simultaneously', () => {
+    const plan: GoalPlan = {
+      judgment: 'stage',
+      goals: [
+        { title: 'Goal A', todos: [{ text: 'a' }, { text: 'b' }] },
+        { title: 'Goal B', todos: [{ text: 'c' }] },
+      ],
+    };
+    const dropped: ProposalDroppedCounts = {
+      perGoalTodos: new Map([[0, 6], [1, 2]]),
+      goals: 1,
+    };
+    const out = formatGoalProposal(plan, dropped);
+    assert.ok(out.includes('(kept the 2 highest-leverage steps; 6 more not shown)'), 'goal A todo-cap note');
+    assert.ok(out.includes('(kept the 1 highest-leverage step; 2 more not shown)'), 'goal B todo-cap note');
+    assert.ok(out.includes('1 additional goal not shown'), 'goal-cap note');
+  });
+});
+
+describe('formatAutoStageNote — dropped-goals cap disclosure', () => {
+  it('appends the dropped-goals note when droppedGoals > 0', () => {
+    const note = formatAutoStageNote(['Harden auth', 'Add reset'], 4, 2);
+    assert.ok(
+      note.includes('2 more goals not staged (plan exceeded cap)'),
+      'shows the dropped-goals note',
+    );
+    assert.ok(note.startsWith('Staged 2 goals on the board:'), 'prefix is unchanged');
+    assert.ok(note.endsWith('· shall I start?'), 'suffix is unchanged');
+  });
+
+  it('omits the dropped note when droppedGoals=0 (byte-identical to two-arg call)', () => {
+    const withoutArg = formatAutoStageNote(['Harden auth'], 3);
+    const withZero = formatAutoStageNote(['Harden auth'], 3, 0);
+    assert.ok(!withoutArg.includes('not staged'), 'no note without arg');
+    assert.equal(withoutArg, withZero, 'byte-identical when droppedGoals=0');
+  });
+
+  it('uses singular "goal" for exactly 1 dropped goal', () => {
+    const note = formatAutoStageNote(['Goal A'], 2, 1);
+    assert.ok(note.includes('1 more goal not staged (plan exceeded cap)'), 'singular "goal"');
   });
 });
 

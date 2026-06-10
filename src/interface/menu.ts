@@ -4017,7 +4017,9 @@ export async function runChatLoop(
               ),
             );
           } else if (plan.plan !== undefined) {
-            const proposal = formatGoalProposal(plan.plan);
+            // Pass the planner's honest cap-disclosure counts (present only when the
+            // model's reply was actually truncated) so the proposal never hides a cap.
+            const proposal = formatGoalProposal(plan.plan, plan.plan.dropped);
             if (proposal.length > 0) {
               out.write('\n' + proposal + '\n');
               // PROACTIVE HEADS-UP: 1–2 findings the understanding pass already computed

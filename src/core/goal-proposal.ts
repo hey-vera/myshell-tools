@@ -83,6 +83,20 @@ function totalTodos(plan: GoalPlan): number {
 }
 
 /**
+ * Per-goal dropped-todo counts for the proposal renderer. An entry at index `i`
+ * means `plan.goals[i]` had that many todos cut by the parser's cap. Omitted or
+ * zero entries are silent — the output stays byte-identical to today's.
+ *
+ * ADDITIVE: callers that do not pass this stay byte-identical.
+ */
+export interface ProposalDroppedCounts {
+  /** Dropped todos per goal, keyed by 0-based goal index. */
+  readonly perGoalTodos?: ReadonlyMap<number, number>;
+  /** How many goals were dropped by the goal cap (≥1 → "N goals not shown"). */
+  readonly goals?: number;
+}
+
+/**
  * Render the CONFIDENT, full proposal for a staged plan — the headline of Phase 2.
  * Lines (themed by the caller; this is plain text):
  *  - a vision header ("Here's how I'd tackle {vision}: {N} goal(s), {M} to-do(s).")
@@ -90,13 +104,19 @@ function totalTodos(plan: GoalPlan): number {
  *  - per goal: a numbered title line, its best-APPROACH (chosen + over-alternatives
  *    + because-rationale) when present, the dependency cause→effect phrase when the
  *    goal has real edges, then its to-dos as a numbered `[ ]` checklist;
+ *  - when `dropped` carries a non-zero dropped-todo count for a goal, appends a brief
+ *    honest line "(kept the N highest-leverage steps; M more not shown)" — only when
+ *    M>0 (strictly additive; no dropped items ⇒ byte-identical to today's output);
+ *  - when `dropped.goals` > 0, appends a note at the end naming the dropped-goal count;
  *  - a blank line between goals.
  *
  * Returns `''` when there is nothing to propose (no `stage` verdict, or zero goals)
  * — the fail-soft contract, so the caller shows nothing rather than an empty box.
  * PURE, never throws.
+ *
+ * @param dropped  optional dropped-count hints (additive — absent ⇒ byte-identical).
  */
-export function formatGoalProposal(plan: GoalPlan): string {
+export function formatGoalProposal(plan: GoalPlan, dropped?: ProposalDroppedCounts): string {
   if (plan.judgment !== 'stage' || plan.goals.length === 0) return '';
   const goalCount = plan.goals.length;
   const todoCount = totalTodos(plan);
@@ -137,7 +157,23 @@ export function formatGoalProposal(plan: GoalPlan): string {
     goal.todos.forEach((todo, ti) => {
       lines.push(`   ${String(ti + 1)}. [ ] ${todo.text}`);
     });
+
+    // Honest cap disclosure: only when something was dropped (additive — silent when 0).
+    const droppedTodos = dropped?.perGoalTodos?.get(gi) ?? 0;
+    if (droppedTodos > 0) {
+      const kept = goal.todos.length;
+      lines.push(
+        `   (kept the ${String(kept)} highest-leverage step${kept === 1 ? '' : 's'}; ${String(droppedTodos)} more not shown)`,
+      );
+    }
   });
+
+  // Honest goal-cap disclosure (additive — silent when 0).
+  const droppedGoals = dropped?.goals ?? 0;
+  if (droppedGoals > 0) {
+    const goalWord = droppedGoals === 1 ? 'goal' : 'goals';
+    lines.push(`\n(${String(droppedGoals)} additional ${goalWord} not shown — plan exceeded the ${String(goalCount + droppedGoals)}-goal cap)`);
+  }
 
   return lines.join('\n');
 }
@@ -181,11 +217,20 @@ export function formatHeadsUp(systemModel: SystemModel | undefined): string[] {
  * line (the caller keeps the fire-and-forget + conversationLive guard; this only
  * shapes the text). Returns `''` when nothing was staged (the caller shows nothing).
  *
- * @param titles  the staged goal titles, in order (already deduped by the caller).
- * @param todoCount total to-dos across the staged goals (for the "N to-dos" count).
+ * When `droppedGoals` > 0, appends a brief honest tail noting how many additional
+ * goals the plan contained but were not staged (the cap was hit). Only when >0 —
+ * zero ⇒ byte-identical to today's output (strictly additive). PURE, total.
+ *
+ * @param titles       the staged goal titles, in order (already deduped by the caller).
+ * @param todoCount    total to-dos across the staged goals (for the "N to-dos" count).
+ * @param droppedGoals how many goals were dropped by the goal cap (omit or 0 ⇒ silent).
  * PURE, total — never throws.
  */
-export function formatAutoStageNote(titles: readonly string[], todoCount: number): string {
+export function formatAutoStageNote(
+  titles: readonly string[],
+  todoCount: number,
+  droppedGoals = 0,
+): string {
   const clean = titles.map((t) => t.trim()).filter((t) => t.length > 0);
   if (clean.length === 0) return '';
   const NAME_CAP = 2; // name the first couple; "+N more" beyond
@@ -196,5 +241,10 @@ export function formatAutoStageNote(titles: readonly string[], todoCount: number
   const goalNoun = clean.length === 1 ? 'goal' : 'goals';
   const todoNoun = todoCount === 1 ? 'to-do' : 'to-dos';
   const countPart = todoCount > 0 ? ` · ${String(todoCount)} ${todoNoun}` : '';
-  return `Staged ${String(clean.length)} ${goalNoun} on the board: ${titlePart}${countPart} · shall I start?`;
+  const dropped = Math.max(0, Math.floor(droppedGoals));
+  const droppedPart =
+    dropped > 0
+      ? ` · ${String(dropped)} more goal${dropped === 1 ? '' : 's'} not staged (plan exceeded cap)`
+      : '';
+  return `Staged ${String(clean.length)} ${goalNoun} on the board: ${titlePart}${countPart}${droppedPart} · shall I start?`;
 }

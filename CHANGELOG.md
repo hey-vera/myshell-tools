@@ -6,6 +6,16 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+## [3.88.0] - 2026-06-10
+
+### Changed (never silently hide a cap — master-plan Phase 5e)
+- **When the partner's plan exceeds its limits, it tells you** instead of silently
+  trimming. If the model proposes more than the cap allows (8 to-dos per goal / a handful
+  of goals), the proposal now appends an honest line — e.g. `(kept the 8 highest-leverage
+  steps; 3 more not shown)` and `(N additional goals not shown — plan exceeded the cap)`.
+  The planner records what the caps drop and the proposal surfaces it. Fully additive: a
+  plan within the caps shows nothing extra (byte-identical).
+
 ## [3.87.0] - 2026-06-10
 
 ### Added (standing rules it remembers AND enforces — master-plan Phase 4)

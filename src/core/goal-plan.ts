@@ -96,6 +96,17 @@ export interface GoalPlan {
     readonly approach?: GoalPlanApproach;
   }[];
   readonly clarifyingQuestion?: string;
+  /**
+   * What the caps TRUNCATED from the model's reply (the owner's "never hide a cap"
+   * rule). Present ONLY when something was dropped (a model that stayed within
+   * GOAL_PLAN_MAX_GOALS / _MAX_TODOS yields no `dropped` field → byte-identical).
+   * `goals` = extra goals beyond the cap; `perGoalTodos` maps a goal's index to how
+   * many of its to-dos were trimmed. The proposal renderer surfaces these honestly.
+   */
+  readonly dropped?: {
+    readonly goals: number;
+    readonly perGoalTodos: ReadonlyMap<number, number>;
+  };
 }
 
 /**
@@ -299,6 +310,11 @@ export function parseGoalPlan(raw: string | undefined | null): GoalPlan | null {
     rationale?: string;
     alternatives?: string[];
   }[] = [];
+  // Honest-truncation tracking (the owner's "never hide a cap" rule): count what the
+  // caps drop so the proposal can disclose it. Stays at 0 / empty when the model
+  // respected the caps → no `dropped` field → byte-identical.
+  let droppedGoals = 0;
+  const droppedTodosByGoal = new Map<number, number>();
 
   for (const line of rawLines) {
     const trimmed = line.trim();
@@ -321,7 +337,10 @@ export function parseGoalPlan(raw: string | undefined | null): GoalPlan | null {
     }
     if (tag === 'goal') {
       if (value.length === 0) continue;
-      if (goals.length >= GOAL_PLAN_MAX_GOALS) continue;
+      if (goals.length >= GOAL_PLAN_MAX_GOALS) {
+        droppedGoals += 1; // over the goal cap — record it, never silently drop
+        continue;
+      }
       goals.push({ title: capLen(value, GOAL_PLAN_TITLE_MAX_CHARS), todos: [] });
       continue;
     }
@@ -361,7 +380,11 @@ export function parseGoalPlan(raw: string | undefined | null): GoalPlan | null {
       if (value.length === 0) continue;
       const current = goals[goals.length - 1];
       if (current === undefined) continue; // a TODO before any GOAL is dropped
-      if (current.todos.length >= GOAL_PLAN_MAX_TODOS) continue;
+      if (current.todos.length >= GOAL_PLAN_MAX_TODOS) {
+        const gi = goals.length - 1; // over the per-goal to-do cap — record it
+        droppedTodosByGoal.set(gi, (droppedTodosByGoal.get(gi) ?? 0) + 1);
+        continue;
+      }
       const { text, afterRaw } = splitAfterMarker(value);
       if (text.length === 0) continue;
       // This todo's own 1-based position within its goal (it is about to be pushed).
@@ -424,6 +447,11 @@ export function parseGoalPlan(raw: string | undefined | null): GoalPlan | null {
           ...(approach !== undefined ? { approach } : {}),
         };
       }),
+      // Honest cap disclosure — present ONLY when the caps actually trimmed something
+      // (within-cap plans omit it → byte-identical). The proposal renderer surfaces it.
+      ...(droppedGoals > 0 || droppedTodosByGoal.size > 0
+        ? { dropped: { goals: droppedGoals, perGoalTodos: droppedTodosByGoal } }
+        : {}),
     };
   }
   if (judgment === 'clarify') {
@@ -432,6 +460,34 @@ export function parseGoalPlan(raw: string | undefined | null): GoalPlan | null {
   }
   // none
   return { judgment: 'none', goals: [] };
+}
+
+// ---------------------------------------------------------------------------
+// Cap-transparency helpers — PURE counters for how much was dropped by a cap
+// ---------------------------------------------------------------------------
+
+/**
+ * How many todos were dropped when a raw model list was capped to `limit`.
+ * Returns a non-negative integer: 0 when nothing was dropped (i.e. the raw
+ * count was within the limit), positive when some items were silently cut.
+ * PURE, total, never throws. Used by the proposal renderer to surface an
+ * honest "kept N highest-leverage steps; M more not shown" note only when M>0.
+ */
+export function countDroppedTodos(rawTodos: readonly unknown[], limit: number): number {
+  const raw = Array.isArray(rawTodos) ? rawTodos.length : 0;
+  const cap = Math.max(0, limit);
+  return Math.max(0, raw - cap);
+}
+
+/**
+ * How many goals were dropped when a raw model list was capped to `limit`.
+ * Returns a non-negative integer: 0 when nothing was dropped. Symmetric
+ * with {@link countDroppedTodos} — same honesty-surface contract. PURE, total.
+ */
+export function countDroppedGoals(rawGoals: readonly unknown[], limit: number): number {
+  const raw = Array.isArray(rawGoals) ? rawGoals.length : 0;
+  const cap = Math.max(0, limit);
+  return Math.max(0, raw - cap);
 }
 
 // ---------------------------------------------------------------------------
