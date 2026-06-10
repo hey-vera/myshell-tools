@@ -6,6 +6,22 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+## [3.83.0] - 2026-06-10
+
+### Changed (the goal experience PROPOSES like a confident pro — master-plan Phase 2)
+- **`/goal` now shows you the plan and asks before it runs**, instead of silently
+  executing a black box. It presents the vision, the goals, the to-dos with their
+  dependency structure in plain cause→effect ("steps 2-3 build on 1"), and the chosen
+  approach + *why* (over the alternatives) — then offers a one-tap **[Start all] /
+  [Just the unblocked ones] / [Edit / not yet]**. Only your go launches it.
+- **Auto-staged goals announce confidently** ("Staged 2 goals: …; 4 to-dos · shall I
+  start?") instead of a dim 6-word whisper — and proactively surface 1-2 **heads-up**
+  findings the investigation turned up (fragility/risk it noticed but you didn't ask
+  about), when present.
+- **The passive "needs your input" lines are gone**, replaced with confident, specific
+  forks ("I hit a fork on X: <the choice> — which way?"). Additive: `MYSHELL_MANAGER=0`
+  legacy `/goal` stays byte-identical.
+
 ## [3.82.0] - 2026-06-10
 
 ### Fixed (no model call can hang the app — master-plan Phase 1)

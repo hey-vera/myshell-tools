@@ -804,6 +804,93 @@ describe('startMenu — /goal work contract threading', () => {
   });
 });
 
+describe('startMenu — /goal PROPOSES the plan before running it (manager cycle on)', () => {
+  it('renders the confident proposal + one-tap confirm; "Edit / not yet" parks instead of executing', async () => {
+    const prompts: string[] = [];
+    let goalWorkTurns = 0;
+    const provider: Provider = {
+      id: 'claude',
+      async detect() {
+        return {
+          id: 'claude',
+          installed: true,
+          version: '1.0.0',
+          authenticated: true,
+          plan: null,
+          binaryPath: null,
+          availableModels: ['model-a'],
+        };
+      },
+      async *run(req: ProviderRequest, _signal: AbortSignal): AsyncIterable<ProviderEvent> {
+        // The PLANNING BRAIN call (judgeGoal) → return a real staged plan so the
+        // proposal renders from the full plan (vision + goal + todos + deps + approach).
+        if (req.prompt.includes('PLANNING BRAIN')) {
+          const reply = [
+            'JUDGMENT: stage',
+            'VISION: ship the auth system',
+            'GOAL: Harden the token-refresh path',
+            'APPROACH: rotate refresh tokens server-side',
+            'WHY: it closes the replay window the client-only flow leaves open',
+            'ALT: client-only refresh',
+            'TODO: wire the refresh endpoint',
+            'TODO: add rotation on use  [after: 1]',
+          ].join('\n');
+          yield { type: 'text', delta: reply };
+          yield { type: 'done', text: reply, usage: FAKE_USAGE, raw: {} };
+          return;
+        }
+        // The background whole-picture UNDERSTANDING warm + the smart-label OBJECTIVE
+        // former are NOT goal-work turns — answer them benignly and don't count them.
+        if (
+          req.prompt.includes('WHOLE-PICTURE') ||
+          req.prompt.includes('understand the system') ||
+          req.prompt.includes('OBJECTIVE: <a crisp')
+        ) {
+          yield { type: 'text', delta: 'ok' };
+          yield { type: 'done', text: 'ok', usage: FAKE_USAGE, raw: {} };
+          return;
+        }
+        // Anything else is a goal-WORK turn — must NOT happen when the user declines.
+        prompts.push(req.prompt);
+        goalWorkTurns += 1;
+        yield { type: 'text', delta: 'working' };
+        yield { type: 'done', text: `working\n${CONFIDENCE_ENVELOPE}`, usage: FAKE_USAGE, raw: {} };
+      },
+    };
+
+    const clock = makeFakeClock();
+    const store = makeStore(clock);
+    const sink = makeSink();
+    const ctx = makeCtx(
+      {
+        // Manager cycle ON (the default) → /goal proposes before executing.
+        config: { onboarded: true, setAsDefault: false, smartRoute: false, experimentalManager: true },
+        providers: { claude: provider },
+        readLine: makeScriptedReader([
+          'n',
+          '/goal ship the auth system',
+          '3', // the one-tap confirm: "Edit / not yet" → park, do not run
+          '/exit',
+          'q',
+        ]),
+      },
+      clock,
+      store,
+    );
+
+    await startMenu(ctx, sink);
+
+    assert.ok(sink.buf.includes("Here's how I'd tackle ship the auth system"), 'renders the confident vision header');
+    assert.ok(sink.buf.includes('1. Harden the token-refresh path'), 'renders the goal title');
+    assert.ok(sink.buf.includes('Approach: rotate refresh tokens server-side'), 'renders the chosen approach');
+    assert.ok(sink.buf.includes('Step 2 build on 1.'), 'renders the dependency cause→effect phrase');
+    assert.ok(sink.buf.includes('Shall I run this, or adjust first?'), 'offers the one-tap confirm');
+    assert.ok(sink.buf.includes('Start all') && sink.buf.includes('Just the unblocked ones'), 'the go options');
+    assert.ok(/Parked ".*" on the board/.test(sink.buf), 'declining parks the goal');
+    assert.equal(goalWorkTurns, 0, 'declining the proposal must NOT run any goal-work turn');
+  });
+});
+
 describe('startMenu — auto-goal smart autonomy', () => {
   it('with autoGoal off, a manager-tier task stays on the single runTask path', async () => {
     const prompts: string[] = [];

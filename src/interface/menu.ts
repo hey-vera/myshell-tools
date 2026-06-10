@@ -124,6 +124,7 @@ import { makeGoalObjectiveGenerator } from '../core/goal-objective-generator.js'
 import { makeGoalPlanner } from '../core/goal-plan-generator.js';
 import type { GoalPlan, GoalPlanTodo } from '../core/goal-plan.js';
 import { planTodosToRoadmap } from '../core/goal-plan.js';
+import { formatGoalProposal, formatHeadsUp, formatAutoStageNote } from '../core/goal-proposal.js';
 import { makeReplanner, applyReplanEditsViaStore } from '../core/goal-replan-generator.js';
 import type { RoadmapEdit } from '../core/goal-replan.js';
 import { makeUnderstandingPass } from '../core/understanding-generator.js';
@@ -2422,6 +2423,13 @@ export async function runChatLoop(
         clarifyingQuestion?: string;
         /** The goal's best-approach (chosen + why), when the planner stated one. */
         approach?: GoalPlan['goals'][number]['approach'];
+        /** The FULL judged plan (vision + every goal's todos/deps/approach), when the
+         *  planner produced one — the raw material the PROPOSAL renderer renders.
+         *  Absent on the smart-label fallback (no model plan to show). */
+        plan?: GoalPlan;
+        /** The warm whole-picture SystemModel used to ground this judgment (when one
+         *  was cached) — the source of the proactive heads-up findings. */
+        systemModel?: SystemModel;
       }> => {
         const cacheKey = (await resolveProjectKeyOnce()) ?? '∅global';
         const warm = systemModelCache.get(cacheKey)?.model;
@@ -2445,6 +2453,8 @@ export async function runChatLoop(
                   roadmap: roadmapFor(g0?.todos ?? []),
                   ...(q !== undefined && q.length > 0 ? { clarifyingQuestion: q } : {}),
                   ...(g0?.approach !== undefined ? { approach: g0.approach } : {}),
+                  plan,
+                  ...(warm !== undefined ? { systemModel: warm } : {}),
                 };
               }
               if (g0 !== undefined && title !== undefined && title.length > 0 && g0.todos.length > 0) {
@@ -2453,6 +2463,8 @@ export async function runChatLoop(
                   title,
                   roadmap: roadmapFor(g0.todos),
                   ...(g0.approach !== undefined ? { approach: g0.approach } : {}),
+                  plan,
+                  ...(warm !== undefined ? { systemModel: warm } : {}),
                 };
               }
             }
@@ -2577,6 +2589,11 @@ export async function runChatLoop(
           /* no existing snapshot → still dedup within this batch */
         }
         let staged = 0;
+        // Track what actually LANDED (titles + total to-dos) so the note can say
+        // something REAL — the confident "here's what I parked, shall I start?" that
+        // replaces the old content-free "※ Staged N goals" whisper.
+        const stagedTitles: string[] = [];
+        let stagedTodos = 0;
         for (const g of plan.goals) {
           const title = g.title.trim();
           if (title.length === 0) continue;
@@ -2597,6 +2614,8 @@ export async function runChatLoop(
               ...(g.approach !== undefined ? { approach: g.approach } : {}),
             });
             staged += 1;
+            stagedTitles.push(title);
+            stagedTodos += g.todos.length;
           } catch {
             /* one create miss must not block the rest — best-effort staging */
           }
@@ -2608,9 +2627,18 @@ export async function runChatLoop(
         // into the menu or smear the next prompt (mirrors the concurrent-recap guard).
         if (!conversationLive) return;
         await syncBoard(); // the new parked goals landed → refresh the board
-        // Brief, HONEST one-line note — do not over-announce.
-        const noun = staged === 1 ? 'goal' : 'goals';
-        out.write('\n' + dim(`※ Staged ${String(staged)} ${noun} on the board.`, out.color) + '\n');
+        // Brief but REAL one-line note — names the goal(s) + to-do count + the
+        // frictionless go-ahead, replacing the dim content-free whisper. Still a
+        // single non-blocking line (we never block on the answer here — the owner
+        // promotes from the board / `/goal` when ready). Fail-soft: an empty render
+        // (defensive) degrades to the prior bare count.
+        const note = formatAutoStageNote(stagedTitles, stagedTodos);
+        if (note.length > 0) {
+          out.write('\n' + dim(`※ ${note}`, out.color) + '\n');
+        } else {
+          const noun = staged === 1 ? 'goal' : 'goals';
+          out.write('\n' + dim(`※ Staged ${String(staged)} ${noun} on the board.`, out.color) + '\n');
+        }
       };
 
       const resolveTurnMemory = async (task: string): Promise<string> => {
@@ -3254,10 +3282,16 @@ export async function runChatLoop(
                 break;
               }
               // A worker turn that asks a question can't be auto-verified — surface
-              // it and stop the cycle honestly (the goal stays open).
+              // it and stop the cycle honestly (the goal stays open). Name the BLOCKER
+              // (the to-do) and the sharp fork, the elite way — never a content-free
+              // "needs your input"; the selector below carries the actual choice.
               if (turn.final?.success === true && turn.final.questions !== undefined) {
+                const fork = turn.final.questions.questions[0]?.prompt.trim();
                 out.write(
-                  dim('\n  The to-do needs your input before it can continue.\n', out.color),
+                  dim(
+                    `\n  I hit a fork on "${next.text}"${fork !== undefined && fork.length > 0 ? `: ${fork}` : ''} — which way?\n`,
+                    out.color,
+                  ),
                 );
                 await runStructuredQuestionFlow(turn.final);
                 if (control.exit) { control.result = 'exit'; return true; }
@@ -3315,7 +3349,7 @@ export async function runChatLoop(
                   }
                   out.write(
                     dim(
-                      `    ⚠ not verified — ${verdict.receipt}. Fix-it cap reached; needs your input.\n`,
+                      `    ⚠ "${next.text}" still isn't verifying after my fix-it attempts — ${verdict.receipt}. I've hit my retry cap; this one needs your call before I push further.\n`,
                       out.color,
                     ),
                   );
@@ -3348,11 +3382,17 @@ export async function runChatLoop(
             const cycleDone = managerCycleComplete(finalGoal);
             const finalProg = roadmapProgress(finalGoal.roadmap);
             if (!cycleDone || stoppedEarly) {
+              // Name the actual blocker when the cycle stalled on an unverifiable item,
+              // so the stop reason is sharp ("blocked on <to-do>"), not a vague "needs
+              // input". Falls back to a plain count when nothing is specifically blocked.
+              const firstBlocked = finalGoal.roadmap.find((i) => i.status === 'blocked');
               const why = stoppedEarly
                 ? 'stopped'
                 : usedTurns >= DEFAULT_MAX_GOAL_ITERATIONS
                   ? 'reached the work budget'
-                  : 'some to-dos need input';
+                  : firstBlocked !== undefined
+                    ? `blocked on "${firstBlocked.text}" — your call needed`
+                    : 'a to-do needs your call';
               out.write(
                 dim(
                   `\n  ${why} — ${String(finalProg.done)}/${String(finalProg.total)} to-dos verified. Keeping the goal open.\n`,
@@ -3456,7 +3496,13 @@ export async function runChatLoop(
           }
 
           if (turn.final?.success === true && turn.final.questions !== undefined) {
-            out.write(dim('\n  The goal run needs your input before it can continue.\n', out.color));
+            const fork = turn.final.questions.questions[0]?.prompt.trim();
+            out.write(
+              dim(
+                `\n  I hit a fork I won't guess on${fork !== undefined && fork.length > 0 ? `: ${fork}` : ''} — which way?\n`,
+                out.color,
+              ),
+            );
             await runStructuredQuestionFlow(turn.final);
             if (control.exit) { control.result = 'exit'; return true; }
             if (control.menu) { control.result = 'menu'; return true; }
@@ -3640,9 +3686,83 @@ export async function runChatLoop(
             return 'continue';
           }
 
-          // ACT: the goal is clear. Put it on the board as active and drive the manager
-          // cycle (work each to-do → verify with real evidence → mark done / fix-it) to
-          // verified-done. The cycle itself refines the to-dos via replan as it learns.
+          // PROPOSE-THEN-GO (Phase 2): the goal is clear, but an elite pro doesn't fire
+          // a black box — it PRESENTS the plan it built (vision · goals · to-dos · the
+          // dependency cause→effect · the chosen approach over the alternatives), flags
+          // any adjacent risk it noticed, then offers a ONE-TAP go. Only on the owner's
+          // word does the manager cycle launch. The proposal renders from the FULL judged
+          // plan when the planner produced one; on the smart-label fallback (no model
+          // plan) there is nothing rich to show, so we skip straight to the launch —
+          // byte-for-byte the prior behaviour for that path.
+          if (plan.plan !== undefined) {
+            const proposal = formatGoalProposal(plan.plan);
+            if (proposal.length > 0) {
+              out.write('\n' + proposal + '\n');
+              // PROACTIVE HEADS-UP: 1–2 findings the understanding pass already computed
+              // (open questions / hard constraints) — "heads up, X looks fragile". Dim,
+              // near-free, fail-soft (none → nothing). Never fabricated.
+              for (const h of formatHeadsUp(plan.systemModel)) {
+                out.write(dim(`  heads up: ${h}\n`, out.color));
+              }
+              // ONE-TAP confirm — the SAME frictionless selector the ask_user forks use.
+              const confirm = await runQuestionSelector(
+                {
+                  questions: [
+                    {
+                      id: 'goal_start',
+                      prompt: 'Shall I run this, or adjust first?',
+                      options: [
+                        { label: 'Start all', description: 'work the whole plan to verified-done' },
+                        { label: 'Just the unblocked ones', description: 'start where nothing is waiting' },
+                        { label: 'Edit / not yet', description: "park it — I'll wait for your word" },
+                      ],
+                      multiSelect: false,
+                      allowFreeText: true,
+                    },
+                  ],
+                },
+                out,
+                readLine,
+              );
+              // Cancelled (Enter/EOF) or chose "Edit / not yet" → PARK the goal so nothing
+              // is lost (it's on the board, fully planned), and WAIT. Anything else is a
+              // GO. A free-text reply is treated as an adjustment → park + carry it.
+              const wantsLaunch =
+                confirm !== null &&
+                /Start all|unblocked/i.test(confirm) &&
+                !/Edit|not yet/i.test(confirm);
+              if (!wantsLaunch) {
+                try {
+                  await goalStore.create({
+                    title: plan.title,
+                    roadmap: plan.roadmap,
+                    scope: projectKey !== null ? 'project' : 'global',
+                    projectKey,
+                    conversationId: convId,
+                    source: 'user-explicit',
+                    ...(plan.approach !== undefined ? { approach: plan.approach } : {}),
+                  });
+                } catch {
+                  /* fail-soft: even if the capture misses, acknowledge honestly */
+                }
+                await syncBoard();
+                out.write(
+                  dim(
+                    `  Parked "${plan.title}" on the board — say the word and I'll run it.\n`,
+                    out.color,
+                  ),
+                );
+                return 'continue';
+              }
+            }
+          }
+
+          // ACT: the owner gave the go. Put the goal on the board as active and drive the
+          // manager cycle (work each to-do → verify with real evidence → mark done /
+          // fix-it) to verified-done. The cycle itself refines the to-dos via replan as
+          // it learns, and is dependency-aware (it never picks a to-do whose blockers
+          // aren't done — so "just the unblocked ones" and "start all" launch the same
+          // dependency-respecting cycle).
           let createdGoalId: string | undefined;
           try {
             const created = await goalStore.create({
