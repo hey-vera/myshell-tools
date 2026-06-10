@@ -6,6 +6,14 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+## [3.78.0] - 2026-06-10
+
+### Changed
+- **`/goal` shows a "thinking it through…" marker while it judges + plans.** The
+  judgment pass takes a few seconds; it now prints a dim progress line first so an
+  explicit `/goal` never looks like a silent hang while it digests the goal and builds
+  the plan. (The post-turn auto-stage stays silent + non-blocking, as before.)
+
 ## [3.77.0] - 2026-06-10
 
 ### Fixed (the manager cycle can never hang on verification)

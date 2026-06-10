@@ -3553,6 +3553,11 @@ export async function runChatLoop(
         // When the manager cycle is opted OUT (MYSHELL_MANAGER=0), `/goal` stays
         // byte-for-byte the legacy free loop.
         if (managerCycleEnabled(process.env, mutableCtx.config)) {
+          // The judgment pass is a manager-tier call (~several seconds). Show a dim
+          // marker first so the explicit `/goal` invocation never looks like a silent
+          // hang while it digests + plans (the owner asked for it — brief feedback is
+          // welcome, unlike the post-turn auto-stage which stays silent + non-blocking).
+          out.write(dim('  ◷ thinking it through — judging the goal and building the plan…\n', out.color));
           const plan = await judgeGoal(goalText);
           const projectKey = await resolveProjectKeyOnce();
 
