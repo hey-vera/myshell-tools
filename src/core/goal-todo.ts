@@ -137,6 +137,21 @@ export interface Goal {
    * else the whole field is omitted — never a half-record).
    */
   readonly approach?: RoadmapItemApproach;
+  /**
+   * The goal's classified CATEGORY (security/infra/data/release/…), set when the
+   * goal is staged — deterministically from the goal text (core/rules.ts
+   * `classifyCategory`) or by the planner. The STANDING-RULES launch gate (Phase 4)
+   * keys a rule's category trigger on this so "pause before any security-type goal"
+   * can fire before the goal runs. Additive + optional: a goal staged WITHOUT a
+   * category round-trips byte-identically (capGoal omits an unknown value).
+   */
+  readonly category?: string;
+  /**
+   * Free-form tags for the goal (forward-compatible; the rules gate may key on
+   * these later). Capped to a handful of short strings. Additive + optional: a
+   * goal without tags round-trips byte-identically (capGoal omits an empty list).
+   */
+  readonly tags?: readonly string[];
 }
 
 /** Roadmap cap — the SAME bound work-contract.ts enforces (cap 8). */
@@ -152,6 +167,10 @@ const GOAL_APPROACH_CHOSEN_LIMIT = 400;
 const GOAL_APPROACH_RATIONALE_LIMIT = 400;
 const GOAL_APPROACH_ALT_LIMIT = 160;
 const GOAL_APPROACH_ALTS_LIMIT = 8;
+// Category / tags caps (Phase 4 — the standing-rules gate keys on category).
+const GOAL_CATEGORY_LIMIT = 40;
+const GOAL_TAG_LIMIT = 40;
+const GOAL_TAGS_LIMIT = 8;
 
 const VALID_STATES: ReadonlySet<string> = new Set<GoalState>([
   'parked',
@@ -286,6 +305,23 @@ export function capGoal(g: Goal): Goal {
     // If chosen/rationale missing → cappedApproach stays undefined (omit).
   }
 
+  // category — a single short label; omit when absent/empty (byte-identical).
+  const catRaw = r['category'];
+  const cappedCategory =
+    typeof catRaw === 'string' && catRaw.trim().length > 0
+      ? capText(catRaw, GOAL_CATEGORY_LIMIT)
+      : undefined;
+
+  // tags — a bounded list of short non-empty strings; omit when absent/empty.
+  let cappedTags: string[] | undefined;
+  if (Array.isArray(r['tags'])) {
+    const tags = r['tags']
+      .map((t) => capText(t, GOAL_TAG_LIMIT))
+      .filter((t) => t.trim().length > 0)
+      .slice(0, GOAL_TAGS_LIMIT);
+    if (tags.length > 0) cappedTags = tags;
+  }
+
   return {
     version: 1,
     id: safeString(r['id']),
@@ -301,6 +337,8 @@ export function capGoal(g: Goal): Goal {
     ...(cappedGa !== undefined ? { goalAcceptance: cappedGa } : {}),
     ...(cappedGv !== undefined ? { goalVerdict: cappedGv } : {}),
     ...(cappedApproach !== undefined ? { approach: cappedApproach } : {}),
+    ...(cappedCategory !== undefined ? { category: cappedCategory } : {}),
+    ...(cappedTags !== undefined ? { tags: cappedTags } : {}),
   };
 }
 

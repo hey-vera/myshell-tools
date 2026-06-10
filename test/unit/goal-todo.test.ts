@@ -190,6 +190,34 @@ describe('capGoal + capRoadmap (defensive shaping)', () => {
   });
 });
 
+describe('capGoal — Phase 4 category + tags (the standing-rules gate key)', () => {
+  it('keeps + caps a category and a bounded tag list', () => {
+    const g = capGoal(makeGoal({ category: 'security', tags: ['auth', 'rls'] } as Goal));
+    assert.equal(g.category, 'security');
+    assert.deepEqual(g.tags, ['auth', 'rls']);
+  });
+
+  it('omits an absent/empty category + tags (byte-identical round-trip)', () => {
+    const g = capGoal(makeGoal());
+    assert.equal('category' in g, false);
+    assert.equal('tags' in g, false);
+    const g2 = capGoal(makeGoal({ category: '   ', tags: ['', '  '] } as unknown as Goal));
+    assert.equal('category' in g2, false);
+    assert.equal('tags' in g2, false);
+  });
+
+  it('caps the category length and bounds the tag list', () => {
+    const g = capGoal(
+      makeGoal({
+        category: 'x'.repeat(100),
+        tags: Array.from({ length: 30 }, (_, i) => `t${i}`),
+      } as Goal),
+    );
+    assert.ok((g.category ?? '').length <= 40);
+    assert.ok((g.tags ?? []).length <= 8);
+  });
+});
+
 describe('selectGoals', () => {
   it('filters by state and scope without mutating the input', () => {
     const goals = [

@@ -70,15 +70,60 @@ export function resolveOversight(
 }
 
 /**
- * WHY a launch checkpoint fires. Today the only reason is the cautious 'review-all'
- * per-diff review; Phase 4 will ADD reasons (e.g. 'standing-rule') to this union and
- * a clause to {@link shouldPauseBeforeLaunch} without touching the call sites.
+ * WHY a launch checkpoint fires.
+ *   - 'review-all-diff' → the cautious 'review-all' persona's per-diff review.
+ *   - 'standing-rule'   → a user-authored STANDING RULE (Phase 4) matched the goal
+ *                         about to launch: a 'pause' rule pauses for confirm, a
+ *                         'block' rule refuses + explains, a 'prefer' rule surfaces
+ *                         the preference. Carried on the {@link LaunchCheckpoint}.
  */
-export type LaunchCheckpointReason = 'review-all-diff';
+export type LaunchCheckpointReason = 'review-all-diff' | 'standing-rule';
+
+/** The standing-rule decision flavour: refuse / confirm-first / inform. */
+type StandingRuleAction = 'block' | 'pause' | 'prefer';
 
 /** A decision to pause before a unit of work proceeds, with the reason it fired. */
 export interface LaunchCheckpoint {
   readonly reason: LaunchCheckpointReason;
+  /**
+   * Present ONLY when reason === 'standing-rule': what the matched rule does
+   * ('block' refuse / 'pause' confirm / 'prefer' inform) and the rule's own text,
+   * so the caller can render the right prompt/explanation. Absent for the
+   * 'review-all-diff' reason → byte-identical to the pre-Phase-4 checkpoint.
+   */
+  readonly rule?: {
+    readonly action: StandingRuleAction;
+    readonly text: string;
+  };
+}
+
+/** A matched standing rule, reduced to what the gate needs (pure — no Rule import). */
+export interface MatchedStandingRule {
+  readonly kind: StandingRuleAction;
+  readonly text: string;
+}
+
+/**
+ * THE STANDING-RULES LAUNCH GATE (Phase 4) — the pure decision for whether a goal
+ * about to go PROPOSED → RUNNING must pause/block/inform because a user rule
+ * matched it. The interface layer runs the (impure) store read + `matchRules` and
+ * passes the matched rules here in PRECEDENCE order (block → pause → prefer); this
+ * returns the FIRST actionable checkpoint, or `null` when nothing matched (→ the
+ * launch proceeds exactly as today). PURE — the caller owns the UI prompt.
+ *
+ * A 'block' rule and a 'pause' rule both pause the launch (the caller must stop and
+ * either refuse or confirm); a lone 'prefer' rule ALSO surfaces as a checkpoint so
+ * the caller can show the preference before proceeding — but the caller treats
+ * 'prefer' as inform-and-continue, never a hard stop.
+ */
+export function standingRuleCheckpoint(
+  matched: readonly MatchedStandingRule[],
+): LaunchCheckpoint | null {
+  if (!Array.isArray(matched) || matched.length === 0) return null;
+  // matchRules already returns block → pause → prefer order; take the strongest.
+  const first = matched[0];
+  if (first === undefined) return null;
+  return { reason: 'standing-rule', rule: { action: first.kind, text: first.text } };
 }
 
 /**

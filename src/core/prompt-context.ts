@@ -93,6 +93,18 @@ export interface ContextBlockOptions {
    */
   readonly goalContext?: string;
   /**
+   * Pre-rendered, compact STANDING RULES block (Phase 4): the user-authored rules
+   * the partner must remember + enforce (kind NEVER/PAUSE/PREFER · what it applies
+   * to · the user's words), rendered by core/rules.ts `formatRulesForContext` from a
+   * fail-soft rulesStore snapshot scoped to the current project + globals. This is
+   * half the "remember + enforce" mechanism — it makes the CONVERSATIONAL partner
+   * aware of policy every turn (the launch GATE enforces it before a goal runs).
+   * undefined / empty → omit (byte-identical to today). Rendered right AFTER CURRENT
+   * GOALS so the partner sees its plan AND the policy that governs it before
+   * INTENT/ENGAGEMENT reasoning.
+   */
+  readonly rulesContext?: string;
+  /**
    * Pre-rendered, capped VISION TRIAGE block (adaptive-partner-v2-5.6.md §2.4 C):
    * the decomposed vision parts with their dispositions (SOLID / DISCUSS /
    * MIGRATE_REARCHITECT / INVESTIGATE_THEN_PROPOSE) and the instruction to address
@@ -162,7 +174,7 @@ export function partnerNudge(style: PartnerStyle): string {
  *
  * Canonical block order (master plan §MF1; ENVIRONMENT prepended in E1;
  * TOOL-STATE adjacent to ENVIRONMENT; WORK STATE after MEMORY, AP2-B §2.3 B):
- *   ENVIRONMENT → TOOL-STATE → MEMORY → LEARNED TASTE → WORK STATE → GOALS → VISION TRIAGE → SYSTEM UNDERSTANDING → INTENT → ENGAGEMENT → (partner posture nudge)
+ *   ENVIRONMENT → TOOL-STATE → MEMORY → LEARNED TASTE → WORK STATE → GOALS → STANDING RULES → VISION TRIAGE → SYSTEM UNDERSTANDING → INTENT → ENGAGEMENT → (partner posture nudge)
  *
  * Each block is independently present/absent. The returned string is inserted by
  * every prompt builder at the same point: AFTER system, BEFORE "CONVERSATION SO
@@ -215,6 +227,16 @@ export function assembleContextBlocks(opts: ContextBlockOptions): string {
   const goalCtx = opts.goalContext?.trim();
   if (goalCtx !== undefined && goalCtx.length > 0) {
     blocks.push(goalCtx);
+  }
+
+  // STANDING RULES — the user-authored policy the partner must honour (NEVER /
+  // PAUSE / PREFER), rendered right AFTER CURRENT GOALS so the partner sees both
+  // its plan and the policy governing it before intent/engagement reasoning. The
+  // launch GATE (oversight.ts) enforces these before a goal runs; this block makes
+  // the conversational partner aware of them every turn. Absent/empty → byte-identical.
+  const rulesCtx = opts.rulesContext?.trim();
+  if (rulesCtx !== undefined && rulesCtx.length > 0) {
+    blocks.push(rulesCtx);
   }
 
   // VISION TRIAGE — decompose a broad multi-part vision into per-disposition parts

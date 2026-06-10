@@ -163,6 +163,7 @@ export function contextFromDeps(deps: OrchestrateDeps): ContextBlockOptions | un
   if (deps.tasteContext !== undefined) ctx.tasteContext = deps.tasteContext;
   if (deps.workStateContext !== undefined) ctx.workStateContext = deps.workStateContext;
   if (deps.goalContext !== undefined) ctx.goalContext = deps.goalContext;
+  if (deps.rulesContext !== undefined) ctx.rulesContext = deps.rulesContext;
   if (deps.visionTriageContext !== undefined) ctx.visionTriageContext = deps.visionTriageContext;
   if (deps.intentFrame !== undefined) ctx.intentFrame = deps.intentFrame;
   if (deps.engagementPlan !== undefined) ctx.engagementPlan = deps.engagementPlan;

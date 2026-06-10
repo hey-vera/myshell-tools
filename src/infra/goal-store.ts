@@ -237,6 +237,14 @@ export interface CreateGoalInput {
    * defensively by capGoal (chosen/rationale required, else omitted entirely).
    */
   readonly approach?: Goal['approach'];
+  /**
+   * The goal's classified CATEGORY (security/infra/…), set at staging so the
+   * STANDING-RULES launch gate (Phase 4) can fire a category-keyed rule. Additive +
+   * optional (mirrors `approach`): absent ⇒ capGoal omits it ⇒ byte-identical.
+   */
+  readonly category?: Goal['category'];
+  /** Free-form goal tags (forward-compatible). Additive + optional; capped by capGoal. */
+  readonly tags?: Goal['tags'];
 }
 
 export interface GoalStore {
@@ -433,6 +441,10 @@ export function createFileGoalStore(opts: {
           // Additive: capGoal omits a malformed/absent approach, so a create
           // WITHOUT one round-trips byte-identically to before this field existed.
           ...(input.approach !== undefined ? { approach: input.approach } : {}),
+          // Additive: capGoal omits an absent/empty category|tags, so a create
+          // WITHOUT them round-trips byte-identically to before these fields existed.
+          ...(input.category !== undefined ? { category: input.category } : {}),
+          ...(input.tags !== undefined ? { tags: input.tags } : {}),
         });
         await persistGoal(home, goal);
         await writeIndex(home, [...goals, goal]);

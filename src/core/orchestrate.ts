@@ -1283,6 +1283,7 @@ export async function* orchestrate(
     deps.memoryContext,
     deps.workStateContext,
     deps.goalContext,
+    deps.rulesContext,
     deps.visionTriageContext,
     deps.intentFrame,
     deps.engagementPlan,

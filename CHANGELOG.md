@@ -6,6 +6,20 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+## [3.87.0] - 2026-06-10
+
+### Added (standing rules it remembers AND enforces — master-plan Phase 4)
+- **You can now set rules the partner keeps and acts on forever** — `/rule add "always use
+  automerge"`, `/rule add "never touch src/legacy/*"`, `/rule add "pause before any security
+  goal"` (plus `/rule list` / `/rule rm`). Rules are stored as explicit user policy in their
+  own store (not the learned-facts memory, which deliberately rejects instructions), and
+  they're injected into the chat context so the partner actually **knows** them.
+- **They're enforced at goal launch.** Goals are classified by category, and before a goal
+  runs the standing-rule gate fires through the oversight checkpoint: a `pause` rule pauses
+  for your go-ahead ("pause before security goals"), a `block` rule refuses and explains
+  ("never touch X"), a `prefer` rule surfaces the preference ("always automerge"). Fully
+  additive: no in-scope rule ⇒ launch is byte-identical to before.
+
 ## [3.86.0] - 2026-06-10
 
 ### Added (it adapts to how YOU like to work — master-plan Phase 2b)

@@ -861,6 +861,7 @@ export async function* runWorkCall(input: WorkCallInput): AsyncGenerator<CoreEve
         ...(deps.tasteContext !== undefined ? { tasteContext: deps.tasteContext } : {}),
         ...(deps.workStateContext !== undefined ? { workStateContext: deps.workStateContext } : {}),
         ...(deps.goalContext !== undefined ? { goalContext: deps.goalContext } : {}),
+        ...(deps.rulesContext !== undefined ? { rulesContext: deps.rulesContext } : {}),
         ...(deps.visionTriageContext !== undefined ? { visionTriageContext: deps.visionTriageContext } : {}),
         // SYSTEM UNDERSTANDING (Phase 3a): inject the deep whole-picture model into
         // the WORK prompt (it previously grounded only the goal planner). Absent →

@@ -489,6 +489,17 @@ export interface OrchestrateDeps {
    */
   readonly goalContext?: string;
   /**
+   * Pre-rendered, compact STANDING RULES block for the prompt seam — the
+   * user-authored rules the partner must remember + enforce (NEVER/PAUSE/PREFER ·
+   * what each applies to · the user's words). Snapshotted fail-soft in the deps
+   * layer (menu.ts) from the rulesStore, scoped to the current project + globals,
+   * and threaded here so it rides sequential, hedge, AND panel prompts via
+   * `assembleContextBlocks` (rendered right after CURRENT GOALS). Absent → byte-
+   * identical to pre-rules prompts. PURE data: NO model call, just a store read
+   * shaped by core/rules.ts `formatRulesForContext`.
+   */
+  readonly rulesContext?: string;
+  /**
    * Pre-rendered, capped ENVIRONMENT / repo-map orientation block (codebase-
    * awareness §1.2, Phase E1) for the prompt seam. Deterministic, NO model call:
    * repo name/branch/dirty, project type, doc presence, key entry points, and a

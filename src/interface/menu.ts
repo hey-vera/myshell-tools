@@ -57,6 +57,20 @@ import { renderSystemModelContext } from '../core/understanding.js';
 import { isPushBackQuestionSet, classifyPushBackAnswer } from '../core/brain.js';
 import { renderTastePlaybook, isImmediateRephrase, type TasteSignal } from '../core/taste.js';
 import { createFileGoalStore } from '../infra/goal-store.js';
+import { createFileRulesStore } from '../infra/rules-store.js';
+import {
+  formatRulesForContext,
+  selectRulesForScope,
+  matchRules,
+  classifyCategory,
+  type Rule,
+} from '../core/rules.js';
+import {
+  runRuleAdd,
+  runRulesList,
+  runRuleRemove,
+  parseRuleCommand,
+} from '../commands/rules.js';
 import { goalGlyph, roadmapProgress, goalVerdictTag, goalVerdictFromOutcome, isGoalVerifiedDone, isDuplicateGoalTitle, formatGoalsForContext, ROADMAP_LIMIT } from '../core/goal-todo.js';
 import { buildVerifyReceipt } from '../core/verify.js';
 import type { Goal, GoalState } from '../core/goal-todo.js';
@@ -205,7 +219,7 @@ import {
   runOversightSelect,
   runSettings,
 } from './menu-settings.js';
-import { resolveOversight, shouldPauseBeforeLaunch } from './ui/oversight.js';
+import { resolveOversight, shouldPauseBeforeLaunch, standingRuleCheckpoint } from './ui/oversight.js';
 
 // ---------------------------------------------------------------------------
 // MenuContext
@@ -1518,6 +1532,7 @@ export async function runChatLoop(
         '  /todo <text>  — park a goal + its to-do for later (/goals to manage)\n' +
         '  /todo add|done|block <g> ... — capture a to-do or check one off\n' +
         '  /goals        — list goals by state; show/go/drop a parked one\n' +
+        '  /rule <text>  — set a standing rule I remember + enforce (/rule list, /rule rm <n>)\n' +
         '  /mode         — quality vs speed (Efficient / Balanced / Max)\n' +
         '  /memory       — see, edit, export, or delete what I remember (/forget to remove)\n' +
         '  /recap        — short recap of where this conversation left off\n' +
@@ -1797,6 +1812,18 @@ export async function runChatLoop(
       let goalContextSnapshot = '';
       const currentGoalContext = (): string => goalContextSnapshot;
 
+      // ---- STANDING RULES snapshot (Phase 4) ---------------------------------
+      // Mirrors the goalContext lazy provider exactly: the rulesStore is created
+      // LATER, so buildDeps reads the latest rendered STANDING RULES block through
+      // this closure (captured by reference, only CALLED at turn time). Refreshed
+      // fail-soft each turn (refreshRulesContext, defined alongside the goal refresh).
+      // Empty until a rule exists → byte-identical prompts.
+      let rulesContextSnapshot = '';
+      const currentRulesContext = (): string => rulesContextSnapshot;
+      // The live in-scope rules snapshot the LAUNCH GATE consults (refreshed with the
+      // context). Empty until a rule exists → the gate is a no-op (byte-identical).
+      let activeRulesSnapshot: readonly Rule[] = [];
+
       // ---- SYSTEM UNDERSTANDING snapshot (Phase 3a) --------------------------
       // The warm SystemModel cache is created LATER (the goal/auto-stage flow), so —
       // exactly like currentGoalContext — buildDeps reads it through a lazy closure
@@ -1851,6 +1878,9 @@ export async function runChatLoop(
         // the latest fail-soft snapshot string (refreshed each turn alongside the
         // board) or '' — so a goalless tool yields a byte-identical prompt. PURE read.
         const goalContext = currentGoalContext();
+        // STANDING RULES block (the partner's policy). Same lazy pattern as goals:
+        // read through the closure at turn time; '' until a rule exists → byte-identical.
+        const rulesContext = currentRulesContext();
         // Build per-provider advertised model sets from the live env so route()
         // can prefer a model the CLI actually advertises. Only include installed
         // providers (exactOptionalPropertyTypes is ON).
@@ -2069,6 +2099,11 @@ export async function runChatLoop(
           // otherwise → byte-identical). Rides sequential, hedge, AND panel prompts via
           // assembleContextBlocks (rendered right after WORK STATE). Fail-soft snapshot.
           ...(goalContext.length > 0 ? { goalContext } : {}),
+          // STANDING RULES block (the partner's policy) — present only when the
+          // rulesStore holds at least one in-scope rule (currentRulesContext returns
+          // '' otherwise → byte-identical). Rides sequential, hedge, AND panel prompts
+          // via assembleContextBlocks (rendered right after CURRENT GOALS).
+          ...(rulesContext.length > 0 ? { rulesContext } : {}),
           // ENVIRONMENT / repo-map orientation block (E1) — gathered once per
           // session, present only when codebase awareness is on AND the scan
           // produced a non-empty block (fail-soft → '' otherwise).
@@ -2253,6 +2288,14 @@ export async function runChatLoop(
       // project key with memory. No model call to create/manage a manual to-do.
       const goalStore = createFileGoalStore({ clock: ctx.clock });
 
+      // ---- Standing RULES store (Phase 4) -------------------------------------
+      // The persistent home for user-authored standing rules the partner remembers
+      // + enforces ("always use automerge", "never touch X", "pause before any
+      // security goal"). EXPLICIT user policy — trusted by construction, NOT routed
+      // through user-memory's instruction-shaped gate. Fail-soft; shares the two-
+      // scope project key with goals/memory; no model call to create/manage a rule.
+      const rulesStore = createFileRulesStore({ clock: ctx.clock });
+
       // ---- Persistent goal BOARD (Elite-partner Phase 1) ----------------------
       // DEFAULT OFF. When the board flag is ON (MYSHELL_BOARD or
       // config.experimentalBoard), the live UI suppresses the fake per-turn
@@ -2339,6 +2382,27 @@ export async function runChatLoop(
         }
       };
 
+      // Refresh the STANDING RULES snapshot (the partner's policy) from the real
+      // store, scoped to the current project + globals — the SAME two-scope filter
+      // the goal context uses, so the prompt and the launch gate agree on what's in
+      // scope. Renders the compact block via the PURE formatRulesForContext; an empty
+      // store → '' (prompt stays byte-identical) and an empty activeRulesSnapshot (the
+      // gate is a no-op). Fail-soft: any store error leaves both empty rather than
+      // breaking the turn. buildDeps reads the block via currentRulesContext; the
+      // launch gate reads activeRulesSnapshot.
+      const refreshRulesContext = async (): Promise<void> => {
+        try {
+          const projectKey = await resolveProjectKeyOnce();
+          const all = await rulesStore.list();
+          const relevant = selectRulesForScope(all, projectKey);
+          activeRulesSnapshot = relevant;
+          rulesContextSnapshot = formatRulesForContext(relevant);
+        } catch {
+          activeRulesSnapshot = [];
+          rulesContextSnapshot = '';
+        }
+      };
+
       // Sync the board + refresh the plan snapshot at the START of this turn (the
       // chat-loop entry point), so the persistent board AND the model's plan context
       // reflect the real store before any work streams. The board sync is a no-op when
@@ -2346,6 +2410,7 @@ export async function runChatLoop(
       // → empty snapshot → byte-identical prompt).
       await syncBoard();
       await refreshGoalContext();
+      await refreshRulesContext();
 
       // ---- VERIFIED-DONE goal-completion GATE (Elite-partner Part 3) -----------
       // DEFAULT OFF. When the truly-complete flag is ON, a goal can NO LONGER be
@@ -3039,6 +3104,71 @@ export async function runChatLoop(
           return formConciseGoalLabel(undefined, rawText);
         }
       };
+      // ---- STANDING-RULES LAUNCH GATE (Phase 4) ------------------------------
+      // Before a goal goes PROPOSED → RUNNING, consult the user's standing rules:
+      // a matching 'block' rule REFUSES the launch + explains; a 'pause' rule stops
+      // for an explicit one-tap confirm; a 'prefer' rule surfaces the preference and
+      // continues. Reuses the existing runQuestionSelector confirm mechanism. The
+      // decision routes through the REUSABLE oversight seam (standingRuleCheckpoint).
+      // FAIL-SOFT + NEUTRAL: no in-scope rules → activeRulesSnapshot is [] → matchRules
+      // returns [] → null checkpoint → 'go' (byte-identical to today's launch path).
+      //
+      // Returns 'go' to proceed or 'stop' to abort the launch (the goal stays parked /
+      // the caller surfaces it). `paths` is optional (a fresh `/goal` has no diff yet);
+      // the category drives the common "pause before any security-type goal" rule.
+      const consultStandingRules = async (args: {
+        readonly text: string;
+        readonly category?: string;
+        readonly paths?: readonly string[];
+      }): Promise<'go' | 'stop'> => {
+        let matched: Rule[] = [];
+        try {
+          matched = matchRules(activeRulesSnapshot, {
+            ...(args.category !== undefined ? { category: classifyCategory(args.category) } : {}),
+            ...(args.paths !== undefined ? { paths: args.paths } : {}),
+            text: args.text,
+          });
+        } catch {
+          matched = []; // fail-soft: a matcher surprise never blocks a launch
+        }
+        const checkpoint = standingRuleCheckpoint(
+          matched.map((r) => ({ kind: r.kind, text: r.text })),
+        );
+        if (checkpoint === null || checkpoint.rule === undefined) return 'go';
+        const { action, text } = checkpoint.rule;
+        if (action === 'prefer') {
+          // Inform-and-continue: surface the standing preference, then proceed.
+          out.write(dim(`  ● standing rule — ${text} (honouring it).\n`, out.color));
+          return 'go';
+        }
+        if (action === 'block') {
+          // Refuse + explain: the rule forbids this. The goal does NOT launch.
+          out.write(dim(`  ⛔ standing rule blocks this — "${text}". Not launching; remove it with /rule rm <n> to override.\n`, out.color));
+          return 'stop';
+        }
+        // 'pause' — stop for an explicit one-tap confirm before launching.
+        out.write(dim(`  ⏸ standing rule — "${text}".\n`, out.color));
+        const confirm = await runQuestionSelector(
+          {
+            questions: [
+              {
+                id: 'rule_pause',
+                prompt: 'Your standing rule says to pause here. Proceed anyway?',
+                options: [
+                  { label: 'Proceed', description: 'launch the goal — I confirm' },
+                  { label: 'Hold off', description: 'leave it; I want to handle this myself' },
+                ],
+                multiSelect: false,
+                allowFreeText: false,
+              },
+            ],
+          },
+          out,
+          readLine,
+        );
+        return confirm !== null && /Proceed/i.test(confirm) ? 'go' : 'stop';
+      };
+
       // `runGoalLoop(goalText, goalLabel?)`:
       //   • goalText  — the FULL work input, passed verbatim to every goal turn
       //                 (buildGoalTask) so the model never loses the user's intent.
@@ -3955,6 +4085,33 @@ export async function runChatLoop(
           // it learns, and is dependency-aware (it never picks a to-do whose blockers
           // aren't done — so "just the unblocked ones" and "start all" launch the same
           // dependency-respecting cycle).
+          // STANDING-RULES GATE (Phase 4): consult the user's rules before launching.
+          // A 'block' rule refuses, a 'pause' rule asks; either 'stop' parks the goal
+          // (nothing lost — it's planned + on the board) and waits. No rule → 'go'.
+          const goalCategory = classifyCategory(`${plan.title} ${goalText}`);
+          const ruleGate = await consultStandingRules({
+            text: `${plan.title} ${goalText}`,
+            category: goalCategory,
+          });
+          if (ruleGate === 'stop') {
+            try {
+              await goalStore.create({
+                title: plan.title,
+                roadmap: plan.roadmap,
+                scope: projectKey !== null ? 'project' : 'global',
+                projectKey,
+                conversationId: convId,
+                source: 'user-explicit',
+                ...(plan.approach !== undefined ? { approach: plan.approach } : {}),
+                ...(goalCategory !== 'general' ? { category: goalCategory } : {}),
+              });
+            } catch {
+              /* fail-soft: even if the capture misses, we still held the launch */
+            }
+            await syncBoard();
+            out.write(dim(`  Parked "${plan.title}" on the board — say the word and I'll run it.\n`, out.color));
+            return 'continue';
+          }
           let createdGoalId: string | undefined;
           try {
             const created = await goalStore.create({
@@ -3965,6 +4122,7 @@ export async function runChatLoop(
               conversationId: convId,
               source: 'user-explicit',
               ...(plan.approach !== undefined ? { approach: plan.approach } : {}),
+              ...(goalCategory !== 'general' ? { category: goalCategory } : {}),
             });
             createdGoalId = created.id;
             await goalStore.setState(created.id, 'running'); // active now → board shows ◐
@@ -4082,6 +4240,17 @@ export async function runChatLoop(
         // roadmap directly. Mark `running` for the duration; mark `done` ONLY if
         // the loop reached real GOAL_COMPLETE (never inferred), else leave it
         // running for the user to revisit.
+        // STANDING-RULES GATE (Phase 4): consult the user's rules before promoting a
+        // parked goal to running. A 'block' refuses, a 'pause' asks; either 'stop'
+        // leaves the goal parked. No matching rule → 'go' (byte-identical to today).
+        const promoteGate = await consultStandingRules({
+          text: target.title,
+          category: target.category ?? classifyCategory(target.title),
+        });
+        if (promoteGate === 'stop') {
+          out.write(dim(`  Held "${target.title}" — it stays parked. Run /goals go ${cmd.n} again to override.\n`, out.color));
+          return 'continue';
+        }
         await goalStore.setState(target.id, 'running');
         await syncBoard(); // goal flipped to running → reflect on the board
         out.write(dim(`  Promoting "${target.title}" — re-validating its to-dos against the current state…\n`, out.color));
@@ -4105,6 +4274,45 @@ export async function runChatLoop(
         }
         await syncBoard(); // goal settled (done / still running) → refresh the board
         if (shouldBreak) return control.result;
+        return 'continue';
+      }
+
+      // ---- /rule — set STANDING RULES the partner remembers + enforces --------
+      // Manual, subscription-clean (no model call — parseRule is deterministic).
+      // `/rule add <text>` saves a rule ("always use automerge", "never touch X",
+      // "pause before any security goal"); `/rule list` shows them; `/rule rm <n>`
+      // removes one. The active rules ride the chat context (rulesContext) AND gate
+      // a goal launch (consultStandingRules). EXPLICIT user policy — NOT routed
+      // through user-memory's instruction-shaped gate.
+      if (line === '/rule' || line.startsWith('/rule ')) {
+        const arg = line.slice('/rule'.length).trim();
+        const cmd = parseRuleCommand(arg);
+        if (cmd.kind === 'usage') {
+          out.write(
+            dim(
+              '  Usage: /rule add <a standing rule>  ·  /rule list  ·  /rule rm <n>  — e.g. "always use automerge", "never touch package-lock.json", "pause before any security goal".\n',
+              out.color,
+            ),
+          );
+          return 'continue';
+        }
+        if (cmd.kind === 'list') {
+          await runRulesList({ store: rulesStore, out });
+          return 'continue';
+        }
+        if (cmd.kind === 'add') {
+          await runRuleAdd({
+            store: rulesStore,
+            out,
+            text: cmd.text,
+            projectKey: await resolveProjectKeyOnce(),
+          });
+          await refreshRulesContext(); // a new rule landed → context + gate see it now
+          return 'continue';
+        }
+        // cmd.kind === 'rm'
+        await runRuleRemove({ store: rulesStore, out, n: cmd.n });
+        await refreshRulesContext(); // a rule left → context + gate drop it now
         return 'continue';
       }
 

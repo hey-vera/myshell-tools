@@ -12,6 +12,7 @@ import assert from 'node:assert/strict';
 import {
   resolveOversight,
   shouldPauseBeforeLaunch,
+  standingRuleCheckpoint,
   type Oversight,
   type LaunchCheckpointReason,
 } from '../../src/interface/ui/oversight.ts';
@@ -78,5 +79,37 @@ describe('shouldPauseBeforeLaunch — the reusable launch-checkpoint seam', () =
         `${oversight} must not pause at the per-diff hook`,
       );
     }
+  });
+});
+
+describe('standingRuleCheckpoint — the Phase-4 STANDING-RULES launch gate', () => {
+  it('no matched rules → null (launch proceeds, byte-identical to today)', () => {
+    assert.equal(standingRuleCheckpoint([]), null);
+  });
+
+  it('a block rule → a standing-rule checkpoint with the block action + text', () => {
+    const cp = standingRuleCheckpoint([{ kind: 'block', text: 'never touch package-lock.json' }]);
+    assert.notEqual(cp, null);
+    assert.equal(cp?.reason, 'standing-rule');
+    assert.equal(cp?.rule?.action, 'block');
+    assert.equal(cp?.rule?.text, 'never touch package-lock.json');
+  });
+
+  it('a pause rule → a standing-rule pause checkpoint', () => {
+    const cp = standingRuleCheckpoint([{ kind: 'pause', text: 'pause before security goals' }]);
+    assert.equal(cp?.rule?.action, 'pause');
+  });
+
+  it('a prefer rule → a standing-rule prefer checkpoint (inform, not a hard stop)', () => {
+    const cp = standingRuleCheckpoint([{ kind: 'prefer', text: 'always use automerge' }]);
+    assert.equal(cp?.rule?.action, 'prefer');
+  });
+
+  it('takes the FIRST (strongest) when several matched (matchRules pre-orders block→pause→prefer)', () => {
+    const cp = standingRuleCheckpoint([
+      { kind: 'block', text: 'b' },
+      { kind: 'pause', text: 'p' },
+    ]);
+    assert.equal(cp?.rule?.action, 'block');
   });
 });
