@@ -14,6 +14,7 @@ import assert from 'node:assert/strict';
 import {
   buildGoalPlanPrompt,
   parseGoalPlan,
+  planTodosToRoadmap,
   GOAL_PLAN_MAX_GOALS,
   GOAL_PLAN_MAX_TODOS,
 } from '../../src/core/goal-plan.ts';
@@ -37,6 +38,9 @@ describe('buildGoalPlanPrompt', () => {
     assert.ok(/NEVER echo/i.test(p), 'forbids echoing the owner phrasing');
     assert.ok(p.includes(String(GOAL_PLAN_MAX_GOALS)), 'states the goal cap');
     assert.ok(p.includes(String(GOAL_PLAN_MAX_TODOS)), 'states the todo cap');
+    // The OPTIONAL dependency marker is documented in the TODO grammar.
+    assert.ok(/\[after:/i.test(p), 'documents the optional [after: ...] dependency marker');
+    assert.ok(/EARLIER/i.test(p), 'instructs that a todo may only reference EARLIER numbers');
   });
 
   it('returns empty string for empty/whitespace input (caller skips the model touch)', () => {
@@ -112,11 +116,11 @@ describe('parseGoalPlan — substantial → stage', () => {
     assert.equal(out?.goals.length, 2);
     assert.equal(out?.goals[0]?.title, 'Build the signup + login flow');
     assert.deepEqual(out?.goals[0]?.todos, [
-      'Design the user + session schema',
-      'Implement the signup endpoint',
+      { text: 'Design the user + session schema' },
+      { text: 'Implement the signup endpoint' },
     ]);
     assert.equal(out?.goals[1]?.title, 'Add password reset');
-    assert.deepEqual(out?.goals[1]?.todos, ['Wire the reset-token email']);
+    assert.deepEqual(out?.goals[1]?.todos, [{ text: 'Wire the reset-token email' }]);
   });
 
   it('caps goals to GOAL_PLAN_MAX_GOALS and todos to GOAL_PLAN_MAX_TODOS', () => {
@@ -144,7 +148,7 @@ describe('parseGoalPlan — substantial → stage', () => {
     const out = parseGoalPlan('JUDGMENT: stage\nTODO: a stray step\nGOAL: Real goal\nTODO: real step');
     assert.ok(out !== null);
     assert.equal(out?.goals.length, 1);
-    assert.deepEqual(out?.goals[0]?.todos, ['real step']);
+    assert.deepEqual(out?.goals[0]?.todos, [{ text: 'real step' }]);
   });
 
   it('a stage verdict with no parseable goal degrades to null (do nothing)', () => {
@@ -193,5 +197,88 @@ describe('parseGoalPlan — garbage → null + defensive', () => {
     assert.doesNotThrow(() => parseGoalPlan('JUDGMENT:\nGOAL:\nTODO:\nASK:'));
     assert.doesNotThrow(() => parseGoalPlan('\n\n※\n\n'));
     assert.doesNotThrow(() => parseGoalPlan('GOAL: '.repeat(5000)));
+    assert.doesNotThrow(() => parseGoalPlan('JUDGMENT: stage\nGOAL: g\nTODO: x [after: not, a, number]'));
+  });
+});
+
+describe('parseGoalPlan — optional [after:] dependency marker', () => {
+  it('extracts EARLIER 1-based deps and strips the marker from the displayed text', () => {
+    const reply = [
+      'JUDGMENT: stage',
+      'GOAL: Ship the feature',
+      'TODO: Wire the API endpoint',
+      'TODO: Add auth middleware',
+      'TODO: Build the UI that calls the API  [after: 1, 2]',
+    ].join('\n');
+    const out = parseGoalPlan(reply);
+    assert.ok(out !== null);
+    assert.deepEqual(out?.goals[0]?.todos, [
+      { text: 'Wire the API endpoint' },
+      { text: 'Add auth middleware' },
+      { text: 'Build the UI that calls the API', dependsOn: [1, 2] },
+    ]);
+  });
+
+  it('a plan with NO marker parses exactly as before (no dependsOn field anywhere)', () => {
+    const reply = 'JUDGMENT: stage\nGOAL: g\nTODO: first\nTODO: second';
+    const out = parseGoalPlan(reply);
+    assert.deepEqual(out?.goals[0]?.todos, [{ text: 'first' }, { text: 'second' }]);
+  });
+
+  it('drops self / forward / out-of-range refs (acyclic by construction)', () => {
+    const reply = [
+      'JUDGMENT: stage',
+      'GOAL: g',
+      'TODO: a  [after: 1]', // self → dropped (position 1)
+      'TODO: b  [after: 3, 9, 0]', // forward (3), out-of-range (9, 0) → all dropped
+      'TODO: c  [after: 2, 2, 1]', // dedupe + keep earlier
+    ].join('\n');
+    const out = parseGoalPlan(reply);
+    assert.deepEqual(out?.goals[0]?.todos, [
+      { text: 'a' },
+      { text: 'b' },
+      { text: 'c', dependsOn: [2, 1] },
+    ]);
+  });
+
+  it('a marker with no usable number is stripped and yields no dependsOn', () => {
+    const out = parseGoalPlan('JUDGMENT: stage\nGOAL: g\nTODO: x  [after: ]');
+    assert.deepEqual(out?.goals[0]?.todos, [{ text: 'x' }]);
+  });
+});
+
+describe('planTodosToRoadmap — pure index→id translation', () => {
+  it('mints r1.. ids and translates dependsOn indices into sibling ids', () => {
+    const roadmap = planTodosToRoadmap([
+      { text: 'wire the API' },
+      { text: 'build the UI', dependsOn: [1] },
+      { text: 'add tests', dependsOn: [1, 2] },
+    ]);
+    assert.deepEqual(roadmap, [
+      { id: 'r1', text: 'wire the API', status: 'pending' },
+      { id: 'r2', text: 'build the UI', status: 'pending', dependsOn: ['r1'] },
+      { id: 'r3', text: 'add tests', status: 'pending', dependsOn: ['r1', 'r2'] },
+    ]);
+  });
+
+  it('a flat plan (no deps) is byte-identical to the {id,text,status} shape', () => {
+    const roadmap = planTodosToRoadmap([{ text: 'a' }, { text: 'b' }]);
+    assert.deepEqual(roadmap, [
+      { id: 'r1', text: 'a', status: 'pending' },
+      { id: 'r2', text: 'b', status: 'pending' },
+    ]);
+    assert.ok(!('dependsOn' in roadmap[0]!), 'no dependsOn field on a dep-free item');
+  });
+
+  it('defensively skips an out-of-range / forward index (no orphan id)', () => {
+    const roadmap = planTodosToRoadmap([
+      { text: 'a', dependsOn: [2, 5] }, // forward (2) + out-of-range (5) → dropped
+      { text: 'b' },
+    ]);
+    assert.equal(roadmap[0]?.dependsOn, undefined, 'no edge survives → field omitted');
+  });
+
+  it('handles the empty plan', () => {
+    assert.deepEqual(planTodosToRoadmap([]), []);
   });
 });

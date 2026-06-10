@@ -75,7 +75,7 @@ describe('makeGoalPlanner', () => {
     const out = await gen(SUBSTANTIAL, SIGNAL);
     assert.equal(out?.judgment, 'stage');
     assert.equal(out?.goals[0]?.title, 'Build the billing core');
-    assert.deepEqual(out?.goals[0]?.todos, ['Model invoices', 'Wire Stripe']);
+    assert.deepEqual(out?.goals[0]?.todos, [{ text: 'Model invoices' }, { text: 'Wire Stripe' }]);
     assert.equal(sink.req?.sandbox, 'read-only');
     assert.ok((sink.req?.prompt ?? '').includes(SUBSTANTIAL), 'prompt carries the owner turn');
   });

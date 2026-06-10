@@ -122,7 +122,8 @@ import { dim, bold, formatRecapLine } from '../ui/theme.js';
 import { makeRecapGenerator } from '../core/recap-generator.js';
 import { makeGoalObjectiveGenerator } from '../core/goal-objective-generator.js';
 import { makeGoalPlanner } from '../core/goal-plan-generator.js';
-import type { GoalPlan } from '../core/goal-plan.js';
+import type { GoalPlan, GoalPlanTodo } from '../core/goal-plan.js';
+import { planTodosToRoadmap } from '../core/goal-plan.js';
 import { makeReplanner, applyReplanEditsViaStore } from '../core/goal-replan-generator.js';
 import type { RoadmapEdit } from '../core/goal-replan.js';
 import { makeUnderstandingPass } from '../core/understanding-generator.js';
@@ -2329,9 +2330,14 @@ export async function runChatLoop(
       // depth. OFF → never invoked, SystemModel stays undefined → the planner prompt
       // is byte-for-byte today's.
       const understandingOn = understandingEnabled(process.env, mutableCtx.config);
-      // Mint sequential roadmap ids (r1, r2, …) for a freshly-staged goal's todos.
-      const todosToRoadmap = (todos: readonly string[]): RoadmapItem[] =>
-        todos.map((text, i) => ({ id: `r${i + 1}`, text, status: 'pending' as const }));
+      // Mint sequential roadmap ids (r1, r2, …) for a freshly-staged goal's todos
+      // and translate each todo's 1-based dependsOn indices into the corresponding
+      // sibling ids (planTodosToRoadmap — the PURE, table-tested translation). The
+      // store-write / capRoadmap path then runs normalizeRoadmapRelations to dedupe/
+      // cycle-strip/cap (the single source of truth — never duplicated here). A todo
+      // with no deps yields a {id, text, status} item byte-identical to before.
+      const todosToRoadmap = (todos: readonly GoalPlanTodo[]): RoadmapItem[] =>
+        planTodosToRoadmap(todos);
       // Run an EXPLICIT goal (`/goal <text>`) through the ADAPTIVE JUDGMENT — the front
       // of the elite-pro loop. It's NOT a rigid decompose+execute pipeline: a senior
       // first DIGESTS the goal (grounded in the whole-picture system model when one is
@@ -2352,8 +2358,10 @@ export async function runChatLoop(
         const cacheKey = (await resolveProjectKeyOnce()) ?? '∅global';
         const warm = systemModelCache.get(cacheKey)?.model;
         if (understandingOn && warm === undefined) warmUnderstanding(cacheKey, goalText);
-        const roadmapFor = (todos: readonly string[]): RoadmapItem[] =>
-          todos.length > 0 ? todosToRoadmap(todos.slice(0, ROADMAP_LIMIT)) : todosToRoadmap([goalText]);
+        const roadmapFor = (todos: readonly GoalPlanTodo[]): RoadmapItem[] =>
+          todos.length > 0
+            ? todosToRoadmap(todos.slice(0, ROADMAP_LIMIT))
+            : todosToRoadmap([{ text: goalText }]);
         const planner = buildGoalPlanner(warm);
         if (planner !== null) {
           try {
@@ -2378,7 +2386,7 @@ export async function runChatLoop(
             /* fall through to the smart-label + single-item fallback */
           }
         }
-        return { judgment: 'stage', title: await formGoalLabel(goalText), roadmap: todosToRoadmap([goalText]) };
+        return { judgment: 'stage', title: await formGoalLabel(goalText), roadmap: todosToRoadmap([{ text: goalText }]) };
       };
       // CACHE-AHEAD SystemModel (per project, session-scoped, in-memory). The
       // understanding pass is a manager-tier investigation with VARIABLE latency

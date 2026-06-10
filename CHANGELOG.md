@@ -6,6 +6,19 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+## [3.76.0] - 2026-06-10
+
+### Added (the first plan emits structure too — not just the re-plan)
+- **The initial `/goal` decomposition can now express dependencies.** A planned to-do
+  may carry an optional `[after: N]` marker ("this step blocks on to-do #N"), so a fresh
+  `/goal` produces a dependency-structured roadmap from the start — the manager cycle
+  then works it in correct order — instead of structure only emerging later via re-plan.
+  The model is told to use it sparingly (real blockers only, earlier-numbers-only, so
+  it's acyclic by construction). Fully additive: a plan with no markers yields a
+  byte-identical flat roadmap; bad/forward/self refs are dropped fail-soft, then the
+  existing relational normalizer dedupes/caps. New pure `planTodosToRoadmap` translates
+  the 1-based indices into roadmap item-id `dependsOn` edges.
+
 ## [3.75.0] - 2026-06-10
 
 ### Added (goals get true structure — dependency edges, not dumb flat lists)

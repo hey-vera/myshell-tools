@@ -23,7 +23,7 @@ import { randomUUID } from 'node:crypto';
 import { createFileGoalStore, type GoalStore } from '../../src/infra/goal-store.ts';
 import type { Clock } from '../../src/core/types.ts';
 import type { GoalPlan } from '../../src/core/goal-plan.ts';
-import type { RoadmapItem } from '../../src/core/work-contract.ts';
+import { planTodosToRoadmap } from '../../src/core/goal-plan.ts';
 import { autoStageEnabled } from '../../src/interface/ui/auto-goal-flag.ts';
 import { understandingEnabled } from '../../src/interface/ui/understanding-flag.ts';
 import { classify, hasTierEvidence } from '../../src/core/classify.ts';
@@ -57,15 +57,13 @@ async function applyStage(
     // 'none' / 'clarify' create nothing and never touch the board from staging.
     return 0;
   }
-  const todosToRoadmap = (todos: readonly string[]): RoadmapItem[] =>
-    todos.map((text, i) => ({ id: `r${i + 1}`, text, status: 'pending' as const }));
   let staged = 0;
   for (const g of plan.goals) {
     const title = g.title.trim();
     if (title.length === 0) continue;
     await store.create({
       title,
-      roadmap: todosToRoadmap(g.todos),
+      roadmap: planTodosToRoadmap(g.todos),
       scope: 'global',
       projectKey: null,
       conversationId: convId,
@@ -94,8 +92,11 @@ describe('post-turn auto-stage', () => {
       judgment: 'stage',
       vision: 'A real auth system',
       goals: [
-        { title: 'Build the signup flow', todos: ['Model users', 'Add the endpoint'] },
-        { title: 'Add password reset', todos: ['Wire the reset email'] },
+        {
+          title: 'Build the signup flow',
+          todos: [{ text: 'Model users' }, { text: 'Add the endpoint', dependsOn: [1] }],
+        },
+        { title: 'Add password reset', todos: [{ text: 'Wire the reset email' }] },
       ],
     };
     let synced = 0;
@@ -121,6 +122,11 @@ describe('post-turn auto-stage', () => {
       'todos became the roadmap',
     );
     assert.ok(signup?.roadmap.every((it) => it.status === 'pending'), 'todos start pending');
+    // The 1-based dependsOn index [1] translated into the first sibling's id (r1).
+    const endpoint = signup?.roadmap.find((it) => it.text === 'Add the endpoint');
+    const modelUsers = signup?.roadmap.find((it) => it.text === 'Model users');
+    assert.deepEqual(endpoint?.dependsOn, [modelUsers?.id], 'index→id dependency wired');
+    assert.equal(modelUsers?.dependsOn, undefined, 'a todo with no deps has no dependsOn field');
   });
 
   it("judgment 'none' creates nothing and never syncs the board", async () => {

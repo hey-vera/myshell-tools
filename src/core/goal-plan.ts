@@ -27,6 +27,7 @@
  */
 
 import { ELITE_VOICE_PREAMBLE } from './prompt.js';
+import type { RoadmapItem } from './work-contract.js';
 import type { SystemModel } from './understanding.js';
 
 /** Hard cap on the VISION line — a crisp framing, not a paragraph. (Module-local:
@@ -45,17 +46,32 @@ export const GOAL_PLAN_MAX_GOALS = 4;
 export const GOAL_PLAN_MAX_TODOS = 8;
 
 /**
+ * One concrete to-do step of a planned goal. `text` is the step; `dependsOn` is an
+ * OPTIONAL list of 1-based indices of EARLIER todos in the SAME goal that this step
+ * truly blocks on (e.g. "build the UI that calls the API" depends on "wire the API").
+ * Indices are always strictly LESS than this todo's own 1-based position — the
+ * parser drops self / forward / out-of-range refs — so the dependency graph a plan
+ * expresses is naturally acyclic. Most todos have NO `dependsOn` (omitted entirely),
+ * so a flat plan is byte-identical to the pre-dependency shape.
+ */
+export interface GoalPlanTodo {
+  readonly text: string;
+  readonly dependsOn?: readonly number[];
+}
+
+/**
  * The judged plan for one owner turn. `judgment` is the senior verdict:
  *   - `none`    → goals is empty, no question (do nothing — frictionless).
  *   - `stage`   → ≥1 goal, each with its todos (+ an optional vision framing).
  *   - `clarify` → a single `clarifyingQuestion` (no goals auto-created).
  * Each goal carries a professional title + its concrete to-do steps (the parked
- * goal's roadmap-to-be).
+ * goal's roadmap-to-be), each step optionally carrying its true blockers
+ * (see {@link GoalPlanTodo}).
  */
 export interface GoalPlan {
   readonly judgment: 'none' | 'stage' | 'clarify';
   readonly vision?: string;
-  readonly goals: readonly { readonly title: string; readonly todos: readonly string[] }[];
+  readonly goals: readonly { readonly title: string; readonly todos: readonly GoalPlanTodo[] }[];
   readonly clarifyingQuestion?: string;
 }
 
@@ -103,6 +119,7 @@ export function buildGoalPlanPrompt(
     '      GOAL: <a professional objective, the way a senior would name it>',
     '      TODO: <a concrete first step of that goal>',
     '      TODO: <the next concrete step>',
+    '      TODO: <a step that truly needs earlier ones first>  [after: 1, 2]',
     '      GOAL: <a second objective, if the work genuinely splits>',
     '      TODO: <a concrete step of the second goal>',
     '  - If the turn is genuinely AMBIGUOUS or HIGH-STAKES and you honestly need to',
@@ -114,6 +131,12 @@ export function buildGoalPlanPrompt(
     'Hard rules:',
     `  - Decompose like a pro, NOT a naive parts-list: each GOAL is a real objective,`,
     '    each TODO a concrete, checkable step. Order the todos sensibly.',
+    '  - OPTIONALLY mark a TODO\'s TRUE blockers with a trailing [after: <n>, <n>]',
+    '    where each <n> is the 1-based number of an EARLIER todo IN THE SAME GOAL that',
+    '    must finish first (todos count from 1 within their goal). Use it ONLY for a',
+    '    real ordering blocker — e.g. "build the UI that calls the API" comes [after:]',
+    '    "wire the API endpoint". MOST todos have NO blocker; omit the marker then. A',
+    '    todo may only reference EARLIER numbers (never itself or a later one).',
     `  - At most ${String(GOAL_PLAN_MAX_GOALS)} goals; at most ${String(GOAL_PLAN_MAX_TODOS)} todos per goal. Prefer fewer,`,
     '    sharper goals over a sprawl.',
     "  - NEVER echo the owner's raw phrasing or parrot their words back. Name the",
@@ -194,6 +217,31 @@ function capLen(s: string, max: number): string {
 }
 
 /**
+ * Split a TODO value into its display text + the OPTIONAL trailing
+ * `[after: <n>, <n>]` dependency marker. The marker (case-insensitive, last one on
+ * the line) is parsed into a raw list of 1-based indices and STRIPPED from the text;
+ * a value with no marker returns `{ text }` (byte-identical to the no-dependency
+ * shape). PURE, defensive: any unparseable number is skipped; a marker with no usable
+ * number is treated as absent (and still stripped from the text). Range/forward/self
+ * validation happens at the call site, where the todo's own position is known.
+ */
+function splitAfterMarker(value: string): { text: string; afterRaw: number[] } {
+  const m = /^(.*?)\s*\[\s*after\s*:\s*([0-9 ,]*?)\s*\]\s*$/i.exec(value);
+  if (m === null) return { text: value, afterRaw: [] };
+  const text = (m[1] ?? '').trim();
+  const afterRaw: number[] = [];
+  for (const tok of (m[2] ?? '').split(',')) {
+    const t = tok.trim();
+    if (t.length === 0) continue;
+    const n = Number.parseInt(t, 10);
+    if (Number.isInteger(n)) afterRaw.push(n);
+  }
+  // If the marker had no usable number, the text is still stripped of it; the empty
+  // afterRaw means "no dependency" (byte-identical downstream to a plain todo).
+  return { text: text.length > 0 ? text : value.trim(), afterRaw };
+}
+
+/**
  * Parse the model's tagged reply into a {@link GoalPlan}, or `null` when the
  * reply is unusable so the caller does nothing. Defensive: never throws, caps
  * counts (≤4 goals, ≤8 todos each) and lengths, and refuses to fabricate —
@@ -207,7 +255,7 @@ export function parseGoalPlan(raw: string | undefined | null): GoalPlan | null {
   let judgment: GoalPlan['judgment'] | null = null;
   let vision: string | undefined;
   let clarifyingQuestion: string | undefined;
-  const goals: { title: string; todos: string[] }[] = [];
+  const goals: { title: string; todos: GoalPlanTodo[] }[] = [];
 
   for (const line of rawLines) {
     const trimmed = line.trim();
@@ -239,7 +287,24 @@ export function parseGoalPlan(raw: string | undefined | null): GoalPlan | null {
       const current = goals[goals.length - 1];
       if (current === undefined) continue; // a TODO before any GOAL is dropped
       if (current.todos.length >= GOAL_PLAN_MAX_TODOS) continue;
-      current.todos.push(capLen(value, GOAL_PLAN_TODO_MAX_CHARS));
+      const { text, afterRaw } = splitAfterMarker(value);
+      if (text.length === 0) continue;
+      // This todo's own 1-based position within its goal (it is about to be pushed).
+      const position = current.todos.length + 1;
+      // Keep only EARLIER, in-range, deduped refs — naturally acyclic. Drop self
+      // (>= position), forward (> position), and out-of-range (< 1) indices.
+      const seen = new Set<number>();
+      const dependsOn: number[] = [];
+      for (const n of afterRaw) {
+        if (n >= 1 && n < position && !seen.has(n)) {
+          seen.add(n);
+          dependsOn.push(n);
+        }
+      }
+      current.todos.push({
+        text: capLen(text, GOAL_PLAN_TODO_MAX_CHARS),
+        ...(dependsOn.length > 0 ? { dependsOn } : {}),
+      });
       continue;
     }
     if (tag === 'ask') {
@@ -274,4 +339,49 @@ export function parseGoalPlan(raw: string | undefined | null): GoalPlan | null {
   }
   // none
   return { judgment: 'none', goals: [] };
+}
+
+// ---------------------------------------------------------------------------
+// planTodosToRoadmap — the PURE index→id translation (table-testable)
+// ---------------------------------------------------------------------------
+
+/**
+ * Translate a planned goal's to-dos into a fresh roadmap (the parked goal's
+ * roadmap-to-be), minting sequential ids `r1, r2, …` in order and converting each
+ * todo's 1-based `dependsOn` INDICES into the corresponding sibling roadmap-item
+ * ids. PURE, total, never throws. A todo with no deps yields an item with NO
+ * `dependsOn` field — byte-identical to the pre-dependency `{id, text, status}`
+ * shape. Out-of-range indices (defensive: the parser already drops self/forward/
+ * out-of-range, this is a second guard) are skipped; an empty edge set leaves the
+ * field off entirely.
+ *
+ * This is the RAW translation only: sibling-existence, dedupe, fan-in cap, and
+ * cycle-stripping are NOT re-done here — they are the single responsibility of
+ * {@link normalizeRoadmapRelations}, which the caller's store-write / capRoadmap
+ * path already runs. By construction `dependsOn` indices are strictly earlier, so
+ * the produced graph is already acyclic.
+ */
+export function planTodosToRoadmap(todos: readonly GoalPlanTodo[]): RoadmapItem[] {
+  const ids = todos.map((_t, i) => `r${String(i + 1)}`);
+  return todos.map((todo, i) => {
+    const deps: string[] = [];
+    const seen = new Set<string>();
+    for (const n of todo.dependsOn ?? []) {
+      // n is 1-based; a valid ref is an EARLIER item (index < i) within range.
+      const idx = n - 1;
+      if (idx >= 0 && idx < i) {
+        const id = ids[idx];
+        if (id !== undefined && !seen.has(id)) {
+          seen.add(id);
+          deps.push(id);
+        }
+      }
+    }
+    return {
+      id: ids[i] ?? `r${String(i + 1)}`,
+      text: todo.text,
+      status: 'pending' as const,
+      ...(deps.length > 0 ? { dependsOn: deps } : {}),
+    };
+  });
 }
