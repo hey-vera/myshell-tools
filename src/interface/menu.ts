@@ -64,9 +64,6 @@ import {
   runGoalsList,
   runTodoCreate,
   runTodoAdd,
-  runTodoEdit,
-  runTodoMove,
-  runTodoRemove,
   renderGoalExpanded,
   parseGoalsCommand,
   parseTodoCommand,
@@ -126,6 +123,8 @@ import { makeRecapGenerator } from '../core/recap-generator.js';
 import { makeGoalObjectiveGenerator } from '../core/goal-objective-generator.js';
 import { makeGoalPlanner } from '../core/goal-plan-generator.js';
 import type { GoalPlan } from '../core/goal-plan.js';
+import { makeReplanner, applyReplanEditsViaStore } from '../core/goal-replan-generator.js';
+import type { RoadmapEdit } from '../core/goal-replan.js';
 import { makeUnderstandingPass } from '../core/understanding-generator.js';
 import type { SystemModel } from '../core/understanding.js';
 import { understandingEnabled } from './ui/understanding-flag.js';
@@ -722,6 +721,55 @@ export async function runChatLoop(
       ...(authenticatedProviders.length > 0 ? { authenticatedProviders } : {}),
       // When the understanding pass produced a SystemModel, GROUND the planner in
       // it; absent → the planner prompt is byte-for-byte today's.
+      ...(systemModel !== undefined ? { systemModel } : {}),
+    });
+  };
+
+  // Build a MANAGER-tier AUTOMATIC RE-PLANNER (Elite-partner Part 1 "re-validate +
+  // re-plan" + Part 4 living plan) from the SAME env→deps machinery as the planner
+  // above. It maintains an ACTIVATED goal's to-do list like a senior PM — add /
+  // edit / reorder / prune the PENDING steps so the plan stays the smartest path to
+  // done — and is the AUTOMATIC consumer of the store's update/reorder/remove CRUD
+  // (replacing the retired manual /todo edit/move/rm). Read by a CAPABLE model
+  // against the reused ELITE_VOICE persona; NEVER touches a verified-done item;
+  // NEVER fabricates a verdict. Subscription-clean (no metered service). Returns
+  // null when no provider is signed in so the cycle proceeds unchanged. TIGHT
+  // timeout — it runs inside the cycle and must never stall it.
+  const buildReplanner = (
+    systemModel?: SystemModel,
+  ): ((goal: Goal, signal: AbortSignal) => Promise<RoadmapEdit[] | null>) | null => {
+    if (!hasAuthenticatedProvider(mutableCtx.env)) return null;
+    const effectiveMode: Mode = mutableCtx.config.mode ?? resolveAutoMode(mutableCtx.env);
+    const policy = POLICY_PRESETS[effectiveMode];
+
+    const availableModels: Partial<Record<ProviderId, readonly string[]>> = {};
+    if (mutableCtx.env.claude.installed && mutableCtx.env.claude.availableModels.length > 0) {
+      availableModels['claude'] = mutableCtx.env.claude.availableModels;
+    }
+    if (mutableCtx.env.codex.installed && mutableCtx.env.codex.availableModels.length > 0) {
+      availableModels['codex'] = mutableCtx.env.codex.availableModels;
+    }
+    if (mutableCtx.env.opencode.installed && mutableCtx.env.opencode.availableModels.length > 0) {
+      availableModels['opencode'] = mutableCtx.env.opencode.availableModels;
+    }
+    const authenticatedProviders: ProviderId[] = [];
+    if (mutableCtx.env.claude.authenticated) authenticatedProviders.push('claude');
+    if (mutableCtx.env.codex.authenticated) authenticatedProviders.push('codex');
+    if (mutableCtx.env.opencode.authenticated) authenticatedProviders.push('opencode');
+
+    // TIGHT cap: it runs inside the manager cycle (gated + bounded per activation),
+    // so keep it short enough that a slow model never stalls execution. Fail-soft
+    // on timeout → null → the roadmap is left unchanged.
+    const GOAL_REPLAN_TIMEOUT_MS = 8_000;
+    return makeReplanner({
+      providers: ctx.providers,
+      policy,
+      cwd: ctx.cwd,
+      timeoutMs: Math.min(ctx.timeoutMs, GOAL_REPLAN_TIMEOUT_MS),
+      ...(Object.keys(availableModels).length > 0 ? { availableModels } : {}),
+      ...(authenticatedProviders.length > 0 ? { authenticatedProviders } : {}),
+      // When the understanding pass produced a SystemModel, GROUND the re-plan in
+      // it; absent → the prompt is the ungrounded form.
       ...(systemModel !== undefined ? { systemModel } : {}),
     });
   };
@@ -1456,7 +1504,7 @@ export async function runChatLoop(
         '  /edit         — edit one of your recent messages and re-run from there\n' +
         '  /goal <text>  — work autonomously until the goal is done (Ctrl+C to stop)\n' +
         '  /todo <text>  — park a goal + its to-do for later (/goals to manage)\n' +
-        '  /todo add|edit|move|rm <g> ... — add, edit, reorder, or remove a to-do\n' +
+        '  /todo add|done|block <g> ... — capture a to-do or check one off\n' +
         '  /goals        — list goals by state; show/go/drop a parked one\n' +
         '  /mode         — quality vs speed (Efficient / Balanced / Max)\n' +
         '  /memory       — see, edit, export, or delete what I remember (/forget to remove)\n' +
@@ -2902,6 +2950,59 @@ export async function runChatLoop(
             let roadmap: readonly RoadmapItem[] = stored.roadmap;
             let usedTurns = 0;
             let stoppedEarly = false;
+
+            // ---- AUTOMATIC LIVING-PLAN MAINTENANCE (re-plan) ------------------
+            // The partner maintains its OWN to-do list: before working a step, a
+            // manager-tier re-plan pass may ADD/EDIT/REORDER/PRUNE the PENDING
+            // to-dos so the plan stays the smartest path to done. This is the
+            // automatic consumer of the store's update/reorder/remove CRUD (the
+            // retired manual /todo edit/move/rm). BOUNDED: gated (cycle start +
+            // after a failure, never every iteration) AND hard-capped per
+            // activation so it can never churn forever. FAIL-SOFT: a null/errored
+            // re-plan leaves the roadmap exactly as-is (today's P7 behaviour).
+            // HONESTY: it can never set a verdict or touch a verified-done item
+            // (enforced in applyReplanEditsViaStore + the store's verified-retain).
+            const replanner = buildReplanner();
+            const MAX_REPLANS_PER_ACTIVATION = 3;
+            let replansUsed = 0;
+            const maybeReplan = async (reason: 'start' | 'after-failure'): Promise<void> => {
+              if (replanner === null) return; // no provider → unchanged
+              if (replansUsed >= MAX_REPLANS_PER_ACTIVATION) return; // bounded
+              const live = await goalStore.get(cycleGoalId).catch(() => null);
+              if (live === null) return;
+              replansUsed += 1;
+              const ac = new AbortController();
+              currentAc = ac;
+              const edits = await replanner(live, ac.signal).catch(() => null);
+              currentAc = null;
+              const applied = await applyReplanEditsViaStore(goalStore, cycleGoalId, edits).catch(
+                () => null,
+              );
+              if (applied !== null) {
+                const touched =
+                  applied.added + applied.edited + applied.reordered + applied.pruned;
+                if (touched > 0) {
+                  out.write(
+                    dim(
+                      `  ↻ re-planned (${reason}): +${String(applied.added)} ~${String(applied.edited)} ⇄${String(applied.reordered)} −${String(applied.pruned)} to-dos.\n`,
+                      out.color,
+                    ),
+                  );
+                  // Refresh the live roadmap + the board so the edits are visible
+                  // immediately and pickNextTodo sees the new plan.
+                  const refreshed = await goalStore.get(cycleGoalId).catch(() => null);
+                  if (refreshed !== null && refreshed !== undefined) roadmap = refreshed.roadmap;
+                  await syncBoard();
+                }
+              }
+            };
+
+            // Re-plan ONCE at cycle start (re-validate the parked roadmap against
+            // the current reality before the first step) — bounded + fail-soft.
+            await maybeReplan('start');
+            if (control.exit) { control.result = 'exit'; return true; }
+            if (control.menu) { control.result = 'menu'; return true; }
+
             for (; usedTurns < DEFAULT_MAX_GOAL_ITERATIONS; ) {
               const next = pickNextTodo(roadmap);
               if (next === null) break; // every item verified-done (or only-blocked)
@@ -3002,6 +3103,16 @@ export async function runChatLoop(
               const refreshed = await goalStore.get(cycleGoalId).catch(() => null);
               if (refreshed !== null && refreshed !== undefined) roadmap = refreshed.roadmap;
               await syncBoard();
+
+              // A FAILURE is the strongest signal the plan needs maintenance — the
+              // assumption a step encoded was wrong. Re-plan now (bounded + fail-
+              // soft) so the next pick reflects the corrected path. On a pass the
+              // plan is already proving out, so we don't spend a re-plan there.
+              if (!itemDone) {
+                await maybeReplan('after-failure');
+                if (control.exit) { control.result = 'exit'; return true; }
+                if (control.menu) { control.result = 'menu'; return true; }
+              }
             }
 
             // Honest receipt + the goal-level gate. The goal can settle `done` ONLY
@@ -3284,7 +3395,7 @@ export async function runChatLoop(
         if (cmd.kind === 'usage') {
           out.write(
             dim(
-              '  Usage: /todo <what you want done>  ·  /todo add <g> <text>  ·  /todo done|block <g> <n>  ·  /todo edit <g> <n> <text>  ·  /todo move <g> <n> <to>  ·  /todo rm <g> <n>\n',
+              '  Usage: /todo <what you want done>  ·  /todo add <g> <text>  ·  /todo done|block <g> <n>  (once promoted, the partner maintains the to-do list itself)\n',
               out.color,
             ),
           );
@@ -3304,21 +3415,6 @@ export async function runChatLoop(
         if (cmd.kind === 'add') {
           await runTodoAdd({ store: goalStore, out, g: cmd.g, text: cmd.text });
           await syncBoard(); // a new to-do landed on a goal → refresh the board
-          return 'continue';
-        }
-        if (cmd.kind === 'edit') {
-          await runTodoEdit({ store: goalStore, out, g: cmd.g, n: cmd.n, text: cmd.text });
-          await syncBoard(); // a to-do's text changed → refresh the board
-          return 'continue';
-        }
-        if (cmd.kind === 'move') {
-          await runTodoMove({ store: goalStore, out, g: cmd.g, n: cmd.n, to: cmd.to });
-          await syncBoard(); // the roadmap order changed → refresh the board
-          return 'continue';
-        }
-        if (cmd.kind === 'rm') {
-          await runTodoRemove({ store: goalStore, out, g: cmd.g, n: cmd.n });
-          await syncBoard(); // a to-do left the roadmap → refresh the board's counts
           return 'continue';
         }
         // mark: done | blocked on parked goal #g, item #n. Honesty: a to-do is

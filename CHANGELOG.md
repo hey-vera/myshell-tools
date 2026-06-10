@@ -6,7 +6,20 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
-## [3.66.0] - 2026-06-10
+## [3.67.0] - 2026-06-10
+
+### Changed (elite planning-partner build — the to-do list is the partner's job, not yours)
+- **The partner now maintains a goal's to-do list automatically** — adding, editing,
+  reordering, and pruning to-dos as its understanding sharpens (a manager-tier re-plan
+  step in the manager cycle, behind `MYSHELL_MANAGER`). It never touches a verified-done
+  to-do (immovable, never pruned, verdict preserved) and never fabricates one; bounded
+  (≤3 re-plans per activation, gated to cycle-start + after a failure) and fail-soft (a
+  re-plan error leaves the list unchanged).
+- **Retired the manual `/todo edit | move | rm` commands** — building and maintaining the
+  to-do list is the elite partner's automatic ability, not something you manage by hand.
+  Quick capture (`/todo`/`/todo add`) and `/goals` listing remain.
+
+
 
 ### Added (elite planning-partner build — the per-goal manager cycle)
 - **An activated goal now executes its own to-do list to verified-done** (behind

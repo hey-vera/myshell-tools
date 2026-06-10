@@ -20,13 +20,9 @@ import {
   renderParkedSection,
   runTodoCreate,
   runTodoAdd,
-  runTodoEdit,
-  runTodoMove,
-  runTodoRemove,
   runGoalsList,
   listParked,
   parkedAt,
-  todoIdAt,
 } from '../../src/commands/goals.ts';
 import { createFileGoalStore, type GoalStore } from '../../src/infra/goal-store.ts';
 import type { OutputSink } from '../../src/interface/render.ts';
@@ -99,22 +95,16 @@ describe('parseTodoCommand', () => {
       text: 'write the tests',
     });
   });
-  it('edit <g> <n> <text> → edit', () => {
+  it('retired edit/move/rm subcommands → create (the partner maintains the plan itself)', () => {
+    // The plan-restructuring commands were removed: the manager cycle's automatic
+    // re-plan pass maintains the to-do list now. A leftover `edit`/`move`/`rm` line
+    // is treated as free-text goal capture, never a plan edit — and never crashes.
     assert.deepEqual(parseTodoCommand('edit 1 2 new wording'), {
-      kind: 'edit',
-      g: 1,
-      n: 2,
-      text: 'new wording',
+      kind: 'create',
+      text: 'edit 1 2 new wording',
     });
-  });
-  it('edit without text → create (free text, since the verb form is incomplete)', () => {
-    assert.equal(parseTodoCommand('edit 1 2').kind, 'create');
-  });
-  it('move <g> <n> <to> → move', () => {
-    assert.deepEqual(parseTodoCommand('move 1 3 1'), { kind: 'move', g: 1, n: 3, to: 1 });
-  });
-  it('rm <g> <n> → rm', () => {
-    assert.deepEqual(parseTodoCommand('rm 2 1'), { kind: 'rm', g: 2, n: 1 });
+    assert.deepEqual(parseTodoCommand('move 1 3 1'), { kind: 'create', text: 'move 1 3 1' });
+    assert.deepEqual(parseTodoCommand('rm 2 1'), { kind: 'create', text: 'rm 2 1' });
   });
 });
 
@@ -224,21 +214,6 @@ describe('parkedAt', () => {
   });
 });
 
-describe('todoIdAt', () => {
-  it('maps a 1-based to-do index to its RoadmapItem.id, null out of range', async () => {
-    const g = await store.create({
-      title: 'x',
-      roadmap: [
-        { id: 'r1', text: 'one', status: 'pending' },
-        { id: 'r2', text: 'two', status: 'pending' },
-      ],
-    });
-    assert.equal(todoIdAt(g, 1), 'r1');
-    assert.equal(todoIdAt(g, 2), 'r2');
-    assert.equal(todoIdAt(g, 3), null);
-    assert.equal(todoIdAt(g, 0), null);
-  });
-});
 
 describe('runTodoAdd', () => {
   it('appends a new to-do to an existing parked goal', async () => {
@@ -274,96 +249,3 @@ describe('runTodoAdd', () => {
   });
 });
 
-describe('runTodoEdit', () => {
-  it('patches a to-do text by (g, n)', async () => {
-    const g = await store.create({
-      title: 'goal',
-      roadmap: [{ id: 'r1', text: 'old text', status: 'pending' }],
-    });
-    const out = makeSink();
-    const msg = await runTodoEdit({ store, out, g: 1, n: 1, text: 'new text' });
-    assert.match(msg, /Updated to-do #1/);
-    const reread = await store.get(g.id);
-    assert.equal(reread?.roadmap[0]?.text, 'new text');
-  });
-
-  it('bad goal index → clear error, no change', async () => {
-    const out = makeSink();
-    const msg = await runTodoEdit({ store, out, g: 9, n: 1, text: 'x' });
-    assert.match(msg, /No parked goal #9/);
-  });
-
-  it('bad to-do index → clear error', async () => {
-    await store.create({ title: 'goal', roadmap: [{ id: 'r1', text: 'one', status: 'pending' }] });
-    const out = makeSink();
-    const msg = await runTodoEdit({ store, out, g: 1, n: 5, text: 'x' });
-    assert.match(msg, /no to-do #5/);
-  });
-});
-
-describe('runTodoMove', () => {
-  it('moves a to-do to a new 1-based position', async () => {
-    const g = await store.create({
-      title: 'goal',
-      roadmap: [
-        { id: 'r1', text: 'one', status: 'pending' },
-        { id: 'r2', text: 'two', status: 'pending' },
-        { id: 'r3', text: 'three', status: 'pending' },
-      ],
-    });
-    const out = makeSink();
-    const msg = await runTodoMove({ store, out, g: 1, n: 3, to: 1 });
-    assert.match(msg, /Moved to-do "three" to position 1/);
-    const reread = await store.get(g.id);
-    assert.deepEqual(reread?.roadmap.map((i) => i.id), ['r3', 'r1', 'r2']);
-  });
-
-  it('bad to-do index → clear error', async () => {
-    await store.create({ title: 'goal', roadmap: [{ id: 'r1', text: 'one', status: 'pending' }] });
-    const out = makeSink();
-    const msg = await runTodoMove({ store, out, g: 1, n: 9, to: 1 });
-    assert.match(msg, /no to-do #9/);
-  });
-});
-
-describe('runTodoRemove', () => {
-  it('removes an unverified to-do', async () => {
-    const g = await store.create({
-      title: 'goal',
-      roadmap: [
-        { id: 'r1', text: 'one', status: 'pending' },
-        { id: 'r2', text: 'two', status: 'pending' },
-      ],
-    });
-    const out = makeSink();
-    const msg = await runTodoRemove({ store, out, g: 1, n: 1 });
-    assert.match(msg, /Removed to-do #1/);
-    const reread = await store.get(g.id);
-    assert.deepEqual(reread?.roadmap.map((i) => i.id), ['r2']);
-  });
-
-  it('retains a verified-done to-do with the audit-trail message', async () => {
-    const g = await store.create({
-      title: 'goal',
-      roadmap: [
-        {
-          id: 'r1',
-          text: 'verified',
-          status: 'done',
-          verdict: { state: 'passing', receipt: 'green', at: '2026-06-05T00:00:00.000Z' },
-        },
-      ],
-    });
-    const out = makeSink();
-    const msg = await runTodoRemove({ store, out, g: 1, n: 1 });
-    assert.match(msg, /verified done/);
-    const reread = await store.get(g.id);
-    assert.equal(reread?.roadmap.length, 1); // kept
-  });
-
-  it('bad goal index → clear error', async () => {
-    const out = makeSink();
-    const msg = await runTodoRemove({ store, out, g: 9, n: 1 });
-    assert.match(msg, /No parked goal #9/);
-  });
-});
