@@ -6,6 +6,25 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+## [3.74.0] - 2026-06-10
+
+### Changed (`/goal` is an entry into the adaptive judgment, not a pipeline)
+- **`/goal <text>` now digests and JUDGES the goal like a senior before acting.** It
+  grounds in the whole-picture system model (when warm), then either (a) asks ONE sharp
+  clarifying question on a genuine fork — parking the goal with its provisional to-dos
+  on the board and waiting for your answer, instead of barreling ahead — or (b) when the
+  goal is clear, builds the to-dos and drives the manager cycle to verified-done. This
+  replaces 3.73.0's rigid decompose-then-execute pipeline. Same adaptive loop whether
+  you type `/goal` or it recognizes a goal as you talk. (`MYSHELL_MANAGER=0` still
+  restores the legacy free-loop `/goal`.)
+
+### Fixed
+- **Auto-stage no longer paints into the menu after you leave.** The fire-and-forget
+  planner's UI writes (the `※ Staged N goals` note, the clarifying `?`, the board sync)
+  are now gated behind a liveness check — if you've left the conversation before the
+  background planner resolves, the goals are still persisted but nothing is written into
+  the menu or smeared across your next prompt (mirrors the existing recap guard).
+
 ## [3.73.0] - 2026-06-10
 
 ### Changed (`/goal x` is now the one move — it builds the to-dos and manages them)

@@ -2332,35 +2332,53 @@ export async function runChatLoop(
       // Mint sequential roadmap ids (r1, r2, …) for a freshly-staged goal's todos.
       const todosToRoadmap = (todos: readonly string[]): RoadmapItem[] =>
         todos.map((text, i) => ({ id: `r${i + 1}`, text, status: 'pending' as const }));
-      // Decompose an EXPLICIT goal (`/goal <text>`) into a smart objective + a to-do
-      // roadmap, reusing the SAME manager-tier planner auto-stage uses — except here the
-      // user has ALREADY committed, so we don't judge none/stage/clarify, we just take
-      // its decomposition: the planner's first goal gives both a professional TITLE and
-      // its ordered, checkable TODOS (so we get the label for free, one model call, not
-      // two). Capped to the roadmap limit. Fail-soft: any miss falls back to a smart
-      // formGoalLabel + a single to-do (the goal itself), so the manager cycle ALWAYS
-      // has a roadmap to drive (its replan step then refines it). Grounded by the warm
-      // SystemModel when one is cached for this project; ungrounded otherwise.
-      const decomposeGoal = async (
+      // Run an EXPLICIT goal (`/goal <text>`) through the ADAPTIVE JUDGMENT — the front
+      // of the elite-pro loop. It's NOT a rigid decompose+execute pipeline: a senior
+      // first DIGESTS the goal (grounded in the whole-picture system model when one is
+      // warm) and JUDGES it — either asks ONE sharp clarifying question (a genuine fork
+      // a pro would never guess on) or forms a professional objective + ordered to-dos
+      // to act on. Reuses the same manager-tier planner the chat brain uses. Returns the
+      // judged plan: { judgment, title, roadmap, clarifyingQuestion? }. Fail-soft: any
+      // miss → a 'stage' result with a formGoalLabel title + single-item roadmap, so the
+      // caller can always proceed. Grounds future turns by warming the model when cold.
+      const judgeGoal = async (
         goalText: string,
-      ): Promise<{ title: string; roadmap: RoadmapItem[] }> => {
-        const planner = buildGoalPlanner(undefined);
+      ): Promise<{
+        judgment: GoalPlan['judgment'];
+        title: string;
+        roadmap: RoadmapItem[];
+        clarifyingQuestion?: string;
+      }> => {
+        const cacheKey = (await resolveProjectKeyOnce()) ?? '∅global';
+        const warm = systemModelCache.get(cacheKey)?.model;
+        if (understandingOn && warm === undefined) warmUnderstanding(cacheKey, goalText);
+        const roadmapFor = (todos: readonly string[]): RoadmapItem[] =>
+          todos.length > 0 ? todosToRoadmap(todos.slice(0, ROADMAP_LIMIT)) : todosToRoadmap([goalText]);
+        const planner = buildGoalPlanner(warm);
         if (planner !== null) {
           try {
             const plan = await planner(goalText, new AbortController().signal);
-            const g0 = plan?.goals[0];
-            if (g0 !== undefined) {
-              const title = g0.title.trim();
-              const todos = g0.todos.slice(0, ROADMAP_LIMIT);
-              if (title.length > 0 && todos.length > 0) {
-                return { title, roadmap: todosToRoadmap(todos) };
+            if (plan !== null) {
+              const g0 = plan.goals[0];
+              const title = g0?.title.trim();
+              if (plan.judgment === 'clarify') {
+                const q = plan.clarifyingQuestion?.trim();
+                return {
+                  judgment: 'clarify',
+                  title: title !== undefined && title.length > 0 ? title : await formGoalLabel(goalText),
+                  roadmap: roadmapFor(g0?.todos ?? []),
+                  ...(q !== undefined && q.length > 0 ? { clarifyingQuestion: q } : {}),
+                };
+              }
+              if (g0 !== undefined && title !== undefined && title.length > 0 && g0.todos.length > 0) {
+                return { judgment: 'stage', title, roadmap: roadmapFor(g0.todos) };
               }
             }
           } catch {
             /* fall through to the smart-label + single-item fallback */
           }
         }
-        return { title: await formGoalLabel(goalText), roadmap: todosToRoadmap([goalText]) };
+        return { judgment: 'stage', title: await formGoalLabel(goalText), roadmap: todosToRoadmap([goalText]) };
       };
       // CACHE-AHEAD SystemModel (per project, session-scoped, in-memory). The
       // understanding pass is a manager-tier investigation with VARIABLE latency
@@ -2445,8 +2463,11 @@ export async function runChatLoop(
 
         if (plan.judgment === 'clarify') {
           // Surface the single sharp question — do NOT auto-create goals here.
+          // LIVENESS GUARD: this runs fire-and-forget (~up to 8s after the turn), so
+          // the user may already have left to the menu — never paint a stray question
+          // into it (mirrors the concurrent-recap guard).
           const q = plan.clarifyingQuestion?.trim();
-          if (q !== undefined && q.length > 0) {
+          if (conversationLive && q !== undefined && q.length > 0) {
             out.write('\n' + dim('? ', out.color) + q + '\n');
           }
           return;
@@ -2497,6 +2518,11 @@ export async function runChatLoop(
           }
         }
         if (staged === 0) return; // nothing landed → no note (honest)
+        // LIVENESS GUARD: this runs fire-and-forget, so the user may already have left
+        // to the menu by the time the planner resolves. The goals are persisted either
+        // way (they'll appear on the board next turn); but never paint the board/note
+        // into the menu or smear the next prompt (mirrors the concurrent-recap guard).
+        if (!conversationLive) return;
         await syncBoard(); // the new parked goals landed → refresh the board
         // Brief, HONEST one-line note — do not over-announce.
         const noun = staged === 1 ? 'goal' : 'goals';
@@ -3485,22 +3511,47 @@ export async function runChatLoop(
           out.write(dim('  Usage: /goal <what you want achieved> — I build the to-do list and work through it to verified-done (Ctrl+C to stop).\n', out.color));
           return 'continue';
         }
-        // ONE move (the elite path, when the manager cycle is on — the default): form a
-        // smart objective, BUILD the to-do list, put the goal on the board, and drive it
-        // through the MANAGER CYCLE to verified-done — no separate "/goals go <n>".
-        // `/goal x` IS the activation. We create the goal WITH its roadmap and hand
-        // runGoalLoop the goalId, so it runs the per-to-do worker→verify→verdict cycle
-        // (and refines the to-dos via replan as it learns). When the manager cycle is
-        // opted OUT (MYSHELL_MANAGER=0), `/goal` stays byte-for-byte the old free loop —
-        // building to-dos only earns its keep when the cycle will actually execute them.
+        // `/goal` is an entry into the ADAPTIVE JUDGMENT SYSTEM, not a rigid pipeline.
+        // An elite pro DIGESTS the goal (grounded in the whole-picture system model),
+        // JUDGES it like a senior, helps BUILD the to-dos, and then ACHIEVES them — the
+        // manager cycle works each to-do to verified-done and asks a sharp question only
+        // at a genuine fork (collaborative, "with the user", not a black-box grind).
+        // When the manager cycle is opted OUT (MYSHELL_MANAGER=0), `/goal` stays
+        // byte-for-byte the legacy free loop.
         if (managerCycleEnabled(process.env, mutableCtx.config)) {
-          const { title: goalLabel, roadmap } = await decomposeGoal(goalText);
+          const plan = await judgeGoal(goalText);
           const projectKey = await resolveProjectKeyOnce();
+
+          // CLARIFY: a genuine fork a senior would never guess on. Surface ONE sharp
+          // question, PARK the goal with its provisional to-dos (nothing lost, it's on
+          // the board), and WAIT — the user answers and we pick it up. No barreling.
+          if (plan.judgment === 'clarify' && plan.clarifyingQuestion !== undefined) {
+            try {
+              await goalStore.create({
+                title: plan.title,
+                roadmap: plan.roadmap,
+                scope: projectKey !== null ? 'project' : 'global',
+                projectKey,
+                conversationId: convId,
+                source: 'user-explicit',
+              });
+            } catch {
+              /* fail-soft: even if the capture misses, still ask the question */
+            }
+            await syncBoard();
+            out.write('\n' + dim('? ', out.color) + plan.clarifyingQuestion + '\n');
+            out.write(dim(`  Parked "${plan.title}" on the board — answer that and I'll take it from there.\n`, out.color));
+            return 'continue';
+          }
+
+          // ACT: the goal is clear. Put it on the board as active and drive the manager
+          // cycle (work each to-do → verify with real evidence → mark done / fix-it) to
+          // verified-done. The cycle itself refines the to-dos via replan as it learns.
           let createdGoalId: string | undefined;
           try {
             const created = await goalStore.create({
-              title: goalLabel,
-              roadmap,
+              title: plan.title,
+              roadmap: plan.roadmap,
               scope: projectKey !== null ? 'project' : 'global',
               projectKey,
               conversationId: convId,
@@ -3514,7 +3565,7 @@ export async function runChatLoop(
           await syncBoard();
           const shouldBreak = await runGoalLoop(
             goalText,
-            goalLabel,
+            plan.title,
             createdGoalId !== undefined ? { goalId: createdGoalId } : undefined,
           );
           if (createdGoalId !== undefined) {
