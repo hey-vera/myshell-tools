@@ -23,6 +23,7 @@ import {
   runGoalsList,
   listParked,
   parkedAt,
+  renderGoalExpanded,
 } from '../../src/commands/goals.ts';
 import { createFileGoalStore, type GoalStore } from '../../src/infra/goal-store.ts';
 import type { OutputSink } from '../../src/interface/render.ts';
@@ -52,6 +53,42 @@ function makeSink(): OutputSink & { buf: string } {
     isTty: false,
   };
 }
+
+function makeGoalFixture(overrides: Partial<Goal> = {}): Goal {
+  return {
+    version: 1,
+    id: 'goal_1',
+    title: 'Harden token refresh',
+    state: 'parked',
+    source: 'user-explicit',
+    roadmap: [{ id: 'r1', text: 'add a refresh test', status: 'pending' }],
+    scope: 'project',
+    projectKey: 'repo#abcd1234',
+    conversationId: null,
+    createdAt: '2026-06-05T00:00:00.000Z',
+    lastTouched: '2026-06-05T00:00:00.000Z',
+    ...overrides,
+  };
+}
+
+describe('renderGoalExpanded — best-approach surfacing', () => {
+  it('shows an "approach: <chosen>" line when the goal carries one', () => {
+    const out = makeSink();
+    renderGoalExpanded(
+      makeGoalFixture({
+        approach: { chosen: 'a single guarded mutex', rationale: 'race-free' },
+      }),
+      out,
+    );
+    assert.match(out.buf, /approach: a single guarded mutex/);
+  });
+
+  it('shows NO approach line when the goal has none', () => {
+    const out = makeSink();
+    renderGoalExpanded(makeGoalFixture(), out);
+    assert.equal(/approach:/.test(out.buf), false);
+  });
+});
 
 // ---------------------------------------------------------------------------
 // Pure arg parsing

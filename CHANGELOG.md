@@ -6,6 +6,18 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+## [3.79.0] - 2026-06-10
+
+### Added (best-approach — the other half of "truly complete")
+- **The partner now states the smartest approach for a goal, and records it.** When the
+  manager-tier planner stages real work (grounded in the whole-picture system model), it
+  can name the goal's **chosen strategy + why it beats the alternatives** — captured on
+  the goal and shown as a dim `approach: <chosen>` line in the expanded goal view. So a
+  goal is "truly complete" on *both* dimensions now: **verified-done** (real test
+  evidence) **and** best-approach (the deliberate, understanding-grounded strategy, made
+  transparent — not a black box). Fully additive: a goal with no approach (trivial work,
+  or a reply that omitted it) round-trips byte-identically; the verify path is untouched.
+
 ## [3.78.0] - 2026-06-10
 
 ### Changed

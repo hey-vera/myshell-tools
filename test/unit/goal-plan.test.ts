@@ -41,6 +41,10 @@ describe('buildGoalPlanPrompt', () => {
     // The OPTIONAL dependency marker is documented in the TODO grammar.
     assert.ok(/\[after:/i.test(p), 'documents the optional [after: ...] dependency marker');
     assert.ok(/EARLIER/i.test(p), 'instructs that a todo may only reference EARLIER numbers');
+    // The OPTIONAL best-approach grammar (APPROACH/WHY/ALT) is documented.
+    assert.ok(/APPROACH:/.test(p), 'documents the optional APPROACH line (chosen strategy)');
+    assert.ok(/WHY:/.test(p), 'documents the WHY line (why it beats the alternatives)');
+    assert.ok(/ALT:/.test(p), 'documents the optional ALT line (rejected options)');
   });
 
   it('returns empty string for empty/whitespace input (caller skips the model touch)', () => {
@@ -159,6 +163,80 @@ describe('parseGoalPlan — substantial → stage', () => {
     const out = parseGoalPlan('GOAL: Ship the API\nTODO: write the handler');
     assert.equal(out?.judgment, 'stage');
     assert.equal(out?.goals.length, 1);
+  });
+});
+
+describe('parseGoalPlan — best-approach (APPROACH/WHY/ALT)', () => {
+  it('extracts a goal approach from APPROACH + WHY (+ ALT) into the goal', () => {
+    const reply = [
+      'JUDGMENT: stage',
+      'GOAL: Harden the auth token-refresh path',
+      'APPROACH: A single guarded mutex around the refresh call',
+      'WHY: Eliminates the concurrent-refresh race without touching call sites',
+      'ALT: per-call locking, optimistic retry',
+      'TODO: Add a concurrent-refresh test',
+    ].join('\n');
+    const out = parseGoalPlan(reply);
+    assert.ok(out !== null);
+    assert.deepEqual(out?.goals[0]?.approach, {
+      chosen: 'A single guarded mutex around the refresh call',
+      rationale: 'Eliminates the concurrent-refresh race without touching call sites',
+      alternatives: ['per-call locking', 'optimistic retry'],
+    });
+    // The todos are unaffected by the approach lines.
+    assert.deepEqual(out?.goals[0]?.todos, [{ text: 'Add a concurrent-refresh test' }]);
+  });
+
+  it('attaches the approach to the MOST-RECENT goal (per-goal, not global)', () => {
+    const reply = [
+      'JUDGMENT: stage',
+      'GOAL: First goal',
+      'TODO: step one',
+      'GOAL: Second goal',
+      'APPROACH: chosen for second',
+      'WHY: because it fits the second goal',
+      'TODO: step two',
+    ].join('\n');
+    const out = parseGoalPlan(reply);
+    assert.equal('approach' in (out?.goals[0] ?? {}), false, 'first goal has no approach');
+    assert.equal(out?.goals[1]?.approach?.chosen, 'chosen for second');
+  });
+
+  it('omits the approach when WHY is missing (never a half-record)', () => {
+    const out = parseGoalPlan('JUDGMENT: stage\nGOAL: G\nAPPROACH: a strategy\nTODO: t');
+    assert.ok(out !== null);
+    assert.equal('approach' in (out?.goals[0] ?? {}), false);
+  });
+
+  it('omits the approach when APPROACH is missing (WHY alone is not enough)', () => {
+    const out = parseGoalPlan('JUDGMENT: stage\nGOAL: G\nWHY: some reasoning\nTODO: t');
+    assert.ok(out !== null);
+    assert.equal('approach' in (out?.goals[0] ?? {}), false);
+  });
+
+  it('a plan with NO approach markers parses byte-identically (no approach field anywhere)', () => {
+    const reply = 'JUDGMENT: stage\nGOAL: Ship the API\nTODO: write the handler';
+    const out = parseGoalPlan(reply);
+    assert.ok(out !== null);
+    for (const g of out?.goals ?? []) {
+      assert.equal('approach' in g, false);
+    }
+  });
+
+  it('bounds the ALT list to 4, deduped, each capped', () => {
+    const out = parseGoalPlan(
+      [
+        'JUDGMENT: stage',
+        'GOAL: G',
+        'APPROACH: x',
+        'WHY: y',
+        'ALT: a, a, b, c, d, e, f',
+        'TODO: t',
+      ].join('\n'),
+    );
+    const alts = out?.goals[0]?.approach?.alternatives ?? [];
+    assert.ok(alts.length <= 4, 'at most 4 alternatives');
+    assert.deepEqual([...new Set(alts)], alts, 'deduped');
   });
 });
 

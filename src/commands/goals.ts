@@ -30,6 +30,7 @@ import {
   formatGoalRow,
   formatTodoCount,
   formatRoadmapLines,
+  formatGoalApproachLine,
   isStale,
   type Goal,
 } from '../core/goal-todo.js';
@@ -252,6 +253,10 @@ export async function runTodoCreate(opts: {
 export function renderGoalExpanded(goal: Goal, out: OutputSink): string {
   const lines: string[] = [];
   lines.push(bold(`  ${goal.title}`, out.color) + dim(`  ·  parked  ·  ${formatTodoCount(goal.roadmap)}`, out.color));
+  // The best-approach one-liner (only when the planner recorded one) — the
+  // smartest/most-efficient strategy chosen for this goal. Absent ⇒ no line.
+  const approachLine = formatGoalApproachLine(goal);
+  if (approachLine !== undefined) lines.push(dim(`   ${approachLine}`, out.color));
   if (goal.roadmap.length === 0) {
     lines.push(dim('   (no to-dos yet)', out.color));
   } else {

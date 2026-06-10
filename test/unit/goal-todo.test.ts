@@ -23,6 +23,7 @@ import {
   goalVerdictFromOutcome,
   isGoalVerifiedDone,
   goalVerdictTag,
+  formatGoalApproachLine,
   type Goal,
   type GoalVerdict,
 } from '../../src/core/goal-todo.ts';
@@ -421,6 +422,62 @@ describe('capRoadmap + capGoal — Phase 2 RoadmapItem new fields', () => {
     assert.deepEqual(capped.goalVerdict, (g as Goal).goalVerdict);
     assert.deepEqual(capped.roadmap[0]?.verdict, verdict);
     assert.deepEqual(capped.roadmap[0]?.approach, approach);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Goal-level best-approach (the "best approach" half of truly-complete)
+// ---------------------------------------------------------------------------
+
+describe('capGoal — goal-level approach', () => {
+  it('round-trips chosen + rationale + alternatives', () => {
+    const approach: RoadmapItemApproach = {
+      chosen: 'Refactor the token-refresh path to a single guarded mutex',
+      rationale: 'Eliminates the concurrent-refresh race without touching call sites',
+      alternatives: ['per-call locking', 'optimistic retry'],
+    };
+    const g = capGoal(makeGoal({ approach } as Goal));
+    assert.deepEqual(g.approach, approach);
+  });
+
+  it('omits approach when chosen is empty (never a half-record)', () => {
+    const g = capGoal(makeGoal({ approach: { chosen: '', rationale: 'why' } } as unknown as Goal));
+    assert.equal('approach' in g, false);
+  });
+
+  it('omits approach when rationale is missing', () => {
+    const g = capGoal(makeGoal({ approach: { chosen: 'do it the smart way' } } as unknown as Goal));
+    assert.equal('approach' in g, false);
+  });
+
+  it('does not throw on a malformed approach + caps chosen/rationale to 400, alternatives to 8/160', () => {
+    const approach = {
+      chosen: 'C'.repeat(500),
+      rationale: 'R'.repeat(500),
+      alternatives: Array.from({ length: 12 }, (_, i) => 'A'.repeat(200) + String(i)),
+    };
+    assert.doesNotThrow(() => capGoal(makeGoal({ approach } as unknown as Goal)));
+    const g = capGoal(makeGoal({ approach } as unknown as Goal));
+    assert.equal(g.approach?.chosen.length, 400);
+    assert.equal(g.approach?.rationale.length, 400);
+    assert.equal(g.approach?.alternatives?.length, 8);
+    assert.ok((g.approach?.alternatives?.[0]?.length ?? 0) <= 160);
+  });
+
+  it('a goal WITHOUT an approach omits the field entirely (byte-identical round-trip)', () => {
+    const g = capGoal(makeGoal());
+    assert.equal('approach' in g, false);
+  });
+});
+
+describe('formatGoalApproachLine', () => {
+  it('returns "approach: <chosen>" when present', () => {
+    const g = makeGoal({ approach: { chosen: 'use a mutex', rationale: 'race-free' } } as Goal);
+    assert.equal(formatGoalApproachLine(g), 'approach: use a mutex');
+  });
+
+  it('returns undefined when the goal has no approach', () => {
+    assert.equal(formatGoalApproachLine(makeGoal()), undefined);
   });
 });
 

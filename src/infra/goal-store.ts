@@ -230,6 +230,13 @@ export interface CreateGoalInput {
   readonly conversationId?: string | null;
   /** Defaults to `user-explicit` (the only Phase 5a producer). */
   readonly source?: Goal['source'];
+  /**
+   * The best-approach the manager-tier planner stated for this goal (chosen +
+   * why). Additive + optional (mirrors the roadmap/source fields): absent ⇒ the
+   * goal is created with no approach and round-trips byte-identically. Capped
+   * defensively by capGoal (chosen/rationale required, else omitted entirely).
+   */
+  readonly approach?: Goal['approach'];
 }
 
 export interface GoalStore {
@@ -423,6 +430,9 @@ export function createFileGoalStore(opts: {
           conversationId: input.conversationId ?? null,
           createdAt: now,
           lastTouched: now,
+          // Additive: capGoal omits a malformed/absent approach, so a create
+          // WITHOUT one round-trips byte-identically to before this field existed.
+          ...(input.approach !== undefined ? { approach: input.approach } : {}),
         });
         await persistGoal(home, goal);
         await writeIndex(home, [...goals, goal]);

@@ -2374,6 +2374,8 @@ export async function runChatLoop(
         title: string;
         roadmap: RoadmapItem[];
         clarifyingQuestion?: string;
+        /** The goal's best-approach (chosen + why), when the planner stated one. */
+        approach?: GoalPlan['goals'][number]['approach'];
       }> => {
         const cacheKey = (await resolveProjectKeyOnce()) ?? '∅global';
         const warm = systemModelCache.get(cacheKey)?.model;
@@ -2396,10 +2398,16 @@ export async function runChatLoop(
                   title: title !== undefined && title.length > 0 ? title : await formGoalLabel(goalText),
                   roadmap: roadmapFor(g0?.todos ?? []),
                   ...(q !== undefined && q.length > 0 ? { clarifyingQuestion: q } : {}),
+                  ...(g0?.approach !== undefined ? { approach: g0.approach } : {}),
                 };
               }
               if (g0 !== undefined && title !== undefined && title.length > 0 && g0.todos.length > 0) {
-                return { judgment: 'stage', title, roadmap: roadmapFor(g0.todos) };
+                return {
+                  judgment: 'stage',
+                  title,
+                  roadmap: roadmapFor(g0.todos),
+                  ...(g0.approach !== undefined ? { approach: g0.approach } : {}),
+                };
               }
             }
           } catch {
@@ -2539,6 +2547,8 @@ export async function runChatLoop(
               // HONEST provenance: these were judged + staged by the planning
               // brain, NOT typed by the owner — the audit trail must say so.
               source: 'auto-staged',
+              // The best-approach the planner stated for this goal (when any).
+              ...(g.approach !== undefined ? { approach: g.approach } : {}),
             });
             staged += 1;
           } catch {
@@ -3573,6 +3583,7 @@ export async function runChatLoop(
                 projectKey,
                 conversationId: convId,
                 source: 'user-explicit',
+                ...(plan.approach !== undefined ? { approach: plan.approach } : {}),
               });
             } catch {
               /* fail-soft: even if the capture misses, still ask the question */
@@ -3595,6 +3606,7 @@ export async function runChatLoop(
               projectKey,
               conversationId: convId,
               source: 'user-explicit',
+              ...(plan.approach !== undefined ? { approach: plan.approach } : {}),
             });
             createdGoalId = created.id;
             await goalStore.setState(created.id, 'running'); // active now → board shows ◐

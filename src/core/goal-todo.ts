@@ -25,7 +25,7 @@
  * NO "execute this roadmap" helper — only shaping/formatting.
  */
 
-import type { RoadmapItem, RoadmapStatus } from './work-contract.js';
+import type { RoadmapItem, RoadmapItemApproach, RoadmapStatus } from './work-contract.js';
 import { capRoadmapItem, normalizeRoadmapRelations } from './work-contract.js';
 import type { VerifiedState, VerifyOutcome } from './verify.js';
 import { buildVerifyReceipt } from './verify.js';
@@ -126,6 +126,17 @@ export interface Goal {
    * hand-set by a model — anti-fabrication hard rule.
    */
   readonly goalVerdict?: GoalVerdict;
+  /**
+   * The best-approach record set by the manager-tier planner at goal-creation
+   * time — the goal's CHOSEN strategy + WHY it beats the alternatives, grounded
+   * in the whole-picture SystemModel when one is warm (the "best approach" half
+   * of truly-complete). Reuses {@link RoadmapItemApproach} verbatim (one type,
+   * one cap discipline). Additive + optional: a goal staged WITHOUT an approach
+   * (a trivial goal, or one from a model reply that omitted the marker) round-
+   * trips byte-identically. Capped in {@link capGoal} (chosen/rationale required,
+   * else the whole field is omitted — never a half-record).
+   */
+  readonly approach?: RoadmapItemApproach;
 }
 
 /** Roadmap cap — the SAME bound work-contract.ts enforces (cap 8). */
@@ -135,6 +146,12 @@ const TITLE_LIMIT = 240;
 // Phase 2 caps for the new goal-level acceptance/verdict fields.
 const GOAL_ACCEPTANCE_LIMIT = 400;
 const GOAL_VERDICT_RECEIPT_LIMIT = 400;
+// Approach caps — mirror work-contract.ts's APPROACH_* bounds exactly so a
+// goal-level approach and a roadmap-item approach cap identically.
+const GOAL_APPROACH_CHOSEN_LIMIT = 400;
+const GOAL_APPROACH_RATIONALE_LIMIT = 400;
+const GOAL_APPROACH_ALT_LIMIT = 160;
+const GOAL_APPROACH_ALTS_LIMIT = 8;
 
 const VALID_STATES: ReadonlySet<string> = new Set<GoalState>([
   'parked',
@@ -246,6 +263,29 @@ export function capGoal(g: Goal): Goal {
     // If state is invalid/missing → cappedGv stays undefined (omit entirely).
   }
 
+  // approach — omit the whole field if chosen or rationale is missing (mirrors
+  // capRoadmapItem's approach handling exactly: never a half-record).
+  let cappedApproach: RoadmapItemApproach | undefined;
+  if (r['approach'] !== undefined && r['approach'] !== null && typeof r['approach'] === 'object') {
+    const a = r['approach'] as Record<string, unknown>;
+    const chosen = capText(a['chosen'], GOAL_APPROACH_CHOSEN_LIMIT);
+    const rationale = capText(a['rationale'], GOAL_APPROACH_RATIONALE_LIMIT);
+    if (chosen.length > 0 && rationale.length > 0) {
+      cappedApproach = {
+        chosen,
+        rationale,
+        ...(Array.isArray(a['alternatives'])
+          ? {
+              alternatives: a['alternatives']
+                .slice(0, GOAL_APPROACH_ALTS_LIMIT)
+                .map((alt) => capText(alt, GOAL_APPROACH_ALT_LIMIT)),
+            }
+          : {}),
+      };
+    }
+    // If chosen/rationale missing → cappedApproach stays undefined (omit).
+  }
+
   return {
     version: 1,
     id: safeString(r['id']),
@@ -260,6 +300,7 @@ export function capGoal(g: Goal): Goal {
     lastTouched: safeString(r['lastTouched']),
     ...(cappedGa !== undefined ? { goalAcceptance: cappedGa } : {}),
     ...(cappedGv !== undefined ? { goalVerdict: cappedGv } : {}),
+    ...(cappedApproach !== undefined ? { approach: cappedApproach } : {}),
   };
 }
 
@@ -413,6 +454,22 @@ export function formatGoalRow(goal: Goal, nowIso: string): string {
   parts.push(isStale(goal, nowIso) ? `parked ${age}d ago` : 'parked');
   parts.push(goal.scope === 'global' ? 'global' : 'this repo');
   return parts.join(' · ');
+}
+
+/**
+ * A concise one-liner for a goal's recorded best-approach, for the expanded goal
+ * view / staging receipt: `approach: <chosen>`. Returns `undefined` when the goal
+ * carries no approach (nothing to show — never a fabricated line), so a goal
+ * without one renders EXACTLY as before. Pure, total — the caller themes the
+ * dimming. The `chosen` strategy is the load-bearing summary; the full rationale +
+ * alternatives stay on the record for the planner/critic, not the one-liner.
+ */
+export function formatGoalApproachLine(goal: Goal): string | undefined {
+  const a = goal.approach;
+  if (a === undefined) return undefined;
+  const chosen = a.chosen.trim();
+  if (chosen.length === 0) return undefined;
+  return `approach: ${chosen}`;
 }
 
 const ROADMAP_BOX: Record<RoadmapStatus, string> = {

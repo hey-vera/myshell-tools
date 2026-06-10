@@ -39,6 +39,12 @@ const GOAL_PLAN_TITLE_MAX_CHARS = 80;
 const GOAL_PLAN_TODO_MAX_CHARS = 120;
 /** Hard cap on the clarifying ASK — one sharp question. */
 const GOAL_PLAN_ASK_MAX_CHARS = 200;
+/** Hard caps on the best-approach lines (a concise strategy, not an essay). The
+ *  store's capGoal re-caps at 400/160, so these are the prompt-side display bound. */
+const GOAL_PLAN_APPROACH_MAX_CHARS = 200;
+const GOAL_PLAN_APPROACH_ALT_MAX_CHARS = 80;
+/** Bounded list of named alternatives per goal (a handful, not a survey). */
+const GOAL_PLAN_APPROACH_MAX_ALTS = 4;
 /** Bounded counts (mirror the roadmap cap-8 discipline): ≤4 goals, ≤8 todos each.
  *  Exported so the prompt's documented caps and the parser's enforcement share ONE
  *  source of truth (consumed by goal-plan tests + buildGoalPlanPrompt). */
@@ -68,10 +74,27 @@ export interface GoalPlanTodo {
  * goal's roadmap-to-be), each step optionally carrying its true blockers
  * (see {@link GoalPlanTodo}).
  */
+/**
+ * The best-approach a planned goal carries: the CHOSEN strategy + WHY it beats
+ * the alternatives, grounded in the real system when the SystemModel is warm.
+ * OPTIONAL per goal (trivial goals omit it). Maps 1:1 onto the stored
+ * {@link RoadmapItemApproach} (chosen/rationale/alternatives) at create time.
+ */
+interface GoalPlanApproach {
+  readonly chosen: string;
+  readonly rationale: string;
+  readonly alternatives?: readonly string[];
+}
+
 export interface GoalPlan {
   readonly judgment: 'none' | 'stage' | 'clarify';
   readonly vision?: string;
-  readonly goals: readonly { readonly title: string; readonly todos: readonly GoalPlanTodo[] }[];
+  readonly goals: readonly {
+    readonly title: string;
+    readonly todos: readonly GoalPlanTodo[];
+    /** The goal's best-approach (chosen + why), when the planner stated one. */
+    readonly approach?: GoalPlanApproach;
+  }[];
   readonly clarifyingQuestion?: string;
 }
 
@@ -117,6 +140,9 @@ export function buildGoalPlanPrompt(
     '      JUDGMENT: stage',
     '      VISION: <one crisp line naming what the owner is really trying to achieve>',
     '      GOAL: <a professional objective, the way a senior would name it>',
+    '      APPROACH: <the chosen strategy — the smartest, most-efficient way to do it>',
+    '      WHY: <why it beats the alternatives, grounded in the real system>',
+    '      ALT: <a rejected option, another rejected option>',
     '      TODO: <a concrete first step of that goal>',
     '      TODO: <the next concrete step>',
     '      TODO: <a step that truly needs earlier ones first>  [after: 1, 2]',
@@ -139,6 +165,13 @@ export function buildGoalPlanPrompt(
     '    todo may only reference EARLIER numbers (never itself or a later one).',
     `  - At most ${String(GOAL_PLAN_MAX_GOALS)} goals; at most ${String(GOAL_PLAN_MAX_TODOS)} todos per goal. Prefer fewer,`,
     '    sharper goals over a sprawl.',
+    '  - For a goal with real engineering depth, state the smartest APPROACH: a',
+    '    concise APPROACH line (the chosen strategy) immediately under its GOAL, a',
+    '    WHY line (why it beats the alternatives — grounded in the real system when',
+    '    you know it), and OPTIONALLY one ALT line (the rejected options, comma-',
+    "    separated). Both APPROACH and WHY are required together or omit BOTH — never",
+    '    state a strategy with no reasoning. SKIP all three for a trivial goal; keep',
+    '    them SHORT (one line each). They attach to the GOAL directly above them.',
     "  - NEVER echo the owner's raw phrasing or parrot their words back. Name the",
     '    objective professionally (e.g. "Harden the auth token-refresh path"), not a',
     "    restatement of what they typed.",
@@ -255,7 +288,17 @@ export function parseGoalPlan(raw: string | undefined | null): GoalPlan | null {
   let judgment: GoalPlan['judgment'] | null = null;
   let vision: string | undefined;
   let clarifyingQuestion: string | undefined;
-  const goals: { title: string; todos: GoalPlanTodo[] }[] = [];
+  // Each goal accumulates an OPTIONAL approach as APPROACH/WHY/ALT lines arrive
+  // (they attach to the most-recent GOAL). `chosen`/`rationale` start undefined;
+  // the approach is only emitted at finalize when BOTH are present (never a half-
+  // record). A goal with no APPROACH/WHY keeps these undefined → no approach field.
+  const goals: {
+    title: string;
+    todos: GoalPlanTodo[];
+    chosen?: string;
+    rationale?: string;
+    alternatives?: string[];
+  }[] = [];
 
   for (const line of rawLines) {
     const trimmed = line.trim();
@@ -280,6 +323,38 @@ export function parseGoalPlan(raw: string | undefined | null): GoalPlan | null {
       if (value.length === 0) continue;
       if (goals.length >= GOAL_PLAN_MAX_GOALS) continue;
       goals.push({ title: capLen(value, GOAL_PLAN_TITLE_MAX_CHARS), todos: [] });
+      continue;
+    }
+    if (tag === 'approach') {
+      if (value.length === 0) continue;
+      const current = goals[goals.length - 1];
+      if (current === undefined) continue; // an APPROACH before any GOAL is dropped
+      if (current.chosen === undefined) current.chosen = capLen(value, GOAL_PLAN_APPROACH_MAX_CHARS);
+      continue;
+    }
+    if (tag === 'why') {
+      if (value.length === 0) continue;
+      const current = goals[goals.length - 1];
+      if (current === undefined) continue; // a WHY before any GOAL is dropped
+      if (current.rationale === undefined) current.rationale = capLen(value, GOAL_PLAN_APPROACH_MAX_CHARS);
+      continue;
+    }
+    if (tag === 'alt') {
+      if (value.length === 0) continue;
+      const current = goals[goals.length - 1];
+      if (current === undefined) continue; // an ALT before any GOAL is dropped
+      if (current.alternatives === undefined) {
+        const alts: string[] = [];
+        const seen = new Set<string>();
+        for (const tok of value.split(',')) {
+          const a = capLen(cleanValue(tok), GOAL_PLAN_APPROACH_ALT_MAX_CHARS);
+          if (a.length === 0 || seen.has(a)) continue;
+          seen.add(a);
+          alts.push(a);
+          if (alts.length >= GOAL_PLAN_APPROACH_MAX_ALTS) break;
+        }
+        if (alts.length > 0) current.alternatives = alts;
+      }
       continue;
     }
     if (tag === 'todo') {
@@ -330,7 +405,25 @@ export function parseGoalPlan(raw: string | undefined | null): GoalPlan | null {
     return {
       judgment: 'stage',
       ...(vision !== undefined ? { vision } : {}),
-      goals: usableGoals.map((g) => ({ title: g.title, todos: g.todos.slice(0, GOAL_PLAN_MAX_TODOS) })),
+      goals: usableGoals.map((g) => {
+        // Emit the approach ONLY when BOTH chosen + rationale are present (never a
+        // half-record); a goal that stated neither is byte-identical to before.
+        const approach: GoalPlanApproach | undefined =
+          g.chosen !== undefined && g.chosen.length > 0 && g.rationale !== undefined && g.rationale.length > 0
+            ? {
+                chosen: g.chosen,
+                rationale: g.rationale,
+                ...(g.alternatives !== undefined && g.alternatives.length > 0
+                  ? { alternatives: g.alternatives }
+                  : {}),
+              }
+            : undefined;
+        return {
+          title: g.title,
+          todos: g.todos.slice(0, GOAL_PLAN_MAX_TODOS),
+          ...(approach !== undefined ? { approach } : {}),
+        };
+      }),
     };
   }
   if (judgment === 'clarify') {

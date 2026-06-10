@@ -100,6 +100,31 @@ describe('goal-store — CRUD round-trip', () => {
     assert.equal(g.roadmap.length, 8);
   });
 
+  it('create records a goal-level approach + it round-trips through get', async () => {
+    const approach = {
+      chosen: 'A single guarded mutex around the refresh call',
+      rationale: 'Eliminates the concurrent-refresh race without touching call sites',
+      alternatives: ['per-call locking', 'optimistic retry'],
+    };
+    const g = await store.create({ title: 'Harden token refresh', approach });
+    assert.deepEqual(g.approach, approach);
+    const full = await store.get(g.id);
+    assert.deepEqual(full?.approach, approach);
+  });
+
+  it('create WITHOUT an approach omits the field (byte-identical to before)', async () => {
+    const g = await store.create({ title: 'plain goal' });
+    assert.equal('approach' in g, false);
+  });
+
+  it('create with a half-record approach (no rationale) omits it', async () => {
+    const g = await store.create({
+      title: 'half',
+      approach: { chosen: 'a strategy' } as unknown as { chosen: string; rationale: string },
+    });
+    assert.equal('approach' in g, false);
+  });
+
   it('setState flips the lifecycle state and bumps lastTouched', async () => {
     const g = await store.create({ title: 'ship it' });
     assert.equal(g.state, 'parked');
