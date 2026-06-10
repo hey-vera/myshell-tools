@@ -6,6 +6,16 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+## [3.72.0] - 2026-06-10
+
+### Changed (auto-plan only on real work, not on questions)
+- **Auto-staging no longer fires on pure questions/lookups.** The planner gate now
+  keys on WORK INTENT (a manager/IC signal — "wire up auth", "refactor the store",
+  "let's plan the migration") rather than any keyword evidence, so a read-only lookup
+  ("how does X work?", "explain Y", "find Z") no longer spends a background manager
+  call (it would only ever return "nothing to stage" on a question). Real build/plan
+  turns are unaffected. New pure predicate `hasWorkIntent` in classify.ts.
+
 ## [3.71.0] - 2026-06-10
 
 ### Fixed (default-on experience — rough edges from a proactive audit)

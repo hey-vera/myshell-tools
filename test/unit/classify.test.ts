@@ -13,7 +13,7 @@
 
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { classify } from '../../src/core/classify.ts';
+import { classify, hasWorkIntent } from '../../src/core/classify.ts';
 
 // ---------------------------------------------------------------------------
 // Table-driven baseline tests
@@ -147,6 +147,34 @@ describe('classify — tier detection', () => {
       );
     });
   }
+});
+
+describe('hasWorkIntent — gate for the auto-stage planner (work, not lookups)', () => {
+  it('fires on manager/IC work signals', () => {
+    for (const t of [
+      'wire up the auth login flow',
+      'implement the dark-mode toggle',
+      'refactor the goal store',
+      'add tests for the planner',
+      'build and ship the billing system',
+      'fix the failing migration',
+    ]) {
+      assert.equal(hasWorkIntent(t), true, `expected work intent: "${t}"`);
+    }
+  });
+  it('does NOT fire on pure read-only lookups / questions', () => {
+    for (const t of [
+      'how does the router work?',
+      'what is the verify engine?',
+      'explain the goal store',
+      'find the auth module',
+      'show me the recent goals',
+      'sounds good?',
+      '',
+    ]) {
+      assert.equal(hasWorkIntent(t), false, `expected NO work intent: "${t}"`);
+    }
+  });
 });
 
 describe('classify — risk detection', () => {

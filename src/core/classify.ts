@@ -286,6 +286,23 @@ export function hasTierEvidence(task: string): boolean {
 }
 
 /**
+ * True when a turn carries evidence of real WORK to plan — a manager (orchestration/
+ * planning) or IC (implement/build/fix/wire-up) signal — as opposed to a pure
+ * read-only LOOKUP (find/show/"what is"/"how does"/explain), which is worker-only.
+ *
+ * This is the gate for the auto-stage PLANNER: staging goals off a plain question
+ * ("how does the router work?") is wrong AND wastes a background manager call on a
+ * subscription's quota (the planner just returns judgment:none). A real build/plan
+ * turn ("wire up auth", "refactor the store", "let's plan the migration") still has a
+ * manager/IC signal and fires. Turns with NO keyword evidence never reach here. Pure.
+ */
+export function hasWorkIntent(task: string): boolean {
+  if (!task || task.trim().length === 0) return false;
+  const signals = scoreTierSignals(task);
+  return signals.managerQualifies || signals.icMatches.length > 0;
+}
+
+/**
  * Classify a free-text `task` string into a {@link Classification}.
  *
  * Tier: multi-signal scoring; tie-break manager > ic > worker; default ic.

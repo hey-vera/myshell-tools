@@ -35,7 +35,7 @@ import {
 import { deriveWorkStateFromHistory, renderWorkStateBlock } from '../core/work-state.js';
 import { isKeepGoingOffer } from '../core/questions.js';
 import { decideAutonomyOffer } from '../core/autonomy.js';
-import { classify, hasTierEvidence } from '../core/classify.js';
+import { classify, hasWorkIntent } from '../core/classify.js';
 import { resolveMemoryContextDetailed } from '../core/memory-injection.js';
 import { buildEnvironmentContext } from '../core/repo-map.js';
 import {
@@ -2371,11 +2371,11 @@ export async function runChatLoop(
         })();
       };
       // Run the planning brain for ONE settled turn and act on its verdict. Gated
-      // (by the caller) on: the flag, a NON-TRIVIAL turn (hasTierEvidence — a real
-      // engagement signal, never a "sounds good?"), and quota pressure below the
-      // ceiling (we skip the extra manager call when every provider is throttled, so
-      // auto-staging never piles onto a quota wall). One manager call per qualifying
-      // turn. Fully fail-soft: ANY error/timeout/empty → do nothing, never block,
+      // (by the caller) on: the flag, a WORK-INTENT turn (hasWorkIntent — a manager/IC
+      // signal, never a "sounds good?" or a pure lookup question), and quota pressure
+      // below the ceiling (we skip the extra manager call when every provider is
+      // throttled, so auto-staging never piles onto a quota wall). One manager call per
+      // qualifying turn. Fully fail-soft: ANY error/timeout/empty → do nothing, never block,
       // never crash the turn.
       const resolveAutoStage = async (line: string): Promise<void> => {
         if (!autoStageOn) return;
@@ -3836,9 +3836,11 @@ export async function runChatLoop(
       // ---- Planning brain / auto-stage (Phase 6) — AFTER the post-turn slot ----
       // Runs ONLY on a clean, settled SUCCESS turn that did not itself end in a
       // question (the model's own ask_user already owns the floor in that case).
-      // Gated on the non-trivial engagement signal (hasTierEvidence) so a trivial
-      // "sounds good?" turn NEVER pays for a manager call. Flag-off ⇒ resolveAutoStage
-      // is a no-op ⇒ byte-identical. Fully fail-soft inside resolveAutoStage.
+      // Gated on WORK INTENT (hasWorkIntent — a manager/IC signal, real build/plan
+      // work), so a trivial "sounds good?" AND a pure read-only LOOKUP ("how does X
+      // work?", "explain Y") never pay for a background manager call (the planner
+      // would just return judgment:none on a question — wasted quota). Flag-off ⇒
+      // resolveAutoStage is a no-op ⇒ byte-identical. Fully fail-soft inside.
       //
       // FIRE-AND-FORGET (not awaited): the planner is a manager-tier call (~up to 8s),
       // and awaiting it here would FREEZE the screen between "✓ done" and the next
@@ -3851,7 +3853,7 @@ export async function runChatLoop(
         autoStageOn &&
         result.final?.success === true &&
         result.final.questions === undefined &&
-        hasTierEvidence(line)
+        hasWorkIntent(line)
       ) {
         void resolveAutoStage(line);
       }
