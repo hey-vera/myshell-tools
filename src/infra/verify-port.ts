@@ -19,7 +19,7 @@
 
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { readFile as fsReadFile } from 'node:fs/promises';
+import { readFile as fsReadFile, stat as fsStat, readdir as fsReaddir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { execa } from 'execa';
 
@@ -76,9 +76,16 @@ export const nodeVerifyPort: VerifyPort = {
     const pkgRaw = await readFileSafe(cwd, 'package.json');
     if (pkgRaw !== null) {
       try {
-        const pkg = JSON.parse(pkgRaw) as { scripts?: Record<string, unknown> };
+        const pkg = JSON.parse(pkgRaw) as { scripts?: Record<string, unknown>; packageManager?: string };
         const test = pkg.scripts?.['test'];
         if (typeof test === 'string' && isRealTestScript(test)) {
+          // pnpm / yarn workspace: if their lockfile is present, prefer their CLI.
+          if ((await existsSafe(cwd, 'pnpm-lock.yaml'))) {
+            return { label: 'pnpm test', command: 'pnpm', args: ['test'] };
+          }
+          if ((await existsSafe(cwd, 'yarn.lock'))) {
+            return { label: 'yarn test', command: 'yarn', args: ['test'] };
+          }
           return { label: 'npm test', command: 'npm', args: ['test', '--silent'] };
         }
       } catch {
@@ -97,6 +104,64 @@ export const nodeVerifyPort: VerifyPort = {
     }
     if ((await readFileSafe(cwd, 'go.mod')) !== null) {
       return { label: 'go test', command: 'go', args: ['test', './...'] };
+    }
+
+    // ---------------------------------------------------------------------------
+    // Extended detectors — only reached when none of the above matched.
+    // Each is fail-soft: any fs error → skip to next detector.
+    // ---------------------------------------------------------------------------
+
+    // Elixir: mix.exs present → `mix test`
+    if ((await existsSafe(cwd, 'mix.exs'))) {
+      return { label: 'mix test', command: 'mix', args: ['test'] };
+    }
+
+    // .NET: any *.csproj or *.sln → `dotnet test`
+    if ((await globExistsSafe(cwd, ['.csproj', '.sln']))) {
+      return { label: 'dotnet test', command: 'dotnet', args: ['test'] };
+    }
+
+    // Gradle: gradlew wrapper first, then bare gradle
+    if ((await existsSafe(cwd, 'gradlew'))) {
+      return { label: 'gradle test', command: './gradlew', args: ['test'] };
+    }
+    if ((await existsSafe(cwd, 'build.gradle'))
+      || (await existsSafe(cwd, 'build.gradle.kts'))) {
+      return { label: 'gradle test', command: 'gradle', args: ['test'] };
+    }
+
+    // Ruby: Rakefile with a test task → `rake test`; spec/ + .rspec → `rspec`
+    const rakefileRaw = await readFileSafe(cwd, 'Rakefile');
+    if (rakefileRaw !== null && hasRakeTestTask(rakefileRaw)) {
+      return { label: 'rake test', command: 'rake', args: ['test'] };
+    }
+    if ((await existsSafe(cwd, '.rspec')) || (await existsSafe(cwd, 'spec'))) {
+      return { label: 'rspec', command: 'rspec', args: [] };
+    }
+
+    // PHP: composer.json with a `test` script → `composer test`
+    const composerRaw = await readFileSafe(cwd, 'composer.json');
+    if (composerRaw !== null) {
+      try {
+        const composer = JSON.parse(composerRaw) as { scripts?: Record<string, unknown> };
+        const test = composer.scripts?.['test'];
+        if (typeof test === 'string' && isRealTestScript(test)) {
+          return { label: 'composer test', command: 'composer', args: ['test'] };
+        }
+      } catch {
+        // Malformed composer.json → skip.
+      }
+    }
+
+    // Make / justfile: check for a `test` target
+    if ((await hasMakeTestTarget(cwd, 'justfile'))
+      || (await hasMakeTestTarget(cwd, 'Justfile'))) {
+      return { label: 'just test', command: 'just', args: ['test'] };
+    }
+    if ((await hasMakeTestTarget(cwd, 'Makefile'))
+      || (await hasMakeTestTarget(cwd, 'makefile'))
+      || (await hasMakeTestTarget(cwd, 'GNUmakefile'))) {
+      return { label: 'make test', command: 'make', args: ['test'] };
     }
 
     // Nothing clearly detected — NEVER fabricate a runner.
@@ -213,6 +278,55 @@ async function readFileSafe(cwd: string, rel: string): Promise<string | null> {
   } catch {
     return null;
   }
+}
+
+/**
+ * Return true if a file/directory at cwd/rel exists (any type), no-throw.
+ * Used instead of readFileSafe when we only need presence, not content.
+ */
+async function existsSafe(cwd: string, rel: string): Promise<boolean> {
+  try {
+    // fsStat resolves both files and directories; ENOENT → false.
+    await fsStat(join(cwd, rel));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Return true if any file in cwd has one of the given extensions (e.g. ".csproj").
+ * Only reads the directory listing — never recurses — so it is fast and safe.
+ */
+async function globExistsSafe(cwd: string, exts: string[]): Promise<boolean> {
+  try {
+    const entries = await fsReaddir(cwd);
+    return entries.some((e) => exts.some((x) => e.endsWith(x)));
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Return true if the given Makefile-like file contains a bare `test:` or
+ * `test ` target line.  Fail-soft: any read/parse error → false.
+ */
+async function hasMakeTestTarget(cwd: string, filename: string): Promise<boolean> {
+  const content = await readFileSafe(cwd, filename);
+  if (content === null) return false;
+  // Match a line that starts with "test:" or "test " (phony target declaration).
+  return /^test[: \t]/m.test(content);
+}
+
+/**
+ * Return true if the Rakefile contains a task named "test".
+ * Conservative — matches `task :test`, `task "test"`, `task 'test'`.
+ * The symbol form `:test` has no trailing delimiter; the string forms do.
+ */
+function hasRakeTestTask(content: string): boolean {
+  // Symbol form:  task :test  (colon prefix, no trailing delimiter)
+  // String forms: task "test" / task 'test' (matching quote delimiters)
+  return /task\s+:test\b/.test(content) || /task\s+["']test["']/.test(content);
 }
 
 function clip(text: string, max: number): string {

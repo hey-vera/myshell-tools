@@ -6,6 +6,15 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+## [3.84.0] - 2026-06-10
+
+### Changed (verified-done is reachable on any stack — master-plan Phase 5)
+- **Verification now detects test commands for 8 more stacks** so a goal can actually
+  reach verified-done outside JS/Python/Rust/Go: pnpm/yarn workspaces, Elixir (mix),
+  .NET (dotnet), Gradle, Ruby (rake/rspec), PHP (composer), `just`, and `make` targets.
+  Existing detection (npm/pytest/cargo/go) keeps its priority, so any repo that resolved
+  before resolves identically; placeholder/`exit 1` scripts are still skipped.
+
 ## [3.83.0] - 2026-06-10
 
 ### Changed (the goal experience PROPOSES like a confident pro — master-plan Phase 2)
