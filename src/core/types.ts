@@ -523,6 +523,17 @@ export interface OrchestrateDeps {
    */
   readonly visionTriageContext?: string;
   /**
+   * Pre-rendered, capped SYSTEM UNDERSTANDING block (vision-brain §2 / Phase 3a) for
+   * the prompt seam. The deep whole-picture {@link import('./understanding.js').SystemModel}
+   * of the real system this work touches, rendered by
+   * `understanding.ts renderSystemModelContext`. The understanding pass previously
+   * grounded ONLY the goal planner; threading it here injects that depth into the
+   * WORK prompt so a substantial turn builds against the real motherboard. Resolved
+   * by the deps layer (the warmed/cached SystemModel) and rendered by
+   * `assembleContextBlocks` right before INTENT. Absent → byte-identical to today.
+   */
+  readonly understandingContext?: string;
+  /**
    * Pre-rendered, capped INTENT block (intent-engine §5.4) for the prompt seam.
    * Computed ONCE per turn INSIDE orchestrate (gated — substantial/ambiguous
    * turns only) and threaded onto a per-turn deps copy so it rides sequential,
@@ -744,6 +755,31 @@ export interface OrchestrateDeps {
    * normal work-call). Type-only import keeps types.ts a leaf module.
    */
   readonly worktreePort?: import('./tribunal.js').WorktreePort;
+  /**
+   * RESEARCH-UNTIL-CONFIDENT flag (vision-brain §2 / master-plan Phase 3b). When true
+   * (the caller resolved `researchEnabled(env, config)`) the brain may run a SECOND-
+   * ANGLE `'web'` re-research round (native web search) AFTER a local codebase round
+   * has grounded the turn but understanding is STILL genuinely low on an external/novel
+   * need. DEFAULT OFF (absent/false): the `'web'` brain arm is structurally
+   * unreachable, so the brain loop + `decideNextMove` are BYTE-FOR-BYTE today's
+   * behavior (the characterization/oracle/brain suites prove that neutrality). The
+   * REAL Read/Grep retrieval that enriches the codebase round is gated SEPARATELY by
+   * {@link researchPort} (absent → the codebase round re-checks the static layout
+   * exactly as before).
+   */
+  readonly researchEnabled?: boolean;
+  /**
+   * The injected READ-ONLY retrieval port (vision-brain §2 / Phase 3a). Provides the
+   * bounded grep/readFile (and optional native web-search) primitives the brain's
+   * investigation rounds use to actually DIVE IN to the relevant files / current
+   * sources, vs. only re-checking the static repo map. Impure (fs/grep/subscription
+   * search); production impl is src/infra/research-port.ts. Read ONLY inside the brain
+   * loop's investigation arms; absent → the codebase round re-checks the static layout
+   * exactly as today and the `'web'` round (even if flag-on) finds no capability and
+   * stops honestly → BYTE-FOR-BYTE today's behavior. Type-only import keeps types.ts a
+   * leaf module.
+   */
+  readonly researchPort?: import('./research.js').ResearchPort;
 }
 
 /**

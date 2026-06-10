@@ -286,6 +286,18 @@ export interface AppConfig {
    */
   experimentalTribunal?: boolean;
   /**
+   * Opt-in for RESEARCH-UNTIL-CONFIDENT's SECOND-ANGLE web re-research (the brain's
+   * `'web'` investigation move; master-plan Phase 3b). DEFAULT OFF — absent/false →
+   * the brain's `decideNextMove` never emits the `'web'` move, so the loop is
+   * byte-for-byte today's. When true (or `MYSHELL_RESEARCH` ∈ {1,true,on,yes}) the
+   * brain may, after a local codebase round has grounded a still-low-confidence
+   * external/novel turn, re-query the web from a fresh angle (native search) until
+   * confident or the round budget is spent. See src/core/research-flag.ts /
+   * src/core/research.ts. The local Read/Grep retrieval is gated separately (the
+   * researchPort), not by this flag.
+   */
+  experimentalResearch?: boolean;
+  /**
    * Opt-in for the REAL PERSISTENT GOAL BOARD (Elite-partner Phase 1). Absent/false
    * → the live status region is byte-for-byte today's, INCLUDING the per-turn
    * "GOALS ▸ <message>" card. When true (or `MYSHELL_BOARD` ∈ {1,true,on,yes}) the

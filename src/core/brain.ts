@@ -24,9 +24,12 @@
  * Total + fail-soft: a malformed/absent frame degrades to the fast-path or to
  * "investigate if investigable, else answer"; it never throws.
  *
- * SCOPE (Phase 1): only the `'codebase'` investigation kind is enabled here. The
- * `'web'` and `'brainstorm'` kinds (vision-brain §2b/§2c, Phases 2/3) are NOT
- * emitted — `decideNextMove` never returns them.
+ * SCOPE: the `'codebase'` investigation kind is always-on (the local first angle).
+ * The `'web'` kind (vision-brain §2b, Phase 3 — RESEARCH-UNTIL-CONFIDENT) is emitted
+ * ONLY behind `JudgmentContext.researchEnabled` (default OFF) AND only as a SECOND
+ * angle after a local round has grounded the turn — so flag-off it is never returned
+ * and `decideNextMove` stays byte-for-byte today's policy. The `'brainstorm'` kind
+ * remains unbuilt.
  */
 
 import type { QuestionSet } from './types.js';
@@ -230,8 +233,16 @@ function substantialBuild(signals: EngagementSignals, plan: EngagementPlan): boo
 // The adaptive control loop (vision-brain §3) — the PURE per-iteration policy
 // ---------------------------------------------------------------------------
 
-/** Phase 1 enables ONLY the codebase scrape; web/brainstorm are Phases 2/3. */
-type InvestigationKind = 'codebase';
+/**
+ * The investigation tools the brain can pick. `'codebase'` is the always-on local
+ * re-orientation/retrieval pass (the FIRST angle); `'web'` is the Phase-3 EXTERNAL
+ * re-research angle (native web search) — emitted ONLY behind the research flag AND
+ * only AFTER a local round has already grounded the turn, so a still-low-confidence
+ * external/novel turn re-queries from a NEW angle (the vision's "I'm not confident,
+ * let me try a different angle"). Self-correction is EXTERNALLY ANCHORED: `'web'` is a
+ * fresh retrieval, never the model re-reading + second-guessing its own answer.
+ */
+type InvestigationKind = 'codebase' | 'web';
 
 /** The brain's running loop state (the impure loop in orchestrate owns it). */
 export interface BrainLoopState {
@@ -309,6 +320,16 @@ export const MAX_ROUNDS_COLLABORATIVE = 3;
  */
 export const CODEBASE_NARRATION = 'Factoring in the project layout…';
 
+/**
+ * Honest narration for a Phase-3 WEB re-research round (vision-brain §2b). HONESTY:
+ * this round runs a REAL native web search from a NEW angle and re-runs the intent
+ * extractor on the enriched context. It fires ONLY after a local round has already
+ * grounded the turn yet understanding is still low on a genuine external/novel need,
+ * so the narration reflects exactly that — a fresh external angle, never re-reading
+ * the model's own prior answer (the externally-anchored self-correction rule).
+ */
+export const WEB_NARRATION = 'Checking current sources from a different angle…';
+
 // ---------------------------------------------------------------------------
 // THE FREE JUDGMENT LAYER (master-judgment §2) — the `push_back` grounded gate
 // ---------------------------------------------------------------------------
@@ -340,6 +361,15 @@ export interface JudgmentContext {
    * deterministic `synthesizeJudgment` result; the brain only surfaces it.
    */
   readonly pollSurface?: PollSurface;
+  /**
+   * RESEARCH-UNTIL-CONFIDENT (vision-brain §2b / Phase 3) flag. DEFAULT false →
+   * absent. When true the policy MAY emit a second-angle `'web'` investigation round
+   * (native web search) AFTER a local codebase round has grounded the turn but
+   * understanding is still genuinely low on an EXTERNAL/novel need. Off/absent → the
+   * `'web'` arm is NEVER reached, so `decideNextMove` returns byte-for-byte today's
+   * move (the OFF-GUARANTEE; the existing brain/decideNextMove tests pass nothing).
+   */
+  readonly researchEnabled?: boolean;
 }
 
 /**
@@ -721,6 +751,31 @@ export function decideNextMove(
     isInvestigable(signals)
   ) {
     return { kind: 'investigate', tool: 'codebase', narration: CODEBASE_NARRATION };
+  }
+
+  // 2b) RESEARCH-UNTIL-CONFIDENT — a SECOND-ANGLE `'web'` re-research round (vision-
+  //     brain §2b / Phase 3). FLAG-GATED OFF (`judgment.researchEnabled`); when
+  //     absent/false this arm is NEVER reached, so the move is byte-for-byte today's.
+  //     It fires ONLY when, AFTER a local codebase round has grounded the turn
+  //     (`groundedness === 'grounded'`), understanding is STILL genuinely too low
+  //     AND the turn carries a real EXTERNAL/novel need — reusing the EXISTING
+  //     engagement WEB_RESEARCH determination (`plan.actions` includes WEB_RESEARCH),
+  //     NOT a new detector — AND there is round budget left AND the deep-dive is not
+  //     opted out. This is the vision's "I'm not confident, let me try a DIFFERENT
+  //     angle": the codebase arm (groundedness 'unread') and this web arm (groundedness
+  //     'grounded') are mutually exclusive, so a turn re-queries externally only after
+  //     the local angle was exhausted. EXTERNALLY ANCHORED: a fresh search, never the
+  //     model re-reading its own answer.
+  if (
+    judgment.researchEnabled === true &&
+    tooLow &&
+    conf.groundedness === 'grounded' &&
+    state.rounds < state.maxRounds &&
+    !state.optedOutOfDeepDive &&
+    isInvestigable(signals) &&
+    plan.actions.includes('WEB_RESEARCH')
+  ) {
+    return { kind: 'investigate', tool: 'web', narration: WEB_NARRATION };
   }
 
   // 2.5) THE FREE JUDGMENT LAYER — `push_back` (master-judgment §2). ADDITIVE, RARE,

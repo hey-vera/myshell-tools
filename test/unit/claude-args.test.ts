@@ -141,4 +141,33 @@ describe('buildClaudeArgs', () => {
     assert.ok(args.indexOf('--resume') < args.indexOf('--disallowedTools'));
     assert.strictEqual(args[args.length - 1], 'Bash', 'tool list is the tail of argv');
   });
+
+  // ---- Native web search (--allowedTools WebSearch WebFetch), audit #3 -----
+
+  it('appends --allowedTools WebSearch WebFetch when webSearch is true (LIVE-VERIFIED required)', () => {
+    const args = buildClaudeArgs(makeReq({ webSearch: true }));
+    const i = args.indexOf('--allowedTools');
+    assert.ok(i >= 0, 'webSearch:true must add the WebSearch allow-list');
+    assert.strictEqual(args[i + 1], 'WebSearch');
+    assert.strictEqual(args[i + 2], 'WebFetch');
+  });
+
+  it('OMITS the web-search allow-list when webSearch is absent (byte-for-byte unchanged)', () => {
+    const args = buildClaudeArgs(makeReq());
+    assert.ok(!args.includes('--allowedTools'), 'no allow-list without webSearch');
+    assert.ok(!args.includes('WebSearch'));
+    // The default arg set is exactly the pre-feature one (no web flag leaked in).
+    assert.deepEqual(args, ['-p', '--output-format', 'stream-json', '--verbose', '--include-partial-messages', '--model', 'sonnet', '--max-budget-usd', '25', '--permission-mode', 'acceptEdits']);
+  });
+
+  it('OMITS the web-search allow-list when webSearch is explicitly false', () => {
+    const args = buildClaudeArgs(makeReq({ webSearch: false }));
+    assert.ok(!args.includes('--allowedTools'));
+  });
+
+  it('the web-search allow-list precedes the variadic --disallowedTools (tail stays the tool list)', () => {
+    const args = buildClaudeArgs(makeReq({ sandbox: 'read-only', webSearch: true }));
+    assert.ok(args.indexOf('--allowedTools') < args.indexOf('--disallowedTools'));
+    assert.strictEqual(args[args.length - 1], 'Bash', 'disallow tool list is still the tail of argv');
+  });
 });

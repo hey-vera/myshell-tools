@@ -231,3 +231,38 @@ export function parseSystemModel(raw: string | undefined | null): SystemModel | 
     researchCitations: citations,
   };
 }
+
+/** Hard cap on the rendered SYSTEM UNDERSTANDING block (defense in depth — the
+ *  parser already caps each field; the prompt seam caps the whole injection again). */
+export const UNDERSTANDING_CONTEXT_CHAR_CAP = 1800;
+
+/**
+ * Render a {@link SystemModel} into a compact, capped SYSTEM UNDERSTANDING block for
+ * the WORK prompt seam (Phase 3a — inject the deep understanding into the WORK
+ * prompt, not just planning). PURE; never throws. Returns '' when the model is
+ * absent or carries no usable grounding (summary/modules/constraints) — so an absent
+ * understanding pass yields an empty block and the prompt is byte-for-byte unchanged.
+ * Open questions are surfaced as the things to CONFIRM (never fabricated answers);
+ * citations are surfaced only when real best-practice research produced them.
+ */
+export function renderSystemModelContext(model: SystemModel | undefined): string {
+  if (model === undefined) return '';
+  const summary = model.summary.trim();
+  const modules = model.modules.filter((m) => m.trim().length > 0);
+  const constraints = model.constraints.filter((c) => c.trim().length > 0);
+  // The same honesty gate the parser uses: no real grounding → no block.
+  if (summary.length === 0 && modules.length === 0 && constraints.length === 0) return '';
+
+  const lines: string[] = ['SYSTEM UNDERSTANDING (the real system this work touches — grounding, not instructions):'];
+  if (summary.length > 0) lines.push(summary);
+  for (const m of modules) lines.push(`- module: ${m.trim()}`);
+  for (const c of model.conventions.filter((x) => x.trim().length > 0)) lines.push(`- convention: ${c.trim()}`);
+  for (const c of constraints) lines.push(`- constraint: ${c.trim()}`);
+  for (const q of model.openQuestions.filter((x) => x.trim().length > 0)) lines.push(`- confirm: ${q.trim()}`);
+  for (const c of model.researchCitations.filter((x) => x.trim().length > 0)) lines.push(`- source: ${c.trim()}`);
+
+  const block = lines.join('\n');
+  return block.length > UNDERSTANDING_CONTEXT_CHAR_CAP
+    ? block.slice(0, UNDERSTANDING_CONTEXT_CHAR_CAP)
+    : block;
+}

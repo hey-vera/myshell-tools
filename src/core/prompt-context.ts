@@ -102,6 +102,18 @@ export interface ContextBlockOptions {
    */
   readonly visionTriageContext?: string;
   /**
+   * Pre-rendered, capped SYSTEM UNDERSTANDING block (vision-brain §2 / Phase 3a):
+   * the deep whole-picture {@link import('./understanding.js').SystemModel} of the
+   * real system this work touches (summary / modules / conventions / hard constraints
+   * / things-to-confirm / real research citations), rendered by
+   * `understanding.ts renderSystemModelContext`. This injects the deep understanding
+   * pass output into the WORK prompt (it previously grounded ONLY the goal planner),
+   * so a substantial turn builds against the real motherboard, not a parts-list.
+   * undefined / empty → omit (byte-for-byte unchanged). Rendered right BEFORE INTENT
+   * so the model orients on the real system before reflecting a single goal.
+   */
+  readonly understandingContext?: string;
+  /**
    * The turn's INTENT block, pre-rendered (intent doc §5.4). undefined → omit.
    * Produced by Phase 6; rendered here when present.
    */
@@ -150,7 +162,7 @@ export function partnerNudge(style: PartnerStyle): string {
  *
  * Canonical block order (master plan §MF1; ENVIRONMENT prepended in E1;
  * TOOL-STATE adjacent to ENVIRONMENT; WORK STATE after MEMORY, AP2-B §2.3 B):
- *   ENVIRONMENT → TOOL-STATE → MEMORY → LEARNED TASTE → WORK STATE → INTENT → ENGAGEMENT → (partner posture nudge)
+ *   ENVIRONMENT → TOOL-STATE → MEMORY → LEARNED TASTE → WORK STATE → GOALS → VISION TRIAGE → SYSTEM UNDERSTANDING → INTENT → ENGAGEMENT → (partner posture nudge)
  *
  * Each block is independently present/absent. The returned string is inserted by
  * every prompt builder at the same point: AFTER system, BEFORE "CONVERSATION SO
@@ -212,6 +224,14 @@ export function assembleContextBlocks(opts: ContextBlockOptions): string {
   const visionTriage = opts.visionTriageContext?.trim();
   if (visionTriage !== undefined && visionTriage.length > 0) {
     blocks.push(visionTriage);
+  }
+
+  // SYSTEM UNDERSTANDING — the deep whole-picture model of the real system (Phase
+  // 3a), rendered right BEFORE INTENT so the model builds against the real
+  // motherboard. Absent (understanding pass off / produced nothing) → byte-identical.
+  const understanding = opts.understandingContext?.trim();
+  if (understanding !== undefined && understanding.length > 0) {
+    blocks.push(understanding);
   }
 
   const intent = opts.intentFrame?.trim();

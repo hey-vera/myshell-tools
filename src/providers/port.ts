@@ -67,9 +67,11 @@ export interface ProviderRequest {
    * needs external/current facts — derived from the EXISTING engagement
    * WEB_RESEARCH determination (the knowledge-boundary predicate), so it never
    * fires on ordinary coding/local turns. When absent/false the adapter args are
-   * byte-for-byte unchanged. TODAY only the Codex adapter honours this (appends
-   * `-c tools.web_search=true` when the chosen codex model supportsSearchTool);
-   * Claude/OpenCode ignore it (their CLI web-search invocation is unverified).
+   * byte-for-byte unchanged. The Codex adapter appends `-c tools.web_search=true`
+   * (when the chosen codex model supportsSearchTool); the Claude adapter appends
+   * `--allowedTools WebSearch WebFetch` (LIVE-VERIFIED: required, else the CLI denies
+   * its own WebSearch tool in headless `-p`). OpenCode ignores it (its CLI web-search
+   * invocation is unverified). All run under the user's subscription — no api key.
    */
   readonly webSearch?: boolean;
   /**

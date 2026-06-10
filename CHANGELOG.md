@@ -6,6 +6,21 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+## [3.85.0] - 2026-06-10
+
+### Added (research-until-confident — master-plan Phase 3)
+- **The partner actually investigates and re-researches now.** On a substantial turn it
+  runs a bounded read-only Read/Grep pass over the files relevant to your task (instead of
+  only re-reading a static layout map), folds what it finds into its understanding, and
+  injects that whole-picture model into the *work* prompt — not just planning. Claude's
+  **native web search** is now wired (`--allowedTools WebSearch WebFetch`, live-verified),
+  so when the answer is external the partner can search — and, on low confidence,
+  **re-query from a different angle** until it's confident or hits its budget, always
+  anchored to real evidence, never the model second-guessing its own answer.
+- Local Read/Grep retrieval is on by default (free); the web-search angle is opt-in via
+  `MYSHELL_RESEARCH=1` (it spends subscription quota). Fully additive + neutrality
+  byte-identical (port/flag absent ⇒ unchanged).
+
 ## [3.84.0] - 2026-06-10
 
 ### Changed (verified-done is reachable on any stack — master-plan Phase 5)

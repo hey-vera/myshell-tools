@@ -51,6 +51,9 @@ import { createFileUserMemoryStore, resolveProjectKey } from '../infra/user-memo
 import { createFileTasteLedger } from '../infra/taste-ledger.js';
 import { tasteEnabled } from '../core/taste-flag.js';
 import { judgmentEnabled } from '../core/judgment-flag.js';
+import { researchEnabled } from '../core/research-flag.js';
+import { createNodeResearchPort } from '../infra/research-port.js';
+import { renderSystemModelContext } from '../core/understanding.js';
 import { isPushBackQuestionSet, classifyPushBackAnswer } from '../core/brain.js';
 import { renderTastePlaybook, isImmediateRephrase, type TasteSignal } from '../core/taste.js';
 import { createFileGoalStore } from '../infra/goal-store.js';
@@ -87,7 +90,8 @@ import { summarizeSpend } from '../infra/insights.js';
 import type { EnvironmentStatus } from '../providers/detect.js';
 import { detectEnvironment } from '../providers/detect.js';
 import { installProvider, installCommandFor } from '../providers/install.js';
-import type { Provider, ProviderId, SandboxLevel } from '../providers/port.js';
+import type { Provider, ProviderId, ProviderRequest, SandboxLevel } from '../providers/port.js';
+import { route } from '../core/route.js';
 import {
   POLICY_PRESETS,
   modeLabel,
@@ -1777,6 +1781,28 @@ export async function runChatLoop(
       let goalContextSnapshot = '';
       const currentGoalContext = (): string => goalContextSnapshot;
 
+      // ---- SYSTEM UNDERSTANDING snapshot (Phase 3a) --------------------------
+      // The warm SystemModel cache is created LATER (the goal/auto-stage flow), so —
+      // exactly like currentGoalContext — buildDeps reads it through a lazy closure
+      // captured by reference and only CALLED at turn time. It renders the MOST
+      // RECENTLY warmed SystemModel into the WORK-prompt SYSTEM UNDERSTANDING block.
+      // Empty until a model is warm → byte-identical prompts. Fail-soft: any error → ''.
+      const currentUnderstandingContext = (): string => {
+        try {
+          let latest: SystemModel | undefined;
+          let latestTurn = -1;
+          for (const entry of systemModelCache.values()) {
+            if (entry.atTurn >= latestTurn) {
+              latest = entry.model;
+              latestTurn = entry.atTurn;
+            }
+          }
+          return renderSystemModelContext(latest);
+        } catch {
+          return '';
+        }
+      };
+
       // ---- Build deps from the live mutableCtx.env ----------------------------
       // This helper is inlined as a function so it can be called again after
       // inline re-login with the refreshed env (bug 5 fix: no stale auth state),
@@ -2135,6 +2161,25 @@ export async function runChatLoop(
                 worktreePort: nodeWorktreePort,
               }
             : {}),
+          // RESEARCH-UNTIL-CONFIDENT (master-plan Phase 3a/3b) — DEFAULT OFF (opt-in;
+          // core/research-flag.ts). The REAL Read/Grep retrieval that enriches the
+          // always-on codebase round rides `researchPort` (present here so a
+          // low-confidence investigable turn actually dives into the relevant files,
+          // not just the static map). The SECOND-ANGLE web move is additionally gated
+          // by `researchEnabled` (the flag) — when off, the brain's `decideNextMove`
+          // never emits the `'web'` move so the loop is byte-for-byte today's. The
+          // port's native web search is wired from the cheapest authed provider (the
+          // subscription tool — no api key); absent capability degrades honestly.
+          researchPort: researchPort,
+          ...(researchOn ? { researchEnabled: true } : {}),
+          // SYSTEM UNDERSTANDING block (Phase 3a) — inject the warmed whole-picture
+          // SystemModel into the WORK prompt (it previously grounded only the goal
+          // planner). Lazy read of the warm cache (populated by warmUnderstanding);
+          // '' when no model is warm yet → omitted → byte-identical prompt.
+          ...((): { understandingContext?: string } => {
+            const block = currentUnderstandingContext();
+            return block.length > 0 ? { understandingContext: block } : {};
+          })(),
         };
       };
 
@@ -2698,6 +2743,60 @@ export async function runChatLoop(
         mutableCtx.config.experimentalJudgment,
         judgmentEnabled,
       );
+      // RESEARCH-UNTIL-CONFIDENT flag (master-plan Phase 3b; core/research-flag.ts).
+      // DEFAULT OFF (opt-in; this is the newest, darkest lever). Enabled only by an
+      // explicit MYSHELL_RESEARCH ∈ {1,true,on,yes} OR config.experimentalResearch.
+      // When off, deps.researchEnabled is never set → the brain's decideNextMove never
+      // emits the second-angle `'web'` move → byte-for-byte today's loop.
+      const researchOn = researchEnabled(process.env, mutableCtx.config);
+      // The injected READ-ONLY retrieval port (grep/readFile + a native web search).
+      // The web-search callback routes the cheapest authed provider with webSearch:true
+      // (the subscription tool — no api key); both Claude (after the 3c allow-list) and
+      // Codex honour it, opencode ignores it. Built ONCE per session; the brain reads
+      // it inside its investigation arms only. Fail-soft throughout.
+      const researchWebSearch = async (query: string, signal: AbortSignal): Promise<string> => {
+        try {
+          const pool = (Object.keys(ctx.providers) as ProviderId[]).filter(
+            (id) => ctx.providers[id] !== undefined,
+          );
+          if (pool.length === 0) return '';
+          const effMode: Mode = mutableCtx.config.mode ?? resolveAutoMode(mutableCtx.env);
+          const pol = POLICY_PRESETS[effMode];
+          const avail: Partial<Record<ProviderId, readonly string[]>> = {};
+          if (mutableCtx.env.claude.installed && mutableCtx.env.claude.availableModels.length > 0)
+            avail['claude'] = mutableCtx.env.claude.availableModels;
+          if (mutableCtx.env.codex.installed && mutableCtx.env.codex.availableModels.length > 0)
+            avail['codex'] = mutableCtx.env.codex.availableModels;
+          if (mutableCtx.env.opencode.installed && mutableCtx.env.opencode.availableModels.length > 0)
+            avail['opencode'] = mutableCtx.env.opencode.availableModels;
+          const authed: ProviderId[] = [];
+          if (mutableCtx.env.claude.authenticated) authed.push('claude');
+          if (mutableCtx.env.codex.authenticated) authed.push('codex');
+          if (mutableCtx.env.opencode.authenticated) authed.push('opencode');
+          const decision = route('worker', pool, pol, avail, authed);
+          const provider = ctx.providers[decision.provider];
+          if (provider === undefined) return '';
+          const req: ProviderRequest = {
+            model: decision.model,
+            prompt:
+              `Search the web for current, authoritative information on the following and reply with a SHORT plain-text summary of what you found, with sources. Do not restate the question.\n\n${query}`,
+            cwd: ctx.cwd,
+            sandbox: 'read-only',
+            timeoutMs: Math.min(ctx.timeoutMs, 90_000),
+            webSearch: true,
+          };
+          let finalText = '';
+          for await (const ev of provider.run(req, signal)) {
+            if (ev.type === 'done') finalText = ev.text;
+            else if (ev.type === 'error') return '';
+          }
+          return finalText.trim();
+        } catch {
+          return '';
+        }
+      };
+      const researchPort = createNodeResearchPort({ webSearch: researchWebSearch });
+
       const tasteLedger = createFileTasteLedger({ clock: ctx.clock });
       // The subject of the last surfaced fork/proposal — so an observed answer can
       // be recorded against the decision it resolved. Set when a question/confirm

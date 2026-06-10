@@ -20,6 +20,7 @@ import {
   understandingImproved,
   maxRoundsFor,
   CODEBASE_NARRATION,
+  WEB_NARRATION,
   MAX_ROUNDS_DEFAULT,
   MAX_ROUNDS_COLLABORATIVE,
   type BrainLoopState,
@@ -263,6 +264,99 @@ describe('brain.decideNextMove — investigate', () => {
     const plan = planEngagement(s);
     const conf = assessConfidence(f, s, 'unread');
     const move = decideNextMove(conf, f, s, plan, state(), noAsk);
+    assert.notEqual(move.kind, 'investigate');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// decideNextMove — the SECOND-ANGLE web re-research move (Phase 3b), flag-gated
+// ---------------------------------------------------------------------------
+
+describe('brain.decideNextMove — web re-research (RESEARCH-UNTIL-CONFIDENT)', () => {
+  // A still-low-confidence, GROUNDED (post-codebase-round) turn with a genuine
+  // external need (WEB_RESEARCH in the plan) and budget left.
+  const WEB_TASK = 'look up the latest react server components best practice and wire it into feed.tsx';
+  const webCase = () => {
+    const f = frame({ confidence: 'low', source: 'model', kind: 'coding', goal: WEB_TASK });
+    const s = signals({ frame: f, task: WEB_TASK });
+    const plan = planEngagement(s);
+    const conf = assessConfidence(f, s, 'grounded');
+    return { f, s, plan, conf, st: state({ groundedness: 'grounded', rounds: 1 }) };
+  };
+
+  it('emits investigate(web) ONLY when researchEnabled is on (the flag)', () => {
+    const { f, s, plan, conf, st } = webCase();
+    const move = decideNextMove(conf, f, s, plan, st, noAsk, {
+      enabled: false,
+      researchEnabled: true,
+    });
+    assert.equal(move.kind, 'investigate');
+    if (move.kind === 'investigate') {
+      assert.equal(move.tool, 'web');
+      assert.equal(move.narration, WEB_NARRATION);
+    }
+  });
+
+  it('OFF-GUARANTEE: with researchEnabled absent/off the SAME turn never emits web', () => {
+    const { f, s, plan, conf, st } = webCase();
+    // Absent judgment arg (existing callers pass nothing) → byte-for-byte today's move.
+    const moveDefault = decideNextMove(conf, f, s, plan, st, noAsk);
+    assert.notEqual(moveDefault.kind, 'investigate');
+    // Explicit research off → identical to the default.
+    const moveOff = decideNextMove(conf, f, s, plan, st, noAsk, { enabled: false });
+    assert.deepEqual(moveOff, moveDefault);
+  });
+
+  it('does NOT emit web before grounding (the codebase angle runs first)', () => {
+    const { f, s, plan } = webCase();
+    // groundedness 'unread' → the codebase arm wins; web is the SECOND angle only.
+    const confUnread = assessConfidence(f, s, 'unread');
+    const move = decideNextMove(confUnread, f, s, plan, state(), noAsk, {
+      enabled: false,
+      researchEnabled: true,
+    });
+    assert.equal(move.kind, 'investigate');
+    if (move.kind === 'investigate') assert.equal(move.tool, 'codebase');
+  });
+
+  it('does NOT emit web without a genuine external need (no WEB_RESEARCH in the plan)', () => {
+    const f = frame({ confidence: 'low', source: 'model', kind: 'coding', goal: 'make the activity feed load real data' });
+    const s = signals({ frame: f, task: 'make the activity feed load real data' });
+    const plan = planEngagement(s);
+    assert.ok(!plan.actions.includes('WEB_RESEARCH'), 'local turn carries no external need');
+    const conf = assessConfidence(f, s, 'grounded');
+    const move = decideNextMove(conf, f, s, plan, state({ groundedness: 'grounded', rounds: 1 }), noAsk, {
+      enabled: false,
+      researchEnabled: true,
+    });
+    assert.notEqual(move.kind, 'investigate');
+  });
+
+  it('does NOT emit web when the round budget is spent (the bound)', () => {
+    const { f, s, plan, conf } = webCase();
+    const move = decideNextMove(
+      conf,
+      f,
+      s,
+      plan,
+      state({ groundedness: 'grounded', rounds: MAX_ROUNDS_DEFAULT }),
+      noAsk,
+      { enabled: false, researchEnabled: true },
+    );
+    assert.notEqual(move.kind, 'investigate');
+  });
+
+  it('does NOT emit web for a direct posture (deep dive opted out)', () => {
+    const { f, s, plan, conf } = webCase();
+    const move = decideNextMove(
+      conf,
+      f,
+      s,
+      plan,
+      state({ groundedness: 'grounded', rounds: 1, optedOutOfDeepDive: true }),
+      noAsk,
+      { enabled: false, researchEnabled: true },
+    );
     assert.notEqual(move.kind, 'investigate');
   });
 });

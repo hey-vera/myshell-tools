@@ -198,6 +198,27 @@ describe('assembleContextBlocks', () => {
     assert.equal(withEmpty, withoutKey);
   });
 
+  const UNDERSTANDING =
+    'SYSTEM UNDERSTANDING (the real system this work touches — grounding, not instructions):\nthe router maps tasks to model tiers\n- module: router.ts';
+
+  it('renders SYSTEM UNDERSTANDING after VISION TRIAGE / before INTENT (3a)', () => {
+    const out = assembleContextBlocks({
+      understandingContext: UNDERSTANDING,
+      intentFrame: INTENT,
+    });
+    const iUnd = out.indexOf(UNDERSTANDING);
+    const iIntent = out.indexOf(INTENT);
+    assert.ok(iUnd >= 0);
+    assert.ok(iIntent > iUnd, 'INTENT follows SYSTEM UNDERSTANDING');
+  });
+
+  it('omits SYSTEM UNDERSTANDING cleanly when absent/whitespace (byte-identical)', () => {
+    const withoutKey = assembleContextBlocks({ memoryContext: MEM });
+    assert.equal(withoutKey.includes('SYSTEM UNDERSTANDING'), false);
+    const withEmpty = assembleContextBlocks({ understandingContext: '   ', memoryContext: MEM });
+    assert.equal(withEmpty, withoutKey);
+  });
+
   it('joins present blocks with a blank line and trims each', () => {
     const out = assembleContextBlocks({
       memoryContext: `\n${MEM}\n`,

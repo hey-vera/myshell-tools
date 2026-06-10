@@ -191,6 +191,56 @@ describe('orchestrate brain loop — investigate round', () => {
       'the re-extraction task carries the REAL repo-map environment context',
     );
   });
+
+  it('PHASE 3a: with a researchPort, the codebase round folds REAL Read/Grep findings into the re-extraction', async () => {
+    const seenTasks: string[] = [];
+    const lowFrame: IntentFrame = {
+      version: 1, goal: 'load the feed', kind: 'coding', confidence: 'low', source: 'model',
+    };
+    const extractor = async (task: string): Promise<IntentFrame | null> => {
+      seenTasks.push(task);
+      return { ...lowFrame, confidence: seenTasks.length === 1 ? 'low' : 'high' };
+    };
+    let grepCalls = 0;
+    const researchPort = {
+      async grepRepo(): Promise<readonly string[]> {
+        grepCalls++;
+        return ['src/feed.tsx'];
+      },
+      async readFile(): Promise<string | null> {
+        return 'export function Feed() { return useFeed(); }';
+      },
+    };
+    await collect(
+      orchestrate(
+        INVESTIGABLE_TASK,
+        baseDeps({ intentExtractor: extractor, researchPort }),
+        new AbortController().signal,
+      ),
+    );
+    assert.equal(seenTasks.length, 2, 'one initial + one enriched re-extraction');
+    assert.ok(grepCalls > 0, 'the round actually ran a read-only grep (the real dive-in)');
+    assert.ok(
+      seenTasks[1]!.includes('RETRIEVAL FINDINGS') && seenTasks[1]!.includes('src/feed.tsx'),
+      'the enriched task carries the REAL retrieval findings',
+    );
+  });
+
+  it('NEUTRALITY: WITHOUT a researchPort the codebase round carries NO retrieval findings (static-layout only)', async () => {
+    const seenTasks: string[] = [];
+    const lowFrame: IntentFrame = {
+      version: 1, goal: 'load the feed', kind: 'coding', confidence: 'low', source: 'model',
+    };
+    const extractor = async (task: string): Promise<IntentFrame | null> => {
+      seenTasks.push(task);
+      return { ...lowFrame, confidence: seenTasks.length === 1 ? 'low' : 'high' };
+    };
+    await collect(
+      orchestrate(INVESTIGABLE_TASK, baseDeps({ intentExtractor: extractor }), new AbortController().signal),
+    );
+    assert.equal(seenTasks.length, 2);
+    assert.ok(!seenTasks[1]!.includes('RETRIEVAL FINDINGS'), 'no retrieval block without a port');
+  });
 });
 
 // ---------------------------------------------------------------------------

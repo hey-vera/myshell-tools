@@ -162,6 +162,19 @@ export function buildClaudeArgs(req: ProviderRequest): string[] {
   if (req.reasoningEffort !== undefined && req.reasoningEffort !== 'none') {
     args.push('--effort', req.reasoningEffort);
   }
+  // Native web search (provider-capability audit #3). LIVE-VERIFIED: WITHOUT this
+  // allow-list the Claude CLI denies its own WebSearch tool ("permission denied")
+  // in headless `-p`; WITH it the search executes (web_search_requests:1, no
+  // denials), running under the user's logged-in subscription — no api key / metered
+  // service. Append `--allowedTools WebSearch WebFetch` ONLY when the orchestrator
+  // asked for search (the EXISTING engagement WEB_RESEARCH determination, so it never
+  // fires on ordinary local/coding turns). Placed BEFORE the variadic sandbox args so
+  // the trailing --disallowedTools list stays the tail of argv (it does not overlap —
+  // sandbox controls Write/Edit/Bash, this adds read-only search tools). Absent/false
+  // req.webSearch → NO flag at all → byte-for-byte unchanged. (Codex path unchanged.)
+  if (req.webSearch === true) {
+    args.push('--allowedTools', 'WebSearch', 'WebFetch');
+  }
   args.push(...claudeSandboxArgs(req.sandbox));
   return args;
 }

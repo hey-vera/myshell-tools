@@ -12,12 +12,15 @@ import assert from 'node:assert/strict';
 import {
   buildUnderstandingPrompt,
   parseSystemModel,
+  renderSystemModelContext,
+  UNDERSTANDING_CONTEXT_CHAR_CAP,
   UNDERSTANDING_MAX_MODULES,
   UNDERSTANDING_MAX_CONVENTIONS,
   UNDERSTANDING_MAX_CONSTRAINTS,
   UNDERSTANDING_MAX_OPEN_QUESTIONS,
   UNDERSTANDING_MAX_CITATIONS,
 } from '../../src/core/understanding.ts';
+import type { SystemModel } from '../../src/core/understanding.ts';
 
 describe('buildUnderstandingPrompt', () => {
   it('returns empty string for empty input (the generator then does nothing)', () => {
@@ -116,5 +119,54 @@ describe('parseSystemModel — fail-soft tagged parse', () => {
 
   it('never throws on hostile input', () => {
     assert.doesNotThrow(() => parseSystemModel('SUMMARY:\nMODULE:\n:::\n— — —'));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// renderSystemModelContext — the WORK-prompt SYSTEM UNDERSTANDING injection (3a)
+// ---------------------------------------------------------------------------
+
+function model(over: Partial<SystemModel> = {}): SystemModel {
+  return {
+    summary: 'the router maps tasks to model tiers',
+    modules: ['router.ts: classifies + routes'],
+    conventions: ['pure core, injected ports'],
+    constraints: ['subscription-OAuth only, no embeddings'],
+    openQuestions: ['which surface should this ship behind?'],
+    researchCitations: [],
+    ...over,
+  };
+}
+
+describe('renderSystemModelContext — WORK-prompt injection', () => {
+  it('ADDITIVE: an absent model renders "" (byte-identical prompt)', () => {
+    assert.equal(renderSystemModelContext(undefined), '');
+  });
+
+  it('a model with no grounding (no summary/modules/constraints) renders ""', () => {
+    const empty = model({ summary: '', modules: [], constraints: [], conventions: [], openQuestions: [], researchCitations: [] });
+    assert.equal(renderSystemModelContext(empty), '');
+  });
+
+  it('renders the grounding (summary/modules/conventions/constraints/confirm/source)', () => {
+    const block = renderSystemModelContext(
+      model({ researchCitations: ['rfc7636 (pkce)'] }),
+    );
+    assert.ok(block.includes('SYSTEM UNDERSTANDING'));
+    assert.ok(block.includes('the router maps tasks'));
+    assert.ok(block.includes('module: router.ts'));
+    assert.ok(block.includes('convention: pure core'));
+    assert.ok(block.includes('constraint: subscription-OAuth only'));
+    assert.ok(block.includes('confirm: which surface'), 'open questions surface as things to confirm');
+    assert.ok(block.includes('source: rfc7636'), 'real citations surface as sources');
+  });
+
+  it('caps the rendered block to the budget', () => {
+    const huge = model({
+      summary: 'z'.repeat(4000),
+      modules: Array.from({ length: 12 }, (_, i) => `m${i}: ` + 'x'.repeat(300)),
+    });
+    const block = renderSystemModelContext(huge);
+    assert.ok(block.length <= UNDERSTANDING_CONTEXT_CHAR_CAP);
   });
 });
