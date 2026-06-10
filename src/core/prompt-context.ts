@@ -82,6 +82,17 @@ export interface ContextBlockOptions {
    */
   readonly workStateContext?: string;
   /**
+   * Pre-rendered, compact CURRENT GOALS / PLAN block (the partner's OWN plan):
+   * the persisted goals (goalStore) with their state, to-dos + per-to-do status,
+   * intra-goal dependsOn edges, any honest verdict tag, and the chosen approach.
+   * undefined / empty → omit (byte-identical to today). Rendered right AFTER WORK
+   * STATE so the resumed turn sees both "what was last done" and "what I'm aiming
+   * at" before INTENT/ENGAGEMENT reasoning. This closes the bug where the chat
+   * model never saw its goals, so "what's the plan?" answered cluelessly. Produced
+   * by core/goal-todo.ts `formatGoalsForContext` from a fail-soft store snapshot.
+   */
+  readonly goalContext?: string;
+  /**
    * Pre-rendered, capped VISION TRIAGE block (adaptive-partner-v2-5.6.md §2.4 C):
    * the decomposed vision parts with their dispositions (SOLID / DISCUSS /
    * MIGRATE_REARCHITECT / INVESTIGATE_THEN_PROPOSE) and the instruction to address
@@ -183,6 +194,15 @@ export function assembleContextBlocks(opts: ContextBlockOptions): string {
   const workState = opts.workStateContext?.trim();
   if (workState !== undefined && workState.length > 0) {
     blocks.push(workState);
+  }
+
+  // CURRENT GOALS / PLAN — the partner's OWN plan (persisted goalStore snapshot),
+  // rendered right AFTER WORK STATE so the resumed turn knows what it is aiming at
+  // (goals/to-dos/dependencies/verdicts/approach) and can answer "what's the plan?"
+  // from real state rather than guessing. Absent/empty → nothing emitted.
+  const goalCtx = opts.goalContext?.trim();
+  if (goalCtx !== undefined && goalCtx.length > 0) {
+    blocks.push(goalCtx);
   }
 
   // VISION TRIAGE — decompose a broad multi-part vision into per-disposition parts

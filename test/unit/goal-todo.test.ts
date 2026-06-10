@@ -24,6 +24,7 @@ import {
   isGoalVerifiedDone,
   goalVerdictTag,
   formatGoalApproachLine,
+  formatGoalsForContext,
   type Goal,
   type GoalVerdict,
 } from '../../src/core/goal-todo.ts';
@@ -575,5 +576,87 @@ describe('goalVerdictTag — honest board tag, only when a real verdict exists',
     assert.equal(tag('reviewed'), '~reviewed');
     assert.equal(tag('failing'), '✗failing');
     assert.equal(tag('unverified'), '⚠unverified');
+  });
+});
+
+describe('formatGoalsForContext — the CURRENT GOALS / PLAN prompt block', () => {
+  it('returns "" for an empty list (no block → byte-identical prompt)', () => {
+    assert.equal(formatGoalsForContext([]), '');
+    // Non-array / malformed input is fail-soft → '' (never throws).
+    assert.equal(formatGoalsForContext(undefined as unknown as Goal[]), '');
+  });
+
+  it('renders a header, the goal line (title/state/count/scope), and its to-dos with status', () => {
+    const g = makeGoal({
+      title: 'Redesign feed',
+      state: 'parked',
+      roadmap: [
+        { id: 'a', text: 'design schema', status: 'done' },
+        { id: 'b', text: 'wire endpoint', status: 'pending' },
+        { id: 'c', text: 'await sign-off', status: 'blocked' },
+      ],
+    });
+    const out = formatGoalsForContext([g]);
+    assert.match(out, /^CURRENT GOALS \(your plan/);
+    assert.match(out, /1\. Redesign feed — parked · 1\/3 to-dos · this repo/);
+    assert.match(out, /- \[done\] design schema/);
+    assert.match(out, /- \[pending\] wire endpoint/);
+    assert.match(out, /- \[blocked\] await sign-off/);
+  });
+
+  it('renders dependsOn edges as "(after #n)" against the roadmap positions', () => {
+    const g = makeGoal({
+      roadmap: [
+        { id: 'a', text: 'first', status: 'done' },
+        { id: 'b', text: 'second', status: 'pending', dependsOn: ['a'] },
+      ],
+    });
+    const out = formatGoalsForContext([g]);
+    assert.match(out, /- \[pending\] second \(after #1\)/);
+  });
+
+  it('renders the chosen approach line and the honest verdict tag when present', () => {
+    const g = makeGoal({
+      state: 'done',
+      approach: { chosen: 'use a hash map', rationale: 'O(1) lookup' },
+      goalVerdict: { state: 'passing', receipt: '✓ tests passing', at: '2026-06-10T00:00:00.000Z' },
+      roadmap: [{ id: 'a', text: 'done it', status: 'done' }],
+    });
+    const out = formatGoalsForContext([g]);
+    assert.match(out, /✓verified/);
+    assert.match(out, /approach: use a hash map/);
+  });
+
+  it('orders LIVE work (running → queued → parked) ahead of terminal goals', () => {
+    const parked = makeGoal({ id: 'p', title: 'Parked goal', state: 'parked' });
+    const running = makeGoal({ id: 'r', title: 'Running goal', state: 'running' });
+    const done = makeGoal({ id: 'd', title: 'Done goal', state: 'done' });
+    const out = formatGoalsForContext([parked, done, running]);
+    const iRun = out.indexOf('Running goal');
+    const iPark = out.indexOf('Parked goal');
+    const iDone = out.indexOf('Done goal');
+    assert.ok(iRun >= 0 && iPark > iRun, 'running precedes parked');
+    assert.ok(iDone > iPark, 'terminal (done) comes last');
+  });
+
+  it('caps the number of goals rendered (≤ 6) so the prompt cannot bloat', () => {
+    const goals = Array.from({ length: 12 }, (_, i) =>
+      makeGoal({ id: `g${i}`, title: `Goal ${i}`, state: 'parked' }),
+    );
+    const out = formatGoalsForContext(goals);
+    const count = (out.match(/^\d+\. Goal /gm) ?? []).length;
+    assert.ok(count <= 6, `expected ≤6 goals rendered, got ${count}`);
+  });
+
+  it('caps the to-dos per goal and shows a "+N more" tail', () => {
+    const roadmap: RoadmapItem[] = Array.from({ length: 8 }, (_, i) => ({
+      id: `r${i}`,
+      text: `step ${i}`,
+      status: 'pending' as const,
+    }));
+    const out = formatGoalsForContext([makeGoal({ roadmap })]);
+    const shown = (out.match(/- \[pending\] step /g) ?? []).length;
+    assert.equal(shown, 6, 'only the first 6 to-dos are rendered');
+    assert.match(out, /\(\+2 more to-dos\)/);
   });
 });

@@ -54,7 +54,7 @@ import { judgmentEnabled } from '../core/judgment-flag.js';
 import { isPushBackQuestionSet, classifyPushBackAnswer } from '../core/brain.js';
 import { renderTastePlaybook, isImmediateRephrase, type TasteSignal } from '../core/taste.js';
 import { createFileGoalStore } from '../infra/goal-store.js';
-import { goalGlyph, roadmapProgress, goalVerdictTag, goalVerdictFromOutcome, isGoalVerifiedDone, isDuplicateGoalTitle, ROADMAP_LIMIT } from '../core/goal-todo.js';
+import { goalGlyph, roadmapProgress, goalVerdictTag, goalVerdictFromOutcome, isGoalVerifiedDone, isDuplicateGoalTitle, formatGoalsForContext, ROADMAP_LIMIT } from '../core/goal-todo.js';
 import { buildVerifyReceipt } from '../core/verify.js';
 import type { Goal, GoalState } from '../core/goal-todo.js';
 import { boardEnabled } from './ui/board-flag.js';
@@ -1765,6 +1765,17 @@ export async function runChatLoop(
       // synchronous buildDeps below can read the memoized value). Fail-soft → undefined.
       await resolveCapabilitySummaryOnce();
 
+      // ---- CURRENT GOALS / PLAN snapshot (the partner's OWN plan) -------------
+      // The persisted goalStore is created LATER (after buildDeps is defined), so
+      // buildDeps cannot read it directly. We hold the latest rendered plan block in
+      // this mutable string and expose a lazy `currentGoalContext` closure that
+      // buildDeps captures by reference and only CALLS at turn time. The snapshot is
+      // refreshed fail-soft at the start of every turn (refreshGoalContext, defined
+      // alongside the board sync below — INDEPENDENT of the board flag so the model
+      // always knows its plan). Empty until a goal exists → byte-identical prompts.
+      let goalContextSnapshot = '';
+      const currentGoalContext = (): string => goalContextSnapshot;
+
       // ---- Build deps from the live mutableCtx.env ----------------------------
       // This helper is inlined as a function so it can be called again after
       // inline re-login with the refreshed env (bug 5 fix: no stale auth state),
@@ -1790,6 +1801,13 @@ export async function runChatLoop(
           tastePlaybookLines?: readonly string[];
         },
       ): OrchestrateDeps => {
+        // CURRENT GOALS / PLAN block (the partner's OWN plan). `goalStore` is created
+        // AFTER buildDeps is defined, so we read it through the lazy
+        // `currentGoalContext` closure (defined below, captured by reference): the
+        // closure is only CALLED here at turn time, after goalStore exists. It returns
+        // the latest fail-soft snapshot string (refreshed each turn alongside the
+        // board) or '' — so a goalless tool yields a byte-identical prompt. PURE read.
+        const goalContext = currentGoalContext();
         // Build per-provider advertised model sets from the live env so route()
         // can prefer a model the CLI actually advertises. Only include installed
         // providers (exactOptionalPropertyTypes is ON).
@@ -2003,6 +2021,11 @@ export async function runChatLoop(
           // turn carried a trusted workTrace (resumed/continuing chat). Truthful or
           // absent; pure derivation from the loaded history, no model call.
           ...(workStateContext.length > 0 ? { workStateContext } : {}),
+          // CURRENT GOALS / PLAN block (the partner's OWN plan) — present only when the
+          // goalStore holds at least one in-scope goal (currentGoalContext returns ''
+          // otherwise → byte-identical). Rides sequential, hedge, AND panel prompts via
+          // assembleContextBlocks (rendered right after WORK STATE). Fail-soft snapshot.
+          ...(goalContext.length > 0 ? { goalContext } : {}),
           // ENVIRONMENT / repo-map orientation block (E1) — gathered once per
           // session, present only when codebase awareness is on AND the scan
           // produced a non-empty block (fail-soft → '' otherwise).
@@ -2234,10 +2257,33 @@ export async function runChatLoop(
           /* board is best-effort chrome — never block or break a turn */
         }
       };
-      // Sync the board at the START of this turn (the chat-loop entry point), so the
-      // persistent board reflects the real store before any work streams. No-op when
-      // the flag is off → byte-identical.
+      // Refresh the CURRENT GOALS / PLAN snapshot (the partner's OWN plan) from the
+      // real store, scoped to the current project + globals — the SAME filter the
+      // board uses, so the prompt and the board agree on what's in scope. Renders the
+      // compact block via the PURE formatGoalsForContext; an empty store → '' (the
+      // prompt stays byte-identical). Runs REGARDLESS of the board flag (the model
+      // should always know its plan). Fail-soft: any store error leaves the snapshot
+      // empty rather than breaking the turn. buildDeps reads this via currentGoalContext.
+      const refreshGoalContext = async (): Promise<void> => {
+        try {
+          const projectKey = await resolveProjectKeyOnce();
+          const all = await goalStore.list();
+          const relevant = all.filter(
+            (g) => g.scope === 'global' || g.projectKey === null || g.projectKey === projectKey,
+          );
+          goalContextSnapshot = formatGoalsForContext(relevant);
+        } catch {
+          goalContextSnapshot = '';
+        }
+      };
+
+      // Sync the board + refresh the plan snapshot at the START of this turn (the
+      // chat-loop entry point), so the persistent board AND the model's plan context
+      // reflect the real store before any work streams. The board sync is a no-op when
+      // the flag is off → byte-identical; the plan refresh is goal-gated (empty store
+      // → empty snapshot → byte-identical prompt).
       await syncBoard();
+      await refreshGoalContext();
 
       // ---- VERIFIED-DONE goal-completion GATE (Elite-partner Part 3) -----------
       // DEFAULT OFF. When the truly-complete flag is ON, a goal can NO LONGER be

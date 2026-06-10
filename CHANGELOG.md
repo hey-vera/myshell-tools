@@ -6,6 +6,17 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+## [3.81.0] - 2026-06-10
+
+### Added (the partner knows its own plan)
+- **Your goals are now injected into the chat context**, so the partner always knows its
+  own plan. Ask "what's the plan?" mid-chat and it can actually answer — it sees a compact
+  CURRENT GOALS block (each goal's title, state, to-dos with status, dependency edges, the
+  chosen approach, and any verdict), refreshed each turn from the goal store. Previously
+  the goals lived only in the store/board and never reached the model, so it answered
+  cluelessly and felt broken. Bounded (top goals/to-dos), fail-soft, and additive: with no
+  goals the prompt is byte-identical to before.
+
 ## [3.80.0] - 2026-06-10
 
 ### Fixed

@@ -522,6 +522,119 @@ export function formatRoadmapLines(roadmap: readonly RoadmapItem[]): string[] {
   });
 }
 
+// ---------------------------------------------------------------------------
+// CURRENT GOALS / PLAN — the compact prompt-context render (the partner's plan)
+// ---------------------------------------------------------------------------
+
+/** How many goals at most to render into the prompt block (bounded so the plan
+ *  can never bloat the prompt). The most relevant non-terminal goals first. */
+const GOAL_CONTEXT_GOAL_CAP = 6;
+/** Per-goal to-do cap inside the block. Goals carry at most ROADMAP_LIMIT(8)
+ *  to-dos; we surface the first few so a wide plan stays compact. */
+const GOAL_CONTEXT_TODO_CAP = 6;
+
+/** Display rank for the plan block: LIVE work first, terminal last. Mirrors the
+ *  board's state ordering so the prompt and the board agree. */
+const GOAL_CONTEXT_STATE_RANK: Record<GoalState, number> = {
+  running: 0,
+  queued: 1,
+  parked: 2,
+  done: 3,
+  failed: 4,
+};
+
+/** A short to-do status word for the plan block. Pure, total. */
+function todoStatusWord(status: RoadmapStatus): string {
+  switch (status) {
+    case 'done':
+      return 'done';
+    case 'blocked':
+      return 'blocked';
+    case 'active':
+      return 'in progress';
+    case 'pending':
+    default:
+      return 'pending';
+  }
+}
+
+/**
+ * Render a COMPACT, plain-text CURRENT GOALS / PLAN block for the chat prompt
+ * context, so the partner always knows its OWN plan — its goals, their state, the
+ * to-dos with status, intra-goal `dependsOn` edges ("after #n"), any honest verdict
+ * tag, and the chosen approach. This is the fix for "the partner doesn't know its
+ * own plan": goalStore is persisted + shown on the board but never reached the
+ * model's prompt, so "what's the plan?" answered cluelessly.
+ *
+ * Selection + bounds (so the prompt can never bloat):
+ *  - LIVE goals (running/queued/parked) first, then optionally the most-recent
+ *    terminal (done/failed) goal as recency context; capped at
+ *    {@link GOAL_CONTEXT_GOAL_CAP} goals total;
+ *  - at most {@link GOAL_CONTEXT_TODO_CAP} to-dos per goal (with a "+N more" tail).
+ *
+ * Empty list ⇒ returns '' (NO block — the assembled prompt stays byte-identical to
+ * today). PURE: no I/O, no time, no randomness; never throws.
+ */
+export function formatGoalsForContext(goals: readonly Goal[]): string {
+  if (!Array.isArray(goals) || goals.length === 0) return '';
+
+  // Partition: live (non-terminal) vs terminal, preserving the caller's order
+  // (the store hands newest-first) within each partition.
+  const live: Goal[] = [];
+  const terminal: Goal[] = [];
+  for (const g of goals) {
+    if (g.state === 'done' || g.state === 'failed') terminal.push(g);
+    else live.push(g);
+  }
+  // Order live work by lifecycle rank (running → queued → parked), recency-stable
+  // within a rank — the SAME ordering the board uses.
+  const orderedLive = live
+    .map((g, i) => ({ g, i }))
+    .sort((a, b) => GOAL_CONTEXT_STATE_RANK[a.g.state] - GOAL_CONTEXT_STATE_RANK[b.g.state] || a.i - b.i)
+    .map((x) => x.g);
+
+  // Fill the cap with live goals first; if room remains, add the most-recent
+  // terminal goal as recency context (never more than one — keep the plan focused).
+  const selected: Goal[] = orderedLive.slice(0, GOAL_CONTEXT_GOAL_CAP);
+  if (selected.length < GOAL_CONTEXT_GOAL_CAP && terminal.length > 0) {
+    selected.push(terminal[0] as Goal);
+  }
+  if (selected.length === 0) return '';
+
+  const lines: string[] = [];
+  selected.forEach((goal, gi) => {
+    const prog = roadmapProgress(goal.roadmap);
+    const scope = goal.scope === 'global' ? 'global' : 'this repo';
+    const verdict = goalVerdictTag(goal);
+    const head =
+      `${gi + 1}. ${goal.title} — ${goal.state}` +
+      ` · ${prog.done}/${prog.total} to-dos` +
+      ` · ${scope}` +
+      (verdict !== undefined ? ` · ${verdict}` : '');
+    lines.push(head);
+
+    const approach = formatGoalApproachLine(goal);
+    if (approach !== undefined) lines.push(`   ${approach}`);
+
+    const shown = goal.roadmap.slice(0, GOAL_CONTEXT_TODO_CAP);
+    shown.forEach((item) => {
+      // Resolve dependsOn edges to the 1-based positions WITHIN this goal's roadmap
+      // (so "after #2" lines up with the printed numbers); unknown ids are dropped.
+      const deps: number[] = [];
+      for (const depId of item.dependsOn ?? []) {
+        const idx = goal.roadmap.findIndex((it) => it.id === depId);
+        if (idx >= 0) deps.push(idx + 1);
+      }
+      const after = deps.length > 0 ? ` (after ${deps.map((n) => `#${String(n)}`).join(', ')})` : '';
+      lines.push(`   - [${todoStatusWord(item.status)}] ${item.text}${after}`);
+    });
+    const remaining = goal.roadmap.length - shown.length;
+    if (remaining > 0) lines.push(`   - (+${String(remaining)} more to-dos)`);
+  });
+
+  return `CURRENT GOALS (your plan — you own these; reference them when the user asks):\n${lines.join('\n')}`;
+}
+
 /**
  * Filter + order a goal list for display: by `state` (and `scope` when given),
  * newest-touched first. Pure — the store keeps the canonical newest-first order,

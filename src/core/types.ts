@@ -476,6 +476,19 @@ export interface OrchestrateDeps {
    */
   readonly workStateContext?: string;
   /**
+   * Pre-rendered, compact CURRENT GOALS / PLAN block for the prompt seam — the
+   * partner's OWN plan: the persisted goals (goalStore) with their lifecycle state,
+   * to-dos + per-to-do status, intra-goal dependsOn edges, any honest verdict tag,
+   * and the chosen approach. Snapshotted fail-soft in the deps layer (menu.ts),
+   * scoped to the current project + globals (the SAME filter the board uses), and
+   * threaded here so it rides sequential, hedge, AND panel prompts via
+   * `assembleContextBlocks` (rendered right after WORK STATE). Closes the bug where
+   * the chat model never saw its goals, so "what's the plan?" answered cluelessly.
+   * Absent → byte-identical to pre-goal-context prompts. PURE data: NO model call,
+   * just a store read shaped by core/goal-todo.ts `formatGoalsForContext`.
+   */
+  readonly goalContext?: string;
+  /**
    * Pre-rendered, capped ENVIRONMENT / repo-map orientation block (codebase-
    * awareness §1.2, Phase E1) for the prompt seam. Deterministic, NO model call:
    * repo name/branch/dirty, project type, doc presence, key entry points, and a

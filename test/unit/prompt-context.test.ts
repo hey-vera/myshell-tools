@@ -148,6 +148,31 @@ describe('assembleContextBlocks', () => {
     assert.equal(withEmpty, withoutKey);
   });
 
+  const GOALS =
+    'CURRENT GOALS (your plan — you own these; reference them when the user asks):\n1. Redesign feed — parked · 1/3 to-dos · this repo';
+
+  it('renders the CURRENT GOALS block after WORK STATE / before INTENT', () => {
+    const out = assembleContextBlocks({
+      workStateContext: WORKSTATE,
+      goalContext: GOALS,
+      intentFrame: INTENT,
+    });
+    const iWork = out.indexOf(WORKSTATE);
+    const iGoals = out.indexOf(GOALS);
+    const iIntent = out.indexOf(INTENT);
+    assert.ok(iWork >= 0);
+    assert.ok(iGoals > iWork, 'CURRENT GOALS follows WORK STATE');
+    assert.ok(iIntent > iGoals, 'INTENT follows CURRENT GOALS');
+  });
+
+  it('includes CURRENT GOALS alone when present, omits it cleanly when absent/whitespace', () => {
+    assert.equal(assembleContextBlocks({ goalContext: GOALS }), GOALS);
+    assert.equal(assembleContextBlocks({ memoryContext: MEM }).includes('CURRENT GOALS'), false);
+    const withoutKey = assembleContextBlocks({ memoryContext: MEM });
+    const withEmpty = assembleContextBlocks({ goalContext: '   ', memoryContext: MEM });
+    assert.equal(withEmpty, withoutKey);
+  });
+
   const TASTE =
     'LEARNED TASTE (this user\'s OBSERVED past decisions — a prior, not a rule):\n- data fetching: server\n\nLean toward these where they apply; an explicit instruction this turn wins.';
 
