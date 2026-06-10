@@ -6,6 +6,23 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+## [3.71.0] - 2026-06-10
+
+### Fixed (default-on experience — rough edges from a proactive audit)
+- **No more post-turn freeze.** Auto-staging the planner now runs in the BACKGROUND
+  instead of being awaited, so the next prompt returns instantly after `✓ done`; the
+  `※ Staged N goals` note and board refresh land asynchronously when ready (they write
+  to the transcript exactly like streamed output). Previously a substantial turn froze
+  the screen for up to ~8s while the planner ran — it read as a hang.
+- **The board no longer lets finished goals crowd out live work.** Completing a goal
+  bumps its recency, which (with newest-first ordering) shoved it to the top of the
+  viewport-capped board. The board now orders live goals (running/queued/parked) ahead
+  of terminal ones (done/failed) before the cap, so active work always shows first.
+
+### Added
+- **`/help` now documents auto-planning and how to turn it off** (`MYSHELL_AUTO_GOAL=0`,
+  board via `MYSHELL_BOARD=0`) — the opt-out was previously undiscoverable in-product.
+
 ## [3.70.0] - 2026-06-10
 
 ### Changed (whole-picture understanding is now ON by default — with zero added latency)

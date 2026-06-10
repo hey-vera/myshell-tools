@@ -56,7 +56,7 @@ import { renderTastePlaybook, isImmediateRephrase, type TasteSignal } from '../c
 import { createFileGoalStore } from '../infra/goal-store.js';
 import { goalGlyph, roadmapProgress, goalVerdictTag, goalVerdictFromOutcome, isGoalVerifiedDone, isDuplicateGoalTitle } from '../core/goal-todo.js';
 import { buildVerifyReceipt } from '../core/verify.js';
-import type { Goal } from '../core/goal-todo.js';
+import type { Goal, GoalState } from '../core/goal-todo.js';
 import { boardEnabled } from './ui/board-flag.js';
 import { autoStageEnabled } from './ui/auto-goal-flag.js';
 import type { GoalBoardRow } from './ui/state.js';
@@ -1521,6 +1521,8 @@ export async function runChatLoop(
         '\n' +
         dim('  About what you\'ll see:\n', out.color) +
         dim('    ※                      a recap of where we left off (on resume)\n', out.color) +
+        dim('    ※ Staged N goals        I plan real work into goals on the board as we talk;\n', out.color) +
+        dim('                            turn it off with MYSHELL_AUTO_GOAL=0 (board: MYSHELL_BOARD=0)\n', out.color) +
         dim('    "what I understood…"    I restate the task before big work — correct me anytime\n', out.color) +
         dim('    "Waiting on N models"   models running in parallel — no dollar charge on a\n', out.color) +
         dim('                            subscription, but each run draws on your plan\'s rate\n', out.color) +
@@ -2210,7 +2212,23 @@ export async function runChatLoop(
           const relevant = all.filter(
             (g) => g.scope === 'global' || g.projectKey === null || g.projectKey === projectKey,
           );
-          out.syncBoard(relevant.map(toBoardRow));
+          // Order LIVE work (running/queued/parked) ahead of terminal (done/failed)
+          // before the layout caps the board to the viewport — otherwise a just-
+          // finished goal (its lastTouched freshly bumped → newest-first from the
+          // store) jumps to the top and crowds the active goals into "+K more".
+          // Stable within a rank, so recency order is preserved among peers.
+          const stateRank: Record<GoalState, number> = {
+            running: 0,
+            queued: 1,
+            parked: 2,
+            done: 3,
+            failed: 4,
+          };
+          const ordered = relevant
+            .map((g, i) => ({ g, i }))
+            .sort((a, b) => stateRank[a.g.state] - stateRank[b.g.state] || a.i - b.i)
+            .map((x) => x.g);
+          out.syncBoard(ordered.map(toBoardRow));
         } catch {
           /* board is best-effort chrome — never block or break a turn */
         }
@@ -3821,13 +3839,21 @@ export async function runChatLoop(
       // Gated on the non-trivial engagement signal (hasTierEvidence) so a trivial
       // "sounds good?" turn NEVER pays for a manager call. Flag-off ⇒ resolveAutoStage
       // is a no-op ⇒ byte-identical. Fully fail-soft inside resolveAutoStage.
+      //
+      // FIRE-AND-FORGET (not awaited): the planner is a manager-tier call (~up to 8s),
+      // and awaiting it here would FREEZE the screen between "✓ done" and the next
+      // prompt — reading as a hang on every substantial turn. So we let it run in the
+      // BACKGROUND: the prompt returns immediately, and the "※ Staged N goals" note +
+      // board refresh land asynchronously when ready (the staging writes go to the
+      // committed transcript region, exactly like streamed output). This mirrors the
+      // non-blocking warmUnderstanding treatment and keeps the conversation frictionless.
       if (
         autoStageOn &&
         result.final?.success === true &&
         result.final.questions === undefined &&
         hasTierEvidence(line)
       ) {
-        await resolveAutoStage(line);
+        void resolveAutoStage(line);
       }
       return 'continue';
   }
