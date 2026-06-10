@@ -126,6 +126,26 @@ export interface AppConfig {
    */
   partnerStyle?: PartnerStyle;
   /**
+   * OVERSIGHT SPECTRUM (Phase 2b). The per-user EXECUTION-AUTONOMY level — DISTINCT
+   * from `partnerStyle` (which is only a soft CONVERSATIONAL bias). This dial decides
+   * how much the user reviews vs. lets the partner run:
+   *
+   *   'review-all'  → cautious: propose-then-confirm AND pause after each to-do's
+   *                   diff for a one-tap [Approve & continue] / [Stop here].
+   *   'checkpoint'  → the safe middle (DEFAULT when absent): propose-then-one-tap-go
+   *                   before launch, then run the manager cycle without per-diff
+   *                   pauses (the Phase-2 behaviour, byte-identical).
+   *   'autonomous'  → "just do it": skip the launch confirm, run, then surface a
+   *                   confident done-summary. The safety floor stays (it still asks
+   *                   at a genuine mid-run fork).
+   *
+   * Absent → 'checkpoint' (see resolveOversight / src/interface/ui/oversight.ts,
+   * where the `MYSHELL_OVERSIGHT` env override and the reusable launch-checkpoint
+   * seam live). Modelled on Claude Code's permission modes (review-each /
+   * acceptEdits / Auto). Persisted like every other config key.
+   */
+  oversight?: 'review-all' | 'checkpoint' | 'autonomous';
+  /**
    * INTENT ENGINE master switch (intent-engine §4, default ON but gated). When
    * absent/true, on substantial/ambiguous turns orchestrate runs ONE cheap,
    * read-only, short-timeout extractor pass to produce a typed IntentFrame, which

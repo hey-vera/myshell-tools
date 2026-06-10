@@ -1,0 +1,112 @@
+/**
+ * src/interface/ui/oversight.ts — the OVERSIGHT SPECTRUM (Phase 2b): the single
+ * source of truth for the per-user EXECUTION-AUTONOMY level and the reusable
+ * launch-checkpoint seam that decides whether a goal/to-do pauses before it goes
+ * from PROPOSED → RUNNING.
+ *
+ * The SAME partner serves three personas, learned + remembered per user:
+ *   'review-all'  → cautious: confirm before launch AND pause after each to-do's
+ *                   diff for a one-tap approve/stop.
+ *   'checkpoint'  → the safe middle (DEFAULT): propose-then-one-tap-go before
+ *                   launch, then run without per-diff pauses (Phase-2 behaviour).
+ *   'autonomous'  → "just do it": skip the launch confirm, run, then surface a
+ *                   confident done-summary. The safety floor stays (a genuine
+ *                   mid-run fork still asks).
+ *
+ * This is DISTINCT from `partnerStyle` (a soft conversational bias) — it governs
+ * real execution autonomy, modelled on Claude Code's permission modes
+ * (review-each / acceptEdits / Auto).
+ *
+ * Pure (no Ink/React, no JSX, no I/O) so it is exercised by the REGULAR `npm test`
+ * suite under strip-types. DEFAULT 'checkpoint' — with `config.oversight` absent
+ * the launch experience is BYTE-IDENTICAL to Phase 2 (propose-then-confirm, no
+ * per-diff pauses). Never throws.
+ *
+ * THE EXTENSION POINT (Phase 4 plugs in HERE): {@link shouldPauseBeforeLaunch} is
+ * the ONE reusable checkpoint hook the goal launch + the manager cycle consult
+ * before a unit of work runs. Phase 4's standing-rules launch gate can add a new
+ * `LaunchCheckpointReason` and an extra clause to this function WITHOUT re-plumbing
+ * the call sites — they already pause on any non-`null` decision.
+ */
+
+import type { AppConfig } from '../../infra/config.js';
+
+/** The three execution-autonomy levels. Re-exported from the config field type. */
+export type Oversight = NonNullable<AppConfig['oversight']>;
+
+/** Env values mapped to each explicit level (case-insensitive, trimmed). */
+const ENV_LEVELS: Record<string, Oversight> = {
+  'review-all': 'review-all',
+  review: 'review-all',
+  'review-each': 'review-all',
+  checkpoint: 'checkpoint',
+  propose: 'checkpoint',
+  autonomous: 'autonomous',
+  auto: 'autonomous',
+};
+
+/**
+ * Resolve the effective oversight level for this user. An explicit
+ * `MYSHELL_OVERSIGHT` env value wins (review-all | checkpoint | autonomous, plus a
+ * couple of friendly aliases), then `config.oversight`, then the DEFAULT
+ * 'checkpoint'. Pure; never throws (any surprise → the safe default).
+ */
+export function resolveOversight(
+  config: Pick<AppConfig, 'oversight'> | undefined,
+  env?: NodeJS.ProcessEnv,
+): Oversight {
+  try {
+    const raw = env?.['MYSHELL_OVERSIGHT'];
+    if (typeof raw === 'string') {
+      const v = raw.trim().toLowerCase();
+      const mapped = ENV_LEVELS[v];
+      if (mapped !== undefined) return mapped;
+    }
+    if (config?.oversight !== undefined) return config.oversight;
+    return 'checkpoint';
+  } catch {
+    return 'checkpoint';
+  }
+}
+
+/**
+ * WHY a launch checkpoint fires. Today the only reason is the cautious 'review-all'
+ * per-diff review; Phase 4 will ADD reasons (e.g. 'standing-rule') to this union and
+ * a clause to {@link shouldPauseBeforeLaunch} without touching the call sites.
+ */
+export type LaunchCheckpointReason = 'review-all-diff';
+
+/** A decision to pause before a unit of work proceeds, with the reason it fired. */
+export interface LaunchCheckpoint {
+  readonly reason: LaunchCheckpointReason;
+}
+
+/**
+ * THE REUSABLE LAUNCH-CHECKPOINT SEAM (the Phase-4 extension point).
+ *
+ * Consulted before a goal/to-do goes from PROPOSED → RUNNING (and, for the manager
+ * cycle, before each to-do's verified diff is committed to "done"). Returns a
+ * {@link LaunchCheckpoint} when the run should PAUSE for the user, or `null` to
+ * proceed without interruption. PURE — the caller owns the actual UI prompt; this
+ * only decides whether to pause and why.
+ *
+ * Today it fires ONLY for the cautious 'review-all' persona, and only at the
+ * `phase: 'per-todo-diff'` site (the per-diff review) when there is a real diff to
+ * show (`hasDiff`). 'checkpoint' and 'autonomous' never pause here (their launch-time
+ * behaviour — confirm vs. skip-confirm — is handled at the proposal site, not this
+ * per-diff hook). When a future phase adds a standing-rules gate it adds a clause +
+ * a reason here, and every existing call site honours it for free.
+ */
+export function shouldPauseBeforeLaunch(args: {
+  readonly oversight: Oversight;
+  /** Which checkpoint site is asking. */
+  readonly phase: 'per-todo-diff';
+  /** Whether the worker turn produced a real diff worth reviewing. */
+  readonly hasDiff: boolean;
+}): LaunchCheckpoint | null {
+  // review-all: pause to review each to-do's diff before marking it done.
+  if (args.oversight === 'review-all' && args.phase === 'per-todo-diff' && args.hasDiff) {
+    return { reason: 'review-all-diff' };
+  }
+  return null;
+}

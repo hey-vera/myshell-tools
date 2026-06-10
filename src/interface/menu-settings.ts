@@ -17,6 +17,8 @@
 import type { AppConfig } from '../infra/config.js';
 import { saveConfig, resolvePartnerStyle } from '../infra/config.js';
 import type { PartnerStyle } from '../core/prompt-context.js';
+import type { Oversight } from './ui/oversight.js';
+import { resolveOversight } from './ui/oversight.js';
 import type { Mode } from '../core/policy.js';
 import { modeLabel, MODE_DESC } from '../core/policy.js';
 import type { EnvironmentStatus } from '../providers/detect.js';
@@ -215,6 +217,53 @@ export async function runStyleSelect(
 }
 
 /**
+ * Choose the OVERSIGHT level (execution autonomy) and persist it — the per-user
+ * "how much do I review vs. let you run" dial, DISTINCT from partner style (a soft
+ * conversational bias). Modelled on Claude Code's permission modes:
+ *
+ *   review-all → confirm before launch AND pause on each to-do's diff
+ *   checkpoint → propose-then-one-tap-go, then run (DEFAULT, the safe middle)
+ *   autonomous → just do it; report when done (the mid-run safety floor stays)
+ *
+ * Absent → 'checkpoint' (resolveOversight). Persists the EXPLICIT level (there is no
+ * "auto" clear-to-default here: the default IS checkpoint, so picking checkpoint
+ * just writes checkpoint). Preserves every other config key via withOptional.
+ */
+export async function runOversightSelect(
+  config: AppConfig,
+  out: OutputSink,
+  readLine: () => Promise<string | null>,
+  // Single-key reader for the Ink path (see runModeSelect). Absent → legacy path.
+  inkReadKey?: () => Promise<string>,
+): Promise<AppConfig> {
+  const current: Oversight = resolveOversight(config);
+  const settingsLines = [
+    '',
+    'Oversight (how much you review vs. let me run — separate from partner style):',
+    `  [1] review-all${current === 'review-all' ? ' (active)' : ''} — tell me every change; I pause on each diff for your OK`,
+    `  [2] checkpoint${current === 'checkpoint' ? ' (active)' : ''} — I propose the plan, you tap go, then I run (default)`,
+    `  [3] autonomous${current === 'autonomous' ? ' (active)' : ''} — just do it; I report when it's done`,
+    '',
+  ];
+  out.write('\n' + box('Settings', settingsLines) + '\n\n');
+
+  out.write('[1/2/3 to change, Enter to keep] ');
+  const key = await readMenuKey(out, readLine, undefined, false, inkReadKey);
+
+  // EOF / Enter → keep current.
+  let newLevel: Oversight = current;
+  if (key === '1') newLevel = 'review-all';
+  else if (key === '2') newLevel = 'checkpoint';
+  else if (key === '3') newLevel = 'autonomous';
+
+  const updated: AppConfig = withOptional(config, 'oversight', newLevel);
+
+  await saveConfig(updated);
+  out.write(`Oversight set to: ${newLevel}\n`);
+  return updated;
+}
+
+/**
  * Toggle the "set as default shell" preference and actually install/uninstall
  * the shell startup hook to match. The config flag is only flipped when the
  * hook write succeeds, so the stored value never lies about the real state.
@@ -264,6 +313,7 @@ export async function runSettings(
     `  [b] Partner style: ${resolvePartnerStyle(cfg, effMode)}${cfg.partnerStyle === undefined ? ' (auto)' : ''}`,
     `  [c] Memory: ${cfg.memory !== false ? 'on' : 'off'}`,
     `  [d] Intent engine: ${cfg.intentEngine !== false ? 'on' : 'off'}`,
+    `  [e] Oversight: ${resolveOversight(cfg)}`,
     '',
     '  [Enter] Back',
     '',
@@ -302,6 +352,8 @@ export async function runSettings(
     mutableCtx.config = await toggleMemory(mutableCtx.config, out);
   } else if (key === 'd') {
     mutableCtx.config = await toggleIntentEngine(mutableCtx.config, out);
+  } else if (key === 'e') {
+    mutableCtx.config = await runOversightSelect(mutableCtx.config, out, readLine, inkReadKey);
   }
   // anything else → back
 }

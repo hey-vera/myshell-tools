@@ -889,6 +889,92 @@ describe('startMenu — /goal PROPOSES the plan before running it (manager cycle
     assert.ok(/Parked ".*" on the board/.test(sink.buf), 'declining parks the goal');
     assert.equal(goalWorkTurns, 0, 'declining the proposal must NOT run any goal-work turn');
   });
+
+  it('oversight=autonomous SKIPS the confirm — says "On it" and runs without a go prompt', async () => {
+    let goalWorkTurns = 0;
+    const provider: Provider = {
+      id: 'claude',
+      async detect() {
+        return {
+          id: 'claude',
+          installed: true,
+          version: '1.0.0',
+          authenticated: true,
+          plan: null,
+          binaryPath: null,
+          availableModels: ['model-a'],
+        };
+      },
+      async *run(req: ProviderRequest, _signal: AbortSignal): AsyncIterable<ProviderEvent> {
+        // The PLANNING BRAIN call (judgeGoal) → a real staged plan to launch.
+        if (req.prompt.includes('PLANNING BRAIN')) {
+          const reply = [
+            'JUDGMENT: stage',
+            'VISION: ship the auth system',
+            'GOAL: Harden the token-refresh path',
+            'APPROACH: rotate refresh tokens server-side',
+            'WHY: it closes the replay window the client-only flow leaves open',
+            'TODO: wire the refresh endpoint',
+          ].join('\n');
+          yield { type: 'text', delta: reply };
+          yield { type: 'done', text: reply, usage: FAKE_USAGE, raw: {} };
+          return;
+        }
+        // Background warm-up / smart-label passes — benign, not goal work.
+        if (
+          req.prompt.includes('WHOLE-PICTURE') ||
+          req.prompt.includes('understand the system') ||
+          req.prompt.includes('OBJECTIVE: <a crisp')
+        ) {
+          yield { type: 'text', delta: 'ok' };
+          yield { type: 'done', text: 'ok', usage: FAKE_USAGE, raw: {} };
+          return;
+        }
+        // A goal-WORK turn — autonomous launches it WITHOUT a confirm.
+        goalWorkTurns += 1;
+        yield { type: 'text', delta: 'working' };
+        yield { type: 'done', text: `working\n${CONFIDENCE_ENVELOPE}`, usage: FAKE_USAGE, raw: {} };
+      },
+    };
+
+    const clock = makeFakeClock();
+    const store = makeStore(clock);
+    const sink = makeSink();
+    const ctx = makeCtx(
+      {
+        // Manager cycle ON + oversight autonomous → /goal skips the confirm.
+        config: {
+          onboarded: true,
+          setAsDefault: false,
+          smartRoute: false,
+          experimentalManager: true,
+          oversight: 'autonomous',
+        },
+        providers: { claude: provider },
+        // No confirm keypress in the script — autonomous never asks for one.
+        readLine: makeScriptedReader([
+          'n',
+          '/goal ship the auth system',
+          '/exit',
+          'q',
+        ]),
+      },
+      clock,
+      store,
+    );
+
+    await startMenu(ctx, sink);
+
+    assert.ok(
+      /On it — starting "/.test(sink.buf),
+      'autonomous announces it is starting the goal',
+    );
+    assert.ok(
+      !sink.buf.includes('Shall I run this, or adjust first?'),
+      'autonomous must NOT present the launch confirm prompt',
+    );
+    assert.ok(goalWorkTurns >= 1, 'autonomous launches the manager cycle (a goal-work turn ran)');
+  });
 });
 
 describe('startMenu — auto-goal smart autonomy', () => {
@@ -4898,6 +4984,39 @@ describe('startMenu — update notifier: banner, [u], auto-update', () => {
       'toggling [a] must report auto-goal on',
     );
     assert.equal(persisted.autoGoal, true, 'autoGoal must be persisted as true');
+  });
+
+  // ---- Settings selector for the OVERSIGHT SPECTRUM (Phase 2b) -------------
+  it('[s] → [e] sets oversight to autonomous and persists it', async () => {
+    const sink = makeSink();
+    const dir = join(tmpdir(), `menu-oversight-${randomUUID()}`);
+    const config: AppConfig = { onboarded: true, setAsDefault: false, smartRoute: false };
+    const ctx = makeCtx({
+      config,
+      cwd: dir,
+      readLine: makeScriptedReader([
+        's',   // settings
+        'e',   // oversight select
+        '3',   // autonomous
+        '',    // Enter → back from settings
+        'q',   // quit
+      ]),
+    });
+
+    const persisted = await withStateHome(dir, async () => {
+      await assert.doesNotReject(() => startMenu(ctx, sink));
+      return readPersistedConfig();
+    });
+
+    assert.ok(
+      sink.buf.includes('[e] Oversight: checkpoint'),
+      'settings must show the [e] Oversight row defaulting to checkpoint',
+    );
+    assert.ok(
+      sink.buf.includes('Oversight set to: autonomous'),
+      'picking [3] must report autonomous',
+    );
+    assert.equal(persisted.oversight, 'autonomous', 'oversight must be persisted as autonomous');
   });
 
   // ---- Settings toggle for USER MEMORY (Phase 4, §9) ----------------------

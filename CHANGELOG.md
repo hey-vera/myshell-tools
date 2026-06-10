@@ -6,6 +6,23 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+## [3.86.0] - 2026-06-10
+
+### Added (it adapts to how YOU like to work — master-plan Phase 2b)
+- **An oversight dial that fits everyone** — `review-all` / `checkpoint` / `autonomous`,
+  set with `/oversight` (or Settings, or `MYSHELL_OVERSIGHT`), remembered per project.
+  Distinct from `/style` (which is only conversational tone): this controls *execution
+  autonomy*.
+  - **autonomous** — "just do it": skips the confirm, starts the goal, reports when done.
+  - **checkpoint** (default) — proposes the plan and asks before running (the 3.83.0 behavior).
+  - **review-all** — "show me every change": pauses after each to-do to show the changed
+    files + the approach, with one-tap **[Approve & continue] / [Stop here]** before it
+    marks the step done.
+- Built on a reusable launch checkpoint (`shouldPauseBeforeLaunch`) so the next phase's
+  standing-rule gate ("pause before security goals") plugs into the same seam. Additive:
+  with oversight unset it defaults to `checkpoint` → byte-identical to before; the safety
+  floor (asking at a genuine fork) is untouched in every mode.
+
 ## [3.85.0] - 2026-06-10
 
 ### Added (research-until-confident — master-plan Phase 3)

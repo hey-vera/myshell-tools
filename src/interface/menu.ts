@@ -202,8 +202,10 @@ import { runWelcome } from './menu-welcome.js';
 import {
   runModeSelect,
   runStyleSelect,
+  runOversightSelect,
   runSettings,
 } from './menu-settings.js';
+import { resolveOversight, shouldPauseBeforeLaunch } from './ui/oversight.js';
 
 // ---------------------------------------------------------------------------
 // MenuContext
@@ -1522,6 +1524,7 @@ export async function runChatLoop(
         '  /copy         — copy my last answer to your clipboard\n' +
         '  /export       — save this conversation to a Markdown file\n' +
         '  /style        — how forward I am: ask-first vs just-do-it\n' +
+        '  /oversight    — how much you review: review-all / checkpoint / autonomous\n' +
         '  /back, /exit  — return to the main menu\n' +
         '  /help         — show this help\n' +
         '\n' +
@@ -1608,6 +1611,19 @@ export async function runChatLoop(
         out,
         readLine,
         resolveAutoMode(mutableCtx.env),
+        inkReadKey,
+      );
+      return 'continue';
+    }
+
+    // Change the OVERSIGHT level (execution autonomy) from inside the chat — same
+    // knob as Settings → Oversight, one source of truth. DISTINCT from /style (a soft
+    // conversational bias): this decides review-all vs. checkpoint vs. autonomous.
+    if (line === '/oversight') {
+      mutableCtx.config = await runOversightSelect(
+        mutableCtx.config,
+        out,
+        readLine,
         inkReadKey,
       );
       return 'continue';
@@ -3233,6 +3249,12 @@ export async function runChatLoop(
         // block is skipped entirely → today's free loop, byte-for-byte.
         const managerOn = managerCycleEnabled(process.env, mutableCtx.config);
         const cycleGoalId = opts?.goalId;
+        // OVERSIGHT (Phase 2b): the cautious 'review-all' persona pauses after each
+        // to-do's diff for a one-tap approve/stop before the item is marked done. The
+        // decision goes through the REUSABLE shouldPauseBeforeLaunch checkpoint seam so
+        // Phase 4 (standing-rules gate) plugs into the SAME hook. Default 'checkpoint'
+        // → no per-diff pause → byte-identical to today's manager cycle.
+        const cycleOversight = resolveOversight(mutableCtx.config, process.env);
         if (managerOn && cycleGoalId !== undefined) {
           const stored = (await goalStore.get(cycleGoalId).catch(() => null)) ?? null;
           if (stored !== null && stored.roadmap.length > 0) {
@@ -3412,6 +3434,61 @@ export async function runChatLoop(
 
               const itemDone = verdict.state === 'passing' || verdict.state === 'reviewed';
               if (itemDone) {
+                // OVERSIGHT 'review-all' (Phase 2b): before this verified to-do is marked
+                // done, PAUSE and show the changed files + the item's approach, then a
+                // one-tap [Approve & continue] / [Stop here]. Reuses the existing
+                // changedPaths capture (no re-run of the model) + the SAME frictionless
+                // selector. The decision routes through the REUSABLE checkpoint seam, so
+                // Phase 4's launch gate plugs into the SAME hook. Under checkpoint/
+                // autonomous shouldPauseBeforeLaunch returns null → no pause → today's path.
+                const changed = verdict.changedPaths ?? [];
+                const pause = shouldPauseBeforeLaunch({
+                  oversight: cycleOversight,
+                  phase: 'per-todo-diff',
+                  hasDiff: changed.length > 0,
+                });
+                if (pause !== null) {
+                  out.write(dim(`\n  Review — "${next.text}":\n`, out.color));
+                  if (next.acceptanceCriterion !== undefined && next.acceptanceCriterion.length > 0) {
+                    out.write(dim(`    approach: ${next.acceptanceCriterion}\n`, out.color));
+                  }
+                  for (const p of changed.slice(0, 12)) {
+                    out.write(dim(`    ~ ${p}\n`, out.color));
+                  }
+                  if (changed.length > 12) {
+                    out.write(dim(`    …and ${String(changed.length - 12)} more\n`, out.color));
+                  }
+                  const review = await runQuestionSelector(
+                    {
+                      questions: [
+                        {
+                          id: 'review_todo',
+                          prompt: 'Approve this change and continue?',
+                          options: [
+                            { label: 'Approve & continue', description: 'mark it done, move to the next to-do' },
+                            { label: 'Stop here', description: 'leave the goal open for you to take over' },
+                          ],
+                          multiSelect: false,
+                          allowFreeText: true,
+                        },
+                      ],
+                    },
+                    out,
+                    readLine,
+                  );
+                  // Default-safe: anything that isn't an explicit approve (Stop here,
+                  // Enter/EOF, or free-text feedback) STOPS the cycle honestly — the
+                  // cautious persona never auto-advances past an unreviewed change.
+                  const approved =
+                    review !== null && /Approve/i.test(review) && !/Stop here/i.test(review);
+                  if (!approved) {
+                    out.write(
+                      dim(`\n  Stopped at "${next.text}" for your review — keeping the goal open.\n`, out.color),
+                    );
+                    stoppedEarly = true;
+                    break;
+                  }
+                }
                 // Mark the item done by its CURRENT index (the verdict already
                 // landed via the itemId-keyed write above). Fail-soft.
                 const idx = roadmap.findIndex((it) => it.id === next.id);
@@ -3758,6 +3835,11 @@ export async function runChatLoop(
           // marker first so the explicit `/goal` invocation never looks like a silent
           // hang while it digests + plans (the owner asked for it — brief feedback is
           // welcome, unlike the post-turn auto-stage which stays silent + non-blocking).
+          // OVERSIGHT (Phase 2b): the per-user execution-autonomy level decides whether
+          // the launch is propose-then-confirm (checkpoint/review-all) or skip-confirm
+          // (autonomous), and whether the manager cycle pauses on each to-do's diff
+          // (review-all). Resolved once; default 'checkpoint' → byte-identical Phase-2.
+          const oversight = resolveOversight(mutableCtx.config, process.env);
           out.write(dim('  ◷ thinking it through — judging the goal and building the plan…\n', out.color));
           const plan = await judgeGoal(goalText);
           const projectKey = await resolveProjectKeyOnce();
@@ -3785,15 +3867,26 @@ export async function runChatLoop(
             return 'continue';
           }
 
-          // PROPOSE-THEN-GO (Phase 2): the goal is clear, but an elite pro doesn't fire
-          // a black box — it PRESENTS the plan it built (vision · goals · to-dos · the
-          // dependency cause→effect · the chosen approach over the alternatives), flags
-          // any adjacent risk it noticed, then offers a ONE-TAP go. Only on the owner's
-          // word does the manager cycle launch. The proposal renders from the FULL judged
-          // plan when the planner produced one; on the smart-label fallback (no model
-          // plan) there is nothing rich to show, so we skip straight to the launch —
-          // byte-for-byte the prior behaviour for that path.
-          if (plan.plan !== undefined) {
+          // PROPOSE-THEN-GO (Phase 2 + Phase 2b oversight): the goal is clear. Under
+          // 'checkpoint' (default) and 'review-all' an elite pro doesn't fire a black box
+          // — it PRESENTS the plan it built (vision · goals · to-dos · the dependency
+          // cause→effect · the chosen approach over the alternatives), flags any adjacent
+          // risk it noticed, then offers a ONE-TAP go; only on the owner's word does the
+          // manager cycle launch. Under 'autonomous' the user has said "just do it", so we
+          // SKIP the confirm — a brief "On it" line, then run, and surface the trust
+          // receipt / done-summary at the end (the mid-run safety floor still asks at a
+          // genuine fork). The proposal renders from the FULL judged plan when the planner
+          // produced one; on the smart-label fallback (no model plan) there is nothing rich
+          // to show, so we skip straight to the launch — byte-for-byte the prior behaviour
+          // for that path.
+          if (oversight === 'autonomous') {
+            out.write(
+              dim(
+                `  On it — starting "${plan.title}"; I'll report when it's done.\n`,
+                out.color,
+              ),
+            );
+          } else if (plan.plan !== undefined) {
             const proposal = formatGoalProposal(plan.plan);
             if (proposal.length > 0) {
               out.write('\n' + proposal + '\n');
