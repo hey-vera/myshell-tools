@@ -26,7 +26,7 @@
  */
 
 import type { RoadmapItem, RoadmapStatus } from './work-contract.js';
-import { capRoadmapItem } from './work-contract.js';
+import { capRoadmapItem, normalizeRoadmapRelations } from './work-contract.js';
 import type { VerifiedState, VerifyOutcome } from './verify.js';
 import { buildVerifyReceipt } from './verify.js';
 
@@ -207,7 +207,7 @@ function capVerifiedState(value: unknown): VerifiedState | undefined {
  */
 export function capRoadmap(roadmap: unknown): RoadmapItem[] {
   if (!Array.isArray(roadmap)) return [];
-  return roadmap.slice(0, ROADMAP_LIMIT).map(capRoadmapItem);
+  return normalizeRoadmapRelations(roadmap.slice(0, ROADMAP_LIMIT).map(capRoadmapItem));
 }
 
 /**
@@ -422,15 +422,46 @@ const ROADMAP_BOX: Record<RoadmapStatus, string> = {
   blocked: '[⚠]',
 };
 
+/** Verified-done bar, local copy (mirrors isTodoVerifiedDone) so this module
+ *  stays free of a goal-manager import. Pure. */
+function isItemVerifiedDone(item: RoadmapItem): boolean {
+  return item.verdict?.state === 'passing' || item.verdict?.state === 'reviewed';
+}
+
 /**
  * The lines for an EXPANDED parked goal — its roadmap (the to-dos) as a numbered
  * checklist, each item `[✓]/[ ]/[⚠]` (done/pending|active/blocked). The numbers
  * are 1-based so they line up with the `[d <n>]` / `[b <n>]` commands. Pure.
+ *
+ * STRUCTURE (additive, neutral when absent):
+ *  - a GROUP HEADER (an item some sibling names as `parentId`) is prefixed `▸`,
+ *    and its grouped children are rendered with ONE extra indent level beneath
+ *    their original numbered position (no box-drawing trees — just one indent);
+ *  - an item with an UNSATISFIED dependency (a `dependsOn` id that is not yet
+ *    verified-done) gets a dim `⤷ needs <n>` hint appended; a fully-satisfied
+ *    dependency adds NO noise.
+ * With no `dependsOn`/`parentId` anywhere this returns EXACTLY the prior output.
  */
 export function formatRoadmapLines(roadmap: readonly RoadmapItem[]): string[] {
+  const byId = new Map(roadmap.map((it) => [it.id, it]));
+  const headers = new Set<string>();
+  for (const it of roadmap) {
+    if (it.parentId !== undefined && it.parentId.length > 0) headers.add(it.parentId);
+  }
   return roadmap.map((item, i) => {
     const box = ROADMAP_BOX[item.status];
-    return `   ${i + 1}. ${box} ${item.text}`;
+    const isChild = item.parentId !== undefined && headers.has(item.parentId);
+    const isHeader = headers.has(item.id);
+    const indent = isChild ? '      ' : '   ';
+    const marker = isHeader ? '▸ ' : '';
+    // Count UNSATISFIED deps only (a satisfied dep is silent — no noise).
+    let unmet = 0;
+    for (const depId of item.dependsOn ?? []) {
+      const dep = byId.get(depId);
+      if (dep === undefined || !isItemVerifiedDone(dep)) unmet += 1;
+    }
+    const needs = unmet > 0 ? ` ⤷ needs ${String(unmet)}` : '';
+    return `${indent}${i + 1}. ${box} ${marker}${item.text}${needs}`;
   });
 }
 

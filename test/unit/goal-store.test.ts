@@ -601,6 +601,47 @@ describe('goal-store — removeRoadmapItem', () => {
     const b = await store.removeRoadmapItem(g.id, 'r999');
     assert.equal(!b.ok && b.reason, 'unknown');
   });
+
+  it('refuses to orphan a dependedOn item → reason=depended-on', async () => {
+    const g = await store.create({
+      title: 't',
+      roadmap: [
+        { id: 'r1', text: 'build', status: 'pending' },
+        { id: 'r2', text: 'wire', status: 'pending', dependsOn: ['r1'] },
+      ],
+    });
+    const res = await store.removeRoadmapItem(g.id, 'r1');
+    assert.equal(res.ok, false);
+    assert.equal(!res.ok && res.reason, 'depended-on');
+    const reread = await store.get(g.id);
+    assert.equal(reread?.roadmap.length, 2); // r1 retained
+  });
+});
+
+describe('goal-store — updateRoadmapItem structural patch (dependsOn / parentId)', () => {
+  it('sets dependsOn (sibling-existence + cycle guards re-run on round-trip)', async () => {
+    const g = await store.create({
+      title: 't',
+      roadmap: [
+        { id: 'r1', text: 'build', status: 'pending' },
+        { id: 'r2', text: 'wire', status: 'pending' },
+      ],
+    });
+    const updated = await store.updateRoadmapItem(g.id, 'r2', { dependsOn: ['r1', 'ghost'] });
+    assert.deepEqual(updated?.roadmap.find((i) => i.id === 'r2')?.dependsOn, ['r1']);
+  });
+
+  it('sets a 1-level parentId', async () => {
+    const g = await store.create({
+      title: 't',
+      roadmap: [
+        { id: 'p1', text: 'header', status: 'pending' },
+        { id: 'c1', text: 'child', status: 'pending' },
+      ],
+    });
+    const updated = await store.updateRoadmapItem(g.id, 'c1', { parentId: 'p1' });
+    assert.equal(updated?.roadmap.find((i) => i.id === 'c1')?.parentId, 'p1');
+  });
 });
 
 describe('goal-store — CRUD recovery/atomicity preserved', () => {

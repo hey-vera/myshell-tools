@@ -13,6 +13,7 @@ import assert from 'node:assert/strict';
 
 import {
   pickNextTodo,
+  pickReadyTodos,
   managerCycleComplete,
   buildTodoTask,
   fixItTodo,
@@ -191,5 +192,142 @@ describe('fixItTodo — bounded self-heal', () => {
   it('fixItDepth of a fresh to-do is 0', () => {
     assert.equal(fixItDepth(item({ id: 'r1' })), 0);
     assert.equal(fixItDepth({ id: 'anything' }), 0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Dependency-aware pick + grouping (additive; strict superset of linear march)
+// ---------------------------------------------------------------------------
+
+describe('pickNextTodo — dependency-aware (additive)', () => {
+  it('with no dependsOn/parentId behaves EXACTLY as the linear march', () => {
+    const roadmap: RoadmapItem[] = [
+      { id: 'r1', text: 'one', status: 'done', verdict: verdict('passing') },
+      { id: 'r2', text: 'two', status: 'pending' },
+      { id: 'r3', text: 'three', status: 'pending' },
+    ];
+    assert.equal(pickNextTodo(roadmap)?.id, 'r2');
+  });
+
+  it('skips an item whose dependency is not yet verified-done', () => {
+    const roadmap: RoadmapItem[] = [
+      { id: 'r1', text: 'build module', status: 'pending' },
+      { id: 'r2', text: 'wire module', status: 'pending', dependsOn: ['r1'] },
+    ];
+    // r1 is unblocked → picked first; r2 waits on r1.
+    assert.equal(pickNextTodo(roadmap)?.id, 'r1');
+  });
+
+  it('picks the dependent once its blocker is verified-done', () => {
+    const roadmap: RoadmapItem[] = [
+      { id: 'r1', text: 'build', status: 'done', verdict: verdict('passing') },
+      { id: 'r2', text: 'wire', status: 'pending', dependsOn: ['r1'] },
+    ];
+    assert.equal(pickNextTodo(roadmap)?.id, 'r2');
+  });
+
+  it('a dependent with an UNSATISFIED dep is skipped in favor of a later ready item', () => {
+    const roadmap: RoadmapItem[] = [
+      { id: 'r1', text: 'wire', status: 'pending', dependsOn: ['r3'] },
+      { id: 'r3', text: 'build', status: 'pending' },
+    ];
+    // r1 blocks on r3 (not done) → skip; r3 is ready → picked.
+    assert.equal(pickNextTodo(roadmap)?.id, 'r3');
+  });
+
+  it('a dangling dep id (no matching sibling) keeps the item blocked', () => {
+    const roadmap: RoadmapItem[] = [
+      { id: 'r1', text: 'wire', status: 'pending', dependsOn: ['ghost'] },
+    ];
+    assert.equal(pickNextTodo(roadmap), null);
+  });
+
+  it('skips a pure parent header (rollup-only, never worked directly)', () => {
+    const roadmap: RoadmapItem[] = [
+      { id: 'p1', text: 'Group: backend', status: 'pending' },
+      { id: 'c1', text: 'child', status: 'pending', parentId: 'p1' },
+    ];
+    // p1 is a header (c1 names it) → skipped; c1 is the first real actionable item.
+    assert.equal(pickNextTodo(roadmap)?.id, 'c1');
+  });
+});
+
+describe('pickReadyTodos', () => {
+  it('returns ALL currently-unblocked actionable items in order', () => {
+    const roadmap: RoadmapItem[] = [
+      { id: 'r1', text: 'a', status: 'pending' },
+      { id: 'r2', text: 'b', status: 'pending', dependsOn: ['r1'] },
+      { id: 'r3', text: 'c', status: 'pending' },
+    ];
+    // r1 + r3 are ready; r2 waits on r1.
+    assert.deepEqual(pickReadyTodos(roadmap).map((i) => i.id), ['r1', 'r3']);
+  });
+
+  it('excludes verified-done, blocked, parent-headers, and dep-blocked items', () => {
+    const roadmap: RoadmapItem[] = [
+      { id: 'r1', text: 'done', status: 'done', verdict: verdict('passing') },
+      { id: 'r2', text: 'blocked', status: 'blocked' },
+      { id: 'p1', text: 'header', status: 'pending' },
+      { id: 'c1', text: 'child', status: 'pending', parentId: 'p1', dependsOn: ['r2'] },
+      { id: 'r5', text: 'ready', status: 'pending' },
+    ];
+    assert.deepEqual(pickReadyTodos(roadmap).map((i) => i.id), ['r5']);
+  });
+
+  it('with no structure returns every not-done, not-blocked item (the whole plan)', () => {
+    const roadmap: RoadmapItem[] = [
+      { id: 'r1', text: 'a', status: 'pending' },
+      { id: 'r2', text: 'b', status: 'active' },
+    ];
+    assert.deepEqual(pickReadyTodos(roadmap).map((i) => i.id), ['r1', 'r2']);
+  });
+});
+
+describe('managerCycleComplete — parent rollup (computed, never fabricated)', () => {
+  it('a header is done iff all its children are verified-done', () => {
+    const incomplete: RoadmapItem[] = [
+      { id: 'p1', text: 'header', status: 'pending' },
+      { id: 'c1', text: 'child a', status: 'done', verdict: verdict('passing') },
+      { id: 'c2', text: 'child b', status: 'pending', parentId: 'p1' },
+    ];
+    // c2 has parentId p1 → p1 is a header; c1 has no parentId so it is a normal item.
+    // c2 not verified → not complete.
+    assert.equal(managerCycleComplete({ roadmap: incomplete }), false);
+
+    const complete: RoadmapItem[] = [
+      { id: 'p1', text: 'header', status: 'pending' }, // header carries NO verdict
+      { id: 'c1', text: 'child a', status: 'done', verdict: verdict('passing'), parentId: 'p1' },
+      { id: 'c2', text: 'child b', status: 'done', verdict: verdict('reviewed'), parentId: 'p1' },
+    ];
+    // both children verified; the header rolls up done WITHOUT a fabricated verdict.
+    assert.equal(managerCycleComplete({ roadmap: complete }), true);
+  });
+
+  it('a header with an unverified child is NOT complete', () => {
+    const roadmap: RoadmapItem[] = [
+      { id: 'p1', text: 'header', status: 'pending' },
+      { id: 'c1', text: 'child', status: 'pending', parentId: 'p1' },
+    ];
+    assert.equal(managerCycleComplete({ roadmap }), false);
+  });
+});
+
+describe('fixItTodo — dependency blocking edge case', () => {
+  it('a fix-it leaves X unverified, so anything depending on X stays blocked', () => {
+    const failed: RoadmapItem = { id: 'r1', text: 'build', status: 'pending' };
+    const fix = fixItTodo(failed, 'tests red');
+    assert.notEqual(fix, null);
+    // The roadmap after the fix-it spawns: r1 still unverified, fix pending, r2 depends on r1.
+    const roadmap: RoadmapItem[] = [
+      { ...failed }, // still no verdict → not verified-done
+      fix as RoadmapItem,
+      { id: 'r2', text: 'wire', status: 'pending', dependsOn: ['r1'] },
+    ];
+    // The fix-it (r1-fix1) is ready (no deps); r2 stays blocked on the unverified r1.
+    const next = pickNextTodo(roadmap);
+    assert.equal(next?.id, 'r1');
+    assert.ok(!isTodoVerifiedDone(roadmap[0] as RoadmapItem));
+    // r2 must NOT be ready (it depends on the still-unverified r1).
+    assert.equal(pickReadyTodos(roadmap).some((i) => i.id === 'r2'), false);
   });
 });

@@ -181,7 +181,7 @@ describe('applyReplanEditsViaStore', () => {
       { kind: 'prune', id: 'r2' },
       { kind: 'reorder', order: ['r3', 'r1'] }, // r3 is the freshly-added id
     ]);
-    assert.deepEqual(result, { added: 1, edited: 1, reordered: 1, pruned: 1 });
+    assert.deepEqual(result, { added: 1, edited: 1, reordered: 1, pruned: 1, structured: 0 });
     const reread = await store.get(g.id);
     assert.equal(reread?.roadmap.find((i) => i.id === 'r1')?.text, 'ONE!');
     assert.ok(!reread?.roadmap.some((i) => i.id === 'r2'), 'r2 pruned');

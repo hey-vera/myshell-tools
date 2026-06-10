@@ -132,6 +132,8 @@ export interface ApplyReplanResult {
   readonly edited: number;
   readonly reordered: number;
   readonly pruned: number;
+  /** `depends`/`group` structural edits that landed (dependency edges + grouping). */
+  readonly structured: number;
 }
 
 /**
@@ -156,7 +158,7 @@ export async function applyReplanEditsViaStore(
   edits: readonly RoadmapEdit[] | null,
 ): Promise<ApplyReplanResult | null> {
   if (edits === null || edits.length === 0) return null;
-  const result = { added: 0, edited: 0, reordered: 0, pruned: 0 };
+  const result = { added: 0, edited: 0, reordered: 0, pruned: 0, structured: 0 };
 
   // A live snapshot of the goal so we resolve ids → verified status + know what's
   // safe to touch. Re-read after the mutating phases that change membership.
@@ -211,6 +213,38 @@ export async function applyReplanEditsViaStore(
       if (removed !== null && removed.ok) {
         result.pruned += 1;
         goal = removed.goal;
+      }
+      continue;
+    }
+  }
+
+  // Phase 1.5: structural edits (depends / group) AFTER adds/prunes so referenced
+  // ids resolve against the post-membership roadmap. A verified-done target is
+  // skipped (sacred); the relational guards (sibling-existence/cycle/depth) re-run
+  // inside the store on the round-trip, so a dangling/cyclic/over-depth edge can
+  // never persist — these set the raw value and let normalizeRoadmapRelations clean.
+  for (const edit of edits) {
+    if (edit.kind === 'depends') {
+      const target = goal.roadmap.find((it) => it.id === edit.id);
+      if (target === undefined || isVerifiedDone(target)) continue;
+      const updated = await store
+        .updateRoadmapItem(goalId, edit.id, { dependsOn: edit.dependsOn })
+        .catch(() => null);
+      if (updated !== null) {
+        result.structured += 1;
+        goal = updated;
+      }
+      continue;
+    }
+    if (edit.kind === 'group') {
+      const target = goal.roadmap.find((it) => it.id === edit.id);
+      if (target === undefined || isVerifiedDone(target)) continue;
+      const updated = await store
+        .updateRoadmapItem(goalId, edit.id, { parentId: edit.parentId })
+        .catch(() => null);
+      if (updated !== null) {
+        result.structured += 1;
+        goal = updated;
       }
       continue;
     }

@@ -9,6 +9,8 @@ import {
   appendCheckpointFromContinue,
   capContract,
   capRoadmapItem,
+  normalizeRoadmapRelations,
+  DEPENDS_ON_LIMIT,
   isCleanObjectiveTask,
   renderContractForPrompt,
   shouldMaterializeContract,
@@ -482,5 +484,95 @@ describe('capRoadmapItem — Phase 2 acceptanceCriterion + verdict + approach', 
     for (const bad of garbage) {
       assert.doesNotThrow(() => capRoadmapItem(bad));
     }
+  });
+});
+
+describe('dependsOn / parentId — additive structural fields', () => {
+  function it_(id: string, extra: Partial<RoadmapItem> = {}): RoadmapItem {
+    return { id, text: `t-${id}`, status: 'pending', ...extra };
+  }
+
+  it('an item with NEITHER field round-trips byte-identical (omitted, not defaulted)', () => {
+    const items = [it_('r1'), it_('r2')];
+    const out = normalizeRoadmapRelations(items);
+    assert.deepEqual(out, items);
+    for (const o of out) {
+      assert.ok(!('dependsOn' in o), 'no dependsOn key');
+      assert.ok(!('parentId' in o), 'no parentId key');
+    }
+  });
+
+  it('keeps only dep ids that exist among siblings; drops unknown', () => {
+    const out = normalizeRoadmapRelations([
+      it_('r1'),
+      it_('r2', { dependsOn: ['r1', 'ghost'] }),
+    ]);
+    assert.deepEqual(out[1]?.dependsOn, ['r1']);
+  });
+
+  it('drops self-edges and dedupes', () => {
+    const out = normalizeRoadmapRelations([
+      it_('r1'),
+      it_('r2', { dependsOn: ['r2', 'r1', 'r1'] }),
+    ]);
+    assert.deepEqual(out[1]?.dependsOn, ['r1']);
+  });
+
+  it('caps dependsOn length at DEPENDS_ON_LIMIT', () => {
+    const sibs = Array.from({ length: 8 }, (_v, i) => it_(`s${String(i)}`));
+    const deps = sibs.map((s) => s.id);
+    const out = normalizeRoadmapRelations([it_('r1', { dependsOn: deps }), ...sibs]);
+    assert.equal(out[0]?.dependsOn?.length, DEPENDS_ON_LIMIT);
+  });
+
+  it('strips edges that would form a CYCLE (degrade, never deadlock)', () => {
+    // r1→r2→r1 is a 2-cycle. The peel orders neither; both get their cyclic edges stripped.
+    const out = normalizeRoadmapRelations([
+      it_('r1', { dependsOn: ['r2'] }),
+      it_('r2', { dependsOn: ['r1'] }),
+    ]);
+    // Neither item ends up with a dependency edge back into the cycle.
+    assert.ok(out[0]?.dependsOn === undefined || !out[0].dependsOn.includes('r2'));
+    assert.ok(out[1]?.dependsOn === undefined || !out[1].dependsOn.includes('r1'));
+  });
+
+  it('keeps an honest acyclic chain intact', () => {
+    const out = normalizeRoadmapRelations([
+      it_('r1'),
+      it_('r2', { dependsOn: ['r1'] }),
+      it_('r3', { dependsOn: ['r2'] }),
+    ]);
+    assert.deepEqual(out[1]?.dependsOn, ['r1']);
+    assert.deepEqual(out[2]?.dependsOn, ['r2']);
+  });
+
+  it('parentId must reference an existing sibling that is NOT itself a child (depth=1)', () => {
+    // c → p is fine; gc → c is over-depth (c is itself a child) → dropped.
+    const out = normalizeRoadmapRelations([
+      it_('p'),
+      it_('c', { parentId: 'p' }),
+      it_('gc', { parentId: 'c' }),
+    ]);
+    assert.equal(out[1]?.parentId, 'p');
+    assert.ok(out[2]?.parentId === undefined, 'grandchild parent dropped (over-depth)');
+  });
+
+  it('drops a parentId pointing at an unknown id', () => {
+    const out = normalizeRoadmapRelations([it_('r1', { parentId: 'ghost' })]);
+    assert.ok(out[0]?.parentId === undefined);
+  });
+
+  it('capContract round-trips the new fields through normalization', () => {
+    const contract: WorkContract = {
+      version: 1,
+      objective: 'o',
+      roadmap: [
+        { id: 'r1', text: 'a', status: 'pending' },
+        { id: 'r2', text: 'b', status: 'pending', dependsOn: ['r1'], parentId: 'r1' },
+      ],
+    };
+    const capped = capContract(contract);
+    assert.deepEqual(capped.roadmap?.[1]?.dependsOn, ['r1']);
+    assert.equal(capped.roadmap?.[1]?.parentId, 'r1');
   });
 });

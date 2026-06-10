@@ -120,6 +120,50 @@ describe('formatRoadmapLines', () => {
     assert.match(lines[2]!, /3\. \[⚠\] step 2/);
     assert.match(lines[3]!, /4\. \[ \] step 3/); // active renders as an open box
   });
+
+  it('with no structure renders EXACTLY the prior output (neutral)', () => {
+    const flat: RoadmapItem[] = [
+      { id: 'r1', text: 'a', status: 'pending' },
+      { id: 'r2', text: 'b', status: 'pending' },
+    ];
+    const lines = formatRoadmapLines(flat);
+    assert.equal(lines[0], '   1. [ ] a');
+    assert.equal(lines[1], '   2. [ ] b');
+  });
+
+  it('prefixes a group header with ▸ and indents its children one level', () => {
+    const roadmap: RoadmapItem[] = [
+      { id: 'p1', text: 'Backend', status: 'pending' },
+      { id: 'c1', text: 'child', status: 'pending', parentId: 'p1' },
+    ];
+    const lines = formatRoadmapLines(roadmap);
+    assert.match(lines[0]!, /^ {3}1\. \[ \] ▸ Backend$/);
+    assert.match(lines[1]!, /^ {6}2\. \[ \] child$/); // extra indent, no box-drawing
+  });
+
+  it('appends ⤷ needs <n> ONLY for an UNSATISFIED dependency', () => {
+    const unmet: RoadmapItem[] = [
+      { id: 'r1', text: 'build', status: 'pending' },
+      { id: 'r2', text: 'wire', status: 'pending', dependsOn: ['r1'] },
+    ];
+    const lines = formatRoadmapLines(unmet);
+    assert.doesNotMatch(lines[0]!, /needs/);
+    assert.match(lines[1]!, /⤷ needs 1$/);
+  });
+
+  it('a SATISFIED dependency adds NO hint (no noise)', () => {
+    const met: RoadmapItem[] = [
+      {
+        id: 'r1',
+        text: 'build',
+        status: 'done',
+        verdict: { state: 'passing', receipt: 'r', at: '2026-06-10T00:00:00.000Z' },
+      },
+      { id: 'r2', text: 'wire', status: 'pending', dependsOn: ['r1'] },
+    ];
+    const lines = formatRoadmapLines(met);
+    assert.doesNotMatch(lines[1]!, /needs/);
+  });
 });
 
 describe('capGoal + capRoadmap (defensive shaping)', () => {

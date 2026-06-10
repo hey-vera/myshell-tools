@@ -30,6 +30,7 @@
 import { ELITE_VOICE_PREAMBLE } from './prompt.js';
 import type { Goal } from './goal-todo.js';
 import type { RoadmapItem } from './work-contract.js';
+import { normalizeRoadmapRelations } from './work-contract.js';
 import type { SystemModel } from './understanding.js';
 
 /** Hard cap on a single to-do's text — a concrete step, not an essay. */
@@ -60,7 +61,14 @@ export type RoadmapEdit =
       readonly acceptanceCriterion?: string;
     }
   | { readonly kind: 'reorder'; readonly order: readonly string[] }
-  | { readonly kind: 'prune'; readonly id: string };
+  | { readonly kind: 'prune'; readonly id: string }
+  // `depends` → set an item's dependsOn (the ids it blocks on). Sibling-existence,
+  // self-edge, dedupe, cap, and cycle guards are enforced in applyReplanEdits via
+  // normalizeRoadmapRelations (the single source of truth).
+  | { readonly kind: 'depends'; readonly id: string; readonly dependsOn: readonly string[] }
+  // `group` → set an item's parentId (1-level grouping). Depth/cycle guards are
+  // enforced in applyReplanEdits via normalizeRoadmapRelations.
+  | { readonly kind: 'group'; readonly id: string; readonly parentId: string };
 
 /**
  * Build the one-shot re-plan prompt. Read by a CAPABLE (manager-tier) model, so it
@@ -98,6 +106,8 @@ export function buildReplanPrompt(goal: Goal, systemModel?: SystemModel): string
     '  EDIT <id>: <corrected text> || DONE-WHEN: <updated definition of done>',
     '  REORDER: <id>, <id>, <id>  (the full desired order of the PENDING to-dos)',
     '  PRUNE <id>: <one short reason it is obsolete>',
+    '  DEPENDS <id>: <id>, <id>  (the to-dos <id> must wait for — true blockers only)',
+    '  GROUP <id>: <parent-id>  (group <id> under an existing header to-do; 1 level)',
     '',
     'HARD rules (non-negotiable):',
     '  - NEVER touch a DONE / VERIFIED to-do: do not edit it, do not prune it, do',
@@ -272,6 +282,28 @@ export function parseReplanEdits(raw: string | undefined | null): RoadmapEdit[] 
       continue;
     }
 
+    // DEPENDS <id>: <id>, <id>, ...  (set the dependency edges of <id>)
+    const depends = /^(?:[※⏺*\-•]\s*)?DEPENDS\s+(\S+?)\s*[:\-—]\s*(.+)$/iu.exec(trimmed);
+    if (depends !== null) {
+      sawAnyTag = true;
+      const id = (depends[1] ?? '').trim();
+      const dependsOn = parseIdList(depends[2] ?? '').filter((d) => d !== id);
+      if (id.length === 0 || dependsOn.length === 0) continue; // nothing to wire
+      edits.push({ kind: 'depends', id, dependsOn });
+      continue;
+    }
+
+    // GROUP <id>: <parent-id>  (set the 1-level grouping parent of <id>)
+    const group = /^(?:[※⏺*\-•]\s*)?GROUP\s+(\S+?)\s*[:\-—]\s*(\S+)\s*$/iu.exec(trimmed);
+    if (group !== null) {
+      sawAnyTag = true;
+      const id = (group[1] ?? '').trim();
+      const parentId = (group[2] ?? '').trim();
+      if (id.length === 0 || parentId.length === 0 || parentId === id) continue;
+      edits.push({ kind: 'group', id, parentId });
+      continue;
+    }
+
     // PRUNE <id>[: reason]
     const prune = /^(?:[※⏺*\-•]\s*)?PRUNE\s+(\S+?)\s*(?:[:\-—].*)?$/iu.exec(trimmed);
     if (prune !== null) {
@@ -366,7 +398,32 @@ export function applyReplanEdits(
       const target = next.find((it) => it.id === edit.id);
       if (target === undefined) continue; // unknown id — no-op
       if (isVerifiedDone(target)) continue; // verified-done is RETAINED — never pruned
+      // Dependency-safety: do not orphan an item others still depend on. If any
+      // OTHER surviving item lists this id in its dependsOn, drop the prune
+      // (mirrors the retained-verified guard — never strand a dependedOn item).
+      if (isDependedOnByOthers(next, edit.id)) continue;
       next = next.filter((it) => it.id !== edit.id);
+      continue;
+    }
+
+    if (edit.kind === 'depends') {
+      next = next.map((it) => {
+        if (it.id !== edit.id) return it;
+        if (isVerifiedDone(it)) return it; // verified-done is immutable
+        // Set the raw edges; sibling-existence/self/dedupe/cap/cycle guards run in
+        // the final normalizeRoadmapRelations pass (the single source of truth).
+        return { ...it, dependsOn: [...edit.dependsOn] };
+      });
+      continue;
+    }
+
+    if (edit.kind === 'group') {
+      next = next.map((it) => {
+        if (it.id !== edit.id) return it;
+        if (isVerifiedDone(it)) return it; // verified-done is immutable
+        // Set the raw parent; depth/cycle guards run in normalizeRoadmapRelations.
+        return { ...it, parentId: edit.parentId };
+      });
       continue;
     }
 
@@ -376,7 +433,16 @@ export function applyReplanEdits(
     next = reorderPreservingVerified(next, edit.order);
   }
 
-  return next;
+  // Final relational guard: re-validate ALL dependency edges + grouping refs
+  // against the post-edit item set (sibling-existence, ≤7 fan-in, cycle-free,
+  // 1-level depth). This is the single source of truth shared with capRoadmap, so
+  // a `depends`/`group` edit can never persist a dangling/cyclic/over-depth edge.
+  return normalizeRoadmapRelations(next);
+}
+
+/** True when some OTHER item in the roadmap lists `id` in its dependsOn. */
+function isDependedOnByOthers(roadmap: readonly RoadmapItem[], id: string): boolean {
+  return roadmap.some((it) => it.id !== id && (it.dependsOn ?? []).includes(id));
 }
 
 /**

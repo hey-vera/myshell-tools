@@ -6,6 +6,30 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+## [3.75.0] - 2026-06-10
+
+### Added (goals get true structure — dependency edges, not dumb flat lists)
+- **A goal's to-dos can now carry real structure**: an optional `dependsOn` (a to-do
+  blocks on its siblings) and an optional one-level `parentId` grouping header. This
+  moves the manager cycle from a dumb top-to-bottom march to **dependency-aware
+  execution**: it works the *next unblocked* to-do (a to-do whose dependencies have all
+  verified), holds blocked work back — correctly, even when a fix-it spawns mid-stream —
+  and rolls a group header to "done" only when all its children verify (computed from
+  real verdicts, never fabricated). Mirrors the topological, cycle-safe machinery the
+  scheduler already proved at the goal level.
+- The living-plan re-plan step gained two edit kinds — set a dependency and group under
+  a header — so the partner can add real structure as its understanding sharpens; the
+  re-plan receipt shows a `⤷N` count of structural edits.
+- The board renders one indent level under a `▸` group header and a dim `⤷ needs <n>`
+  hint only on a still-blocked to-do (no noise once unblocked).
+- New: `pickReadyTodos` exposes all currently-unblocked to-dos (the seam for a future
+  safe parallel phase under the existing bounded scheduler concurrency).
+
+All additive and fail-soft: persisted flat roadmaps round-trip byte-identically;
+invented/cyclic/over-deep edges are stripped (degrade to the linear march, never
+deadlock); `dependsOn` is capped at 7 and grouping depth at 1. With no structure set,
+execution and rendering are byte-for-byte the prior behavior (neutrality preserved).
+
 ## [3.74.0] - 2026-06-10
 
 ### Changed (`/goal` is an entry into the adaptive judgment, not a pipeline)

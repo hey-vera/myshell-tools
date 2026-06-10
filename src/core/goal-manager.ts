@@ -37,6 +37,52 @@ export function isTodoVerifiedDone(item: RoadmapItem): boolean {
 }
 
 // ---------------------------------------------------------------------------
+// Dependency / grouping helpers (additive — neutral when the fields are absent)
+// ---------------------------------------------------------------------------
+
+/** The set of item ids that are used as a GROUP HEADER (some sibling's parentId). */
+function parentHeaderIds(roadmap: readonly RoadmapItem[]): ReadonlySet<string> {
+  const headers = new Set<string>();
+  for (const it of roadmap) {
+    if (it.parentId !== undefined && it.parentId.length > 0) headers.add(it.parentId);
+  }
+  return headers;
+}
+
+/**
+ * Whether an item is a PURE parent header — it groups children (some sibling
+ * names it as `parentId`) and is therefore NOT directly worker-actionable: its
+ * completion is COMPUTED from its children's verdicts (parent rollup), never
+ * worked or verified on its own. With no grouping in play this is always false,
+ * so the linear march is unchanged.
+ */
+function isPureParentHeader(item: RoadmapItem, headers: ReadonlySet<string>): boolean {
+  return headers.has(item.id);
+}
+
+/**
+ * Whether every dependency of an item is verified-done. An item with no
+ * `dependsOn` (the default) is trivially ready — so the linear march is exactly
+ * preserved. An unknown dep id can never appear here (capRoadmapItem +
+ * normalizeRoadmapRelations strip them), but we are defensive: a dep id with no
+ * matching item is treated as UNSATISFIED (it can never become verified-done, so
+ * the item correctly stays blocked rather than silently advancing).
+ */
+function dependenciesSatisfied(
+  item: RoadmapItem,
+  byId: ReadonlyMap<string, RoadmapItem>,
+): boolean {
+  const deps = item.dependsOn;
+  if (deps === undefined || deps.length === 0) return true;
+  for (const depId of deps) {
+    const dep = byId.get(depId);
+    if (dep === undefined) return false; // dangling dep → not satisfiable → blocked
+    if (!isTodoVerifiedDone(dep)) return false;
+  }
+  return true;
+}
+
+// ---------------------------------------------------------------------------
 // pickNextTodo — the next actionable item
 // ---------------------------------------------------------------------------
 
@@ -50,12 +96,38 @@ export function isTodoVerifiedDone(item: RoadmapItem): boolean {
  * items also returns null (nothing the cycle can advance on its own).
  */
 export function pickNextTodo(roadmap: readonly RoadmapItem[]): RoadmapItem | null {
+  const byId = new Map(roadmap.map((it) => [it.id, it]));
+  const headers = parentHeaderIds(roadmap);
   for (const item of roadmap) {
     if (isTodoVerifiedDone(item)) continue; // already real, verified work
     if (item.status === 'blocked') continue; // needs input — not worker-actionable
+    if (isPureParentHeader(item, headers)) continue; // rollup-only, never worked directly
+    if (!dependenciesSatisfied(item, byId)) continue; // a blocker is not yet verified-done
     return item;
   }
   return null;
+}
+
+/**
+ * ALL currently-unblocked actionable items, in roadmap order — the same per-item
+ * gate as {@link pickNextTodo} but returning EVERY ready item instead of just the
+ * first. This is the pure substrate for a FUTURE parallel-execution phase (work
+ * several independent ready items at once); it is deliberately NOT wired into the
+ * cycle yet. Pure, total, never throws. With no dependencies/grouping it returns
+ * every not-done, not-blocked item (the whole remaining linear plan).
+ */
+export function pickReadyTodos(roadmap: readonly RoadmapItem[]): RoadmapItem[] {
+  const byId = new Map(roadmap.map((it) => [it.id, it]));
+  const headers = parentHeaderIds(roadmap);
+  const ready: RoadmapItem[] = [];
+  for (const item of roadmap) {
+    if (isTodoVerifiedDone(item)) continue;
+    if (item.status === 'blocked') continue;
+    if (isPureParentHeader(item, headers)) continue;
+    if (!dependenciesSatisfied(item, byId)) continue;
+    ready.push(item);
+  }
+  return ready;
 }
 
 // ---------------------------------------------------------------------------
@@ -73,7 +145,29 @@ export function pickNextTodo(roadmap: readonly RoadmapItem[]): RoadmapItem | nul
 export function managerCycleComplete(goal: { readonly roadmap: readonly RoadmapItem[] }): boolean {
   const roadmap = goal.roadmap;
   if (roadmap.length === 0) return false;
-  return roadmap.every(isTodoVerifiedDone);
+  const headers = parentHeaderIds(roadmap);
+  // A pure parent header carries no verdict of its own — its completion is
+  // ROLLED UP (computed) from its real children's verdicts. We never fabricate a
+  // verdict on the parent: a header is "done" iff every child is verified-done.
+  const childrenOf = new Map<string, RoadmapItem[]>();
+  if (headers.size > 0) {
+    for (const it of roadmap) {
+      if (it.parentId !== undefined && headers.has(it.parentId)) {
+        const list = childrenOf.get(it.parentId) ?? [];
+        list.push(it);
+        childrenOf.set(it.parentId, list);
+      }
+    }
+  }
+  return roadmap.every((item) => {
+    if (isPureParentHeader(item, headers)) {
+      const children = childrenOf.get(item.id) ?? [];
+      // A header with no surviving children rolls up as done (nothing left to do
+      // under it); otherwise every child must be verified-done.
+      return children.every(isTodoVerifiedDone);
+    }
+    return isTodoVerifiedDone(item);
+  });
 }
 
 // ---------------------------------------------------------------------------

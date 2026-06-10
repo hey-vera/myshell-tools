@@ -3115,11 +3115,17 @@ export async function runChatLoop(
               );
               if (applied !== null) {
                 const touched =
-                  applied.added + applied.edited + applied.reordered + applied.pruned;
+                  applied.added +
+                  applied.edited +
+                  applied.reordered +
+                  applied.pruned +
+                  applied.structured;
                 if (touched > 0) {
+                  const struct =
+                    applied.structured > 0 ? ` ⤷${String(applied.structured)}` : '';
                   out.write(
                     dim(
-                      `  ↻ re-planned (${reason}): +${String(applied.added)} ~${String(applied.edited)} ⇄${String(applied.reordered)} −${String(applied.pruned)} to-dos.\n`,
+                      `  ↻ re-planned (${reason}): +${String(applied.added)} ~${String(applied.edited)} ⇄${String(applied.reordered)} −${String(applied.pruned)}${struct} to-dos.\n`,
                       out.color,
                     ),
                   );

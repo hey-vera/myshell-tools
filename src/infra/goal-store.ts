@@ -334,6 +334,11 @@ export interface GoalStore {
    * item (no verdict, or verdict.state ∈ {unverified, failing}) is removed
    * normally → `{ ok: true, goal }`. Unknown id/itemId → `{ ok: false,
    * reason: 'unknown' }`.
+   *
+   * DEPENDENCY-SAFETY: a to-do that another to-do still lists in its `dependsOn`
+   * is NOT removed (it would orphan a live dependency edge) — the method returns
+   * `{ ok: false, reason: 'depended-on', goal }` so the caller can re-point or
+   * clear the edge first. Mirrors the retained-verified guard.
    */
   removeRoadmapItem(id: string, itemId: string): Promise<RemoveRoadmapItemResult>;
   /** Hard-remove a goal by id (never silent — the caller surfaces it). */
@@ -345,6 +350,10 @@ export interface RoadmapItemPatch {
   readonly text?: string;
   readonly acceptanceCriterion?: string;
   readonly approach?: RoadmapItem['approach'];
+  /** Set the dependency edges; relational guards re-run on round-trip (capGoal). */
+  readonly dependsOn?: readonly string[];
+  /** Set the 1-level grouping parent; depth/cycle guard re-runs on round-trip. */
+  readonly parentId?: string;
 }
 
 /** Result of {@link GoalStore.addRoadmapItem}. */
@@ -357,11 +366,17 @@ export type AddRoadmapItemResult =
 export type RemoveRoadmapItemResult =
   | { readonly ok: true; readonly goal: Goal }
   | { readonly ok: false; readonly reason: 'unknown' }
-  | { readonly ok: false; readonly reason: 'retained-verified'; readonly goal: Goal };
+  | { readonly ok: false; readonly reason: 'retained-verified'; readonly goal: Goal }
+  | { readonly ok: false; readonly reason: 'depended-on'; readonly goal: Goal };
 
 /** A verdict that marks an item as real, verified, completed work (audit-trail). */
 function isVerifiedDone(item: RoadmapItem): boolean {
   return item.verdict?.state === 'passing' || item.verdict?.state === 'reviewed';
+}
+
+/** True when some OTHER item in the roadmap lists `itemId` in its dependsOn. */
+function isDependedOnByOthers(roadmap: readonly RoadmapItem[], itemId: string): boolean {
+  return roadmap.some((it) => it.id !== itemId && (it.dependsOn ?? []).includes(itemId));
 }
 
 export function createFileGoalStore(opts: {
@@ -536,6 +551,12 @@ export function createFileGoalStore(opts: {
               ? { acceptanceCriterion: patch.acceptanceCriterion }
               : {}),
             ...(patch.approach !== undefined ? { approach: patch.approach } : {}),
+            // The two structural fields. The raw value is set here; the relational
+            // guards (sibling-existence/cycle/depth) re-run via capGoal → capRoadmap
+            // → normalizeRoadmapRelations on the round-trip below, so a dangling or
+            // cyclic edge can never persist.
+            ...(patch.dependsOn !== undefined ? { dependsOn: [...patch.dependsOn] } : {}),
+            ...(patch.parentId !== undefined ? { parentId: patch.parentId } : {}),
           };
         });
         const updated = capGoal({ ...target, roadmap: nextRoadmap, lastTouched: clock.isoNow() });
@@ -588,6 +609,11 @@ export function createFileGoalStore(opts: {
           // Audit-trail honesty: a verified-done to-do is RETAINED (the record of
           // real verified work survives plan edits) — never hard-deleted here.
           return { ok: false, reason: 'retained-verified', goal: target };
+        }
+        if (isDependedOnByOthers(target.roadmap, itemId)) {
+          // Dependency-safety: removing this would orphan another item's dependsOn
+          // edge. Refuse so the caller clears/re-points the edge first.
+          return { ok: false, reason: 'depended-on', goal: target };
         }
         const nextRoadmap = target.roadmap.filter((it) => it.id !== itemId);
         const updated = capGoal({ ...target, roadmap: nextRoadmap, lastTouched: clock.isoNow() });

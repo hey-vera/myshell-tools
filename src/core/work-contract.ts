@@ -60,6 +60,24 @@ export interface RoadmapItem {
    * (Part 3b). Enables the approach-quality critic question.
    */
   readonly approach?: RoadmapItemApproach;
+  /**
+   * Intra-goal dependency edges: ids of SIBLING roadmap items this one blocks on.
+   * Additive + optional (mirrors approach/verdict): absent ⇒ the item is
+   * independent and the linear march behaves EXACTLY as before. Normalized
+   * fail-soft in {@link capRoadmapItem}: kept only when they reference existing
+   * siblings, self-edges dropped, deduped, capped at {@link DEPENDS_ON_LIMIT}, and
+   * any edge that would form a CYCLE is stripped (degrade to fewer edges, never a
+   * deadlock — mirrors decompose.ts cycle-stripping).
+   */
+  readonly dependsOn?: readonly string[];
+  /**
+   * Optional 1-level grouping: the id of a SIBLING item used as a group header.
+   * Depth is capped at exactly 1 — a parent that is itself a child (or a self/
+   * cyclic reference) is dropped fail-soft. Absent ⇒ ungrouped (the default).
+   * Hierarchy beyond one level lives at the goal boundary (cap-8 ⇒ child goal),
+   * never as a deep tree here.
+   */
+  readonly parentId?: string;
 }
 
 export interface Checkpoint {
@@ -104,6 +122,10 @@ const APPROACH_CHOSEN_LIMIT = 400;
 const APPROACH_RATIONALE_LIMIT = 400;
 const APPROACH_ALT_LIMIT = 160;
 const APPROACH_ALTS_LIMIT = 8;
+/** Bounded dependency fan-in per to-do (a handful of real blockers, not a web). */
+export const DEPENDS_ON_LIMIT = 7;
+const DEPENDS_ON_ID_LIMIT = 64;
+const PARENT_ID_LIMIT = 64;
 
 const VALID_VERIFIED_STATES: ReadonlySet<string> = new Set<VerifiedState>([
   'unverified',
@@ -212,12 +234,136 @@ export function capRoadmapItem(item: unknown): RoadmapItem {
     // If chosen/rationale missing → cappedApproach stays undefined (omit).
   }
 
+  // dependsOn — shape per-item only (dedupe, drop self/empty, cap length). The
+  // RELATIONAL guards (sibling-existence + cycle-strip) need the full roadmap and
+  // run in normalizeRoadmapRelations (called by capRoadmap / capContract). When an
+  // item is capped in ISOLATION (no sibling context) the raw ids are preserved here
+  // and validated at the array level; a self-edge or empty id is always dropped.
+  let cappedDependsOn: string[] | undefined;
+  if (Array.isArray(r['dependsOn'])) {
+    const selfId = base.id;
+    const seen = new Set<string>();
+    const ids: string[] = [];
+    for (const raw of r['dependsOn']) {
+      const id = safeString(raw).slice(0, DEPENDS_ON_ID_LIMIT).trim();
+      if (id.length === 0 || id === selfId || seen.has(id)) continue;
+      seen.add(id);
+      ids.push(id);
+      if (ids.length >= DEPENDS_ON_LIMIT) break;
+    }
+    if (ids.length > 0) cappedDependsOn = ids;
+  }
+
+  // parentId — shape per-item only (string + cap). Depth/cycle guard is relational
+  // and runs in normalizeRoadmapRelations. A self-reference is dropped here.
+  let cappedParentId: string | undefined;
+  if (r['parentId'] !== undefined) {
+    const pid = safeString(r['parentId']).slice(0, PARENT_ID_LIMIT).trim();
+    if (pid.length > 0 && pid !== base.id) cappedParentId = pid;
+  }
+
   return {
     ...base,
     ...(cappedAc !== undefined ? { acceptanceCriterion: cappedAc } : {}),
     ...(cappedVerdict !== undefined ? { verdict: cappedVerdict } : {}),
     ...(cappedApproach !== undefined ? { approach: cappedApproach } : {}),
+    ...(cappedDependsOn !== undefined ? { dependsOn: cappedDependsOn } : {}),
+    ...(cappedParentId !== undefined ? { parentId: cappedParentId } : {}),
   };
+}
+
+/**
+ * Apply the RELATIONAL guards to a roadmap's dependency edges + grouping refs —
+ * the part that needs the WHOLE item set (sibling existence, cycle-freedom,
+ * 1-level depth). Mirrors decompose.ts: unknown/self edges are dropped, and any
+ * item on a CYCLE has its `dependsOn` stripped so the graph degrades to fewer
+ * edges rather than a deadlock. `parentId` is kept only when it points at an
+ * existing SIBLING that is itself NOT a child (depth cap = 1) and forms no cycle;
+ * otherwise the field is dropped. PURE, total, never throws. An item with neither
+ * field round-trips byte-identically (the spread omits absent fields).
+ */
+export function normalizeRoadmapRelations(items: readonly RoadmapItem[]): RoadmapItem[] {
+  const ids = new Set<string>();
+  for (const it of items) if (it.id.length > 0) ids.add(it.id);
+
+  // Pass 1: drop unknown/self dep ids (sibling-existence guard), dedupe, and cap
+  // the fan-in at DEPENDS_ON_LIMIT. Done HERE too (not only in capRoadmapItem) so
+  // this function is robust when called on raw items (e.g. the re-plan reducer
+  // sets edges directly, never round-tripping through capRoadmapItem first).
+  const deps = new Map<string, string[]>();
+  for (const it of items) {
+    if (it.dependsOn === undefined) continue;
+    const seen = new Set<string>();
+    const kept: string[] = [];
+    for (const d of it.dependsOn) {
+      if (d === it.id || !ids.has(d) || seen.has(d)) continue;
+      seen.add(d);
+      kept.push(d);
+      if (kept.length >= DEPENDS_ON_LIMIT) break;
+    }
+    deps.set(it.id, kept);
+  }
+
+  // Pass 2: break cycles with a Kahn-style topological peel (mirrors
+  // decompose.ts/breakCycles). Anything that cannot be ordered is on a cycle →
+  // strip ANY of its edges that point at a node not peel-ordered. We track the
+  // PEEL-ordered set separately from the post-peel sweep so a later item on the
+  // same cycle can never have its back-edge spuriously "satisfied" by an earlier
+  // item we just added during the sweep.
+  const peelOrdered = new Set<string>();
+  let progressed = true;
+  while (progressed) {
+    progressed = false;
+    for (const it of items) {
+      if (peelOrdered.has(it.id)) continue;
+      const d = deps.get(it.id) ?? [];
+      if (d.every((x) => peelOrdered.has(x))) {
+        peelOrdered.add(it.id);
+        progressed = true;
+      }
+    }
+  }
+  // Sweep: every item NOT peel-ordered is on (or downstream of) a cycle — keep
+  // only its edges to peel-ordered nodes (honest edges survive; the cyclic ones
+  // are dropped), so the graph degrades to fewer edges rather than a deadlock.
+  for (const it of items) {
+    if (!peelOrdered.has(it.id)) {
+      deps.set(it.id, (deps.get(it.id) ?? []).filter((x) => peelOrdered.has(x)));
+    }
+  }
+
+  // parentId depth guard: a valid parent is an existing sibling that is NOT itself
+  // a child (depth cap = 1) and is not the item itself. Compute the set of items
+  // that are children-candidates first (those with a surviving parentId), then
+  // resolve depth: a parent must NOT have a parentId of its own.
+  const rawParent = new Map<string, string>();
+  for (const it of items) {
+    if (it.parentId !== undefined && it.parentId !== it.id && ids.has(it.parentId)) {
+      rawParent.set(it.id, it.parentId);
+    }
+  }
+  const parent = new Map<string, string>();
+  for (const [childId, parentId] of rawParent) {
+    // depth = 1: the parent itself must not be a child (no grandparents) and must
+    // not point back at this child (no 2-cycle).
+    if (rawParent.has(parentId)) continue; // parent is itself grouped → over-depth, drop
+    if (rawParent.get(parentId) === childId) continue; // direct cycle, drop
+    parent.set(childId, parentId);
+  }
+
+  return items.map((it) => {
+    const nextDeps = deps.get(it.id) ?? [];
+    const nextParent = parent.get(it.id);
+    // Rebuild WITHOUT the two relational fields, then re-add only the survivors so
+    // an item whose edges were all stripped omits the field entirely (byte-identical
+    // to one that never had it).
+    const { dependsOn: _d, parentId: _p, ...rest } = it;
+    return {
+      ...rest,
+      ...(nextDeps.length > 0 ? { dependsOn: nextDeps } : {}),
+      ...(nextParent !== undefined ? { parentId: nextParent } : {}),
+    };
+  });
 }
 
 /**
@@ -238,7 +384,7 @@ export function capContract(c: WorkContract): WorkContract {
       : {};
 
   const roadmap = Array.isArray(raw.roadmap)
-    ? raw.roadmap.slice(0, ROADMAP_LIMIT).map(capRoadmapItem)
+    ? normalizeRoadmapRelations(raw.roadmap.slice(0, ROADMAP_LIMIT).map(capRoadmapItem))
     : undefined;
 
   const checkpoints = Array.isArray(raw.checkpoints)
