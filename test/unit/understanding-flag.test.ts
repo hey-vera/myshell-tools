@@ -1,8 +1,10 @@
 /**
  * test/unit/understanding-flag.test.ts — the DEFAULT-OFF opt-in for the WHOLE-
- * PICTURE UNDERSTANDING PASS (Elite-partner Part 2). Mirrors the auto-goal flag
- * shape: env OR config, default false, never throws. When false the understanding
- * pass never runs and the planner is invoked exactly as today (ungrounded).
+ * PICTURE UNDERSTANDING PASS (Elite-partner Part 2). env OR config, default false,
+ * never throws. Deliberately still opt-in while the other elite flags ship
+ * default-on: the read-only investigation times out on a real repo (→ null →
+ * ungrounded planner), so default-on would be pure latency for no grounding. When
+ * false the understanding pass never runs and the planner is invoked ungrounded.
  */
 
 import { describe, it } from 'node:test';

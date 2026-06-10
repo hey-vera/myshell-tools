@@ -17,6 +17,8 @@ import {
   formatGoalRow,
   formatRoadmapLines,
   selectGoals,
+  normalizeGoalTitle,
+  isDuplicateGoalTitle,
   ROADMAP_LIMIT,
   goalVerdictFromOutcome,
   isGoalVerifiedDone,
@@ -428,6 +430,36 @@ describe('isGoalVerifiedDone — only passing/reviewed qualify', () => {
   it('failing ⇒ false, unverified ⇒ false (never done on a weak/absent signal)', () => {
     assert.equal(isGoalVerifiedDone(mk('failing')), false);
     assert.equal(isGoalVerifiedDone(mk('unverified')), false);
+  });
+});
+
+describe('normalizeGoalTitle — fold case/punctuation/whitespace for dedup', () => {
+  it('lowercases, folds punctuation to spaces, collapses whitespace', () => {
+    assert.equal(normalizeGoalTitle('  Redesign the FEED!! '), 'redesign the feed');
+    assert.equal(normalizeGoalTitle('Build—auth/login'), 'build auth login');
+    assert.equal(normalizeGoalTitle(''), '');
+  });
+});
+
+describe('isDuplicateGoalTitle — smart near-duplicate guard for auto-stage', () => {
+  it('exact normalized match ⇒ duplicate', () => {
+    assert.equal(isDuplicateGoalTitle('Redesign the feed!', ['redesign the feed']), true);
+  });
+  it('strong token overlap ⇒ duplicate (Jaccard ≥ 0.7)', () => {
+    assert.equal(
+      isDuplicateGoalTitle('Finish the frontend skeleton', ['finish the frontend skeleton work']),
+      true,
+    );
+  });
+  it('a genuinely different goal ⇒ not a duplicate', () => {
+    assert.equal(
+      isDuplicateGoalTitle('Add OAuth login', ['Redesign the video feed', 'Write the deploy script']),
+      false,
+    );
+  });
+  it('empty candidate or empty existing list ⇒ false', () => {
+    assert.equal(isDuplicateGoalTitle('', ['anything']), false);
+    assert.equal(isDuplicateGoalTitle('Something', []), false);
   });
 });
 

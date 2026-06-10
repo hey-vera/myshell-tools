@@ -6,6 +6,39 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+## [3.68.0] - 2026-06-10
+
+### Changed (elite planning-partner — the vision is now the default experience)
+- **The elite partner is now ON by default for everyone.** Four of the five elite
+  flags ship default-on (with an explicit opt-out): the **persistent goal board**
+  (`MYSHELL_BOARD`) replaces the old throwaway per-turn card, the **planning brain**
+  (`MYSHELL_AUTO_GOAL`) judges each substantial turn and stages real parked goals (it
+  stays silent on a trivial "sounds good?"), the **verified-done gate**
+  (`MYSHELL_TRULY_COMPLETE`) means a goal is `done` only with real evidence, and the
+  **per-goal manager cycle** (`MYSHELL_MANAGER`) drives an *activated* goal's to-dos to
+  verified-done. Each can be turned off with `MYSHELL_<NAME>=0` (or the matching
+  `experimental*` config set to `false`), which restores the byte-for-byte legacy path.
+- **Safety unchanged:** auto-staging only ever creates *parked* goals — chatting never
+  triggers autonomous multi-agent execution or spend. The manager cycle still runs only
+  on **explicit goal activation** (`/goals go <n>`), and stays triple-bounded
+  (≤8 iterations, fix-it depth ≤2, ≤3 re-plans per activation).
+
+### Added (elite planning-partner)
+- **Smart goal dedup.** The planning brain no longer piles up near-duplicate parked
+  goals when you circle the same topic across turns — it recognizes "we already track
+  that" (normalized title + strong token-overlap match against the live goals) instead
+  of stamping out copies.
+- **Understanding-pass session cache** (for the opt-in `MYSHELL_UNDERSTANDING` path):
+  the per-project system model is reused for a few planning moments before it is
+  recomputed, so grounding does not re-pay the full pass every turn.
+
+### Note
+- **The whole-picture understanding pass (`MYSHELL_UNDERSTANDING`) stays opt-in for now.**
+  Its read-only investigation does not finish within a sane post-turn budget on a real
+  (large) repo — it times out and the planner runs ungrounded anyway — so shipping it
+  default-on would add latency for no grounding. It will be flipped on once redesigned to
+  reason from the deterministic repo map instead of a free file-reading investigation.
+
 ## [3.67.0] - 2026-06-10
 
 ### Changed (elite planning-partner build — the to-do list is the partner's job, not yours)

@@ -28,11 +28,15 @@
 const ON = new Set(['1', 'true', 'on', 'yes']);
 
 /**
- * Decide whether the whole-picture understanding pass is enabled. DEFAULT FALSE.
- * Returns true ONLY when explicitly opted in: `MYSHELL_UNDERSTANDING` is one of
- * '1'/'true'/'on'/'yes' (trimmed, case-insensitive) OR
- * `config.experimentalUnderstanding === true`. Any other value (including absent,
- * '0', 'false', '') → false. Never throws.
+ * Decide whether the whole-picture understanding pass is enabled. DEFAULT FALSE —
+ * deliberately STILL opt-in while the other elite flags ship default-on. The
+ * read-only investigation does not finish within any reasonable post-turn budget on
+ * a real (large) repo — it times out → returns null → the planner runs ungrounded
+ * anyway, so default-on would be pure latency/quota for no grounding. Until the pass
+ * is redesigned to be bounded/fast (reason from the deterministic repo map instead
+ * of a free file-reading investigation), it stays opt-in: `MYSHELL_UNDERSTANDING` ∈
+ * {'1','true','on','yes'} (trimmed, case-insensitive) OR
+ * `config.experimentalUnderstanding === true`. Any other value → false. Never throws.
  */
 export function understandingEnabled(
   env: NodeJS.ProcessEnv | undefined,

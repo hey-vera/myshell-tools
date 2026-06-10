@@ -26,15 +26,18 @@
  * as today.
  */
 
-/** Env values treated as an explicit opt-IN for MYSHELL_TRULY_COMPLETE (case-insensitive). */
+/** Env values treated as an explicit opt-IN (case-insensitive). */
 const ON = new Set(['1', 'true', 'on', 'yes']);
+/** Env values treated as an explicit opt-OUT (case-insensitive) — restores legacy. */
+const OFF = new Set(['0', 'false', 'off', 'no']);
 
 /**
- * Decide whether the verified-done goal-completion gate is enabled. DEFAULT FALSE.
- * Returns true ONLY when explicitly opted in: `MYSHELL_TRULY_COMPLETE` is one of
- * '1'/'true'/'on'/'yes' (trimmed, case-insensitive) OR
- * `config.experimentalTrulyComplete === true`. Any other value (including absent,
- * '0', 'false', '') → false. Never throws.
+ * Decide whether the verified-done goal-completion gate is enabled. DEFAULT TRUE (a
+ * goal is `done` only with real evidence — the shipped anti-fabrication backbone).
+ * Returns false ONLY on an explicit opt-OUT: `MYSHELL_TRULY_COMPLETE` ∈
+ * {'0','false','off','no'} (trimmed, case-insensitive) OR
+ * `config.experimentalTrulyComplete === false`, which restores the legacy
+ * model-said-so completion. Absent / any opt-in value → true. Never throws.
  */
 export function verifiedDoneEnabled(
   env: NodeJS.ProcessEnv | undefined,
@@ -42,10 +45,14 @@ export function verifiedDoneEnabled(
 ): boolean {
   try {
     const raw = env?.['MYSHELL_TRULY_COMPLETE'];
-    if (typeof raw === 'string' && ON.has(raw.trim().toLowerCase())) return true;
-    if (config?.experimentalTrulyComplete === true) return true;
-    return false;
+    if (typeof raw === 'string') {
+      const v = raw.trim().toLowerCase();
+      if (OFF.has(v)) return false;
+      if (ON.has(v)) return true;
+    }
+    if (config?.experimentalTrulyComplete === false) return false;
+    return true;
   } catch {
-    return false;
+    return true;
   }
 }

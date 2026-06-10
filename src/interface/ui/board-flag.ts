@@ -21,14 +21,17 @@
  * live region "WORKING", and (b) paints the real board across turns.
  */
 
-/** Env values treated as an explicit opt-IN for MYSHELL_BOARD (case-insensitive). */
+/** Env values treated as an explicit opt-IN (case-insensitive). */
 const ON = new Set(['1', 'true', 'on', 'yes']);
+/** Env values treated as an explicit opt-OUT (case-insensitive) — restores legacy. */
+const OFF = new Set(['0', 'false', 'off', 'no']);
 
 /**
- * Decide whether the persistent Goal Board is enabled. DEFAULT FALSE. Returns true
- * ONLY when explicitly opted in: `MYSHELL_BOARD` is one of '1'/'true'/'on'/'yes'
- * (trimmed, case-insensitive) OR `config.experimentalBoard === true`. Any other
- * value (including absent, '0', 'false', '') → false. Never throws.
+ * Decide whether the persistent Goal Board is enabled. DEFAULT TRUE (the real board
+ * is the shipped experience). Returns false ONLY on an explicit opt-OUT:
+ * `MYSHELL_BOARD` ∈ {'0','false','off','no'} (trimmed, case-insensitive) OR
+ * `config.experimentalBoard === false` — which restores the byte-identical legacy
+ * fake-card UI. Absent / any opt-in value → true. Never throws.
  */
 export function boardEnabled(
   env: NodeJS.ProcessEnv | undefined,
@@ -36,10 +39,14 @@ export function boardEnabled(
 ): boolean {
   try {
     const raw = env?.['MYSHELL_BOARD'];
-    if (typeof raw === 'string' && ON.has(raw.trim().toLowerCase())) return true;
-    if (config?.experimentalBoard === true) return true;
-    return false;
+    if (typeof raw === 'string') {
+      const v = raw.trim().toLowerCase();
+      if (OFF.has(v)) return false;
+      if (ON.has(v)) return true;
+    }
+    if (config?.experimentalBoard === false) return false;
+    return true;
   } catch {
-    return false;
+    return true;
   }
 }

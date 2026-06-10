@@ -350,6 +350,49 @@ export function goalVerdictTag(goal: Goal): string | undefined {
 }
 
 /**
+ * Normalize a goal title for duplicate detection: lowercased, punctuation folded
+ * to spaces, whitespace collapsed. Pure + deterministic — the basis for telling
+ * "Redesign the feed" and "redesign feed!" apart from a genuinely new goal.
+ */
+export function normalizeGoalTitle(title: string): string {
+  return title
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s]/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/**
+ * Decide whether a candidate goal title is a NEAR-DUPLICATE of any already-known
+ * title. True on an exact normalized match OR strong token overlap (Jaccard ≥
+ * `threshold`). This is the smart guard (not a dumb cap) that keeps the auto-stage
+ * planner from piling up duplicate parked goals when the owner circles the same
+ * topic across consecutive turns — an elite partner recognizes "we already have a
+ * goal for that" instead of stamping out copies. Pure; empty candidate → false.
+ */
+export function isDuplicateGoalTitle(
+  candidate: string,
+  existing: readonly string[],
+  threshold = 0.7,
+): boolean {
+  const c = normalizeGoalTitle(candidate);
+  if (c.length === 0) return false;
+  const cTokens = new Set(c.split(' ').filter((t) => t.length > 0));
+  if (cTokens.size === 0) return false;
+  for (const e of existing) {
+    const n = normalizeGoalTitle(e);
+    if (n.length === 0) continue;
+    if (n === c) return true;
+    const eTokens = new Set(n.split(' ').filter((t) => t.length > 0));
+    let inter = 0;
+    for (const t of cTokens) if (eTokens.has(t)) inter += 1;
+    const union = cTokens.size + eTokens.size - inter;
+    if (union > 0 && inter / union >= threshold) return true;
+  }
+  return false;
+}
+
+/**
  * One concise menu row for a parked goal, e.g.
  *   `◷ Redesign feed · 3/8 to-dos · parked · this repo`
  * A blocked parked goal surfaces the first blocker instead of the bare count.

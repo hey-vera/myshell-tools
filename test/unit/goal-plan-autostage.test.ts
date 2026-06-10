@@ -158,8 +158,13 @@ describe('planner gate — the menu invocation conditions', () => {
     return autoStageEnabled(env, config) && hasTierEvidence(line) && pressure < 3;
   }
 
-  it('flag OFF ⇒ planner not invoked (byte-identical post-turn)', () => {
-    assert.equal(shouldInvoke({}, {}, 'build the whole billing system end to end', 0), false);
+  it('flag OFF (explicit opt-out) ⇒ planner not invoked (byte-identical post-turn)', () => {
+    assert.equal(shouldInvoke({ MYSHELL_AUTO_GOAL: '0' }, {}, 'build the whole billing system end to end', 0), false);
+    assert.equal(shouldInvoke({}, { experimentalAutoGoal: false }, 'build the whole billing system end to end', 0), false);
+  });
+
+  it('default ON (no flag) + substantial turn ⇒ planner invoked', () => {
+    assert.equal(shouldInvoke({}, {}, 'build and ship the whole auth system with token refresh', 0), true);
   });
 
   it('flag ON + trivial turn ⇒ planner not invoked', () => {
@@ -221,11 +226,18 @@ describe('understanding pass — the menu grounding wiring (Part 2)', () => {
     return { understandingRan, highStakes, modelToPlanner };
   }
 
-  it('understanding OFF ⇒ pass never runs, planner gets NO model (ungrounded)', async () => {
+  it('understanding OFF (default) ⇒ pass never runs, planner gets NO model (ungrounded)', async () => {
     const pass = async (): Promise<SystemModel | null> => MODEL;
     const r = await simulate({}, {}, 'build the whole auth system', pass);
     assert.equal(r.understandingRan, false);
     assert.equal(r.modelToPlanner, undefined, 'planner ungrounded when understanding off');
+  });
+
+  it('understanding ON (opt-in) ⇒ pass runs, planner grounded', async () => {
+    const pass = async (): Promise<SystemModel | null> => MODEL;
+    const r = await simulate({ MYSHELL_UNDERSTANDING: '1' }, {}, 'build the whole auth system', pass);
+    assert.equal(r.understandingRan, true);
+    assert.equal(r.modelToPlanner, MODEL, 'planner grounded when understanding on');
   });
 
   it('understanding ON + substantial ⇒ pass runs, planner gets the SystemModel', async () => {

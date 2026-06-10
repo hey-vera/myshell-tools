@@ -20,15 +20,17 @@
  * planning path, and prints no staging note — the turn settles exactly as today.
  */
 
-/** Env values treated as an explicit opt-IN for MYSHELL_AUTO_GOAL (case-insensitive). */
+/** Env values treated as an explicit opt-IN (case-insensitive). */
 const ON = new Set(['1', 'true', 'on', 'yes']);
+/** Env values treated as an explicit opt-OUT (case-insensitive) — restores legacy. */
+const OFF = new Set(['0', 'false', 'off', 'no']);
 
 /**
- * Decide whether the planning-brain / auto-stage pass is enabled. DEFAULT FALSE.
- * Returns true ONLY when explicitly opted in: `MYSHELL_AUTO_GOAL` is one of
- * '1'/'true'/'on'/'yes' (trimmed, case-insensitive) OR
- * `config.experimentalAutoGoal === true`. Any other value (including absent, '0',
- * 'false', '') → false. Never throws.
+ * Decide whether the planning-brain / auto-stage pass is enabled. DEFAULT TRUE (the
+ * partner judges + stages goals — the shipped elite experience). Returns false ONLY
+ * on an explicit opt-OUT: `MYSHELL_AUTO_GOAL` ∈ {'0','false','off','no'} (trimmed,
+ * case-insensitive) OR `config.experimentalAutoGoal === false`, which restores the
+ * byte-identical legacy post-turn slot. Absent / any opt-in value → true. Never throws.
  */
 export function autoStageEnabled(
   env: NodeJS.ProcessEnv | undefined,
@@ -36,10 +38,14 @@ export function autoStageEnabled(
 ): boolean {
   try {
     const raw = env?.['MYSHELL_AUTO_GOAL'];
-    if (typeof raw === 'string' && ON.has(raw.trim().toLowerCase())) return true;
-    if (config?.experimentalAutoGoal === true) return true;
-    return false;
+    if (typeof raw === 'string') {
+      const v = raw.trim().toLowerCase();
+      if (OFF.has(v)) return false;
+      if (ON.has(v)) return true;
+    }
+    if (config?.experimentalAutoGoal === false) return false;
+    return true;
   } catch {
-    return false;
+    return true;
   }
 }

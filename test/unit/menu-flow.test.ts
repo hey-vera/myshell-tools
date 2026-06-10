@@ -834,8 +834,12 @@ describe('startMenu — auto-goal smart autonomy', () => {
       // Disable the gated intent pass so this asserts PURE task-dispatch routing
       // (a manager-tier turn would otherwise also make one cheap intent-extraction
       // call — that is exercised in the intent tests, not here). Same discipline
-      // as smartRoute:false above.
+      // as smartRoute:false above. Also opt OUT of the now-default-ON auto-stage /
+      // understanding passes (a substantial turn would otherwise fire the planner
+      // post-reply — exercised in the auto-stage tests, not here).
       intentEngine: false,
+      experimentalAutoGoal: false,
+      experimentalUnderstanding: false,
     };
     const ctx = makeCtx(
       {

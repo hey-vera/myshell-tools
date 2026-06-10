@@ -27,15 +27,20 @@
  * verdict, and never deviates from today's free loop.
  */
 
-/** Env values treated as an explicit opt-IN for MYSHELL_MANAGER (case-insensitive). */
+/** Env values treated as an explicit opt-IN (case-insensitive). */
 const ON = new Set(['1', 'true', 'on', 'yes']);
+/** Env values treated as an explicit opt-OUT (case-insensitive) — restores legacy. */
+const OFF = new Set(['0', 'false', 'off', 'no']);
 
 /**
- * Decide whether the per-goal manager cycle is enabled. DEFAULT FALSE.
- * Returns true ONLY when explicitly opted in: `MYSHELL_MANAGER` is one of
- * '1'/'true'/'on'/'yes' (trimmed, case-insensitive) OR
- * `config.experimentalManager === true`. Any other value (including absent,
- * '0', 'false', '') → false. Never throws.
+ * Decide whether the per-goal manager cycle is enabled. DEFAULT TRUE (an activated
+ * goal with a roadmap executes its to-dos to verified-done — the shipped elite
+ * execution). Returns false ONLY on an explicit opt-OUT: `MYSHELL_MANAGER` ∈
+ * {'0','false','off','no'} (trimmed, case-insensitive) OR
+ * `config.experimentalManager === false`, which restores the legacy free
+ * GOAL_COMPLETE loop. Absent / any opt-in value → true. Never throws. (Still only
+ * engages on EXPLICIT goal activation with a non-empty roadmap — chatting alone
+ * never triggers it.)
  */
 export function managerCycleEnabled(
   env: NodeJS.ProcessEnv | undefined,
@@ -43,10 +48,14 @@ export function managerCycleEnabled(
 ): boolean {
   try {
     const raw = env?.['MYSHELL_MANAGER'];
-    if (typeof raw === 'string' && ON.has(raw.trim().toLowerCase())) return true;
-    if (config?.experimentalManager === true) return true;
-    return false;
+    if (typeof raw === 'string') {
+      const v = raw.trim().toLowerCase();
+      if (OFF.has(v)) return false;
+      if (ON.has(v)) return true;
+    }
+    if (config?.experimentalManager === false) return false;
+    return true;
   } catch {
-    return false;
+    return true;
   }
 }

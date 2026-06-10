@@ -54,7 +54,7 @@ import { judgmentEnabled } from '../core/judgment-flag.js';
 import { isPushBackQuestionSet, classifyPushBackAnswer } from '../core/brain.js';
 import { renderTastePlaybook, isImmediateRephrase, type TasteSignal } from '../core/taste.js';
 import { createFileGoalStore } from '../infra/goal-store.js';
-import { goalGlyph, roadmapProgress, goalVerdictTag, goalVerdictFromOutcome, isGoalVerifiedDone } from '../core/goal-todo.js';
+import { goalGlyph, roadmapProgress, goalVerdictTag, goalVerdictFromOutcome, isGoalVerifiedDone, isDuplicateGoalTitle } from '../core/goal-todo.js';
 import { buildVerifyReceipt } from '../core/verify.js';
 import type { Goal } from '../core/goal-todo.js';
 import { boardEnabled } from './ui/board-flag.js';
@@ -2310,6 +2310,16 @@ export async function runChatLoop(
       // Mint sequential roadmap ids (r1, r2, …) for a freshly-staged goal's todos.
       const todosToRoadmap = (todos: readonly string[]): RoadmapItem[] =>
         todos.map((text, i) => ({ id: `r${i + 1}`, text, status: 'pending' as const }));
+      // SESSION CACHE of the per-project SystemModel. The understanding pass is a
+      // ~20s manager-tier investigation, and a project's whole-picture shape is
+      // largely stable across a session — recomputing it on every substantial turn
+      // is pure waste (subscription quota + post-turn latency). Cache it per project
+      // key and refresh only every UNDERSTANDING_REFRESH_TURNS planning moments, so
+      // the planner stays grounded while the cost of grounding is amortized. In-
+      // process + session-scoped; never persisted.
+      const UNDERSTANDING_REFRESH_TURNS = 5;
+      const systemModelCache = new Map<string, { model: SystemModel; atCount: number }>();
+      let understandingCount = 0;
       // Run the planning brain for ONE settled turn and act on its verdict. Gated
       // (by the caller) on: the flag, a NON-TRIVIAL turn (hasTierEvidence — a real
       // engagement signal, never a "sounds good?"), and quota pressure below the
@@ -2334,15 +2344,28 @@ export async function runChatLoop(
         // planner runs UNGROUNDED, exactly as when understanding is off. Never blocks.
         let systemModel: SystemModel | undefined;
         if (understandingOn) {
-          const risk = classify(line).risk;
-          const highStakes = risk === 'high' || risk === 'critical';
-          const repoContext = await resolveEnvironmentOnce().catch(() => '');
-          const understandingPass = buildUnderstandingPass(repoContext, highStakes);
-          if (understandingPass !== null) {
-            try {
-              systemModel = (await understandingPass(line, new AbortController().signal)) ?? undefined;
-            } catch {
-              systemModel = undefined;
+          // Reuse a fresh-enough cached SystemModel for this project before paying
+          // the full ~20s pass again (refresh every UNDERSTANDING_REFRESH_TURNS).
+          const cacheKey = (await resolveProjectKeyOnce()) ?? '∅global';
+          const cached = systemModelCache.get(cacheKey);
+          const fresh = cached !== undefined && understandingCount - cached.atCount < UNDERSTANDING_REFRESH_TURNS;
+          if (fresh) {
+            systemModel = cached.model;
+          } else {
+            const risk = classify(line).risk;
+            const highStakes = risk === 'high' || risk === 'critical';
+            const repoContext = await resolveEnvironmentOnce().catch(() => '');
+            const understandingPass = buildUnderstandingPass(repoContext, highStakes);
+            if (understandingPass !== null) {
+              try {
+                systemModel = (await understandingPass(line, new AbortController().signal)) ?? undefined;
+              } catch {
+                systemModel = undefined;
+              }
+            }
+            understandingCount += 1;
+            if (systemModel !== undefined) {
+              systemModelCache.set(cacheKey, { model: systemModel, atCount: understandingCount });
             }
           }
         }
@@ -2367,10 +2390,32 @@ export async function runChatLoop(
 
         // judgment === 'stage' → born-parked goals (non-destructive), then board sync.
         const projectKey = await resolveProjectKeyOnce();
+        // SMART DEDUP (not a dumb cap): an elite partner recognizes "we already have
+        // a goal for that" instead of stamping out near-duplicate parked goals when
+        // the owner circles the same topic across turns. Gather the titles of the
+        // LIVE goals (parked/queued/running — not the historical done/failed) in this
+        // scope, plus whatever we stage in THIS batch, and skip any candidate that is
+        // a near-duplicate. Fail-soft: a list error just means we dedup within-batch.
+        const seenTitles: string[] = [];
+        try {
+          const existing = await goalStore.list(
+            projectKey !== null ? { scope: 'project', projectKey } : { scope: 'global' },
+          );
+          for (const e of existing) {
+            if (e.state === 'parked' || e.state === 'queued' || e.state === 'running') {
+              seenTitles.push(e.title);
+            }
+          }
+        } catch {
+          /* no existing snapshot → still dedup within this batch */
+        }
         let staged = 0;
         for (const g of plan.goals) {
           const title = g.title.trim();
           if (title.length === 0) continue;
+          // Skip a goal we already track (or already staged this turn) — no clutter.
+          if (isDuplicateGoalTitle(title, seenTitles)) continue;
+          seenTitles.push(title);
           try {
             await goalStore.create({
               title,
