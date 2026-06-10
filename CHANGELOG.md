@@ -6,6 +6,20 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+## [3.73.0] - 2026-06-10
+
+### Changed (`/goal x` is now the one move — it builds the to-dos and manages them)
+- **`/goal <text>` now plans and drives itself end-to-end** — no separate `/goals go <n>`.
+  It forms a smart objective, **builds the to-do list**, puts the goal on the board as
+  active, and runs the **manager cycle** (work each to-do → verify with real evidence →
+  mark done or spawn a bounded fix-it) to verified-done. Previously `/goal` ran a free
+  loop and the to-do/verified-done execution was reachable only via the clunky
+  `/goals go <n>` — now naming the goal *is* the activation. (`/goals go <n>` still works
+  for activating a backlog goal you parked earlier.) Opting out of the manager cycle
+  (`MYSHELL_MANAGER=0`) restores the byte-for-byte legacy free-loop `/goal`.
+- New pure reuse: `/goal` decomposes via the same manager-tier planner that powers
+  auto-staging, so the goal title and ordered to-dos are senior-quality, not an echo.
+
 ## [3.72.0] - 2026-06-10
 
 ### Changed (auto-plan only on real work, not on questions)

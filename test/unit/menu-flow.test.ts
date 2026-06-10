@@ -658,6 +658,10 @@ describe('startMenu — /goal ask_user stops autonomous loop and surfaces select
     const sink = makeSink();
     const ctx = makeCtx(
       {
+        // Free-loop coverage: opt OUT of the manager cycle so `/goal` exercises the
+        // autonomous loop's ask_user handling this test validates (with it on — the
+        // default — `/goal` builds a roadmap + runs the per-to-do manager cycle).
+        config: { onboarded: true, setAsDefault: false, smartRoute: false, experimentalManager: false },
         providers: { claude: provider },
         readLine: makeScriptedReader([
           'n',
@@ -740,6 +744,11 @@ describe('startMenu — /goal work contract threading', () => {
     const sink = makeSink();
     const ctx = makeCtx(
       {
+        // Free-loop coverage: opt OUT of the manager cycle so `/goal` exercises the
+        // GOAL_CONTINUE contract loop this test validates (with it on — the default —
+        // `/goal` builds a to-do roadmap + runs the per-to-do manager cycle instead,
+        // covered separately). Byte-for-byte the legacy `/goal` path when off.
+        config: { onboarded: true, setAsDefault: false, smartRoute: false, experimentalManager: false },
         providers: { claude: provider },
         readLine: makeScriptedReader([
           'n',

@@ -54,7 +54,7 @@ import { judgmentEnabled } from '../core/judgment-flag.js';
 import { isPushBackQuestionSet, classifyPushBackAnswer } from '../core/brain.js';
 import { renderTastePlaybook, isImmediateRephrase, type TasteSignal } from '../core/taste.js';
 import { createFileGoalStore } from '../infra/goal-store.js';
-import { goalGlyph, roadmapProgress, goalVerdictTag, goalVerdictFromOutcome, isGoalVerifiedDone, isDuplicateGoalTitle } from '../core/goal-todo.js';
+import { goalGlyph, roadmapProgress, goalVerdictTag, goalVerdictFromOutcome, isGoalVerifiedDone, isDuplicateGoalTitle, ROADMAP_LIMIT } from '../core/goal-todo.js';
 import { buildVerifyReceipt } from '../core/verify.js';
 import type { Goal, GoalState } from '../core/goal-todo.js';
 import { boardEnabled } from './ui/board-flag.js';
@@ -2332,6 +2332,36 @@ export async function runChatLoop(
       // Mint sequential roadmap ids (r1, r2, …) for a freshly-staged goal's todos.
       const todosToRoadmap = (todos: readonly string[]): RoadmapItem[] =>
         todos.map((text, i) => ({ id: `r${i + 1}`, text, status: 'pending' as const }));
+      // Decompose an EXPLICIT goal (`/goal <text>`) into a smart objective + a to-do
+      // roadmap, reusing the SAME manager-tier planner auto-stage uses — except here the
+      // user has ALREADY committed, so we don't judge none/stage/clarify, we just take
+      // its decomposition: the planner's first goal gives both a professional TITLE and
+      // its ordered, checkable TODOS (so we get the label for free, one model call, not
+      // two). Capped to the roadmap limit. Fail-soft: any miss falls back to a smart
+      // formGoalLabel + a single to-do (the goal itself), so the manager cycle ALWAYS
+      // has a roadmap to drive (its replan step then refines it). Grounded by the warm
+      // SystemModel when one is cached for this project; ungrounded otherwise.
+      const decomposeGoal = async (
+        goalText: string,
+      ): Promise<{ title: string; roadmap: RoadmapItem[] }> => {
+        const planner = buildGoalPlanner(undefined);
+        if (planner !== null) {
+          try {
+            const plan = await planner(goalText, new AbortController().signal);
+            const g0 = plan?.goals[0];
+            if (g0 !== undefined) {
+              const title = g0.title.trim();
+              const todos = g0.todos.slice(0, ROADMAP_LIMIT);
+              if (title.length > 0 && todos.length > 0) {
+                return { title, roadmap: todosToRoadmap(todos) };
+              }
+            }
+          } catch {
+            /* fall through to the smart-label + single-item fallback */
+          }
+        }
+        return { title: await formGoalLabel(goalText), roadmap: todosToRoadmap([goalText]) };
+      };
       // CACHE-AHEAD SystemModel (per project, session-scoped, in-memory). The
       // understanding pass is a manager-tier investigation with VARIABLE latency
       // (live-measured 20s..>30s on a real repo) — far too unreliable to run on a
@@ -3452,14 +3482,52 @@ export async function runChatLoop(
       if (line === '/goal' || line.startsWith('/goal ')) {
         const goalText = line.slice('/goal'.length).trim();
         if (goalText.length === 0) {
-          out.write(dim('  Usage: /goal <what you want achieved> — I work autonomously until it\'s done (Ctrl+C to stop).\n', out.color));
+          out.write(dim('  Usage: /goal <what you want achieved> — I build the to-do list and work through it to verified-done (Ctrl+C to stop).\n', out.color));
           return 'continue';
         }
-        // 4th-report fix: do NOT default the LABEL to the raw goalText — the old
-        // assumption "explicit /goal text is already concise" is FALSE when the user
-        // rambles, and the raw echo is exactly what they kept seeing as a "noob"
-        // goal. Form a SMART manager-tier objective for the LABEL/title/contract,
-        // while still passing the FULL goalText to the work. fail-soft inside.
+        // ONE move (the elite path, when the manager cycle is on — the default): form a
+        // smart objective, BUILD the to-do list, put the goal on the board, and drive it
+        // through the MANAGER CYCLE to verified-done — no separate "/goals go <n>".
+        // `/goal x` IS the activation. We create the goal WITH its roadmap and hand
+        // runGoalLoop the goalId, so it runs the per-to-do worker→verify→verdict cycle
+        // (and refines the to-dos via replan as it learns). When the manager cycle is
+        // opted OUT (MYSHELL_MANAGER=0), `/goal` stays byte-for-byte the old free loop —
+        // building to-dos only earns its keep when the cycle will actually execute them.
+        if (managerCycleEnabled(process.env, mutableCtx.config)) {
+          const { title: goalLabel, roadmap } = await decomposeGoal(goalText);
+          const projectKey = await resolveProjectKeyOnce();
+          let createdGoalId: string | undefined;
+          try {
+            const created = await goalStore.create({
+              title: goalLabel,
+              roadmap,
+              scope: projectKey !== null ? 'project' : 'global',
+              projectKey,
+              conversationId: convId,
+              source: 'user-explicit',
+            });
+            createdGoalId = created.id;
+            await goalStore.setState(created.id, 'running'); // active now → board shows ◐
+          } catch {
+            createdGoalId = undefined; // store miss → fall back to the free loop
+          }
+          await syncBoard();
+          const shouldBreak = await runGoalLoop(
+            goalText,
+            goalLabel,
+            createdGoalId !== undefined ? { goalId: createdGoalId } : undefined,
+          );
+          if (createdGoalId !== undefined) {
+            // Settle honestly: `done` ONLY when the loop reached verified-done
+            // (lastGoalCompleted); else leave it running for the user to revisit.
+            if (lastGoalCompleted) await goalStore.setState(createdGoalId, 'done');
+            await syncBoard();
+          }
+          if (shouldBreak) return control.result;
+          return 'continue';
+        }
+        // Manager cycle off → the old free loop, byte-for-byte. Form a SMART manager-tier
+        // objective for the LABEL while passing the FULL goalText to the work (fail-soft).
         if (await runGoalLoop(goalText, await formGoalLabel(goalText))) return control.result;
         return 'continue';
       }
