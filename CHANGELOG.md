@@ -6,6 +6,22 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+## [3.89.0] - 2026-06-10
+
+### Fixed (a multi-goal plan now actually runs all its goals — master-plan Phase 5f)
+- **`[Start all]` keeps its promise.** When the planner stages a multi-goal plan, the
+  proposal lists every goal — but the launcher previously created and ran only the first,
+  silently dropping the rest (they never reached the board or executed). Now `[Start all]`
+  builds one run-spec per `GoalPlan.goals[]` entry (title, its own to-dos translated to a
+  dependency-preserving roadmap, approach, category) and runs them **sequentially to
+  verified-done**: per-goal standing-rules gate (a `stop` parks just that goal and continues),
+  interrupts honored between goals, and honest hand-off narration (`→ moving to goal N of M`,
+  `✓ "<title>" done`). `[Just the unblocked ones]` runs the same honest sequential way (the
+  plan models no cross-goal deps, so no fake parallelism is claimed).
+- **Single-goal behavior is byte-identical** — a one-goal plan (and the smart-label fallback)
+  takes the existing single-spec branch with the exact prior gate text, `runGoalLoop` args,
+  and no new narration. `MYSHELL_MANAGER=0` free-loop path untouched.
+
 ## [3.88.0] - 2026-06-10
 
 ### Changed (never silently hide a cap — master-plan Phase 5e)

@@ -975,6 +975,95 @@ describe('startMenu — /goal PROPOSES the plan before running it (manager cycle
     );
     assert.ok(goalWorkTurns >= 1, 'autonomous launches the manager cycle (a goal-work turn ran)');
   });
+
+  it('[Start all] on a MULTI-goal plan runs EVERY goal sequentially to verified-done', async () => {
+    // The over-promise bug this fixes: a 2-goal proposal offered [Start all] but only
+    // the FIRST goal ever ran. Assert BOTH goals reach a goal-work turn (each goal's
+    // title appears as the `Goal: <title>` work input) and the hand-off is narrated.
+    const goalWorkTitles: string[] = [];
+    const provider: Provider = {
+      id: 'claude',
+      async detect() {
+        return {
+          id: 'claude',
+          installed: true,
+          version: '1.0.0',
+          authenticated: true,
+          plan: null,
+          binaryPath: null,
+          availableModels: ['model-a'],
+        };
+      },
+      async *run(req: ProviderRequest, _signal: AbortSignal): AsyncIterable<ProviderEvent> {
+        // The PLANNING BRAIN call (judgeGoal) → a TWO-goal staged plan, so [Start all]
+        // promises "2 goals" and must run both.
+        if (req.prompt.includes('PLANNING BRAIN')) {
+          const reply = [
+            'JUDGMENT: stage',
+            'VISION: ship the auth system',
+            'GOAL: Harden the token-refresh path',
+            'TODO: wire the refresh endpoint',
+            'GOAL: Add a session audit log',
+            'TODO: append a row on each login',
+          ].join('\n');
+          yield { type: 'text', delta: reply };
+          yield { type: 'done', text: reply, usage: FAKE_USAGE, raw: {} };
+          return;
+        }
+        // Background warm-up / smart-label passes — benign, not goal work.
+        if (
+          req.prompt.includes('WHOLE-PICTURE') ||
+          req.prompt.includes('understand the system') ||
+          req.prompt.includes('OBJECTIVE: <a crisp')
+        ) {
+          yield { type: 'text', delta: 'ok' };
+          yield { type: 'done', text: 'ok', usage: FAKE_USAGE, raw: {} };
+          return;
+        }
+        // A goal-WORK turn — capture which goal's title it carried (Goal: <title>) so
+        // the test proves BOTH goals were actually worked, not just the first. Each
+        // emits GOAL_COMPLETE so its manager cycle settles and the run moves on.
+        const m = /Goal:\s*(.+)/.exec(req.prompt);
+        if (m?.[1] !== undefined) goalWorkTitles.push(m[1].trim());
+        yield { type: 'text', delta: 'Done.\nGOAL_COMPLETE' };
+        yield { type: 'done', text: 'Done.\nGOAL_COMPLETE', usage: FAKE_USAGE, raw: {} };
+      },
+    };
+
+    const clock = makeFakeClock();
+    const store = makeStore(clock);
+    const sink = makeSink();
+    const ctx = makeCtx(
+      {
+        config: { onboarded: true, setAsDefault: false, smartRoute: false, experimentalManager: true },
+        providers: { claude: provider },
+        readLine: makeScriptedReader([
+          'n',
+          '/goal ship the auth system',
+          '1', // the one-tap confirm: "Start all" → run the WHOLE plan
+          '/exit',
+          'q',
+        ]),
+      },
+      clock,
+      store,
+    );
+
+    await startMenu(ctx, sink);
+
+    assert.ok(
+      goalWorkTitles.some((t) => t.startsWith('Harden the token-refresh path')),
+      'the FIRST goal ran a goal-work turn',
+    );
+    assert.ok(
+      goalWorkTitles.some((t) => t.startsWith('Add a session audit log')),
+      'the SECOND goal also ran a goal-work turn (no longer silently dropped)',
+    );
+    assert.ok(
+      sink.buf.includes('moving to goal 2 of 2: "Add a session audit log"'),
+      'narrates the hand-off between goals',
+    );
+  });
 });
 
 describe('startMenu — auto-goal smart autonomy', () => {

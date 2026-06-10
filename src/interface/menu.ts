@@ -2600,6 +2600,36 @@ export async function runChatLoop(
         }
         return { judgment: 'stage', title: await formGoalLabel(goalText), roadmap: todosToRoadmap([{ text: goalText }]) };
       };
+      // Convert ONE planned goal (a `GoalPlan.goals[]` entry) into the create-spec the
+      // /goal ACT branch runs: a professional title, its roadmap built from the goal's
+      // to-dos (the SAME planTodosToRoadmap translation judgeGoal uses for goals[0],
+      // so the deps survive), its best-approach when stated, and a stable category for
+      // the standing-rules gate. `work` is the text handed to runGoalLoop (the title —
+      // a concise objective the manager cycle re-validates). PURE-ish (only formGoalLabel
+      // touches a model, and only on the empty-title fallback). This is what lets [Start
+      // all] run EVERY goal in a multi-goal plan, not just goals[0].
+      const planGoalToCreate = async (
+        g: GoalPlan['goals'][number],
+      ): Promise<{
+        title: string;
+        work: string;
+        roadmap: RoadmapItem[];
+        approach?: GoalPlan['goals'][number]['approach'];
+        category: string;
+      }> => {
+        const title = g.title.trim().length > 0 ? g.title.trim() : await formGoalLabel(g.title);
+        const roadmap =
+          g.todos.length > 0
+            ? todosToRoadmap(g.todos.slice(0, ROADMAP_LIMIT))
+            : todosToRoadmap([{ text: title }]);
+        return {
+          title,
+          work: title,
+          roadmap,
+          ...(g.approach !== undefined ? { approach: g.approach } : {}),
+          category: classifyCategory(title),
+        };
+      };
       // CACHE-AHEAD SystemModel (per project, session-scoped, in-memory). The
       // understanding pass is a manager-tier investigation with VARIABLE latency
       // (live-measured 20s..>30s on a real repo) — far too unreliable to run on a
@@ -4081,69 +4111,138 @@ export async function runChatLoop(
             }
           }
 
-          // ACT: the owner gave the go. Put the goal on the board as active and drive the
-          // manager cycle (work each to-do → verify with real evidence → mark done /
-          // fix-it) to verified-done. The cycle itself refines the to-dos via replan as
-          // it learns, and is dependency-aware (it never picks a to-do whose blockers
-          // aren't done — so "just the unblocked ones" and "start all" launch the same
-          // dependency-respecting cycle).
-          // STANDING-RULES GATE (Phase 4): consult the user's rules before launching.
-          // A 'block' rule refuses, a 'pause' rule asks; either 'stop' parks the goal
-          // (nothing lost — it's planned + on the board) and waits. No rule → 'go'.
-          const goalCategory = classifyCategory(`${plan.title} ${goalText}`);
-          const ruleGate = await consultStandingRules({
-            text: `${plan.title} ${goalText}`,
-            category: goalCategory,
-          });
-          if (ruleGate === 'stop') {
-            try {
-              await goalStore.create({
+          // ACT: the owner gave the go. The proposal promised the WHOLE plan ("N goals,
+          // M to-dos" + a one-tap [Start all]); honour that promise — run EVERY goal the
+          // plan staged, in listed order, each to verified-done. Build the run-specs:
+          //  - a MULTI-goal plan (plan.plan.goals.length > 1) → one spec per goal, each
+          //    converted by planGoalToCreate (title + roadmap-from-its-todos + approach +
+          //    category) so the OTHER goals are no longer silently dropped;
+          //  - otherwise (a single-goal plan, OR the smart-label fallback with no full
+          //    plan) → the SINGLE existing spec from plan.title/roadmap/approach + the raw
+          //    goalText as the work — byte-for-byte today's behaviour.
+          interface GoalRunSpec {
+            readonly title: string;
+            readonly work: string;
+            readonly roadmap: RoadmapItem[];
+            readonly approach?: GoalPlan['goals'][number]['approach'];
+            readonly gateText: string;
+            readonly category: string;
+          }
+          const planGoals = plan.plan?.goals ?? [];
+          let runSpecs: GoalRunSpec[];
+          if (planGoals.length > 1) {
+            const built = await Promise.all(planGoals.map((g) => planGoalToCreate(g)));
+            runSpecs = built.map((b) => ({
+              title: b.title,
+              work: b.work,
+              roadmap: b.roadmap,
+              ...(b.approach !== undefined ? { approach: b.approach } : {}),
+              gateText: b.title,
+              category: b.category,
+            }));
+          } else {
+            // Single goal → the exact create-spec the prior code ran (byte-identical):
+            // title/roadmap/approach from the judgeGoal result, the raw goalText as work,
+            // and the gate text + category computed from `${plan.title} ${goalText}`.
+            runSpecs = [
+              {
                 title: plan.title,
+                work: goalText,
                 roadmap: plan.roadmap,
+                ...(plan.approach !== undefined ? { approach: plan.approach } : {}),
+                gateText: `${plan.title} ${goalText}`,
+                category: classifyCategory(`${plan.title} ${goalText}`),
+              },
+            ];
+          }
+
+          // Run the staged goals SEQUENTIALLY, each to verified-done. The manager cycle is
+          // dependency-aware WITHIN a goal (it never picks a to-do whose blockers aren't
+          // done — so [Start all] and [Just the unblocked ones] launch the same
+          // dependency-respecting cycle); the plan does not model CROSS-goal deps, so we
+          // run the goals in listed order and never claim a parallelism that isn't real.
+          let sawBreak = false;
+          for (let gi = 0; gi < runSpecs.length; gi++) {
+            const spec = runSpecs[gi];
+            if (spec === undefined) continue;
+            // Honour interrupts BETWEEN goals — an ESC / exit / menu request during one
+            // goal stops the whole sequence cleanly (the remaining goals are left for the
+            // user, never silently abandoned mid-flight).
+            if (control.exit || control.menu || interruptedByEsc) break;
+            // Narrate the hand-off so a multi-goal run is never silent.
+            if (gi > 0) {
+              out.write(dim(`  → moving to goal ${String(gi + 1)} of ${String(runSpecs.length)}: "${spec.title}"\n`, out.color));
+            }
+            // STANDING-RULES GATE (Phase 4): consult the user's rules before launching THIS
+            // goal. A 'block' rule refuses, a 'pause' rule asks; either 'stop' PARKS this
+            // one goal (nothing lost — it's planned + on the board) and CONTINUES to the
+            // next (a gated goal must not abort the whole run, nor vanish silently). No
+            // rule → 'go'.
+            const ruleGate = await consultStandingRules({
+              text: spec.gateText,
+              category: spec.category,
+            });
+            if (ruleGate === 'stop') {
+              try {
+                await goalStore.create({
+                  title: spec.title,
+                  roadmap: spec.roadmap,
+                  scope: projectKey !== null ? 'project' : 'global',
+                  projectKey,
+                  conversationId: convId,
+                  source: 'user-explicit',
+                  ...(spec.approach !== undefined ? { approach: spec.approach } : {}),
+                  ...(spec.category !== 'general' ? { category: spec.category } : {}),
+                });
+              } catch {
+                /* fail-soft: even if the capture misses, we still held the launch */
+              }
+              await syncBoard();
+              out.write(dim(`  Parked "${spec.title}" on the board — say the word and I'll run it.\n`, out.color));
+              continue; // a gated goal is parked + noted; carry on with the rest
+            }
+            let createdGoalId: string | undefined;
+            try {
+              const created = await goalStore.create({
+                title: spec.title,
+                roadmap: spec.roadmap,
                 scope: projectKey !== null ? 'project' : 'global',
                 projectKey,
                 conversationId: convId,
                 source: 'user-explicit',
-                ...(plan.approach !== undefined ? { approach: plan.approach } : {}),
-                ...(goalCategory !== 'general' ? { category: goalCategory } : {}),
+                ...(spec.approach !== undefined ? { approach: spec.approach } : {}),
+                ...(spec.category !== 'general' ? { category: spec.category } : {}),
               });
+              createdGoalId = created.id;
+              await goalStore.setState(created.id, 'running'); // active now → board shows ◐
             } catch {
-              /* fail-soft: even if the capture misses, we still held the launch */
+              createdGoalId = undefined; // store miss → fall back to the free loop
             }
             await syncBoard();
-            out.write(dim(`  Parked "${plan.title}" on the board — say the word and I'll run it.\n`, out.color));
-            return 'continue';
+            const shouldBreak = await runGoalLoop(
+              spec.work,
+              spec.title,
+              createdGoalId !== undefined ? { goalId: createdGoalId } : undefined,
+            );
+            if (createdGoalId !== undefined) {
+              // Settle honestly: `done` ONLY when the loop reached verified-done
+              // (lastGoalCompleted); else leave it running for the user to revisit.
+              if (lastGoalCompleted) {
+                await goalStore.setState(createdGoalId, 'done');
+                // Narrate the win when there's a NEXT goal to move to (kept silent on the
+                // last goal + on a single-goal run → byte-identical to today's output).
+                if (gi + 1 < runSpecs.length) {
+                  out.write(dim(`  ✓ "${spec.title}" done.\n`, out.color));
+                }
+              }
+              await syncBoard();
+            }
+            if (shouldBreak) {
+              sawBreak = true;
+              break; // control.result requested mid-run — stop the whole sequence
+            }
           }
-          let createdGoalId: string | undefined;
-          try {
-            const created = await goalStore.create({
-              title: plan.title,
-              roadmap: plan.roadmap,
-              scope: projectKey !== null ? 'project' : 'global',
-              projectKey,
-              conversationId: convId,
-              source: 'user-explicit',
-              ...(plan.approach !== undefined ? { approach: plan.approach } : {}),
-              ...(goalCategory !== 'general' ? { category: goalCategory } : {}),
-            });
-            createdGoalId = created.id;
-            await goalStore.setState(created.id, 'running'); // active now → board shows ◐
-          } catch {
-            createdGoalId = undefined; // store miss → fall back to the free loop
-          }
-          await syncBoard();
-          const shouldBreak = await runGoalLoop(
-            goalText,
-            plan.title,
-            createdGoalId !== undefined ? { goalId: createdGoalId } : undefined,
-          );
-          if (createdGoalId !== undefined) {
-            // Settle honestly: `done` ONLY when the loop reached verified-done
-            // (lastGoalCompleted); else leave it running for the user to revisit.
-            if (lastGoalCompleted) await goalStore.setState(createdGoalId, 'done');
-            await syncBoard();
-          }
-          if (shouldBreak) return control.result;
+          if (sawBreak) return control.result;
           return 'continue';
         }
         // Manager cycle off → the old free loop, byte-for-byte. Form a SMART manager-tier
