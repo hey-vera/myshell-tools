@@ -7,9 +7,9 @@
  * shown with goals when active, the "Waiting on N models" status-line wording,
  * and the height-cap COLLAPSE to the compact summary at a small `rows`.
  */
-import test from 'node:test';
+import test, { mock } from 'node:test';
 import assert from 'node:assert/strict';
-import React from 'react';
+import React, { act } from 'react';
 import { render } from 'ink-testing-library';
 import {
   StatusBlock,
@@ -49,6 +49,7 @@ function goal(over: Partial<GoalView> = {}): GoalView {
     label: over.label ?? 'Refactor auth flow',
     state: over.state ?? 'running',
     tokens: over.tokens ?? 3100,
+    toolCount: over.toolCount ?? 0,
     agents: over.agents ?? [agent()],
     tier: over.tier ?? 'ic',
     ...(over.risk !== undefined ? { risk: over.risk } : {}),
@@ -346,17 +347,28 @@ test('StatusBlock SUMMARY says "phases" when stacked cards share a title (honest
 });
 
 test('StatusBlock with an injected clock shows a deterministic elapsed', async () => {
-  const goals = [goal({ state: 'running', agents: [agent({ state: 'running', tokens: 1300 })] })];
-  const state = active(goals);
-  let now = 10_000;
-  const clock = () => now;
-  const { lastFrame } = render(<StatusBlock state={state} color={false} rows={40} clock={clock} />);
-  // advance the injected clock past the first elapsed tick (the elapsed `· Ns`
-  // recomputes on a 1Hz interval — whole seconds only — now that the fast 80ms
-  // braille frame lives in its own leaf and no longer drives the elapsed tick)
-  now = 16_000;
-  await new Promise((r) => setTimeout(r, 1100));
-  assert.match(lastFrame() ?? '', /· 6s/);
+  const actEnvironment = globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean };
+  const previousActEnvironment = actEnvironment.IS_REACT_ACT_ENVIRONMENT;
+  actEnvironment.IS_REACT_ACT_ENVIRONMENT = true;
+  mock.timers.enable({ apis: ['setInterval'] });
+  try {
+    const goals = [goal({ state: 'running', agents: [agent({ state: 'running', tokens: 1300 })] })];
+    const state = active(goals);
+    let now = 10_000;
+    const clock = () => now;
+    let lastFrame: (() => string | undefined) | undefined;
+    await act(async () => {
+      ({ lastFrame } = render(<StatusBlock state={state} color={false} rows={40} clock={clock} />));
+    });
+    await act(async () => {
+      now = 16_000;
+      mock.timers.tick(1000);
+    });
+    assert.match(lastFrame?.() ?? '', /· 6s/);
+  } finally {
+    mock.timers.reset();
+    actEnvironment.IS_REACT_ACT_ENVIRONMENT = previousActEnvironment;
+  }
 });
 
 // ---------------------------------------------------------------------------
@@ -435,45 +447,49 @@ test('Panels renders a coalesced-queued line for many queued goals', () => {
 // Elite-partner Phase 1 — the persistent BOARD + fake-card suppression
 // ---------------------------------------------------------------------------
 
-test('BoardRow renders glyph · title · N/M to-dos · state · scope', () => {
+test('BoardRow renders the goal-centric inactive format', () => {
   const { lastFrame } = render(
-    <BoardRow row={boardRow({ title: 'Redesign feed', done: 3, total: 8, scope: 'project' })} color={false} />,
+    <BoardRow
+      row={boardRow({ title: 'Redesign feed', done: 3, total: 8, scope: 'project' })}
+      state={initialState}
+      color={false}
+    />,
   );
   const frame = lastFrame() ?? '';
-  assert.match(frame, /◷/);
-  assert.match(frame, /Redesign feed/);
-  assert.match(frame, /3\/8 to-dos/);
-  assert.match(frame, /parked/);
-  assert.match(frame, /this repo/);
+  assert.match(frame, /goal Redesign feed — inactive/);
 });
 
-test('BoardRow surfaces the honest verdict tag only when a real verdict exists', () => {
-  // Verified-done (passing) ⇒ ✓verified visible.
-  const verified = render(
-    <BoardRow row={boardRow({ title: 'Ship it', verdict: '✓verified' })} color={false} />,
+test('BoardRow renders a running goal as active with worker, task, and tool counts', () => {
+  const state = active([
+    goal({
+      id: 'goal_a',
+      state: 'running',
+      toolCount: 2,
+      agents: [
+        agent({ state: 'running' }),
+        agent({ provider: 'codex', model: 'gpt-5', state: 'running' }),
+      ],
+    }),
+  ]);
+  const running = render(
+    <BoardRow
+      row={boardRow({ id: 'goal_a', title: 'Ship it', state: 'running', total: 3 })}
+      state={state}
+      color={false}
+    />,
   );
-  assert.match(verified.lastFrame() ?? '', /✓verified/);
-  // Failing ⇒ ✗failing visible (completion honesty, never hidden).
-  const failing = render(
-    <BoardRow row={boardRow({ title: 'WIP', verdict: '✗failing' })} color={false} />,
+  assert.match(running.lastFrame() ?? '', /goal Ship it — active · 2 workers · 3 tasks · 2 tools/);
+  const idle = render(
+    <BoardRow row={boardRow({ id: 'goal_b', title: 'Idle' })} state={state} color={false} />,
   );
-  assert.match(failing.lastFrame() ?? '', /✗failing/);
-  // No verdict ⇒ no tag (never fabricated).
-  const none = render(<BoardRow row={boardRow({ title: 'No verdict' })} color={false} />);
-  assert.doesNotMatch(none.lastFrame() ?? '', /verified|failing|unverified|reviewed/);
-});
-
-test('BoardRow surfaces a REAL live agent count only when running', () => {
-  const running = render(<BoardRow row={boardRow({ state: 'running', glyph: '◐', agents: 2 })} color={false} />);
-  assert.match(running.lastFrame() ?? '', /2 agents/);
-  const parked = render(<BoardRow row={boardRow({ agents: 0 })} color={false} />);
-  assert.doesNotMatch(parked.lastFrame() ?? '', /agent/);
+  assert.match(idle.lastFrame() ?? '', /goal Idle — inactive/);
 });
 
 test('BoardPanel shows the BOARD title, one row per goal, and a +K more overflow line', () => {
   const { lastFrame } = render(
     <BoardPanel
       plan={{ shown: [boardRow({ id: 'a', title: 'A' }), boardRow({ id: 'b', title: 'B' })], overflow: 4 }}
+      state={initialState}
       color={false}
     />,
   );
@@ -504,12 +520,12 @@ test('board ON: an ordinary turn does NOT render a "GOALS ▸ <message>" card', 
   });
   const { lastFrame } = render(<StatusBlock state={state} color={false} rows={40} />);
   const frame = lastFrame() ?? '';
-  // The fake raw-message card is GONE; the live region reads "WORKING", not "GOALS".
+  // The fake raw-message card is GONE; board mode keeps the board as the primary list.
   assert.doesNotMatch(frame, new RegExp(raw.slice(0, 20)));
-  assert.match(frame, /WORKING/);
   assert.doesNotMatch(frame, /\bGOALS\b/);
-  // The honest per-turn label is the tier.
-  assert.match(frame, /\bic\b/);
+  assert.match(frame, /BOARD/);
+  assert.match(frame, /goal Redesign feed — inactive/);
+  assert.match(frame, /Thinking…/);
 });
 
 test('board OFF (default): idle is an empty frame and the live header stays "GOALS" (byte-identical)', () => {
@@ -518,7 +534,7 @@ test('board OFF (default): idle is an empty frame and the live header stays "GOA
   assert.equal((idle.lastFrame() ?? '').trim(), '');
   // active with a title, flag off → the title IS the card label and the header is GOALS.
   const state: UiState = { ...initialState, turnActive: true, goals: [
-    { id: 'mid#0', label: 'Refactor the auth middleware', state: 'running', tokens: 0, agents: [], tier: 'ic' },
+    { id: 'mid#0', label: 'Refactor the auth middleware', state: 'running', tokens: 0, toolCount: 0, agents: [], tier: 'ic' },
   ] };
   const active = render(<StatusBlock state={state} color={false} rows={40} />);
   const frame = active.lastFrame() ?? '';

@@ -35,10 +35,9 @@
 
 import type { Provider, ProviderRequest, ProviderEvent, SandboxLevel } from './port.js';
 import type { ProviderStatus } from './detect.js';
-import { detectProvider } from './detect.js';
+import { claudeEnvWithStoredFallback, detectProvider } from './detect.js';
 import { classifyError } from './errors.js';
 import { parseClaudeLine } from './claude-parse.js';
-import { loadClaudeToken, claudeEnv, replitPersistentEnv } from '../infra/credentials.js';
 import { spawnGuarded, withHangCap, providerHangCapMs } from './hang-cap.js';
 
 // ---------------------------------------------------------------------------
@@ -240,17 +239,11 @@ async function* runClaudeRaw(args0: {
   const { req, signal, bin, register } = args0;
   const args = buildClaudeArgs(req);
 
-  // Load the stored Claude OAuth token and scope it to this child process
-  // only — never written into the global process.env.
+  // Prefer Claude's own current credentials. The legacy myshell token is used
+  // only when Claude has no usable credentials file of its own.
   let childEnv: NodeJS.ProcessEnv = process.env;
   try {
-    const token = await loadClaudeToken();
-    // Also point claude at the Replit-persistent config dir when present so a
-    // plainly-launched run finds the durable one-time sign-in (replit-tools).
-    childEnv = {
-      ...claudeEnv(process.env, token),
-      ...replitPersistentEnv(process.env, req.cwd),
-    };
+    childEnv = await claudeEnvWithStoredFallback(process.env, req.cwd);
   } catch {
     // Never throw — fall back to the unmodified env
   }

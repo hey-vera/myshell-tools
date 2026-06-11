@@ -91,6 +91,7 @@ export function coreEventToActions(
             name: pe.name,
             phase: pe.phase,
             verbosity,
+            ...(ev.goalId !== undefined ? { goalId: ev.goalId } : {}),
             // Carry the real target through ONLY when the provider supplied one
             // (codex/opencode `detail`); absent for the Claude subscription
             // provider, so its live action shows the verb alone (no fabrication).

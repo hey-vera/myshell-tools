@@ -34,6 +34,7 @@ export interface GoalPlanGeneratorDeps {
   readonly cwd: string;
   /** Hard wall-clock cap for the planning run. Keep TIGHT — it runs post-turn. */
   readonly timeoutMs: number;
+  readonly sandbox?: SandboxLevel;
   readonly availableModels?: Partial<Record<ProviderId, readonly string[]>>;
   readonly authenticatedProviders?: readonly ProviderId[];
   /**
@@ -104,7 +105,7 @@ export function makeGoalPlanner(
       model,
       prompt,
       cwd: deps.cwd,
-      sandbox: GOAL_PLAN_SANDBOX,
+      sandbox: deps.sandbox ?? GOAL_PLAN_SANDBOX,
       timeoutMs: deps.timeoutMs,
     };
 

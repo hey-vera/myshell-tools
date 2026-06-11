@@ -56,6 +56,7 @@ import { checkForUpdate } from './infra/update-check.js';
 import { refreshClaudeOauthIfNeeded } from './infra/claude-oauth-refresh.js';
 import { syncConversationMirror } from './infra/session-mirror.js';
 import { replitPersistentEnv } from './infra/credentials.js';
+import { helperSandbox, sandboxForEnvironment } from './infra/sandbox.js';
 import { dim as dimText } from './ui/theme.js';
 import { defaultStateDir, evaluateHealth, probeLedgerWritable, probeStateWritable } from './infra/health.js';
 import { getStateDir } from './infra/paths.js';
@@ -251,7 +252,7 @@ function buildDeps(
     policy,
     providers,
     cwd,
-    sandbox: 'workspace-write',
+    sandbox: sandboxForEnvironment('workspace-write'),
     timeoutMs,
     ...(Object.keys(availableModels).length > 0 ? { availableModels } : {}),
     ...(authenticatedProviders.length > 0 ? { authenticatedProviders } : {}),
@@ -436,6 +437,7 @@ async function main(): Promise<void> {
         providers,
         policy,
         timeoutMs: resolveTimeoutMs(config),
+        sandbox: helperSandbox(sandboxForEnvironment('workspace-write')),
         authenticatedProviders,
         ...(Object.keys(availableModels).length > 0 ? { availableModels } : {}),
         // Fresh deps per prompt — same real answer path the `run` subcommand uses.
@@ -663,7 +665,7 @@ async function main(): Promise<void> {
       store,
       config,
       cwd,
-      sandbox: 'workspace-write',
+      sandbox: sandboxForEnvironment('workspace-write'),
       timeoutMs: resolveTimeoutMs(config),
       healthIssues,
       checkForUpdate: () => checkForUpdate({ currentVersion: version, now: Date.now() }),
@@ -826,6 +828,7 @@ async function main(): Promise<void> {
             policy: replPolicy,
             cwd,
             timeoutMs: Math.min(resolveTimeoutMs(config), INTENT_TIMEOUT_MS),
+            sandbox: helperSandbox(baseDeps.sandbox),
             ...(baseDeps.availableModels !== undefined
               ? { availableModels: baseDeps.availableModels }
               : {}),

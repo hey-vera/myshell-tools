@@ -11,9 +11,11 @@
  *   M1 — a readKey() pending when the App unmounts must RESOLVE (with the cancel
  *        sentinel '\x03'), not orphan and hang the awaiting menu/confirm read.
  *
- *   M2 — a key arriving in the sub-frame window right after readKey() flips
- *        awaitingKey (before the InputBox's isActive:false re-render propagates)
- *        must NOT mutate the editor buffer; the read still resolves on one key.
+ *   M2 — a key arriving immediately after readKey() must route to the menu resolver,
+ *        not mutate the editor buffer; the read still resolves on one key.
+ *
+ *   M3 — the first chat character written immediately after menu selection must
+ *        survive the menu-to-chat visibility render before passive effects settle.
  *
  * Runs under `npm run test:ui` (tsx + ink-testing-library).
  */
@@ -129,7 +131,7 @@ test('M1: a pending readKey() RESOLVES on unmount with the cancel sentinel', asy
 });
 
 // ---------------------------------------------------------------------------
-// M2 — a key in the sub-frame window after readKey() is NOT eaten by the editor
+// M2 — a key immediately after readKey() is routed to the pending menu read
 // ---------------------------------------------------------------------------
 
 test('M2: a key delivered right after readKey() does not mutate the editor and the read still resolves on one key', async () => {
@@ -142,10 +144,8 @@ test('M2: a key delivered right after readKey() does not mutate the editor and t
   await tick();
   assert.equal(bridge.input.currentLine(), 'abc', 'editor seeded');
 
-  // Start a single-key read. This flips awaitingKey, but the InputBox only goes
-  // isActive:false on the NEXT render+effect. We deliver a key IMMEDIATELY — the
-  // readPending early-return guard must stop the editor from mutating, and the
-  // KeyCapture hook resolves the read on this single key.
+  // Start a single-key read and deliver a key IMMEDIATELY. The readPending branch
+  // must route it to the resolver without mutating the editor.
   const keyPromise = bridge.readKey();
   stdin.write('n');
   await tick();
@@ -157,4 +157,26 @@ test('M2: a key delivered right after readKey() does not mutate the editor and t
     'abc',
     'the editor buffer was NOT mutated by the key delivered during the read',
   );
+});
+
+// ---------------------------------------------------------------------------
+// M3 — menu-to-chat transition preserves the first immediately typed character
+// ---------------------------------------------------------------------------
+
+test('M3: the first chat character survives an immediate menu-to-chat transition', async () => {
+  const bridge = createInkAppBridge();
+  const { stdin } = render(<App bridge={bridge} color={false} isTty={true} columns={60} />);
+  await tick();
+
+  const choicePromise = bridge.readKey();
+  stdin.write('n');
+  assert.equal(await choicePromise, 'n', 'the menu selection resolves');
+
+  // Mirror the real menu loop: entering chat makes the composer visible, and the
+  // user may type before React's passive effects run for that visibility render.
+  bridge.setChatActive(true);
+  stdin.write('f');
+  await tick();
+
+  assert.equal(bridge.input.currentLine(), 'f', 'the first chat character is not dropped');
 });

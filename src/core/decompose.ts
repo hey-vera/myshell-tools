@@ -69,6 +69,7 @@ export interface DecomposeDeps {
   readonly cwd: string;
   /** Hard wall-clock cap for the decomposition run. */
   readonly timeoutMs: number;
+  readonly sandbox?: SandboxLevel;
   readonly availableModels?: Partial<Record<ProviderId, readonly string[]>>;
   readonly authenticatedProviders?: readonly ProviderId[];
 }
@@ -294,7 +295,7 @@ export async function decompose(
     model,
     prompt: buildDecomposePrompt(planText, context),
     cwd: deps.cwd,
-    sandbox: DECOMPOSE_SANDBOX,
+    sandbox: deps.sandbox ?? DECOMPOSE_SANDBOX,
     timeoutMs: deps.timeoutMs,
   };
 

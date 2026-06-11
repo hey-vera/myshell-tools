@@ -72,6 +72,8 @@ export interface GoalView {
   readonly label: string;
   readonly state: AgentRunState;
   readonly tokens: number;
+  /** Live tool-call count attributed to this goal for the current turn. */
+  readonly toolCount: number;
   readonly agents: readonly AgentView[];
   /**
    * The routing TIER this goal ran at — kept distinct from `label` so the view can
@@ -378,6 +380,8 @@ export type Action =
       readonly name: string;
       readonly phase: 'start' | 'end';
       readonly verbosity: Verbosity;
+      /** Owning goal when the scheduler/provider surfaced one. */
+      readonly goalId?: string;
       /**
        * OPTIONAL real target the tool acted on (a file path / command / title),
        * copied verbatim from the provider event's `detail` when present (codex /

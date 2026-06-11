@@ -676,6 +676,41 @@ describe('ui reduce — tool / reasoning verbosity', () => {
     assert.equal(n.stream.toolSinceProse, true);
   });
 
+  it('attributes normal tool calls to the matching goalId without changing the global stepCount behavior', () => {
+    const started = run([
+      { type: 'goal/enqueue', goalId: 'g1', label: 'One' },
+      { type: 'goal/enqueue', goalId: 'g2', label: 'Two' },
+      {
+        type: 'tier-start',
+        tier: 'ic',
+        provider: 'claude',
+        model: 'opus',
+        attempt: 1,
+        verbosity: 'normal',
+        goalId: 'g1',
+      },
+      {
+        type: 'tier-start',
+        tier: 'ic',
+        provider: 'codex',
+        model: 'gpt-5',
+        attempt: 1,
+        verbosity: 'normal',
+        goalId: 'g2',
+      },
+    ]);
+    const afterTool = reduce(started, {
+      type: 'stream/tool',
+      name: 'Edit',
+      phase: 'start',
+      verbosity: 'normal',
+      goalId: 'g2',
+    });
+    assert.equal(afterTool.stream.stepCount, 1);
+    assert.equal(afterTool.goals.find((g) => g.id === 'g1')?.toolCount, 0);
+    assert.equal(afterTool.goals.find((g) => g.id === 'g2')?.toolCount, 1);
+  });
+
   it('captures the LIVE action (currentTool) from a real tool event, mapping the name to a verb', () => {
     // A real tool name maps to a friendly verb; with NO detail there is no target
     // (the Claude subscription provider supplies none — never fabricated).
@@ -1165,6 +1200,13 @@ describe('coreEventToActions — mapping fidelity', () => {
     assert.deepEqual(toolWithDetail, [
       { type: 'stream/tool', name: 'file_change', phase: 'end', verbosity: 'normal', detail: 'src/x.ts' },
     ]);
+    const toolWithGoal = coreEventToActions(
+      { type: 'provider-event', tier: 'ic', goalId: 'g7', event: { type: 'tool', name: 'Edit', phase: 'start' } },
+      'normal',
+    );
+    assert.deepEqual(toolWithGoal, [
+      { type: 'stream/tool', name: 'Edit', phase: 'start', verbosity: 'normal', goalId: 'g7' },
+    ]);
     const reasoning = coreEventToActions(
       { type: 'provider-event', tier: 'ic', event: { type: 'reasoning', delta: 'hmm' } },
       'verbose',
@@ -1441,6 +1483,7 @@ describe('ui reduce — multi-goal: goal/enqueue + goal/phase actions', () => {
     assert.equal(s.goals[0]?.id, 'g1');
     assert.equal(s.goals[0]?.label, 'Refactor auth');
     assert.equal(s.goals[0]?.state, 'queued');
+    assert.equal(s.goals[0]?.toolCount, 0);
     assert.equal(s.goals[0]?.agents.length, 0);
   });
 

@@ -37,7 +37,7 @@
  * `color`/`isTty`) so the flag-off legacy path is untouched.
  */
 
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Box, Text, useInput, useStdin } from 'ink';
 import { dim, cyan, blue } from '../../ui/theme.js';
 import { truncateToWidth, visibleLength } from '../../ui/tui.js';
@@ -160,19 +160,15 @@ export interface InputBoxProps {
   readonly onEscape?: (() => boolean) | undefined;
   /**
    * Returns `true` while a single-key menu/confirm read is pending (the App's
-   * `readKey()`). The editor's input handler stops editing while this is true so a
-   * key that arrives in the sub-frame window after `readKey()` flips `awaitingKey`
-   * — but before the `isActive:false` re-render propagates — cannot mutate the edit
-   * buffer. Optional (tests/Step-1 paths may omit it). See App.readKey().
+   * `readKey()`). The editor's single input handler routes that event to the menu
+   * resolver instead of mutating the edit buffer. Optional (tests/Step-1 paths may
+   * omit it). See App.readKey().
    */
   readonly readPending?: (() => boolean) | undefined;
   /**
-   * Resolve a pending single-key read with a key delivered to the editor's
-   * `useInput` in the sub-frame window BEFORE the dedicated `<KeyCapture>` hook has
-   * mounted (M2). The App wires this to its key-capture resolver (which nulls the
-   * resolver first, so a later double-delivery via KeyCapture is a safe no-op). The
-   * editor itself never mutates for such a key — it is forwarded here instead. Only
-   * called while `readPending()` is true. Optional. See App.readKey()/KeyCapture.
+   * Resolve a pending single-key read with a key delivered to the editor's stable
+   * `useInput` consumer. The editor itself never mutates for such a key. Only called
+   * while `readPending()` is true. Optional. See App.readKey().
    */
   readonly onReadKey?: ((input: string, key: KeyCaptureFlagsLike) => void) | undefined;
   /**
@@ -356,17 +352,16 @@ export function InputBox({
     bridge._submit?.(submitted);
   };
 
-  useInput((input, key) => {
-    // --- Sub-frame mode-switch guard (M2) ------------------------------------
-    // A single-key menu/confirm read (App.readKey()) flips `awaitingKey` on, which
-    // sets this box's `isActive:false` — but only on the NEXT render+effect pass.
-    // A key delivered in that sub-frame window would otherwise land here and mutate
-    // the editor (a stray char + the read waits for the NEXT key). Bail at the very
-    // top so the editor consumes nothing while a read is pending, and FORWARD the
-    // key to resolve the read directly (the dedicated <KeyCapture> hook has not
-    // mounted yet in this sub-frame). onReadKey nulls the resolver before resolving,
-    // so a later double-delivery via KeyCapture is a safe no-op. The editor itself
-    // never mutates for this key.
+  // Ink subscribes the callback passed to useInput in a passive effect. Keep that
+  // callback stable across renders so visibility/menu transitions cannot briefly
+  // remove the only stdin listener and drop an EventEmitter input event. The ref is
+  // refreshed during render, so the stable subscriber always invokes current editor
+  // state and callbacks.
+  const inputHandlerRef = useRef<Parameters<typeof useInput>[0]>(() => undefined);
+  inputHandlerRef.current = (input, key): void => {
+    // --- Pending menu/confirm read -------------------------------------------
+    // This is the first dispatch branch: exactly one continuously-mounted input
+    // consumer serves both menu capture and editor input, with no listener handoff.
     if (readPending?.() === true) {
       onReadKey?.(input, key as KeyCaptureFlagsLike);
       return;
@@ -511,7 +506,11 @@ export function InputBox({
     }
     // When `suspended`, this handler is inert (isActive:false below also stops Ink
     // from delivering input), so an inherited-stdio child owns the TTY alone.
-  }, { isActive: !suspended });
+  };
+  const stableInputHandler = useCallback<Parameters<typeof useInput>[0]>((input, key) => {
+    inputHandlerRef.current(input, key);
+  }, []);
+  useInput(stableInputHandler, { isActive: !suspended });
 
   // -------------------------------------------------------------------------
   // Rendering
@@ -555,7 +554,7 @@ export function InputBox({
   // exactly ONE <Box> line (NOT literal null / a bare string child — either crashes
   // Ink) holding a single space, so the `useInput`/`useStdin` hooks above stay
   // mounted and active: Ink keeps raw mode armed (single-key menu nav via
-  // <KeyCapture> works) and the LineReader's suspend()/resume() stdin control stays
+  // menu-key capture works) and the LineReader's suspend()/resume() stdin control stays
   // registered. Keeping one <Box> also avoids forcing a re-mount when visibility
   // toggles (the hooks persist).
   if (!visible) {

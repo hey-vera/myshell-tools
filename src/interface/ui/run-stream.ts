@@ -87,6 +87,7 @@ function cliErrorForCategory(category: ErrorCategory): CliError | null {
     network: { stderr: 'network error', exit: 1 },
     model: { stderr: 'model not found', exit: 1 },
     permission: { stderr: 'permission denied', exit: 126 },
+    'sandbox-environment': { stderr: 'bwrap: failed to start sandbox', exit: 1 },
     unknown: { stderr: '', exit: 1 },
   };
   const probe = PROBES[category];

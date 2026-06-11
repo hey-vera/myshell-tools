@@ -6,6 +6,19 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+## [3.93.0] - 2026-06-11
+
+### Fixed (core + UI real-world batch)
+- **Replit Codex commands run in the environment they actually have.** Replit now selects
+  Codex `danger-full-access` instead of broken bwrap-backed read-only/workspace-write modes,
+  and sandbox setup failures surface as a dedicated sandbox-environment error.
+- **The first chat keystroke is no longer dropped after menu selection.** Input handling now
+  uses one stable `useInput` path instead of racing a separate `KeyCapture` component.
+- **The live-worker display is goal-centric.** Each goal row now reports its active or inactive
+  state with honest worker, task, and tool counts, backed by goal-scoped reducer state.
+- **The provider menu shows the current Claude subscription.** Claude-owned live credentials
+  take precedence over the stale legacy myshell token, which is cleared when obsolete.
+
 ## [3.92.0] - 2026-06-11
 
 ### Fixed (no more stray "press a key" on the startup menu)

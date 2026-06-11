@@ -26,7 +26,12 @@ import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { execa } from 'execa';
-import { loadClaudeToken, claudeEnv, replitPersistentEnv } from '../infra/credentials.js';
+import {
+  clearClaudeToken,
+  loadClaudeToken,
+  claudeEnv,
+  replitPersistentEnv,
+} from '../infra/credentials.js';
 import {
   parseClaudeOauth,
   resolveClaudeCredsPath,
@@ -372,6 +377,46 @@ export function credentialFileIndicatesAuth(rawCredsJson: string, nowMs: number)
   }
 }
 
+/** True only for Claude's own usable subscription OAuth credential. */
+function credentialFileIndicatesClaudeOauth(
+  rawCredsJson: string,
+  nowMs: number,
+): boolean {
+  const oauth = parseClaudeOauth(rawCredsJson);
+  return oauth !== null && (oauth.expiresAt === null || oauth.expiresAt > nowMs);
+}
+
+/**
+ * Build Claude's child environment with Claude-owned credentials taking
+ * precedence over myshell's legacy stored token. A usable Claude credentials
+ * file also proves the legacy token is obsolete, so clear it best-effort.
+ */
+export async function claudeEnvWithStoredFallback(
+  baseEnv: NodeJS.ProcessEnv,
+  cwd: string,
+  storedCredentialInjection = true,
+  stateHome?: string,
+): Promise<NodeJS.ProcessEnv> {
+  const ownEnv = {
+    ...baseEnv,
+    ...replitPersistentEnv(baseEnv, cwd),
+  };
+
+  try {
+    const credsPath = resolveClaudeCredsPath(ownEnv, cwd, stateHome);
+    const raw = await readFile(credsPath, 'utf8');
+    if (credentialFileIndicatesClaudeOauth(raw, Date.now())) {
+      await clearClaudeToken(stateHome);
+      return ownEnv;
+    }
+  } catch {
+    // No usable Claude-owned file; the CLI may use Keychain, or need fallback.
+  }
+
+  const token = storedCredentialInjection ? await loadClaudeToken(stateHome) : null;
+  return claudeEnv(ownEnv, token);
+}
+
 /**
  * Extract the `claudeAiOauth.rateLimitTier` string from the raw credentials JSON,
  * or null when absent/garbage. This is the account's rate-limit tier (e.g.
@@ -437,18 +482,19 @@ export async function detectProvider(
   const storedCredentialInjection = opts.storedCredentialInjection ?? true;
 
   if (id === 'claude') {
-    // Load the stored token once so both the version probe and the auth probe
-    // see it — but never inject it into the global process.env.
-    // Fall back to process.env unchanged if loading fails.
-    let claudeChildEnv: NodeJS.ProcessEnv = baseEnv;
+    // Probe Claude's own login first. The legacy myshell token is only added
+    // after that probe fails, so it cannot shadow a changed subscription.
+    const ownClaudeEnv: NodeJS.ProcessEnv = {
+      ...baseEnv,
+      ...replitPersistentEnv(baseEnv, cwd),
+    };
+    let claudeChildEnv = ownClaudeEnv;
     try {
-      const token = storedCredentialInjection ? await loadClaudeToken() : null;
-      // Point claude at the Replit-persistent config dir when present so detection
-      // sees the one-time sign-in that survives restarts (matches replit-tools).
-      claudeChildEnv = {
-        ...claudeEnv(baseEnv, token),
-        ...replitPersistentEnv(baseEnv, cwd),
-      };
+      claudeChildEnv = await claudeEnvWithStoredFallback(
+        baseEnv,
+        cwd,
+        false,
+      );
     } catch {
       // Never throw — detection must be robust
     }
@@ -471,11 +517,32 @@ export async function detectProvider(
             timeout: 10_000,
             env: claudeChildEnv,
           });
-          const parsed = parseClaudeAuth(
+          let parsed = parseClaudeAuth(
             typeof authResult.stdout === 'string' ? authResult.stdout : '',
             typeof authResult.stderr === 'string' ? authResult.stderr : '',
             authResult.exitCode ?? 1,
           );
+
+          // A successful token-free probe is authoritative (including macOS
+          // Keychain logins). Clear the legacy token so later runs cannot
+          // re-shadow it. An explicit environment token remains user-owned.
+          if (parsed.authenticated && baseEnv['CLAUDE_CODE_OAUTH_TOKEN'] === undefined) {
+            await clearClaudeToken();
+          } else if (!parsed.authenticated && storedCredentialInjection) {
+            claudeChildEnv = await claudeEnvWithStoredFallback(baseEnv, cwd, true);
+            if (claudeChildEnv['CLAUDE_CODE_OAUTH_TOKEN'] !== undefined) {
+              const fallbackAuthResult = await execa('claude', ['auth', 'status'], {
+                reject: false,
+                timeout: 10_000,
+                env: claudeChildEnv,
+              });
+              parsed = parseClaudeAuth(
+                typeof fallbackAuthResult.stdout === 'string' ? fallbackAuthResult.stdout : '',
+                typeof fallbackAuthResult.stderr === 'string' ? fallbackAuthResult.stderr : '',
+                fallbackAuthResult.exitCode ?? 1,
+              );
+            }
+          }
           authenticated = parsed.authenticated;
           plan = parsed.plan;
         } catch {

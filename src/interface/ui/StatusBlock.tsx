@@ -405,65 +405,46 @@ export const Panels = React.memo(PanelsImpl);
 // BoardPanel — the REAL PERSISTENT GOAL BOARD (Elite-partner Phase 1)
 // ---------------------------------------------------------------------------
 
-/** A short "N/M to-dos" label (singular at total===1), mirroring goal-todo.ts
- *  `formatTodoCount` for the board row's pre-projected done/total counts. PURE. */
-function boardTodoCount(done: number, total: number): string {
-  const noun = total === 1 ? 'to-do' : 'to-dos';
-  return `${done}/${total} ${noun}`;
-}
-
-/** The Ink colour for a board row's lifecycle glyph (gated on `color`). running →
- *  cyan, done → green, failed → red, parked/queued → dim. */
-function boardGlyphProps(
-  state: GoalBoardRow['state'],
-  color: boolean,
-): { color?: string; dimColor?: boolean } {
-  if (!color) return {};
-  switch (state) {
-    case 'running':
-      return { color: 'cyan' };
-    case 'done':
-      return { color: 'green' };
-    case 'failed':
-      return { color: 'red' };
-    case 'queued':
-    case 'parked':
-      return { dimColor: true };
-  }
+function pluralize(count: number, singular: string, plural = `${singular}s`): string {
+  return `${count} ${count === 1 ? singular : plural}`;
 }
 
 export interface BoardRowProps {
   readonly row: GoalBoardRow;
+  readonly state: UiState;
   readonly color?: boolean;
 }
 
 /**
- * One persistent board row, reusing the GoalStore projection (built via the pure
- * goal-todo.ts shapers `goalGlyph`/`roadmapProgress`/`formatTodoCount` at sync
- * time): `<glyph> <title>   N/M to-dos · state · scope[ · K agents]`. The live
- * agent count rides on the END only when the goal is running THIS turn (the
- * reducer re-derived it from the real attach-by-goalId truth) — never fabricated.
- * One terminal row. PURE view.
+ * One persistent board row, rendered goal-first from the persisted row plus the
+ * reducer's live goal snapshot keyed by row.id. In board mode this is the primary
+ * per-goal line for both idle and active turns.
  */
-export function BoardRow({ row, color = true }: BoardRowProps): React.ReactElement {
-  const glyphProps = boardGlyphProps(row.state, color);
-  const scope = row.scope === 'global' ? 'global' : 'this repo';
-  const parts = [boardTodoCount(row.done, row.total), row.state, scope];
-  if (row.agents > 0) parts.push(`${row.agents} agent${row.agents === 1 ? '' : 's'}`);
-  // Honest verdict tag (Elite-partner Part 3) — completion honesty made visible.
-  // Present only when the goal has a REAL recorded verdict (never fabricated).
-  if (row.verdict !== undefined && row.verdict.length > 0) parts.push(row.verdict);
+export function BoardRow({ row, state, color = true }: BoardRowProps): React.ReactElement {
+  const liveGoal = state.goals.find((goal) => goal.id === row.id);
+  const liveAgents = liveGoal?.agents.length ?? 0;
+  const liveTools = liveGoal?.toolCount ?? 0;
+  const active = liveAgents > 0 || row.state === 'running';
+  const parts = ['goal', row.title, '—', active ? 'active' : 'inactive'];
+  if (active) {
+    parts.push(
+      '·',
+      pluralize(liveAgents, 'worker'),
+      '·',
+      pluralize(row.total, 'task'),
+    );
+    if (liveTools > 0) parts.push('·', pluralize(liveTools, 'tool'));
+  }
   return (
     <Box>
-      <Text {...glyphProps}>{row.glyph}</Text>
-      <Text {...(color ? {} : {})}>{` ${row.title}`}</Text>
-      <Text dimColor={color}>{`   ${parts.join(' · ')}`}</Text>
+      <Text dimColor={color}>{parts.join(' ')}</Text>
     </Box>
   );
 }
 
 interface BoardPanelProps {
   readonly plan: BoardPlan;
+  readonly state: UiState;
   readonly color?: boolean;
 }
 
@@ -474,13 +455,13 @@ interface BoardPanelProps {
  * overflow the viewport) and ACROSS turns (it does not depend on turnActive). The
  * rounded border mirrors the GOALS/WORKING panel look.
  */
-function BoardPanelImpl({ plan, color = true }: BoardPanelProps): React.ReactElement {
+function BoardPanelImpl({ plan, state, color = true }: BoardPanelProps): React.ReactElement {
   const borderProps = color ? { borderColor: 'gray' as const } : {};
   return (
     <Box flexDirection="column" borderStyle="round" {...borderProps} paddingX={1}>
       <Text {...(color ? { color: 'cyan' as const } : {})}>BOARD</Text>
       {plan.shown.map((row) => (
-        <BoardRow key={row.id} row={row} color={color} />
+        <BoardRow key={row.id} row={row} state={state} color={color} />
       ))}
       {plan.overflow > 0 ? (
         <Text dimColor={color}>{`+${plan.overflow} more`}</Text>
@@ -703,7 +684,7 @@ export function StatusBlock({
   // off path → nothing extra rendered (byte-for-byte today). When the turn is idle
   // the live region (Panels / summary / spinner) collapses and ONLY the board shows.
   const boardEl =
-    plan.board !== null ? <BoardPanel plan={plan.board} color={color} /> : null;
+    plan.board !== null ? <BoardPanel plan={plan.board} state={state} color={color} /> : null;
 
   if (!state.turnActive) {
     // Idle: the only reason the block is visible is the persistent board.
@@ -719,21 +700,19 @@ export function StatusBlock({
   // fabricated; empty when no tool has fired this tier (then the row falls back to
   // the work label).
   const liveAction = liveActionLabel(state.stream.currentTool);
-  // With the persistent board ON, the live per-turn region is honest current-turn
-  // status, NOT a goal — so its header reads "WORKING", not "GOALS". Off → "GOALS".
-  const liveHeader = state.boardEnabled ? 'WORKING' : 'GOALS';
-
   return (
     <Box flexDirection="column">
       {boardEl}
-      <Panels
-        mode={plan.goals}
-        header={liveHeader}
-        {...(elapsedSecs !== undefined ? { elapsedSecs } : {})}
-        {...(liveWorkLabel.length > 0 ? { workLabel: liveWorkLabel } : {})}
-        {...(liveAction.length > 0 ? { liveAction } : {})}
-        color={color}
-      />
+      {state.boardEnabled ? null : (
+        <Panels
+          mode={plan.goals}
+          header="GOALS"
+          {...(elapsedSecs !== undefined ? { elapsedSecs } : {})}
+          {...(liveWorkLabel.length > 0 ? { workLabel: liveWorkLabel } : {})}
+          {...(liveAction.length > 0 ? { liveAction } : {})}
+          color={color}
+        />
+      )}
       {plan.showSummary ? (
         <Text {...(color ? { color: 'cyan' as const } : {})}>
           {summarizeTurn(state, elapsedSecs)}

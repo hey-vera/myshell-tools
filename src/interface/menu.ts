@@ -131,6 +131,7 @@ import {
 import { isStubTitle } from '../infra/conversations.js';
 import { systemClipboardPort, type ClipboardPort } from '../infra/clipboard.js';
 import { resolveStateHome } from '../infra/state-dir.js';
+import { helperSandbox } from '../infra/sandbox.js';
 import { resolveImageAttachments } from '../infra/attachments.js';
 import { runTask } from './run.js';
 import { runLogin } from '../commands/login.js';
@@ -650,6 +651,7 @@ export async function runChatLoop(
       policy,
       cwd: ctx.cwd,
       timeoutMs: Math.min(ctx.timeoutMs, RECAP_TIMEOUT_MS),
+      sandbox: helperSandbox(ctx.sandbox),
       ...(Object.keys(availableModels).length > 0 ? { availableModels } : {}),
       ...(authenticatedProviders.length > 0 ? { authenticatedProviders } : {}),
     });
@@ -694,6 +696,7 @@ export async function runChatLoop(
       policy,
       cwd: ctx.cwd,
       timeoutMs: Math.min(ctx.timeoutMs, GOAL_OBJECTIVE_TIMEOUT_MS),
+      sandbox: helperSandbox(ctx.sandbox),
       ...(Object.keys(availableModels).length > 0 ? { availableModels } : {}),
       ...(authenticatedProviders.length > 0 ? { authenticatedProviders } : {}),
     });
@@ -740,6 +743,7 @@ export async function runChatLoop(
       policy,
       cwd: ctx.cwd,
       timeoutMs: Math.min(ctx.timeoutMs, GOAL_PLAN_TIMEOUT_MS),
+      sandbox: helperSandbox(ctx.sandbox),
       ...(Object.keys(availableModels).length > 0 ? { availableModels } : {}),
       ...(authenticatedProviders.length > 0 ? { authenticatedProviders } : {}),
       // When the understanding pass produced a SystemModel, GROUND the planner in
@@ -789,6 +793,7 @@ export async function runChatLoop(
       policy,
       cwd: ctx.cwd,
       timeoutMs: Math.min(ctx.timeoutMs, GOAL_REPLAN_TIMEOUT_MS),
+      sandbox: helperSandbox(ctx.sandbox),
       ...(Object.keys(availableModels).length > 0 ? { availableModels } : {}),
       ...(authenticatedProviders.length > 0 ? { authenticatedProviders } : {}),
       // When the understanding pass produced a SystemModel, GROUND the re-plan in
@@ -841,6 +846,7 @@ export async function runChatLoop(
       policy,
       cwd: ctx.cwd,
       timeoutMs: Math.min(ctx.timeoutMs, UNDERSTANDING_TIMEOUT_MS),
+      sandbox: helperSandbox(ctx.sandbox),
       ...(Object.keys(availableModels).length > 0 ? { availableModels } : {}),
       ...(authenticatedProviders.length > 0 ? { authenticatedProviders } : {}),
       ...(repoContext.trim().length > 0 ? { repoContext } : {}),
@@ -1971,6 +1977,7 @@ export async function runChatLoop(
                 policy,
                 cwd: ctx.cwd,
                 timeoutMs: Math.min(ctx.timeoutMs, ROUTER_TIMEOUT_MS),
+                sandbox: helperSandbox(ctx.sandbox),
                 ...(Object.keys(availableModels).length > 0 ? { availableModels } : {}),
                 ...(authenticatedProviders.length > 0 ? { authenticatedProviders } : {}),
               })
@@ -1991,6 +1998,7 @@ export async function runChatLoop(
                 policy,
                 cwd: ctx.cwd,
                 timeoutMs: Math.min(ctx.timeoutMs, INTENT_TIMEOUT_MS),
+                sandbox: helperSandbox(ctx.sandbox),
                 ...(Object.keys(availableModels).length > 0 ? { availableModels } : {}),
                 ...(authenticatedProviders.length > 0 ? { authenticatedProviders } : {}),
               })
@@ -2893,7 +2901,7 @@ export async function runChatLoop(
             prompt:
               `Search the web for current, authoritative information on the following and reply with a SHORT plain-text summary of what you found, with sources. Do not restate the question.\n\n${query}`,
             cwd: ctx.cwd,
-            sandbox: 'read-only',
+            sandbox: helperSandbox(ctx.sandbox),
             timeoutMs: Math.min(ctx.timeoutMs, 90_000),
             webSearch: true,
           };
@@ -3297,6 +3305,7 @@ export async function runChatLoop(
                 policy: decomposeBaseDeps.policy,
                 cwd: decomposeBaseDeps.cwd,
                 timeoutMs: decomposeBaseDeps.timeoutMs,
+                sandbox: helperSandbox(decomposeBaseDeps.sandbox),
                 ...(decomposeBaseDeps.availableModels !== undefined
                   ? { availableModels: decomposeBaseDeps.availableModels }
                   : {}),

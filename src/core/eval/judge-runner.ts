@@ -31,6 +31,7 @@ export interface JudgeRunnerDeps {
   readonly cwd: string;
   /** Hard wall-clock cap for a single judge run. */
   readonly timeoutMs: number;
+  readonly sandbox?: SandboxLevel;
   /**
    * The provider that PRODUCED the answers. The judge deliberately routes to a
    * DIFFERENT vendor for an honest outside check; when no other vendor is signed
@@ -103,7 +104,7 @@ export function makeJudgePort(deps: JudgeRunnerDeps): {
       model,
       prompt: buildJudgePrompt(prompt, answer),
       cwd: deps.cwd,
-      sandbox: JUDGE_SANDBOX,
+      sandbox: deps.sandbox ?? JUDGE_SANDBOX,
       timeoutMs: deps.timeoutMs,
     };
 

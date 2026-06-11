@@ -284,6 +284,21 @@ const classifyCases: ClassifyCase[] = [
     expectedCategory: 'permission',
     expectedRecoverable: false,
   },
+  // Sandbox environment
+  {
+    desc: 'bubblewrap capability startup failure',
+    stderr: 'bwrap: Unexpected capabilities but not setuid, old file caps config?',
+    exitCode: 1,
+    expectedCategory: 'sandbox-environment',
+    expectedRecoverable: false,
+  },
+  {
+    desc: 'general bubblewrap startup failure',
+    stderr: 'bwrap: Creating new namespace failed: Operation not permitted',
+    exitCode: 1,
+    expectedCategory: 'sandbox-environment',
+    expectedRecoverable: false,
+  },
   // Unknown / fallback
   {
     desc: 'empty stderr, exit 1',
@@ -345,6 +360,7 @@ describe('classifyError — every ErrorCategory produces a non-empty suggestion'
     network: { stderr: 'ECONNRESET', exitCode: 1 },
     model: { stderr: 'Model not found', exitCode: 1 },
     permission: { stderr: 'Permission denied', exitCode: 1 },
+    'sandbox-environment': { stderr: 'bwrap: sandbox startup failed', exitCode: 1 },
     unknown: { stderr: 'completely unrecognised gibberish xyz123', exitCode: 1 },
   };
 

@@ -31,6 +31,7 @@ export interface IntentExtractorDeps {
   readonly cwd: string;
   /** Hard wall-clock cap for the extraction run. Keep short. */
   readonly timeoutMs: number;
+  readonly sandbox?: SandboxLevel;
   readonly availableModels?: Partial<Record<ProviderId, readonly string[]>>;
   readonly authenticatedProviders?: readonly ProviderId[];
 }
@@ -76,7 +77,7 @@ export function makeIntentExtractor(deps: IntentExtractorDeps): IntentExtractor 
       model,
       prompt: buildIntentPrompt(task),
       cwd: deps.cwd,
-      sandbox: INTENT_SANDBOX,
+      sandbox: deps.sandbox ?? INTENT_SANDBOX,
       timeoutMs: deps.timeoutMs,
     };
 

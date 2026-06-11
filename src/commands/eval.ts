@@ -23,7 +23,7 @@
  */
 
 import type { OutputSink } from '../interface/render.js';
-import type { Provider, ProviderId } from '../providers/port.js';
+import type { Provider, ProviderId, SandboxLevel } from '../providers/port.js';
 import type { OrchestrateDeps, Policy } from '../core/types.js';
 import { SUITE_SIZE } from '../core/eval/suite.js';
 import { runEval } from '../core/eval/harness.js';
@@ -44,6 +44,7 @@ export interface EvalCommandDeps {
   readonly policy: Policy;
   /** Hard wall-clock cap per provider run. */
   readonly timeoutMs: number;
+  readonly sandbox?: SandboxLevel;
   /** Authenticated providers (cross-vendor judge prefers a different signed-in vendor). */
   readonly authenticatedProviders: readonly ProviderId[];
   /** Advertised model lists per provider (so routing prefers a model the CLI has). */
@@ -143,6 +144,7 @@ export async function runEvalCommand(
     policy: deps.policy,
     cwd: deps.cwd,
     timeoutMs: deps.timeoutMs,
+    ...(deps.sandbox !== undefined ? { sandbox: deps.sandbox } : {}),
     answerProvider,
     ...(deps.availableModels !== undefined ? { availableModels: deps.availableModels } : {}),
     authenticatedProviders: deps.authenticatedProviders,

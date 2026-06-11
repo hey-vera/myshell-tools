@@ -17,6 +17,7 @@ export type ErrorCategory =
   | 'network'
   | 'model'
   | 'permission'
+  | 'sandbox-environment'
   | 'unknown';
 
 export interface CliError {
@@ -147,6 +148,10 @@ function isPermissionStderr(lower: string, exitCode: number): boolean {
   );
 }
 
+function isSandboxEnvironmentStderr(lower: string): boolean {
+  return lower.includes('bwrap:');
+}
+
 // ---------------------------------------------------------------------------
 // Per-category error descriptors
 // ---------------------------------------------------------------------------
@@ -189,6 +194,12 @@ const CATEGORY_DESCRIPTORS: Record<
     suggestion:
       'Verify your account has access to the requested resource or operation.',
   },
+  'sandbox-environment': {
+    recoverable: false,
+    message: 'The CLI sandbox could not start in this environment.',
+    suggestion:
+      'Use the host container as the isolation boundary or repair its bubblewrap configuration.',
+  },
   unknown: {
     recoverable: false,
     message: 'An unexpected error occurred.',
@@ -212,7 +223,9 @@ export function classifyError(stderr: string, exitCode: number): CliError {
 
   let category: ErrorCategory;
 
-  if (isAuthStderr(lower)) {
+  if (isSandboxEnvironmentStderr(lower)) {
+    category = 'sandbox-environment';
+  } else if (isAuthStderr(lower)) {
     category = 'auth';
   } else if (isRateLimitStderr(lower)) {
     category = 'rate-limit';

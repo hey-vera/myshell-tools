@@ -317,6 +317,7 @@ export function reduce(state: UiState, action: Action): UiState {
         label: honestTitle !== undefined && honestTitle.length > 0 ? honestTitle : action.tier,
         state: 'running',
         tokens: 0,
+        toolCount: 0,
         agents: [agent],
         tier: action.tier,
         ...(action.risk !== undefined ? { risk: action.risk } : {}),
@@ -379,6 +380,7 @@ export function reduce(state: UiState, action: Action): UiState {
         label: action.label.length > 0 ? action.label : action.goalId,
         state: 'queued',
         tokens: 0,
+        toolCount: 0,
         agents: [],
         // A queued goal has no routed tier yet; default to the lightest tier for
         // the dim badge (the real tier lands when its tier-start attaches).
@@ -474,11 +476,20 @@ export function reduce(state: UiState, action: Action): UiState {
         action.detail !== undefined && action.detail.length > 0
           ? { verb: toolVerb(action.name), target: action.detail }
           : { verb: toolVerb(action.name) };
-      return withStream(state, {
-        stepCount: state.stream.stepCount + 1,
-        toolSinceProse: true,
-        currentTool,
-      });
+      const goals =
+        action.goalId !== undefined
+          ? state.goals.map((goal) =>
+              goal.id === action.goalId ? { ...goal, toolCount: goal.toolCount + 1 } : goal,
+            )
+          : state.goals;
+      return {
+        ...withStream(state, {
+          stepCount: state.stream.stepCount + 1,
+          toolSinceProse: true,
+          currentTool,
+        }),
+        goals,
+      };
     }
 
     // -- reasoning: verbose prints the raw delta (internal thinking shown only in

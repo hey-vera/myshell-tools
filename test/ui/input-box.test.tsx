@@ -88,6 +88,7 @@ test('typing updates the visible line', async () => {
   const { lastFrame, stdin } = render(
     <InputBox bridge={bridge} color={true} isTty={true} columns={60} />,
   );
+  await tick();
   stdin.write('hi there');
   await tick();
   assert.ok(lastFrame()?.includes('hi there'), `got:\n${lastFrame()}`);

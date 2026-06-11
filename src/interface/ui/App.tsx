@@ -15,7 +15,7 @@
  */
 
 import React, { useEffect, useMemo, useState } from 'react';
-import { Box, Static, Text, useInput, useStdout } from 'ink';
+import { Box, Static, Text, useStdout } from 'ink';
 import { InputBox, createInputBoxBridge, type InputBoxBridge } from './InputBox.js';
 import { Stream, CommittedLine } from './Stream.js';
 import { StatusBlock } from './StatusBlock.js';
@@ -98,7 +98,7 @@ export interface InkAppBridge {
    *
    * The menu loop sets this `true` at `runChatLoop` entry and `false` in a
    * `finally` on exit, mirroring how {@link InkAppBridge.setInputInfo} is threaded.
-   * Menu single-key nav (`readKey`/`<KeyCapture>`) and the transcript/status/stream
+   * Menu single-key nav (`readKey`) and the transcript/status/stream
    * regions work in BOTH modes — a hidden input keeps Ink's raw mode + stdin
    * control armed while the composer chrome is gone. No-op before the App mounts.
    */
@@ -114,11 +114,9 @@ export interface InkAppBridge {
    *   - arrows / other non-printables → a multi-byte sentinel (`length > 1`) so the
    *     menu treats them as a no-op, exactly like a raw `'\x1b[A'` arrow sequence.
    *
-   * While a read is pending the App flips `awaitingKey` on: the `<InputBox>` editor
-   * goes inactive and a dedicated capture hook consumes the NEXT key, resolves, and
-   * the App flips `awaitingKey` off so the editor resumes cleanly — exactly one key
-   * is consumed. A read started while suspended (a child owns the TTY) stays parked
-   * until resume(): the capture hook is inactive while suspended.
+   * The continuously-mounted `<InputBox>` input consumer checks the pending resolver
+   * before editing, so the NEXT key resolves the read and exactly one key is consumed.
+   * A read started while suspended (a child owns the TTY) stays parked until resume().
    *
    * The Node side (menu loop) drives this in place of the legacy single-key raw
    * read on the Ink path; chat-message input still flows through the InputBox.
@@ -157,10 +155,8 @@ export interface InkAppBridge {
   /** @internal set by App on mount */ _setInputInfo?: ((value: InputBoxInfo | null) => void) | undefined;
   /** @internal set by App on mount */ _setChatActive?: ((value: boolean) => void) | undefined;
   /** @internal set by App on mount */ _setUiState?: ((state: UiState) => void) | undefined;
-  /** @internal set by App on mount: flip the single-key capture state */
-  _setAwaitingKey?: ((value: boolean) => void) | undefined;
   /** @internal the pending single-key resolver, set by readKey(), consumed (once)
-   *  by the App's capture hook. Cleared after exactly one key is delivered. */
+   *  by the InputBox input consumer. Cleared after exactly one key is delivered. */
   _keyResolver?: ((key: string) => void) | null;
   /** @internal the installed turn-interrupt handler, set by setInterrupt(); read
    *  by the InputBox's bare-ESC branch. `null`/undefined when idle. */
@@ -207,9 +203,6 @@ export function createInkAppBridge(): InkAppBridge {
       }
       return new Promise<string>((resolve) => {
         bridge._keyResolver = resolve;
-        // Flip the App into single-key capture: InputBox editor goes inactive,
-        // the capture hook becomes active and consumes the next key.
-        bridge._setAwaitingKey?.(true);
       });
     },
     setInterrupt(handler: (() => void) | null): void {
@@ -362,28 +355,6 @@ export interface KeyCaptureFlags {
 }
 
 /**
- * A headless single-key capture mounted ONLY while the App is awaiting a key
- * (`awaitingKey && !suspended`). Its `useInput` consumes the NEXT keypress through
- * Ink's own pipeline (cooperating with raw mode + the /dev/tty fallback), resolves
- * the pending resolver with the normalized key, and the App flips `awaitingKey`
- * off — so EXACTLY ONE key is consumed and the InputBox editor resumes cleanly.
- *
- * It renders nothing. While suspended it is not mounted (the App gates it), so a
- * single-key read started before/over an inherited-stdio child handoff never
- * steals the child's keystroke.
- */
-function KeyCapture({
-  resolve,
-}: {
-  readonly resolve: (key: string) => void;
-}): null {
-  useInput((input, key) => {
-    resolve(normalizeInkKey(input, key as KeyCaptureFlags));
-  });
-  return null;
-}
-
-/**
  * The Ink chat app, wrapped in an {@link ErrorBoundary} so a render/reducer throw
  * restores the TTY (cooked mode, resolved readKey, closed reader) instead of
  * leaving stdin wedged in raw mode. The boundary's teardown mirrors mount.tsx's
@@ -440,9 +411,6 @@ function AppBody({
   // When true, an inherited-stdio child (e.g. `claude auth login`) owns the TTY:
   // the InputBox's useInput goes inactive so Ink drops its raw-mode refcount.
   const [suspended, setSuspended] = useState(false);
-  // When true, a single-key menu/confirm read is pending: the InputBox editor goes
-  // inactive and <KeyCapture> consumes the next key (see bridge.readKey()).
-  const [awaitingKey, setAwaitingKey] = useState(false);
   const [inputInfo, setInputInfo] = useState<InputBoxInfo | null>(null);
   // When true, an active chat conversation is in progress and the full composer
   // (chat rule + caret + closing rule) is shown. FALSE by default — the app opens
@@ -474,14 +442,12 @@ function AppBody({
     bridge._setSuspended = setSuspended;
     bridge._setInputInfo = setInputInfo;
     bridge._setUiState = setUiState;
-    bridge._setAwaitingKey = setAwaitingKey;
     bridge._setChatActive = setChatActive;
     return () => {
       bridge._setLines = undefined;
       bridge._setSuspended = undefined;
       bridge._setInputInfo = undefined;
       bridge._setUiState = undefined;
-      bridge._setAwaitingKey = undefined;
       bridge._setChatActive = undefined;
     };
   }, [bridge]);
@@ -560,14 +526,11 @@ function AppBody({
     inputBoxRows,
   ]);
 
-  // Deliver exactly one captured key to the pending readKey() resolver, then exit
-  // capture mode so the InputBox editor resumes. Guards against a double-fire (the
-  // resolver is nulled before resolving, so a stray second event is a no-op) — the
-  // exactly-one-key guarantee.
+  // Deliver exactly one captured key to the pending readKey() resolver. Nulling the
+  // resolver before invoking it makes a second event editor input, not a double-fire.
   const onCapturedKey = (rawKey: string): void => {
     const resolver = bridge._keyResolver;
     bridge._keyResolver = null;
-    setAwaitingKey(false);
     if (resolver != null) resolver(rawKey);
   };
 
@@ -634,13 +597,12 @@ function AppBody({
           onMeasureRows={setInputBoxRows}
           info={inputInfoText}
           visible={chatActive}
-          suspended={suspended || awaitingKey}
+          suspended={suspended}
           onStdinControl={bridge.attachStdinControl}
           onEscape={() => bridge.interrupt()}
           readPending={() => bridge._keyResolver != null}
           onReadKey={(input, key) => onCapturedKey(normalizeInkKey(input, key))}
         />
-        {awaitingKey && !suspended ? <KeyCapture resolve={onCapturedKey} /> : null}
       </Box>
     );
   }
@@ -656,13 +618,12 @@ function AppBody({
         rows={liveRows}
         info={inputInfoText}
         visible={chatActive}
-        suspended={suspended || awaitingKey}
+        suspended={suspended}
         onStdinControl={bridge.attachStdinControl}
         onEscape={() => bridge.interrupt()}
         readPending={() => bridge._keyResolver != null}
         onReadKey={(input, key) => onCapturedKey(normalizeInkKey(input, key))}
       />
-      {awaitingKey && !suspended ? <KeyCapture resolve={onCapturedKey} /> : null}
     </Box>
   );
 }

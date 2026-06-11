@@ -41,6 +41,7 @@ export interface GoalReplanGeneratorDeps {
   readonly cwd: string;
   /** Hard wall-clock cap for the re-plan run. Keep TIGHT — it runs inside the cycle. */
   readonly timeoutMs: number;
+  readonly sandbox?: SandboxLevel;
   readonly availableModels?: Partial<Record<ProviderId, readonly string[]>>;
   readonly authenticatedProviders?: readonly ProviderId[];
   /**
@@ -103,7 +104,7 @@ export function makeReplanner(
       model,
       prompt,
       cwd: deps.cwd,
-      sandbox: GOAL_REPLAN_SANDBOX,
+      sandbox: deps.sandbox ?? GOAL_REPLAN_SANDBOX,
       timeoutMs: deps.timeoutMs,
     };
 
