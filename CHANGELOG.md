@@ -6,6 +6,19 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+## [3.92.0] - 2026-06-11
+
+### Fixed (no more stray "press a key" on the startup menu)
+- **The glitchy `❯ press a key` line is gone.** The Ink input box printed a dim
+  `❯ press a key` hint whenever a single key was awaited — which stacked a redundant,
+  glitch-looking line right under the menu's own `>` prompt (and flashed during early
+  mount). Every single-key prompt in the app (menu, settings, mode, raw-session,
+  conversation/goal lists, auth sign-in, y/N confirms) already prints its own visible
+  prompt, so the hint was always redundant. The hidden-composer branch now renders a
+  single bare reserved line — keeping the input hooks mounted (raw mode stays armed for
+  single-key nav) with no visible noise. The now-dead `MENU_HINT`/`menuKeyAwait` plumbing
+  was removed.
+
 ## [3.91.0] - 2026-06-10
 
 ### Fixed (adversarial hardening pass — three real defects found by audit)

@@ -51,29 +51,36 @@ test('non-TTY InputBox renders a plain caret (no border)', () => {
   assert.ok(!frame.includes('\x1b['), `expected NO ANSI, got:\n${frame}`);
 });
 
-test('hidden InputBox (visible=false) renders the minimal menu prompt, not the composer', () => {
+test('hidden InputBox (visible=false) renders nothing visible — no stray "press a key", no composer', () => {
   const bridge = createInputBoxBridge();
   const { lastFrame } = render(
     <InputBox bridge={bridge} color={true} isTty={true} columns={60} visible={false} />,
   );
   const frame = plain(lastFrame());
-  assert.ok(frame.includes('❯'), `expected the menu-prompt caret, got:\n${frame}`);
-  assert.ok(frame.includes('press a key'), `expected the single-key hint, got:\n${frame}`);
+  // The hidden state prints NO hint: every single-key menu/auth/settings/confirm read
+  // site writes its own visible prompt, so a `❯ press a key` here was redundant and
+  // read like a glitch (it stacked under the menu's own `>`). It must be GONE.
+  assert.ok(!frame.includes('press a key'), `hidden InputBox must NOT print "press a key", got:\n${frame}`);
+  assert.ok(!frame.includes('❯'), `hidden InputBox must NOT print the composer caret, got:\n${frame}`);
   // NOT the full composer: no chat rule, no Mode chip, no free-text placeholder.
   assert.ok(!frame.includes('─ chat '), `menu prompt must NOT show the chat rule, got:\n${frame}`);
   assert.ok(!frame.includes('┌ Mode'), `menu prompt must NOT show the Mode chip, got:\n${frame}`);
   assert.ok(!frame.includes('Type a message'), `menu prompt must NOT imply free-text typing, got:\n${frame}`);
 });
 
-test('hidden InputBox degrades to a bare caret (non-TTY / NO_COLOR), never blank', () => {
+test('hidden InputBox renders a single reserved line (one Box), never crashes / never blank-undefined', () => {
   const bridge = createInputBoxBridge();
+  // The hidden branch must return exactly ONE <Box> (not literal null / a bare string
+  // child — either crashes Ink) so the useInput/useStdin hooks stay mounted and Ink
+  // keeps raw mode armed for single-key menu nav. lastFrame() resolving to a (blank)
+  // string rather than undefined proves the component rendered without throwing.
   const { lastFrame } = render(
     <InputBox bridge={bridge} color={false} isTty={false} columns={60} visible={false} />,
   );
   const frame = lastFrame() ?? '';
-  assert.ok(frame.includes('❯'), `expected a bare caret affordance, got:\n${frame}`);
-  assert.ok(!frame.includes('\x1b['), `expected NO ANSI in the degraded prompt, got:\n${frame}`);
-  assert.ok(frame.trim() !== '', 'degraded prompt must not be blank');
+  assert.equal(typeof lastFrame(), 'string', 'hidden InputBox must render (a string frame), never crash');
+  assert.ok(!frame.includes('press a key'), `degraded hidden state must NOT print "press a key", got:\n${frame}`);
+  assert.ok(!frame.includes('\x1b['), `expected NO ANSI in the reserved hidden line, got:\n${frame}`);
 });
 
 test('typing updates the visible line', async () => {

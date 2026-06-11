@@ -634,7 +634,6 @@ function AppBody({
           onMeasureRows={setInputBoxRows}
           info={inputInfoText}
           visible={chatActive}
-          menuKeyAwait={awaitingKey}
           suspended={suspended || awaitingKey}
           onStdinControl={bridge.attachStdinControl}
           onEscape={() => bridge.interrupt()}
@@ -657,7 +656,6 @@ function AppBody({
         rows={liveRows}
         info={inputInfoText}
         visible={chatActive}
-        menuKeyAwait={awaitingKey}
         suspended={suspended || awaitingKey}
         onStdinControl={bridge.attachStdinControl}
         onEscape={() => bridge.interrupt()}

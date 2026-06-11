@@ -10,37 +10,39 @@ import React from 'react';
 import { render } from 'ink-testing-library';
 import { App, ErrorBoundary, createInkAppBridge } from '../../src/interface/ui/App.js';
 
-test('idle <App> shows the minimal menu prompt, not the full composer (default chatActive=false)', () => {
+test('idle <App> shows NO stray "press a key", and not the full composer (default chatActive=false)', () => {
   const bridge = createInkAppBridge();
   const { lastFrame } = render(<App bridge={bridge} />);
   const frame = lastFrame() ?? '';
-  // The app opens at the MENU: a minimal `❯ press a key` affordance so the user
-  // sees input is awaited — but NOT the full composer (no `─ chat ─` rule/chip).
-  assert.ok(frame.includes('❯'), `expected the menu-prompt caret in the idle/menu frame, got:\n${frame}`);
-  assert.ok(frame.includes('press a key'), `expected the menu-prompt hint, got:\n${frame}`);
+  // The app opens at the MENU. The InputBox prints NOTHING visible here — every
+  // single-key menu/auth/settings read site writes its own prompt, so a stray
+  // `❯ press a key` was redundant and read like a glitch (the user's reported bug).
+  // It must be GONE, along with the full composer chrome (no `─ chat ─` rule/chip).
+  assert.ok(!frame.includes('press a key'), `idle/menu frame must NOT print a stray "press a key", got:\n${frame}`);
+  assert.ok(!frame.includes('❯'), `idle/menu frame must NOT print the composer caret, got:\n${frame}`);
   assert.ok(!frame.includes('─ chat '), `expected NO chat composer rule in the idle/menu frame, got:\n${frame}`);
   assert.ok(!frame.includes('Type a message'), `menu prompt must NOT imply free-text typing, got:\n${frame}`);
 });
 
-test('full composer appears only when chatActive is true; menu prompt shown when false', async () => {
+test('full composer appears only when chatActive is true; hidden (no "press a key") when false', async () => {
   const bridge = createInkAppBridge();
   const { lastFrame } = render(<App bridge={bridge} />);
   await new Promise((r) => setTimeout(r, 20));
-  // At the menu: the minimal prompt, NOT the full composer.
-  assert.ok((lastFrame() ?? '').includes('press a key'), `menu prompt must show before chatActive=true:\n${lastFrame()}`);
+  // At the menu: nothing visible from the InputBox, NOT the full composer.
+  assert.ok(!(lastFrame() ?? '').includes('press a key'), `no stray "press a key" before chatActive=true:\n${lastFrame()}`);
   assert.ok(!(lastFrame() ?? '').includes('─ chat '), `composer rule must be hidden at the menu:\n${lastFrame()}`);
 
   // Entering a chat conversation shows the FULL composer (chat rule + placeholder).
   bridge.setChatActive(true);
   await new Promise((r) => setTimeout(r, 20));
   assert.ok((lastFrame() ?? '').includes('─ chat '), `full composer must appear when chatActive=true:\n${lastFrame()}`);
-  assert.ok(!(lastFrame() ?? '').includes('press a key'), `menu hint must be gone in the composer:\n${lastFrame()}`);
+  assert.ok(!(lastFrame() ?? '').includes('press a key'), `no "press a key" in the composer:\n${lastFrame()}`);
 
-  // Returning to the menu hides the composer and restores the menu prompt.
+  // Returning to the menu hides the composer again — still no stray hint.
   bridge.setChatActive(false);
   await new Promise((r) => setTimeout(r, 20));
   assert.ok(!(lastFrame() ?? '').includes('─ chat '), `composer rule must hide again when chatActive=false:\n${lastFrame()}`);
-  assert.ok((lastFrame() ?? '').includes('press a key'), `menu prompt must return when chatActive=false:\n${lastFrame()}`);
+  assert.ok(!(lastFrame() ?? '').includes('press a key'), `no "press a key" must return when chatActive=false:\n${lastFrame()}`);
 });
 
 test('setChatActive is a safe no-op before the App mounts', () => {

@@ -48,9 +48,6 @@ import type { InkStdinControl } from './App.js';
 const INPUT_BOX_MIN_COLUMNS = 32;
 const CARET = '❯';
 const PLACEHOLDER = 'Type a message...';
-/** The minimal menu-prompt hint shown when the composer is hidden (chatActive
- *  false). SINGLE-KEY selection — must NOT imply free-text typing. */
-const MENU_HINT = 'press a key';
 const INFO_FALLBACK = 'Mode Balanced · /goal · /help · /back';
 /** Gutter under the `❯ ` caret for continuation rows of a multiline buffer. */
 const CONT_GUTTER = '… ';
@@ -131,24 +128,15 @@ export interface InputBoxProps {
   /**
    * Whether the composer CHROME is rendered. `true` (default) → the full chat
    * surface (bordered box / caret / Mode chip) is shown — used during an ACTIVE
-   * CHAT. `false` → the box renders a MINIMAL one-line menu prompt (`❯ press a
-   * key`, no `─ chat ─┌ … ┐` rule, no Mode chip) so the user sees input is awaited
-   * at the menu; the editor's `useInput` + `useStdin` hooks stay mounted and ACTIVE,
-   * so Ink keeps raw mode armed and the LineReader's suspend()/resume() stdin
-   * control stays registered. The App passes `chatActive` here: the full composer
-   * appears ONLY in a chat conversation, the menu prompt in the menu / auth-login /
-   * settings sub-flows.
+   * CHAT. `false` → the box renders nothing visible (a single reserved blank line,
+   * no `─ chat ─┌ … ┐` rule, no Mode chip, no hint) because every single-key menu /
+   * auth-login / settings / confirm read site prints its OWN prompt before blocking;
+   * the editor's `useInput` + `useStdin` hooks still stay mounted and ACTIVE, so Ink
+   * keeps raw mode armed and the LineReader's suspend()/resume() stdin control stays
+   * registered. The App passes `chatActive` here: the full composer appears ONLY in
+   * a chat conversation.
    */
   readonly visible?: boolean;
-  /**
-   * Whether to render the `❯ press a key` menu hint when the composer is hidden
-   * (`!visible`). The hint should appear ONLY when a single-key read is actually
-   * pending (the menu / a y-n confirm is awaiting a key) — NOT in the pre-menu
-   * mount window (Ink mounts before the banner/menu paints) where it would print a
-   * stray "press a key" at the very top of startup. The App passes `awaitingKey`
-   * here. Default true so callers/tests that omit it keep the prior behavior.
-   */
-  readonly menuKeyAwait?: boolean;
   /**
    * When true the editor is SUSPENDED for an inherited-stdio child handoff: its
    * `useInput` goes `isActive: false` so Ink relinquishes its raw-mode refcount
@@ -293,7 +281,6 @@ export function InputBox({
   columns,
   info,
   visible = true,
-  menuKeyAwait = true,
   suspended = false,
   onStdinControl,
   onEscape,
@@ -556,35 +543,25 @@ export function InputBox({
     onMeasureRows?.(measuredRows);
   }, [onMeasureRows, measuredRows]);
 
-  // Composer hidden (NOT a chat conversation: menu / auth-login / settings). Render
-  // a MINIMAL single-line prompt affordance — a dim `❯ press a key` — so the user
-  // sees input is awaited (the menu is single-key: you press one bracketed key, you
-  // do NOT type+Enter, so the hint must NOT imply free-text typing). NO full-width
-  // rules and NO Mode chip here — that's the composer, reserved for an active chat.
-  // The `useInput`/`useStdin` hooks above stay mounted and active, so Ink keeps raw
-  // mode armed (menu single-key nav via <KeyCapture> works) and the LineReader's
-  // suspend()/resume() stdin control stays registered. We keep ONE <Box> line (not
-  // literal null) so this component still returns a ReactElement — and so a re-mount
-  // isn't forced when toggling visibility (the hooks persist).
+  // Composer hidden (NOT a chat conversation: menu / auth-login / settings). The
+  // composer chrome (full-width rules, Mode chip, ❯ caret) belongs to an active chat
+  // ONLY — here we render NOTHING visible. We deliberately do NOT print a `❯ press a
+  // key` hint: every single-key read site (main menu `> `, settings `[1/2/3 …]`,
+  // welcome/mode, raw-session, conversations, auth sign-in, y/n confirms) already
+  // writes its OWN visible prompt before blocking on the key, so an extra hint here
+  // is REDUNDANT — it stacked a stray dim `❯ press a key` under the menu's own `>`
+  // prompt (looked like a glitch) and also flashed at the very top during the
+  // pre-menu mount window (Ink mounts before the banner/menu paints). We still return
+  // exactly ONE <Box> line (NOT literal null / a bare string child — either crashes
+  // Ink) holding a single space, so the `useInput`/`useStdin` hooks above stay
+  // mounted and active: Ink keeps raw mode armed (single-key menu nav via
+  // <KeyCapture> works) and the LineReader's suspend()/resume() stdin control stays
+  // registered. Keeping one <Box> also avoids forcing a re-mount when visibility
+  // toggles (the hooks persist).
   if (!visible) {
-    // Show the `❯ press a key` hint ONLY when a single-key read is actually pending
-    // (menuKeyAwait). In the pre-menu mount window (Ink mounts before the banner/menu
-    // paints, nothing awaiting yet) we render a bare reserved line — no stray "press a
-    // key" at the very top of startup — while still returning ONE <Box> so the
-    // useInput/useStdin hooks above stay mounted (raw mode armed, stdin control kept).
-    if (!menuKeyAwait) {
-      return (
-        <Box>
-          <Text> </Text>
-        </Box>
-      );
-    }
-    // Non-TTY / NO_COLOR / very-narrow degrades to a bare caret (no colour codes),
-    // mirroring the composer's plain-caret fallback — never a crash, never blank.
-    const canColor = isTty && color;
     return (
       <Box>
-        <Text>{canColor ? `${dim(CARET, color)} ${dim(MENU_HINT, color)}` : CARET}</Text>
+        <Text> </Text>
       </Box>
     );
   }
