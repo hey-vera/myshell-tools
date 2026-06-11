@@ -9,6 +9,10 @@
 import type { Policy } from './types.js';
 
 export const DEFAULT_POLICY: Policy = {
+  // Bounds ordinary escalation, review, and repair iterations. Provider
+  // failover is budgeted separately in runWorkCall: after an execution error,
+  // every authenticated, available provider at that tier may run once even if
+  // this ceiling has been reached. Timeouts remain terminal and do not fail over.
   maxAttempts: 3,
 
   // Tier ceiling — retained as route()'s final safety net only. The PRIMARY
@@ -88,8 +92,9 @@ export const DEFAULT_POLICY: Policy = {
  *
  * Manager-tier access is governed by flagshipAdmission (core/flagship.ts), with
  * maxTier kept only as route()'s clamp safety net. There is no dollar budget guard:
- * on a flat-rate subscription a USD cap is fiction, and maxAttempts already bounds
- * the loop. The real scarce resource (rate-limit headroom) is handled per-session
+ * on a flat-rate subscription a USD cap is fiction, and maxAttempts bounds ordinary
+ * escalation/repair iterations while provider failover is bounded by the finite
+ * authenticated-provider pool. The real scarce resource (rate-limit headroom) is handled per-session
  * by the cooldown (core/cooldown.ts) and the free-plan veto in flagship admission.
  */
 export type Mode = 'cost-saver' | 'balanced' | 'quality-first';

@@ -6,6 +6,15 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+## [3.94.0] - 2026-06-11
+
+### Fixed (provider fallback never strands an authenticated provider)
+- **Authenticated OpenCode gets its failover attempt before a tier hard-fails.** Provider
+  failover now has a separate budget from the global attempt ceiling, so an already-queued
+  authenticated provider is not denied when ordinary attempts are exhausted.
+- **Sandbox-environment errors switch providers immediately.** They no longer spend another
+  ordinary retry in the broken sandbox; timeouts remain terminal and do not fail over.
+
 ## [3.93.0] - 2026-06-11
 
 ### Fixed (core + UI real-world batch)

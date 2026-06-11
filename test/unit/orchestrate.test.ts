@@ -2650,10 +2650,10 @@ describe('orchestrate — authenticatedProviders routes to signed-in provider fi
 });
 
 // ---------------------------------------------------------------------------
-// Bug 1 fix: Auth errors short-circuit — no failover, no escalation
+// Auth errors fail over when possible, then remain terminal once providers exhaust
 // ---------------------------------------------------------------------------
 
-describe('orchestrate — Bug 1 fix: auth error short-circuits immediately', () => {
+describe('orchestrate — auth error provider failover', () => {
   it('auth error from single provider: single attempt, final.errorCategory:auth, NO failover/escalate', async () => {
     const authErrorProvider = makeFakeProvider('claude', [
       {
@@ -2708,7 +2708,7 @@ describe('orchestrate — Bug 1 fix: auth error short-circuits immediately', () 
     }
   });
 
-  it('auth error with two providers: still short-circuits — second provider never tried', async () => {
+  it('auth error with two providers fails over to the authenticated alternative', async () => {
     let codexRunCount = 0;
     const authErrorProvider = makeFakeProvider('claude', [
       {
@@ -2747,20 +2747,22 @@ describe('orchestrate — Bug 1 fix: auth error short-circuits immediately', () 
       orchestrate('refactor X', deps, new AbortController().signal),
     );
 
-    // Codex must never have run (auth error = no failover)
-    assert.equal(codexRunCount, 0, 'Auth error must not trigger failover to second provider');
+    assert.equal(codexRunCount, 1, 'Auth error must fail over to the authenticated provider');
 
-    // No failover event
+    // The failover event names the provider that actually runs.
     const failoverEv = events.find((e) => e.type === 'failover');
-    assert.equal(failoverEv, undefined, 'No failover event must be emitted on auth error');
+    assert.ok(failoverEv !== undefined, 'Auth error must emit a failover event');
+    if (failoverEv.type === 'failover') {
+      assert.equal(failoverEv.from, 'claude');
+      assert.equal(failoverEv.to, 'codex');
+    }
 
-    // Final must be auth failure
+    // The alternative provider recovers the task.
     const finalEv = events.find((e) => e.type === 'final');
     assert.ok(finalEv !== undefined);
     if (finalEv.type === 'final') {
-      assert.equal(finalEv.success, false);
-      assert.equal(finalEv.errorCategory, 'auth');
-      assert.equal(finalEv.provider, 'claude');
+      assert.equal(finalEv.success, true);
+      assert.equal(finalEv.attempts, 2);
     }
   });
 
@@ -2882,14 +2884,13 @@ describe('orchestrate — Bug 2 fix: reviewer escalate at manager tier emits fin
 });
 
 // ---------------------------------------------------------------------------
-// Bug 3 fix: No misleading failover event at maxAttempts boundary
+// Provider failover budget is independent of the ordinary maxAttempts boundary
 // ---------------------------------------------------------------------------
 
-describe('orchestrate — Bug 3 fix: no misleading failover event at maxAttempts ceiling', () => {
-  it('when maxAttempts=1, a failure with untried providers emits NO failover event', async () => {
-    // With maxAttempts=1: the first (and only) attempt fails.
-    // There is a second provider (codex) untried, but there is no room for another attempt.
-    // Bug 3 fix: must NOT emit a failover event because codex would never actually run.
+describe('orchestrate — provider failover beyond maxAttempts ceiling', () => {
+  it('when maxAttempts=1, an authenticated untried provider still runs', async () => {
+    // maxAttempts bounds ordinary escalation/repair iterations, not provider
+    // failover. The authenticated fallback gets one execution and can recover.
     let codexRunCount = 0;
     const claudeErrorProvider = makeFakeProvider('claude', [
       {
@@ -2928,18 +2929,18 @@ describe('orchestrate — Bug 3 fix: no misleading failover event at maxAttempts
       orchestrate('refactor X', deps, new AbortController().signal),
     );
 
-    // Codex must never have actually run (no room for another attempt)
-    assert.equal(codexRunCount, 0, 'Codex must never run when maxAttempts=1');
+    assert.equal(codexRunCount, 1, 'Codex must run as the authenticated fallback');
 
-    // No misleading failover event
+    // The failover event names an execution that actually occurs.
     const failoverEv = events.find((e) => e.type === 'failover');
-    assert.equal(failoverEv, undefined, 'Must NOT emit a failover event when no room for another attempt');
+    assert.ok(failoverEv !== undefined, 'Must emit failover for the guaranteed fallback execution');
 
-    // Must still emit a final
+    // The fallback succeeds despite exceeding the ordinary attempt ceiling.
     const finalEv = events.find((e) => e.type === 'final');
     assert.ok(finalEv !== undefined, 'Expected a final event');
     if (finalEv.type === 'final') {
-      assert.equal(finalEv.success, false, 'Must be a failure final');
+      assert.equal(finalEv.success, true, 'Authenticated fallback must be allowed to recover');
+      assert.equal(finalEv.attempts, 2);
     }
   });
 

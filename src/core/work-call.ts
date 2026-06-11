@@ -743,7 +743,11 @@ export async function* runWorkCall(input: WorkCallInput): AsyncGenerator<CoreEve
   // -------------------------------------------------------------------------
   // (f) Main orchestration loop
   // -------------------------------------------------------------------------
-  mainLoop: while (attempts < deps.policy.maxAttempts) {
+  // maxAttempts bounds ordinary escalation / review / repair iterations. A
+  // queued failover is a separate budget: once an execution failure identifies
+  // an authenticated, untried provider at this tier, that provider gets its one
+  // execution even when the ordinary attempt ceiling has been reached.
+  mainLoop: while (attempts < deps.policy.maxAttempts || failoverPool !== null) {
     attempts++;
 
     // --- Route for current tier ---
@@ -1165,23 +1169,6 @@ export async function* runWorkCall(input: WorkCallInput): AsyncGenerator<CoreEve
     // 1) Provider failure → try cross-vendor failover first; escalate only when
     //    all vendors at this tier have been exhausted.
     if (!success) {
-      // Bug 1 fix: auth errors are terminal — a missing credential cannot be
-      // fixed by switching provider or escalating tier.  Short-circuit now.
-      if (errored !== undefined && errored.category === 'auth') {
-        yield {
-          type: 'final',
-          success: false,
-          output: lastOutput,
-          tier: currentTier,
-          totalCostUsd,
-          sessionId: deps.session.id,
-          attempts,
-          errorCategory: 'auth',
-          provider: decision.provider,
-        };
-        return;
-      }
-
       // Timeouts are terminal for THIS task: do NOT cross-vendor fail over and do
       // NOT escalate the tier. Re-running the same (too-broad) task on another
       // vendor at the same tier just doubles the wall-clock and the spend for the
@@ -1244,41 +1231,54 @@ export async function* runWorkCall(input: WorkCallInput): AsyncGenerator<CoreEve
       }
 
       if (remaining.length > 0) {
-        // Failover to an untried vendor at the same tier only when there is
-        // still room for another attempt.
-        // Bug 3 fix: only emit the failover event when another iteration can
-        // actually execute — i.e., when attempts < maxAttempts.  At the ceiling
-        // the next loop condition (attempts < maxAttempts) would be false, so the
-        // promised failover run would never happen; don't mislead the caller.
-        if (attempts < deps.policy.maxAttempts) {
-          // Peek at what route() would pick from the remaining pool so we can
-          // name the target provider in the failover event. Use the SAME effective
-          // policy as the actual run (manager ceiling lifted when authorized), so
-          // the previewed target matches what the next iteration really routes.
-          const nextDecision = route(
-            currentTier,
-            remaining,
-            effPolicy,
-            deps.availableModels,
-            deps.authenticatedProviders,
-            deps.learnedProviderOrder?.[currentTier],
-            capabilityContext,
-          );
-          yield {
-            type: 'failover',
-            from: decision.provider,
-            to: nextDecision.provider,
-            tier: currentTier,
-            reason: errored?.message ?? 'execution failure',
-          };
-          // Signal the next iteration to route among only the remaining vendors.
-          failoverPool = remaining;
-          continue mainLoop;
-        }
-        // Reached maxAttempts with untried vendors — fall through to escalate/break.
+        // Peek at what route() will pick from the remaining pool so the event
+        // names the execution that is now guaranteed to run. Provider failover
+        // has its own dynamic budget (one run per authenticated provider at this
+        // tier), independent of the escalation / repair maxAttempts ceiling.
+        // This also makes sandbox-environment failures switch CLIs immediately
+        // instead of spending another ordinary retry on the broken sandbox.
+        const nextDecision = route(
+          currentTier,
+          remaining,
+          effPolicy,
+          deps.availableModels,
+          deps.authenticatedProviders,
+          deps.learnedProviderOrder?.[currentTier],
+          capabilityContext,
+        );
+        yield {
+          type: 'failover',
+          from: decision.provider,
+          to: nextDecision.provider,
+          tier: currentTier,
+          reason: errored?.message ?? 'execution failure',
+        };
+        // Signal the next iteration to route among only the remaining vendors.
+        // The loop condition treats this as failover budget, not ordinary budget.
+        failoverPool = remaining;
+        continue mainLoop;
       }
 
-      // All vendors at this tier have been tried (or maxAttempts reached) — escalate or break.
+      // An auth failure can be provider-local, so authenticated alternatives
+      // above must get their failover execution. Once none remain, however,
+      // escalating tiers would only retry a CLI whose authentication is broken.
+      if (errored !== undefined && errored.category === 'auth') {
+        yield {
+          type: 'final',
+          success: false,
+          output: lastOutput,
+          tier: currentTier,
+          totalCostUsd,
+          sessionId: deps.session.id,
+          attempts,
+          errorCategory: 'auth',
+          provider: decision.provider,
+        };
+        return;
+      }
+
+      // All authenticated, available vendors at this tier have now been tried —
+      // only at this point may the tier escalate or hard-fail.
       // Adaptive admission: a failure escalation to the flagship is an EARNED
       // trigger, but Efficient (never-auto) and a free-plan veto deny it; in that
       // case fall back to the static ceiling (clampTier) — preserving the prior
