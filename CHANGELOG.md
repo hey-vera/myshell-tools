@@ -6,6 +6,9 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+## 3.96.0
+fix(input): type-ahead during startup — keystrokes typed during the keep-alive refresh, auto-update, and version banner are now captured and applied to the menu instead of being echoed and dropped. Fixes the "first menu keypress needs a second press" issue; survives the auto-update relaunch. Guarded by an early-keypress Ink menu PTY smoke.
+
 ## [3.95.0] - 2026-06-12
 
 ### Fixed (graceful big-task handling)

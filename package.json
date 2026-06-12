@@ -1,6 +1,6 @@
 {
   "name": "myshell-tools",
-  "version": "3.95.0",
+  "version": "3.96.0",
   "type": "module",
   "bin": {
     "myshell-tools": "dist/cli.js",
@@ -25,7 +25,8 @@
     "prepublishOnly": "npm run clean && npm run typecheck && npm run lint && npm run build",
     "smoke:pty": "MYSHELL_INK=0 node scripts/pty-smoke.mjs",
     "smoke:pty:handoff": "node scripts/pty-smoke-handoff.mjs",
-    "smoke:pty:ink": "node scripts/pty-smoke-ink.mjs"
+    "smoke:pty:ink": "node scripts/pty-smoke-ink.mjs",
+    "smoke:pty:menu-ink": "node scripts/pty-smoke-menu-ink.mjs"
   },
   "files": [
     "dist/",

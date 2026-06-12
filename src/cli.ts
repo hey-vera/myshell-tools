@@ -30,6 +30,8 @@ import { resolveImageAttachments } from './infra/attachments.js';
 import { startRepl } from './interface/repl.js';
 import { startMenu } from './interface/menu.js';
 import type { MenuContext } from './interface/menu.js';
+import { StartupInputBuffer } from './interface/startup-input.js';
+import type { StartupInputStream } from './interface/startup-input.js';
 import { buildProviders } from './providers/registry.js';
 import { detectEnvironment } from './providers/detect.js';
 import { createFileConversationStore } from './infra/conversations.js';
@@ -71,6 +73,7 @@ import { banner } from './ui/banner.js';
 import { commandHelpText } from './ui/help.js';
 import { createSpinner } from './ui/spinner.js';
 import { dim } from './ui/theme.js';
+import { inkEnabled } from './interface/ui/flag.js';
 const require = createRequire(import.meta.url);
 const pkg = require('../package.json');
 const version: string = pkg.version as string;
@@ -317,8 +320,23 @@ async function main(): Promise<void> {
     color: process.stdout.isTTY === true && !process.env['NO_COLOR'],
     isTty: process.stdout.isTTY === true,
   };
+  const startupConfigPromise = args.length === 0 ? loadConfig() : null;
+  let startupInput =
+    args.length === 0 &&
+    process.stdin.isTTY === true &&
+    process.stdout.isTTY === true &&
+    inkEnabled(process.env, undefined)
+      ? new StartupInputBuffer()
+      : null;
+  startupInput?.arm(process.stdin as unknown as StartupInputStream);
+  const startupConfig = startupConfigPromise !== null ? await startupConfigPromise : null;
+  if (startupInput !== null && !inkEnabled(process.env, startupConfig ?? undefined)) {
+    startupInput.dispose();
+    startupInput = null;
+  }
 
-  // ---- Keep Claude signed in across restarts ---------------------------------
+  try {
+    // ---- Keep Claude signed in across restarts ---------------------------------
   // Refresh Claude's OAuth token IN PLACE if it's expired or close to it, BEFORE
   // detecting providers, so detection (and any spawned claude) sees a fresh token
   // — this is what makes "sign in once, the container just remembers" hold even
@@ -630,7 +648,7 @@ async function main(): Promise<void> {
     spinner.start('Detecting providers…');
     const [env, config, stateWritable, ledgerWritable] = await Promise.all([
       detectEnvironment(),
-      loadConfig(),
+      startupConfigPromise ?? loadConfig(),
       probeStateWritable(cwd),
       probeLedgerWritable(cwd),
     ]);
@@ -687,7 +705,7 @@ async function main(): Promise<void> {
         }
         try {
           const result = await execa('npm', installArgs, {
-            stdio: 'inherit',
+            stdio: ['ignore', 'inherit', 'inherit'],
             reject: false,
           });
           return result.exitCode === 0;
@@ -722,17 +740,19 @@ async function main(): Promise<void> {
           return null;
         }
       },
-      relaunch: async () => {
+      relaunch: async (env) => {
         try {
           const result = await execa('myshell-tools', process.argv.slice(2), {
             stdio: 'inherit',
             reject: false,
+            ...(env !== undefined ? { env } : {}),
           });
           return result.exitCode ?? 0;
         } catch {
           return 1;
         }
       },
+      ...(startupInput !== null ? { startupInput } : {}),
     };
 
     await startMenu(menuCtx, out);
@@ -744,7 +764,7 @@ async function main(): Promise<void> {
     out.write(banner(version, out.color) + '\n');
     const spinner = createSpinner(out);
     spinner.start('Detecting providers…');
-    const [env, config] = await Promise.all([detectEnvironment(), loadConfig()]);
+    const [env, config] = await Promise.all([detectEnvironment(), startupConfigPromise ?? loadConfig()]);
     const replMode = config.mode ?? autoModeForPlans(
       [env.claude, env.codex, env.opencode]
         .filter((p) => p.authenticated)
@@ -854,6 +874,10 @@ async function main(): Promise<void> {
     `myshell-tools: unknown command "${args[0] ?? ''}"\nRun myshell-tools --help for usage.\n`,
   );
   process.exit(1);
+  } catch (err) {
+    startupInput?.dispose();
+    throw err;
+  }
 }
 
 main().catch((err) => {

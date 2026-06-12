@@ -189,6 +189,8 @@ import {
   resolveRawKeyInput,
 } from './menu-readline.js';
 import { inkEnabled } from './ui/flag.js';
+import type { StartupInputBuffer } from './startup-input.js';
+import { STARTUP_INPUT_CARRIER_ENV } from './startup-input.js';
 import { schedulerEnabled } from './ui/scheduler-flag.js';
 import { governorEnabled } from './ui/governor-flag.js';
 import { verifyEnabled } from './ui/verify-flag.js';
@@ -333,7 +335,8 @@ export interface MenuContext {
    * Returns the exit code of the relaunched process (or 1 on spawn failure).
    * Used only for the opt-in auto-update path.
    */
-  readonly relaunch?: () => Promise<number>;
+  readonly relaunch?: (env?: NodeJS.ProcessEnv) => Promise<number>;
+  readonly startupInput?: StartupInputBuffer;
   /**
    * Optional pre-computed Claude token lifetime status for testing. When provided,
    * `startMenu` uses this instead of loading from disk, allowing tests to drive
@@ -4791,6 +4794,7 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
   // but /dev/tty is; resolveRawKeyInput mirrors rawKeyInputs() exactly.
   // Tests inject ctx.readLine, so they bypass this whole branch regardless.
   const inkRawInput = ctx.readLine === undefined ? resolveRawKeyInput(out) : null;
+  let startupReadKey = ctx.startupInput?.handoff();
   if (ctx.readLine === undefined && out.isTty === true && inkRawInput !== null && inkEnabled(process.env, ctx.config)) {
     const { mountInk } = await import('./ui/mount.js');
     inkHandle = mountInk({ color: out.color, isTty: out.isTty, stdin: inkRawInput });
@@ -4897,7 +4901,12 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
   // decide instantly — matching the legacy feel — instead of grabbing the raw TTY
   // (which would fight Ink). forceLine stays false; inkReadKey owns the Ink path.
   const inkReadKey: (() => Promise<string>) | undefined =
-    inkHandle !== null ? () => inkHandle.readKey() : undefined;
+    inkHandle !== null
+      ? () =>
+          startupReadKey !== undefined
+            ? startupReadKey(() => inkHandle.readKey())
+            : inkHandle.readKey()
+      : undefined;
   // Ink turn-interrupt setter — installs/clears the per-turn ESC→abort handler on
   // the App bridge (the InputBox routes a bare ESC to it). Undefined off the Ink
   // path so runChatLoop's legacy ESC path is byte-identical.
@@ -4967,17 +4976,24 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
       // version, false on failure (with an actionable message).
       const install = async (): Promise<boolean> => {
         let handedOff = false;
+        const updateStartupInput = ctx.startupInput;
         // Release the parent's stdin/readline so the npm child AND the relaunched
         // child own the TTY alone — otherwise the parent's reader races the relaunched
         // process for keypresses and the new menu falls back to line mode (needs Enter).
         // Mirrors the login flow, which suspends stdin before any inherited-stdio child.
         const resumeStdin = suspendStdin?.();
         try {
+          if (updateStartupInput !== undefined && inkRawInput !== null) {
+            updateStartupInput.arm(inkRawInput);
+          }
           const ok = await doUpdate(out).catch(() => false);
           if (ok) {
             if (activeVersionFn !== undefined) {
               const activeVersion = await activeVersionFn().catch(() => null);
               if (activeVersion !== toV) {
+                if (updateStartupInput !== undefined) {
+                  startupReadKey = updateStartupInput.handoff();
+                }
                 const activeLine = activeVersion !== null
                   ? `the active \`myshell-tools\` on your PATH is still ${activeVersion}.`
                   : 'the active `myshell-tools` on your PATH could not be verified.';
@@ -5003,10 +5019,30 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
               }
             }
             if (relaunchFn !== undefined) {
-              await relaunchFn().catch(() => 1);
-              handedOff = true;
+              const relaunchEnv =
+                updateStartupInput !== undefined
+                  ? {
+                      ...process.env,
+                      ...(updateStartupInput.exportPendingBase64() !== null
+                        ? { [STARTUP_INPUT_CARRIER_ENV]: updateStartupInput.exportPendingBase64() ?? '' }
+                        : {}),
+                    }
+                  : undefined;
+              const code = await relaunchFn(relaunchEnv).catch(() => 1);
+              if (code === 0) {
+                handedOff = true;
+                return true;
+              }
+              if (updateStartupInput !== undefined) {
+                startupReadKey = updateStartupInput.handoff();
+              }
+              out.write(`\n  ⚠️  Relaunch after updating to ${toV} failed.\n     Staying on ${fromV} for now.\n\n`);
+              return false;
             }
             return true;
+          }
+          if (updateStartupInput !== undefined) {
+            startupReadKey = updateStartupInput.handoff();
           }
           out.write(
             `\n  ⚠️  Update to ${toV} didn't complete.\n` +
