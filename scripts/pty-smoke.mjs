@@ -37,10 +37,13 @@ child.stdout.on('data', (d) => { out += d.toString('utf8'); });
 child.stderr.on('data', (d) => { out += d.toString('utf8'); });
 const w = (s) => { try { child.stdin.write(s); } catch { /* child gone */ } };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const cleanText = (s) => s.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '').replace(/\x1b[=>]/g, '').replace(/\r/g, '\n');
 
 await sleep(6000);  // provider detection + menu render
+const menuBeforeN = out;
 w('n');             // new chat (single keypress)
 await sleep(3000);
+const afterSingleN = out;
 w(PASTE);           // paste as one chunk
 await sleep(600);
 w('\r');            // submit
@@ -54,7 +57,7 @@ await sleep(1500);
 try { child.kill('SIGTERM'); } catch { /* already exited */ }
 await sleep(400);
 
-const clean = out.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '').replace(/\x1b[=>]/g, '').replace(/\r/g, '\n');
+const clean = cleanText(out);
 const lines = clean.split('\n').map((l) => l.trim());
 // The committed input line carries the `❯` caret; the menu's Recent-list entry
 // (after /exit) also contains the text but is NOT an input echo. Count ONLY the
@@ -63,7 +66,13 @@ const inputRows = lines.filter((l) => /^❯\s/.test(l) && l.includes('quick brow
 const strayEcho = lines.filter((l) => /^>\s/.test(l) && l.includes('quick brown fox'));
 const sawCaret = inputRows.length >= 1;
 const noDup = inputRows.length === 1 && strayEcho.length === 0;
-const menuKeyWorked = /myshell-tools v/.test(clean) && /Type a message and press Enter/.test(clean);
+const menuPhase = cleanText(menuBeforeN);
+const chatPhase = cleanText(afterSingleN);
+const menuMarker = 'myshell-tools v';
+const chatMarker = 'Type a message and press Enter';
+const menuIdx = menuPhase.indexOf(menuMarker);
+const chatIdx = chatPhase.indexOf(chatMarker);
+const menuKeyWorked = menuIdx !== -1 && chatIdx !== -1 && chatIdx > menuIdx;
 
 console.log(`PTY smoke results:`);
 console.log(`  input caret rows with paste : ${inputRows.length} ${inputRows.map((l)=>JSON.stringify(l)).join(' ')}`);
