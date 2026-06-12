@@ -222,6 +222,7 @@ import {
   runSettings,
 } from './menu-settings.js';
 import { resolveOversight, shouldPauseBeforeLaunch, standingRuleCheckpoint } from './ui/oversight.js';
+import type { Oversight } from './ui/oversight.js';
 
 // ---------------------------------------------------------------------------
 // MenuContext
@@ -366,6 +367,14 @@ export interface MenuContext {
    * Defaults to the real check: `() => isHookInstalled(process.env, process.platform)`.
    */
   readonly isHookInstalled?: () => Promise<boolean>;
+}
+
+/** Timeout continuation obeys the same oversight level as an explicit /goal. */
+export async function approveTimeoutContinuation(
+  oversight: Oversight,
+  confirm: Confirm,
+): Promise<boolean> {
+  return oversight === 'autonomous' ? true : confirm(true);
 }
 
 // ---------------------------------------------------------------------------
@@ -1215,6 +1224,7 @@ export async function runChatLoop(
     // merged goalId-tagged stream here so it rides the SAME renderer + input
     // hooks as a normal turn. Absent → the default single-orchestrate path.
     events?: AsyncIterable<CoreEvent>,
+    timeoutContinuation: 'automatic' | 'prompt' = 'prompt',
   ): Promise<Awaited<ReturnType<typeof runTask>>> => {
     // Fresh interrupt state for THIS task (a prior turn's ESC must not leak).
     interruptedByEsc = false;
@@ -1260,7 +1270,17 @@ export async function runChatLoop(
       });
     }
     try {
-      return await runTask(taskLine, taskDeps, out, signal, verbosity, turnInput, inkRenderTurn, events);
+      return await runTask(
+        taskLine,
+        taskDeps,
+        out,
+        signal,
+        verbosity,
+        turnInput,
+        inkRenderTurn,
+        events,
+        timeoutContinuation,
+      );
     } finally {
       detachEsc();
       if (inkSetInterrupt !== undefined) inkSetInterrupt(null);
@@ -4494,7 +4514,15 @@ export async function runChatLoop(
 
       const ac = new AbortController();
       currentAc = ac;
-      const result = await runTaskWithInputHooks(line, deps, ac.signal, mutableCtx.config.verbosity ?? 'normal');
+      const oversight = resolveOversight(mutableCtx.config, process.env);
+      const result = await runTaskWithInputHooks(
+        line,
+        deps,
+        ac.signal,
+        mutableCtx.config.verbosity ?? 'normal',
+        undefined,
+        oversight === 'autonomous' ? 'automatic' : 'prompt',
+      );
       currentAc = null;
       noteRateLimit(result);
 
@@ -4605,9 +4633,15 @@ export async function runChatLoop(
           renderDiscardedQueue(out, queuedTurns.length, 'interrupt');
           queuedTurns.length = 0;
         }
-        out.write('\n  ' + dim('I can keep working on it autonomously, step by step.', out.color) + '\n');
-        out.write(`  Keep working on it autonomously, step by step, until it's done? ${yesNoHint('yes', out.color)} `);
-        if (await confirm(true)) {
+        if (oversight === 'autonomous') {
+          out.write(
+            '\n  ' + dim('↳ large task — continuing autonomously, step by step…', out.color) + '\n',
+          );
+        } else {
+          out.write('\n  ' + dim('This step ran long; I can continue from here in smaller steps.', out.color) + '\n');
+          out.write(`  Continue working step by step until it's done? ${yesNoHint('yes', out.color)} `);
+        }
+        if (await approveTimeoutContinuation(oversight, confirm)) {
           // Chunking a timed-out RAW chat ask: concise title, full `line` as work.
           if (await runGoalLoop(line, await formGoalLabel(line))) return control.result;
         }
@@ -4764,7 +4798,7 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
     // reassigning the seam bindings the shared loop below already uses.
     out = inkHandle.out;
     const handle = inkHandle;
-    inkRenderTurn = (events, _sink, verbosity) => {
+    inkRenderTurn = (events, _sink, verbosity, _turnInput, timeoutContinuation) => {
       // Parity with legacy renderStream's spinner clock: stamp the turn start and
       // report wall-clock elapsed seconds so the Ink success line keeps its
       // `· Ns` suffix (`✓ done · N tokens · 12s`). Mirrors mount.tsx's
@@ -4772,6 +4806,7 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
       const startMs = ctx.clock.now();
       return handle.renderTurn(events, {
         verbosity,
+        ...(timeoutContinuation !== undefined ? { timeoutContinuation } : {}),
         elapsedSecs: () => Math.max(0, Math.round((ctx.clock.now() - startMs) / 1000)),
       });
     };

@@ -132,6 +132,8 @@ export interface RenderStreamInkOptions {
    * where no ticks fire.
    */
   readonly elapsedSecs?: () => number;
+  /** Whether a timeout will resume immediately or wait for confirmation. */
+  readonly timeoutContinuation?: 'automatic' | 'prompt';
   /** The env bag for MYSHELL_DEBUG (gates the classified line). Default
    *  process.env. Threaded so the consumer stays hermetically testable. */
   readonly env?: NodeJS.ProcessEnv;
@@ -366,6 +368,9 @@ export async function renderStreamInk(
               : undefined;
           const enriched: Action = {
             ...base,
+            ...(ev.errorCategory === 'timeout' && opts.timeoutContinuation !== undefined
+              ? { timeoutContinuation: opts.timeoutContinuation }
+              : {}),
             ...(elapsedSecs > 0 ? { elapsedSecs } : {}),
             ...(actionableError !== undefined ? { actionableError } : {}),
           };

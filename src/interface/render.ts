@@ -419,6 +419,7 @@ export async function renderStream(
   verbosity: Verbosity = 'normal',
   interruptHint?: string,
   turnInput?: TurnInputSurface | null,
+  timeoutContinuation: 'automatic' | 'prompt' = 'prompt',
 ): Promise<{
   success: boolean;
   final?: Extract<CoreEvent, { type: 'final' }>;
@@ -886,12 +887,18 @@ export async function renderStream(
         if (!ev.success) {
           if (ev.errorCategory === 'timeout') {
             if (!isQuiet) {
+              // Follow-up: classify genuine progress vs. a stuck provider and
+              // retain partial streamed progress across a killed turn.
+              const status =
+                timeoutContinuation === 'automatic'
+                  ? '⏳ That step ran long (hit the single-turn limit) — continuing…'
+                  : '⏳ That step ran long (hit the single-turn limit) — continue when prompted.';
               out.write(
-                `\n${yellow("That ran past the single-turn time limit — it's a big task, not a crash.", c)}\n`,
+                `\n${yellow(status, c)}\n`,
               );
               out.write(
                 `${dim(
-                  `Timed out after one turn · tier: ${ev.tier} · ${formatTokens(runningTokens)} tokens · attempts: ${ev.attempts} · session: ${ev.sessionId}`,
+                  `Single-turn limit reached · tier: ${ev.tier} · ${formatTokens(runningTokens)} tokens · attempts: ${ev.attempts} · session: ${ev.sessionId}`,
                   c,
                 )}\n`,
               );

@@ -6,6 +6,15 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+## [3.95.0] - 2026-06-12
+
+### Fixed (graceful big-task handling)
+- **The elite pro never scary-fails on a large task.** Single-turn timeouts now
+  auto-continue step by step under autonomous oversight (no confirm prompt), preserve
+  still-running goals instead of settling them as failed, and show calm "that step ran
+  long — continuing…" framing. Checkpoint/review oversight still confirms exactly once;
+  genuine errors still settle as failed.
+
 ## [3.94.0] - 2026-06-11
 
 ### Fixed (provider fallback never strands an authenticated provider)

@@ -25,6 +25,7 @@ export type TurnRenderer = (
   out: OutputSink,
   verbosity: Verbosity,
   turnInput: TurnInputSurface | null | undefined,
+  timeoutContinuation?: 'automatic' | 'prompt',
 ) => Promise<{
   success: boolean;
   final?: Extract<CoreEvent, { type: 'final' }>;
@@ -73,12 +74,20 @@ export async function runTask(
   // renderer/return-shape drives the multi-goal StatusBlock. Purely additive: when
   // absent, behaviour is identical to before.
   events?: AsyncIterable<CoreEvent>,
+  timeoutContinuation: 'automatic' | 'prompt' = 'prompt',
 ): Promise<RunTaskResult> {
   try {
     const renderTurn: TurnRenderer =
       render ??
-      ((evs, sink, v, ti) => renderStream(evs, sink, v, undefined, ti));
-    const result = await renderTurn(events ?? orchestrate(task, deps, signal), out, verbosity, turnInput);
+      ((evs, sink, v, ti, continuation) =>
+        renderStream(evs, sink, v, undefined, ti, continuation));
+    const result = await renderTurn(
+      events ?? orchestrate(task, deps, signal),
+      out,
+      verbosity,
+      turnInput,
+      timeoutContinuation,
+    );
     return {
       code: result.success ? 0 : 1,
       ...(result.final !== undefined ? { final: result.final } : {}),

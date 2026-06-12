@@ -478,6 +478,8 @@ export type Action =
       readonly canceled?: boolean;
       readonly errorCategory?: ErrorCategory;
       readonly provider?: ProviderId;
+      /** How the conversation layer will resume a timed-out turn. */
+      readonly timeoutContinuation?: 'automatic' | 'prompt';
       /** True iff the final carried a structured-question set (suppresses the
        *  completion line — the caller drives a selector). */
       readonly hasQuestions?: boolean;

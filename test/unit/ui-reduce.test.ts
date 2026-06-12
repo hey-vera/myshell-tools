@@ -1064,30 +1064,43 @@ describe('ui reduce — final', () => {
     assert.equal(q.committed.length, 0);
   });
 
-  it('timeout failure commits the friendly two-line message', () => {
+  it('timeout renders a calm continuing status and does not settle the running goal as failed', () => {
     const s = run([
       {
-        type: 'stream/flush-tier',
+        type: 'tier-start',
         tier: 'manager',
-        success: false,
-        confidence: null,
-        inputTokens: 5000,
-        outputTokens: 0,
-        durationMs: 60000,
-        panelCandidate: false,
+        provider: 'claude',
+        model: 'model-a',
+        attempt: 1,
         verbosity: 'normal',
       },
-      finalAction({ success: false, tier: 'manager', attempts: 2, errorCategory: 'timeout' }),
+      finalAction({
+        success: false,
+        tier: 'manager',
+        attempts: 2,
+        errorCategory: 'timeout',
+        timeoutContinuation: 'automatic',
+      }),
     ]);
     assert.deepEqual(lines(s), [
-      "That ran past the single-turn time limit — it's a big task, not a crash.",
-      'Timed out after one turn · tier: manager · 5k tokens · attempts: 2 · session: sess-1',
+      '⏳ That step ran long (hit the single-turn limit) — continuing…',
+      'Single-turn limit reached · tier: manager · 0 tokens · attempts: 2 · session: sess-1',
     ]);
+    assert.equal(s.goals[0]?.state, 'running');
+    assert.equal(s.goals[0]?.agents[0]?.state, 'running');
   });
 
   it('non-timeout failure commits the actionable error then the "Failed — …" line', () => {
+    const running = reduce(initialState, {
+      type: 'tier-start',
+      tier: 'ic',
+      provider: 'claude',
+      model: 'model-a',
+      attempt: 1,
+      verbosity: 'normal',
+    });
     const s = reduce(
-      initialState,
+      running,
       finalAction({
         success: false,
         attempts: 3,
@@ -1101,6 +1114,8 @@ describe('ui reduce — final', () => {
     ]);
     assert.equal(s.committed[0]?.kind, 'error');
     assert.equal(s.committed[1]?.kind, 'completion');
+    assert.equal(s.goals[0]?.state, 'failed');
+    assert.equal(s.goals[0]?.agents[0]?.state, 'failed');
   });
 
   it('a failure with no actionable error still commits the Failed line (non-quiet)', () => {

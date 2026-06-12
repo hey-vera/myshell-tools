@@ -346,7 +346,7 @@ describe('renderStream — final success:false', () => {
     assert.ok(!joined.includes('cancel-session'), 'Cancellation must skip failure telemetry');
   });
 
-  it('frames timeout finals as big single-turn work, not a bare crash failure', async () => {
+  it('frames an auto-continued timeout as a long step, not a failure', async () => {
     const sink = makeSink();
 
     const events: CoreEvent[] = [
@@ -363,13 +363,20 @@ describe('renderStream — final success:false', () => {
       },
     ];
 
-    const result = await renderStream(makeStream(events), sink);
+    const result = await renderStream(
+      makeStream(events),
+      sink,
+      'normal',
+      undefined,
+      undefined,
+      'automatic',
+    );
     const joined = sink.buf.join('');
 
     assert.equal(result.success, false);
-    assert.ok(joined.includes('single-turn time limit'), `Should explain the time limit, got:\n${joined}`);
-    assert.ok(joined.includes('big task'), `Should frame this as big work, got:\n${joined}`);
-    assert.ok(joined.includes('Timed out after one turn'), `Should still be truthful, got:\n${joined}`);
+    assert.ok(joined.includes('That step ran long'), `Should explain that the step ran long, got:\n${joined}`);
+    assert.ok(joined.includes('continuing…'), `Should say autonomous work is continuing, got:\n${joined}`);
+    assert.ok(joined.includes('Single-turn limit reached'), `Should still be truthful, got:\n${joined}`);
     assert.ok(joined.includes('0 tokens'), `Should show the real measured token total, got:\n${joined}`);
     assert.ok(!joined.includes('Failed'), `Timeout must not render the stark failure summary, got:\n${joined}`);
     assert.ok(!joined.includes('CLAUDE Error [timeout]'), `Timeout must not render the crash-like provider error line, got:\n${joined}`);

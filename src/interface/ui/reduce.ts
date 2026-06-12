@@ -669,13 +669,15 @@ export function reduce(state: UiState, action: Action): UiState {
       if (!action.canceled && state.stream.proseFull.length > 0) {
         next = commit(next, { kind: 'prose', text: state.stream.proseFull });
       }
-      // The turn is over: clear live status + mark inactive. Any goal still
-      // `running` (e.g. a turn that ended without a non-panel tier boundary, or
-      // a failure) settles to the turn's outcome so a late reader of the final
-      // state sees a coherent goal glyph rather than a stuck `running` card.
+      // The turn is over: clear live status + mark inactive. A timeout is a
+      // resumable step boundary, not evidence that the goal failed, so preserve
+      // running goals for the continuation. Real failures still settle failed.
       next = {
         ...next,
-        goals: settleAllRunningGoals(next.goals, action.success ? 'done' : 'failed'),
+        goals:
+          !action.success && action.errorCategory === 'timeout'
+            ? next.goals
+            : settleAllRunningGoals(next.goals, action.success ? 'done' : 'failed'),
         turnActive: false,
         stream: { ...initialStreamView, buffer: '' },
       };
@@ -690,16 +692,22 @@ export function reduce(state: UiState, action: Action): UiState {
       if (!action.success) {
         if (action.errorCategory === 'timeout') {
           if (!isQuiet) {
+            // Follow-up: classify genuine progress vs. a stuck provider and retain
+            // partial streamed progress across a killed turn before auto-resuming.
+            const status =
+              action.timeoutContinuation === 'automatic'
+                ? '⏳ That step ran long (hit the single-turn limit) — continuing…'
+                : '⏳ That step ran long (hit the single-turn limit) — continue when prompted.';
             next = commit(
               next,
               {
                 kind: 'completion',
-                text: "That ran past the single-turn time limit — it's a big task, not a crash.",
+                text: status,
               },
               {
                 kind: 'completion',
                 text:
-                  `Timed out after one turn · tier: ${action.tier} · ${tokenStr} tokens · ` +
+                  `Single-turn limit reached · tier: ${action.tier} · ${tokenStr} tokens · ` +
                   `attempts: ${action.attempts} · session: ${action.sessionId}`,
               },
             );

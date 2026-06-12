@@ -24,7 +24,11 @@ import fs from 'node:fs';
 import tty from 'node:tty';
 
 import { EventEmitter } from 'node:events';
-import { startMenu, runChatLoop } from '../../src/interface/menu.ts';
+import {
+  approveTimeoutContinuation,
+  startMenu,
+  runChatLoop,
+} from '../../src/interface/menu.ts';
 import { parseYesNo, interpretYesNoKey, yesNoHint } from '../../src/interface/menu-questions.ts';
 import { readSingleKey, createLineReader, normalizeMenuKey, resolveRawKeyInput, __resetControllingTtyRawInputForTest } from '../../src/interface/menu-readline.ts';
 import { readMenuKey, confirmViaKey, attachChatTurnKeyListener } from '../../src/interface/menu-key-confirm.ts';
@@ -1970,6 +1974,28 @@ describe('confirmViaKey — single-key yes/no over a fake stream', () => {
       await confirmViaKey(out, true, asStream(new FakeKeyStream(['\n', 'n'])), true),
       false,
     );
+  });
+});
+
+describe('approveTimeoutContinuation — oversight gate', () => {
+  it('autonomous proceeds without calling confirm', async () => {
+    let confirms = 0;
+    const approved = await approveTimeoutContinuation('autonomous', async () => {
+      confirms += 1;
+      return false;
+    });
+    assert.equal(approved, true);
+    assert.equal(confirms, 0);
+  });
+
+  it('checkpoint keeps one confirmation', async () => {
+    let confirms = 0;
+    const approved = await approveTimeoutContinuation('checkpoint', async () => {
+      confirms += 1;
+      return true;
+    });
+    assert.equal(approved, true);
+    assert.equal(confirms, 1);
   });
 });
 
