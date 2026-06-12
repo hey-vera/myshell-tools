@@ -6,6 +6,9 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+## 3.97.0
+feat(chat): cleaner live-chat structure — composer hints now fold into the input box's bottom border (no more right-side box stealing typing width); the status line replaces the misleading "N tool calls" with an honest work summary (active/complete agents · goals · elapsed); and the Thinking indicator appears instantly on submit instead of lagging behind dependency prep.
+
 ## 3.96.0
 fix(input): type-ahead during startup — keystrokes typed during the keep-alive refresh, auto-update, and version banner are now captured and applied to the menu instead of being echoed and dropped. Fixes the "first menu keypress needs a second press" issue; survives the auto-update relaunch. Guarded by an early-keypress Ink menu PTY smoke.
 

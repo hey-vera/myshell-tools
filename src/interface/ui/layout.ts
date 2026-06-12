@@ -29,7 +29,7 @@
  */
 
 import { formatTokens } from '../../infra/insights.js';
-import { visibleLength } from '../../ui/tui.js';
+import { truncateToWidth, visibleLength } from '../../ui/tui.js';
 import type { GoalBoardRow, GoalView, UiState } from './state.js';
 
 // ---------------------------------------------------------------------------
@@ -219,6 +219,62 @@ export const SAFETY_MARGIN_ROWS = 1;
  * budget and the StatusBlock board renderer agree on the same constant.
  */
 export const BOARD_CHROME_ROWS = 3;
+
+// ---------------------------------------------------------------------------
+// Composer hint-line shaping
+// ---------------------------------------------------------------------------
+
+/**
+ * Shape the composer's bottom hint line to fit `width` columns while preserving
+ * the body width. The first segment ("Mode: …") is kept as long as possible;
+ * trailing hints are dropped one-by-one before the mode segment itself is
+ * truncated. PURE.
+ */
+export function fitComposerInfo(info: string, width: number): string {
+  const segments = info
+    .split(' · ')
+    .map((segment) => segment.trim())
+    .filter((segment) => segment.length > 0);
+  if (segments.length === 0 || width <= 0) return '';
+
+  const first = segments[0] ?? '';
+  const rest = segments.slice(1);
+  let fitted = first;
+  for (const segment of rest) {
+    const next = `${fitted} · ${segment}`;
+    if (visibleLength(next) > width) break;
+    fitted = next;
+  }
+  return truncateToWidth(fitted, width);
+}
+
+// ---------------------------------------------------------------------------
+// Live work-summary shaping
+// ---------------------------------------------------------------------------
+
+export interface WorkSummary {
+  readonly active: number;
+  readonly complete: number;
+  readonly goals?: number;
+}
+
+/**
+ * Count the real in-flight work visible in the reducer state. Active/complete are
+ * derived strictly from tracked agents/panelists; the goal count is shown only
+ * when more than one goal is present. PURE.
+ */
+export function summarizeWork(state: UiState): WorkSummary {
+  const goalAgents = state.goals.flatMap((goal) => goal.agents);
+  const panelists = state.stream.panelists;
+  const active =
+    goalAgents.filter((agent) => agent.state === 'running').length +
+    panelists.filter((agent) => agent.state === 'running').length;
+  const complete =
+    goalAgents.filter((agent) => agent.state === 'done').length +
+    panelists.filter((agent) => agent.state === 'done').length;
+  const goals = state.goals.length > 1 ? state.goals.length : undefined;
+  return { active, complete, ...(goals !== undefined ? { goals } : {}) };
+}
 
 // ---------------------------------------------------------------------------
 // Plan shape

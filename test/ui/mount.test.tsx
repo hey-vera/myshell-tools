@@ -288,6 +288,66 @@ test('createInkLineReader ignores submits after close()', async () => {
   assert.equal(await reader.nextLine(), null);
 });
 
+test('optimistic turn start can be reset cleanly before renderTurn runs', () => {
+  const bridge = createInkAppBridge();
+  let last: UiState | null = null;
+  bridge._setUiState = (s) => { last = s; };
+  const store = createInkStore(bridge);
+
+  store.dispatch({ type: 'turn/start' });
+  assert.equal(last?.turnActive, true);
+  assert.equal(last?.stream.workLabel, 'Thinking');
+
+  store.dispatch({ type: 'turn/reset' });
+  assert.equal(last?.turnActive, false);
+  assert.equal(last?.stream.workLabel, 'Thinking');
+  assert.equal(last?.goals.length, 0);
+});
+
+test('createTurnDriver does not dispatch a duplicate turn/start when the optimistic turn is already active', async () => {
+  let dispatchCount = 0;
+  const actions: string[] = [];
+  const store = {
+    getState: (): UiState => ({
+      ...({
+        committed: [],
+        chrome: [],
+        goals: [],
+        stream: {
+          buffer: '',
+          proseFull: '',
+          phase: 'idle',
+          stepCount: 0,
+          streamedChars: 0,
+          panelists: [],
+          synthesizing: null,
+          workLabel: 'Thinking',
+          toolSinceProse: false,
+          breakBeforeNextProse: false,
+          proseStarted: false,
+          attemptHadProse: false,
+          markerEmitted: false,
+        },
+        turnActive: true,
+        tokens: { turn: 0, session: 0 },
+        board: [],
+        boardEnabled: false,
+      }) satisfies UiState,
+    }),
+    dispatch(action: { type: string }): void {
+      dispatchCount += 1;
+      actions.push(action.type);
+    },
+  };
+
+  const renderTurn = createTurnDriver(store, { color: false, isTty: true });
+  const result = await renderTurn((async function* () {})(), { verbosity: 'normal' });
+
+  assert.equal(result.success, false);
+  assert.ok(!actions.includes('turn/start'), `duplicate turn/start dispatched: ${JSON.stringify(actions)}`);
+  assert.equal(dispatchCount, 0);
+});
+
 // ---------------------------------------------------------------------------
 // C1/C2 REGRESSION — persistent state across ≥3 consecutive turns through ONE
 // mounted store + turn driver (NOT rebuilt per turn — rebuilding is exactly what

@@ -17,7 +17,7 @@
  *   PANEL: the live "Waiting on N models" panel status line renders during the
  *     panel turn (≥2 candidates).
  *   GOALS: the bordered GOALS box + an agent tree row render mid-turn.
- *   COMPOSER: the full-width chat rail + blue info chip + ❯ caret is intact (not broken/duplicated) while
+ *   COMPOSER: the full-width chat rail + ❯ caret + bottom-rule hints is intact (not broken/duplicated) while
  *     streaming — checked against the ATOMIC last-synchronized Ink frame (the true
  *     on-screen repaint), which is independent of terminal height (a tall, non-
  *     scrolled viewport legitimately retains prior-frame chrome rows in the replay
@@ -70,7 +70,7 @@ const { Terminal } = require('@xterm/headless');
 // MYSHELL_INK on (any flag-gated path is live) + a sane width so Ink doesn't wrap
 // every line to one column.
 // FORCE_COLOR:1 so Ink/chalk emit SGR under the PTY and the REAL full-width composer
-// (dim chat rail + blue info chip) renders (the inner mounts color:true). @xterm/headless folds SGR into cell
+// (dim chat rail + bottom-rule hints) renders (the inner mounts color:true). @xterm/headless folds SGR into cell
 // attributes, so the reconstructed TEXT is colour-independent.
 const env = { ...process.env, MYSHELL_INK: '1', COLUMNS: String(COLS), LINES: String(ROWS), FORCE_COLOR: '1' };
 const cmd = `${TSX} ${INNER}`;
@@ -289,30 +289,46 @@ record('GOALS: at least one agent tree row rendered', sawAgentRow,
 
 // --- COMPOSER integrity while streaming: the full-width composer is ONE
 // contiguous, intact surface pinned at the bottom of the ATOMIC live Ink frame
-// (not broken, split, or duplicated). The composer is three drawn rows:
-//   top   — `─ chat ───…───┌ Mode … · /goal · /help · /back ┐`  (dim rail + blue chip)
-//   caret — `❯ <input or placeholder>`                          (cyan caret, no rail)
-//   bottom— `───…───└────────┘`                                 (dim rule + blue chip base)
+// (not broken, split, or duplicated). Slice A folded the hints into the box's own
+// borders — there is NO detached right-side chip box (no separate ┌┐└┘ corners).
+// The composer is now three drawn rows:
+//   top   — `─ chat ───…───`                                     (full-width dim rail)
+//   caret — `❯ <input or placeholder>`                           (cyan caret, no rail)
+//   bottom— `───…─── Mode: … · /goal · /help · /back`            (dim rule + right-aligned dim hints)
 // We inspect the LAST synchronized Ink frame at the GOALS-open moment (the exact
 // atomic repaint Ink committed) rather than the replayed viewport, because how many
 // stale prior-frame rows linger in a non-scrolled viewport is purely a function of
 // terminal height (Ink erases only its dynamic region; committed chrome scrolls into
 // history — on a short terminal it scrolls away, on a tall one it lingers in the
 // replay), NOT a render bug. The atomic frame is the height-independent truth. In it
-// the composer must be the LAST three drawn rows AND the chip top + caret must each
-// appear EXACTLY ONCE (Ink repaints the pinned composer in place, never duplicating).
+// the composer must be the LAST three drawn rows AND the chat-rail top + caret must
+// each appear EXACTLY ONCE (Ink repaints the pinned composer in place, never
+// duplicating). The hints must ride in the BOTTOM rule (folded into the border), not a
+// detached chip stealing the editor's typing width. Matched on stable substrings so
+// ANSI/colour and exact fill-width are tolerated.
 const liveFrame = lastInkFrameAt('GOALS_OPEN');
 const fTail = liveFrame.slice(-3);
-const tailTop = /^─ chat ─+┌ .* ┐$/.test(fTail[0] ?? '');
+// Top: full-width chat rail (a `─ chat ` label followed by a dim rule); NO `┌ … ┐` chip.
+const tailTop = /^─ chat ─+$/.test(fTail[0] ?? '');
+// Caret: the `❯ ` prompt at full width (its own row — hints do not steal this width).
 const tailCaret = /^❯ /.test(fTail[1] ?? '');
-const tailBottom = /^─+└─+┘$/.test(fTail[2] ?? '');
+// Bottom: a dim rule that now CARRIES the right-aligned hints folded into the border
+// (Mode … · /goal · /help · /back). Match the stable hint substrings after a run of
+// rule chars, NOT a detached `└ … ┘` box.
+const fBottom = fTail[2] ?? '';
+const tailBottom =
+  /^─+ /.test(fBottom) && /Mode:/.test(fBottom) && /\/goal/.test(fBottom) && /\/help/.test(fBottom) && /\/back/.test(fBottom);
 const frameText = liveFrame.join('\n');
-const frameTopBorders = (frameText.match(/─ chat ─+┌ [^┐]* ┐/g) || []).length;
+// The composer must be a SINGLE contiguous surface: exactly one chat-rail top and one
+// caret in the atomic frame (no duplicated/split composer). There must be NO detached
+// chip box (a `┌ … ┐` rule with its own corners) anywhere in the composer chrome.
+const frameTopRails = (frameText.match(/^─ chat ─+$/gm) || []).length;
 const frameCarets = (frameText.match(/❯/g) || []).length;
+const noDetachedChip = !/┌ [^┐]* ┐/.test(frameText) && !/└─+┘/.test(frameText);
 record(
-  'COMPOSER: full-width chat rail + blue info chip + ❯ caret intact + pinned while streaming (single contiguous surface)',
-  tailTop && tailCaret && tailBottom && frameTopBorders === 1 && frameCarets === 1,
-  `top=${tailTop} caret=${tailCaret} bottom=${tailBottom} uniqueTop=${frameTopBorders} uniqueCaret=${frameCarets}`,
+  'COMPOSER: full-width chat rail + ❯ caret intact + hints folded into bottom rule + pinned while streaming (single contiguous surface)',
+  tailTop && tailCaret && tailBottom && frameTopRails === 1 && frameCarets === 1 && noDetachedChip,
+  `top=${tailTop} caret=${tailCaret} bottom=${tailBottom} uniqueTop=${frameTopRails} uniqueCaret=${frameCarets} noChip=${noDetachedChip}`,
 );
 
 // --- ESC interrupt actually fired.

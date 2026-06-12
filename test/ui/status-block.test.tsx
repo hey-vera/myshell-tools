@@ -174,7 +174,7 @@ test('StatusBlock shows a "Thinking…" status line when active with no goals/st
   const frame = lastFrame() ?? '';
   assert.notEqual(frame.trim(), ''); // not an empty box
   assert.match(frame, /Thinking…/);
-  assert.match(frame, /esc to interrupt/);
+  assert.doesNotMatch(frame, /esc to interrupt/);
   assert.doesNotMatch(frame, /GOALS/); // no goals panel until goals arrive
 });
 
@@ -213,7 +213,7 @@ test('StatusLine renders the "Waiting on N models" wording in panel mode', () =>
   assert.match(frame, /esc to interrupt/);
 });
 
-test('StatusLine falls back to "Thinking" + tool-call count when no tool is active, and shows NO fabricated token', () => {
+test('StatusLine falls back to "Thinking" + an honest work summary when no tool is active', () => {
   const state: UiState = {
     ...initialState,
     turnActive: true,
@@ -225,19 +225,22 @@ test('StatusLine falls back to "Thinking" + tool-call count when no tool is acti
   const { lastFrame } = render(<StatusLine state={state} frame="⠙" elapsedSecs={6} color={false} />);
   const frame = lastFrame() ?? '';
   assert.match(frame, /Thinking…/);
-  assert.match(frame, /3 tool calls/);
-  assert.doesNotMatch(frame, /3 steps/);
+  assert.match(frame, /◐ 1 active/);
   // NO token figure mid-run (the fabricated ~Nk proxy is gone).
   assert.doesNotMatch(frame, /tokens/);
   assert.doesNotMatch(frame, /~1k/);
   assert.match(frame, /· 6s/);
+  assert.match(frame, /esc to interrupt/);
 });
 
-test('StatusLine LEADS with the live ACTION (real tool verb + target) when a tool is active', () => {
+test('StatusLine LEADS with the live ACTION and reports honest active, complete, and goal counts', () => {
   const state: UiState = {
     ...initialState,
     turnActive: true,
-    goals: [goal({ state: 'running', agents: [agent({ state: 'running' })] })],
+    goals: [
+      goal({ id: 'a', label: 'A', state: 'running', agents: [agent({ state: 'running' }), agent({ state: 'done' })] }),
+      goal({ id: 'b', label: 'B', state: 'done', agents: [agent({ state: 'done' })] }),
+    ],
     stream: {
       ...initialState.stream,
       phase: 'streaming',
@@ -248,23 +251,28 @@ test('StatusLine LEADS with the live ACTION (real tool verb + target) when a too
   };
   const { lastFrame } = render(<StatusLine state={state} frame="⠹" elapsedSecs={59} color={false} />);
   const frame = lastFrame() ?? '';
-  // The action leads (not "Thinking"); the real tool-call count + elapsed follow.
+  // The action leads (not "Thinking"); the honest work summary + elapsed follow.
   assert.match(frame, /editing src\/auth\/mw\.ts…/);
-  assert.match(frame, /28 tool calls/);
+  assert.match(frame, /◐ 1 active/);
+  assert.match(frame, /✓ 2 complete/);
+  assert.match(frame, /2 goals/);
   assert.match(frame, /· 59s/);
   assert.match(frame, /esc to interrupt/);
   assert.doesNotMatch(frame, /tokens/);
 });
 
-test('StatusLine pluralises the tool-call count', () => {
+test('StatusLine omits the goal-count segment when only one goal is visible', () => {
   const state: UiState = {
     ...initialState,
     turnActive: true,
     goals: [goal({ state: 'running', agents: [agent({ state: 'running' }), agent({ state: 'done' })] })],
     stream: { ...initialState.stream, phase: 'streaming', workLabel: 'Thinking', stepCount: 1 },
   };
-  const { lastFrame } = render(<StatusLine state={state} frame="⠙" color={false} />);
-  assert.match(lastFrame() ?? '', /1 tool call(?!s)/);
+  const { lastFrame } = render(<StatusLine state={state} frame="⠙" elapsedSecs={1} color={false} />);
+  const frame = lastFrame() ?? '';
+  assert.match(frame, /◐ 1 active/);
+  assert.match(frame, /✓ 1 complete/);
+  assert.doesNotMatch(frame, /\b1 goals\b/);
 });
 
 test('StatusBlock COLLAPSES to the compact summary at a small height', () => {
@@ -328,7 +336,7 @@ test('StatusBlock surfaces the live action (currentTool) on the running agent ro
   const { lastFrame } = render(<StatusBlock state={state} color={false} rows={40} />);
   const frame = lastFrame() ?? '';
   assert.match(frame, /editing src\/auth\/mw\.ts/);
-  assert.match(frame, /12 tool calls/);
+  assert.match(frame, /◐ 1 active/);
   // No fabricated token figure anywhere mid-run.
   assert.doesNotMatch(frame, /tokens/);
 });

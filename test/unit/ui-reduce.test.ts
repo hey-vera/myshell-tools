@@ -521,6 +521,23 @@ describe('ui reduce — turn/start + commit/raw (persistent state)', () => {
     assert.equal(final.turnActive, false);
   });
 
+  it('turn/reset clears an optimistic preflight turn without touching committed lines or session tokens', () => {
+    const started = reduce(
+      {
+        ...initialState,
+        committed: [{ kind: 'raw', text: '> prior transcript' }],
+        tokens: { turn: 0, session: 150 },
+      },
+      { type: 'turn/start' },
+    );
+    const reset = reduce(started, { type: 'turn/reset' });
+    assert.equal(reset.turnActive, false);
+    assert.deepEqual(reset.stream, initialStreamView);
+    assert.deepEqual(reset.goals, []);
+    assert.deepEqual(reset.committed, [{ kind: 'raw', text: '> prior transcript' }]);
+    assert.deepEqual(reset.tokens, { turn: 0, session: 150 });
+  });
+
   it('commit/raw appends a raw chrome line to the SAME committed transcript', () => {
     const s = run([
       { type: 'commit/raw', text: '> user prompt' },

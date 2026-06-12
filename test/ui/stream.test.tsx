@@ -40,7 +40,7 @@ test('<CommittedLine> shows the line text verbatim (colour is chrome)', () => {
 
 test('App structured mode: committed prose + completion + live buffer all visible', async () => {
   const bridge = createInkAppBridge();
-  const { lastFrame } = render(<App bridge={bridge} color={false} />);
+  const { lastFrame } = render(<App bridge={bridge} color={false} rows={24} />);
 
   // Drive a normal streaming turn through the reducer, then push the snapshot
   // mid-stream (prose still in the live buffer).

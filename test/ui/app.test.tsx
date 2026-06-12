@@ -9,6 +9,7 @@ import assert from 'node:assert/strict';
 import React from 'react';
 import { render } from 'ink-testing-library';
 import { App, ErrorBoundary, createInkAppBridge } from '../../src/interface/ui/App.js';
+import { initialState } from '../../src/interface/ui/index.js';
 
 test('idle <App> shows NO stray "press a key", and not the full composer (default chatActive=false)', () => {
   const bridge = createInkAppBridge();
@@ -61,6 +62,16 @@ test('committed lines appear in the transcript', async () => {
     lastFrame()?.includes('hello from the sink'),
     `expected committed line in frame, got:\n${lastFrame()}`,
   );
+});
+
+test('optimistic turn-start state renders Thinking immediately before any stream events arrive', async () => {
+  const bridge = createInkAppBridge();
+  const { lastFrame } = render(<App bridge={bridge} color={false} rows={24} clock={() => 0} />);
+  bridge.setChatActive(true);
+  bridge.pushState({ ...initialState, turnActive: true });
+  await new Promise((r) => setTimeout(r, 20));
+  const frame = lastFrame() ?? '';
+  assert.ok(frame.includes('Thinking…'), `expected immediate optimistic Thinking state, got:\n${frame}`);
 });
 
 // ---------------------------------------------------------------------------

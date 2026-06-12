@@ -183,10 +183,19 @@ export function reduce(state: UiState, action: Action): UiState {
         // can be seconds away (classification + cold provider spawn), leaving the
         // UI looking frozen. With turnActive true and the fresh initialStreamView
         // (phase 'idle', workLabel 'Thinking', 0 steps), StatusBlock renders a
-        // sensible "⠋ Thinking… 0 steps   esc to interrupt" line — no goals panel
-        // yet (it stays hidden until goals arrive), never empty, never a crash.
+        // sensible immediate "⠋ Thinking… · 0s" line — no goals panel yet (it
+        // stays hidden until goals arrive), never empty, never a crash.
         // turn/final still settles turnActive back to false.
         turnActive: true,
+        tokens: { turn: 0, session: state.tokens.session },
+      };
+
+    case 'turn/reset':
+      return {
+        ...state,
+        goals: [],
+        stream: initialStreamView,
+        turnActive: false,
         tokens: { turn: 0, session: state.tokens.session },
       };
 

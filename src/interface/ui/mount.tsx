@@ -413,7 +413,11 @@ export function createTurnDriver(
   base: { readonly color: boolean; readonly isTty: boolean },
 ): (
   events: AsyncIterable<CoreEvent>,
-  opts?: { readonly verbosity?: Verbosity; readonly elapsedSecs?: () => number },
+  opts?: {
+    readonly verbosity?: Verbosity;
+    readonly elapsedSecs?: () => number;
+    readonly timeoutContinuation?: 'automatic' | 'prompt';
+  },
 ) => Promise<{
   success: boolean;
   final?: Extract<CoreEvent, { type: 'final' }>;
@@ -421,12 +425,19 @@ export function createTurnDriver(
 }> {
   return async (events, opts = {}) => {
     // Reset ONLY the per-turn slice; committed[] and tokens.session carry forward.
-    store.dispatch({ type: 'turn/start' });
+    // An optimistic beginTurn() may already have dispatched turn/start while the
+    // menu was still building dependencies; do not reset the live turn twice.
+    if (!store.getState().turnActive) {
+      store.dispatch({ type: 'turn/start' });
+    }
     return renderStreamInk(events, store.dispatch, {
       color: base.color,
       isTty: base.isTty,
       ...(opts.verbosity !== undefined ? { verbosity: opts.verbosity } : {}),
       ...(opts.elapsedSecs !== undefined ? { elapsedSecs: opts.elapsedSecs } : {}),
+      ...(opts.timeoutContinuation !== undefined
+        ? { timeoutContinuation: opts.timeoutContinuation }
+        : {}),
     });
   };
 }
@@ -461,13 +472,21 @@ export interface InkMountHandle {
    * {@link InkAppBridge.setChatActive}.
    */
   setChatActive(active: boolean): void;
+  /** Optimistically enter the live-turn state before expensive preflight awaits. */
+  beginTurn(): void;
+  /** Clear an optimistic preflight turn that never reached renderTurn(). */
+  resetTurn(): void;
   /**
    * Drive one model turn's CoreEvent stream into the reducer-backed transcript
    * (the STEP-3b streaming path). Same return shape as render.ts `renderStream`.
    */
   renderTurn(
     events: AsyncIterable<CoreEvent>,
-    opts?: { readonly verbosity?: Verbosity; readonly elapsedSecs?: () => number },
+    opts?: {
+      readonly verbosity?: Verbosity;
+      readonly elapsedSecs?: () => number;
+      readonly timeoutContinuation?: 'automatic' | 'prompt';
+    },
   ): Promise<{
     success: boolean;
     final?: Extract<CoreEvent, { type: 'final' }>;
@@ -507,6 +526,12 @@ export function mountInk(opts: InkMountOptions): InkMountHandle {
   const out = createInkOutputSink(store, { color: opts.color, isTty: opts.isTty });
   const reader = createInkLineReader(bridge);
   const renderTurn = createTurnDriver(store, { color: opts.color, isTty: opts.isTty });
+  const beginTurn = (): void => {
+    if (!store.getState().turnActive) store.dispatch({ type: 'turn/start' });
+  };
+  const resetTurn = (): void => {
+    if (store.getState().turnActive) store.dispatch({ type: 'turn/reset' });
+  };
 
   // The ErrorBoundary's teardown needs reader.close() + instance.unmount(), but the
   // Ink instance doesn't exist until render() returns. A forward-declared holder
@@ -556,6 +581,8 @@ export function mountInk(opts: InkMountOptions): InkMountHandle {
     setInterrupt: (handler) => bridge.setInterrupt(handler),
     setInputInfo: (info) => bridge.setInputInfo(info),
     setChatActive: (active) => bridge.setChatActive(active),
+    beginTurn,
+    resetTurn,
     renderTurn,
     waitUntilExit: async () => {
       await instance.waitUntilExit();

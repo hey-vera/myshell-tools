@@ -34,8 +34,10 @@ test('idle InputBox renders the full-width composer and info chip (TTY+colour)',
   const frame = plain(lastFrame());
   assert.ok(frame.includes('❯'), `expected caret, got:\n${frame}`);
   assert.ok(frame.includes('─ chat '), `expected chat rule, got:\n${frame}`);
-  assert.ok(frame.includes('┌ Mode Balanced · /goal · /help · /back ┐'), `expected info chip, got:\n${frame}`);
+  assert.ok(frame.includes('Mode: Balanced · /goal · /help · /back'), `expected folded bottom hints, got:\n${frame}`);
   assert.ok(frame.includes('Type a message...'), `expected placeholder, got:\n${frame}`);
+  assert.ok(!frame.includes('┌'), `nested info-box corners must not render, got:\n${frame}`);
+  assert.ok(!frame.includes('└'), `nested info-box corners must not render, got:\n${frame}`);
   assert.ok(!frame.includes('✦'), `old mini-box glyph must not render, got:\n${frame}`);
 });
 
@@ -238,7 +240,7 @@ test('multiline buffer renders adjacent composer rows (caret on row 1, gutter on
   assert.ok(r1 !== -1 && r2 !== -1 && r2 === r1 + 1, `rows should be adjacent, got:\n${frame}`);
   // Full-width rules still frame the (now taller) input, without old side rails.
   assert.ok(frame.includes('─ chat '), `expected top rule, got:\n${frame}`);
-  assert.ok(frame.includes('└'), `expected chip bottom, got:\n${frame}`);
+  assert.ok(frame.includes('Mode: Balanced · /goal · /help · /back'), `expected folded bottom hints, got:\n${frame}`);
   assert.ok(!frame.includes('│'), `expected no old side rails, got:\n${frame}`);
 });
 
@@ -430,14 +432,57 @@ test('queued indicator appears when setQueued(N) is called', async () => {
   const rows = frame.split('\n');
   const queuedRow = rows.findIndex((r) => r.includes('queued (3)'));
   assert.ok(queuedRow > 0, `queued row should sit below top rule, got:\n${frame}`);
-  assert.ok(rows.slice(queuedRow + 1).some((r) => r.includes('└')), `queued row should sit above bottom rule, got:\n${frame}`);
+  assert.ok(
+    rows
+      .slice(queuedRow + 1)
+      .some((r) => r.includes('Mode: Balanced · /goal · /help · /back')),
+    `queued row should sit above the folded bottom rule, got:\n${frame}`,
+  );
 });
 
-test('composerRules pins the mode chip and grows past the old 84-column clamp', () => {
-  const rules = composerRules(100, 'Mode Balanced · /goal · /help · /back', false);
+test('composerRules uses the full width and folds hints into the bottom rule', () => {
+  const rules = composerRules(100, 'Mode: Balanced · /goal · /help · /back', false);
   assert.equal(visibleLength(rules.top), 100);
   assert.equal(visibleLength(rules.bottom), 100);
-  assert.ok(rules.top.includes('┌ Mode Balanced · /goal · /help · /back ┐'), `got:\n${rules.top}`);
+  assert.ok(!rules.top.includes('┌'), `got:\n${rules.top}`);
+  assert.ok(rules.bottom.includes('Mode: Balanced · /goal · /help · /back'), `got:\n${rules.bottom}`);
+});
+
+test('composerRules drops trailing hints on narrow widths before shrinking the editor', () => {
+  const rules = composerRules(32, 'Mode: Balanced · /goal · /help · /back', false);
+  assert.equal(visibleLength(rules.bottom), 32);
+  assert.ok(rules.bottom.includes('Mode: Balanced'), `got:\n${rules.bottom}`);
+  assert.ok(!rules.bottom.includes('/back'), `narrow width should hide trailing hints first, got:\n${rules.bottom}`);
+});
+
+test('long input wraps to the same row count with default vs overlong hints at a narrow width', async () => {
+  const long = 'wordwordword '.repeat(8).trim();
+  const countWrappedRows = (frame: string): number =>
+    frame.split('\n').filter((row) => row.includes('word')).length;
+
+  const baseBridge = createInputBoxBridge();
+  const base = render(<InputBox bridge={baseBridge} color={true} isTty={true} columns={32} />);
+  base.stdin.write(long);
+  await tick();
+
+  const extraHintBridge = createInputBoxBridge();
+  const extraHint = render(
+    <InputBox
+      bridge={extraHintBridge}
+      color={true}
+      isTty={true}
+      columns={32}
+      info="Mode: Balanced · /goal · /help · /back · /extra-hint"
+    />,
+  );
+  extraHint.stdin.write(long);
+  await tick();
+
+  assert.equal(
+    countWrappedRows(plain(base.lastFrame())),
+    countWrappedRows(plain(extraHint.lastFrame())),
+    'hint truncation must not reduce the editor content width',
+  );
 });
 
 test('NO_COLOR InputBox falls back to plain caret without chip or ANSI', () => {

@@ -29,6 +29,7 @@ import { panelLabel, type PanelistState } from '../../ui/theme.js';
 import { pad, truncateToWidth } from '../../ui/tui.js';
 import {
   layoutForHeight,
+  summarizeWork,
   summarizeTurn,
   coalescedQueuedLine,
   INPUT_ROWS,
@@ -534,13 +535,13 @@ function SpinnerStatusLine({ state, elapsedSecs, color = true }: SpinnerStatusLi
  * verb mirrors render.ts's spinnerLabel exactly:
  *   - panel mode → panelLabel() ("Waiting on N models · claude ✓ · codex …" /
  *     "Synthesizing N answers…");
- *   - otherwise → "<workLabel>… N steps[ · ↓ ~Nk tokens]".
+ *   - otherwise → "<workLabel>… · honest work summary".
  * The braille `frame` and the `· Ns` elapsed come from the injected tick/clock so
  * this component never reads the system clock.
  */
 export function StatusLine({ state, frame, elapsedSecs, color = true }: StatusLineProps): React.ReactElement {
   const s = state.stream;
-  const elapsed = elapsedSecs !== undefined && elapsedSecs > 0 ? ` · ${elapsedSecs}s` : '';
+  const elapsed = elapsedSecs !== undefined ? `${elapsedSecs}s` : '';
   if (s.phase === 'panel' || s.phase === 'synthesis') {
     // Panel mode keeps the already-agent-shaped panelLabel ("Waiting on N
     // models · claude ✓ · codex …" / "Synthesizing N answers…").
@@ -560,18 +561,27 @@ export function StatusLine({ state, frame, elapsedSecs, color = true }: StatusLi
   // Non-panel: LEAD with the live ACTION — the single most informative real-time
   // signal — i.e. the real tool verb + target ("editing src/auth/mw.ts") from the
   // most recent tool event; fall back to the real workLabel ("Thinking") when no
-  // tool is active. Then the demoted, DIM detail: the per-tier tool-call count
-  // ("N tool calls") and elapsed `· Ns`. NO token figure is shown here: mid-run
-  // there is no honest token count for the Claude subscription provider, so we
-  // never render the old fabricated `streamedChars/4` proxy.
+  // tool is active. Then the demoted, DIM detail: a strictly derived work summary
+  // (running agents, completed agents, visible multi-goal count, elapsed). NO
+  // token figure is shown here: mid-run there is no honest token count for the
+  // Claude subscription provider, so we never render the old fabricated
+  // `streamedChars/4` proxy.
   const liveAction = liveActionLabel(s.currentTool);
   const headline = liveAction.length > 0 ? liveAction : s.workLabel;
-  const steps = `${s.stepCount} tool call${s.stepCount === 1 ? '' : 's'}`;
+  const summary = summarizeWork(state);
+  const detailParts: string[] = [];
+  if (summary.active > 0) detailParts.push(`◐ ${summary.active} active`);
+  if (summary.complete > 0) detailParts.push(`✓ ${summary.complete} complete`);
+  if (summary.goals !== undefined) detailParts.push(`${summary.goals} goals`);
+  if (elapsed.length > 0) detailParts.push(elapsed);
+  const detail = detailParts.join(' · ');
   return (
     <Box>
       <Text {...(color ? { color: 'cyan' as const } : {})}>{frame}</Text>
       <Text>{` ${headline}…`}</Text>
-      <Text dimColor={color}>{`  ${steps}${elapsed}   esc to interrupt`}</Text>
+      {detail.length > 0 ? (
+        <Text dimColor={color}>{` · ${detail}${summary.active > 0 || summary.complete > 0 || summary.goals !== undefined ? '   esc to interrupt' : ''}`}</Text>
+      ) : null}
     </Box>
   );
 }

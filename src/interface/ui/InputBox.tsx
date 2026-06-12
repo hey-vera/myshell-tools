@@ -40,15 +40,15 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Box, Text, useInput, useStdin } from 'ink';
 import { dim, cyan, blue } from '../../ui/theme.js';
-import { truncateToWidth, visibleLength } from '../../ui/tui.js';
-import { composerShownPlan, INPUT_BORDER_ROWS } from './layout.js';
+import { visibleLength } from '../../ui/tui.js';
+import { composerShownPlan, fitComposerInfo, INPUT_BORDER_ROWS } from './layout.js';
 import type { InkStdinControl } from './App.js';
 
 /** Below this, fall back to the plain caret surface. */
 const INPUT_BOX_MIN_COLUMNS = 32;
 const CARET = '❯';
 const PLACEHOLDER = 'Type a message...';
-const INFO_FALLBACK = 'Mode Balanced · /goal · /help · /back';
+const INFO_FALLBACK = 'Mode: Balanced · /goal · /help · /back';
 /** Gutter under the `❯ ` caret for continuation rows of a multiline buffer. */
 const CONT_GUTTER = '… ';
 // The cap on how many LOGICAL buffer rows the box shows at once (so a huge paste
@@ -209,15 +209,17 @@ function composerWidth(columns: number | undefined): number {
 }
 
 export function composerRules(width: number, info: string, color: boolean): { top: string; bottom: string } {
-  const chipText = ` ${truncateToWidth(info, Math.max(12, width - 12))} `;
-  const topChip = `┌${chipText}┐`;
-  const bottomChip = `└${'─'.repeat(visibleLength(chipText))}┘`;
   const leftTop = '─ chat ';
-  const topFill = Math.max(1, width - visibleLength(leftTop) - visibleLength(topChip));
-  const bottomFill = Math.max(1, width - visibleLength(bottomChip));
+  const topFill = Math.max(1, width - visibleLength(leftTop));
+  const fittedInfo = fitComposerInfo(info, Math.max(0, width - 1));
+  const infoWidth = visibleLength(fittedInfo);
+  const bottomFill = Math.max(1, width - infoWidth - (infoWidth > 0 ? 1 : 0));
   return {
-    top: `${dim(leftTop + '─'.repeat(topFill), color)}${blue(topChip, color)}`,
-    bottom: `${dim('─'.repeat(bottomFill), color)}${blue(bottomChip, color)}`,
+    top: `${dim(leftTop + '─'.repeat(topFill), color)}`,
+    bottom:
+      infoWidth > 0
+        ? `${dim('─'.repeat(bottomFill), color)}${blue(` ${fittedInfo}`, color)}`
+        : `${dim('─'.repeat(width), color)}`,
   };
 }
 

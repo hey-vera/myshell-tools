@@ -312,6 +312,12 @@ export type Action =
   //     forward (session tokens ACCUMULATE), so <Static>'s committed[] only ever
   //     GROWS across turns (never shrinks/regrows — Ink 6's append-only contract).
   | { readonly type: 'turn/start' }
+  // --- turn/reset: clear an OPTIMISTIC preflight turn that never reached the
+  //     model/event stream (e.g. dependency-building failed before runTask). Like
+  //     turn/start it resets only the per-turn slice and preserves committed[] +
+  //     tokens.session, but it settles back to the idle prompt without emitting a
+  //     completion line.
+  | { readonly type: 'turn/reset' }
   // --- commit/raw: append ONE already-final chrome line (text the impure
   //     OutputSink wrote — echoed prompt, the ※ recap, resume transcript,
   //     inter-turn menu chrome, /mode output, error notices) into the SAME

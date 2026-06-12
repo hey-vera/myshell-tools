@@ -30,7 +30,7 @@ export interface InputBoxInfo {
 
 function formatInputBoxInfo(info: InputBoxInfo | null): string | undefined {
   if (info === null) return undefined;
-  return `Mode ${info.mode} · ${info.hints.join(' · ')}`;
+  return `Mode: ${info.mode} · ${info.hints.join(' · ')}`;
 }
 
 /**

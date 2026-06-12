@@ -620,6 +620,12 @@ export async function runChatLoop(
   // loop's finally on exit so returning to the menu hides the composer. Absent
   // (legacy/test paths) → no-op, byte-identical. Mirrors inkSetInputInfo.
   inkSetChatActive?: (active: boolean) => void,
+  // Optimistic live-turn seams. On the Ink path the menu can flip the reducer into
+  // a visible "Thinking…" state immediately on submit, before dependency-building
+  // awaits; if preprocessing fails or the turn is diverted elsewhere, reset clears
+  // that optimistic state without emitting a completion line.
+  inkBeginTurn?: () => void,
+  inkResetTurn?: () => void,
 ): Promise<'menu' | 'exit'> {
   // -------------------------------------------------------------------------
   // RECAP (Phase 7, docs/recap-feature-5.5.md) — a ※ orientation line on resume
@@ -4484,35 +4490,48 @@ export async function runChatLoop(
         return 'continue';
       }
 
-      const depsBase = buildDeps(
-        priorHistory,
-        await resolveTurnMemory(line),
-        await resolveEnvironmentOnce(),
-        await resolveTurnTaste(),
-      );
-      // Image attachments (audit #4, image scope): the IMPURE existence check lives
-      // here in the interface layer (fs allowed). The pure extractor finds candidate
-      // image paths in the user's message; we keep only those that exist on disk and
-      // thread them onto deps so orchestrate sets needsVision + routes the turn to a
-      // vision-capable provider (codex `-i` / opencode `-f`). No real image → empty
-      // → field omitted → behaviour byte-for-byte unchanged.
-      const turnAttachments = resolveImageAttachments(line, { cwd: ctx.cwd });
-      const deps: OrchestrateDeps =
-        turnAttachments.length > 0 ? { ...depsBase, attachments: turnAttachments } : depsBase;
+      inkBeginTurn?.();
+      let deps: OrchestrateDeps | null = null;
+      let turnAttachments: ReturnType<typeof resolveImageAttachments> = [];
+      try {
+        const depsBase = buildDeps(
+          priorHistory,
+          await resolveTurnMemory(line),
+          await resolveEnvironmentOnce(),
+          await resolveTurnTaste(),
+        );
+        // Image attachments (audit #4, image scope): the IMPURE existence check lives
+        // here in the interface layer (fs allowed). The pure extractor finds candidate
+        // image paths in the user's message; we keep only those that exist on disk and
+        // thread them onto deps so orchestrate sets needsVision + routes the turn to a
+        // vision-capable provider (codex `-i` / opencode `-f`). No real image → empty
+        // → field omitted → behaviour byte-for-byte unchanged.
+        turnAttachments = resolveImageAttachments(line, { cwd: ctx.cwd });
+        deps =
+          turnAttachments.length > 0 ? { ...depsBase, attachments: turnAttachments } : depsBase;
 
-      if (mutableCtx.config.autoGoal === true && effectiveMode === 'quality-first') {
-        const autoClassification = classify(line);
-        const autonomy = decideAutonomyOffer({
-          mode: effectiveMode,
-          classification: autoClassification,
-          autoGoalEnabled: true,
-        });
-        if (autonomy.kind === 'auto_engage') {
-          // Auto-engaging on RAW chat text: form a concise title/objective from it
-          // (the full `line` stays the work input). Fail-soft → raw text.
-          if (await runGoalLoop(line, await formGoalLabel(line))) return control.result;
-          return 'continue';
+        if (mutableCtx.config.autoGoal === true && effectiveMode === 'quality-first') {
+          const autoClassification = classify(line);
+          const autonomy = decideAutonomyOffer({
+            mode: effectiveMode,
+            classification: autoClassification,
+            autoGoalEnabled: true,
+          });
+          if (autonomy.kind === 'auto_engage') {
+            inkResetTurn?.();
+            // Auto-engaging on RAW chat text: form a concise title/objective from it
+            // (the full `line` stays the work input). Fail-soft → raw text.
+            if (await runGoalLoop(line, await formGoalLabel(line))) return control.result;
+            return 'continue';
+          }
         }
+      } catch (error) {
+        inkResetTurn?.();
+        throw error;
+      }
+      if (deps === null) {
+        inkResetTurn?.();
+        throw new Error('chat turn dependencies were not prepared');
       }
 
       const ac = new AbortController();
@@ -4920,6 +4939,10 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
   // never in the menu / auth-login / settings. Undefined off the Ink path.
   const inkSetChatActive: ((active: boolean) => void) | undefined =
     inkHandle !== null ? (active) => inkHandle.setChatActive(active) : undefined;
+  const inkBeginTurn: (() => void) | undefined =
+    inkHandle !== null ? () => inkHandle.beginTurn() : undefined;
+  const inkResetTurn: (() => void) | undefined =
+    inkHandle !== null ? () => inkHandle.resetTurn() : undefined;
   const confirm = makeConfirm(out, readLine, ctx.confirm, false, inkReadKey);
   // Lets the login flow release stdin while an inherited-stdio child (e.g.
   // `claude auth login`) owns the terminal, then take it back. Returns the
@@ -5249,7 +5272,7 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
         // (conversations.ts append()), so create an untitled conversation and drop
         // straight into it.
         const meta = await ctx.store.create('');
-        const chatResult = await runChatLoop(ctx, mutableCtx, meta.id, out, readLine, loginFn, detectEnvironmentFn, confirm, suspendStdin, lineReader, inkRenderTurn, inkReadKey, inkSetInterrupt, inkSetInputInfo, inkSetChatActive);
+        const chatResult = await runChatLoop(ctx, mutableCtx, meta.id, out, readLine, loginFn, detectEnvironmentFn, confirm, suspendStdin, lineReader, inkRenderTurn, inkReadKey, inkSetInterrupt, inkSetInputInfo, inkSetChatActive, inkBeginTurn, inkResetTurn);
         spendDirty = true; // a task may have run — refresh the spend summary
         listDirty = true; // a new conversation was created (and goals may be parked)
         if (chatResult === 'exit') break;
@@ -5264,7 +5287,7 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
           if (!(await promptForAuthBeforeChat(out, readLine, mutableCtx, loginFn, detectEnvironmentFn, confirm, suspendStdin, inkReadKey))) {
             continue;
           }
-          const chatResult = await runChatLoop(ctx, mutableCtx, latest.id, out, readLine, loginFn, detectEnvironmentFn, confirm, suspendStdin, lineReader, inkRenderTurn, inkReadKey, inkSetInterrupt, inkSetInputInfo, inkSetChatActive);
+          const chatResult = await runChatLoop(ctx, mutableCtx, latest.id, out, readLine, loginFn, detectEnvironmentFn, confirm, suspendStdin, lineReader, inkRenderTurn, inkReadKey, inkSetInterrupt, inkSetInputInfo, inkSetChatActive, inkBeginTurn, inkResetTurn);
           spendDirty = true; // a task may have run — refresh the spend summary
           listDirty = true; // conversation order/goals may have changed
           if (chatResult === 'exit') break;
@@ -5282,7 +5305,7 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
           if (!(await promptForAuthBeforeChat(out, readLine, mutableCtx, loginFn, detectEnvironmentFn, confirm, suspendStdin, inkReadKey))) {
             continue;
           }
-          const chatResult = await runChatLoop(ctx, mutableCtx, target.id, out, readLine, loginFn, detectEnvironmentFn, confirm, suspendStdin, lineReader, inkRenderTurn, inkReadKey, inkSetInterrupt, inkSetInputInfo, inkSetChatActive);
+          const chatResult = await runChatLoop(ctx, mutableCtx, target.id, out, readLine, loginFn, detectEnvironmentFn, confirm, suspendStdin, lineReader, inkRenderTurn, inkReadKey, inkSetInterrupt, inkSetInputInfo, inkSetChatActive, inkBeginTurn, inkResetTurn);
           spendDirty = true; // a task may have run — refresh the spend summary
           listDirty = true; // conversation order/goals may have changed
           if (chatResult === 'exit') break;
