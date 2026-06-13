@@ -119,6 +119,7 @@ import { planNativeSession } from '../core/native-session.js';
 import { decideHistoryPolicy } from '../core/turn-directive.js';
 import { historyTruncationInfo } from '../core/history.js';
 import { availableAfterCooldown, cooldownExpiry } from '../core/cooldown.js';
+import { deriveBaselineOrder } from '../core/capacity-allocator.js';
 import { learnProviderOrder, learnModelOutcomeOrder } from '../core/routing-memory.js';
 import type { OutputSink, TurnInputSurface, Verbosity } from './render.js';
 import {
@@ -166,6 +167,7 @@ import {
   PROVIDER_LABEL,
   resolveAutoMode,
   hasAuthenticatedProvider,
+  subscriptionInventoryFromEnvironment,
 } from './menu-auto-mode.js';
 import { decidePostTurn } from './menu-post-turn.js';
 import { planRetryTruncation, recentUserMessages } from './menu-message-redo.js';
@@ -1805,10 +1807,13 @@ export async function runChatLoop(
                 .map((p) => p.plan),
             )
           : POLICY_PRESETS[effectiveMode];
+      const inventory = subscriptionInventoryFromEnvironment(mutableCtx.env);
+      const baselineOrder = deriveBaselineOrder(inventory);
       const policy = {
         ...autoTunedPreset,
         ...(mutableCtx.config.panel === true ? { panelPolicy: 'hard-turns' as const } : {}),
         ...(mutableCtx.config.hedge === true ? { hedgePolicy: 'on' as const } : {}),
+        providerOrderByTier: baselineOrder,
       };
 
       // NOTE (Bug 4 / FIX 3): the no-provider gate used to sit HERE, BEFORE the

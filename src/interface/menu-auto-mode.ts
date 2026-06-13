@@ -6,6 +6,10 @@
 
 import type { EnvironmentStatus } from '../providers/detect.js';
 import {
+  classifyCapacity,
+  type CapacityWeight,
+} from '../core/capacity-allocator.js';
+import {
   modeLabel,
   autoModeForPlanInfos,
   classifyPlan,
@@ -45,6 +49,12 @@ function authedProviderPlans(env: EnvironmentStatus): ProviderPlanInfo[] {
       label: PROVIDER_LABEL[p.id] ?? p.id,
       info: classifyPlan(p.plan),
     }));
+}
+
+export function subscriptionInventoryFromEnvironment(env: EnvironmentStatus): CapacityWeight[] {
+  return [env.claude, env.codex, env.opencode]
+    .filter((p) => p.authenticated)
+    .map((p) => classifyCapacity(p.id, p.plan));
 }
 
 /**
