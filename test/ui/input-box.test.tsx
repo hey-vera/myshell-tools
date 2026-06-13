@@ -20,6 +20,8 @@ const DOWN = '\x1b[B';
 const LEFT = '\x1b[D';
 const HOME = '\x01'; // Ctrl+A
 const ALT_ENTER = '\x1b\r'; // Meta+Return
+const TAB = '\t';
+const ESC = '\x1b';
 
 const tick = (): Promise<void> => new Promise((r) => setTimeout(r, 50));
 
@@ -483,6 +485,129 @@ test('long input wraps to the same row count with default vs overlong hints at a
     countWrappedRows(plain(extraHint.lastFrame())),
     'hint truncation must not reduce the editor content width',
   );
+});
+
+// ---------------------------------------------------------------------------
+// Tab-autocomplete (the offline completion engine wired into the Ink editor)
+// ---------------------------------------------------------------------------
+
+test('typing /go then Tab shows a suggestion row with /goal and /goals', async () => {
+  const bridge = createInputBoxBridge();
+  bridge.onSubmit(() => {});
+  const { lastFrame, stdin } = render(
+    <InputBox bridge={bridge} color={true} isTty={true} columns={60} />,
+  );
+  stdin.write('/go');
+  await tick();
+  stdin.write(TAB);
+  await tick();
+  const frame = plain(lastFrame());
+  assert.ok(frame.includes('/goal'), `expected /goal candidate, got:\n${frame}`);
+  assert.ok(frame.includes('/goals'), `expected /goals candidate, got:\n${frame}`);
+  // The buffer is unchanged while the (multi-candidate) row is shown.
+  assert.equal(bridge.currentLine(), '/go');
+});
+
+test('typing /hel then Tab auto-accepts to /help with no suggestion row', async () => {
+  const bridge = createInputBoxBridge();
+  bridge.onSubmit(() => {});
+  const { lastFrame, stdin } = render(
+    <InputBox bridge={bridge} color={true} isTty={true} columns={60} />,
+  );
+  stdin.write('/hel');
+  await tick();
+  stdin.write(TAB);
+  await tick();
+  assert.equal(bridge.currentLine(), '/help', 'single hit should auto-accept');
+  const frame = plain(lastFrame());
+  // The completed value shows, but there is no separate candidate row offering
+  // /help a second time above the rule (single hit → no row).
+  const rows = frame.split('\n');
+  const ruleRow = rows.findIndex((r) => r.includes('─ chat '));
+  const aboveRule = rows.slice(0, ruleRow).join('\n');
+  assert.ok(!aboveRule.includes('/help'), `expected NO suggestion row, got:\n${frame}`);
+});
+
+test('typing /g then Tab twice cycles the highlighted candidate', async () => {
+  const bridge = createInputBoxBridge();
+  bridge.onSubmit(() => {});
+  const { lastFrame, stdin } = render(
+    <InputBox bridge={bridge} color={true} isTty={true} columns={60} />,
+  );
+  stdin.write('/g');
+  await tick();
+  stdin.write(TAB); // first Tab: shows candidates (/goal, /goals), index 0
+  await tick();
+  const first = lastFrame() ?? '';
+  stdin.write(TAB); // second Tab: cycle highlight + splice the selected candidate
+  await tick();
+  const second = lastFrame() ?? '';
+  // The frame changed between the two Tabs (the highlight/buffer advanced).
+  assert.notEqual(plain(first), plain(second), `cycle should change the frame:\n${plain(second)}`);
+  // After cycling, the buffer holds one of the candidate commands.
+  const line = bridge.currentLine();
+  assert.ok(line === '/goal' || line === '/goals', `expected a cycled candidate, got: ${line}`);
+});
+
+test('Esc dismisses the suggestion row, leaving the value unchanged', async () => {
+  const bridge = createInputBoxBridge();
+  bridge.onSubmit(() => {});
+  const { lastFrame, stdin } = render(
+    <InputBox bridge={bridge} color={true} isTty={true} columns={60} />,
+  );
+  stdin.write('/go');
+  await tick();
+  stdin.write(TAB);
+  await tick();
+  assert.ok(plain(lastFrame()).includes('/goals'), 'precondition: candidates shown');
+  stdin.write(ESC);
+  await tick();
+  const frame = plain(lastFrame());
+  const rows = frame.split('\n');
+  const ruleRow = rows.findIndex((r) => r.includes('─ chat '));
+  const aboveRule = rows.slice(0, ruleRow).join('\n');
+  assert.ok(!aboveRule.includes('/goals'), `Esc should clear the candidate row, got:\n${frame}`);
+  assert.equal(bridge.currentLine(), '/go', 'Esc must not change the buffer');
+});
+
+test('typing a normal char after Tab clears the suggestions', async () => {
+  const bridge = createInputBoxBridge();
+  bridge.onSubmit(() => {});
+  const { lastFrame, stdin } = render(
+    <InputBox bridge={bridge} color={true} isTty={true} columns={60} />,
+  );
+  stdin.write('/go');
+  await tick();
+  stdin.write(TAB);
+  await tick();
+  assert.ok(plain(lastFrame()).includes('/goals'), 'precondition: candidates shown');
+  stdin.write('a'); // a normal edit invalidates the completions
+  await tick();
+  const frame = plain(lastFrame());
+  const rows = frame.split('\n');
+  const ruleRow = rows.findIndex((r) => r.includes('─ chat '));
+  const aboveRule = rows.slice(0, ruleRow).join('\n');
+  assert.ok(!aboveRule.includes('/goals'), `a non-Tab edit must clear candidates, got:\n${frame}`);
+  assert.equal(bridge.currentLine(), '/goa');
+});
+
+test('plain prose + Tab is a no-op (no candidate row, no literal tab inserted)', async () => {
+  const bridge = createInputBoxBridge();
+  bridge.onSubmit(() => {});
+  const { lastFrame, stdin } = render(
+    <InputBox bridge={bridge} color={true} isTty={true} columns={60} />,
+  );
+  stdin.write('hello');
+  await tick();
+  stdin.write(TAB);
+  await tick();
+  assert.equal(bridge.currentLine(), 'hello', 'Tab on prose must not insert a literal tab');
+  const frame = plain(lastFrame());
+  assert.ok(!frame.includes('\t'), `no literal tab in the buffer, got:\n${frame}`);
+  // No candidate row above the chat rule.
+  const rows = frame.split('\n');
+  const ruleRow = rows.findIndex((r) => r.includes('─ chat '));
+  assert.ok(ruleRow >= 0, `expected the chat rule, got:\n${frame}`);
 });
 
 test('NO_COLOR InputBox falls back to plain caret without chip or ANSI', () => {

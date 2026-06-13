@@ -6,6 +6,9 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+## 3.98.0
+feat(chat): Tab-to-autocomplete in live chat on the Ink path. Press Tab to complete slash commands (`/help`, `/oversight`, `/rule`, …) and `@`-file mentions inline, the way the Claude/GPT shells do — single-match Tab fills the rest of the token, the suggestion preview renders just under the composer, and Esc dismisses it. The completion engine already existed; this wires it into the Ink `InputBox` so it actually shows in conversations.
+
 ## 3.97.0
 feat(chat): cleaner live-chat structure — composer hints now fold into the input box's bottom border (no more right-side box stealing typing width); the status line replaces the misleading "N tool calls" with an honest work summary (active/complete agents · goals · elapsed); and the Thinking indicator appears instantly on submit instead of lagging behind dependency prep.
 

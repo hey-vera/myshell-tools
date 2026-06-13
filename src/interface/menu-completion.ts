@@ -19,8 +19,8 @@ import os from 'node:os';
  * The slash-commands available at the chat prompt — the canonical command set
  * (Tab T1, docs/tab-completion-5.5.md). Tab-completion offers exactly these;
  * keep in sync with the dispatch in `runOneChatInput` (/retry, /edit, /style,
- * /mode, /goal, /goals, /todo, /recap, /remember, /forget, /memory, /help,
- * /back, /exit).
+ * /oversight, /mode, /goal, /goals, /todo, /rule, /recap, /remember, /forget,
+ * /memory, /help, /back, /exit).
  * Ordered most-used first.
  */
 export const CHAT_SLASH_COMMANDS: readonly string[] = [
@@ -28,10 +28,12 @@ export const CHAT_SLASH_COMMANDS: readonly string[] = [
   '/retry',
   '/edit',
   '/style',
+  '/oversight',
   '/mode',
   '/goal',
   '/goals',
   '/todo',
+  '/rule',
   '/recap',
   '/copy',
   '/export',

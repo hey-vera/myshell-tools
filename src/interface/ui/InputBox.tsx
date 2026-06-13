@@ -42,6 +42,7 @@ import { Box, Text, useInput, useStdin } from 'ink';
 import { dim, cyan, blue } from '../../ui/theme.js';
 import { visibleLength } from '../../ui/tui.js';
 import { composerShownPlan, fitComposerInfo, INPUT_BORDER_ROWS } from './layout.js';
+import { completeChat, classifyCompletion } from '../menu-completion.js';
 import type { InkStdinControl } from './App.js';
 
 /** Below this, fall back to the plain caret surface. */
@@ -297,6 +298,20 @@ export function InputBox({
   const [history, setHistory] = useState<string[]>(() => bridge._history.slice());
   const [histIndex, setHistIndex] = useState<number | null>(null);
   const [draft, setDraft] = useState('');
+  // Tab-autocomplete (editor-local, ephemeral): the candidate list currently
+  // shown under the composer, the highlighted index, and a cache of the last
+  // classified completion token so Tab-accept knows how many trailing chars to
+  // splice. Cleared on submit / Esc / any non-Tab edit — suggestions never
+  // outlive the keystroke that produced them.
+  const [suggestions, setSuggestions] = useState<string[]>([]);
+  const [suggIndex, setSuggIndex] = useState(0);
+  const lastCompletionRef = useRef<{ token: string } | null>(null);
+  // Live mirrors of value/cursor so the async completeChat() resolve can race-guard
+  // against the LATEST buffer (the .then closure captures stale state otherwise).
+  const valueRef = useRef(value);
+  valueRef.current = value;
+  const cursorRef = useRef(cursor);
+  cursorRef.current = cursor;
 
   // Register the imperative API + queued subscriber; consume the history seed.
   useEffect(() => {
@@ -338,6 +353,11 @@ export function InputBox({
   const replace = (next: string, nextCursor: number): void => {
     setValue(next);
     setCursor(Math.max(0, Math.min(next.length, nextCursor)));
+    // Any edit invalidates the shown completions. The Tab-accept/cycle branch
+    // re-sets suggestion state AFTER its replace() call, so React's batching lets
+    // those later sets win and the candidate row survives a cycle.
+    setSuggestions([]);
+    setSuggIndex(0);
   };
 
   // Commit `submitted` as a line: record non-blank history, clear the editor,
@@ -351,6 +371,9 @@ export function InputBox({
     setCursor(0);
     setHistIndex(null);
     setDraft('');
+    setSuggestions([]);
+    setSuggIndex(0);
+    lastCompletionRef.current = null;
     bridge._submit?.(submitted);
   };
 
@@ -376,6 +399,16 @@ export function InputBox({
     // is intercepted (key.escape && no input payload): typed-ahead characters and
     // Alt-chord escapes are untouched, so the typed-ahead queue is preserved. When
     // idle (no handler installed) onEscape returns false → ESC is a no-op as before.
+    //
+    // When Tab-completions are showing, a bare ESC DISMISSES them first (clears the
+    // candidate row, leaves the buffer untouched) BEFORE the turn-interrupt path, so
+    // a user can back out of the suggestion list without aborting an in-flight turn.
+    if (key.escape && input === '' && suggestions.length > 0) {
+      setSuggestions([]);
+      setSuggIndex(0);
+      lastCompletionRef.current = null;
+      return;
+    }
     if (key.escape && input === '' && onEscape?.() === true) return;
 
     // --- Submit vs newline ---------------------------------------------------
@@ -484,6 +517,71 @@ export function InputBox({
       return;
     }
 
+    // --- Tab → autocomplete (T1–T4 engine) -----------------------------------
+    // Wire the existing offline completion engine (src/interface/menu-completion.ts)
+    // into the Ink editor. The single property we preserve from the legacy readline
+    // path: plain prose is a strict no-op — Tab on a sentence does NOTHING (it must
+    // not insert a literal '\t'). Only a slash-command, a path-shaped token, or an
+    // @-mention drives an active completion.
+    //
+    // FIRST Tab (no candidates yet): classify the line; if prose → return (no-op).
+    // Otherwise fire completeChat() and on resolve either auto-accept a lone hit or
+    // show the candidate row. SUBSEQUENT Tab (candidates shown): cycle the highlight
+    // and splice the selected candidate over the trailing token. A race guard ignores
+    // a stale async resolve whose buffer no longer matches what we classified.
+    if (key.tab) {
+      const lineToCursor = value.slice(0, cursor);
+      const classified = classifyCompletion(lineToCursor);
+      if (classified.kind === 'none') {
+        // Plain prose (or a free-text slash arg) → Tab is a deliberate no-op. Do
+        // NOT fall through to the printable catch-all (which would insert '\t').
+        return;
+      }
+      lastCompletionRef.current = { token: classified.token };
+
+      // Splice `candidate` over the trailing token (length cached above), preserving
+      // any text to the RIGHT of the cursor. For slash-NAME the token is the whole
+      // line-to-cursor and the candidate is the full command, so this replaces it.
+      const accept = (candidate: string): void => {
+        const tokenLen = lastCompletionRef.current?.token.length ?? 0;
+        const head = value.slice(0, Math.max(0, cursor - tokenLen));
+        const tail = value.slice(cursor);
+        replace(head + candidate + tail, head.length + candidate.length);
+      };
+
+      if (suggestions.length > 0) {
+        // Cycle: advance the highlight (wrap) and splice the now-selected candidate.
+        const nextIdx = (suggIndex + 1) % suggestions.length;
+        const candidate = suggestions[nextIdx];
+        if (candidate !== undefined) {
+          accept(candidate);
+          // replace() cleared suggestions; re-show them so the row survives the
+          // cycle (React batches these later sets to win).
+          setSuggestions(suggestions);
+          setSuggIndex(nextIdx);
+        }
+        return;
+      }
+
+      // No candidates yet → ask the engine. Fire-and-forget; ignore a stale resolve.
+      const requestedValue = value;
+      const requestedCursor = cursor;
+      void completeChat(lineToCursor).then(([hits]) => {
+        // Race guard: drop the resolve if the buffer/cursor moved since the request
+        // (compare against the LIVE refs, not the stale captured render state).
+        if (valueRef.current !== requestedValue || cursorRef.current !== requestedCursor) return;
+        if (hits.length === 0) return;
+        if (hits.length === 1) {
+          // Exactly one hit → auto-accept immediately, no candidate row.
+          accept(hits[0] ?? '');
+          return;
+        }
+        setSuggestions(hits);
+        setSuggIndex(0);
+      });
+      return;
+    }
+
     // --- Printable input (incl. pasted chunks with embedded newlines) --------
     if (input && !key.ctrl && !key.meta) {
       // Paste-trailing-newline submit (residual risk #3, the auth-code-paste
@@ -538,7 +636,7 @@ export function InputBox({
     : queued > 0
       ? 1 + INPUT_BORDER_ROWS
       : canBox
-        ? shownPlan.physical + INPUT_BORDER_ROWS
+        ? shownPlan.physical + INPUT_BORDER_ROWS + (suggestions.length > 0 ? 1 : 0)
         : shownPlan.physical;
   useEffect(() => {
     onMeasureRows?.(measuredRows);
@@ -592,8 +690,25 @@ export function InputBox({
   // used by composerShownPlan above, so the rendered physical height equals the
   // measured (reported) height to the row.
 
+  // Compact Tab-completion candidate row: rendered ABOVE the composer's top rule
+  // when suggestions are showing. Capped to ~6 candidates, space-separated, dim;
+  // the selected one (suggIndex) is highlighted cyan.
+  const SUGGESTION_CAP = 6;
+  const suggestionRow =
+    suggestions.length > 0 ? (
+      <Text>
+        {suggestions.slice(0, SUGGESTION_CAP).map((s, i) => (
+          <Text key={s}>
+            {i > 0 ? ' ' : ''}
+            {i === suggIndex ? cyan(s, color) : dim(s, color)}
+          </Text>
+        ))}
+      </Text>
+    ) : null;
+
   return (
     <Box flexDirection="column">
+      {suggestionRow}
       <Text>{rules.top}</Text>
       {queued > 0 ? (
         <Text>{dim(`⏎ queued (${queued})`, color)}</Text>
