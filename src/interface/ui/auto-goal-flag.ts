@@ -9,11 +9,9 @@
  * so the post-turn slot is byte-for-byte identical to today.
  *
  * Pure (no Ink/React, no JSX, no I/O) so it is exercised by the REGULAR `npm test`
- * suite under strip-types. DEFAULT OFF — auto-staging ships dark unless the caller
- * explicitly opts IN: `MYSHELL_AUTO_GOAL` ∈ {'1','true','on','yes'} (case-
- * insensitive, trimmed) OR `config.experimentalAutoGoal === true`. This mirrors the
- * rollout shape of the board/tribunal/judgment/verify/scheduler flags (opt-in,
- * dark).
+ * suite under strip-types. DEFAULT ON — auto-staging is the shipped experience and
+ * the caller opts OUT with `MYSHELL_AUTO_GOAL` ∈ {'0','false','off','no'} (case-
+ * insensitive, trimmed) or `config.experimentalAutoGoal === false`.
  *
  * THE OFF-GUARANTEE (the neutrality contract): when this returns false, menu.ts
  * never builds or invokes the planner, never calls goalStore.create from the

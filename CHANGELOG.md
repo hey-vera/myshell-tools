@@ -6,6 +6,9 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+## 3.101.0
+feat(goals): create a goal the moment work is acknowledged. When you send an actionable request, the assistant now judges it up front and — if it's real work — creates a running goal with a checklist, says "On it — <title>", and starts executing it immediately (visible in the running-goals board), instead of quietly staging a parked goal *after* the reply. Ambiguous requests open the polished decision prompt to discuss first and only create a goal once you've answered (cancel = no goal). Reuses the existing planner, goal store, and goal loop — no new model calls or storage. Duplicate-goal safe: the old post-turn auto-stage now runs only when no goal was created up front. (Checklist rows render in the board in a follow-up.)
+
 ## 3.100.0
 feat(chat): organized verbose narration. A new shared `VerboseNarrationFormatter` groups streamed activity into a readable block per tier — an `Activity:` header (provider/model/attempt), a `Tools:` section, and a `Reasoning:` section — instead of the old interleaved wall of raw `[tool]`/reasoning deltas. It buffers fragmented reasoning into whole lines, collapses adjacent duplicates, and pairs tool start/end so lifecycle noise disappears. Both the legacy renderer and the Ink path now feed the same formatter, so verbose output stays byte-identical across the two (the parity test got *stricter* — the old live-region ordering carve-out is gone). Presentation-only.
 

@@ -5,11 +5,9 @@
  * whether the fake per-turn "GOALS ▸ <raw message>" card is suppressed.
  *
  * Pure (no Ink/React, no JSX, no I/O) so it is exercised by the REGULAR `npm test`
- * suite under strip-types. DEFAULT OFF — the board ships dark and the UI is
- * byte-for-byte identical to today (the fake per-turn card and all) unless the
- * caller explicitly opts IN: `MYSHELL_BOARD` ∈ {'1','true','on','yes'}
- * (case-insensitive, trimmed) OR `config.experimentalBoard === true`. This mirrors
- * the rollout shape of the tribunal/judgment/verify/scheduler flags (opt-in, dark).
+ * suite under strip-types. DEFAULT ON — the persistent board is the shipped
+ * experience, and the caller opts OUT with `MYSHELL_BOARD` ∈ {'0','false','off','no'}
+ * (case-insensitive, trimmed) or `config.experimentalBoard === false`.
  *
  * THE OFF-GUARANTEE (the load-bearing neutrality contract): when this returns
  * false, menu.ts never dispatches `board/sync`, so `UiState.boardEnabled` stays

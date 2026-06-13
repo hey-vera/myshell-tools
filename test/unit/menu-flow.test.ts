@@ -54,6 +54,9 @@ import { loadConfig } from '../../src/infra/config.ts';
 import { resolveStateHome } from '../../src/infra/state-dir.ts';
 import { createFileGoalStore } from '../../src/infra/goal-store.ts';
 import { homedir } from 'node:os';
+import { renderStreamInk } from '../../src/interface/ui/run-stream.ts';
+import { reduce } from '../../src/interface/ui/reduce.ts';
+import { initialState, type UiState } from '../../src/interface/ui/state.ts';
 
 /**
  * Run `fn` with the app state home forced to `home`: HOME is overridden and the
@@ -1146,6 +1149,398 @@ describe('startMenu — auto-goal smart autonomy', () => {
     );
   });
 
+  it('clear actionable chat creates exactly one running goal before the first worker call, with the planner roadmap', async () => {
+    const dir = join(tmpdir(), `menu-preflight-goal-${randomUUID()}`);
+    await withStateHome(dir, async () => {
+      const clock = makeFakeClock();
+      const store = makeStore(clock);
+      let workerCalls = 0;
+      const provider: Provider = {
+        id: 'claude',
+        async detect() {
+          return {
+            id: 'claude',
+            installed: true,
+            version: '1.0.0',
+            authenticated: true,
+            plan: null,
+            binaryPath: null,
+            availableModels: ['model-a'],
+          };
+        },
+        async *run(req: ProviderRequest, _signal: AbortSignal): AsyncIterable<ProviderEvent> {
+          if (req.prompt.includes('PLANNING BRAIN')) {
+            const reply = [
+              'JUDGMENT: stage',
+              'GOAL: Ship the billing migration',
+              'TODO: map the current billing flows',
+              'TODO: wire the new provider',
+            ].join('\n');
+            yield { type: 'text', delta: reply };
+            yield { type: 'done', text: reply, usage: FAKE_USAGE, raw: {} };
+            return;
+          }
+          workerCalls += 1;
+          const goalStore = createFileGoalStore({ clock });
+          const all = await goalStore.list();
+          assert.equal(workerCalls, 1, 'only the first work turn should inspect persistence timing');
+          assert.equal(all.length, 1, 'the goal must already exist before the first worker call');
+          assert.equal(all[0]?.state, 'running', 'the staged goal must be promoted before work starts');
+          assert.equal(all[0]?.title, 'Ship the billing migration');
+          assert.deepEqual(all[0]?.roadmap.map((item) => item.text), [
+            'map the current billing flows',
+            'wire the new provider',
+          ]);
+          yield { type: 'text', delta: 'Done.\nGOAL_COMPLETE' };
+          yield { type: 'done', text: 'Done.\nGOAL_COMPLETE', usage: FAKE_USAGE, raw: {} };
+        },
+      };
+
+      const sink = makeSink();
+      const ctx = makeCtx(
+        {
+          providers: { claude: provider },
+          readLine: makeScriptedReader(['n', 'implement and wire the new billing provider', '/exit', 'q']),
+        },
+        clock,
+        store,
+      );
+
+      await startMenu(ctx, sink);
+
+      const goalStore = createFileGoalStore({ clock });
+      const all = await goalStore.list();
+      assert.equal(all.length, 1, 'preflight should create exactly one goal');
+      assert.ok(sink.buf.includes('On it — Ship the billing migration'));
+    });
+  });
+
+  it("planner 'none' writes no goal", async () => {
+    const dir = join(tmpdir(), `menu-preflight-none-${randomUUID()}`);
+    await withStateHome(dir, async () => {
+      const prompts: string[] = [];
+      let sawWorkerTurn = false;
+      const provider: Provider = {
+        id: 'claude',
+        async detect() {
+          return {
+            id: 'claude',
+            installed: true,
+            version: '1.0.0',
+            authenticated: true,
+            plan: null,
+            binaryPath: null,
+            availableModels: ['model-a'],
+          };
+        },
+        async *run(req: ProviderRequest, _signal: AbortSignal): AsyncIterable<ProviderEvent> {
+          prompts.push(req.prompt);
+          if (req.prompt.includes('PLANNING BRAIN')) {
+            const reply = 'JUDGMENT: none';
+            yield { type: 'text', delta: reply };
+            yield { type: 'done', text: reply, usage: FAKE_USAGE, raw: {} };
+            return;
+          }
+          sawWorkerTurn = true;
+          const goalStore = createFileGoalStore({ clock });
+          assert.equal((await goalStore.list()).length, 0, 'judgment:none must not create a goal before the worker turn');
+          yield { type: 'text', delta: 'Done.' };
+          yield { type: 'done', text: `Done.\n${CONFIDENCE_ENVELOPE}`, usage: FAKE_USAGE, raw: {} };
+        },
+      };
+
+      const clock = makeFakeClock();
+      const sink = makeSink();
+      const ctx = makeCtx(
+        {
+          providers: { claude: provider },
+          readLine: makeScriptedReader(['n', 'review and design the migration plan', '/exit', 'q']),
+        },
+        clock,
+      );
+
+      await startMenu(ctx, sink);
+
+      assert.equal(sawWorkerTurn, true, 'the turn should still run normally');
+    });
+  });
+
+  it('hasWorkIntent=false skips the planner and creates no goal', async () => {
+    const dir = join(tmpdir(), `menu-preflight-nointent-${randomUUID()}`);
+    await withStateHome(dir, async () => {
+      const prompts: string[] = [];
+      const provider: Provider = {
+        id: 'claude',
+        async detect() {
+          return {
+            id: 'claude',
+            installed: true,
+            version: '1.0.0',
+            authenticated: true,
+            plan: null,
+            binaryPath: null,
+            availableModels: ['model-a'],
+          };
+        },
+        async *run(req: ProviderRequest, _signal: AbortSignal): AsyncIterable<ProviderEvent> {
+          prompts.push(req.prompt);
+          yield { type: 'text', delta: 'Done.' };
+          yield { type: 'done', text: `Done.\n${CONFIDENCE_ENVELOPE}`, usage: FAKE_USAGE, raw: {} };
+        },
+      };
+
+      const clock = makeFakeClock();
+      const sink = makeSink();
+      const ctx = makeCtx(
+        {
+          providers: { claude: provider },
+          readLine: makeScriptedReader(['n', 'how does the router work?', '/exit', 'q']),
+        },
+        clock,
+      );
+
+      await startMenu(ctx, sink);
+
+      const goalStore = createFileGoalStore({ clock });
+      assert.equal((await goalStore.list()).length, 0, 'read-only chat must not create a goal');
+      assert.equal(
+        prompts.filter((p) => p.includes('PLANNING BRAIN')).length,
+        0,
+        'hasWorkIntent=false must skip the planner call entirely',
+      );
+    });
+  });
+
+  it('planner clarify uses the decision prompt, stays empty until answered, then creates one goal without a duplicate', async () => {
+    const dir = join(tmpdir(), `menu-preflight-clarify-${randomUUID()}`);
+    await withStateHome(dir, async () => {
+      const clock = makeFakeClock();
+      let plannerCalls = 0;
+      const provider: Provider = {
+        id: 'claude',
+        async detect() {
+          return {
+            id: 'claude',
+            installed: true,
+            version: '1.0.0',
+            authenticated: true,
+            plan: null,
+            binaryPath: null,
+            availableModels: ['model-a'],
+          };
+        },
+        async *run(req: ProviderRequest, _signal: AbortSignal): AsyncIterable<ProviderEvent> {
+          if (req.prompt.includes('PLANNING BRAIN')) {
+            plannerCalls += 1;
+            const goalStore = createFileGoalStore({ clock });
+            if (plannerCalls === 1) {
+              assert.equal((await goalStore.list()).length, 0, 'clarify must not create a goal before the answer');
+              const reply = [
+                'JUDGMENT: clarify',
+                'GOAL: Ship authentication',
+                'ASK: Which provider should I wire first?',
+              ].join('\n');
+              yield { type: 'text', delta: reply };
+              yield { type: 'done', text: reply, usage: FAKE_USAGE, raw: {} };
+              return;
+            }
+            const reply = [
+              'JUDGMENT: stage',
+              'GOAL: Ship authentication',
+              'TODO: wire the chosen provider',
+            ].join('\n');
+            yield { type: 'text', delta: reply };
+            yield { type: 'done', text: reply, usage: FAKE_USAGE, raw: {} };
+            return;
+          }
+          const goalStore = createFileGoalStore({ clock });
+          assert.equal((await goalStore.list()).length, 1, 'exactly one goal should exist when work begins');
+          yield { type: 'text', delta: 'Done.\nGOAL_COMPLETE' };
+          yield { type: 'done', text: 'Done.\nGOAL_COMPLETE', usage: FAKE_USAGE, raw: {} };
+        },
+      };
+
+      const sink = makeSink();
+      const ctx = makeCtx(
+        {
+          providers: { claude: provider },
+          readLine: makeScriptedReader(['n', 'implement and wire auth', '1', 'GitHub', '/exit', 'q']),
+        },
+        clock,
+      );
+
+      await startMenu(ctx, sink);
+
+      const goalStore = createFileGoalStore({ clock });
+      const all = await goalStore.list();
+      assert.equal(all.length, 1, 'clarify path must create exactly one goal after the answer');
+      assert.ok(sink.buf.includes('? Question: Which provider should I wire first?'));
+      assert.ok(!sink.buf.includes('\n  ? Which provider should I wire first?\n'));
+    });
+  });
+
+  it('experimentalAutoGoal:false preserves the ordinary chat path and creates no goal', async () => {
+    const dir = join(tmpdir(), `menu-preflight-disabled-${randomUUID()}`);
+    await withStateHome(dir, async () => {
+      const prompts: string[] = [];
+      const provider: Provider = {
+        id: 'claude',
+        async detect() {
+          return {
+            id: 'claude',
+            installed: true,
+            version: '1.0.0',
+            authenticated: true,
+            plan: null,
+            binaryPath: null,
+            availableModels: ['model-a'],
+          };
+        },
+        async *run(req: ProviderRequest, _signal: AbortSignal): AsyncIterable<ProviderEvent> {
+          prompts.push(req.prompt);
+          yield { type: 'text', delta: 'Done.' };
+          yield { type: 'done', text: `Done.\n${CONFIDENCE_ENVELOPE}`, usage: FAKE_USAGE, raw: {} };
+        },
+      };
+
+      const clock = makeFakeClock();
+      const sink = makeSink();
+      const ctx = makeCtx(
+        {
+          config: {
+            onboarded: true,
+            setAsDefault: false,
+            smartRoute: false,
+            experimentalAutoGoal: false,
+          },
+          providers: { claude: provider },
+          readLine: makeScriptedReader(['n', 'please refactor auth', '/exit', 'q']),
+        },
+        clock,
+      );
+
+      await startMenu(ctx, sink);
+
+      const goalStore = createFileGoalStore({ clock });
+      assert.equal((await goalStore.list()).length, 0, 'disabling experimentalAutoGoal must suppress preflight goals');
+      assert.equal(prompts.filter((p) => p.includes('PLANNING BRAIN')).length, 0);
+    });
+  });
+
+  it('goal events carry the persisted goalId and attach live agents', async () => {
+    const dir = join(tmpdir(), `menu-preflight-goalid-${randomUUID()}`);
+    await withStateHome(dir, async () => {
+      const clock = makeFakeClock();
+      const store = makeStore(clock);
+      let uiState: UiState = initialState;
+      const seenGoalIds = new Set<string>();
+      const maxAgentsByGoalId = new Map<string, number>();
+      const sink: OutputSink & { buf: string } = {
+        buf: '',
+        write(s: string) { this.buf += s; },
+        color: false,
+        isTty: false,
+        syncBoard(rows) {
+          uiState = reduce(uiState, { type: 'board/sync', rows, enabled: true });
+        },
+      };
+      const provider: Provider = {
+        id: 'claude',
+        async detect() {
+          return {
+            id: 'claude',
+            installed: true,
+            version: '1.0.0',
+            authenticated: true,
+            plan: null,
+            binaryPath: null,
+            availableModels: ['model-a'],
+          };
+        },
+        async *run(req: ProviderRequest, _signal: AbortSignal): AsyncIterable<ProviderEvent> {
+          if (req.prompt.includes('PLANNING BRAIN')) {
+            const reply = [
+              'JUDGMENT: stage',
+              'GOAL: Stabilize the auth flow',
+              'TODO: wire the auth provider',
+            ].join('\n');
+            yield { type: 'text', delta: reply };
+            yield { type: 'done', text: reply, usage: FAKE_USAGE, raw: {} };
+            return;
+          }
+          yield { type: 'text', delta: 'Done.\nGOAL_COMPLETE' };
+          yield { type: 'done', text: 'Done.\nGOAL_COMPLETE', usage: FAKE_USAGE, raw: {} };
+        },
+      };
+      const ctx = makeCtx(
+        {
+          providers: { claude: provider },
+          readLine: makeScriptedReader(['implement and wire auth', '/exit']),
+        },
+        clock,
+        store,
+      );
+      const meta = await store.create('goal-id');
+      const mutableCtx = { config: ctx.config, env: ctx.env };
+      const inkRenderTurn = async (events, _sink, verbosity, _turnInput, timeoutContinuation) =>
+        renderStreamInk(
+          events,
+          (action) => {
+            uiState = reduce(uiState, action);
+            if ('goalId' in action && typeof action.goalId === 'string') {
+              seenGoalIds.add(action.goalId);
+            }
+            for (const goal of uiState.goals) {
+              maxAgentsByGoalId.set(
+                goal.id,
+                Math.max(maxAgentsByGoalId.get(goal.id) ?? 0, goal.agents.length),
+              );
+            }
+          },
+          {
+            verbosity,
+            color: false,
+            isTty: false,
+            timeoutContinuation,
+            scheduleFlush: (flush) => {
+              flush();
+              return () => {};
+            },
+          },
+        );
+
+      await runChatLoop(
+        ctx,
+        mutableCtx,
+        meta.id,
+        sink,
+        makeScriptedReader(['implement and wire auth', '/exit']),
+        async () => 0,
+        async () => ctx.env,
+        async () => false,
+        undefined,
+        undefined,
+        inkRenderTurn,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        () => {
+          uiState = reduce(uiState, { type: 'turn/start' });
+        },
+      );
+
+      const goalStore = createFileGoalStore({ clock });
+      const all = await goalStore.list();
+      assert.equal(all.length, 1);
+      assert.ok(seenGoalIds.has(all[0]!.id), 'live events must carry the persisted goal id');
+      assert.ok(
+        (maxAgentsByGoalId.get(all[0]!.id) ?? 0) > 0,
+        'the reducer must attach a live agent to the persisted goal id',
+      );
+    });
+  });
+
   it('with autoGoal on and quality-first, strong multi-step work enters runGoalLoop and prints the banner', async () => {
     const prompts: string[] = [];
     const provider: Provider = {
@@ -1195,6 +1590,7 @@ describe('startMenu — auto-goal smart autonomy', () => {
       mode: 'quality-first',
       smartRoute: false,
       autoGoal: true,
+      experimentalAutoGoal: false,
     };
     // A deliberately rambling raw message: the work must still receive it verbatim,
     // while the title/objective is the concise extracted label.
@@ -1295,6 +1691,7 @@ describe('startMenu — auto-goal smart autonomy', () => {
       mode: 'quality-first',
       smartRoute: true,
       autoGoal: true,
+      experimentalAutoGoal: false,
     };
     const ctx = makeCtx(
       {
@@ -1379,6 +1776,7 @@ describe('startMenu — auto-goal smart autonomy', () => {
       mode: 'quality-first',
       smartRoute: false,
       autoGoal: true,
+      experimentalAutoGoal: false,
     };
     const ctx = makeCtx(
       {

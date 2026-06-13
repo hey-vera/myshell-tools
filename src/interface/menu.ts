@@ -20,7 +20,7 @@ import readline from 'node:readline';
 import fs from 'node:fs';
 import { join } from 'node:path';
 import { Writable } from 'node:stream';
-import type { Clock, CoreEvent, LedgerWriter, OrchestrateDeps, SessionEntry, SessionWriter, Tier } from '../core/types.js';
+import type { Clock, CoreEvent, LedgerWriter, OrchestrateDeps, QuestionSet, SessionEntry, SessionWriter, Tier } from '../core/types.js';
 import { buildGoalTask, parseGoalSignal, parseGoalContinueText, decideGoalNext, formatGoalProgress, DEFAULT_MAX_GOAL_ITERATIONS, stripTrailingGoalConfidenceEnvelope, formConciseGoalLabel } from '../core/goal.js';
 import type { GoalCeilings } from '../core/goal.js';
 import { appendCheckpointFromContinue, capContract } from '../core/work-contract.js';
@@ -626,7 +626,7 @@ export async function runChatLoop(
   // awaits; if preprocessing fails or the turn is diverted elsewhere, reset clears
   // that optimistic state without emitting a completion line.
   inkBeginTurn?: () => void,
-  inkResetTurn?: () => void,
+  _inkResetTurn?: () => void,
 ): Promise<'menu' | 'exit'> {
   // -------------------------------------------------------------------------
   // RECAP (Phase 7, docs/recap-feature-5.5.md) — a ※ orientation line on resume
@@ -2639,6 +2639,147 @@ export async function runChatLoop(
         }
         return { judgment: 'stage', title: await formGoalLabel(goalText), roadmap: todosToRoadmap([{ text: goalText }]) };
       };
+      interface AcknowledgedGoalLaunch {
+        readonly goalId: string;
+        readonly title: string;
+        readonly work: string;
+        readonly roadmap: readonly RoadmapItem[];
+      }
+      const existingLiveGoalTitles = async (projectKey: string | null): Promise<string[]> => {
+        const seenTitles: string[] = [];
+        try {
+          const existing = await goalStore.list(
+            projectKey !== null ? { scope: 'project', projectKey } : { scope: 'global' },
+          );
+          for (const e of existing) {
+            if (e.state === 'parked' || e.state === 'queued' || e.state === 'running') {
+              seenTitles.push(e.title);
+            }
+          }
+        } catch {
+          /* fail-soft: dedup only against the current turn's candidate */
+        }
+        return seenTitles;
+      };
+      const canDelegateClarifyingQuestion = (goalText: string, question: string): boolean => {
+        const risk = classify(goalText).risk;
+        if (risk === 'high' || risk === 'critical') return false;
+        const q = question.trim().toLowerCase();
+        if (q.length === 0) return false;
+        if (/\b(prefer|want|choose|pick|specific|exact|which|who|where|when)\b/.test(q)) return false;
+        if (/\b(secret|credential|password|token|account|billing|legal|policy|security|production|prod)\b/.test(q)) return false;
+        return true;
+      };
+      const clarifyQuestionSetFor = (
+        goalText: string,
+        clarifyingQuestion: string,
+      ): QuestionSet => ({
+        questions: [
+          {
+            id: 'goal_clarify',
+            prompt: clarifyingQuestion,
+            options: canDelegateClarifyingQuestion(goalText, clarifyingQuestion)
+              ? [
+                  {
+                    label: 'Use your best judgment',
+                    description: 'delegate the choice and keep moving',
+                  },
+                ]
+              : [],
+            multiSelect: false,
+            allowFreeText: true,
+          },
+        ],
+      });
+      async function prepareAcknowledgedGoal(
+        line: string,
+      ): Promise<AcknowledgedGoalLaunch | 'normal-chat' | 'cancelled'> {
+        if (!autoStageOn) return 'normal-chat';
+        if (!hasAuthenticatedProvider(mutableCtx.env)) return 'normal-chat';
+        if (!hasWorkIntent(line)) return 'normal-chat';
+        if (currentPressure() >= 3) return 'normal-chat';
+
+        let plan = await judgeGoal(line);
+        if (plan.judgment === 'none') return 'normal-chat';
+
+        if (plan.judgment === 'clarify') {
+          const question = plan.clarifyingQuestion?.trim();
+          if (question === undefined || question.length === 0) return 'normal-chat';
+          const answer = await runQuestionSelector(
+            clarifyQuestionSetFor(line, question),
+            out,
+            readLine,
+          );
+          if (answer === null) return 'cancelled';
+          plan = await judgeGoal(`${line}\n${answer}`);
+          if (plan.judgment !== 'stage') return 'normal-chat';
+        }
+
+        const projectKey = await resolveProjectKeyOnce();
+        const seenTitles = await existingLiveGoalTitles(projectKey);
+        if (isDuplicateGoalTitle(plan.title, seenTitles)) return 'normal-chat';
+
+        try {
+          const created = await goalStore.create({
+            title: plan.title,
+            roadmap: plan.roadmap,
+            scope: projectKey !== null ? 'project' : 'global',
+            projectKey,
+            conversationId: convId,
+            source: 'auto-staged',
+            ...(plan.approach !== undefined ? { approach: plan.approach } : {}),
+          });
+          await goalStore.setState(created.id, 'running');
+          await syncBoard();
+          return {
+            goalId: created.id,
+            title: plan.title,
+            work: line,
+            roadmap: plan.roadmap,
+          };
+        } catch {
+          return 'normal-chat';
+        }
+      }
+      async function* tagGoalEvents(
+        events: AsyncIterable<CoreEvent>,
+        goalId: string,
+      ): AsyncIterable<CoreEvent> {
+        for await (const event of events) {
+          switch (event.type) {
+            case 'tier-start':
+            case 'provider-event':
+            case 'tier-done':
+            case 'final':
+              yield event.goalId === undefined ? { ...event, goalId } : event;
+              break;
+            default:
+              yield event;
+              break;
+          }
+        }
+      }
+      const launchAcknowledgedGoal = async (
+        launch: AcknowledgedGoalLaunch,
+      ): Promise<boolean> => {
+        out.write(`  On it — ${launch.title}\n`);
+        const shouldBreak = await runGoalLoop(launch.work, launch.title, { goalId: launch.goalId });
+        if (lastGoalCompleted) {
+          await goalStore.setState(launch.goalId, 'done').catch(() => null);
+        }
+        await syncBoard();
+        return shouldBreak;
+      };
+      const launchGoalFromChatLine = async (
+        rawLine: string,
+        fallbackLabel: string,
+        prepared?: AcknowledgedGoalLaunch | 'normal-chat' | 'cancelled',
+      ): Promise<'continue' | 'cancelled' | boolean> => {
+        const launch = prepared ?? (await prepareAcknowledgedGoal(rawLine));
+        if (launch === 'cancelled') return 'cancelled';
+        if (launch !== 'normal-chat') return launchAcknowledgedGoal(launch);
+        return runGoalLoop(rawLine, fallbackLabel);
+      };
       // Convert ONE planned goal (a `GoalPlan.goals[]` entry) into the create-spec the
       // /goal ACT branch runs: a professional title, its roadmap built from the goal's
       // to-dos (the SAME planTodosToRoadmap translation judgeGoal uses for goals[0],
@@ -3505,6 +3646,16 @@ export async function runChatLoop(
                 { ...deps, workContract: goalContract, goalTurn: true },
                 ac.signal,
                 mutableCtx.config.verbosity ?? 'normal',
+                cycleGoalId !== undefined
+                  ? tagGoalEvents(
+                      orchestrate(
+                        task,
+                        { ...deps, workContract: goalContract, goalTurn: true },
+                        ac.signal,
+                      ),
+                      cycleGoalId,
+                    )
+                  : undefined,
               );
               currentAc = null;
               noteRateLimit(result);
@@ -3862,6 +4013,16 @@ export async function runChatLoop(
             { ...goalDeps, session: goalSession, workContract: goalContract, goalTurn: true },
             goalAc.signal,
             mutableCtx.config.verbosity ?? 'normal',
+            opts?.goalId !== undefined
+              ? tagGoalEvents(
+                  orchestrate(
+                    contractedGoalTask,
+                    { ...goalDeps, session: goalSession, workContract: goalContract, goalTurn: true },
+                    goalAc.signal,
+                  ),
+                  opts.goalId,
+                )
+              : undefined,
           );
           currentAc = null;
           noteRateLimit(turn);
@@ -4491,50 +4652,60 @@ export async function runChatLoop(
         return 'continue';
       }
 
-      inkBeginTurn?.();
       let deps: OrchestrateDeps | null = null;
       let turnAttachments: ReturnType<typeof resolveImageAttachments> = [];
-      try {
-        const depsBase = buildDeps(
-          priorHistory,
-          await resolveTurnMemory(line),
-          await resolveEnvironmentOnce(),
-          await resolveTurnTaste(),
-        );
-        // Image attachments (audit #4, image scope): the IMPURE existence check lives
-        // here in the interface layer (fs allowed). The pure extractor finds candidate
-        // image paths in the user's message; we keep only those that exist on disk and
-        // thread them onto deps so orchestrate sets needsVision + routes the turn to a
-        // vision-capable provider (codex `-i` / opencode `-f`). No real image → empty
-        // → field omitted → behaviour byte-for-byte unchanged.
-        turnAttachments = resolveImageAttachments(line, { cwd: ctx.cwd });
-        deps =
-          turnAttachments.length > 0 ? { ...depsBase, attachments: turnAttachments } : depsBase;
+      let acknowledgedGoal:
+        | AcknowledgedGoalLaunch
+        | 'normal-chat'
+        | 'cancelled' = 'normal-chat';
+      const depsBase = buildDeps(
+        priorHistory,
+        await resolveTurnMemory(line),
+        await resolveEnvironmentOnce(),
+        await resolveTurnTaste(),
+      );
+      // Image attachments (audit #4, image scope): the IMPURE existence check lives
+      // here in the interface layer (fs allowed). The pure extractor finds candidate
+      // image paths in the user's message; we keep only those that exist on disk and
+      // thread them onto deps so orchestrate sets needsVision + routes the turn to a
+      // vision-capable provider (codex `-i` / opencode `-f`). No real image → empty
+      // → field omitted → behaviour byte-for-byte unchanged.
+      turnAttachments = resolveImageAttachments(line, { cwd: ctx.cwd });
+      deps =
+        turnAttachments.length > 0 ? { ...depsBase, attachments: turnAttachments } : depsBase;
+      acknowledgedGoal = await prepareAcknowledgedGoal(line);
+      if (acknowledgedGoal === 'cancelled') return 'continue';
 
-        if (mutableCtx.config.autoGoal === true && effectiveMode === 'quality-first') {
-          const autoClassification = classify(line);
-          const autonomy = decideAutonomyOffer({
-            mode: effectiveMode,
-            classification: autoClassification,
-            autoGoalEnabled: true,
-          });
-          if (autonomy.kind === 'auto_engage') {
-            inkResetTurn?.();
-            // Auto-engaging on RAW chat text: form a concise title/objective from it
-            // (the full `line` stays the work input). Fail-soft → raw text.
-            if (await runGoalLoop(line, await formGoalLabel(line))) return control.result;
-            return 'continue';
-          }
+      if (mutableCtx.config.autoGoal === true && effectiveMode === 'quality-first') {
+        const autoClassification = classify(line);
+        const autonomy = decideAutonomyOffer({
+          mode: effectiveMode,
+          classification: autoClassification,
+          autoGoalEnabled: true,
+        });
+        if (autonomy.kind === 'auto_engage') {
+          // Auto-engaging on RAW chat text: reuse the acknowledged-goal launch
+          // when one was staged in preflight; otherwise fall back to the legacy
+          // goal loop on the raw work with a concise label.
+          const launched = await launchGoalFromChatLine(
+            line,
+            await formGoalLabel(line),
+            acknowledgedGoal,
+          );
+          if (launched === 'cancelled') return 'continue';
+          if (launched) return control.result;
+          return 'continue';
         }
-      } catch (error) {
-        inkResetTurn?.();
-        throw error;
       }
       if (deps === null) {
-        inkResetTurn?.();
         throw new Error('chat turn dependencies were not prepared');
       }
+      if (acknowledgedGoal !== 'normal-chat') {
+        if (await launchAcknowledgedGoal(acknowledgedGoal)) return control.result;
+        return 'continue';
+      }
 
+      inkBeginTurn?.();
       const ac = new AbortController();
       currentAc = ac;
       const oversight = resolveOversight(mutableCtx.config, process.env);
@@ -4685,8 +4856,9 @@ export async function runChatLoop(
           ));
         }
         if (await approveTimeoutContinuation(oversight, confirm)) {
-          // Chunking a timed-out RAW chat ask: concise title, full `line` as work.
-          if (await runGoalLoop(line, await formGoalLabel(line))) return control.result;
+          const launched = await launchGoalFromChatLine(line, await formGoalLabel(line));
+          if (launched === 'cancelled') return 'continue';
+          if (launched) return control.result;
         }
         return 'continue';
       }
@@ -4725,9 +4897,9 @@ export async function runChatLoop(
           out.color,
         ));
         if (await confirm(true)) {
-          // Accepting the model's keep-going offer on the ORIGINAL raw ask: concise
-          // title, full `line` as work.
-          if (await runGoalLoop(line, await formGoalLabel(line))) return control.result;
+          const launched = await launchGoalFromChatLine(line, await formGoalLabel(line));
+          if (launched === 'cancelled') return 'continue';
+          if (launched) return control.result;
         }
         return 'continue';
       }
@@ -4801,6 +4973,7 @@ export async function runChatLoop(
       // committed transcript region, exactly like streamed output). This mirrors the
       // non-blocking warmUnderstanding treatment and keeps the conversation frictionless.
       if (
+        acknowledgedGoal === 'normal-chat' &&
         autoStageOn &&
         result.final?.success === true &&
         result.final.questions === undefined &&
