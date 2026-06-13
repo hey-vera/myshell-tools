@@ -101,7 +101,7 @@ import type { AppConfig } from '../infra/config.js';
 import { saveConfig, resolvePartnerStyle } from '../infra/config.js';
 import type { ConversationMeta, ConversationStore } from '../infra/conversation-store.js';
 import { readLedger } from '../infra/ledger.js';
-import { summarizeSpend } from '../infra/insights.js';
+import { summarizeSessionProviderTokens, summarizeSpend } from '../infra/insights.js';
 import type { EnvironmentStatus } from '../providers/detect.js';
 import { detectEnvironment } from '../providers/detect.js';
 import { installProvider, installCommandFor } from '../providers/install.js';
@@ -119,7 +119,7 @@ import { planNativeSession } from '../core/native-session.js';
 import { decideHistoryPolicy } from '../core/turn-directive.js';
 import { historyTruncationInfo } from '../core/history.js';
 import { availableAfterCooldown, cooldownExpiry } from '../core/cooldown.js';
-import { deriveBaselineOrder } from '../core/capacity-allocator.js';
+import { deriveBaselineOrder, deriveLiveProviderOrder } from '../core/capacity-allocator.js';
 import { learnProviderOrder, learnModelOutcomeOrder } from '../core/routing-memory.js';
 import type { OutputSink, TurnInputSurface, Verbosity } from './render.js';
 import {
@@ -1155,9 +1155,9 @@ export async function runChatLoop(
   // unhandled-rejection; the loop awaits it in finally to settle side effects.
   recapResolved.catch(() => {});
 
-  // EXPERIMENTAL Local Outcome Learner (opt-in via config.learnRouting; default
-  // off → this whole block is skipped, zero behaviour change). Read the ledger
-  // ONCE here, before the chat loop, and learn a per-tier provider-preference
+  // Read the ledger ONCE here, before the chat loop. The session accumulator
+  // powers live capacity allocation; the optional outcome learner reuses the
+  // same snapshot to learn a per-tier provider-preference
   // order from this user's own recorded outcomes. We compute it once per chat
   // session (not per turn) so a long ledger isn't re-read every message; the
   // closure below spreads it into deps. We pre-filter to the most recent 500
@@ -1174,8 +1174,21 @@ export async function runChatLoop(
       readonly import('../core/model-capabilities.js').ModelPreference[]
     >
   > = {};
+  const allEntries = await readLedger(ctx.cwd).catch(() => []);
+  const sessionConsumption: Partial<Record<ProviderId, number>> =
+    summarizeSessionProviderTokens(allEntries, convId);
+  const accountingLedger: LedgerWriter = {
+    record: async (entry) => {
+      await ctx.ledger.record(entry);
+      if (entry.sessionId === convId) {
+        const inputTokens = Number.isFinite(entry.inputTokens) ? Math.max(0, entry.inputTokens) : 0;
+        const outputTokens = Number.isFinite(entry.outputTokens) ? Math.max(0, entry.outputTokens) : 0;
+        sessionConsumption[entry.provider] =
+          (sessionConsumption[entry.provider] ?? 0) + inputTokens + outputTokens;
+      }
+    },
+  };
   if (mutableCtx.config.learnRouting === true) {
-    const allEntries = await readLedger(ctx.cwd);
     const recent = allEntries.slice(-500);
     for (const tier of ['worker', 'ic', 'manager'] as const) {
       const order = learnProviderOrder(recent, tier);
@@ -2074,10 +2087,37 @@ export async function runChatLoop(
           ...(caps.summary !== undefined ? { capabilitySummary: caps.summary } : {}),
         });
 
+        const capacityWeightByProvider: Partial<Record<ProviderId, number>> = {};
+        for (const weight of inventory) {
+          capacityWeightByProvider[weight.provider] = weight.weight;
+        }
+        const now = ctx.clock.now();
+        const coolingProviders = new Set<ProviderId>();
+        for (const [provider, until] of providerCooldownUntil) {
+          if (until > now) coolingProviders.add(provider);
+        }
+        const liveOrder = deriveLiveProviderOrder({
+          baselineOrderByTier: policy.providerOrderByTier,
+          capacityWeightByProvider,
+          sessionTokensByProvider: sessionConsumption,
+          ...(Object.keys(learnedProviderOrder).length > 0
+            ? { learnedOutcomeOrderByTier: learnedProviderOrder }
+            : {}),
+          coolingProviders,
+        });
+        const dynamicOrder: Partial<Record<Tier, readonly ProviderId[]>> = {};
+        for (const tier of ['worker', 'ic', 'manager'] as const) {
+          const live = liveOrder[tier];
+          const base = policy.providerOrderByTier[tier];
+          if (live.length !== base.length || live.some((provider, index) => provider !== base[index])) {
+            dynamicOrder[tier] = live;
+          }
+        }
+
         return {
           clock: ctx.clock,
           session: ctx.store.writer(convId),
-          ledger: ctx.ledger,
+          ledger: accountingLedger,
           policy,
           providers: ctx.providers,
           cwd: ctx.cwd,
@@ -2095,7 +2135,9 @@ export async function runChatLoop(
           ...(nativeSession.length > 0 ? { nativeSession } : {}),
           ...(routeClassifier !== undefined ? { routeClassifier } : {}),
           ...(intentExtractor !== undefined ? { intentExtractor } : {}),
-          ...(Object.keys(learnedProviderOrder).length > 0 ? { learnedProviderOrder } : {}),
+          // Composed dynamic provider order: capacity + session consumption +
+          // optional learned outcomes + current cooldown state.
+          ...(Object.keys(dynamicOrder).length > 0 ? { learnedProviderOrder: dynamicOrder } : {}),
           ...(Object.keys(modelOutcomeOrderByTaskKind).length > 0
             ? { modelOutcomeOrderByTaskKind }
             : {}),

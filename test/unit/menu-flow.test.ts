@@ -53,6 +53,7 @@ import type { AppConfig } from '../../src/infra/config.ts';
 import { loadConfig } from '../../src/infra/config.ts';
 import { resolveStateHome } from '../../src/infra/state-dir.ts';
 import { createFileGoalStore } from '../../src/infra/goal-store.ts';
+import { createLedger } from '../../src/infra/ledger.ts';
 import { homedir } from 'node:os';
 import { renderStreamInk } from '../../src/interface/ui/run-stream.ts';
 import { reduce } from '../../src/interface/ui/reduce.ts';
@@ -347,6 +348,20 @@ function makeFakeProvider(id: 'claude' | 'codex' = 'claude'): Provider {
   };
 }
 
+function makeTrackingProvider(
+  id: 'claude' | 'codex',
+  calls: Array<'claude' | 'codex'>,
+): Provider {
+  const provider = makeFakeProvider(id);
+  return {
+    ...provider,
+    async *run(req: ProviderRequest, signal: AbortSignal): AsyncIterable<ProviderEvent> {
+      if (req.prompt.includes('implement the parser')) calls.push(id);
+      yield* provider.run(req, signal);
+    },
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Fake environment
 // ---------------------------------------------------------------------------
@@ -382,6 +397,121 @@ const FAKE_ENV: EnvironmentStatus = {
   hasAnyProvider: true,
   platform: 'linux',
 };
+
+describe('runChatLoop — active subscription capacity allocator', () => {
+  const capacityEnv: EnvironmentStatus = {
+    claude: {
+      id: 'claude',
+      installed: true,
+      version: '1.0.0',
+      authenticated: true,
+      plan: 'Max 20x',
+      binaryPath: 'claude',
+      availableModels: ['claude-sonnet-4-6'],
+    },
+    codex: {
+      id: 'codex',
+      installed: true,
+      version: '1.0.0',
+      authenticated: true,
+      plan: 'Plus',
+      binaryPath: 'codex',
+      availableModels: ['gpt-5.4'],
+    },
+    opencode: {
+      id: 'opencode',
+      installed: false,
+      version: null,
+      authenticated: false,
+      plan: null,
+      binaryPath: null,
+      availableModels: [],
+    },
+    hasAnyProvider: true,
+    platform: 'linux',
+  };
+
+  it('shifts an IC turn by weighted session consumption and leaves a fresh conversation neutral', async () => {
+    const cwd = join(tmpdir(), `menu-live-capacity-${randomUUID()}`);
+    const clock = makeFakeClock();
+    const store = makeStore(clock);
+    const ledger = createLedger({ cwd });
+    const consumed = await store.create('consumed');
+    const fresh = await store.create('fresh');
+    await ledger.record({
+      timestamp: clock.isoNow(),
+      sessionId: consumed.id,
+      taskId: 'seed-claude',
+      provider: 'claude',
+      model: 'claude-sonnet-4-6',
+      tier: 'ic',
+      inputTokens: 2_001,
+      outputTokens: 0,
+      cachedInputTokens: 0,
+      usd: 0,
+      durationMs: 1,
+      success: true,
+    });
+    await ledger.record({
+      timestamp: clock.isoNow(),
+      sessionId: consumed.id,
+      taskId: 'seed-codex',
+      provider: 'codex',
+      model: 'gpt-5.4',
+      tier: 'ic',
+      inputTokens: 200,
+      outputTokens: 0,
+      cachedInputTokens: 0,
+      usd: 0,
+      durationMs: 1,
+      success: true,
+    });
+
+    const runConversation = async (conversationId: string): Promise<Array<'claude' | 'codex'>> => {
+      const calls: Array<'claude' | 'codex'> = [];
+      const ctx = makeCtx(
+        {
+          providers: {
+            claude: makeTrackingProvider('claude', calls),
+            codex: makeTrackingProvider('codex', calls),
+          },
+          env: capacityEnv,
+          config: {
+            onboarded: true,
+            setAsDefault: false,
+            smartRoute: false,
+            intentEngine: false,
+            experimentalAutoGoal: false,
+            mode: 'cost-saver',
+          },
+          readLine: makeScriptedReader(['implement the parser', '/exit']),
+        },
+        clock,
+        store,
+        ledger,
+        cwd,
+      );
+      await runChatLoop(
+        ctx,
+        { config: ctx.config, env: capacityEnv },
+        conversationId,
+        makeSink(),
+        makeScriptedReader(['implement the parser', '/exit']),
+        async () => 0,
+        async () => capacityEnv,
+        async () => false,
+      );
+      return calls;
+    };
+
+    try {
+      assert.deepStrictEqual(await runConversation(consumed.id), ['codex']);
+      assert.deepStrictEqual(await runConversation(fresh.id), ['claude']);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+});
 
 // ---------------------------------------------------------------------------
 // Non-color capturing OutputSink

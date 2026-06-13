@@ -11,6 +11,24 @@
  */
 
 import type { LedgerEntry } from '../core/types.js';
+import type { ProviderId } from '../providers/port.js';
+
+export function summarizeSessionProviderTokens(
+  entries: readonly LedgerEntry[],
+  sessionId: string,
+): Partial<Record<ProviderId, number>> {
+  const tokensByProvider: Partial<Record<ProviderId, number>> = {};
+
+  for (const entry of entries) {
+    if (entry.sessionId !== sessionId) continue;
+    const inputTokens = Number.isFinite(entry.inputTokens) ? Math.max(0, entry.inputTokens) : 0;
+    const outputTokens = Number.isFinite(entry.outputTokens) ? Math.max(0, entry.outputTokens) : 0;
+    tokensByProvider[entry.provider] =
+      (tokensByProvider[entry.provider] ?? 0) + inputTokens + outputTokens;
+  }
+
+  return tokensByProvider;
+}
 
 // ---------------------------------------------------------------------------
 // SpendSummary

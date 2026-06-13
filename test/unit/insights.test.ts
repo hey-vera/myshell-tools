@@ -11,7 +11,13 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 
-import { summarizeSpend, providerHealth, formatUsd, formatTokens } from '../../src/infra/insights.ts';
+import {
+  summarizeSessionProviderTokens,
+  summarizeSpend,
+  providerHealth,
+  formatUsd,
+  formatTokens,
+} from '../../src/infra/insights.ts';
 import type { LedgerEntry } from '../../src/core/types.ts';
 
 // ---------------------------------------------------------------------------
@@ -64,6 +70,46 @@ function makeEntry(overrides?: Partial<LedgerEntry>): LedgerEntry {
     ...overrides,
   };
 }
+
+// ---------------------------------------------------------------------------
+// summarizeSessionProviderTokens
+// ---------------------------------------------------------------------------
+
+describe('summarizeSessionProviderTokens', () => {
+  it('sums input and output tokens by provider for the matching session only', () => {
+    const sessionId = randomUUID();
+    const entries = [
+      makeEntry({ sessionId, provider: 'claude', inputTokens: 100, outputTokens: 20 }),
+      makeEntry({ sessionId, provider: 'claude', inputTokens: 30, outputTokens: 5 }),
+      makeEntry({ sessionId, provider: 'codex', inputTokens: 40, outputTokens: 10 }),
+      makeEntry({ sessionId: randomUUID(), provider: 'codex', inputTokens: 900, outputTokens: 100 }),
+    ];
+
+    assert.deepStrictEqual(summarizeSessionProviderTokens(entries, sessionId), {
+      claude: 155,
+      codex: 50,
+    });
+  });
+
+  it('skips negative and non-finite token values', () => {
+    const sessionId = randomUUID();
+    const entries = [
+      makeEntry({ sessionId, provider: 'claude', inputTokens: -10, outputTokens: 7 }),
+      makeEntry({ sessionId, provider: 'codex', inputTokens: Number.NaN, outputTokens: 3 }),
+      makeEntry({ sessionId, provider: 'opencode', inputTokens: Number.POSITIVE_INFINITY, outputTokens: -2 }),
+    ];
+
+    assert.deepStrictEqual(summarizeSessionProviderTokens(entries, sessionId), {
+      claude: 7,
+      codex: 3,
+      opencode: 0,
+    });
+  });
+
+  it('returns an empty object when no entries match', () => {
+    assert.deepStrictEqual(summarizeSessionProviderTokens([], randomUUID()), {});
+  });
+});
 
 // ---------------------------------------------------------------------------
 // summarizeSpend
