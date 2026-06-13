@@ -6,6 +6,9 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+## 3.102.0
+feat(goals): show each running goal's checklist in the board. Running goals now render their roadmap items (✓ done · ◐ active · ⚠ blocked · ▢ pending) indented beneath the goal line, so you can watch the per-goal checklist progress live. The bordered GOALS agent tree is no longer suppressed just because board mode is on — the layout now budgets both and renders whichever fit. Parked/terminal goals stay compact one-liners. Layout budgets the taller multi-line running rows so the board + live panel + composer never overflow the terminal. Presentation-only; completes the elite-partner goal experience started in 3.101.0.
+
 ## 3.101.0
 feat(goals): create a goal the moment work is acknowledged. When you send an actionable request, the assistant now judges it up front and — if it's real work — creates a running goal with a checklist, says "On it — <title>", and starts executing it immediately (visible in the running-goals board), instead of quietly staging a parked goal *after* the reply. Ambiguous requests open the polished decision prompt to discuss first and only create a goal once you've answered (cancel = no goal). Reuses the existing planner, goal store, and goal loop — no new model calls or storage. Duplicate-goal safe: the old post-turn auto-stage now runs only when no goal was created up front. (Checklist rows render in the board in a follow-up.)
 

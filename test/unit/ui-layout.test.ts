@@ -638,6 +638,7 @@ function boardRow(over: Partial<GoalBoardRow> = {}): GoalBoardRow {
     glyph: over.glyph ?? '◷',
     scope: over.scope ?? 'project',
     agents: over.agents ?? 0,
+    ...(over.todos !== undefined ? { todos: over.todos } : {}),
   };
 }
 
@@ -656,6 +657,29 @@ describe('planBoard — bounded board body', () => {
     assert.ok(plan !== null);
     assert.equal(plan?.shown.length, 3);
     assert.equal(plan?.overflow, 0);
+  });
+  it('budgets running board rows by their expanded checklist height', () => {
+    const rows = [
+      boardRow({
+        id: 'run',
+        state: 'running',
+        todos: [
+          { id: 't1', text: 'one', status: 'done' },
+          { id: 't2', text: 'two', status: 'active' },
+        ],
+      }),
+      boardRow({ id: 'parked' }),
+      boardRow({ id: 'done', state: 'done' }),
+    ];
+    const budget = 4;
+    const plan = planBoard(rows, budget);
+    assert.ok(plan !== null);
+    assert.deepEqual(plan?.shown.map((row) => row.id), ['run']);
+    assert.equal(plan?.overflow, 2);
+    const used =
+      (plan?.shown.reduce((sum, row) => sum + 1 + (row.state === 'running' ? row.todos?.length ?? 0 : 0), 0) ?? 0) +
+      ((plan?.overflow ?? 0) > 0 ? 1 : 0);
+    assert.ok(used <= budget, `used ${used} > budget ${budget}`);
   });
   it('collapses the overflow into a single +K more line so 20 goals never exceed the budget', () => {
     const rows = Array.from({ length: 20 }, (_, i) => boardRow({ id: `g${i}` }));
@@ -701,8 +725,34 @@ describe('layoutForHeight — persistent board (flag ON)', () => {
       `planned ${plan.plannedRows} + input ${INPUT_ROWS} + margin ${SAFETY_MARGIN_ROWS} > ${viewport}`,
     );
     // The board self-caps to ~1/3 of the viewport, so it leaves room for a live turn.
-    const boardRowsUsed = BOARD_CHROME_ROWS + (plan.board?.shown.length ?? 0) + ((plan.board?.overflow ?? 0) > 0 ? 1 : 0);
+    const boardRowsUsed =
+      BOARD_CHROME_ROWS +
+      (plan.board?.shown.reduce((sum, row) => sum + 1 + (row.state === 'running' ? row.todos?.length ?? 0 : 0), 0) ?? 0) +
+      ((plan.board?.overflow ?? 0) > 0 ? 1 : 0);
     assert.equal(plan.plannedRows, boardRowsUsed, 'idle planned rows == the board rows');
+  });
+
+  it('expanded running board rows still never make board plus live panel exceed the terminal height', () => {
+    const board = [
+      boardRow({
+        id: 'goal_a',
+        state: 'running',
+        todos: [
+          { id: 't1', text: 'Inspect logs', status: 'done' },
+          { id: 't2', text: 'Patch renderer', status: 'active' },
+          { id: 't3', text: 'Verify layout', status: 'pending' },
+        ],
+      }),
+      boardRow({ id: 'goal_b' }),
+      boardRow({ id: 'goal_c' }),
+    ];
+    const goals = [goal({ id: 'goal_a', label: 'Ship it', state: 'running', agents: [agent({ state: 'running' })] })];
+    const rows = 18;
+    const plan = layoutForHeight(withBoard(board, true, goals), rows, 1, INPUT_ROWS);
+    assert.ok(
+      plan.plannedRows + INPUT_ROWS + SAFETY_MARGIN_ROWS <= rows,
+      `planned ${plan.plannedRows} + input ${INPUT_ROWS} + margin ${SAFETY_MARGIN_ROWS} > ${rows}`,
+    );
   });
 });
 

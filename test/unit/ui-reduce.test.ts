@@ -1669,6 +1669,7 @@ const boardRow = (over: Partial<GoalBoardRow> = {}): GoalBoardRow => ({
   glyph: '◷',
   scope: 'project',
   agents: 0,
+  ...(over.todos !== undefined ? { todos: over.todos } : {}),
   ...over,
 });
 
@@ -1710,6 +1711,32 @@ describe('ui reduce — board/sync (persistent board)', () => {
     assert.equal(synced.board.find((r) => r.id === 'goal_run')?.agents, 2);
     // A goal not running this turn keeps 0 (never fabricated).
     assert.equal(synced.board.find((r) => r.id === 'goal_idle')?.agents, 0);
+  });
+
+  it('board/sync preserves the optional todos projection while re-deriving live agents', () => {
+    let s = reduce(initialState, {
+      type: 'tier-start', tier: 'ic', provider: 'claude', model: 'opus', attempt: 1,
+      verbosity: 'normal', goalId: 'goal_run',
+    });
+    s = reduce(s, {
+      type: 'board/sync',
+      rows: [
+        boardRow({
+          id: 'goal_run',
+          state: 'running',
+          todos: [
+            { id: 't1', text: 'Inspect logs', status: 'done' },
+            { id: 't2', text: 'Patch renderer', status: 'active' },
+          ],
+        }),
+      ],
+      enabled: true,
+    });
+    assert.deepEqual(s.board[0]?.todos, [
+      { id: 't1', text: 'Inspect logs', status: 'done' },
+      { id: 't2', text: 'Patch renderer', status: 'active' },
+    ]);
+    assert.equal(s.board[0]?.agents, 1);
   });
 
   it('the board SURVIVES turn/start and turn/final without clearing (cross-turn)', () => {

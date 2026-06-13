@@ -582,17 +582,33 @@ export interface BoardPlan {
   readonly overflow: number;
 }
 
+function boardRowHeight(row: GoalBoardRow): number {
+  return 1 + (row.state === 'running' ? row.todos?.length ?? 0 : 0);
+}
+
+function boardRowsHeight(rows: readonly GoalBoardRow[]): number {
+  return rows.reduce((sum, row) => sum + boardRowHeight(row), 0);
+}
+
 export function planBoard(board: readonly GoalBoardRow[], budget: number): BoardPlan | null {
   if (board.length === 0) return null;
   if (budget < 1) return null;
-  // Everything fits as one row each.
-  if (board.length <= budget) return { shown: board, overflow: 0 };
-  // Reserve ONE row for the `+K more` overflow line; show as many goals as the
-  // rest of the budget allows (active goals — running/queued — lead, since the
-  // store returns newest-touched first and the board wants the live work on top).
-  const showCount = Math.max(0, budget - 1);
-  if (showCount < 1) return null;
-  return { shown: board.slice(0, showCount), overflow: board.length - showCount };
+  if (boardRowsHeight(board) <= budget) return { shown: board, overflow: 0 };
+
+  const shown: GoalBoardRow[] = [];
+  let used = 0;
+  for (let i = 0; i < board.length; i += 1) {
+    const row = board[i];
+    if (row === undefined) continue;
+    const remaining = board.length - (i + 1);
+    const reserveOverflow = remaining > 0 ? 1 : 0;
+    const next = boardRowHeight(row);
+    if (used + next + reserveOverflow > budget) break;
+    shown.push(row);
+    used += next;
+  }
+  if (shown.length < 1) return null;
+  return { shown, overflow: board.length - shown.length };
 }
 
 // ---------------------------------------------------------------------------
@@ -654,7 +670,7 @@ export function layoutForHeight(
     const planned = boardBodyBudget >= 1 ? planBoard(state.board, boardBodyBudget) : null;
     if (planned !== null) {
       board = planned;
-      boardRows = BOARD_CHROME_ROWS + planned.shown.length + (planned.overflow > 0 ? 1 : 0);
+      boardRows = BOARD_CHROME_ROWS + boardRowsHeight(planned.shown) + (planned.overflow > 0 ? 1 : 0);
     }
   }
 

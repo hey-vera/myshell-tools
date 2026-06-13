@@ -36,6 +36,7 @@ function boardRow(over: Partial<GoalBoardRow> = {}): GoalBoardRow {
     glyph: over.glyph ?? '◷',
     scope: over.scope ?? 'project',
     agents: over.agents ?? 0,
+    ...(over.todos !== undefined ? { todos: over.todos } : {}),
     ...(over.verdict !== undefined ? { verdict: over.verdict } : {}),
   };
 }
@@ -493,6 +494,39 @@ test('BoardRow renders a running goal as active with worker, task, and tool coun
   assert.match(idle.lastFrame() ?? '', /goal Idle — inactive/);
 });
 
+test('BoardRow renders a running goal checklist beneath the goal line with status glyphs', () => {
+  const state = active([
+    goal({
+      id: 'goal_a',
+      state: 'running',
+      agents: [agent({ state: 'running' })],
+    }),
+  ]);
+  const { lastFrame } = render(
+    <BoardRow
+      row={boardRow({
+        id: 'goal_a',
+        title: 'Ship it',
+        state: 'running',
+        todos: [
+          { id: 't1', text: 'Done item', status: 'done' },
+          { id: 't2', text: 'Blocked item', status: 'blocked' },
+          { id: 't3', text: 'Pending item', status: 'pending' },
+          { id: 't4', text: 'Active item', status: 'active' },
+        ],
+      })}
+      state={state}
+      color={false}
+    />,
+  );
+  const frame = lastFrame() ?? '';
+  assert.match(frame, /goal Ship it — active/);
+  assert.match(frame, /\[✓\] Done item/);
+  assert.match(frame, /\[⚠\] Blocked item/);
+  assert.match(frame, /\[ \] Pending item/);
+  assert.match(frame, /\[◐\] Active item/);
+});
+
 test('BoardPanel shows the BOARD title, one row per goal, and a +K more overflow line', () => {
   const { lastFrame } = render(
     <BoardPanel
@@ -530,10 +564,40 @@ test('board ON: an ordinary turn does NOT render a "GOALS ▸ <message>" card', 
   const frame = lastFrame() ?? '';
   // The fake raw-message card is GONE; board mode keeps the board as the primary list.
   assert.doesNotMatch(frame, new RegExp(raw.slice(0, 20)));
-  assert.doesNotMatch(frame, /\bGOALS\b/);
   assert.match(frame, /BOARD/);
+  assert.match(frame, /\bGOALS\b/);
   assert.match(frame, /goal Redesign feed — inactive/);
   assert.match(frame, /Thinking…/);
+});
+
+test('board ON: the persistent board and the live GOALS agent tree render together within budget', () => {
+  const state = active(
+    [goal({ id: 'goal_a', label: 'Ship it', state: 'running', agents: [agent({ state: 'running' })] })],
+    {
+      boardEnabled: true,
+      board: [
+        boardRow({
+          id: 'goal_a',
+          title: 'Ship it',
+          state: 'running',
+          total: 4,
+          todos: [
+            { id: 't1', text: 'Inspect logs', status: 'done' },
+            { id: 't2', text: 'Patch renderer', status: 'active' },
+          ],
+        }),
+      ],
+    },
+  );
+  const rows = 18;
+  const { lastFrame } = render(<StatusBlock state={state} color={false} rows={rows} />);
+  const frame = lastFrame() ?? '';
+  assert.match(frame, /BOARD/);
+  assert.match(frame, /\[✓\] Inspect logs/);
+  assert.match(frame, /\[◐\] Patch renderer/);
+  assert.match(frame, /\bGOALS\b/);
+  assert.match(frame, /└─/);
+  assert.ok(frame.split('\n').length <= rows, `rendered ${frame.split('\n').length} rows > ${rows}`);
 });
 
 test('board OFF (default): idle is an empty frame and the live header stays "GOALS" (byte-identical)', () => {

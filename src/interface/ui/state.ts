@@ -18,6 +18,7 @@
  */
 
 import type { Risk, Tier } from '../../core/types.js';
+import type { RoadmapStatus } from '../../core/work-contract.js';
 import type { ProviderId } from '../../providers/port.js';
 import type { ErrorCategory } from '../../providers/errors.js';
 
@@ -96,6 +97,12 @@ export interface GoalView {
   readonly phase?: { readonly current: number; readonly total: number };
 }
 
+export interface GoalBoardTodoRow {
+  readonly id: string;
+  readonly text: string;
+  readonly status: RoadmapStatus;
+}
+
 /**
  * One row of the REAL PERSISTENT GOAL BOARD (Elite-partner Phase 1) — a flat,
  * pure projection of a persisted `Goal` (src/core/goal-todo.ts) plus the LIVE
@@ -123,6 +130,8 @@ export interface GoalBoardRow {
   readonly scope: 'global' | 'project';
   /** Live count of running agents attached to this goal on the current turn. */
   readonly agents: number;
+  /** Bounded running-goal checklist rows for the expanded persistent board view. */
+  readonly todos?: readonly GoalBoardTodoRow[];
   /**
    * The goal's honest evidence-backed verdict tag (Elite-partner Part 3) — e.g.
    * `✓verified` / `~reviewed` / `✗failing` / `⚠unverified`, pre-shaped by the pure

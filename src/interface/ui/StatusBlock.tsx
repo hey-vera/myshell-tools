@@ -37,7 +37,14 @@ import {
   type GoalsMode,
   type StatusLayout,
 } from './layout.js';
-import type { AgentView, AgentRunState, GoalBoardRow, GoalView, UiState } from './state.js';
+import type {
+  AgentView,
+  AgentRunState,
+  GoalBoardRow,
+  GoalBoardTodoRow,
+  GoalView,
+  UiState,
+} from './state.js';
 
 // ---------------------------------------------------------------------------
 // currentTool → a scannable live-action label
@@ -410,6 +417,19 @@ function pluralize(count: number, singular: string, plural = `${singular}s`): st
   return `${count} ${count === 1 ? singular : plural}`;
 }
 
+function boardTodoGlyph(status: GoalBoardTodoRow['status']): string {
+  switch (status) {
+    case 'done':
+      return GLYPHS.success;
+    case 'blocked':
+      return '⚠';
+    case 'active':
+      return '◐';
+    case 'pending':
+      return ' ';
+  }
+}
+
 export interface BoardRowProps {
   readonly row: GoalBoardRow;
   readonly state: UiState;
@@ -437,8 +457,13 @@ export function BoardRow({ row, state, color = true }: BoardRowProps): React.Rea
     if (liveTools > 0) parts.push('·', pluralize(liveTools, 'tool'));
   }
   return (
-    <Box>
+    <Box flexDirection="column">
       <Text dimColor={color}>{parts.join(' ')}</Text>
+      {row.state === 'running'
+        ? row.todos?.map((todo) => (
+            <Text key={todo.id} dimColor={color}>{`   [${boardTodoGlyph(todo.status)}] ${todo.text}`}</Text>
+          ))
+        : null}
     </Box>
   );
 }
@@ -713,7 +738,7 @@ export function StatusBlock({
   return (
     <Box flexDirection="column">
       {boardEl}
-      {state.boardEnabled ? null : (
+      {plan.goals.kind !== 'hidden' ? (
         <Panels
           mode={plan.goals}
           header="GOALS"
@@ -722,7 +747,7 @@ export function StatusBlock({
           {...(liveAction.length > 0 ? { liveAction } : {})}
           color={color}
         />
-      )}
+      ) : null}
       {plan.showSummary ? (
         <Text {...(color ? { color: 'cyan' as const } : {})}>
           {summarizeTurn(state, elapsedSecs)}

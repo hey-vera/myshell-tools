@@ -2355,6 +2355,14 @@ export async function runChatLoop(
         // goal has a REAL recorded verdict (goalVerdictTag returns undefined otherwise)
         // — completion honesty made visible, never a fabricated tag.
         const verdict = goalVerdictTag(g);
+        const todos =
+          g.state === 'running'
+            ? g.roadmap.slice(0, ROADMAP_LIMIT).map((item) => ({
+                id: item.id,
+                text: item.text,
+                status: item.status,
+              }))
+            : undefined;
         return {
           id: g.id,
           title: g.title,
@@ -2364,6 +2372,7 @@ export async function runChatLoop(
           glyph: goalGlyph(g),
           scope: g.scope,
           agents: 0,
+          ...(todos !== undefined ? { todos } : {}),
           ...(verdict !== undefined ? { verdict } : {}),
         };
       };
