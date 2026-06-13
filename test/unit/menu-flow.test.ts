@@ -124,6 +124,20 @@ function makeFakeClock(): Clock {
   };
 }
 
+function makeAdvanceableClock(): Clock & { advance: (ms: number) => void } {
+  let counter = 0;
+  let nowMs = 1_700_000_000_000;
+  return {
+    now: () => nowMs,
+    isoNow: () => new Date(nowMs).toISOString(),
+    uuid: () => `fake-${++counter}`,
+    random: () => 0.5,
+    advance: (ms: number) => {
+      nowMs += ms;
+    },
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Fake ledger
 // ---------------------------------------------------------------------------
@@ -503,6 +517,101 @@ describe('startMenu — immediate q → exits cleanly', () => {
 
     const p = startMenu(ctx, sink);
     await assert.doesNotReject(p);
+  });
+
+  it('empty-key repaint within TTL does not re-detect the environment', async () => {
+    const sink = makeSink();
+    let detectCalls = 0;
+    const ctx = makeCtx({
+      readLine: makeScriptedReader(['', '', 'q']),
+      detectEnvironment: async () => {
+        detectCalls += 1;
+        return FAKE_ENV;
+      },
+    });
+
+    await startMenu(ctx, sink);
+
+    assert.equal(detectCalls, 0, 'TTL no-op path must not spawn a re-detect');
+  });
+
+  it('after the TTL expires, the next return to the menu refreshes exactly once', async () => {
+    const sink = makeSink();
+    const clock = makeAdvanceableClock();
+    let detectCalls = 0;
+    let reads = 0;
+    const ctx = makeCtx(
+      {
+        readLine: async () => {
+          reads += 1;
+          if (reads === 1) {
+            clock.advance(15_001);
+            return '';
+          }
+          return 'q';
+        },
+        detectEnvironment: async () => {
+          detectCalls += 1;
+          return FAKE_ENV;
+        },
+      },
+      clock,
+    );
+
+    await startMenu(ctx, sink);
+
+    assert.equal(detectCalls, 1, 'exactly one stale-menu refresh should run');
+  });
+
+  it('a failed stale refresh retains the prior environment snapshot', async () => {
+    const priorEnv: EnvironmentStatus = {
+      ...FAKE_ENV,
+      claude: { ...FAKE_ENV.claude, plan: 'max_5x' },
+    };
+    const sink = makeSink();
+    const clock = makeAdvanceableClock();
+    let detectCalls = 0;
+    let reads = 0;
+    const ctx = makeCtx(
+      {
+        env: priorEnv,
+        readLine: async () => {
+          reads += 1;
+          if (reads === 1) {
+            clock.advance(15_001);
+            return '';
+          }
+          return 'q';
+        },
+        detectEnvironment: async () => {
+          detectCalls += 1;
+          throw new Error('detect failed');
+        },
+      },
+      clock,
+    );
+
+    await assert.doesNotReject(() => startMenu(ctx, sink));
+
+    assert.equal(detectCalls, 1, 'stale refresh should attempt one detect');
+    assert.ok(sink.buf.includes('max_5x'), 'prior provider plan should remain rendered after a failed refresh');
+  });
+
+  it('explicit login forces an environment refresh even within the TTL', async () => {
+    const sink = makeSink();
+    let detectCalls = 0;
+    const ctx = makeCtx({
+      readLine: makeScriptedReader(['j', 'q']),
+      login: async () => 0,
+      detectEnvironment: async () => {
+        detectCalls += 1;
+        return FAKE_ENV;
+      },
+    });
+
+    await startMenu(ctx, sink);
+
+    assert.equal(detectCalls, 1, 'forced post-login refresh must bypass the TTL');
   });
 });
 

@@ -5191,6 +5191,31 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
     config: ctx.config,
     env: ctx.env,
   };
+  const ENV_REFRESH_TTL_MS = 15_000;
+  let envDetectedAt = ctx.clock.now();
+  let envRefreshInFlight: Promise<EnvironmentStatus> | null = null;
+
+  async function refreshEnvironmentIfStale(force = false): Promise<EnvironmentStatus> {
+    if (!force && ctx.clock.now() - envDetectedAt < ENV_REFRESH_TTL_MS) {
+      return mutableCtx.env;
+    }
+    if (envRefreshInFlight !== null) return envRefreshInFlight;
+    envRefreshInFlight = (async () => {
+      try {
+        const fresh = await detectEnvironmentFn();
+        mutableCtx.env = fresh;
+        envDetectedAt = ctx.clock.now();
+        return fresh;
+      } catch {
+        // Fail soft: keep the prior env snapshot and allow a near-term retry.
+        envDetectedAt = ctx.clock.now() - (ENV_REFRESH_TTL_MS - 2_000);
+        return mutableCtx.env;
+      } finally {
+        envRefreshInFlight = null;
+      }
+    })();
+    return envRefreshInFlight;
+  }
 
   try {
     // ---- Update check FIRST (before onboarding) -----------------------------
@@ -5334,6 +5359,7 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
       // Re-detect after onboarding so the first main screen shows the REAL post-login
       // status (e.g. codex now "ready" if the user signed in during setup).
       mutableCtx.env = await detectEnvironmentFn();
+      envDetectedAt = ctx.clock.now();
     }
 
     // ---- B. Main screen loop -------------------------------------------------
@@ -5439,6 +5465,13 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
         parkedGoals = await menuGoalStore.list({ state: 'parked' }).catch(() => []);
         listsLoading = false;
         listDirty = false;
+      }
+      if (liveRegion) {
+        void refreshEnvironmentIfStale().then(() => {
+          repaintIfActive();
+        });
+      } else {
+        await refreshEnvironmentIfStale();
       }
 
       // Paint the frame (menu + prompt) as the live region before blocking on the
@@ -5585,7 +5618,7 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
           confirm,
           ...(suspendStdin !== undefined ? { suspendStdin } : {}),
         });
-        mutableCtx.env = await detectEnvironmentFn();
+        await refreshEnvironmentIfStale(true);
         continue;
       }
 
@@ -5596,7 +5629,7 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
           confirm,
           ...(suspendStdin !== undefined ? { suspendStdin } : {}),
         });
-        mutableCtx.env = await detectEnvironmentFn();
+        await refreshEnvironmentIfStale(true);
         continue;
       }
 
@@ -5627,7 +5660,7 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
           } finally {
             resumeStdin?.();
           }
-          mutableCtx.env = await detectEnvironmentFn();
+          await refreshEnvironmentIfStale(true);
           if (!ok || !mutableCtx.env.opencode.installed) {
             out.write(`Install failed. Run it yourself: ${installCommandFor('opencode')}\n`);
             continue;
@@ -5639,7 +5672,7 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
           confirm,
           ...(suspendStdin !== undefined ? { suspendStdin } : {}),
         });
-        mutableCtx.env = await detectEnvironmentFn();
+        await refreshEnvironmentIfStale(true);
         continue;
       }
 
