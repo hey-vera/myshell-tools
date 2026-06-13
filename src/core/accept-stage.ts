@@ -1,8 +1,14 @@
-import type { Confidence } from './brain.js';
+import { confidenceLine, type Confidence } from './brain.js';
 import { ENGINE_BEHAVIOR_VERSION } from './engine-version.js';
 import { memoryProposalFor } from './orchestrate-memory.js';
 import type { CoreEvent, OrchestrateDeps, Tier } from './types.js';
-import type { VerifyLevel, VerifyOutcome, VerifyPort } from './verify.js';
+import { buildVerifyReceipt, type VerifyLevel, type VerifyOutcome, type VerifyPort } from './verify.js';
+import {
+  composeTrustReceipt,
+  trustReceiptLines,
+  isEmptyReceipt,
+  type TrustSignals,
+} from './trust-receipt.js';
 import type { WorkContract } from './work-contract.js';
 import type { ProviderId } from '../providers/port.js';
 
@@ -95,6 +101,50 @@ export function buildRepairEvidence(outcome: VerifyOutcome): string {
     parts.push(`Critic: ${outcome.critic.notes}.`);
   }
   return parts.join(' ');
+}
+
+/**
+ * Build the verification/trust receipt CoreEvents for an accepted candidate — the
+ * SAME logic the sequential work-call path uses inline (`receiptEvents`), extracted
+ * here so the panel and hedge executors emit the identical receipt before `final`.
+ * When the candidate opted into the trust surface, the consolidated trust receipt is
+ * composed from the real signals; otherwise the bare verify-receipt notice is emitted
+ * (or no event at all when verification was unarmed). PURE (reads only deps + outcome).
+ */
+export function buildVerifyReceiptEvents(
+  deps: OrchestrateDeps,
+  verifyOutcome: VerifyOutcome | undefined,
+  candidate: CandidateResult,
+): readonly CoreEvent[] {
+  if (candidate.trustEnabled === true) {
+    const trustSignals: TrustSignals = {
+      ...(candidate.brainConfidence !== undefined
+        ? { confidence: candidate.brainConfidence }
+        : {}),
+      ...(verifyOutcome !== undefined ? { verify: verifyOutcome } : {}),
+      ...(verifyOutcome?.changedPaths !== undefined && verifyOutcome.changedPaths.length > 0
+        ? { groundedFiles: verifyOutcome.changedPaths }
+        : {}),
+      ...(deps.authenticatedProviders !== undefined
+        ? { authedProviderCount: deps.authenticatedProviders.length }
+        : {}),
+    };
+    const receipt = composeTrustReceipt(
+      trustSignals,
+      confidenceLine(candidate.brainConfidence),
+    );
+    if (!isEmptyReceipt(receipt)) {
+      const level = verifyOutcome?.verified === 'failing' ? 'warn' : 'info';
+      return trustReceiptLines(receipt).map((message) => ({ type: 'notice', level, message }));
+    }
+    return [];
+  }
+  if (verifyOutcome === undefined) return [];
+  return [{
+    type: 'notice',
+    level: verifyOutcome.verified === 'failing' ? 'warn' : 'info',
+    message: buildVerifyReceipt(verifyOutcome),
+  }];
 }
 
 export async function appendAcceptedAssistant(

@@ -32,6 +32,11 @@ import type {
   ProviderId,
   Usage,
 } from '../../src/providers/port.ts';
+import type {
+  DetectedTestCommand,
+  TestRunResult,
+  VerifyPort,
+} from '../../src/core/verify.ts';
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -660,5 +665,182 @@ describe('runHedged — capability parity (attachments + webSearch + capabilityC
     await collect(runHedged('task', depsNoImage, PLAN, new AbortController().signal));
 
     assert.equal(primSink.last?.attachments, undefined, 'no image → attachments omitted');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// P0.1b — the hedge WINNER routes through the SHARED Candidate Quality Gate.
+//
+// Only a typed RED test changes behaviour: ONE same-author repair on
+// winner.chosen.provider at its resolved tier/model, then accept-or-block. The
+// loser is never restarted and winner selection runs once. Non-verify
+// transcripts above remain unchanged (no verifyPort there).
+// ---------------------------------------------------------------------------
+
+/** A provider that emits a DIFFERENT text on each successive run (for repair). */
+function makeSeqProvider(
+  id: ProviderId,
+  texts: string[],
+  rec?: { calls: number; prompts: string[] },
+): Provider {
+  let calls = 0;
+  return {
+    id,
+    async detect() {
+      return { id, installed: true, version: '1', authenticated: true, binaryPath: '/f', availableModels: [] };
+    },
+    async *run(req: ProviderRequest): AsyncIterable<ProviderEvent> {
+      const text = texts[Math.min(calls, texts.length - 1)] ?? '';
+      if (rec !== undefined) { rec.calls++; rec.prompts.push(req.prompt); }
+      calls++;
+      yield { type: 'text', delta: text };
+      yield { type: 'done', text, usage: USAGE, raw: {} };
+    },
+  };
+}
+
+function makeVerifyPort(
+  runs: TestRunResult[],
+  detected: DetectedTestCommand | null = { label: 'npm test', command: 'npm', args: ['test'] },
+): VerifyPort & { calls: number } {
+  let calls = 0;
+  return {
+    get calls() { return calls; },
+    async captureDiff() {
+      return { files: ['src/a.ts'], patch: '+ fixed' };
+    },
+    async detectTestCommand() {
+      return detected;
+    },
+    async runTests() {
+      const result = runs[Math.min(calls, runs.length - 1)];
+      calls++;
+      return result ?? { outcome: 'errored', output: '', durationMs: 0 };
+    },
+  };
+}
+
+const redRun = (output = 'FAIL a.test.ts'): TestRunResult => ({ outcome: 'red', output, durationMs: 5 });
+const greenRun = (): TestRunResult => ({ outcome: 'green', output: 'ok', durationMs: 4 });
+
+describe('runHedged — Candidate Quality Gate', () => {
+  it('winner red → one repair on the chosen provider only → green success', async () => {
+    // Primary fast + adequate → winner = primary (claude). Then verify red → ONE
+    // repair on claude only; codex (speculative) is never started at all.
+    const claudeRec = { calls: 0, prompts: [] as string[] };
+    const specRec = { ran: false, aborted: false };
+    const claude = makeSeqProvider('claude', [adequate('WINNER-RED'), adequate('WINNER-GREEN')], claudeRec);
+    const codex = makeProvider('codex', adequate('SPEC'), { record: specRec });
+    const neverSleep = (): Promise<void> => new Promise<void>(() => {});
+    const { deps, session, ledger } = hedgeDeps({ claude, codex }, neverSleep, SPLIT_ORDER);
+    const port = makeVerifyPort([redRun(), greenRun()]);
+    const events = await collect(
+      runHedged('hard task', { ...deps, verifyPort: port, verifyLevel: 'tests' }, PLAN, new AbortController().signal),
+    );
+    const final = events.at(-1);
+    assert.ok(final !== undefined && final.type === 'final' && final.success === true);
+    assert.match(final.output, /WINNER-GREEN/);
+    assert.equal(port.calls, 2, 'verify ran twice (winner red, repair green)');
+    assert.equal(claudeRec.calls, 2, 'claude ran the winner + ONE repair');
+    assert.equal(specRec.ran, false, 'the speculative loser was never started');
+    assert.match(claudeRec.prompts[1] ?? '', /Acceptance verification failed/);
+    assert.match(claudeRec.prompts[1] ?? '', /FAIL a\.test\.ts/);
+    assert.ok(session.entries.some((e) => e.role === 'assistant' && /WINNER-GREEN/.test(e.content)));
+    // ledger: primary winner + repair = 2 entries (speculative never ran).
+    assert.equal(ledger.entries.length, 2);
+    assert.equal(ledger.entries.at(-1)?.provider, 'claude');
+    assert.equal(events.filter((e) => e.type === 'final').length, 1);
+  });
+
+  it('winner red → red blocks (final.success:false, no assistant append)', async () => {
+    const claude = makeSeqProvider('claude', [adequate('WINNER-RED'), adequate('STILL-RED')]);
+    const codex = makeProvider('codex', adequate('SPEC'));
+    const neverSleep = (): Promise<void> => new Promise<void>(() => {});
+    const { deps, session } = hedgeDeps({ claude, codex }, neverSleep, SPLIT_ORDER);
+    const port = makeVerifyPort([redRun(), redRun('FAIL again')]);
+    const events = await collect(
+      runHedged('hard task', { ...deps, verifyPort: port, verifyLevel: 'tests' }, PLAN, new AbortController().signal),
+    );
+    const final = events.at(-1);
+    assert.ok(final !== undefined && final.type === 'final');
+    assert.equal(final.success, false);
+    assert.equal(final.memoryProposal, undefined);
+    assert.equal(session.entries.filter((e) => e.role === 'assistant').length, 0);
+    assert.equal(events.filter((e) => e.type === 'final').length, 1);
+  });
+
+  it('loser is never restarted and winner selection runs once (CASE B, delay elapses)', async () => {
+    // delay elapses immediately → both branches start. Primary (claude) finishes
+    // adequate first and wins; speculative (codex) is gated then cancelled. The
+    // repair re-runs ONLY claude — codex must NOT run a second time.
+    const claudeRec = { calls: 0, prompts: [] as string[] };
+    const codexRec = { calls: 0, prompts: [] as string[] };
+    const claude = makeSeqProvider('claude', [adequate('PRIMARY-WIN'), adequate('PRIMARY-FIXED')], claudeRec);
+    // codex (speculative) is gated forever so the primary always wins the race.
+    const codex: Provider = {
+      id: 'codex',
+      async detect() {
+        return { id: 'codex', installed: true, version: '1', authenticated: true, binaryPath: '/f', availableModels: [] };
+      },
+      async *run(req: ProviderRequest, signal: AbortSignal): AsyncIterable<ProviderEvent> {
+        codexRec.calls++; codexRec.prompts.push(req.prompt);
+        await new Promise<void>((resolve) => {
+          if (signal.aborted) resolve();
+          else signal.addEventListener('abort', () => resolve(), { once: true });
+        });
+        // cancelled → emits nothing (the yield is unreachable once aborted).
+        if (!signal.aborted) yield { type: 'done', text: 'LATE', usage: USAGE, raw: {} };
+      },
+    };
+    const nowSleep = (): Promise<void> => Promise.resolve();
+    const { deps } = hedgeDeps({ claude, codex }, nowSleep, SPLIT_ORDER);
+    const port = makeVerifyPort([redRun(), greenRun()]);
+    const events = await collect(
+      runHedged('hard task', { ...deps, verifyPort: port, verifyLevel: 'tests' }, PLAN, new AbortController().signal),
+    );
+    const final = events.at(-1);
+    assert.ok(final !== undefined && final.type === 'final' && final.success === true);
+    assert.match(final.output, /PRIMARY-FIXED/);
+    assert.equal(claudeRec.calls, 2, 'claude ran the winner + ONE repair');
+    assert.equal(codexRec.calls, 1, 'the loser ran ONCE (its hedge attempt) and was never restarted');
+    assert.equal(events.filter((e) => e.type === 'final').length, 1);
+  });
+
+  it('passing tests accept with no repair (one final)', async () => {
+    const claudeRec = { calls: 0, prompts: [] as string[] };
+    const claude = makeSeqProvider('claude', [adequate('WINNER-OK')], claudeRec);
+    const codex = makeProvider('codex', adequate('SPEC'));
+    const neverSleep = (): Promise<void> => new Promise<void>(() => {});
+    const { deps, session } = hedgeDeps({ claude, codex }, neverSleep, SPLIT_ORDER);
+    const port = makeVerifyPort([greenRun()]);
+    const events = await collect(
+      runHedged('hard task', { ...deps, verifyPort: port, verifyLevel: 'tests' }, PLAN, new AbortController().signal),
+    );
+    const final = events.at(-1);
+    assert.ok(final !== undefined && final.type === 'final' && final.success === true);
+    assert.equal(claudeRec.calls, 1, 'no repair run on green');
+    assert.equal(port.calls, 1);
+    assert.equal(session.entries.filter((e) => e.role === 'assistant').length, 1);
+    assert.equal(events.filter((e) => e.type === 'final').length, 1);
+  });
+
+  it('cancellation during the winner run emits exactly one failing final and no append', async () => {
+    // Abort before anything runs → the early-abort path emits one failing final.
+    const claude = makeSeqProvider('claude', [adequate('X')]);
+    const codex = makeProvider('codex', adequate('Y'));
+    const neverSleep = (): Promise<void> => new Promise<void>(() => {});
+    const { deps, session } = hedgeDeps({ claude, codex }, neverSleep, SPLIT_ORDER);
+    const port = makeVerifyPort([redRun()]);
+    const ac = new AbortController();
+    ac.abort();
+    const events = await collect(
+      runHedged('hard task', { ...deps, verifyPort: port, verifyLevel: 'tests' }, PLAN, ac.signal),
+    );
+    const final = events.at(-1);
+    assert.ok(final !== undefined && final.type === 'final');
+    assert.equal(final.success, false);
+    assert.equal(final.canceled, true);
+    assert.equal(session.entries.filter((e) => e.role === 'assistant').length, 0);
+    assert.equal(events.filter((e) => e.type === 'final').length, 1);
   });
 });

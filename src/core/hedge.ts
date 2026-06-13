@@ -52,6 +52,15 @@ import { findCapability, type ReasoningEffort, type TaskKind } from './model-cap
 import { modeFromPolicy } from './policy.js';
 import type { WorkContract } from './work-contract.js';
 import { capContract, isCleanObjectiveTask, shouldMaterializeContract } from './work-contract.js';
+import {
+  runCandidateQualityGate,
+  buildVerifyReceiptEvents,
+  type AcceptedRunSessionData,
+  type CandidateResult,
+} from './accept-stage.js';
+import { verifyStage, type CriticRunInput, type CriticRunOutput } from './work-call.js';
+import { effortForDecision } from './orchestrate-signals.js';
+import { parseReviewVerdict } from './review.js';
 
 // ---------------------------------------------------------------------------
 // Plan
@@ -589,6 +598,326 @@ export async function* runHedged(
     return usd;
   };
 
+  // -----------------------------------------------------------------------
+  // P0.1b — the SHARED Candidate Quality Gate for the hedge WINNER.
+  //
+  // After winner selection, a SUCCESSFUL winner is routed through the same gate
+  // the sequential + panel paths use (verify → optional one-shot repair → accept
+  // /block). The repair runs ONLY on winner.chosen.provider at its resolved
+  // tier/model — it never restarts the loser, reruns selection, or launches
+  // another hedge. When verification is unarmed (no port / no tests / passing
+  // tests) the gate accepts immediately and the emitted events are byte-for-byte
+  // the pre-gate hedge success behaviour. Failed/cancelled winners keep the
+  // failure-only `finalAndAppend` path and never enter acceptance.
+  // -----------------------------------------------------------------------
+  const runVerifyAtAccept = async (
+    candidate: CandidateResult,
+  ): Promise<import('./verify.js').VerifyOutcome | undefined> => {
+    if (candidate.verifyPort === undefined) return undefined;
+    const runCritic = async (input: CriticRunInput): Promise<CriticRunOutput | undefined> => {
+      const reviewerProvider = deps.providers[input.reviewer];
+      if (reviewerProvider === undefined) return { ran: false };
+      try {
+        const reviewDecision = route(
+          'manager',
+          [input.reviewer],
+          deps.policy,
+          deps.availableModels,
+          deps.authenticatedProviders,
+          deps.learnedProviderOrder?.['manager'],
+          capabilityContext,
+        );
+        const reviewEffort = effortForDecision(
+          deps.capabilityRegistry,
+          input.reviewer,
+          reviewDecision.model,
+          reviewDecision.tier,
+          modeFromPolicy(deps.policy),
+          { risk: plan.risk, routePlan: false, taskKind: 'review' },
+        );
+        const reviewReq: import('../providers/port.js').ProviderRequest = {
+          model: reviewDecision.model,
+          prompt: input.prompt,
+          cwd: deps.cwd,
+          sandbox: deps.sandbox,
+          timeoutMs: deps.timeoutMs,
+          ...(reviewEffort !== undefined ? { reasoningEffort: reviewEffort } : {}),
+        };
+        const reviewStart = deps.clock.now();
+        const provider = deps.providers[input.reviewer];
+        if (provider === undefined) return { ran: false };
+        let reviewText: string | undefined;
+        let reviewErrored: import('../providers/port.js').CliError | undefined;
+        let reviewUsage: import('../providers/port.js').Usage | undefined;
+        let reviewProviderCostUsd: number | undefined;
+        let reviewCanceled = false;
+        if (signal.aborted) return { ran: false };
+        for await (const ev of provider.run(reviewReq, signal)) {
+          if (ev.type === 'done') {
+            reviewText = ev.text;
+            if (ev.usage !== undefined) reviewUsage = ev.usage;
+            if (ev.costUsd !== undefined) reviewProviderCostUsd = ev.costUsd;
+          } else if (ev.type === 'error') {
+            reviewErrored = ev.error;
+          } else if (ev.type === 'usage' && reviewUsage === undefined) {
+            reviewUsage = ev.usage;
+          }
+          if (signal.aborted) {
+            reviewCanceled = true;
+            break;
+          }
+        }
+        const reviewDurationMs = deps.clock.now() - reviewStart;
+        if (reviewCanceled || reviewErrored != null) return { ran: false };
+        const reviewPricing = getModelPricing(input.reviewer, reviewDecision.model);
+        const reviewUsd =
+          reviewProviderCostUsd ??
+          (reviewUsage !== undefined && reviewPricing !== undefined
+            ? calculateCost(reviewUsage.inputTokens, reviewUsage.outputTokens, reviewPricing)
+            : 0);
+        totalCostUsd += reviewUsd;
+        await deps.ledger.record({
+          timestamp: deps.clock.isoNow(),
+          sessionId: deps.session.id,
+          taskId: deps.clock.uuid(),
+          provider: input.reviewer,
+          model: reviewDecision.model,
+          tier: reviewDecision.tier,
+          inputTokens: reviewUsage?.inputTokens ?? 0,
+          outputTokens: reviewUsage?.outputTokens ?? 0,
+          cachedInputTokens: reviewUsage?.cachedInputTokens ?? 0,
+          usd: reviewUsd,
+          durationMs: reviewDurationMs,
+          success: true,
+          ...(reviewEffort !== undefined ? { reasoningEffort: reviewEffort } : {}),
+          taskKind: 'review',
+        });
+        const verdict = parseReviewVerdict(reviewText ?? '');
+        return {
+          ran: verdict.parsed === true,
+          parsed: verdict.parsed,
+          verdict: verdict.verdict,
+          notes: verdict.notes,
+        };
+      } catch {
+        return { ran: false };
+      }
+    };
+    return verifyStage({
+      output: candidate.content,
+      provider: candidate.provider,
+      tier: candidate.tier,
+      port: candidate.verifyPort,
+      level: candidate.verifyLevel,
+      task: candidate.task,
+      cwd: candidate.cwd,
+      ...(candidate.verifyTestTimeoutMs !== undefined
+        ? { testTimeoutMs: candidate.verifyTestTimeoutMs }
+        : {}),
+      available: candidate.availableProviders,
+      runCritic,
+    });
+  };
+
+  // ONE same-author repair: re-run winner.chosen.provider at its resolved
+  // tier/model with the original task + verification evidence as manager-notes.
+  // Never restarts the loser, reruns selection, or launches another hedge. Its
+  // events, ledger entry, attempts, and cost are ordinary provider-attempt
+  // accounting folded into the turn totals.
+  const runWinnerRepair = (
+    winnerRun: RunResult,
+  ) => async function* (
+    candidate: CandidateResult,
+    evidence: string,
+  ): AsyncGenerator<CoreEvent, CandidateResult | undefined> {
+    const provider = deps.providers[winnerRun.provider];
+    if (provider === undefined || signal.aborted) return undefined;
+
+    attempts++;
+    const repairReq: import('../providers/port.js').ProviderRequest = {
+      model: winnerRun.model,
+      ...(winnerRun.reasoningEffort !== undefined
+        ? { reasoningEffort: winnerRun.reasoningEffort }
+        : {}),
+      prompt: buildPrompt(
+        winnerRun.tier,
+        task,
+        evidence,
+        historyContext,
+        {
+          ...(deps.goalTurn === true ? { goalTurn: true } : {}),
+          ...(deps.partnerStyle !== undefined ? { partnerStyle: deps.partnerStyle } : {}),
+          ...(deps.environmentContext !== undefined ? { environmentContext: deps.environmentContext } : {}),
+          ...(deps.memoryContext !== undefined ? { memoryContext: deps.memoryContext } : {}),
+          ...(deps.tasteContext !== undefined ? { tasteContext: deps.tasteContext } : {}),
+          ...(deps.visionTriageContext !== undefined ? { visionTriageContext: deps.visionTriageContext } : {}),
+          ...(deps.intentFrame !== undefined ? { intentFrame: deps.intentFrame } : {}),
+          ...(deps.engagementPlan !== undefined ? { engagementPlan: deps.engagementPlan } : {}),
+        },
+      ),
+      cwd: deps.cwd,
+      sandbox: deps.sandbox,
+      timeoutMs: deps.timeoutMs,
+      ...(wantsWebSearch ? { webSearch: true } : {}),
+      ...(hasImageAttachment(deps.attachments) && deps.attachments !== undefined
+        ? { attachments: deps.attachments }
+        : {}),
+    };
+    yield {
+      type: 'tier-start',
+      tier: winnerRun.tier,
+      provider: winnerRun.provider,
+      model: winnerRun.model,
+      attempt: attempts,
+    };
+    const repairStart = deps.clock.now();
+    let repairText: string | undefined;
+    let repairErrored: import('../providers/port.js').CliError | undefined;
+    let repairUsage: import('../providers/port.js').Usage | undefined;
+    let repairProviderCostUsd: number | undefined;
+    let repairCanceled = false;
+    try {
+      for await (const ev of provider.run(repairReq, signal)) {
+        yield { type: 'provider-event', tier: winnerRun.tier, event: ev };
+        if (ev.type === 'done') {
+          repairText = ev.text;
+          if (ev.usage !== undefined) repairUsage = ev.usage;
+          if (ev.costUsd !== undefined) repairProviderCostUsd = ev.costUsd;
+        } else if (ev.type === 'error') {
+          repairErrored = ev.error;
+        } else if (ev.type === 'usage' && repairUsage === undefined) {
+          repairUsage = ev.usage;
+        }
+        if (signal.aborted) {
+          repairCanceled = true;
+          break;
+        }
+      }
+    } catch (err) {
+      repairErrored = {
+        category: 'unknown',
+        recoverable: false,
+        message: err instanceof Error ? err.message : String(err),
+        suggestion: 'The hedge repair run threw unexpectedly.',
+      };
+    }
+    const repairDurationMs = deps.clock.now() - repairStart;
+    const repairSuccess =
+      !repairCanceled && repairErrored == null && (repairText ?? '').trim().length > 0;
+    const repairPricing = getModelPricing(winnerRun.provider, winnerRun.model);
+    const repairUsd =
+      repairProviderCostUsd ??
+      (repairUsage !== undefined && repairPricing !== undefined
+        ? calculateCost(repairUsage.inputTokens, repairUsage.outputTokens, repairPricing)
+        : 0);
+    totalCostUsd += repairUsd;
+    const repairAssessment = assess(repairText ?? '');
+    await deps.ledger.record({
+      timestamp: deps.clock.isoNow(),
+      sessionId: deps.session.id,
+      taskId: deps.clock.uuid(),
+      provider: winnerRun.provider,
+      model: winnerRun.model,
+      tier: winnerRun.tier,
+      inputTokens: repairUsage?.inputTokens ?? 0,
+      outputTokens: repairUsage?.outputTokens ?? 0,
+      cachedInputTokens: repairUsage?.cachedInputTokens ?? 0,
+      usd: repairUsd,
+      durationMs: repairDurationMs,
+      success: repairSuccess,
+      ...(winnerRun.reasoningEffort !== undefined
+        ? { reasoningEffort: winnerRun.reasoningEffort }
+        : {}),
+      taskKind: winnerRun.taskKind,
+    });
+    yield {
+      type: 'tier-done',
+      tier: winnerRun.tier,
+      success: repairSuccess,
+      confidence: repairAssessment.confidence,
+      costUsd: repairUsd,
+      inputTokens: repairUsage?.inputTokens ?? 0,
+      outputTokens: repairUsage?.outputTokens ?? 0,
+      durationMs: repairDurationMs,
+    };
+    if (!repairSuccess) return undefined;
+    const repairedRun: AcceptedRunSessionData = {
+      content: repairText ?? '',
+      tier: winnerRun.tier,
+      provider: winnerRun.provider,
+      model: winnerRun.model,
+      confidence: repairAssessment.confidence,
+      costUsd: repairUsd,
+      durationMs: repairDurationMs,
+      ...(workTrace !== undefined ? { workTrace } : {}),
+    };
+    return makeWinnerCandidate(repairedRun, winnerRun);
+  };
+
+  function makeWinnerCandidate(
+    run: AcceptedRunSessionData,
+    winnerRun: RunResult,
+  ): CandidateResult {
+    const candidate: CandidateResult = {
+      ...run,
+      get totalCostUsd() { return totalCostUsd; },
+      get attempts() { return attempts; },
+      disposition: 'clean',
+      task,
+      cwd: deps.cwd,
+      ...(deps.verifyPort !== undefined ? { verifyPort: deps.verifyPort } : {}),
+      verifyLevel: deps.verifyLevel ?? 'tests',
+      ...(deps.verifyTestTimeoutMs !== undefined
+        ? { verifyTestTimeoutMs: deps.verifyTestTimeoutMs }
+        : {}),
+      availableProviders:
+        deps.authenticatedProviders ??
+        (Object.keys(deps.providers) as ProviderId[]).filter(
+          (id) => deps.providers[id] !== undefined,
+        ),
+      repair: (evidence) => runWinnerRepair(winnerRun)(candidate, evidence),
+    };
+    return candidate;
+  }
+
+  // Accept a SUCCESSFUL winner through the shared gate. A failed/cancelled winner
+  // is handled by the failure-only finalAndAppend at the call site, never here.
+  const acceptWinner = async function* (run: RunResult): AsyncGenerator<CoreEvent> {
+    const output = run.finalText ?? '';
+    const assessment = assess(output);
+    const winnerRun: AcceptedRunSessionData = {
+      content: output,
+      tier: run.tier,
+      provider: run.provider,
+      model: run.model,
+      confidence: assessment.confidence,
+      costUsd: costOf(run),
+      durationMs: run.durationMs,
+      ...(workTrace !== undefined ? { workTrace } : {}),
+    };
+    yield* runCandidateQualityGate({
+      deps,
+      candidate: makeWinnerCandidate(winnerRun, run),
+      goalTurn: deps.goalTurn === true,
+      verify: runVerifyAtAccept,
+      receiptEvents: (outcome, candidate) => buildVerifyReceiptEvents(deps, outcome, candidate),
+    });
+  };
+
+  // Emit the final for the chosen winner: a SUCCESSFUL run goes through the shared
+  // gate (verify → repair → accept/block); a failed/cancelled run takes the
+  // failure-only final path (never appended as the assistant answer). This is the
+  // single terminal emission for the winner — there is NO parallel successful
+  // append path left in this module.
+  const emitWinner = async function* (run: RunResult): AsyncGenerator<CoreEvent> {
+    const success = run.errored == null && run.finalText !== undefined && !run.canceled;
+    if (success) {
+      yield* acceptWinner(run);
+      return;
+    }
+    yield* finalAndAppend(run, totalCostUsd, deps, attempts, workTrace);
+  };
+
   try {
     // --- Start the PRIMARY run as a background promise. ---
     attempts++;
@@ -641,7 +970,7 @@ export async function* runHedged(
         // its quota is genuinely saved. Honest notice (no cancellation claim).
         yield { type: 'notice', level: 'info', message: 'hedge: primary answered in time' };
         yield* primary.events;
-        yield* finalAndAppend(primary, totalCostUsd, deps, attempts, workTrace);
+        yield* emitWinner(primary);
         return;
       }
 
@@ -688,7 +1017,7 @@ export async function* runHedged(
       yield* speculative.events;
       // Ship the flagship result (it's the strongest attempt) — successful when it
       // produced output without error, even if its confidence is unparsed.
-      yield* finalAndAppend(speculative, totalCostUsd, deps, attempts, workTrace);
+      yield* emitWinner(speculative);
       return;
     }
 
@@ -760,7 +1089,7 @@ export async function* runHedged(
     };
 
     yield* winner.chosen.events;
-    yield* finalAndAppend(winner.chosen, totalCostUsd, deps, attempts, workTrace);
+    yield* emitWinner(winner.chosen);
     return;
   } finally {
     // Never leave a branch running or a listener attached.
@@ -847,59 +1176,34 @@ async function pickWinner(
 // ---------------------------------------------------------------------------
 
 /**
- * Emit the final event for the chosen run AND persist its assistant turn to the
- * session (on success), mirroring orchestrate/runPanel. A failing run emits a
- * failing final and is NOT appended (we never persist an error message as the
- * assistant's answer).
+ * Emit the FAILURE-ONLY final event for a failed/cancelled chosen run. A failed
+ * winner is NEVER appended to the session (we never persist an error message as
+ * the assistant's answer) and NEVER enters acceptance. Successful winners flow
+ * exclusively through the shared Candidate Quality Gate (see acceptWinner /
+ * emitWinner) — there is no parallel successful append path in this module.
+ *
+ * The `workTrace` parameter is unused on the failure path (a failing turn does not
+ * persist a work trace) but is retained in the signature so the single call site
+ * reads symmetrically with the success path's gate wiring.
  */
 async function* finalAndAppend(
   run: RunResult,
   totalCostUsd: number,
   deps: OrchestrateDeps,
   attempts: number,
-  workTrace: WorkContract | undefined,
+  _workTrace: WorkContract | undefined,
 ): AsyncGenerator<CoreEvent> {
-  const success = run.errored == null && run.finalText !== undefined && !run.canceled;
   const output = run.finalText ?? (run.errored?.message ?? '');
-
-  if (!success) {
-    yield {
-      type: 'final',
-      success: false,
-      output,
-      tier: run.tier,
-      totalCostUsd,
-      sessionId: deps.session.id,
-      attempts,
-      ...(run.canceled ? { canceled: true } : {}),
-      ...(run.errored !== undefined ? { errorCategory: run.errored.category } : {}),
-      provider: run.provider,
-    };
-    return;
-  }
-
-  const assessment = assess(output);
-  const usd = costOf(run);
-  await deps.session.append({
-    timestamp: deps.clock.isoNow(),
-    role: 'assistant',
-    content: output,
-    tier: run.tier,
-    provider: run.provider,
-    model: run.model,
-    confidence: assessment.confidence,
-    costUsd: usd,
-    durationMs: run.durationMs,
-    ...(workTrace !== undefined ? { workTrace } : {}),
-  });
-
   yield {
     type: 'final',
-    success: true,
+    success: false,
     output,
     tier: run.tier,
     totalCostUsd,
     sessionId: deps.session.id,
     attempts,
+    ...(run.canceled ? { canceled: true } : {}),
+    ...(run.errored !== undefined ? { errorCategory: run.errored.category } : {}),
+    provider: run.provider,
   };
 }

@@ -33,6 +33,11 @@ import type {
   ProviderId,
   Usage,
 } from '../../src/providers/port.ts';
+import type {
+  DetectedTestCommand,
+  TestRunResult,
+  VerifyPort,
+} from '../../src/core/verify.ts';
 
 // ---------------------------------------------------------------------------
 // Pure: planPanel
@@ -953,5 +958,157 @@ describe('runPanel — capability parity (attachments + webSearch)', () => {
       assert.equal(req.attachments, undefined, 'no image attachment → attachments omitted');
       assert.equal(req.webSearch, undefined, 'no web-search need → webSearch omitted');
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// P0.1b — panel synthesis routes through the SHARED Candidate Quality Gate.
+//
+// Only a typed RED test (or a parsed critic revise) changes behaviour: ONE
+// same-author repair on plan.synthesizer at synthDecision.tier, then accept the
+// repaired green output or block with final.success:false + no assistant append.
+// The non-verify transcripts above remain unchanged (no verifyPort there).
+// ---------------------------------------------------------------------------
+
+/** A provider that emits a DIFFERENT text on each successive run (for repair). */
+function makeSeqProvider(
+  id: ProviderId,
+  texts: string[],
+  rec?: { calls: number; prompts: string[] },
+): Provider {
+  let calls = 0;
+  return {
+    id,
+    async detect() {
+      return { id, installed: true, version: '1', authenticated: true, binaryPath: '/f', availableModels: [] };
+    },
+    async *run(req: ProviderRequest): AsyncIterable<ProviderEvent> {
+      const text = texts[Math.min(calls, texts.length - 1)] ?? '';
+      if (rec !== undefined) { rec.calls++; rec.prompts.push(req.prompt); }
+      calls++;
+      yield { type: 'text', delta: text };
+      yield { type: 'done', text, usage: USAGE, raw: {} };
+    },
+  };
+}
+
+function makeVerifyPort(
+  runs: TestRunResult[],
+  detected: DetectedTestCommand | null = { label: 'npm test', command: 'npm', args: ['test'] },
+): VerifyPort & { calls: number } {
+  let calls = 0;
+  return {
+    get calls() { return calls; },
+    async captureDiff() {
+      return { files: ['src/a.ts'], patch: '+ fixed' };
+    },
+    async detectTestCommand() {
+      return detected;
+    },
+    async runTests() {
+      const result = runs[Math.min(calls, runs.length - 1)];
+      calls++;
+      return result ?? { outcome: 'errored', output: '', durationMs: 0 };
+    },
+  };
+}
+
+const redRun = (output = 'FAIL a.test.ts'): TestRunResult => ({ outcome: 'red', output, durationMs: 5 });
+const greenRun = (): TestRunResult => ({ outcome: 'green', output: 'ok', durationMs: 4 });
+
+function panelAssistantEntries(all: readonly SessionEntry[]): SessionEntry[] {
+  return all.filter((e) => e.role === 'assistant');
+}
+
+describe('runPanel — Candidate Quality Gate', () => {
+  it('synthesis red → one synthesizer repair → green success', async () => {
+    // claude is candidate[0] + synthesizer + repair author. Calls:
+    //   1 candidate, 2 synthesis, 3 repair.
+    const rec = { calls: 0, prompts: [] as string[] };
+    const claude = makeSeqProvider('claude', ['cand-A', 'SYNTH-RED', 'SYNTH-GREEN'], rec);
+    const codex = makeSeqProvider('codex', ['cand-B']);
+    const { deps, session, ledger } = panelDeps({ claude, codex });
+    const port = makeVerifyPort([redRun(), greenRun()]);
+    const events = await collect(
+      runPanel('hard task', { ...deps, verifyPort: port, verifyLevel: 'tests' }, PLAN, new AbortController().signal),
+    );
+    const final = events.at(-1);
+    assert.ok(final !== undefined && final.type === 'final' && final.success === true);
+    assert.equal(final.output, 'SYNTH-GREEN');
+    assert.equal(port.calls, 2, 'verify ran twice (synth red, repair green)');
+    assert.equal(rec.calls, 3, 'claude ran candidate + synthesis + repair');
+    assert.match(rec.prompts[2] ?? '', /Acceptance verification failed/);
+    assert.match(rec.prompts[2] ?? '', /FAIL a\.test\.ts/);
+    assert.equal(panelAssistantEntries(session.entries)[0]?.content, 'SYNTH-GREEN');
+    // ledger: 2 candidates + synth + repair = 4 entries; repair is a real review run.
+    assert.equal(ledger.entries.length, 4);
+    assert.equal(ledger.entries.at(-1)?.taskKind, 'review');
+    assert.equal(ledger.entries.at(-1)?.provider, 'claude');
+    assert.equal(events.filter((e) => e.type === 'final').length, 1);
+  });
+
+  it('synthesis red → red blocks (final.success:false, no assistant append)', async () => {
+    const claude = makeSeqProvider('claude', ['cand-A', 'SYNTH-RED', 'STILL-RED']);
+    const codex = makeSeqProvider('codex', ['cand-B']);
+    const { deps, session } = panelDeps({ claude, codex });
+    const port = makeVerifyPort([redRun(), redRun('FAIL again')]);
+    const events = await collect(
+      runPanel('hard task', { ...deps, verifyPort: port, verifyLevel: 'tests' }, PLAN, new AbortController().signal),
+    );
+    const final = events.at(-1);
+    assert.ok(final !== undefined && final.type === 'final');
+    assert.equal(final.success, false);
+    assert.equal(final.memoryProposal, undefined);
+    assert.equal(panelAssistantEntries(session.entries).length, 0, 'no assistant append on a blocked red');
+    assert.equal(events.filter((e) => e.type === 'final').length, 1, 'exactly one final');
+  });
+
+  it('passing tests accept with no repair (one final, one append)', async () => {
+    const rec = { calls: 0, prompts: [] as string[] };
+    const claude = makeSeqProvider('claude', ['cand-A', 'SYNTH-OK'], rec);
+    const codex = makeSeqProvider('codex', ['cand-B']);
+    const { deps, session } = panelDeps({ claude, codex });
+    const port = makeVerifyPort([greenRun()]);
+    const events = await collect(
+      runPanel('hard task', { ...deps, verifyPort: port, verifyLevel: 'tests' }, PLAN, new AbortController().signal),
+    );
+    const final = events.at(-1);
+    assert.ok(final !== undefined && final.type === 'final' && final.success === true);
+    assert.equal(final.output, 'SYNTH-OK');
+    assert.equal(rec.calls, 2, 'no repair run on green');
+    assert.equal(port.calls, 1);
+    assert.equal(panelAssistantEntries(session.entries).length, 1);
+    assert.equal(events.filter((e) => e.type === 'final').length, 1);
+  });
+
+  it('repair-error blocks with exactly one final and no append', async () => {
+    // synthesis red, then the repair run errors → original red remains → block.
+    let claudeCalls = 0;
+    const claude: Provider = {
+      id: 'claude',
+      async detect() {
+        return { id: 'claude', installed: true, version: '1', authenticated: true, binaryPath: '/f', availableModels: [] };
+      },
+      async *run(): AsyncIterable<ProviderEvent> {
+        // call 0 = candidate, call 1 = synthesis, call 2 = repair (errors).
+        if ((claudeCalls++) === 2) {
+          yield { type: 'error', error: { category: 'network', recoverable: true, message: 'boom', suggestion: 'retry' } };
+          return;
+        }
+        yield { type: 'text', delta: 'X' };
+        yield { type: 'done', text: 'SYNTH-RED', usage: USAGE, raw: {} };
+      },
+    };
+    const codex = makeSeqProvider('codex', ['cand-B']);
+    const { deps, session } = panelDeps({ claude, codex });
+    const port = makeVerifyPort([redRun()]);
+    const events = await collect(
+      runPanel('hard task', { ...deps, verifyPort: port, verifyLevel: 'tests' }, PLAN, new AbortController().signal),
+    );
+    const final = events.at(-1);
+    assert.ok(final !== undefined && final.type === 'final');
+    assert.equal(final.success, false);
+    assert.equal(panelAssistantEntries(session.entries).length, 0);
+    assert.equal(events.filter((e) => e.type === 'final').length, 1);
   });
 });

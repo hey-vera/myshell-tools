@@ -47,6 +47,15 @@ import { modeFromPolicy } from './policy.js';
 import type { WorkContract } from './work-contract.js';
 import { capContract, renderContractForPrompt, shouldMaterializeContract, isCleanObjectiveTask } from './work-contract.js';
 import { assembleContextBlocks, type ContextBlockOptions } from './prompt-context.js';
+import {
+  runCandidateQualityGate,
+  buildVerifyReceiptEvents,
+  type AcceptedRunSessionData,
+  type CandidateResult,
+} from './accept-stage.js';
+import { verifyStage, type CriticRunInput, type CriticRunOutput } from './work-call.js';
+import { parseReviewVerdict } from './review.js';
+import { buildPrompt } from './prompt.js';
 
 // ---------------------------------------------------------------------------
 // Plan
@@ -1093,10 +1102,261 @@ export async function* runPanel(
     return;
   }
 
-  // Persist the synthesizer's answer as the assistant turn (matches orchestrate).
-  await deps.session.append({
-    timestamp: deps.clock.isoNow(),
-    role: 'assistant',
+  // -----------------------------------------------------------------------
+  // P0.1b — the synthesizer succeeded; route its answer through the SHARED
+  // Candidate Quality Gate (verify → optional one-shot repair → accept/block),
+  // exactly like the sequential and hedge paths. The gate owns the assistant
+  // append and the terminal `final`. When verification is unarmed (no port / no
+  // tests / passing tests) the gate accepts immediately and the emitted events
+  // (one success final, assistant append, memory-proposal parity) are byte-for-
+  // byte the pre-gate panel behaviour. Only a typed RED test or a parsed critic
+  // `revise` changes behaviour: ONE same-author repair on plan.synthesizer at
+  // synthDecision.tier, then accept-or-block.
+  // -----------------------------------------------------------------------
+
+  // The verify runner: armed ONLY when deps.verifyPort is present. Mirrors the
+  // sequential work-call's runVerifyAtAccept — the critic (the one paid lever)
+  // reuses the same cross-vendor reviewer routing + ledger/cost accounting, so
+  // the diff critic is a real parseable verdict (never fabricated) and its cost
+  // folds into totalCostUsd + the ledger exactly like a panel provider run.
+  const runVerifyAtAccept = async (
+    candidate: CandidateResult,
+  ): Promise<import('./verify.js').VerifyOutcome | undefined> => {
+    if (candidate.verifyPort === undefined) return undefined;
+    const runCritic = async (input: CriticRunInput): Promise<CriticRunOutput | undefined> => {
+      const reviewerProvider = deps.providers[input.reviewer];
+      if (reviewerProvider === undefined) return { ran: false };
+      try {
+        const reviewDecision = route(
+          'manager',
+          [input.reviewer],
+          deps.policy,
+          deps.availableModels,
+          deps.authenticatedProviders,
+          deps.learnedProviderOrder?.['manager'],
+          capability.capabilityContext,
+        );
+        const reviewEffort = panelEffort(
+          deps,
+          plan,
+          input.reviewer,
+          reviewDecision.model,
+          reviewDecision.tier,
+          'review',
+        );
+        const reviewReq: import('../providers/port.js').ProviderRequest = {
+          model: reviewDecision.model,
+          prompt: input.prompt,
+          cwd: deps.cwd,
+          sandbox: deps.sandbox,
+          timeoutMs: deps.timeoutMs,
+          ...(reviewEffort !== undefined ? { reasoningEffort: reviewEffort } : {}),
+        };
+        const reviewStart = deps.clock.now();
+        // Consume the critic run for TERMINAL data only — the cross-vendor critic
+        // is an internal control-plane run and must NOT stream its prose to the
+        // renderer (mirrors work-call's collectProviderRun).
+        let reviewText: string | undefined;
+        let reviewErrored: import('../providers/port.js').CliError | undefined;
+        let reviewUsage: import('../providers/port.js').Usage | undefined;
+        let reviewProviderCostUsd: number | undefined;
+        let reviewCanceled = false;
+        if (signal.aborted) return { ran: false };
+        for await (const ev of reviewerProvider.run(reviewReq, signal)) {
+          if (ev.type === 'done') {
+            reviewText = ev.text;
+            if (ev.usage !== undefined) reviewUsage = ev.usage;
+            if (ev.costUsd !== undefined) reviewProviderCostUsd = ev.costUsd;
+          } else if (ev.type === 'error') {
+            reviewErrored = ev.error;
+          } else if (ev.type === 'usage' && reviewUsage === undefined) {
+            reviewUsage = ev.usage;
+          }
+          if (signal.aborted) {
+            reviewCanceled = true;
+            break;
+          }
+        }
+        const reviewDurationMs = deps.clock.now() - reviewStart;
+        if (reviewCanceled || reviewErrored != null) return { ran: false };
+        const reviewPricing = getModelPricing(input.reviewer, reviewDecision.model);
+        const reviewUsd =
+          reviewProviderCostUsd ??
+          (reviewUsage !== undefined && reviewPricing !== undefined
+            ? calculateCost(
+                reviewUsage.inputTokens,
+                reviewUsage.outputTokens,
+                reviewPricing,
+              )
+            : 0);
+        totalCostUsd += reviewUsd;
+        await deps.ledger.record({
+          timestamp: deps.clock.isoNow(),
+          sessionId: deps.session.id,
+          taskId: deps.clock.uuid(),
+          provider: input.reviewer,
+          model: reviewDecision.model,
+          tier: reviewDecision.tier,
+          inputTokens: reviewUsage?.inputTokens ?? 0,
+          outputTokens: reviewUsage?.outputTokens ?? 0,
+          cachedInputTokens: reviewUsage?.cachedInputTokens ?? 0,
+          usd: reviewUsd,
+          durationMs: reviewDurationMs,
+          success: true,
+          ...(reviewEffort !== undefined ? { reasoningEffort: reviewEffort } : {}),
+          taskKind: 'review',
+        });
+        const verdict = parseReviewVerdict(reviewText ?? '');
+        return {
+          ran: verdict.parsed === true,
+          parsed: verdict.parsed,
+          verdict: verdict.verdict,
+          notes: verdict.notes,
+        };
+      } catch {
+        return { ran: false };
+      }
+    };
+    return verifyStage({
+      output: candidate.content,
+      provider: candidate.provider,
+      tier: candidate.tier,
+      port: candidate.verifyPort,
+      level: candidate.verifyLevel,
+      task: candidate.task,
+      cwd: candidate.cwd,
+      ...(candidate.verifyTestTimeoutMs !== undefined
+        ? { testTimeoutMs: candidate.verifyTestTimeoutMs }
+        : {}),
+      available: candidate.availableProviders,
+      runCritic,
+    });
+  };
+
+  // ONE same-author repair: re-run plan.synthesizer at synthDecision.tier with the
+  // original task + the verification evidence injected as manager-notes. This is
+  // NOT a second panel and does NOT rerun candidates or synthesis — its events,
+  // ledger entry, attempts, and cost are ordinary provider-attempt accounting.
+  const runSynthRepair = async function* (
+    candidate: CandidateResult,
+    evidence: string,
+  ): AsyncGenerator<CoreEvent, CandidateResult | undefined> {
+    const provider = deps.providers[plan.synthesizer];
+    if (provider === undefined || signal.aborted) return undefined;
+
+    attempts++;
+    const repairPrompt = buildPrompt(
+      synthDecision.tier,
+      task,
+      evidence,
+      historyContext,
+      contextFromDeps(deps),
+    );
+    yield {
+      type: 'tier-start',
+      tier: synthDecision.tier,
+      provider: plan.synthesizer,
+      model: synthDecision.model,
+      attempt: attempts,
+    };
+    const repairReq: import('../providers/port.js').ProviderRequest = {
+      model: synthDecision.model,
+      prompt: repairPrompt,
+      cwd: deps.cwd,
+      sandbox: deps.sandbox,
+      timeoutMs: deps.timeoutMs,
+      ...(synthEffort !== undefined ? { reasoningEffort: synthEffort } : {}),
+      ...(capability.webSearch === true ? { webSearch: true } : {}),
+      ...(panelHasImageAttachment(capability.attachments)
+        ? { attachments: capability.attachments }
+        : {}),
+    };
+    const repairStart = deps.clock.now();
+    const repairOutcome = yield* streamProvider(
+      deps,
+      plan.synthesizer,
+      repairReq,
+      synthDecision.tier,
+      signal,
+    );
+    const repairDurationMs = deps.clock.now() - repairStart;
+    const repairText = repairOutcome.finalText ?? '';
+    const repairSuccess =
+      !repairOutcome.canceled &&
+      repairOutcome.errored == null &&
+      repairText.trim().length > 0;
+    const repairPricing = getModelPricing(plan.synthesizer, synthDecision.model);
+    const repairUsd =
+      repairOutcome.providerCostUsd ??
+      (repairOutcome.usage !== undefined && repairPricing !== undefined
+        ? calculateCost(
+            repairOutcome.usage.inputTokens,
+            repairOutcome.usage.outputTokens,
+            repairPricing,
+          )
+        : 0);
+    totalCostUsd += repairUsd;
+    const repairAssessment = assess(repairText);
+    await deps.ledger.record({
+      timestamp: deps.clock.isoNow(),
+      sessionId: deps.session.id,
+      taskId: deps.clock.uuid(),
+      provider: plan.synthesizer,
+      model: synthDecision.model,
+      tier: synthDecision.tier,
+      inputTokens: repairOutcome.usage?.inputTokens ?? 0,
+      outputTokens: repairOutcome.usage?.outputTokens ?? 0,
+      cachedInputTokens: repairOutcome.usage?.cachedInputTokens ?? 0,
+      usd: repairUsd,
+      durationMs: repairDurationMs,
+      success: repairSuccess,
+      ...(synthEffort !== undefined ? { reasoningEffort: synthEffort } : {}),
+      taskKind: 'review',
+    });
+    yield {
+      type: 'tier-done',
+      tier: synthDecision.tier,
+      success: repairSuccess,
+      confidence: repairAssessment.confidence,
+      costUsd: repairUsd,
+      inputTokens: repairOutcome.usage?.inputTokens ?? 0,
+      outputTokens: repairOutcome.usage?.outputTokens ?? 0,
+      durationMs: repairDurationMs,
+    };
+    if (!repairSuccess) return undefined;
+    const repairedRun: AcceptedRunSessionData = {
+      content: repairText,
+      tier: synthDecision.tier,
+      provider: plan.synthesizer,
+      model: synthDecision.model,
+      confidence: repairAssessment.confidence,
+      costUsd: repairUsd,
+      durationMs: repairDurationMs,
+      ...(workTrace !== undefined ? { workTrace } : {}),
+    };
+    return makeSynthCandidate(repairedRun);
+  };
+
+  function makeSynthCandidate(run: AcceptedRunSessionData): CandidateResult {
+    const candidate: CandidateResult = {
+      ...run,
+      get totalCostUsd() { return totalCostUsd; },
+      get attempts() { return attempts; },
+      disposition: 'clean',
+      task,
+      cwd: deps.cwd,
+      ...(deps.verifyPort !== undefined ? { verifyPort: deps.verifyPort } : {}),
+      verifyLevel: deps.verifyLevel ?? 'tests',
+      ...(deps.verifyTestTimeoutMs !== undefined
+        ? { verifyTestTimeoutMs: deps.verifyTestTimeoutMs }
+        : {}),
+      availableProviders: deps.authenticatedProviders ?? [...plan.candidates],
+      repair: (evidence) => runSynthRepair(candidate, evidence),
+    };
+    return candidate;
+  }
+
+  const synthRun: AcceptedRunSessionData = {
     content: synthText,
     tier: synthDecision.tier,
     provider: plan.synthesizer,
@@ -1105,17 +1365,13 @@ export async function* runPanel(
     costUsd: synthUsd,
     durationMs: synthDurationMs,
     ...(workTrace !== undefined ? { workTrace } : {}),
-  });
-
-  yield {
-    type: 'final',
-    success: true,
-    output: synthText,
-    // The user-facing answer is the synthesizer's, produced at its RESOLVED
-    // tier — report that, never a tier the model didn't run.
-    tier: synthDecision.tier,
-    totalCostUsd,
-    sessionId: deps.session.id,
-    attempts,
   };
+
+  yield* runCandidateQualityGate({
+    deps,
+    candidate: makeSynthCandidate(synthRun),
+    goalTurn: deps.goalTurn === true,
+    verify: runVerifyAtAccept,
+    receiptEvents: (outcome, candidate) => buildVerifyReceiptEvents(deps, outcome, candidate),
+  });
 }
