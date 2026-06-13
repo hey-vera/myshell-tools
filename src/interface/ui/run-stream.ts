@@ -34,6 +34,7 @@ import { EnvelopeFilter, type OutputSink } from '../stream-filter.js';
 import { styleInlineMarkdown } from '../../ui/theme.js';
 import { coreEventToActions, isDebugEnv } from './core-event.js';
 import type { Action, Verbosity } from './state.js';
+import { VerboseNarrationFormatter } from '../narration-format.js';
 
 // ---------------------------------------------------------------------------
 // Capturing sink — turns EnvelopeFilter's emitted prose into plain chunks.
@@ -183,6 +184,7 @@ export async function renderStreamInk(
   const env = opts.env ?? process.env;
   const debug = isDebugEnv(env);
   const scheduleFlush = opts.scheduleFlush ?? defaultScheduleFlush;
+  const narration = verbosity === 'verbose' ? new VerboseNarrationFormatter() : null;
 
   // The per-tier EnvelopeFilter's markdown styler is enabled exactly as render.ts
   // gates it: colour on AND MYSHELL_NO_MARKDOWN unset. Identity off-colour.
@@ -273,11 +275,17 @@ export async function renderStreamInk(
     dispatch(action);
   }
 
+  function dispatchNarration(lines: readonly string[]): void {
+    if (lines.length === 0) return;
+    dispatchStructural({ type: 'stream/narration', lines });
+  }
+
   try {
     for await (const ev of events) {
     if (ev.type === 'provider-event') {
       const pe = ev.event;
       if (pe.type === 'text') {
+        if (narration !== null) dispatchNarration(narration.flush());
         // Feed the raw delta through the per-tier EnvelopeFilter; whatever it
         // emits (cleaned, possibly markdown-styled) is queued as throttled prose.
         prose.push(pe.delta);
@@ -295,6 +303,18 @@ export async function renderStreamInk(
       // so it is COALESCED via queueStep — a burst of tool calls flushes as one
       // re-render. Every other action (incl. verbose tool, which commits a `[tool]`
       // line) keeps its immediate, order-preserving dispatchStructural.
+      if (narration !== null && pe.type === 'tool') {
+        dispatchNarration(
+          narration.pushTool({
+            name: pe.name,
+            phase: pe.phase,
+            ...(pe.detail !== undefined && pe.detail.length > 0 ? { detail: pe.detail } : {}),
+          }),
+        );
+      }
+      if (narration !== null && pe.type === 'reasoning') {
+        dispatchNarration(narration.pushReasoning(pe.delta));
+      }
       for (const action of coreEventToActions(ev, verbosity, debug)) {
         if (action.type === 'stream/tool' && action.verbosity !== 'verbose') {
           queueStep(action);
@@ -308,6 +328,16 @@ export async function renderStreamInk(
     switch (ev.type) {
       case 'tier-start': {
         currentProvider = ev.provider;
+        if (narration !== null) {
+          dispatchNarration(
+            narration.beginTier({
+              tier: ev.tier,
+              provider: ev.provider,
+              model: ev.model,
+              attempt: ev.attempt,
+            }),
+          );
+        }
         for (const action of coreEventToActions(ev, verbosity, debug)) {
           dispatchStructural(action);
         }
@@ -333,6 +363,7 @@ export async function renderStreamInk(
         // tier-done flips a panelist + accounts tokens but does NOT flush prose.
         const panelCandidate = panelMode && !synthesizing;
         if (!panelCandidate) {
+          if (narration !== null) dispatchNarration(narration.flush());
           // A real tier boundary: flush the per-tier EnvelopeFilter (envelope/goal
           // stripped at the boundary) and rotate to a fresh filter for the next
           // tier, mirroring render.ts (prose.finishAttempt(); prose = new …).
@@ -347,11 +378,23 @@ export async function renderStreamInk(
             base.type === 'stream/flush-tier' ? { ...base, panelCandidate } : base;
           dispatchStructural(action);
         }
+        if (narration !== null && verbosity === 'verbose') {
+          dispatchNarration(
+            narration.endTier({
+              success: ev.success,
+              confidence: ev.confidence,
+              inputTokens: ev.inputTokens,
+              outputTokens: ev.outputTokens,
+              durationMs: ev.durationMs,
+            }),
+          );
+        }
         break;
       }
 
       case 'final': {
         finalEvent = ev;
+        if (narration !== null) dispatchNarration(narration.flush());
         // Flush held-back prose (envelope already stripped) BEFORE the completion
         // line, exactly as render.ts does (prose.flush() then the line).
         prose.flush();
@@ -381,6 +424,12 @@ export async function renderStreamInk(
 
       default: {
         // classified / intent / engagement / escalate / failover / notice.
+        if (
+          narration !== null &&
+          (ev.type === 'escalate' || ev.type === 'failover' || ev.type === 'notice')
+        ) {
+          dispatchNarration(narration.flush());
+        }
         for (const action of coreEventToActions(ev, verbosity, debug)) {
           dispatchStructural(action);
         }
@@ -396,6 +445,7 @@ export async function renderStreamInk(
     // returns '' which queueProse ignores; flushPending no-ops with empty buffers),
     // so the normal-path flush in the `final` case is not double-emitted.
     // The error (if any) re-propagates after this block so runTask still sees it.
+    if (narration !== null) dispatchNarration(narration.flush());
     prose.flush();
     drainProse();
     flushPending();

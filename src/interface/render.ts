@@ -38,6 +38,7 @@ import {
 } from '../ui/theme.js';
 import { createSpinner, type SpinnerOverlay } from '../ui/spinner.js';
 import { formatTokens } from '../infra/insights.js';
+import { VerboseNarrationFormatter } from './narration-format.js';
 
 // ---------------------------------------------------------------------------
 // OutputSink
@@ -352,20 +353,6 @@ export function renderResumeTranscript(
 // ---------------------------------------------------------------------------
 
 /**
- * Render a confidence value as a computed percentage string or 'unrated'.
- * No digit-% literal is used here — the percentage is always interpolated
- * from the real numeric value.
- */
-function renderConfidence(confidence: number | null, color: boolean): string {
-  if (confidence === null) return dim('unrated', color);
-  const pct = Math.round(confidence * 100);
-  const str = `${pct}%`;
-  if (pct >= 80) return green(str, color);
-  if (pct >= 50) return yellow(str, color);
-  return red(str, color);
-}
-
-/**
  * Reconstruct a {@link CliError} for a known {@link ErrorCategory} by feeding
  * `classifyError` a probe string that deterministically maps to that category.
  * This REUSES the existing classification + descriptor tables in errors.ts
@@ -428,6 +415,7 @@ export async function renderStream(
   const c = out.color;
   const isVerbose = verbosity === 'verbose';
   const isQuiet = verbosity === 'quiet';
+  const narration = isVerbose ? new VerboseNarrationFormatter() : null;
 
   let finalEvent: Extract<CoreEvent, { type: 'final' }> | undefined;
   // Providers that hit a rate-limit (429 / quota) at ANY point this run — even when
@@ -566,6 +554,16 @@ export async function renderStream(
     ensureAlive();
   }
 
+  function writeNarration(lines: readonly string[]): void {
+    if (!isVerbose || lines.length === 0) return;
+    for (const line of lines) out.write(`${dim(line, c)}\n`);
+  }
+
+  function flushNarration(): void {
+    if (narration === null) return;
+    writeNarration(narration.flush());
+  }
+
   if (out.isTty) {
     showInterruptHint();
     spinner.start(spinnerLabel());
@@ -617,10 +615,14 @@ export async function renderStream(
           spinner.stop();
           spinnerActive = false;
         }
-        if (isVerbose) {
-          out.write(
-            dim(`▶ ${ev.tier} (${ev.provider}/${ev.model})`, c) +
-            `\n`,
+        if (narration !== null) {
+          writeNarration(
+            narration.beginTier({
+              tier: ev.tier,
+              provider: ev.provider,
+              model: ev.model,
+              attempt: ev.attempt,
+            }),
           );
         }
         // Reset per-tier work tracking and start the live indicator. In verbose
@@ -664,6 +666,7 @@ export async function renderStream(
       case 'provider-event': {
         const pe = ev.event;
         if (pe.type === 'text') {
+          flushNarration();
           // First real answer prose — clear the indicator and start streaming.
           stopSpinner();
           // Head the assistant's turn with the cyan streaming `●`, exactly once,
@@ -695,7 +698,15 @@ export async function renderStream(
           if (isVerbose) {
             // Verbose: print each tool line (stop the spinner so it isn't clobbered).
             stopSpinner();
-            out.write(dim(`[tool] ${pe.name} ${pe.phase}`, c) + `\n`);
+            if (narration !== null) {
+              writeNarration(
+                narration.pushTool({
+                  name: pe.name,
+                  phase: pe.phase,
+                  ...(pe.detail !== undefined && pe.detail.length > 0 ? { detail: pe.detail } : {}),
+                }),
+              );
+            }
           } else {
             // Normal/quiet: keep the indicator alive and count the step, so a
             // tool-heavy run shows life ("Thinking… 12 steps · 8s") instead of
@@ -707,7 +718,7 @@ export async function renderStream(
         } else if (pe.type === 'reasoning') {
           if (isVerbose) {
             stopSpinner();
-            out.write(dim(pe.delta, c));
+            if (narration !== null) writeNarration(narration.pushReasoning(pe.delta));
           } else {
             // Normal/quiet: reasoning is internal — don't print it, but keep (or
             // revive) the live indicator so a long thinking phase shows life.
@@ -737,19 +748,21 @@ export async function renderStream(
           // Tokens are real and measured — accumulate them like any tier.
           runningTokens += ev.inputTokens + ev.outputTokens;
           if (isVerbose) {
-            const confidenceStr = renderConfidence(ev.confidence, c);
-            const tokenStr = formatTokens(ev.inputTokens + ev.outputTokens);
-            const successMark = ev.success ? green('✓', c) : red('✗', c);
             // Stop the live line so the verbose telemetry isn't clobbered, then
             // let ensureAlive() bring the panel line back for the remaining
             // candidates.
             stopSpinner();
-            out.write(
-              `\n${successMark} ${bold('tier done', c)} — ` +
-              `confidence: ${confidenceStr}, ` +
-              `${tokenStr} tokens, ` +
-              `duration: ${ev.durationMs}ms\n`,
-            );
+            if (narration !== null) {
+              writeNarration(
+                narration.endTier({
+                  success: ev.success,
+                  confidence: ev.confidence,
+                  inputTokens: ev.inputTokens,
+                  outputTokens: ev.outputTokens,
+                  durationMs: ev.durationMs,
+                }),
+              );
+            }
             ensureAlive();
           } else if (spinnerActive) {
             spinner.update(spinnerLabel());
@@ -757,6 +770,7 @@ export async function renderStream(
           break;
         }
         stopSpinner();
+        flushNarration();
         prose.finishAttempt();
         prose = new EnvelopeFilter(out, proseStyler);
         if (attemptHadProse) {
@@ -769,15 +783,17 @@ export async function renderStream(
         runningTokens += ev.inputTokens + ev.outputTokens;
         // Per-tier telemetry is verbose-only chrome.
         if (isVerbose) {
-          const confidenceStr = renderConfidence(ev.confidence, c);
-          const tokenStr = formatTokens(ev.inputTokens + ev.outputTokens);
-          const successMark = ev.success ? green('✓', c) : red('✗', c);
-          out.write(
-            `\n${successMark} ${bold('tier done', c)} — ` +
-            `confidence: ${confidenceStr}, ` +
-            `${tokenStr} tokens, ` +
-            `duration: ${ev.durationMs}ms\n`,
-          );
+          if (narration !== null) {
+            writeNarration(
+              narration.endTier({
+                success: ev.success,
+                confidence: ev.confidence,
+                inputTokens: ev.inputTokens,
+                outputTokens: ev.outputTokens,
+                durationMs: ev.durationMs,
+              }),
+            );
+          }
         }
         break;
       }
@@ -791,6 +807,7 @@ export async function renderStream(
         // hedge normal-mode notices below). Stop the spinner first so the line
         // isn't clobbered.
         stopSpinner();
+        flushNarration();
         if (isVerbose) {
           out.write(
             yellow(`↑ Escalating ${ev.from} → ${ev.to}: ${ev.reason}`, c) + `\n`,
@@ -804,6 +821,7 @@ export async function renderStream(
       case 'failover': {
         // Failover is internal routing — verbose-only.
         if (isVerbose) {
+          flushNarration();
           out.write(
             yellow(`⇄ Failing over ${ev.from} → ${ev.to} (${ev.tier}): ${ev.reason}`, c) + `\n`,
           );
@@ -839,6 +857,7 @@ export async function renderStream(
           isSpendUnknownWarn
         ) {
           stopSpinner();
+          flushNarration();
         }
         // Errors are ALWAYS shown (every verbosity). Info/warn are chrome and
         // only surface in verbose mode — except the normal-mode notices above
@@ -862,6 +881,7 @@ export async function renderStream(
       case 'final': {
         finalEvent = ev;
         stopSpinner();
+        flushNarration();
 
         if (ev.canceled === true) {
           // CANCEL: a canceled answer is incomplete (the user hit ESC) and is
@@ -990,6 +1010,7 @@ export async function renderStream(
     // exhausted), so the normal-path flush in the `final` case above is not
     // double-emitted. The error (if any) re-propagates after this block so
     // runTask still sees it and prints `[error]`.
+    flushNarration();
     stopSpinner();
     prose.flush();
   }

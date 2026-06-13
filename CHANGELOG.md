@@ -6,6 +6,9 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+## 3.100.0
+feat(chat): organized verbose narration. A new shared `VerboseNarrationFormatter` groups streamed activity into a readable block per tier — an `Activity:` header (provider/model/attempt), a `Tools:` section, and a `Reasoning:` section — instead of the old interleaved wall of raw `[tool]`/reasoning deltas. It buffers fragmented reasoning into whole lines, collapses adjacent duplicates, and pairs tool start/end so lifecycle noise disappears. Both the legacy renderer and the Ink path now feed the same formatter, so verbose output stays byte-identical across the two (the parity test got *stricter* — the old live-region ordering carve-out is gone). Presentation-only.
+
 ## 3.99.0
 feat(chat): polished decision prompts in the Claude/GPT shell style. The bare "Continue working step by step? yes/no" line is replaced by a pronounced multi-line block — titled by kind (Keep Going / Timeout / Checkpoint / Question), with numbered options, recommended/Enter-default markers, per-option descriptions, and a clear key hint. Shared `renderDecisionPrompt()` now backs the timeout, keep-going, and structured-question flows (the standing-rule, per-todo, and goal-launch checkpoints inherit it), on both the Ink and legacy paths. Presentation-only — input handling and answer semantics are unchanged.
 

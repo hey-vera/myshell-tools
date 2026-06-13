@@ -380,6 +380,8 @@ export type Action =
     }
   // --- already-cleaned prose chunk (envelope already stripped by 3b's filter) ---
   | { readonly type: 'stream/prose'; readonly text: string }
+  // --- finalized verbose narration lines from the shared formatter ---
+  | { readonly type: 'stream/narration'; readonly lines: readonly string[] }
   // --- a tool call ran (verbose prints a line; normal counts a step) ---
   | {
       readonly type: 'stream/tool';

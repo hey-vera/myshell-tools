@@ -206,6 +206,12 @@ export function reduce(state: UiState, action: Action): UiState {
     case 'commit/raw':
       return commit(state, { kind: 'raw', text: action.text });
 
+    case 'stream/narration':
+      return commit(
+        state,
+        ...action.lines.map((text) => ({ kind: 'telemetry' as const, text })),
+      );
+
     // -- chrome/replace: swap the ephemeral live-frame region wholesale. The menu
     //    loop redraws its full chrome every keypress; routing it here (instead of
     //    commit/raw) means the frame REPLACES the prior one in a bounded NON-<Static>
@@ -353,7 +359,7 @@ export function reduce(state: UiState, action: Action): UiState {
       } else {
         nextGoals = [...state.goals, goal];
       }
-      let next: UiState = {
+      return {
         ...state,
         turnActive: true,
         goals: nextGoals,
@@ -367,13 +373,6 @@ export function reduce(state: UiState, action: Action): UiState {
           workLabel,
         },
       };
-      if (isVerbose) {
-        next = commit(next, {
-          kind: 'telemetry',
-          text: `▶ ${action.tier} (${action.provider}/${action.model})`,
-        });
-      }
-      return next;
     }
 
     // -- goal/enqueue: append a QUEUED goal card (multi-goal seam). Marks the
@@ -474,9 +473,7 @@ export function reduce(state: UiState, action: Action): UiState {
     // -- tool: verbose prints a `[tool] name phase` line; normal/quiet counts a
     //    step and marks toolSinceProse so the next prose starts on a fresh line.
     case 'stream/tool': {
-      if (action.verbosity === 'verbose') {
-        return commit(state, { kind: 'telemetry', text: `[tool] ${action.name} ${action.phase}` });
-      }
+      if (action.verbosity === 'verbose') return state;
       // Capture the LIVE action from the real tool event (the single most useful
       // real-time signal): a friendly verb mapped from the tool NAME plus the real
       // TARGET only when the event actually carried one (`detail`). This is live-
@@ -505,9 +502,7 @@ export function reduce(state: UiState, action: Action): UiState {
     //    verbose); normal/quiet keeps the spinner alive (no committed text, no
     //    counter change beyond keeping phase non-idle).
     case 'stream/reasoning': {
-      if (action.verbosity === 'verbose') {
-        return commit(state, { kind: 'telemetry', text: action.text });
-      }
+      if (action.verbosity === 'verbose') return state;
       // ensureAlive(): keep the live indicator; nothing visible commits.
       const phase = state.stream.phase === 'idle' ? 'thinking' : state.stream.phase;
       return withStream(state, { phase });
@@ -521,7 +516,6 @@ export function reduce(state: UiState, action: Action): UiState {
     //       breakBeforeNextProse if this tier had prose, reset attempt flags.
     //       Verbose commits the per-tier telemetry line.
     case 'stream/flush-tier': {
-      const isVerbose = action.verbosity === 'verbose';
       // Clamp the per-tier token figure at the accumulation point: a malformed
       // provider usage event (NaN, Infinity, or negative input/output counts)
       // must never poison the running turn/session totals or the TokenMeter
@@ -529,14 +523,6 @@ export function reduce(state: UiState, action: Action): UiState {
       // non-finite sum as 0.
       const rawTierTokens = action.inputTokens + action.outputTokens;
       const tierTokens = Number.isFinite(rawTierTokens) ? Math.max(0, rawTierTokens) : 0;
-      const telemetry: TranscriptLine = {
-        kind: 'telemetry',
-        text:
-          `${action.success ? '✓' : '✗'} tier done — ` +
-          `confidence: ${renderConfidencePlain(action.confidence)}, ` +
-          `${formatTokens(tierTokens)} tokens, ` +
-          `duration: ${action.durationMs}ms`,
-      };
 
       if (action.panelCandidate) {
         // Flip the first still-running panelist (candidate dones arrive in
@@ -549,13 +535,11 @@ export function reduce(state: UiState, action: Action): UiState {
           }
           return p;
         });
-        let next: UiState = {
+        return {
           ...state,
           tokens: { turn: state.tokens.turn + tierTokens, session: state.tokens.session + tierTokens },
           stream: { ...state.stream, panelists },
         };
-        if (isVerbose) next = commit(next, telemetry);
-        return next;
       }
 
       // Normal tier boundary: commit the FULL buffered prose (proseFull — NOT the
@@ -593,7 +577,6 @@ export function reduce(state: UiState, action: Action): UiState {
           markerEmitted: false,
         },
       };
-      if (isVerbose) next = commit(next, telemetry);
       return next;
     }
 
@@ -776,14 +759,4 @@ export function reduce(state: UiState, action: Action): UiState {
       return next;
     }
   }
-}
-
-// ---------------------------------------------------------------------------
-// confidence — the plain-text mirror of render.ts renderConfidence (the view
-// layer applies green/yellow/red by threshold in 3b; the text is identical).
-// ---------------------------------------------------------------------------
-
-function renderConfidencePlain(confidence: number | null): string {
-  if (confidence === null) return 'unrated';
-  return `${Math.round(confidence * 100)}%`;
 }

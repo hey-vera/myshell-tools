@@ -668,7 +668,7 @@ describe('ui reduce — tier-start', () => {
     assert.equal(s.goals[0]?.tier, 'manager');
   });
 
-  it('verbose mode: commits the ▶ tier line and uses the verbose workLabel', () => {
+  it('verbose mode: keeps the verbose workLabel but does not commit narration directly', () => {
     const s = reduce(initialState, {
       type: 'tier-start',
       tier: 'manager',
@@ -677,16 +677,15 @@ describe('ui reduce — tier-start', () => {
       attempt: 2,
       verbosity: 'verbose',
     });
-    assert.deepEqual(lines(s), ['▶ manager (codex/gpt-5)']);
-    assert.equal(s.committed[0]?.kind, 'telemetry');
+    assert.deepEqual(lines(s), []);
     assert.equal(s.stream.workLabel, 'manager (codex/gpt-5)');
   });
 });
 
 describe('ui reduce — tool / reasoning verbosity', () => {
-  it('verbose tool commits a [tool] line; normal counts a step', () => {
+  it('verbose tool no longer commits directly; normal still counts a step', () => {
     const v = reduce(initialState, { type: 'stream/tool', name: 'bash', phase: 'end', verbosity: 'verbose' });
-    assert.deepEqual(lines(v), ['[tool] bash end']);
+    assert.deepEqual(lines(v), []);
     const n = reduce(initialState, { type: 'stream/tool', name: 'bash', phase: 'start', verbosity: 'normal' });
     assert.equal(n.committed.length, 0);
     assert.equal(n.stream.stepCount, 1);
@@ -770,22 +769,33 @@ describe('ui reduce — tool / reasoning verbosity', () => {
     assert.equal(settled.stream.currentTool, undefined);
   });
 
-  it('verbose tool events do NOT set currentTool (they commit a [tool] line instead)', () => {
+  it('verbose tool events do NOT set currentTool', () => {
     const v = reduce(initialState, { type: 'stream/tool', name: 'Edit', phase: 'start', verbosity: 'verbose' });
     assert.equal(v.stream.currentTool, undefined);
   });
 
-  it('verbose reasoning commits the raw delta; normal commits nothing', () => {
+  it('verbose reasoning no longer commits directly; normal commits nothing', () => {
     const v = reduce(initialState, { type: 'stream/reasoning', text: 'thinking…', verbosity: 'verbose' });
-    assert.deepEqual(lines(v), ['thinking…']);
+    assert.deepEqual(lines(v), []);
     const n = reduce(initialState, { type: 'stream/reasoning', text: 'thinking…', verbosity: 'normal' });
     assert.equal(n.committed.length, 0);
     assert.equal(n.stream.phase, 'thinking'); // ensureAlive keeps the indicator
   });
 });
 
-describe('ui reduce — verbose tier-done telemetry', () => {
-  it('commits a "tier done — confidence …, N tokens, duration …ms" line', () => {
+describe('ui reduce — stream/narration', () => {
+  it('commits each finalized narration line as telemetry', () => {
+    const s = run([
+      {
+        type: 'stream/narration',
+        lines: ['Activity: ic (claude/sonnet) attempt 1', 'Tools:', '  - read_file'],
+      },
+    ]);
+    assert.deepEqual(lines(s), ['Activity: ic (claude/sonnet) attempt 1', 'Tools:', '  - read_file']);
+    assert.equal(s.committed.every((line) => line.kind === 'telemetry'), true);
+  });
+
+  it('verbose flush-tier still commits prose and accounting, but no telemetry line', () => {
     const s = run([
       { type: 'stream/prose', text: 'ans' },
       {
@@ -800,25 +810,7 @@ describe('ui reduce — verbose tier-done telemetry', () => {
         verbosity: 'verbose',
       },
     ]);
-    // prose committed first, then telemetry.
-    assert.deepEqual(lines(s), ['ans', '✓ tier done — confidence: 85%, 2k tokens, duration: 3400ms']);
-  });
-
-  it('renders null confidence as "unrated" and ✗ for failure', () => {
-    const s = run([
-      {
-        type: 'stream/flush-tier',
-        tier: 'worker',
-        success: false,
-        confidence: null,
-        inputTokens: 5,
-        outputTokens: 5,
-        durationMs: 10,
-        panelCandidate: false,
-        verbosity: 'verbose',
-      },
-    ]);
-    assert.deepEqual(lines(s), ['✗ tier done — confidence: unrated, 10 tokens, duration: 10ms']);
+    assert.deepEqual(lines(s), ['ans']);
   });
 });
 

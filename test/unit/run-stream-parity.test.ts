@@ -72,25 +72,7 @@
  *       audited "don't commit a partial answer on cancel" behaviour (screen ==
  *       store == replay); a real divergence in the cancel OUTCOME line still fails.
  *
- *   N5. (verbose tool/reasoning interleave ONLY) the comparison is made on the
- *       MULTISET of lines, not their order. This is the one INTENTIONAL, loudly-
- *       documented architectural divergence: in legacy renderStream everything is
- *       one linear byte stream, so a verbose `[tool] …`/reasoning line that fires
- *       WHILE an answer is mid-stream is written between prose deltas. The Ink MVU
- *       model is TWO regions — the live answer streams in `<Stream>` (the
- *       `stream.buffer`, committed only at the tier boundary) while verbose chrome
- *       commits to the `<Static>` transcript immediately. So when a tool line
- *       arrives after prose has begun but before the tier flushes, Ink commits the
- *       tool line first and the (still-live) answer after, whereas legacy
- *       interleaves them. The VISIBLE TOKENS are identical — only the relative
- *       order of a still-streaming answer vs. interleaved verbose chrome differs,
- *       which is a direct, accepted consequence of the live-region layout (the
- *       answer is shown live BELOW the committed chrome, not spliced into it).
- *       This is applied to EXACTLY ONE fixture/verbosity (the verbose
- *       tool+reasoning turn); every other case is strictly order-sensitive, so a
- *       real ordering regression elsewhere still fails loudly.
- *
- * Anything NOT covered by N1–N5 is compared verbatim. If the model ever changed
+ * Anything NOT covered by N1–N4 is compared verbatim. If the model ever changed
  * the wording of a line, this harness would fail — that is the point.
  */
 
@@ -238,9 +220,6 @@ interface Fixture {
   readonly events: readonly CoreEvent[];
   /** Which verbosities to compare (default all three). */
   readonly verbosities?: readonly Verbosity[];
-  /** Verbosities for which the comparison is on the line MULTISET, not order
-   *  (N5 — the verbose live-region interleave divergence). Default: none. */
-  readonly orderInsensitive?: readonly Verbosity[];
   /** N6: a mid-stream cancel — compare only the COMMITTED outcome lines (from
    *  "■ Cancelled" onward), dropping transient pre-cancel live prose. Default false. */
   readonly cancelOutcomeOnly?: boolean;
@@ -371,9 +350,7 @@ const MARKDOWN_STREAM: CoreEvent[] = [
 
 const FIXTURES: readonly Fixture[] = [
   { name: 'normal streaming turn', events: NORMAL_STREAM },
-  // N5: in verbose, the tool/reasoning lines interleave with a live-streaming
-  // answer; the Ink two-region model orders them differently (same tokens).
-  { name: 'tool + reasoning turn', events: TOOL_REASONING_STREAM, orderInsensitive: ['verbose'] },
+  { name: 'tool + reasoning turn', events: TOOL_REASONING_STREAM },
   { name: 'confidence envelope stripped (split deltas)', events: ENVELOPE_STREAM },
   { name: 'escalation', events: ESCALATE_STREAM },
   { name: 'failover (rate-limit rescue)', events: FAILOVER_STREAM },
@@ -407,12 +384,10 @@ describe('renderStreamInk — parity with legacy renderStream (visible text)', (
           legacy = cancelOutcomeLines(legacy);
           lines = cancelOutcomeLines(lines);
         }
-        const orderless = (fx.orderInsensitive ?? []).includes(verbosity);
-        const sort = (xs: string[]): string[] => [...xs].sort();
         assert.deepEqual(
-          orderless ? sort(lines) : lines,
-          orderless ? sort(legacy) : legacy,
-          `Ink visible text diverged from legacy renderStream${orderless ? ' (multiset, N5)' : ''}.\n` +
+          lines,
+          legacy,
+          'Ink visible text diverged from legacy renderStream.\n' +
             `legacy: ${JSON.stringify(legacy, null, 2)}\n` +
             `ink   : ${JSON.stringify(lines, null, 2)}`,
         );

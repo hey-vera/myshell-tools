@@ -526,10 +526,11 @@ describe('renderStream — rate-limit collection (cooldown signal survives failo
 // ---------------------------------------------------------------------------
 
 describe('renderStream — tool and reasoning events', () => {
-  it('renders tool events as one-liners and reasoning events as dim text', async () => {
+  it('groups verbose tool and reasoning narration into labeled sections', async () => {
     const sink = makeSink();
 
     const events: CoreEvent[] = [
+      { type: 'tier-start', tier: 'ic', provider: 'claude', model: 'sonnet', attempt: 1 },
       {
         type: 'provider-event',
         tier: 'ic',
@@ -560,9 +561,10 @@ describe('renderStream — tool and reasoning events', () => {
     const joined = sink.buf.join('');
 
     assert.equal(result.success, true);
-    assert.ok(joined.includes('[tool]'), 'Should render [tool] prefix');
-    assert.ok(joined.includes('read_file'), 'Should render real tool name');
-    assert.ok(joined.includes('thinking...'), 'Should render reasoning delta');
+    assert.ok(joined.includes('Activity: ic (claude/sonnet) attempt 1'));
+    assert.ok(joined.includes('Tools:\n  - read_file'));
+    assert.ok(joined.includes('Reasoning:\n  - thinking...'));
+    assert.ok(!joined.includes('[tool]'), 'raw [tool] lines should be replaced');
   });
 });
 
@@ -1111,14 +1113,14 @@ describe('renderStream — verbosity gating', () => {
     },
   ];
 
-  it('verbose shows tool lines, reasoning, and tier telemetry', async () => {
+  it('verbose shows grouped narration, telemetry, and prose', async () => {
     const sink = makeSink();
     await renderStream(makeStream(toolEvents), sink, 'verbose');
     const joined = sink.buf.join('');
 
-    assert.ok(joined.includes('[tool]'), 'verbose shows [tool] lines');
-    assert.ok(joined.includes('read_file'), 'verbose shows tool name');
-    assert.ok(joined.includes('thinking hard'), 'verbose shows reasoning');
+    assert.ok(joined.includes('Activity: ic (claude/claude-sonnet-4-6) attempt 1'));
+    assert.ok(joined.includes('Tools:\n  - read_file'), 'verbose shows grouped tools');
+    assert.ok(joined.includes('Reasoning:\n  - thinking hard'), 'verbose shows grouped reasoning');
     assert.ok(joined.includes('tier done'), 'verbose shows tier telemetry');
     assert.ok(joined.includes('The answer.'), 'prose always shown');
   });
@@ -1128,7 +1130,7 @@ describe('renderStream — verbosity gating', () => {
     await renderStream(makeStream(toolEvents), sink); // default normal
     const joined = sink.buf.join('');
 
-    assert.ok(!joined.includes('[tool]'), 'normal hides [tool] lines');
+    assert.ok(!joined.includes('Tools:'), 'normal hides verbose narration');
     assert.ok(!joined.includes('thinking hard'), 'normal hides reasoning');
     assert.ok(!joined.includes('tier done'), 'normal hides tier telemetry');
     assert.ok(joined.includes('The answer.'), 'normal shows prose');
@@ -1139,7 +1141,7 @@ describe('renderStream — verbosity gating', () => {
     await renderStream(makeStream(toolEvents), sink, 'quiet');
     const joined = sink.buf.join('');
 
-    assert.ok(!joined.includes('[tool]'), 'quiet hides [tool] lines');
+    assert.ok(!joined.includes('Tools:'), 'quiet hides verbose narration');
     assert.ok(!joined.includes('thinking hard'), 'quiet hides reasoning');
     assert.ok(!joined.includes('tier done'), 'quiet hides tier telemetry');
     assert.ok(!joined.includes('done ('), 'quiet hides the completion status line');
