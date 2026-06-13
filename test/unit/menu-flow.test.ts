@@ -291,6 +291,21 @@ function makeStore(clock: Clock, initialMetas?: ConversationMeta[]): FakeConvers
       }
     },
 
+    async setIntensity(id: string, intensity): Promise<void> {
+      const idx = metas.findIndex((m) => m.id === id);
+      if (idx >= 0) {
+        const m = metas[idx];
+        if (m !== undefined) {
+          if (intensity === undefined || intensity === 'auto') {
+            const { intensity: _ignored, ...rest } = m;
+            metas[idx] = rest;
+          } else {
+            metas[idx] = { ...m, intensity };
+          }
+        }
+      }
+    },
+
     async truncateAfter(id: string, keepCount: number): Promise<number> {
       const w = writers.get(id);
       if (w === undefined) return 0;

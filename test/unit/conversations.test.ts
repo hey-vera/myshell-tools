@@ -602,6 +602,70 @@ describe('createFileConversationStore — setRecap', () => {
 });
 
 // ---------------------------------------------------------------------------
+// setIntensity — numeric round-trip, clear-on-auto/undefined, preservation
+// ---------------------------------------------------------------------------
+
+describe('createFileConversationStore — setIntensity', () => {
+  it('persists a numeric intensity override and list reflects it', async () => {
+    const home2 = await mkdtemp(join(tmpdir(), `conv-intensity-persist-${randomUUID()}-`));
+    try {
+      const clock = makeFakeClock();
+      const store = createFileConversationStore({ homeDir: home2, clock });
+      const meta = await store.create('Dial me');
+
+      await store.setIntensity(meta.id, 4);
+
+      const found = (await store.list()).find((m) => m.id === meta.id);
+      assert.ok(found !== undefined);
+      assert.equal(found.intensity, 4);
+    } finally {
+      await rm(home2, { recursive: true, force: true });
+    }
+  });
+
+  it('canonicalizes auto/undefined to an absent key and preserves unrelated metadata', async () => {
+    const home2 = await mkdtemp(join(tmpdir(), `conv-intensity-clear-${randomUUID()}-`));
+    try {
+      const clock = makeFakeClock('2024-06-01T10:00:00.000Z');
+      const store = createFileConversationStore({ homeDir: home2, clock });
+      const meta = await store.create('Preserve me');
+      await store.rename(meta.id, 'Preserve me renamed');
+      await store.setPinned(meta.id, true);
+      await store.setCategory(meta.id, 'refactor');
+      await store.setRecap(meta.id, 'where we were', 6);
+      await store.setIntensity(meta.id, 3);
+      await store.setIntensity(meta.id, 'auto');
+
+      let found = (await store.list()).find((m) => m.id === meta.id);
+      assert.ok(found !== undefined);
+      assert.equal(found.title, 'Preserve me renamed');
+      assert.equal(found.pinned, true);
+      assert.equal(found.category, 'refactor');
+      assert.equal(found.recap, 'where we were');
+      assert.equal(found.recapAt, '2024-06-01T10:00:00.000Z');
+      assert.equal(found.recapMessageCount, 6);
+      assert.equal(found.intensity, undefined);
+
+      const indexPath = join(home2, '.myshell-tools', 'conversations', 'index.json');
+      const rawAfterAuto = await readFile(indexPath, 'utf8');
+      assert.equal(rawAfterAuto.includes('"intensity"'), false);
+
+      await store.setIntensity(meta.id, 2);
+      await store.setIntensity(meta.id, undefined);
+
+      found = (await store.list()).find((m) => m.id === meta.id);
+      assert.ok(found !== undefined);
+      assert.equal(found.intensity, undefined);
+
+      const rawAfterUndefined = await readFile(indexPath, 'utf8');
+      assert.equal(rawAfterUndefined.includes('"intensity"'), false);
+    } finally {
+      await rm(home2, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
 // truncateAfter — controlled, atomic, fail-soft departure from append-only
 // (powers /retry and /edit). Round-trip, index update, recap-clear, validation,
 // atomicity, fail-soft.

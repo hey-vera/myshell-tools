@@ -11,6 +11,7 @@
 import { mkdir, readFile, readdir, rename, stat, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { Clock, SessionEntry, SessionWriter } from '../core/types.js';
+import type { Intensity } from '../core/capacity-allocator.js';
 import type { ConversationMeta, ConversationStore } from './conversation-store.js';
 import { atomicAppendJSONL, atomicWrite, withLock } from './atomic.js';
 import { isConversationMessage } from './jsonl-guards.js';
@@ -96,6 +97,9 @@ function normaliseMeta(raw: unknown): ConversationMeta {
   if (typeof r['recapAt'] === 'string') meta.recapAt = r['recapAt'];
   else if (r['recapAt'] === null) meta.recapAt = null;
   if (typeof r['recapMessageCount'] === 'number') meta.recapMessageCount = r['recapMessageCount'];
+  if (r['intensity'] === 1 || r['intensity'] === 2 || r['intensity'] === 3 || r['intensity'] === 4 || r['intensity'] === 5) {
+    meta.intensity = r['intensity'];
+  }
   return meta;
 }
 
@@ -115,6 +119,12 @@ function recapFields(
   if (m.recap !== undefined) out.recap = m.recap;
   if (m.recapAt !== undefined) out.recapAt = m.recapAt;
   if (m.recapMessageCount !== undefined) out.recapMessageCount = m.recapMessageCount;
+  return out;
+}
+
+function intensityFields(m: ConversationMeta): Pick<ConversationMeta, 'intensity'> {
+  const out: { intensity?: Intensity } = {};
+  if (m.intensity !== undefined && m.intensity !== 'auto') out.intensity = m.intensity;
   return out;
 }
 
@@ -438,6 +448,7 @@ export function createFileConversationStore(opts: {
               pinned: existing.pinned,
               category: existing.category,
               ...recapFields(existing),
+              ...intensityFields(existing),
             };
 
             const newIndex = [...index];
@@ -554,6 +565,7 @@ export function createFileConversationStore(opts: {
           pinned: existing.pinned,
           category: existing.category,
           ...recapFields(existing),
+          ...intensityFields(existing),
         };
         const newIndex = [...index];
         newIndex[idx] = updated;
@@ -606,6 +618,7 @@ export function createFileConversationStore(opts: {
           pinned,
           category: existing.category,
           ...recapFields(existing),
+          ...intensityFields(existing),
         };
         const newIndex = [...index];
         newIndex[idx] = updated;
@@ -634,6 +647,7 @@ export function createFileConversationStore(opts: {
           pinned: existing.pinned,
           category,
           ...recapFields(existing),
+          ...intensityFields(existing),
         };
         const newIndex = [...index];
         newIndex[idx] = updated;
@@ -664,6 +678,37 @@ export function createFileConversationStore(opts: {
           recap,
           recapAt: recap === null ? null : clock.isoNow(),
           recapMessageCount: atMessageCount,
+          ...intensityFields(existing),
+        };
+        const newIndex = [...index];
+        newIndex[idx] = updated;
+        await writeIndex(home, newIndex);
+      });
+    },
+
+    // -----------------------------------------------------------------------
+    // setIntensity — persist a conversation-scoped intensity override under the
+    // lock, canonicalizing Auto/inherit to absence.
+    // -----------------------------------------------------------------------
+    async setIntensity(id: string, intensity: Intensity | undefined): Promise<void> {
+      await ensureDir(home);
+      await withLock(getIndexLockPath(home), async () => {
+        const index = await readIndexLocked(home, onWarning);
+        const idx = index.findIndex((m) => m.id === id);
+        if (idx === -1) return; // no-op if missing
+
+        const existing = index[idx];
+        if (existing === undefined) return;
+        const updated: ConversationMeta = {
+          id: existing.id,
+          title: existing.title,
+          createdAt: existing.createdAt,
+          updatedAt: existing.updatedAt,
+          messageCount: existing.messageCount,
+          pinned: existing.pinned,
+          category: existing.category,
+          ...recapFields(existing),
+          ...(intensity === undefined || intensity === 'auto' ? {} : { intensity }),
         };
         const newIndex = [...index];
         newIndex[idx] = updated;

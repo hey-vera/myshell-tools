@@ -12,6 +12,7 @@
  */
 
 import type { SessionEntry, SessionWriter } from '../core/types.js';
+import type { Intensity } from '../core/capacity-allocator.js';
 
 export interface ConversationMeta {
   readonly id: string;
@@ -34,6 +35,8 @@ export interface ConversationMeta {
   readonly recapAt?: string | null;
   /** `messageCount` at recap generation, for the staleness check; absent when none. */
   readonly recapMessageCount?: number;
+  /** Conversation-scoped intensity override; absent means inherit global/Auto. */
+  readonly intensity?: Intensity;
 }
 
 export interface ConversationStore {
@@ -80,4 +83,6 @@ export interface ConversationStore {
    * Best-effort orientation cache — never the durable-memory write path.
    */
   setRecap(id: string, recap: string | null, atMessageCount: number): Promise<void>;
+  /** Set or clear the conversation intensity override. No-op if id missing. */
+  setIntensity(id: string, intensity: Intensity | undefined): Promise<void>;
 }

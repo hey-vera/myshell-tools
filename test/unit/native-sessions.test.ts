@@ -136,6 +136,7 @@ function makeFakeStore(): FakeStore {
     async setPinned(): Promise<void> { /* no-op */ },
     async setCategory(): Promise<void> { /* no-op */ },
     async setRecap(): Promise<void> { /* no-op */ },
+    async setIntensity(): Promise<void> { /* no-op */ },
     async truncateAfter(id: string, keepCount: number): Promise<number> {
       const arr = written.get(id);
       if (arr === undefined) return 0;

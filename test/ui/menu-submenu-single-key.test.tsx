@@ -184,6 +184,15 @@ function makeStoreWithOne(): { store: ConversationStore; pinned: { value: boolea
     async setPinned(_id: string, value: boolean) {
       pinned.value = value;
     },
+    async setIntensity() {},
+    async create() { return meta; },
+    async load() { return []; },
+    async rename() {},
+    async remove() {},
+    writer() { return { id: meta.id, async append() {} }; },
+    async setCategory() {},
+    async setRecap() {},
+    async truncateAfter() { return 0; },
   } as unknown as ConversationStore;
   return { store, pinned };
 }

@@ -122,6 +122,13 @@ describe('saveConfig + loadConfig — round-trip', () => {
     assert.equal(loaded.partnerStyle, 'collaborative');
   });
 
+  it('round-trips intensity', async () => {
+    const cfg: AppConfig = { onboarded: true, setAsDefault: false, intensity: 4 };
+    await saveConfig(cfg, homeDir);
+    const loaded = await loadConfig(homeDir);
+    assert.equal(loaded.intensity, 4);
+  });
+
   it('round-trips the memory kill-switch (memory:false)', async () => {
     const cfg: AppConfig = { onboarded: true, setAsDefault: false, memory: false };
     await saveConfig(cfg, homeDir);

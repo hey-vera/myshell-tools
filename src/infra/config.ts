@@ -10,6 +10,7 @@ import { mkdir, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { atomicWrite } from './atomic.js';
 import { defaultStateHome } from './state-dir.js';
+import type { Intensity } from '../core/capacity-allocator.js';
 import type { PartnerStyle } from '../core/prompt-context.js';
 
 // ---------------------------------------------------------------------------
@@ -34,6 +35,8 @@ export interface AppConfig {
   setAsDefault: boolean;
   /** Active routing mode. Absent → use DEFAULT_POLICY (same as 'balanced'). */
   mode?: 'cost-saver' | 'balanced' | 'quality-first';
+  /** User-facing Intensity dial default (1=Focused … 5=Max). Absent → Auto (the smart default). */
+  intensity?: Intensity;
   /**
    * When true or absent (default), myshell-tools automatically updates itself
    * at startup when a newer version is available and relaunches the updated

@@ -166,15 +166,10 @@ describe('deriveBaselineOrder', () => {
 describe('regimeForIntensity', () => {
   const cases = [
     [1, 'focused'],
-    [2, 'focused'],
-    [3, 'pair'],
-    [4, 'pair'],
-    [5, 'fleet'],
-    [6, 'fleet'],
-    [7, 'fleet-hedge'],
-    [8, 'fleet-hedge'],
-    [9, 'fleet-panel'],
-    [10, 'fleet-panel'],
+    [2, 'pair'],
+    [3, 'fleet'],
+    [4, 'fleet-hedge'],
+    [5, 'fleet-panel'],
   ] as const;
   for (const [level, regime] of cases) {
     it(`maps ${level} to ${regime}`, () => {
@@ -185,82 +180,75 @@ describe('regimeForIntensity', () => {
 
 describe('legacyModeToIntensity', () => {
   it('maps all legacy modes and applies panel and hedge floors', () => {
-    assert.equal(legacyModeToIntensity('cost-saver'), 2);
-    assert.equal(legacyModeToIntensity('balanced'), 6);
-    assert.equal(legacyModeToIntensity('quality-first'), 10);
+    assert.equal(legacyModeToIntensity('cost-saver'), 1);
+    assert.equal(legacyModeToIntensity('balanced'), 3);
+    assert.equal(legacyModeToIntensity('quality-first'), 5);
     assert.equal(legacyModeToIntensity('cost-saver', { hedge: true }), 4);
     assert.equal(legacyModeToIntensity('cost-saver', { panel: true }), 5);
     assert.equal(legacyModeToIntensity('cost-saver', { panel: true, hedge: true }), 5);
-    assert.equal(legacyModeToIntensity('balanced', { panel: true, hedge: true }), 6);
+    assert.equal(legacyModeToIntensity('balanced', { hedge: true }), 4);
   });
 });
 
 describe('autoIntensityForTurn', () => {
-  it('is efficiency-first, escalates on difficulty, and never returns 10', () => {
-    // Genuinely-trivial fast path earns the cheapest regime (Focused/2).
+  it('is efficiency-first, escalates on difficulty, and never returns 5', () => {
+    // Genuinely-trivial fast path earns the cheapest regime.
     assert.equal(autoIntensityForTurn({
       tier: 'worker',
       risk: 'low',
       depth: 0,
       escalate: false,
-    }), 2);
+    }), 1);
 
-    // A worker/low turn with ANY depth is no longer trivial → ordinary (4).
+    // A worker/low turn with depth 1 is no longer trivial.
     assert.equal(autoIntensityForTurn({
       tier: 'worker',
       risk: 'low',
       depth: 1,
       escalate: false,
-    }), 4);
+    }), 2);
 
     assert.equal(autoIntensityForTurn({
       tier: 'ic',
       risk: 'medium',
       depth: 1,
       escalate: false,
-    }), 4);
+    }), 2);
 
     assert.equal(autoIntensityForTurn({
       tier: 'manager',
       risk: 'medium',
       depth: 1,
       escalate: false,
-    }), 6);
+    }), 3);
 
     assert.equal(autoIntensityForTurn({
       tier: 'worker',
       risk: 'low',
       depth: 2,
       escalate: false,
-    }), 6);
+    }), 3);
 
     assert.equal(autoIntensityForTurn({
       tier: 'worker',
       risk: 'high',
       depth: 0,
       escalate: false,
-    }), 8);
+    }), 4);
 
     assert.equal(autoIntensityForTurn({
       tier: 'worker',
       risk: 'medium',
       depth: 0,
       escalate: true,
-    }), 8);
+    }), 4);
 
     assert.equal(autoIntensityForTurn({
       tier: 'manager',
       risk: 'critical',
       depth: 1,
       escalate: false,
-    }), 9);
-
-    assert.equal(autoIntensityForTurn({
-      tier: 'worker',
-      risk: 'critical',
-      depth: 2,
-      escalate: false,
-    }), 9);
+    }), 4);
 
     assert.equal(autoIntensityForTurn({
       tier: 'worker',
@@ -268,16 +256,15 @@ describe('autoIntensityForTurn', () => {
       depth: 0,
       escalate: false,
       needsReview: true,
-    }), 9);
+    }), 4);
 
-    // Never selects full-width 10 (that is an explicit user choice).
-    assert.ok(autoIntensityForTurn({
+    assert.notEqual(autoIntensityForTurn({
       tier: 'worker',
       risk: 'critical',
       depth: 2,
       escalate: true,
       needsReview: true,
-    }) < 10);
+    }), 5);
   });
 });
 

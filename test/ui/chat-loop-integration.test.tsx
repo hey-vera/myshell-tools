@@ -105,6 +105,7 @@ function makeStore(clock: Clock): ConversationStore {
     async setPinned() {},
     async setCategory() {},
     async setRecap() {},
+    async setIntensity() {},
     async truncateAfter() { return 0; },
   };
 }
@@ -290,6 +291,7 @@ test('BUG 2: resume enables the chat composer BEFORE the recap model call resolv
     async setPinned() {},
     async setCategory() {},
     async setRecap() {},
+    async setIntensity() {},
     async truncateAfter() { return 0; },
   };
 

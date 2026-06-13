@@ -120,16 +120,23 @@ export function deriveBaselineOrder(
   };
 }
 
-export type Intensity = 'auto' | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10;
+export type Intensity = 'auto' | 1 | 2 | 3 | 4 | 5;
 
 export type IntensityRegime = 'focused' | 'pair' | 'fleet' | 'fleet-hedge' | 'fleet-panel';
 
 export function regimeForIntensity(level: Exclude<Intensity, 'auto'>): IntensityRegime {
-  if (level <= 2) return 'focused';
-  if (level <= 4) return 'pair';
-  if (level <= 6) return 'fleet';
-  if (level <= 8) return 'fleet-hedge';
-  return 'fleet-panel';
+  switch (level) {
+    case 1:
+      return 'focused';
+    case 2:
+      return 'pair';
+    case 3:
+      return 'fleet';
+    case 4:
+      return 'fleet-hedge';
+    case 5:
+      return 'fleet-panel';
+  }
 }
 
 export function legacyModeToIntensity(
@@ -137,9 +144,9 @@ export function legacyModeToIntensity(
   opts: { panel?: boolean; hedge?: boolean } = {},
 ): Exclude<Intensity, 'auto'> {
   const base =
-    mode === 'cost-saver' ? 2
-      : mode === 'balanced' ? 6
-        : 10;
+    mode === 'cost-saver' ? 1
+      : mode === 'balanced' ? 3
+        : 5;
   const floor = Math.max(opts.panel === true ? 5 : 0, opts.hedge === true ? 4 : 0);
   return Math.max(base, floor) as Exclude<Intensity, 'auto'>;
 }
@@ -156,28 +163,28 @@ export function autoIntensityForTurn(s: {
     (s.risk === 'critical' && (s.tier === 'manager' || s.depth === 2)) ||
     (s.needsReview === true && hardTurn)
   ) {
-    return 9;
+    return 4;
   }
   if (hardTurn || s.escalate) {
-    return 8;
+    return 4;
   }
   if (s.tier === 'manager' || s.depth === 2) {
-    return 6;
+    return 3;
   }
   // Efficiency-first: the genuinely-trivial fast path (worker + low risk + no
   // depth) earns the cheapest regime. Checked BEFORE the ordinary row below
   // because a trivial turn also satisfies the ordinary predicate; ordering it
-  // first is what keeps Focused (2) reachable instead of always landing on 4.
+  // first is what keeps 1 reachable instead of always landing on 2.
   if (s.tier === 'worker' && s.risk === 'low' && s.depth === 0) {
-    return 2;
+    return 1;
   }
   if (
     (s.tier === 'worker' || s.tier === 'ic') &&
     (s.risk === 'low' || s.risk === 'medium')
   ) {
-    return 4;
+    return 2;
   }
-  return 4;
+  return 2;
 }
 
 export interface LiveCapacityInput {

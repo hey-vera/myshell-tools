@@ -7,7 +7,9 @@
 import type { EnvironmentStatus } from '../providers/detect.js';
 import {
   classifyCapacity,
+  legacyModeToIntensity,
   type CapacityWeight,
+  type Intensity,
 } from '../core/capacity-allocator.js';
 import {
   modeLabel,
@@ -19,6 +21,8 @@ import {
 import type { PlanInfo } from '../core/policy.js';
 import type { Mode } from '../core/policy.js';
 import { autoPostureForMode } from '../core/governor.js';
+import type { AppConfig } from '../infra/config.js';
+import type { ConversationMeta } from '../infra/conversation-store.js';
 import { dim } from '../ui/theme.js';
 
 export const PROVIDER_LABEL: Record<string, string> = {
@@ -26,6 +30,38 @@ export const PROVIDER_LABEL: Record<string, string> = {
   codex: 'Codex',
   opencode: 'OpenCode',
 };
+
+export type ResolvedIntensity =
+  | { readonly source: 'conversation'; readonly value: 1 | 2 | 3 | 4 | 5 }
+  | { readonly source: 'global'; readonly value: 1 | 2 | 3 | 4 | 5 }
+  | { readonly source: 'legacy'; readonly value: 1 | 2 | 3 | 4 | 5 }
+  | { readonly source: 'auto'; readonly value: 'auto' };
+
+function isNumericIntensity(value: Intensity | undefined): value is 1 | 2 | 3 | 4 | 5 {
+  return value === 1 || value === 2 || value === 3 || value === 4 || value === 5;
+}
+
+export function resolveIntensity(
+  meta: Pick<ConversationMeta, 'intensity'> | undefined,
+  config: AppConfig,
+): ResolvedIntensity {
+  if (isNumericIntensity(meta?.intensity)) {
+    return { source: 'conversation', value: meta.intensity };
+  }
+  if (isNumericIntensity(config.intensity)) {
+    return { source: 'global', value: config.intensity };
+  }
+  if (config.mode !== undefined || config.panel === true || config.hedge === true) {
+    return {
+      source: 'legacy',
+      value: legacyModeToIntensity(config.mode ?? 'balanced', {
+        ...(config.panel === true ? { panel: true } : {}),
+        ...(config.hedge === true ? { hedge: true } : {}),
+      }),
+    };
+  }
+  return { source: 'auto', value: 'auto' };
+}
 
 /**
  * One authenticated provider's classified plan, paired with its display label.
