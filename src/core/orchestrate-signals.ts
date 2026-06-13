@@ -144,5 +144,6 @@ export function effortForDecision(
     risk: signals.risk,
     taskKind: signals.taskKind,
     routePlan: signals.routePlan,
+    ...(signals.difficulty !== undefined ? { difficulty: signals.difficulty } : {}),
   });
 }

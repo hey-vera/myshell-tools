@@ -30,6 +30,13 @@ function model(efforts: readonly ReasoningEffort[]): ModelCapability {
 
 const FULL: readonly ReasoningEffort[] = ['low', 'medium', 'high', 'xhigh'];
 
+interface Difficulty {
+  depth?: 0 | 1 | 2;
+  intentConfidence?: 'high' | 'medium' | 'low';
+  planFirst?: boolean;
+  forkCount?: number;
+}
+
 function pick(opts: {
   efforts?: readonly ReasoningEffort[];
   mode: Mode;
@@ -37,6 +44,7 @@ function pick(opts: {
   risk?: Risk;
   taskKind?: TaskKind;
   routePlan?: boolean;
+  difficulty?: Difficulty;
 }): ReasoningEffort | undefined {
   return selectReasoningEffort({
     model: model(opts.efforts ?? FULL),
@@ -45,6 +53,7 @@ function pick(opts: {
     risk: opts.risk ?? 'low',
     taskKind: opts.taskKind ?? 'implementation',
     routePlan: opts.routePlan ?? false,
+    ...(opts.difficulty !== undefined ? { difficulty: opts.difficulty } : {}),
   });
 }
 
@@ -256,6 +265,159 @@ describe('selectReasoningEffort — step DOWN to the nearest lower supported eff
     assert.strictEqual(
       pick({ efforts: FULL, mode: 'quality-first', tier: 'manager', taskKind: 'architecture' }),
       'xhigh',
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// P0.3 — per-task difficulty sizing. The new `difficulty` signals (engagement
+// depth, intent GOAL-confidence, plan-first, genuine-fork count) bump the coarse
+// bucket by at most ±1 ladder step, bounded by the mode+tier hard-turn ceiling.
+// ---------------------------------------------------------------------------
+
+describe('selectReasoningEffort — difficulty is NEUTRAL by default (no inflation)', () => {
+  it('absent difficulty leaves every bucket unchanged', () => {
+    assert.strictEqual(pick({ mode: 'balanced', tier: 'ic' }), 'medium');
+    assert.strictEqual(pick({ mode: 'cost-saver', tier: 'ic' }), 'low');
+    assert.strictEqual(pick({ mode: 'quality-first', tier: 'manager' }), 'high');
+  });
+  it('neutral signals (depth 1, high/absent confidence, no plan-first, ≤1 fork) leave effort unchanged', () => {
+    for (const difficulty of [
+      { depth: 1 as const },
+      { depth: 1 as const, intentConfidence: 'high' as const, planFirst: false, forkCount: 1 },
+      { intentConfidence: 'high' as const },
+      { forkCount: 0 },
+    ]) {
+      assert.strictEqual(
+        pick({ mode: 'balanced', tier: 'ic', difficulty }),
+        'medium',
+        `neutral ${JSON.stringify(difficulty)} must stay medium`,
+      );
+    }
+  });
+});
+
+describe('selectReasoningEffort — a deep / low-confidence / hard turn RAISES (bounded)', () => {
+  it('Balanced IC depth-2 raises medium → high', () => {
+    assert.strictEqual(
+      pick({ mode: 'balanced', tier: 'ic', difficulty: { depth: 2 } }),
+      'high',
+    );
+  });
+  it('Balanced IC low GOAL-confidence raises medium → high', () => {
+    assert.strictEqual(
+      pick({ mode: 'balanced', tier: 'ic', difficulty: { intentConfidence: 'low' } }),
+      'high',
+    );
+  });
+  it('Balanced IC plan-first raises medium → high', () => {
+    assert.strictEqual(
+      pick({ mode: 'balanced', tier: 'ic', difficulty: { planFirst: true } }),
+      'high',
+    );
+  });
+  it('Balanced IC ≥2 genuine forks raises medium → high', () => {
+    assert.strictEqual(
+      pick({ mode: 'balanced', tier: 'ic', difficulty: { forkCount: 2 } }),
+      'high',
+    );
+  });
+  it('a single raise step never leaps the ladder: Balanced IC stays at high, never xhigh', () => {
+    assert.strictEqual(
+      pick({
+        mode: 'balanced',
+        tier: 'ic',
+        difficulty: { depth: 2, intentConfidence: 'low', planFirst: true, forkCount: 3 },
+      }),
+      'high',
+    );
+  });
+  it('raise is bounded by the hard-turn ceiling: Balanced IC never reaches xhigh from difficulty', () => {
+    // An IC hard turn earns `high` in Balanced; difficulty cannot exceed that even
+    // when every signal screams hard.
+    assert.notStrictEqual(
+      pick({
+        mode: 'balanced',
+        tier: 'ic',
+        difficulty: { depth: 2, intentConfidence: 'low', planFirst: true, forkCount: 5 },
+      }),
+      'xhigh',
+    );
+  });
+  it('Balanced admitted-manager non-xhigh-class deep turn raises medium → high (NOT xhigh)', () => {
+    // base 'medium' (implementation), hard-turn manager ceiling in Balanced is
+    // 'high' (high-risk is not xhigh-class), so a deep manager implementation turn
+    // tops out at high.
+    assert.strictEqual(
+      pick({ mode: 'balanced', tier: 'manager', difficulty: { depth: 2 } }),
+      'high',
+    );
+  });
+});
+
+describe('selectReasoningEffort — a genuinely trivial / shallow turn LOWERS (no floor breach)', () => {
+  it('Balanced IC depth-0 high-confidence lowers medium → low', () => {
+    assert.strictEqual(
+      pick({ mode: 'balanced', tier: 'ic', difficulty: { depth: 0, intentConfidence: 'high' } }),
+      'low',
+    );
+  });
+  it('depth-0 with lingering medium confidence does NOT lower (medium blocks the step down)', () => {
+    assert.strictEqual(
+      pick({ mode: 'balanced', tier: 'ic', difficulty: { depth: 0, intentConfidence: 'medium' } }),
+      'medium',
+    );
+  });
+  it('lower never breaches the low floor: cost-saver IC (low) with depth-0 stays low', () => {
+    assert.strictEqual(
+      pick({ mode: 'cost-saver', tier: 'ic', difficulty: { depth: 0 } }),
+      'low',
+    );
+  });
+});
+
+describe('selectReasoningEffort — Efficient never RAISES on a difficulty hint (cost discipline)', () => {
+  it('cost-saver manager (medium) stays medium even on a deep/low-confidence turn', () => {
+    assert.strictEqual(
+      pick({
+        mode: 'cost-saver',
+        tier: 'manager',
+        difficulty: { depth: 2, intentConfidence: 'low', planFirst: true, forkCount: 3 },
+      }),
+      'medium',
+    );
+  });
+  it('cost-saver IC (low) stays low on a deep turn (never above low in Efficient)', () => {
+    assert.strictEqual(
+      pick({ mode: 'cost-saver', tier: 'ic', difficulty: { depth: 2 } }),
+      'low',
+    );
+  });
+});
+
+describe('selectReasoningEffort — capability reconciliation still caps a bumped effort to supported', () => {
+  it('Balanced IC depth-2 wants high; model supports only [low, medium] → medium (stepped down)', () => {
+    assert.strictEqual(
+      pick({ efforts: ['low', 'medium'], mode: 'balanced', tier: 'ic', difficulty: { depth: 2 } }),
+      'medium',
+    );
+  });
+  it('a bumped desired beyond the supported set never escapes resolveSupported', () => {
+    // Wants high (medium + raise), model tops out at medium → medium, NOT high.
+    assert.strictEqual(
+      pick({
+        efforts: ['low', 'medium'],
+        mode: 'balanced',
+        tier: 'ic',
+        difficulty: { intentConfidence: 'low' },
+      }),
+      'medium',
+    );
+  });
+  it('empty efforts → undefined regardless of difficulty', () => {
+    assert.strictEqual(
+      pick({ efforts: [], mode: 'balanced', tier: 'ic', difficulty: { depth: 2 } }),
+      undefined,
     );
   });
 });

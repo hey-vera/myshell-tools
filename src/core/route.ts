@@ -47,6 +47,13 @@ export interface CapabilityTaskSignals {
    */
   readonly needsWebSearch?: boolean;
   readonly taskKind: TaskKind;
+  /**
+   * Per-task difficulty signals the system already computes upstream (engagement
+   * depth, intent GOAL-confidence, plan-first, genuine-fork count). Fed into the
+   * reasoning-effort selector (P0.3). OPTIONAL and NEUTRAL when absent — routing
+   * itself ignores them (effort sizing only). See {@link EffortDifficulty}.
+   */
+  readonly difficulty?: EffortDifficulty;
 }
 
 /**
@@ -662,6 +669,89 @@ function isHardReasoningTurn(input: {
 }
 
 /**
+ * The base desired effort from the COARSE buckets (mode × tier × risk/taskKind),
+ * BEFORE any difficulty adjustment. PURE. Factored out so the difficulty bump
+ * (selectReasoningEffort) can also evaluate the "hard turn" ceiling for the same
+ * mode/tier without duplicating the ladder.
+ */
+function baseDesiredEffort(
+  mode: Mode,
+  tier: Tier,
+  risk: Risk,
+  taskKind: TaskKind,
+): ReasoningEffort {
+  const isManager = tier === 'manager'; // manager here ⇒ already admitted by policy
+  const hardTurn = isHardReasoningTurn({ risk, taskKind });
+  // xhigh-class turns: critical/architecture/large-context (review/high are NOT
+  // sufficient for xhigh in Balanced, but ARE sufficient in Max).
+  const xhighClassStrict =
+    risk === 'critical' || taskKind === 'architecture' || taskKind === 'large-context';
+
+  switch (mode) {
+    case 'cost-saver':
+      // Efficient: worker/IC → low; admitted manager → medium; NEVER xhigh.
+      return isManager ? 'medium' : 'low';
+    case 'balanced':
+      if (isManager && xhighClassStrict) return 'xhigh';
+      if (hardTurn) return 'high';
+      return 'medium';
+    case 'quality-first':
+      // Max (quality-first, the deepest knob): `high` is the FLOOR for IC/manager;
+      // an admitted manager on a hard turn desires the DEEPEST level (`max`, stepped
+      // down for models without it). Worker non-hard stays `medium`.
+      if (isManager && hardTurn) return 'max';
+      if (tier !== 'worker' || hardTurn) return 'high';
+      return 'medium';
+  }
+}
+
+/**
+ * Difficulty signals the system ALREADY computes upstream (engagement depth, the
+ * intent extractor's GOAL-understanding confidence, plan-first, genuine-fork
+ * count). All optional and DEFAULT TO NEUTRAL: when every field is absent (or its
+ * neutral value), {@link selectReasoningEffort} returns exactly the coarse-bucket
+ * effort it always did — so ordinary turns and every existing caller/fixture are
+ * byte-for-byte unchanged. PURE reference data only.
+ */
+export interface EffortDifficulty {
+  /** Engagement plan depth ∈ {0,1,2}. 1 is neutral; 0 lowers, 2 raises. */
+  readonly depth?: 0 | 1 | 2;
+  /** Intent extractor's confidence it understood the GOAL. 'low' raises effort. */
+  readonly intentConfidence?: 'high' | 'medium' | 'low';
+  /** Engagement plan-first (a real multi-step plan precedes work) → raises. */
+  readonly planFirst?: boolean;
+  /** Count of GENUINE decision forks the intent extractor surfaced. ≥2 raises. */
+  readonly forkCount?: number;
+}
+
+/**
+ * Net difficulty step ∈ {-1, 0, +1} from the upstream signals (§ effort sizing).
+ * MONOTONIC and CONSERVATIVE: a turn whose signals are all neutral/absent yields 0
+ * (no change). At most ±1 step so a single rich-signal turn never leaps the ladder.
+ *   - RAISE (+1) when the turn is genuinely deep or hard to understand: engagement
+ *     depth 2, OR low GOAL-confidence, OR plan-first, OR ≥2 genuine forks.
+ *   - LOWER (-1) only when the turn is genuinely shallow AND nothing argues for
+ *     depth: engagement depth 0 with high (or absent) confidence, no plan-first,
+ *     and at most one fork. A lower signal NEVER fires alongside a raise signal.
+ * PURE.
+ */
+function difficultyStep(d: EffortDifficulty | undefined): -1 | 0 | 1 {
+  if (d === undefined) return 0;
+  const raise =
+    d.depth === 2 ||
+    d.intentConfidence === 'low' ||
+    d.planFirst === true ||
+    (d.forkCount ?? 0) >= 2;
+  if (raise) return 1;
+  // `raise` was false ⇒ confidence is not 'low', planFirst is not true, forkCount
+  // < 2, depth is not 2 already. Lower ONLY a genuinely shallow turn: engagement
+  // depth 0 with no lingering uncertainty (a 'medium' confidence still blocks the
+  // step down — only high/absent confidence is shallow enough to think less).
+  const lower = d.depth === 0 && d.intentConfidence !== 'medium';
+  return lower ? -1 : 0;
+}
+
+/**
  * Select the reasoning-effort knob for a run, per docs/model-capability-
  * registry-5.6.md §3 ("Effort selector") and §5. PURE — no I/O, no time, no
  * randomness; reference data only.
@@ -680,17 +770,27 @@ function isHardReasoningTurn(input: {
  *    effort the model doesn't support (§3 "cannot force a reasoning effort
  *    unsupported by the selected model").
  *
- * Rules (mode × tier × risk/taskKind):
+ * Coarse buckets (mode × tier × risk/taskKind) — see {@link baseDesiredEffort}:
  *  - Efficient (cost-saver): worker/IC → `low`; admitted manager → `medium`;
  *    NEVER `xhigh`.
- *  - Balanced: `medium` default; `high` for a hard turn (high/critical risk,
- *    architecture, review, or large-context); `xhigh` ONLY for an admitted
- *    manager on critical/architecture/large-context.
+ *  - Balanced: `medium` default; `high` for a hard turn; `xhigh` ONLY for an
+ *    admitted manager on critical/architecture/large-context.
  *  - Max (quality-first): `high` floor for IC/manager (and worker hard turns);
- *    the DEEPEST supported level (`max` for a model that offers it, e.g. Claude;
- *    `xhigh` after step-down for Codex) for an admitted manager on a hard turn
- *    (high/critical risk, architecture, review, or large-context). Worker non-hard
- *    stays `medium`.
+ *    the DEEPEST supported level for an admitted manager on a hard turn.
+ *
+ * Per-task difficulty adjustment (P0.3) — OPT-IN via `difficulty`, NEUTRAL when
+ * absent:
+ *  - The base bucket is bumped at most ±1 ladder step by the upstream signals the
+ *    system already computes (engagement depth, intent GOAL-confidence, plan-first,
+ *    genuine-fork count); see {@link difficultyStep}.
+ *  - The bump is CLAMPED: it can never raise effort above what an explicit HARD
+ *    turn would already earn in this mode+tier (the `baseDesiredEffort` hard-turn
+ *    ceiling), and never lower below `low`. In cost-saver the bump is clamped to
+ *    ≤ 0 (Efficient never spends MORE on a difficulty hint), preserving "NEVER
+ *    xhigh". So the signals can deepen a genuinely hard turn and shallow a trivial
+ *    one, but cannot invent a ceiling the coarse policy didn't already grant.
+ *  - The (possibly bumped) desired effort is then reconciled against the model's
+ *    supported set exactly as before.
  */
 export function selectReasoningEffort(input: {
   readonly model: ModelCapability;
@@ -699,46 +799,36 @@ export function selectReasoningEffort(input: {
   readonly risk: Risk;
   readonly taskKind: TaskKind;
   readonly routePlan: boolean;
+  readonly difficulty?: EffortDifficulty;
 }): ReasoningEffort | undefined {
-  const { model, mode, tier, risk, taskKind } = input;
+  const { model, mode, tier, risk, taskKind, difficulty } = input;
   const supported = model.supportedReasoningEfforts;
   // No machine-readable effort metadata → never thread an effort (unchanged).
   if (supported.length === 0) return undefined;
 
-  const isManager = tier === 'manager'; // manager here ⇒ already admitted by policy
-  const hardTurn = isHardReasoningTurn({ risk, taskKind });
-  // xhigh-class turns: critical/architecture/large-context (review/high are NOT
-  // sufficient for xhigh in Balanced, but ARE sufficient in Max).
-  const xhighClassStrict =
-    risk === 'critical' || taskKind === 'architecture' || taskKind === 'large-context';
+  const base = baseDesiredEffort(mode, tier, risk, taskKind);
 
-  let desired: ReasoningEffort;
-  switch (mode) {
-    case 'cost-saver': {
-      // Efficient: worker/IC → low; admitted manager → medium; NEVER xhigh.
-      desired = isManager ? 'medium' : 'low';
-      break;
-    }
-    case 'balanced': {
-      if (isManager && xhighClassStrict) desired = 'xhigh';
-      else if (hardTurn) desired = 'high';
-      else desired = 'medium';
-      break;
-    }
-    case 'quality-first': {
-      // Max (quality-first, the deepest knob): `high` is the FLOOR for IC/manager
-      // (Max spends quality on substantial work by default); for an admitted manager
-      // on a hard turn (high/critical risk, architecture, review, or large-context)
-      // we desire the DEEPEST level the chosen model offers — `max` (Claude's
-      // `--effort max`). resolveSupported steps this down to the nearest lower
-      // supported effort for a model without `max` (e.g. Codex → `xhigh`), so this
-      // is byte-for-byte unchanged for Codex while unlocking `max` for Claude.
-      // Worker rises to `high` on a hard turn but otherwise stays `medium` (a trivial
-      // worker chore is never worth deep reasoning, even in Max).
-      if (isManager && hardTurn) desired = 'max';
-      else if (tier !== 'worker' || hardTurn) desired = 'high';
-      else desired = 'medium';
-      break;
+  // Apply the bounded per-task difficulty bump.
+  let desired = base;
+  const step = difficultyStep(difficulty);
+  if (step !== 0) {
+    // Hard-turn ceiling for THIS mode+tier: the effort an explicit hard turn would
+    // already earn. The bump can promote a non-hard turn UP TO this — never past it
+    // — so the signals deepen within the policy's own envelope. (For a hard turn,
+    // base already equals/clears this, so the +1 is a no-op above it.) cost-saver
+    // gets a `low` ceiling so a difficulty hint can never raise Efficient effort.
+    const ceiling =
+      mode === 'cost-saver'
+        ? base // Efficient: never raise on a hint (clamp keeps step ≤ 0 below).
+        : baseDesiredEffort(mode, tier, 'high', taskKind); // risk:'high' ⇒ hard-turn value
+    const baseRank = effortRank(base);
+    const ceilRank = effortRank(ceiling);
+    const floorRank = effortRank('low');
+    const targetRank = baseRank + step;
+    const clampedRank = Math.max(floorRank, Math.min(targetRank, Math.max(baseRank, ceilRank)));
+    if (clampedRank !== baseRank) {
+      const next = KNOWN_REASONING_EFFORTS[clampedRank];
+      if (next !== undefined) desired = next;
     }
   }
 

@@ -37,12 +37,13 @@ import type {
   Policy,
 } from './types.js';
 import type { ProviderId } from '../providers/port.js';
-import { route, selectReasoningEffort, type CapabilityRouteContext } from './route.js';
+import { route, type CapabilityRouteContext, type CapabilityTaskSignals } from './route.js';
+import { effortForDecision } from './orchestrate-signals.js';
 import type { Attachment } from './attachments.js';
 import { getModelPricing, calculateCost } from '../infra/pricing.js';
 import { assess } from './assess.js';
 import { authorizeTier } from './flagship.js';
-import { findCapability, type ReasoningEffort, type TaskKind } from './model-capabilities.js';
+import { type ReasoningEffort, type TaskKind } from './model-capabilities.js';
 import { modeFromPolicy } from './policy.js';
 import type { WorkContract } from './work-contract.js';
 import { capContract, renderContractForPrompt, shouldMaterializeContract, isCleanObjectiveTask } from './work-contract.js';
@@ -187,8 +188,14 @@ export function contextFromDeps(deps: OrchestrateDeps): ContextBlockOptions | un
  * synthesizer's manager admission already passed upstream), so this never opens
  * manager or exceeds policy. PURE.
  *
- * @param taskKind - 'implementation' for an independent candidate; 'review' for
- *                   the cross-vendor synthesizer (its job is adjudication).
+ * @param taskKind - the role's task kind: a candidate uses the REAL turn taskKind
+ *                   (P0.3 — threaded via `capabilityContext.taskSignals`, no longer
+ *                   hard-coded), 'review' for the cross-vendor synthesizer, and
+ *                   'judgment' for the judgment poll (the caller passes the role).
+ * @param capabilityContext - the SAME opt-in capability-fit context the route()
+ *                   calls use; its `taskSignals.difficulty` (engagement depth,
+ *                   intent confidence, plan-first, fork count) sizes effort per task
+ *                   exactly like the sequential path. Absent → no difficulty bump.
  */
 function panelEffort(
   deps: OrchestrateDeps,
@@ -197,19 +204,26 @@ function panelEffort(
   model: string,
   tier: Tier,
   taskKind: TaskKind,
+  capabilityContext: CapabilityRouteContext | undefined,
 ): ReasoningEffort | undefined {
-  const registry = deps.capabilityRegistry;
-  if (registry === undefined) return undefined;
-  const cap = findCapability(registry, provider, model);
-  if (cap === undefined) return undefined;
-  return selectReasoningEffort({
-    model: cap,
-    mode: modeFromPolicy(deps.policy),
-    tier,
+  // The role's taskKind wins (a synthesizer is 'review' even on an implementation
+  // turn), but the difficulty signals come from the turn's real taskSignals.
+  const signals: CapabilityTaskSignals = {
     risk: plan.classification.risk,
-    taskKind,
     routePlan: false,
-  });
+    taskKind,
+    ...(capabilityContext?.taskSignals?.difficulty !== undefined
+      ? { difficulty: capabilityContext.taskSignals.difficulty }
+      : {}),
+  };
+  return effortForDecision(
+    deps.capabilityRegistry,
+    provider,
+    model,
+    tier,
+    modeFromPolicy(deps.policy),
+    signals,
+  );
 }
 
 /**
@@ -487,12 +501,22 @@ export async function* runCandidate(
   // diversity is its job, not adjudication). decision.tier is the tier route()
   // resolved (candidates stay at plan.tier — never the lifted manager ceiling), so
   // this never opens manager. undefined → no registry / no efforts → no flag.
-  // Independent panel candidates are always 'implementation' (diversity, not
-  // adjudication) — recorded on the ledger for Stage 4 outcome learning. The
-  // judgment poll overrides this to 'judgment' (it weighs a decision, not an
-  // implementation); absent → 'implementation', byte-for-byte the panel default.
-  const taskKind: TaskKind = overrides.taskKind ?? 'implementation';
-  const reasoningEffort = panelEffort(deps, plan, candidate, decision.model, decision.tier, taskKind);
+  // An independent panel candidate now serves the turn's REAL taskKind (P0.3 —
+  // threaded via capability.capabilityContext.taskSignals), falling back to the
+  // prior 'implementation' default when no signals are present (registry absent),
+  // so a no-registry turn is byte-for-byte unchanged. The judgment poll still
+  // overrides this to 'judgment' (it weighs a decision, not an implementation).
+  const taskKind: TaskKind =
+    overrides.taskKind ?? capability.capabilityContext?.taskSignals?.taskKind ?? 'implementation';
+  const reasoningEffort = panelEffort(
+    deps,
+    plan,
+    candidate,
+    decision.model,
+    decision.tier,
+    taskKind,
+    capability.capabilityContext,
+  );
 
   let finalText: string | undefined;
   let errored: import('../providers/port.js').CliError | undefined;
@@ -952,6 +976,7 @@ export async function* runPanel(
     synthDecision.model,
     synthDecision.tier,
     'review',
+    capability.capabilityContext,
   );
   const synthContractDecision = shouldMaterializeContract({
     classification: plan.classification,
@@ -1143,6 +1168,7 @@ export async function* runPanel(
           reviewDecision.model,
           reviewDecision.tier,
           'review',
+          capability.capabilityContext,
         );
         const reviewReq: import('../providers/port.js').ProviderRequest = {
           model: reviewDecision.model,

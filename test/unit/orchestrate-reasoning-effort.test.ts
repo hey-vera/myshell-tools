@@ -18,6 +18,7 @@ import assert from 'node:assert/strict';
 
 import { orchestrate } from '../../src/core/orchestrate.ts';
 import { POLICY_PRESETS } from '../../src/core/policy.ts';
+import type { IntentFrame } from '../../src/core/intent.ts';
 import type {
   Clock,
   SessionWriter,
@@ -192,5 +193,79 @@ describe('orchestrate Stage-3 wiring — reasoning effort threaded to provider +
     for (const req of codex.requests) {
       assert.strictEqual(req.reasoningEffort, undefined, 'no effort when model has none');
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// P0.3 — per-task difficulty sizing flows end-to-end: a model intent frame whose
+// GOAL-confidence is 'low' raises a Balanced IC turn from medium → high, while an
+// identical turn with a 'high'-confidence frame stays at the medium default.
+// Proves the engagement/intent signals reach selectReasoningEffort through the
+// real orchestrate → work-call → provider-request path (not just the pure unit).
+// ---------------------------------------------------------------------------
+
+// A multi-clause IC-tier task: low-risk, substantial enough to trip intent
+// extraction, but NOT a hard turn — so its base effort is the Balanced `medium`
+// default, leaving headroom for a difficulty bump to be observable.
+const IC_TASK =
+  'Update the user list component to paginate, and also add a small empty-state message when there are no users.';
+
+function modelFrame(confidence: IntentFrame['confidence']): IntentFrame {
+  return { version: 1, goal: 'paginate the user list and add an empty state', confidence, source: 'model' };
+}
+
+/**
+ * Registry that ALSO declares the cheap IC codex model (`gpt-5.2-codex`) the
+ * Balanced IC route resolves to, so findCapability matches and effort is selected.
+ */
+const CODEX_IC_REGISTRY: CapabilityRegistry = {
+  claude: [],
+  codex: [
+    ...CODEX_XHIGH_REGISTRY.codex,
+    {
+      provider: 'codex',
+      id: 'gpt-5.2-codex',
+      aliases: ['codex'],
+      tierHint: 'ic',
+      supportedReasoningEfforts: ['low', 'medium', 'high', 'xhigh'],
+      source: ['codex-cache'],
+    },
+  ],
+  opencode: [],
+};
+
+describe('orchestrate P0.3 — intent confidence sizes effort per task (Balanced IC)', () => {
+  function balancedDeps(
+    frameConfidence: IntentFrame['confidence'],
+  ): { deps: OrchestrateDeps; codex: ReturnType<typeof makeRecordingCodex> } {
+    const codexLocal = makeRecordingCodex();
+    const deps: OrchestrateDeps = {
+      providers: { codex: codexLocal },
+      clock: makeFakeClock(),
+      session: makeFakeSession(),
+      ledger: makeFakeLedger(),
+      policy: POLICY_PRESETS['balanced'],
+      cwd: '/fake',
+      sandbox: 'workspace-write',
+      timeoutMs: 30_000,
+      authenticatedProviders: ['codex'],
+      capabilityRegistry: CODEX_IC_REGISTRY,
+      intentExtractor: async () => modelFrame(frameConfidence),
+    };
+    return { deps, codex: codexLocal };
+  }
+
+  it('high-confidence model frame → Balanced IC stays at the medium default (no inflation)', async () => {
+    const { deps, codex: c } = balancedDeps('high');
+    await drain(orchestrate(IC_TASK, deps, new AbortController().signal));
+    assert.ok(c.requests.length >= 1, 'codex ran');
+    assert.strictEqual(c.requests[0]?.reasoningEffort, 'medium', 'control: medium default');
+  });
+
+  it('low-confidence model frame → Balanced IC RAISES to high', async () => {
+    const { deps, codex: c } = balancedDeps('low');
+    await drain(orchestrate(IC_TASK, deps, new AbortController().signal));
+    assert.ok(c.requests.length >= 1, 'codex ran');
+    assert.strictEqual(c.requests[0]?.reasoningEffort, 'high', 'low GOAL-confidence raises effort');
   });
 });

@@ -43,12 +43,12 @@ import type {
   Policy,
 } from './types.js';
 import type { ProviderId } from '../providers/port.js';
-import { route, selectReasoningEffort, type CapabilityRouteContext } from './route.js';
+import { route, type CapabilityRouteContext, type CapabilityTaskSignals } from './route.js';
 import { getModelPricing, calculateCost } from '../infra/pricing.js';
 import { assess } from './assess.js';
 import { authorizeTier } from './flagship.js';
 import { buildPrompt } from './prompt.js';
-import { findCapability, type ReasoningEffort, type TaskKind } from './model-capabilities.js';
+import { type ReasoningEffort, type TaskKind } from './model-capabilities.js';
 import { modeFromPolicy } from './policy.js';
 import type { WorkContract } from './work-contract.js';
 import { capContract, isCleanObjectiveTask, shouldMaterializeContract } from './work-contract.js';
@@ -241,16 +241,25 @@ async function runAttempt(
     deps.learnedProviderOrder?.[requestedTier],
     capabilityContext,
   );
+  // The REAL task kind + difficulty signals for this turn (P0.3): the SAME
+  // taskSignals the sequential path uses, threaded via capabilityContext from
+  // orchestrate (taskKind from deriveTaskKind + difficulty from engagement/intent).
+  // When no taskSignals are present (registry absent), fall back to the prior
+  // conservative 'implementation' default so a turn without a registry is unchanged.
+  const taskKind: TaskKind = capabilityContext?.taskSignals?.taskKind ?? 'implementation';
   // Reasoning effort for this hedge run (capability registry §3/§5). decision.tier
   // is the tier route() resolved (admission already passed in planHedge), so this
   // never opens manager or exceeds policy. undefined → no registry / no efforts →
-  // no flag (byte-for-byte unchanged). Hedge only fires on high/critical-risk
-  // turns; taskKind 'implementation' is the conservative default (risk drives the
-  // effort). The selector reconciles against the model's supported set.
-  const reasoningEffort = hedgeEffort(deps, decision.provider, decision.model, decision.tier, risk);
-  // Hedge runs are always 'implementation' (the same conservative default
-  // hedgeEffort uses) — recorded on the ledger for Stage 4 outcome learning.
-  const taskKind: TaskKind = 'implementation';
+  // no flag (byte-for-byte unchanged). The selector reconciles against the model's
+  // supported set; effortForDecision feeds it the real taskKind + difficulty.
+  const reasoningEffort = hedgeEffort(
+    deps,
+    decision.provider,
+    decision.model,
+    decision.tier,
+    risk,
+    capabilityContext?.taskSignals,
+  );
   const provider = deps.providers[decision.provider];
   const start = deps.clock.now();
   const events: CoreEvent[] = [];
@@ -395,9 +404,13 @@ function hasImageAttachment(
  * registry facts (capability registry §3/§5). Returns undefined when the registry
  * is absent, the model has no capability record, or it declares no efforts (→ no
  * flag, byte-for-byte unchanged). The resolved tier is the tier route() granted
- * (admission already passed in planHedge), so this never opens manager. Hedge only
- * fires on high/critical risk; taskKind 'implementation' is the conservative
- * default (risk is the dominant signal). PURE.
+ * (admission already passed in planHedge), so this never opens manager. P0.3: it
+ * now uses the REAL task kind + difficulty signals the turn computed (threaded via
+ * `signals`) instead of a hard-coded 'implementation', so a hedged turn sizes
+ * effort exactly like the sequential path. When `signals` is absent it falls back
+ * to the prior conservative defaults (taskKind 'implementation', risk-driven, no
+ * difficulty) so behaviour is unchanged. Reuses {@link effortForDecision} for the
+ * one selection + reconciliation path. PURE.
  */
 function hedgeEffort(
   deps: OrchestrateDeps,
@@ -405,20 +418,18 @@ function hedgeEffort(
   model: string,
   tier: Tier,
   risk: Risk,
+  signals: CapabilityTaskSignals | undefined,
 ): ReasoningEffort | undefined {
-  const registry = deps.capabilityRegistry;
-  if (registry === undefined) return undefined;
-  const cap = findCapability(registry, provider, model);
-  if (cap === undefined) return undefined;
-  const taskKind: TaskKind = 'implementation';
-  return selectReasoningEffort({
-    model: cap,
-    mode: modeFromPolicy(deps.policy),
+  const effectiveSignals: CapabilityTaskSignals =
+    signals ?? { risk, routePlan: false, taskKind: 'implementation' };
+  return effortForDecision(
+    deps.capabilityRegistry,
+    provider,
+    model,
     tier,
-    risk,
-    taskKind,
-    routePlan: false,
-  });
+    modeFromPolicy(deps.policy),
+    effectiveSignals,
+  );
 }
 
 // ---------------------------------------------------------------------------

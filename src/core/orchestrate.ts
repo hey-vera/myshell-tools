@@ -1315,6 +1315,25 @@ export async function* orchestrate(
       routePlan,
       estimatedInputTokens,
     }),
+    // Per-task effort sizing (P0.3): thread the difficulty signals the pipeline
+    // already computed — engagement depth, the intent extractor's GOAL-confidence,
+    // plan-first, and genuine-fork count — so selectReasoningEffort can deepen a
+    // genuinely hard/low-confidence turn and shallow a trivial one, bounded by the
+    // coarse-bucket hard-turn ceiling. Neutral signals leave effort unchanged.
+    difficulty: {
+      depth: engagementPlan.depth,
+      planFirst: engagementPlan.planFirst,
+      // Only a REAL model extraction's confidence is a genuine uncertainty signal.
+      // The rules/skipped fallback reports a tier-based placeholder ('low' for
+      // IC/manager) that does NOT mean the goal was misunderstood — treating it as
+      // low-confidence would inflate effort on every ordinary IC/manager turn where
+      // intent extraction was skipped. So feed confidence ONLY from `source:'model'`.
+      ...(intentFrame?.source === 'model' ? { intentConfidence: intentFrame.confidence } : {}),
+      // Likewise, genuine forks are only meaningful from the model extractor.
+      ...(intentFrame?.source === 'model' && intentFrame.forks !== undefined
+        ? { forkCount: intentFrame.forks.length }
+        : {}),
+    },
   };
   /**
    * The opt-in capability context handed to route(). Built ONLY when the registry
