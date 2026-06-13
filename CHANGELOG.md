@@ -6,6 +6,9 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+## 3.99.0
+feat(chat): polished decision prompts in the Claude/GPT shell style. The bare "Continue working step by step? yes/no" line is replaced by a pronounced multi-line block — titled by kind (Keep Going / Timeout / Checkpoint / Question), with numbered options, recommended/Enter-default markers, per-option descriptions, and a clear key hint. Shared `renderDecisionPrompt()` now backs the timeout, keep-going, and structured-question flows (the standing-rule, per-todo, and goal-launch checkpoints inherit it), on both the Ink and legacy paths. Presentation-only — input handling and answer semantics are unchanged.
+
 ## 3.98.0
 feat(chat): Tab-to-autocomplete in live chat on the Ink path. Press Tab to complete slash commands (`/help`, `/oversight`, `/rule`, …) and `@`-file mentions inline, the way the Claude/GPT shells do — single-match Tab fills the rest of the token, the suggestion preview renders just under the composer, and Esc dismisses it. The completion engine already existed; this wires it into the Ink `InputBox` so it actually shows in conversations.
 

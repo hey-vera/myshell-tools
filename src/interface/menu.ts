@@ -214,6 +214,7 @@ import {
   yesNoHint,
 } from './menu-questions.js';
 import { runQuestionSelector } from './menu-question-flow.js';
+import { renderDecisionPrompt } from './decision-prompt.js';
 import { runRawProviderSession } from './menu-raw-session.js';
 import { runManage, runImportNative, runManageGoals } from './menu-conversations.js';
 import { runWelcome } from './menu-welcome.js';
@@ -4660,8 +4661,28 @@ export async function runChatLoop(
             '\n  ' + dim('↳ large task — continuing autonomously, step by step…', out.color) + '\n',
           );
         } else {
-          out.write('\n  ' + dim('This step ran long; I can continue from here in smaller steps.', out.color) + '\n');
-          out.write(`  Continue working step by step until it's done? ${yesNoHint('yes', out.color)} `);
+          out.write('\n' + renderDecisionPrompt(
+            {
+              kind: 'timeout',
+              title: "Continue working step by step until it's done?",
+              message: 'This step ran long; I can continue from here in smaller steps.',
+              options: [
+                {
+                  id: 'yes',
+                  label: 'Yes',
+                  description: 'keep going autonomously until the task is done',
+                  recommended: true,
+                },
+                {
+                  id: 'no',
+                  label: 'No',
+                  description: 'stop here and return to the prompt',
+                },
+              ],
+              defaultOptionId: 'yes',
+            },
+            out.color,
+          ));
         }
         if (await approveTimeoutContinuation(oversight, confirm)) {
           // Chunking a timed-out RAW chat ask: concise title, full `line` as work.
@@ -4681,8 +4702,28 @@ export async function runChatLoop(
           renderDiscardedQueue(out, queuedTurns.length, 'interrupt');
           queuedTurns.length = 0;
         }
-        out.write('\n  ' + dim("I can keep working on this autonomously until it's done.", out.color) + '\n');
-        out.write(`  Keep going? ${yesNoHint('yes', out.color)} `);
+        out.write('\n' + renderDecisionPrompt(
+          {
+            kind: 'keep-going',
+            title: 'Keep going?',
+            message: "I can keep working on this autonomously until it's done.",
+            options: [
+              {
+                id: 'yes',
+                label: 'Yes',
+                description: "continue working until it's done",
+                recommended: true,
+              },
+              {
+                id: 'no',
+                label: 'No',
+                description: 'stop here and wait for your next message',
+              },
+            ],
+            defaultOptionId: 'yes',
+          },
+          out.color,
+        ));
         if (await confirm(true)) {
           // Accepting the model's keep-going offer on the ORIGINAL raw ask: concise
           // title, full `line` as work.

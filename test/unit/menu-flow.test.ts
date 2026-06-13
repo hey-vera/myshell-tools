@@ -682,7 +682,9 @@ describe('startMenu — /goal ask_user stops autonomous loop and surfaces select
     await startMenu(ctx, sink);
 
     assert.equal(callCount, 2, 'one goal turn plus one normal answer turn');
-    assert.ok(sink.buf.includes('Which database?'), 'question selector is surfaced');
+    assert.ok(sink.buf.includes('? Question: Which database?'), 'question selector is surfaced');
+    assert.ok(sink.buf.includes('1. Postgres'), 'selector shows numbered options');
+    assert.ok(sink.buf.includes('Type a number · Enter = skip · Ctrl+C = cancel'), 'selector shows the final hint');
     assert.ok(prompts[0]?.includes('Goal: choose the database'), 'first call is the goal turn');
     assert.ok(prompts[1]?.includes('Answers: db = Postgres'), 'second call submits the selected answer');
     assert.ok(
@@ -888,7 +890,7 @@ describe('startMenu — /goal PROPOSES the plan before running it (manager cycle
     assert.ok(sink.buf.includes('1. Harden the token-refresh path'), 'renders the goal title');
     assert.ok(sink.buf.includes('Approach: rotate refresh tokens server-side'), 'renders the chosen approach');
     assert.ok(sink.buf.includes('Step 2 build on 1.'), 'renders the dependency cause→effect phrase');
-    assert.ok(sink.buf.includes('Shall I run this, or adjust first?'), 'offers the one-tap confirm');
+    assert.ok(sink.buf.includes('? Question: Shall I run this, or adjust first?'), 'offers the one-tap confirm');
     assert.ok(sink.buf.includes('Start all') && sink.buf.includes('Just the unblocked ones'), 'the go options');
     assert.ok(/Parked ".*" on the board/.test(sink.buf), 'declining parks the goal');
     assert.equal(goalWorkTurns, 0, 'declining the proposal must NOT run any goal-work turn');

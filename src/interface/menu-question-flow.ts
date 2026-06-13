@@ -8,6 +8,7 @@
 import type { QuestionSet } from '../core/types.js';
 import { formatAnswers } from '../core/questions.js';
 import type { OutputSink } from './render.js';
+import { renderDecisionPrompt } from './decision-prompt.js';
 import {
   interpretQuestionAnswer,
   FREE_TEXT_SENTINEL,
@@ -43,24 +44,29 @@ export async function runQuestionSelector(
   const answers: Record<string, string> = {};
 
   for (const q of questions.questions) {
-    out.write(`\n${q.prompt}\n`);
-    for (let i = 0; i < q.options.length; i++) {
-      const opt = q.options[i];
-      if (opt === undefined) continue;
-      const desc = opt.description !== undefined ? ` — ${opt.description}` : '';
-      out.write(`  [${i + 1}] ${opt.label}${desc}\n`);
-    }
     const freeTextIndex = q.options.length + 1;
-    if (q.allowFreeText) {
-      out.write(`  [${freeTextIndex}] type your own\n`);
-    }
-    const hint = q.multiSelect
-      ? 'Pick one or more (comma-separated), or Enter to skip: '
-      : 'Pick one, or Enter to skip: ';
+    out.write('\n' + renderDecisionPrompt(
+      {
+        kind: 'question',
+        title: q.prompt,
+        options: [
+          ...q.options.map((opt, i) => ({
+            id: String(i + 1),
+            label: opt.label,
+            ...(opt.description !== undefined ? { description: opt.description } : {}),
+          })),
+          ...(q.allowFreeText
+            ? [{ id: String(freeTextIndex), label: 'Type your own' }]
+            : []),
+        ],
+        multiSelect: q.multiSelect,
+        allowFreeText: q.allowFreeText,
+      },
+      out.color,
+    ));
 
     // Re-prompt on `retry`; resolve on `answer`/`cancel`.
     for (;;) {
-      out.write(hint);
       const line = await readLine();
       const verdict = interpretQuestionAnswer(line, q);
 

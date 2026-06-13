@@ -88,8 +88,8 @@ test('createInkOutputSink flush() commits pending partial line; no-op when empty
 });
 
 test('BUG 1: Ink readLine wrapper flushes the pending prompt cue BEFORE awaiting input', async () => {
-  // The question-selector / /edit flows write a trailing-space prompt with NO
-  // newline (e.g. "Pick one, or Enter to skip: ") then immediately await readLine().
+  // Free-text follow-ups / /edit flows still write a trailing-space prompt with NO
+  // newline (e.g. "Type your answer: ") then immediately await readLine().
   // Without flushing, that cue sits invisibly in `pending` and the user is parked at
   // a blank composer. menu.ts wraps the Ink reader as:
   //   readLine = () => { out.flush?.(); return reader.nextLine(); };
@@ -114,7 +114,7 @@ test('BUG 1: Ink readLine wrapper flushes the pending prompt cue BEFORE awaiting
   // The numbered options render (newline-terminated) — then the action cue WITHOUT
   // a newline, which would otherwise be invisible.
   out.write('  1. fix the bug\n  2. add the test\n');
-  out.write('Pick one, or Enter to skip: ');
+  out.write('Type your answer: ');
   // Before readLine, the cue is still buffered (not committed).
   assert.deepEqual(chrome(), ['  1. fix the bug', '  2. add the test']);
 
@@ -124,7 +124,7 @@ test('BUG 1: Ink readLine wrapper flushes the pending prompt cue BEFORE awaiting
   assert.deepEqual(chrome(), [
     '  1. fix the bug',
     '  2. add the test',
-    'Pick one, or Enter to skip: ',
+    'Type your answer: ',
   ]);
 
   // Now the user submits; the line resolves and no extra/duplicate lines appear.
@@ -133,7 +133,7 @@ test('BUG 1: Ink readLine wrapper flushes the pending prompt cue BEFORE awaiting
   assert.deepEqual(chrome(), [
     '  1. fix the bug',
     '  2. add the test',
-    'Pick one, or Enter to skip: ',
+    'Type your answer: ',
   ]);
 });
 
