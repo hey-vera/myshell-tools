@@ -51,7 +51,6 @@ import type { FlagshipTrigger, FlagshipDecision } from './flagship.js';
 import { buildPrompt } from './prompt.js';
 import { assess } from './assess.js';
 import { parseQuestions } from './questions.js';
-import { memoryProposalFor } from './orchestrate-memory.js';
 import { getModelPricing, calculateCost } from '../infra/pricing.js';
 import { nextTierUp, pickReviewer } from './escalate.js';
 import { buildReviewPrompt, parseReviewVerdict } from './review.js';
@@ -94,8 +93,14 @@ import {
   discoveryEscalationReason,
   type DiscoverySignal,
 } from './discovery.js';
-import { ENGINE_BEHAVIOR_VERSION } from './engine-version.js';
 import { lastJsonObjectBoundsWithKey } from './json-envelope.js';
+import {
+  MAX_REVISE_RETRIES,
+  appendAcceptedAssistant,
+  runCandidateQualityGate,
+  type AcceptedRunSessionData,
+  type CandidateResult,
+} from './accept-stage.js';
 
 // ---------------------------------------------------------------------------
 // Partial-output salvage constants (draft-handoff on rate-limit failover)
@@ -182,41 +187,6 @@ interface StreamOutcome {
   canceled: boolean;
   /** True only when the signal was already aborted before streaming started. */
   canceledBeforeStream: boolean;
-}
-
-interface AcceptedRunSessionData {
-  readonly content: string;
-  readonly tier: Tier;
-  readonly provider: ProviderId;
-  readonly model: string;
-  readonly confidence: number | null;
-  readonly costUsd: number;
-  readonly durationMs: number;
-  readonly sessionId?: string;
-  readonly workTrace?: WorkContract;
-}
-
-async function appendAcceptedAssistant(
-  deps: OrchestrateDeps,
-  run: AcceptedRunSessionData,
-): Promise<void> {
-  await deps.session.append({
-    timestamp: deps.clock.isoNow(),
-    role: 'assistant',
-    content: run.content,
-    tier: run.tier,
-    provider: run.provider,
-    model: run.model,
-    confidence: run.confidence,
-    costUsd: run.costUsd,
-    durationMs: run.durationMs,
-    ...(run.sessionId !== undefined ? { sessionId: run.sessionId } : {}),
-    ...(run.workTrace !== undefined ? { workTrace: run.workTrace } : {}),
-    // Stamp the engine BEHAVIOR version (AP2-F / Stage 6, §3, §4) so a later turn
-    // can identify this as CURRENT-engine prose and NOT quarantine it on the
-    // version axis. Absent on legacy/pre-fix entries → quarantine candidate.
-    engineBehaviorVersion: ENGINE_BEHAVIOR_VERSION,
-  });
 }
 
 /**
@@ -373,6 +343,9 @@ export interface CriticRunInput {
 export interface CriticRunOutput {
   /** Whether a real, parseable verdict was produced (never fabricated). */
   readonly ran: boolean;
+  readonly parsed?: boolean;
+  readonly verdict?: 'approve' | 'revise' | 'escalate';
+  readonly notes?: string;
 }
 
 const VERIFY_DEFAULT_TEST_TIMEOUT_MS = 120_000;
@@ -476,7 +449,13 @@ export async function verifyStage(
         });
         const out = await ctx.runCritic({ reviewer, prompt }).catch(() => undefined);
         if (out !== undefined && out.ran) {
-          critic = { vendor: reviewer, sameVendor: reviewer === ctx.provider };
+          critic = {
+            vendor: reviewer,
+            sameVendor: reviewer === ctx.provider,
+            parsed: out.parsed ?? true,
+            verdict: out.verdict ?? 'approve',
+            notes: out.notes ?? '',
+          };
         }
       }
     }
@@ -678,7 +657,6 @@ export async function* runWorkCall(input: WorkCallInput): AsyncGenerator<CoreEve
    * admission allows, otherwise accept the best answer we already have.
    */
   let reviseRetries = 0;
-  const MAX_REVISE_RETRIES = 1;
 
   /**
    * Adaptive flagship admission for a manager request at the current decision
@@ -717,8 +695,8 @@ export async function* runWorkCall(input: WorkCallInput): AsyncGenerator<CoreEve
   // uses (route → collectProviderRun → ledger → parseReviewVerdict) so the diff
   // critic is a real, parseable verdict — never fabricated — and its cost is
   // accounted into `totalCostUsd` + the ledger exactly like the inline reviewer.
-  const runVerifyAtAccept = async (): Promise<VerifyOutcome | undefined> => {
-    if (deps.verifyPort === undefined) return undefined;
+  const runVerifyAtAccept = async (candidate: CandidateResult): Promise<VerifyOutcome | undefined> => {
+    if (candidate.verifyPort === undefined) return undefined;
     // The critic-runner the verify stage calls. Returns { ran:true } only on a
     // genuinely parseable verdict; a broken/absent reviewer → { ran:false } so the
     // four-state never claims `reviewed` off a non-verdict.
@@ -800,23 +778,241 @@ export async function* runWorkCall(input: WorkCallInput): AsyncGenerator<CoreEve
         });
         const verdict = parseReviewVerdict(reviewOutcome.finalText ?? '');
         // A real, parseable verdict ⇒ the critic genuinely ran.
-        return { ran: verdict.parsed === true };
+        return {
+          ran: verdict.parsed === true,
+          parsed: verdict.parsed,
+          verdict: verdict.verdict,
+          notes: verdict.notes,
+        };
       } catch {
         return { ran: false };
       }
     };
 
     return verifyStage({
-      output: lastOutput,
-      provider: acceptedRun?.provider ?? lastAttemptedProvider ?? available[0] ?? 'claude',
-      tier: currentTier,
-      port: deps.verifyPort,
-      level: verifyLevel ?? deps.verifyLevel ?? 'tests',
+      output: candidate.content,
+      provider: candidate.provider,
+      tier: candidate.tier,
+      port: candidate.verifyPort,
+      level: candidate.verifyLevel,
+      task: candidate.task,
+      cwd: candidate.cwd,
+      ...(candidate.verifyTestTimeoutMs !== undefined
+        ? { testTimeoutMs: candidate.verifyTestTimeoutMs }
+        : {}),
+      available: candidate.availableProviders,
+      runCritic,
+    });
+  };
+
+  const receiptEvents = (
+    verifyOutcome: VerifyOutcome | undefined,
+    candidate: CandidateResult,
+  ): readonly CoreEvent[] => {
+    if (candidate.trustEnabled === true) {
+      const trustSignals: TrustSignals = {
+        ...(candidate.brainConfidence !== undefined
+          ? { confidence: candidate.brainConfidence }
+          : {}),
+        ...(verifyOutcome !== undefined ? { verify: verifyOutcome } : {}),
+        ...(verifyOutcome?.changedPaths !== undefined && verifyOutcome.changedPaths.length > 0
+          ? { groundedFiles: verifyOutcome.changedPaths }
+          : {}),
+        ...(deps.authenticatedProviders !== undefined
+          ? { authedProviderCount: deps.authenticatedProviders.length }
+          : {}),
+      };
+      const receipt = composeTrustReceipt(
+        trustSignals,
+        confidenceLine(candidate.brainConfidence),
+      );
+      if (!isEmptyReceipt(receipt)) {
+        const level = verifyOutcome?.verified === 'failing' ? 'warn' : 'info';
+        return trustReceiptLines(receipt).map((message) => ({ type: 'notice', level, message }));
+      }
+      return [];
+    }
+    if (verifyOutcome === undefined) return [];
+    return [{
+      type: 'notice',
+      level: verifyOutcome.verified === 'failing' ? 'warn' : 'info',
+      message: buildVerifyReceipt(verifyOutcome),
+    }];
+  };
+
+  const runAcceptanceRepair = async function* (
+    candidate: CandidateResult,
+    evidence: string,
+  ): AsyncGenerator<CoreEvent, CandidateResult | undefined> {
+    const provider = deps.providers[candidate.provider];
+    if (provider === undefined || signal.aborted) return undefined;
+
+    attempts++;
+    const reasoningEffort = effortForDecision(
+      deps.capabilityRegistry,
+      candidate.provider,
+      candidate.model,
+      candidate.tier,
+      mode,
+      taskSignals,
+    );
+    const useNative = candidate.sessionId !== undefined;
+    const prompt = buildPrompt(
+      candidate.tier,
+      task,
+      evidence,
+      useNative ? undefined : historyContext,
+      {
+        ...(deps.goalTurn === true ? { goalTurn: true } : {}),
+        ...(directive.substantial === true ? { explanatory: true } : {}),
+        ...(deps.partnerStyle !== undefined ? { partnerStyle: deps.partnerStyle } : {}),
+        ...(deps.environmentContext !== undefined
+          ? { environmentContext: deps.environmentContext }
+          : {}),
+        ...(deps.toolStateContext !== undefined ? { toolStateContext: deps.toolStateContext } : {}),
+        ...(deps.memoryContext !== undefined ? { memoryContext: deps.memoryContext } : {}),
+        ...(deps.tasteContext !== undefined ? { tasteContext: deps.tasteContext } : {}),
+        ...(deps.workStateContext !== undefined ? { workStateContext: deps.workStateContext } : {}),
+        ...(deps.goalContext !== undefined ? { goalContext: deps.goalContext } : {}),
+        ...(deps.rulesContext !== undefined ? { rulesContext: deps.rulesContext } : {}),
+        ...(deps.visionTriageContext !== undefined
+          ? { visionTriageContext: deps.visionTriageContext }
+          : {}),
+        ...(deps.understandingContext !== undefined
+          ? { understandingContext: deps.understandingContext }
+          : {}),
+        ...(deps.intentFrame !== undefined ? { intentFrame: deps.intentFrame } : {}),
+        ...(deps.engagementPlan !== undefined ? { engagementPlan: deps.engagementPlan } : {}),
+      },
+    );
+
+    yield {
+      type: 'tier-start',
+      tier: candidate.tier,
+      provider: candidate.provider,
+      model: candidate.model,
+      attempt: attempts,
+      ...(goalTitle.length > 0 ? { title: goalTitle } : {}),
+      risk: classification.risk,
+    };
+
+    const req: ProviderRequest = {
+      model: candidate.model,
+      prompt,
+      cwd: deps.cwd,
+      sandbox: deps.sandbox,
+      timeoutMs: deps.timeoutMs,
+      ...(candidate.sessionId !== undefined
+        ? { sessionId: candidate.sessionId, resume: true }
+        : {}),
+      ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
+      ...(wantsWebSearch ? { webSearch: true } : {}),
+      ...(hasImageAttachment && deps.attachments !== undefined
+        ? { attachments: deps.attachments }
+        : {}),
+    };
+    const start = deps.clock.now();
+    const outcome = yield* streamProvider(provider, req, candidate.tier, signal);
+    const durationMs = deps.clock.now() - start;
+    const finalText = outcome.finalText ?? '';
+    const success =
+      !outcome.canceled && outcome.errored === undefined && finalText.trim().length > 0;
+    const pricing = getModelPricing(candidate.provider, candidate.model);
+    const usd =
+      outcome.providerCostUsd ??
+      (outcome.usage !== undefined && pricing !== undefined
+        ? calculateCost(
+            outcome.usage.inputTokens,
+            outcome.usage.outputTokens,
+            pricing,
+          )
+        : 0);
+    totalCostUsd += usd;
+    const assessment = assess(finalText);
+
+    await deps.ledger.record({
+      timestamp: deps.clock.isoNow(),
+      sessionId: deps.session.id,
+      taskId: deps.clock.uuid(),
+      provider: candidate.provider,
+      model: candidate.model,
+      tier: candidate.tier,
+      inputTokens: outcome.usage?.inputTokens ?? 0,
+      outputTokens: outcome.usage?.outputTokens ?? 0,
+      cachedInputTokens: outcome.usage?.cachedInputTokens ?? 0,
+      usd,
+      durationMs,
+      success,
+      ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
+      taskKind: taskSignals.taskKind,
+    });
+    yield {
+      type: 'tier-done',
+      tier: candidate.tier,
+      success,
+      confidence: assessment.confidence,
+      costUsd: usd,
+      inputTokens: outcome.usage?.inputTokens ?? 0,
+      outputTokens: outcome.usage?.outputTokens ?? 0,
+      durationMs,
+    };
+
+    if (!success) return undefined;
+
+    lastOutput = finalText;
+    const repairedRun: AcceptedRunSessionData = {
+      content: finalText,
+      tier: candidate.tier,
+      provider: candidate.provider,
+      model: candidate.model,
+      confidence: assessment.confidence,
+      costUsd: usd,
+      durationMs,
+      ...(outcome.sessionId !== undefined
+        ? { sessionId: outcome.sessionId }
+        : candidate.sessionId !== undefined
+          ? { sessionId: candidate.sessionId }
+          : {}),
+      ...(candidate.workTrace !== undefined ? { workTrace: candidate.workTrace } : {}),
+    };
+    acceptedRun = repairedRun;
+    return makeCandidate(repairedRun, candidate.disposition);
+  };
+
+  function makeCandidate(
+    run: AcceptedRunSessionData,
+    disposition: CandidateResult['disposition'],
+  ): CandidateResult {
+    const candidate: CandidateResult = {
+      ...run,
+      get totalCostUsd() { return totalCostUsd; },
+      get attempts() { return attempts; },
+      disposition,
       task,
       cwd: deps.cwd,
-      ...(deps.verifyTestTimeoutMs !== undefined ? { testTimeoutMs: deps.verifyTestTimeoutMs } : {}),
-      available: deps.authenticatedProviders ?? available,
-      runCritic,
+      ...(deps.verifyPort !== undefined ? { verifyPort: deps.verifyPort } : {}),
+      verifyLevel: verifyLevel ?? deps.verifyLevel ?? 'tests',
+      ...(deps.verifyTestTimeoutMs !== undefined
+        ? { verifyTestTimeoutMs: deps.verifyTestTimeoutMs }
+        : {}),
+      availableProviders: deps.authenticatedProviders ?? available,
+      ...(trustEnabled === true ? { trustEnabled: true } : {}),
+      ...(brainConfidence !== undefined ? { brainConfidence } : {}),
+      repair: (evidence) => runAcceptanceRepair(candidate, evidence),
+    };
+    return candidate;
+  }
+
+  const gateAcceptedRun = async function* (
+    run: AcceptedRunSessionData,
+    disposition: CandidateResult['disposition'],
+  ): AsyncGenerator<CoreEvent> {
+    yield* runCandidateQualityGate({
+      deps,
+      candidate: makeCandidate(run, disposition),
+      goalTurn: deps.goalTurn === true,
+      verify: runVerifyAtAccept,
+      receiptEvents,
     });
   };
 
@@ -1692,20 +1888,7 @@ export async function* runWorkCall(input: WorkCallInput): AsyncGenerator<CoreEve
             if (acceptedRun === undefined) {
               throw new Error('orchestrate invariant violated: approved final without accepted run');
             }
-            await appendAcceptedAssistant(deps, acceptedRun);
-            {
-              const memoryProposal = memoryProposalFor(lastOutput);
-              yield {
-                type: 'final',
-                success: true,
-                output: lastOutput,
-                tier: currentTier,
-                totalCostUsd,
-                sessionId: deps.session.id,
-                attempts,
-                ...(memoryProposal !== undefined ? { memoryProposal } : {}),
-              };
-            }
+            yield* gateAcceptedRun(acceptedRun, 'clean');
             return;
           }
 
@@ -1747,21 +1930,7 @@ export async function* runWorkCall(input: WorkCallInput): AsyncGenerator<CoreEve
             if (acceptedRun === undefined) {
               throw new Error('orchestrate invariant violated: revise-accept final without accepted run');
             }
-            await appendAcceptedAssistant(deps, acceptedRun);
-            {
-              const memoryProposal = memoryProposalFor(lastOutput);
-              yield {
-                type: 'final',
-                success: true,
-                output: lastOutput,
-                tier: currentTier,
-                totalCostUsd,
-                sessionId: deps.session.id,
-                attempts,
-                bestEffort: true,
-                ...(memoryProposal !== undefined ? { memoryProposal } : {}),
-              };
-            }
+            yield* gateAcceptedRun(acceptedRun, 'bestEffort');
             return;
           }
 
@@ -1782,25 +1951,7 @@ export async function* runWorkCall(input: WorkCallInput): AsyncGenerator<CoreEve
             if (acceptedRun === undefined) {
               throw new Error('orchestrate invariant violated: ceiling-accepted final without accepted run');
             }
-            await appendAcceptedAssistant(deps, acceptedRun);
-            {
-              const memoryProposal = memoryProposalFor(lastOutput);
-              yield {
-                type: 'final',
-                success: true,
-                output: lastOutput,
-                tier: currentTier,
-                totalCostUsd,
-                sessionId: deps.session.id,
-                attempts,
-                // Honesty: the reviewer wanted a stronger tier and policy denied
-                // it. We accept the best result rather than re-running, but flag it
-                // best-effort so the user can tell this apart from a clean,
-                // fully-verified success.
-                bestEffort: true,
-                ...(memoryProposal !== undefined ? { memoryProposal } : {}),
-              };
-            }
+            yield* gateAcceptedRun(acceptedRun, 'bestEffort');
             return;
           }
           if (escalateTo === null) {
@@ -1914,63 +2065,7 @@ export async function* runWorkCall(input: WorkCallInput): AsyncGenerator<CoreEve
     if (acceptedRun === undefined) {
       throw new Error('orchestrate invariant violated: successful final without accepted run');
     }
-    await appendAcceptedAssistant(deps, acceptedRun);
-    {
-      const memoryProposal = memoryProposalFor(lastOutput);
-      // --- THE VERIFY STAGE (fail-soft; never breaks the turn) -----------------
-      const verifyOutcome = await runVerifyAtAccept();
-      if (trustEnabled === true) {
-        // THE TRUST SURFACE (master-plan PHASE 8): UPGRADE the bare verify line into
-        // the consolidated, AUDITABLE trust receipt — auditable confidence + the
-        // four-state verify line + an honest self-audit of what it did NOT do —
-        // composed PURELY from the real signals already on this turn (no new model
-        // call). It surfaces ONLY signals that genuinely occurred: an absent verify
-        // ⇒ no verify line; an absent poll ⇒ no agreement ground; no grounded files
-        // ⇒ no file claim; a `reviewed` verdict never reads as `passing`. When NOTHING
-        // is real (no verify outcome AND no confidence), the receipt is empty and we
-        // emit nothing — the same neutrality as the bare path.
-        const trustSignals: TrustSignals = {
-          ...(brainConfidence !== undefined ? { confidence: brainConfidence } : {}),
-          ...(verifyOutcome !== undefined ? { verify: verifyOutcome } : {}),
-          // The real grounding: the repo-relative paths the diff ACTUALLY touched
-          // (the verify stage's `changedPaths`, honestly absent when no diff ran). We
-          // list the real files the turn changed — never a fabricated file name.
-          ...(verifyOutcome?.changedPaths !== undefined && verifyOutcome.changedPaths.length > 0
-            ? { groundedFiles: verifyOutcome.changedPaths }
-            : {}),
-          ...(deps.authenticatedProviders !== undefined
-            ? { authedProviderCount: deps.authenticatedProviders.length }
-            : {}),
-        };
-        const confBase = confidenceLine(brainConfidence);
-        const receipt = composeTrustReceipt(trustSignals, confBase);
-        if (!isEmptyReceipt(receipt)) {
-          // A failing test is the one real warning; the consolidated receipt stays
-          // informational otherwise (the verify line itself carries the ✗).
-          const level = verifyOutcome?.verified === 'failing' ? 'warn' : 'info';
-          for (const message of trustReceiptLines(receipt)) {
-            yield { type: 'notice', level, message };
-          }
-        }
-      } else if (verifyOutcome !== undefined) {
-        yield {
-          type: 'notice',
-          // A failing test is a real warning; everything else is informational.
-          level: verifyOutcome.verified === 'failing' ? 'warn' : 'info',
-          message: buildVerifyReceipt(verifyOutcome),
-        };
-      }
-      yield {
-        type: 'final',
-        success: true,
-        output: lastOutput,
-        tier: currentTier,
-        totalCostUsd,
-        sessionId: deps.session.id,
-        attempts,
-        ...(memoryProposal !== undefined ? { memoryProposal } : {}),
-      };
-    }
+    yield* gateAcceptedRun(acceptedRun, 'clean');
     return;
   }
 
@@ -1996,19 +2091,7 @@ export async function* runWorkCall(input: WorkCallInput): AsyncGenerator<CoreEve
   // error with no untried vendor — that correctly still fails below.
   // -------------------------------------------------------------------------
   if (acceptedRun !== undefined && acceptedRun.content.trim().length > 0) {
-    await appendAcceptedAssistant(deps, acceptedRun);
-    const memoryProposal = memoryProposalFor(acceptedRun.content);
-    yield {
-      type: 'final',
-      success: true,
-      output: acceptedRun.content,
-      tier: currentTier,
-      totalCostUsd,
-      sessionId: deps.session.id,
-      attempts,
-      bestEffort: true,
-      ...(memoryProposal !== undefined ? { memoryProposal } : {}),
-    };
+    yield* gateAcceptedRun(acceptedRun, 'bestEffort');
     return;
   }
 

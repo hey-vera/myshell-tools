@@ -189,6 +189,9 @@ export interface VerifyOutcome {
   readonly critic?: {
     readonly vendor: string;
     readonly sameVendor: boolean;
+    readonly parsed?: boolean;
+    readonly verdict?: 'approve' | 'revise' | 'escalate';
+    readonly notes?: string;
   };
   /** The number of files the diff touched (0 ⇒ no verification ran). */
   readonly changedFiles: number;
@@ -231,11 +234,18 @@ export function unverified(reason: string, changedFiles = 0): VerifyOutcome {
  */
 export function buildVerifyReceipt(outcome: VerifyOutcome): string {
   const critic = outcome.critic;
+  const criticVerdictTail =
+    critic?.parsed === true && critic.verdict === 'revise'
+      ? ' · critic requested revision'
+      : critic?.parsed === true && critic.verdict === 'escalate'
+        ? ' · critic requested escalation'
+        : '';
   const criticTail = (() => {
     if (critic === undefined) return '';
-    return critic.sameVendor
+    const vendor = critic.sameVendor
       ? ` · self-checked by ${critic.vendor} (same vendor)`
       : ` · cross-checked by ${critic.vendor}`;
+    return `${vendor}${criticVerdictTail}`;
   })();
 
   switch (outcome.verified) {
@@ -255,7 +265,7 @@ export function buildVerifyReceipt(outcome: VerifyOutcome): string {
     case 'reviewed': {
       const vendor = critic?.vendor ?? 'a reviewer';
       const kind = critic?.sameVendor === true ? 'self-check' : 'review';
-      return `~ reviewed by ${vendor} (${kind}, no tests run — weak signal)`;
+      return `~ reviewed by ${vendor} (${kind}, no tests run — weak signal)${criticVerdictTail}`;
     }
     case 'unverified':
     default: {
