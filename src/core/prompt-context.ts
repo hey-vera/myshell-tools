@@ -140,6 +140,19 @@ export interface ContextBlockOptions {
    * undefined → omit. The `balanced` (neutral) style emits no nudge.
    */
   readonly partnerStyle?: PartnerStyle;
+  /**
+   * Partial draft salvaged from a rate-limited interrupted attempt by a prior
+   * provider (partial-output salvage, draft-handoff semantics). When present
+   * and non-empty, rendered as a clearly-labelled PARTIAL DRAFT block so the
+   * next provider can continue/complete it rather than starting from scratch.
+   *
+   * Absent / empty → block is omitted → byte-identical to the pre-salvage path.
+   * The block is placed AFTER workStateContext so orientation context precedes
+   * the draft, but BEFORE intentFrame so the model reads its own partial work
+   * before reasoning about engagement. Injected by the work-call failover branch
+   * (rate-limit only) and cleared immediately after prompt build (one-shot).
+   */
+  readonly salvagedDraft?: string;
 }
 
 /**
@@ -174,7 +187,7 @@ export function partnerNudge(style: PartnerStyle): string {
  *
  * Canonical block order (master plan §MF1; ENVIRONMENT prepended in E1;
  * TOOL-STATE adjacent to ENVIRONMENT; WORK STATE after MEMORY, AP2-B §2.3 B):
- *   ENVIRONMENT → TOOL-STATE → MEMORY → LEARNED TASTE → WORK STATE → GOALS → STANDING RULES → VISION TRIAGE → SYSTEM UNDERSTANDING → INTENT → ENGAGEMENT → (partner posture nudge)
+ *   ENVIRONMENT → TOOL-STATE → MEMORY → LEARNED TASTE → WORK STATE → SALVAGED DRAFT → GOALS → STANDING RULES → VISION TRIAGE → SYSTEM UNDERSTANDING → INTENT → ENGAGEMENT → (partner posture nudge)
  *
  * Each block is independently present/absent. The returned string is inserted by
  * every prompt builder at the same point: AFTER system, BEFORE "CONVERSATION SO
@@ -218,6 +231,18 @@ export function assembleContextBlocks(opts: ContextBlockOptions): string {
   const workState = opts.workStateContext?.trim();
   if (workState !== undefined && workState.length > 0) {
     blocks.push(workState);
+  }
+
+  // SALVAGED DRAFT — partial prose from a rate-limited interrupted prior provider
+  // (draft-handoff semantics). Rendered right AFTER WORK STATE so the model sees
+  // "what was done so far this turn" before reasoning about the task. Absent →
+  // omitted → byte-identical to the pre-salvage path. One-shot: the work-call
+  // loop clears salvagedDraft immediately after building the prompt.
+  const salvagedDraft = opts.salvagedDraft?.trim();
+  if (salvagedDraft !== undefined && salvagedDraft.length > 0) {
+    blocks.push(
+      `PARTIAL DRAFT FROM AN INTERRUPTED PREVIOUS ATTEMPT (a different model began this answer before being interrupted). Continue and COMPLETE it in your own voice; do NOT repeat what is already written, and do not mention the interruption:\n${salvagedDraft}`,
+    );
   }
 
   // CURRENT GOALS / PLAN — the partner's OWN plan (persisted goalStore snapshot),

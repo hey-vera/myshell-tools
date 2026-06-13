@@ -259,4 +259,46 @@ describe('assembleContextBlocks', () => {
     assert.equal(a, b);
     assert.deepEqual(opts, { memoryContext: MEM, partnerStyle: 'direct' });
   });
+
+  // ---------------------------------------------------------------------------
+  // salvagedDraft — partial-output salvage (draft-handoff semantics)
+  // ---------------------------------------------------------------------------
+
+  const DRAFT = 'Here is the beginning of the answer. It covers the first two points in detail and starts explaining the third, but was interrupted before completing it.';
+
+  it('renders the SALVAGED DRAFT block when salvagedDraft is present and non-empty', () => {
+    const out = assembleContextBlocks({ salvagedDraft: DRAFT });
+    assert.ok(out.includes('PARTIAL DRAFT FROM AN INTERRUPTED PREVIOUS ATTEMPT'), 'has header');
+    assert.ok(out.includes(DRAFT), 'contains the draft text');
+    assert.ok(out.includes('Continue and COMPLETE it in your own voice'), 'has continuation instruction');
+    assert.ok(out.includes('do NOT repeat what is already written'), 'has no-repeat instruction');
+    assert.ok(out.includes('do not mention the interruption'), 'has no-mention-interruption instruction');
+  });
+
+  it('omits the SALVAGED DRAFT block when absent (byte-identical to pre-salvage path)', () => {
+    const without = assembleContextBlocks({ memoryContext: MEM });
+    const withUndefined = assembleContextBlocks({ memoryContext: MEM, salvagedDraft: undefined });
+    assert.equal(withUndefined, without, 'undefined salvagedDraft → byte-identical');
+    assert.ok(!without.includes('PARTIAL DRAFT'), 'no draft block when absent');
+  });
+
+  it('omits the SALVAGED DRAFT block when whitespace-only (byte-identical)', () => {
+    const without = assembleContextBlocks({ memoryContext: MEM });
+    const withEmpty = assembleContextBlocks({ memoryContext: MEM, salvagedDraft: '   ' });
+    assert.equal(withEmpty, without, 'whitespace-only salvagedDraft → byte-identical');
+  });
+
+  it('renders SALVAGED DRAFT after WORK STATE and before INTENT (salvage ordering)', () => {
+    const out = assembleContextBlocks({
+      workStateContext: WORKSTATE,
+      salvagedDraft: DRAFT,
+      intentFrame: INTENT,
+    });
+    const iWork = out.indexOf(WORKSTATE);
+    const iDraft = out.indexOf('PARTIAL DRAFT');
+    const iIntent = out.indexOf(INTENT);
+    assert.ok(iWork >= 0, 'WORK STATE present');
+    assert.ok(iDraft > iWork, 'SALVAGED DRAFT follows WORK STATE');
+    assert.ok(iIntent > iDraft, 'INTENT follows SALVAGED DRAFT');
+  });
 });

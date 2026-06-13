@@ -6,6 +6,9 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+## 3.103.0
+feat(failover): salvage partial output on rate-limit failover. When a provider streams part of an answer and then hits a rate limit, the failover provider now picks up from that partial draft instead of starting from scratch — the half-written work is stripped of its confidence envelope and handed to the next provider as context ("continue and complete this, don't repeat it"). You'll see a notice like "Resuming on codex from claude's partial draft (~847 chars) — no work wasted." Guarded so it only fires on rate-limit failover (never timeouts/auth), only when the partial is substantial (≥200 chars), never mid-tool-call, capped at 4000 chars; latest-draft-wins across successive failovers. Fully additive and default-off — the no-salvage path is byte-identical, and the failed attempt's spend is still recorded (cost honesty unchanged).
+
 ## 3.102.0
 feat(goals): show each running goal's checklist in the board. Running goals now render their roadmap items (✓ done · ◐ active · ⚠ blocked · ▢ pending) indented beneath the goal line, so you can watch the per-goal checklist progress live. The bordered GOALS agent tree is no longer suppressed just because board mode is on — the layout now budgets both and renders whichever fit. Parked/terminal goals stay compact one-liners. Layout budgets the taller multi-line running rows so the board + live panel + composer never overflow the terminal. Presentation-only; completes the elite-partner goal experience started in 3.101.0.
 

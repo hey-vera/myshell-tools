@@ -95,6 +95,77 @@ import {
   type DiscoverySignal,
 } from './discovery.js';
 import { ENGINE_BEHAVIOR_VERSION } from './engine-version.js';
+import { lastJsonObjectBoundsWithKey } from './json-envelope.js';
+
+// ---------------------------------------------------------------------------
+// Partial-output salvage constants (draft-handoff on rate-limit failover)
+// ---------------------------------------------------------------------------
+
+/**
+ * Minimum stripped-draft length (chars) required to salvage across a failover.
+ * Below this, the partial is too short to be useful context and is skipped.
+ */
+const SALVAGE_MIN_CHARS = 200;
+
+/**
+ * Maximum stripped-draft length (chars) to inject as a salvaged-draft block.
+ * When the partial exceeds this, keep the HEAD (so the continuation reads
+ * naturally from the beginning of the answer) and cap with a tail marker.
+ * HEAD-preference: a continuation that reads from "…" at the tail is harder
+ * for the model to bridge; starting from the head + indicating truncation is
+ * more natural and lets the model re-close the answer coherently.
+ */
+const SALVAGE_MAX_CHARS = 4000;
+
+/**
+ * Strip the trailing confidence envelope (and/or ask_user block) from a
+ * provider's partial draft before injecting it as a salvaged-draft context
+ * block. The same approach as history.ts stripEnvelope — but inlined here to
+ * avoid a cross-module dependency on a private helper.
+ *
+ * Handles both 'confidence' and 'ask_user' keys (whichever appears last and is
+ * truly trailing). Never throws — returns the original text on any failure.
+ */
+function stripSalvageEnvelope(text: string): string {
+  try {
+    let match: { readonly start: number; readonly end: number } | null = null;
+    for (const key of ['confidence', 'ask_user']) {
+      const m = lastJsonObjectBoundsWithKey(text, key);
+      if (m !== null && text.slice(m.end).trim().length === 0) {
+        if (match === null || m.start < match.start) match = { start: m.start, end: m.end };
+      }
+    }
+    if (match === null) return text;
+    return text.slice(0, match.start).replace(/\s+$/, '');
+  } catch {
+    return text;
+  }
+}
+
+/**
+ * Conservative check: does the text appear to contain an unterminated tool-call
+ * or code fence? If yes, skip salvage — injecting mid-tool-call JSON as a
+ * continuation context block would confuse provider B.
+ *
+ * Checks for:
+ *   - An odd number of ``` fences (open fence with no matching close)
+ *   - A dangling `<tool_use>` or `<function_call>` open tag with no close
+ *
+ * Pure; never throws.
+ */
+function hasUnterminatedToolCall(text: string): boolean {
+  try {
+    // Odd number of triple-backtick fences → a code fence is open
+    const fenceCount = (text.match(/```/g) ?? []).length;
+    if (fenceCount % 2 !== 0) return true;
+    // An open <tool_use> or <function_call> tag without a matching close
+    if (/<tool_use>/i.test(text) && !/<\/tool_use>/i.test(text)) return true;
+    if (/<function_call>/i.test(text) && !/<\/function_call>/i.test(text)) return true;
+    return false;
+  } catch {
+    return false; // fail-safe: don't skip salvage on a check error
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Private streaming helpers (moved verbatim from orchestrate.ts — they are used
@@ -582,6 +653,15 @@ export async function* runWorkCall(input: WorkCallInput): AsyncGenerator<CoreEve
   let failoverPool: ProviderId[] | null = null;
 
   /**
+   * Partial draft salvaged from a rate-limited interrupted attempt, to be
+   * injected into the NEXT provider's prompt (draft-handoff semantics).
+   * Set in the failover branch (rate-limit only, guards met), cleared
+   * immediately after buildPrompt so it never leaks into a later iteration.
+   * undefined on the common path → byte-identical output.
+   */
+  let salvagedDraft: string | undefined;
+
+  /**
    * Track which attempt indices have already been reviewed so that re-runs
    * (e.g. after a revise verdict) are not reviewed a second time and we
    * cannot enter an infinite review loop.
@@ -864,6 +944,10 @@ export async function* runWorkCall(input: WorkCallInput): AsyncGenerator<CoreEve
         ...(deps.memoryContext !== undefined ? { memoryContext: deps.memoryContext } : {}),
         ...(deps.tasteContext !== undefined ? { tasteContext: deps.tasteContext } : {}),
         ...(deps.workStateContext !== undefined ? { workStateContext: deps.workStateContext } : {}),
+        // PARTIAL-OUTPUT SALVAGE: inject the prior provider's stripped partial
+        // draft (rate-limit failover only). Absent → omitted → byte-identical.
+        // Cleared immediately after buildPrompt (one-shot, never leaks).
+        ...(salvagedDraft !== undefined ? { salvagedDraft } : {}),
         ...(deps.goalContext !== undefined ? { goalContext: deps.goalContext } : {}),
         ...(deps.rulesContext !== undefined ? { rulesContext: deps.rulesContext } : {}),
         ...(deps.visionTriageContext !== undefined ? { visionTriageContext: deps.visionTriageContext } : {}),
@@ -875,6 +959,9 @@ export async function* runWorkCall(input: WorkCallInput): AsyncGenerator<CoreEve
         ...(deps.engagementPlan !== undefined ? { engagementPlan: deps.engagementPlan } : {}),
       },
     );
+    // IMPORTANT: clear the salvaged draft immediately after consuming it so it
+    // only ever affects this single attempt and never leaks into a later retry.
+    salvagedDraft = undefined;
 
     // --- Yield tier-start ---
     yield {
@@ -1253,6 +1340,45 @@ export async function* runWorkCall(input: WorkCallInput): AsyncGenerator<CoreEve
           tier: currentTier,
           reason: errored?.message ?? 'execution failure',
         };
+
+        // PARTIAL-OUTPUT SALVAGE (draft-handoff): when the just-failed attempt
+        // was rate-limited AND produced a meaningful partial, inject it as
+        // context for the next provider so no work is wasted.
+        // Guards (ALL must hold or salvage is skipped → undefined clears any stale):
+        //   G1. Error category is specifically 'rate-limit' (not auth, model, etc.)
+        //   G2. finalText is defined and stripped length >= SALVAGE_MIN_CHARS
+        //   G3. The stripped draft does not contain an unterminated tool-call/fence
+        // Multi-failover A→B→C: each failover replaces from the just-failed attempt
+        // (latest-wins); a failed guard clears any stale draft (never carry forward).
+        if (
+          errored?.category === 'rate-limit' &&
+          finalText !== undefined
+        ) {
+          const stripped = stripSalvageEnvelope(finalText).trimEnd();
+          if (
+            stripped.length >= SALVAGE_MIN_CHARS &&
+            !hasUnterminatedToolCall(stripped)
+          ) {
+            // Cap to SALVAGE_MAX_CHARS keeping the HEAD (natural continuation).
+            const capped =
+              stripped.length > SALVAGE_MAX_CHARS
+                ? `${stripped.slice(0, SALVAGE_MAX_CHARS)}\n[draft truncated — continue from here]`
+                : stripped;
+            salvagedDraft = capped;
+            yield {
+              type: 'notice',
+              level: 'info',
+              message: `Resuming on ${nextDecision.provider} from ${decision.provider}'s partial draft (~${capped.length} chars) — no work wasted.`,
+            };
+          } else {
+            // Guard failed — clear any stale draft from a prior failover.
+            salvagedDraft = undefined;
+          }
+        } else {
+          // Not a rate-limit failover — clear any stale draft.
+          salvagedDraft = undefined;
+        }
+
         // Signal the next iteration to route among only the remaining vendors.
         // The loop condition treats this as failover budget, not ordinary budget.
         failoverPool = remaining;
