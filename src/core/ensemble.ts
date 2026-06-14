@@ -102,6 +102,7 @@ export interface PanelPlan {
  * @param opts.tier                   - The resolved tier every panel run uses.
  * @param opts.authenticatedProviders - Signed-in provider ids (panel candidates pool).
  * @param opts.maxPanelProviders      - Max concurrent candidates (quota guard; floor 2).
+ * @param opts.qualificationOverride  - Bypass only the hard-turn risk qualification.
  */
 export function planPanel(opts: {
   readonly panelPolicy: Policy['panelPolicy'];
@@ -109,8 +110,16 @@ export function planPanel(opts: {
   readonly tier: Tier;
   readonly authenticatedProviders: readonly ProviderId[];
   readonly maxPanelProviders: number;
+  readonly qualificationOverride?: boolean;
 }): PanelPlan | null {
-  const { panelPolicy, classification, tier, authenticatedProviders, maxPanelProviders } = opts;
+  const {
+    panelPolicy,
+    classification,
+    tier,
+    authenticatedProviders,
+    maxPanelProviders,
+    qualificationOverride = false,
+  } = opts;
 
   // 'off' / undefined → never form a panel (the sequential engine runs).
   if (panelPolicy === undefined || panelPolicy === 'off') return null;
@@ -118,6 +127,7 @@ export function planPanel(opts: {
   // 'always' qualifies every turn; 'hard-turns' only on high/critical risk.
   const qualifies =
     panelPolicy === 'always' ||
+    qualificationOverride ||
     (panelPolicy === 'hard-turns' &&
       (classification.risk === 'high' || classification.risk === 'critical'));
   if (!qualifies) return null;

@@ -361,9 +361,11 @@ describe('governor.allocate — invariant tripwires', () => {
     const verbosity: Verbosity = plan.verbosity;
     const verify: Verify = plan.verify;
     const levers: readonly Lever[] = plan.levers;
+    const panelAllowed: boolean = plan.panelAllowed;
     assert.ok(tier === 'ic' || tier === 'oracle');
     assert.ok(['terse', 'laddered', 'deep'].includes(verbosity));
     assert.ok(['none', 'tests', 'tests+critic', 'reviewed'].includes(verify));
+    assert.ok(typeof panelAllowed === 'boolean');
     for (const l of levers) {
       assert.ok(['oracle', 'depth', 'critic', 'poll', 'tribunal'].includes(l));
     }
@@ -577,6 +579,109 @@ describe('governor.pollPermittedConservative — the Governor-OFF built-in defau
     assert.strictEqual(pollPermittedConservative(false, 2), false);
     assert.strictEqual(pollPermittedConservative(true, 1), false);
     assert.strictEqual(pollPermittedConservative(false, 1), false);
+  });
+});
+
+describe('governor.allocate — panel admission', () => {
+  function panelDecisionInput(over: Partial<AllocateInput> = {}): AllocateInput {
+    const s = signals({ task: 'should we use Redux or Context for state?' });
+    const conf = assessConfidence(frame({ confidence: 'high' }), s);
+    return allocInput({ signals: s, conf, substantial: true, repoOriented: false, ...over });
+  }
+
+  it('GRANTS the panel only for decide/risky/investigate with non-frugal mode, 2 vendors, and budget 3', () => {
+    const decide = allocate(panelDecisionInput({ mode: 'quality-first', authedProviderCount: 2, pressure: 0 }));
+    assert.strictEqual(decide.shape, 'decide');
+    assert.strictEqual(decide.turnCallBudget, 3);
+    assert.strictEqual(decide.panelAllowed, true);
+
+    const riskySignals = signals({
+      task: 'delete the production database',
+      classification: classification({ risk: 'high' }),
+    });
+    const risky = allocate(
+      allocInput({
+        signals: riskySignals,
+        conf: assessConfidence(frame({ confidence: 'high' }), riskySignals),
+        mode: 'quality-first',
+        authedProviderCount: 2,
+      }),
+    );
+    assert.strictEqual(risky.shape, 'risky');
+    assert.strictEqual(risky.turnCallBudget, 3);
+    assert.strictEqual(risky.panelAllowed, true);
+
+    const investigateFrame = frame({
+      confidence: 'low',
+      source: 'model',
+      forks: [{ id: 'feed', question: 'which feed?', options: ['a', 'b'], assumeIfUnasked: 'a' }],
+    } as Partial<IntentFrame>);
+    const investigateSignals = signals({ frame: investigateFrame, task: 'why is the activity feed empty' });
+    const investigate = allocate(
+      allocInput({
+        frame: investigateFrame,
+        signals: investigateSignals,
+        conf: assessConfidence(investigateFrame, investigateSignals),
+        mode: 'quality-first',
+        authedProviderCount: 2,
+      }),
+    );
+    assert.strictEqual(investigate.shape, 'investigate');
+    assert.strictEqual(investigate.turnCallBudget, 3);
+    assert.strictEqual(investigate.panelAllowed, true);
+  });
+
+  it('REFUSES the panel for quick/explain/ordinary build, budget 1/2, one provider, and cost-saver', () => {
+    const quick = allocate(
+      allocInput({
+        signals: TRIVIAL,
+        frame: undefined,
+        conf: assessConfidence(undefined, TRIVIAL),
+        mode: 'quality-first',
+        authedProviderCount: 2,
+      }),
+    );
+    assert.strictEqual(quick.shape, 'quick');
+    assert.strictEqual(quick.panelAllowed, false);
+
+    const explainSignals = signals({ task: 'how does the orchestrate loop work' });
+    const explain = allocate(
+      allocInput({
+        signals: explainSignals,
+        conf: assessConfidence(frame({ confidence: 'high' }), explainSignals),
+        mode: 'quality-first',
+        authedProviderCount: 2,
+      }),
+    );
+    assert.strictEqual(explain.shape, 'explain');
+    assert.strictEqual(explain.panelAllowed, false);
+
+    const buildSignals = signals({ task: 'add a logout button to the navbar' });
+    const build = allocate(
+      allocInput({
+        signals: buildSignals,
+        conf: assessConfidence(frame({ confidence: 'high' }), buildSignals),
+        repoOriented: true,
+        mode: 'quality-first',
+        authedProviderCount: 2,
+      }),
+    );
+    assert.strictEqual(build.shape, 'build');
+    assert.strictEqual(build.panelAllowed, false);
+
+    const budgetTwo = allocate(panelDecisionInput({ mode: 'balanced', authedProviderCount: 2 }));
+    assert.strictEqual(budgetTwo.turnCallBudget, 2);
+    assert.strictEqual(budgetTwo.panelAllowed, false);
+
+    const budgetOne = allocate(panelDecisionInput({ mode: 'balanced', authedProviderCount: 2, pressure: 1 }));
+    assert.strictEqual(budgetOne.turnCallBudget, 1);
+    assert.strictEqual(budgetOne.panelAllowed, false);
+
+    const oneProvider = allocate(panelDecisionInput({ mode: 'quality-first', authedProviderCount: 1 }));
+    assert.strictEqual(oneProvider.panelAllowed, false);
+
+    const frugal = allocate(panelDecisionInput({ mode: 'cost-saver', authedProviderCount: 2 }));
+    assert.strictEqual(frugal.panelAllowed, false);
   });
 });
 

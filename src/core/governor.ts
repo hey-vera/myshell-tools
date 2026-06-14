@@ -239,6 +239,11 @@ export interface AllocationPlan {
    */
   readonly pollAllowed: boolean;
   /**
+   * Whether the panel is permitted to fire this turn. This is GOVERNOR permission
+   * only: policy/risk/provider ordering/capacity still live in `planPanel`.
+   */
+  readonly panelAllowed: boolean;
+  /**
    * Whether THE RIVAL TRIBUNAL is permitted to fire this turn (master-plan PHASE 9).
    * The TIGHTEST cross-vendor gate: two vendors each BUILD the same fork in isolated
    * worktrees (two builds + two cross-reviews — the costliest lever), so it is granted
@@ -550,6 +555,18 @@ function pollAllowedForShape(
   return turnCallBudget >= POLL_MIN_BUDGET && spent < turnCallBudget;
 }
 
+function panelAllowedForShape(
+  shape: TaskShape,
+  mode: Mode,
+  crossVendor: boolean,
+  turnCallBudget: number,
+): boolean {
+  if (mode === 'cost-saver') return false;
+  if (!crossVendor) return false;
+  if (turnCallBudget < 3) return false;
+  return shape === 'decide' || shape === 'risky' || shape === 'investigate';
+}
+
 /**
  * The CONSERVATIVE BUILT-IN poll gate used when the Governor is OFF (master-plan
  * PHASE 7 single-vendor / off-default contract): with no Governor coordinating the
@@ -770,6 +787,13 @@ export function allocate(input: AllocateInput): AllocationPlan {
     }
   }
 
+  const panelAllowed = panelAllowedForShape(shape, input.mode, crossVendor, turnCallBudget);
+  if (panelAllowed) {
+    reasons.push('panel admitted — non-frugal decide/risky/investigate turn with 2+ vendors and budget 3');
+  } else {
+    reasons.push('panel refused — requires non-frugal decide/risky/investigate shape, 2+ vendors, and budget 3');
+  }
+
   // MODEL TIER — request the Oracle only when the shape/mode earns it AND a unit
   // of the budget remains. Otherwise REFUSE it explicitly (the anti-drift act).
   let tierRequest: TierRequest = 'ic';
@@ -851,6 +875,7 @@ export function allocate(input: AllocateInput): AllocationPlan {
     locked,
     reasons,
     pollAllowed,
+    panelAllowed,
     tribunalAllowed,
   };
 }

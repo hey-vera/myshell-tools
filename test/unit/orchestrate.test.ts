@@ -3578,6 +3578,29 @@ describe('orchestrate — ask_user short-circuit', () => {
 // ---------------------------------------------------------------------------
 
 describe('orchestrate — panel delegation (panelPolicy)', () => {
+  function panelDeps(
+    overrides: Partial<OrchestrateDeps> = {},
+    providerEvents?: ProviderEvent[],
+  ): OrchestrateDeps {
+    return {
+      providers: {
+        claude: makeFakeProvider('claude', providerEvents),
+        codex: makeFakeProvider('codex', providerEvents),
+      },
+      clock: makeFakeClock(),
+      session: makeFakeSession(),
+      ledger: makeFakeLedger(),
+      policy: { ...POLICY_PRESETS['quality-first'], panelPolicy: 'hard-turns', maxTier: 'manager' },
+      cwd: '/fake/cwd',
+      sandbox: 'workspace-write',
+      timeoutMs: 30_000,
+      authenticatedProviders: ['claude', 'codex'],
+      governorEnabled: true,
+      governorPressure: 0,
+      ...overrides,
+    };
+  }
+
   it("panelPolicy 'hard-turns' + high-risk task + 2 authed providers delegates to the panel", async () => {
     const icEnvelope =
       '{"confidence": 0.85, "escalate": false, "reason": "done", "needs_review": false}';
@@ -3745,6 +3768,132 @@ describe('orchestrate — panel delegation (panelPolicy)', () => {
       (e) => e.type === 'notice' && e.message.includes('Panel'),
     );
     assert.equal(panelNotice, undefined, 'low-risk turn must not form a panel under hard-turns');
+  });
+
+  it('governed low-risk decision turn forms a 2-candidate panel with budget 3', async () => {
+    const deps = panelDeps();
+    const events = await collectEvents(
+      orchestrate('should we use Redux or React Context for the app state?', deps, new AbortController().signal),
+    );
+
+    const panelNotice = events.find((e) => e.type === 'notice' && e.message.includes('Panel'));
+    assert.ok(panelNotice !== undefined, 'governor admission should form the panel on a low-risk decision turn');
+    assert.strictEqual(events.filter((e) => e.type === 'tier-start').length, 3, 'two candidates + one synthesis call');
+  });
+
+  it('governed investigate turn forms a 2-candidate panel with budget 3', async () => {
+    const deps = panelDeps({
+      intentExtractor: async () => ({
+        frame: {
+          version: 1,
+          goal: 'why is the activity feed empty',
+          kind: 'coding',
+          confidence: 'low',
+          source: 'model',
+          forks: [{ id: 'feed', question: 'which feed?', options: ['a', 'b'], assumeIfUnasked: 'a' }],
+        },
+      }),
+    });
+    const events = await collectEvents(
+      orchestrate('why is the activity feed empty', deps, new AbortController().signal),
+    );
+
+    const panelNotice = events.find((e) => e.type === 'notice' && e.message.includes('Panel'));
+    assert.ok(panelNotice !== undefined, 'governor admission should form the panel on an investigate turn');
+    assert.strictEqual(events.filter((e) => e.type === 'tier-start').length, 3, 'two candidates + one synthesis call');
+  });
+
+  it("explicit panelPolicy 'off' vetoes adaptive admission", async () => {
+    const deps = panelDeps({
+      policy: { ...POLICY_PRESETS['quality-first'], panelPolicy: 'off', maxTier: 'manager' },
+    });
+    const events = await collectEvents(
+      orchestrate('should we use Redux or React Context for the app state?', deps, new AbortController().signal),
+    );
+
+    const panelNotice = events.find((e) => e.type === 'notice' && e.message.includes('Panel'));
+    const panelPhase = events.find((e) => e.type === 'phase' && e.phase === 'panel');
+    assert.equal(panelNotice, undefined, 'panelPolicy off remains an absolute veto');
+    assert.equal(panelPhase, undefined, 'no panel phase should form when policy is off');
+  });
+
+  it('existing high-risk panels still form with the governor on', async () => {
+    const deps = panelDeps();
+    const events = await collectEvents(
+      orchestrate('implement payment handler', deps, new AbortController().signal),
+    );
+
+    const panelNotice = events.find((e) => e.type === 'notice' && e.message.includes('Panel'));
+    assert.ok(panelNotice !== undefined, 'legacy high-risk panel path must remain intact');
+  });
+
+  it('governor-off low-risk hard-turn path is byte-identical', async () => {
+    function recordingProvider(id: 'claude' | 'codex'): Provider & { requests: ProviderRequest[] } {
+      const requests: ProviderRequest[] = [];
+      return {
+        id,
+        requests,
+        async detect() {
+          return {
+            id,
+            installed: true,
+            version: '1.0.0',
+            authenticated: true,
+            binaryPath: '/usr/bin/fake',
+            availableModels: [],
+          };
+        },
+        async *run(req: ProviderRequest): AsyncIterable<ProviderEvent> {
+          requests.push(req);
+          yield { type: 'done', text: FINAL_TEXT, usage: FAKE_USAGE, raw: {} };
+        },
+      };
+    }
+
+    const omittedClaude = recordingProvider('claude');
+    const omittedCodex = recordingProvider('codex');
+    const omittedEvents = await collectEvents(
+      orchestrate(
+        'refactor X',
+        {
+          providers: { claude: omittedClaude, codex: omittedCodex },
+          clock: makeFakeClock(),
+          session: makeFakeSession(),
+          ledger: makeFakeLedger(),
+          policy: { ...DEFAULT_POLICY, panelPolicy: 'hard-turns' },
+          cwd: '/fake/cwd',
+          sandbox: 'workspace-write',
+          timeoutMs: 30_000,
+          authenticatedProviders: ['claude', 'codex'],
+        },
+        new AbortController().signal,
+      ),
+    );
+
+    const falseClaude = recordingProvider('claude');
+    const falseCodex = recordingProvider('codex');
+    const falseEvents = await collectEvents(
+      orchestrate(
+        'refactor X',
+        {
+          providers: { claude: falseClaude, codex: falseCodex },
+          clock: makeFakeClock(),
+          session: makeFakeSession(),
+          ledger: makeFakeLedger(),
+          policy: { ...DEFAULT_POLICY, panelPolicy: 'hard-turns' },
+          cwd: '/fake/cwd',
+          sandbox: 'workspace-write',
+          timeoutMs: 30_000,
+          authenticatedProviders: ['claude', 'codex'],
+          governorEnabled: false,
+        },
+        new AbortController().signal,
+      ),
+    );
+
+    assert.deepEqual(falseEvents, omittedEvents);
+    assert.deepEqual(falseClaude.requests, omittedClaude.requests);
+    assert.deepEqual(falseCodex.requests, omittedCodex.requests);
   });
 });
 

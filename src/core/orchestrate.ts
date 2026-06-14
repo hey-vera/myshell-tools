@@ -1387,7 +1387,7 @@ export async function* orchestrate(
     });
   }
 
-  const panelPlan = planPanel({
+  const legacyPanelPlan = planPanel({
     panelPolicy: deps.policy.panelPolicy,
     classification,
     // Use the as-classified tier — the panel routes each candidate through
@@ -1396,6 +1396,19 @@ export async function* orchestrate(
     authenticatedProviders: deps.authenticatedProviders ?? [],
     maxPanelProviders: deps.policy.maxPanelProviders ?? 2,
   });
+  const adaptiveEligible =
+    governorPlan?.panelAllowed === true && deps.policy.panelPolicy !== 'off';
+  const adaptivePanelPlan = adaptiveEligible
+    ? planPanel({
+        panelPolicy: deps.policy.panelPolicy,
+        classification,
+        tier: classification.tier,
+        authenticatedProviders: deps.authenticatedProviders ?? [],
+        maxPanelProviders: deps.policy.maxPanelProviders ?? 2,
+        qualificationOverride: true,
+      })
+    : null;
+  const panelPlan = legacyPanelPlan ?? adaptivePanelPlan;
   if (panelPlan !== null) {
     // Thread the per-turn capability seam into the panel so the ensemble path
     // drops nothing the sequential path carries (audit parity): the SAME
