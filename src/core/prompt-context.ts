@@ -162,6 +162,36 @@ export interface ContextBlockOptions {
  */
 const CONTEXT_BLOCK_CHAR_CAP = 6000;
 
+type ContextBlockTier = 'non-sheddable' | 'shed-first' | 'degradable';
+
+type ContextBlockKind =
+  | 'environment'
+  | 'tool-state'
+  | 'memory'
+  | 'learned-taste'
+  | 'work-state'
+  | 'salvaged-draft'
+  | 'goals'
+  | 'standing-rules'
+  | 'vision-triage'
+  | 'system-understanding'
+  | 'intent'
+  | 'engagement'
+  | 'partner-nudge';
+
+interface ContextBlockRecord {
+  readonly kind: ContextBlockKind;
+  readonly text: string;
+  readonly tier: ContextBlockTier;
+  readonly shedRank?: number;
+}
+
+export interface ContextBlockAssemblyResult {
+  readonly text: string;
+  readonly rawLength: number;
+  readonly overflowedNonSheddable: boolean;
+}
+
 /**
  * The one-line soft-bias posture nudge derived from `partnerStyle`. Returns ""
  * for the neutral `balanced` style (no nudge needed). The persona text itself
@@ -194,13 +224,32 @@ export function partnerNudge(style: PartnerStyle): string {
  * FAR".
  */
 export function assembleContextBlocks(opts: ContextBlockOptions): string {
-  const blocks: string[] = [];
+  return assembleContextBlocksDetailed(opts).text;
+}
+
+export function assembleContextBlocksDetailed(
+  opts: ContextBlockOptions,
+): ContextBlockAssemblyResult {
+  const blocks: ContextBlockRecord[] = [];
+
+  const pushBlock = (
+    kind: ContextBlockKind,
+    text: string,
+    tier: ContextBlockTier,
+    shedRank?: number,
+  ): void => {
+    blocks.push(
+      shedRank === undefined
+        ? { kind, text, tier }
+        : { kind, text, tier, shedRank },
+    );
+  };
 
   // ENVIRONMENT goes FIRST — orientation precedes memory/intent/engagement so the
   // later reasoning already knows where it is and what the project is (E1 §1.2).
   const environment = opts.environmentContext?.trim();
   if (environment !== undefined && environment.length > 0) {
-    blocks.push(environment);
+    pushBlock('environment', environment, 'shed-first', 1);
   }
 
   // TOOL-STATE / ABOUT THIS TOOL — orientation about the tool ITSELF, adjacent to
@@ -208,12 +257,12 @@ export function assembleContextBlocks(opts: ContextBlockOptions): string {
   // setup / mode / what can you do" so the model never has to guess or read files.
   const toolState = opts.toolStateContext?.trim();
   if (toolState !== undefined && toolState.length > 0) {
-    blocks.push(toolState);
+    pushBlock('tool-state', toolState, 'shed-first', 2);
   }
 
   const memory = opts.memoryContext?.trim();
   if (memory !== undefined && memory.length > 0) {
-    blocks.push(memory);
+    pushBlock('memory', memory, 'degradable', 5);
   }
 
   // LEARNED TASTE — the user's OBSERVED past decisions, rendered right AFTER
@@ -222,7 +271,7 @@ export function assembleContextBlocks(opts: ContextBlockOptions): string {
   // when the taste flag is ON (the producer returns '' otherwise).
   const taste = opts.tasteContext?.trim();
   if (taste !== undefined && taste.length > 0) {
-    blocks.push(taste);
+    pushBlock('learned-taste', taste, 'shed-first', 3);
   }
 
   // WORK STATE — task/session continuity (what's done / what's next), distinct from
@@ -230,7 +279,7 @@ export function assembleContextBlocks(opts: ContextBlockOptions): string {
   // before intent/engagement reasoning (AP2-B §2.3 B). Truthful or absent.
   const workState = opts.workStateContext?.trim();
   if (workState !== undefined && workState.length > 0) {
-    blocks.push(workState);
+    pushBlock('work-state', workState, 'non-sheddable');
   }
 
   // SALVAGED DRAFT — partial prose from a rate-limited interrupted prior provider
@@ -240,8 +289,10 @@ export function assembleContextBlocks(opts: ContextBlockOptions): string {
   // loop clears salvagedDraft immediately after building the prompt.
   const salvagedDraft = opts.salvagedDraft?.trim();
   if (salvagedDraft !== undefined && salvagedDraft.length > 0) {
-    blocks.push(
+    pushBlock(
+      'salvaged-draft',
       `PARTIAL DRAFT FROM AN INTERRUPTED PREVIOUS ATTEMPT (a different model began this answer before being interrupted). Continue and COMPLETE it in your own voice; do NOT repeat what is already written, and do not mention the interruption:\n${salvagedDraft}`,
+      'non-sheddable',
     );
   }
 
@@ -251,7 +302,7 @@ export function assembleContextBlocks(opts: ContextBlockOptions): string {
   // from real state rather than guessing. Absent/empty → nothing emitted.
   const goalCtx = opts.goalContext?.trim();
   if (goalCtx !== undefined && goalCtx.length > 0) {
-    blocks.push(goalCtx);
+    pushBlock('goals', goalCtx, 'non-sheddable');
   }
 
   // STANDING RULES — the user-authored policy the partner must honour (NEVER /
@@ -261,7 +312,7 @@ export function assembleContextBlocks(opts: ContextBlockOptions): string {
   // the conversational partner aware of them every turn. Absent/empty → byte-identical.
   const rulesCtx = opts.rulesContext?.trim();
   if (rulesCtx !== undefined && rulesCtx.length > 0) {
-    blocks.push(rulesCtx);
+    pushBlock('standing-rules', rulesCtx, 'non-sheddable');
   }
 
   // VISION TRIAGE — decompose a broad multi-part vision into per-disposition parts
@@ -270,7 +321,7 @@ export function assembleContextBlocks(opts: ContextBlockOptions): string {
   // reflecting a single goal line. Absent on a plain single-claim turn.
   const visionTriage = opts.visionTriageContext?.trim();
   if (visionTriage !== undefined && visionTriage.length > 0) {
-    blocks.push(visionTriage);
+    pushBlock('vision-triage', visionTriage, 'degradable', 3);
   }
 
   // SYSTEM UNDERSTANDING — the deep whole-picture model of the real system (Phase
@@ -278,28 +329,83 @@ export function assembleContextBlocks(opts: ContextBlockOptions): string {
   // motherboard. Absent (understanding pass off / produced nothing) → byte-identical.
   const understanding = opts.understandingContext?.trim();
   if (understanding !== undefined && understanding.length > 0) {
-    blocks.push(understanding);
+    pushBlock('system-understanding', understanding, 'degradable', 4);
   }
 
   const intent = opts.intentFrame?.trim();
   if (intent !== undefined && intent.length > 0) {
-    blocks.push(intent);
+    pushBlock('intent', intent, 'non-sheddable');
   }
 
   const engagement = opts.engagementPlan?.trim();
   if (engagement !== undefined && engagement.length > 0) {
-    blocks.push(engagement);
+    pushBlock('engagement', engagement, 'degradable', 2);
   }
 
   if (opts.partnerStyle !== undefined) {
     const nudge = partnerNudge(opts.partnerStyle);
-    if (nudge.length > 0) blocks.push(nudge);
+    if (nudge.length > 0) pushBlock('partner-nudge', nudge, 'degradable', 1);
   }
 
-  if (blocks.length === 0) return '';
+  if (blocks.length === 0) {
+    return {
+      text: '',
+      rawLength: 0,
+      overflowedNonSheddable: false,
+    };
+  }
 
-  const assembled = blocks.join('\n\n');
-  return assembled.length > CONTEXT_BLOCK_CHAR_CAP
-    ? assembled.slice(0, CONTEXT_BLOCK_CHAR_CAP)
-    : assembled;
+  const assembled = blocks.map((block) => block.text).join('\n\n');
+  if (assembled.length <= CONTEXT_BLOCK_CHAR_CAP) {
+    return {
+      text: assembled,
+      rawLength: assembled.length,
+      overflowedNonSheddable: false,
+    };
+  }
+
+  const joinedNonSheddables = blocks
+    .filter((block) => block.tier === 'non-sheddable')
+    .map((block) => block.text)
+    .join('\n\n');
+  if (joinedNonSheddables.length > CONTEXT_BLOCK_CHAR_CAP) {
+    return {
+      text: joinedNonSheddables,
+      rawLength: assembled.length,
+      overflowedNonSheddable: true,
+    };
+  }
+
+  const removableBlocks = blocks.filter((block) => block.shedRank !== undefined);
+  const removedKinds = new Set<ContextBlockKind>();
+
+  for (const tier of ['shed-first', 'degradable'] as const) {
+    const tierBlocks = removableBlocks
+      .filter((block) => block.tier === tier)
+      .sort(
+        (left, right) =>
+          (left.shedRank ?? Number.POSITIVE_INFINITY) -
+          (right.shedRank ?? Number.POSITIVE_INFINITY),
+      );
+    for (const block of tierBlocks) {
+      removedKinds.add(block.kind);
+      const compacted = blocks
+        .filter((candidate) => !removedKinds.has(candidate.kind))
+        .map((candidate) => candidate.text)
+        .join('\n\n');
+      if (compacted.length <= CONTEXT_BLOCK_CHAR_CAP) {
+        return {
+          text: compacted,
+          rawLength: assembled.length,
+          overflowedNonSheddable: false,
+        };
+      }
+    }
+  }
+
+  return {
+    text: joinedNonSheddables,
+    rawLength: assembled.length,
+    overflowedNonSheddable: false,
+  };
 }

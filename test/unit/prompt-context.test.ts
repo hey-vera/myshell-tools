@@ -11,6 +11,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   assembleContextBlocks,
+  assembleContextBlocksDetailed,
   engagementBiasOf,
   partnerNudge,
   type ContextBlockOptions,
@@ -40,6 +41,8 @@ describe('assembleContextBlocks', () => {
   const MEM = 'USER PREFERENCES AND MEMORY:\n- prefers concise answers';
   const INTENT = 'INTENT (your current understanding):\nShip the feature';
   const ENG = 'ENGAGEMENT:\nFirst inspect X. Then reflect the goal in one line.';
+  const RULES = 'STANDING RULES:\n- Never remove this sentinel rule.';
+  const VISION = 'VISION TRIAGE:\n- part A: SOLID';
 
   it('renders the ENVIRONMENT block FIRST (orientation precedes everything)', () => {
     assert.equal(assembleContextBlocks({ environmentContext: ENV }), ENV);
@@ -236,10 +239,204 @@ describe('assembleContextBlocks', () => {
     assert.doesNotMatch(out, /PARTNER POSTURE/);
   });
 
-  it('caps the total injected length regardless of caller', () => {
-    const huge = 'x'.repeat(20_000);
-    const out = assembleContextBlocks({ memoryContext: huge });
+  it('keeps the under-cap path byte-identical in the detailed helper', () => {
+    const out = assembleContextBlocks({
+      environmentContext: ENV,
+      toolStateContext: TOOLSTATE,
+      memoryContext: MEM,
+      tasteContext: TASTE,
+      workStateContext: WORKSTATE,
+      goalContext: GOALS,
+      rulesContext: RULES,
+      visionTriageContext: VISION,
+      understandingContext: UNDERSTANDING,
+      intentFrame: INTENT,
+      engagementPlan: ENG,
+      partnerStyle: 'collaborative',
+    });
+    const detailed = assembleContextBlocksDetailed({
+      environmentContext: ENV,
+      toolStateContext: TOOLSTATE,
+      memoryContext: MEM,
+      tasteContext: TASTE,
+      workStateContext: WORKSTATE,
+      goalContext: GOALS,
+      rulesContext: RULES,
+      visionTriageContext: VISION,
+      understandingContext: UNDERSTANDING,
+      intentFrame: INTENT,
+      engagementPlan: ENG,
+      partnerStyle: 'collaborative',
+    });
+    assert.equal(detailed.text, out);
+    assert.equal(detailed.rawLength, out.length);
+    assert.equal(detailed.overflowedNonSheddable, false);
+  });
+
+  it('keeps all canonical blocks present in canonical order when under the cap', () => {
+    const out = assembleContextBlocks({
+      environmentContext: ENV,
+      toolStateContext: TOOLSTATE,
+      memoryContext: MEM,
+      tasteContext: TASTE,
+      workStateContext: WORKSTATE,
+      salvagedDraft: DRAFT,
+      goalContext: GOALS,
+      rulesContext: RULES,
+      visionTriageContext: VISION,
+      understandingContext: UNDERSTANDING,
+      intentFrame: INTENT,
+      engagementPlan: ENG,
+      partnerStyle: 'direct',
+    });
+    const orderedBlocks = [
+      ENV,
+      TOOLSTATE,
+      MEM,
+      TASTE,
+      WORKSTATE,
+      'PARTIAL DRAFT FROM AN INTERRUPTED PREVIOUS ATTEMPT',
+      GOALS,
+      RULES,
+      VISION,
+      UNDERSTANDING,
+      INTENT,
+      ENG,
+      'PARTNER POSTURE',
+    ];
+    let lastIndex = -1;
+    for (const block of orderedBlocks) {
+      const nextIndex = out.indexOf(block);
+      assert.ok(nextIndex > lastIndex, `${block} stays in canonical order`);
+      lastIndex = nextIndex;
+    }
+  });
+
+  it('drops MEMORY whole on overflow and still fits within the cap', () => {
+    const hugeMemory = `MEMORY:\n${'m'.repeat(6100)}`;
+    const out = assembleContextBlocks({
+      memoryContext: hugeMemory,
+      workStateContext: WORKSTATE,
+      goalContext: GOALS,
+      rulesContext: RULES,
+      intentFrame: INTENT,
+    });
+    assert.equal(out.includes(hugeMemory), false);
+    assert.equal(out.includes('MEMORY:'), false);
+    assert.ok(out.includes(WORKSTATE));
+    assert.ok(out.includes(GOALS));
+    assert.ok(out.includes(RULES));
+    assert.ok(out.includes(INTENT));
     assert.ok(out.length <= 6000);
+  });
+
+  it('sheds ENVIRONMENT, TOOL-STATE, and LEARNED TASTE before any middle-tier block', () => {
+    const largeEnv = `ENVIRONMENT\n${'e'.repeat(1200)}`;
+    const largeTool = `ABOUT THIS TOOL\n${'t'.repeat(3200)}`;
+    const largeTaste = `LEARNED TASTE\n${'a'.repeat(6100)}`;
+    const out = assembleContextBlocks({
+      environmentContext: largeEnv,
+      toolStateContext: largeTool,
+      tasteContext: largeTaste,
+      memoryContext: MEM,
+      engagementPlan: ENG,
+      intentFrame: INTENT,
+    });
+    assert.equal(out.includes(largeEnv), false);
+    assert.equal(out.includes(largeTool), false);
+    assert.equal(out.includes(largeTaste), false);
+    assert.ok(out.includes(MEM), 'MEMORY survives longer than shed-first blocks');
+    assert.ok(out.includes(ENG), 'ENGAGEMENT survives until the middle tier is reached');
+    assert.ok(out.includes(INTENT), 'INTENT is non-sheddable');
+    assert.ok(out.length <= 6000);
+  });
+
+  it('removes middle-tier blocks in order nudge → engagement → vision → understanding → memory', () => {
+    const largeMemory = `MEMORY:\n${'m'.repeat(2800)}`;
+    const largeVision = `VISION TRIAGE:\n${'v'.repeat(1600)}`;
+    const largeUnderstanding = `SYSTEM UNDERSTANDING:\n${'u'.repeat(1600)}`;
+    const largeEngagement = `ENGAGEMENT:\n${'g'.repeat(1600)}`;
+    const largeRules = `STANDING RULES:\n- ${'r'.repeat(3200)}`;
+    const out = assembleContextBlocks({
+      memoryContext: largeMemory,
+      rulesContext: largeRules,
+      visionTriageContext: largeVision,
+      understandingContext: largeUnderstanding,
+      engagementPlan: largeEngagement,
+      intentFrame: INTENT,
+      partnerStyle: 'direct',
+    });
+    assert.equal(out.includes('PARTNER POSTURE'), false);
+    assert.equal(out.includes(largeEngagement), false);
+    assert.equal(out.includes(largeVision), false);
+    assert.equal(out.includes(largeUnderstanding), false);
+    assert.equal(out.includes(largeMemory), false);
+    assert.ok(out.includes(INTENT));
+    assert.ok(out.length <= 6000);
+  });
+
+  it('keeps STANDING RULES, GOALS, WORK STATE, SALVAGED DRAFT, and INTENT whole past char 6000', () => {
+    const hugeMemory = `MEMORY:\n${'m'.repeat(3100)}`;
+    const hugeUnderstanding = `SYSTEM UNDERSTANDING:\n${'u'.repeat(1200)}`;
+    const sentinelRule = `STANDING RULES:\n- RULE SENTINEL ${'R'.repeat(2400)} END RULE SENTINEL`;
+    const out = assembleContextBlocks({
+      memoryContext: hugeMemory,
+      workStateContext: WORKSTATE,
+      salvagedDraft: DRAFT,
+      goalContext: GOALS,
+      rulesContext: sentinelRule,
+      understandingContext: hugeUnderstanding,
+      intentFrame: INTENT,
+    });
+    assert.ok(out.includes(WORKSTATE));
+    assert.ok(out.includes('PARTIAL DRAFT FROM AN INTERRUPTED PREVIOUS ATTEMPT'));
+    assert.ok(out.includes(DRAFT));
+    assert.ok(out.includes(GOALS));
+    assert.ok(out.includes(sentinelRule));
+    assert.ok(out.includes(INTENT));
+    assert.equal(out.includes(hugeMemory), false);
+    assert.equal(out.includes(hugeUnderstanding), false);
+    assert.ok(out.includes('END RULE SENTINEL'));
+  });
+
+  it('never returns a mid-block slice when compacting', () => {
+    const hugeMemory = `MEMORY BLOCK START\n${'m'.repeat(7000)}\nMEMORY BLOCK END`;
+    const out = assembleContextBlocks({
+      memoryContext: hugeMemory,
+      intentFrame: INTENT,
+    });
+    assert.equal(out.includes('MEMORY BLOCK START'), false);
+    assert.equal(out.includes('MEMORY BLOCK END'), false);
+    assert.equal(out.includes('m'.repeat(100)), false);
+    assert.equal(out, INTENT);
+  });
+
+  it('returns whole non-sheddables with explicit overflow metadata when they alone exceed the cap', () => {
+    const bigWorkState = `WORK STATE:\n${'w'.repeat(2400)}`;
+    const bigGoals = `CURRENT GOALS:\n${'g'.repeat(2400)}`;
+    const bigRules = `STANDING RULES:\n- RULE SENTINEL ${'r'.repeat(1800)} END`;
+    const detailed = assembleContextBlocksDetailed({
+      workStateContext: bigWorkState,
+      goalContext: bigGoals,
+      rulesContext: bigRules,
+      intentFrame: INTENT,
+    });
+    assert.equal(
+      detailed.text,
+      [bigWorkState, bigGoals, bigRules, INTENT].join('\n\n'),
+    );
+    assert.ok(detailed.text.length > 6000);
+    assert.equal(detailed.overflowedNonSheddable, true);
+    assert.ok(detailed.rawLength >= detailed.text.length);
+    assert.equal(
+      assembleContextBlocks({
+        workStateContext: bigWorkState,
+        goalContext: bigGoals,
+        rulesContext: bigRules,
+        intentFrame: INTENT,
+      }),
+      detailed.text,
+    );
   });
 
   for (const [style, bias] of [
@@ -258,6 +455,22 @@ describe('assembleContextBlocks', () => {
     const b = assembleContextBlocks(opts);
     assert.equal(a, b);
     assert.deepEqual(opts, { memoryContext: MEM, partnerStyle: 'direct' });
+  });
+
+  it('does not mutate inputs in the detailed helper', () => {
+    const opts: ContextBlockOptions = {
+      memoryContext: MEM,
+      workStateContext: WORKSTATE,
+      goalContext: GOALS,
+      rulesContext: RULES,
+      intentFrame: INTENT,
+      partnerStyle: 'direct',
+    };
+    const before = { ...opts };
+    const first = assembleContextBlocksDetailed(opts);
+    const second = assembleContextBlocksDetailed(opts);
+    assert.deepEqual(first, second);
+    assert.deepEqual(opts, before);
   });
 
   // ---------------------------------------------------------------------------
