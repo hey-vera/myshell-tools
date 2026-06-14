@@ -87,6 +87,12 @@ export interface HedgePlan {
   readonly risk: Risk;
 }
 
+export interface HedgeAuthorityInput {
+  readonly turnCallBudget?: number;
+  readonly verifyLevel?: import('./verify.js').VerifyLevel;
+  readonly roundBudget?: number;
+}
+
 /**
  * Decide whether (and how) to hedge this turn. PURE.
  *
@@ -524,7 +530,12 @@ export async function* runHedged(
   historyContext?: string,
   capabilityContext?: CapabilityRouteContext,
   wantsWebSearch = false,
-): AsyncGenerator<CoreEvent> {
+  authority: HedgeAuthorityInput = {},
+): AsyncGenerator<CoreEvent, false | undefined> {
+  if (authority.turnCallBudget !== undefined && authority.turnCallBudget < 2) {
+    return false;
+  }
+
   // Append the user message once (matches orchestrate/runPanel).
   await deps.session.append({
     timestamp: deps.clock.isoNow(),
@@ -663,6 +674,11 @@ export async function* runHedged(
         let reviewProviderCostUsd: number | undefined;
         let reviewCanceled = false;
         if (signal.aborted) return { ran: false };
+        if (
+          authority.turnCallBudget !== undefined &&
+          attempts >= authority.turnCallBudget
+        ) return { ran: false };
+        if (authority.turnCallBudget !== undefined) attempts++;
         for await (const ev of provider.run(reviewReq, signal)) {
           if (ev.type === 'done') {
             reviewText = ev.text;
@@ -742,7 +758,11 @@ export async function* runHedged(
     evidence: string,
   ): AsyncGenerator<CoreEvent, CandidateResult | undefined> {
     const provider = deps.providers[winnerRun.provider];
-    if (provider === undefined || signal.aborted) return undefined;
+    if (
+      provider === undefined ||
+      signal.aborted ||
+      (authority.turnCallBudget !== undefined && attempts >= authority.turnCallBudget)
+    ) return undefined;
 
     attempts++;
     const repairReq: import('../providers/port.js').ProviderRequest = {
@@ -877,7 +897,7 @@ export async function* runHedged(
       task,
       cwd: deps.cwd,
       ...(deps.verifyPort !== undefined ? { verifyPort: deps.verifyPort } : {}),
-      verifyLevel: deps.verifyLevel ?? 'tests',
+      verifyLevel: authority.verifyLevel ?? deps.verifyLevel ?? 'tests',
       ...(deps.verifyTestTimeoutMs !== undefined
         ? { verifyTestTimeoutMs: deps.verifyTestTimeoutMs }
         : {}),

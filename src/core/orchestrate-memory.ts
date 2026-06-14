@@ -54,10 +54,13 @@ export function memoryProposalFor(finalText: string | undefined): RememberPropos
  * neither questions nor an existing proposal, preserving the questions ⊻ memory
  * mutual-exclusivity invariant. Pure pass-through for every other event.
  */
-export async function* withMemoryProposalAttached(
-  source: AsyncGenerator<CoreEvent>,
-): AsyncGenerator<CoreEvent> {
-  for await (const ev of source) {
+export async function* withMemoryProposalAttached<T = void>(
+  source: AsyncGenerator<CoreEvent, T>,
+): AsyncGenerator<CoreEvent, T> {
+  while (true) {
+    const next = await source.next();
+    if (next.done) return next.value;
+    const ev = next.value;
     if (
       ev.type === 'final' &&
       ev.success === true &&

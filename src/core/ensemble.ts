@@ -362,6 +362,9 @@ export interface PanelCapabilityInput {
   readonly capabilityContext?: CapabilityRouteContext;
   readonly attachments?: readonly Attachment[];
   readonly webSearch?: boolean;
+  readonly turnCallBudget?: number;
+  readonly verifyLevel?: import('./verify.js').VerifyLevel;
+  readonly roundBudget?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -706,7 +709,18 @@ export async function* runPanel(
   signal: AbortSignal,
   historyContext?: string,
   capability: PanelCapabilityInput = {},
-): AsyncGenerator<CoreEvent> {
+): AsyncGenerator<CoreEvent, false | undefined> {
+  if (capability.turnCallBudget !== undefined) {
+    const affordableCandidates = Math.min(
+      plan.candidates.length,
+      capability.turnCallBudget - 1,
+    );
+    if (affordableCandidates < 2) return false;
+    if (affordableCandidates < plan.candidates.length) {
+      plan = { ...plan, candidates: plan.candidates.slice(0, affordableCandidates) };
+    }
+  }
+
   // Append the user message once (matches orchestrate's single user append).
   await deps.session.append({
     timestamp: deps.clock.isoNow(),
@@ -1150,7 +1164,10 @@ export async function* runPanel(
     if (candidate.verifyPort === undefined) return undefined;
     const runCritic = async (input: CriticRunInput): Promise<CriticRunOutput | undefined> => {
       const reviewerProvider = deps.providers[input.reviewer];
-      if (reviewerProvider === undefined) return { ran: false };
+      if (
+        reviewerProvider === undefined ||
+        (capability.turnCallBudget !== undefined && attempts >= capability.turnCallBudget)
+      ) return { ran: false };
       try {
         const reviewDecision = route(
           'manager',
@@ -1188,6 +1205,7 @@ export async function* runPanel(
         let reviewProviderCostUsd: number | undefined;
         let reviewCanceled = false;
         if (signal.aborted) return { ran: false };
+        if (capability.turnCallBudget !== undefined) attempts++;
         for await (const ev of reviewerProvider.run(reviewReq, signal)) {
           if (ev.type === 'done') {
             reviewText = ev.text;
@@ -1268,7 +1286,11 @@ export async function* runPanel(
     evidence: string,
   ): AsyncGenerator<CoreEvent, CandidateResult | undefined> {
     const provider = deps.providers[plan.synthesizer];
-    if (provider === undefined || signal.aborted) return undefined;
+    if (
+      provider === undefined ||
+      signal.aborted ||
+      (capability.turnCallBudget !== undefined && attempts >= capability.turnCallBudget)
+    ) return undefined;
 
     attempts++;
     const repairPrompt = buildPrompt(
@@ -1372,7 +1394,7 @@ export async function* runPanel(
       task,
       cwd: deps.cwd,
       ...(deps.verifyPort !== undefined ? { verifyPort: deps.verifyPort } : {}),
-      verifyLevel: deps.verifyLevel ?? 'tests',
+      verifyLevel: capability.verifyLevel ?? deps.verifyLevel ?? 'tests',
       ...(deps.verifyTestTimeoutMs !== undefined
         ? { verifyTestTimeoutMs: deps.verifyTestTimeoutMs }
         : {}),

@@ -317,6 +317,31 @@ const PLAN: HedgePlan = { primaryTier: 'ic', speculativeTier: 'manager', delayMs
 // ---------------------------------------------------------------------------
 
 describe('runHedged — primary fast + adequate (speculative never starts)', () => {
+  it('governor budget below 2 denies the hedge before any call or session append', async () => {
+    const claudeRec = { calls: 0, prompts: [] as string[] };
+    const codexRec = { calls: 0, prompts: [] as string[] };
+    const claude = makeSeqProvider('claude', [adequate('unused')], claudeRec);
+    const codex = makeSeqProvider('codex', [adequate('unused')], codexRec);
+    const { deps, session } = hedgeDeps({ claude, codex }, () => Promise.resolve(), SPLIT_ORDER);
+
+    const events = await collect(
+      runHedged(
+        'hard task',
+        deps,
+        PLAN,
+        new AbortController().signal,
+        undefined,
+        undefined,
+        false,
+        { turnCallBudget: 1 },
+      ),
+    );
+
+    assert.deepEqual(events, []);
+    assert.equal(claudeRec.calls + codexRec.calls, 0);
+    assert.deepEqual(session.entries, []);
+  });
+
   it('sleep never resolves → primary wins; speculative provider not invoked', async () => {
     const specRec = { ran: false, aborted: false };
     const claude = makeProvider('claude', adequate('PRIMARY-OK'));
@@ -724,6 +749,33 @@ const redRun = (output = 'FAIL a.test.ts'): TestRunResult => ({ outcome: 'red', 
 const greenRun = (): TestRunResult => ({ outcome: 'green', output: 'ok', durationMs: 4 });
 
 describe('runHedged — Candidate Quality Gate', () => {
+  it('two spent hedge calls leave no budget for winner repair', async () => {
+    const claudeRec = { calls: 0, prompts: [] as string[] };
+    const codexRec = { calls: 0, prompts: [] as string[] };
+    const claude = makeSeqProvider('claude', [lowConf('PRIMARY-LOW')], claudeRec);
+    const codex = makeSeqProvider('codex', [adequate('SPEC-RED')], codexRec);
+    const neverSleep = (): Promise<void> => new Promise<void>(() => {});
+    const { deps } = hedgeDeps({ claude, codex }, neverSleep, SPLIT_ORDER);
+    const port = makeVerifyPort([redRun()]);
+
+    const events = await collect(
+      runHedged(
+        'hard task',
+        { ...deps, verifyPort: port, verifyLevel: 'tests' },
+        PLAN,
+        new AbortController().signal,
+        undefined,
+        undefined,
+        false,
+        { turnCallBudget: 2, verifyLevel: 'tests' },
+      ),
+    );
+
+    assert.equal(claudeRec.calls + codexRec.calls, 2);
+    assert.equal(events.at(-1)?.type, 'final');
+    assert.equal(events.at(-1)?.type === 'final' ? events.at(-1)?.success : undefined, false);
+  });
+
   it('winner red → one repair on the chosen provider only → green success', async () => {
     // Primary fast + adequate → winner = primary (claude). Then verify red → ONE
     // repair on claude only; codex (speculative) is never started at all.

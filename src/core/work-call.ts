@@ -512,6 +512,10 @@ export interface WorkCallInput {
    * run BEFORE this stage; the stage starts the loop at the tier they chose.
    */
   readonly startTier: Tier;
+  /** Hard provider-invocation cap for this turn. Absent means unbounded by Governor. */
+  readonly turnCallBudget?: number;
+  /** Governor investigation-round allowance, threaded for executor authority. */
+  readonly roundBudget?: number;
   /**
    * The RESOLVED verification level for this turn (master-plan PHASE 3). orchestrate
    * sets this from the Governor's `verify` lever when the Governor is ON, else from
@@ -577,6 +581,7 @@ export async function* runWorkCall(input: WorkCallInput): AsyncGenerator<CoreEve
     wantsWebSearch,
     hasImageAttachment,
     startTier,
+    turnCallBudget,
     verifyLevel,
     trustEnabled,
     brainConfidence,
@@ -589,6 +594,9 @@ export async function* runWorkCall(input: WorkCallInput): AsyncGenerator<CoreEve
   let currentTier: Tier = startTier;
   let managerNotes: string | undefined;
   let attempts = 0;
+  let providerCalls = 0;
+  const callBudgetAvailable = (): boolean =>
+    turnCallBudget === undefined || providerCalls < turnCallBudget;
   // Seed from any prior metered spend this turn (poll/tribunal). Defaults to 0 when
   // absent → byte-for-byte the prior path; the prior cost is folded in exactly once.
   let totalCostUsd = priorCostUsd ?? 0;
@@ -744,6 +752,8 @@ export async function* runWorkCall(input: WorkCallInput): AsyncGenerator<CoreEve
           ...(reviewEffort !== undefined ? { reasoningEffort: reviewEffort } : {}),
         };
         const reviewStart = deps.clock.now();
+        if (!callBudgetAvailable()) return { ran: false };
+        providerCalls++;
         const reviewOutcome = await collectProviderRun(reviewerProvider, reviewReq, signal);
         const reviewDurationMs = deps.clock.now() - reviewStart;
         if (reviewOutcome.canceled || reviewOutcome.errored != null) {
@@ -845,8 +855,9 @@ export async function* runWorkCall(input: WorkCallInput): AsyncGenerator<CoreEve
     evidence: string,
   ): AsyncGenerator<CoreEvent, CandidateResult | undefined> {
     const provider = deps.providers[candidate.provider];
-    if (provider === undefined || signal.aborted) return undefined;
+    if (provider === undefined || signal.aborted || !callBudgetAvailable()) return undefined;
 
+    providerCalls++;
     attempts++;
     const reasoningEffort = effortForDecision(
       deps.capabilityRegistry,
@@ -1023,7 +1034,10 @@ export async function* runWorkCall(input: WorkCallInput): AsyncGenerator<CoreEve
   // queued failover is a separate budget: once an execution failure identifies
   // an authenticated, untried provider at this tier, that provider gets its one
   // execution even when the ordinary attempt ceiling has been reached.
-  mainLoop: while (attempts < deps.policy.maxAttempts || failoverPool !== null) {
+  mainLoop: while (
+    (attempts < deps.policy.maxAttempts || failoverPool !== null) &&
+    callBudgetAvailable()
+  ) {
     attempts++;
 
     // --- Route for current tier ---
@@ -1194,6 +1208,7 @@ export async function* runWorkCall(input: WorkCallInput): AsyncGenerator<CoreEve
     const start = deps.clock.now();
 
     // --- Stream provider events ---
+    providerCalls++;
     const outcome = yield* streamProvider(provider, req, decision.tier, signal);
 
     if (outcome.canceled) {
@@ -1337,7 +1352,10 @@ export async function* runWorkCall(input: WorkCallInput): AsyncGenerator<CoreEve
     // never multiply provider calls. validateTurnOutput returns the FIRST failure;
     // we pick the matching repair note so the retry gets targeted feedback.
     const rawValidatorFailure =
-      success && genericMenuRepairs < MAX_VALIDATOR_REPAIRS && parseQuestions(finalText ?? '') === null
+      success &&
+      callBudgetAvailable() &&
+      genericMenuRepairs < MAX_VALIDATOR_REPAIRS &&
+      parseQuestions(finalText ?? '') === null
         ? validateTurnOutput(finalText ?? '', directive)
         : null;
     // The grounded-recommendation repair DEFERS to the review pipeline: when this
@@ -1444,6 +1462,11 @@ export async function* runWorkCall(input: WorkCallInput): AsyncGenerator<CoreEve
         return;
       }
     }
+
+    // The provider invocation that just completed consumes one unit regardless
+    // of success, error, or cancellation. Once exhausted, use the existing loop-
+    // exhausted best-effort/failure terminal without announcing work we cannot run.
+    if (!callBudgetAvailable()) break mainLoop;
 
     // -----------------------------------------------------------------------
     // Decision tree
@@ -1775,6 +1798,7 @@ export async function* runWorkCall(input: WorkCallInput): AsyncGenerator<CoreEve
         const reviewStart = deps.clock.now();
 
         // --- Consume reviewer events without surfacing internal prose ---
+        providerCalls++;
         const reviewOutcome = await collectProviderRun(reviewerProvider, reviewReq, signal);
 
         if (reviewOutcome.canceled) {

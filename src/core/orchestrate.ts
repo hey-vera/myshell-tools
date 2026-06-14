@@ -1360,6 +1360,33 @@ export async function* orchestrate(
         }
       : undefined;
 
+  // -------------------------------------------------------------------------
+  // (c1) THE PERFORMANCE GOVERNOR — consulted ONCE before any execution fork.
+  //
+  // FLAG-GATED, DEFAULT OFF. When disabled this remains a no-op. When enabled,
+  // the single AllocationPlan is authoritative for every executor below.
+  let governorPlan: AllocationPlan | undefined;
+  if (deps.governorEnabled === true) {
+    const conf = assessConfidence(intentFrame, engagementSignals, brainGroundedness);
+    const planInfoList: PlanInfo[] =
+      deps.planInfos !== undefined
+        ? (Object.values(deps.planInfos).filter((p) => p !== undefined) as PlanInfo[])
+        : [];
+    const governorMode = planInfoList.length > 0 ? autoModeForPlanInfos(planInfoList) : mode;
+    governorPlan = allocate({
+      conf,
+      frame: intentFrame,
+      signals: engagementSignals,
+      plan: engagementPlan,
+      substantial: directive.substantial,
+      repoOriented: directive.repoOriented,
+      mode: governorMode,
+      authedProviderCount: (deps.authenticatedProviders ?? []).length,
+      pressure: deps.governorPressure ?? pressureFromSignals({}),
+      maxRounds: maxRoundsFor(deps.partnerStyle),
+    });
+  }
+
   const panelPlan = planPanel({
     panelPolicy: deps.policy.panelPolicy,
     classification,
@@ -1376,14 +1403,21 @@ export async function* orchestrate(
     // the SAME image attachments. Built ONCE above; the structured engagement
     // plan (wantsWebSearch) and the assembled capabilityContext are not
     // reconstructable from deps inside runPanel, so they're passed in.
-    yield* withMemoryProposalAttached(
+    const panelDenied = yield* withMemoryProposalAttached(
       runPanel(task, deps, panelPlan, signal, historyContext, {
         ...(capabilityContext !== undefined ? { capabilityContext } : {}),
         ...(deps.attachments !== undefined ? { attachments: deps.attachments } : {}),
         ...(wantsWebSearch ? { webSearch: true } : {}),
+        ...(governorPlan !== undefined
+          ? {
+              turnCallBudget: governorPlan.turnCallBudget,
+              verifyLevel: governorPlan.verify,
+              roundBudget: governorPlan.roundBudget,
+            }
+          : {}),
       }),
     );
-    return;
+    if (panelDenied !== false) return;
   }
 
   // -------------------------------------------------------------------------
@@ -1407,10 +1441,25 @@ export async function* orchestrate(
     hasSleep: deps.sleep !== undefined,
   });
   if (hedgePlan !== null) {
-    yield* withMemoryProposalAttached(
-      runHedged(task, deps, hedgePlan, signal, historyContext, capabilityContext, wantsWebSearch),
+    const hedgeDenied = yield* withMemoryProposalAttached(
+      runHedged(
+        task,
+        deps,
+        hedgePlan,
+        signal,
+        historyContext,
+        capabilityContext,
+        wantsWebSearch,
+        governorPlan !== undefined
+          ? {
+              turnCallBudget: governorPlan.turnCallBudget,
+              verifyLevel: governorPlan.verify,
+              roundBudget: governorPlan.roundBudget,
+            }
+          : undefined,
+      ),
     );
-    return;
+    if (hedgeDenied !== false) return;
   }
 
   // -------------------------------------------------------------------------
@@ -1526,62 +1575,6 @@ export async function* orchestrate(
   //     left unchanged and route() resolves the normal tier (and if no manager model is
   //     reachable, route() degrades to the best available model). Never strands a turn.
   //
-  // -------------------------------------------------------------------------
-  // (e2) THE PERFORMANCE GOVERNOR — consulted ONCE per turn at the admission seam
-  //      (the spine, Phase 2 skeleton; .tmp-master-performance.md / build PHASE 2).
-  //
-  // FLAG-GATED, DEFAULT OFF (deps.governorEnabled, resolved by the impure caller
-  // via governorEnabled(env, config)). When OFF we SHORT-CIRCUIT here: the governor
-  // is never consulted, no AllocationPlan is computed, and the Oracle escalation
-  // below runs EXACTLY as it does today — every emitted CoreEvent / tier request /
-  // prompt is byte-for-byte the pre-governor path (the flag-off neutrality the
-  // characterization tests, e.g. orchestrate-oracle.test.ts, prove UNCHANGED).
-  //
-  // When ON the governor is a PURE consult (no I/O, no model call): it reads only
-  // real, in-process signals — the brain's confidence/stakes tuple (recomputed here
-  // from the same pure inputs the brain loop used), the directive's substantial /
-  // repoOriented projection, the detected strongest tier (autoModeForPlanInfos over
-  // the observed plan infos), the authed vendor count, live rate-limit pressure
-  // (pressureFromSignals — no new probe), and the brain's per-turn round ceiling —
-  // and returns an AllocationPlan. In Phase 2 the governor COORDINATES exactly one
-  // existing lever: the Oracle tier request. It NEVER bypasses admitManager /
-  // authorizeTier (the gate keeps the free-plan veto, never-auto, and per-turn
-  // flagship budget); it only refuses the UNCOORDINATED request when its per-shape
-  // quality-per-token policy says the strong model is not warranted for THIS shape.
-  // So when ON it can make the Oracle request equally or MORE conservative, never
-  // less — it can never open a tier the gate would deny.
-  let governorPlan: AllocationPlan | undefined;
-  if (deps.governorEnabled === true) {
-    const conf = assessConfidence(intentFrame, engagementSignals, brainGroundedness);
-    const planInfoList: PlanInfo[] =
-      deps.planInfos !== undefined
-        ? (Object.values(deps.planInfos).filter((p) => p !== undefined) as PlanInfo[])
-        : [];
-    const governorMode = planInfoList.length > 0 ? autoModeForPlanInfos(planInfoList) : mode;
-    governorPlan = allocate({
-      conf,
-      frame: intentFrame,
-      signals: engagementSignals,
-      plan: engagementPlan,
-      substantial: directive.substantial,
-      repoOriented: directive.repoOriented,
-      mode: governorMode,
-      authedProviderCount: (deps.authenticatedProviders ?? []).length,
-      // REAL live pressure (master-plan PHASE 4 — closing the Phase-2 honest-zero
-      // gap). The caller observes a genuine pressure dimension — how many providers
-      // are in rate-limit cooldown RIGHT NOW (real 429s this session) — and threads
-      // it on `deps.governorPressure` (computed via `pressureFromSignals` over the
-      // live cooldown map). When present it shrinks the budget under genuine
-      // pressure; ABSENT (one-shot runs / no cooldowns) → the honest zero, exactly
-      // as Phase 2 read it (`pressureFromSignals({})`). The governor NEVER fabricates
-      // pressure: the only real dimension wired is the rate-limit cooldown count;
-      // no token-budget readout exists on subscription CLIs, so that dimension stays
-      // an honest 0 (documented at the caller's compute site), exactly as Phase 2 did.
-      pressure: deps.governorPressure ?? pressureFromSignals({}),
-      maxRounds: maxRoundsFor(deps.partnerStyle),
-    });
-  }
-
   // ORACLE move (elite-review item 4) — request the strongest admissible model for
   // the substantial/insight moment, STILL gated by admitManager/authorizeTier.
   // When the governor is ON, its AllocationPlan REFINES the request: the Oracle is
@@ -1632,6 +1625,12 @@ export async function* orchestrate(
     wantsWebSearch,
     hasImageAttachment,
     startTier: currentTier,
+    ...(governorPlan !== undefined
+      ? {
+          turnCallBudget: governorPlan.turnCallBudget,
+          roundBudget: governorPlan.roundBudget,
+        }
+      : {}),
     // HONESTY CONTRACT: seed the work-call loop's cost counter with any prior metered
     // cross-vendor spend (poll/tribunal) so the terminal final.totalCostUsd is the
     // true sum across every metered run this turn. Optional + defaults to 0 in the

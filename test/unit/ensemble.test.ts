@@ -521,6 +521,46 @@ const PLAN: PanelPlan = {
 // ---------------------------------------------------------------------------
 
 describe('runPanel — happy path', () => {
+  it('governor budget below 3 denies the panel before any call or session append', async () => {
+    const rec = { calls: 0, prompts: [] as string[] };
+    const claude = makeSeqProvider('claude', ['unused'], rec);
+    const codex = makeProvider('codex', 'unused');
+    const { deps, session } = panelDeps({ claude, codex });
+
+    const events = await collect(
+      runPanel('hard task', deps, PLAN, new AbortController().signal, undefined, {
+        turnCallBudget: 2,
+      }),
+    );
+
+    assert.deepEqual(events, []);
+    assert.equal(rec.calls, 0);
+    assert.deepEqual(session.entries, []);
+  });
+
+  it('governor budget reduces candidates to leave exactly one synthesis call', async () => {
+    const claudeRec = { calls: 0, prompts: [] as string[] };
+    const codexRec = { calls: 0, prompts: [] as string[] };
+    const opencodeRec = { calls: 0, prompts: [] as string[] };
+    const claude = makeSeqProvider('claude', ['A', 'SYNTH'], claudeRec);
+    const codex = makeSeqProvider('codex', ['B'], codexRec);
+    const opencode = makeSeqProvider('opencode', ['C'], opencodeRec);
+    const { deps } = panelDeps({ claude, codex, opencode });
+    const widePlan: PanelPlan = { ...PLAN, candidates: ['claude', 'codex', 'opencode'] };
+
+    const events = await collect(
+      runPanel('hard task', deps, widePlan, new AbortController().signal, undefined, {
+        turnCallBudget: 3,
+      }),
+    );
+
+    const panelPhase = events.find((e) => e.type === 'phase' && e.phase === 'panel');
+    assert.ok(panelPhase !== undefined && panelPhase.type === 'phase');
+    assert.deepEqual(panelPhase.participants, ['claude', 'codex']);
+    assert.equal(claudeRec.calls + codexRec.calls + opencodeRec.calls, 3);
+    assert.equal(opencodeRec.calls, 0, 'candidate reduction is restrictive only');
+  });
+
   it('(a) emits tier-start per candidate and a success final = synthesizer text', async () => {
     // synthesizer is 'claude' (candidates[0]); give it a distinct text so we can
     // assert the final output is the synthesizer's, not a candidate's.
