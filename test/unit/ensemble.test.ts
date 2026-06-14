@@ -311,6 +311,53 @@ Now write the single final answer for the user.`;
     assert.match(p, /CONTRACT TO ADJUDICATE AGAINST:\nOBJECTIVE: choose a simple cache\nVISION: avoid broad rewrites/);
     assert.ok(p.indexOf('CONTRACT TO ADJUDICATE AGAINST') < p.indexOf('Original task:'));
   });
+
+  it('in compact mode keeps a body <= 2000 chars whole', () => {
+    const body = 'SMALL-BODY\n' + 'x'.repeat(1800) + '\nEND-SMALL';
+    const prompt = buildPanelSynthesisPrompt(
+      'design a cache',
+      [
+        {
+          provider: 'claude',
+          output: `${body}\n{"choice":"F1:0","confidence":0.9}`,
+        },
+      ],
+      undefined,
+      undefined,
+      { compactCandidates: true },
+    );
+
+    assert.match(prompt, /CONCLUSION: {"choice":"F1:0","confidence":0.9}/);
+    assert.match(prompt, /ANSWER EXCERPT:\nSMALL-BODY/);
+    assert.match(prompt, /END-SMALL/);
+    assert.doesNotMatch(prompt, /…\[candidate body compacted\]…/);
+  });
+
+  it('in compact mode emits stable records with head-tail excerpts and preserves candidate order', () => {
+    const longA = makeLongCandidateOutput('alpha');
+    const longB = makeLongCandidateOutput('beta');
+    const prompt = buildPanelSynthesisPrompt(
+      'design a cache',
+      [
+        { provider: 'claude', output: longA.output },
+        { provider: 'codex', output: longB.output },
+      ],
+      undefined,
+      undefined,
+      { compactCandidates: true },
+    );
+
+    assert.ok(prompt.indexOf('--- PANELIST 1 (claude) ---') < prompt.indexOf('--- PANELIST 2 (codex) ---'));
+    assert.match(prompt, /CONCLUSION: {"choice":"ALPHA","confidence":0.91,"assumptions":"alpha","what_would_make_this_wrong":"alpha-fail"}/);
+    assert.match(prompt, /CONCLUSION: {"choice":"BETA","confidence":0.91,"assumptions":"beta","what_would_make_this_wrong":"beta-fail"}/);
+    assert.match(prompt, /HEAD-alpha-/);
+    assert.match(prompt, /HEAD-beta-/);
+    assert.match(prompt, /TAIL-alpha/);
+    assert.match(prompt, /TAIL-beta/);
+    assert.match(prompt, /…\[candidate body compacted\]…/);
+    assert.doesNotMatch(prompt, /MIDDLE-OMIT-alpha/);
+    assert.doesNotMatch(prompt, /MIDDLE-OMIT-beta/);
+  });
 });
 
 describe('S2 — panel agreement projection', () => {
@@ -658,6 +705,25 @@ function governedCapability(
   };
 }
 
+function makeLongCandidateOutput(label: string): {
+  output: string;
+  body: string;
+  conclusion: string;
+} {
+  const headPrefix = `HEAD-${label}-`;
+  const head = headPrefix + 'H'.repeat(1600 - headPrefix.length);
+  const middle = `MIDDLE-OMIT-${label}-` + 'M'.repeat(5000);
+  const tail = 'T'.repeat(350) + `TAIL-${label}`;
+  const body = `${head}${middle}${tail}`;
+  const conclusion =
+    `{"choice":"${label.toUpperCase()}","confidence":0.91,"assumptions":"${label}","what_would_make_this_wrong":"${label}-fail"}`;
+  return {
+    output: `${body}\n${conclusion}`,
+    body,
+    conclusion,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Integration: runPanel
 // ---------------------------------------------------------------------------
@@ -825,6 +891,66 @@ describe('runPanel — happy path', () => {
       notice.type === 'notice' && !/\bfree\b/i.test(notice.message),
       'panel notice must NOT claim the runs are free',
     );
+  });
+
+  it('governor-off panels keep full candidate bodies even above the 12000-char threshold', async () => {
+    const claudeLong = makeLongCandidateOutput('alpha');
+    const codexLong = makeLongCandidateOutput('beta');
+    const rec = { calls: 0, prompts: [] as string[] };
+    const claude = makeSeqProvider('claude', [
+      claudeLong.output,
+      'Synth\n{"confidence":0.9,"escalate":false,"reason":"done","needs_review":false}',
+    ], rec);
+    const codex = makeSeqProvider('codex', [codexLong.output]);
+    const { deps } = panelDeps({ claude, codex });
+
+    await collect(runPanel('hard task', deps, PLAN, new AbortController().signal));
+
+    assert.equal(
+      rec.prompts[1],
+      buildPanelSynthesisPrompt('hard task', [
+        { provider: 'claude', output: claudeLong.output },
+        { provider: 'codex', output: codexLong.output },
+      ], { version: 1, objective: 'hard task' }),
+    );
+    assert.match(rec.prompts[1] ?? '', /MIDDLE-OMIT-alpha/);
+    assert.match(rec.prompts[1] ?? '', /MIDDLE-OMIT-beta/);
+    assert.doesNotMatch(rec.prompts[1] ?? '', /ANSWER EXCERPT:/);
+  });
+
+  it('governed large panels compact candidate summaries only in the synthesis prompt', async () => {
+    const claudeLong = makeLongCandidateOutput('alpha');
+    const codexLong = makeLongCandidateOutput('beta');
+    const rec = { calls: 0, prompts: [] as string[] };
+    const claude = makeSeqProvider('claude', [
+      claudeLong.output,
+      'Synth\n{"confidence":0.9,"escalate":false,"reason":"done","needs_review":false}',
+    ], rec);
+    const codex = makeSeqProvider('codex', [codexLong.output]);
+    const { deps } = panelDeps({ claude, codex });
+
+    await collect(
+      runPanel('hard task', deps, PLAN, new AbortController().signal, undefined, governedCapability('risky')),
+    );
+
+    assert.equal(
+      rec.prompts[1],
+      buildPanelSynthesisPrompt('hard task', [
+        { provider: 'claude', output: claudeLong.output },
+        { provider: 'codex', output: codexLong.output },
+      ], { version: 1, objective: 'hard task' }, undefined, { compactCandidates: true }),
+    );
+    assert.match(rec.prompts[1] ?? '', /--- PANELIST 1 \(claude\) ---/);
+    assert.match(rec.prompts[1] ?? '', /--- PANELIST 2 \(codex\) ---/);
+    assert.match(rec.prompts[1] ?? '', /CONCLUSION: {"choice":"ALPHA","confidence":0.91,"assumptions":"alpha","what_would_make_this_wrong":"alpha-fail"}/);
+    assert.match(rec.prompts[1] ?? '', /CONCLUSION: {"choice":"BETA","confidence":0.91,"assumptions":"beta","what_would_make_this_wrong":"beta-fail"}/);
+    assert.match(rec.prompts[1] ?? '', /HEAD-alpha-/);
+    assert.match(rec.prompts[1] ?? '', /HEAD-beta-/);
+    assert.match(rec.prompts[1] ?? '', /TAIL-alpha/);
+    assert.match(rec.prompts[1] ?? '', /TAIL-beta/);
+    assert.match(rec.prompts[1] ?? '', /…\[candidate body compacted\]…/);
+    assert.doesNotMatch(rec.prompts[1] ?? '', /MIDDLE-OMIT-alpha/);
+    assert.doesNotMatch(rec.prompts[1] ?? '', /MIDDLE-OMIT-beta/);
   });
 });
 

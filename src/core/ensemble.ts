@@ -317,13 +317,19 @@ export function buildPanelSynthesisPrompt(
   candidates: ReadonlyArray<{ provider: ProviderId; output: string }>,
   contract?: WorkContract,
   context?: ContextBlockOptions,
+  opts?: { compactCandidates?: boolean },
 ): string {
-  const blocks = candidates
-    .map(
-      (c, i) =>
-        `--- PANELIST ${i + 1} (${c.provider}) ---\n${c.output.trim()}`,
-    )
-    .join('\n\n');
+  const blocks =
+    opts?.compactCandidates === true
+      ? candidates
+          .map((c, i) => formatCompactSynthesisCandidate(c, i))
+          .join('\n\n')
+      : candidates
+          .map(
+            (c, i) =>
+              `--- PANELIST ${i + 1} (${c.provider}) ---\n${c.output.trim()}`,
+          )
+          .join('\n\n');
   const contractSection =
     contract !== undefined
       ? `\n\nCONTRACT TO ADJUDICATE AGAINST:\n${renderContractForPrompt(contract)}\n\nUse this contract as the criteria when reconciling the panel answers. Prefer candidates that serve the objective and vision directly, and call out material drift from that objective.`
@@ -379,6 +385,22 @@ function splitFinalLineJson(text: string): { body: string; finalLine: string | u
     break;
   }
   return { body: text.trim(), finalLine: undefined };
+}
+
+function compactCandidateBodyExcerpt(body: string): string {
+  if (body.length <= 2000) return body;
+  return `${body.slice(0, 1600)}\n…[candidate body compacted]…\n${body.slice(-400)}`;
+}
+
+function formatCompactSynthesisCandidate(
+  candidate: { provider: ProviderId; output: string },
+  index: number,
+): string {
+  const parts = splitFinalLineJson(candidate.output.trim());
+  return `--- PANELIST ${index + 1} (${candidate.provider}) ---
+CONCLUSION: ${parts.finalLine ?? '(no parseable conclusion envelope)'}
+ANSWER EXCERPT:
+${compactCandidateBodyExcerpt(parts.body)}`;
 }
 
 export function buildPanelCritiqueSynthesisPrompt(
@@ -1232,6 +1254,9 @@ export async function* runPanel(
         ? capContract({ version: 1, objective: task })
         : undefined;
   const synthCandidates = succeeded.map((o) => ({ provider: o.provider, output: o.finalText }));
+  const compactSynthesisCandidates =
+    capability.governorPlan !== undefined &&
+    synthCandidates.reduce((sum, candidate) => sum + candidate.output.trim().length, 0) > 12_000;
   const synthContext = contextFromDeps(deps);
   const panelAgreement =
     debateConfig !== undefined
@@ -1282,8 +1307,16 @@ export async function* runPanel(
         ? buildPanelCritiqueSynthesisPrompt(task, synthCandidates, synthContract, synthContext)
         : buildPanelCritiqueSynthesisPrompt(task, synthCandidates, undefined, synthContext))
     : (synthContractDecision.criteria && synthContract !== undefined
-        ? buildPanelSynthesisPrompt(task, synthCandidates, synthContract, synthContext)
-        : buildPanelSynthesisPrompt(task, synthCandidates, undefined, synthContext));
+        ? (compactSynthesisCandidates
+            ? buildPanelSynthesisPrompt(task, synthCandidates, synthContract, synthContext, {
+                compactCandidates: true,
+              })
+            : buildPanelSynthesisPrompt(task, synthCandidates, synthContract, synthContext))
+        : (compactSynthesisCandidates
+            ? buildPanelSynthesisPrompt(task, synthCandidates, undefined, synthContext, {
+                compactCandidates: true,
+              })
+            : buildPanelSynthesisPrompt(task, synthCandidates, undefined, synthContext)));
 
   attempts++;
   yield {
