@@ -75,11 +75,12 @@ import { autoModeForPlanInfos, type PlanInfo } from './policy.js';
 import { pressureFromSignals } from './capability-budget.js';
 import { ENVIRONMENT_BLOCK_CHAR_CAP } from './repo-map.js';
 import { buildRetrievalContext, buildWebContext } from './research.js';
+import { buildInitialExecutorContextBlockOptions } from './context-block-options.js';
 import {
   compileTurnDirective,
   detectGenericOpenMenu,
 } from './turn-directive.js';
-import { engagementBiasOf } from './prompt-context.js';
+import { assembleContextBlocksDetailed, engagementBiasOf } from './prompt-context.js';
 import { ENGINE_BEHAVIOR_VERSION, isLegacyEngineEntry } from './engine-version.js';
 import { deriveWorkStateFromHistory, renderWorkStateBlock } from './work-state.js';
 import { renderVisionTriageBlock } from './vision-triage.js';
@@ -1275,18 +1276,15 @@ export async function* orchestrate(
   //      selected, and every route() call below behaves byte-for-byte as before.
   // -------------------------------------------------------------------------
   const mode: Mode = modeFromPolicy(deps.policy);
+  const initialExecutorContextOptions = buildInitialExecutorContextBlockOptions(deps);
+  const initialExecutorContext =
+    initialExecutorContextOptions !== undefined
+      ? assembleContextBlocksDetailed(initialExecutorContextOptions)
+      : undefined;
   const estimatedInputTokens = estimateInputTokens([
     task,
     historyContext,
-    deps.environmentContext,
-    deps.toolStateContext,
-    deps.memoryContext,
-    deps.workStateContext,
-    deps.goalContext,
-    deps.rulesContext,
-    deps.visionTriageContext,
-    deps.intentFrame,
-    deps.engagementPlan,
+    initialExecutorContext?.text,
   ]);
   // needsVision is true ONLY when the turn genuinely carries image input (audit
   // opportunity #4). It is derived from REAL image attachments the interface layer

@@ -49,6 +49,7 @@ import { modeFromPolicy } from './policy.js';
 import type { WorkContract } from './work-contract.js';
 import { capContract, renderContractForPrompt, shouldMaterializeContract, isCleanObjectiveTask } from './work-contract.js';
 import { assembleContextBlocks, type ContextBlockOptions } from './prompt-context.js';
+import { buildSharedContextBlockOptions } from './context-block-options.js';
 import {
   runCandidateQualityGate,
   buildVerifyReceiptEvents,
@@ -179,19 +180,7 @@ export function planPanel(opts: {
  * identical to the pre-seam panel prompt). PURE.
  */
 export function contextFromDeps(deps: OrchestrateDeps): ContextBlockOptions | undefined {
-  const ctx: { -readonly [K in keyof ContextBlockOptions]?: ContextBlockOptions[K] } = {};
-  if (deps.partnerStyle !== undefined) ctx.partnerStyle = deps.partnerStyle;
-  if (deps.environmentContext !== undefined) ctx.environmentContext = deps.environmentContext;
-  if (deps.toolStateContext !== undefined) ctx.toolStateContext = deps.toolStateContext;
-  if (deps.memoryContext !== undefined) ctx.memoryContext = deps.memoryContext;
-  if (deps.tasteContext !== undefined) ctx.tasteContext = deps.tasteContext;
-  if (deps.workStateContext !== undefined) ctx.workStateContext = deps.workStateContext;
-  if (deps.goalContext !== undefined) ctx.goalContext = deps.goalContext;
-  if (deps.rulesContext !== undefined) ctx.rulesContext = deps.rulesContext;
-  if (deps.visionTriageContext !== undefined) ctx.visionTriageContext = deps.visionTriageContext;
-  if (deps.intentFrame !== undefined) ctx.intentFrame = deps.intentFrame;
-  if (deps.engagementPlan !== undefined) ctx.engagementPlan = deps.engagementPlan;
-  return Object.keys(ctx).length > 0 ? ctx : undefined;
+  return buildSharedContextBlockOptions(deps, { includeUnderstanding: false });
 }
 
 /**

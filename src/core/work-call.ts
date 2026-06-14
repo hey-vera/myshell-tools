@@ -67,6 +67,7 @@ import {
 } from './verify.js';
 import { defaultVerifyLevel } from './verify-policy.js';
 import { confidenceLine } from './brain.js';
+import { buildInitialExecutorContextBlockOptions } from './context-block-options.js';
 import {
   composeTrustReceipt,
   trustReceiptLines,
@@ -876,24 +877,7 @@ export async function* runWorkCall(input: WorkCallInput): AsyncGenerator<CoreEve
       {
         ...(deps.goalTurn === true ? { goalTurn: true } : {}),
         ...(directive.substantial === true ? { explanatory: true } : {}),
-        ...(deps.partnerStyle !== undefined ? { partnerStyle: deps.partnerStyle } : {}),
-        ...(deps.environmentContext !== undefined
-          ? { environmentContext: deps.environmentContext }
-          : {}),
-        ...(deps.toolStateContext !== undefined ? { toolStateContext: deps.toolStateContext } : {}),
-        ...(deps.memoryContext !== undefined ? { memoryContext: deps.memoryContext } : {}),
-        ...(deps.tasteContext !== undefined ? { tasteContext: deps.tasteContext } : {}),
-        ...(deps.workStateContext !== undefined ? { workStateContext: deps.workStateContext } : {}),
-        ...(deps.goalContext !== undefined ? { goalContext: deps.goalContext } : {}),
-        ...(deps.rulesContext !== undefined ? { rulesContext: deps.rulesContext } : {}),
-        ...(deps.visionTriageContext !== undefined
-          ? { visionTriageContext: deps.visionTriageContext }
-          : {}),
-        ...(deps.understandingContext !== undefined
-          ? { understandingContext: deps.understandingContext }
-          : {}),
-        ...(deps.intentFrame !== undefined ? { intentFrame: deps.intentFrame } : {}),
-        ...(deps.engagementPlan !== undefined ? { engagementPlan: deps.engagementPlan } : {}),
+        ...(buildInitialExecutorContextBlockOptions(deps) ?? {}),
       },
     );
 
