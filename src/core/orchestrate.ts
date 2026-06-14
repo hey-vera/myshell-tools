@@ -1426,8 +1426,14 @@ export async function* orchestrate(
               turnCallBudget: governorPlan.turnCallBudget,
               verifyLevel: governorPlan.verify,
               roundBudget: governorPlan.roundBudget,
+              governorPlan: {
+                panelAllowed: governorPlan.panelAllowed,
+                shape: governorPlan.shape,
+                turnCallBudget: governorPlan.turnCallBudget,
+              },
             }
           : {}),
+        ...(intentFrame !== undefined ? { intentFrame } : {}),
       }),
     );
     if (panelDenied !== false) return;

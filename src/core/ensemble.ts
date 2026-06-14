@@ -35,6 +35,7 @@ import type {
   Tier,
   Classification,
   Policy,
+  Assessment,
 } from './types.js';
 import type { ProviderId } from '../providers/port.js';
 import { route, type CapabilityRouteContext, type CapabilityTaskSignals } from './route.js';
@@ -57,6 +58,9 @@ import {
 import { verifyStage, type CriticRunInput, type CriticRunOutput } from './work-call.js';
 import { parseReviewVerdict } from './review.js';
 import { buildPrompt } from './prompt.js';
+import type { IntentFrame } from './intent.js';
+import type { AllocationPlan } from './governor.js';
+import { parseFinalLineChoiceEnvelope, tallyChoiceEnvelopes } from './judgment-shared.js';
 
 // ---------------------------------------------------------------------------
 // Plan
@@ -288,6 +292,26 @@ not a throwaway.`;
   return prompt;
 }
 
+function buildGovernedPanelCandidatePrompt(
+  tier: Tier,
+  task: string,
+  conclusionOptionIds: readonly string[],
+  historyContext?: string,
+  context?: ContextBlockOptions,
+): string {
+  const base = buildPanelCandidatePrompt(tier, task, historyContext, context);
+  const choiceHint =
+    conclusionOptionIds.length === 1 && conclusionOptionIds[0] === 'OPEN'
+      ? 'OPEN'
+      : conclusionOptionIds.join(' | ');
+  return `${base}
+
+Also append ONE additional structured conclusion envelope on the FINAL line of
+your response, replacing the usual panel envelope. It MUST be raw JSON on its
+own line:
+{"choice":"${choiceHint}","confidence":0.0,"assumptions":"...","what_would_make_this_wrong":"..."}`;
+}
+
 /**
  * Build the prompt for the cross-vendor synthesizer. PURE.
  *
@@ -352,6 +376,171 @@ ${blocks}
 Now write the single final answer for the user.`;
 }
 
+function splitFinalLineJson(text: string): { body: string; finalLine: string | undefined } {
+  const lines = text.split(/\r?\n/);
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i]?.trim();
+    if (line === undefined || line.length === 0) continue;
+    if (line.startsWith('{') && line.endsWith('}')) {
+      return {
+        body: lines.slice(0, i).join('\n').trim(),
+        finalLine: line,
+      };
+    }
+    break;
+  }
+  return { body: text.trim(), finalLine: undefined };
+}
+
+export function buildPanelCritiqueSynthesisPrompt(
+  task: string,
+  candidates: ReadonlyArray<{ provider: ProviderId; output: string }>,
+  contract?: WorkContract,
+  context?: ContextBlockOptions,
+): string {
+  const contractSection =
+    contract !== undefined
+      ? `\n\nCONTRACT TO ADJUDICATE AGAINST:\n${renderContractForPrompt(contract)}\n\nUse this contract as the criteria when reconciling the panel answers. Prefer candidates that serve the objective and vision directly, and call out material drift from that objective.`
+      : '';
+  const contextBlocks =
+    context !== undefined ? assembleContextBlocks(context) : '';
+  const contextSection =
+    contextBlocks.length > 0 ? `\n\n${contextBlocks}` : '';
+  const blocks = candidates
+    .map((c, i) => {
+      const parts = splitFinalLineJson(c.output.trim());
+      return `--- CANDIDATE ${i + 1} (${c.provider}) ---
+Conclusion:
+${parts.finalLine ?? '(no parseable conclusion envelope)'}
+
+Answer:
+${parts.body.length > 0 ? parts.body : c.output.trim()}`;
+    })
+    .join('\n\n');
+  return `\
+You are the final adjudicator for an expert panel. Two candidates answered the
+same task independently and reached materially different structured conclusions.
+Your job is to critique the disagreement, reconsider the evidence, and produce
+one final answer for the user.
+${contextSection}${contractSection}
+Original task:
+${task}
+
+Candidate records:
+${blocks}
+
+Instructions:
+- Read both candidates carefully.
+- Explicitly critique each candidate's conclusion against the other's evidence.
+- Reconsider each candidate's original conclusion and state any revision that
+  critique causes.
+- Then write ONE final synthesized answer for the user in your own voice.
+- End with the normal confidence envelope on its own final line and nothing
+  after it:
+{"confidence": 0.0, "escalate": false, "reason": "...", "needs_review": false}`;
+}
+
+export type PanelAgreement = 'consensus' | 'material-disagreement' | 'unknown';
+
+export interface PanelDebateReceipt {
+  readonly status: 'ran' | 'not-run';
+  readonly reason:
+    | 'material-disagreement'
+    | 'consensus'
+    | 'unknown'
+    | 'low-synthesis-confidence-budget-exhausted'
+    | 'budget';
+  readonly participants: readonly ProviderId[];
+  readonly calls: 0 | 1;
+}
+
+interface GovernedPanelDebateConfig {
+  readonly conclusionOptionIds: readonly string[];
+  readonly countingOptionIds: readonly string[];
+}
+
+function panelDebateConfig(
+  governorPlan: Pick<AllocationPlan, 'panelAllowed' | 'shape' | 'turnCallBudget'> | undefined,
+  intentFrame: IntentFrame | undefined,
+  plan: PanelPlan,
+): GovernedPanelDebateConfig | undefined {
+  if (
+    governorPlan?.panelAllowed !== true ||
+    governorPlan.turnCallBudget !== 3 ||
+    plan.candidates.length !== 2
+  ) return undefined;
+  const decideOptionIds = (() => {
+    const forks = intentFrame?.forks ?? [];
+    for (const fork of forks) {
+      const forkId = fork.id.trim();
+      const options = (fork.options ?? []).filter((option) => option.trim().length > 0);
+      if (forkId.length > 0 && fork.question.trim().length > 0 && options.length >= 2) {
+        return options.map((_, i) => `${forkId}:${i}`);
+      }
+    }
+    return [];
+  })();
+  if (governorPlan.shape === 'decide' && decideOptionIds.length >= 2) {
+    return { conclusionOptionIds: decideOptionIds, countingOptionIds: decideOptionIds };
+  }
+  if (governorPlan.shape === 'decide') {
+    return { conclusionOptionIds: [], countingOptionIds: [] };
+  }
+  if (governorPlan.shape === 'risky' || governorPlan.shape === 'investigate') {
+    return { conclusionOptionIds: ['OPEN'], countingOptionIds: [] };
+  }
+  return undefined;
+}
+
+export function classifyPanelAgreement(
+  candidates: ReadonlyArray<{ provider: ProviderId; output: string | undefined }>,
+  vocabulary: readonly string[],
+  countingVocabulary: readonly string[] = vocabulary,
+): PanelAgreement {
+  if (vocabulary.length === 0 || countingVocabulary.length === 0) return 'unknown';
+  const counting = new Set(countingVocabulary);
+  const parsed = candidates
+    .map((candidate) => parseFinalLineChoiceEnvelope(candidate.provider, candidate.output, vocabulary))
+    .filter(
+      (parsed): parsed is NonNullable<typeof parsed> =>
+        parsed !== null && counting.has(parsed.choice),
+    );
+  const tally = tallyChoiceEnvelopes(parsed);
+  if (tally.total < 2 || tally.top === undefined) return 'unknown';
+  if (tally.distinctOptions === 1) return 'consensus';
+  if (tally.total === 2 && tally.distinctOptions === 2) return 'material-disagreement';
+  return 'unknown';
+}
+
+export function isLowSynthesisConfidence(
+  assessment: Assessment,
+  policy: Policy,
+  classification: Classification,
+): boolean {
+  const threshold = policy.escalateBelowConfidence[classification.risk];
+  return (
+    assessment.escalate === true ||
+    assessment.needsReview === true ||
+    (assessment.confidence !== null && assessment.confidence < threshold)
+  );
+}
+
+export function formatPanelDebateNotice(receipt: PanelDebateReceipt): string {
+  if (receipt.status === 'ran' && receipt.reason === 'material-disagreement') {
+    return 'Panel debate: ran (material disagreement)';
+  }
+  if (receipt.reason === 'consensus') {
+    return 'Panel debate: not run (consensus)';
+  }
+  if (receipt.reason === 'unknown') {
+    return 'Panel debate: not run (no parseable decision split)';
+  }
+  if (receipt.reason === 'low-synthesis-confidence-budget-exhausted') {
+    return 'Panel debate: trigger observed (low synthesis confidence), not run (budget exhausted)';
+  }
+  return 'Panel debate: not run (budget exhausted)';
+}
+
 // ---------------------------------------------------------------------------
 // Capability seam — the per-turn capability data the SEQUENTIAL path threads
 // onto its route() calls and provider requests, carried into the panel so the
@@ -375,6 +564,8 @@ export interface PanelCapabilityInput {
   readonly turnCallBudget?: number;
   readonly verifyLevel?: import('./verify.js').VerifyLevel;
   readonly roundBudget?: number;
+  readonly governorPlan?: Pick<AllocationPlan, 'panelAllowed' | 'shape' | 'turnCallBudget'>;
+  readonly intentFrame?: IntentFrame;
 }
 
 // ---------------------------------------------------------------------------
@@ -563,12 +754,30 @@ export async function* runCandidate(
     // for-byte the panel default — the audit-parity contract).
     prompt:
       overrides.prompt ??
-      buildPanelCandidatePrompt(
-        decision.tier,
-        task,
-        historyContext,
-        contextFromDeps(deps),
-      ),
+      (capability.governorPlan !== undefined
+        ? (() => {
+            const debate = panelDebateConfig(capability.governorPlan, capability.intentFrame, plan);
+            return debate !== undefined && debate.conclusionOptionIds.length > 0
+              ? buildGovernedPanelCandidatePrompt(
+                  decision.tier,
+                  task,
+                  debate.conclusionOptionIds,
+                  historyContext,
+                  contextFromDeps(deps),
+                )
+              : buildPanelCandidatePrompt(
+                  decision.tier,
+                  task,
+                  historyContext,
+                  contextFromDeps(deps),
+                );
+          })()
+        : buildPanelCandidatePrompt(
+            decision.tier,
+            task,
+            historyContext,
+            contextFromDeps(deps),
+          )),
     cwd: deps.cwd,
     sandbox: deps.sandbox,
     timeoutMs: deps.timeoutMs,
@@ -729,6 +938,10 @@ export async function* runPanel(
     if (affordableCandidates < plan.candidates.length) {
       plan = { ...plan, candidates: plan.candidates.slice(0, affordableCandidates) };
     }
+  }
+  const debateConfig = panelDebateConfig(capability.governorPlan, capability.intentFrame, plan);
+  if (debateConfig !== undefined && plan.candidates.length > 2) {
+    plan = { ...plan, candidates: plan.candidates.slice(0, 2) };
   }
 
   // Append the user message once (matches orchestrate's single user append).
@@ -1031,9 +1244,57 @@ export async function* runPanel(
         : undefined;
   const synthCandidates = succeeded.map((o) => ({ provider: o.provider, output: o.finalText }));
   const synthContext = contextFromDeps(deps);
-  const synthPrompt = synthContractDecision.criteria && synthContract !== undefined
-    ? buildPanelSynthesisPrompt(task, synthCandidates, synthContract, synthContext)
-    : buildPanelSynthesisPrompt(task, synthCandidates, undefined, synthContext);
+  const panelAgreement =
+    debateConfig !== undefined
+      ? classifyPanelAgreement(
+          synthCandidates.map((candidate) => ({
+            provider: candidate.provider,
+            output: candidate.output,
+          })),
+          debateConfig.conclusionOptionIds,
+          debateConfig.countingOptionIds,
+        )
+      : undefined;
+  const runDebate =
+    debateConfig !== undefined &&
+    panelAgreement === 'material-disagreement' &&
+    (capability.turnCallBudget === undefined || attempts < capability.turnCallBudget);
+  if (debateConfig !== undefined && panelAgreement === 'consensus') {
+    const receipt: PanelDebateReceipt = {
+      status: 'not-run',
+      reason: 'consensus',
+      participants: plan.candidates.slice(0, 2),
+      calls: 0,
+    };
+    yield { type: 'notice', level: 'info', message: formatPanelDebateNotice(receipt) };
+  } else if (debateConfig !== undefined && panelAgreement === 'unknown') {
+    const receipt: PanelDebateReceipt = {
+      status: 'not-run',
+      reason: 'unknown',
+      participants: plan.candidates.slice(0, 2),
+      calls: 0,
+    };
+    yield { type: 'notice', level: 'info', message: formatPanelDebateNotice(receipt) };
+  } else if (
+    debateConfig !== undefined &&
+    panelAgreement === 'material-disagreement' &&
+    !runDebate
+  ) {
+    const receipt: PanelDebateReceipt = {
+      status: 'not-run',
+      reason: 'budget',
+      participants: plan.candidates.slice(0, 2),
+      calls: 0,
+    };
+    yield { type: 'notice', level: 'info', message: formatPanelDebateNotice(receipt) };
+  }
+  const synthPrompt = runDebate
+    ? (synthContractDecision.criteria && synthContract !== undefined
+        ? buildPanelCritiqueSynthesisPrompt(task, synthCandidates, synthContract, synthContext)
+        : buildPanelCritiqueSynthesisPrompt(task, synthCandidates, undefined, synthContext))
+    : (synthContractDecision.criteria && synthContract !== undefined
+        ? buildPanelSynthesisPrompt(task, synthCandidates, synthContract, synthContext)
+        : buildPanelSynthesisPrompt(task, synthCandidates, undefined, synthContext));
 
   attempts++;
   yield {
@@ -1043,6 +1304,15 @@ export async function* runPanel(
     model: synthDecision.model,
     attempt: attempts,
   };
+  if (runDebate) {
+    const receipt: PanelDebateReceipt = {
+      status: 'ran',
+      reason: 'material-disagreement',
+      participants: plan.candidates.slice(0, 2),
+      calls: 1,
+    };
+    yield { type: 'notice', level: 'info', message: formatPanelDebateNotice(receipt) };
+  }
 
   const synthReq: import('../providers/port.js').ProviderRequest = {
     model: synthDecision.model,
@@ -1130,6 +1400,21 @@ export async function* runPanel(
     outputTokens: synthOutcome.usage?.outputTokens ?? 0,
     durationMs: synthDurationMs,
   };
+  if (
+    !runDebate &&
+    debateConfig !== undefined &&
+    isLowSynthesisConfidence(synthAssessment, deps.policy, plan.classification) &&
+    capability.turnCallBudget !== undefined &&
+    attempts >= capability.turnCallBudget
+  ) {
+    const receipt: PanelDebateReceipt = {
+      status: 'not-run',
+      reason: 'low-synthesis-confidence-budget-exhausted',
+      participants: plan.candidates.slice(0, 2),
+      calls: 0,
+    };
+    yield { type: 'notice', level: 'info', message: formatPanelDebateNotice(receipt) };
+  }
 
   if (!synthSuccess) {
     // The synthesizer itself failed; surface honestly rather than ship its error.

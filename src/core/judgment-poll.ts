@@ -47,6 +47,7 @@
 import type { CoreEvent, OrchestrateDeps, Tier, Classification } from './types.js';
 import type { ProviderId } from '../providers/port.js';
 import { getModelPricing, calculateCost } from '../infra/pricing.js';
+import { parseFinalLineChoiceEnvelope, tallyChoiceEnvelopes } from './judgment-shared.js';
 import {
   runCandidate,
   mergeCandidates,
@@ -288,46 +289,15 @@ export function parseJudgmentVerdict(
   text: string | undefined,
   optionIds: readonly string[],
 ): JudgmentVerdict | null {
-  try {
-    if (typeof text !== 'string' || text.trim().length === 0) return null;
-    const valid = new Set(optionIds);
-    if (valid.size === 0) return null;
-
-    // Scan lines bottom-up for the LAST parseable JSON object carrying a choice.
-    const lines = text.split(/\r?\n/);
-    for (let i = lines.length - 1; i >= 0; i--) {
-      const line = lines[i]?.trim();
-      if (line === undefined || line.length === 0) continue;
-      if (!(line.startsWith('{') && line.endsWith('}'))) continue;
-      let obj: unknown;
-      try {
-        obj = JSON.parse(line);
-      } catch {
-        continue;
-      }
-      if (obj === null || typeof obj !== 'object') continue;
-      const rec = obj as Record<string, unknown>;
-      const choice = typeof rec['choice'] === 'string' ? rec['choice'].trim() : '';
-      // HONESTY: the choice MUST be a real option id, or the verdict is dropped.
-      if (!valid.has(choice)) continue;
-      const confidence =
-        typeof rec['confidence'] === 'number' && Number.isFinite(rec['confidence'])
-          ? Math.max(0, Math.min(1, rec['confidence']))
-          : undefined;
-      const why = typeof rec['why'] === 'string' ? rec['why'].trim() : '';
-      const keyRisk = typeof rec['key_risk'] === 'string' ? rec['key_risk'].trim() : '';
-      return {
-        vendor,
-        choice,
-        ...(confidence !== undefined ? { confidence } : {}),
-        why,
-        ...(keyRisk.length > 0 ? { keyRisk } : {}),
-      };
-    }
-    return null;
-  } catch {
-    return null;
-  }
+  const parsed = parseFinalLineChoiceEnvelope(vendor, text, optionIds);
+  if (parsed === null) return null;
+  return {
+    vendor: parsed.vendor,
+    choice: parsed.choice,
+    ...(parsed.confidence !== undefined ? { confidence: parsed.confidence } : {}),
+    why: parsed.why ?? '',
+    ...(parsed.keyRisk !== undefined ? { keyRisk: parsed.keyRisk } : {}),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -392,38 +362,13 @@ export function synthesizeJudgment(verdicts: readonly JudgmentVerdict[]): Judgme
   const counted = (verdicts ?? []).filter(
     (v): v is JudgmentVerdict => v !== null && typeof v === 'object' && typeof v.choice === 'string',
   );
-
-  // Build the tally (count per option, vendors per option), preserving first-seen
-  // order so the result is fully deterministic for identical inputs.
-  const order: string[] = [];
-  const byOption = new Map<string, ProviderId[]>();
-  for (const v of counted) {
-    const arr = byOption.get(v.choice);
-    if (arr === undefined) {
-      order.push(v.choice);
-      byOption.set(v.choice, [v.vendor]);
-    } else {
-      arr.push(v.vendor);
-    }
-  }
-  const tally: TallyEntry[] = order
-    .map((optionId) => {
-      const vendors = byOption.get(optionId) ?? [];
-      return { optionId, count: vendors.length, vendors };
-    })
-    // Most-supported first; ties keep first-seen order (stable, deterministic).
-    .sort((a, b) => b.count - a.count);
-
-  const total = counted.length;
+  const { tally, total, top, distinctOptions, tiedAtTop, strictMajority } =
+    tallyChoiceEnvelopes(counted);
 
   // No real signal → SPLIT, chosen null (never fabricate a call from nothing).
-  const top = tally[0];
   if (total === 0 || top === undefined) {
     return { agreement: 'split', tally, chosen: null, dissent: [], verdicts: counted };
   }
-
-  const topCount = top.count;
-  const distinctOptions = tally.length;
 
   // CONSENSUS — ≥2 real minds ALL chose the same option (plural needs plurality;
   // one mind alone is NEVER a consensus).
@@ -433,8 +378,6 @@ export function synthesizeJudgment(verdicts: readonly JudgmentVerdict[]): Judgme
 
   // A genuine divide with NO majority (a tie at the top, or a plurality that is not a
   // strict majority of the total) → SPLIT. The synthesizer is FORBIDDEN from picking.
-  const tiedAtTop = tally.filter((t) => t.count === topCount).length > 1;
-  const strictMajority = topCount * 2 > total; // > half of the counted verdicts
   if (tiedAtTop || !strictMajority) {
     return { agreement: 'split', tally, chosen: null, dissent: [], verdicts: counted };
   }

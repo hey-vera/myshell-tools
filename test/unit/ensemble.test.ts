@@ -13,7 +13,12 @@ import {
   runPanel,
   buildPanelCandidatePrompt,
   buildPanelSynthesisPrompt,
+  buildPanelCritiqueSynthesisPrompt,
+  classifyPanelAgreement,
+  formatPanelDebateNotice,
+  isLowSynthesisConfidence,
   type PanelPlan,
+  type PanelDebateReceipt,
 } from '../../src/core/ensemble.ts';
 import { DEFAULT_POLICY } from '../../src/core/policy.ts';
 import type {
@@ -33,6 +38,7 @@ import type {
   ProviderId,
   Usage,
 } from '../../src/providers/port.ts';
+import type { IntentFrame } from '../../src/core/intent.ts';
 import type {
   DetectedTestCommand,
   TestRunResult,
@@ -307,6 +313,122 @@ Now write the single final answer for the user.`;
   });
 });
 
+describe('S2 — panel agreement projection', () => {
+  it('classifies same valid choice from two candidates as consensus', () => {
+    assert.equal(
+      classifyPanelAgreement(
+        [
+          { provider: 'claude', output: 'A\n{"choice":"F1:0","confidence":0.9}' },
+          { provider: 'codex', output: 'B\n{"choice":"F1:0","confidence":0.8}' },
+        ],
+        ['F1:0', 'F1:1'],
+      ),
+      'consensus',
+    );
+  });
+
+  it('classifies different valid choices as material disagreement', () => {
+    assert.equal(
+      classifyPanelAgreement(
+        [
+          { provider: 'claude', output: 'A\n{"choice":"F1:0","confidence":0.9}' },
+          { provider: 'codex', output: 'B\n{"choice":"F1:1","confidence":0.8}' },
+        ],
+        ['F1:0', 'F1:1'],
+      ),
+      'material-disagreement',
+    );
+  });
+
+  it('classifies malformed or partial verdicts as unknown', () => {
+    assert.equal(
+      classifyPanelAgreement(
+        [
+          { provider: 'claude', output: 'A\n{"choice":"F1:0","confidence":0.9}' },
+          { provider: 'codex', output: 'B\n{"choice":"nope","confidence":0.8}' },
+        ],
+        ['F1:0', 'F1:1'],
+      ),
+      'unknown',
+    );
+  });
+
+  it('OPEN and no counting vocabulary never manufacture disagreement', () => {
+    assert.equal(
+      classifyPanelAgreement(
+        [
+          { provider: 'claude', output: 'A\n{"choice":"OPEN","confidence":0.9}' },
+          { provider: 'codex', output: 'B\n{"choice":"OPEN","confidence":0.8}' },
+        ],
+        ['OPEN'],
+        [],
+      ),
+      'unknown',
+    );
+  });
+});
+
+describe('S3/S4 — pure helpers', () => {
+  it('builds a critique+synthesis prompt with both conclusions and the assess envelope instruction', () => {
+    const prompt = buildPanelCritiqueSynthesisPrompt(
+      'ship the feature',
+      [
+        { provider: 'claude', output: 'Answer A\n{"choice":"F1:0","confidence":0.7}' },
+        { provider: 'codex', output: 'Answer B\n{"choice":"F1:1","confidence":0.6}' },
+      ],
+      { version: 1, objective: 'ship the feature safely' },
+      { memoryContext: 'USER PREFERENCES AND MEMORY:\n- concise' },
+    );
+    assert.match(prompt, /CANDIDATE 1 \(claude\)/);
+    assert.match(prompt, /CANDIDATE 2 \(codex\)/);
+    assert.match(prompt, /"choice":"F1:0"/);
+    assert.match(prompt, /"choice":"F1:1"/);
+    assert.match(prompt, /critique each candidate's conclusion/i);
+    assert.match(prompt, /"needs_review": false/);
+    assert.match(prompt, /CONTRACT TO ADJUDICATE AGAINST/);
+    assert.match(prompt, /USER PREFERENCES AND MEMORY/);
+  });
+
+  it('formats the additive debate receipts honestly', () => {
+    const ran: PanelDebateReceipt = {
+      status: 'ran',
+      reason: 'material-disagreement',
+      participants: ['claude', 'codex'],
+      calls: 1,
+    };
+    const low: PanelDebateReceipt = {
+      status: 'not-run',
+      reason: 'low-synthesis-confidence-budget-exhausted',
+      participants: ['claude', 'codex'],
+      calls: 0,
+    };
+    assert.equal(formatPanelDebateNotice(ran), 'Panel debate: ran (material disagreement)');
+    assert.equal(
+      formatPanelDebateNotice(low),
+      'Panel debate: trigger observed (low synthesis confidence), not run (budget exhausted)',
+    );
+  });
+
+  it('reuses the policy confidence gate for low synthesis confidence', () => {
+    assert.equal(
+      isLowSynthesisConfidence(
+        { confidence: 0.2, escalate: false, reason: 'unsure', needsReview: false },
+        DEFAULT_POLICY,
+        HIGH,
+      ),
+      true,
+    );
+    assert.equal(
+      isLowSynthesisConfidence(
+        { confidence: 0.95, escalate: false, reason: 'done', needsReview: false },
+        DEFAULT_POLICY,
+        HIGH,
+      ),
+      false,
+    );
+  });
+});
+
 // ---------------------------------------------------------------------------
 // MF1 — the binding regression: panel turns are no longer context-blind.
 //
@@ -515,6 +637,26 @@ const PLAN: PanelPlan = {
   synthesizer: 'claude',
   classification: HIGH,
 };
+
+const DECIDE_FRAME: IntentFrame = {
+  version: 1,
+  goal: 'pick an implementation path',
+  confidence: 'high',
+  source: 'model',
+  forks: [
+    { id: 'F1', question: 'Which path?', options: ['A', 'B'] },
+  ],
+};
+
+function governedCapability(
+  shape: 'decide' | 'risky' | 'investigate' = 'decide',
+): NonNullable<Parameters<typeof runPanel>[5]> {
+  return {
+    turnCallBudget: 3,
+    governorPlan: { panelAllowed: true, shape, turnCallBudget: 3 },
+    ...(shape === 'decide' ? { intentFrame: DECIDE_FRAME } : {}),
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Integration: runPanel
@@ -1150,5 +1292,217 @@ describe('runPanel — Candidate Quality Gate', () => {
     assert.equal(final.success, false);
     assert.equal(panelAssistantEntries(session.entries).length, 0);
     assert.equal(events.filter((e) => e.type === 'final').length, 1);
+  });
+});
+
+describe('S2/S3/S4 — governed panel debate', () => {
+  it('consensus uses the byte-identical ordinary synthesis prompt and exactly three calls', async () => {
+    const rec = { calls: 0, prompts: [] as string[] };
+    const claude = makeSeqProvider(
+      'claude',
+      ['Candidate A\n{"choice":"F1:0","confidence":0.9}', 'Synth\n{"confidence":0.9,"escalate":false,"reason":"done","needs_review":false}'],
+      rec,
+    );
+    const codexRec = { calls: 0, prompts: [] as string[] };
+    const codex = makeSeqProvider(
+      'codex',
+      ['Candidate B\n{"choice":"F1:0","confidence":0.8}'],
+      codexRec,
+    );
+    const { deps, ledger } = panelDeps({ claude, codex });
+
+    const events = await collect(
+      runPanel('hard task', deps, PLAN, new AbortController().signal, undefined, governedCapability()),
+    );
+
+    assert.equal(rec.calls + codexRec.calls, 3);
+    assert.equal(ledger.entries.length, 3);
+    const final = events.find((e) => e.type === 'final');
+    assert.ok(final !== undefined && final.type === 'final');
+    if (final?.type === 'final') assert.equal(final.attempts, 3);
+    assert.equal(
+      rec.prompts[1],
+      buildPanelSynthesisPrompt('hard task', [
+        { provider: 'claude', output: 'Candidate A\n{"choice":"F1:0","confidence":0.9}' },
+        { provider: 'codex', output: 'Candidate B\n{"choice":"F1:0","confidence":0.8}' },
+      ], { version: 1, objective: 'hard task' }),
+    );
+    assert.ok(events.some((e) => e.type === 'notice' && e.message === 'Panel debate: not run (consensus)'));
+    assert.ok(!events.some((e) => e.type === 'notice' && /ran \(material disagreement\)/.test(e.message)));
+  });
+
+  it('unknown consumes exactly three calls and still uses the ordinary synthesis prompt', async () => {
+    const rec = { calls: 0, prompts: [] as string[] };
+    const claude = makeSeqProvider(
+      'claude',
+      ['Candidate A\n{"choice":"OPEN","confidence":0.9}', 'Synth\n{"confidence":0.9,"escalate":false,"reason":"done","needs_review":false}'],
+      rec,
+    );
+    const codexRec = { calls: 0, prompts: [] as string[] };
+    const codex = makeSeqProvider('codex', ['Candidate B\n{"choice":"OPEN","confidence":0.8}'], codexRec);
+    const { deps } = panelDeps({ claude, codex });
+
+    const events = await collect(
+      runPanel('hard task', deps, PLAN, new AbortController().signal, undefined, governedCapability('risky')),
+    );
+
+    assert.equal(rec.calls + codexRec.calls, 3);
+    assert.ok(events.some((e) => e.type === 'notice' && e.message === 'Panel debate: not run (no parseable decision split)'));
+    assert.equal(
+      rec.prompts[1],
+      buildPanelSynthesisPrompt('hard task', [
+        { provider: 'claude', output: 'Candidate A\n{"choice":"OPEN","confidence":0.9}' },
+        { provider: 'codex', output: 'Candidate B\n{"choice":"OPEN","confidence":0.8}' },
+      ], { version: 1, objective: 'hard task' }),
+    );
+  });
+
+  it('material disagreement uses exactly one combined critique+synthesis call with context/contract/request parity', async () => {
+    const claudeReqs: ProviderRequest[] = [];
+    const codexReqs: ProviderRequest[] = [];
+    let claudeCall = 0;
+    const { deps, ledger } = panelDeps({
+      claude: {
+        id: 'claude',
+        async detect() {
+          return {
+            id: 'claude',
+            installed: true,
+            version: '1',
+            authenticated: true,
+            binaryPath: '/f',
+            availableModels: [],
+          };
+        },
+        async *run(req: ProviderRequest, _signal: AbortSignal): AsyncIterable<ProviderEvent> {
+          claudeReqs.push(req);
+          const text = claudeCall++ === 0
+            ? 'Candidate A\n{"choice":"F1:0","confidence":0.9}'
+            : 'Final synthesis\n{"confidence":0.92,"escalate":false,"reason":"done","needs_review":false}';
+          yield { type: 'done', text, usage: USAGE, raw: {} };
+        },
+      },
+      codex: makeCapturingProvider('codex', 'Candidate B\n{"choice":"F1:1","confidence":0.8}', codexReqs),
+    });
+    const governedDeps: OrchestrateDeps = {
+      ...deps,
+      memoryContext: 'USER PREFERENCES AND MEMORY:\n- concise',
+      workContract: { version: 1, objective: 'keep the fix local' },
+    };
+
+    const events = await collect(
+      runPanel('hard task', governedDeps, PLAN, new AbortController().signal, undefined, {
+        ...governedCapability(),
+        attachments: [{ path: '/tmp/a.png', kind: 'image' }],
+        webSearch: true,
+      }),
+    );
+
+    assert.equal(claudeReqs.length + codexReqs.length, 3);
+    assert.equal(ledger.entries.length, 3);
+    const synthPrompt = claudeReqs[1]?.prompt ?? '';
+    assert.match(synthPrompt, /CANDIDATE 1 \(claude\)/);
+    assert.match(synthPrompt, /CANDIDATE 2 \(codex\)/);
+    assert.match(synthPrompt, /"choice":"F1:0"/);
+    assert.match(synthPrompt, /"choice":"F1:1"/);
+    assert.match(synthPrompt, /critique each candidate's conclusion/i);
+    assert.match(synthPrompt, /CONTRACT TO ADJUDICATE AGAINST/);
+    assert.match(synthPrompt, /USER PREFERENCES AND MEMORY/);
+    assert.equal(claudeReqs[1]?.webSearch, true);
+    assert.deepEqual(claudeReqs[1]?.attachments, [{ path: '/tmp/a.png', kind: 'image' }]);
+    const final = events.find((e) => e.type === 'final');
+    assert.ok(final !== undefined && final.type === 'final');
+    if (final?.type === 'final') assert.equal(final.attempts, 3);
+    assert.ok(events.some((e) => e.type === 'notice' && e.message === 'Panel debate: ran (material disagreement)'));
+    assert.equal(events.filter((e) => e.type === 'final').length, 1);
+  });
+
+  it('governor-off panels never emit the debate receipt', async () => {
+    const { deps } = panelDeps({
+      claude: makeProvider('claude', 'A'),
+      codex: makeProvider('codex', 'B'),
+    });
+    const events = await collect(runPanel('hard task', deps, PLAN, new AbortController().signal));
+    assert.ok(!events.some((e) => e.type === 'notice' && e.message.startsWith('Panel debate:')));
+  });
+
+  it('debate output reaches the gate: green accepts once, red blocks when no repair budget remains', async () => {
+    const greenClaude = makeSeqProvider(
+      'claude',
+      [
+        'Candidate A\n{"choice":"F1:0","confidence":0.9}',
+        'Debated\n{"confidence":0.91,"escalate":false,"reason":"done","needs_review":false}',
+      ],
+    );
+    const greenCodex = makeSeqProvider('codex', ['Candidate B\n{"choice":"F1:1","confidence":0.8}']);
+    const greenPort = makeVerifyPort([greenRun()]);
+    const green = panelDeps({ claude: greenClaude, codex: greenCodex });
+    const greenEvents = await collect(
+      runPanel(
+        'hard task',
+        { ...green.deps, verifyPort: greenPort, verifyLevel: 'tests' },
+        PLAN,
+        new AbortController().signal,
+        undefined,
+        governedCapability(),
+      ),
+    );
+    const greenFinal = greenEvents.at(-1);
+    assert.ok(greenFinal !== undefined && greenFinal.type === 'final' && greenFinal.success === true);
+    assert.equal(panelAssistantEntries(green.session.entries).length, 1);
+    assert.equal(greenEvents.filter((e) => e.type === 'final').length, 1);
+
+    const redClaudeRec = { calls: 0, prompts: [] as string[] };
+    const redClaude = makeSeqProvider(
+      'claude',
+      [
+        'Candidate A\n{"choice":"F1:0","confidence":0.9}',
+        'Debated\n{"confidence":0.91,"escalate":false,"reason":"done","needs_review":false}',
+      ],
+      redClaudeRec,
+    );
+    const redCodex = makeSeqProvider('codex', ['Candidate B\n{"choice":"F1:1","confidence":0.8}']);
+    const redPort = makeVerifyPort([redRun()]);
+    const red = panelDeps({ claude: redClaude, codex: redCodex });
+    const redEvents = await collect(
+      runPanel(
+        'hard task',
+        { ...red.deps, verifyPort: redPort, verifyLevel: 'tests' },
+        PLAN,
+        new AbortController().signal,
+        undefined,
+        governedCapability(),
+      ),
+    );
+    const redFinal = redEvents.at(-1);
+    assert.ok(redFinal !== undefined && redFinal.type === 'final' && redFinal.success === false);
+    assert.equal(panelAssistantEntries(red.session.entries).length, 0);
+    assert.equal(redClaudeRec.calls, 2, 'no repair call remains after the 3-call cap is spent');
+    assert.equal(redEvents.filter((e) => e.type === 'final').length, 1);
+  });
+
+  it('low synthesis confidence records trigger-observed/budget-exhausted with no fourth call', async () => {
+    const rec = { calls: 0, prompts: [] as string[] };
+    const claude = makeSeqProvider(
+      'claude',
+      [
+        'Candidate A\n{"choice":"F1:0","confidence":0.9}',
+        'Ordinary synth\n{"confidence":0.2,"escalate":false,"reason":"unsure","needs_review":false}',
+      ],
+      rec,
+    );
+    const codexRec = { calls: 0, prompts: [] as string[] };
+    const codex = makeSeqProvider('codex', ['Candidate B\n{"choice":"F1:0","confidence":0.8}'], codexRec);
+    const { deps, ledger } = panelDeps({ claude, codex });
+
+    const events = await collect(
+      runPanel('hard task', deps, PLAN, new AbortController().signal, undefined, governedCapability()),
+    );
+
+    assert.equal(rec.calls + codexRec.calls, 3);
+    assert.equal(ledger.entries.length, 3);
+    assert.ok(events.some((e) => e.type === 'notice' && e.message === 'Panel debate: trigger observed (low synthesis confidence), not run (budget exhausted)'));
+    assert.equal(events.filter((e) => e.type === 'final').length, 1);
+    assert.ok(!rec.prompts.some((p) => /critique each candidate's conclusion/i.test(p)));
   });
 });
