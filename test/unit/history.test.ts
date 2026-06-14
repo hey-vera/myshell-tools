@@ -5,7 +5,11 @@
 
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { compactHistory, historyTruncationInfo } from '../../src/core/history.ts';
+import {
+  compactHistory,
+  historyTruncationInfo,
+  planHistoryCompaction,
+} from '../../src/core/history.ts';
 import type { SessionEntry } from '../../src/core/types.ts';
 
 // ---------------------------------------------------------------------------
@@ -39,6 +43,31 @@ describe('compactHistory — empty / no input', () => {
     assert.doesNotThrow(() => compactHistory([]));
     assert.doesNotThrow(() => compactHistory([makeEntry('user', '')]));
     assert.doesNotThrow(() => compactHistory([makeEntry('assistant', '')]));
+  });
+});
+
+describe('planHistoryCompaction', () => {
+  it('keeps the existing defaults at and below the context cap', () => {
+    assert.deepEqual(planHistoryCompaction(0), { maxChars: 6000, maxTurns: 12, reduced: false });
+    assert.deepEqual(planHistoryCompaction(6000), {
+      maxChars: 6000,
+      maxTurns: 12,
+      reduced: false,
+    });
+  });
+
+  it('subtracts only the raw context overflow and reaches zero at 12000 chars', () => {
+    assert.deepEqual(planHistoryCompaction(6500), {
+      maxChars: 5500,
+      maxTurns: 12,
+      reduced: true,
+    });
+    assert.deepEqual(planHistoryCompaction(12000), {
+      maxChars: 0,
+      maxTurns: 12,
+      reduced: true,
+    });
+    assert.equal(planHistoryCompaction(20000).maxChars, 0);
   });
 });
 
@@ -440,5 +469,34 @@ describe('historyTruncationInfo', () => {
     assert.equal(info.droppedTurns, 17);
     assert.ok(!out.includes('msg-17-end'), 'compactHistory omits the 17 older turns');
     assert.ok(out.includes('msg-18-end'), 'compactHistory keeps the recent window');
+  });
+
+  it('reports every turn omitted by a non-positive budget', () => {
+    const entries = [makeEntry('user', 'old'), makeEntry('assistant', 'new')];
+    assert.equal(compactHistory(entries, { maxChars: 0 }), '');
+    assert.equal(compactHistory(entries, { maxChars: -1 }), '');
+    assert.deepEqual(historyTruncationInfo(entries, { maxChars: 0 }), {
+      truncated: true,
+      droppedTurns: 2,
+    });
+  });
+});
+
+describe('compactHistory — tiny positive budgets', () => {
+  it('never exceeds maxChars when the truncation marker itself does not fit', () => {
+    const entry = makeEntry('user', 'abcdefghijklmnopqrstuvwxyz');
+    for (const maxChars of [1, 5, 12, 13]) {
+      const result = compactHistory([entry], { maxChars });
+      assert.equal(result.length, maxChars);
+      assert.equal(result, `User: abcdefghijklmnopqrstuvwxyz`.slice(0, maxChars));
+      assert.ok(!result.includes('…[truncated]'));
+    }
+  });
+
+  it('uses exactly one marker once there is room for it', () => {
+    const result = compactHistory([makeEntry('user', 'x'.repeat(100))], { maxChars: 20 });
+    assert.equal(result.length, 20);
+    assert.equal(result.match(/…\[truncated\]/g)?.length, 1);
+    assert.equal(result.match(/User:/g)?.length, 1);
   });
 });

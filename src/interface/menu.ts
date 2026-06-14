@@ -117,7 +117,6 @@ import type { PlanInfo } from '../core/policy.js';
 import type { Mode } from '../core/policy.js';
 import { planNativeSession } from '../core/native-session.js';
 import { decideHistoryPolicy } from '../core/turn-directive.js';
-import { historyTruncationInfo } from '../core/history.js';
 import { availableAfterCooldown, cooldownExpiry } from '../core/cooldown.js';
 import { deriveBaselineOrder, deriveLiveProviderOrder } from '../core/capacity-allocator.js';
 import { learnProviderOrder, learnModelOutcomeOrder } from '../core/routing-memory.js';
@@ -1076,21 +1075,6 @@ export async function runChatLoop(
       if (transcript.length > 0) {
         out.write('\n' + transcript + '\n');
       }
-      // Honesty: the transcript above shows the WHOLE scrollback, but the model
-      // only receives compactHistory's recent window. When that compaction drops
-      // whole turns, say so once — quietly — so the user knows the model isn't
-      // seeing everything above. Uses the same bounds as the actual replay, so
-      // the note can't disagree with what was sent. Non-alarming, dim, one line.
-      const trunc = historyTruncationInfo(priorEntries);
-      if (trunc.truncated) {
-        const turnWord = trunc.droppedTurns === 1 ? 'turn' : 'turns';
-        out.write(
-          dim(
-            `  ※ ${trunc.droppedTurns} older ${turnWord} above are outside the model's context window — it sees the recent part.\n`,
-            out.color,
-          ),
-        );
-      }
     }
   }
 
@@ -1203,6 +1187,7 @@ export async function runChatLoop(
   }
 
   let currentAc: AbortController | null = null;
+  let lastReportedHistoryDropCount: number | undefined;
   // Set true when the in-flight turn was interrupted by ESC (distinct from the
   // Ctrl+C escape model). Read by the post-turn slot to discard the typed-ahead
   // queue (per decidePostTurn) and print the ESC status once.
@@ -2124,6 +2109,25 @@ export async function runChatLoop(
           sandbox: ctx.sandbox,
           timeoutMs: ctx.timeoutMs,
           ...(hist.length > 0 ? { history: hist } : {}),
+          ...(hist.length > 0
+            ? {
+                onHistoryCompacted: (report) => {
+                  if (
+                    report.truncated &&
+                    report.droppedTurns !== lastReportedHistoryDropCount
+                  ) {
+                    const turnWord = report.droppedTurns === 1 ? 'turn' : 'turns';
+                    out.write(
+                      dim(
+                        `  ※ ${report.droppedTurns} older ${turnWord} above are outside the model's context window — it sees the recent part.\n`,
+                        out.color,
+                      ),
+                    );
+                  }
+                  lastReportedHistoryDropCount = report.droppedTurns;
+                },
+              }
+            : {}),
           ...(Object.keys(availableModels).length > 0 ? { availableModels } : {}),
           ...(authenticatedProviders.length > 0 ? { authenticatedProviders } : {}),
           ...(Object.keys(planInfos).length > 0 ? { planInfos } : {}),

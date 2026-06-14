@@ -37,7 +37,7 @@ import { deriveTaskKind, estimateInputTokens } from './orchestrate-signals.js';
 import { authorizeTier } from './flagship.js';
 import type { FlagshipTrigger, FlagshipDecision } from './flagship.js';
 import { withMemoryProposalAttached } from './orchestrate-memory.js';
-import { compactHistory } from './history.js';
+import { compactHistory, historyTruncationInfo, planHistoryCompaction } from './history.js';
 import { serializeQuestionSet } from './questions.js';
 import { planPanel, runPanel } from './ensemble.js';
 import { planHedge, runHedged } from './hedge.js';
@@ -80,7 +80,10 @@ import {
   compileTurnDirective,
   detectGenericOpenMenu,
 } from './turn-directive.js';
-import { assembleContextBlocksDetailed, engagementBiasOf } from './prompt-context.js';
+import {
+  assembleContextBlocksDetailed,
+  engagementBiasOf,
+} from './prompt-context.js';
 import { ENGINE_BEHAVIOR_VERSION, isLegacyEngineEntry } from './engine-version.js';
 import { deriveWorkStateFromHistory, renderWorkStateBlock } from './work-state.js';
 import { renderVisionTriageBlock } from './vision-triage.js';
@@ -1252,6 +1255,12 @@ export async function* orchestrate(
   // NOT from this replay copy, so excluding a poisoned turn's PROSE here never loses
   // its workTrace data. The store is untouched (we filter a LOCAL copy only).
   // Fail-soft: any other policy uses the full history as before.
+  const initialExecutorContextOptions = buildInitialExecutorContextBlockOptions(deps);
+  const initialExecutorContext =
+    initialExecutorContextOptions !== undefined
+      ? assembleContextBlocksDetailed(initialExecutorContextOptions)
+      : undefined;
+  const historyPlan = planHistoryCompaction(initialExecutorContext?.rawLength ?? 0);
   const replayHistory =
     directive.historyPolicy.replayMode === 'quarantine_assistant_prose' &&
     deps.history !== undefined
@@ -1261,10 +1270,33 @@ export async function* orchestrate(
             (!detectGenericOpenMenu(e.content) && !isLegacyEngineEntry(e.engineBehaviorVersion)),
         )
       : deps.history;
-  const historyContext =
-    replayHistory !== undefined && replayHistory.length > 0
-      ? compactHistory(replayHistory)
-      : undefined;
+  let historyContext: string | undefined;
+  if (replayHistory !== undefined && replayHistory.length > 0) {
+    if (!historyPlan.reduced) {
+      historyContext = compactHistory(replayHistory);
+    } else if (historyPlan.maxChars > 0) {
+      historyContext = compactHistory(replayHistory, {
+        maxChars: historyPlan.maxChars,
+        maxTurns: historyPlan.maxTurns,
+      });
+    }
+    if (
+      deps.onHistoryCompacted !== undefined &&
+      (deps.nativeSession === undefined || deps.nativeSession.length === 0)
+    ) {
+      const truncation = historyTruncationInfo(
+        replayHistory,
+        historyPlan.reduced
+          ? { maxChars: historyPlan.maxChars, maxTurns: historyPlan.maxTurns }
+          : undefined,
+      );
+      try {
+        deps.onHistoryCompacted({ ...historyPlan, ...truncation });
+      } catch {
+        // Observation only: interface reporting must never block orchestration.
+      }
+    }
+  }
 
   // -------------------------------------------------------------------------
   // (c1) CAPABILITY TASK SIGNALS (capability registry §3) — computed ONCE per
@@ -1276,11 +1308,6 @@ export async function* orchestrate(
   //      selected, and every route() call below behaves byte-for-byte as before.
   // -------------------------------------------------------------------------
   const mode: Mode = modeFromPolicy(deps.policy);
-  const initialExecutorContextOptions = buildInitialExecutorContextBlockOptions(deps);
-  const initialExecutorContext =
-    initialExecutorContextOptions !== undefined
-      ? assembleContextBlocksDetailed(initialExecutorContextOptions)
-      : undefined;
   const estimatedInputTokens = estimateInputTokens([
     task,
     historyContext,

@@ -338,6 +338,15 @@ export interface OrchestrateDeps {
    */
   readonly history?: readonly SessionEntry[];
   /**
+   * Optional observation seam for the exact history bounds used on this turn.
+   * The interactive interface uses it to report truncation only after context
+   * pressure is known; absent callers remain byte-for-byte unchanged.
+   */
+  readonly onHistoryCompacted?: (
+    report: import('./history.js').HistoryCompactionPlan &
+      import('./history.js').HistoryTruncationInfo,
+  ) => void;
+  /**
    * Advertised model lists from provider detection, keyed by provider id.
    * When supplied, route() restricts candidates to models that the provider CLI
    * actually advertises, preventing the CLI from routing to a model it cannot run.

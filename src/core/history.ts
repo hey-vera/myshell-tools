@@ -22,7 +22,41 @@ import { stripTrailingGoalMarker } from './goal.js';
 
 const DEFAULT_MAX_CHARS = 6000;
 const DEFAULT_MAX_TURNS = 12;
+const CONTEXT_PRESSURE_CHAR_CAP = 6000;
 const TRUNCATION_MARKER = ' …[truncated]';
+
+export interface HistoryCompactionPlan {
+  readonly maxChars: number;
+  readonly maxTurns: number;
+  readonly reduced: boolean;
+}
+
+/**
+ * Reduce history by exactly the amount raw context exceeds its own 6,000-char cap.
+ * Context at or below the cap retains the existing history defaults unchanged.
+ */
+export function planHistoryCompaction(
+  rawContextLength: number,
+): HistoryCompactionPlan {
+  const normalizedRawLength = Number.isFinite(rawContextLength)
+    ? Math.max(0, rawContextLength)
+    : 0;
+  if (normalizedRawLength <= CONTEXT_PRESSURE_CHAR_CAP) {
+    return {
+      maxChars: DEFAULT_MAX_CHARS,
+      maxTurns: DEFAULT_MAX_TURNS,
+      reduced: false,
+    };
+  }
+  return {
+    maxChars: Math.max(
+      0,
+      DEFAULT_MAX_CHARS - (normalizedRawLength - CONTEXT_PRESSURE_CHAR_CAP),
+    ),
+    maxTurns: DEFAULT_MAX_TURNS,
+    reduced: true,
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Internal helpers
@@ -120,6 +154,10 @@ export function compactHistory(
     const maxChars = opts?.maxChars ?? DEFAULT_MAX_CHARS;
     const maxTurns = opts?.maxTurns ?? DEFAULT_MAX_TURNS;
 
+    if (maxChars <= 0) {
+      return '';
+    }
+
     // Take the most recent up-to-maxTurns entries, then keep chronological order
     const window = entries.slice(-maxTurns);
 
@@ -148,7 +186,10 @@ export function compactHistory(
     if (formatted.length > 0) {
       const last = formatted[formatted.length - 1];
       if (last !== undefined && last.length > maxChars) {
-        const truncated = last.slice(0, maxChars - TRUNCATION_MARKER.length) + TRUNCATION_MARKER;
+        const truncated =
+          maxChars <= TRUNCATION_MARKER.length
+            ? last.slice(0, maxChars)
+            : last.slice(0, maxChars - TRUNCATION_MARKER.length) + TRUNCATION_MARKER;
         return truncated;
       }
       if (last !== undefined) {
@@ -197,6 +238,10 @@ export function historyTruncationInfo(
 
     const maxChars = opts?.maxChars ?? DEFAULT_MAX_CHARS;
     const maxTurns = opts?.maxTurns ?? DEFAULT_MAX_TURNS;
+
+    if (maxChars <= 0) {
+      return { truncated: true, droppedTurns: entries.length };
+    }
 
     // (1) maxTurns windowing drops the oldest turns beyond the window.
     const droppedByTurns = Math.max(0, entries.length - maxTurns);
