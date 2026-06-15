@@ -12,6 +12,8 @@ import {
   deriveLiveProviderOrder,
   legacyModeToIntensity,
   regimeForIntensity,
+  concurrencyCeilingForRegime,
+  crossGoalCap,
   type CapacityWeight,
 } from '../../src/core/capacity-allocator.ts';
 import type { ProviderId } from '../../src/providers/port.ts';
@@ -176,6 +178,104 @@ describe('regimeForIntensity', () => {
       assert.equal(regimeForIntensity(level), regime);
     });
   }
+});
+
+describe('concurrencyCeilingForRegime — tuning is a CEILING (never above BASE_ACTIVE_LIMIT=2)', () => {
+  const cases = [
+    ['focused', 1],
+    ['pair', 1],
+    ['fleet', 2],
+    ['fleet-hedge', 2],
+    ['fleet-panel', 2],
+  ] as const;
+  for (const [regime, ceiling] of cases) {
+    it(`${regime} → ${ceiling}`, () => {
+      assert.equal(concurrencyCeilingForRegime(regime), ceiling);
+    });
+  }
+});
+
+describe('crossGoalCap — load-bearing min of every ceiling + demand', () => {
+  it('returns the minimum of the four inputs', () => {
+    assert.equal(
+      crossGoalCap({
+        activeLimit: 2,
+        tuningCeiling: 2,
+        callBudgetCeiling: 2,
+        genuineParallelGoalCount: 2,
+      }),
+      2,
+    );
+  });
+
+  it('a low provider ceiling caps it to 1 regardless of high tuning/budget/demand', () => {
+    assert.equal(
+      crossGoalCap({
+        activeLimit: 1,
+        tuningCeiling: 2,
+        callBudgetCeiling: 2,
+        genuineParallelGoalCount: 3,
+      }),
+      1,
+    );
+  });
+
+  it('a budget of 1 caps it to 1', () => {
+    assert.equal(
+      crossGoalCap({
+        activeLimit: 2,
+        tuningCeiling: 2,
+        callBudgetCeiling: 1,
+        genuineParallelGoalCount: 2,
+      }),
+      1,
+    );
+  });
+
+  it('the birdhouse-at-max-tuning case: max regime + high budget + 3 providers but ONE genuine goal ⇒ 1', () => {
+    assert.equal(
+      crossGoalCap({
+        activeLimit: 2, // planSchedule already capped at BASE_ACTIVE_LIMIT
+        tuningCeiling: concurrencyCeilingForRegime('fleet-panel'), // 2
+        callBudgetCeiling: 2,
+        genuineParallelGoalCount: 1, // only one independent runnable goal
+      }),
+      1,
+    );
+  });
+
+  it('no single high signal can cancel a lower quota (zero demand ⇒ 0)', () => {
+    assert.equal(
+      crossGoalCap({
+        activeLimit: 2,
+        tuningCeiling: 2,
+        callBudgetCeiling: 2,
+        genuineParallelGoalCount: 0,
+      }),
+      0,
+    );
+  });
+
+  it('garbage inputs degrade to 0 (safe floor, never unbounded)', () => {
+    assert.equal(
+      crossGoalCap({
+        activeLimit: NaN,
+        tuningCeiling: 2,
+        callBudgetCeiling: 2,
+        genuineParallelGoalCount: 2,
+      }),
+      0,
+    );
+    assert.equal(
+      crossGoalCap({
+        activeLimit: 2,
+        tuningCeiling: -5,
+        callBudgetCeiling: 2,
+        genuineParallelGoalCount: 2,
+      }),
+      0,
+    );
+  });
 });
 
 describe('legacyModeToIntensity', () => {

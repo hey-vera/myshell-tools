@@ -104,6 +104,14 @@ export interface SchedulePlanInput {
   readonly pressure: QuotaPressure;
   /** The count of providers currently signed in (the honest concurrency ceiling). */
   readonly authedProviderCount: number;
+  /**
+   * ADDITIVE optional cross-goal ceiling (Phase D `crossGoalCap`). When ABSENT,
+   * the activeLimit math is EXACTLY today's (byte-identical). When PRESENT, the
+   * computed activeLimit is additionally clamped by `Math.min(limit, maxActive)`
+   * — a non-negative integer ceiling from the call site (tuning/budget/demand).
+   * A negative/NaN value degrades to 0 (nothing runs), never an uncapped run.
+   */
+  readonly maxActive?: number;
 }
 
 /** Result of the PURE {@link planSchedule}: the bound + the running/queued split. */
@@ -161,6 +169,13 @@ export function planSchedule(input: SchedulePlanInput): SchedulePlan {
   // Degrade under pressure: high pressure → single-file (but never below 1 while
   // at least one provider is signed in).
   if (input.pressure >= 2 && limit > 1) limit = 1;
+  // ADDITIVE Phase-D clamp: when a cross-goal ceiling is supplied, it can only
+  // LOWER the limit (never raise it). Absent ⇒ this line is a no-op and the math
+  // is byte-identical to before. A non-finite/negative maxActive degrades to 0.
+  if (input.maxActive !== undefined) {
+    const cap = Number.isFinite(input.maxActive) ? Math.max(0, Math.floor(input.maxActive)) : 0;
+    limit = Math.min(limit, cap);
+  }
   // Never schedule more than we have goals for; never negative.
   limit = Math.max(0, Math.min(limit, goals.length));
 

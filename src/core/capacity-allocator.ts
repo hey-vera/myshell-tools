@@ -139,6 +139,59 @@ export function regimeForIntensity(level: Exclude<Intensity, 'auto'>): Intensity
   }
 }
 
+/**
+ * The maximum number of goals that may run TRULY CONCURRENTLY for a given
+ * intensity/tuning regime — the "tuning is a CEILING, never a floor" rule
+ * expressed as a pure mapping. `focused`/`pair` → 1 (single-file: low/standard
+ * tuning never engages cross-goal concurrency, exactly today's behavior); the
+ * `fleet*` regimes → 2, never above {@link BASE_ACTIVE_LIMIT} (= 2 in
+ * scheduler.ts). Raising the fleet ceiling to 3–4 is a deferred phase gated on
+ * ≥3 signed-in providers; this function never returns more than 2. Pure, total.
+ */
+export function concurrencyCeilingForRegime(regime: IntensityRegime): 1 | 2 {
+  switch (regime) {
+    case 'focused':
+    case 'pair':
+      return 1;
+    case 'fleet':
+    case 'fleet-hedge':
+    case 'fleet-panel':
+      return 2;
+  }
+}
+
+/** Named ceilings + the demand term for {@link crossGoalCap}. */
+export interface CrossGoalCapInput {
+  /** Honest provider/pressure ceiling from planSchedule.activeLimit. */
+  readonly activeLimit: number;
+  /** Tuning ceiling from {@link concurrencyCeilingForRegime}. */
+  readonly tuningCeiling: number;
+  /** Governor turnCallBudget headroom ceiling (budget 1 → 1, ≥2 → 2). */
+  readonly callBudgetCeiling: number;
+  /** DEMAND: count of independent runnable goals (no unmet dependency). */
+  readonly genuineParallelGoalCount: number;
+}
+
+/**
+ * The load-bearing cross-goal concurrency cap: the `min` of every named ceiling
+ * and the demand term — mirroring `planningDepthCap`'s pattern (3.122) where NO
+ * single high signal can cancel a lower quota. Max tuning + a high budget + 3
+ * providers but only ONE genuinely-parallel goal ⇒ cap 1 (the birdhouse case:
+ * the excavator never starts). Pure, total, never throws.
+ *
+ * Each input is floored at 0 (a NaN/negative/∞ input degrades to 0, the safe
+ * "nothing runs" floor rather than an unbounded fan-out).
+ */
+export function crossGoalCap(input: CrossGoalCapInput): number {
+  const floor = (n: number): number => (Number.isFinite(n) ? Math.max(0, Math.floor(n)) : 0);
+  return Math.min(
+    floor(input.activeLimit),
+    floor(input.tuningCeiling),
+    floor(input.callBudgetCeiling),
+    floor(input.genuineParallelGoalCount),
+  );
+}
+
 export function legacyModeToIntensity(
   mode: Mode,
   opts: { panel?: boolean; hedge?: boolean } = {},

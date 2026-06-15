@@ -91,6 +91,88 @@ describe('planSchedule — activeLimit math + partition', () => {
   });
 });
 
+describe('planSchedule — additive maxActive clamp (D3: absent === today, present clamps)', () => {
+  it('ABSENT maxActive is byte-identical to the 3.127 numbers (neutrality)', () => {
+    // Mirror the exact scenarios pinned above; assert maxActive-absent matches.
+    assert.equal(
+      planSchedule({ goals: specs('a', 'b', 'c'), pressure: 0, authedProviderCount: 3 }).activeLimit,
+      BASE_ACTIVE_LIMIT,
+    );
+    assert.equal(
+      planSchedule({ goals: specs('a', 'b', 'c'), pressure: 0, authedProviderCount: 1 }).activeLimit,
+      1,
+    );
+    assert.equal(
+      planSchedule({ goals: specs('a', 'b'), pressure: 0, authedProviderCount: 0 }).activeLimit,
+      0,
+    );
+    assert.equal(
+      planSchedule({ goals: specs('a', 'b', 'c'), pressure: 2, authedProviderCount: 3 }).activeLimit,
+      1,
+    );
+    assert.equal(
+      planSchedule({ goals: specs('a'), pressure: 0, authedProviderCount: 3 }).activeLimit,
+      1,
+    );
+  });
+
+  it('explicit undefined maxActive equals omitting it', () => {
+    const omitted = planSchedule({ goals: specs('a', 'b', 'c'), pressure: 0, authedProviderCount: 3 });
+    const explicit = planSchedule({
+      goals: specs('a', 'b', 'c'),
+      pressure: 0,
+      authedProviderCount: 3,
+      maxActive: undefined,
+    });
+    assert.deepEqual(explicit, omitted);
+  });
+
+  it('PRESENT maxActive can only LOWER the limit (and re-partitions running/queued)', () => {
+    const plan = planSchedule({
+      goals: specs('a', 'b', 'c'),
+      pressure: 0,
+      authedProviderCount: 3, // base limit would be 2
+      maxActive: 1,
+    });
+    assert.equal(plan.activeLimit, 1);
+    assert.deepEqual(plan.running.map((g) => g.id), ['a']);
+    assert.deepEqual(plan.queued.map((g) => g.id), ['b', 'c']);
+  });
+
+  it('a maxActive ABOVE the computed limit never raises it', () => {
+    const plan = planSchedule({
+      goals: specs('a', 'b', 'c'),
+      pressure: 0,
+      authedProviderCount: 1, // limit ceilinged to 1 by providers
+      maxActive: 5,
+    });
+    assert.equal(plan.activeLimit, 1);
+  });
+
+  it('maxActive 0 forces single-file off (nothing runs)', () => {
+    const plan = planSchedule({
+      goals: specs('a', 'b'),
+      pressure: 0,
+      authedProviderCount: 2,
+      maxActive: 0,
+    });
+    assert.equal(plan.activeLimit, 0);
+    assert.equal(plan.running.length, 0);
+    assert.deepEqual(plan.queued.map((g) => g.id), ['a', 'b']);
+  });
+
+  it('a garbage maxActive (NaN/negative) degrades to 0, never uncapped', () => {
+    assert.equal(
+      planSchedule({ goals: specs('a', 'b'), pressure: 0, authedProviderCount: 2, maxActive: NaN }).activeLimit,
+      0,
+    );
+    assert.equal(
+      planSchedule({ goals: specs('a', 'b'), pressure: 0, authedProviderCount: 2, maxActive: -3 }).activeLimit,
+      0,
+    );
+  });
+});
+
 describe('requeueBackoffMs — exponential growth + cap', () => {
   it('doubles each requeue from the base', () => {
     assert.equal(requeueBackoffMs(0), BASE_BACKOFF_MS);

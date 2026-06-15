@@ -358,6 +358,15 @@ export interface AppConfig {
   /** Internal default-off rollout gate for effort-governed preflight planning depth. */
   experimentalPlanningDepth?: boolean;
   /**
+   * Internal default-off rollout gate for PER-ITEM BLOCK/CONTINUE PARKING (Phase
+   * D). When absent/false the manager-cycle fork branch behaves exactly as today
+   * (a worker fork stops the whole goal cycle). When true (or `MYSHELL_ITEM_PARK`
+   * ∈ {1,true,on,yes}) a forked item is PARKED (`status='blocked'`) and the cycle
+   * continues with the next unblocked sibling. Dark until the D5 wiring lands. See
+   * src/interface/ui/item-park-flag.ts.
+   */
+  experimentalItemParking?: boolean;
+  /**
    * Opt-in for the VERIFIED-DONE goal-completion GATE (Elite-partner architecture
    * Part 3, the anti-fabrication backbone). Absent/false → a goal is marked `done`
    * exactly as today: when the goal loop reaches the model's GOAL_COMPLETE signal

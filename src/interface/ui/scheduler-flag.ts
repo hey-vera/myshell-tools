@@ -17,6 +17,12 @@
  * runGoalLoop call site in menu.ts.
  */
 
+// Re-export the sibling Phase-D per-item parking flag so it participates in the
+// src import graph (the no-orphan arch guard requires a SRC importer). The flag
+// itself is dark until the D5 wiring; its only behavioral consumer this slice is
+// its unit test (which imports it directly from item-park-flag.ts).
+export { itemParkingEnabled } from './item-park-flag.js';
+
 /** Env values treated as an explicit opt-IN for MYSHELL_SCHEDULER (case-insensitive). */
 const ON = new Set(['1', 'true', 'on', 'yes']);
 

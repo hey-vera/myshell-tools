@@ -19,6 +19,7 @@ import {
   fixItTodo,
   fixItDepth,
   isTodoVerifiedDone,
+  itemBlockReason,
   FIX_IT_MAX_DEPTH,
 } from '../../src/core/goal-manager.ts';
 import type { RoadmapItem, RoadmapItemVerdict } from '../../src/core/work-contract.ts';
@@ -329,5 +330,67 @@ describe('fixItTodo — dependency blocking edge case', () => {
     assert.ok(!isTodoVerifiedDone(roadmap[0] as RoadmapItem));
     // r2 must NOT be ready (it depends on the still-unverified r1).
     assert.equal(pickReadyTodos(roadmap).some((i) => i.id === 'r2'), false);
+  });
+});
+
+describe('itemBlockReason — why an item is blocked (pure, existing fields only)', () => {
+  function byIdOf(roadmap: readonly RoadmapItem[]): ReadonlyMap<string, RoadmapItem> {
+    return new Map(roadmap.map((it) => [it.id, it]));
+  }
+
+  it('returns null for a plain actionable item (no deps, not blocked)', () => {
+    const roadmap = [item({ id: 'r1' })];
+    assert.equal(itemBlockReason(roadmap[0] as RoadmapItem, byIdOf(roadmap)), null);
+  });
+
+  it('returns null for a done/verified item too (not blocked)', () => {
+    const roadmap = [item({ id: 'r1', status: 'done', verdict: verdict('passing') })];
+    assert.equal(itemBlockReason(roadmap[0] as RoadmapItem, byIdOf(roadmap)), null);
+  });
+
+  it("'dependency' when a dependsOn target is not yet verified-done", () => {
+    const roadmap = [
+      item({ id: 'r1' }), // unverified blocker
+      item({ id: 'r2', dependsOn: ['r1'] }),
+    ];
+    assert.equal(itemBlockReason(roadmap[1] as RoadmapItem, byIdOf(roadmap)), 'dependency');
+  });
+
+  it("'dependency' for a dangling dep id (can never satisfy)", () => {
+    const roadmap = [item({ id: 'r2', dependsOn: ['missing'] })];
+    assert.equal(itemBlockReason(roadmap[0] as RoadmapItem, byIdOf(roadmap)), 'dependency');
+  });
+
+  it('dependency dominates even when the item is also status blocked', () => {
+    const roadmap = [
+      item({ id: 'r1' }), // unverified blocker
+      item({ id: 'r2', status: 'blocked', text: 'Clarify: which db?', dependsOn: ['r1'] }),
+    ];
+    assert.equal(itemBlockReason(roadmap[1] as RoadmapItem, byIdOf(roadmap)), 'dependency');
+  });
+
+  it('null once the dependency becomes verified-done (and item not blocked)', () => {
+    const roadmap = [
+      item({ id: 'r1', status: 'done', verdict: verdict('passing') }),
+      item({ id: 'r2', dependsOn: ['r1'] }),
+    ];
+    assert.equal(itemBlockReason(roadmap[1] as RoadmapItem, byIdOf(roadmap)), null);
+  });
+
+  it("'clarify' for a blocked item carrying the Clarify: marker (owner answer needed)", () => {
+    const roadmap = [item({ id: 'r1', status: 'blocked', text: 'Clarify: which auth provider?' })];
+    assert.equal(itemBlockReason(roadmap[0] as RoadmapItem, byIdOf(roadmap)), 'clarify');
+  });
+
+  it("'unverifiable' for a blocked fix-it item with no clarify marker (self-heal exhausted)", () => {
+    const roadmap = [
+      item({ id: 'r1-fix2', status: 'blocked', text: 'Fix: build — tests red' }),
+    ];
+    assert.equal(itemBlockReason(roadmap[0] as RoadmapItem, byIdOf(roadmap)), 'unverifiable');
+  });
+
+  it("'unverifiable' is the catch-all for a plain blocked item (never null)", () => {
+    const roadmap = [item({ id: 'r1', status: 'blocked' })];
+    assert.equal(itemBlockReason(roadmap[0] as RoadmapItem, byIdOf(roadmap)), 'unverifiable');
   });
 });

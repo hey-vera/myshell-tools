@@ -131,6 +131,58 @@ export function pickReadyTodos(roadmap: readonly RoadmapItem[]): RoadmapItem[] {
 }
 
 // ---------------------------------------------------------------------------
+// itemBlockReason — WHY an item is blocked (pure, derived from existing fields)
+// ---------------------------------------------------------------------------
+
+/**
+ * The text marker an item carries when it was parked awaiting an OWNER answer
+ * (a clarify / fork). Reuses the same `Fix:`-style note convention `fixItTodo`
+ * uses (a human-readable prefix in the item `text`) — NO new field. A blocked
+ * item whose text starts with this marker is "waiting on a person", not on a
+ * dependency or a self-heal cap.
+ */
+const CLARIFY_PREFIX = 'Clarify: ';
+
+/**
+ * Why an item is blocked, or `null` when it is NOT blocked — centralizing A.1's
+ * definition so honest surfacing and the cross-goal demand count read one source
+ * of truth. Derived ENTIRELY from existing fields (`status`, `dependsOn`, and the
+ * `Fix:`/`Clarify:` text-marker convention); adds NO new state. Pure, total,
+ * never throws.
+ *
+ * Precedence (most specific first):
+ *  - `'dependency'` — an unmet `dependsOn` (a blocker that is not yet
+ *    verified-done, or a dangling dep id). This holds REGARDLESS of status: an
+ *    item with an unmet dependency is not actionable even while `pending`, which
+ *    is exactly what `pickNextTodo` skips (goal-manager.ts:105).
+ *  - `'clarify'` — `status === 'blocked'` AND the item text carries the
+ *    `Clarify:` marker (parked awaiting an owner answer — the fork case A.2).
+ *  - `'unverifiable'` — `status === 'blocked'` after self-heal is exhausted: a
+ *    fix-it item (its id encodes a `fixN` depth ≥ 1) that is itself blocked. This
+ *    is the "fix-it depth cap was hit and the cycle parked it" case
+ *    (goal-manager.ts:279-281, menu.ts blocked-on-failure path).
+ *  - `null` — not blocked: every dependency satisfied AND status is not blocked.
+ *
+ * Note: a plain `status === 'blocked'` item with no clarify marker and no fix-it
+ * depth still reports `'unverifiable'` (it was parked by the cycle on a failure
+ * it could not self-heal) — the catch-all blocked reason, never `null`.
+ */
+export function itemBlockReason(
+  item: RoadmapItem,
+  byId: ReadonlyMap<string, RoadmapItem>,
+): 'dependency' | 'clarify' | 'unverifiable' | null {
+  // An unmet dependency dominates: the item cannot be worked until its blocker is
+  // verified-done, whatever its own status says.
+  if (!dependenciesSatisfied(item, byId)) return 'dependency';
+  // Past here, all dependencies are satisfied — the only remaining block is the
+  // item's own `blocked` status (a clarify park or an unverifiable self-heal).
+  if (item.status !== 'blocked') return null;
+  const text = typeof item.text === 'string' ? item.text : '';
+  if (text.startsWith(CLARIFY_PREFIX)) return 'clarify';
+  return 'unverifiable';
+}
+
+// ---------------------------------------------------------------------------
 // managerCycleComplete — every item verified done
 // ---------------------------------------------------------------------------
 
