@@ -31,6 +31,7 @@ import {
   buildTodoTask,
   managerCycleComplete,
   fixItTodo,
+  CLARIFY_PREFIX,
 } from '../core/goal-manager.js';
 import { deriveWorkStateFromHistory, renderWorkStateBlock } from '../core/work-state.js';
 import { isKeepGoingOffer } from '../core/questions.js';
@@ -197,6 +198,7 @@ import { inkEnabled } from './ui/flag.js';
 import type { StartupInputBuffer } from './startup-input.js';
 import { STARTUP_INPUT_CARRIER_ENV } from './startup-input.js';
 import { schedulerEnabled } from './ui/scheduler-flag.js';
+import { itemParkingEnabled } from './ui/item-park-flag.js';
 import { governorEnabled } from './ui/governor-flag.js';
 import { verifyEnabled } from './ui/verify-flag.js';
 import { trustEnabled } from './ui/trust-flag.js';
@@ -4145,6 +4147,45 @@ export async function runChatLoop(
               // "needs your input"; the selector below carries the actual choice.
               if (turn.final?.success === true && turn.final.questions !== undefined) {
                 const fork = turn.final.questions.questions[0]?.prompt.trim();
+                // PER-ITEM PARK (Phase D, gated default-OFF). When item-parking is
+                // opted IN, a fork PARKS this ONE item (status → blocked, its open
+                // question recorded in the item text behind the Clarify: marker so
+                // itemBlockReason reads it as a clarify-park) and the cycle CONTINUES
+                // on the next unblocked sibling — pickNextTodo skips the parked item.
+                // Flag OFF (the default) ⇒ byte-identical to today: surface the fork,
+                // run the selector, and stop the whole cycle honestly.
+                if (itemParkingEnabled(process.env, mutableCtx.config)) {
+                  out.write(
+                    dim(
+                      `\n  I hit a fork on "${next.text}"${fork !== undefined && fork.length > 0 ? `: ${fork}` : ''} — parking it and continuing on the others.\n`,
+                      out.color,
+                    ),
+                  );
+                  // Park this item: blocked (so pickNextTodo skips it) + record the
+                  // open question in the item text behind the SAME Clarify: marker
+                  // itemBlockReason classifies — reusing the existing updateRoadmapItem
+                  // text patch (the fixItTodo `Fix:`-note convention), NO new write
+                  // path. Both writes are fail-soft (a store miss never breaks the
+                  // cycle). The item gets NO verdict and is never marked done.
+                  const idx = roadmap.findIndex((it) => it.id === next.id);
+                  if (idx >= 0) {
+                    const baseText = next.text.startsWith(CLARIFY_PREFIX)
+                      ? next.text
+                      : `${CLARIFY_PREFIX}${next.text}${fork !== undefined && fork.length > 0 ? ` — ${fork}` : ''}`;
+                    await goalStore
+                      .updateRoadmapItem(cycleGoalId, next.id, { text: baseText })
+                      .catch(() => null);
+                    await goalStore
+                      .setRoadmapItemStatus(cycleGoalId, idx, 'blocked')
+                      .catch(() => null);
+                  }
+                  // Refresh the live roadmap so pickNextTodo sees the parked item and
+                  // the board reflects the [⚠]. Then continue to the next sibling.
+                  const refreshed = await goalStore.get(cycleGoalId).catch(() => null);
+                  if (refreshed !== null && refreshed !== undefined) roadmap = refreshed.roadmap;
+                  await syncBoard();
+                  continue;
+                }
                 out.write(
                   dim(
                     `\n  I hit a fork on "${next.text}"${fork !== undefined && fork.length > 0 ? `: ${fork}` : ''} — which way?\n`,

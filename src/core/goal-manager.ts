@@ -141,7 +141,7 @@ export function pickReadyTodos(roadmap: readonly RoadmapItem[]): RoadmapItem[] {
  * item whose text starts with this marker is "waiting on a person", not on a
  * dependency or a self-heal cap.
  */
-const CLARIFY_PREFIX = 'Clarify: ';
+export const CLARIFY_PREFIX = 'Clarify: ';
 
 /**
  * Why an item is blocked, or `null` when it is NOT blocked — centralizing A.1's

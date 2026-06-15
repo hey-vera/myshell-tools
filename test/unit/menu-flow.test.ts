@@ -53,6 +53,8 @@ import type { AppConfig } from '../../src/infra/config.ts';
 import { loadConfig } from '../../src/infra/config.ts';
 import { resolveStateHome } from '../../src/infra/state-dir.ts';
 import { createFileGoalStore } from '../../src/infra/goal-store.ts';
+import { itemBlockReason, CLARIFY_PREFIX } from '../../src/core/goal-manager.ts';
+import type { RoadmapItem } from '../../src/core/work-contract.ts';
 import { createLedger } from '../../src/infra/ledger.ts';
 import { homedir } from 'node:os';
 import { renderStreamInk } from '../../src/interface/ui/run-stream.ts';
@@ -1341,6 +1343,222 @@ describe('startMenu — /goal PROPOSES the plan before running it (manager cycle
       sink.buf.includes('moving to goal 2 of 2: "Add a session audit log"'),
       'narrates the hand-off between goals',
     );
+  });
+});
+
+describe('startMenu — manager cycle item-parking on a fork (Phase D5)', () => {
+  // A worker turn that asks a structured question (an `ask_user` envelope) FORKS:
+  // turn.final.success === true && turn.final.questions !== undefined. With the
+  // item-parking flag ON the cycle PARKS that one item (status → blocked, text
+  // prefixed with CLARIFY_PREFIX) and CONTINUES to the next sibling, instead of
+  // the legacy behaviour (surface the fork + stop the whole cycle).
+  const FORK_ENVELOPE =
+    '{"ask_user":{"questions":[{"id":"fork","prompt":"Postgres or SQLite?","options":[{"label":"Postgres"},{"label":"SQLite"}],"multiSelect":false,"allowFreeText":false}]}}';
+
+  // A planner reply: ONE goal with TWO independent to-dos (no [after:] deps), so
+  // both are immediately actionable and the cycle can advance to the sibling once
+  // the first is parked. oversight:autonomous skips the launch confirm. The FIRST
+  // to-do's worker turn FORKS via an explicit ask_user envelope.
+  function makeForkProvider(): Provider {
+    return {
+      id: 'claude',
+      async detect() {
+        return {
+          id: 'claude', installed: true, version: '1.0.0', authenticated: true,
+          plan: null, binaryPath: null, availableModels: ['model-a'],
+        };
+      },
+      async *run(req: ProviderRequest, _signal: AbortSignal): AsyncIterable<ProviderEvent> {
+        if (req.prompt.includes('PLANNING BRAIN')) {
+          const reply = [
+            'JUDGMENT: stage',
+            'VISION: ship the data layer',
+            'GOAL: Build the storage layer',
+            'TODO: choose the database',
+            'TODO: write the migration runner',
+          ].join('\n');
+          yield { type: 'text', delta: reply };
+          yield { type: 'done', text: reply, usage: FAKE_USAGE, raw: {} };
+          return;
+        }
+        // Background warm-up / smart-label passes — benign, not goal work.
+        if (
+          req.prompt.includes('WHOLE-PICTURE') ||
+          req.prompt.includes('understand the system') ||
+          req.prompt.includes('OBJECTIVE: <a crisp')
+        ) {
+          yield { type: 'text', delta: 'ok' };
+          yield { type: 'done', text: 'ok', usage: FAKE_USAGE, raw: {} };
+          return;
+        }
+        // The FIRST to-do ("choose the database") FORKS via an ask_user envelope →
+        // turn.final.questions, the exact condition the manager-cycle fork branch
+        // keys on. Any other turn completes benignly.
+        if (req.prompt.includes('This to-do: choose the database')) {
+          yield { type: 'text', delta: 'Which database?\n' };
+          yield { type: 'done', text: `Which database?\n${FORK_ENVELOPE}`, usage: FAKE_USAGE, raw: {} };
+          return;
+        }
+        yield { type: 'text', delta: 'Done.' };
+        yield { type: 'done', text: 'Done.\nGOAL_COMPLETE', usage: FAKE_USAGE, raw: {} };
+      },
+    };
+  }
+
+  it('flag ON: a fork PARKS that one item (blocked + Clarify:) and the cycle CONTINUES to the sibling', async () => {
+    const dir = join(tmpdir(), `menu-itempark-on-${randomUUID()}`);
+    await withStateHome(dir, async () => {
+      const clock = makeFakeClock();
+      const store = makeStore(clock);
+      const provider = makeForkProvider();
+
+      await fs.promises.mkdir(dir, { recursive: true });
+      await fs.promises.writeFile(
+        join(dir, 'package.json'),
+        JSON.stringify({ name: 'fixture', scripts: { test: 'node --test' } }),
+        'utf8',
+      );
+      const sink = makeSink();
+      const ctx = makeCtx(
+        {
+          // Manager cycle ON + oversight autonomous (no launch confirm) + item
+          // parking opted IN via config (mirrors how experimentalManager is set).
+          config: {
+            onboarded: true,
+            setAsDefault: false,
+            smartRoute: false,
+            experimentalManager: true,
+            experimentalItemParking: true,
+            oversight: 'autonomous',
+          },
+          providers: { claude: provider },
+          readLine: makeScriptedReader(['n', '/goal ship the data layer', '/exit', 'q']),
+        },
+        clock,
+        store,
+        undefined,
+        dir,
+      );
+
+      await startMenu(ctx, sink);
+
+      // The forked item is PARKED, not stopped-on: status blocked, text carries the
+      // Clarify: marker, and itemBlockReason classifies it as a 'clarify' park.
+      const all = await createFileGoalStore({ clock }).list();
+      assert.equal(all.length, 1, 'exactly one goal');
+      const roadmap = all[0]?.roadmap ?? [];
+      const forked = roadmap.find((it) => it.text.includes('choose the database'));
+      assert.ok(forked !== undefined, 'the forked to-do is still on the roadmap');
+      assert.equal(forked?.status, 'blocked', 'the forked to-do is parked (blocked)');
+      assert.ok(
+        forked?.text.startsWith(CLARIFY_PREFIX),
+        `the forked to-do text starts with CLARIFY_PREFIX (got: ${String(forked?.text)})`,
+      );
+      const byId = new Map(roadmap.map((it) => [it.id, it]));
+      assert.equal(
+        itemBlockReason(forked as RoadmapItem, byId),
+        'clarify',
+        'itemBlockReason reads the parked fork as a clarify-park',
+      );
+
+      // The cycle CONTINUED past the fork: after parking the first to-do it picked
+      // the SIBLING (pickNextTodo skips the blocked fork). The per-item progress
+      // line "▸ to-do …: write the migration runner" is the cycle advancing to the
+      // sibling — proof it did NOT stop the whole cycle on the first fork.
+      assert.ok(
+        sink.buf.includes('▸ to-do') && sink.buf.includes('write the migration runner'),
+        'the cycle advanced to the sibling to-do after parking the fork',
+      );
+      // Operator narration is the park-and-continue line, never the legacy fork-stop
+      // "which way?" prompt (the OFF path takes that branch — asserted below).
+      assert.ok(
+        sink.buf.includes('parking it and continuing on the others'),
+        'narrates the park-and-continue, not the legacy fork-stop',
+      );
+      assert.ok(
+        !sink.buf.includes('— which way?'),
+        'must NOT take the legacy fork-stop path that surfaces the selector',
+      );
+
+      // Assertion #3 (all-blocked → honest open-goal stop). Here BOTH to-dos end
+      // parked (the sibling also forks, via the derived clarifying ask), so once
+      // every item is blocked pickNextTodo returns null: the cycle breaks and the
+      // goal stays OPEN with an honest blocker receipt — never a silent / fake done.
+      assert.ok(
+        roadmap.length > 0 && roadmap.every((it) => it.status === 'blocked'),
+        'every to-do is parked (blocked) once both forked',
+      );
+      assert.ok(
+        /blocked on ".*" — your call needed — 0\/2 to-dos verified\. Keeping the goal open\./.test(
+          sink.buf,
+        ),
+        'surfaces the honest open-goal stop receipt (named blocker, goal kept open), not done',
+      );
+      assert.ok(
+        !sink.buf.includes('verified done'),
+        'the all-blocked goal must NOT report verified done',
+      );
+      assert.equal(all[0]?.state, 'running', 'the goal stays open (running), not settled done');
+    });
+  });
+
+  it('flag OFF (default): the same fork STOPS the cycle — item is not blocked-with-Clarify', async () => {
+    const dir = join(tmpdir(), `menu-itempark-off-${randomUUID()}`);
+    await withStateHome(dir, async () => {
+      const clock = makeFakeClock();
+      const store = makeStore(clock);
+      const provider = makeForkProvider();
+
+      await fs.promises.mkdir(dir, { recursive: true });
+      await fs.promises.writeFile(
+        join(dir, 'package.json'),
+        JSON.stringify({ name: 'fixture', scripts: { test: 'node --test' } }),
+        'utf8',
+      );
+      const sink = makeSink();
+      const ctx = makeCtx(
+        {
+          // Same as the ON case but item-parking left at its default (absent) — the
+          // legacy fork-stop path. A keypress answers the surfaced selector.
+          config: {
+            onboarded: true,
+            setAsDefault: false,
+            smartRoute: false,
+            experimentalManager: true,
+            oversight: 'autonomous',
+          },
+          providers: { claude: provider },
+          readLine: makeScriptedReader(['n', '/goal ship the data layer', '1', '/exit', 'q']),
+        },
+        clock,
+        store,
+        undefined,
+        dir,
+      );
+
+      await startMenu(ctx, sink);
+
+      // Neutrality: the forked item is NOT parked-with-Clarify (the legacy path
+      // surfaces the selector + stops; it never rewrites the item text/status).
+      const all = await createFileGoalStore({ clock }).list();
+      const roadmap = all[0]?.roadmap ?? [];
+      const forked = roadmap.find((it) => it.text.includes('choose the database'));
+      assert.ok(forked !== undefined, 'the forked to-do is still on the roadmap');
+      assert.ok(
+        !forked?.text.startsWith(CLARIFY_PREFIX),
+        'flag OFF must NOT prefix the item with CLARIFY_PREFIX',
+      );
+      // It legacy-stopped on the fork: the "which way?" narration + the selector,
+      // and the park-and-continue narration is absent.
+      assert.ok(
+        sink.buf.includes('— which way?'),
+        'flag OFF takes the legacy fork-stop path (surfaces the selector)',
+      );
+      assert.ok(
+        !sink.buf.includes('parking it and continuing on the others'),
+        'flag OFF must NOT narrate park-and-continue',
+      );
+    });
   });
 });
 
