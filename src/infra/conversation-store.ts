@@ -13,6 +13,7 @@
 
 import type { SessionEntry, SessionWriter } from '../core/types.js';
 import type { Intensity } from '../core/capacity-allocator.js';
+import type { GoalActivationOverride } from '../core/autonomy.js';
 
 export interface ConversationMeta {
   readonly id: string;
@@ -37,6 +38,8 @@ export interface ConversationMeta {
   readonly recapMessageCount?: number;
   /** Conversation-scoped intensity override; absent means inherit global/Auto. */
   readonly intensity?: Intensity;
+  /** Conversation-scoped goal activation preference; absent means adaptive. */
+  readonly activation?: Exclude<GoalActivationOverride, 'adaptive'>;
 }
 
 export interface ConversationStore {
@@ -85,4 +88,6 @@ export interface ConversationStore {
   setRecap(id: string, recap: string | null, atMessageCount: number): Promise<void>;
   /** Set or clear the conversation intensity override. No-op if id missing. */
   setIntensity(id: string, intensity: Intensity | undefined): Promise<void>;
+  /** Set or clear the conversation goal activation preference. No-op if id missing. */
+  setActivation(id: string, activation: GoalActivationOverride | undefined): Promise<void>;
 }

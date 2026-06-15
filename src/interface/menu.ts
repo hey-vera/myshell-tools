@@ -34,7 +34,7 @@ import {
 } from '../core/goal-manager.js';
 import { deriveWorkStateFromHistory, renderWorkStateBlock } from '../core/work-state.js';
 import { isKeepGoingOffer } from '../core/questions.js';
-import { assessGoalConfidence, decideAutonomyOffer, decideGoalActivation } from '../core/autonomy.js';
+import { assessGoalConfidence, decideAutonomyOffer, decideGoalActivation, detectActivationOverride } from '../core/autonomy.js';
 import { classify, hasWorkIntent } from '../core/classify.js';
 import { resolveMemoryContextDetailed } from '../core/memory-injection.js';
 import { buildEnvironmentContext } from '../core/repo-map.js';
@@ -2822,13 +2822,14 @@ export async function runChatLoop(
             const substantial = planGoalCount > 1 || plan.roadmap.length >= 3;
             const shape: 'quick' | 'risky' | 'decide' | 'investigate' | 'build' | 'explain' =
               highStakes ? 'risky' : substantial ? 'decide' : 'build';
+            const conversationMeta = (await ctx.store.list()).find((m) => m.id === convId);
             const activation = decideGoalActivation({
               confident: true,
               shape,
               substantial,
               highStakes,
               hasGenuineFork: false,
-              override: 'adaptive',
+              override: conversationMeta?.activation ?? 'adaptive',
             });
             if (activation.kind === 'auto-run') {
               await goalStore.setState(created.id, 'running');
@@ -4756,6 +4757,20 @@ export async function runChatLoop(
         if (tasteOn && isImmediateRephrase(priorDecision, line)) {
           void recordTaste('immediate_rephrase', priorDecision, line);
         }
+      }
+
+      const activationOverride = detectActivationOverride(line);
+      if (activationOverride !== null) {
+        await ctx.store.setActivation(
+          convId,
+          activationOverride === 'adaptive' ? undefined : activationOverride,
+        );
+        const confirmation = activationOverride === 'go-when-confident'
+          ? "  Activation: I'll auto-run when confident (this chat).\n"
+          : activationOverride === 'always-plan-first'
+            ? "  Activation: I'll relay the plan first from now on (this chat).\n"
+            : "  Activation: back to adaptive - I'll decide when to just go (this chat).\n";
+        out.write(confirmation);
       }
 
       // ---- Bug 4 fix / FIX 3: no-provider gate (relocated) --------------------

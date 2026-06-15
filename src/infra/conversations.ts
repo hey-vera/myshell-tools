@@ -12,6 +12,7 @@ import { mkdir, readFile, readdir, rename, stat, unlink } from 'node:fs/promises
 import { join } from 'node:path';
 import type { Clock, SessionEntry, SessionWriter } from '../core/types.js';
 import type { Intensity } from '../core/capacity-allocator.js';
+import type { GoalActivationOverride } from '../core/autonomy.js';
 import type { ConversationMeta, ConversationStore } from './conversation-store.js';
 import { atomicAppendJSONL, atomicWrite, withLock } from './atomic.js';
 import { isConversationMessage } from './jsonl-guards.js';
@@ -100,6 +101,9 @@ function normaliseMeta(raw: unknown): ConversationMeta {
   if (r['intensity'] === 1 || r['intensity'] === 2 || r['intensity'] === 3 || r['intensity'] === 4 || r['intensity'] === 5) {
     meta.intensity = r['intensity'];
   }
+  if (r['activation'] === 'go-when-confident' || r['activation'] === 'always-plan-first') {
+    meta.activation = r['activation'];
+  }
   return meta;
 }
 
@@ -125,6 +129,12 @@ function recapFields(
 function intensityFields(m: ConversationMeta): Pick<ConversationMeta, 'intensity'> {
   const out: { intensity?: Intensity } = {};
   if (m.intensity !== undefined && m.intensity !== 'auto') out.intensity = m.intensity;
+  return out;
+}
+
+function activationFields(m: ConversationMeta): Pick<ConversationMeta, 'activation'> {
+  const out: { activation?: Exclude<GoalActivationOverride, 'adaptive'> } = {};
+  if (m.activation !== undefined) out.activation = m.activation;
   return out;
 }
 
@@ -449,6 +459,7 @@ export function createFileConversationStore(opts: {
               category: existing.category,
               ...recapFields(existing),
               ...intensityFields(existing),
+              ...activationFields(existing),
             };
 
             const newIndex = [...index];
@@ -534,6 +545,8 @@ export function createFileConversationStore(opts: {
               // than show a recap of deleted turns (isRecapStale → regenerate).
               recap: null,
               recapAt: null,
+              ...intensityFields(existing),
+              ...activationFields(existing),
             };
             const newIndex = [...index];
             newIndex[idx] = updated;
@@ -566,6 +579,7 @@ export function createFileConversationStore(opts: {
           category: existing.category,
           ...recapFields(existing),
           ...intensityFields(existing),
+          ...activationFields(existing),
         };
         const newIndex = [...index];
         newIndex[idx] = updated;
@@ -619,6 +633,7 @@ export function createFileConversationStore(opts: {
           category: existing.category,
           ...recapFields(existing),
           ...intensityFields(existing),
+          ...activationFields(existing),
         };
         const newIndex = [...index];
         newIndex[idx] = updated;
@@ -648,6 +663,7 @@ export function createFileConversationStore(opts: {
           category,
           ...recapFields(existing),
           ...intensityFields(existing),
+          ...activationFields(existing),
         };
         const newIndex = [...index];
         newIndex[idx] = updated;
@@ -679,6 +695,7 @@ export function createFileConversationStore(opts: {
           recapAt: recap === null ? null : clock.isoNow(),
           recapMessageCount: atMessageCount,
           ...intensityFields(existing),
+          ...activationFields(existing),
         };
         const newIndex = [...index];
         newIndex[idx] = updated;
@@ -708,7 +725,42 @@ export function createFileConversationStore(opts: {
           pinned: existing.pinned,
           category: existing.category,
           ...recapFields(existing),
+          ...activationFields(existing),
           ...(intensity === undefined || intensity === 'auto' ? {} : { intensity }),
+        };
+        const newIndex = [...index];
+        newIndex[idx] = updated;
+        await writeIndex(home, newIndex);
+      });
+    },
+
+    // -----------------------------------------------------------------------
+    // setActivation — persist a conversation-scoped activation preference under
+    // the lock, canonicalizing adaptive/inherit to absence.
+    // -----------------------------------------------------------------------
+    async setActivation(
+      id: string,
+      activation: GoalActivationOverride | undefined,
+    ): Promise<void> {
+      await ensureDir(home);
+      await withLock(getIndexLockPath(home), async () => {
+        const index = await readIndexLocked(home, onWarning);
+        const idx = index.findIndex((m) => m.id === id);
+        if (idx === -1) return;
+
+        const existing = index[idx];
+        if (existing === undefined) return;
+        const updated: ConversationMeta = {
+          id: existing.id,
+          title: existing.title,
+          createdAt: existing.createdAt,
+          updatedAt: existing.updatedAt,
+          messageCount: existing.messageCount,
+          pinned: existing.pinned,
+          category: existing.category,
+          ...recapFields(existing),
+          ...intensityFields(existing),
+          ...(activation === undefined || activation === 'adaptive' ? {} : { activation }),
         };
         const newIndex = [...index];
         newIndex[idx] = updated;

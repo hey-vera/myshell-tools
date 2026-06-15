@@ -5,6 +5,7 @@ import {
   assessGoalConfidence,
   decideAutonomyOffer,
   decideGoalActivation,
+  detectActivationOverride,
 } from '../../src/core/autonomy.ts';
 import type { Classification } from '../../src/core/types.ts';
 import type { Mode } from '../../src/core/policy.ts';
@@ -28,6 +29,59 @@ const MANAGER_TWO_SIGNALS: Classification = {
 };
 
 const MODES: readonly Mode[] = ['cost-saver', 'balanced', 'quality-first'];
+
+describe('detectActivationOverride', () => {
+  it('detects clear standing go-when-confident preferences', () => {
+    for (const line of [
+      "from now on just go when you're confident",
+      'always auto-run when confident',
+      'by default go ahead whenever you are confident',
+      "from now on just go when you're confident, and refactor the parser",
+    ]) {
+      assert.equal(detectActivationOverride(line), 'go-when-confident', line);
+    }
+  });
+
+  it('detects clear standing plan-first preferences', () => {
+    for (const line of [
+      'always relay the plan first',
+      'from now on show me the plan first',
+      'run it by me first',
+      'always run it by me first, then continue',
+    ]) {
+      assert.equal(detectActivationOverride(line), 'always-plan-first', line);
+    }
+  });
+
+  it('detects explicit returns to adaptive behavior', () => {
+    for (const line of [
+      'back to adaptive',
+      'switch back to adaptive please',
+      'use your best judgment',
+      'use best judgment from now on',
+    ]) {
+      assert.equal(detectActivationOverride(line), 'adaptive', line);
+    }
+  });
+
+  it('does not hijack ordinary work, one-off planning, questions, or empty input', () => {
+    for (const line of [
+      '',
+      '   ',
+      "let's plan the migration first, then build it",
+      'go implement the parser',
+      'go ahead and fix the tests',
+      'show me the plan for the auth rewrite',
+      'relay the plan first for this migration',
+      'use your judgment to choose a database',
+      'are you confident?',
+      'can you always relay the plan first?',
+      'should we go back to adaptive?',
+    ]) {
+      assert.equal(detectActivationOverride(line), null, line);
+    }
+  });
+});
 
 describe('decideAutonomyOffer', () => {
   for (const mode of MODES) {

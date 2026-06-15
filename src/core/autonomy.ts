@@ -36,6 +36,40 @@ export type GoalActivation =
   | { readonly kind: 'hold' };
 
 /**
+ * Detect an explicit standing preference for confident-goal activation.
+ * Ordinary work requests and one-off sequencing language intentionally do not
+ * match: this only recognizes clear persistent-policy phrasing.
+ */
+export function detectActivationOverride(line: string): GoalActivationOverride | null {
+  const text = line.trim().toLowerCase().replace(/[\u2018\u2019]/g, "'");
+  if (text.length === 0 || text.endsWith('?')) return null;
+
+  if (
+    /\b(?:back|go back|switch back|return) to adaptive\b/.test(text) ||
+    /\buse (?:your )?best judgment(?: from now on)?\b/.test(text)
+  ) {
+    return 'adaptive';
+  }
+
+  if (
+    /\b(?:always|from now on)\b.{0,40}\b(?:relay|show|share|give|present) (?:me )?(?:the )?plan first\b/.test(text) ||
+    /\b(?:always|from now on)\b.{0,40}\brun it by me first\b/.test(text) ||
+    /^run it by me first[.!]?$/.test(text)
+  ) {
+    return 'always-plan-first';
+  }
+
+  if (
+    /\b(?:from now on|always|by default)\b.{0,40}\b(?:just go|go ahead|auto-run|run automatically)\b/.test(text) &&
+    /\bconfident\b/.test(text)
+  ) {
+    return 'go-when-confident';
+  }
+
+  return null;
+}
+
+/**
  * Auto-goal engagement policy.
  *
  * Explicit timeout and model keep-going offers live in the interface layer. This

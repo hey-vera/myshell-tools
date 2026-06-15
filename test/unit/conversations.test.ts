@@ -666,6 +666,74 @@ describe('createFileConversationStore — setIntensity', () => {
 });
 
 // ---------------------------------------------------------------------------
+// setActivation — non-default round-trip, normalization, clearing, preservation
+// ---------------------------------------------------------------------------
+
+describe('createFileConversationStore — setActivation', () => {
+  it('persists and normalizes a non-default activation preference', async () => {
+    const home2 = await mkdtemp(join(tmpdir(), `conv-activation-persist-${randomUUID()}-`));
+    try {
+      const clock = makeFakeClock();
+      const store = createFileConversationStore({ homeDir: home2, clock });
+      const meta = await store.create('Activation');
+
+      await store.setActivation(meta.id, 'go-when-confident');
+
+      const reopened = createFileConversationStore({ homeDir: home2, clock });
+      const found = (await reopened.list()).find((m) => m.id === meta.id);
+      assert.ok(found !== undefined);
+      assert.equal(found.activation, 'go-when-confident');
+    } finally {
+      await rm(home2, { recursive: true, force: true });
+    }
+  });
+
+  it('leaves activation absent by default and preserves it across unrelated mutations', async () => {
+    const home2 = await mkdtemp(join(tmpdir(), `conv-activation-preserve-${randomUUID()}-`));
+    try {
+      const clock = makeFakeClock();
+      const store = createFileConversationStore({ homeDir: home2, clock });
+      const meta = await store.create('Activation');
+      assert.equal((await store.list()).find((m) => m.id === meta.id)?.activation, undefined);
+
+      await store.setIntensity(meta.id, 4);
+      await store.setActivation(meta.id, 'always-plan-first');
+      await store.rename(meta.id, 'Activation renamed');
+      await store.setPinned(meta.id, true);
+
+      const found = (await store.list()).find((m) => m.id === meta.id);
+      assert.ok(found !== undefined);
+      assert.equal(found.activation, 'always-plan-first');
+      assert.equal(found.intensity, 4);
+    } finally {
+      await rm(home2, { recursive: true, force: true });
+    }
+  });
+
+  it('canonicalizes adaptive and undefined to an absent persisted key', async () => {
+    const home2 = await mkdtemp(join(tmpdir(), `conv-activation-clear-${randomUUID()}-`));
+    try {
+      const clock = makeFakeClock();
+      const store = createFileConversationStore({ homeDir: home2, clock });
+      const meta = await store.create('Activation');
+      const indexPath = join(home2, '.myshell-tools', 'conversations', 'index.json');
+
+      await store.setActivation(meta.id, 'go-when-confident');
+      await store.setActivation(meta.id, 'adaptive');
+      assert.equal((await store.list()).find((m) => m.id === meta.id)?.activation, undefined);
+      assert.equal((await readFile(indexPath, 'utf8')).includes('"activation"'), false);
+
+      await store.setActivation(meta.id, 'always-plan-first');
+      await store.setActivation(meta.id, undefined);
+      assert.equal((await store.list()).find((m) => m.id === meta.id)?.activation, undefined);
+      assert.equal((await readFile(indexPath, 'utf8')).includes('"activation"'), false);
+    } finally {
+      await rm(home2, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
 // truncateAfter — controlled, atomic, fail-soft departure from append-only
 // (powers /retry and /edit). Round-trip, index update, recap-clear, validation,
 // atomicity, fail-soft.

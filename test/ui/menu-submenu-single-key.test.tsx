@@ -185,6 +185,7 @@ function makeStoreWithOne(): { store: ConversationStore; pinned: { value: boolea
       pinned.value = value;
     },
     async setIntensity() {},
+    async setActivation() {},
     async create() { return meta; },
     async load() { return []; },
     async rename() {},

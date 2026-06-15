@@ -306,6 +306,21 @@ function makeStore(clock: Clock, initialMetas?: ConversationMeta[]): FakeConvers
       }
     },
 
+    async setActivation(id: string, activation): Promise<void> {
+      const idx = metas.findIndex((m) => m.id === id);
+      if (idx >= 0) {
+        const m = metas[idx];
+        if (m !== undefined) {
+          if (activation === undefined || activation === 'adaptive') {
+            const { activation: _ignored, ...rest } = m;
+            metas[idx] = rest;
+          } else {
+            metas[idx] = { ...m, activation };
+          }
+        }
+      }
+    },
+
     async truncateAfter(id: string, keepCount: number): Promise<number> {
       const w = writers.get(id);
       if (w === undefined) return 0;
@@ -1547,6 +1562,133 @@ describe('startMenu — auto-goal smart autonomy', () => {
       );
       assert.ok(!sink.buf.includes('On it —'));
       assert.ok(sink.buf.includes('Staged — Refresh the billing module'));
+    });
+  });
+
+  it('go-when-confident preference auto-runs a substantial confident goal immediately', async () => {
+    const dir = join(tmpdir(), `menu-activation-go-${randomUUID()}`);
+    await withStateHome(dir, async () => {
+      const clock = makeFakeClock();
+      const store = makeStore(clock);
+      let sawGoalWorker = false;
+      const provider: Provider = {
+        id: 'claude',
+        async detect() {
+          return {
+            id: 'claude', installed: true, version: '1.0.0', authenticated: true,
+            plan: null, binaryPath: null, availableModels: ['model-a'],
+          };
+        },
+        async *run(req: ProviderRequest): AsyncIterable<ProviderEvent> {
+          if (req.prompt.includes('PLANNING BRAIN')) {
+            const reply = [
+              'JUDGMENT: stage',
+              'GOAL: Rebuild the settings module',
+              'DONE: the rebuilt settings module passes its test suite',
+              'TODO: map the current settings behavior',
+              'TODO: rebuild the settings implementation',
+              'TODO: update the settings tests',
+            ].join('\n');
+            yield { type: 'done', text: reply, usage: FAKE_USAGE, raw: {} };
+            return;
+          }
+          if (req.prompt.includes('Goal: Rebuild the settings module')) sawGoalWorker = true;
+          yield { type: 'done', text: 'Done.\nGOAL_COMPLETE', usage: FAKE_USAGE, raw: {} };
+        },
+      };
+
+      await fs.promises.mkdir(dir, { recursive: true });
+      await fs.promises.writeFile(
+        join(dir, 'package.json'),
+        JSON.stringify({ name: 'fixture', scripts: { test: 'node --test' } }),
+        'utf8',
+      );
+      const sink = makeSink();
+      const ctx = makeCtx(
+        {
+          providers: { claude: provider },
+          readLine: makeScriptedReader([
+            'n',
+            "from now on just go when you're confident, and implement the settings module in three steps",
+            '/exit',
+            'q',
+          ]),
+        },
+        clock,
+        store,
+        undefined,
+        dir,
+      );
+
+      await startMenu(ctx, sink);
+
+      const all = await createFileGoalStore({ clock }).list();
+      assert.equal(all[0]?.state, 'running');
+      assert.equal(sawGoalWorker, true);
+      assert.ok(sink.buf.includes("Activation: I'll auto-run when confident (this chat)."));
+      assert.ok(sink.buf.includes('On it — Rebuild the settings module'));
+    });
+  });
+
+  it('always-plan-first preference parks a trivial confident goal immediately', async () => {
+    const dir = join(tmpdir(), `menu-activation-plan-${randomUUID()}`);
+    await withStateHome(dir, async () => {
+      const clock = makeFakeClock();
+      const store = makeStore(clock);
+      const provider: Provider = {
+        id: 'claude',
+        async detect() {
+          return {
+            id: 'claude', installed: true, version: '1.0.0', authenticated: true,
+            plan: null, binaryPath: null, availableModels: ['model-a'],
+          };
+        },
+        async *run(req: ProviderRequest): AsyncIterable<ProviderEvent> {
+          if (req.prompt.includes('PLANNING BRAIN')) {
+            const reply = [
+              'JUDGMENT: stage',
+              'GOAL: Implement the parser module',
+              'DONE: the parser module passes its test suite',
+              'TODO: implement the parser',
+              'TODO: add parser tests',
+            ].join('\n');
+            yield { type: 'done', text: reply, usage: FAKE_USAGE, raw: {} };
+            return;
+          }
+          yield { type: 'done', text: 'Done.\nGOAL_COMPLETE', usage: FAKE_USAGE, raw: {} };
+        },
+      };
+
+      await fs.promises.mkdir(dir, { recursive: true });
+      await fs.promises.writeFile(
+        join(dir, 'package.json'),
+        JSON.stringify({ name: 'fixture', scripts: { test: 'node --test' } }),
+        'utf8',
+      );
+      const sink = makeSink();
+      const ctx = makeCtx(
+        {
+          providers: { claude: provider },
+          readLine: makeScriptedReader([
+            'n',
+            'always relay the plan first, and implement the parser module',
+            '/exit',
+            'q',
+          ]),
+        },
+        clock,
+        store,
+        undefined,
+        dir,
+      );
+
+      await startMenu(ctx, sink);
+
+      const all = await createFileGoalStore({ clock }).list();
+      assert.equal(all[0]?.state, 'parked');
+      assert.ok(sink.buf.includes("Activation: I'll relay the plan first from now on (this chat)."));
+      assert.ok(!sink.buf.includes('On it —'));
+      assert.ok(sink.buf.includes('Staged — Implement the parser module'));
     });
   });
 
