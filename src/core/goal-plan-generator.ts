@@ -37,6 +37,8 @@ export interface GoalPlanGeneratorDeps {
   readonly sandbox?: SandboxLevel;
   readonly availableModels?: Partial<Record<ProviderId, readonly string[]>>;
   readonly authenticatedProviders?: readonly ProviderId[];
+  /** Optional planner tier override. Absent preserves the manager-tier default. */
+  readonly tier?: Tier;
   /**
    * Optional whole-picture understanding of the REAL system (understanding.ts).
    * When present it GROUNDS the planner prompt (the staged goals fit the actual
@@ -59,6 +61,13 @@ const GOAL_PLAN_TIER: Tier = 'manager';
 /** It reads the turn text and emits a tagged plan — it never touches files. */
 const GOAL_PLAN_SANDBOX: SandboxLevel = 'read-only';
 
+export interface GoalPlanAttempt {
+  readonly plan: GoalPlan | null;
+  readonly provider: ProviderId;
+  readonly model: string;
+  readonly raw: string;
+}
+
 /**
  * Build a manager-tier planning-brain pass. Returns a function that takes the
  * owner's turn text and resolves to a judged {@link GoalPlan}, or `null` on ANY
@@ -68,7 +77,16 @@ const GOAL_PLAN_SANDBOX: SandboxLevel = 'read-only';
 export function makeGoalPlanner(
   deps: GoalPlanGeneratorDeps,
 ): (userMessage: string, signal: AbortSignal) => Promise<GoalPlan | null> {
-  return async (userMessage: string, signal: AbortSignal): Promise<GoalPlan | null> => {
+  const attempt = makeGoalPlannerAttempt(deps);
+  return async (userMessage: string, signal: AbortSignal): Promise<GoalPlan | null> =>
+    (await attempt(userMessage, signal))?.plan ?? null;
+}
+
+/** Build the same planner pass while exposing its routed provider and raw output. */
+export function makeGoalPlannerAttempt(
+  deps: GoalPlanGeneratorDeps,
+): (userMessage: string, signal: AbortSignal) => Promise<GoalPlanAttempt | null> {
+  return async (userMessage: string, signal: AbortSignal): Promise<GoalPlanAttempt | null> => {
     // Ground the planner in the whole-picture understanding when one is injected;
     // absent (the default) → the prompt is byte-for-byte today's. assistantReply /
     // frameGoal stay undefined here, as before — only the optional systemModel is
@@ -88,7 +106,7 @@ export function makeGoalPlanner(
       // provider order — this throwaway pass is a cost decision about judging the
       // turn, not about doing the owner's work.
       const decision = route(
-        GOAL_PLAN_TIER,
+        deps.tier ?? GOAL_PLAN_TIER,
         pool,
         deps.policy,
         deps.availableModels,
@@ -118,6 +136,12 @@ export function makeGoalPlanner(
     } catch {
       return null;
     }
-    return parseGoalPlan(finalText);
+    if (finalText === undefined) return null;
+    return {
+      plan: parseGoalPlan(finalText),
+      provider: provider.id,
+      model,
+      raw: finalText,
+    };
   };
 }

@@ -31,6 +31,7 @@ import {
   allocate,
   autoPostureForMode,
   pollPermittedConservative,
+  panelAllowedForShape,
   tribunalPermittedConservative,
   type TaskShape,
   type AllocateInput,
@@ -52,6 +53,18 @@ import type { Mode } from '../../src/core/policy.ts';
 // ---------------------------------------------------------------------------
 // Builders (mirror brain.test.ts)
 // ---------------------------------------------------------------------------
+
+describe('panelAllowedForShape', () => {
+  it('requires a non-cost-saver cross-vendor budget of three and an eligible shape', () => {
+    for (const shape of ['decide', 'risky', 'investigate'] as const) {
+      assert.equal(panelAllowedForShape(shape, 'quality-first', true, 3), true);
+    }
+    assert.equal(panelAllowedForShape('build', 'quality-first', true, 3), false);
+    assert.equal(panelAllowedForShape('decide', 'cost-saver', true, 3), false);
+    assert.equal(panelAllowedForShape('decide', 'quality-first', false, 3), false);
+    assert.equal(panelAllowedForShape('decide', 'quality-first', true, 2), false);
+  });
+});
 
 function classification(over: Partial<Classification> = {}): Classification {
   return { tier: 'ic', risk: 'medium', rationale: 'test', ...over };

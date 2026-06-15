@@ -2009,6 +2009,7 @@ describe('startMenu — auto-goal smart autonomy', () => {
     const dir = join(tmpdir(), `menu-planning-depth-birdhouse-${randomUUID()}`);
     await withStateHome(dir, async () => {
       let plannerCalls = 0;
+      let secondProviderCalls = 0;
       const provider: Provider = {
         id: 'claude',
         async detect() { return FAKE_ENV.claude; },
@@ -2022,6 +2023,21 @@ describe('startMenu — auto-goal smart autonomy', () => {
           yield { type: 'done', text: `Done.\n${CONFIDENCE_ENVELOPE}`, usage: FAKE_USAGE, raw: {} };
         },
       };
+      const codex: Provider = {
+        id: 'codex',
+        async detect() { return twoProviderEnv.codex; },
+        async *run(): AsyncIterable<ProviderEvent> {
+          secondProviderCalls += 1;
+          yield { type: 'done', text: 'unused', usage: FAKE_USAGE, raw: {} };
+        },
+      };
+      const twoProviderEnv: EnvironmentStatus = {
+        ...FAKE_ENV,
+        codex: {
+          id: 'codex', installed: true, version: '1.0.0', authenticated: true,
+          plan: null, binaryPath: null, availableModels: ['gpt-5.5', 'gpt-5.4'],
+        },
+      };
       const sink = makeSink();
       const ctx = makeCtx({
         config: {
@@ -2029,14 +2045,260 @@ describe('startMenu — auto-goal smart autonomy', () => {
           mode: 'quality-first', intensity: 5, experimentalPlanningDepth: true,
           experimentalUnderstanding: false,
         },
-        providers: { claude: provider },
+        providers: { claude: provider, codex },
+        env: twoProviderEnv,
         readLine: makeScriptedReader(['n', 'build a birdhouse', '/exit', 'q']),
       }, undefined, undefined, undefined, dir);
 
       await startMenu(ctx, sink);
 
       assert.equal(plannerCalls, 1);
+      assert.equal(secondProviderCalls, 0);
       assert.ok(!sink.buf.includes('Planning deeper'));
+      assert.ok(!sink.buf.includes('Planning with 2 subscription brains'));
+    });
+  });
+
+  it('selects a stronger hard-goal plan in exactly three synchronous planner calls', async () => {
+    const dir = join(tmpdir(), `menu-plan-selection-${randomUUID()}`);
+    await withStateHome(dir, async () => {
+      await fs.promises.mkdir(dir, { recursive: true });
+      await fs.promises.writeFile(join(dir, 'package.json'), JSON.stringify({ name: 'fixture' }), 'utf8');
+      const sequence: string[] = [];
+      const twoProviderEnv: EnvironmentStatus = {
+        ...FAKE_ENV,
+        claude: { ...FAKE_ENV.claude, availableModels: ['claude-opus-4-7', 'claude-sonnet-4-6'] },
+        codex: {
+          id: 'codex', installed: true, version: '1.0.0', authenticated: true,
+          plan: null, binaryPath: null, availableModels: ['gpt-5.5', 'gpt-5.4'],
+        },
+      };
+      const providerFor = (id: 'claude' | 'codex'): Provider => ({
+        id,
+        async detect() { return twoProviderEnv[id]; },
+        async *run(req: ProviderRequest): AsyncIterable<ProviderEvent> {
+          if (req.prompt.startsWith('You are one adjudicator selecting the strongest plan')) {
+            sequence.push(`${id}:adjudicator`);
+            yield {
+              type: 'done',
+              text: [
+                'JUDGMENT: stage',
+                'GOAL: Selected production auth migration',
+                'APPROACH: Stage the migration behind compatibility checks',
+                'WHY: It controls production risk and preserves rollback',
+                'TODO: Map every authentication boundary',
+                'DONE: The migration tests and rollback verification pass',
+                '{"choice":"P2","confidence":0.9,"why":"more complete","key_risk":"migration safety"}',
+              ].join('\n'),
+              usage: FAKE_USAGE,
+              raw: {},
+            };
+            return;
+          }
+          if (req.prompt.includes('WHOLE-PICTURE UNDERSTANDING PASS')) {
+            sequence.push(`${id}:understanding`);
+            yield { type: 'done', text: 'SUMMARY: should not run synchronously', usage: FAKE_USAGE, raw: {} };
+            return;
+          }
+          if (req.prompt.includes('PLANNING BRAIN')) {
+            sequence.push(`${id}:planner`);
+            const text = id === 'claude'
+              ? ['JUDGMENT: stage', 'GOAL: First auth migration', 'TODO: inspect auth'].join('\n')
+              : [
+                  'JUDGMENT: stage',
+                  'GOAL: Second auth migration',
+                  'APPROACH: Use a compatibility bridge',
+                  'WHY: It permits rollback',
+                  'TODO: Inventory auth callers',
+                  'DONE: Migration verification passes',
+                ].join('\n');
+            yield { type: 'done', text, usage: FAKE_USAGE, raw: {} };
+            return;
+          }
+          yield { type: 'done', text: `Done.\n${CONFIDENCE_ENVELOPE}`, usage: FAKE_USAGE, raw: {} };
+        },
+      });
+      const sink = makeSink();
+      const ctx = makeCtx({
+        env: twoProviderEnv,
+        providers: { claude: providerFor('claude'), codex: providerFor('codex') },
+        config: {
+          onboarded: true, setAsDefault: false, smartRoute: false,
+          mode: 'quality-first', intensity: 5, experimentalPlanningDepth: true,
+        },
+        readLine: makeScriptedReader([
+          'n',
+          'design and migrate production billing authentication architecture without data loss',
+          '/exit',
+          'q',
+        ]),
+      }, undefined, undefined, undefined, dir);
+
+      await startMenu(ctx, sink);
+
+      const synchronousPlannerCalls = sequence.filter((call) => !call.endsWith(':understanding'));
+      assert.deepEqual(synchronousPlannerCalls, ['claude:planner', 'codex:planner', 'claude:adjudicator']);
+      assert.equal(synchronousPlannerCalls.length, 3, 'A + B + adjudicator is the full synchronous planning budget');
+      assert.equal(sequence.filter((call) => call.endsWith(':understanding')).length, 1, 'cold grounding remains background-only');
+      assert.ok(sink.buf.includes('Planning with 2 subscription brains: claude + codex'));
+      assert.ok(sink.buf.includes('Plan selection: ran - claude + codex'));
+      const goals = await createFileGoalStore({ clock: ctx.clock }).list();
+      assert.equal(goals[0]?.title, 'Selected production auth migration');
+    });
+  });
+
+  it('keeps deficient candidate A when only one provider is authenticated', async () => {
+    const dir = join(tmpdir(), `menu-plan-selection-one-provider-${randomUUID()}`);
+    await withStateHome(dir, async () => {
+      let plannerCalls = 0;
+      const provider: Provider = {
+        id: 'claude',
+        async detect() { return FAKE_ENV.claude; },
+        async *run(req: ProviderRequest): AsyncIterable<ProviderEvent> {
+          if (req.prompt.includes('PLANNING BRAIN')) {
+            plannerCalls += 1;
+            yield { type: 'done', text: 'JUDGMENT: stage\nGOAL: First auth migration\nTODO: inspect auth', usage: FAKE_USAGE, raw: {} };
+            return;
+          }
+          yield { type: 'done', text: `Done.\n${CONFIDENCE_ENVELOPE}`, usage: FAKE_USAGE, raw: {} };
+        },
+      };
+      const oneProviderEnv: EnvironmentStatus = {
+        ...FAKE_ENV,
+        claude: {
+          ...FAKE_ENV.claude,
+          availableModels: ['claude-opus-4-7', 'claude-sonnet-4-6'],
+        },
+      };
+      await fs.promises.mkdir(dir, { recursive: true });
+      await fs.promises.writeFile(join(dir, 'package.json'), JSON.stringify({ name: 'fixture' }), 'utf8');
+      const sink = makeSink();
+      const ctx = makeCtx({
+        env: oneProviderEnv,
+        providers: { claude: provider },
+        config: {
+          onboarded: true, setAsDefault: false, smartRoute: false,
+          mode: 'quality-first', intensity: 5, experimentalPlanningDepth: true,
+          experimentalUnderstanding: false,
+        },
+        readLine: makeScriptedReader(['n', 'design and migrate production billing authentication architecture without data loss', '/exit', 'q']),
+      }, undefined, undefined, undefined, dir);
+
+      await startMenu(ctx, sink);
+
+      assert.equal(plannerCalls, 1);
+      assert.ok(!sink.buf.includes('Planning with 2 subscription brains'));
+      const goals = await createFileGoalStore({ clock: ctx.clock }).list();
+      assert.equal(goals[0]?.title, 'First auth migration');
+    });
+  });
+
+  it('does not select again when hard-goal candidate A is complete', async () => {
+    const dir = join(tmpdir(), `menu-plan-selection-complete-${randomUUID()}`);
+    await withStateHome(dir, async () => {
+      let plannerCalls = 0;
+      let codexCalls = 0;
+      const twoProviderEnv: EnvironmentStatus = {
+        ...FAKE_ENV,
+        claude: { ...FAKE_ENV.claude, availableModels: ['claude-opus-4-7', 'claude-sonnet-4-6'] },
+        codex: {
+          id: 'codex', installed: true, version: '1.0.0', authenticated: true,
+          plan: null, binaryPath: null, availableModels: ['gpt-5.5'],
+        },
+      };
+      const claude: Provider = {
+        id: 'claude', async detect() { return twoProviderEnv.claude; },
+        async *run(req: ProviderRequest): AsyncIterable<ProviderEvent> {
+          if (req.prompt.includes('PLANNING BRAIN')) {
+            plannerCalls += 1;
+            yield { type: 'done', text: [
+              'JUDGMENT: stage', 'GOAL: Complete auth migration',
+              'APPROACH: Use a compatibility bridge', 'WHY: It permits rollback',
+              'TODO: Inventory auth callers', 'DONE: Migration verification passes',
+            ].join('\n'), usage: FAKE_USAGE, raw: {} };
+            return;
+          }
+          yield { type: 'done', text: `Done.\n${CONFIDENCE_ENVELOPE}`, usage: FAKE_USAGE, raw: {} };
+        },
+      };
+      const codex: Provider = {
+        id: 'codex', async detect() { return twoProviderEnv.codex; },
+        async *run(req: ProviderRequest): AsyncIterable<ProviderEvent> {
+          if (
+            req.prompt.includes('PLANNING BRAIN') ||
+            req.prompt.startsWith('You are one adjudicator selecting the strongest plan')
+          ) codexCalls += 1;
+          yield { type: 'done', text: 'unused', usage: FAKE_USAGE, raw: {} };
+        },
+      };
+      await fs.promises.mkdir(dir, { recursive: true });
+      await fs.promises.writeFile(join(dir, 'package.json'), JSON.stringify({ name: 'fixture' }), 'utf8');
+      const sink = makeSink();
+      const ctx = makeCtx({
+        env: twoProviderEnv,
+        providers: { claude, codex },
+        config: {
+          onboarded: true, setAsDefault: false, smartRoute: false,
+          mode: 'quality-first', intensity: 5, experimentalPlanningDepth: true,
+        },
+        readLine: makeScriptedReader(['n', 'design and migrate production billing authentication architecture without data loss', '/exit', 'q']),
+      }, undefined, undefined, undefined, dir);
+
+      await startMenu(ctx, sink);
+
+      assert.equal(plannerCalls, 1);
+      assert.equal(codexCalls, 0);
+      assert.ok(!sink.buf.includes('Planning with 2 subscription brains'));
+    });
+  });
+
+  it('cost-saver locks hard-goal selection and retains the one-call Phase B path', async () => {
+    const dir = join(tmpdir(), `menu-plan-selection-cost-saver-${randomUUID()}`);
+    await withStateHome(dir, async () => {
+      let plannerCalls = 0;
+      let codexCalls = 0;
+      const twoProviderEnv: EnvironmentStatus = {
+        ...FAKE_ENV,
+        claude: { ...FAKE_ENV.claude, availableModels: ['claude-sonnet-4-6'] },
+        codex: {
+          id: 'codex', installed: true, version: '1.0.0', authenticated: true,
+          plan: null, binaryPath: null, availableModels: ['gpt-5.4'],
+        },
+      };
+      const claude: Provider = {
+        id: 'claude', async detect() { return twoProviderEnv.claude; },
+        async *run(req: ProviderRequest): AsyncIterable<ProviderEvent> {
+          if (req.prompt.includes('PLANNING BRAIN')) plannerCalls += 1;
+          yield { type: 'done', text: 'JUDGMENT: stage\nGOAL: First auth migration\nTODO: inspect auth', usage: FAKE_USAGE, raw: {} };
+        },
+      };
+      const codex: Provider = {
+        id: 'codex', async detect() { return twoProviderEnv.codex; },
+        async *run(req: ProviderRequest): AsyncIterable<ProviderEvent> {
+          if (
+            req.prompt.includes('PLANNING BRAIN') ||
+            req.prompt.startsWith('You are one adjudicator selecting the strongest plan')
+          ) codexCalls += 1;
+          yield { type: 'done', text: 'unused', usage: FAKE_USAGE, raw: {} };
+        },
+      };
+      const sink = makeSink();
+      const ctx = makeCtx({
+        env: twoProviderEnv,
+        providers: { claude, codex },
+        config: {
+          onboarded: true, setAsDefault: false, smartRoute: false,
+          mode: 'cost-saver', intensity: 5, experimentalPlanningDepth: true,
+          experimentalUnderstanding: false,
+        },
+        readLine: makeScriptedReader(['n', 'design and migrate production billing authentication architecture without data loss', '/exit', 'q']),
+      }, undefined, undefined, undefined, dir);
+
+      await startMenu(ctx, sink);
+
+      assert.equal(plannerCalls, 1);
+      assert.equal(codexCalls, 0);
+      assert.ok(!sink.buf.includes('Planning with 2 subscription brains'));
     });
   });
 

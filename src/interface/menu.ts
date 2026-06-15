@@ -34,7 +34,7 @@ import {
 } from '../core/goal-manager.js';
 import { deriveWorkStateFromHistory, renderWorkStateBlock } from '../core/work-state.js';
 import { isKeepGoingOffer } from '../core/questions.js';
-import { assessGoalConfidence, chooseInitialPlanningDepth, decideAutonomyOffer, decideGoalActivation, detectActivationOverride, planningDepthCap } from '../core/autonomy.js';
+import { assessGoalConfidence, chooseInitialPlanningDepth, choosePlannerTier, decideAutonomyOffer, decideGoalActivation, detectActivationOverride, needStrongPlanner, planningDepthCap, planningSelectionEntitlement, shouldRunPlanningSelection, type FirstPlanSelectionEvidence, type PlanningSelectionScope } from '../core/autonomy.js';
 import { classify, hasWorkIntent } from '../core/classify.js';
 import { resolveMemoryContextDetailed } from '../core/memory-injection.js';
 import { buildEnvironmentContext } from '../core/repo-map.js';
@@ -141,7 +141,9 @@ import { runCost } from '../commands/cost.js';
 import { dim, bold, formatRecapLine } from '../ui/theme.js';
 import { makeRecapGenerator } from '../core/recap-generator.js';
 import { makeGoalObjectiveGenerator } from '../core/goal-objective-generator.js';
-import { makeGoalPlanner } from '../core/goal-plan-generator.js';
+import { makeGoalPlanner, makeGoalPlannerAttempt } from '../core/goal-plan-generator.js';
+import { formatGoalPlanSelectionDisclosure, formatGoalPlanSelectionNotice, selectGoalPlan } from '../core/ensemble.js';
+import { panelAllowedForShape } from '../core/governor.js';
 import type { GoalPlan, GoalPlanTodo } from '../core/goal-plan.js';
 import { planTodosToRoadmap } from '../core/goal-plan.js';
 import { formatGoalProposal, formatHeadsUp, formatAutoStageNote } from '../core/goal-proposal.js';
@@ -770,6 +772,41 @@ export async function runChatLoop(
       ...(authenticatedProviders.length > 0 ? { authenticatedProviders } : {}),
       // When the understanding pass produced a SystemModel, GROUND the planner in
       // it; absent → the planner prompt is byte-for-byte today's.
+      ...(systemModel !== undefined ? { systemModel } : {}),
+    });
+  };
+
+  const buildGoalPlannerAttempt = (
+    tier: Extract<Tier, 'ic' | 'manager'>,
+    systemModel?: SystemModel,
+  ): ReturnType<typeof makeGoalPlannerAttempt> | null => {
+    if (!hasAuthenticatedProvider(mutableCtx.env)) return null;
+    const effectiveMode: Mode = mutableCtx.config.mode ?? resolveAutoMode(mutableCtx.env);
+    const policy = POLICY_PRESETS[effectiveMode];
+    const availableModels: Partial<Record<ProviderId, readonly string[]>> = {};
+    if (mutableCtx.env.claude.installed && mutableCtx.env.claude.availableModels.length > 0) {
+      availableModels['claude'] = mutableCtx.env.claude.availableModels;
+    }
+    if (mutableCtx.env.codex.installed && mutableCtx.env.codex.availableModels.length > 0) {
+      availableModels['codex'] = mutableCtx.env.codex.availableModels;
+    }
+    if (mutableCtx.env.opencode.installed && mutableCtx.env.opencode.availableModels.length > 0) {
+      availableModels['opencode'] = mutableCtx.env.opencode.availableModels;
+    }
+    const authenticatedProviders: ProviderId[] = [];
+    if (mutableCtx.env.claude.authenticated) authenticatedProviders.push('claude');
+    if (mutableCtx.env.codex.authenticated) authenticatedProviders.push('codex');
+    if (mutableCtx.env.opencode.authenticated) authenticatedProviders.push('opencode');
+
+    return makeGoalPlannerAttempt({
+      providers: ctx.providers,
+      policy,
+      cwd: ctx.cwd,
+      timeoutMs: Math.min(ctx.timeoutMs, 8_000),
+      sandbox: helperSandbox(ctx.sandbox),
+      tier,
+      ...(Object.keys(availableModels).length > 0 ? { availableModels } : {}),
+      ...(authenticatedProviders.length > 0 ? { authenticatedProviders } : {}),
       ...(systemModel !== undefined ? { systemModel } : {}),
     });
   };
@@ -2633,6 +2670,19 @@ export async function runChatLoop(
       // with no deps yields a {id, text, status} item byte-identical to before.
       const todosToRoadmap = (todos: readonly GoalPlanTodo[]): RoadmapItem[] =>
         planTodosToRoadmap(todos);
+      const verifiabilityByCwd = new Map<string, boolean>();
+      const verificationAvailableForCwd = async (cwd: string): Promise<boolean> => {
+        const cached = verifiabilityByCwd.get(cwd);
+        if (cached !== undefined) return cached;
+        let available = false;
+        try {
+          available = (await nodeVerifyPort.detectTestCommand(cwd)) !== null;
+        } catch {
+          available = false;
+        }
+        verifiabilityByCwd.set(cwd, available);
+        return available;
+      };
       // Run an EXPLICIT goal (`/goal <text>`) through the ADAPTIVE JUDGMENT — the front
       // of the elite-pro loop. It's NOT a rigid decompose+execute pipeline: a senior
       // first DIGESTS the goal (grounded in the whole-picture system model when one is
@@ -2742,8 +2792,36 @@ export async function runChatLoop(
           risk: classification.risk,
           engagementDepth: 0,
         });
+        const scope: PlanningSelectionScope = {
+          shape,
+          substantial: classification.tier === 'manager',
+          repoOriented,
+          risk: classification.risk,
+          engagementDepth: 0,
+        };
+        const authenticatedProviders: ProviderId[] = [];
+        if (mutableCtx.env.claude.authenticated) authenticatedProviders.push('claude');
+        if (mutableCtx.env.codex.authenticated) authenticatedProviders.push('codex');
+        if (mutableCtx.env.opencode.authenticated) authenticatedProviders.push('opencode');
+        const selectionEntitlement = planningSelectionEntitlement({
+          gateOn: planningDepthOn,
+          resolvedIntensity,
+          turnCallBudget: callBudgetCeiling,
+          panelAllowed: panelAllowedForShape(
+            shape,
+            effectiveMode,
+            authenticatedProviders.length >= 2,
+            callBudgetCeiling,
+          ),
+          authenticatedProviderCount: authenticatedProviders.length,
+        });
 
-        if (depth === 2 && warm === undefined && understandingOn) {
+        if (
+          selectionEntitlement === 'locked' &&
+          depth === 2 &&
+          warm === undefined &&
+          understandingOn
+        ) {
           out.write('  Planning deeper: grounding this first (one extra pass).\n');
           try {
             const repoContext = await resolveEnvironmentOnce().catch(() => '');
@@ -2765,10 +2843,101 @@ export async function runChatLoop(
           todos.length > 0
             ? todosToRoadmap(todos.slice(0, ROADMAP_LIMIT))
             : todosToRoadmap([{ text: goalText }]);
-        const planner = buildGoalPlanner(warm);
+        const initialTier = choosePlannerTier({
+          resolvedIntensity,
+          needStrongPlanner: needStrongPlanner({ scope, planFixableDeficiency: false }),
+        });
+        const planner = buildGoalPlannerAttempt(initialTier, warm);
         if (planner !== null) {
           try {
-            const plan = await planner(goalText, signal);
+            const attempt = await planner(goalText, signal);
+            let plan = attempt?.plan ?? null;
+            if (attempt !== null && plan !== null) {
+              const substantialGoalMissingApproach =
+                scope.substantial && plan.goals.some((goal) => goal.approach === undefined);
+              const nonTrivialGoalMissingDoneWhen =
+                plan.judgment === 'stage' &&
+                plan.goals.some(
+                  (goal) => goal.doneWhen === undefined || goal.doneWhen.trim().length === 0,
+                );
+              const capDropped =
+                plan.dropped !== undefined &&
+                (plan.dropped.goals > 0 ||
+                  [...plan.dropped.perGoalTodos.values()].some((count) => count > 0));
+              const genericFallbackOnly =
+                plan.judgment === 'stage' &&
+                (plan.goals.length === 0 ||
+                  plan.goals.every(
+                    (goal) => goal.title.trim().length === 0 || goal.todos.length === 0,
+                  ));
+              const verificationAvailable = await verificationAvailableForCwd(ctx.cwd);
+              const firstPlan: FirstPlanSelectionEvidence = {
+                judgment: plan.judgment,
+                substantialGoalMissingApproach,
+                nonTrivialGoalMissingDoneWhen,
+                capDropped,
+                genericFallbackOnly,
+                confidenceNoDoneWhen: nonTrivialGoalMissingDoneWhen,
+                onlyGapIsNoVerification:
+                  !verificationAvailable &&
+                  !substantialGoalMissingApproach &&
+                  !nonTrivialGoalMissingDoneWhen &&
+                  !capDropped &&
+                  !genericFallbackOnly,
+              };
+              const planFixableDeficiency =
+                substantialGoalMissingApproach ||
+                nonTrivialGoalMissingDoneWhen ||
+                capDropped ||
+                genericFallbackOnly;
+              if (shouldRunPlanningSelection({ entitlement: selectionEntitlement, scope, firstPlan })) {
+                const providerB = authenticatedProviders.find(
+                  (provider) => provider !== attempt.provider && ctx.providers[provider] !== undefined,
+                );
+                if (providerB !== undefined) {
+                  const reason = substantialGoalMissingApproach
+                    ? 'first plan lacked a complete approach'
+                    : nonTrivialGoalMissingDoneWhen
+                      ? 'first plan lacked DONE criteria'
+                      : capDropped
+                        ? 'first plan dropped scope at parser caps'
+                        : 'first plan retained only generic fallback structure';
+                  out.write(
+                    `  ${formatGoalPlanSelectionNotice({
+                      candidateA: attempt.provider,
+                      candidateB: providerB,
+                      reason,
+                    })}\n`,
+                  );
+                  const selectionTier = choosePlannerTier({
+                    resolvedIntensity,
+                    needStrongPlanner: needStrongPlanner({ scope, planFixableDeficiency }),
+                  });
+                  const selectionDeps: OrchestrateDeps = {
+                    ...buildDeps([]),
+                    sandbox: helperSandbox(ctx.sandbox),
+                    timeoutMs: Math.min(ctx.timeoutMs, 8_000),
+                  };
+                  const selection = await selectGoalPlan({
+                    ownerTask: goalText,
+                    candidateA: {
+                      plan,
+                      provider: attempt.provider,
+                      model: attempt.model,
+                      rawText: attempt.raw,
+                    },
+                    deps: selectionDeps,
+                    tier: selectionTier,
+                    classification,
+                    signal,
+                    ...(warm !== undefined ? { systemModel: warm } : {}),
+                    candidateProviders: authenticatedProviders,
+                  });
+                  plan = selection.plan;
+                  out.write(`  ${formatGoalPlanSelectionDisclosure(selection.receipt)}\n`);
+                }
+              }
+            }
             if (plan !== null) {
               const g0 = plan.goals[0];
               const title = g0?.title.trim();
@@ -2853,19 +3022,6 @@ export async function runChatLoop(
           },
         ],
       });
-      const verifiabilityByCwd = new Map<string, boolean>();
-      const verificationAvailableForCwd = async (cwd: string): Promise<boolean> => {
-        const cached = verifiabilityByCwd.get(cwd);
-        if (cached !== undefined) return cached;
-        let available = false;
-        try {
-          available = (await nodeVerifyPort.detectTestCommand(cwd)) !== null;
-        } catch {
-          available = false;
-        }
-        verifiabilityByCwd.set(cwd, available);
-        return available;
-      };
       async function prepareAcknowledgedGoal(
         line: string,
       ): Promise<AcknowledgedGoalLaunch | 'normal-chat' | 'cancelled' | 'staged-parked'> {

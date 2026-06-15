@@ -9,7 +9,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { makeGoalPlanner } from '../../src/core/goal-plan-generator.ts';
+import { makeGoalPlanner, makeGoalPlannerAttempt } from '../../src/core/goal-plan-generator.ts';
 import { DEFAULT_POLICY } from '../../src/core/policy.ts';
 import type { Provider, ProviderEvent, ProviderRequest } from '../../src/providers/port.ts';
 
@@ -115,5 +115,36 @@ describe('makeGoalPlanner', () => {
     const provider = fakeProvider([{ type: 'done', text: 'sounds good to me!', raw: {} }]);
     const gen = makeGoalPlanner(baseDeps(provider));
     assert.equal(await gen(SUBSTANTIAL, SIGNAL), null);
+  });
+});
+
+describe('makeGoalPlannerAttempt', () => {
+  it('exposes provider, model, raw text, and the parsed plan', async () => {
+    const raw = 'JUDGMENT: stage\nGOAL: Build billing\nTODO: Wire invoices';
+    const provider = fakeProvider([{ type: 'done', text: raw, raw: {} }]);
+    const attempt = await makeGoalPlannerAttempt(baseDeps(provider))(SUBSTANTIAL, SIGNAL);
+
+    assert.equal(attempt?.provider, 'claude');
+    assert.equal(attempt?.model, 'claude-sonnet-4-6');
+    assert.equal(attempt?.raw, raw);
+    assert.equal(attempt?.plan?.goals[0]?.title, 'Build billing');
+  });
+
+  it('honors an IC tier override', async () => {
+    const sink: { req?: ProviderRequest } = {};
+    const provider = fakeProvider([
+      { type: 'done', text: 'JUDGMENT: stage\nGOAL: Build billing\nTODO: Wire invoices', raw: {} },
+    ], sink);
+    const attempt = makeGoalPlannerAttempt({ ...baseDeps(provider), tier: 'ic' });
+
+    await attempt(SUBSTANTIAL, SIGNAL);
+    assert.equal(sink.req?.model, 'claude-sonnet-4-6');
+  });
+
+  it('returns null fail-soft when routing or execution cannot produce raw output', async () => {
+    assert.equal(
+      await makeGoalPlannerAttempt({ providers: {}, policy: DEFAULT_POLICY, cwd: '/x', timeoutMs: 1000 })(SUBSTANTIAL, SIGNAL),
+      null,
+    );
   });
 });

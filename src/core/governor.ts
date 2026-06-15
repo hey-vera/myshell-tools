@@ -555,7 +555,7 @@ function pollAllowedForShape(
   return turnCallBudget >= POLL_MIN_BUDGET && spent < turnCallBudget;
 }
 
-function panelAllowedForShape(
+export function panelAllowedForShape(
   shape: TaskShape,
   mode: Mode,
   crossVendor: boolean,
