@@ -37,6 +37,26 @@ export type GoalActivation =
 
 export type PlanningDepth = 1 | 2;
 
+export type PlanningSelectionEntitlement = 'locked' | 'unlocked';
+
+export interface FirstPlanSelectionEvidence {
+  readonly judgment: 'none' | 'stage' | 'clarify' | 'fallback';
+  readonly substantialGoalMissingApproach: boolean;
+  readonly nonTrivialGoalMissingDoneWhen: boolean;
+  readonly capDropped: boolean;
+  readonly genericFallbackOnly: boolean;
+  readonly confidenceNoDoneWhen: boolean;
+  readonly onlyGapIsNoVerification: boolean;
+}
+
+export interface PlanningSelectionScope {
+  readonly shape: 'quick' | 'risky' | 'decide' | 'investigate' | 'build' | 'explain';
+  readonly substantial: boolean;
+  readonly repoOriented: boolean;
+  readonly risk: 'low' | 'medium' | 'high' | 'critical';
+  readonly engagementDepth: 0 | 1 | 2;
+}
+
 /**
  * Detect an explicit standing preference for confident-goal activation.
  * Ordinary work requests and one-off sequencing language intentionally do not
@@ -201,6 +221,70 @@ export function chooseInitialPlanningDepth(input: {
     input.risk === 'critical';
 
   return groundingNeed ? 2 : 1;
+}
+
+/**
+ * Planning-selection entitlement ceiling.
+ *
+ * Selection is unlocked only when the gate, tuning, call budget, governor
+ * allowance, and provider availability all permit it.
+ */
+export function planningSelectionEntitlement(input: {
+  readonly gateOn: boolean;
+  readonly resolvedIntensity: 1 | 2 | 3 | 4 | 5;
+  readonly turnCallBudget: 1 | 2 | 3;
+  readonly panelAllowed: boolean;
+  readonly authenticatedProviderCount: number;
+}): PlanningSelectionEntitlement {
+  const unlocked =
+    input.gateOn &&
+    input.resolvedIntensity >= 4 &&
+    input.turnCallBudget >= 3 &&
+    input.panelAllowed &&
+    input.authenticatedProviderCount >= 2;
+  return unlocked ? 'unlocked' : 'locked';
+}
+
+/**
+ * Decide whether multi-brain planning selection should run.
+ *
+ * Tuning appears only through entitlement: this need check looks first for
+ * absolute exclusions, then requires both a plan-fixable deficiency and a
+ * genuinely hard or high-stakes goal.
+ */
+export function shouldRunPlanningSelection(input: {
+  readonly entitlement: PlanningSelectionEntitlement;
+  readonly scope: PlanningSelectionScope;
+  readonly firstPlan: FirstPlanSelectionEvidence;
+}): boolean {
+  if (input.entitlement === 'locked') return false;
+  const s = input.scope;
+  const f = input.firstPlan;
+
+  if (s.shape === 'quick' || s.shape === 'explain') return false;
+  if ((s.risk === 'low' || s.risk === 'medium') && !s.substantial && s.shape === 'build') return false;
+  if (f.judgment === 'clarify' || f.judgment === 'none') return false;
+  if (f.onlyGapIsNoVerification) return false;
+
+  const deficiency =
+    f.judgment === 'fallback' ||
+    f.substantialGoalMissingApproach ||
+    f.nonTrivialGoalMissingDoneWhen ||
+    f.capDropped ||
+    f.genericFallbackOnly ||
+    f.confidenceNoDoneWhen;
+  if (!deficiency) return false;
+
+  const hard =
+    s.shape === 'risky' ||
+    s.shape === 'investigate' ||
+    (s.shape === 'decide' && s.substantial) ||
+    s.risk === 'high' ||
+    s.risk === 'critical' ||
+    (s.repoOriented && s.substantial) ||
+    s.engagementDepth >= 2;
+
+  return hard;
 }
 
 /**

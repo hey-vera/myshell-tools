@@ -8,7 +8,9 @@ import {
   decideGoalActivation,
   detectActivationOverride,
   planningDepthCap,
+  planningSelectionEntitlement,
   planningDepthReason,
+  shouldRunPlanningSelection,
 } from '../../src/core/autonomy.ts';
 import type { Classification } from '../../src/core/types.ts';
 import type { Mode } from '../../src/core/policy.ts';
@@ -565,5 +567,197 @@ describe('planningDepthReason', () => {
   it('returns a short phrase for each planning depth', () => {
     assert.equal(planningDepthReason(1), 'single planning pass');
     assert.equal(planningDepthReason(2), 'grounded planning pass');
+  });
+});
+
+describe('planningSelectionEntitlement', () => {
+  const unlockedInput = {
+    gateOn: true,
+    resolvedIntensity: 4 as const,
+    turnCallBudget: 3 as const,
+    panelAllowed: true,
+    authenticatedProviderCount: 2,
+  };
+
+  it('returns unlocked when every conjunct holds', () => {
+    assert.equal(planningSelectionEntitlement(unlockedInput), 'unlocked');
+  });
+
+  it('returns locked when gateOn is false', () => {
+    assert.equal(planningSelectionEntitlement({ ...unlockedInput, gateOn: false }), 'locked');
+  });
+
+  it('returns locked when resolvedIntensity is 3', () => {
+    assert.equal(planningSelectionEntitlement({ ...unlockedInput, resolvedIntensity: 3 }), 'locked');
+  });
+
+  it('returns locked when turnCallBudget is 2', () => {
+    assert.equal(planningSelectionEntitlement({ ...unlockedInput, turnCallBudget: 2 }), 'locked');
+  });
+
+  it('returns locked when panelAllowed is false', () => {
+    assert.equal(planningSelectionEntitlement({ ...unlockedInput, panelAllowed: false }), 'locked');
+  });
+
+  it('returns locked when authenticatedProviderCount is 1', () => {
+    assert.equal(
+      planningSelectionEntitlement({ ...unlockedInput, authenticatedProviderCount: 1 }),
+      'locked',
+    );
+  });
+});
+
+describe('shouldRunPlanningSelection', () => {
+  const ordinaryScope = {
+    shape: 'decide' as const,
+    substantial: false,
+    repoOriented: false,
+    risk: 'low' as const,
+    engagementDepth: 1 as const,
+  };
+
+  const hardScope = {
+    shape: 'investigate' as const,
+    substantial: false,
+    repoOriented: false,
+    risk: 'medium' as const,
+    engagementDepth: 1 as const,
+  };
+
+  const stagePlan = {
+    judgment: 'stage' as const,
+    substantialGoalMissingApproach: false,
+    nonTrivialGoalMissingDoneWhen: false,
+    capDropped: false,
+    genericFallbackOnly: false,
+    confidenceNoDoneWhen: false,
+    onlyGapIsNoVerification: false,
+  };
+
+  it('returns false when entitlement is locked', () => {
+    assert.equal(
+      shouldRunPlanningSelection({
+        entitlement: 'locked',
+        scope: hardScope,
+        firstPlan: { ...stagePlan, capDropped: true },
+      }),
+      false,
+    );
+  });
+
+  it('returns false for quick work', () => {
+    assert.equal(
+      shouldRunPlanningSelection({
+        entitlement: 'unlocked',
+        scope: { ...hardScope, shape: 'quick' },
+        firstPlan: { ...stagePlan, capDropped: true },
+      }),
+      false,
+    );
+  });
+
+  it('returns false for explain work', () => {
+    assert.equal(
+      shouldRunPlanningSelection({
+        entitlement: 'unlocked',
+        scope: { ...hardScope, shape: 'explain' },
+        firstPlan: { ...stagePlan, capDropped: true },
+      }),
+      false,
+    );
+  });
+
+  it('tuning never forces a second brain: unlocked + birdhouse -> false', () => {
+    assert.equal(
+      shouldRunPlanningSelection({
+        entitlement: 'unlocked',
+        scope: {
+          shape: 'build',
+          substantial: false,
+          repoOriented: false,
+          risk: 'medium',
+          engagementDepth: 1,
+        },
+        firstPlan: { ...stagePlan, nonTrivialGoalMissingDoneWhen: true },
+      }),
+      false,
+    );
+  });
+
+  it('returns false when judgment is clarify', () => {
+    assert.equal(
+      shouldRunPlanningSelection({
+        entitlement: 'unlocked',
+        scope: hardScope,
+        firstPlan: { ...stagePlan, judgment: 'clarify', capDropped: true },
+      }),
+      false,
+    );
+  });
+
+  it('returns false when judgment is none', () => {
+    assert.equal(
+      shouldRunPlanningSelection({
+        entitlement: 'unlocked',
+        scope: hardScope,
+        firstPlan: { ...stagePlan, judgment: 'none', capDropped: true },
+      }),
+      false,
+    );
+  });
+
+  it('returns false when the only gap is no verification', () => {
+    assert.equal(
+      shouldRunPlanningSelection({
+        entitlement: 'unlocked',
+        scope: hardScope,
+        firstPlan: { ...stagePlan, onlyGapIsNoVerification: true, confidenceNoDoneWhen: true },
+      }),
+      false,
+    );
+  });
+
+  it('returns false for a hard goal with no deficiency', () => {
+    assert.equal(
+      shouldRunPlanningSelection({
+        entitlement: 'unlocked',
+        scope: { ...ordinaryScope, risk: 'high' },
+        firstPlan: stagePlan,
+      }),
+      false,
+    );
+  });
+
+  it('returns false for a deficiency on a non-hard goal', () => {
+    assert.equal(
+      shouldRunPlanningSelection({
+        entitlement: 'unlocked',
+        scope: ordinaryScope,
+        firstPlan: { ...stagePlan, nonTrivialGoalMissingDoneWhen: true },
+      }),
+      false,
+    );
+  });
+
+  it('returns true for investigate work with a capDropped deficiency', () => {
+    assert.equal(
+      shouldRunPlanningSelection({
+        entitlement: 'unlocked',
+        scope: hardScope,
+        firstPlan: { ...stagePlan, capDropped: true },
+      }),
+      true,
+    );
+  });
+
+  it('returns true for critical-risk work with fallback judgment', () => {
+    assert.equal(
+      shouldRunPlanningSelection({
+        entitlement: 'unlocked',
+        scope: { ...ordinaryScope, risk: 'critical' },
+        firstPlan: { ...stagePlan, judgment: 'fallback' },
+      }),
+      true,
+    );
   });
 });
