@@ -35,6 +35,8 @@ export type GoalActivation =
   | { readonly kind: 'await-greenlight' }
   | { readonly kind: 'hold' };
 
+export type PlanningDepth = 1 | 2;
+
 /**
  * Detect an explicit standing preference for confident-goal activation.
  * Ordinary work requests and one-off sequencing language intentionally do not
@@ -154,6 +156,58 @@ export function decideGoalActivation(input: {
     !input.highStakes &&
     !input.hasGenuineFork;
   return autoRun ? { kind: 'auto-run' } : { kind: 'await-greenlight' };
+}
+
+/**
+ * Planning depth ceiling.
+ *
+ * Tuning can unlock deeper planning, but never force it: `quick` and `explain`
+ * work stay at a single planning pass, and all other inputs combine by minimum.
+ */
+export function planningDepthCap(input: {
+  readonly resolvedIntensity: 1 | 2 | 3 | 4 | 5;
+  readonly callBudgetCeiling: 1 | 2 | 3;
+  readonly shape: 'quick' | 'risky' | 'decide' | 'investigate' | 'build' | 'explain';
+}): PlanningDepth {
+  if (input.shape === 'quick' || input.shape === 'explain') return 1;
+
+  const intensityCap: PlanningDepth = input.resolvedIntensity >= 3 ? 2 : 1;
+  const callCap: PlanningDepth = input.callBudgetCeiling >= 2 ? 2 : 1;
+
+  return Math.min(intensityCap, callCap) as PlanningDepth;
+}
+
+/**
+ * Choose the shallowest sufficient initial planning depth from task scope.
+ *
+ * Resolved tuning does not appear here; callers pass the already-computed cap.
+ */
+export function chooseInitialPlanningDepth(input: {
+  readonly cap: PlanningDepth;
+  readonly shape: 'quick' | 'risky' | 'decide' | 'investigate' | 'build' | 'explain';
+  readonly substantial: boolean;
+  readonly repoOriented: boolean;
+  readonly risk: 'low' | 'medium' | 'high' | 'critical';
+  readonly engagementDepth: 0 | 1 | 2;
+}): PlanningDepth {
+  if (input.cap === 1) return 1;
+
+  const groundingNeed =
+    (input.repoOriented && input.substantial) ||
+    input.shape === 'investigate' ||
+    input.shape === 'risky' ||
+    input.engagementDepth >= 2 ||
+    input.risk === 'high' ||
+    input.risk === 'critical';
+
+  return groundingNeed ? 2 : 1;
+}
+
+/**
+ * Human-readable label for the selected planning depth.
+ */
+export function planningDepthReason(depth: PlanningDepth): string {
+  return depth === 1 ? 'single planning pass' : 'grounded planning pass';
 }
 
 function tierSignalCount(rationale: string): number {

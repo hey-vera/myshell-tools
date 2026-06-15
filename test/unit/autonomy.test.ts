@@ -3,9 +3,12 @@ import assert from 'node:assert/strict';
 
 import {
   assessGoalConfidence,
+  chooseInitialPlanningDepth,
   decideAutonomyOffer,
   decideGoalActivation,
   detectActivationOverride,
+  planningDepthCap,
+  planningDepthReason,
 } from '../../src/core/autonomy.ts';
 import type { Classification } from '../../src/core/types.ts';
 import type { Mode } from '../../src/core/policy.ts';
@@ -368,5 +371,199 @@ describe('decideGoalActivation', () => {
       }),
       { kind: 'await-greenlight' },
     );
+  });
+});
+
+describe('planningDepthCap', () => {
+  for (const shape of ['quick', 'explain'] as const) {
+    for (const resolvedIntensity of [1, 2, 3, 4, 5] as const) {
+      for (const callBudgetCeiling of [1, 2, 3] as const) {
+        it(`${shape} stays at depth 1 for intensity ${resolvedIntensity} and budget ${callBudgetCeiling}`, () => {
+          assert.equal(
+            planningDepthCap({
+              resolvedIntensity,
+              callBudgetCeiling,
+              shape,
+            }),
+            1,
+          );
+        });
+      }
+    }
+  }
+
+  for (const resolvedIntensity of [1, 2] as const) {
+    it(`returns depth 1 for build work at intensity ${resolvedIntensity} with budget 3`, () => {
+      assert.equal(
+        planningDepthCap({
+          resolvedIntensity,
+          callBudgetCeiling: 3,
+          shape: 'build',
+        }),
+        1,
+      );
+    });
+  }
+
+  for (const resolvedIntensity of [3, 4, 5] as const) {
+    it(`returns depth 2 for build work at intensity ${resolvedIntensity} with budget 3`, () => {
+      assert.equal(
+        planningDepthCap({
+          resolvedIntensity,
+          callBudgetCeiling: 3,
+          shape: 'build',
+        }),
+        2,
+      );
+    });
+  }
+
+  it('returns depth 1 when call-budget ceiling is 1 even at intensity 5', () => {
+    assert.equal(
+      planningDepthCap({
+        resolvedIntensity: 5,
+        callBudgetCeiling: 1,
+        shape: 'investigate',
+      }),
+      1,
+    );
+  });
+
+  for (const callBudgetCeiling of [2, 3] as const) {
+    it(`returns depth 2 when call-budget ceiling is ${callBudgetCeiling} and intensity is 3 or higher`, () => {
+      assert.equal(
+        planningDepthCap({
+          resolvedIntensity: 5,
+          callBudgetCeiling,
+          shape: 'decide',
+        }),
+        2,
+      );
+    });
+  }
+});
+
+describe('chooseInitialPlanningDepth', () => {
+  it('returns depth 1 whenever the cap is 1', () => {
+    assert.equal(
+      chooseInitialPlanningDepth({
+        cap: 1,
+        shape: 'investigate',
+        substantial: true,
+        repoOriented: true,
+        risk: 'critical',
+        engagementDepth: 2,
+      }),
+      1,
+    );
+  });
+
+  for (const engagementDepth of [0, 1] as const) {
+    it(`returns depth 1 for a non-substantial low-risk build at engagement depth ${engagementDepth}`, () => {
+      assert.equal(
+        chooseInitialPlanningDepth({
+          cap: 2,
+          shape: 'build',
+          substantial: false,
+          repoOriented: false,
+          risk: 'low',
+          engagementDepth,
+        }),
+        1,
+      );
+    });
+  }
+
+  it('tuning never forces depth: a high-cap simple task still chooses L1', () => {
+    assert.equal(
+      chooseInitialPlanningDepth({
+        cap: 2,
+        shape: 'build',
+        substantial: false,
+        repoOriented: false,
+        risk: 'low',
+        engagementDepth: 0,
+      }),
+      1,
+    );
+  });
+
+  it('returns depth 2 when repo-oriented work is substantial', () => {
+    assert.equal(
+      chooseInitialPlanningDepth({
+        cap: 2,
+        shape: 'build',
+        substantial: true,
+        repoOriented: true,
+        risk: 'medium',
+        engagementDepth: 1,
+      }),
+      2,
+    );
+  });
+
+  it('returns depth 2 for investigate work', () => {
+    assert.equal(
+      chooseInitialPlanningDepth({
+        cap: 2,
+        shape: 'investigate',
+        substantial: false,
+        repoOriented: false,
+        risk: 'low',
+        engagementDepth: 0,
+      }),
+      2,
+    );
+  });
+
+  it('returns depth 2 for risky work', () => {
+    assert.equal(
+      chooseInitialPlanningDepth({
+        cap: 2,
+        shape: 'risky',
+        substantial: false,
+        repoOriented: false,
+        risk: 'low',
+        engagementDepth: 0,
+      }),
+      2,
+    );
+  });
+
+  for (const risk of ['high', 'critical'] as const) {
+    it(`returns depth 2 for ${risk}-risk work`, () => {
+      assert.equal(
+        chooseInitialPlanningDepth({
+          cap: 2,
+          shape: 'build',
+          substantial: false,
+          repoOriented: false,
+          risk,
+          engagementDepth: 1,
+        }),
+        2,
+      );
+    });
+  }
+
+  it('returns depth 2 for engagement depth 2', () => {
+    assert.equal(
+      chooseInitialPlanningDepth({
+        cap: 2,
+        shape: 'build',
+        substantial: false,
+        repoOriented: false,
+        risk: 'medium',
+        engagementDepth: 2,
+      }),
+      2,
+    );
+  });
+});
+
+describe('planningDepthReason', () => {
+  it('returns a short phrase for each planning depth', () => {
+    assert.equal(planningDepthReason(1), 'single planning pass');
+    assert.equal(planningDepthReason(2), 'grounded planning pass');
   });
 });
