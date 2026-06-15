@@ -47,6 +47,7 @@ describe('buildGoalPlanPrompt', () => {
     assert.ok(/APPROACH:/.test(p), 'documents the optional APPROACH line (chosen strategy)');
     assert.ok(/WHY:/.test(p), 'documents the WHY line (why it beats the alternatives)');
     assert.ok(/ALT:/.test(p), 'documents the optional ALT line (rejected options)');
+    assert.ok(/DONE:/.test(p), 'documents the optional DONE line (verifiable success criterion)');
   });
 
   it('returns empty string for empty/whitespace input (caller skips the model touch)', () => {
@@ -181,6 +182,51 @@ describe('parseGoalPlan — substantial → stage', () => {
     const out = parseGoalPlan('JUDGMENT: stage\nGOAL: Ship it\nTODO: step one\nTODO: step two');
     assert.ok(out !== null);
     assert.equal(out?.dropped, undefined, 'nothing dropped ⇒ no dropped field');
+  });
+
+  it('parses an optional DONE line into doneWhen', () => {
+    const out = parseGoalPlan('JUDGMENT: stage\nGOAL: Ship it\nDONE: tests pass\nTODO: step one');
+    assert.ok(out !== null);
+    assert.equal(out?.goals[0]?.doneWhen, 'tests pass');
+  });
+
+  it('a plan with NO DONE line has NO doneWhen field (additive — byte-identical)', () => {
+    const out = parseGoalPlan('JUDGMENT: stage\nGOAL: Ship it\nTODO: step one');
+    assert.ok(out !== null);
+    const goal = out?.goals[0];
+    assert.ok(goal !== undefined);
+    assert.equal(Object.hasOwn(goal, 'doneWhen'), false);
+  });
+
+  it('caps DONE to 160 chars', () => {
+    const longDone = 'a'.repeat(161);
+    const out = parseGoalPlan(`JUDGMENT: stage\nGOAL: Ship it\nDONE: ${longDone}\nTODO: step one`);
+    assert.ok(out !== null);
+    assert.equal(out?.goals[0]?.doneWhen?.length, 160);
+  });
+
+  it('a DONE on a DROPPED goal does not attach to the last KEPT goal', () => {
+    const lines = ['JUDGMENT: stage'];
+    for (let g = 0; g < GOAL_PLAN_MAX_GOALS; g += 1) {
+      lines.push(`GOAL: Goal number ${g}`);
+      lines.push(`DONE: done ${g}`);
+      lines.push(`TODO: only todo ${g}`);
+    }
+    lines.push(`GOAL: Goal number ${GOAL_PLAN_MAX_GOALS}`);
+    lines.push('DONE: dropped done');
+    lines.push(`TODO: only todo ${GOAL_PLAN_MAX_GOALS}`);
+    const out = parseGoalPlan(lines.join('\n'));
+    assert.ok(out !== null);
+    const lastKept = out?.goals[GOAL_PLAN_MAX_GOALS - 1];
+    assert.equal(lastKept?.doneWhen, `done ${GOAL_PLAN_MAX_GOALS - 1}`);
+  });
+
+  it('keeps only the FIRST DONE per goal', () => {
+    const out = parseGoalPlan(
+      'JUDGMENT: stage\nGOAL: Ship it\nDONE: first done\nDONE: second done\nTODO: step one',
+    );
+    assert.ok(out !== null);
+    assert.equal(out?.goals[0]?.doneWhen, 'first done');
   });
 
   it('does NOT echo the raw phrasing (the model writes professional titles)', () => {

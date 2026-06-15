@@ -37,6 +37,8 @@ const GOAL_PLAN_VISION_MAX_CHARS = 120;
 const GOAL_PLAN_TITLE_MAX_CHARS = 80;
 /** Hard cap on a single TODO step — a concrete step, not an essay. */
 const GOAL_PLAN_TODO_MAX_CHARS = 120;
+/** Hard cap on a goal's DONE criterion — one concise, checkable line, not an essay. */
+const GOAL_PLAN_DONE_MAX_CHARS = 160;
 /** Hard cap on the clarifying ASK — one sharp question. */
 const GOAL_PLAN_ASK_MAX_CHARS = 200;
 /** Hard caps on the best-approach lines (a concise strategy, not an essay). The
@@ -94,6 +96,8 @@ export interface GoalPlan {
     readonly todos: readonly GoalPlanTodo[];
     /** The goal's best-approach (chosen + why), when the planner stated one. */
     readonly approach?: GoalPlanApproach;
+    /** The goal's verifiable definition of done (one concise success criterion), when the planner stated one. OPTIONAL — trivial goals omit it. */
+    readonly doneWhen?: string;
   }[];
   readonly clarifyingQuestion?: string;
   /**
@@ -154,6 +158,7 @@ export function buildGoalPlanPrompt(
     '      APPROACH: <the chosen strategy — the smartest, most-efficient way to do it>',
     '      WHY: <why it beats the alternatives, grounded in the real system>',
     '      ALT: <a rejected option, another rejected option>',
+    '      DONE: <one concise, checkable success criterion — how you KNOW the goal is done>',
     '      TODO: <a concrete first step of that goal>',
     '      TODO: <the next concrete step>',
     '      TODO: <a step that truly needs earlier ones first>  [after: 1, 2]',
@@ -183,6 +188,8 @@ export function buildGoalPlanPrompt(
     "    separated). Both APPROACH and WHY are required together or omit BOTH — never",
     '    state a strategy with no reasoning. SKIP all three for a trivial goal; keep',
     '    them SHORT (one line each). They attach to the GOAL directly above them.',
+    '  - State a DONE line per goal: ONE concise, VERIFIABLE success criterion (a passing test, an',
+    '    observable behavior) — how you KNOW it is finished. Keep it short; omit only if truly trivial.',
     "  - You are an advisor, NOT a yes-man. If the owner named a way to do it but a",
     '    materially BETTER path exists for their real goal, make APPROACH the better',
     "    path — not theirs — say in WHY why it wins, and put their stated way in ALT.",
@@ -314,6 +321,7 @@ export function parseGoalPlan(raw: string | undefined | null): GoalPlan | null {
     chosen?: string;
     rationale?: string;
     alternatives?: string[];
+    doneWhen?: string;
   }[] = [];
   // Honest-truncation tracking (the owner's "never hide a cap" rule): count what the
   // caps drop so the proposal can disclose it. Stays at 0 / empty when the model
@@ -363,6 +371,14 @@ export function parseGoalPlan(raw: string | undefined | null): GoalPlan | null {
       const current = goals[goals.length - 1];
       if (current === undefined) continue; // an APPROACH before any GOAL is dropped
       if (current.chosen === undefined) current.chosen = capLen(value, GOAL_PLAN_APPROACH_MAX_CHARS);
+      continue;
+    }
+    if (tag === 'done') {
+      if (value.length === 0) continue;
+      if (inDroppedGoal) continue; // belongs to a dropped goal — never attach to the last kept one
+      const current = goals[goals.length - 1];
+      if (current === undefined) continue; // a DONE before any GOAL is dropped
+      if (current.doneWhen === undefined) current.doneWhen = capLen(value, GOAL_PLAN_DONE_MAX_CHARS);
       continue;
     }
     if (tag === 'why') {
@@ -462,6 +478,7 @@ export function parseGoalPlan(raw: string | undefined | null): GoalPlan | null {
           title: g.title,
           todos: g.todos.slice(0, GOAL_PLAN_MAX_TODOS),
           ...(approach !== undefined ? { approach } : {}),
+          ...(g.doneWhen !== undefined && g.doneWhen.length > 0 ? { doneWhen: g.doneWhen } : {}),
         };
       }),
       // Honest cap disclosure — present ONLY when the caps actually trimmed something
