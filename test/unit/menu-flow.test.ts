@@ -1969,6 +1969,256 @@ describe('startMenu — auto-goal smart autonomy', () => {
     });
   });
 
+  it('planning-depth gate off preserves the single ungrounded preflight planner call', async () => {
+    const dir = join(tmpdir(), `menu-planning-depth-off-${randomUUID()}`);
+    await withStateHome(dir, async () => {
+      const plannerPrompts: string[] = [];
+      const provider: Provider = {
+        id: 'claude',
+        async detect() { return FAKE_ENV.claude; },
+        async *run(req: ProviderRequest): AsyncIterable<ProviderEvent> {
+          if (req.prompt.includes('PLANNING BRAIN')) {
+            plannerPrompts.push(req.prompt);
+            const reply = ['JUDGMENT: stage', 'GOAL: Design the migration', 'TODO: design it'].join('\n');
+            yield { type: 'done', text: reply, usage: FAKE_USAGE, raw: {} };
+            return;
+          }
+          yield { type: 'done', text: `Done.\n${CONFIDENCE_ENVELOPE}`, usage: FAKE_USAGE, raw: {} };
+        },
+      };
+      const sink = makeSink();
+      const ctx = makeCtx({
+        config: {
+          onboarded: true, setAsDefault: false, smartRoute: false,
+          mode: 'quality-first', intensity: 5, experimentalUnderstanding: false,
+        },
+        providers: { claude: provider },
+        readLine: makeScriptedReader(['n', 'review and design the architecture', '/exit', 'q']),
+      }, undefined, undefined, undefined, dir);
+
+      await startMenu(ctx, sink);
+
+      assert.equal(plannerPrompts.length, 1);
+      assert.ok(plannerPrompts[0]?.includes('review and design the architecture'));
+      assert.ok(!plannerPrompts[0]?.includes('WHOLE-PICTURE UNDERSTANDING OF THE REAL SYSTEM'));
+      assert.ok(!sink.buf.includes('Planning deeper'));
+    });
+  });
+
+  it('planning-depth gate on keeps a low-risk birdhouse at one silent planner call', async () => {
+    const dir = join(tmpdir(), `menu-planning-depth-birdhouse-${randomUUID()}`);
+    await withStateHome(dir, async () => {
+      let plannerCalls = 0;
+      const provider: Provider = {
+        id: 'claude',
+        async detect() { return FAKE_ENV.claude; },
+        async *run(req: ProviderRequest): AsyncIterable<ProviderEvent> {
+          if (req.prompt.includes('PLANNING BRAIN')) {
+            plannerCalls += 1;
+            const reply = ['JUDGMENT: stage', 'GOAL: Build the birdhouse', 'TODO: build it'].join('\n');
+            yield { type: 'done', text: reply, usage: FAKE_USAGE, raw: {} };
+            return;
+          }
+          yield { type: 'done', text: `Done.\n${CONFIDENCE_ENVELOPE}`, usage: FAKE_USAGE, raw: {} };
+        },
+      };
+      const sink = makeSink();
+      const ctx = makeCtx({
+        config: {
+          onboarded: true, setAsDefault: false, smartRoute: false,
+          mode: 'quality-first', intensity: 5, experimentalPlanningDepth: true,
+          experimentalUnderstanding: false,
+        },
+        providers: { claude: provider },
+        readLine: makeScriptedReader(['n', 'build a birdhouse', '/exit', 'q']),
+      }, undefined, undefined, undefined, dir);
+
+      await startMenu(ctx, sink);
+
+      assert.equal(plannerCalls, 1);
+      assert.ok(!sink.buf.includes('Planning deeper'));
+    });
+  });
+
+  it('cold hard preflight awaits understanding once and grounds the single planner call', async () => {
+    const dir = join(tmpdir(), `menu-planning-depth-cold-${randomUUID()}`);
+    await withStateHome(dir, async () => {
+      const sequence: string[] = [];
+      const provider: Provider = {
+        id: 'claude',
+        async detect() { return FAKE_ENV.claude; },
+        async *run(req: ProviderRequest): AsyncIterable<ProviderEvent> {
+          if (req.prompt.includes('WHOLE-PICTURE UNDERSTANDING PASS')) {
+            sequence.push('understanding');
+            const reply = [
+              'SUMMARY: Billing auth spans the router and provider adapter.',
+              'MODULE: router selects the provider adapter.',
+              'CONSTRAINT: preserve subscription OAuth.',
+            ].join('\n');
+            yield { type: 'done', text: reply, usage: FAKE_USAGE, raw: {} };
+            return;
+          }
+          if (req.prompt.includes('PLANNING BRAIN')) {
+            sequence.push(req.prompt.includes('WHOLE-PICTURE UNDERSTANDING OF THE REAL SYSTEM') ? 'planner-grounded' : 'planner-ungrounded');
+            const reply = ['JUDGMENT: stage', 'GOAL: Migrate billing auth', 'TODO: map the auth path'].join('\n');
+            yield { type: 'done', text: reply, usage: FAKE_USAGE, raw: {} };
+            return;
+          }
+          yield { type: 'done', text: `Done.\n${CONFIDENCE_ENVELOPE}`, usage: FAKE_USAGE, raw: {} };
+        },
+      };
+      await fs.promises.mkdir(dir, { recursive: true });
+      await fs.promises.writeFile(join(dir, 'package.json'), JSON.stringify({ name: 'fixture' }), 'utf8');
+      const sink = makeSink();
+      const ctx = makeCtx({
+        config: {
+          onboarded: true, setAsDefault: false, smartRoute: false,
+          mode: 'quality-first', intensity: 5, experimentalPlanningDepth: true,
+        },
+        providers: { claude: provider },
+        readLine: makeScriptedReader(['n', 'design and migrate billing authentication architecture', '/exit', 'q']),
+      }, undefined, undefined, undefined, dir);
+
+      await startMenu(ctx, sink);
+
+      assert.deepEqual(sequence, ['understanding', 'planner-grounded']);
+      assert.ok(sink.buf.includes('Planning deeper: grounding this first (one extra pass).'));
+    });
+  });
+
+  it('a warm SystemModel is reused without another awaited understanding pass', async () => {
+    const dir = join(tmpdir(), `menu-planning-depth-warm-${randomUUID()}`);
+    await withStateHome(dir, async () => {
+      const sequence: string[] = [];
+      let plannerCalls = 0;
+      const provider: Provider = {
+        id: 'claude',
+        async detect() { return FAKE_ENV.claude; },
+        async *run(req: ProviderRequest): AsyncIterable<ProviderEvent> {
+          if (req.prompt.includes('WHOLE-PICTURE UNDERSTANDING PASS')) {
+            sequence.push('understanding');
+            const reply = ['SUMMARY: The architecture centers on the router.', 'MODULE: router connects providers.'].join('\n');
+            yield { type: 'done', text: reply, usage: FAKE_USAGE, raw: {} };
+            return;
+          }
+          if (req.prompt.includes('PLANNING BRAIN')) {
+            plannerCalls += 1;
+            sequence.push('planner');
+            assert.ok(req.prompt.includes('WHOLE-PICTURE UNDERSTANDING OF THE REAL SYSTEM'));
+            const reply = plannerCalls === 1
+              ? ['JUDGMENT: clarify', 'GOAL: Design the architecture', 'ASK: Which provider should lead?'].join('\n')
+              : ['JUDGMENT: stage', 'GOAL: Design the architecture', 'TODO: map the provider boundary'].join('\n');
+            yield { type: 'done', text: reply, usage: FAKE_USAGE, raw: {} };
+            return;
+          }
+          yield { type: 'done', text: `Done.\n${CONFIDENCE_ENVELOPE}`, usage: FAKE_USAGE, raw: {} };
+        },
+      };
+      await fs.promises.mkdir(dir, { recursive: true });
+      await fs.promises.writeFile(join(dir, 'package.json'), JSON.stringify({ name: 'fixture' }), 'utf8');
+      const sink = makeSink();
+      const ctx = makeCtx({
+        config: {
+          onboarded: true, setAsDefault: false, smartRoute: false,
+          mode: 'quality-first', intensity: 5, experimentalPlanningDepth: true,
+        },
+        providers: { claude: provider },
+        readLine: makeScriptedReader(['n', 'review and design the architecture', '1', 'Claude', '/exit', 'q']),
+      }, undefined, undefined, undefined, dir);
+
+      await startMenu(ctx, sink);
+
+      assert.deepEqual(sequence, ['understanding', 'planner', 'planner']);
+      assert.equal((sink.buf.match(/Planning deeper/g) ?? []).length, 1);
+    });
+  });
+
+  it('understanding failure falls through to one ungrounded planner call', async () => {
+    const dir = join(tmpdir(), `menu-planning-depth-failsoft-${randomUUID()}`);
+    await withStateHome(dir, async () => {
+      const sequence: string[] = [];
+      const provider: Provider = {
+        id: 'claude',
+        async detect() { return FAKE_ENV.claude; },
+        async *run(req: ProviderRequest): AsyncIterable<ProviderEvent> {
+          if (req.prompt.includes('WHOLE-PICTURE UNDERSTANDING PASS')) {
+            sequence.push('understanding');
+            yield { type: 'error', error: new Error('timed out') };
+            return;
+          }
+          if (req.prompt.includes('PLANNING BRAIN')) {
+            sequence.push(req.prompt.includes('WHOLE-PICTURE UNDERSTANDING OF THE REAL SYSTEM') ? 'planner-grounded' : 'planner-ungrounded');
+            const reply = ['JUDGMENT: stage', 'GOAL: Migrate billing auth', 'TODO: map the auth path'].join('\n');
+            yield { type: 'done', text: reply, usage: FAKE_USAGE, raw: {} };
+            return;
+          }
+          yield { type: 'done', text: `Done.\n${CONFIDENCE_ENVELOPE}`, usage: FAKE_USAGE, raw: {} };
+        },
+      };
+      await fs.promises.mkdir(dir, { recursive: true });
+      await fs.promises.writeFile(join(dir, 'package.json'), JSON.stringify({ name: 'fixture' }), 'utf8');
+      const sink = makeSink();
+      const ctx = makeCtx({
+        config: {
+          onboarded: true, setAsDefault: false, smartRoute: false,
+          mode: 'quality-first', intensity: 5, experimentalPlanningDepth: true,
+        },
+        providers: { claude: provider },
+        readLine: makeScriptedReader(['n', 'design and migrate billing authentication architecture', '/exit', 'q']),
+      }, undefined, undefined, undefined, dir);
+
+      await startMenu(ctx, sink);
+
+      assert.deepEqual(sequence, ['understanding', 'planner-ungrounded']);
+      assert.ok(sink.buf.includes('Grounding unavailable; planning ungrounded.'));
+    });
+  });
+
+  it('cost-saver call budget caps a hard turn at L1 without awaiting its background warm', async () => {
+    const dir = join(tmpdir(), `menu-planning-depth-cost-saver-${randomUUID()}`);
+    await withStateHome(dir, async () => {
+      const sequence: string[] = [];
+      let releaseUnderstanding!: () => void;
+      const understandingMayFinish = new Promise<void>((resolve) => { releaseUnderstanding = resolve; });
+      const provider: Provider = {
+        id: 'claude',
+        async detect() { return FAKE_ENV.claude; },
+        async *run(req: ProviderRequest): AsyncIterable<ProviderEvent> {
+          if (req.prompt.includes('WHOLE-PICTURE UNDERSTANDING PASS')) {
+            sequence.push('understanding-start');
+            await understandingMayFinish;
+            yield { type: 'done', text: 'SUMMARY: background warm', usage: FAKE_USAGE, raw: {} };
+            return;
+          }
+          if (req.prompt.includes('PLANNING BRAIN')) {
+            sequence.push('planner');
+            releaseUnderstanding();
+            const reply = ['JUDGMENT: stage', 'GOAL: Migrate billing auth', 'TODO: map the auth path'].join('\n');
+            yield { type: 'done', text: reply, usage: FAKE_USAGE, raw: {} };
+            return;
+          }
+          yield { type: 'done', text: `Done.\n${CONFIDENCE_ENVELOPE}`, usage: FAKE_USAGE, raw: {} };
+        },
+      };
+      await fs.promises.mkdir(dir, { recursive: true });
+      await fs.promises.writeFile(join(dir, 'package.json'), JSON.stringify({ name: 'fixture' }), 'utf8');
+      const sink = makeSink();
+      const ctx = makeCtx({
+        config: {
+          onboarded: true, setAsDefault: false, smartRoute: false,
+          mode: 'cost-saver', intensity: 5, experimentalPlanningDepth: true,
+        },
+        providers: { claude: provider },
+        readLine: makeScriptedReader(['n', 'design and migrate billing authentication architecture', '/exit', 'q']),
+      }, undefined, undefined, undefined, dir);
+
+      await startMenu(ctx, sink);
+
+      assert.equal(sequence[0], 'planner');
+      assert.ok(!sink.buf.includes('Planning deeper'));
+    });
+  });
+
   it('goal events carry the persisted goalId and attach live agents', async () => {
     const dir = join(tmpdir(), `menu-preflight-goalid-${randomUUID()}`);
     await withStateHome(dir, async () => {

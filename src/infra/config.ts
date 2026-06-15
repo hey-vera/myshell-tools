@@ -355,6 +355,8 @@ export interface AppConfig {
    * / src/core/understanding.ts.
    */
   experimentalUnderstanding?: boolean;
+  /** Internal default-off rollout gate for effort-governed preflight planning depth. */
+  experimentalPlanningDepth?: boolean;
   /**
    * Opt-in for the VERIFIED-DONE goal-completion GATE (Elite-partner architecture
    * Part 3, the anti-fabrication backbone). Absent/false → a goal is marked `done`

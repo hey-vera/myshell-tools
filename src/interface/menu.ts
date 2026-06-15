@@ -34,7 +34,7 @@ import {
 } from '../core/goal-manager.js';
 import { deriveWorkStateFromHistory, renderWorkStateBlock } from '../core/work-state.js';
 import { isKeepGoingOffer } from '../core/questions.js';
-import { assessGoalConfidence, decideAutonomyOffer, decideGoalActivation, detectActivationOverride } from '../core/autonomy.js';
+import { assessGoalConfidence, chooseInitialPlanningDepth, decideAutonomyOffer, decideGoalActivation, detectActivationOverride, planningDepthCap } from '../core/autonomy.js';
 import { classify, hasWorkIntent } from '../core/classify.js';
 import { resolveMemoryContextDetailed } from '../core/memory-injection.js';
 import { buildEnvironmentContext } from '../core/repo-map.js';
@@ -118,7 +118,7 @@ import type { Mode } from '../core/policy.js';
 import { planNativeSession } from '../core/native-session.js';
 import { decideHistoryPolicy } from '../core/turn-directive.js';
 import { availableAfterCooldown, cooldownExpiry } from '../core/cooldown.js';
-import { deriveBaselineOrder, deriveLiveProviderOrder } from '../core/capacity-allocator.js';
+import { autoIntensityForTurn, deriveBaselineOrder, deriveLiveProviderOrder } from '../core/capacity-allocator.js';
 import { learnProviderOrder, learnModelOutcomeOrder } from '../core/routing-memory.js';
 import type { OutputSink, TurnInputSurface, Verbosity } from './render.js';
 import {
@@ -150,6 +150,7 @@ import type { RoadmapEdit } from '../core/goal-replan.js';
 import { makeUnderstandingPass } from '../core/understanding-generator.js';
 import type { SystemModel } from '../core/understanding.js';
 import { understandingEnabled } from './ui/understanding-flag.js';
+import { planningDepthEnabled } from './ui/planning-depth-flag.js';
 import { verifiedDoneEnabled } from './ui/truly-complete-flag.js';
 import { verifyStage } from '../core/work-call.js';
 import { isRecapStale, recapEligible, type RecapResult } from '../core/recap.js';
@@ -167,6 +168,7 @@ import {
   resolveAutoMode,
   hasAuthenticatedProvider,
   subscriptionInventoryFromEnvironment,
+  resolveIntensity,
 } from './menu-auto-mode.js';
 import { decidePostTurn } from './menu-post-turn.js';
 import { planRetryTruncation, recentUserMessages } from './menu-message-redo.js';
@@ -2622,6 +2624,7 @@ export async function runChatLoop(
       // depth. OFF → never invoked, SystemModel stays undefined → the planner prompt
       // is byte-for-byte today's.
       const understandingOn = understandingEnabled(process.env, mutableCtx.config);
+      const planningDepthOn = planningDepthEnabled(process.env, mutableCtx.config);
       // Mint sequential roadmap ids (r1, r2, …) for a freshly-staged goal's todos
       // and translate each todo's 1-based dependsOn indices into the corresponding
       // sibling ids (planTodosToRoadmap — the PURE, table-tested translation). The
@@ -2656,9 +2659,108 @@ export async function runChatLoop(
          *  was cached) — the source of the proactive heads-up findings. */
         systemModel?: SystemModel;
       }> => {
+        if (!planningDepthOn) {
+          const cacheKey = (await resolveProjectKeyOnce()) ?? '∅global';
+          const warm = systemModelCache.get(cacheKey)?.model;
+          if (understandingOn && warm === undefined) warmUnderstanding(cacheKey, goalText);
+          const roadmapFor = (todos: readonly GoalPlanTodo[]): RoadmapItem[] =>
+            todos.length > 0
+              ? todosToRoadmap(todos.slice(0, ROADMAP_LIMIT))
+              : todosToRoadmap([{ text: goalText }]);
+          const planner = buildGoalPlanner(warm);
+          if (planner !== null) {
+            try {
+              const plan = await planner(goalText, new AbortController().signal);
+              if (plan !== null) {
+                const g0 = plan.goals[0];
+                const title = g0?.title.trim();
+                if (plan.judgment === 'clarify') {
+                  const q = plan.clarifyingQuestion?.trim();
+                  return {
+                    judgment: 'clarify',
+                    title: title !== undefined && title.length > 0 ? title : await formGoalLabel(goalText),
+                    roadmap: roadmapFor(g0?.todos ?? []),
+                    ...(q !== undefined && q.length > 0 ? { clarifyingQuestion: q } : {}),
+                    ...(g0?.approach !== undefined ? { approach: g0.approach } : {}),
+                    plan,
+                    ...(warm !== undefined ? { systemModel: warm } : {}),
+                  };
+                }
+                if (g0 !== undefined && title !== undefined && title.length > 0 && g0.todos.length > 0) {
+                  return {
+                    judgment: 'stage',
+                    title,
+                    roadmap: roadmapFor(g0.todos),
+                    ...(g0.approach !== undefined ? { approach: g0.approach } : {}),
+                    plan,
+                    ...(warm !== undefined ? { systemModel: warm } : {}),
+                  };
+                }
+              }
+            } catch {
+              /* fall through to the smart-label + single-item fallback */
+            }
+          }
+          return { judgment: 'stage', title: await formGoalLabel(goalText), roadmap: todosToRoadmap([{ text: goalText }]) };
+        }
+
         const cacheKey = (await resolveProjectKeyOnce()) ?? '∅global';
-        const warm = systemModelCache.get(cacheKey)?.model;
-        if (understandingOn && warm === undefined) warmUnderstanding(cacheKey, goalText);
+        let warm = systemModelCache.get(cacheKey)?.model;
+        const signal = new AbortController().signal;
+        const classification = classify(goalText);
+        const highStakes = classification.risk === 'high' || classification.risk === 'critical';
+        const repoOriented = cacheKey !== '∅global';
+        const shape = highStakes
+          ? 'risky'
+          : classification.tier === 'manager'
+            ? 'decide'
+            : repoOriented
+              ? 'build'
+              : 'explain';
+        const resolved = resolveIntensity(
+          (await ctx.store.list()).find((meta) => meta.id === convId),
+          mutableCtx.config,
+        );
+        const resolvedIntensity = resolved.value === 'auto'
+          ? autoIntensityForTurn({
+              tier: classification.tier,
+              risk: classification.risk,
+              depth: 0,
+              escalate: false,
+              ...(highStakes ? { needsReview: true } : {}),
+            })
+          : resolved.value;
+        const effectiveMode: Mode = mutableCtx.config.mode ?? resolveAutoMode(mutableCtx.env);
+        const modeBudget = effectiveMode === 'quality-first' ? 3 : effectiveMode === 'balanced' ? 2 : 1;
+        const callBudgetCeiling = Math.max(1, modeBudget - currentPressure()) as 1 | 2 | 3;
+        const cap = planningDepthCap({ resolvedIntensity, callBudgetCeiling, shape });
+        const depth = chooseInitialPlanningDepth({
+          cap,
+          shape,
+          substantial: classification.tier === 'manager',
+          repoOriented,
+          risk: classification.risk,
+          engagementDepth: 0,
+        });
+
+        if (depth === 2 && warm === undefined && understandingOn) {
+          out.write('  Planning deeper: grounding this first (one extra pass).\n');
+          try {
+            const repoContext = await resolveEnvironmentOnce().catch(() => '');
+            const pass = buildUnderstandingPass(repoContext, highStakes, 8_000);
+            const model = pass === null ? null : await pass(goalText, signal);
+            if (model !== null) {
+              warm = model;
+              systemModelCache.set(cacheKey, { model, atTurn: autoStageTurns });
+            } else {
+              out.write('  Grounding unavailable; planning ungrounded.\n');
+            }
+          } catch {
+            out.write('  Grounding unavailable; planning ungrounded.\n');
+          }
+        } else if (warm === undefined && understandingOn) {
+          warmUnderstanding(cacheKey, goalText);
+        }
         const roadmapFor = (todos: readonly GoalPlanTodo[]): RoadmapItem[] =>
           todos.length > 0
             ? todosToRoadmap(todos.slice(0, ROADMAP_LIMIT))
@@ -2666,7 +2768,7 @@ export async function runChatLoop(
         const planner = buildGoalPlanner(warm);
         if (planner !== null) {
           try {
-            const plan = await planner(goalText, new AbortController().signal);
+            const plan = await planner(goalText, signal);
             if (plan !== null) {
               const g0 = plan.goals[0];
               const title = g0?.title.trim();
