@@ -53,6 +53,7 @@ import { createFileTasteLedger } from '../infra/taste-ledger.js';
 import { tasteEnabled } from '../core/taste-flag.js';
 import { judgmentEnabled } from '../core/judgment-flag.js';
 import { researchEnabled } from '../core/research-flag.js';
+import { preflightUnifyEnabled } from '../core/router.js';
 import { createNodeResearchPort } from '../infra/research-port.js';
 import { renderSystemModelContext } from '../core/understanding.js';
 import { isPushBackQuestionSet, classifyPushBackAnswer } from '../core/brain.js';
@@ -2180,6 +2181,12 @@ export async function runChatLoop(
           ...(nativeSession.length > 0 ? { nativeSession } : {}),
           ...(routeClassifier !== undefined ? { routeClassifier } : {}),
           ...(intentExtractor !== undefined ? { intentExtractor } : {}),
+          // UNIFIED PREFLIGHT (rank-7). Set ONLY when the unify flag is ON; absent
+          // when off → orchestrate runs today's verbatim decideRoute + intent block
+          // (the OFF-GUARANTEE). On the affected turn class (ambiguous + substantial,
+          // both engines on) this collapses the route-classifier model call into the
+          // single intent extraction — pure consolidation, never an added call.
+          ...(unifyPreflightOn ? { unifyPreflight: true } : {}),
           // Composed dynamic provider order: capacity + session consumption +
           // optional learned outcomes + current cooldown state.
           ...(Object.keys(dynamicOrder).length > 0 ? { learnedProviderOrder: dynamicOrder } : {}),
@@ -3421,6 +3428,13 @@ export async function runChatLoop(
       // When off, deps.researchEnabled is never set → the brain's decideNextMove never
       // emits the second-angle `'web'` move → byte-for-byte today's loop.
       const researchOn = researchEnabled(process.env, mutableCtx.config);
+      // UNIFIED PREFLIGHT flag (rank-7; core/router.ts `preflightUnifyEnabled`).
+      // DEFAULT OFF (opt-in): enabled only by an explicit MYSHELL_UNIFY_PREFLIGHT ∈
+      // {1,true,on,yes} OR config.experimentalUnifyPreflight. When off, deps.unifyPreflight
+      // is never set → orchestrate runs today's verbatim decideRoute + intent block
+      // (the OFF-GUARANTEE). When on, the preflight collapses the route-classifier call
+      // into the single intent extraction on the affected turn class (pure consolidation).
+      const unifyPreflightOn = preflightUnifyEnabled(process.env, mutableCtx.config);
       // The injected READ-ONLY retrieval port (grep/readFile + a native web search).
       // The web-search callback routes the cheapest authed provider with webSearch:true
       // (the subscription tool — no api key); both Claude (after the 3c allow-list) and

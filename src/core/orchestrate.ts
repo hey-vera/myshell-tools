@@ -29,7 +29,8 @@
 
 import type { CoreEvent, OrchestrateDeps, Tier, Classification, Assessment, QuestionSet } from './types.js';
 import type { ProviderId } from '../providers/port.js';
-import { decideRoute } from './router.js';
+import { decideRoute, combineRoute, unifiedPreflightApplies } from './router.js';
+import { classify } from './classify.js';
 import { runWorkCall } from './work-call.js';
 import { type CapabilityRouteContext, type CapabilityTaskSignals } from './route.js';
 import { modeFromPolicy, type Mode } from './policy.js';
@@ -207,66 +208,139 @@ export async function* orchestrate(
   signal: AbortSignal,
 ): AsyncGenerator<CoreEvent> {
   // -------------------------------------------------------------------------
-  // (a) Decide the route. Deterministic rules first; the model-brained router
-  //     (core/router.ts) only arbitrates turns the keyword classifier couldn't
-  //     route, and only when deps.routeClassifier is wired. decision.plan is
-  //     reserved for plan-first mode (Phase C).
-  // -------------------------------------------------------------------------
-  const decision = await decideRoute(task, {
-    ...(depsArg.routeClassifier !== undefined ? { classifier: depsArg.routeClassifier } : {}),
-    signal,
-  });
-  const classification: Classification = {
-    tier: decision.tier,
-    risk: decision.risk,
-    rationale: decision.rationale,
-  };
-  const routePlan = decision.plan;
-  yield { type: 'classified', classification };
-
-  // -------------------------------------------------------------------------
-  // (a2) INTENT ENGINE + ADAPTIVE PARTNER ENGINE (Phase 6 / APE).
+  // (a) Decide the route + (a2) run the intent engine.
   //
-  // GATED, fail-soft, ZERO-overhead on trivial turns. shouldExtractIntent is the
-  // pure gate (the intent analogue of hasTierEvidence): clear/cheap turns skip
-  // the model pass entirely → EXECUTE_NOW, no extra call. Substantial/ambiguous
-  // turns run the cheap, read-only, short-timeout extractor (the ONLY model touch
-  // here) and fall back to the deterministic rulesIntentFrame on ANY failure
-  // (null/timeout/bad-parse) — never a hang, never a blocked turn.
+  // TWO preflight shapes, selected by the default-off rank-7 unify gate:
   //
-  // planEngagement is then a PURE decision over {frame, classification, routePlan,
-  // engagementBias, memoryBias} → an ordered EngagementPlan. It adds NO model
-  // call (it rides the one gated intent call). The rendered INTENT + ENGAGEMENT
-  // blocks flow through the Phase-2 prompt seam (assembleContextBlocks) to the
-  // sequential, hedge, AND panel executors via the per-turn `deps` copy below.
+  //  • UNIFIED PATH (gate ON + intent pass already scheduled + extractor wired —
+  //    `unifiedPreflightApplies`, DESIGN-RANK7 §A.1): the dedicated route-classifier
+  //    model call is SUPPRESSED. We classify deterministically (free), run the ONE
+  //    intent extraction, and derive the route decision from the frame's optional
+  //    `routeTier`/`routePlan` hints via `combineRoute` (pure; risk stays the
+  //    deterministic floor). Pure CONSOLIDATION: this only ever REMOVES the router
+  //    call from a turn that was already making the intent call — never adds one.
+  //
+  //  • ELSE (gate off / intent pass not scheduled / no extractor): TODAY'S VERBATIM
+  //    code — `decideRoute` then the gated `shouldExtractIntent` + extractor/rules
+  //    block. Byte-identical to the pre-rank-7 path (DESIGN-RANK7 §C neutrality).
+  //
+  // In BOTH shapes the downstream consumers see the same variables: `classification`
+  // (the {tier,risk,rationale} the rest of the turn routes on), `routePlan`, the
+  // `classified` event, `runIntent` (read by the a2b brain-loop re-extraction), and
+  // `intentFrame`. The brain-loop re-extraction (a2b) is UNTOUCHED — it reuses
+  // `depsArg.intentExtractor` on enriched contexts and only ever fires when
+  // `runIntent` is already true, exactly as today.
   // -------------------------------------------------------------------------
+  let classification: Classification;
+  let routePlan: boolean;
   let intentFrame: IntentFrame | undefined;
-  const runIntent =
-    // Autonomous /goal turns own their roadmap loop (work-contract.ts) — running
-    // the intent pass per goal sub-turn would double-plan (APE §5.9). The initial
-    // goal contract is already seeded by the interface layer. So the gate never
-    // fires inside a goal turn; the deterministic frame still feeds APE/seed.
+  let runIntent: boolean;
+
+  // The deterministic floor + the unify predicate. `routePlan: false` is the
+  // CONSERVATIVE pre-extraction value (DESIGN-RANK7 §A.4): the router's plan flag
+  // is not available before extraction in the unified path, and the rules path
+  // already yields plan:false; the model's plan:true only ever WIDENS the extract
+  // gate, never narrows it, so using false here can only ever skip — never add.
+  const det = classify(task);
+  const detClassification: Classification = {
+    tier: det.tier,
+    risk: det.risk,
+    rationale: det.rationale,
+  };
+  const unifiedRunIntent =
     depsArg.goalTurn !== true &&
     shouldExtractIntent({
       task,
-      classification,
-      routePlan,
+      classification: detClassification,
+      routePlan: false,
       ...(depsArg.partnerStyle !== undefined ? { partnerStyle: depsArg.partnerStyle } : {}),
       hasExtractor: depsArg.intentExtractor !== undefined,
     });
-  if (runIntent && depsArg.intentExtractor !== undefined) {
+
+  if (
+    unifiedPreflightApplies({
+      gateOn: depsArg.unifyPreflight === true,
+      runIntentScheduled: unifiedRunIntent,
+      hasExtractor: depsArg.intentExtractor !== undefined,
+    }) &&
+    depsArg.intentExtractor !== undefined
+  ) {
+    // UNIFIED PATH — ONE preflight model call (the extractor); router suppressed.
+    runIntent = true;
     let extracted: IntentFrame | null = null;
     try {
       extracted = normalizeExtraction(await depsArg.intentExtractor(task, signal)).frame;
     } catch {
-      extracted = null; // fail-soft: extractor threw → rules fallback
+      extracted = null; // fail-soft: extractor threw → no hints → deterministic route
     }
+    // Derive the route decision from the frame's hints (absent/failed → exactly the
+    // deterministic decision `decideRoute` returns on its rules/fallback path).
+    const decision = combineRoute(det, {
+      ...(extracted?.routeTier !== undefined ? { routeTier: extracted.routeTier } : {}),
+      ...(extracted?.routePlan !== undefined ? { routePlan: extracted.routePlan } : {}),
+    });
+    classification = {
+      tier: decision.tier,
+      risk: decision.risk,
+      rationale: decision.rationale,
+    };
+    routePlan = decision.plan;
+    yield { type: 'classified', classification };
     intentFrame = extracted ?? rulesIntentFrame(task, classification, 'rules-fallback');
   } else {
-    // Trivial turn (or no extractor): a cheap, deterministic, source:'skipped'
-    // frame. No model call, no latency. It still lets APE/seed read a goal.
-    intentFrame = rulesIntentFrame(task, classification, 'skipped');
+    // ELSE — TODAY'S VERBATIM PREFLIGHT (DESIGN-RANK7 §C). Do not edit this branch.
+    // The model-brained router (core/router.ts) only arbitrates turns the keyword
+    // classifier couldn't route, and only when deps.routeClassifier is wired.
+    const decision = await decideRoute(task, {
+      ...(depsArg.routeClassifier !== undefined ? { classifier: depsArg.routeClassifier } : {}),
+      signal,
+    });
+    classification = {
+      tier: decision.tier,
+      risk: decision.risk,
+      rationale: decision.rationale,
+    };
+    routePlan = decision.plan;
+    yield { type: 'classified', classification };
+
+    // GATED, fail-soft, ZERO-overhead on trivial turns. shouldExtractIntent is the
+    // pure gate (the intent analogue of hasTierEvidence): clear/cheap turns skip the
+    // model pass entirely → EXECUTE_NOW, no extra call. Substantial/ambiguous turns
+    // run the cheap, read-only, short-timeout extractor (the ONLY model touch here)
+    // and fall back to the deterministic rulesIntentFrame on ANY failure
+    // (null/timeout/bad-parse) — never a hang, never a blocked turn.
+    runIntent =
+      // Autonomous /goal turns own their roadmap loop (work-contract.ts) — running
+      // the intent pass per goal sub-turn would double-plan (APE §5.9). The initial
+      // goal contract is already seeded by the interface layer. So the gate never
+      // fires inside a goal turn; the deterministic frame still feeds APE/seed.
+      depsArg.goalTurn !== true &&
+      shouldExtractIntent({
+        task,
+        classification,
+        routePlan,
+        ...(depsArg.partnerStyle !== undefined ? { partnerStyle: depsArg.partnerStyle } : {}),
+        hasExtractor: depsArg.intentExtractor !== undefined,
+      });
+    if (runIntent && depsArg.intentExtractor !== undefined) {
+      let extracted: IntentFrame | null = null;
+      try {
+        extracted = normalizeExtraction(await depsArg.intentExtractor(task, signal)).frame;
+      } catch {
+        extracted = null; // fail-soft: extractor threw → rules fallback
+      }
+      intentFrame = extracted ?? rulesIntentFrame(task, classification, 'rules-fallback');
+    } else {
+      // Trivial turn (or no extractor): a cheap, deterministic, source:'skipped'
+      // frame. No model call, no latency. It still lets APE/seed read a goal.
+      intentFrame = rulesIntentFrame(task, classification, 'skipped');
+    }
   }
+  // planEngagement (below) is a PURE decision over {frame, classification, routePlan,
+  // engagementBias, memoryBias} → an ordered EngagementPlan. It adds NO model call
+  // (it rides the one gated intent call). The rendered INTENT + ENGAGEMENT blocks
+  // flow through the Phase-2 prompt seam (assembleContextBlocks) to the sequential,
+  // hedge, AND panel executors via the per-turn `deps` copy below.
   const buildEngagementSignals = (frame: IntentFrame | undefined): EngagementSignals => ({
     ...(frame !== undefined ? { frame } : {}),
     classification,

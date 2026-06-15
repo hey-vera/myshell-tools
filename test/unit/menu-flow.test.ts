@@ -3026,6 +3026,103 @@ describe('startMenu — auto-goal smart autonomy', () => {
     );
   });
 
+  // rank-7 S5 — the unify flag threads from menu config → deps.unifyPreflight →
+  // orchestrate's unified preflight. We prove it END-TO-END through the menu by
+  // counting the DISTINCT preflight prompts the provider sees: the route-classifier
+  // prompt ('You are a routing classifier') and the intent-extractor prompt ('You
+  // extract the INTENT'). On an ambiguous + multi-clause turn (no tier evidence +
+  // substantial), both engines on:
+  //   • flag OFF (default) → BOTH preflight prompts fire (router 1 + intent 1).
+  //   • flag ON  → router prompt SUPPRESSED (0), intent prompt fires exactly once.
+  // This is the menu-level flag-threading + call-count-parity proof (the orchestrate
+  // unit test carries the exhaustive per-class parity assertion).
+  for (const unify of [false, true] as const) {
+    it(`rank-7: experimentalUnifyPreflight=${unify} ⇒ router preflight prompt ${unify ? 'suppressed' : 'fires'} (intent always once)`, async () => {
+      let routerPrompts = 0;
+      let intentPrompts = 0;
+      let taskPrompts = 0;
+      const provider: Provider = {
+        id: 'claude',
+        async detect() {
+          return {
+            id: 'claude',
+            installed: true,
+            version: '1.0.0',
+            authenticated: true,
+            plan: null,
+            binaryPath: null,
+            availableModels: ['model-a'],
+          };
+        },
+        async *run(req: ProviderRequest, _signal: AbortSignal): AsyncIterable<ProviderEvent> {
+          if (req.prompt.includes('You are a routing classifier')) {
+            routerPrompts++;
+            yield {
+              type: 'done',
+              text: '{"tier":"worker","plan":false,"reason":"ambiguous"}',
+              usage: FAKE_USAGE,
+              raw: {},
+            };
+            return;
+          }
+          if (req.prompt.includes('You extract the INTENT')) {
+            intentPrompts++;
+            yield {
+              type: 'done',
+              text: '{"goal":"figure out the dashboard","kind":"coding","confidence":"high","routeTier":"ic","routePlan":false}',
+              usage: FAKE_USAGE,
+              raw: {},
+            };
+            return;
+          }
+          taskPrompts++;
+          yield { type: 'text', delta: 'Done.' };
+          yield { type: 'done', text: `Done.\n${CONFIDENCE_ENVELOPE}`, usage: FAKE_USAGE, raw: {} };
+        },
+      };
+
+      const clock = makeFakeClock();
+      const store = makeStore(clock);
+      const sink = makeSink();
+      const config: AppConfig = {
+        onboarded: true,
+        setAsDefault: false,
+        mode: 'quality-first',
+        smartRoute: true, // route classifier wired
+        intentEngine: true, // intent extractor wired
+        autoGoal: false, // keep this a normal work turn, not a goal turn
+        experimentalAutoGoal: false,
+        experimentalUnifyPreflight: unify, // THE FLAG UNDER TEST
+      };
+      const ctx = makeCtx(
+        {
+          config,
+          providers: { claude: provider },
+          // Ambiguous (no tier keyword) + multi-clause (substantial) → both
+          // preflight passes are eligible off-path.
+          readLine: makeScriptedReader([
+            'n',
+            'the dashboard feels off, and the numbers do not line up, then it stalls',
+            '/exit',
+            'q',
+          ]),
+        },
+        clock,
+        store,
+      );
+
+      await startMenu(ctx, sink);
+
+      assert.equal(intentPrompts, 1, 'the intent extraction fires exactly once on the substantial turn');
+      if (unify) {
+        assert.equal(routerPrompts, 0, 'flag ON: the route-classifier preflight prompt is SUPPRESSED (consolidated)');
+      } else {
+        assert.equal(routerPrompts, 1, 'flag OFF (default): the route-classifier preflight prompt fires (status quo)');
+      }
+      assert.equal(taskPrompts, 1, 'the work call itself runs exactly once regardless of the flag');
+    });
+  }
+
   it('with autoGoal on, ambiguous non-engaged work calls the model router only once', async () => {
     let routerPrompts = 0;
     let taskPrompts = 0;

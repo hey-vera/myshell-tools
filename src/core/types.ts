@@ -601,6 +601,18 @@ export interface OrchestrateDeps {
     signal: AbortSignal,
   ) => Promise<{ readonly tier: Tier; readonly plan: boolean; readonly reason: string } | null>;
   /**
+   * UNIFIED PREFLIGHT flag (rank-7; core/router.ts `preflightUnifyEnabled`).
+   * When true (the caller resolved `preflightUnifyEnabled(env, config)`), AND the
+   * intent pass is already scheduled this turn, AND an extractor is wired, the
+   * preflight SUPPRESSES the dedicated route-classifier model call and instead
+   * derives the route decision from the ONE intent extraction (its `routeTier`/
+   * `routePlan` hints fed through `combineRoute`) — pure consolidation, never an
+   * added call. DEFAULT (absent/false) → orchestrate runs today's verbatim
+   * `decideRoute` + intent block (the OFF-GUARANTEE). Set only by the interface
+   * layer when the unify flag is ON.
+   */
+  readonly unifyPreflight?: boolean;
+  /**
    * Observed plan classification per provider (from classifyPlan), supplied by
    * the conversation layer as an immutable snapshot. Consulted by the adaptive
    * flagship-admission gate (core/flagship.ts) to veto auto-opening the flagship
