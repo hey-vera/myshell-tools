@@ -22,7 +22,7 @@
  * the decision came from rules or the model, and why.
  */
 
-import type { Tier, Risk } from './types.js';
+import type { Tier, Risk, Classification } from './types.js';
 import { classify, hasTierEvidence } from './classify.js';
 
 // ---------------------------------------------------------------------------
@@ -174,8 +174,12 @@ function extractLastJsonObject(text: string): string | null {
 // The decision
 // ---------------------------------------------------------------------------
 
-/** Pull just the `risk: …` clause out of a classify() rationale, for reuse. */
-function riskClause(rationale: string): string {
+/**
+ * Pull just the `risk: …` clause out of a classify() rationale, for reuse.
+ * Exported so the unified preflight (`combineRoute`) can build a rationale that
+ * is byte-structurally identical to `decideRoute`'s model branch (rank-7).
+ */
+export function riskClause(rationale: string): string {
   const idx = rationale.indexOf('risk:');
   return idx === -1 ? rationale : rationale.slice(idx);
 }
@@ -225,5 +229,99 @@ export async function decideRoute(
     plan: suggestion.plan,
     rationale: `tier: ${suggestion.tier} (model router: ${suggestion.reason}); ${riskClause(base.rationale)}`,
     source: 'model',
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Rank-7 — unified preflight (pure helpers; default-off, NOT wired here)
+//
+// These collapse the router's tier/plan judgment into the intent extractor's
+// single model round-trip on the affected turn class (ambiguous + substantial),
+// removing one serial worker-tier call. They are PURE and live here — router.ts
+// is the preflight's natural home and is already widely imported — so the new
+// logic satisfies the no-orphan arch guard + knip WITHOUT a new orphan module
+// and WITHOUT any premature live wiring (the orchestrate/menu wiring is deferred
+// to later slices). DESIGN-RANK7 §A.3 / §B. Default-off: nothing calls these yet,
+// so the tree is byte-identical.
+// ---------------------------------------------------------------------------
+
+/** Env values treated as an explicit opt-IN for MYSHELL_UNIFY_PREFLIGHT. */
+const UNIFY_ON = new Set(['1', 'true', 'on', 'yes']);
+
+/**
+ * Decide whether THE UNIFIED PREFLIGHT (rank-7) is enabled. DEFAULT FALSE — mirrors
+ * `judgment-flag.ts` exactly. Returns true ONLY when explicitly opted in:
+ * `MYSHELL_UNIFY_PREFLIGHT` is one of '1'/'true'/'on'/'yes' (trimmed, case-insensitive)
+ * OR `config.experimentalUnifyPreflight === true`. Any other value (including absent,
+ * '0', 'false', '', garbage) → false. Never throws.
+ */
+export function preflightUnifyEnabled(
+  env: NodeJS.ProcessEnv | undefined,
+  config: { experimentalUnifyPreflight?: boolean } | undefined,
+): boolean {
+  try {
+    const raw = env?.['MYSHELL_UNIFY_PREFLIGHT'];
+    if (typeof raw === 'string' && UNIFY_ON.has(raw.trim().toLowerCase())) return true;
+    if (config?.experimentalUnifyPreflight === true) return true;
+    return false;
+  } catch {
+    return false;
+  }
+}
+
+/** Inputs to the unified-preflight predicate — all already-computed booleans. */
+export interface UnifiedPreflightInput {
+  /** `preflightUnifyEnabled(env, config)` — the rank-7 gate. */
+  readonly gateOn: boolean;
+  /** Whether the intent pass is ALREADY scheduled this turn (today's `runIntent`). */
+  readonly runIntentScheduled: boolean;
+  /** Whether an intent extractor is wired this turn. */
+  readonly hasExtractor: boolean;
+}
+
+/**
+ * The §A.1 predicate: the unified path applies IFF the gate is on AND the intent
+ * pass was already going to run this turn AND an extractor is wired. A thin pure
+ * combiner over already-computed booleans — so the unified path can only ever
+ * REMOVE the router call from a turn that was already making the intent call; it
+ * never adds work. PURE; trivially testable. (DESIGN-RANK7 §A.1 / §A.3.)
+ */
+export function unifiedPreflightApplies(input: UnifiedPreflightInput): boolean {
+  return input.gateOn && input.runIntentScheduled && input.hasExtractor;
+}
+
+/**
+ * The MONOTONIC combine (DESIGN-RANK7 §B): fuse the deterministic classification
+ * with the route hints the intent extractor produced, into the existing
+ * {@link RouteDecision} shape. Byte-structurally identical to `decideRoute`'s
+ * model branch above.
+ *
+ *  - `tier`     — the model's hint when present (it may RAISE the firepower tier),
+ *                 else the deterministic tier. Same latitude `decideRoute` gives
+ *                 the dedicated router.
+ *  - `risk`     — `det.risk` ALWAYS. The deterministic risk floor is authoritative
+ *                 and is NEVER model-driven and NEVER lowered. There is no
+ *                 `routeRisk` hint at all.
+ *  - `plan`     — the model's `routePlan` hint, else `false` (mirrors the rules
+ *                 default + `decideRoute`'s fallback).
+ *  - `source`   — `'model'` when a tier hint was present, else `'rules'`.
+ *
+ * With NO hints (absent/invalid) this returns exactly what `decideRoute` returns on
+ * its rules/fallback path, so fail-soft ties the no-unify behavior, never worse.
+ */
+export function combineRoute(
+  det: Classification,
+  hints: { readonly routeTier?: Tier; readonly routePlan?: boolean },
+): RouteDecision {
+  const modelTier = hints.routeTier;
+  return {
+    tier: modelTier ?? det.tier, // model may set/raise tier; absent → deterministic
+    risk: det.risk, // DETERMINISTIC RISK — authoritative, never model-driven
+    plan: hints.routePlan ?? false, // mirrors the rules default false
+    rationale:
+      modelTier !== undefined
+        ? `tier: ${modelTier} (intent preflight); ${riskClause(det.rationale)}`
+        : det.rationale,
+    source: modelTier !== undefined ? 'model' : 'rules',
   };
 }

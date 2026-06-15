@@ -58,6 +58,19 @@ export interface IntentFrame {
   readonly confidence: IntentConfidence;
   /** Provenance for transparency + tests. */
   readonly source: 'model' | 'rules-fallback' | 'skipped';
+  /**
+   * OPTIONAL routing hints the UNIFIED PREFLIGHT reads (rank-7). The model's tier
+   * suggestion — 'worker' | 'ic' | 'manager'. ABSENT on every rules/skipped frame
+   * and on any model frame whose JSON omits/garbles it, so existing frames, mocks,
+   * and goldens are structurally unchanged. Risk is intentionally NOT a hint — it
+   * stays 100% deterministic (see router.ts combineRoute).
+   */
+  readonly routeTier?: Tier;
+  /**
+   * OPTIONAL routing hint the UNIFIED PREFLIGHT reads (rank-7): would a short
+   * plan-first pass help? Absent unless the model emitted a boolean.
+   */
+  readonly routePlan?: boolean;
 }
 
 /**
@@ -127,6 +140,14 @@ const VALID_CONFIDENCE: ReadonlySet<string> = new Set<IntentConfidence>([
   'medium',
   'low',
 ]);
+
+/**
+ * Valid routing tiers for the OPTIONAL `routeTier` hint (rank-7). Mirrors the
+ * `VALID_TIERS` set + validation pattern in `router.ts` so the tolerant extraction
+ * accepts a tier hint iff it is a real tier (else the field is OMITTED, never a
+ * parse failure).
+ */
+const VALID_TIERS: ReadonlySet<string> = new Set<Tier>(['worker', 'ic', 'manager']);
 
 function safeString(value: unknown): string {
   if (typeof value === 'string') return value;
@@ -210,6 +231,12 @@ export function capIntentFrame(frame: IntentFrame): IntentFrame {
   const forks = capForks(raw['forks']);
   const doneWhen = capText(raw['doneWhen'], DONE_LIMIT);
 
+  // OPTIONAL route hints (rank-7): tolerant passthrough — a tier hint only if it is
+  // a real tier, a plan hint only if a boolean; anything else is OMITTED (never a
+  // failure). Absent on every existing frame → structurally unchanged.
+  const routeTierRaw = raw['routeTier'];
+  const routePlanRaw = raw['routePlan'];
+
   const out: { -readonly [K in keyof IntentFrame]?: IntentFrame[K] } = {
     version: 1,
     goal,
@@ -221,6 +248,10 @@ export function capIntentFrame(frame: IntentFrame): IntentFrame {
   if (constraints.length > 0) out.constraints = constraints;
   if (forks.length > 0) out.forks = forks;
   if (doneWhen.length > 0) out.doneWhen = doneWhen;
+  if (typeof routeTierRaw === 'string' && VALID_TIERS.has(routeTierRaw)) {
+    out.routeTier = routeTierRaw as Tier;
+  }
+  if (typeof routePlanRaw === 'boolean') out.routePlan = routePlanRaw;
   return out as IntentFrame;
 }
 
@@ -297,6 +328,16 @@ export function buildIntentPrompt(task: string): string {
     '               minor uncertainties or generic category menus — only real forks',
     '               between distinct approaches.',
     '  confidence — high | medium | low: how sure you are you understood the GOAL.',
+    '  routeTier  — OPTIONAL. The CHEAPEST firepower tier that fits (escalate only on',
+    '               clear evidence, never just because the message is vague/short):',
+    '               "worker" = DEFAULT: simple questions, explanations, lookups,',
+    '               summaries, and any casual/conversational/unclear message (no file',
+    '               changes); "ic" = a concrete implementation/edit/debug/refactor task',
+    '               in one area; "manager" = ONLY clearly high-level technical work',
+    '               (architecture, audits, multi-system/cross-cutting design, comparing',
+    '               approaches, high-stakes planning). Omit if unsure.',
+    '  routePlan  — OPTIONAL boolean: true only if the task is genuinely complex /',
+    '               multi-step enough that a short plan before acting would help.',
     '',
     'Reply with ONLY a JSON object, nothing else:',
     '{"goal":"...","kind":"coding","constraints":[],"nonGoals":[],"doneWhen":"",',
@@ -304,7 +345,7 @@ export function buildIntentPrompt(task: string): string {
     '   "options":["Server-Component streaming — fewer round-trips, RSC-only",',
     '              "Client SWR fetch — simpler, needs a /api route"],',
     '   "assumeIfUnasked":"Server-Component streaming"}],',
-    ' "confidence":"medium"}',
+    ' "confidence":"medium","routeTier":"ic","routePlan":false}',
     '',
     `Message: ${task}`,
   ].join('\n');
@@ -337,6 +378,11 @@ export function parseIntentFrame(text: string | undefined): IntentFrame | null {
   const confidence = obj['confidence'];
   if (typeof confidence !== 'string' || !VALID_CONFIDENCE.has(confidence)) return null;
 
+  // OPTIONAL route hints (rank-7): forwarded raw to capIntentFrame, which performs
+  // the tolerant tier/boolean validation (invalid → omitted, never a parse failure).
+  const routeTier = obj['routeTier'];
+  const routePlan = obj['routePlan'];
+
   return capIntentFrame({
     version: 1,
     goal,
@@ -347,6 +393,8 @@ export function parseIntentFrame(text: string | undefined): IntentFrame | null {
     doneWhen: capText(obj['doneWhen'], DONE_LIMIT),
     confidence: confidence as IntentConfidence,
     source: 'model',
+    ...(typeof routeTier === 'string' ? { routeTier: routeTier as Tier } : {}),
+    ...(typeof routePlan === 'boolean' ? { routePlan } : {}),
   });
 }
 

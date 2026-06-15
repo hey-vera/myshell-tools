@@ -15,10 +15,24 @@ import {
   buildRouterPrompt,
   parseModelRoute,
   decideRoute,
+  riskClause,
   type ModelClassifier,
 } from '../../src/core/router.ts';
 
 const NEVER_ABORT = new AbortController().signal;
+
+// ---------------------------------------------------------------------------
+// riskClause — exported helper reused by the unified preflight (rank-7)
+// ---------------------------------------------------------------------------
+
+describe('riskClause', () => {
+  it('returns the substring from "risk:" onward', () => {
+    assert.equal(riskClause('tier: ic; risk: high (irreversible)'), 'risk: high (irreversible)');
+  });
+  it('returns the whole rationale when there is no risk clause', () => {
+    assert.equal(riskClause('tier: worker only'), 'tier: worker only');
+  });
+});
 
 // ---------------------------------------------------------------------------
 // hasTierEvidence

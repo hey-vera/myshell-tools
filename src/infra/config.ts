@@ -295,6 +295,19 @@ export interface AppConfig {
    */
   experimentalJudgment?: boolean;
   /**
+   * EXPERIMENTAL UNIFIED PREFLIGHT (default off; rank-7). When true (or with
+   * `MYSHELL_UNIFY_PREFLIGHT` truthy in the environment), on the affected turn class
+   * (ambiguous — no keyword tier evidence — AND substantial, with the intent pass
+   * already scheduled) the router's tier/plan judgment is folded into the intent
+   * extractor's single model round-trip, REMOVING one serial worker-tier call. The
+   * deterministic risk floor stays authoritative (never model-driven). Pure
+   * consolidation: it never increases the model-call count on any turn. The legacy
+   * path is byte-identical when this is absent/false (the unified branch is
+   * structurally unreachable). See src/core/router.ts (preflightUnifyEnabled /
+   * combineRoute / unifiedPreflightApplies).
+   */
+  experimentalUnifyPreflight?: boolean;
+  /**
    * EXPERIMENTAL RIVAL TRIBUNAL (default off; master-plan PHASE 9). When true (or with
    * `MYSHELL_TRIBUNAL` truthy in the environment), a genuine load-bearing IMPLEMENTATION
    * fork with ≥2 distinct authed vendors may be settled by a build-off: each vendor

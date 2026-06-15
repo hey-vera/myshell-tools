@@ -284,6 +284,90 @@ describe('shouldExtractIntent — the gate', () => {
 });
 
 // ---------------------------------------------------------------------------
+// OPTIONAL route hints (rank-7) — additive; absent ⇒ frame structurally unchanged
+// ---------------------------------------------------------------------------
+
+describe('parseIntentFrame — optional route hints (rank-7)', () => {
+  const base = '{"goal":"do the thing","confidence":"medium"';
+
+  it('parses a valid routeTier hint', () => {
+    const f = parseIntentFrame(`${base},"routeTier":"manager"}`);
+    assert.equal(f?.routeTier, 'manager');
+  });
+
+  it('omits an INVALID routeTier (not a real tier) — never a parse failure', () => {
+    const f = parseIntentFrame(`${base},"routeTier":"boss"}`);
+    assert.ok(f, 'frame still parses');
+    assert.equal(f?.routeTier, undefined);
+    assert.equal(f?.goal, 'do the thing');
+  });
+
+  it('omits a non-string routeTier', () => {
+    const f = parseIntentFrame(`${base},"routeTier":7}`);
+    assert.ok(f);
+    assert.equal(f?.routeTier, undefined);
+  });
+
+  it('parses a boolean routePlan hint (true and false)', () => {
+    assert.equal(parseIntentFrame(`${base},"routePlan":true}`)?.routePlan, true);
+    assert.equal(parseIntentFrame(`${base},"routePlan":false}`)?.routePlan, false);
+  });
+
+  it('omits a non-boolean routePlan — never a parse failure', () => {
+    const f = parseIntentFrame(`${base},"routePlan":"yes"}`);
+    assert.ok(f);
+    assert.equal(f?.routePlan, undefined);
+  });
+
+  it('both hints absent → neither field present (existing frames unchanged)', () => {
+    const f = parseIntentFrame(`${base}}`);
+    assert.ok(f);
+    assert.equal('routeTier' in (f as object), false);
+    assert.equal('routePlan' in (f as object), false);
+  });
+
+  it('capIntentFrame passes valid hints through and drops invalid ones', () => {
+    const passed = capIntentFrame({
+      version: 1,
+      goal: 'g',
+      confidence: 'low',
+      source: 'model',
+      routeTier: 'ic',
+      routePlan: true,
+    });
+    assert.equal(passed.routeTier, 'ic');
+    assert.equal(passed.routePlan, true);
+
+    const dropped = capIntentFrame({
+      version: 1,
+      goal: 'g',
+      confidence: 'low',
+      source: 'model',
+      // @ts-expect-error — runtime tolerance test for a bogus tier
+      routeTier: 'nope',
+      // @ts-expect-error — runtime tolerance test for a bogus plan
+      routePlan: 'true',
+    });
+    assert.equal(dropped.routeTier, undefined);
+    assert.equal(dropped.routePlan, undefined);
+  });
+});
+
+describe('buildIntentPrompt — optional route-hint fields (rank-7)', () => {
+  it('documents routeTier with the router tier definitions + routePlan', () => {
+    const p = buildIntentPrompt('rework the architecture across services');
+    assert.ok(/routeTier/.test(p));
+    assert.ok(/routePlan/.test(p));
+    assert.ok(/CHEAPEST firepower tier/i.test(p));
+    // mirrors the router's tier vocabulary
+    assert.ok(/"worker"/.test(p) && /"ic"/.test(p) && /"manager"/.test(p));
+    // the JSON exemplar carries the two optional fields
+    assert.ok(/"routeTier":"ic"/.test(p));
+    assert.ok(/"routePlan":false/.test(p));
+  });
+});
+
+// ---------------------------------------------------------------------------
 // buildIntentPrompt + renderIntentBlock — pure string builders
 // ---------------------------------------------------------------------------
 
