@@ -119,7 +119,7 @@ import type { Mode } from '../core/policy.js';
 import { planNativeSession } from '../core/native-session.js';
 import { decideHistoryPolicy } from '../core/turn-directive.js';
 import { availableAfterCooldown, cooldownExpiry } from '../core/cooldown.js';
-import { autoIntensityForTurn, deriveBaselineOrder, deriveLiveProviderOrder } from '../core/capacity-allocator.js';
+import { autoIntensityForTurn, concurrencyCeilingForRegime, deriveBaselineOrder, deriveLiveProviderOrder, regimeForIntensity } from '../core/capacity-allocator.js';
 import { learnProviderOrder, learnModelOutcomeOrder } from '../core/routing-memory.js';
 import type { OutputSink, TurnInputSurface, Verbosity } from './render.js';
 import {
@@ -3812,18 +3812,27 @@ export async function runChatLoop(
 
         // ---- FLAG-GATED: bounded concurrent multi-goal SCHEDULER --------------
         // DEFAULT OFF. When the user has opted in (MYSHELL_SCHEDULER / config), run
-        // the goal through `runSchedule` instead of the sequential loop. This phase
-        // DECOMPOSES TO EXACTLY ONE brain-validated GoalSpec (the confirmed goal the
-        // user just typed) — so the live behaviour matches today's single-goal path
-        // (one goal, one phase, the same renderStreamInk path), only routed through
-        // the scheduler's merge/cancel machinery so the seam is exercised end-to-end
-        // ahead of real >1-goal decomposition.
+        // the goal through `runSchedule` instead of the sequential loop. `decompose`
+        // turns the confirmed plan into 1..MAX_GOALS brain-validated GoalSpecs + a
+        // dependency DAG; `runSchedule` runs the independent (DAG-root) goals
+        // CONCURRENTLY, queueing the rest until their prerequisites finish.
         //
-        // HARD CONSTRAINT (owner): the scheduler runs specs VERBATIM. We pass ONLY
-        // the goal the user explicitly confirmed THIS turn — there is NO path here
-        // that promotes a parked/stale roadmap into a spec. Multi-goal decomposition
-        // (a separate next phase) must brain-revalidate any parked goal BEFORE it
-        // becomes a GoalSpec; this single-spec wiring deliberately does not.
+        // BOUNDED — NO OVERKILL (Phase D, D6): concurrency is hard-capped by
+        // `crossGoalCap = min(activeLimit, tuningCeiling, callBudgetCeiling,
+        // genuineParallelGoalCount)`. The pressure/provider `activeLimit` lives
+        // INSIDE the scheduler (planSchedule); here we compute the other three
+        // ceilings and pass their `min` as `deps.maxActive`, so planSchedule's clamp
+        // mins it with the live `activeLimit` to yield the exact `crossGoalCap`.
+        // Because it is a four-way `min`, NO single high signal adds a goal: a
+        // single (or strictly-sequential) decomposition ⇒ genuineParallelGoalCount 1
+        // ⇒ cap 1 ⇒ one goal, one phase, byte-identical to the single-goal path; low
+        // tuning pins the cap to 1 regardless of goal count; `BASE_ACTIVE_LIMIT = 2`
+        // stays the absolute fleet ceiling (the cap only ever LOWERS the limit).
+        //
+        // HARD CONSTRAINT (owner): the scheduler runs specs VERBATIM, and every spec
+        // is handed to orchestrate (goalTurn:true) so the brain re-validates each
+        // goal at run time — there is NO path here that promotes a parked/stale
+        // roadmap into a spec without brain re-validation.
         if (schedulerEnabled(process.env, mutableCtx.config)) {
           const authedProviders: ProviderId[] = [];
           if (mutableCtx.env.claude.authenticated) authedProviders.push('claude');
@@ -3877,6 +3886,57 @@ export async function runChatLoop(
             // flag-off-by-default scheduler path is out of scope for this fix.)
             goalSpecs = [{ id: 'g0', title: goalText }];
           }
+
+          // ---- CROSS-GOAL CAP (Phase D, D6) --------------------------------
+          // Compute the three NON-pressure ceilings; their `min` is forwarded as
+          // `deps.maxActive`, and planSchedule mins THAT with the live
+          // pressure/provider `activeLimit` to yield the exact crossGoalCap.
+          // Source the resolved intensity + governor budget from the SAME places
+          // judgeGoal (Phase B2/C4) does, so the cap is consistent with planning.
+          //  - tuningCeiling: regime → 1|2 (focused/pair → 1, fleet* → 2). Low
+          //    tuning pins concurrency to 1, exactly today.
+          //  - callBudgetCeiling: governor headroom (mode budget shrunk by live
+          //    pressure), then collapsed to the 1-vs-≥2 ceiling the planner uses.
+          //  - genuineParallelGoalCount: independent runnable goals — DAG roots
+          //    with no `dependsOn` (a single goal, or an all-dependent chain with
+          //    one root, ⇒ 1 ⇒ cap 1 ⇒ one goal at a time).
+          const schedResolved = resolveIntensity(
+            (await ctx.store.list()).find((meta) => meta.id === convId),
+            mutableCtx.config,
+          );
+          const schedClassification = classify(goalText);
+          const schedHighStakes =
+            schedClassification.risk === 'high' || schedClassification.risk === 'critical';
+          const schedResolvedIntensity =
+            schedResolved.value === 'auto'
+              ? autoIntensityForTurn({
+                  tier: schedClassification.tier,
+                  risk: schedClassification.risk,
+                  depth: 0,
+                  escalate: false,
+                  ...(schedHighStakes ? { needsReview: true } : {}),
+                })
+              : schedResolved.value;
+          const tuningCeiling = concurrencyCeilingForRegime(
+            regimeForIntensity(schedResolvedIntensity),
+          );
+          // Governor headroom, sourced exactly like judgeGoal: mode budget (quality
+          // -first 3 / balanced 2 / else 1) shrunk by live pressure, floored at 1.
+          // The planner consumes 1-vs-≥2 (panel discipline), so the concurrency
+          // ceiling is budget 1 → 1, ≥2 → 2 (never above BASE_ACTIVE_LIMIT).
+          const schedEffectiveMode: Mode =
+            mutableCtx.config.mode ?? resolveAutoMode(mutableCtx.env);
+          const schedModeBudget =
+            schedEffectiveMode === 'quality-first' ? 3 : schedEffectiveMode === 'balanced' ? 2 : 1;
+          const schedTurnCallBudget = Math.max(1, schedModeBudget - currentPressure());
+          const callBudgetCeiling = schedTurnCallBudget >= 2 ? 2 : 1;
+          // DEMAND: independent (DAG-root) goals that can start immediately — those
+          // with no `dependsOn` edge to a sibling in this spec set.
+          const goalIdSet = new Set(goalSpecs.map((s) => s.id));
+          const genuineParallelGoalCount = goalSpecs.filter(
+            (s) => (s.dependsOn ?? []).filter((d) => d !== s.id && goalIdSet.has(d)).length === 0,
+          ).length;
+          const maxActive = Math.min(tuningCeiling, callBudgetCeiling, genuineParallelGoalCount);
 
           // Per-goal phase runner: ONE orchestrate() per phase (orchestrate stays
           // the per-phase engine, untouched). Reloads history per phase like the
@@ -3940,7 +4000,7 @@ export async function runChatLoop(
               // Feed the merged goalId-tagged scheduler stream to the SAME renderer.
               runSchedule(
                 goalSpecs,
-                { runGoal, authedProviders },
+                { runGoal, authedProviders, maxActive },
                 schedAc.signal,
               ),
             );

@@ -227,6 +227,18 @@ export interface ScheduleDeps {
    * generous multiple of the goal count.
    */
   readonly maxTotalRuns?: number;
+  /**
+   * ADDITIVE Phase-D cross-goal cap (D6): an upper bound on the live active-goal
+   * limit, forwarded into every `planSchedule` re-derivation in
+   * `currentActiveLimit`. It can only LOWER the limit (planSchedule mins it with
+   * the live pressure/provider ceiling), never raise it. Absent ⇒ every
+   * planSchedule call is byte-identical to before and the scheduler behaves
+   * exactly as it did pre-D6. The live wiring computes it as
+   * `min(tuningCeiling, callBudgetCeiling, genuineParallelGoalCount)`
+   * (see `interface/menu.ts`); combined with planSchedule's clamp this yields the
+   * exact `crossGoalCap` (capacity-allocator.ts).
+   */
+  readonly maxActive?: number;
 }
 
 /**
@@ -445,7 +457,12 @@ export async function* runSchedule(
       id: `_${i}`,
       title: '',
     }));
-    return planSchedule({ goals: fakeGoals, pressure, authedProviderCount: authedCount }).activeLimit;
+    return planSchedule({
+      goals: fakeGoals,
+      pressure,
+      authedProviderCount: authedCount,
+      ...(deps.maxActive !== undefined ? { maxActive: deps.maxActive } : {}),
+    }).activeLimit;
   };
 
   // EVERY child controller ever created — so the try/finally can guarantee NONE

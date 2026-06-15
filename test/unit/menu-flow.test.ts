@@ -1562,6 +1562,108 @@ describe('startMenu — manager cycle item-parking on a fork (Phase D5)', () => 
   });
 });
 
+describe('startMenu — scheduler cross-goal cap: single goal ⇒ cap 1, one phase (Phase D6)', () => {
+  // The no-overkill headline proof (DESIGN-PHASE-D §C.2): with the scheduler flag
+  // ON and a SINGLE-goal decomposition, the cross-goal cap collapses to 1
+  // (genuineParallelGoalCount === 1 ⇒ min(...) === 1) — exactly ONE goal runs,
+  // ONE orchestrate phase, byte-identical to the single-goal scheduler path. No
+  // second concurrent goal is ever started: the birdhouse guarantee.
+  //
+  // We count GOAL-WORK orchestrate turns (the per-goal phase runner's calls). A
+  // single-goal decompose ⇒ exactly one goal-work turn. The provider returns a
+  // single-goal decomposition JSON for the decompose prompt and completes the one
+  // goal-work turn with GOAL_COMPLETE.
+  function makeSingleGoalProvider(counters: { decompose: number; work: number }): Provider {
+    return {
+      id: 'claude',
+      async detect() {
+        return {
+          id: 'claude', installed: true, version: '1.0.0', authenticated: true,
+          plan: null, binaryPath: null, availableModels: ['model-a'],
+        };
+      },
+      async *run(req: ProviderRequest, _signal: AbortSignal): AsyncIterable<ProviderEvent> {
+        // The PLAN DECOMPOSITION call (decompose()'s prompt) → return EXACTLY ONE
+        // goal so the cross-goal cap collapses to 1.
+        if (req.prompt.includes('breaking a CONFIRMED plan into concurrently-runnable goals')) {
+          counters.decompose++;
+          const json = JSON.stringify({ goals: [{ id: 'g1', title: 'do the whole thing', dependsOn: [] }] });
+          yield { type: 'text', delta: json };
+          yield { type: 'done', text: json, usage: FAKE_USAGE, raw: {} };
+          return;
+        }
+        // Background warm-up / smart-label / planning passes — benign, not goal work.
+        if (
+          req.prompt.includes('WHOLE-PICTURE') ||
+          req.prompt.includes('understand the system') ||
+          req.prompt.includes('OBJECTIVE: <a crisp') ||
+          req.prompt.includes('PLANNING BRAIN')
+        ) {
+          yield { type: 'text', delta: 'ok' };
+          yield { type: 'done', text: 'ok', usage: FAKE_USAGE, raw: {} };
+          return;
+        }
+        // Anything else is a GOAL-WORK orchestrate turn — complete it immediately.
+        counters.work++;
+        yield { type: 'text', delta: 'Done.' };
+        yield { type: 'done', text: 'Done.\nGOAL_COMPLETE', usage: FAKE_USAGE, raw: {} };
+      },
+    };
+  }
+
+  it('flag ON + single-goal decomposition ⇒ exactly ONE goal-work phase (cap 1)', async () => {
+    const dir = join(tmpdir(), `menu-sched-cap1-${randomUUID()}`);
+    await withStateHome(dir, async () => {
+      const clock = makeFakeClock();
+      const store = makeStore(clock);
+      const counters = { decompose: 0, work: 0 };
+      const provider = makeSingleGoalProvider(counters);
+
+      await fs.promises.mkdir(dir, { recursive: true });
+      await fs.promises.writeFile(
+        join(dir, 'package.json'),
+        JSON.stringify({ name: 'fixture', scripts: { test: 'node --test' } }),
+        'utf8',
+      );
+      const sink = makeSink();
+      const ctx = makeCtx(
+        {
+          // Scheduler ON via config; oversight autonomous so the run is unattended.
+          config: {
+            onboarded: true,
+            setAsDefault: false,
+            smartRoute: false,
+            experimentalScheduler: true,
+            oversight: 'autonomous',
+          },
+          providers: { claude: provider },
+          readLine: makeScriptedReader(['n', '/goal ship the whole thing', '/exit', 'q']),
+        },
+        clock,
+        store,
+        undefined,
+        dir,
+      );
+
+      await startMenu(ctx, sink);
+
+      // The scheduler path was taken (its narration is the proof of entry).
+      assert.ok(
+        sink.buf.includes('concurrent scheduler'),
+        'the /goal run routed through the concurrent scheduler',
+      );
+      // Exactly ONE decomposition call, ONE goal-work phase — never a second
+      // concurrent goal. genuineParallelGoalCount === 1 ⇒ cap 1.
+      assert.equal(counters.decompose, 1, 'decompose was called exactly once');
+      assert.equal(
+        counters.work,
+        1,
+        `exactly one goal-work phase ran (cap 1), saw ${counters.work}`,
+      );
+    });
+  });
+});
+
 describe('startMenu — auto-goal smart autonomy', () => {
   it('with autoGoal off, a manager-tier task stays on the single runTask path', async () => {
     const prompts: string[] = [];

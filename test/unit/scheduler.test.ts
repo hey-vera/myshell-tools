@@ -402,6 +402,103 @@ describe('runSchedule — bounded concurrency (3 goals, activeLimit=2)', () => {
 });
 
 // ---------------------------------------------------------------------------
+// runSchedule — maxActive dep threading (D6)
+// ---------------------------------------------------------------------------
+
+describe('runSchedule — maxActive dep lowers the live active limit (D6)', () => {
+  it('maxActive=1 forces single-file even with 3 providers + 3 goals', async () => {
+    const time = makeFakeTime();
+    // Hold the first goal open; with maxActive=1 NO second goal may start until
+    // the held slot frees.
+    let release!: () => void;
+    const hold = new Promise<void>((r) => (release = r));
+
+    const started: string[] = [];
+    const runGoal = makeRunGoal({
+      a: { hold, onStart: () => started.push('a') },
+      b: { onStart: () => started.push('b') },
+      c: { onStart: () => started.push('c') },
+    });
+
+    const deps: ScheduleDeps = {
+      runGoal,
+      authedProviders: ['claude', 'codex', 'opencode'], // raw ceiling would be 2
+      now: time.now,
+      sleep: time.sleep,
+      maxActive: 1, // D6 cross-goal cap → single-file
+    };
+
+    const gen = runSchedule(specs('a', 'b', 'c'), deps, new AbortController().signal);
+    const next = async (): Promise<CoreEvent | undefined> => {
+      const r = await gen.next();
+      return r.done ? undefined : r.value;
+    };
+
+    // Pull until the first goal has started.
+    while (!started.includes('a')) {
+      const ev = await next();
+      assert.ok(ev !== undefined, 'stream ended before the first goal started');
+    }
+    // With maxActive=1, NO second goal may start while the first holds its slot.
+    assert.equal(started.includes('b'), false, 'a second goal started despite maxActive=1');
+    assert.equal(started.includes('c'), false, 'a third goal started despite maxActive=1');
+
+    release();
+    for (;;) {
+      const ev = await next();
+      if (ev === undefined) break;
+    }
+    // All three still complete — capping lowers concurrency, never drops goals.
+    assert.deepEqual([...started].sort(), ['a', 'b', 'c']);
+  });
+
+  it('ABSENT maxActive keeps today\'s numbers — 2 concurrent with 3 providers + 3 goals', async () => {
+    const time = makeFakeTime();
+    let releaseA!: () => void;
+    let releaseB!: () => void;
+    const holdA = new Promise<void>((r) => (releaseA = r));
+    const holdB = new Promise<void>((r) => (releaseB = r));
+
+    const started: string[] = [];
+    const runGoal = makeRunGoal({
+      a: { hold: holdA, onStart: () => started.push('a') },
+      b: { hold: holdB, onStart: () => started.push('b') },
+      c: { onStart: () => started.push('c') },
+    });
+
+    const deps: ScheduleDeps = {
+      runGoal,
+      authedProviders: ['claude', 'codex', 'opencode'],
+      now: time.now,
+      sleep: time.sleep,
+      // maxActive ABSENT → byte-identical to the pre-D6 path (ceiling = 2).
+    };
+
+    const gen = runSchedule(specs('a', 'b', 'c'), deps, new AbortController().signal);
+    const next = async (): Promise<CoreEvent | undefined> => {
+      const r = await gen.next();
+      return r.done ? undefined : r.value;
+    };
+
+    // Two goals start concurrently (raw ceiling 2); the 3rd is held back.
+    while (started.length < 2) {
+      const ev = await next();
+      assert.ok(ev !== undefined, 'stream ended before two goals started');
+    }
+    assert.deepEqual([...started].sort(), ['a', 'b']);
+    assert.equal(started.includes('c'), false, 'the 3rd goal started before a slot freed');
+
+    releaseA();
+    releaseB();
+    for (;;) {
+      const ev = await next();
+      if (ev === undefined) break;
+    }
+    assert.deepEqual([...started].sort(), ['a', 'b', 'c']);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // runSchedule — cancellation (ESC)
 // ---------------------------------------------------------------------------
 
