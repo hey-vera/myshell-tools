@@ -20,6 +20,21 @@ export interface DecideAutonomyOfferOptions {
   readonly autoGoalEnabled: boolean;
 }
 
+export type GoalConfidence =
+  | { readonly kind: 'confident' }
+  | { readonly kind: 'needs-clarification'; readonly missing: 'fork' }
+  | {
+      readonly kind: 'not-confident';
+      readonly reason: 'no-stage' | 'no-goal' | 'no-done-when' | 'no-verification';
+    };
+
+export type GoalActivationOverride = 'adaptive' | 'go-when-confident' | 'always-plan-first';
+
+export type GoalActivation =
+  | { readonly kind: 'auto-run' }
+  | { readonly kind: 'await-greenlight' }
+  | { readonly kind: 'hold' };
+
 /**
  * Auto-goal engagement policy.
  *
@@ -38,6 +53,73 @@ export function decideAutonomyOffer(opts: DecideAutonomyOfferOptions): AutonomyD
     return { kind: 'auto_engage', reason: 'multi_step' };
   }
   return { kind: 'none' };
+}
+
+/**
+ * Goal confidence gate.
+ *
+ * Confidence requires a staged work turn, a non-empty intended outcome, no
+ * genuine owner-only fork, an explicit done-when, and a real verification
+ * route. Missing done-when or verification parks the goal rather than turning
+ * the gap into a fake question.
+ */
+export function assessGoalConfidence(input: {
+  readonly hasWorkIntent: boolean;
+  readonly plannerStaged: boolean;
+  readonly goal: string;
+  readonly hasGenuineFork: boolean;
+  readonly hasDoneWhen: boolean;
+  readonly verificationAvailable: boolean;
+}): GoalConfidence {
+  if (!input.hasWorkIntent || !input.plannerStaged) {
+    return { kind: 'not-confident', reason: 'no-stage' };
+  }
+  if (input.goal.trim().length === 0) {
+    return { kind: 'not-confident', reason: 'no-goal' };
+  }
+  if (input.hasGenuineFork) {
+    return { kind: 'needs-clarification', missing: 'fork' };
+  }
+  if (!input.hasDoneWhen) {
+    return { kind: 'not-confident', reason: 'no-done-when' };
+  }
+  if (!input.verificationAvailable) {
+    return { kind: 'not-confident', reason: 'no-verification' };
+  }
+  return { kind: 'confident' };
+}
+
+/**
+ * Goal activation policy.
+ *
+ * Activation is gated first by confidence, then by an explicit per-conversation
+ * override. In adaptive mode, simple reversible `quick`/`build`/`explain` work
+ * auto-runs; substantial, high-stakes, forked, or investigative work waits for
+ * approval.
+ */
+export function decideGoalActivation(input: {
+  readonly confident: boolean;
+  readonly shape: 'quick' | 'risky' | 'decide' | 'investigate' | 'build' | 'explain';
+  readonly substantial: boolean;
+  readonly highStakes: boolean;
+  readonly hasGenuineFork: boolean;
+  readonly override: GoalActivationOverride;
+}): GoalActivation {
+  if (!input.confident) {
+    return { kind: 'hold' };
+  }
+  if (input.override === 'always-plan-first') {
+    return { kind: 'await-greenlight' };
+  }
+  if (input.override === 'go-when-confident') {
+    return { kind: 'auto-run' };
+  }
+  const autoRun =
+    (input.shape === 'quick' || input.shape === 'build' || input.shape === 'explain') &&
+    !input.substantial &&
+    !input.highStakes &&
+    !input.hasGenuineFork;
+  return autoRun ? { kind: 'auto-run' } : { kind: 'await-greenlight' };
 }
 
 function tierSignalCount(rationale: string): number {
