@@ -5,7 +5,7 @@
  * rendering and execution; this module only decides whether autonomy is allowed.
  */
 
-import type { Classification } from './types.js';
+import type { Classification, Tier } from './types.js';
 import type { Mode } from './policy.js';
 
 type AutonomyReason = 'multi_step';
@@ -285,6 +285,50 @@ export function shouldRunPlanningSelection(input: {
     s.engagementDepth >= 2;
 
   return hard;
+}
+
+/**
+ * Planner tier ceiling from resolved tuning intensity.
+ *
+ * Lower tuning keeps planning on the cheaper IC tier. Only intensity 4-5 can
+ * permit the stronger manager planner tier.
+ */
+export function plannerTierCeiling(resolvedIntensity: 1 | 2 | 3 | 4 | 5): Extract<Tier, 'ic' | 'manager'> {
+  return resolvedIntensity >= 4 ? 'manager' : 'ic';
+}
+
+/**
+ * Whether the task genuinely needs the stronger planner tier.
+ *
+ * This need predicate is tuning-independent. It only reflects hard scope or a
+ * substantial decision task with a plan-fixable deficiency.
+ */
+export function needStrongPlanner(input: {
+  readonly scope: PlanningSelectionScope;
+  readonly planFixableDeficiency: boolean;
+}): boolean {
+  const s = input.scope;
+  return (
+    s.risk === 'high' ||
+    s.risk === 'critical' ||
+    s.shape === 'risky' ||
+    s.shape === 'investigate' ||
+    (s.shape === 'decide' && s.substantial && input.planFixableDeficiency)
+  );
+}
+
+/**
+ * Choose the planner tier after applying the tuning ceiling.
+ *
+ * Need can request manager, but low tuning still clamps to IC. Absent need,
+ * planning stays on the cheaper IC tier even at maximum tuning.
+ */
+export function choosePlannerTier(input: {
+  readonly resolvedIntensity: 1 | 2 | 3 | 4 | 5;
+  readonly needStrongPlanner: boolean;
+}): Extract<Tier, 'ic' | 'manager'> {
+  const ceiling = plannerTierCeiling(input.resolvedIntensity);
+  return input.needStrongPlanner && ceiling === 'manager' ? 'manager' : 'ic';
 }
 
 /**

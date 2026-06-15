@@ -4,12 +4,15 @@ import assert from 'node:assert/strict';
 import {
   assessGoalConfidence,
   chooseInitialPlanningDepth,
+  choosePlannerTier,
   decideAutonomyOffer,
   decideGoalActivation,
   detectActivationOverride,
+  needStrongPlanner,
   planningDepthCap,
   planningSelectionEntitlement,
   planningDepthReason,
+  plannerTierCeiling,
   shouldRunPlanningSelection,
 } from '../../src/core/autonomy.ts';
 import type { Classification } from '../../src/core/types.ts';
@@ -758,6 +761,182 @@ describe('shouldRunPlanningSelection', () => {
         firstPlan: { ...stagePlan, judgment: 'fallback' },
       }),
       true,
+    );
+  });
+});
+
+describe('plannerTierCeiling', () => {
+  for (const resolvedIntensity of [1, 2, 3] as const) {
+    it(`returns ic for intensity ${resolvedIntensity}`, () => {
+      assert.equal(plannerTierCeiling(resolvedIntensity), 'ic');
+    });
+  }
+
+  for (const resolvedIntensity of [4, 5] as const) {
+    it(`returns manager for intensity ${resolvedIntensity}`, () => {
+      assert.equal(plannerTierCeiling(resolvedIntensity), 'manager');
+    });
+  }
+});
+
+describe('needStrongPlanner', () => {
+  const plainScope = {
+    shape: 'build' as const,
+    substantial: false,
+    repoOriented: false,
+    risk: 'low' as const,
+    engagementDepth: 0 as const,
+  };
+
+  it('returns true for high risk', () => {
+    assert.equal(
+      needStrongPlanner({
+        scope: { ...plainScope, risk: 'high' },
+        planFixableDeficiency: false,
+      }),
+      true,
+    );
+  });
+
+  it('returns true for critical risk', () => {
+    assert.equal(
+      needStrongPlanner({
+        scope: { ...plainScope, risk: 'critical' },
+        planFixableDeficiency: false,
+      }),
+      true,
+    );
+  });
+
+  it('returns true for risky shape', () => {
+    assert.equal(
+      needStrongPlanner({
+        scope: { ...plainScope, shape: 'risky' },
+        planFixableDeficiency: false,
+      }),
+      true,
+    );
+  });
+
+  it('returns true for investigate shape', () => {
+    assert.equal(
+      needStrongPlanner({
+        scope: { ...plainScope, shape: 'investigate' },
+        planFixableDeficiency: false,
+      }),
+      true,
+    );
+  });
+
+  it('returns true for substantial decide work with a plan-fixable deficiency', () => {
+    assert.equal(
+      needStrongPlanner({
+        scope: { ...plainScope, shape: 'decide', substantial: true },
+        planFixableDeficiency: true,
+      }),
+      true,
+    );
+  });
+
+  it('returns false for an ordinary low-risk build', () => {
+    assert.equal(
+      needStrongPlanner({
+        scope: plainScope,
+        planFixableDeficiency: false,
+      }),
+      false,
+    );
+  });
+
+  it('returns false for substantial decide work without a plan-fixable deficiency', () => {
+    assert.equal(
+      needStrongPlanner({
+        scope: { ...plainScope, shape: 'decide', substantial: true },
+        planFixableDeficiency: false,
+      }),
+      false,
+    );
+  });
+
+  it('returns false for decide work when substantial is false even if deficiency is plan-fixable', () => {
+    assert.equal(
+      needStrongPlanner({
+        scope: { ...plainScope, shape: 'decide', substantial: false },
+        planFixableDeficiency: true,
+      }),
+      false,
+    );
+  });
+
+  it('returns false for a plain non-hard scope', () => {
+    assert.equal(
+      needStrongPlanner({
+        scope: {
+          shape: 'explain',
+          substantial: false,
+          repoOriented: false,
+          risk: 'medium',
+          engagementDepth: 1,
+        },
+        planFixableDeficiency: false,
+      }),
+      false,
+    );
+  });
+});
+
+describe('choosePlannerTier', () => {
+  for (const resolvedIntensity of [4, 5] as const) {
+    it(`returns manager when needed at intensity ${resolvedIntensity}`, () => {
+      assert.equal(
+        choosePlannerTier({
+          resolvedIntensity,
+          needStrongPlanner: true,
+        }),
+        'manager',
+      );
+    });
+  }
+
+  for (const resolvedIntensity of [1, 2, 3] as const) {
+    it(`returns ic when needed at intensity ${resolvedIntensity}`, () => {
+      assert.equal(
+        choosePlannerTier({
+          resolvedIntensity,
+          needStrongPlanner: true,
+        }),
+        'ic',
+      );
+    });
+  }
+
+  it('low tuning never raises the planner tier even when needed', () => {
+    assert.equal(
+      choosePlannerTier({
+        resolvedIntensity: 2,
+        needStrongPlanner: true,
+      }),
+      'ic',
+    );
+  });
+
+  it('returns ic when not needed even at intensity 5', () => {
+    assert.equal(
+      choosePlannerTier({
+        resolvedIntensity: 5,
+        needStrongPlanner: false,
+      }),
+      'ic',
+    );
+  });
+
+  it('max tuning does not raise without need', () => {
+    assert.equal(
+      choosePlannerTier({
+        resolvedIntensity: 5,
+        needStrongPlanner: false,
+      }),
+      'ic',
     );
   });
 });
