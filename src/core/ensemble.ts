@@ -62,6 +62,12 @@ import { buildPrompt } from './prompt.js';
 import type { IntentFrame } from './intent.js';
 import type { AllocationPlan } from './governor.js';
 import { parseFinalLineChoiceEnvelope, tallyChoiceEnvelopes } from './judgment-shared.js';
+import {
+  buildGoalPlanPrompt,
+  parseGoalPlan,
+  type GoalPlan,
+} from './goal-plan.js';
+import type { SystemModel } from './understanding.js';
 
 // ---------------------------------------------------------------------------
 // Plan
@@ -553,6 +559,195 @@ export function formatPanelDebateNotice(receipt: PanelDebateReceipt): string {
 }
 
 // ---------------------------------------------------------------------------
+// Goal-plan selection adapter (Phase C3; additive and not wired by runPanel)
+// ---------------------------------------------------------------------------
+
+export interface GoalPlanSelectionCandidate {
+  readonly plan: GoalPlan;
+  readonly provider: ProviderId;
+  readonly model?: string;
+  readonly rawText: string;
+}
+
+interface GoalPlanSelectionParticipant {
+  readonly choice: 'P1' | 'P2';
+  readonly provider: ProviderId;
+  readonly model?: string;
+}
+
+export interface GoalPlanSelectionReceipt {
+  readonly status: 'ran' | 'not-run';
+  readonly reason:
+    | 'selected'
+    | 'no-different-provider'
+    | 'candidate-failed'
+    | 'candidate-invalid'
+    | 'adjudicator-failed'
+    | 'invalid-adjudication';
+  readonly candidates: readonly GoalPlanSelectionParticipant[];
+  readonly adjudicator?: GoalPlanSelectionParticipant;
+  readonly selectedProvider: ProviderId;
+  readonly selectedChoice: 'P1' | 'P2';
+  readonly totalCalls: 1 | 2 | 3;
+  readonly selection: 'synthesis' | 'fallback';
+  readonly failedCandidate?: ProviderId;
+}
+
+export interface GoalPlanSelectionResult {
+  readonly plan: GoalPlan;
+  readonly receipt: GoalPlanSelectionReceipt;
+}
+
+interface GoalPlanSelectionRunRequest {
+  readonly role: 'candidate' | 'adjudicator';
+  readonly provider: ProviderId;
+  readonly prompt: string;
+}
+
+export type GoalPlanSelectionRunner = (
+  request: GoalPlanSelectionRunRequest,
+) => Promise<CandidateOutcome>;
+
+export interface GoalPlanSelectionInput {
+  readonly ownerTask: string;
+  readonly candidateA: GoalPlanSelectionCandidate;
+  readonly deps: OrchestrateDeps;
+  readonly tier: Tier;
+  readonly classification: Classification;
+  readonly signal: AbortSignal;
+  readonly systemModel?: SystemModel;
+  readonly candidateProviders?: readonly ProviderId[];
+  readonly runner?: GoalPlanSelectionRunner;
+}
+
+export function buildGoalPlanAdjudicationPrompt(input: {
+  readonly ownerTask: string;
+  readonly plannerPrompt: string;
+  readonly candidateA: GoalPlanSelectionCandidate;
+  readonly candidateB: GoalPlanSelectionCandidate;
+}): string {
+  const { ownerTask, plannerPrompt, candidateA, candidateB } = input;
+  return `\
+You are one adjudicator selecting the strongest plan for the same owner task.
+Compare P1 and P2 against the original task and the exact grounded planning brief.
+
+OWNER TASK:
+${ownerTask.trim()}
+
+GROUNDED PLANNING BRIEF USED FOR BOTH CANDIDATES:
+${plannerPrompt.trim()}
+
+P1 (${candidateA.provider}${candidateA.model === undefined ? '' : ` / ${candidateA.model}`}):
+${candidateA.rawText.trim()}
+
+P2 (${candidateB.provider}${candidateB.model === undefined ? '' : ` / ${candidateB.model}`}):
+${candidateB.rawText.trim()}
+
+Compare correctness, grounding, scope completeness, concrete TODOs, complete
+APPROACH+WHY records, verifiable DONE criteria, and honest cap-drop disclosure.
+Resolve material differences and emit one best plan using ONLY this grammar:
+JUDGMENT: stage
+VISION: <optional concise framing>
+GOAL: <title>
+APPROACH: <chosen strategy>
+WHY: <why it is best>
+ALT: <optional comma-separated alternatives>
+TODO: <concrete step>
+DONE: <verifiable completion criterion>
+
+Use 1-4 goals and 1-8 TODO lines per goal. Do not emit JUDGMENT: clarify or
+JUDGMENT: none. After the tagged plan, end with exactly one JSON choice envelope
+on its own final line and nothing after it:
+{"choice":"P1","confidence":0.0,"why":"...","key_risk":"..."}
+The choice must be P1 or P2 and must name the candidate the synthesized plan is
+based on, even when you improve it.`;
+}
+
+function droppedCount(plan: GoalPlan): number {
+  if (plan.dropped === undefined) return 0;
+  let total = plan.dropped.goals;
+  for (const count of plan.dropped.perGoalTodos.values()) total += count;
+  return total;
+}
+
+/** Accept only structurally usable synthesis that preserves chosen-plan evidence. */
+export function isAcceptableGoalPlanSynthesis(
+  synthesized: GoalPlan | null,
+  chosen: GoalPlan,
+): synthesized is GoalPlan {
+  if (synthesized === null || synthesized.judgment !== 'stage') return false;
+  if (synthesized.goals.length === 0) return false;
+  if (synthesized.goals.some((goal) => goal.title.trim().length === 0 || goal.todos.length === 0)) {
+    return false;
+  }
+  const missingDoneWhen = (plan: GoalPlan): number =>
+    plan.goals.filter((goal) => goal.doneWhen === undefined || goal.doneWhen.trim().length === 0).length;
+  const missingApproach = (plan: GoalPlan): number =>
+    plan.goals.filter(
+      (goal) =>
+        goal.approach === undefined ||
+        goal.approach.chosen.trim().length === 0 ||
+        goal.approach.rationale.trim().length === 0,
+    ).length;
+  return (
+    missingDoneWhen(synthesized) <= missingDoneWhen(chosen) &&
+    missingApproach(synthesized) <= missingApproach(chosen) &&
+    droppedCount(synthesized) <= droppedCount(chosen)
+  );
+}
+
+export interface GoalPlanAdjudicationSelection {
+  readonly plan: GoalPlan;
+  readonly choice: 'P1' | 'P2';
+  readonly selection: 'synthesis' | 'fallback';
+  readonly validEnvelope: boolean;
+}
+
+export function selectGoalPlanFromAdjudication(input: {
+  readonly candidateA: GoalPlanSelectionCandidate;
+  readonly candidateB: GoalPlanSelectionCandidate;
+  readonly adjudicatorProvider: ProviderId;
+  readonly rawText: string | undefined;
+}): GoalPlanAdjudicationSelection {
+  const envelope = parseFinalLineChoiceEnvelope(
+    input.adjudicatorProvider,
+    input.rawText,
+    ['P1', 'P2'],
+  );
+  const tally = tallyChoiceEnvelopes(envelope === null ? [] : [envelope]);
+  const choice = tally.top?.optionId === 'P2' ? 'P2' : 'P1';
+  if (envelope === null) {
+    return { plan: input.candidateA.plan, choice: 'P1', selection: 'fallback', validEnvelope: false };
+  }
+  const chosen = choice === 'P2' ? input.candidateB : input.candidateA;
+  const synthesized = parseGoalPlan(input.rawText);
+  if (isAcceptableGoalPlanSynthesis(synthesized, chosen.plan)) {
+    return { plan: synthesized, choice, selection: 'synthesis', validEnvelope: true };
+  }
+  return { plan: chosen.plan, choice, selection: 'fallback', validEnvelope: true };
+}
+
+export function formatGoalPlanSelectionNotice(input: {
+  readonly candidateA: ProviderId;
+  readonly candidateB: ProviderId;
+  readonly reason: string;
+}): string {
+  return `Planning with 2 subscription brains: ${input.candidateA} + ${input.candidateB} - ${input.reason}; 3 total planning runs including selection, may take longer.`;
+}
+
+export function formatGoalPlanSelectionDisclosure(receipt: GoalPlanSelectionReceipt): string {
+  if (receipt.status === 'ran') {
+    const providers = receipt.candidates.map((candidate) => candidate.provider).join(' + ');
+    const source = receipt.selection === 'synthesis' ? 'synthesized' : 'used the named original';
+    return `Plan selection: ran - ${providers}; one adjudicator chose ${receipt.selectedChoice} and ${source}; ${receipt.totalCalls} bounded subscription calls.`;
+  }
+  if (receipt.reason === 'no-different-provider') {
+    return 'Plan selection: no different authenticated provider; keeping the first plan (1 call used).';
+  }
+  return `Plan selection: ${receipt.reason.replaceAll('-', ' ')}; keeping the first plan (${receipt.totalCalls} calls used).`;
+}
+
+// ---------------------------------------------------------------------------
 // Capability seam — the per-turn capability data the SEQUENTIAL path threads
 // onto its route() calls and provider requests, carried into the panel so the
 // ensemble path drops nothing the single-model path carries (audit parity):
@@ -897,6 +1092,232 @@ export async function* mergeCandidates(
   }
 
   return outcomes;
+}
+
+function makeGoalPlanSelectionRunner(input: {
+  readonly ownerTask: string;
+  readonly deps: OrchestrateDeps;
+  readonly tier: Tier;
+  readonly classification: Classification;
+  readonly signal: AbortSignal;
+}): GoalPlanSelectionRunner {
+  const boundedDeps: OrchestrateDeps = {
+    ...input.deps,
+    timeoutMs: Math.min(8_000, Math.max(1, input.deps.timeoutMs)),
+  };
+  return async (request): Promise<CandidateOutcome> => {
+    const plan: PanelPlan = {
+      tier: input.tier,
+      candidates: [request.provider],
+      synthesizer: request.provider,
+      classification: input.classification,
+    };
+    const merged = mergeCandidates(
+      [
+        runCandidate(
+          input.ownerTask,
+          boundedDeps,
+          plan,
+          request.provider,
+          input.signal,
+          undefined,
+          {},
+          { prompt: request.prompt, taskKind: 'judgment' },
+        ),
+      ],
+      async function* (): AsyncGenerator<CoreEvent> {},
+    );
+    while (true) {
+      const next = await merged.next();
+      if (next.done) {
+        const outcome = next.value[0];
+        if (outcome === undefined) throw new Error('Goal-plan selection produced no outcome.');
+        return outcome;
+      }
+    }
+  };
+}
+
+/**
+ * Reuse candidate A, run one different-provider B, then one adjudicator. The
+ * adapter is deliberately not called by runPanel or the menu until Phase C4.
+ */
+export async function selectGoalPlan(input: GoalPlanSelectionInput): Promise<GoalPlanSelectionResult> {
+  const { candidateA } = input;
+  const providerPool = input.candidateProviders ?? input.deps.authenticatedProviders ?? [];
+  const providerB = providerPool.find(
+    (provider) => provider !== candidateA.provider && input.deps.providers[provider] !== undefined,
+  );
+  const participantA: GoalPlanSelectionParticipant = {
+    choice: 'P1',
+    provider: candidateA.provider,
+    ...(candidateA.model === undefined ? {} : { model: candidateA.model }),
+  };
+  if (providerB === undefined) {
+    return {
+      plan: candidateA.plan,
+      receipt: {
+        status: 'not-run',
+        reason: 'no-different-provider',
+        candidates: [participantA],
+        selectedProvider: candidateA.provider,
+        selectedChoice: 'P1',
+        totalCalls: 1,
+        selection: 'fallback',
+      },
+    };
+  }
+
+  const plannerPrompt = buildGoalPlanPrompt(
+    input.ownerTask,
+    undefined,
+    undefined,
+    input.systemModel,
+  );
+  const runner =
+    input.runner ??
+    makeGoalPlanSelectionRunner({
+      ownerTask: input.ownerTask,
+      deps: input.deps,
+      tier: input.tier,
+      classification: input.classification,
+      signal: input.signal,
+    });
+
+  let candidateBOutcome: CandidateOutcome;
+  try {
+    candidateBOutcome = await runner({ role: 'candidate', provider: providerB, prompt: plannerPrompt });
+  } catch {
+    return failedGoalPlanSelection(candidateA, participantA, providerB, 'candidate-failed', 2);
+  }
+  if (
+    candidateBOutcome.errored !== undefined ||
+    candidateBOutcome.finalText === undefined ||
+    candidateBOutcome.finalText.trim().length === 0
+  ) {
+    return failedGoalPlanSelection(candidateA, participantA, providerB, 'candidate-failed', 2);
+  }
+  const candidateBPlan = parseGoalPlan(candidateBOutcome.finalText);
+  if (candidateBPlan === null) {
+    return failedGoalPlanSelection(candidateA, participantA, providerB, 'candidate-invalid', 2);
+  }
+  const candidateB: GoalPlanSelectionCandidate = {
+    plan: candidateBPlan,
+    provider: providerB,
+    model: candidateBOutcome.model,
+    rawText: candidateBOutcome.finalText,
+  };
+  const participantB: GoalPlanSelectionParticipant = {
+    choice: 'P2',
+    provider: providerB,
+    model: candidateBOutcome.model,
+  };
+  const adjudicatorProvider = candidateA.provider;
+  const adjudicationPrompt = buildGoalPlanAdjudicationPrompt({
+    ownerTask: input.ownerTask,
+    plannerPrompt,
+    candidateA,
+    candidateB,
+  });
+  let adjudication: CandidateOutcome;
+  try {
+    adjudication = await runner({
+      role: 'adjudicator',
+      provider: adjudicatorProvider,
+      prompt: adjudicationPrompt,
+    });
+  } catch {
+    return failedGoalPlanAdjudication(candidateA, participantA, participantB, adjudicatorProvider);
+  }
+  if (
+    adjudication.errored !== undefined ||
+    adjudication.finalText === undefined ||
+    adjudication.finalText.trim().length === 0
+  ) {
+    return failedGoalPlanAdjudication(candidateA, participantA, participantB, adjudicatorProvider);
+  }
+  const selected = selectGoalPlanFromAdjudication({
+    candidateA,
+    candidateB,
+    adjudicatorProvider,
+    rawText: adjudication.finalText,
+  });
+  if (!selected.validEnvelope) {
+    return {
+      plan: candidateA.plan,
+      receipt: {
+        status: 'not-run',
+        reason: 'invalid-adjudication',
+        candidates: [participantA, participantB],
+        adjudicator: { choice: 'P1', provider: adjudicatorProvider, model: adjudication.model },
+        selectedProvider: candidateA.provider,
+        selectedChoice: 'P1',
+        totalCalls: 3,
+        selection: 'fallback',
+      },
+    };
+  }
+  const selectedCandidate = selected.choice === 'P2' ? candidateB : candidateA;
+  return {
+    plan: selected.plan,
+    receipt: {
+      status: 'ran',
+      reason: 'selected',
+      candidates: [participantA, participantB],
+      adjudicator: {
+        choice: selected.choice,
+        provider: adjudicatorProvider,
+        model: adjudication.model,
+      },
+      selectedProvider: selectedCandidate.provider,
+      selectedChoice: selected.choice,
+      totalCalls: 3,
+      selection: selected.selection,
+    },
+  };
+}
+
+function failedGoalPlanSelection(
+  candidateA: GoalPlanSelectionCandidate,
+  participantA: GoalPlanSelectionParticipant,
+  failedCandidate: ProviderId,
+  reason: 'candidate-failed' | 'candidate-invalid',
+  totalCalls: 2,
+): GoalPlanSelectionResult {
+  return {
+    plan: candidateA.plan,
+    receipt: {
+      status: 'not-run',
+      reason,
+      candidates: [participantA],
+      selectedProvider: candidateA.provider,
+      selectedChoice: 'P1',
+      totalCalls,
+      selection: 'fallback',
+      failedCandidate,
+    },
+  };
+}
+
+function failedGoalPlanAdjudication(
+  candidateA: GoalPlanSelectionCandidate,
+  participantA: GoalPlanSelectionParticipant,
+  participantB: GoalPlanSelectionParticipant,
+  adjudicatorProvider: ProviderId,
+): GoalPlanSelectionResult {
+  return {
+    plan: candidateA.plan,
+    receipt: {
+      status: 'not-run',
+      reason: 'adjudicator-failed',
+      candidates: [participantA, participantB],
+      adjudicator: { choice: 'P1', provider: adjudicatorProvider },
+      selectedProvider: candidateA.provider,
+      selectedChoice: 'P1',
+      totalCalls: 3,
+      selection: 'fallback',
+    },
+  };
 }
 
 // ---------------------------------------------------------------------------
