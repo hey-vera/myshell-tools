@@ -34,7 +34,7 @@ import {
 } from '../core/goal-manager.js';
 import { deriveWorkStateFromHistory, renderWorkStateBlock } from '../core/work-state.js';
 import { isKeepGoingOffer } from '../core/questions.js';
-import { decideAutonomyOffer } from '../core/autonomy.js';
+import { assessGoalConfidence, decideAutonomyOffer, decideGoalActivation } from '../core/autonomy.js';
 import { classify, hasWorkIntent } from '../core/classify.js';
 import { resolveMemoryContextDetailed } from '../core/memory-injection.js';
 import { buildEnvironmentContext } from '../core/repo-map.js';
@@ -2751,9 +2751,22 @@ export async function runChatLoop(
           },
         ],
       });
+      const verifiabilityByCwd = new Map<string, boolean>();
+      const verificationAvailableForCwd = async (cwd: string): Promise<boolean> => {
+        const cached = verifiabilityByCwd.get(cwd);
+        if (cached !== undefined) return cached;
+        let available = false;
+        try {
+          available = (await nodeVerifyPort.detectTestCommand(cwd)) !== null;
+        } catch {
+          available = false;
+        }
+        verifiabilityByCwd.set(cwd, available);
+        return available;
+      };
       async function prepareAcknowledgedGoal(
         line: string,
-      ): Promise<AcknowledgedGoalLaunch | 'normal-chat' | 'cancelled'> {
+      ): Promise<AcknowledgedGoalLaunch | 'normal-chat' | 'cancelled' | 'staged-parked'> {
         if (!autoStageOn) return 'normal-chat';
         if (!hasAuthenticatedProvider(mutableCtx.env)) return 'normal-chat';
         if (!hasWorkIntent(line)) return 'normal-chat';
@@ -2789,14 +2802,59 @@ export async function runChatLoop(
             source: 'auto-staged',
             ...(plan.approach !== undefined ? { approach: plan.approach } : {}),
           });
-          await goalStore.setState(created.id, 'running');
+
+          const doneWhen = plan.plan?.goals[0]?.doneWhen;
+          const hasDoneWhen = typeof doneWhen === 'string' && doneWhen.trim().length > 0;
+          const verificationAvailable = await verificationAvailableForCwd(ctx.cwd);
+          const confidence = assessGoalConfidence({
+            hasWorkIntent: true,
+            plannerStaged: true,
+            goal: plan.title,
+            hasGenuineFork: false,
+            hasDoneWhen,
+            verificationAvailable,
+          });
+
+          if (confidence.kind === 'confident') {
+            const risk = classify(line).risk;
+            const highStakes = risk === 'high' || risk === 'critical';
+            const planGoalCount = plan.plan?.goals.length ?? 1;
+            const substantial = planGoalCount > 1 || plan.roadmap.length >= 3;
+            const shape: 'quick' | 'risky' | 'decide' | 'investigate' | 'build' | 'explain' =
+              highStakes ? 'risky' : substantial ? 'decide' : 'build';
+            const activation = decideGoalActivation({
+              confident: true,
+              shape,
+              substantial,
+              highStakes,
+              hasGenuineFork: false,
+              override: 'adaptive',
+            });
+            if (activation.kind === 'auto-run') {
+              await goalStore.setState(created.id, 'running');
+              await syncBoard();
+              return {
+                goalId: created.id,
+                title: plan.title,
+                work: line,
+                roadmap: plan.roadmap,
+              };
+            }
+            await syncBoard();
+            out.write(`  Staged — ${plan.title}\n`);
+            for (const item of plan.roadmap) out.write(`    • ${item.text}\n`);
+            if (hasDoneWhen) out.write(`    Done when: ${doneWhen.trim()}\n`);
+            out.write(`    Bigger piece of work — say “go” (or run /goals go) to start it.\n`);
+            return 'staged-parked';
+          }
+
           await syncBoard();
-          return {
-            goalId: created.id,
-            title: plan.title,
-            work: line,
-            roadmap: plan.roadmap,
-          };
+          const why = confidence.kind === 'not-confident' && confidence.reason === 'no-verification'
+            ? 'no test command detected to verify completion'
+            : 'success criteria not yet clear';
+          out.write(`  Staged (holding) — ${plan.title}\n`);
+          out.write(`    Parked for your review — ${why}. Run /goals go to start anyway, or refine it.\n`);
+          return 'staged-parked';
         } catch {
           return 'normal-chat';
         }
@@ -2837,7 +2895,9 @@ export async function runChatLoop(
       ): Promise<'continue' | 'cancelled' | boolean> => {
         const launch = prepared ?? (await prepareAcknowledgedGoal(rawLine));
         if (launch === 'cancelled') return 'cancelled';
-        if (launch !== 'normal-chat') return launchAcknowledgedGoal(launch);
+        if (launch !== 'normal-chat' && launch !== 'staged-parked') {
+          return launchAcknowledgedGoal(launch);
+        }
         return runGoalLoop(rawLine, fallbackLabel);
       };
       // Convert ONE planned goal (a `GoalPlan.goals[]` entry) into the create-spec the
@@ -4717,7 +4777,8 @@ export async function runChatLoop(
       let acknowledgedGoal:
         | AcknowledgedGoalLaunch
         | 'normal-chat'
-        | 'cancelled' = 'normal-chat';
+        | 'cancelled'
+        | 'staged-parked' = 'normal-chat';
       const depsBase = buildDeps(
         priorHistory,
         await resolveTurnMemory(line),
@@ -4747,10 +4808,13 @@ export async function runChatLoop(
           // Auto-engaging on RAW chat text: reuse the acknowledged-goal launch
           // when one was staged in preflight; otherwise fall back to the legacy
           // goal loop on the raw work with a concise label.
+          const preparedForAutoEngage = acknowledgedGoal === 'staged-parked'
+            ? 'normal-chat'
+            : acknowledgedGoal;
           const launched = await launchGoalFromChatLine(
             line,
             await formGoalLabel(line),
-            acknowledgedGoal,
+            preparedForAutoEngage,
           );
           if (launched === 'cancelled') return 'continue';
           if (launched) return control.result;
@@ -4760,7 +4824,7 @@ export async function runChatLoop(
       if (deps === null) {
         throw new Error('chat turn dependencies were not prepared');
       }
-      if (acknowledgedGoal !== 'normal-chat') {
+      if (acknowledgedGoal !== 'normal-chat' && acknowledgedGoal !== 'staged-parked') {
         if (await launchAcknowledgedGoal(acknowledgedGoal)) return control.result;
         return 'continue';
       }

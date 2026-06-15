@@ -1427,6 +1427,7 @@ describe('startMenu — auto-goal smart autonomy', () => {
             const reply = [
               'JUDGMENT: stage',
               'GOAL: Ship the billing migration',
+              'DONE: the new billing provider passes the billing test suite',
               'TODO: map the current billing flows',
               'TODO: wire the new provider',
             ].join('\n');
@@ -1451,13 +1452,21 @@ describe('startMenu — auto-goal smart autonomy', () => {
       };
 
       const sink = makeSink();
+      await fs.promises.mkdir(dir, { recursive: true });
+      await fs.promises.writeFile(
+        join(dir, 'package.json'),
+        JSON.stringify({ name: 'fixture', scripts: { test: 'node --test' } }),
+        'utf8',
+      );
       const ctx = makeCtx(
         {
           providers: { claude: provider },
-          readLine: makeScriptedReader(['n', 'implement and wire the new billing provider', '/exit', 'q']),
+          readLine: makeScriptedReader(['n', 'implement the new formatter module', '/exit', 'q']),
         },
         clock,
         store,
+        undefined,
+        dir,
       );
 
       await startMenu(ctx, sink);
@@ -1466,6 +1475,143 @@ describe('startMenu — auto-goal smart autonomy', () => {
       const all = await goalStore.list();
       assert.equal(all.length, 1, 'preflight should create exactly one goal');
       assert.ok(sink.buf.includes('On it — Ship the billing migration'));
+    });
+  });
+
+  it('substantial confident goal stages PARKED and awaits green light (no worker, no On it)', async () => {
+    const dir = join(tmpdir(), `menu-preflight-substantial-${randomUUID()}`);
+    await withStateHome(dir, async () => {
+      const clock = makeFakeClock();
+      const store = makeStore(clock);
+      const prompts: string[] = [];
+      const provider: Provider = {
+        id: 'claude',
+        async detect() {
+          return {
+            id: 'claude',
+            installed: true,
+            version: '1.0.0',
+            authenticated: true,
+            plan: null,
+            binaryPath: null,
+            availableModels: ['model-a'],
+          };
+        },
+        async *run(req: ProviderRequest, _signal: AbortSignal): AsyncIterable<ProviderEvent> {
+          prompts.push(req.prompt);
+          if (req.prompt.includes('PLANNING BRAIN')) {
+            const reply = [
+              'JUDGMENT: stage',
+              'GOAL: Refresh the billing module',
+              'DONE: the refreshed billing module passes its test suite',
+              'TODO: map the current module behavior',
+              'TODO: implement the refreshed module',
+              'TODO: update the module tests',
+            ].join('\n');
+            yield { type: 'text', delta: reply };
+            yield { type: 'done', text: reply, usage: FAKE_USAGE, raw: {} };
+            return;
+          }
+          yield { type: 'text', delta: 'Understood.' };
+          yield { type: 'done', text: `Understood.\n${CONFIDENCE_ENVELOPE}`, usage: FAKE_USAGE, raw: {} };
+        },
+      };
+
+      await fs.promises.mkdir(dir, { recursive: true });
+      await fs.promises.writeFile(
+        join(dir, 'package.json'),
+        JSON.stringify({ name: 'fixture', scripts: { test: 'node --test' } }),
+        'utf8',
+      );
+      const sink = makeSink();
+      const ctx = makeCtx(
+        {
+          providers: { claude: provider },
+          readLine: makeScriptedReader(['n', 'implement the settings module in three steps', '/exit', 'q']),
+        },
+        clock,
+        store,
+        undefined,
+        dir,
+      );
+
+      await startMenu(ctx, sink);
+
+      const all = await createFileGoalStore({ clock }).list();
+      assert.equal(all.length, 1);
+      assert.equal(all[0]?.state, 'parked');
+      assert.equal(
+        prompts.some((prompt) => prompt.includes('Goal: Refresh the billing module')),
+        false,
+        'the staged goal must not be sent to a worker before green light',
+      );
+      assert.ok(!sink.buf.includes('On it —'));
+      assert.ok(sink.buf.includes('Staged — Refresh the billing module'));
+    });
+  });
+
+  it('confident-but-unverifiable goal stages PARKED (holding), no auto-run', async () => {
+    const dir = join(tmpdir(), `menu-preflight-unverifiable-${randomUUID()}`);
+    await withStateHome(dir, async () => {
+      const clock = makeFakeClock();
+      const store = makeStore(clock);
+      const prompts: string[] = [];
+      const provider: Provider = {
+        id: 'claude',
+        async detect() {
+          return {
+            id: 'claude',
+            installed: true,
+            version: '1.0.0',
+            authenticated: true,
+            plan: null,
+            binaryPath: null,
+            availableModels: ['model-a'],
+          };
+        },
+        async *run(req: ProviderRequest, _signal: AbortSignal): AsyncIterable<ProviderEvent> {
+          prompts.push(req.prompt);
+          if (req.prompt.includes('PLANNING BRAIN')) {
+            const reply = [
+              'JUDGMENT: stage',
+              'GOAL: Refresh the billing module',
+              'DONE: the refreshed billing module passes its test suite',
+              'TODO: implement the refreshed module',
+              'TODO: update the module tests',
+            ].join('\n');
+            yield { type: 'text', delta: reply };
+            yield { type: 'done', text: reply, usage: FAKE_USAGE, raw: {} };
+            return;
+          }
+          yield { type: 'text', delta: 'Understood.' };
+          yield { type: 'done', text: `Understood.\n${CONFIDENCE_ENVELOPE}`, usage: FAKE_USAGE, raw: {} };
+        },
+      };
+
+      const sink = makeSink();
+      const ctx = makeCtx(
+        {
+          providers: { claude: provider },
+          readLine: makeScriptedReader(['n', 'implement the settings module', '/exit', 'q']),
+        },
+        clock,
+        store,
+        undefined,
+        dir,
+      );
+
+      await startMenu(ctx, sink);
+
+      const all = await createFileGoalStore({ clock }).list();
+      assert.equal(all.length, 1);
+      assert.equal(all[0]?.state, 'parked');
+      assert.equal(
+        prompts.some((prompt) => prompt.includes('Goal: Refresh the billing module')),
+        false,
+        'the unverifiable staged goal must not be sent to a worker',
+      );
+      assert.ok(!sink.buf.includes('On it —'));
+      assert.ok(sink.buf.includes('Staged (holding) — Refresh the billing module'));
     });
   });
 
@@ -1716,6 +1862,7 @@ describe('startMenu — auto-goal smart autonomy', () => {
             const reply = [
               'JUDGMENT: stage',
               'GOAL: Stabilize the auth flow',
+              'DONE: the auth flow passes its test suite',
               'TODO: wire the auth provider',
             ].join('\n');
             yield { type: 'text', delta: reply };
@@ -1726,13 +1873,21 @@ describe('startMenu — auto-goal smart autonomy', () => {
           yield { type: 'done', text: 'Done.\nGOAL_COMPLETE', usage: FAKE_USAGE, raw: {} };
         },
       };
+      await fs.promises.mkdir(dir, { recursive: true });
+      await fs.promises.writeFile(
+        join(dir, 'package.json'),
+        JSON.stringify({ name: 'fixture', scripts: { test: 'node --test' } }),
+        'utf8',
+      );
       const ctx = makeCtx(
         {
           providers: { claude: provider },
-          readLine: makeScriptedReader(['implement and wire auth', '/exit']),
+          readLine: makeScriptedReader(['implement the parser module', '/exit']),
         },
         clock,
         store,
+        undefined,
+        dir,
       );
       const meta = await store.create('goal-id');
       const mutableCtx = { config: ctx.config, env: ctx.env };
@@ -1768,7 +1923,7 @@ describe('startMenu — auto-goal smart autonomy', () => {
         mutableCtx,
         meta.id,
         sink,
-        makeScriptedReader(['implement and wire auth', '/exit']),
+        makeScriptedReader(['implement the parser module', '/exit']),
         async () => 0,
         async () => ctx.env,
         async () => false,
