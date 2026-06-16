@@ -19,7 +19,7 @@
  * blocked turn.
  */
 
-import type { Classification, Tier } from './types.js';
+import type { Classification, Tier, Risk } from './types.js';
 
 // ---------------------------------------------------------------------------
 // The frame shape (§3)
@@ -71,6 +71,18 @@ export interface IntentFrame {
    * plan-first pass help? Absent unless the model emitted a boolean.
    */
   readonly routePlan?: boolean;
+  /**
+   * OPTIONAL intent-derived RISK signals (rank-8). The model MAY raise the
+   * deterministic risk floor through these; it can NEVER lower it. ABSENT on
+   * every rules/skipped frame and on any model frame whose JSON omits/garbles
+   * them, so existing frames/mocks/goldens are structurally unchanged.
+   */
+  /** Does the task need fresh EXTERNAL info? Additively MAY trigger web research. */
+  readonly externalFreshness?: 'none' | 'helpful' | 'required';
+  /** How dangerous the operation is — grounded in the EXISTING Risk taxonomy. */
+  readonly operationRisk?: Risk;
+  /** How WIDE the impact is — grounded in the EXISTING Risk taxonomy. */
+  readonly blastRadius?: Risk;
 }
 
 /**
@@ -148,6 +160,17 @@ const VALID_CONFIDENCE: ReadonlySet<string> = new Set<IntentConfidence>([
  * parse failure).
  */
 const VALID_TIERS: ReadonlySet<string> = new Set<Tier>(['worker', 'ic', 'manager']);
+
+/** Valid risk levels for the OPTIONAL operationRisk/blastRadius hints (rank-8).
+ *  Mirrors VALID_TIERS + the Risk validation pattern. */
+const VALID_RISKS: ReadonlySet<string> = new Set<Risk>(['low', 'medium', 'high', 'critical']);
+
+/** Valid externalFreshness values (rank-8). */
+const VALID_FRESHNESS: ReadonlySet<string> = new Set<'none' | 'helpful' | 'required'>([
+  'none',
+  'helpful',
+  'required',
+]);
 
 function safeString(value: unknown): string {
   if (typeof value === 'string') return value;
@@ -237,6 +260,12 @@ export function capIntentFrame(frame: IntentFrame): IntentFrame {
   const routeTierRaw = raw['routeTier'];
   const routePlanRaw = raw['routePlan'];
 
+  // OPTIONAL risk signals (rank-8): tolerant passthrough — a risk/freshness hint
+  // only if it is a real enum member; anything else is OMITTED (never a failure).
+  const operationRiskRaw = raw['operationRisk'];
+  const blastRadiusRaw = raw['blastRadius'];
+  const freshnessRaw = raw['externalFreshness'];
+
   const out: { -readonly [K in keyof IntentFrame]?: IntentFrame[K] } = {
     version: 1,
     goal,
@@ -252,6 +281,15 @@ export function capIntentFrame(frame: IntentFrame): IntentFrame {
     out.routeTier = routeTierRaw as Tier;
   }
   if (typeof routePlanRaw === 'boolean') out.routePlan = routePlanRaw;
+  if (typeof operationRiskRaw === 'string' && VALID_RISKS.has(operationRiskRaw)) {
+    out.operationRisk = operationRiskRaw as Risk;
+  }
+  if (typeof blastRadiusRaw === 'string' && VALID_RISKS.has(blastRadiusRaw)) {
+    out.blastRadius = blastRadiusRaw as Risk;
+  }
+  if (typeof freshnessRaw === 'string' && VALID_FRESHNESS.has(freshnessRaw)) {
+    out.externalFreshness = freshnessRaw as 'none' | 'helpful' | 'required';
+  }
   return out as IntentFrame;
 }
 
@@ -338,6 +376,24 @@ export function buildIntentPrompt(task: string): string {
     '               approaches, high-stakes planning). Omit if unsure.',
     '  routePlan  — OPTIONAL boolean: true only if the task is genuinely complex /',
     '               multi-step enough that a short plan before acting would help.',
+    '  operationRisk    — OPTIONAL. How DANGEROUS this operation is, on the same scale',
+    '                     the system uses: "low" | "medium" | "high" | "critical". Set',
+    '                     this ABOVE low ONLY on clear evidence the operation is hard to',
+    '                     undo or touches sensitive assets (deletes data, deploys/ships,',
+    '                     migrates, drops a table, force-pushes, charges money, touches',
+    '                     secrets/auth/credentials). A read-only or easily-reverted task',
+    '                     is "low". Omit if unsure — do NOT raise risk just because the',
+    '                     message is vague or large.',
+    '  blastRadius      — OPTIONAL. How WIDE the impact is, same scale: "low" (one local',
+    '                     file/area) | "medium" (a shared module / several files) | "high"',
+    '                     (cross-cutting / many systems) | "critical" (production / whole',
+    '                     system / external users). Omit if unsure.',
+    '  externalFreshness— OPTIONAL. Does the task need FRESH EXTERNAL info you cannot',
+    '                     know from training? "none" (default — self-contained / local',
+    '                     codebase work), "helpful" (recent context would help but is not',
+    '                     required), "required" (the answer genuinely depends on current/',
+    '                     latest external facts — e.g. "latest version", "today\'s", recent',
+    '                     news/releases). Omit or "none" for ordinary local work.',
     '',
     'Reply with ONLY a JSON object, nothing else:',
     '{"goal":"...","kind":"coding","constraints":[],"nonGoals":[],"doneWhen":"",',
@@ -345,7 +401,8 @@ export function buildIntentPrompt(task: string): string {
     '   "options":["Server-Component streaming — fewer round-trips, RSC-only",',
     '              "Client SWR fetch — simpler, needs a /api route"],',
     '   "assumeIfUnasked":"Server-Component streaming"}],',
-    ' "confidence":"medium","routeTier":"ic","routePlan":false}',
+    ' "confidence":"medium","routeTier":"ic","routePlan":false,',
+    ' "operationRisk":"medium","blastRadius":"medium","externalFreshness":"none"}',
     '',
     `Message: ${task}`,
   ].join('\n');
@@ -383,6 +440,12 @@ export function parseIntentFrame(text: string | undefined): IntentFrame | null {
   const routeTier = obj['routeTier'];
   const routePlan = obj['routePlan'];
 
+  // OPTIONAL risk signals (rank-8): forwarded raw to capIntentFrame, which performs
+  // the tolerant enum validation (invalid → omitted, never a parse failure).
+  const operationRisk = obj['operationRisk'];
+  const blastRadius = obj['blastRadius'];
+  const externalFreshness = obj['externalFreshness'];
+
   return capIntentFrame({
     version: 1,
     goal,
@@ -395,6 +458,11 @@ export function parseIntentFrame(text: string | undefined): IntentFrame | null {
     source: 'model',
     ...(typeof routeTier === 'string' ? { routeTier: routeTier as Tier } : {}),
     ...(typeof routePlan === 'boolean' ? { routePlan } : {}),
+    ...(typeof operationRisk === 'string' ? { operationRisk: operationRisk as Risk } : {}),
+    ...(typeof blastRadius === 'string' ? { blastRadius: blastRadius as Risk } : {}),
+    ...(typeof externalFreshness === 'string'
+      ? { externalFreshness: externalFreshness as 'none' | 'helpful' | 'required' }
+      : {}),
   });
 }
 

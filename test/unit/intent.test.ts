@@ -353,6 +353,82 @@ describe('parseIntentFrame — optional route hints (rank-7)', () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// OPTIONAL risk signals (rank-8) — additive; absent ⇒ frame structurally unchanged
+// ---------------------------------------------------------------------------
+
+describe('parseIntentFrame / capIntentFrame — optional risk signals (rank-8)', () => {
+  const base = '{"goal":"do the thing","confidence":"medium"';
+
+  it('valid values parse AND survive capIntentFrame', () => {
+    const f = parseIntentFrame(
+      `${base},"operationRisk":"high","blastRadius":"critical","externalFreshness":"required"}`,
+    );
+    assert.ok(f, 'frame parses');
+    assert.equal(f?.operationRisk, 'high');
+    assert.equal(f?.blastRadius, 'critical');
+    assert.equal(f?.externalFreshness, 'required');
+    // and they survive a re-cap unchanged
+    const recapped = capIntentFrame(f as IntentFrame);
+    assert.equal(recapped.operationRisk, 'high');
+    assert.equal(recapped.blastRadius, 'critical');
+    assert.equal(recapped.externalFreshness, 'required');
+  });
+
+  it('invalid values → field OMITTED, frame still valid, NO throw', () => {
+    let f: IntentFrame | null = null;
+    assert.doesNotThrow(() => {
+      f = parseIntentFrame(
+        `${base},"operationRisk":"banana","externalFreshness":"maybe","blastRadius":42}`,
+      );
+    });
+    assert.ok(f, 'frame still parses');
+    assert.equal((f as unknown as IntentFrame).goal, 'do the thing');
+    assert.equal('operationRisk' in (f as object), false);
+    assert.equal('blastRadius' in (f as object), false);
+    assert.equal('externalFreshness' in (f as object), false);
+  });
+
+  it('absent → frame has none of the three keys (structurally identical to pre-rank-8)', () => {
+    const f = parseIntentFrame(`${base}}`);
+    assert.ok(f);
+    assert.equal('operationRisk' in (f as object), false);
+    assert.equal('blastRadius' in (f as object), false);
+    assert.equal('externalFreshness' in (f as object), false);
+  });
+
+  it('capIntentFrame passes valid risk signals through and drops invalid ones', () => {
+    const passed = capIntentFrame({
+      version: 1,
+      goal: 'g',
+      confidence: 'low',
+      source: 'model',
+      operationRisk: 'critical',
+      blastRadius: 'high',
+      externalFreshness: 'helpful',
+    });
+    assert.equal(passed.operationRisk, 'critical');
+    assert.equal(passed.blastRadius, 'high');
+    assert.equal(passed.externalFreshness, 'helpful');
+
+    const dropped = capIntentFrame({
+      version: 1,
+      goal: 'g',
+      confidence: 'low',
+      source: 'model',
+      // @ts-expect-error — runtime tolerance test for a bogus risk
+      operationRisk: 'banana',
+      // @ts-expect-error — runtime tolerance test for a bogus freshness
+      externalFreshness: 'maybe',
+      // @ts-expect-error — runtime tolerance test for a non-string blast radius
+      blastRadius: 42,
+    });
+    assert.equal(dropped.operationRisk, undefined);
+    assert.equal(dropped.externalFreshness, undefined);
+    assert.equal(dropped.blastRadius, undefined);
+  });
+});
+
 describe('buildIntentPrompt — optional route-hint fields (rank-7)', () => {
   it('documents routeTier with the router tier definitions + routePlan', () => {
     const p = buildIntentPrompt('rework the architecture across services');
@@ -364,6 +440,24 @@ describe('buildIntentPrompt — optional route-hint fields (rank-7)', () => {
     // the JSON exemplar carries the two optional fields
     assert.ok(/"routeTier":"ic"/.test(p));
     assert.ok(/"routePlan":false/.test(p));
+  });
+});
+
+describe('buildIntentPrompt — optional risk-signal fields (rank-8)', () => {
+  it('documents operationRisk / blastRadius / externalFreshness + exemplar keys', () => {
+    const p = buildIntentPrompt('delete the production database');
+    // field names appear in the field list
+    assert.ok(/operationRisk/.test(p));
+    assert.ok(/blastRadius/.test(p));
+    assert.ok(/externalFreshness/.test(p));
+    // wording mirrors the risk taxonomy + freshness vocabulary
+    assert.ok(/How DANGEROUS this operation is/i.test(p));
+    assert.ok(/How WIDE the impact is/i.test(p));
+    assert.ok(/FRESH EXTERNAL info/i.test(p));
+    // the JSON exemplar carries the three new keys
+    assert.ok(/"operationRisk":"medium"/.test(p));
+    assert.ok(/"blastRadius":"medium"/.test(p));
+    assert.ok(/"externalFreshness":"none"/.test(p));
   });
 });
 
