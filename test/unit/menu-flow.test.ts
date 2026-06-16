@@ -3123,6 +3123,113 @@ describe('startMenu — auto-goal smart autonomy', () => {
     });
   }
 
+  // rank-8 S6 — the risk-signals flag threads from menu config → deps.riskSignals →
+  // orchestrate's combineRisk. We prove it END-TO-END through the menu by observing
+  // the FINAL classification risk: the model's intent frame carries
+  // operationRisk:'critical' on a task the deterministic keyword classifier scores
+  // 'low'. With unifyPreflight ON the `classified` event is emitted AFTER extraction
+  // (DESIGN-RANK8 §D.3), and the legacy renderer prints `Classified: … <risk> risk`
+  // to the sink when MYSHELL_DEBUG is set, giving a deterministic observable:
+  //   • flag OFF (default) → orchestrate STRIPS the frame hints → risk stays 'low'.
+  //   • flag ON            → combineRisk RAISES low → 'critical' (model raise-only).
+  // This is the menu-level flag-threading proof (the orchestrate unit suite carries
+  // the exhaustive monotonicity + OFF-neutrality assertions). The task is the SAME
+  // deterministically-low, substantial+ambiguous fixture the orchestrate risk-signals
+  // suite uses, so shouldExtractIntent fires the single intent extraction.
+  for (const risk of [false, true] as const) {
+    it(`rank-8: experimentalRiskSignals=${risk} ⇒ classification risk ${risk ? 'RAISED to critical' : 'stays low'} (model raise-only)`, async () => {
+      const provider: Provider = {
+        id: 'claude',
+        async detect() {
+          return {
+            id: 'claude',
+            installed: true,
+            version: '1.0.0',
+            authenticated: true,
+            plan: null,
+            binaryPath: null,
+            availableModels: ['model-a'],
+          };
+        },
+        async *run(req: ProviderRequest, _signal: AbortSignal): AsyncIterable<ProviderEvent> {
+          if (req.prompt.includes('You extract the INTENT')) {
+            yield {
+              type: 'done',
+              // Deterministically-LOW task; the model frame RAISES via operationRisk.
+              text: '{"goal":"tidy the helper","kind":"coding","confidence":"high","routeTier":"ic","routePlan":false,"operationRisk":"critical"}',
+              usage: FAKE_USAGE,
+              raw: {},
+            };
+            return;
+          }
+          yield { type: 'text', delta: 'Done.' };
+          yield { type: 'done', text: `Done.\n${CONFIDENCE_ENVELOPE}`, usage: FAKE_USAGE, raw: {} };
+        },
+      };
+
+      const clock = makeFakeClock();
+      const store = makeStore(clock);
+      const sink = makeSink();
+      const config: AppConfig = {
+        onboarded: true,
+        setAsDefault: false,
+        mode: 'quality-first',
+        smartRoute: true,
+        intentEngine: true, // intent extractor wired (carries the risk hints)
+        autoGoal: false, // a normal work turn, not a goal turn (no on-disk store)
+        experimentalAutoGoal: false,
+        experimentalUnifyPreflight: true, // classified event emitted AFTER extraction
+        experimentalRiskSignals: risk, // THE FLAG UNDER TEST
+      };
+      const ctx = makeCtx(
+        {
+          config,
+          providers: { claude: provider },
+          // Deterministically-low, substantial + ambiguous → the intent extraction
+          // fires and its frame's risk hints are eligible for combineRisk.
+          readLine: makeScriptedReader([
+            'n',
+            'add a logging line to the helper, and also tidy up the surrounding comments and naming a bit',
+            '/exit',
+            'q',
+          ]),
+        },
+        clock,
+        store,
+      );
+
+      // MYSHELL_DEBUG surfaces the legacy renderer's `Classified: … <risk> risk` line.
+      const prevDebug = process.env['MYSHELL_DEBUG'];
+      process.env['MYSHELL_DEBUG'] = '1';
+      try {
+        await startMenu(ctx, sink);
+      } finally {
+        if (prevDebug !== undefined) process.env['MYSHELL_DEBUG'] = prevDebug;
+        else Reflect.deleteProperty(process.env, 'MYSHELL_DEBUG');
+      }
+
+      if (risk) {
+        assert.ok(
+          /Classified:[^\n]*\bcritical risk\b/.test(sink.buf),
+          'flag ON: the model frame RAISED the deterministic low floor → critical',
+        );
+        assert.ok(
+          !/Classified:[^\n]*\blow risk\b/.test(sink.buf),
+          'flag ON: the raised classified line must not also report the low floor',
+        );
+      } else {
+        assert.ok(
+          /Classified:[^\n]*\blow risk\b/.test(sink.buf),
+          'flag OFF (default): hints stripped → risk stays the deterministic low floor',
+        );
+        assert.ok(
+          !/Classified:[^\n]*\bcritical risk\b/.test(sink.buf),
+          'flag OFF: the model frame must NOT raise the deterministic risk',
+        );
+      }
+    });
+  }
+
   it('with autoGoal on, ambiguous non-engaged work calls the model router only once', async () => {
     let routerPrompts = 0;
     let taskPrompts = 0;

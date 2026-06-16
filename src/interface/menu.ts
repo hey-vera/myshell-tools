@@ -53,7 +53,7 @@ import { createFileTasteLedger } from '../infra/taste-ledger.js';
 import { tasteEnabled } from '../core/taste-flag.js';
 import { judgmentEnabled } from '../core/judgment-flag.js';
 import { researchEnabled } from '../core/research-flag.js';
-import { preflightUnifyEnabled } from '../core/router.js';
+import { preflightUnifyEnabled, preflightRiskSignalsEnabled } from '../core/router.js';
 import { createNodeResearchPort } from '../infra/research-port.js';
 import { renderSystemModelContext } from '../core/understanding.js';
 import { isPushBackQuestionSet, classifyPushBackAnswer } from '../core/brain.js';
@@ -2187,6 +2187,13 @@ export async function runChatLoop(
           // both engines on) this collapses the route-classifier model call into the
           // single intent extraction — pure consolidation, never an added call.
           ...(unifyPreflightOn ? { unifyPreflight: true } : {}),
+          // RISK SIGNALS (rank-8). Set ONLY when the risk-signals flag is ON; absent
+          // when off → orchestrate strips the optional operationRisk/blastRadius/
+          // externalFreshness hints from the frame so risk stays det.risk and the
+          // WEB_RESEARCH determination is byte-identical (the OFF-GUARANTEE). When on,
+          // the model may RAISE (never lower) the deterministic risk floor and
+          // externalFreshness feeds web research additively.
+          ...(riskSignalsOn ? { riskSignals: true } : {}),
           // Composed dynamic provider order: capacity + session consumption +
           // optional learned outcomes + current cooldown state.
           ...(Object.keys(dynamicOrder).length > 0 ? { learnedProviderOrder: dynamicOrder } : {}),
@@ -3435,6 +3442,14 @@ export async function runChatLoop(
       // (the OFF-GUARANTEE). When on, the preflight collapses the route-classifier call
       // into the single intent extraction on the affected turn class (pure consolidation).
       const unifyPreflightOn = preflightUnifyEnabled(process.env, mutableCtx.config);
+      // RISK SIGNALS flag (rank-8; core/router.ts `preflightRiskSignalsEnabled`).
+      // DEFAULT OFF (opt-in): enabled only by an explicit MYSHELL_RISK_SIGNALS ∈
+      // {1,true,on,yes} OR config.experimentalRiskSignals. When off, deps.riskSignals
+      // is never set → orchestrate strips the optional intent-derived risk hints and
+      // runs today's verbatim risk + web-research determination (the OFF-GUARANTEE).
+      // When on, the model's operationRisk/blastRadius may RAISE (never lower) the
+      // deterministic risk floor and externalFreshness feeds web research additively.
+      const riskSignalsOn = preflightRiskSignalsEnabled(process.env, mutableCtx.config);
       // The injected READ-ONLY retrieval port (grep/readFile + a native web search).
       // The web-search callback routes the cheapest authed provider with webSearch:true
       // (the subscription tool — no api key); both Claude (after the 3c allow-list) and
