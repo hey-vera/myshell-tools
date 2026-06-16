@@ -102,11 +102,11 @@ describe('route — worker tier', () => {
     assert.equal(decision.provider, 'claude');
   });
 
-  it('grok-only → grok worker model (grok-build)', () => {
+  it('grok-only → grok worker model (grok-composer-2.5-fast)', () => {
     const decision = route('worker', GROK_ONLY, DEFAULT_POLICY);
     assert.equal(decision.tier, 'worker');
     assert.equal(decision.provider, 'grok');
-    assert.equal(decision.model, 'grok-build');
+    assert.equal(decision.model, 'grok-composer-2.5-fast');
   });
 });
 

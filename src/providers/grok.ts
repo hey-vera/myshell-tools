@@ -1,18 +1,18 @@
 /**
  * src/providers/grok.ts — xAI Grok CLI adapter implementing the Provider port.
  *
- * Spawns `grok --single --prompt-file <PATH> --output-format streaming-json -m <MODEL>`
+ * Spawns `grok --output-format streaming-json -m <MODEL> --prompt-file <PATH>`
  * via execa v9, delivers the prompt via a temporary prompt file (never as an argv
  * argument), and streams parsed ProviderEvents to the caller as they arrive.
  *
- * Why `--prompt-file` instead of STDIN:
- *  - grok's own help documents `--prompt-file <PATH>` for prompt-from-file.
- *  - It is the safer provisional default while the live transcript is pending:
- *    if `grok --single` does not consume stdin, an `input:` spawn would hang.
+ * Why `--prompt-file` (verified live, G2):
+ *  - `--prompt-file <PATH>` is grok's file form of a single-turn headless prompt;
+ *    providing it puts grok in headless mode (the same mode `-p/--single` use).
+ *  - It does NOT combine with `--single`: `--single` requires an inline <PROMPT>
+ *    value, and `grok --single --prompt-file …` errors. So we use `--prompt-file`
+ *    alone.
  *  - The prompt never appears in argv, preserving the "never as shell argument"
  *    contract from claude.ts.
- *  - This is one of the open items to reconcile during G2 live verification
- *    (DESIGN-GROK.md).
  *
  * Auth:
  *  Auth is exclusively grok's own OAuth subscription flow (`grok login --oauth` /
@@ -21,12 +21,13 @@
  *  state via `grok models`, which prints "You are not authenticated." when logged
  *  out. Creds live in `~/.grok/`; myshell never sees the secret.
  *
- * Sandbox / permission mapping:
- *  - read-only       → --permission-mode restrictive
- *  - workspace-write → --permission-mode acceptEdits
- *  - full-access     → --permission-mode bypassPermissions
- *  We never pass a "dangerously skip permissions" flag. The mapping is PROVISIONAL
- *  pending live verification of grok's exact permission-mode values (G2).
+ * Sandbox / permission mapping (verified live, G2 — grok has BOTH an OS-level
+ * `--sandbox` guardrail and a `--permission-mode` tool-approval knob; we pair them):
+ *  - read-only       → --sandbox read-only --permission-mode dontAsk
+ *  - workspace-write → --sandbox workspace  --permission-mode acceptEdits
+ *  - full-access     → --sandbox off        --permission-mode bypassPermissions
+ *  The sandbox does the real enforcement; the non-prompting permission mode keeps
+ *  headless runs from hanging on an approval prompt.
  *
  * Web search:
  *  grok enables web search by default. We add `--disable-web-search` UNLESS the
@@ -44,7 +45,7 @@ import type { Provider, ProviderRequest, ProviderEvent, SandboxLevel } from './p
 import type { ProviderStatus } from './detect.js';
 import { detectProvider } from './detect.js';
 import { classifyError } from './errors.js';
-import { parseGrokLine } from './grok-parse.js';
+import { createGrokParser } from './grok-parse.js';
 import { spawnGuarded, withHangCap, providerHangCapMs } from './hang-cap.js';
 
 // ---------------------------------------------------------------------------
@@ -52,24 +53,34 @@ import { spawnGuarded, withHangCap, providerHangCapMs } from './hang-cap.js';
 // ---------------------------------------------------------------------------
 
 /**
- * Map the abstract privilege ladder to Grok CLI permission flags. Pure.
+ * Map the abstract privilege ladder to Grok CLI sandbox + permission flags. Pure.
  *
- *  - read-only       → --permission-mode restrictive
- *  - workspace-write → --permission-mode acceptEdits
- *  - full-access     → --permission-mode bypassPermissions
+ *  - read-only       → --sandbox read-only --permission-mode dontAsk
+ *  - workspace-write → --sandbox workspace  --permission-mode acceptEdits
+ *  - full-access     → --sandbox off        --permission-mode bypassPermissions
  *
- * PROVISIONAL: grok's permission-mode values are modeled on claude's verified set.
- * Confirm against `grok --help` and live behavior during G2.
+ * Verified against `grok --help`/README + live behavior (G2): grok's
+ * permission-mode set is default|acceptEdits|auto|dontAsk|bypassPermissions|plan
+ * (no `restrictive`), and `--sandbox` profiles are off|workspace|read-only|strict.
  */
 function grokSandboxArgs(sandbox: SandboxLevel): string[] {
+  // grok enforces filesystem/network isolation via `--sandbox <PROFILE>`
+  // (off | workspace | read-only | strict — an OS-level guardrail), and tool
+  // auto-approval via `--permission-mode`. We pair them: the sandbox does the
+  // real enforcement, and a NON-prompting permission mode keeps headless runs
+  // from hanging on an approval prompt. (Verified live — grok's permission-mode
+  // set is default|acceptEdits|auto|dontAsk|bypassPermissions|plan; there is no
+  // `restrictive`.)
   switch (sandbox) {
     case 'read-only':
-      return ['--permission-mode', 'restrictive'];
+      // Read everywhere, write nowhere (OS-enforced); auto-approve read tools.
+      return ['--sandbox', 'read-only', '--permission-mode', 'dontAsk'];
     case 'full-access':
-      return ['--permission-mode', 'bypassPermissions'];
+      return ['--sandbox', 'off', '--permission-mode', 'bypassPermissions'];
     case 'workspace-write':
     default:
-      return ['--permission-mode', 'acceptEdits'];
+      // Read everywhere, write only to CWD + /tmp (OS-enforced); auto-accept edits.
+      return ['--sandbox', 'workspace', '--permission-mode', 'acceptEdits'];
   }
 }
 
@@ -86,8 +97,12 @@ function grokSandboxArgs(sandbox: SandboxLevel): string[] {
  * with our chosen id. When unset, the run is a stateless one-shot (the default).
  */
 export function buildGrokArgs(req: ProviderRequest): string[] {
+  // Single-turn headless mode is triggered by `--prompt-file` (appended by the
+  // caller at spawn time), NOT `--single`: grok's `--single` REQUIRES an inline
+  // <PROMPT> value and cannot be combined with `--prompt-file` (verified live —
+  // doing so errors "a value is required for '--single'"). The prompt is
+  // delivered via the file so it never appears in argv.
   const args = [
-    '--single',
     '--output-format',
     'streaming-json',
     '-m',
@@ -219,11 +234,12 @@ async function* runGrokRaw(args0: {
 
   {
     let emittedTerminal = false;
+    const parse = createGrokParser();
 
     try {
       stdoutLoop:
       for await (const line of subprocess) {
-        const events = parseGrokLine(line);
+        const events = parse(line);
         for (const ev of events) {
           yield ev;
           if (ev.type === 'done' || ev.type === 'error') {

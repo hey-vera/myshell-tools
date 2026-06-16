@@ -265,9 +265,19 @@ export const DECLARATIVE_MODEL_CAPABILITIES: CapabilityRegistry = {
     {
       provider: 'grok',
       id: 'grok-build',
-      aliases: ['grok-4.3'],
+      aliases: [],
       tierHint: 'manager',
-      // grok exposes `--effort <low|medium|high|xhigh|max>` (DESIGN-GROK.md).
+      // grok exposes `--effort <low|medium|high|xhigh|max>` (verified G2).
+      supportedReasoningEfforts: ['low', 'medium', 'high', 'xhigh', 'max'],
+      supportsNativeSession: true,
+      supportsSearchTool: true,
+      source: ['declarative'],
+    },
+    {
+      provider: 'grok',
+      id: 'grok-composer-2.5-fast',
+      aliases: ['grok-composer'],
+      tierHint: 'worker',
       supportedReasoningEfforts: ['low', 'medium', 'high', 'xhigh', 'max'],
       supportsNativeSession: true,
       supportsSearchTool: true,

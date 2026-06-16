@@ -24,22 +24,24 @@ describe('buildGrokArgs', () => {
   it('builds the stateless one-shot args by default', () => {
     const args = buildGrokArgs(makeReq());
     assert.deepEqual(args, [
-      '--single',
       '--output-format',
       'streaming-json',
       '-m',
       'grok-build',
       '--disable-web-search',
+      '--sandbox',
+      'workspace',
       '--permission-mode',
       'acceptEdits',
     ]);
+    assert.ok(!args.includes('--single'), '--single does not combine with --prompt-file');
     assert.ok(!args.includes('--resume'), 'no --resume when sessionId is unset');
     assert.ok(!args.includes('--session-id'), 'no --session-id when sessionId is unset');
   });
 
   it('passes the concrete model id through unchanged', () => {
-    const args = buildGrokArgs(makeReq({ model: 'grok-4.3' }));
-    assert.ok(args.includes('grok-4.3'));
+    const args = buildGrokArgs(makeReq({ model: 'grok-composer-2.5-fast' }));
+    assert.ok(args.includes('grok-composer-2.5-fast'));
   });
 
   it('uses --session-id to ESTABLISH a session (resume=false)', () => {
@@ -93,26 +95,26 @@ describe('buildGrokArgs', () => {
 
   // ---- Sandbox / privilege ladder ------------------------------------------
 
-  it('read-only uses --permission-mode restrictive', () => {
+  it('read-only uses --sandbox read-only + non-prompting --permission-mode dontAsk', () => {
     const args = buildGrokArgs(makeReq({ sandbox: 'read-only' }));
+    const s = args.indexOf('--sandbox');
+    assert.strictEqual(args[s + 1], 'read-only');
     const i = args.indexOf('--permission-mode');
-    assert.ok(i >= 0, 'read-only must set a permission mode');
-    assert.strictEqual(args[i + 1], 'restrictive');
+    assert.strictEqual(args[i + 1], 'dontAsk');
     assert.ok(!args.includes('bypassPermissions'), 'read-only must not bypass permissions');
+    assert.ok(!args.includes('restrictive'), 'restrictive is not a valid grok permission mode');
   });
 
-  it('workspace-write uses --permission-mode acceptEdits', () => {
+  it('workspace-write uses --sandbox workspace + --permission-mode acceptEdits', () => {
     const args = buildGrokArgs(makeReq({ sandbox: 'workspace-write' }));
-    const i = args.indexOf('--permission-mode');
-    assert.ok(i >= 0, 'workspace-write must set a permission mode');
-    assert.strictEqual(args[i + 1], 'acceptEdits');
+    assert.strictEqual(args[args.indexOf('--sandbox') + 1], 'workspace');
+    assert.strictEqual(args[args.indexOf('--permission-mode') + 1], 'acceptEdits');
   });
 
-  it('full-access uses --permission-mode bypassPermissions', () => {
+  it('full-access uses --sandbox off + --permission-mode bypassPermissions', () => {
     const args = buildGrokArgs(makeReq({ sandbox: 'full-access' }));
-    const i = args.indexOf('--permission-mode');
-    assert.ok(i >= 0, 'full-access must set a permission mode');
-    assert.strictEqual(args[i + 1], 'bypassPermissions');
+    assert.strictEqual(args[args.indexOf('--sandbox') + 1], 'off');
+    assert.strictEqual(args[args.indexOf('--permission-mode') + 1], 'bypassPermissions');
   });
 
   // ---- Web search (inverse of claude) --------------------------------------

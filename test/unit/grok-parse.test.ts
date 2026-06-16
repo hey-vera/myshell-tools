@@ -1,147 +1,97 @@
 /**
- * test/unit/grok-parse.test.ts — unit tests for the provisional grok streaming-json
- * parser. Fixtures are Claude-shaped because grok is a Claude-Code clone and the
- * parser is modeled on claude-parse.ts pending live-transcript reconciliation (G2).
+ * test/unit/grok-parse.test.ts — unit tests for the grok streaming-json parser.
+ * Fixtures are REAL grok output (reconciled against a live transcript, G2):
+ *   {"type":"thought","data":"…"}  {"type":"text","data":"…"}
+ *   {"type":"end","stopReason":"EndTurn","sessionId":"…","requestId":"…"}
  */
 
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { parseGrokLine } from '../../src/providers/grok-parse.ts';
+import { createGrokParser } from '../../src/providers/grok-parse.ts';
 
-describe('parseGrokLine', () => {
-  it('skips empty lines', () => {
-    assert.deepEqual(parseGrokLine(''), []);
-    assert.deepEqual(parseGrokLine('   '), []);
+describe('createGrokParser', () => {
+  it('skips empty and malformed lines', () => {
+    const parse = createGrokParser();
+    assert.deepEqual(parse(''), []);
+    assert.deepEqual(parse('   '), []);
+    assert.deepEqual(parse('not json'), []);
+    assert.deepEqual(parse('123'), []); // valid JSON, not an object
   });
 
-  it('skips malformed JSON', () => {
-    assert.deepEqual(parseGrokLine('not json'), []);
+  it('emits a text delta per text fragment', () => {
+    const parse = createGrokParser();
+    assert.deepEqual(parse(JSON.stringify({ type: 'text', data: 'GRO' })), [
+      { type: 'text', delta: 'GRO' },
+    ]);
+    assert.deepEqual(parse(JSON.stringify({ type: 'text', data: 'K_OK' })), [
+      { type: 'text', delta: 'K_OK' },
+    ]);
   });
 
-  it('skips rate_limit_event and system events', () => {
-    assert.deepEqual(parseGrokLine(JSON.stringify({ type: 'rate_limit_event' })), []);
-    assert.deepEqual(parseGrokLine(JSON.stringify({ type: 'system', subtype: 'init' })), []);
+  it('emits reasoning deltas for thought fragments', () => {
+    const parse = createGrokParser();
+    assert.deepEqual(parse(JSON.stringify({ type: 'thought', data: 'thinking…' })), [
+      { type: 'reasoning', delta: 'thinking…' },
+    ]);
   });
 
-  it('emits text deltas from stream_event/content_block_delta/text_delta', () => {
-    const events = parseGrokLine(
+  it('ignores empty-string text/thought data', () => {
+    const parse = createGrokParser();
+    assert.deepEqual(parse(JSON.stringify({ type: 'text', data: '' })), []);
+    assert.deepEqual(parse(JSON.stringify({ type: 'thought', data: '' })), []);
+  });
+
+  it('accumulates text across fragments and emits done with the full text + sessionId on end', () => {
+    const parse = createGrokParser();
+    parse(JSON.stringify({ type: 'thought', data: 'The user says hi' }));
+    parse(JSON.stringify({ type: 'text', data: 'GRO' }));
+    parse(JSON.stringify({ type: 'text', data: 'K_OK' }));
+    const events = parse(
       JSON.stringify({
-        type: 'stream_event',
-        event: { type: 'content_block_delta', delta: { type: 'text_delta', text: 'hello' } },
-      }),
-    );
-    assert.deepEqual(events, [{ type: 'text', delta: 'hello' }]);
-  });
-
-  it('ignores non-text stream_event deltas', () => {
-    const events = parseGrokLine(
-      JSON.stringify({
-        type: 'stream_event',
-        event: { type: 'content_block_delta', delta: { type: 'thinking_delta', thinking: '...' } },
-      }),
-    );
-    assert.deepEqual(events, []);
-  });
-
-  it('emits tool start events from assistant tool_use blocks', () => {
-    const events = parseGrokLine(
-      JSON.stringify({
-        type: 'assistant',
-        message: {
-          content: [
-            { type: 'tool_use', name: 'Read', input: { file_path: '/tmp/foo.txt' } },
-          ],
-        },
-      }),
-    );
-    assert.equal(events.length, 1);
-    assert.deepEqual(events[0], {
-      type: 'tool',
-      name: 'Read',
-      phase: 'start',
-      detail: '/tmp/foo.txt',
-    });
-  });
-
-  it('emits tool start events without detail when input has no recognizable field', () => {
-    const events = parseGrokLine(
-      JSON.stringify({
-        type: 'assistant',
-        message: {
-          content: [{ type: 'tool_use', name: 'Bash', input: {} }],
-        },
+        type: 'end',
+        stopReason: 'EndTurn',
+        sessionId: '019ed1c3-1ea3-7ce1-92fb-fee940f953e9',
+        requestId: '977bc6ff-950b-4192-ab03-231c4f61ed2f',
       }),
     );
     assert.equal(events.length, 1);
-    assert.deepEqual(events[0], { type: 'tool', name: 'Bash', phase: 'start' });
-  });
-
-  it('ignores assistant text blocks (deltas own the prose)', () => {
-    const events = parseGrokLine(
-      JSON.stringify({
-        type: 'assistant',
-        message: {
-          content: [{ type: 'text', text: 'should be ignored' }],
-        },
-      }),
-    );
-    assert.deepEqual(events, []);
-  });
-
-  it('emits usage + done on a successful result event', () => {
-    const events = parseGrokLine(
-      JSON.stringify({
-        type: 'result',
-        subtype: 'success',
-        is_error: false,
-        result: 'done',
-        total_cost_usd: 0,
-        usage: { input_tokens: 10, output_tokens: 5 },
-      }),
-    );
-    assert.equal(events.length, 2);
-    assert.deepEqual(events[0], { type: 'usage', usage: { inputTokens: 10, outputTokens: 5 } });
-    assert.equal(events[1]?.type, 'done');
-    if (events[1]?.type === 'done') {
-      assert.equal(events[1].text, 'done');
-      assert.equal(events[1].costUsd, 0);
-      assert.deepEqual(events[1].usage, { inputTokens: 10, outputTokens: 5 });
+    assert.equal(events[0]?.type, 'done');
+    if (events[0]?.type === 'done') {
+      assert.equal(events[0].text, 'GROK_OK');
+      assert.equal(events[0].sessionId, '019ed1c3-1ea3-7ce1-92fb-fee940f953e9');
     }
   });
 
-  it('emits usage + error on a failed result event', () => {
-    const events = parseGrokLine(
-      JSON.stringify({
-        type: 'result',
-        subtype: 'error',
-        is_error: true,
-        result: 'something went wrong',
-        usage: { input_tokens: 1, output_tokens: 1 },
-      }),
-    );
-    assert.equal(events.length, 2);
-    assert.equal(events[0]?.type, 'usage');
-    assert.equal(events[1]?.type, 'error');
+  it('emits done with empty text and no sessionId when none streamed', () => {
+    const parse = createGrokParser();
+    const events = parse(JSON.stringify({ type: 'end', stopReason: 'EndTurn' }));
+    assert.equal(events.length, 1);
+    assert.equal(events[0]?.type, 'done');
+    if (events[0]?.type === 'done') {
+      assert.equal(events[0].text, '');
+      assert.equal(events[0].sessionId, undefined);
+    }
   });
 
-  it('handles cache read input tokens', () => {
-    const events = parseGrokLine(
-      JSON.stringify({
-        type: 'result',
-        subtype: 'success',
-        is_error: false,
-        usage: { input_tokens: 10, output_tokens: 5, cache_read_input_tokens: 3 },
-      }),
-    );
-    const usageEvent = events.find((e) => e.type === 'usage');
-    assert.ok(usageEvent?.type === 'usage');
-    if (usageEvent.type === 'usage') {
-      assert.deepEqual(usageEvent.usage, {
-        inputTokens: 10,
-        outputTokens: 5,
-        cachedInputTokens: 3,
-      });
-    }
+  it('state is per-parser-instance (no cross-run text bleed)', () => {
+    const a = createGrokParser();
+    a(JSON.stringify({ type: 'text', data: 'aaa' }));
+    const b = createGrokParser();
+    const events = b(JSON.stringify({ type: 'end', stopReason: 'EndTurn' }));
+    if (events[0]?.type === 'done') assert.equal(events[0].text, '');
+  });
+
+  it('surfaces an explicit error line', () => {
+    const parse = createGrokParser();
+    const events = parse(JSON.stringify({ type: 'error', message: 'boom' }));
+    assert.equal(events.length, 1);
+    assert.equal(events[0]?.type, 'error');
+  });
+
+  it('ignores unknown event types', () => {
+    const parse = createGrokParser();
+    assert.deepEqual(parse(JSON.stringify({ type: 'tool_call', name: 'x' })), []);
+    assert.deepEqual(parse(JSON.stringify({ type: 'system', subtype: 'init' })), []);
   });
 });

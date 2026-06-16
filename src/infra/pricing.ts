@@ -157,13 +157,15 @@ export const PRICING_TABLE: PricingTable = {
 
     // ---- grok --------------------------------------------------------------
     // grok is subscription-OAuth only (SuperGrok / X Premium+). Per-call cost is
-    // provisional: treat it as included in the subscription ($0) unless live usage
-    // shows metered billing. Default model is grok-build (alias of grok-4.3 per
-    // `grok models`). Tiers are provisional pending G2 live verification.
+    // provisional: treated as included in the subscription ($0) unless live usage
+    // shows metered billing (grok surfaces NO cost in streaming-json — verified
+    // G2 — so cost is estimated from this table, like codex). Real models seen
+    // via `grok models`: `grok-build` (the powerful coding agent, ~1M ctx) and
+    // `grok-composer-2.5-fast` (the fast default). Tiers are provisional.
     {
       provider: 'grok',
-      model: 'grok-build',
-      aliases: ['grok-4.3', 'grok-build'],
+      model: 'grok-composer-2.5-fast',
+      aliases: ['grok-composer', 'grok-composer-2.5-fast'],
       tier: 'worker',
       inputPer1M: 0,
       outputPer1M: 0,
@@ -172,29 +174,20 @@ export const PRICING_TABLE: PricingTable = {
     {
       provider: 'grok',
       model: 'grok-build',
-      aliases: ['grok-4.3', 'grok-build'],
+      aliases: ['grok-build'],
       tier: 'ic',
       inputPer1M: 0,
       outputPer1M: 0,
-      contextWindow: 128_000,
+      contextWindow: 1_000_000,
     },
     {
       provider: 'grok',
       model: 'grok-build',
-      aliases: ['grok-4.3', 'grok-build'],
+      aliases: ['grok-build'],
       tier: 'manager',
       inputPer1M: 0,
       outputPer1M: 0,
-      contextWindow: 128_000,
-    },
-    {
-      provider: 'grok',
-      model: 'grok-4.3',
-      aliases: ['grok-build', 'grok4.3'],
-      tier: 'manager',
-      inputPer1M: 0,
-      outputPer1M: 0,
-      contextWindow: 128_000,
+      contextWindow: 1_000_000,
     },
   ],
 };

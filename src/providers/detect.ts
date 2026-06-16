@@ -910,12 +910,12 @@ async function detectOpencodeProvider(
  * Real output shape (exit code 0, unauthenticated):
  *   You are not authenticated.
  *
- * Real output shape (exit code 0, authenticated):
- *   Default model: grok-build
+ * Real output shape (exit code 0, authenticated — verified G2):
+ *   You are logged in with grok.com.
+ *   Default model: grok-composer-2.5-fast
  *   Available models:
- *     grok-build
- *     grok-4.3
- *     ...
+ *     - grok-build
+ *     * grok-composer-2.5-fast (default)
  *
  * Authenticated when: exitCode === 0 AND the output does NOT contain the
  * "not authenticated" substring (case-insensitive). Plan is always null —
@@ -957,10 +957,13 @@ export function parseGrokModels(stdout: string): string[] {
       continue;
     }
     if (!inList) continue;
-    // Skip decorative bullets/indentation and keep the bare id.
+    // Real lines look like `  - grok-build` or `  * grok-composer-2.5-fast (default)`
+    // (verified G2): strip the leading bullet/indent, then keep ONLY the first
+    // token so a trailing ` (default)` (or any annotation) is dropped.
     const cleaned = line.replace(/^[-*•\s]+/, '').trim();
-    if (/^[\w.:-]+$/.test(cleaned)) {
-      models.push(cleaned);
+    const id = cleaned.split(/\s+/)[0] ?? '';
+    if (/^[\w.:-]+$/.test(id)) {
+      models.push(id);
     }
   }
   return models;

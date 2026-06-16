@@ -405,7 +405,9 @@ describe('parseGrokAuth — unauthenticated output', () => {
 });
 
 describe('parseGrokAuth — authenticated output', () => {
-  const stdout = 'Default model: grok-build\nAvailable models:\n  grok-build\n  grok-4.3\n';
+  // Real `grok models` output when signed in (verified G2).
+  const stdout =
+    'You are logged in with grok.com.\n\nDefault model: grok-composer-2.5-fast\n\nAvailable models:\n  - grok-build\n  * grok-composer-2.5-fast (default)\n';
   const result = parseGrokAuth(stdout, '', 0);
 
   it('authenticated is true', () => {
@@ -426,9 +428,11 @@ describe('parseGrokAuth — non-zero exit code', () => {
 });
 
 describe('parseGrokModels — parses the Available models list', () => {
-  it('extracts model ids after the header', () => {
-    const stdout = 'Default model: grok-build\nAvailable models:\n  grok-build\n  grok-4.3\n';
-    assert.deepEqual(parseGrokModels(stdout), ['grok-build', 'grok-4.3']);
+  it('extracts model ids from the real bulleted list, dropping the (default) suffix', () => {
+    // Real format: `  - grok-build` / `  * grok-composer-2.5-fast (default)` (G2).
+    const stdout =
+      'You are logged in with grok.com.\n\nDefault model: grok-composer-2.5-fast\n\nAvailable models:\n  - grok-build\n  * grok-composer-2.5-fast (default)\n';
+    assert.deepEqual(parseGrokModels(stdout), ['grok-build', 'grok-composer-2.5-fast']);
   });
 
   it('returns [] when unauthenticated', () => {
