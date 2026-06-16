@@ -16,10 +16,66 @@ import {
   parseModelRoute,
   decideRoute,
   riskClause,
+  combineRisk,
   type ModelClassifier,
 } from '../../src/core/router.ts';
+import type { Risk } from '../../src/core/types.ts';
 
 const NEVER_ABORT = new AbortController().signal;
+
+// ---------------------------------------------------------------------------
+// combineRisk — MONOTONIC risk combine (rank-8). The deterministic risk is a
+// HARD FLOOR; the model may RAISE it on evidence, never lower it.
+// RISK_RANK is not exported, so monotonicity is checked via an explicit order.
+// ---------------------------------------------------------------------------
+
+describe('combineRisk', () => {
+  const ORDER: readonly Risk[] = ['low', 'medium', 'high', 'critical'];
+  const rank = (r: Risk): number => ORDER.indexOf(r);
+
+  it('raises when a hint is more severe than the floor', () => {
+    assert.equal(combineRisk('low', { operationRisk: 'critical' }), 'critical');
+  });
+
+  it('never lowers below the deterministic floor', () => {
+    assert.equal(combineRisk('high', { operationRisk: 'low', blastRadius: 'low' }), 'high');
+  });
+
+  it('returns the floor unchanged when no hints are present', () => {
+    for (const d of ORDER) {
+      assert.equal(combineRisk(d, {}), d, `d=${d}`);
+    }
+  });
+
+  it('takes the max of two hints', () => {
+    assert.equal(combineRisk('low', { operationRisk: 'medium', blastRadius: 'high' }), 'high');
+  });
+
+  it('is monotone-up for every floor and hint combo (result >= floor)', () => {
+    const hintVals: readonly (Risk | undefined)[] = [undefined, 'low', 'medium', 'high', 'critical'];
+    for (const d of ORDER) {
+      for (const op of hintVals) {
+        for (const blast of hintVals) {
+          const result = combineRisk(d, {
+            ...(op !== undefined ? { operationRisk: op } : {}),
+            ...(blast !== undefined ? { blastRadius: blast } : {}),
+          });
+          assert.ok(
+            rank(result) >= rank(d),
+            `combineRisk(${d}, {op:${op}, blast:${blast}}) = ${result} dropped below floor`,
+          );
+          // exact: result is the max of floor and any present hints
+          const expectedRank = Math.max(
+            rank(d),
+            op !== undefined ? rank(op) : 0,
+            blast !== undefined ? rank(blast) : 0,
+          );
+          assert.equal(rank(result), expectedRank, `d=${d} op=${op} blast=${blast}`);
+        }
+      }
+    }
+  });
+});
 
 // ---------------------------------------------------------------------------
 // riskClause — exported helper reused by the unified preflight (rank-7)

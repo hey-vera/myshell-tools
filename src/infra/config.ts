@@ -308,6 +308,18 @@ export interface AppConfig {
    */
   experimentalUnifyPreflight?: boolean;
   /**
+   * EXPERIMENTAL INTENT-DERIVED RISK SIGNALS (default off; rank-8). When true (or
+   * with `MYSHELL_RISK_SIGNALS` truthy in the environment), the single gated intent
+   * extraction may emit optional risk hints (operationRisk/blastRadius) that are
+   * combined MONOTONICALLY with the deterministic keyword risk floor: the model may
+   * RAISE risk on genuine evidence of a dangerous/wide-blast operation, but can NEVER
+   * lower it. Absent/invalid hints are inert. The legacy path is byte-identical when
+   * this is absent/false (the raised-risk branch is flag-gated and the hint fields are
+   * stripped from the frame). See src/core/router.ts (preflightRiskSignalsEnabled /
+   * combineRisk).
+   */
+  experimentalRiskSignals?: boolean;
+  /**
    * EXPERIMENTAL RIVAL TRIBUNAL (default off; master-plan PHASE 9). When true (or with
    * `MYSHELL_TRIBUNAL` truthy in the environment), a genuine load-bearing IMPLEMENTATION
    * fork with ≥2 distinct authed vendors may be settled by a build-off: each vendor

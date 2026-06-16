@@ -613,6 +613,18 @@ export interface OrchestrateDeps {
    */
   readonly unifyPreflight?: boolean;
   /**
+   * INTENT-DERIVED RISK SIGNALS flag (rank-8; core/router.ts
+   * `preflightRiskSignalsEnabled`). When true (the caller resolved
+   * `preflightRiskSignalsEnabled(env, config)`), the preflight combines the optional
+   * intent-derived risk hints (operationRisk/blastRadius) with the deterministic risk
+   * floor via `combineRisk` — the model may RAISE risk on genuine evidence, never
+   * lower it — and preserves the freshness hint feeding web-research. DEFAULT
+   * (absent/false) → the hint fields are stripped and risk stays exactly the
+   * deterministic floor (the OFF-GUARANTEE). Set only by the interface layer when the
+   * risk-signals flag is ON.
+   */
+  readonly riskSignals?: boolean;
+  /**
    * Observed plan classification per provider (from classifyPlan), supplied by
    * the conversation layer as an immutable snapshot. Consulted by the adaptive
    * flagship-admission gate (core/flagship.ts) to veto auto-opening the flagship

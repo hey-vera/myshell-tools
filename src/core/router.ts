@@ -269,6 +269,27 @@ export function preflightUnifyEnabled(
   }
 }
 
+/**
+ * Decide whether INTENT-DERIVED RISK SIGNALS (rank-8) are enabled. DEFAULT FALSE —
+ * verbatim mirror of `preflightUnifyEnabled`. Returns true ONLY when explicitly
+ * opted in: `MYSHELL_RISK_SIGNALS` is one of '1'/'true'/'on'/'yes' (trimmed,
+ * case-insensitive) OR `config.experimentalRiskSignals === true`. Any other value
+ * (including absent, '0', 'false', '', garbage) → false. Never throws.
+ */
+export function preflightRiskSignalsEnabled(
+  env: NodeJS.ProcessEnv | undefined,
+  config: { experimentalRiskSignals?: boolean } | undefined,
+): boolean {
+  try {
+    const raw = env?.['MYSHELL_RISK_SIGNALS'];
+    if (typeof raw === 'string' && UNIFY_ON.has(raw.trim().toLowerCase())) return true;
+    if (config?.experimentalRiskSignals === true) return true;
+    return false;
+  } catch {
+    return false;
+  }
+}
+
 /** Inputs to the unified-preflight predicate — all already-computed booleans. */
 export interface UnifiedPreflightInput {
   /** `preflightUnifyEnabled(env, config)` — the rank-7 gate. */
@@ -324,4 +345,28 @@ export function combineRoute(
         : det.rationale,
     source: modelTier !== undefined ? 'model' : 'rules',
   };
+}
+
+/** Severity rank for Risk — the SAME priority cascade classify() uses
+ *  (critical > high > medium > low). Higher = more severe. */
+const RISK_RANK: Record<Risk, number> = { low: 0, medium: 1, high: 2, critical: 3 };
+
+/**
+ * MONOTONIC risk combine (rank-8). The deterministic keyword risk is a HARD FLOOR:
+ * the model's intent-derived signals may RAISE risk above it, NEVER lower it.
+ * Absent/invalid hints (already omitted by capIntentFrame) → no effect, returns the
+ * deterministic risk unchanged. Mirrors combineRoute's risk-lock discipline,
+ * extended so the model can raise on genuine evidence. PURE; never throws.
+ */
+export function combineRisk(
+  deterministicRisk: Risk,
+  hints: { readonly operationRisk?: Risk; readonly blastRadius?: Risk },
+): Risk {
+  let rank = RISK_RANK[deterministicRisk];
+  const op = hints.operationRisk;
+  const blast = hints.blastRadius;
+  if (op !== undefined) rank = Math.max(rank, RISK_RANK[op]);
+  if (blast !== undefined) rank = Math.max(rank, RISK_RANK[blast]);
+  const order: readonly Risk[] = ['low', 'medium', 'high', 'critical'];
+  return order[rank] ?? deterministicRisk;
 }
