@@ -91,7 +91,7 @@ export async function renderMainScreen(
     out.write(
       '  ' +
         yellow(
-          '⚠ Not signed in yet — press [j] Claude · [k] Codex · [o] opencode to get started',
+          '⚠ Not signed in yet — press [j] Claude · [k] Codex · [o] opencode · [p] grok to get started',
           out.color,
         ) +
         '\n\n',
