@@ -1149,6 +1149,10 @@ export async function* runWorkCall(input: WorkCallInput): AsyncGenerator<CoreEve
         // the WORK prompt (it previously grounded only the goal planner). Absent →
         // omitted → byte-for-byte unchanged.
         ...(deps.understandingContext !== undefined ? { understandingContext: deps.understandingContext } : {}),
+        // LOCAL INVESTIGATION (rank 9): the bounded read-only retrieval findings from
+        // the enforced preflight, carried into the work prompt as a grounding block.
+        // Absent → omitted → byte-for-byte unchanged.
+        ...(deps.investigationContext !== undefined ? { investigationContext: deps.investigationContext } : {}),
         ...(deps.intentFrame !== undefined ? { intentFrame: deps.intentFrame } : {}),
         ...(deps.engagementPlan !== undefined ? { engagementPlan: deps.engagementPlan } : {}),
       },

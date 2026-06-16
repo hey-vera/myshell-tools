@@ -27,6 +27,7 @@ import {
   detectBareOptionsList,
   detectHonestNoContext,
   shouldAppendGroundedFallback,
+  deriveRequiredInvestigation,
   GENERIC_MENU_REPAIR_NOTE,
   GROUNDED_RECOMMENDATION_FALLBACK,
   type TurnDirective,
@@ -446,6 +447,75 @@ describe('detectRecommendation / detectGrounding / detectBareOptionsList / detec
 
   it('ungrounded prose has no grounding', () => {
     assert.equal(detectGrounding('I recommend rewriting everything, trust me.'), null);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// compileTurnDirective — requiredInvestigation (audit rank 9)
+// ---------------------------------------------------------------------------
+
+describe('deriveRequiredInvestigation', () => {
+  it('returns local when INVESTIGATE_CONTEXT is planned and a repo is present', () => {
+    const s = signals({
+      frame: frameWith(undefined, 'coding'),
+      task: 'investigate the existing auth module and explain how it works',
+    });
+    const plan = planEngagement(s);
+    assert.equal(deriveRequiredInvestigation(plan, true), 'local');
+  });
+
+  it('returns none when no INVESTIGATE_CONTEXT action is planned', () => {
+    const s = signals({ frame: frameWith(undefined, 'coding'), task: 'rename foo to bar' });
+    const plan = planEngagement(s);
+    assert.equal(plan.actions.includes('INVESTIGATE_CONTEXT'), false);
+    assert.equal(deriveRequiredInvestigation(plan, true), 'none');
+  });
+
+  it('returns none when a repo is NOT present even if INVESTIGATE_CONTEXT is planned', () => {
+    const s = signals({
+      frame: frameWith(undefined, 'coding'),
+      task: 'investigate the existing auth module and explain how it works',
+    });
+    const plan = planEngagement(s);
+    assert.equal(deriveRequiredInvestigation(plan, false), 'none');
+  });
+});
+
+describe('compileTurnDirective — requiredInvestigation', () => {
+  it('omits requiredInvestigation when requiredInvestigationEnabled is not set', () => {
+    const s = signals({
+      frame: frameWith(undefined, 'coding'),
+      task: 'investigate the existing auth module and explain how it works',
+    });
+    const d = compileTurnDirective({ frame: undefined, plan: planEngagement(s), signals: s });
+    assert.equal(d.requiredInvestigation, undefined);
+  });
+
+  it('sets requiredInvestigation to local when enabled + repoPresent + INVESTIGATE_CONTEXT', () => {
+    const s = signals({
+      frame: frameWith(undefined, 'coding'),
+      task: 'investigate the existing auth module and explain how it works',
+    });
+    const d = compileTurnDirective({
+      frame: undefined,
+      plan: planEngagement(s),
+      signals: s,
+      repoPresent: true,
+      requiredInvestigationEnabled: true,
+    });
+    assert.equal(d.requiredInvestigation, 'local');
+  });
+
+  it('sets requiredInvestigation to none when enabled but no INVESTIGATE_CONTEXT action', () => {
+    const s = signals({ frame: frameWith(undefined, 'coding'), task: 'rename foo to bar' });
+    const d = compileTurnDirective({
+      frame: undefined,
+      plan: planEngagement(s),
+      signals: s,
+      repoPresent: true,
+      requiredInvestigationEnabled: true,
+    });
+    assert.equal(d.requiredInvestigation, 'none');
   });
 });
 

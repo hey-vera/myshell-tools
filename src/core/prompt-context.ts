@@ -126,6 +126,14 @@ export interface ContextBlockOptions {
    */
   readonly understandingContext?: string;
   /**
+   * Pre-rendered, capped LOCAL INVESTIGATION block (audit rank 9): the bounded
+   * read-only retrieval findings produced by the enforced preflight. Rendered as a
+   * grounding block right BEFORE INTENT so the model sees the evidence gathered
+   * from the repo before it acts. Present only when the required-investigation flag
+   * is ON and the retrieval returned non-empty findings; absent → byte-identical.
+   */
+  readonly investigationContext?: string;
+  /**
    * The turn's INTENT block, pre-rendered (intent doc §5.4). undefined → omit.
    * Produced by Phase 6; rendered here when present.
    */
@@ -175,6 +183,7 @@ type ContextBlockKind =
   | 'standing-rules'
   | 'vision-triage'
   | 'system-understanding'
+  | 'local-investigation'
   | 'intent'
   | 'engagement'
   | 'partner-nudge';
@@ -330,6 +339,14 @@ export function assembleContextBlocksDetailed(
   const understanding = opts.understandingContext?.trim();
   if (understanding !== undefined && understanding.length > 0) {
     pushBlock('system-understanding', understanding, 'degradable', 4);
+  }
+
+  // LOCAL INVESTIGATION — the bounded read-only retrieval findings from the rank-9
+  // enforced preflight, rendered right BEFORE INTENT as a grounding block.
+  // Absent (flag off / already-grounded / empty findings) → byte-identical.
+  const investigation = opts.investigationContext?.trim();
+  if (investigation !== undefined && investigation.length > 0) {
+    pushBlock('local-investigation', investigation, 'degradable', 5);
   }
 
   const intent = opts.intentFrame?.trim();

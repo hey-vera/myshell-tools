@@ -290,6 +290,28 @@ export function preflightRiskSignalsEnabled(
   }
 }
 
+/**
+ * Decide whether the ENFORCED LOCAL-INVESTIGATION DIRECTIVE (rank-9) is enabled.
+ * DEFAULT FALSE — verbatim mirror of `preflightRiskSignalsEnabled`. Returns true
+ * ONLY when explicitly opted in: `MYSHELL_REQUIRED_INVESTIGATION` is one of
+ * '1'/'true'/'on'/'yes' (trimmed, case-insensitive) OR
+ * `config.experimentalRequiredInvestigation === true`. Any other value
+ * (including absent, '0', 'false', '', garbage) → false. Never throws.
+ */
+export function preflightRequiredInvestigationEnabled(
+  env: NodeJS.ProcessEnv | undefined,
+  config: { experimentalRequiredInvestigation?: boolean } | undefined,
+): boolean {
+  try {
+    const raw = env?.['MYSHELL_REQUIRED_INVESTIGATION'];
+    if (typeof raw === 'string' && UNIFY_ON.has(raw.trim().toLowerCase())) return true;
+    if (config?.experimentalRequiredInvestigation === true) return true;
+    return false;
+  } catch {
+    return false;
+  }
+}
+
 /** Inputs to the unified-preflight predicate — all already-computed booleans. */
 export interface UnifiedPreflightInput {
   /** `preflightUnifyEnabled(env, config)` — the rank-7 gate. */

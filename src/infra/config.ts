@@ -320,6 +320,17 @@ export interface AppConfig {
    */
   experimentalRiskSignals?: boolean;
   /**
+   * EXPERIMENTAL ENFORCED LOCAL-INVESTIGATION DIRECTIVE (default off; audit rank 9).
+   * When true (or with `MYSHELL_REQUIRED_INVESTIGATION` ∈ {1,true,on,yes}), on an
+   * INVESTIGATE_CONTEXT turn that the confidence brain did NOT already ground,
+   * orchestrate runs ONE bounded `buildRetrievalContext` read-only retrieval before
+   * the work call and carries its findings into execution. Reuses the existing
+   * `ResearchPort` and caps; no new model call, no network, no embeddings. Default
+   * OFF (absent/false) → the directive has no `requiredInvestigation` field, the
+   * preflight never fires, and every path is byte-identical to today.
+   */
+  experimentalRequiredInvestigation?: boolean;
+  /**
    * EXPERIMENTAL RIVAL TRIBUNAL (default off; master-plan PHASE 9). When true (or with
    * `MYSHELL_TRIBUNAL` truthy in the environment), a genuine load-bearing IMPLEMENTATION
    * fork with ≥2 distinct authed vendors may be settled by a build-off: each vendor

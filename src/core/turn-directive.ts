@@ -152,6 +152,14 @@ export interface TurnDirective {
    * gated. See {@link decideSubstantial} for the heuristic.
    */
   readonly substantial: boolean;
+  /**
+   * Audit rank 9 — the ENFORCED investigation directive. Set only when the
+   * required-investigation flag is ON; omitted otherwise (byte-identical OFF path).
+   * `'local'` means a bounded read-only retrieval must run before execution when the
+   * confidence brain did not already ground the turn; `'web'` is reserved for a later
+   * slice; `'none'` means no enforced retrieval this turn.
+   */
+  readonly requiredInvestigation?: 'local' | 'web' | 'none';
 }
 
 /** Inputs to {@link compileTurnDirective}. PURE — no model call, no I/O. */
@@ -198,6 +206,12 @@ export interface CompileDirectiveInput {
    * un-bypassable: the flag is a REQUEST, the policy gate is the DECISION.
    */
   readonly canAuthorizeManagerForMigration?: () => boolean;
+  /**
+   * Audit rank 9 — when TRUE the compiler derives and sets `requiredInvestigation`
+   * on the directive. When absent/false the field is OMITTED so the OFF path is
+   * byte-identical to today.
+   */
+  readonly requiredInvestigationEnabled?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -722,6 +736,23 @@ function decideSubstantial(input: {
  *   - INVESTIGATE_THEN_PROPOSE→ `requiresInvestigation`: the answer must return
  *                               findings + a plan, not a generic question.
  */
+
+/**
+ * Derive the rank-9 enforced investigation directive. PURE; never throws.
+ * Returns `'local'` ONLY when the engagement plan explicitly schedules an
+ * `INVESTIGATE_CONTEXT` action AND a repo is present (`repoPresent`). `'web'` is
+ * reserved for a later slice and is never derived here.
+ */
+export function deriveRequiredInvestigation(
+  plan: EngagementPlan,
+  repoPresent: boolean,
+): 'local' | 'none' {
+  if (repoPresent && Array.isArray(plan.actions) && plan.actions.includes('INVESTIGATE_CONTEXT')) {
+    return 'local';
+  }
+  return 'none';
+}
+
 export function compileTurnDirective(input: CompileDirectiveInput): TurnDirective {
   const { frame, plan, signals } = input;
 
@@ -800,6 +831,9 @@ export function compileTurnDirective(input: CompileDirectiveInput): TurnDirectiv
     repoOriented,
     substantial,
     ...(input.workState !== undefined ? { workState: input.workState } : {}),
+    ...(input.requiredInvestigationEnabled === true
+      ? { requiredInvestigation: deriveRequiredInvestigation(plan, input.repoPresent === true) }
+      : {}),
   };
 
   if (plan === undefined || plan === null || !Array.isArray(plan.actions)) {

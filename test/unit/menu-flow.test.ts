@@ -3318,6 +3318,92 @@ describe('startMenu — auto-goal smart autonomy', () => {
     });
   }
 
+  for (const flag of [false, true] as const) {
+    it(`rank-9: experimentalRequiredInvestigation=${flag} ⇒ work prompt ${flag ? 'contains' : 'does NOT contain'} LOCAL INVESTIGATION`, async () => {
+      const requests: ProviderRequest[] = [];
+      const provider: Provider = {
+        id: 'claude',
+        async detect() {
+          return {
+            id: 'claude',
+            installed: true,
+            version: '1.0.0',
+            authenticated: true,
+            plan: null,
+            binaryPath: null,
+            availableModels: ['model-a'],
+          };
+        },
+        async *run(req: ProviderRequest, _signal: AbortSignal): AsyncIterable<ProviderEvent> {
+          requests.push(req);
+          if (req.prompt.includes('You extract the INTENT')) {
+            yield {
+              type: 'done',
+              text: '{"goal":"explain the build scripts in package.json","kind":"coding","confidence":"high"}',
+              usage: FAKE_USAGE,
+              raw: {},
+            };
+            return;
+          }
+          yield { type: 'text', delta: 'Done.' };
+          yield { type: 'done', text: `Done.\n${CONFIDENCE_ENVELOPE}`, usage: FAKE_USAGE, raw: {} };
+        },
+      };
+
+      const clock = makeFakeClock();
+      const store = makeStore(clock);
+      const sink = makeSink();
+      const cwd = '/home/runner/workspace';
+      const config: AppConfig = {
+        onboarded: true,
+        setAsDefault: false,
+        mode: 'quality-first',
+        smartRoute: false,
+        intentEngine: true,
+        codebaseAwareness: true,
+        autoGoal: false,
+        experimentalAutoGoal: false,
+        experimentalRequiredInvestigation: flag,
+      };
+      const ctx = makeCtx(
+        {
+          config,
+          providers: { claude: provider },
+          cwd,
+          readLine: makeScriptedReader([
+            'n',
+            'investigate how the build scripts in package.json work',
+            '/exit',
+            'q',
+          ]),
+        },
+        clock,
+        store,
+        undefined,
+        cwd,
+      );
+
+      await startMenu(ctx, sink);
+
+      const workReq = requests.find((r) => !r.prompt.includes('You extract the INTENT'));
+      assert.ok(workReq !== undefined, 'a work provider request was made');
+      const prompt = workReq.prompt;
+      if (flag) {
+        assert.match(
+          prompt,
+          /LOCAL INVESTIGATION/,
+          'flag ON: the enforced preflight threads retrieval findings into the work prompt',
+        );
+      } else {
+        assert.doesNotMatch(
+          prompt,
+          /LOCAL INVESTIGATION/,
+          'flag OFF: no preflight, no investigationContext block',
+        );
+      }
+    });
+  }
+
   it('with autoGoal on, ambiguous non-engaged work calls the model router only once', async () => {
     let routerPrompts = 0;
     let taskPrompts = 0;

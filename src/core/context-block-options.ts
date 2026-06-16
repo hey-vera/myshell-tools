@@ -34,6 +34,7 @@ export function buildSharedContextBlockOptions(
   if (flags.includeUnderstanding === true && deps.understandingContext !== undefined) {
     ctx.understandingContext = deps.understandingContext;
   }
+  if (deps.investigationContext !== undefined) ctx.investigationContext = deps.investigationContext;
   if (deps.intentFrame !== undefined) ctx.intentFrame = deps.intentFrame;
   if (deps.engagementPlan !== undefined) ctx.engagementPlan = deps.engagementPlan;
 

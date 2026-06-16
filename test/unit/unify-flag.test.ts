@@ -9,7 +9,11 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { preflightUnifyEnabled, preflightRiskSignalsEnabled } from '../../src/core/router.ts';
+import {
+  preflightUnifyEnabled,
+  preflightRiskSignalsEnabled,
+  preflightRequiredInvestigationEnabled,
+} from '../../src/core/router.ts';
 
 const KEY = 'MYSHELL_UNIFY_PREFLIGHT';
 
@@ -50,6 +54,7 @@ describe('preflightUnifyEnabled', () => {
 });
 
 const RKEY = 'MYSHELL_RISK_SIGNALS';
+const RIKEY = 'MYSHELL_REQUIRED_INVESTIGATION';
 
 describe('preflightRiskSignalsEnabled', () => {
   it('defaults OFF: no env, no config', () => {
@@ -105,5 +110,74 @@ describe('preflightRiskSignalsEnabled', () => {
     ) as NodeJS.ProcessEnv;
     assert.doesNotThrow(() => preflightRiskSignalsEnabled(throwingEnv, undefined));
     assert.equal(preflightRiskSignalsEnabled(throwingEnv, undefined), false);
+  });
+});
+
+describe('preflightRequiredInvestigationEnabled', () => {
+  it('defaults OFF: no env, no config', () => {
+    assert.equal(preflightRequiredInvestigationEnabled(undefined, undefined), false);
+    assert.equal(preflightRequiredInvestigationEnabled({}, {}), false);
+  });
+
+  it('true for each accepted env value (case-insensitive, trimmed)', () => {
+    for (const v of ['1', 'true', 'on', 'yes', 'TRUE', ' On ', 'YES']) {
+      assert.equal(
+        preflightRequiredInvestigationEnabled({ [RIKEY]: v }, undefined),
+        true,
+        `env=${JSON.stringify(v)}`,
+      );
+    }
+  });
+
+  it('true when config.experimentalRequiredInvestigation === true', () => {
+    assert.equal(
+      preflightRequiredInvestigationEnabled(undefined, { experimentalRequiredInvestigation: true }),
+      true,
+    );
+    assert.equal(
+      preflightRequiredInvestigationEnabled({}, { experimentalRequiredInvestigation: true }),
+      true,
+    );
+  });
+
+  it('false for disabling / garbage env values', () => {
+    for (const v of ['0', 'false', '', 'garbage', 'off', 'no', '2']) {
+      assert.equal(
+        preflightRequiredInvestigationEnabled({ [RIKEY]: v }, undefined),
+        false,
+        `env=${JSON.stringify(v)}`,
+      );
+    }
+  });
+
+  it('false when config flag is explicitly false or absent', () => {
+    assert.equal(
+      preflightRequiredInvestigationEnabled({}, { experimentalRequiredInvestigation: false }),
+      false,
+    );
+    assert.equal(preflightRequiredInvestigationEnabled({}, {}), false);
+  });
+
+  it('env opt-in wins even when config is false', () => {
+    assert.equal(
+      preflightRequiredInvestigationEnabled(
+        { [RIKEY]: 'yes' },
+        { experimentalRequiredInvestigation: false },
+      ),
+      true,
+    );
+  });
+
+  it('never throws when the env getter itself throws', () => {
+    const throwingEnv = new Proxy(
+      {},
+      {
+        get() {
+          throw new Error('boom');
+        },
+      },
+    ) as NodeJS.ProcessEnv;
+    assert.doesNotThrow(() => preflightRequiredInvestigationEnabled(throwingEnv, undefined));
+    assert.equal(preflightRequiredInvestigationEnabled(throwingEnv, undefined), false);
   });
 });

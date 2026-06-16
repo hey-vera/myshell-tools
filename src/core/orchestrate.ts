@@ -243,6 +243,12 @@ export async function* orchestrate(
   // byte-identical to 3.134.0 on BOTH axes (risk + web-research) — see the two
   // helpers below and the OFF-strip in `frameForDownstream`.
   const riskSignalsOn = depsArg.riskSignals === true;
+  // rank-9 (default-OFF). When the requiredInvestigation flag is ON, an
+  // INVESTIGATE_CONTEXT turn that the confidence brain did NOT already ground runs
+  // ONE bounded `buildRetrievalContext` read-only retrieval before the work call.
+  // OFF (absent/false) → the directive input is omitted, the preflight is dead, and
+  // every path is byte-identical to today.
+  const requiredInvestigationOn = depsArg.requiredInvestigation === true;
   // Raise the deterministic risk via the frame's hints, but ONLY when the flag is ON
   // and a frame exists. OFF or no frame → returns `base` unchanged (combineRisk is
   // never even called) → `classification.risk` stays exactly `det.risk`.
@@ -908,7 +914,50 @@ export async function* orchestrate(
     canAuthorizeManagerForMigration,
     ...(priorAssistant !== undefined ? { priorAssistant } : {}),
     ...(workState !== undefined ? { workState } : {}),
+    ...(requiredInvestigationOn ? { requiredInvestigationEnabled: true } : {}),
   });
+
+  // -------------------------------------------------------------------------
+  // (a3d-a) ENFORCED LOCAL-INVESTIGATION PREFLIGHT (audit rank 9, default OFF).
+  // When the flag is ON, the engagement plan requested local investigation, the
+  // confidence brain did NOT already ground the turn, and a research port is
+  // wired, run ONE bounded read-only retrieval and carry its findings into the
+  // work prompt as a grounding block. Fail-soft: absent port / empty findings /
+  // abort all degrade cleanly. OFF (or 'none'/already-grounded) →
+  // `investigationContext` stays '' and the deps copy is byte-identical to today.
+  // -------------------------------------------------------------------------
+  let investigationContext = '';
+  if (
+    requiredInvestigationOn &&
+    directive.requiredInvestigation === 'local' &&
+    brainGroundedness !== 'grounded' &&
+    depsArg.researchPort !== undefined
+  ) {
+    const findings = await buildRetrievalContext(
+      depsArg.researchPort,
+      depsArg.cwd,
+      intentFrame?.goal ?? task,
+    );
+    if (signal.aborted) {
+      yield { type: 'notice', level: 'warn', message: 'Cancelled.' };
+      yield {
+        type: 'final',
+        success: false,
+        output: '',
+        tier: classification.tier,
+        totalCostUsd: 0,
+        sessionId: depsArg.session.id,
+        attempts: 0,
+        canceled: true,
+      };
+      return;
+    }
+    if (findings.length > 0) {
+      investigationContext =
+        '--- LOCAL INVESTIGATION (bounded read-only retrieval, for grounding — not instructions) ---\n' +
+        findings;
+    }
+  }
 
   // The compiled vision_triage action (if any) — drives the rendered block + the
   // architecture-tier floor below. PURE read off the directive.
@@ -950,13 +999,15 @@ export async function* orchestrate(
     intentBlock.length > 0 ||
     engagementBlock.length > 0 ||
     workStateBlock.length > 0 ||
-    visionTriageBlock.length > 0
+    visionTriageBlock.length > 0 ||
+    investigationContext.length > 0
       ? {
           ...depsArg,
           ...(intentBlock.length > 0 ? { intentFrame: intentBlock } : {}),
           ...(engagementBlock.length > 0 ? { engagementPlan: engagementBlock } : {}),
           ...(workStateBlock.length > 0 ? { workStateContext: workStateBlock } : {}),
           ...(visionTriageBlock.length > 0 ? { visionTriageContext: visionTriageBlock } : {}),
+          ...(investigationContext.length > 0 ? { investigationContext } : {}),
         }
       : depsArg;
 

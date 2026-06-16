@@ -554,6 +554,16 @@ export interface OrchestrateDeps {
    */
   readonly understandingContext?: string;
   /**
+   * Pre-rendered, capped LOCAL INVESTIGATION block (audit rank 9) for the prompt
+   * seam. The bounded, read-only retrieval findings from the enforced preflight,
+   * carried into execution as a grounding block. Rendered by `assembleContextBlocks`
+   * right before INTENT. Present only when the required-investigation flag is ON,
+   * the directive requested local investigation, the brain did NOT already ground
+   * the turn, a research port is wired, and the retrieval returned non-empty
+   * findings. Absent → byte-identical to today.
+   */
+  readonly investigationContext?: string;
+  /**
    * Pre-rendered, capped INTENT block (intent-engine §5.4) for the prompt seam.
    * Computed ONCE per turn INSIDE orchestrate (gated — substantial/ambiguous
    * turns only) and threaded onto a per-turn deps copy so it rides sequential,
@@ -624,6 +634,18 @@ export interface OrchestrateDeps {
    * risk-signals flag is ON.
    */
   readonly riskSignals?: boolean;
+  /**
+   * ENFORCED LOCAL-INVESTIGATION DIRECTIVE flag (rank-9; core/router.ts
+   * `preflightRequiredInvestigationEnabled`). When true (the caller resolved
+   * `preflightRequiredInvestigationEnabled(env, config)`), on an INVESTIGATE_CONTEXT
+   * turn that the confidence brain did NOT already ground, orchestrate runs ONE
+   * bounded `buildRetrievalContext` read-only retrieval before the work call and
+   * threads its findings into execution. DEFAULT (absent/false) → the directive
+   * has no `requiredInvestigation` field, the preflight never fires, and every
+   * path is byte-identical to today (the OFF-GUARANTEE). Set only by the interface
+   * layer when the required-investigation flag is ON.
+   */
+  readonly requiredInvestigation?: boolean;
   /**
    * Observed plan classification per provider (from classifyPlan), supplied by
    * the conversation layer as an immutable snapshot. Consulted by the adaptive

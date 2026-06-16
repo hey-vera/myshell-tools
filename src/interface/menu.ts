@@ -53,7 +53,11 @@ import { createFileTasteLedger } from '../infra/taste-ledger.js';
 import { tasteEnabled } from '../core/taste-flag.js';
 import { judgmentEnabled } from '../core/judgment-flag.js';
 import { researchEnabled } from '../core/research-flag.js';
-import { preflightUnifyEnabled, preflightRiskSignalsEnabled } from '../core/router.js';
+import {
+  preflightUnifyEnabled,
+  preflightRiskSignalsEnabled,
+  preflightRequiredInvestigationEnabled,
+} from '../core/router.js';
 import { createNodeResearchPort } from '../infra/research-port.js';
 import { renderSystemModelContext } from '../core/understanding.js';
 import { isPushBackQuestionSet, classifyPushBackAnswer } from '../core/brain.js';
@@ -2226,6 +2230,12 @@ export async function runChatLoop(
           // the model may RAISE (never lower) the deterministic risk floor and
           // externalFreshness feeds web research additively.
           ...(riskSignalsOn ? { riskSignals: true } : {}),
+          // REQUIRED INVESTIGATION (rank-9). Set ONLY when the required-investigation
+          // flag is ON; absent when off → the directive has no `requiredInvestigation`
+          // field, the preflight never fires, and every path is byte-identical (the
+          // OFF-GUARANTEE). When on, an INVESTIGATE_CONTEXT turn the brain did not
+          // already ground runs ONE bounded read-only retrieval before execution.
+          ...(requiredInvestigationOn ? { requiredInvestigation: true } : {}),
           // Composed dynamic provider order: capacity + session consumption +
           // optional learned outcomes + current cooldown state.
           ...(Object.keys(dynamicOrder).length > 0 ? { learnedProviderOrder: dynamicOrder } : {}),
@@ -3484,6 +3494,19 @@ export async function runChatLoop(
       // When on, the model's operationRisk/blastRadius may RAISE (never lower) the
       // deterministic risk floor and externalFreshness feeds web research additively.
       const riskSignalsOn = preflightRiskSignalsEnabled(process.env, mutableCtx.config);
+      // REQUIRED INVESTIGATION flag (rank-9; core/router.ts
+      // `preflightRequiredInvestigationEnabled`). DEFAULT OFF (opt-in): enabled only
+      // by an explicit MYSHELL_REQUIRED_INVESTIGATION ∈ {1,true,on,yes} OR
+      // config.experimentalRequiredInvestigation. When off, deps.requiredInvestigation
+      // is never set → the directive has no `requiredInvestigation` field, the
+      // preflight never fires, and every path is byte-identical to today. When on,
+      // an INVESTIGATE_CONTEXT turn that the brain did NOT already ground runs ONE
+      // bounded read-only retrieval before the work call and carries its findings
+      // into execution.
+      const requiredInvestigationOn = preflightRequiredInvestigationEnabled(
+        process.env,
+        mutableCtx.config,
+      );
       // The injected READ-ONLY retrieval port (grep/readFile + a native web search).
       // The web-search callback routes the cheapest authed provider with webSearch:true
       // (the subscription tool — no api key); both Claude (after the 3c allow-list) and
