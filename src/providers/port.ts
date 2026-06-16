@@ -23,7 +23,7 @@ export type { CliError } from './errors.js';
 /** Privilege ladder mapped onto each CLI's sandbox flags. Default is workspace-write. */
 export type SandboxLevel = 'read-only' | 'workspace-write' | 'full-access';
 
-export type ProviderId = 'claude' | 'codex' | 'opencode';
+export type ProviderId = 'claude' | 'codex' | 'opencode' | 'grok';
 
 export interface Usage {
   readonly inputTokens: number;

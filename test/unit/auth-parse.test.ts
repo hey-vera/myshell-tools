@@ -24,6 +24,8 @@ import {
   codexPlanFromAuthJson,
   resolveCodexAuthPath,
   opencodePlanFromAuthJson,
+  parseGrokAuth,
+  parseGrokModels,
 } from '../../src/providers/detect.ts';
 
 // ---------------------------------------------------------------------------
@@ -357,6 +359,88 @@ describe('opencode — getInstallCommand returns the opencode-ai npm package', (
   });
 });
 
+describe('grok — getInstallCommand returns the @xai-official/grok npm package', () => {
+  it('does not throw', () => {
+    assert.doesNotThrow(() => getInstallCommand('grok'));
+  });
+
+  it('returns the npm install -g @xai-official/grok command', () => {
+    assert.equal(getInstallCommand('grok'), 'npm install -g @xai-official/grok');
+  });
+
+  it('contains the @xai-official/grok package name', () => {
+    assert.ok(
+      getInstallCommand('grok').includes('@xai-official/grok'),
+      'grok install command must include the "@xai-official/grok" package name',
+    );
+  });
+
+  it('is different from the claude/codex/opencode install commands', () => {
+    assert.notEqual(getInstallCommand('grok'), getInstallCommand('claude'));
+    assert.notEqual(getInstallCommand('grok'), getInstallCommand('codex'));
+    assert.notEqual(getInstallCommand('grok'), getInstallCommand('opencode'));
+  });
+
+  it('does not contain digit-% literals (Honesty Contract)', () => {
+    assert.ok(!/\d+%/.test(getInstallCommand('grok')));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// parseGrokAuth / parseGrokModels — grok stores creds in ~/.grok/; myshell never
+// sees the secret. Auth is probed via `grok models` output.
+// ---------------------------------------------------------------------------
+
+describe('parseGrokAuth — unauthenticated output', () => {
+  const stdout = 'You are not authenticated.';
+  const result = parseGrokAuth(stdout, '', 0);
+
+  it('authenticated is false', () => {
+    assert.equal(result.authenticated, false);
+  });
+
+  it('plan is null', () => {
+    assert.equal(result.plan, null);
+  });
+});
+
+describe('parseGrokAuth — authenticated output', () => {
+  const stdout = 'Default model: grok-build\nAvailable models:\n  grok-build\n  grok-4.3\n';
+  const result = parseGrokAuth(stdout, '', 0);
+
+  it('authenticated is true', () => {
+    assert.equal(result.authenticated, true);
+  });
+
+  it('plan is null (grok models exposes no plan)', () => {
+    assert.equal(result.plan, null);
+  });
+});
+
+describe('parseGrokAuth — non-zero exit code', () => {
+  const result = parseGrokAuth('Default model: grok-build', '', 1);
+
+  it('authenticated is false', () => {
+    assert.equal(result.authenticated, false);
+  });
+});
+
+describe('parseGrokModels — parses the Available models list', () => {
+  it('extracts model ids after the header', () => {
+    const stdout = 'Default model: grok-build\nAvailable models:\n  grok-build\n  grok-4.3\n';
+    assert.deepEqual(parseGrokModels(stdout), ['grok-build', 'grok-4.3']);
+  });
+
+  it('returns [] when unauthenticated', () => {
+    assert.deepEqual(parseGrokModels('You are not authenticated.'), []);
+  });
+
+  it('returns [] on empty/garbage input', () => {
+    assert.deepEqual(parseGrokModels(''), []);
+    assert.deepEqual(parseGrokModels('no models here'), []);
+  });
+});
+
 describe('opencode — detection rationale: installed implies authenticated (free models)', () => {
   /**
    * opencode ships free models (e.g. opencode/deepseek-v4-flash-free) that
@@ -379,14 +463,15 @@ describe('opencode — detection rationale: installed implies authenticated (fre
     assert.ok(typeof cmd === 'string' && cmd.length > 0, 'opencode is a valid ProviderId');
   });
 
-  it('all three install commands are distinct (claude, codex, opencode)', () => {
+  it('all four install commands are distinct (claude, codex, opencode, grok)', () => {
     const commands = [
       getInstallCommand('claude'),
       getInstallCommand('codex'),
       getInstallCommand('opencode'),
+      getInstallCommand('grok'),
     ];
     const uniqueCommands = new Set(commands);
-    assert.equal(uniqueCommands.size, 3, 'all three install commands must be distinct');
+    assert.equal(uniqueCommands.size, 4, 'all four install commands must be distinct');
   });
 });
 

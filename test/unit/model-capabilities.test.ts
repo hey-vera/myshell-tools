@@ -25,8 +25,8 @@ const KNOWN_TIERS = new Set(['worker', 'ic', 'manager']);
 describe('DECLARATIVE_MODEL_CAPABILITIES — well-formed, facts only', () => {
   const reg: CapabilityRegistry = DECLARATIVE_MODEL_CAPABILITIES;
 
-  it('has exactly the three current provider keys (no Gemini)', () => {
-    assert.deepEqual(Object.keys(reg).sort(), ['claude', 'codex', 'opencode']);
+  it('has exactly the four current provider keys (no Gemini)', () => {
+    assert.deepEqual(Object.keys(reg).sort(), ['claude', 'codex', 'grok', 'opencode']);
     assert.ok(!('gemini' in reg), 'no Gemini data in Stage 1');
   });
 

@@ -426,6 +426,15 @@ const FAKE_ENV: EnvironmentStatus = {
     binaryPath: null,
     availableModels: [],
   },
+  grok: {
+    id: 'grok',
+    installed: false,
+    version: null,
+    authenticated: false,
+    plan: null,
+    binaryPath: null,
+    availableModels: [],
+  },
   hasAnyProvider: true,
   platform: 'linux',
 };
@@ -459,6 +468,15 @@ describe('runChatLoop — active subscription capacity allocator', () => {
       binaryPath: null,
       availableModels: [],
     },
+  grok: {
+    id: 'grok',
+    installed: false,
+    version: null,
+    authenticated: false,
+    plan: null,
+    binaryPath: null,
+    availableModels: [],
+  },
     hasAnyProvider: true,
     platform: 'linux',
   };
@@ -652,7 +670,17 @@ describe('startMenu — immediate q → exits cleanly', () => {
     const afterLoginEnv: EnvironmentStatus = {
       ...FAKE_ENV,
       claude: { ...FAKE_ENV.claude, authenticated: true, availableModels: ['model-a'] },
-    };
+    
+  grok: {
+    id: 'grok',
+    installed: false,
+    version: null,
+    authenticated: false,
+    plan: null,
+    binaryPath: null,
+    availableModels: [],
+  },
+};
     const ctx = makeCtx({
       env: { ...FAKE_ENV, claude: { ...FAKE_ENV.claude, authenticated: false } },
       readLine: makeScriptedReader(['j', '', 'q']),
@@ -729,7 +757,17 @@ describe('startMenu — immediate q → exits cleanly', () => {
     const priorEnv: EnvironmentStatus = {
       ...FAKE_ENV,
       claude: { ...FAKE_ENV.claude, plan: 'max_5x' },
-    };
+    
+  grok: {
+    id: 'grok',
+    installed: false,
+    version: null,
+    authenticated: false,
+    plan: null,
+    binaryPath: null,
+    availableModels: [],
+  },
+};
     const sink = makeSink();
     const clock = makeAdvanceableClock();
     let detectCalls = 0;
@@ -2357,7 +2395,17 @@ describe('startMenu — auto-goal smart autonomy', () => {
           id: 'codex', installed: true, version: '1.0.0', authenticated: true,
           plan: null, binaryPath: null, availableModels: ['gpt-5.5', 'gpt-5.4'],
         },
-      };
+      
+  grok: {
+    id: 'grok',
+    installed: false,
+    version: null,
+    authenticated: false,
+    plan: null,
+    binaryPath: null,
+    availableModels: [],
+  },
+};
       const sink = makeSink();
       const ctx = makeCtx({
         config: {
@@ -2392,7 +2440,17 @@ describe('startMenu — auto-goal smart autonomy', () => {
           id: 'codex', installed: true, version: '1.0.0', authenticated: true,
           plan: null, binaryPath: null, availableModels: ['gpt-5.5', 'gpt-5.4'],
         },
-      };
+      
+  grok: {
+    id: 'grok',
+    installed: false,
+    version: null,
+    authenticated: false,
+    plan: null,
+    binaryPath: null,
+    availableModels: [],
+  },
+};
       const providerFor = (id: 'claude' | 'codex'): Provider => ({
         id,
         async detect() { return twoProviderEnv[id]; },
@@ -2489,7 +2547,17 @@ describe('startMenu — auto-goal smart autonomy', () => {
           ...FAKE_ENV.claude,
           availableModels: ['claude-opus-4-7', 'claude-sonnet-4-6'],
         },
-      };
+      
+  grok: {
+    id: 'grok',
+    installed: false,
+    version: null,
+    authenticated: false,
+    plan: null,
+    binaryPath: null,
+    availableModels: [],
+  },
+};
       await fs.promises.mkdir(dir, { recursive: true });
       await fs.promises.writeFile(join(dir, 'package.json'), JSON.stringify({ name: 'fixture' }), 'utf8');
       const sink = makeSink();
@@ -2525,7 +2593,17 @@ describe('startMenu — auto-goal smart autonomy', () => {
           id: 'codex', installed: true, version: '1.0.0', authenticated: true,
           plan: null, binaryPath: null, availableModels: ['gpt-5.5'],
         },
-      };
+      
+  grok: {
+    id: 'grok',
+    installed: false,
+    version: null,
+    authenticated: false,
+    plan: null,
+    binaryPath: null,
+    availableModels: [],
+  },
+};
       const claude: Provider = {
         id: 'claude', async detect() { return twoProviderEnv.claude; },
         async *run(req: ProviderRequest): AsyncIterable<ProviderEvent> {
@@ -2584,7 +2662,17 @@ describe('startMenu — auto-goal smart autonomy', () => {
           id: 'codex', installed: true, version: '1.0.0', authenticated: true,
           plan: null, binaryPath: null, availableModels: ['gpt-5.4'],
         },
-      };
+      
+  grok: {
+    id: 'grok',
+    installed: false,
+    version: null,
+    authenticated: false,
+    plan: null,
+    binaryPath: null,
+    availableModels: [],
+  },
+};
       const claude: Provider = {
         id: 'claude', async detect() { return twoProviderEnv.claude; },
         async *run(req: ProviderRequest): AsyncIterable<ProviderEvent> {
@@ -4495,6 +4583,15 @@ const FAKE_ENV_CLAUDE_MISSING: EnvironmentStatus = {
     binaryPath: null,
     availableModels: [],
   },
+  grok: {
+    id: 'grok',
+    installed: false,
+    version: null,
+    authenticated: false,
+    plan: null,
+    binaryPath: null,
+    availableModels: [],
+  },
   hasAnyProvider: true,
   platform: 'linux',
 };
@@ -4686,6 +4783,15 @@ describe('startMenu — first-run welcome: install prompt for missing provider',
         binaryPath: null,
         availableModels: [],
       },
+  grok: {
+    id: 'grok',
+    installed: false,
+    version: null,
+    authenticated: false,
+    plan: null,
+    binaryPath: null,
+    availableModels: [],
+  },
       hasAnyProvider: true,
       platform: 'linux',
     };
@@ -4864,6 +4970,15 @@ describe('startMenu — first-run welcome: opencode onboarding prompt', () => {
       binaryPath: null,
       availableModels: [],
     },
+  grok: {
+    id: 'grok',
+    installed: false,
+    version: null,
+    authenticated: false,
+    plan: null,
+    binaryPath: null,
+    availableModels: [],
+  },
     hasAnyProvider: true,
     platform: 'linux',
   };
@@ -4880,7 +4995,17 @@ describe('startMenu — first-run welcome: opencode onboarding prompt', () => {
       binaryPath: 'opencode',
       availableModels: ['opencode/deepseek-v4-flash-free'],
     },
-  };
+  
+  grok: {
+    id: 'grok',
+    installed: false,
+    version: null,
+    authenticated: false,
+    plan: null,
+    binaryPath: null,
+    availableModels: [],
+  },
+};
 
   function makeOpencodeOnboardCtx(
     inputs: ReadonlyArray<string | null>,
@@ -5313,7 +5438,17 @@ describe('startMenu — [r] raw session picker: opencode visibility', () => {
       binaryPath: 'opencode',
       availableModels: ['opencode/deepseek-v4-flash-free'],
     },
-  };
+  
+  grok: {
+    id: 'grok',
+    installed: false,
+    version: null,
+    authenticated: false,
+    plan: null,
+    binaryPath: null,
+    availableModels: [],
+  },
+};
 
   it('raw session picker shows [3] opencode when opencode is installed', async () => {
     const sink = makeSink();
@@ -5452,6 +5587,15 @@ describe('startMenu — [r] raw session picker: opencode visibility', () => {
         binaryPath: null,
         availableModels: [],
       },
+  grok: {
+    id: 'grok',
+    installed: false,
+    version: null,
+    authenticated: false,
+    plan: null,
+    binaryPath: null,
+    availableModels: [],
+  },
       hasAnyProvider: false,
       platform: 'linux',
     };
@@ -5519,6 +5663,15 @@ describe('startMenu — first-run welcome: y to set-as-default writes the shell 
       binaryPath: null,
       availableModels: [],
     },
+  grok: {
+    id: 'grok',
+    installed: false,
+    version: null,
+    authenticated: false,
+    plan: null,
+    binaryPath: null,
+    availableModels: [],
+  },
     hasAnyProvider: true,
     platform: 'linux',
   };
@@ -5615,8 +5768,8 @@ describe('startMenu — first-run welcome: y to set-as-default writes the shell 
     await withTempHome(tempHome, async () => {
       const sink = makeSink();
       // FAKE_ENV has both providers installed+authed → no install/login prompts.
-      // Welcome flow: n (skip opencode) → '' (mode Enter = balanced) → y (set as default) → n (auto-update) → q (main menu)
-      const ctx = makeInstallCtx(['n', '', 'y', 'n', 'q'], tempHome);
+      // Welcome flow: n (skip opencode) → n (skip grok) → '' (mode Enter = balanced) → y (set as default) → n (auto-update) → q (main menu)
+      const ctx = makeInstallCtx(['n', 'n', '', 'y', 'n', 'q'], tempHome);
 
       await assert.doesNotReject(
         () => startMenu(ctx, sink),
@@ -5647,7 +5800,7 @@ describe('startMenu — first-run welcome: y to set-as-default writes the shell 
 
     await withTempHome(tempHome, async () => {
       const sink = makeSink();
-      const ctx = makeInstallCtx(['n', '', 'y', 'n', 'q'], tempHome);
+      const ctx = makeInstallCtx(['n', 'n', '', 'y', 'n', 'q'], tempHome);
 
       await startMenu(ctx, sink);
 
@@ -5668,8 +5821,8 @@ describe('startMenu — first-run welcome: y to set-as-default writes the shell 
 
     await withTempHome(tempHome, async () => {
       const sink = makeSink();
-      // n → skip opencode; '' → mode (Enter = balanced); n → skip set-as-default; n → auto-update; q → quit
-      const ctx = makeInstallCtx(['n', '', 'n', 'n', 'q'], tempHome);
+      // n → skip opencode; n → skip grok; '' → mode (Enter = balanced); n → skip set-as-default; n → auto-update; q → quit
+      const ctx = makeInstallCtx(['n', 'n', '', 'n', 'n', 'q'], tempHome);
 
       await startMenu(ctx, sink);
 
@@ -5729,6 +5882,15 @@ describe('startMenu — first-run: post-onboarding env refresh (BUG 1)', () => {
       binaryPath: null,
       availableModels: [],
     },
+  grok: {
+    id: 'grok',
+    installed: false,
+    version: null,
+    authenticated: false,
+    plan: null,
+    binaryPath: null,
+    availableModels: [],
+  },
     hasAnyProvider: true,
     platform: 'linux',
   };
@@ -5765,6 +5927,15 @@ describe('startMenu — first-run: post-onboarding env refresh (BUG 1)', () => {
       binaryPath: null,
       availableModels: [],
     },
+  grok: {
+    id: 'grok',
+    installed: false,
+    version: null,
+    authenticated: false,
+    plan: null,
+    binaryPath: null,
+    availableModels: [],
+  },
     hasAnyProvider: true,
     platform: 'linux',
   };
@@ -5778,8 +5949,9 @@ describe('startMenu — first-run: post-onboarding env refresh (BUG 1)', () => {
     const config: AppConfig = { onboarded: false, setAsDefault: false };
 
     // Welcome flow for STALE_ENV: codex not installed (install prompt → y), opencode not installed
-    // (opencode prompt → n), claude installed but unauthenticated (no sign-in prompt in FRESH_ENV
-    // since FRESH_ENV has claude authenticated). Mode → Enter (balanced), default shell → n. Then main menu → q.
+    // (opencode prompt → n), grok not installed (grok prompt → n), claude installed but unauthenticated
+    // (no sign-in prompt in FRESH_ENV since FRESH_ENV has claude authenticated). Mode → Enter (balanced),
+    // default shell → n. Then main menu → q.
     const ctx: MenuContext = {
       version: '2.0.0',
       clock,
@@ -5791,7 +5963,7 @@ describe('startMenu — first-run: post-onboarding env refresh (BUG 1)', () => {
       cwd: dir,
       sandbox: 'workspace-write',
       timeoutMs: 5_000,
-      readLine: makeScriptedReader(['y', 'n', '', 'n', 'n', 'q']),
+      readLine: makeScriptedReader(['y', 'n', 'n', '', 'n', 'n', 'q']),
       installProvider: async () => true,
       login: async () => 0,
       // detectEnvironment returns FRESH_ENV — simulates successful post-login detection
@@ -5844,8 +6016,8 @@ describe('startMenu — first-run: post-onboarding env refresh (BUG 1)', () => {
       cwd: dir,
       sandbox: 'workspace-write',
       timeoutMs: 5_000,
-      // 'y' → install codex; 'n' → skip opencode; '' → mode (Enter = balanced); 'n' → set-as-default; 'n' → auto-update; 'q' → main menu quit
-      readLine: makeScriptedReader(['y', 'n', '', 'n', 'n', 'q']),
+      // 'y' → install codex; 'n' → skip opencode; 'n' → skip grok; '' → mode (Enter = balanced); 'n' → set-as-default; 'n' → auto-update; 'q' → main menu quit
+      readLine: makeScriptedReader(['y', 'n', 'n', '', 'n', 'n', 'q']),
       installProvider: async () => true,
       login: async () => 0,
       detectEnvironment: async () => {
@@ -5879,6 +6051,15 @@ describe('startMenu — first-run: post-onboarding env refresh (BUG 1)', () => {
       claude: { id: 'claude', installed: true, version: '1.0.0', authenticated: false, plan: null, binaryPath: 'claude', availableModels: [] },
       codex: { id: 'codex', installed: true, version: '1.0.0', authenticated: false, plan: null, binaryPath: 'codex', availableModels: [] },
       opencode: { id: 'opencode', installed: true, version: '1.0.0', authenticated: false, plan: null, binaryPath: 'opencode', availableModels: [] },
+  grok: {
+    id: 'grok',
+    installed: false,
+    version: null,
+    authenticated: false,
+    plan: null,
+    binaryPath: null,
+    availableModels: [],
+  },
       hasAnyProvider: true,
       platform: 'linux',
     };
@@ -5886,6 +6067,15 @@ describe('startMenu — first-run: post-onboarding env refresh (BUG 1)', () => {
       claude: { ...installedUnauthed.claude, authenticated: true, availableModels: ['opus'] },
       codex: { ...installedUnauthed.codex, authenticated: true, availableModels: ['gpt-5.5'] },
       opencode: { ...installedUnauthed.opencode, authenticated: true, availableModels: ['opencode/paid'] },
+  grok: {
+    id: 'grok',
+    installed: false,
+    version: null,
+    authenticated: false,
+    plan: null,
+    binaryPath: null,
+    availableModels: [],
+  },
       hasAnyProvider: true,
       platform: 'linux',
     };
@@ -5902,9 +6092,9 @@ describe('startMenu — first-run: post-onboarding env refresh (BUG 1)', () => {
       cwd: dir,
       sandbox: 'workspace-write',
       timeoutMs: 5_000,
-      // y = accept Claude sign-in, '' = mode Enter. Without the post-login
+      // n = skip grok install, y = accept Claude sign-in, '' = mode Enter. Without the post-login
       // re-detect, that blank would default-accept the stale Codex auth prompt.
-      readLine: makeScriptedReader(['y', '', 'n', 'n', 'q']),
+      readLine: makeScriptedReader(['n', 'y', '', 'n', 'n', 'q']),
       installProvider: async () => true,
       login: async (_out, providerArg) => {
         loginCalls.push(providerArg ?? 'all');
@@ -5953,7 +6143,17 @@ describe('startMenu — [o] opencode discoverability in Auth section', () => {
       binaryPath: 'opencode',
       availableModels: ['opencode/deepseek-v4-flash-free'],
     },
-  };
+  
+  grok: {
+    id: 'grok',
+    installed: false,
+    version: null,
+    authenticated: false,
+    plan: null,
+    binaryPath: null,
+    availableModels: [],
+  },
+};
 
   // ---- Label visibility (always present) ------------------------------------
 
@@ -7846,6 +8046,15 @@ describe('startMenu — no-provider gate in chat loop', () => {
       binaryPath: null,
       availableModels: [],
     },
+  grok: {
+    id: 'grok',
+    installed: false,
+    version: null,
+    authenticated: false,
+    plan: null,
+    binaryPath: null,
+    availableModels: [],
+  },
     hasAnyProvider: false,
     platform: 'linux',
   };
@@ -7862,6 +8071,15 @@ describe('startMenu — no-provider gate in chat loop', () => {
         binaryPath: 'claude',
         availableModels: ['model-a'],
       },
+  grok: {
+    id: 'grok',
+    installed: false,
+    version: null,
+    authenticated: false,
+    plan: null,
+    binaryPath: null,
+    availableModels: [],
+  },
       hasAnyProvider: true,
     };
     const afterLoginEnv: EnvironmentStatus = {
@@ -7870,7 +8088,17 @@ describe('startMenu — no-provider gate in chat loop', () => {
         ...installedUnauthedEnv.claude,
         authenticated: true,
       },
-    };
+    
+  grok: {
+    id: 'grok',
+    installed: false,
+    version: null,
+    authenticated: false,
+    plan: null,
+    binaryPath: null,
+    availableModels: [],
+  },
+};
     const clock = makeFakeClock();
     const store = makeStore(clock);
     const sink = makeSink();
@@ -7995,7 +8223,17 @@ describe('startMenu — no-provider gate in chat loop', () => {
         binaryPath: 'opencode',
         availableModels: [],
       },
-    };
+    
+  grok: {
+    id: 'grok',
+    installed: false,
+    version: null,
+    authenticated: false,
+    plan: null,
+    binaryPath: null,
+    availableModels: [],
+  },
+};
 
     const clock = makeFakeClock();
     const store = makeStore(clock);
@@ -8035,7 +8273,17 @@ describe('startMenu — no-provider gate in chat loop', () => {
         binaryPath: 'opencode',
         availableModels: [],
       },
-    };
+    
+  grok: {
+    id: 'grok',
+    installed: false,
+    version: null,
+    authenticated: false,
+    plan: null,
+    binaryPath: null,
+    availableModels: [],
+  },
+};
 
     const clock = makeFakeClock();
     const store = makeStore(clock);
@@ -8111,7 +8359,17 @@ describe('startMenu — inline re-login uses refreshed auth (stale-deps fix)', (
         authenticated: true,
         availableModels: ['fresh-model'],
       },
-    };
+    
+  grok: {
+    id: 'grok',
+    installed: false,
+    version: null,
+    authenticated: false,
+    plan: null,
+    binaryPath: null,
+    availableModels: [],
+  },
+};
 
     let detectCallCount = 0;
     const ctx = makeCtx(
@@ -8503,6 +8761,15 @@ describe('startMenu — first-run: hook already installed → skips set-default 
       binaryPath: null,
       availableModels: [],
     },
+  grok: {
+    id: 'grok',
+    installed: false,
+    version: null,
+    authenticated: false,
+    plan: null,
+    binaryPath: null,
+    availableModels: [],
+  },
     hasAnyProvider: true,
     platform: 'linux',
   };
@@ -8758,7 +9025,17 @@ describe('startMenu — mode settings [4] Auto', () => {
         ...FAKE_ENV.claude,
         plan: 'claude max',
       },
-    };
+    
+  grok: {
+    id: 'grok',
+    installed: false,
+    version: null,
+    authenticated: false,
+    plan: null,
+    binaryPath: null,
+    availableModels: [],
+  },
+};
 
     const ctx = makeCtx(
       {
@@ -9332,6 +9609,15 @@ describe('runChatLoop — local-only slash commands bypass the no-provider gate 
   const NO_AUTH_ENV: EnvironmentStatus = {
     ...FAKE_ENV,
     claude: { ...FAKE_ENV.claude, authenticated: false },
+  grok: {
+    id: 'grok',
+    installed: false,
+    version: null,
+    authenticated: false,
+    plan: null,
+    binaryPath: null,
+    availableModels: [],
+  },
     hasAnyProvider: false,
   };
 

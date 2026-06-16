@@ -24,10 +24,11 @@ import {
 import { extractClaudeToken, stripPastedSecretWrapper, classifyPastedSecret } from '../../src/infra/credentials.ts';
 
 describe('isProviderId', () => {
-  it('accepts claude, codex, and opencode', () => {
+  it('accepts claude, codex, opencode, and grok', () => {
     assert.equal(isProviderId('claude'), true);
     assert.equal(isProviderId('codex'), true);
     assert.equal(isProviderId('opencode'), true);
+    assert.equal(isProviderId('grok'), true);
   });
 
   it('rejects anything else', () => {
@@ -160,6 +161,29 @@ describe('getLoginCommand — opencode uses the provider picker (no -p opencode)
       bin: 'codex',
       args: ['login', '--device-auth'],
     });
+  });
+
+  it('grok browser login uses OAuth subscription flow', () => {
+    assert.deepEqual(getLoginCommand('grok', 'browser'), {
+      bin: 'grok',
+      args: ['login', '--oauth'],
+    });
+  });
+
+  it('grok code login uses device-auth flow', () => {
+    assert.deepEqual(getLoginCommand('grok', 'code'), {
+      bin: 'grok',
+      args: ['login', '--device-auth'],
+    });
+  });
+
+  it('grok login never passes an api key or --xai-api-base-url', () => {
+    for (const method of ['browser', 'code'] as const) {
+      const cmd = getLoginCommand('grok', method);
+      assert.ok(!cmd.args.some((a) => a.startsWith('sk-')));
+      assert.ok(!cmd.args.includes('--xai-api-base-url'));
+      assert.ok(!cmd.args.includes('XAI_API_KEY'));
+    }
   });
 });
 

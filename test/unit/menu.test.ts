@@ -78,7 +78,7 @@ function assertNoDigitPercent(output: string, label: string): void {
 type ProviderStatusWithPlan = EnvironmentStatus['claude'] & { readonly plan?: string | null };
 
 function makeProvider(
-  id: 'claude' | 'codex' | 'opencode',
+  id: 'claude' | 'codex' | 'opencode' | 'grok',
   opts: {
     installed: boolean;
     version?: string | null;
@@ -100,10 +100,14 @@ function makeProvider(
 /** Canonical not-installed opencode status used as a default in fake envs. */
 const OPENCODE_NOT_INSTALLED = makeProvider('opencode', { installed: false });
 
+/** Canonical not-installed grok status used as a default in fake envs. */
+const GROK_NOT_INSTALLED = makeProvider('grok', { installed: false });
+
 const FAKE_ENV_BOTH_INSTALLED: EnvironmentStatus = {
   claude: makeProvider('claude', { installed: true, version: '1.2.3', authenticated: true }),
   codex: makeProvider('codex', { installed: true, version: '4.5.6', authenticated: true }),
   opencode: OPENCODE_NOT_INSTALLED,
+  grok: GROK_NOT_INSTALLED,
   hasAnyProvider: true,
   platform: 'linux',
 };
@@ -112,6 +116,7 @@ const FAKE_ENV_NONE_INSTALLED: EnvironmentStatus = {
   claude: makeProvider('claude', { installed: false }),
   codex: makeProvider('codex', { installed: false }),
   opencode: OPENCODE_NOT_INSTALLED,
+  grok: GROK_NOT_INSTALLED,
   hasAnyProvider: false,
   platform: 'linux',
 };
@@ -120,6 +125,7 @@ const FAKE_ENV_MIXED: EnvironmentStatus = {
   claude: makeProvider('claude', { installed: true, version: '2.0.0', authenticated: true }),
   codex: makeProvider('codex', { installed: false }),
   opencode: OPENCODE_NOT_INSTALLED,
+  grok: GROK_NOT_INSTALLED,
   hasAnyProvider: true,
   platform: 'win32',
 };
@@ -129,6 +135,7 @@ const FAKE_ENV_INSTALLED_NOT_AUTHED: EnvironmentStatus = {
   claude: makeProvider('claude', { installed: true, version: '1.0.0', authenticated: false }),
   codex: makeProvider('codex', { installed: true, version: '4.0.0', authenticated: true }),
   opencode: OPENCODE_NOT_INSTALLED,
+  grok: GROK_NOT_INSTALLED,
   hasAnyProvider: true,
   platform: 'linux',
 };
@@ -138,6 +145,7 @@ const FAKE_ENV_WITH_PLANS: EnvironmentStatus = {
   claude: makeProvider('claude', { installed: true, version: '1.0.0', authenticated: true, plan: 'Max x5' }),
   codex: makeProvider('codex', { installed: true, version: '4.0.0', authenticated: true, plan: 'Plus' }),
   opencode: OPENCODE_NOT_INSTALLED,
+  grok: GROK_NOT_INSTALLED,
   hasAnyProvider: true,
   platform: 'linux',
 };
@@ -147,6 +155,7 @@ const FAKE_ENV_NO_PLAN: EnvironmentStatus = {
   claude: makeProvider('claude', { installed: true, version: '1.0.0', authenticated: true, plan: null }),
   codex: makeProvider('codex', { installed: true, version: '4.0.0', authenticated: true, plan: null }),
   opencode: OPENCODE_NOT_INSTALLED,
+  grok: GROK_NOT_INSTALLED,
   hasAnyProvider: true,
   platform: 'linux',
 };
@@ -594,6 +603,7 @@ describe('hasAnyAuthenticatedProvider', () => {
       claude: makeProvider('claude', { installed: true, authenticated: false }),
       codex: makeProvider('codex', { installed: true, authenticated: false }),
       opencode: OPENCODE_NOT_INSTALLED,
+      grok: GROK_NOT_INSTALLED,
       hasAnyProvider: true,
       platform: 'linux',
     };
@@ -605,6 +615,7 @@ describe('hasAnyAuthenticatedProvider', () => {
       claude: makeProvider('claude', { installed: false }),
       codex: makeProvider('codex', { installed: false }),
       opencode: makeProvider('opencode', { installed: true, authenticated: true }),
+      grok: GROK_NOT_INSTALLED,
       hasAnyProvider: true,
       platform: 'linux',
     };

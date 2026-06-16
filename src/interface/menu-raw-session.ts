@@ -58,9 +58,10 @@ export async function runRawProviderSession(
   inkReadKey?: () => Promise<string>,
 ): Promise<void> {
   const choices: Array<{ label: string; bin: string }> = [];
-  for (const ps of [env.claude, env.codex, env.opencode]) {
+  for (const ps of [env.claude, env.codex, env.opencode, env.grok]) {
     if (!ps.installed) continue;
-    const label = ps.id === 'claude' ? 'Claude' : ps.id === 'codex' ? 'Codex' : 'opencode';
+    const label =
+      ps.id === 'claude' ? 'Claude' : ps.id === 'codex' ? 'Codex' : ps.id === 'grok' ? 'Grok' : 'opencode';
     choices.push({ label, bin: ps.binaryPath ?? ps.id });
   }
 

@@ -330,6 +330,7 @@ describe('runRawProviderSession — Enter cancels with visible feedback', () => 
       claude: provider({ id: 'claude' }),
       codex: provider({ id: 'codex', installed: false, binaryPath: null }),
       opencode: provider({ id: 'opencode', installed: false, binaryPath: null }),
+      grok: provider({ id: 'grok', installed: false, binaryPath: null }),
       hasAnyProvider: true,
       platform: process.platform,
     };

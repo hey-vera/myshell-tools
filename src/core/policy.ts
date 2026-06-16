@@ -45,9 +45,9 @@ export const DEFAULT_POLICY: Policy = {
   // opencode is listed last — it is a fallback / explicit-choice provider and
   // must NOT displace claude or codex when those are available.
   providerOrderByTier: {
-    worker: ['claude', 'codex', 'opencode'],
-    ic: ['claude', 'codex', 'opencode'],
-    manager: ['claude', 'codex', 'opencode'],
+    worker: ['claude', 'codex', 'opencode', 'grok'],
+    ic: ['claude', 'codex', 'opencode', 'grok'],
+    manager: ['claude', 'codex', 'opencode', 'grok'],
   },
 
   // Review policy: 'auto' = current default behaviour (review on high/critical or needsReview).
@@ -389,9 +389,9 @@ export const POLICY_PRESETS: Record<Mode, Policy> = {
       critical: 0.65,
     },
     providerOrderByTier: {
-      worker: ['claude', 'codex', 'opencode'],
-      ic: ['claude', 'codex', 'opencode'],
-      manager: ['claude', 'codex', 'opencode'],
+      worker: ['claude', 'codex', 'opencode', 'grok'],
+      ic: ['claude', 'codex', 'opencode', 'grok'],
+      manager: ['claude', 'codex', 'opencode', 'grok'],
     },
     // Only trigger cross-vendor review for critical-risk tasks to halve spend.
     reviewPolicy: 'critical-only',
@@ -418,9 +418,9 @@ export const POLICY_PRESETS: Record<Mode, Policy> = {
       critical: 0.92,
     },
     providerOrderByTier: {
-      worker: ['claude', 'codex', 'opencode'],
-      ic: ['claude', 'codex', 'opencode'],
-      manager: ['claude', 'codex', 'opencode'],
+      worker: ['claude', 'codex', 'opencode', 'grok'],
+      ic: ['claude', 'codex', 'opencode', 'grok'],
+      manager: ['claude', 'codex', 'opencode', 'grok'],
     },
     // Review on high/critical risk or model-requested needsReview (most thorough).
     reviewPolicy: 'auto',

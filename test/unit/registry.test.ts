@@ -17,8 +17,9 @@ function makeEnv(overrides: Partial<{
   claudeInstalled: boolean;
   codexInstalled: boolean;
   opencodeInstalled: boolean;
+  grokInstalled: boolean;
 }>): EnvironmentStatus {
-  const { claudeInstalled = false, codexInstalled = false, opencodeInstalled = false } = overrides;
+  const { claudeInstalled = false, codexInstalled = false, opencodeInstalled = false, grokInstalled = false } = overrides;
   const base = {
     installed: false,
     version: null,
@@ -31,7 +32,8 @@ function makeEnv(overrides: Partial<{
     claude: { ...base, id: 'claude', installed: claudeInstalled },
     codex: { ...base, id: 'codex', installed: codexInstalled },
     opencode: { ...base, id: 'opencode', installed: opencodeInstalled },
-    hasAnyProvider: claudeInstalled || codexInstalled || opencodeInstalled,
+    grok: { ...base, id: 'grok', installed: grokInstalled },
+    hasAnyProvider: claudeInstalled || codexInstalled || opencodeInstalled || grokInstalled,
     platform: process.platform,
   };
 }
@@ -76,6 +78,13 @@ describe('buildProviders — synchronous, accepts pre-detected env', () => {
     assert.ok('claude' in providers);
     assert.ok('codex' in providers);
     assert.ok('opencode' in providers);
+  });
+
+  it('returns grok when grok is installed', () => {
+    const env = makeEnv({ grokInstalled: true });
+    const providers = buildProviders('/fake/cwd', env);
+    assert.ok('grok' in providers);
+    assert.ok(!('claude' in providers));
   });
 
   it('buildProviders is synchronous (returns plain object, not a Promise)', () => {

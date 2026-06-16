@@ -43,7 +43,7 @@ describe('PRICING_TABLE integrity', () => {
   });
 
   it('every model belongs to a known provider', () => {
-    const knownProviders = new Set(['claude', 'codex', 'opencode']);
+    const knownProviders = new Set(['claude', 'codex', 'opencode', 'grok']);
     for (const m of PRICING_TABLE.models) {
       assert.ok(
         knownProviders.has(m.provider),

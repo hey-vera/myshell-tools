@@ -27,7 +27,7 @@ import type { OutputSink } from '../../src/interface/render.ts';
 // ---------------------------------------------------------------------------
 
 function makeProvider(
-  id: 'claude' | 'codex' | 'opencode',
+  id: 'claude' | 'codex' | 'opencode' | 'grok',
   opts: { installed?: boolean; authenticated?: boolean } = {},
 ): ProviderStatus {
   return {
@@ -45,6 +45,7 @@ const ENV_NONE_AUTHED: EnvironmentStatus = {
   claude: makeProvider('claude', { installed: true, authenticated: false }),
   codex: makeProvider('codex', { installed: true, authenticated: false }),
   opencode: makeProvider('opencode', { installed: false }),
+  grok: makeProvider('grok', { installed: false }),
   hasAnyProvider: true,
   platform: 'linux',
 };
@@ -53,6 +54,7 @@ const ENV_CLAUDE_AUTHED: EnvironmentStatus = {
   claude: makeProvider('claude', { installed: true, authenticated: true }),
   codex: makeProvider('codex', { installed: true, authenticated: false }),
   opencode: makeProvider('opencode', { installed: false }),
+  grok: makeProvider('grok', { installed: false }),
   hasAnyProvider: true,
   platform: 'linux',
 };
@@ -169,6 +171,7 @@ function envWithClaudePlan(plan: string | null): EnvironmentStatus {
     claude: { ...makeProvider('claude', { installed: true, authenticated: true }), plan },
     codex: makeProvider('codex', { installed: true, authenticated: false }),
     opencode: makeProvider('opencode', { installed: false }),
+    grok: makeProvider('grok', { installed: false }),
     hasAnyProvider: true,
     platform: 'linux',
   };

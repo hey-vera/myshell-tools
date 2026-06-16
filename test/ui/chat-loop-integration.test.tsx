@@ -115,6 +115,7 @@ const FAKE_ENV: EnvironmentStatus = {
   claude: { id: 'claude', installed: true, version: '1.0.0', authenticated: true, plan: null, binaryPath: null, availableModels: ['model-a'] },
   codex: { id: 'codex', installed: false, version: null, authenticated: false, plan: null, binaryPath: null, availableModels: [] },
   opencode: { id: 'opencode', installed: false, version: null, authenticated: false, plan: null, binaryPath: null, availableModels: [] },
+  grok: { id: 'grok', installed: false, version: null, authenticated: false, plan: null, binaryPath: null, availableModels: [] },
   hasAnyProvider: true,
   platform: 'linux',
 };

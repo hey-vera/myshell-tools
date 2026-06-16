@@ -60,6 +60,8 @@ const LOGIN_COMMAND: Record<ProviderId, { readonly bin: string; readonly args: r
   // choose any provider — OpenCode Zen (recommended) or one they have access to.
   // opencode stores the chosen credential itself; myshell never sees it.
   opencode: { bin: 'opencode', args: ['auth', 'login'] },
+  // grok stores the OAuth subscription credential in ~/.grok/; myshell never sees it.
+  grok: { bin: 'grok', args: ['login', '--oauth'] },
 };
 
 /**
@@ -110,6 +112,17 @@ const LOGIN_CODE_COMMAND: Record<
       '  and from that one credential opencode brokers many models (e.g. Kimi via\n' +
       '  opencode-go).',
   },
+  grok: {
+    bin: 'grok',
+    // Device-code flow for headless/remote shells where no local browser opens.
+    // grok stores the OAuth subscription credential in ~/.grok/; myshell never sees it.
+    args: ['login', '--device-auth'],
+    guidance:
+      'A URL and a one-time code will appear below.\n' +
+      '  1. On any device, open the URL.\n' +
+      '  2. Enter the code shown and authorize your X / SuperGrok account.\n' +
+      '  3. Sign-in completes here automatically once authorized.',
+  },
 };
 
 export function getLoginCommand(
@@ -121,7 +134,7 @@ export function getLoginCommand(
 }
 
 export function isProviderId(value: string): value is ProviderId {
-  return value === 'claude' || value === 'codex' || value === 'opencode';
+  return value === 'claude' || value === 'codex' || value === 'opencode' || value === 'grok';
 }
 
 /**
@@ -304,12 +317,12 @@ export async function runLogin(
   let targets: ProviderId[];
   if (providerArg !== undefined) {
     if (!isProviderId(providerArg)) {
-      out.write(red(`Unknown provider "${providerArg}". Use: claude, codex, or opencode.\n`, out.color));
+      out.write(red(`Unknown provider "${providerArg}". Use: claude, codex, opencode, or grok.\n`, out.color));
       return 1;
     }
     targets = [providerArg];
   } else {
-    targets = ['claude', 'codex', 'opencode'];
+    targets = ['claude', 'codex', 'opencode', 'grok'];
   }
 
   const method = resolveLoginMethod(opts?.method, process.env, process.platform);

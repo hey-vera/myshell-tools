@@ -29,6 +29,7 @@ export const PROVIDER_LABEL: Record<string, string> = {
   claude: 'Claude',
   codex: 'Codex',
   opencode: 'OpenCode',
+  grok: 'Grok',
 };
 
 export type ResolvedIntensity =
@@ -79,7 +80,7 @@ interface ProviderPlanInfo {
  * decision and its reason account for "all of them, and what kind".
  */
 function authedProviderPlans(env: EnvironmentStatus): ProviderPlanInfo[] {
-  return [env.claude, env.codex, env.opencode]
+  return [env.claude, env.codex, env.opencode, env.grok]
     .filter((p) => p.authenticated)
     .map((p) => ({
       label: PROVIDER_LABEL[p.id] ?? p.id,
@@ -88,7 +89,7 @@ function authedProviderPlans(env: EnvironmentStatus): ProviderPlanInfo[] {
 }
 
 export function subscriptionInventoryFromEnvironment(env: EnvironmentStatus): CapacityWeight[] {
-  return [env.claude, env.codex, env.opencode]
+  return [env.claude, env.codex, env.opencode, env.grok]
     .filter((p) => p.authenticated)
     .map((p) => classifyCapacity(p.id, p.plan));
 }
@@ -103,7 +104,7 @@ export function resolveAutoMode(env: EnvironmentStatus): Mode {
 }
 
 export function hasAuthenticatedProvider(env: EnvironmentStatus): boolean {
-  return env.claude.authenticated || env.codex.authenticated || env.opencode.authenticated;
+  return env.claude.authenticated || env.codex.authenticated || env.opencode.authenticated || env.grok.authenticated;
 }
 
 /**

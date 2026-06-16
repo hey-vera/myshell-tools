@@ -83,6 +83,7 @@ const PROVIDER_LABEL: Record<string, string> = {
   claude: 'Claude',
   codex: 'Codex',
   opencode: 'OpenCode',
+  grok: 'Grok',
 };
 
 /**
@@ -108,7 +109,7 @@ async function gatherCapabilitySummary(
     // self-awareness summary (Stage 1). Do NOT recompute either separately.
     const { registry } = await refreshCapabilities(
       {
-        providers: [env.claude, env.codex, env.opencode].map((p) => ({
+        providers: [env.claude, env.codex, env.opencode, env.grok].map((p) => ({
           provider: p.id,
           authenticated: p.authenticated,
           availableModels: p.availableModels,
@@ -123,6 +124,7 @@ async function gatherCapabilitySummary(
         claude: env.claude.authenticated,
         codex: env.codex.authenticated,
         opencode: env.opencode.authenticated,
+        grok: env.grok.authenticated,
       },
       (p) => PROVIDER_LABEL[p] ?? p,
     );
@@ -233,6 +235,9 @@ function buildDeps(
   if (env.opencode.installed && env.opencode.availableModels.length > 0) {
     availableModels['opencode'] = env.opencode.availableModels;
   }
+  if (env.grok.installed && env.grok.availableModels.length > 0) {
+    availableModels['grok'] = env.grok.availableModels;
+  }
 
   // Collect authenticated providers so route() can prefer signed-in providers
   // over signed-out ones, preventing wasted attempts on unauthenticated installs.
@@ -240,6 +245,7 @@ function buildDeps(
   if (env.claude.authenticated) authenticatedProviders.push('claude');
   if (env.codex.authenticated) authenticatedProviders.push('codex');
   if (env.opencode.authenticated) authenticatedProviders.push('opencode');
+  if (env.grok.authenticated) authenticatedProviders.push('grok');
 
   // Observed plan per authenticated provider — snapshot for adaptive flagship
   // admission (free-plan veto). Never fabricated (null plan → confidence 'none').
@@ -247,6 +253,7 @@ function buildDeps(
   if (env.claude.authenticated) planInfos['claude'] = classifyPlan(env.claude.plan);
   if (env.codex.authenticated) planInfos['codex'] = classifyPlan(env.codex.plan);
   if (env.opencode.authenticated) planInfos['opencode'] = classifyPlan(env.opencode.plan);
+  if (env.grok.authenticated) planInfos['grok'] = classifyPlan(env.grok.plan);
 
   return {
     clock: systemClock,
@@ -432,7 +439,7 @@ async function main(): Promise<void> {
     }
     const [env, config] = await Promise.all([detectEnvironment(), loadConfig()]);
     const resolvedMode = config.mode ?? autoModeForPlans(
-      [env.claude, env.codex, env.opencode]
+      [env.claude, env.codex, env.opencode, env.grok]
         .filter((p) => p.authenticated)
         .map((p) => p.plan),
     );
@@ -442,10 +449,12 @@ async function main(): Promise<void> {
     if (env.claude.authenticated) authenticatedProviders.push('claude');
     if (env.codex.authenticated) authenticatedProviders.push('codex');
     if (env.opencode.authenticated) authenticatedProviders.push('opencode');
+    if (env.grok.authenticated) authenticatedProviders.push('grok');
     const availableModels: Partial<Record<import('./providers/port.js').ProviderId, readonly string[]>> = {};
     if (env.claude.installed && env.claude.availableModels.length > 0) availableModels['claude'] = env.claude.availableModels;
     if (env.codex.installed && env.codex.availableModels.length > 0) availableModels['codex'] = env.codex.availableModels;
     if (env.opencode.installed && env.opencode.availableModels.length > 0) availableModels['opencode'] = env.opencode.availableModels;
+    if (env.grok.installed && env.grok.availableModels.length > 0) availableModels['grok'] = env.grok.availableModels;
     const code = await runEvalCommand(
       evalArgs,
       {
@@ -493,7 +502,7 @@ async function main(): Promise<void> {
     const [env, config] = await Promise.all([detectEnvironment(), loadConfig()]);
     // Resolve mode across all authenticated providers when mode is unset (auto).
     const resolvedMode = config.mode ?? autoModeForPlans(
-      [env.claude, env.codex, env.opencode]
+      [env.claude, env.codex, env.opencode, env.grok]
         .filter((p) => p.authenticated)
         .map((p) => p.plan),
     );
@@ -506,7 +515,7 @@ async function main(): Promise<void> {
       config.mode === undefined
         ? tunePolicyForMaxSubTier(
             POLICY_PRESETS[resolvedMode],
-            [env.claude, env.codex, env.opencode]
+            [env.claude, env.codex, env.opencode, env.grok]
               .filter((p) => p.authenticated)
               .map((p) => p.plan),
           )
@@ -591,7 +600,7 @@ async function main(): Promise<void> {
     const capability = await gatherCapabilitySummary(env, cwd);
     const toolStateContext = buildToolStateContext({
       version,
-      providers: [env.claude, env.codex, env.opencode].map(
+      providers: [env.claude, env.codex, env.opencode, env.grok].map(
         (p): ToolStateProvider => ({
           label: PROVIDER_LABEL[p.id] ?? p.id,
           installed: p.installed,
@@ -766,7 +775,7 @@ async function main(): Promise<void> {
     spinner.start('Detecting providers…');
     const [env, config] = await Promise.all([detectEnvironment(), startupConfigPromise ?? loadConfig()]);
     const replMode = config.mode ?? autoModeForPlans(
-      [env.claude, env.codex, env.opencode]
+      [env.claude, env.codex, env.opencode, env.grok]
         .filter((p) => p.authenticated)
         .map((p) => p.plan),
     );
@@ -774,7 +783,7 @@ async function main(): Promise<void> {
       config.mode === undefined
         ? tunePolicyForMaxSubTier(
             POLICY_PRESETS[replMode],
-            [env.claude, env.codex, env.opencode]
+            [env.claude, env.codex, env.opencode, env.grok]
               .filter((p) => p.authenticated)
               .map((p) => p.plan),
           )
@@ -811,7 +820,7 @@ async function main(): Promise<void> {
     const replCapability = await gatherCapabilitySummary(env, cwd);
     const replToolStateContext = buildToolStateContext({
       version,
-      providers: [env.claude, env.codex, env.opencode].map(
+      providers: [env.claude, env.codex, env.opencode, env.grok].map(
         (p): ToolStateProvider => ({
           label: PROVIDER_LABEL[p.id] ?? p.id,
           installed: p.installed,

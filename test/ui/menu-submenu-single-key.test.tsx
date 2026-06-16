@@ -49,7 +49,7 @@ function makeOut(): { sink: OutputSink; written: string[] } {
 }
 
 function makeEnv(): EnvironmentStatus {
-  const ps = (id: 'claude' | 'codex' | 'opencode'): EnvironmentStatus['claude'] => ({
+  const ps = (id: 'claude' | 'codex' | 'opencode' | 'grok'): EnvironmentStatus['claude'] => ({
     id,
     installed: true,
     authenticated: true,
@@ -58,7 +58,7 @@ function makeEnv(): EnvironmentStatus {
     binaryPath: null,
     availableModels: ['model-a'],
   });
-  return { claude: ps('claude'), codex: ps('codex'), opencode: ps('opencode') } as EnvironmentStatus;
+  return { claude: ps('claude'), codex: ps('codex'), opencode: ps('opencode'), grok: ps('grok') } as EnvironmentStatus;
 }
 
 /**

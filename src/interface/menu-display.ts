@@ -172,7 +172,7 @@ export function isRunningUnderNpx(
  * silenced.
  */
 export function hasAnyAuthenticatedProvider(env: EnvironmentStatus): boolean {
-  return env.claude.authenticated || env.codex.authenticated || env.opencode.authenticated;
+  return env.claude.authenticated || env.codex.authenticated || env.opencode.authenticated || env.grok.authenticated;
 }
 
 export function renderHeaderLines(
@@ -207,6 +207,18 @@ export function renderHeaderLines(
     } else {
       // Concise status only — the [o] action lives in the menu below, so repeating
       // it here is redundant (and overflowed the box).
+      lines.push(`${ps.id}: not signed in${planSuffix}`);
+    }
+  }
+
+  // grok: only show when installed (neutral-by-default; ordered last in policy).
+  // Auth is probed via `grok models`; creds live in ~/.grok/ and are owned by grok.
+  if (env.grok.installed) {
+    const ps = env.grok;
+    const planSuffix = ps.plan != null ? ` (${ps.plan})` : '';
+    if (ps.authenticated) {
+      lines.push(`${ps.id}: ready${planSuffix}`);
+    } else {
       lines.push(`${ps.id}: not signed in${planSuffix}`);
     }
   }

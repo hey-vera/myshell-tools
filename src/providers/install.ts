@@ -25,6 +25,7 @@ const PACKAGES: Record<ProviderId, string> = {
   claude: '@anthropic-ai/claude-code',
   codex: '@openai/codex',
   opencode: 'opencode-ai',
+  grok: '@xai-official/grok',
 };
 
 // ---------------------------------------------------------------------------

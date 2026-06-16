@@ -8,7 +8,7 @@ import type { EnvironmentStatus } from '../../src/providers/detect.ts';
 type ProviderStatusWithPlan = EnvironmentStatus['claude'] & { readonly plan?: string | null };
 
 function makeProvider(
-  id: 'claude' | 'codex' | 'opencode',
+  id: 'claude' | 'codex' | 'opencode' | 'grok',
   opts: {
     installed?: boolean;
     authenticated?: boolean;
@@ -32,6 +32,7 @@ function makeEnv(overrides: Partial<EnvironmentStatus> = {}): EnvironmentStatus 
     claude: makeProvider('claude'),
     codex: makeProvider('codex'),
     opencode: makeProvider('opencode', { installed: false }),
+    grok: makeProvider('grok', { installed: false }),
     hasAnyProvider: true,
     platform: 'linux',
     ...overrides,

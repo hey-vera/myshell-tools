@@ -113,7 +113,7 @@ export function buildDoctorReport(
   // ---- Providers -------------------------------------------------------------
   lines.push(bold('Providers', color));
 
-  for (const ps of [env.claude, env.codex, env.opencode]) {
+  for (const ps of [env.claude, env.codex, env.opencode, env.grok]) {
     if (ps.installed) {
       const versionStr = ps.version !== null ? ps.version : 'unknown';
       lines.push(
@@ -171,7 +171,7 @@ export function buildDoctorReport(
   } else {
     lines.push(
       red('No providers found.', color) +
-        ' Install claude, codex, or opencode to use myshell-tools.',
+        ' Install claude, codex, opencode, or grok to use myshell-tools.',
     );
   }
 
@@ -179,7 +179,7 @@ export function buildDoctorReport(
 }
 
 function hasAuthenticatedProvider(env: EnvironmentStatus): boolean {
-  return env.claude.authenticated || env.codex.authenticated || env.opencode.authenticated;
+  return env.claude.authenticated || env.codex.authenticated || env.opencode.authenticated || env.grok.authenticated;
 }
 
 // ---------------------------------------------------------------------------

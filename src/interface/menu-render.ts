@@ -158,10 +158,14 @@ export async function renderMainScreen(
   const opencodeLabel = mutableCtx.env.opencode.installed
     ? 'Login opencode'
     : 'Login opencode (installs it first)';
+  const grokLabel = mutableCtx.env.grok.installed
+    ? 'Login grok'
+    : 'Login grok (installs it first)';
   const authEntries: Array<{ key: string; label: string; section: string }> = [
     { key: 'j', label: 'Login Claude', section: 'Auth' },
     { key: 'k', label: 'Login Codex', section: 'Auth' },
     { key: 'o', label: opencodeLabel, section: 'Auth' },
+    { key: 'p', label: grokLabel, section: 'Auth' },
   ];
 
   // [u] Update now — shown only when a newer version is actually available AND

@@ -112,11 +112,28 @@ export async function runWelcome(
     // No nag on skip — opencode is always discoverable via [o] in the main menu.
   }
 
+  // ---- Offer grok (optional xAI Grok subscription gateway) -----------------
+  // Enter = yes, consistent with the optional-provider install prompts above.
+  if (!env.grok.installed) {
+    out.write(`Add grok? (optional — connect an X / SuperGrok account) ${yesNoHint('yes', out.color)} `);
+    if (await confirm(true)) {
+      const resumeStdin = suspendStdin?.();
+      let ok = false;
+      try {
+        ok = await installProviderFn('grok', out);
+      } finally {
+        resumeStdin?.();
+      }
+      if (ok) {
+        env = await detectEnvironmentFn();
+      }
+    }
+  }
+
   // ---- Offer sign-in for installed-but-unauthenticated providers -----------
-  // opencode now reports authenticated from a real credential probe, so a freshly
-  // installed opencode (0 credentials) is offered sign-in here too. The default
-  // login connects the OpenCode account gateway directly.
-  for (const id of ['claude', 'codex', 'opencode'] as const) {
+  // grok now reports authenticated from a real credential probe (`grok models`),
+  // so a freshly installed grok is offered sign-in here too.
+  for (const id of ['claude', 'codex', 'opencode', 'grok'] as const) {
     const ps = env[id];
     if (!ps.installed || ps.authenticated) continue;
 

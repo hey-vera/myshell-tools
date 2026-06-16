@@ -15,7 +15,7 @@
 // ---------------------------------------------------------------------------
 
 export interface ModelPricing {
-  readonly provider: 'claude' | 'codex' | 'opencode';
+  readonly provider: 'claude' | 'codex' | 'opencode' | 'grok';
   readonly model: string; // full model ID
   readonly aliases: readonly string[]; // e.g. ['opus', 'opus-4.7']
   readonly tier: 'worker' | 'ic' | 'manager';
@@ -149,6 +149,48 @@ export const PRICING_TABLE: PricingTable = {
       provider: 'opencode',
       model: 'opencode',
       aliases: ['opencode-manager', 'big-pickle'],
+      tier: 'manager',
+      inputPer1M: 0,
+      outputPer1M: 0,
+      contextWindow: 128_000,
+    },
+
+    // ---- grok --------------------------------------------------------------
+    // grok is subscription-OAuth only (SuperGrok / X Premium+). Per-call cost is
+    // provisional: treat it as included in the subscription ($0) unless live usage
+    // shows metered billing. Default model is grok-build (alias of grok-4.3 per
+    // `grok models`). Tiers are provisional pending G2 live verification.
+    {
+      provider: 'grok',
+      model: 'grok-build',
+      aliases: ['grok-4.3', 'grok-build'],
+      tier: 'worker',
+      inputPer1M: 0,
+      outputPer1M: 0,
+      contextWindow: 128_000,
+    },
+    {
+      provider: 'grok',
+      model: 'grok-build',
+      aliases: ['grok-4.3', 'grok-build'],
+      tier: 'ic',
+      inputPer1M: 0,
+      outputPer1M: 0,
+      contextWindow: 128_000,
+    },
+    {
+      provider: 'grok',
+      model: 'grok-build',
+      aliases: ['grok-4.3', 'grok-build'],
+      tier: 'manager',
+      inputPer1M: 0,
+      outputPer1M: 0,
+      contextWindow: 128_000,
+    },
+    {
+      provider: 'grok',
+      model: 'grok-4.3',
+      aliases: ['grok-build', 'grok4.3'],
       tier: 'manager',
       inputPer1M: 0,
       outputPer1M: 0,

@@ -42,7 +42,7 @@ import {
 // ---------------------------------------------------------------------------
 
 export interface ProviderStatus {
-  readonly id: 'claude' | 'codex' | 'opencode';
+  readonly id: 'claude' | 'codex' | 'opencode' | 'grok';
   readonly installed: boolean;
   readonly version: string | null;
   readonly authenticated: boolean;
@@ -55,6 +55,7 @@ export interface EnvironmentStatus {
   readonly claude: ProviderStatus;
   readonly codex: ProviderStatus;
   readonly opencode: ProviderStatus;
+  readonly grok: ProviderStatus;
   readonly hasAnyProvider: boolean;
   readonly platform: NodeJS.Platform;
 }
@@ -63,7 +64,7 @@ export interface EnvironmentStatus {
 // Internal factory
 // ---------------------------------------------------------------------------
 
-function notDetected(id: 'claude' | 'codex' | 'opencode'): ProviderStatus {
+function notDetected(id: ProviderStatus['id']): ProviderStatus {
   return {
     id,
     installed: false,
@@ -468,7 +469,7 @@ export function rateLimitTierFromCreds(rawCredsJson: string): string | null {
  * ChatGPT plan claim, which opencodePlanFromAuthJson surfaces.
  */
 export async function detectProvider(
-  id: 'claude' | 'codex' | 'opencode',
+  id: ProviderStatus['id'],
   opts: {
     env?: NodeJS.ProcessEnv;
     cwd?: string;
@@ -603,6 +604,11 @@ export async function detectProvider(
   // opencode: delegate to the dedicated helper.
   if (id === 'opencode') {
     return detectOpencodeProvider(baseEnv, cwd);
+  }
+
+  // grok: delegate to the dedicated helper.
+  if (id === 'grok') {
+    return detectGrokProvider(baseEnv, cwd);
   }
 
   // codex: run `codex --version` to probe installation, then `codex login status`
@@ -899,22 +905,151 @@ async function detectOpencodeProvider(
 }
 
 /**
- * Detect the full environment — all three providers — in parallel.
+ * Parse the output of `grok models` into an auth verdict.
+ *
+ * Real output shape (exit code 0, unauthenticated):
+ *   You are not authenticated.
+ *
+ * Real output shape (exit code 0, authenticated):
+ *   Default model: grok-build
+ *   Available models:
+ *     grok-build
+ *     grok-4.3
+ *     ...
+ *
+ * Authenticated when: exitCode === 0 AND the output does NOT contain the
+ * "not authenticated" substring (case-insensitive). Plan is always null —
+ * `grok models` text exposes no subscription/plan label.
+ * Conservative: on any parse error, authenticated stays false and plan is null.
+ */
+export function parseGrokAuth(
+  stdout: string,
+  _stderr: string,
+  exitCode: number,
+): { authenticated: boolean; plan: string | null } {
+  if (exitCode !== 0) {
+    return { authenticated: false, plan: null };
+  }
+  const haystack = stdout.toLowerCase();
+  const authenticated = !haystack.includes('not authenticated');
+  return { authenticated, plan: null };
+}
+
+/**
+ * Parse `grok models` output into a list of available model ids.
+ *
+ * The command prints a "Available models:" header when authenticated, followed
+ * by one model id per line. We keep only non-empty lines that look like model
+ * ids (alphanumerics, dots, dashes) and ignore the default-model banner.
+ * Tolerant — returns [] on empty/garbage/unauthenticated input. Never throws.
+ *
+ * @param stdout - stdout from `grok models`.
+ */
+export function parseGrokModels(stdout: string): string[] {
+  const lines = stdout.split('\n');
+  let inList = false;
+  const models: string[] = [];
+  for (const raw of lines) {
+    const line = raw.trim();
+    if (line.length === 0) continue;
+    if (/^available models:/i.test(line)) {
+      inList = true;
+      continue;
+    }
+    if (!inList) continue;
+    // Skip decorative bullets/indentation and keep the bare id.
+    const cleaned = line.replace(/^[-*•\s]+/, '').trim();
+    if (/^[\w.:-]+$/.test(cleaned)) {
+      models.push(cleaned);
+    }
+  }
+  return models;
+}
+
+/**
+ * Detect the Grok CLI. `installed` is true when `grok --version` succeeds;
+ * `authenticated` reflects a REAL credential probe — we spawn `grok models` and
+ * treat it as authenticated when the output does not say "not authenticated".
+ * `availableModels` is parsed from the "Available models:" list.
+ *
+ * Auth is exclusively grok's own OAuth subscription flow; this function NEVER
+ * reads or handles a raw API key. Creds live in `~/.grok/` and are owned by grok.
+ */
+async function detectGrokProvider(
+  baseEnv: NodeJS.ProcessEnv = process.env,
+  _cwd: string = process.cwd(),
+): Promise<ProviderStatus> {
+  try {
+    const result = await execa('grok', ['--version'], {
+      reject: false,
+      timeout: 10_000,
+      env: baseEnv,
+    });
+
+    if (result.exitCode === 0) {
+      // Binary present — probe real auth state + model list via `grok models`.
+      let authenticated = false;
+      let plan: string | null = null;
+      let availableModels: string[] = [];
+
+      try {
+        const modelsResult = await execa('grok', ['models'], {
+          reject: false,
+          timeout: 10_000,
+          env: baseEnv,
+        });
+        const parsed = parseGrokAuth(
+          typeof modelsResult.stdout === 'string' ? modelsResult.stdout : '',
+          typeof modelsResult.stderr === 'string' ? modelsResult.stderr : '',
+          modelsResult.exitCode ?? 1,
+        );
+        authenticated = parsed.authenticated;
+        plan = parsed.plan;
+        if (authenticated) {
+          availableModels = parseGrokModels(
+            typeof modelsResult.stdout === 'string' ? modelsResult.stdout : '',
+          );
+        }
+      } catch {
+        // Spawn failure — leave authenticated false and availableModels empty.
+      }
+
+      return {
+        id: 'grok',
+        installed: true,
+        version: (result.stdout as string).trim(),
+        binaryPath: 'grok',
+        authenticated,
+        plan,
+        availableModels,
+      };
+    }
+  } catch {
+    // Binary not found or spawn error — fall through to notDetected
+  }
+
+  return notDetected('grok');
+}
+
+/**
+ * Detect the full environment — all providers — in parallel.
  *
  * Delegates to detectProvider for each provider ID.
  */
 export async function detectEnvironment(): Promise<EnvironmentStatus> {
-  const [claude, codex, opencode] = await Promise.all([
+  const [claude, codex, opencode, grok] = await Promise.all([
     detectProvider('claude'),
     detectProvider('codex'),
     detectProvider('opencode'),
+    detectProvider('grok'),
   ]);
 
   return {
     claude,
     codex,
     opencode,
-    hasAnyProvider: claude.installed || codex.installed || opencode.installed,
+    grok,
+    hasAnyProvider: claude.installed || codex.installed || opencode.installed || grok.installed,
     platform: process.platform,
   };
 }
@@ -922,7 +1057,7 @@ export async function detectEnvironment(): Promise<EnvironmentStatus> {
 /**
  * Return the shell command a user should run to install the given provider.
  */
-export function getInstallCommand(id: 'claude' | 'codex' | 'opencode'): string {
+export function getInstallCommand(id: ProviderStatus['id']): string {
   switch (id) {
     case 'claude':
       return 'npm install -g @anthropic-ai/claude-code';
@@ -930,5 +1065,7 @@ export function getInstallCommand(id: 'claude' | 'codex' | 'opencode'): string {
       return 'npm install -g @openai/codex';
     case 'opencode':
       return 'npm install -g opencode-ai';
+    case 'grok':
+      return 'npm install -g @xai-official/grok';
   }
 }

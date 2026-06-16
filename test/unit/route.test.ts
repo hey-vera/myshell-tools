@@ -27,6 +27,7 @@ const NO_CAP_POLICY: Policy = (() => {
 
 const CLAUDE_ONLY: ProviderId[] = ['claude'];
 const CODEX_ONLY: ProviderId[] = ['codex'];
+const GROK_ONLY: ProviderId[] = ['grok'];
 const BOTH: ProviderId[] = ['claude', 'codex'];
 const NEITHER: ProviderId[] = [];
 
@@ -67,6 +68,13 @@ describe('route — ic tier', () => {
     const decision = route('ic', CLAUDE_ONLY, DEFAULT_POLICY);
     assert.equal(decision.tier, 'ic');
   });
+
+  it('grok-only → grok ic model (grok-build) under default policy', () => {
+    const decision = route('ic', GROK_ONLY, DEFAULT_POLICY);
+    assert.equal(decision.tier, 'ic');
+    assert.equal(decision.provider, 'grok');
+    assert.equal(decision.model, 'grok-build');
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -92,6 +100,13 @@ describe('route — worker tier', () => {
   it('both available → claude first (per policy order)', () => {
     const decision = route('worker', BOTH, DEFAULT_POLICY);
     assert.equal(decision.provider, 'claude');
+  });
+
+  it('grok-only → grok worker model (grok-build)', () => {
+    const decision = route('worker', GROK_ONLY, DEFAULT_POLICY);
+    assert.equal(decision.tier, 'worker');
+    assert.equal(decision.provider, 'grok');
+    assert.equal(decision.model, 'grok-build');
   });
 });
 
@@ -120,8 +135,20 @@ describe('route — manager tier', () => {
     assert.equal(decision.model, 'gpt-5.5');
   });
 
+  it('grok-only → grok manager model (grok-build) under a manager-allowed policy', () => {
+    const decision = route('manager', GROK_ONLY, MANAGER_OK_POLICY);
+    assert.equal(decision.tier, 'manager');
+    assert.equal(decision.provider, 'grok');
+    assert.equal(decision.model, 'grok-build');
+  });
+
   it('both available → claude first (per policy order) under a manager-allowed policy', () => {
     const decision = route('manager', BOTH, MANAGER_OK_POLICY);
+    assert.equal(decision.provider, 'claude');
+  });
+
+  it('all providers available → grok is ordered LAST in policy', () => {
+    const decision = route('manager', ['claude', 'codex', 'opencode', 'grok'], MANAGER_OK_POLICY);
     assert.equal(decision.provider, 'claude');
   });
 

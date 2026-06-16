@@ -454,10 +454,11 @@ async function promptForAuthBeforeChat(
 ): Promise<boolean> {
   if (hasAuthenticatedProvider(mutableCtx.env)) return true;
 
-  const choices: Array<{ key: 'j' | 'k' | 'o'; id: ProviderId; label: string }> = [];
+  const choices: Array<{ key: 'j' | 'k' | 'o' | 'p'; id: ProviderId; label: string }> = [];
   if (mutableCtx.env.claude.installed) choices.push({ key: 'j', id: 'claude', label: 'Claude' });
   if (mutableCtx.env.codex.installed) choices.push({ key: 'k', id: 'codex', label: 'Codex' });
   if (mutableCtx.env.opencode.installed) choices.push({ key: 'o', id: 'opencode', label: 'opencode' });
+  if (mutableCtx.env.grok.installed) choices.push({ key: 'p', id: 'grok', label: 'grok' });
 
   if (choices.length === 0) {
     out.write('\nNo provider signed in yet, and no provider is installed. Install one from the Auth section first.\n');
@@ -667,10 +668,14 @@ export async function runChatLoop(
     if (mutableCtx.env.opencode.installed && mutableCtx.env.opencode.availableModels.length > 0) {
       availableModels['opencode'] = mutableCtx.env.opencode.availableModels;
     }
+    if (mutableCtx.env.grok.installed && mutableCtx.env.grok.availableModels.length > 0) {
+      availableModels['grok'] = mutableCtx.env.grok.availableModels;
+    }
     const authenticatedProviders: ProviderId[] = [];
     if (mutableCtx.env.claude.authenticated) authenticatedProviders.push('claude');
     if (mutableCtx.env.codex.authenticated) authenticatedProviders.push('codex');
     if (mutableCtx.env.opencode.authenticated) authenticatedProviders.push('opencode');
+    if (mutableCtx.env.grok.authenticated) authenticatedProviders.push('grok');
 
     const RECAP_TIMEOUT_MS = 8_000;
     return makeRecapGenerator({
@@ -710,10 +715,14 @@ export async function runChatLoop(
     if (mutableCtx.env.opencode.installed && mutableCtx.env.opencode.availableModels.length > 0) {
       availableModels['opencode'] = mutableCtx.env.opencode.availableModels;
     }
+    if (mutableCtx.env.grok.installed && mutableCtx.env.grok.availableModels.length > 0) {
+      availableModels['grok'] = mutableCtx.env.grok.availableModels;
+    }
     const authenticatedProviders: ProviderId[] = [];
     if (mutableCtx.env.claude.authenticated) authenticatedProviders.push('claude');
     if (mutableCtx.env.codex.authenticated) authenticatedProviders.push('codex');
     if (mutableCtx.env.opencode.authenticated) authenticatedProviders.push('opencode');
+    if (mutableCtx.env.grok.authenticated) authenticatedProviders.push('grok');
 
     // TIGHT cap: this gates goal START, so keep it shorter than the recap's 8s so a
     // slow model can't visibly delay the goal beginning. Fail-soft on timeout.
@@ -757,10 +766,14 @@ export async function runChatLoop(
     if (mutableCtx.env.opencode.installed && mutableCtx.env.opencode.availableModels.length > 0) {
       availableModels['opencode'] = mutableCtx.env.opencode.availableModels;
     }
+    if (mutableCtx.env.grok.installed && mutableCtx.env.grok.availableModels.length > 0) {
+      availableModels['grok'] = mutableCtx.env.grok.availableModels;
+    }
     const authenticatedProviders: ProviderId[] = [];
     if (mutableCtx.env.claude.authenticated) authenticatedProviders.push('claude');
     if (mutableCtx.env.codex.authenticated) authenticatedProviders.push('codex');
     if (mutableCtx.env.opencode.authenticated) authenticatedProviders.push('opencode');
+    if (mutableCtx.env.grok.authenticated) authenticatedProviders.push('grok');
 
     // TIGHT cap: it runs post-turn (non-blocking), so keep it short enough that a
     // slow model never delays the next prompt. Fail-soft on timeout → null.
@@ -796,10 +809,14 @@ export async function runChatLoop(
     if (mutableCtx.env.opencode.installed && mutableCtx.env.opencode.availableModels.length > 0) {
       availableModels['opencode'] = mutableCtx.env.opencode.availableModels;
     }
+    if (mutableCtx.env.grok.installed && mutableCtx.env.grok.availableModels.length > 0) {
+      availableModels['grok'] = mutableCtx.env.grok.availableModels;
+    }
     const authenticatedProviders: ProviderId[] = [];
     if (mutableCtx.env.claude.authenticated) authenticatedProviders.push('claude');
     if (mutableCtx.env.codex.authenticated) authenticatedProviders.push('codex');
     if (mutableCtx.env.opencode.authenticated) authenticatedProviders.push('opencode');
+    if (mutableCtx.env.grok.authenticated) authenticatedProviders.push('grok');
 
     return makeGoalPlannerAttempt({
       providers: ctx.providers,
@@ -841,10 +858,14 @@ export async function runChatLoop(
     if (mutableCtx.env.opencode.installed && mutableCtx.env.opencode.availableModels.length > 0) {
       availableModels['opencode'] = mutableCtx.env.opencode.availableModels;
     }
+    if (mutableCtx.env.grok.installed && mutableCtx.env.grok.availableModels.length > 0) {
+      availableModels['grok'] = mutableCtx.env.grok.availableModels;
+    }
     const authenticatedProviders: ProviderId[] = [];
     if (mutableCtx.env.claude.authenticated) authenticatedProviders.push('claude');
     if (mutableCtx.env.codex.authenticated) authenticatedProviders.push('codex');
     if (mutableCtx.env.opencode.authenticated) authenticatedProviders.push('opencode');
+    if (mutableCtx.env.grok.authenticated) authenticatedProviders.push('grok');
 
     // TIGHT cap: it runs inside the manager cycle (gated + bounded per activation),
     // so keep it short enough that a slow model never stalls execution. Fail-soft
@@ -893,10 +914,14 @@ export async function runChatLoop(
     if (mutableCtx.env.opencode.installed && mutableCtx.env.opencode.availableModels.length > 0) {
       availableModels['opencode'] = mutableCtx.env.opencode.availableModels;
     }
+    if (mutableCtx.env.grok.installed && mutableCtx.env.grok.availableModels.length > 0) {
+      availableModels['grok'] = mutableCtx.env.grok.availableModels;
+    }
     const authenticatedProviders: ProviderId[] = [];
     if (mutableCtx.env.claude.authenticated) authenticatedProviders.push('claude');
     if (mutableCtx.env.codex.authenticated) authenticatedProviders.push('codex');
     if (mutableCtx.env.opencode.authenticated) authenticatedProviders.push('opencode');
+    if (mutableCtx.env.grok.authenticated) authenticatedProviders.push('grok');
     // The BOUNDED map-grounded pass (understanding.ts) reads at most a couple of
     // files and reasons primarily from the repo orientation. Caller picks the budget:
     // the CACHE-AHEAD warm runs in the BACKGROUND (never blocks a turn), so it gets a
@@ -955,6 +980,7 @@ export async function runChatLoop(
             mutableCtx.env.claude,
             mutableCtx.env.codex,
             mutableCtx.env.opencode,
+            mutableCtx.env.grok,
           ].map((p) => ({
             provider: p.id,
             authenticated: p.authenticated,
@@ -971,6 +997,7 @@ export async function runChatLoop(
           claude: mutableCtx.env.claude.authenticated,
           codex: mutableCtx.env.codex.authenticated,
           opencode: mutableCtx.env.opencode.authenticated,
+          grok: mutableCtx.env.grok.authenticated,
         },
         (p) => PROVIDER_LABEL[p] ?? p,
       );
@@ -1492,7 +1519,7 @@ export async function runChatLoop(
       providerCooldownUntil.set(id, cooldownExpiry(now));
     }
     // Be legible: if another signed-in provider can absorb the load, say so.
-    const others = [mutableCtx.env.claude, mutableCtx.env.codex, mutableCtx.env.opencode].filter(
+    const others = [mutableCtx.env.claude, mutableCtx.env.codex, mutableCtx.env.opencode, mutableCtx.env.grok].filter(
       (p) => p.authenticated && !throttled.has(p.id),
     );
     if (newlyCooled.length > 0 && others.length > 0) {
@@ -1842,7 +1869,7 @@ export async function runChatLoop(
         mutableCtx.config.mode === undefined
           ? tunePolicyForMaxSubTier(
               POLICY_PRESETS[effectiveMode],
-              [mutableCtx.env.claude, mutableCtx.env.codex, mutableCtx.env.opencode]
+              [mutableCtx.env.claude, mutableCtx.env.codex, mutableCtx.env.opencode, mutableCtx.env.grok]
                 .filter((p) => p.authenticated)
                 .map((p) => p.plan),
             )
@@ -1985,6 +2012,9 @@ export async function runChatLoop(
         if (mutableCtx.env.opencode.installed && mutableCtx.env.opencode.availableModels.length > 0) {
           availableModels['opencode'] = mutableCtx.env.opencode.availableModels;
         }
+        if (mutableCtx.env.grok.installed && mutableCtx.env.grok.availableModels.length > 0) {
+          availableModels['grok'] = mutableCtx.env.grok.availableModels;
+        }
 
         // Collect authenticated providers from the live env so route() prefers
         // signed-in providers over signed-out ones. Uses mutableCtx.env so
@@ -1993,6 +2023,7 @@ export async function runChatLoop(
         if (mutableCtx.env.claude.authenticated) authedAll.push('claude');
         if (mutableCtx.env.codex.authenticated) authedAll.push('codex');
         if (mutableCtx.env.opencode.authenticated) authedAll.push('opencode');
+        if (mutableCtx.env.grok.authenticated) authedAll.push('grok');
 
         // Bias away from providers that recently hit a rate limit this session,
         // so a second signed-in provider absorbs the load. Never strands the user:
@@ -2008,7 +2039,7 @@ export async function runChatLoop(
         // auto-opening the flagship on an observed `free` plan. Never fabricated:
         // providers whose CLI reports no plan classify to confidence 'none'.
         const planInfos: Partial<Record<ProviderId, PlanInfo>> = {};
-        for (const p of [mutableCtx.env.claude, mutableCtx.env.codex, mutableCtx.env.opencode]) {
+        for (const p of [mutableCtx.env.claude, mutableCtx.env.codex, mutableCtx.env.opencode, mutableCtx.env.grok]) {
           if (p.authenticated) planInfos[p.id] = classifyPlan(p.plan);
         }
 
@@ -2088,6 +2119,7 @@ export async function runChatLoop(
           mutableCtx.env.claude,
           mutableCtx.env.codex,
           mutableCtx.env.opencode,
+          mutableCtx.env.grok,
         ].map((p) => ({
           label: PROVIDER_LABEL[p.id] ?? p.id,
           installed: p.installed,
@@ -2604,6 +2636,7 @@ export async function runChatLoop(
           if (mutableCtx.env.claude.authenticated) authed.push('claude');
           if (mutableCtx.env.codex.authenticated) authed.push('codex');
           if (mutableCtx.env.opencode.authenticated) authed.push('opencode');
+          if (mutableCtx.env.grok.authenticated) authed.push('grok');
           let capTimer: ReturnType<typeof setTimeout> | undefined;
           const capped = new Promise<import('../core/verify.js').VerifyOutcome>((resolve) => {
             capTimer = setTimeout(
@@ -2819,6 +2852,7 @@ export async function runChatLoop(
         if (mutableCtx.env.claude.authenticated) authenticatedProviders.push('claude');
         if (mutableCtx.env.codex.authenticated) authenticatedProviders.push('codex');
         if (mutableCtx.env.opencode.authenticated) authenticatedProviders.push('opencode');
+        if (mutableCtx.env.grok.authenticated) authenticatedProviders.push('grok');
         const selectionEntitlement = planningSelectionEntitlement({
           gateOn: planningDepthOn,
           resolvedIntensity,
@@ -3465,15 +3499,13 @@ export async function runChatLoop(
           const pol = POLICY_PRESETS[effMode];
           const avail: Partial<Record<ProviderId, readonly string[]>> = {};
           if (mutableCtx.env.claude.installed && mutableCtx.env.claude.availableModels.length > 0)
-            avail['claude'] = mutableCtx.env.claude.availableModels;
-          if (mutableCtx.env.codex.installed && mutableCtx.env.codex.availableModels.length > 0)
-            avail['codex'] = mutableCtx.env.codex.availableModels;
-          if (mutableCtx.env.opencode.installed && mutableCtx.env.opencode.availableModels.length > 0)
-            avail['opencode'] = mutableCtx.env.opencode.availableModels;
+            avail['grok'] = mutableCtx.env.grok.availableModels;
+
           const authed: ProviderId[] = [];
           if (mutableCtx.env.claude.authenticated) authed.push('claude');
           if (mutableCtx.env.codex.authenticated) authed.push('codex');
           if (mutableCtx.env.opencode.authenticated) authed.push('opencode');
+          if (mutableCtx.env.grok.authenticated) authed.push('grok');
           const decision = route('worker', pool, pol, avail, authed);
           const provider = ctx.providers[decision.provider];
           if (provider === undefined) return '';
@@ -3867,6 +3899,7 @@ export async function runChatLoop(
           if (mutableCtx.env.claude.authenticated) authedProviders.push('claude');
           if (mutableCtx.env.codex.authenticated) authedProviders.push('codex');
           if (mutableCtx.env.opencode.authenticated) authedProviders.push('opencode');
+          if (mutableCtx.env.grok.authenticated) authedProviders.push('grok');
 
           const schedAc = new AbortController();
           currentAc = schedAc;
@@ -6181,6 +6214,49 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
         }
         // opencode is (now) installed — proceed to sign in
         await loginFn(out, 'opencode', {
+          readLine,
+          confirm,
+          ...(suspendStdin !== undefined ? { suspendStdin } : {}),
+        });
+        await refreshEnvironmentIfStale(true);
+        continue;
+      }
+
+      // ---- [p] Connect / Login grok -------------------------------------------
+      // Always handles the key. When grok is not yet installed, asks for consent
+      // then installs it (using the injected installProviderFn seam so tests stay
+      // hermetic). If install succeeds, proceeds to sign in.
+      if (key === 'p') {
+        if (!mutableCtx.env.grok.installed) {
+          out.write(`Install grok (${installCommandFor('grok').replace('npm install -g ', '')})? ${yesNoHint('yes', out.color)} `);
+          // Preserve the install-safety rule from the line-mode path: EOF means
+          // there is no interactive user, so never auto-install on a closed pipe.
+          const canRawConfirm =
+            out.isTty &&
+            process.stdin.isTTY === true &&
+            typeof process.stdin.setRawMode === 'function';
+          const shouldInstall = canRawConfirm
+            ? await confirm(true)
+            : (() => readLine().then((ans) => ans !== null && parseYesNo(ans, true)))();
+          if (!(await shouldInstall)) {
+            out.write(`\x1b[2mSkipped. You can install it later: ${installCommandFor('grok')}\x1b[0m\n`);
+            continue;
+          }
+          const resumeStdin = suspendStdin?.();
+          let ok = false;
+          try {
+            ok = await installProviderFn('grok', out);
+          } finally {
+            resumeStdin?.();
+          }
+          await refreshEnvironmentIfStale(true);
+          if (!ok || !mutableCtx.env.grok.installed) {
+            out.write(`Install failed. Run it yourself: ${installCommandFor('grok')}\n`);
+            continue;
+          }
+        }
+        // grok is (now) installed — proceed to sign in
+        await loginFn(out, 'grok', {
           readLine,
           confirm,
           ...(suspendStdin !== undefined ? { suspendStdin } : {}),

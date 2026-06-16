@@ -173,6 +173,7 @@ export async function refreshCapabilities(
     claude: cloneList(DECLARATIVE_MODEL_CAPABILITIES.claude),
     codex: cloneList(DECLARATIVE_MODEL_CAPABILITIES.codex),
     opencode: cloneList(DECLARATIVE_MODEL_CAPABILITIES.opencode),
+    grok: cloneList(DECLARATIVE_MODEL_CAPABILITIES.grok),
   };
 
   // --- Source 2: detect.ts availableModels ---------------------------------
@@ -252,6 +253,7 @@ export async function refreshCapabilities(
     claude: working.claude,
     codex: working.codex,
     opencode: working.opencode,
+    grok: working.grok,
   };
   return { registry, diagnostics };
 }

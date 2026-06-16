@@ -15,6 +15,7 @@ import type { EnvironmentStatus } from './detect.js';
 import { createClaudeProvider } from './claude.js';
 import { createCodexProvider } from './codex.js';
 import { createOpencodeProvider } from './opencode.js';
+import { createGrokProvider } from './grok.js';
 
 /**
  * Build the provider map for OrchestrateDeps from an already-detected
@@ -43,6 +44,10 @@ export function buildProviders(
 
   if (env.opencode.installed) {
     providers.opencode = createOpencodeProvider();
+  }
+
+  if (env.grok.installed) {
+    providers.grok = createGrokProvider();
   }
 
   return providers;

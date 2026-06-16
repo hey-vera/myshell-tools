@@ -254,7 +254,7 @@ export function replitPersistentEnv(baseEnv: NodeJS.ProcessEnv, cwd: string): No
 export function loginPersistentEnv(
   baseEnv: NodeJS.ProcessEnv,
   cwd: string,
-  providers: readonly ('claude' | 'codex' | 'opencode')[],
+  providers: readonly ('claude' | 'codex' | 'opencode' | 'grok')[],
 ): NodeJS.ProcessEnv {
   const add: NodeJS.ProcessEnv = {};
   try {

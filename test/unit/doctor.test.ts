@@ -21,7 +21,7 @@ import type { ClaudeTokenStatus } from '../../src/infra/credentials.ts';
 // ---------------------------------------------------------------------------
 
 function makeProviderStatus(
-  id: 'claude' | 'codex' | 'opencode',
+  id: 'claude' | 'codex' | 'opencode' | 'grok',
   overrides?: Partial<ProviderStatus>,
 ): ProviderStatus {
   return {
@@ -40,15 +40,18 @@ function makeEnv(
   claudeOverrides?: Partial<ProviderStatus>,
   codexOverrides?: Partial<ProviderStatus>,
   opencodeOverrides?: Partial<ProviderStatus>,
+  grokOverrides?: Partial<ProviderStatus>,
 ): EnvironmentStatus {
   const claude = makeProviderStatus('claude', claudeOverrides);
   const codex = makeProviderStatus('codex', codexOverrides);
   const opencode = makeProviderStatus('opencode', opencodeOverrides);
+  const grok = makeProviderStatus('grok', grokOverrides);
   return {
     claude,
     codex,
     opencode,
-    hasAnyProvider: claude.installed || codex.installed || opencode.installed,
+    grok,
+    hasAnyProvider: claude.installed || codex.installed || opencode.installed || grok.installed,
     platform: 'linux',
   };
 }
@@ -417,15 +420,18 @@ function makeFullEnv(overrides: {
   claude?: Partial<ProviderStatus>;
   codex?: Partial<ProviderStatus>;
   opencode?: Partial<ProviderStatus>;
+  grok?: Partial<ProviderStatus>;
 }): EnvironmentStatus {
   const claude = makeProviderStatus('claude', overrides.claude);
   const codex = makeProviderStatus('codex', overrides.codex);
   const opencode = makeProviderStatus('opencode', overrides.opencode);
+  const grok = makeProviderStatus('grok', overrides.grok);
   return {
     claude,
     codex,
     opencode,
-    hasAnyProvider: claude.installed || codex.installed || opencode.installed,
+    grok,
+    hasAnyProvider: claude.installed || codex.installed || opencode.installed || grok.installed,
     platform: 'linux',
   };
 }
