@@ -320,6 +320,16 @@ export function needsExternal(s: EngagementSignals): number {
   let score = 0;
   if (explicit) score += 2;
   if (researchKind && explicit) score += 1;
+  // rank-8 (default-OFF): the model's freshness judgment is ADDITIVE. Gated at the
+  // SOURCE — orchestrate STRIPS `externalFreshness` from the frame copy it feeds into
+  // EngagementSignals when the riskSignals flag is OFF (orchestrate.ts), so on the OFF
+  // path `s.frame?.externalFreshness` is always undefined and this branch is DEAD →
+  // byte-identical to the pre-rank-8 score. When ON: 'required' adds +2 (enough to
+  // reach RESEARCH_T=2 unaided), 'helpful' adds +1 (strictly below the bar, so it can
+  // never trigger web research alone — only nudges a borderline turn), 'none'/absent 0.
+  const freshness = s.frame?.externalFreshness;
+  if (freshness === 'required') score += 2;
+  else if (freshness === 'helpful') score += 1;
   return score;
 }
 

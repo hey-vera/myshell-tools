@@ -27,9 +27,9 @@
  *  - No process.exit() — only src/cli.ts may terminate the process
  */
 
-import type { CoreEvent, OrchestrateDeps, Tier, Classification, Assessment, QuestionSet } from './types.js';
+import type { CoreEvent, OrchestrateDeps, Tier, Risk, Classification, Assessment, QuestionSet } from './types.js';
 import type { ProviderId } from '../providers/port.js';
-import { decideRoute, combineRoute, unifiedPreflightApplies } from './router.js';
+import { decideRoute, combineRoute, combineRisk, unifiedPreflightApplies } from './router.js';
 import { classify } from './classify.js';
 import { runWorkCall } from './work-call.js';
 import { type CapabilityRouteContext, type CapabilityTaskSignals } from './route.js';
@@ -236,6 +236,36 @@ export async function* orchestrate(
   let intentFrame: IntentFrame | undefined;
   let runIntent: boolean;
 
+  // rank-8 (default-OFF). When the riskSignals flag is ON, the intent model's
+  // OPTIONAL risk hints may RAISE the deterministic risk floor (never lower it) and
+  // its externalFreshness hint may ADDITIVELY nudge web-research. Resolved ONCE here.
+  // When OFF (absent/false), every rank-8 line below is inert and the preflight is
+  // byte-identical to 3.134.0 on BOTH axes (risk + web-research) — see the two
+  // helpers below and the OFF-strip in `frameForDownstream`.
+  const riskSignalsOn = depsArg.riskSignals === true;
+  // Raise the deterministic risk via the frame's hints, but ONLY when the flag is ON
+  // and a frame exists. OFF or no frame → returns `base` unchanged (combineRisk is
+  // never even called) → `classification.risk` stays exactly `det.risk`.
+  const raiseRisk = (base: Risk, frame: IntentFrame | null | undefined): Risk =>
+    riskSignalsOn && frame != null
+      ? combineRisk(base, {
+          ...(frame.operationRisk !== undefined ? { operationRisk: frame.operationRisk } : {}),
+          ...(frame.blastRadius !== undefined ? { blastRadius: frame.blastRadius } : {}),
+        })
+      : base;
+  // OFF-strip for the web-research axis: when the flag is OFF, remove the three
+  // rank-8 hint fields from the frame copy that flows into EngagementSignals, so
+  // `needsExternal` sees `externalFreshness === undefined` (DEAD branch) → the
+  // WEB_RESEARCH determination is byte-identical. When ON, the frame is passed
+  // through unchanged so the additive freshness term can fire. operationRisk/
+  // blastRadius are stripped too (cleanest): they never feed engagement (only
+  // combineRisk above), so stripping them OFF changes nothing on either axis.
+  const frameForDownstream = (frame: IntentFrame | undefined): IntentFrame | undefined => {
+    if (frame === undefined || riskSignalsOn) return frame;
+    const { operationRisk: _o, blastRadius: _b, externalFreshness: _f, ...rest } = frame;
+    return rest;
+  };
+
   // The deterministic floor + the unify predicate. `routePlan: false` is the
   // CONSERVATIVE pre-extraction value (DESIGN-RANK7 §A.4): the router's plan flag
   // is not available before extraction in the unified path, and the rules path
@@ -279,9 +309,14 @@ export async function* orchestrate(
       ...(extracted?.routeTier !== undefined ? { routeTier: extracted.routeTier } : {}),
       ...(extracted?.routePlan !== undefined ? { routePlan: extracted.routePlan } : {}),
     });
+    // rank-8: combineRoute NEVER moves risk, so decision.risk === det.risk. When the
+    // flag is ON and a frame exists, raise it via the frame's hints; OFF or no frame →
+    // `decision.risk` unchanged. In THIS (unified) branch the `classified` event is
+    // yielded AFTER extraction (extraction above, event below), so it can carry the
+    // FINAL raised risk — no ordering hazard here.
     classification = {
       tier: decision.tier,
-      risk: decision.risk,
+      risk: raiseRisk(decision.risk, extracted),
       rationale: decision.rationale,
     };
     routePlan = decision.plan;
@@ -329,6 +364,22 @@ export async function* orchestrate(
       } catch {
         extracted = null; // fail-soft: extractor threw → rules fallback
       }
+      // rank-8 EVENT-ORDERING DECISION (DESIGN §D.3 [ASSUMPTION], deliberate): in THIS
+      // (else) branch the `classified` event was already yielded ABOVE with the
+      // deterministic risk, BEFORE extraction completes here. We deliberately do NOT
+      // move that event: moving it would change the OFF-path event sequence (the
+      // load-bearing byte-identical guarantee), and the event is flag-independent. We
+      // only RE-RAISE `classification.risk` AFTER extraction so the raised risk flows
+      // into buildEngagementSignals + taskSignals.risk (the safety machinery §D.4).
+      // When OFF or no frame, raiseRisk returns the base unchanged → classification
+      // is left exactly as the `classified` event reported it. The (rare) cost is that
+      // on the ON path the already-emitted `classified` event shows the deterministic
+      // risk while downstream uses the raised one — acceptable per §D.3; the unified
+      // branch (event-after-extraction) carries the raised risk in the event itself.
+      const raised = raiseRisk(classification.risk, extracted);
+      if (raised !== classification.risk) {
+        classification = { ...classification, risk: raised };
+      }
       intentFrame = extracted ?? rulesIntentFrame(task, classification, 'rules-fallback');
     } else {
       // Trivial turn (or no extractor): a cheap, deterministic, source:'skipped'
@@ -341,7 +392,13 @@ export async function* orchestrate(
   // (it rides the one gated intent call). The rendered INTENT + ENGAGEMENT blocks
   // flow through the Phase-2 prompt seam (assembleContextBlocks) to the sequential,
   // hedge, AND panel executors via the per-turn `deps` copy below.
-  const buildEngagementSignals = (frame: IntentFrame | undefined): EngagementSignals => ({
+  const buildEngagementSignals = (frameIn: IntentFrame | undefined): EngagementSignals => {
+    // rank-8 OFF-strip (§E.2): when the flag is OFF, remove the three rank-8 hint
+    // fields from the frame the engagement engine sees, so `needsExternal`'s freshness
+    // branch is DEAD → the WEB_RESEARCH determination is byte-identical to 3.134.0.
+    // When ON, the frame passes through unchanged so the additive term can fire.
+    const frame = frameForDownstream(frameIn);
+    return {
     ...(frame !== undefined ? { frame } : {}),
     classification,
     routePlan,
@@ -353,7 +410,8 @@ export async function* orchestrate(
     // wired-but-unfed until now.
     ...(depsArg.memoryBias !== undefined ? { memoryBias: depsArg.memoryBias } : {}),
     task,
-  });
+    };
+  };
   let engagementSignals: EngagementSignals = buildEngagementSignals(intentFrame);
   let engagementPlan = planEngagement(engagementSignals);
 

@@ -643,6 +643,21 @@ describe('pure heuristics', () => {
     assert.equal(needsExternal(signals({ task: 'explain recursion' })), 0);
   });
 
+  it('needsExternal: rank-8 externalFreshness term is ADDITIVE + guarded', () => {
+    // RESEARCH_T = 2. On a NON-keyword task (base score 0) the freshness hint is the
+    // only contributor. orchestrate strips this field on the OFF path so needsExternal
+    // only ever sees it when the flag is ON; here we drive the field directly to prove
+    // the additive arithmetic + the guard.
+    const local = 'refactor the helper'; // no web keyword → base score 0
+    // 'required' (+2) reaches RESEARCH_T unaided.
+    assert.ok(needsExternal(signals({ task: local, frame: frame({ externalFreshness: 'required' }) })) >= 2);
+    // 'helpful' (+1) is STRICTLY below RESEARCH_T → cannot trigger web research alone.
+    assert.equal(needsExternal(signals({ task: local, frame: frame({ externalFreshness: 'helpful' }) })), 1);
+    // 'none' / absent → no contribution.
+    assert.equal(needsExternal(signals({ task: local, frame: frame({ externalFreshness: 'none' }) })), 0);
+    assert.equal(needsExternal(signals({ task: local, frame: frame() })), 0);
+  });
+
   it('forkBudget is 0 for direct/balanced and up to ASK_CAP for collaborative', () => {
     assert.equal(forkBudget(-1, 0), 0);
     assert.equal(forkBudget(0, 0), 0);
