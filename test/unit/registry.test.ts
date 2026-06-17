@@ -6,7 +6,7 @@
 
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { buildProviders } from '../../src/providers/registry.ts';
+import { buildProviders, buildAuthenticatedProviders } from '../../src/providers/registry.ts';
 import type { EnvironmentStatus } from '../../src/providers/detect.ts';
 
 // ---------------------------------------------------------------------------
@@ -103,5 +103,33 @@ describe('buildProviders — synchronous, accepts pre-detected env', () => {
     for (const [key, provider] of Object.entries(providers)) {
       assert.equal(provider?.id, key, `Provider id should match key "${key}"`);
     }
+  });
+});
+
+describe('buildAuthenticatedProviders — orchestration set is signed-in only', () => {
+  it('excludes installed-but-signed-out providers (no unauthenticated spawn target)', () => {
+    const base = makeEnv({ claudeInstalled: true, codexInstalled: true });
+    // claude signed in; codex installed but signed out.
+    const env: EnvironmentStatus = { ...base, claude: { ...base.claude, authenticated: true } };
+    const providers = buildAuthenticatedProviders('/fake/cwd', env);
+    assert.ok('claude' in providers, 'signed-in claude is included');
+    assert.ok(!('codex' in providers), 'signed-out codex is excluded');
+  });
+
+  it('returns an empty map when nothing is signed in (orchestrate guards cleanly)', () => {
+    const env = makeEnv({ claudeInstalled: true, opencodeInstalled: true, grokInstalled: true });
+    assert.deepEqual(Object.keys(buildAuthenticatedProviders('/fake/cwd', env)), []);
+  });
+
+  it('includes every signed-in provider', () => {
+    const base = makeEnv({ claudeInstalled: true, opencodeInstalled: true });
+    const env: EnvironmentStatus = {
+      ...base,
+      claude: { ...base.claude, authenticated: true },
+      opencode: { ...base.opencode, authenticated: true },
+    };
+    const providers = buildAuthenticatedProviders('/fake/cwd', env);
+    assert.ok('claude' in providers && 'opencode' in providers);
+    assert.equal(Object.keys(providers).length, 2);
   });
 });

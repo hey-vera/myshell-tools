@@ -52,3 +52,26 @@ export function buildProviders(
 
   return providers;
 }
+
+/**
+ * The ORCHESTRATION provider set: {@link buildProviders} filtered to providers
+ * that are actually SIGNED IN. An installed-but-signed-out provider must never be
+ * a routing / preflight / work-call target — spawning its CLI unauthenticated can
+ * hang or error opaquely (e.g. a user who installed several provider CLIs but only
+ * signed into one). Detection still lists every INSTALLED provider for
+ * `doctor`/login; this is only the set `orchestrate` is allowed to spawn. When
+ * nothing is signed in this returns an empty map, so orchestrate's no-providers
+ * guard fires cleanly instead of stalling on a signed-out CLI.
+ */
+export function buildAuthenticatedProviders(
+  cwd: string,
+  env: EnvironmentStatus,
+): Partial<Record<ProviderId, Provider>> {
+  const installed = buildProviders(cwd, env);
+  const authed: Partial<Record<ProviderId, Provider>> = {};
+  for (const id of Object.keys(installed) as ProviderId[]) {
+    const provider = installed[id];
+    if (provider !== undefined && env[id].authenticated) authed[id] = provider;
+  }
+  return authed;
+}

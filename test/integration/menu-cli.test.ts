@@ -131,17 +131,17 @@ describe('menu CLI (real spawn, piped stdin)', () => {
     );
   });
 
-  it('"n" → "/exit" → "q" → exit 0 (onboarding/new-conversation path, no provider call)', async () => {
-    // "n" creates an untitled conversation and drops STRAIGHT into the chat loop
-    // (no up-front "name your chat" prompt — the title derives silently from the
-    // first message). The chat loop prints its one-time orientation line; "/exit"
-    // immediately returns to the menu WITHOUT calling a model; "q" quits. Quota-free.
-    const res = await runCli('n\n/exit\nq\n');
-    assert.equal(res.timedOut, false, 'CLI must not hang on n → /exit → q');
+  it('"n" with no provider → auth gate → cancel → "q" → exit 0 (no ERR_USE_AFTER_CLOSE)', async () => {
+    // "n" hits promptForAuthBeforeChat since no provider is signed in. Enter
+    // cancels the gate, re-renders the menu, then "q" quits. This exercises the
+    // same non-TTY line-dispatch path the original P0 fix targeted — but gated
+    // behind the auth-prompt that now runs before entering the chat loop.
+    const res = await runCli('n\n\nq\n');
+    assert.equal(res.timedOut, false, 'CLI must not hang on n → cancel → q');
     assert.equal(res.code, 0, `must exit 0 (got ${res.code}); stderr: ${res.stderr}`);
     assert.ok(
-      res.stdout.includes('Type a message and press Enter'),
-      `stdout must show the chat orientation line (proving "n" entered the chat loop); got:\n${res.stdout}`,
+      res.stdout.includes('No provider signed in yet'),
+      `stdout must show the auth gate (proving "n" was dispatched); got:\n${res.stdout}`,
     );
     assert.ok(
       !res.stderr.includes('ERR_USE_AFTER_CLOSE'),

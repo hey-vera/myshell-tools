@@ -33,7 +33,7 @@ import { hasAuthenticatedProvider } from './interface/menu-auto-mode.js';
 import type { MenuContext } from './interface/menu.js';
 import { StartupInputBuffer } from './interface/startup-input.js';
 import type { StartupInputStream } from './interface/startup-input.js';
-import { buildProviders } from './providers/registry.js';
+import { buildAuthenticatedProviders } from './providers/registry.js';
 import { detectEnvironment } from './providers/detect.js';
 import { createFileConversationStore } from './infra/conversations.js';
 // Memory 5.5: the file-backed store + project-key resolver, now wired into
@@ -222,7 +222,7 @@ function buildDeps(
     >
   >,
 ): OrchestrateDeps {
-  const providers = buildProviders(cwd, env);
+  const providers = buildAuthenticatedProviders(cwd, env);
 
   // Populate advertised model lists from detection so route() can prefer a
   // model the provider CLI actually has. Only include installed providers.
@@ -457,7 +457,7 @@ async function main(): Promise<void> {
         .map((p) => p.plan),
     );
     const policy = POLICY_PRESETS[resolvedMode];
-    const providers = buildProviders(cwd, env);
+    const providers = buildAuthenticatedProviders(cwd, env);
     const authenticatedProviders: import('./providers/port.js').ProviderId[] = [];
     if (env.claude.authenticated) authenticatedProviders.push('claude');
     if (env.codex.authenticated) authenticatedProviders.push('codex');
@@ -686,7 +686,7 @@ async function main(): Promise<void> {
       probeStateWritable(cwd),
       probeLedgerWritable(cwd),
     ]);
-    const providers = buildProviders(cwd, env);
+    const providers = buildAuthenticatedProviders(cwd, env);
     spinner.stop();
 
     // Evaluate non-provider environment health once at startup. Surfaced in the
