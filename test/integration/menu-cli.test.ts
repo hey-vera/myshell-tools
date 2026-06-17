@@ -25,14 +25,56 @@
 import { describe, it, before } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
 import { execSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
+import { tmpdir } from 'node:os';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(__dirname, '..', '..');
 const CLI_PATH = join(REPO_ROOT, 'dist', 'cli.js');
+
+/**
+ * HERMETIC AUTH ISOLATION — make these spawns independent of the host's signed-in
+ * providers. Without this, the assertion about the "no provider signed in" auth
+ * gate is non-deterministic: it passes on a fresh CI runner (no creds) but fails
+ * on a developer box / Replit container where providers ARE authenticated (the
+ * child would skip the gate and enter chat). We point every provider's
+ * credential-home env var at one empty temp dir and clear the Replit-detection
+ * vars (so the orchestrator never redirects those homes back at the workspace's
+ * persistent creds). Providers stay INSTALLED (detected via PATH `--version`,
+ * untouched here) but resolve as NOT authenticated — the exact fresh-user state.
+ */
+const EMPTY_AUTH_DIR = mkdtempSync(join(tmpdir(), 'myshell-itest-noauth-'));
+const HERMETIC_ENV: NodeJS.ProcessEnv = {
+  ...process.env,
+  NO_COLOR: '1',
+  // Point each vendor CLI's credential home at the empty dir → no creds found.
+  CLAUDE_CONFIG_DIR: EMPTY_AUTH_DIR,
+  CODEX_HOME: EMPTY_AUTH_DIR,
+  GROK_HOME: EMPTY_AUTH_DIR,
+  XDG_CONFIG_HOME: EMPTY_AUTH_DIR,
+  XDG_DATA_HOME: EMPTY_AUTH_DIR,
+  HOME: EMPTY_AUTH_DIR,
+  USERPROFILE: EMPTY_AUTH_DIR,
+};
+// Clear Replit detection so replitPersistentEnv() is a no-op and never points the
+// homes above back at the workspace's real persistent credentials.
+delete HERMETIC_ENV['REPL_ID'];
+delete HERMETIC_ENV['REPLIT_DEV_DOMAIN'];
+delete HERMETIC_ENV['REPL_SLUG'];
+delete HERMETIC_ENV['REPL_OWNER'];
+// Model a RETURNING user who simply isn't signed in (not a brand-new install):
+// seed `onboarded: true` so the menu renders directly instead of the first-run
+// setup wizard. Off-Replit the state home is HOME (= EMPTY_AUTH_DIR), so the
+// config lives at <EMPTY_AUTH_DIR>/.myshell-tools/config.json. loadConfig merges
+// this partial over DEFAULTS, so onboarded:true is all that's needed.
+mkdirSync(join(EMPTY_AUTH_DIR, '.myshell-tools'), { recursive: true });
+writeFileSync(
+  join(EMPTY_AUTH_DIR, '.myshell-tools', 'config.json'),
+  JSON.stringify({ onboarded: true }),
+);
 
 /** Generous per-spawn timeout so a hung child can never wedge CI. */
 const SPAWN_TIMEOUT_MS = 30_000;
@@ -55,8 +97,9 @@ function runCli(input: string): Promise<SpawnResult> {
   return new Promise<SpawnResult>((resolve) => {
     const child = spawn(process.execPath, [CLI_PATH], {
       cwd: REPO_ROOT,
-      // Force non-TTY, color-free output regardless of where the test runs.
-      env: { ...process.env, NO_COLOR: '1' },
+      // Non-TTY, color-free, AND auth-isolated (see HERMETIC_ENV) so the no-provider
+      // assertions hold on every host regardless of locally signed-in providers.
+      env: HERMETIC_ENV,
       stdio: ['pipe', 'pipe', 'pipe'],
     });
 

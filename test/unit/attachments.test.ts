@@ -8,6 +8,7 @@
 
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { resolve } from 'node:path';
 
 import { extractImagePaths, IMAGE_EXTENSIONS } from '../../src/core/attachments.ts';
 import { resolveImageAttachments } from '../../src/infra/attachments.ts';
@@ -79,32 +80,46 @@ describe('extractImagePaths (pure)', () => {
 });
 
 describe('resolveImageAttachments (impure, injected fileExists)', () => {
-  const deps = (existing: readonly string[], cwd = '/work', home = '/home/u'): {
+  // Platform-agnostic bases: resolve() normalizes to the host OS's separators
+  // (POSIX `/work/x`, Windows `C:\work\x`), so the test passes on Linux, macOS,
+  // AND Windows (the CI matrix). Both the injected `existing` set and the
+  // expected output paths are built with the SAME node:path resolution the source
+  // uses — so we assert against whatever the running platform actually produces,
+  // never a hardcoded forward-slash literal.
+  const CWD = resolve('/work');
+  const HOME = resolve('/home/u');
+  /** Mirror src toAbsolute(): relative→resolve(cwd), `~/`→resolve(home), absolute→as-is. */
+  const abs = (relUnderCwd: string): string => resolve(CWD, relUnderCwd);
+  const absHome = (relUnderHome: string): string => resolve(HOME, relUnderHome);
+
+  const deps = (existing: readonly string[]): {
     fileExists: (p: string) => boolean;
     cwd: string;
     home: string;
   } => ({
     fileExists: (p: string): boolean => existing.includes(p),
-    cwd,
-    home,
+    cwd: CWD,
+    home: HOME,
   });
 
   it('keeps only image paths that exist on disk (resolved to absolute)', () => {
-    const out = resolveImageAttachments('see real.png and gone.jpg', deps(['/work/real.png']));
-    assert.deepEqual(out, [{ path: '/work/real.png', kind: 'image' }]);
+    const out = resolveImageAttachments('see real.png and gone.jpg', deps([abs('real.png')]));
+    assert.deepEqual(out, [{ path: abs('real.png'), kind: 'image' }]);
   });
 
   it('resolves a relative path against cwd', () => {
-    const out = resolveImageAttachments('@assets/logo.png', deps(['/work/assets/logo.png']));
-    assert.deepEqual(out, [{ path: '/work/assets/logo.png', kind: 'image' }]);
+    const out = resolveImageAttachments('@assets/logo.png', deps([abs('assets/logo.png')]));
+    assert.deepEqual(out, [{ path: abs('assets/logo.png'), kind: 'image' }]);
   });
 
   it('expands a leading ~ against home', () => {
-    const out = resolveImageAttachments('open ~/pics/y.bmp', deps(['/home/u/pics/y.bmp']));
-    assert.deepEqual(out, [{ path: '/home/u/pics/y.bmp', kind: 'image' }]);
+    const out = resolveImageAttachments('open ~/pics/y.bmp', deps([absHome('pics/y.bmp')]));
+    assert.deepEqual(out, [{ path: absHome('pics/y.bmp'), kind: 'image' }]);
   });
 
   it('passes through an absolute path', () => {
+    // A leading-slash path is absolute on POSIX and Windows alike; the source
+    // returns it unchanged (no re-resolution), so assert it verbatim.
     const out = resolveImageAttachments('open /tmp/x.webp', deps(['/tmp/x.webp']));
     assert.deepEqual(out, [{ path: '/tmp/x.webp', kind: 'image' }]);
   });
@@ -114,11 +129,11 @@ describe('resolveImageAttachments (impure, injected fileExists)', () => {
   });
 
   it('collapses ./a.png and a.png to one absolute attachment', () => {
-    const out = resolveImageAttachments('a.png and ./a.png', deps(['/work/a.png']));
-    assert.deepEqual(out, [{ path: '/work/a.png', kind: 'image' }]);
+    const out = resolveImageAttachments('a.png and ./a.png', deps([abs('a.png')]));
+    assert.deepEqual(out, [{ path: abs('a.png'), kind: 'image' }]);
   });
 
   it('returns [] when the message references no image (unchanged behaviour)', () => {
-    assert.deepEqual(resolveImageAttachments('refactor index.ts', deps(['/work/index.ts'])), []);
+    assert.deepEqual(resolveImageAttachments('refactor index.ts', deps([abs('index.ts')])), []);
   });
 });
