@@ -29,6 +29,7 @@ import { runTask } from './interface/run.js';
 import { resolveImageAttachments } from './infra/attachments.js';
 import { startRepl } from './interface/repl.js';
 import { startMenu } from './interface/menu.js';
+import { hasAuthenticatedProvider } from './interface/menu-auto-mode.js';
 import type { MenuContext } from './interface/menu.js';
 import { StartupInputBuffer } from './interface/startup-input.js';
 import type { StartupInputStream } from './interface/startup-input.js';
@@ -512,6 +513,18 @@ async function main(): Promise<void> {
       process.exit(1);
     }
     const [env, config] = await Promise.all([detectEnvironment(), loadConfig()]);
+    // Fast auth pre-check: a one-shot `run` with NO signed-in provider should give
+    // clear guidance, not attempt work against an unauthenticated CLI (which can
+    // hang or error opaquely). Mirrors `doctor`'s "Not ready" message. opencode
+    // counts as authenticated when installed (free models), so this only fires for
+    // a genuinely signed-out setup.
+    if (!hasAuthenticatedProvider(env)) {
+      process.stderr.write(
+        'No providers are signed in. Run `myshell-tools login` to sign in ' +
+          '(claude, codex, opencode, or grok), then try again.\n',
+      );
+      process.exit(1);
+    }
     // Resolve mode across all authenticated providers when mode is unset (auto).
     const resolvedMode = config.mode ?? autoModeForPlans(
       [env.claude, env.codex, env.opencode, env.grok]
