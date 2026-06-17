@@ -320,6 +320,18 @@ async function main(): Promise<void> {
   }
 
   const cwd = process.cwd();
+  // Keep grok signed in across Replit sessions. Unlike claude/codex/opencode —
+  // whose persistent dirs (CLAUDE_CONFIG_DIR / CODEX_HOME / XDG_*) the replit-tools
+  // wrapper already sets — nothing sets GROK_HOME, so grok's ~/.grok creds are
+  // ephemeral. Apply the persistent-dir redirect to process.env ONCE here (before
+  // any detection or spawn) so detection, the work spawn, and login all agree.
+  // No-op off Replit / when GROK_HOME is already set / before the first grok login.
+  {
+    const grokHome = replitPersistentEnv(process.env, cwd)['GROK_HOME'];
+    if (grokHome !== undefined && process.env['GROK_HOME'] === undefined) {
+      process.env['GROK_HOME'] = grokHome;
+    }
+  }
   const out: OutputSink = {
     write: (s) => {
       process.stdout.write(s);

@@ -75,6 +75,18 @@ describe('replitPersistentEnv', () => {
     assert.equal(add['XDG_DATA_HOME'], join(dir, '.local', 'share'));
   });
 
+  it('sets GROK_HOME when the persistent grok dir exists', async () => {
+    const grokDir = join(dir, '.replit-tools', '.grok-persistent');
+    await mkdir(grokDir, { recursive: true });
+    const add = replitPersistentEnv({}, dir);
+    assert.equal(add['GROK_HOME'], grokDir);
+  });
+
+  it('never overrides an already-set GROK_HOME', () => {
+    const add = replitPersistentEnv({ GROK_HOME: '/already/set' }, dir);
+    assert.equal(add['GROK_HOME'], undefined);
+  });
+
   it('never overrides an already-set CLAUDE_CONFIG_DIR / CODEX_HOME / XDG_*', () => {
     const add = replitPersistentEnv(
       {
@@ -135,6 +147,18 @@ describe('loginPersistentEnv', () => {
       assert.equal(existsSync(codexDir), true);
       assert.equal(existsSync(opencodeCfg), true);
       assert.equal(existsSync(opencodeData), true);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('on Replit returns GROK_HOME and creates the grok dir', async () => {
+    const dir = await mkdtemp(join(tmpdir(), `myshell-login-grok-${randomUUID()}-`));
+    try {
+      const add = loginPersistentEnv({ REPL_ID: 'abc123' }, dir, ['grok']);
+      const grokDir = join(dir, '.replit-tools', '.grok-persistent');
+      assert.equal(add['GROK_HOME'], grokDir);
+      assert.equal(existsSync(grokDir), true);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

@@ -107,6 +107,10 @@ function replitCodexHome(cwd: string): string {
   return join(cwd, '.replit-tools', '.codex-persistent');
 }
 
+function replitGrokHome(cwd: string): string {
+  return join(cwd, '.replit-tools', '.grok-persistent');
+}
+
 function replitOpencodeConfigHome(cwd: string): string {
   return join(cwd, '.config');
 }
@@ -231,6 +235,14 @@ export function replitPersistentEnv(baseEnv: NodeJS.ProcessEnv, cwd: string): No
       const data = replitOpencodeDataHome(cwd);
       if (existsSync(join(data, 'opencode'))) add['XDG_DATA_HOME'] = data;
     }
+    // grok stores its OAuth subscription credential under GROK_HOME (default
+    // ~/.grok), which is ephemeral on Replit. Once `myshell login grok` has created
+    // the persistent dir, redirect to it so the sign-in sticks across sessions —
+    // the grok analogue of CLAUDE_CONFIG_DIR / CODEX_HOME above.
+    if (baseEnv['GROK_HOME'] === undefined) {
+      const dir = replitGrokHome(cwd);
+      if (existsSync(dir)) add['GROK_HOME'] = dir;
+    }
   } catch {
     // Best-effort — never throw on env resolution.
   }
@@ -283,6 +295,12 @@ export function loginPersistentEnv(
         mkdirSync(data, { recursive: true, mode: 0o700 });
         add['XDG_DATA_HOME'] = data;
       }
+    }
+
+    if (providers.includes('grok') && baseEnv['GROK_HOME'] === undefined) {
+      const dir = replitGrokHome(cwd);
+      mkdirSync(dir, { recursive: true, mode: 0o700 });
+      add['GROK_HOME'] = dir;
     }
   } catch {
     // Best-effort — never throw on env resolution.
