@@ -57,6 +57,7 @@ import {
   preflightUnifyEnabled,
   preflightRiskSignalsEnabled,
   preflightRequiredInvestigationEnabled,
+  preflightOverheadGuardEnabled,
 } from '../core/router.js';
 import { createNodeResearchPort } from '../infra/research-port.js';
 import { renderSystemModelContext } from '../core/understanding.js';
@@ -1038,6 +1039,12 @@ export async function runChatLoop(
   };
   const currentShedPlan = (): ReturnType<typeof decideShed> => decideShed(currentPressure());
 
+  // rank-10: count of blocking pre-answer model calls the menu layer initiated
+  // upstream of the current orchestrate() turn (resume recap refresh + understanding
+  // warmup when they ran). Seeded into deps.observedBlockingCalls at each buildDeps
+  // call site and reset so each turn counts only calls made before it.
+  let upstreamBlockingCalls = 0;
+
   /**
    * Produce the recap text to show: the fresh cache when not stale, otherwise a
    * best-effort regeneration that is cached via setRecap. Always fail-soft —
@@ -1075,8 +1082,12 @@ export async function runChatLoop(
     let fresh: RecapResult | null = null;
     try {
       fresh = await generate(entries, new AbortController().signal);
+      // rank-10: the resume recap refresh is a blocking pre-answer model call
+      // upstream of the first turn. Count it so the guard can shed an optional
+      // downstream preflight if the turn is already at budget.
+      upstreamBlockingCalls += 1;
     } catch {
-      fresh = null;
+      fresh = null; // fail-soft: a recap failure must never block resume
     }
     if (fresh === null) {
       // Generation failed/empty — fall back to a stale cache or nothing. NEVER block.
@@ -1984,6 +1995,12 @@ export async function runChatLoop(
           tastePlaybookLines?: readonly string[];
         },
       ): OrchestrateDeps => {
+        // rank-10: capture the count of blocking pre-answer model calls initiated
+        // upstream of this orchestrate() turn, then reset so the NEXT turn starts
+        // from zero. The count covers resume recap refresh + understanding warmup.
+        const observedBlockingCalls = upstreamBlockingCalls;
+        upstreamBlockingCalls = 0;
+
         // CURRENT GOALS / PLAN block (the partner's OWN plan). `goalStore` is created
         // AFTER buildDeps is defined, so we read it through the lazy
         // `currentGoalContext` closure (defined below, captured by reference): the
@@ -2236,6 +2253,16 @@ export async function runChatLoop(
           // OFF-GUARANTEE). When on, an INVESTIGATE_CONTEXT turn the brain did not
           // already ground runs ONE bounded read-only retrieval before execution.
           ...(requiredInvestigationOn ? { requiredInvestigation: true } : {}),
+          // AGGREGATE PREFLIGHT-OVERHEAD GUARD (rank-10). Set ONLY when the guard flag
+          // is ON; absent when off → orchestrate's guard `if`s are dead and every path
+          // is byte-identical (the OFF-GUARANTEE). When on, also seed the observed
+          // count of blocking pre-answer model calls the interface layer already made
+          // upstream this turn (resume recap refresh + understanding warmup). A count
+          // of 0 is omitted, so the OFF path is byte-identical.
+          ...(preflightGuardOn ? { preflightGuard: true } : {}),
+          ...(preflightGuardOn && observedBlockingCalls > 0
+            ? { observedBlockingCalls }
+            : {}),
           // Composed dynamic provider order: capacity + session consumption +
           // optional learned outcomes + current cooldown state.
           ...(Object.keys(dynamicOrder).length > 0 ? { learnedProviderOrder: dynamicOrder } : {}),
@@ -3277,6 +3304,9 @@ export async function runChatLoop(
             const repoContext = await resolveEnvironmentOnce().catch(() => '');
             const pass = buildUnderstandingPass(repoContext, highStakes); // generous bg budget
             if (pass !== null) {
+              // rank-10: understanding warmup is a blocking pre-answer model call
+              // upstream of the turn that benefits from it.
+              upstreamBlockingCalls += 1;
               const model = (await pass(line, new AbortController().signal)) ?? undefined;
               if (model !== undefined) systemModelCache.set(cacheKey, { model, atTurn: autoStageTurns });
             }
@@ -3507,6 +3537,15 @@ export async function runChatLoop(
         process.env,
         mutableCtx.config,
       );
+      // AGGREGATE PREFLIGHT-OVERHEAD GUARD flag (rank-10; core/router.ts
+      // `preflightOverheadGuardEnabled`). DEFAULT OFF (opt-in): enabled only by an
+      // explicit MYSHELL_PREFLIGHT_GUARD ∈ {1,true,on,yes} OR
+      // config.experimentalPreflightGuard. When off, deps.preflightGuard is never set
+      // and deps.observedBlockingCalls is omitted → orchestrate's guard is inert and
+      // every path is byte-identical to today (the OFF-GUARANTEE). When on, orchestrate
+      // counts blocking pre-answer model calls and sheds the next avoidable optional
+      // one when the count would exceed the turn-class budget.
+      const preflightGuardOn = preflightOverheadGuardEnabled(process.env, mutableCtx.config);
       // The injected READ-ONLY retrieval port (grep/readFile + a native web search).
       // The web-search callback routes the cheapest authed provider with webSearch:true
       // (the subscription tool — no api key); both Claude (after the 3c allow-list) and

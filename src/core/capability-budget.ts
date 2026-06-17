@@ -98,6 +98,37 @@ export const CAPABILITY_BUDGET: Readonly<Record<TurnClass, TurnBudget>> = {
 export const MAX_ADDED_BLOCKING_CALLS = 1;
 
 // ---------------------------------------------------------------------------
+// Aggregate preflight-overhead guard (audit rank 10) — default-OFF, neutral
+// ---------------------------------------------------------------------------
+
+/**
+ * OBSERVED in-turn blocking preflight state for the rank-10 guard. NO new probe,
+ * NO token meter — just the count of blocking model calls already taken this turn
+ * plus the EXISTING QuotaPressure signal the renderer already surfaces.
+ */
+export interface PreflightObservation {
+  /** Blocking model calls already taken this turn (upstream + in-orchestrate). */
+  readonly blockingCallsSoFar: number;
+  /** The live quota pressure the caller already computed from cooldown state. */
+  readonly pressure: QuotaPressure;
+}
+
+/**
+ * The rank-10 gate: may this turn take ONE MORE optional blocking preflight?
+ * True iff the observed count is still strictly below the turn-class budget AND
+ * quota pressure is not already heavy (pressure ≥ 3 already shed the intent pass
+ * per decideShed; the guard must not re-admit). PURE; total; never throws.
+ */
+export function preflightAdmits(obs: PreflightObservation, turnClass: TurnClass): boolean {
+  const budget = CAPABILITY_BUDGET[turnClass]?.addedBlockingCalls ?? 0;
+  return (
+    Number.isFinite(obs.blockingCallsSoFar) &&
+    obs.blockingCallsSoFar < budget &&
+    obs.pressure < 3
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Quota-shed policy (§3.2) — ordered; the core answer always survives
 // ---------------------------------------------------------------------------
 

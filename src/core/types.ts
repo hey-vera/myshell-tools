@@ -647,6 +647,24 @@ export interface OrchestrateDeps {
    */
   readonly requiredInvestigation?: boolean;
   /**
+   * AGGREGATE PREFLIGHT-OVERHEAD GUARD flag (rank-10; core/router.ts
+   * `preflightOverheadGuardEnabled`). When true (the caller resolved
+   * `preflightOverheadGuardEnabled(env, config)`), orchestrate counts the blocking
+   * pre-answer model calls actually taken this turn and sheds the next avoidable
+   * optional one when the count would exceed the turn-class budget. DEFAULT
+   * (absent/false) → the guard is inert, no preflight is shed, and every path is
+   * byte-identical to today (the OFF-GUARANTEE). Set only by the interface layer
+   * when the preflight-guard flag is ON.
+   */
+  readonly preflightGuard?: boolean;
+  /**
+   * Seed for the rank-10 guard: the count of blocking pre-answer model calls the
+   * interface layer already made upstream of orchestrate this turn (recap refresh +
+   * understanding warmup when they ran). Absent → 0. Set only when the preflight
+   * guard is ON; omitted otherwise so the OFF path is byte-identical.
+   */
+  readonly observedBlockingCalls?: number;
+  /**
    * Observed plan classification per provider (from classifyPlan), supplied by
    * the conversation layer as an immutable snapshot. Consulted by the adaptive
    * flagship-admission gate (core/flagship.ts) to veto auto-opening the flagship

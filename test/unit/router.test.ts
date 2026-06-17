@@ -17,6 +17,7 @@ import {
   decideRoute,
   riskClause,
   combineRisk,
+  preflightOverheadGuardEnabled,
   type ModelClassifier,
 } from '../../src/core/router.ts';
 import type { Risk } from '../../src/core/types.ts';
@@ -253,5 +254,40 @@ describe('decideRoute', () => {
     const d = await decideRoute('it broke after lunch, halp', { classifier, signal: NEVER_ABORT });
     assert.equal(d.source, 'rules');
     assert.equal(d.tier, 'ic');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// preflightOverheadGuardEnabled — rank-10 default-OFF flag
+// ---------------------------------------------------------------------------
+
+describe('preflightOverheadGuardEnabled', () => {
+  it('default OFF (absent env + absent config)', () => {
+    assert.equal(preflightOverheadGuardEnabled(undefined, undefined), false);
+    assert.equal(preflightOverheadGuardEnabled({}, {}), false);
+  });
+
+  it('env opt-in values turn it ON', () => {
+    for (const v of ['1', 'true', 'on', 'yes', '  TRUE  ', 'On']) {
+      assert.equal(preflightOverheadGuardEnabled({ MYSHELL_PREFLIGHT_GUARD: v }, {}), true, v);
+    }
+  });
+
+  it('env opt-out / garbage values stay OFF', () => {
+    for (const v of ['0', 'false', 'off', 'no', '', 'maybe', undefined]) {
+      assert.equal(preflightOverheadGuardEnabled({ MYSHELL_PREFLIGHT_GUARD: v }, {}), false, String(v));
+    }
+  });
+
+  it('config.experimentalPreflightGuard === true turns it ON', () => {
+    assert.equal(preflightOverheadGuardEnabled({}, { experimentalPreflightGuard: true }), true);
+    assert.equal(preflightOverheadGuardEnabled({}, { experimentalPreflightGuard: false }), false);
+  });
+
+  it('env wins over config (env ON, config OFF)', () => {
+    assert.equal(
+      preflightOverheadGuardEnabled({ MYSHELL_PREFLIGHT_GUARD: '1' }, { experimentalPreflightGuard: false }),
+      true,
+    );
   });
 });

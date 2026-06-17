@@ -312,6 +312,28 @@ export function preflightRequiredInvestigationEnabled(
   }
 }
 
+/**
+ * Decide whether the AGGREGATE PREFLIGHT-OVERHEAD GUARD (audit rank 10) is
+ * enabled. DEFAULT FALSE — verbatim mirror of `preflightRequiredInvestigationEnabled`.
+ * Returns true ONLY when explicitly opted in: `MYSHELL_PREFLIGHT_GUARD` is one of
+ * '1'/'true'/'on'/'yes' (trimmed, case-insensitive) OR
+ * `config.experimentalPreflightGuard === true`. Any other value (including absent,
+ * '0', 'false', '', garbage) → false. Never throws.
+ */
+export function preflightOverheadGuardEnabled(
+  env: NodeJS.ProcessEnv | undefined,
+  config: { experimentalPreflightGuard?: boolean } | undefined,
+): boolean {
+  try {
+    const raw = env?.['MYSHELL_PREFLIGHT_GUARD'];
+    if (typeof raw === 'string' && UNIFY_ON.has(raw.trim().toLowerCase())) return true;
+    if (config?.experimentalPreflightGuard === true) return true;
+    return false;
+  } catch {
+    return false;
+  }
+}
+
 /** Inputs to the unified-preflight predicate — all already-computed booleans. */
 export interface UnifiedPreflightInput {
   /** `preflightUnifyEnabled(env, config)` — the rank-7 gate. */

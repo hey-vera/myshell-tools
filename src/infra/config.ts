@@ -331,6 +331,17 @@ export interface AppConfig {
    */
   experimentalRequiredInvestigation?: boolean;
   /**
+   * EXPERIMENTAL AGGREGATE PREFLIGHT-OVERHEAD GUARD (default off; audit rank 10).
+   * When true (or with `MYSHELL_PREFLIGHT_GUARD` ∈ {1,true,on,yes}), orchestrate
+   * counts the blocking pre-answer model calls actually taken this turn and SHEDS
+   * the next avoidable optional one when the count would exceed the turn-class
+   * budget, using only the EXISTING `CAPABILITY_BUDGET` ceiling and the EXISTING
+   * `QuotaPressure` signal. NO new probe, NO token meter, NO model call. Default
+   * OFF (absent/false) → the guard fields are omitted and every path is byte-
+   * identical to today.
+   */
+  experimentalPreflightGuard?: boolean;
+  /**
    * EXPERIMENTAL RIVAL TRIBUNAL (default off; master-plan PHASE 9). When true (or with
    * `MYSHELL_TRIBUNAL` truthy in the environment), a genuine load-bearing IMPLEMENTATION
    * fork with ≥2 distinct authed vendors may be settled by a build-off: each vendor

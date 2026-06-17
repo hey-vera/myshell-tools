@@ -3404,6 +3404,99 @@ describe('startMenu — auto-goal smart autonomy', () => {
     });
   }
 
+  // rank-10 S3 — the preflight-guard flag threads from menu config →
+  // deps.preflightGuard → orchestrate's aggregate overhead guard. We prove it
+  // END-TO-END by combining requiredInvestigation ON with preflightGuard ON:
+  // the intent pass is the ONE allowed optional blocking preflight, so the
+  // rank-9 retrieval is SHED (no LOCAL INVESTIGATION block). OFF, both run.
+  for (const guard of [false, true] as const) {
+    it(`rank-10: experimentalPreflightGuard=${guard} ⇒ retrieval ${guard ? 'is SHED' : 'runs'} when intent already consumes the budget`, async () => {
+      const requests: ProviderRequest[] = [];
+      const provider: Provider = {
+        id: 'claude',
+        async detect() {
+          return {
+            id: 'claude',
+            installed: true,
+            version: '1.0.0',
+            authenticated: true,
+            plan: null,
+            binaryPath: null,
+            availableModels: ['model-a'],
+          };
+        },
+        async *run(req: ProviderRequest, _signal: AbortSignal): AsyncIterable<ProviderEvent> {
+          requests.push(req);
+          if (req.prompt.includes('You extract the INTENT')) {
+            yield {
+              type: 'done',
+              text: '{"goal":"explain the build scripts in package.json","kind":"coding","confidence":"high"}',
+              usage: FAKE_USAGE,
+              raw: {},
+            };
+            return;
+          }
+          yield { type: 'text', delta: 'Done.' };
+          yield { type: 'done', text: `Done.\n${CONFIDENCE_ENVELOPE}`, usage: FAKE_USAGE, raw: {} };
+        },
+      };
+
+      const clock = makeFakeClock();
+      const store = makeStore(clock);
+      const sink = makeSink();
+      const cwd = '/home/runner/workspace';
+      const config: AppConfig = {
+        onboarded: true,
+        setAsDefault: false,
+        mode: 'quality-first',
+        smartRoute: false,
+        intentEngine: true,
+        codebaseAwareness: true,
+        autoGoal: false,
+        experimentalAutoGoal: false,
+        experimentalRequiredInvestigation: true,
+        experimentalPreflightGuard: guard, // THE FLAG UNDER TEST
+      };
+      const ctx = makeCtx(
+        {
+          config,
+          providers: { claude: provider },
+          cwd,
+          readLine: makeScriptedReader([
+            'n',
+            'investigate how the build scripts in package.json work',
+            '/exit',
+            'q',
+          ]),
+        },
+        clock,
+        store,
+        undefined,
+        cwd,
+      );
+
+      await startMenu(ctx, sink);
+
+      const intentPrompts = requests.filter((r) => r.prompt.includes('You extract the INTENT')).length;
+      const workReq = requests.find((r) => !r.prompt.includes('You extract the INTENT'));
+      assert.ok(workReq !== undefined, 'a work provider request was made');
+      assert.equal(intentPrompts, 1, 'the one allowed intent extraction still fires');
+      if (guard) {
+        assert.doesNotMatch(
+          workReq.prompt,
+          /LOCAL INVESTIGATION/,
+          'flag ON: rank-9 retrieval is shed because intent consumed the budget',
+        );
+      } else {
+        assert.match(
+          workReq.prompt,
+          /LOCAL INVESTIGATION/,
+          'flag OFF: rank-9 retrieval runs normally',
+        );
+      }
+    });
+  }
+
   it('with autoGoal on, ambiguous non-engaged work calls the model router only once', async () => {
     let routerPrompts = 0;
     let taskPrompts = 0;

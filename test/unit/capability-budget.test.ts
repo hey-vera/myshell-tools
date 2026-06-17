@@ -17,6 +17,7 @@ import {
   MAX_ADDED_BLOCKING_CALLS,
   decideShed,
   pressureFromSignals,
+  preflightAdmits,
   type TurnClass,
   type QuotaPressure,
 } from '../../src/core/capability-budget.ts';
@@ -180,5 +181,37 @@ describe('pressureFromSignals — from renderer signals only', () => {
     assert.equal(plan.memoryWidth, 'full');
     assert.equal(plan.intentPass, true);
     assert.equal(plan.coreAnswer, true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// preflightAdmits — rank-10 aggregate overhead guard (default-OFF, neutral)
+// ---------------------------------------------------------------------------
+
+describe('preflightAdmits — rank-10 guard truth table', () => {
+  it('trivial class admits NO optional blocking preflights (budget 0)', () => {
+    assert.equal(preflightAdmits({ blockingCallsSoFar: 0, pressure: 0 }, 'trivial'), false);
+  });
+
+  it('normal class admits exactly one optional blocking preflight (budget 1)', () => {
+    assert.equal(preflightAdmits({ blockingCallsSoFar: 0, pressure: 0 }, 'normal'), true);
+    assert.equal(preflightAdmits({ blockingCallsSoFar: 1, pressure: 0 }, 'normal'), false);
+  });
+
+  it('substantial class admits exactly one optional blocking preflight (budget 1)', () => {
+    assert.equal(preflightAdmits({ blockingCallsSoFar: 0, pressure: 0 }, 'substantial'), true);
+    assert.equal(preflightAdmits({ blockingCallsSoFar: 1, pressure: 0 }, 'substantial'), false);
+  });
+
+  it('heavy pressure (3) denies every optional preflight, matching decideShed', () => {
+    for (const c of CLASSES) {
+      assert.equal(preflightAdmits({ blockingCallsSoFar: 0, pressure: 3 }, c), false);
+    }
+  });
+
+  it('defends against garbage counts (total, never throws)', () => {
+    assert.equal(preflightAdmits({ blockingCallsSoFar: Number.NaN, pressure: 0 }, 'normal'), false);
+    assert.equal(preflightAdmits({ blockingCallsSoFar: -1, pressure: 0 }, 'normal'), true);
+    assert.equal(preflightAdmits({ blockingCallsSoFar: Number.POSITIVE_INFINITY, pressure: 0 }, 'normal'), false);
   });
 });
