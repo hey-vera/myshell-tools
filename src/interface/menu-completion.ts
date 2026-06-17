@@ -251,9 +251,11 @@ export function expandPathToken(
   } else {
     resolveBase = join(cwd, dirPart);
   }
-  // Normalize away a trailing slash (except the filesystem root) so `dir` is a
-  // clean directory path for `readdir`.
-  resolveBase = resolveBase.length > 1 ? resolveBase.replace(/\/+$/, '') : resolveBase;
+  // Normalize away a trailing separator (except the filesystem root) so `dir` is
+  // a clean directory path for `readdir`. Strip BOTH separators: `join` emits the
+  // OS separator, so on Windows the trailing char is a backslash, not a slash —
+  // a POSIX-only `/\/+$/` would leave `C:\a\` un-normalized.
+  resolveBase = resolveBase.length > 1 ? resolveBase.replace(/[/\\]+$/, '') : resolveBase;
   const dir = resolveBase === '' ? cwd : resolveBase;
   return { dir, base, displayPrefix };
 }

@@ -8763,36 +8763,46 @@ describe('fuzzyRank — prefix → substring → subsequence ordering (T4)', () 
 });
 
 describe('expandPathToken — pure ~/cwd/dir math, no fs (T3)', () => {
+  // `dir` is built with node:path `join`, which emits the OS separator — so the
+  // expected value must be derived the same way (POSIX `/work/src`, Windows
+  // `C:\work\src`) rather than hardcoded with forward slashes. `base` and
+  // `displayPrefix` are pure string math on the forward-slash token, so they are
+  // identical on every platform and asserted as literals. Keeps the test green on
+  // the Windows CI matrix without weakening it.
+  const expectDir = (...segs: string[]): string => join(...segs);
+
   it('expands ~ to home for the read but keeps ~/ as the display prefix', () => {
     const r = expandPathToken('~/proj/sr', '/home/u', '/work');
-    assert.equal(r.dir, '/home/u/proj');
+    assert.equal(r.dir, expectDir('/home/u', 'proj'));
     assert.equal(r.base, 'sr');
     assert.equal(r.displayPrefix, '~/proj/');
   });
 
   it('resolves ../ against cwd and preserves the typed prefix', () => {
     const r = expandPathToken('../a/b', '/home/u', '/work/pkg');
-    assert.equal(r.dir, '/work/a');
+    assert.equal(r.dir, expectDir('/work/pkg', '../a'));
     assert.equal(r.base, 'b');
     assert.equal(r.displayPrefix, '../a/');
   });
 
   it('reads cwd for a bare basename token', () => {
     const r = expandPathToken('src/in', '/home/u', '/work');
-    assert.equal(r.dir, '/work/src');
+    assert.equal(r.dir, expectDir('/work', 'src'));
     assert.equal(r.base, 'in');
     assert.equal(r.displayPrefix, 'src/');
   });
 
   it('carries a leading @ in the display prefix (mention stays well-formed)', () => {
     const r = expandPathToken('@src/in', '/home/u', '/work');
-    assert.equal(r.dir, '/work/src');
+    assert.equal(r.dir, expectDir('/work', 'src'));
     assert.equal(r.base, 'in');
     assert.equal(r.displayPrefix, '@src/');
   });
 
   it('reads an absolute dir directly', () => {
     const r = expandPathToken('/etc/ho', '/home/u', '/work');
+    // Absolute tokens take the no-`join` branch (the typed prefix is used as-is),
+    // so `dir` stays forward-slash on every platform — assert the literal.
     assert.equal(r.dir, '/etc');
     assert.equal(r.base, 'ho');
     assert.equal(r.displayPrefix, '/etc/');
