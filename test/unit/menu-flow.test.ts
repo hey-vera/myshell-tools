@@ -3405,12 +3405,13 @@ describe('startMenu — auto-goal smart autonomy', () => {
   }
 
   // rank-10 S3 — the preflight-guard flag threads from menu config →
-  // deps.preflightGuard → orchestrate's aggregate overhead guard. We prove it
-  // END-TO-END by combining requiredInvestigation ON with preflightGuard ON:
-  // the intent pass is the ONE allowed optional blocking preflight, so the
-  // rank-9 retrieval is SHED (no LOCAL INVESTIGATION block). OFF, both run.
+  // deps.preflightGuard → orchestrate's aggregate overhead guard. The guard governs
+  // blocking MODEL calls ONLY, so rank-9's LOCAL retrieval (a read-only grep, not a
+  // model call) is NEVER suppressed by it — proving rank 9 + rank 10 are safe to
+  // enable together. We verify END-TO-END that with requiredInvestigation ON the
+  // LOCAL INVESTIGATION block is present regardless of the preflight-guard flag.
   for (const guard of [false, true] as const) {
-    it(`rank-10: experimentalPreflightGuard=${guard} ⇒ retrieval ${guard ? 'is SHED' : 'runs'} when intent already consumes the budget`, async () => {
+    it(`rank-10: experimentalPreflightGuard=${guard} ⇒ rank-9 local retrieval still runs (guard governs model calls only)`, async () => {
       const requests: ProviderRequest[] = [];
       const provider: Provider = {
         id: 'claude',
@@ -3481,19 +3482,13 @@ describe('startMenu — auto-goal smart autonomy', () => {
       const workReq = requests.find((r) => !r.prompt.includes('You extract the INTENT'));
       assert.ok(workReq !== undefined, 'a work provider request was made');
       assert.equal(intentPrompts, 1, 'the one allowed intent extraction still fires');
-      if (guard) {
-        assert.doesNotMatch(
-          workReq.prompt,
-          /LOCAL INVESTIGATION/,
-          'flag ON: rank-9 retrieval is shed because intent consumed the budget',
-        );
-      } else {
-        assert.match(
-          workReq.prompt,
-          /LOCAL INVESTIGATION/,
-          'flag OFF: rank-9 retrieval runs normally',
-        );
-      }
+      assert.match(
+        workReq.prompt,
+        /LOCAL INVESTIGATION/,
+        guard
+          ? 'guard ON: rank-9 LOCAL retrieval still runs — the guard governs model calls, not the local grep'
+          : 'guard OFF: rank-9 retrieval runs normally',
+      );
     });
   }
 

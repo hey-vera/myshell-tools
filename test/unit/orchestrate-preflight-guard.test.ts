@@ -182,7 +182,7 @@ describe('rank-10 — ON path', () => {
     assert.equal(workCalls(deps), 1, 'ON within budget: core answer still runs');
   });
 
-  it('over budget: sheds the rank-9 retrieval while keeping the core answer', async () => {
+  it('does NOT govern the rank-9 local retrieval — a local grep is not a model call, so it always runs', async () => {
     const port = findingsPort('auth module uses tokens');
     const { extractor, counter } = countingExtractor(modelFrame());
     const deps = baseDeps({
@@ -192,10 +192,10 @@ describe('rank-10 — ON path', () => {
       preflightGuard: true,
     });
     const events = await collect(orchestrate(INVESTIGATE_TASK, deps, new AbortController().signal));
-    assert.equal(counter.value, 1, 'over budget: intent extraction still runs (first allowed)');
-    assert.equal(port.counter.value, 0, 'over budget: rank-9 retrieval is shed');
-    assert.doesNotMatch(workPrompt(deps), /LOCAL INVESTIGATION/);
-    assert.equal(workCalls(deps), 1, 'over budget: core answer still runs');
+    assert.equal(counter.value, 1, 'intent extraction runs (the one allowed MODEL call)');
+    assert.equal(port.counter.value, 1, 'rank-9 LOCAL retrieval is NOT shed by the guard (orthogonal)');
+    assert.match(workPrompt(deps), /LOCAL INVESTIGATION/);
+    assert.equal(workCalls(deps), 1, 'core answer still runs');
     assert.ok(events.some((e) => e.type === 'final' && e.success), 'turn succeeds');
   });
 
@@ -211,7 +211,7 @@ describe('rank-10 — ON path', () => {
     assert.equal(workCalls(deps), 1, 'seeded over budget: core answer still runs');
   });
 
-  it('trivial turn sheds every optional preflight (budget 0)', async () => {
+  it('trivial turn sheds the optional intent MODEL call (budget 0)', async () => {
     const port = findingsPort('auth module uses tokens');
     const { extractor, counter } = countingExtractor(modelFrame());
     const deps = baseDeps({
@@ -221,13 +221,16 @@ describe('rank-10 — ON path', () => {
       preflightGuard: true,
     });
     await collect(orchestrate('what is 2+2', deps, new AbortController().signal));
-    // "what is 2+2" is trivial (worker/low), so the guard budget is 0.
+    // "what is 2+2" is trivial (worker/low), so the guard budget is 0 → the intent
+    // MODEL call is shed. The rank-9 local retrieval simply never runs here because a
+    // trivial turn carries no INVESTIGATE_CONTEXT (requiredInvestigation derives 'none'),
+    // NOT because the guard shed it — rank 10 does not govern the local grep.
     assert.equal(counter.value, 0, 'trivial: intent pass is shed');
-    assert.equal(port.counter.value, 0, 'trivial: retrieval is shed');
+    assert.equal(port.counter.value, 0, 'trivial: no INVESTIGATE_CONTEXT → retrieval never runs');
     assert.equal(workCalls(deps), 1, 'trivial: core answer still runs');
   });
 
-  it('pressure 3 matches decideShed: every optional preflight is denied', async () => {
+  it('pressure 3 matches decideShed: the optional intent MODEL call is denied (local retrieval is not governed)', async () => {
     const port = findingsPort('auth module uses tokens');
     const { extractor, counter } = countingExtractor(modelFrame());
     const deps = baseDeps({
@@ -238,12 +241,12 @@ describe('rank-10 — ON path', () => {
       governorPressure: 3,
     });
     await collect(orchestrate(INVESTIGATE_TASK, deps, new AbortController().signal));
-    assert.equal(counter.value, 0, 'pressure 3: intent pass is shed');
-    assert.equal(port.counter.value, 0, 'pressure 3: retrieval is shed');
+    assert.equal(counter.value, 0, 'pressure 3: intent pass is shed (matches decideShed)');
+    assert.equal(port.counter.value, 1, 'pressure 3: the rank-9 LOCAL retrieval still runs (not a model call)');
     assert.equal(workCalls(deps), 1, 'pressure 3: core answer still runs');
   });
 
-  it('unified path counts its ONE extractor and still sheds a later retrieval', async () => {
+  it('unified path counts its ONE extractor; the rank-9 LOCAL retrieval still runs (not governed)', async () => {
     const port = findingsPort('auth module uses tokens');
     const { extractor, counter } = countingExtractor(modelFrame({ routeTier: 'ic' }));
     const deps = baseDeps({
@@ -255,7 +258,7 @@ describe('rank-10 — ON path', () => {
     });
     await collect(orchestrate(INVESTIGATE_TASK, deps, new AbortController().signal));
     assert.equal(counter.value, 1, 'unified: one extractor call counted');
-    assert.equal(port.counter.value, 0, 'unified+over budget: retrieval shed');
-    assert.doesNotMatch(workPrompt(deps), /LOCAL INVESTIGATION/);
+    assert.equal(port.counter.value, 1, 'rank-9 LOCAL retrieval runs — the guard governs model calls only');
+    assert.match(workPrompt(deps), /LOCAL INVESTIGATION/);
   });
 });
