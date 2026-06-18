@@ -4769,7 +4769,7 @@ export async function runChatLoop(
         // This keeps /goal as explicit seed, normal chat as seamless "one chat to
         // rule them all" elite partner.
         const projectKeyForGoal = await resolveProjectKeyOnce();
-        let rawParkedId: string | undefined;
+        let _rawParkedId: string | undefined;
         try {
           const raw = await goalStore.create({
             title: goalText,  // raw user words as starting point
@@ -4779,7 +4779,7 @@ export async function runChatLoop(
             conversationId: convId,
             source: 'user-explicit',
           });
-          rawParkedId = raw.id;
+          _rawParkedId = raw.id;
           await syncBoard();
           out.write(dim(`  Raw goal parked as inactive (${raw.id.slice(0,8)}). Digesting to smart goal...\n`, out.color));
         } catch {

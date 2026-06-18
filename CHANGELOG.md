@@ -4,6 +4,13 @@ All notable changes to **myshell-tools** are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.150.0] - 2026-06-18
+### Seamless "one chat to rule them all" + /goal power-user raw capture
+- Normal chat now auto-digests work intent (including soft signals like "plan") into smart goals via prepare/judge/planner, launching the full engine (scheduler, manager cycle, verify) instead of failing on low-tier.
+- `/goal` explicitly creates raw user goal as parked/inactive first (for user error/loop accounting), then digests to smart internal goal treated as any other in system.
+- hasWorkIntent updated to catch manager soft signals for proactive goal digestion in chat.
+- All previous A++++ (smart auto scheduler default, live @, DAG viz, pressure, parallel, anti-drift, etc.) included.
+
 ## [3.149.0] - 2026-06-18
 ### A++++ push (full golden + audit recs)
 - Menu refactor started (extracted scheduler decision + goal loop wiring patterns; god-file reduced toward maintainability).
