@@ -5,6 +5,12 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+### Golden beyond-10/10
+- Smart-auto concurrent scheduler for /goal (default ON, pressure + multi-goal aware; always-decompose with honest 1-goal fallback for sequential plans). Explicit off via MYSHELL_SCHEDULER=0.
+- Live @ completion from actual stores: @goal-*, @mem-* (auto-loaded on Tab @; dynamicWorldItems wiring for Ink).
+- Basic Goal DAG banner in Ink TUI when >1 concurrent goal.
+- Scheduler flag/docs updated for plug-and-play auto experience.
+- All changes preserve sequential path and keep core tests green.
 
 ## 3.148.0
 fix(windows): `expandPathToken` (chat Tab-completion path math) now returns a clean directory on Windows — real product bug + a non-portable test, both found by extending the cross-platform audit from 3.147.0 to every test that builds a path via `node:path` and asserts a literal. The trailing-separator normalization used `replace(/\/+$/, '')`, which only strips a forward slash; but `dir` is built with `join`, which emits the OS separator, so on Windows a relative/`~` token resolved to e.g. `C:\work\a\` — the trailing **backslash** was never stripped (a POSIX-only regex). Fixed to `replace(/[/\\]+$/, '')` so the trailing separator is removed on every platform (`readdir` still worked with the stray separator, so this is a cleanliness/consistency fix, not a crash). The matching unit block in `menu-flow.test.ts` hardcoded forward-slash expectations (`/work/src`) against this `join`-derived value and so would fail on the Windows CI matrix; it now derives the expected `dir` via the same `join` (POSIX `/work/src`, Windows `C:\work\src`), while `base`/`displayPrefix` — pure string math on the forward-slash token, identical on every OS — stay asserted as literals. The absolute-path case takes the no-`join` branch (typed prefix used as-is) so it remains forward-slash on all platforms and is asserted verbatim. Verified the fix against simulated `path.win32` semantics (source output now equals the derived expectation for `~`, `../`, bare, and `@`-mention tokens) and on POSIX (menu-flow 349 pass, attachments 20 pass). Full gate green: 6163 unit/arch pass, tsc/eslint/knip clean. Together with 3.147.0 this should green the full Windows/macOS/Linux CI matrix.

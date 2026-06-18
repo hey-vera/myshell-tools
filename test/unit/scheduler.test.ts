@@ -192,22 +192,22 @@ describe('requeueBackoffMs — exponential growth + cap', () => {
 // Flag
 // ---------------------------------------------------------------------------
 
-describe('schedulerEnabled — default OFF, explicit opt-in', () => {
-  it('defaults OFF with no env and no config', () => {
-    assert.equal(schedulerEnabled({}, {}), false);
-    assert.equal(schedulerEnabled(undefined, undefined), false);
+describe('schedulerEnabled — smart auto default (ON), explicit off supported', () => {
+  it('defaults ON (smart auto) with no env and no config', () => {
+    assert.equal(schedulerEnabled({}, {}), true);
+    assert.equal(schedulerEnabled(undefined, undefined), true);
   });
-  it('ON only for explicit opt-in env values', () => {
+  it('ON for explicit opt-in env values', () => {
     for (const v of ['1', 'true', 'TRUE', 'on', 'yes', ' On ']) {
       assert.equal(schedulerEnabled({ MYSHELL_SCHEDULER: v }, {}), true, `expected ${v} → true`);
     }
   });
-  it('stays OFF for non-opt-in values', () => {
-    for (const v of ['0', 'false', 'off', 'no', '', 'nope']) {
+  it('OFF only for explicit opt-out values (forces sequential)', () => {
+    for (const v of ['0', 'false', 'off', 'no', ' Off ']) {
       assert.equal(schedulerEnabled({ MYSHELL_SCHEDULER: v }, {}), false, `expected ${v} → false`);
     }
   });
-  it('ON when config.experimentalScheduler === true', () => {
+  it('ON when config.experimentalScheduler === true, OFF when false', () => {
     assert.equal(schedulerEnabled({}, { experimentalScheduler: true }), true);
     assert.equal(schedulerEnabled({}, { experimentalScheduler: false }), false);
   });

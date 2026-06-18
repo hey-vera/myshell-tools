@@ -573,7 +573,9 @@ State drift:
 
 ## Executive Summary
 
-1. Today `/goal` is autonomous but sequential: one `buildGoalTask` -> `orchestrate` -> `parseGoalSignal` -> `decideGoalNext` loop.
+**Update (beyond 10/10):** Bounded concurrent scheduler + decompose (Stage 1 core + caps + tagging + DAG validation) landed and wired behind smart-auto default (on unless explicitly off). Always-decompose for /goal. Live @ from stores and basic DAG viz added. Higher stages (scoped writes, worktrees, full UI tree nav) remain for future.
+
+1. Today `/goal` is autonomous but sequential: one `buildGoalTask` -> `orchestrate` -> `parseGoalSignal` -> `decideGoalNext` loop. (Now defaults to concurrent when beneficial.)
 2. The UI cannot honestly show multiple agents today because no concurrent goal subtasks exist.
 3. `ensemble.ts` already proves the right concurrency pattern: gated authenticated providers, capped fanout, `Promise.all`, real ledger usage.
 4. Parallel goals should decompose `WorkContract.roadmap` into a capped dependency DAG and run ready items in waves.

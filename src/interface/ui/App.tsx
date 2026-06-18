@@ -578,6 +578,9 @@ function AppBody({
             ))}
           </Box>
         ) : null}
+        {uiState.goals.length > 1 && (
+          <Text dimColor>  Goal DAG active — {uiState.goals.length} branches (use review j/k to inspect)</Text>
+        )}
         <StatusBlock
           state={uiState}
           color={color}
@@ -598,6 +601,8 @@ function AppBody({
           info={inputInfoText}
           visible={chatActive}
           suspended={suspended}
+          pressure={uiState?.pressure ?? 0}
+          dynamicWorldItems={uiState?.dynamicWorldItems ?? []}
           onStdinControl={bridge.attachStdinControl}
           onEscape={() => bridge.interrupt()}
           readPending={() => bridge._keyResolver != null}
@@ -623,6 +628,8 @@ function AppBody({
         onEscape={() => bridge.interrupt()}
         readPending={() => bridge._keyResolver != null}
         onReadKey={(input, key) => onCapturedKey(normalizeInkKey(input, key))}
+        pressure={0}
+        dynamicWorldItems={[]}
       />
     </Box>
   );

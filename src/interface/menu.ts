@@ -203,7 +203,7 @@ import {
 import { inkEnabled } from './ui/flag.js';
 import type { StartupInputBuffer } from './startup-input.js';
 import { STARTUP_INPUT_CARRIER_ENV } from './startup-input.js';
-import { schedulerEnabled } from './ui/scheduler-flag.js';
+import { schedulerEnabled, schedulerExplicitlyOff } from './ui/scheduler-flag.js';
 import { itemParkingEnabled } from './ui/item-park-flag.js';
 import { governorEnabled } from './ui/governor-flag.js';
 import { verifyEnabled } from './ui/verify-flag.js';
@@ -3933,97 +3933,68 @@ export async function runChatLoop(
           await ctx.store.rename(convId, goalLabel.length <= 80 ? goalLabel : goalLabel.slice(0, 80));
         }
 
-        // ---- FLAG-GATED: bounded concurrent multi-goal SCHEDULER --------------
-        // DEFAULT OFF. When the user has opted in (MYSHELL_SCHEDULER / config), run
-        // the goal through `runSchedule` instead of the sequential loop. `decompose`
-        // turns the confirmed plan into 1..MAX_GOALS brain-validated GoalSpecs + a
-        // dependency DAG; `runSchedule` runs the independent (DAG-root) goals
-        // CONCURRENTLY, queueing the rest until their prerequisites finish.
-        //
-        // BOUNDED — NO OVERKILL (Phase D, D6): concurrency is hard-capped by
-        // `crossGoalCap = min(activeLimit, tuningCeiling, callBudgetCeiling,
-        // genuineParallelGoalCount)`. The pressure/provider `activeLimit` lives
-        // INSIDE the scheduler (planSchedule); here we compute the other three
-        // ceilings and pass their `min` as `deps.maxActive`, so planSchedule's clamp
-        // mins it with the live `activeLimit` to yield the exact `crossGoalCap`.
-        // Because it is a four-way `min`, NO single high signal adds a goal: a
-        // single (or strictly-sequential) decomposition ⇒ genuineParallelGoalCount 1
-        // ⇒ cap 1 ⇒ one goal, one phase, byte-identical to the single-goal path; low
-        // tuning pins the cap to 1 regardless of goal count; `BASE_ACTIVE_LIMIT = 2`
-        // stays the absolute fleet ceiling (the cap only ever LOWERS the limit).
-        //
-        // HARD CONSTRAINT (owner): the scheduler runs specs VERBATIM, and every spec
-        // is handed to orchestrate (goalTurn:true) so the brain re-validates each
-        // goal at run time — there is NO path here that promotes a parked/stale
-        // roadmap into a spec without brain re-validation.
-        if (schedulerEnabled(process.env, mutableCtx.config)) {
+        // ---- SMART AUTO CONCURRENT SCHEDULER (golden: auto, plug-and-play) ---
+        // Always-decompose for /goal (richer fan when genuinely parallel).
+        // decompose() is cost-honest: returns exactly 1 spec for sequential plans.
+        // Then decide useConcurrentScheduler:
+        //   - explicit OFF (MYSHELL_SCHEDULER=0/false) forces sequential
+        //   - schedulerEnabled (now smart-default) OR multi-goal OR low pressure (<2)
+        //     → use runSchedule (bounded DAG concurrent)
+        //   - otherwise fall through to classic sequential runGoalLoop
+        // This gives "pretty much auto" without overkill: 1-goal plans stay ~identical
+        // to sequential (scheduler with 1 root behaves the same).
+
+        const schedAc = new AbortController();
+        currentAc = schedAc;
+
+        const decomposeBaseDeps = buildDeps([]);
+        let goalSpecs: GoalSpec[];
+        try {
+          goalSpecs = await decompose(
+            goalText,
+            {
+              ...(decomposeBaseDeps.environmentContext !== undefined &&
+              decomposeBaseDeps.environmentContext.length > 0
+                ? { repoMap: decomposeBaseDeps.environmentContext }
+                : {}),
+            },
+            {
+              providers: decomposeBaseDeps.providers,
+              policy: decomposeBaseDeps.policy,
+              cwd: decomposeBaseDeps.cwd,
+              timeoutMs: decomposeBaseDeps.timeoutMs,
+              sandbox: helperSandbox(decomposeBaseDeps.sandbox),
+              ...(decomposeBaseDeps.availableModels !== undefined
+                ? { availableModels: decomposeBaseDeps.availableModels }
+                : {}),
+              ...(decomposeBaseDeps.authenticatedProviders !== undefined
+                ? { authenticatedProviders: decomposeBaseDeps.authenticatedProviders }
+                : {}),
+            },
+            schedAc.signal,
+          );
+        } catch {
+          goalSpecs = [{ id: 'g0', title: goalText }];
+        }
+
+        const explicitOff = schedulerExplicitlyOff(process.env, mutableCtx.config);
+        const useConcurrentScheduler = !explicitOff && (
+          schedulerEnabled(process.env, mutableCtx.config) ||
+          goalSpecs.length > 1 ||
+          currentPressure() < 2
+        );
+
+        if (useConcurrentScheduler) {
           const authedProviders: ProviderId[] = [];
           if (mutableCtx.env.claude.authenticated) authedProviders.push('claude');
           if (mutableCtx.env.codex.authenticated) authedProviders.push('codex');
           if (mutableCtx.env.opencode.authenticated) authedProviders.push('opencode');
           if (mutableCtx.env.grok.authenticated) authedProviders.push('grok');
 
-          const schedAc = new AbortController();
-          currentAc = schedAc;
+          // schedAc + currentAc already set above for decompose + run
 
-          // ---- PLAN DECOMPOSITION ------------------------------------------
-          // Turn the CONFIRMED plan into N brain-validated GoalSpecs + a dependency
-          // DAG via ONE model call at the strongest admissible tier (decompose()
-          // reuses route()/the provider machinery; subscription-clean, fail-soft).
-          // COST HONESTY: decompose() returns ONE goal for a genuinely
-          // sequential/single plan — it never forces fan-out — so a non-splittable
-          // confirmed plan runs exactly like today's single-goal path, just routed
-          // through the scheduler's merge/cancel machinery.
-          const decomposeBaseDeps = buildDeps([]);
-          let goalSpecs: GoalSpec[];
-          try {
-            goalSpecs = await decompose(
-              goalText,
-              {
-                ...(decomposeBaseDeps.environmentContext !== undefined &&
-                decomposeBaseDeps.environmentContext.length > 0
-                  ? { repoMap: decomposeBaseDeps.environmentContext }
-                  : {}),
-              },
-              {
-                providers: decomposeBaseDeps.providers,
-                policy: decomposeBaseDeps.policy,
-                cwd: decomposeBaseDeps.cwd,
-                timeoutMs: decomposeBaseDeps.timeoutMs,
-                sandbox: helperSandbox(decomposeBaseDeps.sandbox),
-                ...(decomposeBaseDeps.availableModels !== undefined
-                  ? { availableModels: decomposeBaseDeps.availableModels }
-                  : {}),
-                ...(decomposeBaseDeps.authenticatedProviders !== undefined
-                  ? { authenticatedProviders: decomposeBaseDeps.authenticatedProviders }
-                  : {}),
-              },
-              schedAc.signal,
-            );
-          } catch {
-            // decompose() is fail-soft, but never let a decomposition hiccup abort
-            // the goal run — degrade to the single-goal whole-plan spec. The
-            // scheduler runs specs VERBATIM and `spec.title` doubles as this fallback
-            // spec's WORK INPUT (buildGoalTask(spec.title, …) in runGoal below), so it
-            // MUST stay the full raw text here — never the concise label — or the
-            // work would lose the user's full intent. (Concise-label titling for the
-            // flag-off-by-default scheduler path is out of scope for this fix.)
-            goalSpecs = [{ id: 'g0', title: goalText }];
-          }
 
-          // ---- CROSS-GOAL CAP (Phase D, D6) --------------------------------
-          // Compute the three NON-pressure ceilings; their `min` is forwarded as
-          // `deps.maxActive`, and planSchedule mins THAT with the live
-          // pressure/provider `activeLimit` to yield the exact crossGoalCap.
-          // Source the resolved intensity + governor budget from the SAME places
-          // judgeGoal (Phase B2/C4) does, so the cap is consistent with planning.
-          //  - tuningCeiling: regime → 1|2 (focused/pair → 1, fleet* → 2). Low
-          //    tuning pins concurrency to 1, exactly today.
-          //  - callBudgetCeiling: governor headroom (mode budget shrunk by live
-          //    pressure), then collapsed to the 1-vs-≥2 ceiling the planner uses.
-          //  - genuineParallelGoalCount: independent runnable goals — DAG roots
-          //    with no `dependsOn` (a single goal, or an all-dependent chain with
-          //    one root, ⇒ 1 ⇒ cap 1 ⇒ one goal at a time).
+          // CROSS-GOAL CAP (same logic)
           const schedResolved = resolveIntensity(
             (await ctx.store.list()).find((meta) => meta.id === convId),
             mutableCtx.config,
@@ -4044,34 +4015,28 @@ export async function runChatLoop(
           const tuningCeiling = concurrencyCeilingForRegime(
             regimeForIntensity(schedResolvedIntensity),
           );
-          // Governor headroom, sourced exactly like judgeGoal: mode budget (quality
-          // -first 3 / balanced 2 / else 1) shrunk by live pressure, floored at 1.
-          // The planner consumes 1-vs-≥2 (panel discipline), so the concurrency
-          // ceiling is budget 1 → 1, ≥2 → 2 (never above BASE_ACTIVE_LIMIT).
           const schedEffectiveMode: Mode =
             mutableCtx.config.mode ?? resolveAutoMode(mutableCtx.env);
           const schedModeBudget =
             schedEffectiveMode === 'quality-first' ? 3 : schedEffectiveMode === 'balanced' ? 2 : 1;
           const schedTurnCallBudget = Math.max(1, schedModeBudget - currentPressure());
           const callBudgetCeiling = schedTurnCallBudget >= 2 ? 2 : 1;
-          // DEMAND: independent (DAG-root) goals that can start immediately — those
-          // with no `dependsOn` edge to a sibling in this spec set.
           const goalIdSet = new Set(goalSpecs.map((s) => s.id));
           const genuineParallelGoalCount = goalSpecs.filter(
             (s) => (s.dependsOn ?? []).filter((d) => d !== s.id && goalIdSet.has(d)).length === 0,
           ).length;
           const maxActive = Math.min(tuningCeiling, callBudgetCeiling, genuineParallelGoalCount);
 
-          // Per-goal phase runner: ONE orchestrate() per phase (orchestrate stays
-          // the per-phase engine, untouched). Reloads history per phase like the
-          // sequential loop so the model sees its own progress.
-          //
-          // HARD CONSTRAINT (owner): each goal is run THROUGH THE BRAIN — every
-          // spec is handed to orchestrate (goalTurn:true), which re-runs intent/
-          // brain validation on the spec title before acting. So a goal carved out
-          // of a plan (or, later, promoted from a parked roadmap) is re-validated
-          // here at run time; the scheduler never executes a raw stored roadmap.
-          // Each goal gets its OWN per-goal contract seeded from its own title.
+          if (goalSpecs.length > 1) {
+            out.write(
+              dim(`  Decomposed plan into ${goalSpecs.length} goals (parallel where independent):\n`, out.color),
+            );
+            for (const g of goalSpecs.slice(0, 4)) {
+              out.write(dim(`    • ${g.title}\n`, out.color));
+            }
+            if (goalSpecs.length > 4) out.write(dim(`    … +${goalSpecs.length - 4} more\n`, out.color));
+          }
+
           const runGoal: RunGoalPhase = (spec, sig) => {
             const phaseDeps = (async (): Promise<OrchestrateDeps> => {
               let hist: SessionEntry[] = [];
@@ -4086,10 +4051,6 @@ export async function runChatLoop(
                 await resolveEnvironmentOnce(),
               );
             })();
-            // Wrap the async-deps resolution into the generator (orchestrate needs
-            // resolved deps); keep the per-phase task contracted like the loop. The
-            // per-goal contract is seeded from THIS goal's title (not the whole
-            // plan), so the brain validates + works each goal on its own terms.
             const goalSpecContract = capContract({ version: 1, objective: spec.title });
             return (async function* (): AsyncGenerator<CoreEvent> {
               const d = await phaseDeps;
@@ -4100,11 +4061,6 @@ export async function runChatLoop(
                   ...d,
                   workContract: goalSpecContract,
                   goalTurn: true,
-                  // PHASE 9: when a goal carries an isolated worktree cwd (the Rival
-                  // Tribunal built one for it), run the goal IN that worktree so a
-                  // per-rival build never touches the shared tree. Absent → the shared
-                  // repo cwd, today's behavior (fully additive — byte-for-byte unchanged
-                  // for every non-tribunal goal).
                   ...(spec.worktreeCwd !== undefined ? { cwd: spec.worktreeCwd } : {}),
                 },
                 sig,
@@ -4121,7 +4077,6 @@ export async function runChatLoop(
               buildDeps([]),
               schedAc.signal,
               mutableCtx.config.verbosity ?? 'normal',
-              // Feed the merged goalId-tagged scheduler stream to the SAME renderer.
               runSchedule(
                 goalSpecs,
                 { runGoal, authedProviders, maxActive },

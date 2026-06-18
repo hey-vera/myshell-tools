@@ -189,6 +189,10 @@ export interface InputBoxProps {
    * {@link INPUT_ROWS} before the first measurement. Optional (tests may omit it).
    */
   readonly onMeasureRows?: ((rows: number) => void) | undefined;
+  /** Current pressure (0-3) for smart placeholder / completion tuning. */
+  readonly pressure?: number;
+  /** Live dynamic items for @-mentions (@goal, @board, etc) from stores. */
+  readonly dynamicWorldItems?: ReadonlyArray<{ prefix: string; items: readonly string[] }>;
 }
 
 /** The slice of Ink's `key` object {@link InputBoxProps.onReadKey} forwards (a
@@ -287,6 +291,8 @@ export function InputBox({
   onReadKey,
   rows,
   onMeasureRows,
+  pressure = 0,
+  dynamicWorldItems,
 }: InputBoxProps): React.ReactElement {
   const { setRawMode, isRawModeSupported } = useStdin();
   const [value, setValue] = useState('');
@@ -566,7 +572,7 @@ export function InputBox({
       // No candidates yet → ask the engine. Fire-and-forget; ignore a stale resolve.
       const requestedValue = value;
       const requestedCursor = cursor;
-      void completeChat(lineToCursor).then(([hits]) => {
+      void completeChat(lineToCursor, { dynamicWorldItems: dynamicWorldItems ?? [] }).then(([hits]) => {
         // Race guard: drop the resolve if the buffer/cursor moved since the request
         // (compare against the LIVE refs, not the stale captured render state).
         if (valueRef.current !== requestedValue || cursorRef.current !== requestedCursor) return;

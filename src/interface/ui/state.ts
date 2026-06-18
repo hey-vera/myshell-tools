@@ -260,6 +260,10 @@ export interface UiState {
    * stay env-free and table-testable.
    */
   readonly boardEnabled: boolean;
+  /** Optional pressure signal (0-3) for UI tuning. */
+  readonly pressure?: number;
+  /** Optional live dynamic world items for @-mention completion. */
+  readonly dynamicWorldItems?: ReadonlyArray<{ prefix: string; items: readonly string[] }>;
 }
 
 // ---------------------------------------------------------------------------
@@ -300,6 +304,8 @@ export const initialState: UiState = {
   tokens: { turn: 0, session: 0 },
   board: [],
   boardEnabled: false,
+  pressure: 0,
+  dynamicWorldItems: [],
 };
 
 // ---------------------------------------------------------------------------

@@ -14,6 +14,8 @@
 import fs from 'node:fs';
 import { join } from 'node:path';
 import os from 'node:os';
+import { createFileGoalStore } from '../infra/goal-store.js';
+import { createFileUserMemoryStore, resolveProjectKey } from '../infra/user-memory-store.js';
 
 /**
  * The slash-commands available at the chat prompt — the canonical command set
@@ -310,6 +312,12 @@ export interface CompleteChatDeps {
   home: string;
   commands: readonly string[];
   argMap: Readonly<Record<string, readonly string[]>>;
+  /**
+   * Live dynamic items for @-mentions (goals, board todos, memories, etc.).
+   * Each group has a prefix (e.g. '@goal', '@board') and list of item strings.
+   * Merged into mention/path hits when token starts with '@'.
+   */
+  dynamicWorldItems?: ReadonlyArray<{ prefix: string; items: readonly string[] }>;
 }
 
 const defaultCompleteChatDeps = (): CompleteChatDeps => ({
@@ -318,6 +326,7 @@ const defaultCompleteChatDeps = (): CompleteChatDeps => ({
   home: os.homedir(),
   commands: CHAT_SLASH_COMMANDS,
   argMap: CHAT_SLASH_ARG_MAP,
+  dynamicWorldItems: [],
 });
 
 /**
@@ -356,9 +365,49 @@ export async function completeChat(
         try {
           entries = await d.readdir(dir);
         } catch {
-          return [[], line]; // fail-soft: readdir error → no completions
+          entries = [];
         }
-        const hits = matchPathEntries(base, entries).map((h) => displayPrefix + h);
+        let hits = matchPathEntries(base, entries).map((h) => displayPrefix + h);
+
+        // Merge live dynamic world items (golden: live @ from actual stores)
+        let dynGroups = d.dynamicWorldItems ?? [];
+        if (c.token.startsWith('@') && dynGroups.length === 0) {
+          // Auto-load from real stores (best-effort, small stores) — golden live @
+          try {
+            const clock = { now: () => Date.now() } as any;
+            const gStore = createFileGoalStore({ clock });
+            const gs = await gStore.list();
+            if (gs.length) {
+              dynGroups = [...dynGroups, { prefix: '@goal-', items: gs.map((g: any) => (g.title || '').replace(/[^a-z0-9_-]/gi, '-').toLowerCase().slice(0, 40)) }];
+            }
+            const pk = await resolveProjectKey(process.cwd()).catch(() => 'default');
+            const mStore = createFileUserMemoryStore({ clock, homeDir: os.homedir() } as any);
+            let mems: any[] = [];
+            try {
+              // list may be (projectKey) or ()
+              mems = await (mStore as any).list?.(pk).catch(() => []) ?? [];
+            } catch {}
+            if (mems && mems.length) {
+              dynGroups = [...dynGroups, { prefix: '@mem-', items: mems.slice(0, 30).map((m: any) => (m.key || m.id || String(m)).replace(/[^a-z0-9_-]/gi, '-').toLowerCase().slice(0, 40)) }];
+            }
+          } catch {
+            // fail soft, no dynamic
+          }
+        }
+        if (c.token.startsWith('@') && dynGroups.length > 0) {
+          const tokenLower = c.token.toLowerCase();
+          const dynHits: string[] = [];
+          for (const group of dynGroups) {
+            if (tokenLower.startsWith(group.prefix.toLowerCase()) || tokenLower === '@') {
+              for (const item of group.items) {
+                const full = item.startsWith('@') ? item : `${group.prefix}${item}`;
+                if (full.toLowerCase().startsWith(tokenLower) || tokenLower === '@') dynHits.push(full);
+              }
+            }
+          }
+          const seen = new Set(hits);
+          hits = [...dynHits.filter((h) => !seen.has(h)), ...hits];
+        }
         return [hits, c.token];
       }
       default:

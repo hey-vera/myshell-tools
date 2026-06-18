@@ -217,11 +217,10 @@ export interface AppConfig {
    */
   experimentalBasic?: boolean;
   /**
-   * EXPERIMENTAL bounded concurrent multi-goal SCHEDULER (default off). When true
-   * (or with `MYSHELL_SCHEDULER` truthy in the environment), the /goal runner
-   * routes the confirmed goal through `runSchedule` (src/core/scheduler.ts)
-   * instead of the sequential single-goal loop. This phase decomposes to exactly
-   * ONE brain-validated GoalSpec, so live behaviour matches the sequential path;
+   * Bounded concurrent multi-goal SCHEDULER (smart auto default). When the env/config
+   * enables (or default), /goal decomposes via `decompose` + runs via `runSchedule`
+   * (bounded, pressure-aware). Explicit off with MYSHELL_SCHEDULER=0. Single-goal plans
+   * stay equivalent to sequential.
    * it exercises the merge/cancel seam ahead of real >1-goal decomposition. The
    * legacy path is unchanged when this is absent/false. See
    * src/interface/ui/scheduler-flag.ts.
