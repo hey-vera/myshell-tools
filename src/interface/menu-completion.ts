@@ -17,6 +17,10 @@ import os from 'node:os';
 import { createFileGoalStore } from '../infra/goal-store.js';
 import { createFileUserMemoryStore, resolveProjectKey } from '../infra/user-memory-store.js';
 import { createFileRulesStore } from '../infra/rules-store.js';
+import type { Goal } from '../core/goal-todo.js';
+import type { UserMemoryFact } from '../core/user-memory.js';
+import type { Rule } from '../core/rules.js';
+import type { Clock } from '../core/types.js';
 
 /**
  * The slash-commands available at the chat prompt — the canonical command set
@@ -375,9 +379,14 @@ export async function completeChat(
         if (c.token.startsWith('@') && dynGroups.length === 0) {
           // Auto-load from real stores (best-effort, small stores) — final smartness: richer live @
           try {
-            const clock = { now: () => Date.now() } as any;
+            const clock: Clock = {
+              now: () => Date.now(),
+              isoNow: () => new Date().toISOString(),
+              uuid: () => 'mock-uuid-' + Date.now(),
+              random: () => Math.random(),
+            };
             const gStore = createFileGoalStore({ clock });
-            const gs = await gStore.list();
+            const gs: Goal[] = await gStore.list();
             if (gs.length) {
               const goalItems: string[] = [];
               const todoItems: string[] = [];
@@ -401,28 +410,27 @@ export async function completeChat(
               }
             }
             const pk = await resolveProjectKey(process.cwd()).catch(() => 'default');
-            const mStore = createFileUserMemoryStore({ clock, homeDir: os.homedir() } as any);
-            let mems: any[] = [];
-            try {
-              mems = await (mStore as any).list?.(pk).catch(() => []) ?? [];
-            } catch {}
-            if (mems && mems.length) {
-              const memItems = mems.slice(0, 30).map((m: any) => (m.key || m.id || String(m)).replace(/[^a-z0-9_-]/gi, '-').toLowerCase().slice(0, 32));
+            const mStore = createFileUserMemoryStore({ clock, homeDir: os.homedir() });
+            const mems: UserMemoryFact[] = await mStore.listAll(pk ? { scope: 'project', projectKey: pk } : undefined).catch(() => []);
+            if (mems.length) {
+              const memItems = mems.slice(0, 30).map((m: UserMemoryFact) => (m.id || m.text || '').replace(/[^a-z0-9_-]/gi, '-').toLowerCase().slice(0, 32));
               dynGroups = [...dynGroups, { prefix: '@mem-', items: memItems }];
               dynGroups = [...dynGroups, { prefix: '@', items: memItems }];
             }
             // Rules for @rule-
             try {
               const rStore = createFileRulesStore({ clock });
-              const rs = await rStore.list().catch(() => []);
+              const rs: Rule[] = await rStore.list().catch(() => []);
               if (rs.length) {
-                const ruleItems = rs.slice(0, 20).map((r: any) => (r.trigger?.text || r.id || '').replace(/[^a-z0-9_-]/gi, '-').toLowerCase().slice(0, 32)).filter(Boolean);
+                const ruleItems = rs.slice(0, 20).map((r: Rule) => (r.text || r.id || '').replace(/[^a-z0-9_-]/gi, '-').toLowerCase().slice(0, 32)).filter(Boolean);
                 if (ruleItems.length) {
                   dynGroups = [...dynGroups, { prefix: '@rule-', items: ruleItems }];
                   dynGroups = [...dynGroups, { prefix: '@', items: ruleItems }];
                 }
               }
-            } catch {}
+            } catch {
+              // no rules, ignore
+            }
           } catch {
             // fail soft, no dynamic
           }
