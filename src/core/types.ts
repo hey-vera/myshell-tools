@@ -1058,6 +1058,8 @@ export type CoreEvent =
       readonly type: 'goal-enqueue';
       readonly id: string;
       readonly title: string;
+      /** Optional deps from decompose/GoalSpec for full DAG viz. */
+      readonly dependsOn?: readonly string[];
     }
   | {
       /**

@@ -444,6 +444,7 @@ export type Action =
       readonly type: 'goal/enqueue';
       readonly goalId: string;
       readonly label: string;
+      readonly dependsOn?: readonly string[];
     }
   // --- goal/phase: set a goal's phase {current,total} for the "phase X/Y" badge
   //     (multi-goal seam). Additive — no emitter today. ---

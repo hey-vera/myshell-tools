@@ -4,7 +4,7 @@
  * Coverage:
  *  - PURE planSchedule: activeLimit math, pressure lowering, partition, clamps.
  *  - PURE requeueBackoffMs: exponential growth + cap.
- *  - schedulerEnabled flag: default OFF, explicit opt-in.
+ *  - schedulerEnabled flag: smart auto default ON (for /goal), explicit OFF supported.
  *  - runSchedule (fake per-goal generators, no real model calls):
  *      · 3 goals, activeLimit=2 → exactly 2 concurrent, 3rd queued then pulled in.
  *      · every event correctly goalId-tagged; goal-enqueue + goal-phase emitted.

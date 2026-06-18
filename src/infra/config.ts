@@ -28,7 +28,8 @@ export type FirstTouchKey =
   | 'intentReflect' // first "here's what I understand" intent reflection
   | 'panelWaiting' // first "Waiting on N models" panel status
   | 'recap' // first ※ recap on resume
-  | 'apeEngage'; // first time APE visibly chose to ask/plan/investigate
+  | 'apeEngage' // first time APE visibly chose to ask/plan/investigate
+  | 'parallelGoal'; // first smart parallel goal run (concurrent scheduler)
 
 export interface AppConfig {
   onboarded: boolean;
@@ -217,10 +218,10 @@ export interface AppConfig {
    */
   experimentalBasic?: boolean;
   /**
-   * Bounded concurrent multi-goal SCHEDULER (smart auto default). When the env/config
-   * enables (or default), /goal decomposes via `decompose` + runs via `runSchedule`
-   * (bounded, pressure-aware). Explicit off with MYSHELL_SCHEDULER=0. Single-goal plans
-   * stay equivalent to sequential.
+   * Bounded concurrent multi-goal SCHEDULER (smart auto default ON). When MYSHELL_SCHEDULER
+   * (or config) enables or default, /goal always decomposes (cost-honest: 1 goal for sequential)
+   * then runs via `runSchedule` with pressure/provider caps, DAG queuing, per-goal brain re-val.
+   * Explicit OFF: MYSHELL_SCHEDULER=0/false. MYSHELL_PARALLEL accepted as alias.
    * it exercises the merge/cancel seam ahead of real >1-goal decomposition. The
    * legacy path is unchanged when this is absent/false. See
    * src/interface/ui/scheduler-flag.ts.

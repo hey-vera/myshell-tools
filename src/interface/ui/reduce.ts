@@ -354,6 +354,7 @@ export function reduce(state: UiState, action: Action): UiState {
             tier: action.tier,
             ...(action.risk !== undefined ? { risk: action.risk } : {}),
             agents: [...g.agents, agent],
+            // preserve dependsOn if present
           };
         });
       } else {
@@ -393,6 +394,7 @@ export function reduce(state: UiState, action: Action): UiState {
         // A queued goal has no routed tier yet; default to the lightest tier for
         // the dim badge (the real tier lands when its tier-start attaches).
         tier: 'worker',
+        ...(action.dependsOn && action.dependsOn.length ? { dependsOn: action.dependsOn } : {}),
       };
       return { ...state, turnActive: true, goals: [...state.goals, goal] };
     }

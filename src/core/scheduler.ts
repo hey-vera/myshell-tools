@@ -35,10 +35,11 @@
  * provider that is not throttled. We never exceed the honest concurrency ceiling
  * (≤ authed providers).
  *
- * SCOPE (this phase): the scheduler ENGINE only, behind a default-OFF flag
- * ({@link schedulerEnabled}). It does NOT decompose a plan into goals and does
- * NOT render the plan-panel UI and is NOT yet wired into the live /goal runner —
- * those are SEPARATE next phases. It runs the goal specs it is GIVEN.
+ * SCOPE: the scheduler ENGINE for bounded concurrent multi-goal runs. It is now
+ * smart-auto by default for /goal (see scheduler-flag.ts and menu.ts wiring).
+ * Decompose is always called for goals (cost-honest: returns 1 for sequential).
+ * It does NOT render the plan-panel UI. Runs the goal specs it is GIVEN, with
+ * pressure/provider caps, DAG queuing, per-goal re-validation via orchestrate.
  *
  * This module is PURE except for the injected-deps I/O in {@link runSchedule}
  * (same as ensemble/hedge): no fs/child_process, no Date.now/Math.random.
@@ -369,7 +370,7 @@ export async function* runSchedule(
   // 1. Declare every goal up front so all cards appear (queued) immediately, with
   //    an honest 0/<planned> seed.
   for (const spec of goalSpecs) {
-    yield { type: 'goal-enqueue', id: spec.id, title: spec.title };
+    yield { type: 'goal-enqueue', id: spec.id, title: spec.title, ...(spec.dependsOn && spec.dependsOn.length ? { dependsOn: spec.dependsOn } : {}) };
     yield { type: 'goal-phase', goalId: spec.id, current: 0, total: phaseTotal.get(spec.id) ?? 1 };
   }
 
@@ -766,7 +767,7 @@ export async function* runSchedule(
           // 429 → requeue with backoff (queue, don't hammer). Re-enqueue its card.
           if (worker !== undefined) {
             requeueWithBackoff(worker.spec, ev.provider);
-            yield { type: 'goal-enqueue', id: worker.spec.id, title: worker.spec.title };
+            yield { type: 'goal-enqueue', id: worker.spec.id, title: worker.spec.title, ...(worker.spec.dependsOn && worker.spec.dependsOn.length ? { dependsOn: worker.spec.dependsOn } : {}) };
             yield {
               type: 'notice',
               level: 'warn',

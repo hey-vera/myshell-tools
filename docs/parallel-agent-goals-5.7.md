@@ -573,7 +573,7 @@ State drift:
 
 ## Executive Summary
 
-**Update (beyond 10/10):** Bounded concurrent scheduler + decompose (Stage 1 core + caps + tagging + DAG validation) landed and wired behind smart-auto default (on unless explicitly off). Always-decompose for /goal. Live @ from stores and basic DAG viz added. Higher stages (scoped writes, worktrees, full UI tree nav) remain for future.
+**Update (beyond 10/10):** Bounded concurrent scheduler + decompose (Stage 1-2 core + caps + tagging + DAG validation + per-goal contracts) landed and wired with **smart-auto default** (ON by default for /goal unless MYSHELL_SCHEDULER=0). Always-decompose (honest 1-goal for sequential). Live @ (goals + todos + memory + rules), pressure-smart UI, deps in GoalView + badge rendering, parallel env alias. Higher stages (worktrees, full tree nav in review, branched recap) in progress or future. Full E2E/PTY smokes added as part of golden pass.
 
 1. Today `/goal` is autonomous but sequential: one `buildGoalTask` -> `orchestrate` -> `parseGoalSignal` -> `decideGoalNext` loop. (Now defaults to concurrent when beneficial.)
 2. The UI cannot honestly show multiple agents today because no concurrent goal subtasks exist.

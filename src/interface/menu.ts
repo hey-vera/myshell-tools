@@ -4080,6 +4080,7 @@ export async function runChatLoop(
           out.write(
             dim('\n  Working autonomously (concurrent scheduler). Ctrl+C / Esc to stop.\n\n', out.color),
           );
+          await showFirstTouch('parallelGoal');
           try {
             await runTaskWithInputHooks(
               goalText,

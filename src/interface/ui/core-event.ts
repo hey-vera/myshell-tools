@@ -132,7 +132,7 @@ export function coreEventToActions(
       ];
 
     case 'goal-enqueue':
-      return [{ type: 'goal/enqueue', goalId: ev.id, label: ev.title }];
+      return [{ type: 'goal/enqueue', goalId: ev.id, label: ev.title, ...(ev.dependsOn ? { dependsOn: ev.dependsOn } : {}) }];
 
     case 'goal-phase':
       return [

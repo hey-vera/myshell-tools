@@ -27,6 +27,7 @@ export const FIRST_TOUCH_KEYS: readonly FirstTouchKey[] = [
   'panelWaiting',
   'recap',
   'apeEngage',
+  'parallelGoal',
 ] as const;
 
 /**
@@ -44,6 +45,8 @@ export const FIRST_TOUCH_LINES: Readonly<Record<FirstTouchKey, string>> = {
   recap: '※ marks a short recap of where we left off.',
   apeEngage:
     '(I chose this approach because the task warranted it — type to steer me.)',
+  parallelGoal:
+    'Smart parallel: independent parts of the goal run concurrently on your providers (capped, pressure-aware).',
 } as const;
 
 /**
