@@ -95,6 +95,8 @@ export interface GoalView {
    * Never set on today's single-goal path (no `goal-phase` event is emitted).
    */
   readonly phase?: { readonly current: number; readonly total: number };
+  /** Optional deps for full DAG viz (from scheduler GoalSpec). */
+  readonly dependsOn?: readonly string[];
 }
 
 export interface GoalBoardTodoRow {

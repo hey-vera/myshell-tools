@@ -261,12 +261,13 @@ export function GoalCard({ goal, elapsedSecs, workLabel, liveAction, color = tru
   const glyphProps = stateColorProps(goal.state, color);
   const n = goal.agents.length;
   const badge = `${goalBadge(goal)} · ${n} agent${n === 1 ? '' : 's'}`;
+  const depNote = goal.dependsOn && goal.dependsOn.length > 0 ? ` (deps: ${goal.dependsOn.join(',')})` : '';
   return (
     <Box flexDirection="column">
       <Box>
         <Text {...glyphProps}>{glyph}</Text>
         <Text bold={color}>{` ${goal.label}`}</Text>
-        <Text dimColor={color}>{`   ${badge}`}</Text>
+        <Text dimColor={color}>{`   ${badge}${depNote}`}</Text>
         {goal.tokens > 0 ? (
           <>
             <Text>{'  '}</Text>

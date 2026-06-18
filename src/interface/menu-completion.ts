@@ -16,6 +16,7 @@ import { join } from 'node:path';
 import os from 'node:os';
 import { createFileGoalStore } from '../infra/goal-store.js';
 import { createFileUserMemoryStore, resolveProjectKey } from '../infra/user-memory-store.js';
+import { createFileRulesStore } from '../infra/rules-store.js';
 
 /**
  * The slash-commands available at the chat prompt — the canonical command set
@@ -378,13 +379,26 @@ export async function completeChat(
             const gStore = createFileGoalStore({ clock });
             const gs = await gStore.list();
             if (gs.length) {
-              const goalItems = gs.map((g: any) => {
+              const goalItems: string[] = [];
+              const todoItems: string[] = [];
+              for (const g of gs) {
                 const slug = (g.title || '').replace(/[^a-z0-9_-]/gi, '-').toLowerCase().slice(0, 32);
-                return slug;
-              });
+                goalItems.push(slug);
+                if (Array.isArray(g.roadmap)) {
+                  for (const item of g.roadmap.slice(0, 3)) {
+                    if (item && !item.done && item.text) {
+                      const t = String(item.text).replace(/[^a-z0-9_-]/gi, '-').toLowerCase().slice(0, 32);
+                      if (t) todoItems.push(t);
+                    }
+                  }
+                }
+              }
               dynGroups = [...dynGroups, { prefix: '@goal-', items: goalItems }];
-              // Also offer bare @<slug> style for quick mention
               dynGroups = [...dynGroups, { prefix: '@', items: goalItems }];
+              if (todoItems.length) {
+                dynGroups = [...dynGroups, { prefix: '@todo-', items: todoItems }];
+                dynGroups = [...dynGroups, { prefix: '@', items: todoItems }];
+              }
             }
             const pk = await resolveProjectKey(process.cwd()).catch(() => 'default');
             const mStore = createFileUserMemoryStore({ clock, homeDir: os.homedir() } as any);
@@ -397,6 +411,18 @@ export async function completeChat(
               dynGroups = [...dynGroups, { prefix: '@mem-', items: memItems }];
               dynGroups = [...dynGroups, { prefix: '@', items: memItems }];
             }
+            // Rules for @rule-
+            try {
+              const rStore = createFileRulesStore({ clock });
+              const rs = await rStore.list().catch(() => []);
+              if (rs.length) {
+                const ruleItems = rs.slice(0, 20).map((r: any) => (r.trigger?.text || r.id || '').replace(/[^a-z0-9_-]/gi, '-').toLowerCase().slice(0, 32)).filter(Boolean);
+                if (ruleItems.length) {
+                  dynGroups = [...dynGroups, { prefix: '@rule-', items: ruleItems }];
+                  dynGroups = [...dynGroups, { prefix: '@', items: ruleItems }];
+                }
+              }
+            } catch {}
           } catch {
             // fail soft, no dynamic
           }
