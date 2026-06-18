@@ -383,7 +383,7 @@ export async function completeChat(
               now: () => Date.now(),
               isoNow: () => new Date().toISOString(),
               uuid: () => 'mock-uuid-' + Date.now(),
-              random: () => Math.random(),
+              random: () => 0.5,
             };
             const gStore = createFileGoalStore({ clock });
             const gs: Goal[] = await gStore.list();

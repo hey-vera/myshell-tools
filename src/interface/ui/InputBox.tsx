@@ -627,6 +627,20 @@ export function InputBox({
   }, []);
   useInput(stableInputHandler, { isActive: !suspended });
 
+  // Eager raw-mode arm for the (Replit /dev/tty) stream the instant the editor
+  // is live. Ink's internal effect will also do this, but doing it here on mount
+  // (and on !suspended flips) removes any 1-frame window after chat resume or
+  // after a single-key handoff where keystrokes could be delayed or dropped.
+  useEffect(() => {
+    if (!suspended && isRawModeSupported) {
+      try {
+        setRawMode(true);
+      } catch {
+        /* best-effort; Ink will also attempt */
+      }
+    }
+  }, [suspended, isRawModeSupported, setRawMode]);
+
   // -------------------------------------------------------------------------
   // Rendering
   // -------------------------------------------------------------------------

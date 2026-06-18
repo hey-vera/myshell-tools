@@ -303,7 +303,7 @@ function controllingTtyRawInput(out: OutputSink): KeyInputStream | null {
   if (!out.isTty || process.platform === 'win32') return null;
   if (controllingTtyInput !== undefined) return controllingTtyInput;
   try {
-    const fd = fs.openSync('/dev/tty', 'r');
+    const fd = fs.openSync('/dev/tty', 'r+');
     controllingTtyInput = new tty.ReadStream(fd) as unknown as KeyInputStream;
   } catch {
     controllingTtyInput = null;

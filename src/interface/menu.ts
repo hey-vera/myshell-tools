@@ -1242,9 +1242,12 @@ export async function runChatLoop(
       readonly import('../core/model-capabilities.js').ModelPreference[]
     >
   > = {};
-  const allEntries = await readLedger(ctx.cwd).catch(() => []);
-  const sessionConsumption: Partial<Record<ProviderId, number>> =
-    summarizeSessionProviderTokens(allEntries, convId);
+  // IMPORTANT: do NOT await the ledger read here. On resume the chat composer
+  // is already visible (inkSetChatActive) and we must reach the readLine() await
+  // with the event loop free so first keystrokes are processed with zero lag.
+  // Seed empty; a fire-and-forget populates for this session (first turn may see
+  // the update or start with zeroed baseline — both acceptable; records grow it).
+  const sessionConsumption: Partial<Record<ProviderId, number>> = {};
   const accountingLedger: LedgerWriter = {
     record: async (entry) => {
       await ctx.ledger.record(entry);
@@ -1256,19 +1259,30 @@ export async function runChatLoop(
       }
     },
   };
-  if (mutableCtx.config.learnRouting === true) {
-    const recent = allEntries.slice(-500);
-    for (const tier of ['worker', 'ic', 'manager'] as const) {
-      const order = learnProviderOrder(recent, tier);
-      if (order !== null) learnedProviderOrder[tier] = order;
+  void (async () => {
+    try {
+      const allEntries = await readLedger(ctx.cwd);
+      const initial = summarizeSessionProviderTokens(allEntries, convId);
+      for (const [k, v] of Object.entries(initial)) {
+        if (typeof v === 'number') sessionConsumption[k as ProviderId] = v;
+      }
+      if (mutableCtx.config.learnRouting === true) {
+        const recent = allEntries.slice(-500);
+        for (const tier of ['worker', 'ic', 'manager'] as const) {
+          const order = learnProviderOrder(recent, tier);
+          if (order !== null) learnedProviderOrder[tier] = order;
+        }
+        for (const kind of [
+          'trivial', 'implementation', 'debug', 'review', 'architecture', 'large-context', 'unknown',
+        ] as const) {
+          const order = learnModelOutcomeOrder(recent, kind);
+          if (order !== null) modelOutcomeOrderByTaskKind[kind] = order;
+        }
+      }
+    } catch {
+      /* best-effort; first turn just runs with empty baseline */
     }
-    for (const kind of [
-      'trivial', 'implementation', 'debug', 'review', 'architecture', 'large-context', 'unknown',
-    ] as const) {
-      const order = learnModelOutcomeOrder(recent, kind);
-      if (order !== null) modelOutcomeOrderByTaskKind[kind] = order;
-    }
-  }
+  })();
 
   let currentAc: AbortController | null = null;
   let lastReportedHistoryDropCount: number | undefined;
