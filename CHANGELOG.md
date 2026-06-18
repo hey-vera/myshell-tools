@@ -4,6 +4,14 @@ All notable changes to **myshell-tools** are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.151.0] - 2026-06-18
+### Replit input lag fix (resume conversation typing)
+- Eliminated first-load typing lag + dropped characters specifically in Replit shells when resuming a conversation (login flow → select/ resume chat → typing first message).
+- Moved the blocking `readLedger()` + routing learning work that was running *after* `inkSetChatActive(true)` but *before* the chat input loop to a fire-and-forget promise. The composer + `useInput` now become live immediately with an unblocked event loop.
+- Added eager `setRawMode(true)` on InputBox mount (in addition to Ink's refcounting) to ensure the `/dev/tty` fallback is armed with no race window after menu selection or stdin handoff.
+- `/dev/tty` raw input stream now opened with `'r+'` (consistent with interactive child path) for reliable termios control under Replit wrappers.
+- Minor cleanup to satisfy arch guards (no functional change).
+
 ## [3.150.0] - 2026-06-18
 ### Seamless "one chat to rule them all" + /goal power-user raw capture
 - Normal chat now auto-digests work intent (including soft signals like "plan") into smart goals via prepare/judge/planner, launching the full engine (scheduler, manager cycle, verify) instead of failing on low-tier.
