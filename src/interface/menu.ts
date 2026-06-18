@@ -4760,6 +4760,32 @@ export async function runChatLoop(
           out.write(dim('  Usage: /goal <what you want achieved> — I build the to-do list and work through it to verified-done (Ctrl+C to stop).\n', out.color));
           return 'continue';
         }
+
+        // Power-user /goal: mark the raw user input as parked/inactive goal first (to
+        // account for user error / potential loops from bad goals). Then digest via
+        // planner into smart internal goal (with proper roadmap/approach/DONE). The
+        // smart version is then treated exactly like any other goal in the system
+        // (parked, activated by confidence, run via manager/scheduler, verified).
+        // This keeps /goal as explicit seed, normal chat as seamless "one chat to
+        // rule them all" elite partner.
+        const projectKeyForGoal = await resolveProjectKeyOnce();
+        let rawParkedId: string | undefined;
+        try {
+          const raw = await goalStore.create({
+            title: goalText,  // raw user words as starting point
+            roadmap: [],      // empty; will be replaced by digested smart version
+            scope: projectKeyForGoal !== null ? 'project' : 'global',
+            projectKey: projectKeyForGoal,
+            conversationId: convId,
+            source: 'user-explicit',
+          });
+          rawParkedId = raw.id;
+          await syncBoard();
+          out.write(dim(`  Raw goal parked as inactive (${raw.id.slice(0,8)}). Digesting to smart goal...\n`, out.color));
+        } catch {
+          /* fail-soft: still digest even if raw capture misses */
+        }
+
         // `/goal` is an entry into the ADAPTIVE JUDGMENT SYSTEM, not a rigid pipeline.
         // An elite pro DIGESTS the goal (grounded in the whole-picture system model),
         // JUDGES it like a senior, helps BUILD the to-dos, and then ACHIEVES them — the

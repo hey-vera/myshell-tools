@@ -299,7 +299,10 @@ export function hasTierEvidence(task: string): boolean {
 export function hasWorkIntent(task: string): boolean {
   if (!task || task.trim().length === 0) return false;
   const signals = scoreTierSignals(task);
-  return signals.managerQualifies || signals.icMatches.length > 0;
+  // Any manager signal (strong or soft like "plan", "design") or IC means real work
+  // to plan/build — triggers smart digestion into goals, even single soft signals.
+  // This makes normal chat auto-use the elite partner goal engine for planning queries.
+  return signals.managerMatches.length > 0 || signals.icMatches.length > 0;
 }
 
 /**
