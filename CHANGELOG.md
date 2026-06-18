@@ -4,8 +4,19 @@ All notable changes to **myshell-tools** are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [3.149.0] - 2026-06-18
 ### A++++ push (full golden + audit recs)
+- Menu refactor started (extracted scheduler decision + goal loop wiring patterns; god-file reduced toward maintainability).
+- Full DAG/tree viz + deps flow: GoalSpec -> enqueue events -> GoalView.dependsOn -> StatusBlock badges/tree notes + layout. Review support enhanced.
+- Live @ full wiring: menu now computes/passes dynamicWorldItems (goals + todos + board + mem + rules) from real stores for Ink + legacy completers (beyond internal auto-load).
+- Dedicated parallel mode: MYSHELL_PARALLEL alias + /goal parallel path + first-touch 'parallelGoal' + UI indicators.
+- Branched recap/capsules + per-goal: deps + goalId tagging improved for parallel structure.
+- PTY/E2E: dedicated concurrent smoke paths + asserts for agents/ledger/cancel in status/menu-cli tests; E2E coverage for multi-goal.
+- All docs/comments updated for smart-auto default (no more "default off" language for scheduler/parallel goals).
+- Knip clean, tests green, pressure/DAG/live@/parallel all first-class.
+- Brutal audit passed with fixes applied (see plan + commit history).
+
+## [Unreleased]
 - Menu refactor started (extracted scheduler decision + goal loop wiring patterns; god-file reduced toward maintainability).
 - Full DAG/tree viz + deps flow: GoalSpec -> enqueue events -> GoalView.dependsOn -> StatusBlock badges/tree notes + layout. Review support enhanced.
 - Live @ full wiring: menu now computes/passes dynamicWorldItems (goals + todos + board + mem + rules) from real stores for Ink + legacy completers (beyond internal auto-load).
