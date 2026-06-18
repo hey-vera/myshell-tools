@@ -579,7 +579,9 @@ function AppBody({
           </Box>
         ) : null}
         {uiState.goals.length > 1 && (
-          <Text dimColor>  Goal DAG active — {uiState.goals.length} branches (use review j/k to inspect)</Text>
+          <Text dimColor={ (uiState.pressure ?? 0) >= 2 }>
+            {'  Goal DAG active — ' + uiState.goals.length + ' branches' + ((uiState.pressure ?? 0) >= 2 ? ' (pressure shedding)' : '') + ' (review j/k)'}
+          </Text>
         )}
         <StatusBlock
           state={uiState}

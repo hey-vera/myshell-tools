@@ -3978,9 +3978,13 @@ export async function runChatLoop(
         }
 
         const explicitOff = schedulerExplicitlyOff(process.env, mutableCtx.config);
+        const authedCount = [mutableCtx.env.claude?.authenticated, mutableCtx.env.codex?.authenticated, mutableCtx.env.opencode?.authenticated, mutableCtx.env.grok?.authenticated].filter(Boolean).length;
+        const genuineParallel = goalSpecs.filter((s) => (s.dependsOn ?? []).length === 0).length;
+        // Smarter trigger (final pass): use concurrent if not off, and (default-enabled or real parallel work or low-p)
+        // But if only 1 provider, don't force parallel (quota protection) — scheduler will still cap sensibly.
         const useConcurrentScheduler = !explicitOff && (
           schedulerEnabled(process.env, mutableCtx.config) ||
-          goalSpecs.length > 1 ||
+          (genuineParallel > 1 && authedCount >= 2) ||
           currentPressure() < 2
         );
 
@@ -4035,6 +4039,11 @@ export async function runChatLoop(
               out.write(dim(`    • ${g.title}\n`, out.color));
             }
             if (goalSpecs.length > 4) out.write(dim(`    … +${goalSpecs.length - 4} more\n`, out.color));
+          }
+          if (currentPressure() >= 2) {
+            out.write(dim('  (smart: pressure-aware caps + shedding active)\n', out.color));
+          } else if (authedCount >= 2 && genuineParallel > 1) {
+            out.write(dim('  (smart parallel: multiple providers + independent work detected)\n', out.color));
           }
 
           const runGoal: RunGoalPhase = (spec, sig) => {

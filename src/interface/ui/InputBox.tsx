@@ -50,6 +50,15 @@ const INPUT_BOX_MIN_COLUMNS = 32;
 const CARET = '❯';
 const PLACEHOLDER = 'Type a message...';
 const INFO_FALLBACK = 'Mode: Balanced · /goal · /help · /back';
+
+// Smart placeholder based on pressure + dynamic context (final smartness pass)
+function smartPlaceholder(pressure: number, hasDynamic: boolean, goalCount: number): string {
+  if (pressure >= 3) return 'High pressure — keep it short & focused...';
+  if (pressure >= 2) return 'Pressure building — concise please...';
+  if (goalCount > 1 || hasDynamic) return '@goal-... or describe next step (parallel aware)...';
+  if (pressure === 1) return 'Type a message (balanced)...';
+  return PLACEHOLDER;
+}
 /** Gutter under the `❯ ` caret for continuation rows of a multiline buffer. */
 const CONT_GUTTER = '… ';
 // The cap on how many LOGICAL buffer rows the box shows at once (so a huge paste
@@ -730,7 +739,9 @@ export function InputBox({
           // fixed-width sibling so wrapped continuation rows stay aligned.
           const isFirst = absRow === 0;
           const isPlaceholder = line === '' && isFirst;
-          const display = isPlaceholder ? dim(PLACEHOLDER, color) : line;
+          const dynCount = (dynamicWorldItems ?? []).length;
+          const ph = smartPlaceholder(pressure, dynCount > 0, dynCount);
+          const display = isPlaceholder ? dim(ph, color) : line;
           const gutter =
             isFirst ? (
               <Text>

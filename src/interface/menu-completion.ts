@@ -372,23 +372,30 @@ export async function completeChat(
         // Merge live dynamic world items (golden: live @ from actual stores)
         let dynGroups = d.dynamicWorldItems ?? [];
         if (c.token.startsWith('@') && dynGroups.length === 0) {
-          // Auto-load from real stores (best-effort, small stores) — golden live @
+          // Auto-load from real stores (best-effort, small stores) — final smartness: richer live @
           try {
             const clock = { now: () => Date.now() } as any;
             const gStore = createFileGoalStore({ clock });
             const gs = await gStore.list();
             if (gs.length) {
-              dynGroups = [...dynGroups, { prefix: '@goal-', items: gs.map((g: any) => (g.title || '').replace(/[^a-z0-9_-]/gi, '-').toLowerCase().slice(0, 40)) }];
+              const goalItems = gs.map((g: any) => {
+                const slug = (g.title || '').replace(/[^a-z0-9_-]/gi, '-').toLowerCase().slice(0, 32);
+                return slug;
+              });
+              dynGroups = [...dynGroups, { prefix: '@goal-', items: goalItems }];
+              // Also offer bare @<slug> style for quick mention
+              dynGroups = [...dynGroups, { prefix: '@', items: goalItems }];
             }
             const pk = await resolveProjectKey(process.cwd()).catch(() => 'default');
             const mStore = createFileUserMemoryStore({ clock, homeDir: os.homedir() } as any);
             let mems: any[] = [];
             try {
-              // list may be (projectKey) or ()
               mems = await (mStore as any).list?.(pk).catch(() => []) ?? [];
             } catch {}
             if (mems && mems.length) {
-              dynGroups = [...dynGroups, { prefix: '@mem-', items: mems.slice(0, 30).map((m: any) => (m.key || m.id || String(m)).replace(/[^a-z0-9_-]/gi, '-').toLowerCase().slice(0, 40)) }];
+              const memItems = mems.slice(0, 30).map((m: any) => (m.key || m.id || String(m)).replace(/[^a-z0-9_-]/gi, '-').toLowerCase().slice(0, 32));
+              dynGroups = [...dynGroups, { prefix: '@mem-', items: memItems }];
+              dynGroups = [...dynGroups, { prefix: '@', items: memItems }];
             }
           } catch {
             // fail soft, no dynamic
