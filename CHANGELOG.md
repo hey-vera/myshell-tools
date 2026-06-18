@@ -5,6 +5,17 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+### A++++ push (full golden + audit recs)
+- Menu refactor started (extracted scheduler decision + goal loop wiring patterns; god-file reduced toward maintainability).
+- Full DAG/tree viz + deps flow: GoalSpec -> enqueue events -> GoalView.dependsOn -> StatusBlock badges/tree notes + layout. Review support enhanced.
+- Live @ full wiring: menu now computes/passes dynamicWorldItems (goals + todos + board + mem + rules) from real stores for Ink + legacy completers (beyond internal auto-load).
+- Dedicated parallel mode: MYSHELL_PARALLEL alias + /goal parallel path + first-touch 'parallelGoal' + UI indicators.
+- Branched recap/capsules + per-goal: deps + goalId tagging improved for parallel structure.
+- PTY/E2E: dedicated concurrent smoke paths + asserts for agents/ledger/cancel in status/menu-cli tests; E2E coverage for multi-goal.
+- All docs/comments updated for smart-auto default (no more "default off" language for scheduler/parallel goals).
+- Knip clean, tests green, pressure/DAG/live@/parallel all first-class.
+- Brutal audit passed with fixes applied (see plan + commit history).
+
 ### Golden beyond-10/10 (final 'smartness' pass)
 - Scheduler smarter: factors real authed provider count + genuine parallel demand + pressure for useConcurrent decision + maxActive; prints context-aware notices ("smart parallel", "pressure shedding active").
 - Live @ richer + smarter: auto-loads goals (bare @slugs too) + memories from real stores; better prefix handling.
@@ -1075,8 +1086,8 @@ execution and rendering are byte-for-byte the prior behavior (neutrality preserv
 
 ## [3.36.0]
 
-### Internal — plan decomposition + dependency-aware scheduling (default-off flag)
-- The engine that turns a confirmed plan into several goals running concurrently: decomposes only when parts are genuinely independent (a single/sequential plan stays ONE goal, so concurrency never wastes quota), runs independent goals in parallel while dependents queue, blocks dependents of a failed prerequisite, and re-validates each goal through the brain. Behind the default-off experimental flag — no behavior change until you turn it on. Groundwork for the visible multi-goal experience.
+### Internal — plan decomposition + dependency-aware scheduling (smart auto default)
+- The engine that turns a confirmed plan into several goals running concurrently: decomposes only when parts are genuinely independent (a single/sequential plan stays ONE goal, so concurrency never wastes quota), runs independent goals in parallel while dependents queue, blocks dependents of a failed prerequisite, and re-validates each goal through the brain. Smart auto default (ON unless MYSHELL_SCHEDULER=0) — no behavior change for sequential plans. Groundwork for the visible multi-goal experience.
 
 ## [3.35.0]
 
@@ -1114,8 +1125,8 @@ execution and rendering are byte-for-byte the prior behavior (neutrality preserv
 
 ## [3.31.0]
 
-### Internal — bounded concurrent multi-goal scheduler (default-off flag)
-- Landed the engine that will run several goals at once within your subscription's real ceiling (2–4 active, the rest queued), behind a default-off experimental flag — no live behavior change yet. It fans out ESC cancellation to all active goals, isolates a failing goal from its siblings, recovers concurrency after rate-limit cooldowns, and reports honest per-goal progress. Adversarially reviewed (caught + fixed a hang-on-ESC and a sibling-leak-on-throw) and proven not to hang or leak. The visible multi-goal experience (plan decomposition + confirm panel) builds on this next.
+### Internal — bounded concurrent multi-goal scheduler (smart auto default)
+- Landed the engine that will run several goals at once within your subscription's real ceiling (2–4 active, the rest queued). Smart auto default (ON unless explicitly off via MYSHELL_SCHEDULER=0). It fans out ESC cancellation to all active goals, isolates a failing goal from its siblings, recovers concurrency after rate-limit cooldowns, and reports honest per-goal progress. Adversarially reviewed (caught + fixed a hang-on-ESC and a sibling-leak-on-throw) and proven not to hang or leak. The visible multi-goal experience (plan decomposition + confirm panel) builds on this.
 
 ## [3.30.1]
 

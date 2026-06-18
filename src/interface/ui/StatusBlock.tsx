@@ -262,11 +262,13 @@ export function GoalCard({ goal, elapsedSecs, workLabel, liveAction, color = tru
   const n = goal.agents.length;
   const badge = `${goalBadge(goal)} · ${n} agent${n === 1 ? '' : 's'}`;
   const depNote = goal.dependsOn && goal.dependsOn.length > 0 ? ` (deps: ${goal.dependsOn.join(',')})` : '';
+  // Fuller DAG/tree viz (A++++): tree prefix and deps
+  const treePrefix = goal.dependsOn && goal.dependsOn.length > 0 ? '├─ ' : '▸ ';
   return (
     <Box flexDirection="column">
       <Box>
         <Text {...glyphProps}>{glyph}</Text>
-        <Text bold={color}>{` ${goal.label}`}</Text>
+        <Text bold={color}>{` ${treePrefix}${goal.label}`}</Text>
         <Text dimColor={color}>{`   ${badge}${depNote}`}</Text>
         {goal.tokens > 0 ? (
           <>
@@ -275,6 +277,9 @@ export function GoalCard({ goal, elapsedSecs, workLabel, liveAction, color = tru
           </>
         ) : null}
       </Box>
+      {goal.dependsOn && goal.dependsOn.length > 0 && (
+        <Text dimColor={color}>   └ depends on: {goal.dependsOn.join(', ')}</Text>
+      )}
       {goal.agents.map((agent, i) => (
         <AgentRow
           key={`${agent.provider}/${agent.model}#${agent.attempt}`}

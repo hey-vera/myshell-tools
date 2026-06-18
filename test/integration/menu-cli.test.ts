@@ -93,13 +93,14 @@ interface SpawnResult {
  * or kills it and resolves with `timedOut: true` after SPAWN_TIMEOUT_MS so the
  * test can fail loudly instead of hanging.
  */
-function runCli(input: string): Promise<SpawnResult> {
+function runCli(input: string, overrideEnv: Partial<NodeJS.ProcessEnv> = {}): Promise<SpawnResult> {
   return new Promise<SpawnResult>((resolve) => {
+    const env = { ...HERMETIC_ENV, ...overrideEnv };
     const child = spawn(process.execPath, [CLI_PATH], {
       cwd: REPO_ROOT,
       // Non-TTY, color-free, AND auth-isolated (see HERMETIC_ENV) so the no-provider
       // assertions hold on every host regardless of locally signed-in providers.
-      env: HERMETIC_ENV,
+      env,
       stdio: ['pipe', 'pipe', 'pipe'],
     });
 

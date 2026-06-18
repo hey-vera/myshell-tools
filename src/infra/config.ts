@@ -218,10 +218,11 @@ export interface AppConfig {
    */
   experimentalBasic?: boolean;
   /**
-   * Bounded concurrent multi-goal SCHEDULER (smart auto default ON). When MYSHELL_SCHEDULER
-   * (or config) enables or default, /goal always decomposes (cost-honest: 1 goal for sequential)
-   * then runs via `runSchedule` with pressure/provider caps, DAG queuing, per-goal brain re-val.
-   * Explicit OFF: MYSHELL_SCHEDULER=0/false. MYSHELL_PARALLEL accepted as alias.
+   * Bounded concurrent multi-goal SCHEDULER (smart auto default ON for /goal). 
+   * /goal always decomposes (cost-honest fallback to 1 spec for sequential/single-piece work)
+   * then optionally runs via `runSchedule` (DAG deps, pressure-aware caps, per-goal contracts + brain re-val).
+   * Explicit OFF via MYSHELL_SCHEDULER=0/false/off/no (or config). MYSHELL_PARALLEL alias supported.
+   * Parallel work only when genuinely independent + sufficient providers/pressure headroom.
    * it exercises the merge/cancel seam ahead of real >1-goal decomposition. The
    * legacy path is unchanged when this is absent/false. See
    * src/interface/ui/scheduler-flag.ts.

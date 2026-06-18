@@ -253,7 +253,7 @@ Subscription-cost discipline:
 - There is no dollar budget fiction. The hard budgets are iterations/waves, max agents, max attempts per item, provider timeout, cooldown, and manager admission.
 - Use OAuth provider CLIs only.
 - Never launch more concurrent agents than authenticated/cooldown-available providers unless the user explicitly enables same-provider fanout in a later advanced mode.
-- Default off or guarded behind a new experimental config, same posture as `panel` and `hedge`.
+- Smart auto by default (MYSHELL_SCHEDULER=0 to force off). Same posture as other high-impact features but enabled for plug-and-play UX.
 
 Real-run verification:
 
