@@ -350,6 +350,12 @@ async function main(): Promise<void> {
       : null;
   startupInput?.arm(process.stdin as unknown as StartupInputStream);
   const startupConfig = startupConfigPromise !== null ? await startupConfigPromise : null;
+  // Propagate the persisted color theme into the environment before any ANSI
+  // rendering so theme.ts's isLightTheme() sees the correct value for the full
+  // session. Only light needs explicit signaling; dark is the default.
+  if (startupConfig?.colorTheme === 'light') {
+    process.env['MYSHELL_THEME'] = 'light';
+  }
   if (startupInput !== null && !inkEnabled(process.env, startupConfig ?? undefined)) {
     startupInput.dispose();
     startupInput = null;

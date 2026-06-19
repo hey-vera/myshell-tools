@@ -162,6 +162,14 @@ export interface AppConfig {
    */
   intentEngine?: boolean;
   /**
+   * Terminal color theme. Absent/'dark' → optimize for dark terminal backgrounds
+   * (the common default). 'light' → skip ANSI faint (dim), which is near-invisible
+   * on white/light backgrounds, so secondary text remains readable. Takes effect on
+   * the next launch (MYSHELL_THEME is set from this value at startup). Toggle via
+   * Settings [f].
+   */
+  colorTheme?: 'dark' | 'light';
+  /**
    * CODEBASE AWARENESS master switch (codebase-awareness §6.1, Phase E1). Absent/
    * true → the chat gathers a cheap, deterministic ENVIRONMENT / repo-map
    * orientation block once per session (repo name/branch/dirty, project type, doc

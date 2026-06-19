@@ -35,7 +35,7 @@ import {
 } from '../core/goal-manager.js';
 import { deriveWorkStateFromHistory, renderWorkStateBlock } from '../core/work-state.js';
 import { isKeepGoingOffer } from '../core/questions.js';
-import { assessGoalConfidence, chooseInitialPlanningDepth, choosePlannerTier, decideAutonomyOffer, decideGoalActivation, detectActivationOverride, needStrongPlanner, planningDepthCap, planningSelectionEntitlement, shouldRunPlanningSelection, type FirstPlanSelectionEvidence, type PlanningSelectionScope } from '../core/autonomy.js';
+import { assessGoalConfidence, chooseInitialPlanningDepth, choosePlannerTier, decideGoalActivation, detectActivationOverride, needStrongPlanner, planningDepthCap, planningSelectionEntitlement, shouldRunPlanningSelection, type FirstPlanSelectionEvidence, type PlanningSelectionScope } from '../core/autonomy.js';
 import { classify, hasWorkIntent } from '../core/classify.js';
 import { resolveMemoryContextDetailed } from '../core/memory-injection.js';
 import { buildEnvironmentContext } from '../core/repo-map.js';
@@ -392,6 +392,19 @@ export async function approveTimeoutContinuation(
   confirm: Confirm,
 ): Promise<boolean> {
   return oversight === 'autonomous' ? true : confirm(true);
+}
+
+function makeQuietSink(base: OutputSink): OutputSink {
+  return {
+    write: () => {},
+    get color() { return base.color; },
+    get isTty() { return base.isTty; },
+    ...(base.flush ? { flush: base.flush.bind(base) } : {}),
+    ...(base.beginFrame ? { beginFrame: base.beginFrame.bind(base) } : {}),
+    ...(base.endFrame ? { endFrame: base.endFrame.bind(base) } : {}),
+    ...(base.promoteFrame ? { promoteFrame: base.promoteFrame.bind(base) } : {}),
+    ...(base.syncBoard ? { syncBoard: base.syncBoard.bind(base) } : {}),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -1285,6 +1298,7 @@ export async function runChatLoop(
   })();
 
   let currentAc: AbortController | null = null;
+  const backgroundGoals = new Set<AbortController>();
   let lastReportedHistoryDropCount: number | undefined;
   // Set true when the in-flight turn was interrupted by ESC (distinct from the
   // Ctrl+C escape model). Read by the post-turn slot to discard the typed-ahead
@@ -1526,7 +1540,7 @@ export async function runChatLoop(
   const noteRateLimit = (result: {
     final?: Extract<CoreEvent, { type: 'final' }>;
     rateLimitedProviders?: readonly ProviderId[];
-  }): void => {
+  }, sink: OutputSink = out): void => {
     const throttled = new Set<ProviderId>(result.rateLimitedProviders ?? []);
     const final = result.final;
     if (
@@ -1552,10 +1566,10 @@ export async function runChatLoop(
       (p) => p.authenticated && !throttled.has(p.id),
     );
     if (newlyCooled.length > 0 && others.length > 0) {
-      out.write(
+      sink.write(
         dim(
           `  (${newlyCooled.join(', ')} rate-limited — preferring your other provider${others.length > 1 ? 's' : ''} for a few minutes)\n`,
-          out.color,
+          sink.color,
         ),
       );
     }
@@ -1630,6 +1644,8 @@ export async function runChatLoop(
   } finally {
     process.removeListener('SIGINT', sigintHandler);
     loopBreaker = null;
+    for (const ac of backgroundGoals) ac.abort();
+    backgroundGoals.clear();
     // Mark the conversation no longer live FIRST so a still-pending concurrent recap
     // (fired on resume) sees the gate closed and skips its write into the menu.
     conversationLive = false;
@@ -2008,6 +2024,7 @@ export async function runChatLoop(
           memoryBias?: -1 | 0 | 1;
           tastePlaybookLines?: readonly string[];
         },
+        sink: OutputSink = out,
       ): OrchestrateDeps => {
         // rank-10: capture the count of blocking pre-answer model calls initiated
         // upstream of this orchestrate() turn, then reset so the NEXT turn starts
@@ -2226,10 +2243,10 @@ export async function runChatLoop(
                     report.droppedTurns !== lastReportedHistoryDropCount
                   ) {
                     const turnWord = report.droppedTurns === 1 ? 'turn' : 'turns';
-                    out.write(
+                    sink.write(
                       dim(
                         `  ※ ${report.droppedTurns} older ${turnWord} above are outside the model's context window — it sees the recent part.\n`,
-                        out.color,
+                        sink.color,
                       ),
                     );
                   }
@@ -2726,6 +2743,7 @@ export async function runChatLoop(
       const gateGoalCompletion = async (
         goalId: string | undefined,
         acceptance: string | undefined,
+        sink: OutputSink = out,
       ): Promise<boolean> => {
         const outcome = await runGoalVerification(acceptance);
         const verdict = goalVerdictFromOutcome(outcome, ctx.clock.isoNow());
@@ -2737,10 +2755,10 @@ export async function runChatLoop(
         }
         const trulyDone = isGoalVerifiedDone(verdict);
         if (trulyDone) {
-          out.write(dim(`\n  ✓ verified done — ${verdict.receipt}\n`, out.color));
+          sink.write(dim(`\n  ✓ verified done — ${verdict.receipt}\n`, sink.color));
         } else {
-          out.write(
-            dim(`\n  ⚠ not verified done — ${verdict.receipt}. Keeping the goal open.\n`, out.color),
+          sink.write(
+            dim(`\n  ⚠ not verified done — ${verdict.receipt}. Keeping the goal open.\n`, sink.color),
           );
         }
         return trulyDone;
@@ -3260,6 +3278,38 @@ export async function runChatLoop(
         }
         return runGoalLoop(rawLine, fallbackLabel);
       };
+      const spawnBackgroundGoal = (goalId: string, work: string, title: string): void => {
+        const ac = new AbortController();
+        backgroundGoals.add(ac);
+        void (async () => {
+          let verifiedDone = false;
+          try {
+            await runGoalLoop(work, title, { goalId, background: true, signal: ac.signal });
+            const goal = await goalStore.get(goalId).catch(() => null);
+            verifiedDone = goal?.goalVerdict !== undefined && isGoalVerifiedDone(goal.goalVerdict);
+            if (verifiedDone) await goalStore.setState(goalId, 'done').catch(() => null);
+          } catch {
+            /* background run failure must never crash the chat loop */
+          } finally {
+            backgroundGoals.delete(ac);
+            if (conversationLive) {
+              try {
+                await syncBoard();
+                out.write(
+                  '\n' +
+                    dim(
+                      verifiedDone
+                        ? `※ Background goal finished: ${title}`
+                        : `※ Background goal paused: ${title}`,
+                      out.color,
+                    ) +
+                    '\n',
+                );
+              } catch { /* fail-soft */ }
+            }
+          }
+        })();
+      };
       // Convert ONE planned goal (a `GoalPlan.goals[]` entry) into the create-spec the
       // /goal ACT branch runs: a professional title, its roadmap built from the goal's
       // to-dos (the SAME planTodosToRoadmap translation judgeGoal uses for goals[0],
@@ -3420,7 +3470,7 @@ export async function runChatLoop(
           if (isDuplicateGoalTitle(title, seenTitles)) continue;
           seenTitles.push(title);
           try {
-            await goalStore.create({
+            const created = await goalStore.create({
               title,
               roadmap: todosToRoadmap(g.todos),
               scope: projectKey !== null ? 'project' : 'global',
@@ -3432,6 +3482,39 @@ export async function runChatLoop(
               // The best-approach the planner stated for this goal (when any).
               ...(g.approach !== undefined ? { approach: g.approach } : {}),
             });
+            // Decide activation (mirror prepareAcknowledgedGoal). Confident + auto-run →
+            // activate now and run in the BACKGROUND; else leave parked (today's behaviour).
+            try {
+              const verificationAvailable = await verificationAvailableForCwd(ctx.cwd);
+              const confidence = assessGoalConfidence({
+                hasWorkIntent: true,
+                plannerStaged: true,
+                goal: title,
+                hasGenuineFork: false,
+                hasDoneWhen: false,
+                verificationAvailable,
+              });
+              if (confidence.kind === 'confident') {
+                const risk = classify(line).risk;
+                const highStakes = risk === 'high' || risk === 'critical';
+                const substantial = (plan.goals.length > 1) || (g.todos.length >= 3);
+                const shape: 'quick' | 'risky' | 'decide' | 'investigate' | 'build' | 'explain' =
+                  highStakes ? 'risky' : substantial ? 'decide' : 'build';
+                const conversationMeta = (await ctx.store.list()).find((m) => m.id === convId);
+                const activation = decideGoalActivation({
+                  confident: true, shape, substantial, highStakes,
+                  hasGenuineFork: false,
+                  override: conversationMeta?.activation ?? 'adaptive',
+                });
+                if (activation.kind === 'auto-run') {
+                  await goalStore.setState(created.id, 'running');
+                  spawnBackgroundGoal(created.id, title, title);
+                  if (conversationLive) {
+                    out.write('\n' + dim(`※ Starting "${title}" in the background — keep chatting.`, out.color) + '\n');
+                  }
+                }
+              }
+            } catch { /* activation decision is best-effort; parked is the safe fallback */ }
             staged += 1;
             stagedTitles.push(title);
             stagedTodos += g.todos.length;
@@ -3927,23 +4010,38 @@ export async function runChatLoop(
       const runGoalLoop = async (
         goalText: string,
         goalLabel: string = goalText,
-        opts?: { readonly goalId?: string; readonly goalAcceptance?: string },
+        opts?: { readonly goalId?: string; readonly goalAcceptance?: string; readonly background?: boolean; readonly signal?: AbortSignal },
       ): Promise<boolean> => {
+        const goalOut = opts?.background === true ? makeQuietSink(out) : out;
         // FIX 3: a goal loop is model-needing. /goal and /goals go dispatch BEFORE the
         // relocated no-provider gate, so self-gate here — no provider means the loop
         // would only fail. Returns false (don't break the chat loop) after a notice.
         if (!hasAuthenticatedProvider(mutableCtx.env)) {
-          out.write(
+          goalOut.write(
             '\n[info] No signed-in provider yet — type /back or press Ctrl+C twice to return, then [j] Claude / [k] Codex / [o] opencode to sign in.\n',
           );
           return false;
         }
+        const isForegroundGoalRun = (): boolean => opts?.background !== true;
+        const bindAc = (ac: AbortController): AbortController => {
+          if (opts?.background === true) {
+            // Link to the spawn's external signal so leaving the chat aborts this run.
+            if (opts.signal !== undefined) {
+              if (opts.signal.aborted) ac.abort();
+              else opts.signal.addEventListener('abort', () => ac.abort(), { once: true });
+            }
+            // Background: do NOT hijack the shared chat abort controller.
+            return ac;
+          }
+          currentAc = ac;
+          return ac;
+        };
         lastGoalCompleted = false;
         let goalContract = capContract({ version: 1, objective: goalLabel });
         // Title a still-untitled conversation from the concise goal label (no-op if
         // already set).
         const gMeta = (await ctx.store.list()).find((m) => m.id === convId);
-        if (gMeta !== undefined && gMeta.title.trim().length === 0) {
+        if (opts?.background !== true && gMeta !== undefined && gMeta.title.trim().length === 0) {
           await ctx.store.rename(convId, goalLabel.length <= 80 ? goalLabel : goalLabel.slice(0, 80));
         }
 
@@ -3959,9 +4057,9 @@ export async function runChatLoop(
         // to sequential (scheduler with 1 root behaves the same).
 
         const schedAc = new AbortController();
-        currentAc = schedAc;
+        bindAc(schedAc);
 
-        const decomposeBaseDeps = buildDeps([]);
+        const decomposeBaseDeps = buildDeps([], undefined, undefined, undefined, goalOut);
         let goalSpecs: GoalSpec[];
         try {
           goalSpecs = await decompose(
@@ -3996,11 +4094,11 @@ export async function runChatLoop(
         const genuineParallel = goalSpecs.filter((s) => (s.dependsOn ?? []).length === 0).length;
         // Smarter trigger (final pass): use concurrent if not off, and (default-enabled or real parallel work or low-p)
         // But if only 1 provider, don't force parallel (quota protection) — scheduler will still cap sensibly.
-        const useConcurrentScheduler = !explicitOff && (
+        const useConcurrentScheduler = opts?.background !== true && (!explicitOff && (
           schedulerEnabled(process.env, mutableCtx.config) ||
           (genuineParallel > 1 && authedCount >= 2) ||
           currentPressure() < 2
-        );
+        ));
 
         if (useConcurrentScheduler) {
           const authedProviders: ProviderId[] = [];
@@ -4046,18 +4144,18 @@ export async function runChatLoop(
           const maxActive = Math.min(tuningCeiling, callBudgetCeiling, genuineParallelGoalCount);
 
           if (goalSpecs.length > 1) {
-            out.write(
-              dim(`  Decomposed plan into ${goalSpecs.length} goals (parallel where independent):\n`, out.color),
+            goalOut.write(
+              dim(`  Decomposed plan into ${goalSpecs.length} goals (parallel where independent):\n`, goalOut.color),
             );
             for (const g of goalSpecs.slice(0, 4)) {
-              out.write(dim(`    • ${g.title}\n`, out.color));
+              goalOut.write(dim(`    • ${g.title}\n`, goalOut.color));
             }
-            if (goalSpecs.length > 4) out.write(dim(`    … +${goalSpecs.length - 4} more\n`, out.color));
+            if (goalSpecs.length > 4) goalOut.write(dim(`    … +${goalSpecs.length - 4} more\n`, goalOut.color));
           }
           if (currentPressure() >= 2) {
-            out.write(dim('  (smart: pressure-aware caps + shedding active)\n', out.color));
+            goalOut.write(dim('  (smart: pressure-aware caps + shedding active)\n', goalOut.color));
           } else if (authedCount >= 2 && genuineParallel > 1) {
-            out.write(dim('  (smart parallel: multiple providers + independent work detected)\n', out.color));
+            goalOut.write(dim('  (smart parallel: multiple providers + independent work detected)\n', goalOut.color));
           }
 
           const runGoal: RunGoalPhase = (spec, sig) => {
@@ -4072,6 +4170,8 @@ export async function runChatLoop(
                 hist,
                 await resolveTurnMemory(spec.title),
                 await resolveEnvironmentOnce(),
+                undefined,
+                goalOut,
               );
             })();
             const goalSpecContract = capContract({ version: 1, objective: spec.title });
@@ -4091,14 +4191,14 @@ export async function runChatLoop(
             })();
           };
 
-          out.write(
-            dim('\n  Working autonomously (concurrent scheduler). Ctrl+C / Esc to stop.\n\n', out.color),
+          goalOut.write(
+            dim('\n  Working autonomously (concurrent scheduler). Ctrl+C / Esc to stop.\n\n', goalOut.color),
           );
           await showFirstTouch('parallelGoal');
           try {
             await runTaskWithInputHooks(
               goalText,
-              buildDeps([]),
+              buildDeps([], undefined, undefined, undefined, goalOut),
               schedAc.signal,
               mutableCtx.config.verbosity ?? 'normal',
               runSchedule(
@@ -4108,7 +4208,7 @@ export async function runChatLoop(
               ),
             );
           } finally {
-            currentAc = null;
+            if (isForegroundGoalRun()) currentAc = null;
           }
           if (control.exit) { control.result = 'exit'; return true; }
           if (control.menu) { control.result = 'menu'; return true; }
@@ -4139,14 +4239,14 @@ export async function runChatLoop(
         // error degrades to `unverified` (fix-it or move on), never a fake pass,
         // never a crash, never an infinite loop. Flag OFF or no roadmap ⇒ this
         // block is skipped entirely → today's free loop, byte-for-byte.
-        const managerOn = managerCycleEnabled(process.env, mutableCtx.config);
+        const managerOn = opts?.background === true ? true : managerCycleEnabled(process.env, mutableCtx.config);
         const cycleGoalId = opts?.goalId;
         // OVERSIGHT (Phase 2b): the cautious 'review-all' persona pauses after each
         // to-do's diff for a one-tap approve/stop before the item is marked done. The
         // decision goes through the REUSABLE shouldPauseBeforeLaunch checkpoint seam so
         // Phase 4 (standing-rules gate) plugs into the SAME hook. Default 'checkpoint'
         // → no per-diff pause → byte-identical to today's manager cycle.
-        const cycleOversight = resolveOversight(mutableCtx.config, process.env);
+        const cycleOversight = opts?.background === true ? 'autonomous' : resolveOversight(mutableCtx.config, process.env);
         if (managerOn && cycleGoalId !== undefined) {
           const stored = (await goalStore.get(cycleGoalId).catch(() => null)) ?? null;
           if (stored !== null && stored.roadmap.length > 0) {
@@ -4182,34 +4282,46 @@ export async function runChatLoop(
                 hist,
                 await resolveTurnMemory(task),
                 await resolveEnvironmentOnce(),
+                undefined,
+                goalOut,
               );
-              const ac = new AbortController();
-              currentAc = ac;
-              const result = await runTaskWithInputHooks(
-                task,
-                { ...deps, workContract: goalContract, goalTurn: true },
-                ac.signal,
-                mutableCtx.config.verbosity ?? 'normal',
-                cycleGoalId !== undefined
-                  ? tagGoalEvents(
-                      orchestrate(
-                        task,
-                        { ...deps, workContract: goalContract, goalTurn: true },
-                        ac.signal,
-                      ),
-                      cycleGoalId,
-                    )
-                  : undefined,
-              );
-              currentAc = null;
-              noteRateLimit(result);
+              const turnSession = opts?.background === true
+                ? ctx.store.writer(cycleGoalId ?? convId)
+                : deps.session;
+              const turnDeps = { ...deps, session: turnSession, workContract: goalContract, goalTurn: true } as typeof deps;
+              const ac = bindAc(new AbortController());
+              const result = opts?.background === true
+                ? await runTask(
+                    task,
+                    turnDeps,
+                    makeQuietSink(out),
+                    ac.signal,
+                    mutableCtx.config.verbosity ?? 'normal',
+                    null,
+                    undefined,
+                    cycleGoalId !== undefined
+                      ? tagGoalEvents(orchestrate(task, turnDeps, ac.signal), cycleGoalId)
+                      : undefined,
+                    'automatic',
+                  )
+                : await runTaskWithInputHooks(
+                    task,
+                    { ...deps, workContract: goalContract, goalTurn: true },
+                    ac.signal,
+                    mutableCtx.config.verbosity ?? 'normal',
+                    cycleGoalId !== undefined
+                      ? tagGoalEvents(orchestrate(task, { ...deps, workContract: goalContract, goalTurn: true }, ac.signal), cycleGoalId)
+                      : undefined,
+                  );
+              if (isForegroundGoalRun()) currentAc = null;
+              noteRateLimit(result, goalOut);
               return result;
             };
 
-            out.write(
+            goalOut.write(
               dim(
                 `\n  Executing the to-do list (${String(stored.roadmap.length)} to-dos, manager cycle). Ctrl+C / Esc to stop.\n\n`,
-                out.color,
+                goalOut.color,
               ),
             );
 
@@ -4241,10 +4353,9 @@ export async function runChatLoop(
               const live = await goalStore.get(cycleGoalId).catch(() => null);
               if (live === null) return;
               replansUsed += 1;
-              const ac = new AbortController();
-              currentAc = ac;
+              const ac = bindAc(new AbortController());
               const edits = await replanner(live, ac.signal).catch(() => null);
-              currentAc = null;
+              if (isForegroundGoalRun()) currentAc = null;
               const applied = await applyReplanEditsViaStore(goalStore, cycleGoalId, edits).catch(
                 () => null,
               );
@@ -4258,10 +4369,10 @@ export async function runChatLoop(
                 if (touched > 0) {
                   const struct =
                     applied.structured > 0 ? ` ⤷${String(applied.structured)}` : '';
-                  out.write(
+                  goalOut.write(
                     dim(
                       `  ↻ re-planned (${reason}): +${String(applied.added)} ~${String(applied.edited)} ⇄${String(applied.reordered)} −${String(applied.pruned)}${struct} to-dos.\n`,
-                      out.color,
+                      goalOut.color,
                     ),
                   );
                   // Refresh the live roadmap + the board so the edits are visible
@@ -4284,10 +4395,10 @@ export async function runChatLoop(
               if (next === null) break; // every item verified-done (or only-blocked)
 
               const prog = roadmapProgress(roadmap);
-              out.write(
+              goalOut.write(
                 dim(
                   `  ▸ to-do ${String(prog.done + 1)}/${String(prog.total)}: ${next.text}\n`,
-                  out.color,
+                  goalOut.color,
                 ),
               );
 
@@ -4297,7 +4408,7 @@ export async function runChatLoop(
               if (control.exit) { control.result = 'exit'; return true; }
               if (control.menu) { control.result = 'menu'; return true; }
               if (interruptedByEsc) {
-                if (queuedTurns.length > 0) {
+                if (opts?.background !== true && queuedTurns.length > 0) {
                   renderDiscardedQueue(out, queuedTurns.length, 'interrupt');
                   queuedTurns.length = 0;
                 }
@@ -4317,11 +4428,11 @@ export async function runChatLoop(
                 // on the next unblocked sibling — pickNextTodo skips the parked item.
                 // Flag OFF (the default) ⇒ byte-identical to today: surface the fork,
                 // run the selector, and stop the whole cycle honestly.
-                if (itemParkingEnabled(process.env, mutableCtx.config)) {
-                  out.write(
+                if (opts?.background === true || itemParkingEnabled(process.env, mutableCtx.config)) {
+                  goalOut.write(
                     dim(
                       `\n  I hit a fork on "${next.text}"${fork !== undefined && fork.length > 0 ? `: ${fork}` : ''} — parking it and continuing on the others.\n`,
-                      out.color,
+                      goalOut.color,
                     ),
                   );
                   // Park this item: blocked (so pickNextTodo skips it) + record the
@@ -4349,10 +4460,10 @@ export async function runChatLoop(
                   await syncBoard();
                   continue;
                 }
-                out.write(
+                goalOut.write(
                   dim(
                     `\n  I hit a fork on "${next.text}"${fork !== undefined && fork.length > 0 ? `: ${fork}` : ''} — which way?\n`,
-                    out.color,
+                    goalOut.color,
                   ),
                 );
                 await runStructuredQuestionFlow(turn.final);
@@ -4389,15 +4500,15 @@ export async function runChatLoop(
                   hasDiff: changed.length > 0,
                 });
                 if (pause !== null) {
-                  out.write(dim(`\n  Review — "${next.text}":\n`, out.color));
+                  goalOut.write(dim(`\n  Review — "${next.text}":\n`, goalOut.color));
                   if (next.acceptanceCriterion !== undefined && next.acceptanceCriterion.length > 0) {
-                    out.write(dim(`    approach: ${next.acceptanceCriterion}\n`, out.color));
+                    goalOut.write(dim(`    approach: ${next.acceptanceCriterion}\n`, goalOut.color));
                   }
                   for (const p of changed.slice(0, 12)) {
-                    out.write(dim(`    ~ ${p}\n`, out.color));
+                    goalOut.write(dim(`    ~ ${p}\n`, goalOut.color));
                   }
                   if (changed.length > 12) {
-                    out.write(dim(`    …and ${String(changed.length - 12)} more\n`, out.color));
+                    goalOut.write(dim(`    …and ${String(changed.length - 12)} more\n`, goalOut.color));
                   }
                   const review = await runQuestionSelector(
                     {
@@ -4423,8 +4534,8 @@ export async function runChatLoop(
                   const approved =
                     review !== null && /Approve/i.test(review) && !/Stop here/i.test(review);
                   if (!approved) {
-                    out.write(
-                      dim(`\n  Stopped at "${next.text}" for your review — keeping the goal open.\n`, out.color),
+                    goalOut.write(
+                      dim(`\n  Stopped at "${next.text}" for your review — keeping the goal open.\n`, goalOut.color),
                     );
                     stoppedEarly = true;
                     break;
@@ -4436,7 +4547,7 @@ export async function runChatLoop(
                 if (idx >= 0) {
                   await goalStore.setRoadmapItemStatus(cycleGoalId, idx, 'done').catch(() => null);
                 }
-                out.write(dim(`    ✓ verified — ${verdict.receipt}\n`, out.color));
+                goalOut.write(dim(`    ✓ verified — ${verdict.receipt}\n`, goalOut.color));
               } else {
                 // failing / unverified ⇒ the to-do is NOT done. Self-heal with a
                 // bounded fix-it to-do carrying the failure note; at the depth cap
@@ -4448,10 +4559,10 @@ export async function runChatLoop(
                 const fix = fixItTodo(next, verdict.receipt);
                 if (fix !== null) {
                   await goalStore.addRoadmapItem(cycleGoalId, fix).catch(() => null);
-                  out.write(
+                  goalOut.write(
                     dim(
                       `    ⚠ not verified — ${verdict.receipt}. Spawned a fix-it to-do.\n`,
-                      out.color,
+                      goalOut.color,
                     ),
                   );
                 } else {
@@ -4464,10 +4575,10 @@ export async function runChatLoop(
                       .setRoadmapItemStatus(cycleGoalId, idx, 'blocked')
                       .catch(() => null);
                   }
-                  out.write(
+                  goalOut.write(
                     dim(
                       `    ⚠ "${next.text}" still isn't verifying after my fix-it attempts — ${verdict.receipt}. I've hit my retry cap; this one needs your call before I push further.\n`,
-                      out.color,
+                      goalOut.color,
                     ),
                   );
                 }
@@ -4510,10 +4621,10 @@ export async function runChatLoop(
                   : firstBlocked !== undefined
                     ? `blocked on "${firstBlocked.text}" — your call needed`
                     : 'a to-do needs your call';
-              out.write(
+              goalOut.write(
                 dim(
                   `\n  ${why} — ${String(finalProg.done)}/${String(finalProg.total)} to-dos verified. Keeping the goal open.\n`,
-                  out.color,
+                  goalOut.color,
                 ),
               );
               lastGoalCompleted = false;
@@ -4522,23 +4633,31 @@ export async function runChatLoop(
             // Every to-do verified-done → the goal-level gate decides `done`. Reuses
             // gateGoalCompletion (verifies cumulative changes + persists the goal
             // verdict + syncs the board) — the model's word never reaches it.
-            out.write(
+            goalOut.write(
               dim(
                 `\n  All ${String(finalProg.total)} to-dos verified — running the goal-level acceptance check…\n`,
-                out.color,
+                goalOut.color,
               ),
             );
-            lastGoalCompleted = await gateGoalCompletion(cycleGoalId, opts?.goalAcceptance);
+            lastGoalCompleted = await gateGoalCompletion(cycleGoalId, opts?.goalAcceptance, goalOut);
             return false;
           }
         }
 
+        if (opts?.background === true) {
+          // Background goals run only via the manager cycle above (auto-staged goals
+          // always carry a roadmap). If we reach here there is nothing safe to run in
+          // the background - bail quietly rather than use the foreground sequential
+          // driver (which streams to chat + binds currentAc).
+          return false;
+        }
+
         // Turns are the honest bound on a subscription (no per-token bill to cap).
         const ceilings: GoalCeilings = { maxIterations: DEFAULT_MAX_GOAL_ITERATIONS };
-        out.write(
+        goalOut.write(
           dim(
             `\n  Working autonomously until it's done (up to ${ceilings.maxIterations} turns). Ctrl+C to stop.\n\n`,
-            out.color,
+            goalOut.color,
           ),
         );
         // Baseline for the live progress panel: wall-clock start + the ledger's
@@ -4550,7 +4669,7 @@ export async function runChatLoop(
         for (let i = 0; i < ceilings.maxIterations; i++) {
           const tokensThisRun =
             summarizeSpend(await readLedger(ctx.cwd), ctx.clock.isoNow()).totalTokens - baseTokens;
-          out.write(
+          goalOut.write(
             dim(
               `  ▸ ${formatGoalProgress({
                 turn: i + 1,
@@ -4560,7 +4679,7 @@ export async function runChatLoop(
                 objective: goalLabel,
                 contract: goalContract,
               })}\n`,
-              out.color,
+              goalOut.color,
             ),
           );
           // Fail-soft history load: a corrupt store degrades to an empty thread +
@@ -4570,12 +4689,14 @@ export async function runChatLoop(
             goalHistory = await ctx.store.load(convId);
           } catch {
             goalHistory = [];
-            out.write(dim("  Couldn't read prior history — continuing without it.\n", out.color));
+            goalOut.write(dim("  Couldn't read prior history — continuing without it.\n", goalOut.color));
           }
           const goalDeps = buildDeps(
             goalHistory,
             await resolveTurnMemory(goalText),
             await resolveEnvironmentOnce(),
+            undefined,
+            goalOut,
           );
           const contractedGoalTask = buildGoalTask(goalText, i, goalContract);
           const replayGoalTask = buildGoalTask(goalText, i);
@@ -4589,8 +4710,7 @@ export async function runChatLoop(
               );
             },
           };
-          const goalAc = new AbortController();
-          currentAc = goalAc;
+          const goalAc = bindAc(new AbortController());
           const turn = await runTaskWithInputHooks(
             contractedGoalTask,
             { ...goalDeps, session: goalSession, workContract: goalContract, goalTurn: true },
@@ -4607,8 +4727,8 @@ export async function runChatLoop(
                 )
               : undefined,
           );
-          currentAc = null;
-          noteRateLimit(turn);
+          if (isForegroundGoalRun()) currentAc = null;
+          noteRateLimit(turn, goalOut);
           completed = i + 1;
           if (control.exit) { control.result = 'exit'; return true; }
           if (control.menu) { control.result = 'menu'; return true; }
@@ -4624,10 +4744,10 @@ export async function runChatLoop(
 
           if (turn.final?.success === true && turn.final.questions !== undefined) {
             const fork = turn.final.questions.questions[0]?.prompt.trim();
-            out.write(
+            goalOut.write(
               dim(
                 `\n  I hit a fork I won't guess on${fork !== undefined && fork.length > 0 ? `: ${fork}` : ''} — which way?\n`,
-                out.color,
+                goalOut.color,
               ),
             );
             await runStructuredQuestionFlow(turn.final);
@@ -4645,7 +4765,7 @@ export async function runChatLoop(
             turn.final?.errorCategory === 'timeout' &&
             completed < ceilings.maxIterations
           ) {
-            out.write(dim('  (that step ran long — continuing with the next piece)\n', out.color));
+            goalOut.write(dim('  (that step ran long — continuing with the next piece)\n', goalOut.color));
             continue;
           }
 
@@ -4675,15 +4795,15 @@ export async function runChatLoop(
                 // and let its honest verdict — not the model's word — decide. Persists
                 // the verdict against the stored goal (when one is tied to this run)
                 // and only sets `lastGoalCompleted` when the verdict is passing/reviewed.
-                out.write(dim(`\n  ${mark} ${step.reason} — verifying before marking done…\n`, out.color));
-                lastGoalCompleted = await gateGoalCompletion(opts?.goalId, opts?.goalAcceptance);
+                goalOut.write(dim(`\n  ${mark} ${step.reason} — verifying before marking done…\n`, goalOut.color));
+                lastGoalCompleted = await gateGoalCompletion(opts?.goalId, opts?.goalAcceptance, goalOut);
                 break;
               }
               // Flag OFF — today's behaviour exactly: the model's GOAL_COMPLETE settles
               // the goal `done` (byte-for-byte identical).
               lastGoalCompleted = true;
             }
-            out.write(dim(`\n  ${mark} ${step.reason}.\n`, out.color));
+            goalOut.write(dim(`\n  ${mark} ${step.reason}.\n`, goalOut.color));
             break;
           }
         }
@@ -5277,7 +5397,7 @@ export async function runChatLoop(
 
       let deps: OrchestrateDeps | null = null;
       let turnAttachments: ReturnType<typeof resolveImageAttachments> = [];
-      let acknowledgedGoal:
+      const acknowledgedGoal:
         | AcknowledgedGoalLaunch
         | 'normal-chat'
         | 'cancelled'
@@ -5297,39 +5417,8 @@ export async function runChatLoop(
       turnAttachments = resolveImageAttachments(line, { cwd: ctx.cwd });
       deps =
         turnAttachments.length > 0 ? { ...depsBase, attachments: turnAttachments } : depsBase;
-      acknowledgedGoal = await prepareAcknowledgedGoal(line);
-      if (acknowledgedGoal === 'cancelled') return 'continue';
-
-      if (mutableCtx.config.autoGoal === true && effectiveMode === 'quality-first') {
-        const autoClassification = classify(line);
-        const autonomy = decideAutonomyOffer({
-          mode: effectiveMode,
-          classification: autoClassification,
-          autoGoalEnabled: true,
-        });
-        if (autonomy.kind === 'auto_engage') {
-          // Auto-engaging on RAW chat text: reuse the acknowledged-goal launch
-          // when one was staged in preflight; otherwise fall back to the legacy
-          // goal loop on the raw work with a concise label.
-          const preparedForAutoEngage = acknowledgedGoal === 'staged-parked'
-            ? 'normal-chat'
-            : acknowledgedGoal;
-          const launched = await launchGoalFromChatLine(
-            line,
-            await formGoalLabel(line),
-            preparedForAutoEngage,
-          );
-          if (launched === 'cancelled') return 'continue';
-          if (launched) return control.result;
-          return 'continue';
-        }
-      }
       if (deps === null) {
         throw new Error('chat turn dependencies were not prepared');
-      }
-      if (acknowledgedGoal !== 'normal-chat' && acknowledgedGoal !== 'staged-parked') {
-        if (await launchAcknowledgedGoal(acknowledgedGoal)) return control.result;
-        return 'continue';
       }
 
       inkBeginTurn?.();

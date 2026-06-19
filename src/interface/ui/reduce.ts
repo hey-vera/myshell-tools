@@ -308,27 +308,25 @@ export function reduce(state: UiState, action: Action): UiState {
       // already-enqueued/running goal, ATTACH this tier to THAT goal (flip a
       // queued goal to running, push the agent) instead of appending a fresh
       // per-tier card — this is what lets several goals run concurrently. When
-      // goalId is ABSENT (today's single-goal path) we take the original branch
-      // verbatim: append one goal per tier-start (outside panel mode). Never
-      // mutates input arrays.
+      // goalId is ABSENT and the persistent board is OFF, keep today's original
+      // single-turn card. When the board is ON, an unkeyed tier-start is plain
+      // chat execution, not a staged/running goal, so it must not create a goal row.
+      // Never mutates input arrays.
       const existingIdx =
         action.goalId !== undefined
           ? state.goals.findIndex((g) => g.id === action.goalId)
           : -1;
-      // Elite-partner Phase 1: when the persistent board is ON, the per-turn card
-      // must NOT surface the raw-message `title` (the fake "GOALS ▸ <message>" card)
-      // — the honest current-turn label is the routing TIER (worker/ic/manager). The
-      // raw message lives nowhere on the live card; the real goal lives on the board.
-      // When the board is OFF this is `action.title` verbatim → byte-for-byte today.
-      const honestTitle = state.boardEnabled ? undefined : action.title;
+      // The title is safe to show only on an actual GoalView. Board mode gets real
+      // goals from board/sync + goalId attachment; unkeyed plain-chat starts skip the
+      // GoalView branch below instead of falling back to the tier as a fake title.
+      const honestTitle = action.title;
       const goal: GoalView = {
         // Key off the scheduler-assigned goalId when present (stable across the
         // goal's phases); else the original per-tier id, byte-for-byte unchanged.
         id: action.goalId !== undefined ? action.goalId : `${action.tier}#${action.attempt}`,
         // Phase 2: lead with the human goal title when the engine supplied one;
         // fail soft to the bare tier id so the card is never blank and the count
-        // is never fabricated. The tier/risk ride along for the dim badge. With the
-        // board on, `honestTitle` is undefined → the label is the tier (no raw msg).
+        // is never fabricated. The tier/risk ride along for the dim badge.
         label: honestTitle !== undefined && honestTitle.length > 0 ? honestTitle : action.tier,
         state: 'running',
         tokens: 0,
@@ -357,6 +355,8 @@ export function reduce(state: UiState, action: Action): UiState {
             // preserve dependsOn if present
           };
         });
+      } else if (state.boardEnabled && action.goalId === undefined) {
+        nextGoals = state.goals;
       } else {
         nextGoals = [...state.goals, goal];
       }

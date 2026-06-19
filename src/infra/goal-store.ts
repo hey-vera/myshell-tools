@@ -531,12 +531,15 @@ export function createFileGoalStore(opts: {
         const goals = await readIndexLocked(home, onWarning);
         const target = goals.find((g) => g.id === id);
         if (target === undefined) return { ok: false, reason: 'unknown-goal' };
+        const capped = capRoadmapItem(item);
+        if (target.roadmap.some((it) => it.id === capped.id)) {
+          return { ok: true, goal: target };
+        }
         if (target.roadmap.length >= ROADMAP_LIMIT) {
           // Cap-full: no-op, but report it so the caller can split into a child
           // goal (the architecture's cap-8⇒sub-goal escape, Part 4).
           return { ok: false, reason: 'full', goal: target };
         }
-        const capped = capRoadmapItem(item);
         const at =
           typeof atIndex === 'number' && Number.isFinite(atIndex)
             ? Math.max(0, Math.min(Math.floor(atIndex), target.roadmap.length))
