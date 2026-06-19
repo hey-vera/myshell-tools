@@ -314,6 +314,7 @@ export async function runSettings(
     `  [c] Memory: ${cfg.memory !== false ? 'on' : 'off'}`,
     `  [d] Intent engine: ${cfg.intentEngine !== false ? 'on' : 'off'}`,
     `  [e] Oversight: ${resolveOversight(cfg)}`,
+    `  [f] Theme: ${cfg.colorTheme ?? 'dark'}`,
     '',
     '  [Enter] Back',
     '',
@@ -354,6 +355,8 @@ export async function runSettings(
     mutableCtx.config = await toggleIntentEngine(mutableCtx.config, out);
   } else if (key === 'e') {
     mutableCtx.config = await runOversightSelect(mutableCtx.config, out, readLine, inkReadKey);
+  } else if (key === 'f') {
+    mutableCtx.config = await toggleColorTheme(mutableCtx.config, out);
   }
   // anything else → back
 }
@@ -509,6 +512,25 @@ async function toggleLearnRouting(config: AppConfig, out: OutputSink): Promise<A
   const updated: AppConfig = withOptional(config, 'learnRouting', enable ? true : undefined);
   await saveConfig(updated);
   out.write(`Learned routing (experimental): ${enable ? 'on' : 'off'}\n`);
+  return updated;
+}
+
+/**
+ * Toggle the terminal COLOR THEME and persist it.
+ *
+ * 'dark' (default, absent) → keep ANSI faint (dim) for muted secondary text on
+ * dark terminal backgrounds. 'light' → skip ANSI faint (SGR 2), which is
+ * near-invisible on white/light terminals, so secondary text stays readable.
+ * Takes effect on the next launch (the CLI sets MYSHELL_THEME from this at
+ * startup). Toggling writes the explicit value; toggling back to 'dark' removes
+ * the key (restores default).
+ */
+async function toggleColorTheme(config: AppConfig, out: OutputSink): Promise<AppConfig> {
+  const currentlyLight = config.colorTheme === 'light';
+  const newTheme: 'dark' | 'light' | undefined = currentlyLight ? undefined : 'light';
+  const updated: AppConfig = withOptional(config, 'colorTheme', newTheme);
+  await saveConfig(updated);
+  out.write(`Theme: ${newTheme ?? 'dark'}${newTheme === undefined ? ' (default)' : ''} — takes effect on next launch\n`);
   return updated;
 }
 

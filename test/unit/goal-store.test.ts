@@ -466,6 +466,18 @@ describe('goal-store — addRoadmapItem', () => {
     assert.equal(res2.ok && res2.goal.roadmap.at(-1)?.id, 'r4');
   });
 
+  it('re-adding the same item id is an idempotent no-op', async () => {
+    const g = await store.create({ title: 'dedup' });
+    const first = await store.addRoadmapItem(g.id, { id: 'r1-fix1', text: 'fix it', status: 'pending' });
+    assert.equal(first.ok, true);
+
+    const second = await store.addRoadmapItem(g.id, { id: 'r1-fix1', text: 'fix it again', status: 'pending' });
+    assert.equal(second.ok, true);
+
+    const reread = await store.get(g.id);
+    assert.equal(reread?.roadmap.filter((item) => item.id === 'r1-fix1').length, 1);
+  });
+
   it('rejects when the roadmap is at the cap-8 limit (no-op, reason=full)', async () => {
     const roadmap = Array.from({ length: 8 }, (_, i) => ({
       id: `r${i}`,

@@ -13,9 +13,12 @@
 // Primitive colour helpers
 // ---------------------------------------------------------------------------
 
-/** Dim / faint text. */
+/** Dim / faint text. On light terminal backgrounds, skips ANSI faint (SGR 2) which
+ *  is near-invisible on white — plain text is returned instead. */
 export function dim(text: string, color: boolean): string {
-  return color ? `\x1b[2m${text}\x1b[0m` : text;
+  if (!color) return text;
+  if (isLightTheme()) return text;
+  return `\x1b[2m${text}\x1b[0m`;
 }
 
 /** Bold text. */
@@ -114,6 +117,16 @@ export type TurnState = 'streaming' | 'success' | 'fail' | 'cancel' | 'ask';
 export function isPlainMode(): boolean {
   const v = process.env['MYSHELL_PLAIN'];
   return v !== undefined && v !== '' && v !== '0';
+}
+
+/**
+ * Is the terminal configured for a light background? When true, ANSI faint
+ * (SGR 2) is skipped — it renders as near-invisible text on white/light
+ * terminals. Set via MYSHELL_THEME=light (written from config at startup).
+ * Reads the env each call so tests can toggle without re-importing.
+ */
+export function isLightTheme(): boolean {
+  return process.env['MYSHELL_THEME'] === 'light';
 }
 
 /**

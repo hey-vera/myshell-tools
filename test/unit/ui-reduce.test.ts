@@ -1758,9 +1758,12 @@ describe('ui reduce — board/sync (persistent board)', () => {
       type: 'tier-start', tier: 'ic', provider: 'claude', model: 'opus', attempt: 1,
       verbosity: 'normal', title: 'please refactor the auth middleware and also fix the tests',
     });
-    // The label is the honest TIER, never the raw message.
-    assert.equal(s.goals[0]?.label, 'ic');
-    assert.notEqual(s.goals[0]?.label, 'please refactor the auth middleware and also fix the tests');
+    // Board ON + an UNKEYED tier-start (no goalId) is plain chat execution, not a
+    // staged/running goal — it must create NO goal row at all (the real goals come
+    // from board/sync + goalId attachment). So there is no fake card, and the raw
+    // message is never surfaced as a label.
+    assert.equal(s.goals.length, 0);
+    assert.equal(s.goals[0]?.label, undefined);
   });
 
   it('board OFF (default): a tier-start title still becomes the label — byte-identical to today', () => {
