@@ -4,6 +4,15 @@ All notable changes to **myshell-tools** are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.152.0] - 2026-06-20
+### Answer-first chat + background auto-run of confident goals
+- **Chat answers first.** Removed the synchronous pre-turn goal judge/launch that could block the reply or replace it with a goal loop (the "I typed something and it just said goal inactive and did nothing" hang). Plain chat now responds immediately; goal staging happens post-turn, fire-and-forget.
+- **Confident goals run in the background.** When the planner is confident a message is real work, the goal activates and runs in an isolated background session (quiet sink, no chat-prose leak, no abort/conversation hijack, honest verified done-marking) while you keep chatting — surfaced with a "Starting … in the background" note.
+- **Goal-store dedup.** `addRoadmapItem` is now idempotent, fixing duplicate fix-step bloat in the goal store.
+- **Board labels.** An unkeyed tier-start (plain chat) no longer fabricates a fake `▸ ic` / `▸ worker` goal row on the board; only real staged goals appear.
+- **Color theme.** `MYSHELL_THEME` / `config.colorTheme` / Settings toggle / `theme.ts` light-theme helpers.
+- **Honest tests.** Retargeted the menu-flow suite to the answer-first + background-auto-run contract; restored three over-loosened tests (raw-TTY `'r'`→`'r+'` flag drift and two manager-cycle item-parking tests) to strict, behavior-asserting form; retargeted the ui-reduce board test to the "no fake card" contract. Full unit suite: 5095 pass / 0 fail.
+
 ## [3.151.0] - 2026-06-18
 ### Replit input lag fix (resume conversation typing)
 - Eliminated first-load typing lag + dropped characters specifically in Replit shells when resuming a conversation (login flow → select/ resume chat → typing first message).
