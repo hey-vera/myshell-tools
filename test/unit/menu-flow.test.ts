@@ -1867,7 +1867,6 @@ describe('startMenu — auto-goal smart autonomy', () => {
 
       await startMenu(ctx, sink);
 
-      const goalStore = createFileGoalStore({ clock });
       const all = await waitForGoalCount(clock, 1);
       assert.ok(workerCalls >= 1, 'the user turn is answered by the normal worker path');
       assert.equal(all.length, 1, 'post-turn auto-stage should create exactly one goal');
@@ -3101,7 +3100,6 @@ describe('startMenu — auto-goal smart autonomy', () => {
         },
       );
 
-      const goalStore = createFileGoalStore({ clock });
       const all = await waitForGoalCount(clock, 1);
       assert.equal(all.length, 1);
       assert.equal(all[0]?.state, 'parked');
