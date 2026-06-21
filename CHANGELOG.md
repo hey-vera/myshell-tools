@@ -4,6 +4,14 @@ All notable changes to **myshell-tools** are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased / next]
+### Reliability, default shell, and honest UI (post 3.152)
+- **Default shell self-heals (esp. Replit)**: If `setAsDefault` is on in persisted config but the hook marker is missing from the current shell rc (common after Replit container restart, since ~ is ephemeral while our state lives in workspace), launch now best-effort re-runs the installer. Added Replit-specific note in install output. "On" in Settings now actually means new shells / fresh tabs will auto-pop the menu.
+- **Replit resume / kill-to-recover UX**: Combined with the hook self-heal, after a laggy/double-key resume (browser tab re-attach to live pty) you can kill the stuck process; the parent shell (now with hook ensured) + fresh launch gives a clean interactive session without manual re-typing `myshell-tools`.
+- **No stale subscription/plan labels in main menu header**: `renderHeaderLines` (the compact "claude: ready" box) no longer appends `(max_5x)`, `(Pro)`, etc. Plans can change externally (user downgrades subs) and the header is the always-visible surface; showing stale data is worse than silence. Live plans remain in `doctor` (re-detects fresh), internal policy/mode auto, capacity, free-veto, tool-state prompts to the model, etc. Updated tests + header docs. (Cleanest per user feedback.)
+- **Prevent "Failed — attempts: 1" on first error (high-quality recovery)**: In the work-call loop, a first execution failure (non-timeout/non-auth) now forces an escalate to manager (if not already there) even under Efficient or observed free/max_5x vetoes. Gives at least one more real shot using a stronger model / other sub before hard-failing the turn. Later attempts still respect full gates. Directly eliminates the "tried to type and chat on resumed conv → failed with attempts 1" when you have multiple providers.
+- All prior core fixes (attempts on resume chat, orchestration reliability) carried forward.
+
 ## [3.152.0] - 2026-06-20
 ### Answer-first chat + background auto-run of confident goals
 - **Chat answers first.** Removed the synchronous pre-turn goal judge/launch that could block the reply or replace it with a goal loop (the "I typed something and it just said goal inactive and did nothing" hang). Plain chat now responds immediately; goal staging happens post-turn, fire-and-forget.
