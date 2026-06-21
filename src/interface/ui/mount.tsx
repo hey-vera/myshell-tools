@@ -339,6 +339,16 @@ export function createInkLineReader(bridge: InkAppBridge): LineReader {
       //    regression guard). No manual stream resume — that would break readable
       //    mode.
       bridge.setSuspended(false);
+      // Eager re-arm (for resume lag on Replit etc): force raw true immediately
+      // after the transition so first keystroke after attach is captured without
+      // kill/retype. Best-effort, matches legacy off→on cycle intent.
+      if (control && control.isRawModeSupported) {
+        try {
+          control.setRawMode(true);
+        } catch {
+          /* unsupported or transient */
+        }
+      }
     },
     close(): void {
       closed = true;

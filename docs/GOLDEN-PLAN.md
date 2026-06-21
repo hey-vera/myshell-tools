@@ -38,6 +38,12 @@ better, we amend the contract rather than let it drift.*
   **regression guard** (does routing still pick sane tiers? does review still catch a couple seeded
   defects?), not the headline.
 
+- **A4 — Preference-aware (not quota-aware).** Subscription quotas are unreliable (CLIs expose only
+  historical stats or interactive /usage; no real-time remaining for planning). The system is
+  preference-aware: learned taste (observed edits/accepts/forks via free ledger) + routing memory
+  bias + real plan-tier capacity. /plan is first-class pure-planning (judgeGoal parity, proposal +
+  PLAN.md + park) for "one chat to rule them all". No fabricated numbers.
+
 ---
 
 ## 0. Why this document exists

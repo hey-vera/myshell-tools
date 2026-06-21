@@ -304,12 +304,12 @@ export async function runSettings(
     `  [1] Mode: ${modeLabel(effMode)}${cfg.mode === undefined ? ' (auto)' : ''}`,
     `  [2] Set as default shell: ${cfg.setAsDefault ? 'on' : 'off'}`,
     `  [3] Update on launch: ${cfg.autoUpdate !== false ? 'on' : 'off'}`,
-    `  [4] Native sessions (experimental): ${cfg.nativeSessions === true ? 'on' : 'off'}`,
+    `  [4] Native sessions (opt-in): ${cfg.nativeSessions === true ? 'on' : 'off'}`,
     `  [5] Output detail: ${cfg.verbosity ?? 'normal'}`,
     `  [6] Smart routing: ${cfg.smartRoute !== false ? 'on' : 'off'}`,
-    `  [7] Panel (experimental): ${cfg.panel === true ? 'on' : 'off'}`,
-    `  [8] Learned routing (experimental): ${cfg.learnRouting === true ? 'on' : 'off'}`,
-    `  [9] Hedged escalation (experimental): ${cfg.hedge === true ? 'on' : 'off'}`,
+    `  [7] Panel (advanced): ${cfg.panel === true ? 'on' : 'off'}`,
+    `  [8] Learned routing (advanced): ${cfg.learnRouting === true ? 'on' : 'off'}`,
+    `  [9] Hedged escalation (advanced): ${cfg.hedge === true ? 'on' : 'off'}`,
     `  [t] Learned taste / prefs (free layer): ${tasteEnabled(process.env, cfg) ? 'on' : 'off'}`,
     `  [a] Auto-goal (quality-first): ${cfg.autoGoal === true ? 'on' : 'off'} — only takes effect under quality-first mode`,
     `  [b] Partner style: ${resolvePartnerStyle(cfg, effMode)}${cfg.partnerStyle === undefined ? ' (auto)' : ''}`,
@@ -461,7 +461,7 @@ async function toggleNativeSessions(config: AppConfig, out: OutputSink): Promise
   // spread preserves every other key.
   const updated: AppConfig = withOptional(config, 'nativeSessions', enable ? true : undefined);
   await saveConfig(updated);
-  out.write(`Native sessions (experimental): ${enable ? 'on' : 'off'}\n`);
+  out.write(`Native sessions (opt-in): ${enable ? 'on' : 'off'}\n`);
   return updated;
 }
 
@@ -479,7 +479,7 @@ async function togglePanel(config: AppConfig, out: OutputSink): Promise<AppConfi
   // every other key.
   const updated: AppConfig = withOptional(config, 'panel', enable ? true : undefined);
   await saveConfig(updated);
-  out.write(`Panel (experimental): ${enable ? 'on' : 'off'}\n`);
+  out.write(`Panel (advanced): ${enable ? 'on' : 'off'}\n`);
   return updated;
 }
 
@@ -498,7 +498,7 @@ async function toggleHedge(config: AppConfig, out: OutputSink): Promise<AppConfi
   // every other key.
   const updated: AppConfig = withOptional(config, 'hedge', enable ? true : undefined);
   await saveConfig(updated);
-  out.write(`Hedged escalation (experimental): ${enable ? 'on' : 'off'}\n`);
+  out.write(`Hedged escalation (advanced): ${enable ? 'on' : 'off'}\n`);
   return updated;
 }
 
@@ -515,7 +515,7 @@ async function toggleLearnRouting(config: AppConfig, out: OutputSink): Promise<A
   // every other key.
   const updated: AppConfig = withOptional(config, 'learnRouting', enable ? true : undefined);
   await saveConfig(updated);
-  out.write(`Learned routing (experimental): ${enable ? 'on' : 'off'}\n`);
+  out.write(`Learned routing (advanced): ${enable ? 'on' : 'off'}\n`);
   return updated;
 }
 

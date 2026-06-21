@@ -76,6 +76,7 @@ async function withStateHome<T>(home: string, fn: () => Promise<T>): Promise<T> 
   process.env['HOME'] = home;
   restore('REPL_ID', undefined);
   restore('REPLIT_DEV_DOMAIN', undefined);
+  await fs.promises.mkdir(home, { recursive: true });
   try {
     return await fn();
   } finally {
@@ -1201,6 +1202,84 @@ describe('startMenu — /goal PROPOSES the plan before running it (manager cycle
     assert.ok(sink.buf.includes('Start all') && sink.buf.includes('Just the unblocked ones'), 'the go options');
     assert.ok(/Parked ".*" on the board/.test(sink.buf), 'declining parks the goal');
     assert.equal(goalWorkTurns, 0, 'declining the proposal must NOT run any goal-work turn');
+  });
+
+  it('/plan does pure planning (full judgeGoal parity) + proposal + stubs + PLAN.md + park (taste aware, no exec)', async () => {
+    const clock = makeFakeClock();
+    const store = makeStore(clock);
+    const sink = makeSink();
+    const dir = join(tmpdir(), `menu-plan-pure-${randomUUID()}`);
+    await fs.promises.mkdir(dir, { recursive: true });
+    const provider: Provider = {
+      id: 'claude',
+      async detect() {
+        return {
+          id: 'claude',
+          installed: true,
+          version: '1.0.0',
+          authenticated: true,
+          plan: null,
+          binaryPath: null,
+          availableModels: ['model-a'],
+        };
+      },
+      async *run(req: ProviderRequest, _signal: AbortSignal): AsyncIterable<ProviderEvent> {
+        if (req.prompt.includes('PLANNING BRAIN')) {
+          // Include file paths in TODOs so diff-preview stub has signal to show.
+          const reply = [
+            'JUDGMENT: stage',
+            'VISION: build a hello web app',
+            'GOAL: Scaffold the hello server',
+            'APPROACH: use express for quick start',
+            'WHY: fastest path to working demo',
+            'TODO: add src/server.ts with hello route',
+            'TODO: write README.md with usage',
+            'TODO: add test [after: 1]',
+          ].join('\n');
+          yield { type: 'text', delta: reply };
+          yield { type: 'done', text: reply, usage: FAKE_USAGE, raw: {} };
+          return;
+        }
+        if (
+          req.prompt.includes('WHOLE-PICTURE') ||
+          req.prompt.includes('understand the system') ||
+          req.prompt.includes('OBJECTIVE: <a crisp')
+        ) {
+          yield { type: 'text', delta: 'ok' };
+          yield { type: 'done', text: 'ok', usage: FAKE_USAGE, raw: {} };
+          return;
+        }
+        yield { type: 'text', delta: 'ok' };
+        yield { type: 'done', text: 'ok', usage: FAKE_USAGE, raw: {} };
+      },
+    };
+    const ctx = makeCtx(
+      {
+        config: { onboarded: true, setAsDefault: false, smartRoute: false, experimentalManager: true },
+        providers: { claude: provider },
+        readLine: makeScriptedReader(['n', '/plan build a hello web app', '/exit', 'q']),
+        cwd: dir,
+      },
+      clock,
+      store,
+    );
+
+    await startMenu(ctx, sink);
+
+    assert.ok(sink.buf.includes('Pure planning...'), '/plan prints pure marker');
+    assert.ok(sink.buf.includes("Here's how I'd tackle build a hello web app"), 'renders proposal vision from judgeGoal plan');
+    assert.ok(sink.buf.includes('1. Scaffold the hello server'), 'renders goal title');
+    assert.ok(sink.buf.includes('Lead approach:'), 'shows compact viz lead approach/rationale');
+    assert.ok(sink.buf.includes('Diff preview (stub):'), 'shows diff preview stub');
+    assert.ok(sink.buf.includes('src/server.ts'), 'diff stub surfaces path from the plan text');
+    assert.ok(sink.buf.includes('cross-vendor plan critique via tribunal'), 'shows cross critique note');
+    assert.ok(sink.buf.includes('Wrote '), 'reports the PLAN.md write side-effect');
+    assert.ok(sink.buf.includes('parked for /goals review; taste aware'), 'notes parked + taste awareness');
+    // Side effect: real PLAN.md written (ascii dashes, no emdash in our header)
+    const planDoc = await fs.promises.readFile(join(dir, 'PLAN.md'), 'utf8').catch(() => '');
+    assert.ok(planDoc.includes('Proposed Plan - '), 'PLAN.md created by /plan');
+    assert.ok(planDoc.includes('Pure planning pass (/plan) - parked'), 'PLAN.md header uses ascii dash (our note has no em dash)');
+    assert.ok(planDoc.includes('Pure planning pass (/plan)'), 'PLAN.md contains the /plan marker');
   });
 
   it('oversight=autonomous SKIPS the confirm — says "On it" and runs without a go prompt', async () => {
@@ -2977,7 +3056,10 @@ describe('startMenu — auto-goal smart autonomy', () => {
       await startMenu(ctx, sink);
 
       await waitForGoalCount(ctx.clock, 1);
-      assert.equal(sequence[0], 'planner');
+      // planner or understanding-start (bg warm is fire-and-forget; taste file await
+      // or scheduling can let understanding's provider call race first). The key
+      // contract for cost-saver L1 is no "Planning deeper" print.
+      assert.ok(sequence[0] === 'planner' || sequence[0] === 'understanding-start');
       assert.ok(!sink.buf.includes('Planning deeper'));
     });
   });
@@ -7436,11 +7518,11 @@ describe('startMenu — update notifier: banner, [u], auto-update', () => {
 
     assert.ok(
       sink.buf.includes('[7]') && sink.buf.toLowerCase().includes('panel'),
-      'settings must show the [7] Panel (experimental) toggle line',
+      'settings must show the [7] Panel (advanced) toggle line',
     );
     assert.ok(
       sink.buf.includes('[8]') && sink.buf.toLowerCase().includes('learned routing'),
-      'settings must show the [8] Learned routing (experimental) toggle line',
+      'settings must show the [8] Learned routing (advanced) toggle line',
     );
   });
 
@@ -7460,7 +7542,7 @@ describe('startMenu — update notifier: banner, [u], auto-update', () => {
     });
 
     assert.ok(
-      sink.buf.includes('Panel (experimental): on'),
+      sink.buf.includes('Panel (advanced): on'),
       'toggling [7] must report panel on',
     );
     assert.equal(persisted.panel, true, 'panel must be persisted as true');
@@ -7482,7 +7564,7 @@ describe('startMenu — update notifier: banner, [u], auto-update', () => {
     });
 
     assert.ok(
-      sink.buf.includes('Learned routing (experimental): on'),
+      sink.buf.includes('Learned routing (advanced): on'),
       'toggling [8] must report learned routing on',
     );
     assert.equal(persisted.learnRouting, true, 'learnRouting must be persisted as true');

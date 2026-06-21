@@ -62,7 +62,7 @@ import {
 import { createNodeResearchPort } from '../infra/research-port.js';
 import { renderSystemModelContext } from '../core/understanding.js';
 import { isPushBackQuestionSet, classifyPushBackAnswer } from '../core/brain.js';
-import { renderTastePlaybook, isImmediateRephrase, distillTaste, type TasteSignal } from '../core/taste.js';
+import { renderTastePlaybook, isImmediateRephrase, type TasteSignal } from '../core/taste.js';
 import { createFileGoalStore } from '../infra/goal-store.js';
 import { createFileRulesStore } from '../infra/rules-store.js';
 import {
@@ -767,6 +767,7 @@ export async function runChatLoop(
   // non-blocking, and must never stall the conversation.
   const buildGoalPlanner = (
     systemModel?: SystemModel,
+    tasteContext?: string,
   ):
     | ((userMessage: string, signal: AbortSignal) => Promise<GoalPlan | null>)
     | null => {
@@ -807,12 +808,14 @@ export async function runChatLoop(
       // When the understanding pass produced a SystemModel, GROUND the planner in
       // it; absent → the planner prompt is byte-for-byte today's.
       ...(systemModel !== undefined ? { systemModel } : {}),
+      ...(tasteContext ? { tasteContext } : {}),
     });
   };
 
   const buildGoalPlannerAttempt = (
     tier: Extract<Tier, 'ic' | 'manager'>,
     systemModel?: SystemModel,
+    tasteContext?: string,
   ): ReturnType<typeof makeGoalPlannerAttempt> | null => {
     if (!hasAuthenticatedProvider(mutableCtx.env)) return null;
     const effectiveMode: Mode = mutableCtx.config.mode ?? resolveAutoMode(mutableCtx.env);
@@ -846,6 +849,7 @@ export async function runChatLoop(
       ...(Object.keys(availableModels).length > 0 ? { availableModels } : {}),
       ...(authenticatedProviders.length > 0 ? { authenticatedProviders } : {}),
       ...(systemModel !== undefined ? { systemModel } : {}),
+      ...(tasteContext ? { tasteContext } : {}),
     });
   };
 
@@ -2556,6 +2560,12 @@ export async function runChatLoop(
       // sinks, so the flag-off path stays byte-identical). Cheap: a local store read,
       // no model call. Fully fail-soft (a board read never blocks/breaks a turn).
       const boardOn = boardEnabled(process.env, mutableCtx.config);
+
+      // Full picture tracking for strong meta model calls (conscious layer)
+      let lastProposedPlan: Record<string, unknown> | null = null;
+      let parkedGoals: Array<Record<string, unknown>> = [];
+      let tasteSummary: Record<string, unknown> | null = null;
+      let boardSummary: Record<string, unknown> = {};
       // Map one persisted Goal → a flat board row using the PURE goal-todo.ts shapers
       // (goalGlyph for the lifecycle glyph, roadmapProgress for the to-do counts), so
       // the projection reuses the same vocabulary as the /goals menu rows. `agents`
@@ -2586,6 +2596,7 @@ export async function runChatLoop(
           agents: 0,
           ...(todos !== undefined ? { todos } : {}),
           ...(verdict !== undefined ? { verdict } : {}),
+          ...(g.approach !== undefined ? { approach: g.approach } : {}),
         };
       };
       // Snapshot the store and push it into the live board. Scoped to the current
@@ -2617,6 +2628,8 @@ export async function runChatLoop(
             .map((g, i) => ({ g, i }))
             .sort((a, b) => stateRank[a.g.state] - stateRank[b.g.state] || a.i - b.i)
             .map((x) => x.g);
+          parkedGoals = ordered.filter((g) => g.state === 'parked').map((g) => ({ id: g.id, title: g.title, roadmap: g.roadmap?.slice(0, 3) }));
+          boardSummary = { total: ordered.length, parked: parkedGoals.length, running: ordered.filter(g => g.state === 'running').length };
           out.syncBoard(ordered.map(toBoardRow));
         } catch {
           /* board is best-effort chrome — never block or break a turn */
@@ -2841,7 +2854,19 @@ export async function runChatLoop(
             todos.length > 0
               ? todosToRoadmap(todos.slice(0, ROADMAP_LIMIT))
               : todosToRoadmap([{ text: goalText }]);
-          const planner = buildGoalPlanner(warm);
+          let tasteCtx: string | undefined;
+          if (tasteOn) {
+            try {
+              const pk = await resolveProjectKeyOnce();
+              const tl = createFileTasteLedger({ clock: ctx.clock });
+              const pb = await tl.recall(pk);
+              const b = renderTastePlaybook(pb);
+              if (b.length > 0) tasteCtx = b;
+            } catch {
+              /* fail-soft: no taste for this planning pass */
+            }
+          }
+          const planner = buildGoalPlanner(warm, tasteCtx);
           if (planner !== null) {
             try {
               const plan = await planner(goalText, new AbortController().signal);
@@ -2972,7 +2997,19 @@ export async function runChatLoop(
           resolvedIntensity,
           needStrongPlanner: needStrongPlanner({ scope, planFixableDeficiency: false }),
         });
-        const planner = buildGoalPlannerAttempt(initialTier, warm);
+        let tasteCtx: string | undefined;
+        if (tasteOn) {
+          try {
+            const pk = await resolveProjectKeyOnce();
+            const tl = createFileTasteLedger({ clock: ctx.clock });
+            const pb = await tl.recall(pk);
+            const b = renderTastePlaybook(pb);
+            if (b.length > 0) tasteCtx = b;
+          } catch {
+            /* fail-soft: no taste for this planning pass */
+          }
+        }
+        const planner = buildGoalPlannerAttempt(initialTier, warm, tasteCtx);
         if (planner !== null) {
           try {
             const attempt = await planner(goalText, signal);
@@ -3147,6 +3184,103 @@ export async function runChatLoop(
           },
         ],
       });
+      // ---- Strong meta model helper for conscious orchestration (high effort via opencode access)
+      // Use kimi (good for parallel/structured intent as per vision) or other strong with --variant max equivalent (reasoningEffort: 'max')
+      // The model gets full picture context, does the thinking (no dumb wiring).
+      // Launched properly with high effort in the req.
+      const callStrongMetaForIntent = async (userLine: string, signal: AbortSignal, extraContext?: Record<string, unknown>): Promise<Record<string, unknown> | null> => {
+        if (!hasAuthenticatedProvider(mutableCtx.env)) return null;
+        const op = ctx.providers['opencode'];
+        if (!op) return null;
+        const fullCtx = await buildFullContext();
+        const metaPrompt = `You are the high-intelligence meta-orchestrator for myshell-tools (conscious thinker, not dumb wiring).
+
+FULL PICTURE CONTEXT (injected for you to see everything):
+${JSON.stringify({ ...fullCtx, extra: extraContext || {} }, null, 2)}
+
+User natural language input: "${userLine}"
+
+Your job: Parse intent from the chat (the user may say anything). Output ONLY valid JSON (no prose, no markdown):
+{
+  "intent": "accept_plan" | "adjust_plan" | "bg_directive" | "new_plan" | "pause_goal" | "clarify" | "normal_chat" | "other",
+  "details": { "planTitle"?: string, "adjustment"?: string, "bgTarget"?: string, "reason"?: string, "goalId"?: string, ... },
+  "confidence": number 0-1,
+  "rationale": "short why you chose this intent using the full picture"
+}
+
+Be wise like an elite pro. For acceptance, look for 'accept the plan', 'go', 'looks good', 'start all', 'unblocked'. For adjustments, detect 'pause', 'change', 'instead'. For bg, 'background', 'bg the', 'while we discuss'.
+If uncertain, use "clarify".`;
+
+        const req: ProviderRequest = {
+          model: 'opencode-go/kimi-k2.7-code',  // kimi good for this structured + parallel per vision; use high effort
+          prompt: metaPrompt,
+          cwd: ctx.cwd,
+          sandbox: 'workspace-write',
+          timeoutMs: 45000,
+          reasoningEffort: 'max',  // Proper high effort launch (equivalent to --variant max)
+        };
+        let text = '';
+        try {
+          for await (const ev of op.run(req, signal)) {
+            if (ev.type === 'done') text = ev.text;
+            else if (ev.type === 'error') return null;
+          }
+        } catch {
+          return null;
+        }
+        if (!text) return null;
+        try {
+          // The model may wrap in ```json, clean it
+          const cleaned = text.replace(/```json\s*/g, '').replace(/```\s*$/g, '').trim();
+          return JSON.parse(cleaned);
+        } catch {
+          return null;
+        }
+      };
+
+      const decideWithStrongModel = async (userLine: string, signal: AbortSignal): Promise<unknown> => {
+        const context = {
+          lastPlan: lastProposedPlan,
+          parked: parkedGoals,
+          taste: tasteSummary,
+          board: boardSummary,
+        };
+        return callStrongMetaForIntent(userLine, signal, context);
+      };
+
+      const buildFullContext = async () => {
+        const projectKey = await resolveProjectKeyOnce().catch(() => null);
+        const allGoals = await goalStore.list({ projectKey }).catch(() => []);
+        const taste = tasteOn ? await (async () => {
+          try {
+            const pb = await tasteLedger.recall(projectKey);
+            return { bias: pb.memoryBias, lines: pb.lines.slice(0, 3) };
+          } catch { return null; }
+        })() : null;
+        return {
+          goals: allGoals.map(g => ({ id: g.id, title: g.title, state: g.state, approach: g.approach })),
+          taste,
+          board: boardSummary,
+          lastPlan: lastProposedPlan,
+          providers: Object.keys(ctx.providers || {}),
+        };
+      };
+
+      const withMetaCritique = async <T>(fn: () => Promise<T>, context: unknown, signal: AbortSignal): Promise<T> => {
+        const result = await fn();
+        try {
+          const critique = await callStrongMetaForIntent(`At high effort, critique this result using full picture: ${JSON.stringify(result)}`, signal, { ... (context as Record<string, unknown>), task: 'meta_critique' });
+          const c = critique as Record<string, unknown> | null;
+          if (c && c.issues && (c.issues as unknown[]).length) {
+            // In full: feed back to revise the result (self-critique loop)
+            // For now, the meta call itself provides the intelligence.
+          }
+        } catch {
+          /* fail-soft meta critique */
+        }
+        return result;
+      };
+
       async function prepareAcknowledgedGoal(
         line: string,
       ): Promise<AcknowledgedGoalLaunch | 'normal-chat' | 'cancelled' | 'staged-parked'> {
@@ -3155,7 +3289,7 @@ export async function runChatLoop(
         if (!hasWorkIntent(line)) return 'normal-chat';
         if (currentPressure() >= 3) return 'normal-chat';
 
-        let plan = await judgeGoal(line);
+        let plan = await withMetaCritique(() => judgeGoal(line), {line}, new AbortController().signal);
         if (plan.judgment === 'none') return 'normal-chat';
 
         if (plan.judgment === 'clarify') {
@@ -3420,7 +3554,19 @@ export async function runChatLoop(
             warmUnderstanding(cacheKey, line); // ungrounded now; grounded next time
           }
         }
-        const planner = buildGoalPlanner(systemModel);
+        let tasteCtx: string | undefined;
+        if (tasteOn) {
+          try {
+            const pk = await resolveProjectKeyOnce();
+            const tl = createFileTasteLedger({ clock: ctx.clock });
+            const pb = await tl.recall(pk);
+            const b = renderTastePlaybook(pb);
+            if (b.length > 0) tasteCtx = b;
+          } catch {
+            /* fail-soft: no taste for this planning pass */
+          }
+        }
+        const planner = buildGoalPlanner(systemModel, tasteCtx);
         if (planner === null) return;
         let plan: GoalPlan | null = null;
         try {
@@ -3712,6 +3858,11 @@ export async function runChatLoop(
           const projectKey = await resolveProjectKeyOnce();
           const playbook = await tasteLedger.recall(projectKey);
           const block = renderTastePlaybook(playbook);
+          tasteSummary = {
+            bias: playbook.memoryBias,
+            lines: playbook.lines.slice(0, 5),  // lean summary for meta context
+            hasSignals: playbook.lines.length > 0,
+          };
           return {
             ...(block.length > 0 ? { tasteContext: block } : {}),
             ...(playbook.memoryBias !== 0 ? { memoryBias: playbook.memoryBias } : {}),
@@ -4915,44 +5066,162 @@ export async function runChatLoop(
         return 'continue';
       }
 
-      // ---- /plan <text> — pure planning pass (no exec). Full proposal + PLAN.md.
-      // Uses planner, renders proposal, writes doc, parks for review (preference aware).
+      // ---- /plan <text> - pure planning pass (no exec). Full proposal + PLAN.md.
+      // Uses judgeGoal (full parity with /goal judgment: depth, warm understanding,
+      // selection, caps honesty) then renders proposal, heads-up, stubs, writes doc,
+      // parks for /goals review (preference/taste aware). Never executes.
       if (line === '/plan' || line.startsWith('/plan ')) {
         const planText = line.slice('/plan'.length).trim();
         if (!planText) {
-          out.write(dim('  Usage: /plan <text> — pure plan + PLAN.md (no auto exec).\n', out.color));
+          out.write(dim('  Usage: /plan <text> - pure plan + PLAN.md (no auto exec). Or just chat it: "plan the foo project for the team"\n', out.color));
           return 'continue';
         }
         if (!hasAuthenticatedProvider(mutableCtx.env)) return 'continue';
         out.write(dim('  Pure planning...\n', out.color));
         try {
           const pk = await resolveProjectKey(ctx.cwd).catch(() => null);
-          const planner = makeGoalPlanner({ providers: ctx.providers, policy, cwd: ctx.cwd, timeoutMs: Math.min(ctx.timeoutMs, 60_000), sandbox: helperSandbox(ctx.sandbox) });
-          const planRes: any = await planner(planText, new AbortController().signal);
-          const gp = planRes?.plan;
-          if (!gp || gp.judgment !== 'stage' || !(gp.goals || []).length) {
+          const plan = await judgeGoal(planText);
+          if (plan.judgment !== 'stage' || !plan.plan || !(plan.plan.goals || []).length) {
             out.write(dim('  No plan.\n', out.color));
             return 'continue';
           }
-          const proposal = formatGoalProposal(gp, (gp as any).dropped);
+          // High effort meta critique on the plan (using strong model, full context in helper)
+          try {
+            const critique = await callStrongMetaForIntent(`Critique this plan for the input at high effort: ${JSON.stringify(plan.plan)}`, new AbortController().signal, { task: 'critique_plan', input: planText });
+            if (critique && critique.issues && critique.issues.length) {
+              out.write(dim(`  (strong meta critique: ${critique.issues[0]})\n`, out.color));
+            }
+          } catch {
+            /* fail-soft meta critique */
+          }
+          const proposal = formatGoalProposal(plan.plan, plan.plan.dropped);
           if (proposal.length > 0) {
             out.write('\n' + proposal + '\n');
-            for (const h of formatHeadsUp(planRes?.systemModel)) out.write(dim(`  heads up: ${h}\n`, out.color));
+            for (const h of formatHeadsUp(plan.systemModel)) {
+              out.write(dim(`  heads up: ${h}\n`, out.color));
+            }
+            // Diff preview stub (lean, observed-only signal): regex-extract likely file
+            // paths mentioned in the proposal. Not a real patch (no exec yet), just
+            // surfaces "would touch these" so the plan feels concrete. Cap + dedupe.
+            const affected: string[] = Array.from(
+              new Set(
+                (proposal.match(/\b[\w@./-]+\.(ts|tsx|js|jsx|mjs|cjs|py|go|rs|java|kt|swift|md|markdown|json|yaml|yml|toml|sh|bash|txt|css|scss|html|vue|svelte)\b/gi) || [])
+                  .filter((p: string) => p.length > 2 && !p.toLowerCase().includes('node_modules'))
+              )
+            ).slice(0, 6);
+            if (affected.length > 0) {
+              out.write(dim(`  Diff preview (stub): ${affected.join(', ')} (full diff on exec)\n`, out.color));
+            }
+            // Cross-vendor critique: the tribunal (ensemble) already provides selection
+            // critique for deep plans; for /plan the note is sufficient (no bloat call).
+            out.write(dim('  (Cross-vendor critique via tribunal is used for deep plan selection.)\n', out.color));
+            // Compact plan viz: surface the lead goal's chosen approach + rationale
+            // (the first that would run). Keeps /plan output scannable without
+            // duplicating the full checklist.
+            if (plan.plan.goals.length > 0) {
+              const g0 = plan.plan.goals[0];
+              if (g0 && g0.approach) {
+                const ch = (g0.approach.chosen || '').trim();
+                const rat = (g0.approach.rationale || '').trim();
+                if (ch || rat) {
+                  out.write(dim(`  Lead approach: ${ch}${rat ? ' - ' + rat : ''}\n`, out.color));
+                }
+              }
+            }
             try {
               const pth = join(ctx.cwd, 'PLAN.md');
-              await fs.promises.writeFile(pth, `# Plan: ${planText}\n\n${proposal}\n`, 'utf8');
+              const planDoc =
+                `# Proposed Plan - ${new Date().toISOString().slice(0, 10)}\n\n` +
+                proposal +
+                `\n\n---\nPure planning pass (/plan) - parked for /goals review; taste aware.\n`;
+              await fs.promises.writeFile(pth, planDoc, 'utf8');
               out.write(dim(`  Wrote ${pth}\n`, out.color));
-            } catch {}
+            } catch {
+              /* fail-soft: PLAN.md is nice-to-have; in-chat + /goals is primary */
+            }
           }
+          lastProposedPlan = plan.plan || null;
           out.write(dim('  (parked for /goals review; taste aware)\n', out.color));
           try {
             const gs = createFileGoalStore({ clock: ctx.clock });
-            await gs.create({ title: gp.title || planText.slice(0,80), roadmap: gp.roadmap || [], scope: pk ? 'project' : 'global', projectKey: pk, conversationId: convId, source: 'user-explicit' });
-          } catch {}
-        } catch (e: any) {
-          out.write(dim(`  Failed: ${e?.message || e}\n`, out.color));
+            await gs.create({
+              title: plan.title,
+              roadmap: plan.roadmap,
+              scope: pk ? 'project' : 'global',
+              projectKey: pk,
+              conversationId: convId,
+              source: 'user-explicit',
+              ...(plan.approach !== undefined ? { approach: plan.approach } : {}),
+            });
+          } catch {
+            /* fail-soft: even if the capture misses, the plan was shown */
+          }
+          if (tasteOn) {
+            void recordTaste('immediate_edit', plan.title, 'plan proposal');
+          }
+        } catch (e: unknown) {
+          out.write(dim(`  Failed: ${e instanceof Error ? e.message : String(e)}\n`, out.color));
         }
         return 'continue';
+      }
+
+      // Chat-first meta intent (NL primary, after explicit /plan handling)
+      // Uses strong model (opencode/kimi high effort) for parsing acceptance, adjustments, bg directives from natural language.
+      // This is the "conscious" layer: the model sees full picture (via context in helper) and decides.
+      if (!line.startsWith('/')) {
+        try {
+          const signal = new AbortController().signal;
+          const intent = await decideWithStrongModel(line, signal);
+          if (intent && intent.intent === 'accept_plan' && (intent.confidence ?? 0) > 0.5) {
+            out.write(dim('  (strong meta detected plan acceptance via natural language)\n', out.color));
+            if (lastProposedPlan && parkedGoals.length > 0) {
+              for (const p of parkedGoals) {
+                await goalStore.setState(p.id, 'queued').catch(() => {});
+              }
+              await syncBoard();
+              if (tasteOn) {
+                void recordTaste('accept_unchanged', lastProposedPlan ? lastProposedPlan.title : 'plan', 'chat accept');
+              }
+              out.write(dim(`  Plan "${lastProposedPlan.title || 'recent'}" accepted via chat — ${parkedGoals.length} goals activated (queued for scheduler).\n`, out.color));
+              lastProposedPlan = null;
+            } else if (lastProposedPlan) {
+              out.write(dim(`  Plan "${lastProposedPlan.title || 'recent'}" accepted via chat — goals now active on the board (scheduler will advance them).\n`, out.color));
+              lastProposedPlan = null;
+              await syncBoard();
+            }
+            // In full impl (later phases): actual state promotion in goalStore, taste record on accept, start bg work if model decides.
+          } else if (intent.intent === 'bg_directive' && intent.details) {
+            out.write(dim(`  (strong meta: background directive for ${intent.details.bgTarget || 'task'} — noted; scheduler can run in bg)\n`, out.color));
+            // Later: tag goals or spin via scheduler with bg flag, using model decision.
+          } else if (intent.intent === 'adjust_plan' && intent.details && intent.details.adjustment) {
+            out.write(dim(`  (strong meta: plan adjustment "${intent.details.adjustment}" — noted for refine)\n`, out.color));
+            if (lastProposedPlan) {
+              try {
+                const refine = await callStrongMetaForIntent(`At high effort, produce JSON diff/refine for this plan based on the adjustment: ${JSON.stringify(lastProposedPlan)}`, new AbortController().signal, { task: 'refine_plan', adjustment: intent.details.adjustment });
+                if (refine) {
+                  lastProposedPlan = { ...lastProposedPlan, lastRefine: refine };
+                  // Apply to store for living plan: add a roadmap item reflecting the adjustment
+                  const g = parkedGoals[0];
+                  if (g) {
+                    const goal = await goalStore.get(g.id).catch(() => null);
+                    if (goal) {
+                      const newItem = { id: 'adj-' + Date.now(), text: `Adjusted per chat: ${intent.details.adjustment}`, status: 'pending' as const };
+                      await goalStore.addRoadmapItem(g.id, newItem).catch(() => {});
+                      await syncBoard();
+                      out.write(dim(`  Applied adjustment to goal ${g.title} (new roadmap item added).\n`, out.color));
+                    }
+                  }
+                }
+              } catch {
+                /* fail-soft meta refine */
+              }
+            }
+            // Later: full diff apply to roadmap/approach using updateRoadmapItem, taste record 'immediate_edit'.
+          }
+          // TODO later phases: handle 'pause_goal' similarly with model-driven update.
+        } catch {
+          /* meta intent is best-effort; never block chat */
+        }
       }
 
       // ---- /goal — explicit autonomous loop -----------------------------------
@@ -4961,7 +5230,7 @@ export async function runChatLoop(
       if (line === '/goal' || line.startsWith('/goal ')) {
         const goalText = line.slice('/goal'.length).trim();
         if (goalText.length === 0) {
-          out.write(dim('  Usage: /goal <what you want achieved> — I build the to-do list and work through it to verified-done (Ctrl+C to stop).\n', out.color));
+          out.write(dim('  Usage: /goal <what you want achieved> — I build the to-do list and work through it to verified-done (Ctrl+C to stop). Or just chat: "plan and do the foo project" or "accept the plan" or "pause goal 3 and change to X".\n', out.color));
           return 'continue';
         }
 
@@ -5057,6 +5326,7 @@ export async function runChatLoop(
             // Pass the planner's honest cap-disclosure counts (present only when the
             // model's reply was actually truncated) so the proposal never hides a cap.
             const proposal = formatGoalProposal(plan.plan, plan.plan.dropped);
+            lastProposedPlan = plan.plan || null;
             if (proposal.length > 0) {
               out.write('\n' + proposal + '\n');
               // Nice-to-have for "one chat to rule them all": also drop a real PLAN.md

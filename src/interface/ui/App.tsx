@@ -1,17 +1,11 @@
 /**
- * src/interface/ui/App.tsx — minimal Ink chat skeleton (Step 1 of the Ink
- * migration, behind the default-OFF MYSHELL_INK flag).
+ * src/interface/ui/App.tsx — Ink chat UI (Ink migration, default ON via flag).
  *
- * This is SCAFFOLDING, not the real UI: a `<Static>` transcript region fed by
- * committed lines, plus a single-line pinned input box at the bottom driven by
- * Ink's built-in `useInput` (no extra dependency). No goals, panels, streaming,
- * or token meters yet — those are later steps. The legacy (flag-off)
- * render.ts/menu-readline.ts path is 100% unchanged.
- *
- * The App exposes its mutable seams (commit a transcript line; subscribe to
- * submitted input lines) through a small imperative handle passed in via props,
- * so the OutputSink adapter and createInkLineReader (in mount.tsx) can drive it
- * without React knowing about Node streams.
+ * Full modern chat surface: <Static> transcript, <StatusBlock> (goals/agents/tokens),
+ * live <Stream>, advanced <InputBox> (history, multiline, queued). Supports chat
+ * active toggle, single-key reads, interrupts, stdin control for suspend/resume.
+ * Legacy path remains byte-identical when flag off. The App is driven imperatively
+ * via the bridge from Node side (menu, renderStreamInk).
  */
 
 import React, { useEffect, useMemo, useState } from 'react';

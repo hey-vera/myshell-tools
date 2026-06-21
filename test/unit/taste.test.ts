@@ -296,6 +296,6 @@ describe('tasteEnabled (flag, default ON)', () => {
   });
 
   it('never throws on hostile input (default-ON safe)', () => {
-    assert.doesNotThrow(() => tasteEnabled({ MYSHELL_TASTE: 42 as any }, { experimentalTaste: 'weird' as any }));
+    assert.doesNotThrow(() => tasteEnabled({ MYSHELL_TASTE: 42 as unknown as string }, { experimentalTaste: 'weird' as unknown as boolean | undefined }));
   });
 });

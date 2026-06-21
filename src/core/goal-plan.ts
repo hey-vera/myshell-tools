@@ -129,12 +129,17 @@ export interface GoalPlan {
  *                      can draw on the understanding's genuinely-open questions).
  *                      ABSENT → the prompt is byte-for-byte today's (the planner
  *                      runs exactly as before the understanding pass existed).
+ * @param tasteContext  optional — pre-rendered learned-taste playbook (taste.ts).
+ *                      Present only when taste flag ON; observed prefs injected so
+ *                      plans are preference-aware (approach/rationale/bias). Absent
+ *                      → byte-identical.
  */
 export function buildGoalPlanPrompt(
   userMessage: string,
   assistantReply?: string,
   frameGoal?: string,
   systemModel?: SystemModel,
+  tasteContext?: string,
 ): string {
   const text = (userMessage ?? '').trim();
   if (text.length === 0) return '';
@@ -216,6 +221,15 @@ export function buildGoalPlanPrompt(
   // the prompt is byte-for-byte identical to the pre-understanding planner.
   const grounding = systemModelGrounding(systemModel);
   if (grounding.length > 0) lines.push('', ...grounding);
+  const taste = (tasteContext ?? '').trim();
+  if (taste.length > 0) {
+    lines.push(
+      '',
+      'OBSERVED USER TASTE / PREFS (free learned layer — lean prior from past decisions;',
+      'explicit request this turn wins; use to shape approach/ask vs proceed when it fits):',
+      taste,
+    );
+  }
   lines.push('', "OWNER'S LATEST TURN:", text);
   return lines.join('\n');
 }

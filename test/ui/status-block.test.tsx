@@ -38,6 +38,7 @@ function boardRow(over: Partial<GoalBoardRow> = {}): GoalBoardRow {
     agents: over.agents ?? 0,
     ...(over.todos !== undefined ? { todos: over.todos } : {}),
     ...(over.verdict !== undefined ? { verdict: over.verdict } : {}),
+    ...(over.approach !== undefined ? { approach: over.approach } : {}),
   };
 }
 
@@ -527,6 +528,25 @@ test('BoardRow renders a running goal checklist beneath the goal line with statu
   assert.match(frame, /\[◐\] Active item/);
 });
 
+test('BoardRow renders approach/rationale line for persistent plan viz (parked or running)', () => {
+  const state = active([]);
+  const { lastFrame } = render(
+    <BoardRow
+      row={boardRow({
+        id: 'g1',
+        title: 'Ship it',
+        state: 'parked',
+        approach: { chosen: 'use incremental delivery', rationale: 'reduces risk on core paths' },
+      })}
+      state={state}
+      color={false}
+    />,
+  );
+  const frame = lastFrame() ?? '';
+  assert.match(frame, /goal Ship it — inactive/);
+  assert.match(frame, /Approach: use incremental delivery - reduces risk on core paths/);
+});
+
 test('BoardPanel shows the BOARD title, one row per goal, and a +K more overflow line', () => {
   const { lastFrame } = render(
     <BoardPanel
@@ -563,9 +583,9 @@ test('board ON: an ordinary turn does NOT render a "GOALS ▸ <message>" card', 
   const { lastFrame } = render(<StatusBlock state={state} color={false} rows={40} />);
   const frame = lastFrame() ?? '';
   // The fake raw-message card is GONE; board mode keeps the board as the primary list.
+  // (Live GOALS panel hidden when no live goals this turn; board supplies the persistent list.)
   assert.doesNotMatch(frame, new RegExp(raw.slice(0, 20)));
   assert.match(frame, /BOARD/);
-  assert.match(frame, /\bGOALS\b/);
   assert.match(frame, /goal Redesign feed — inactive/);
   assert.match(frame, /Thinking…/);
 });

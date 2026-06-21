@@ -19,7 +19,9 @@
  * Row budget model (each item below is exactly ONE terminal row):
  *   panel top border ........................... 1
  *   per full GoalCard:  the goal line ........... 1
+ *                       + approach (if present) . 0|1
  *                       + one row per agent ..... agents.length
+ *                       + todos (running only) .. 0..N
  *   panel bottom border ........................ 1
  *   the status line (spinner verb) ............. 1
  *   the live <Stream> .......................... streamLines (capped to streamCap)
@@ -583,7 +585,13 @@ export interface BoardPlan {
 }
 
 function boardRowHeight(row: GoalBoardRow): number {
-  return 1 + (row.state === 'running' ? row.todos?.length ?? 0 : 0);
+  // Base goal line + optional approach line (always, for persistent viz) +
+  // running todos only (live checklist). This keeps the layout budget
+  // honest so StatusBlock + stream + input never overflow viewport.
+  const base = 1;
+  const approachLines = row.approach ? 1 : 0;
+  const todoLines = row.state === 'running' ? (row.todos?.length ?? 0) : 0;
+  return base + approachLines + todoLines;
 }
 
 function boardRowsHeight(rows: readonly GoalBoardRow[]): number {

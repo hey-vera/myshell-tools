@@ -125,7 +125,7 @@ export function isPlainMode(): boolean {
  * terminals. Set via MYSHELL_THEME=light (written from config at startup).
  * Reads the env each call so tests can toggle without re-importing.
  */
-export function isLightTheme(): boolean {
+function isLightTheme(): boolean {
   return process.env['MYSHELL_THEME'] === 'light';
 }
 

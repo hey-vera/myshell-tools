@@ -30,7 +30,7 @@ import { governorEnabled } from '../../src/interface/ui/governor-flag.ts';
 import { verifyEnabled } from '../../src/interface/ui/verify-flag.ts';
 import { trustEnabled } from '../../src/interface/ui/trust-flag.ts';
 import { tribunalEnabled } from '../../src/interface/ui/tribunal-flag.ts';
-import { tasteEnabled } from '../../src/core/taste-flag.ts';
+// tasteEnabled excluded from this composition test (direct default-ON handling)
 import { judgmentEnabled } from '../../src/core/judgment-flag.ts';
 
 type OptIn = (

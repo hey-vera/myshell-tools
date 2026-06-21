@@ -18,6 +18,7 @@
  */
 
 import type { Risk, Tier } from '../../core/types.js';
+import type { RoadmapItemApproach } from '../../core/work-contract.js';
 import type { RoadmapStatus } from '../../core/work-contract.js';
 import type { ProviderId } from '../../providers/port.js';
 import type { ErrorCategory } from '../../providers/errors.js';
@@ -141,6 +142,11 @@ export interface GoalBoardRow {
    * real recorded verdict (never fabricated); absent when none has been computed.
    */
   readonly verdict?: string;
+  /** Approach (chosen + rationale) when present on the goal. Surfaced as a
+   * persistent compact viz line in the board (for both parked + running goals).
+   * Carried through from Goal so the StatusBlock can render "always-visible"
+   * approach/rationale without re-fetch. */
+  readonly approach?: RoadmapItemApproach;
 }
 
 /** The execution phase that drives the live status line / spinner verb. */

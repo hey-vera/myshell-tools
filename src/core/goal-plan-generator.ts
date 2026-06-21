@@ -47,6 +47,10 @@ export interface GoalPlanGeneratorDeps {
    * for-byte today's (the planner runs exactly as before understanding existed).
    */
   readonly systemModel?: SystemModel;
+  /** Optional pre-rendered taste playbook (when taste flag ON) so the PLANNING
+   * BRAIN is preference-aware (observed priors on approach/ask-depth). Absent →
+   * byte-identical to pre-taste. */
+  readonly tasteContext?: string;
 }
 
 /**
@@ -91,7 +95,7 @@ export function makeGoalPlannerAttempt(
     // absent (the default) → the prompt is byte-for-byte today's. assistantReply /
     // frameGoal stay undefined here, as before — only the optional systemModel is
     // threaded through.
-    const prompt = buildGoalPlanPrompt(userMessage, undefined, undefined, deps.systemModel);
+    const prompt = buildGoalPlanPrompt(userMessage, undefined, undefined, deps.systemModel, deps.tasteContext);
     if (prompt.trim().length === 0) return null;
 
     const pool = (Object.keys(deps.providers) as ProviderId[]).filter(
@@ -125,6 +129,7 @@ export function makeGoalPlannerAttempt(
       cwd: deps.cwd,
       sandbox: deps.sandbox ?? GOAL_PLAN_SANDBOX,
       timeoutMs: deps.timeoutMs,
+      reasoningEffort: 'max',  // High effort for planning meta (conscious thinker, not dumb wiring)
     };
 
     let finalText: string | undefined;

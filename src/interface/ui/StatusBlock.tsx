@@ -465,6 +465,11 @@ export function BoardRow({ row, state, color = true }: BoardRowProps): React.Rea
   return (
     <Box flexDirection="column">
       <Text dimColor={color}>{parts.join(' ')}</Text>
+      {row.approach ? (
+        <Text dimColor={color}>
+          {`   Approach: ${truncateToWidth(row.approach.chosen, 48)}${row.approach.rationale ? ' - ' + truncateToWidth(row.approach.rationale, 40) : ''}`}
+        </Text>
+      ) : null}
       {row.state === 'running'
         ? row.todos?.map((todo) => (
             <Text key={todo.id} dimColor={color}>{`   [${boardTodoGlyph(todo.status)}] ${todo.text}`}</Text>
