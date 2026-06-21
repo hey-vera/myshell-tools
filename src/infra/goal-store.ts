@@ -50,6 +50,7 @@ import {
 import {
   capRoadmapItem,
   type RoadmapItem,
+  type RoadmapItemApproach,
   type RoadmapItemVerdict,
   type RoadmapStatus,
 } from '../core/work-contract.js';
@@ -122,7 +123,11 @@ async function readIndexFile(homeDir: string): Promise<IndexReadResult> {
   try {
     const raw = await readFile(getIndexPath(homeDir), 'utf8');
     const parsed = JSON.parse(raw) as unknown;
-    if (parsed === null || typeof parsed !== 'object' || !Array.isArray((parsed as GoalIndex).goals)) {
+    if (
+      parsed === null ||
+      typeof parsed !== 'object' ||
+      !Array.isArray((parsed as GoalIndex).goals)
+    ) {
       return { kind: 'corrupt', reason: 'index.json missing goals array' };
     }
     // Defensive: cap every row so a hand-edited/partial index can't crash a caller.
@@ -132,14 +137,17 @@ async function readIndexFile(homeDir: string): Promise<IndexReadResult> {
     if (nodeErr.code === 'ENOENT') return { kind: 'absent' };
     return {
       kind: 'corrupt',
-      reason: err instanceof SyntaxError ? 'index.json is invalid JSON' : 'index.json is unreadable',
+      reason:
+        err instanceof SyntaxError ? 'index.json is invalid JSON' : 'index.json is unreadable',
     };
   }
 }
 
 /** Newest-touched first (the canonical display order; ties keep insertion order). */
 function sortNewestFirst(goals: Goal[]): Goal[] {
-  return [...goals].sort((a, b) => (a.lastTouched < b.lastTouched ? 1 : a.lastTouched > b.lastTouched ? -1 : 0));
+  return [...goals].sort((a, b) =>
+    a.lastTouched < b.lastTouched ? 1 : a.lastTouched > b.lastTouched ? -1 : 0,
+  );
 }
 
 async function writeIndex(homeDir: string, goals: Goal[]): Promise<void> {
@@ -198,7 +206,11 @@ async function rebuildIndexFromItems(homeDir: string): Promise<Goal[]> {
   return sortNewestFirst(goals);
 }
 
-async function recoverIndex(homeDir: string, reason: string, onWarning?: StoreWarning): Promise<Goal[]> {
+async function recoverIndex(
+  homeDir: string,
+  reason: string,
+  onWarning?: StoreWarning,
+): Promise<Goal[]> {
   const corruptPath = await preserveCorruptIndex(homeDir);
   const rebuilt = await rebuildIndexFromItems(homeDir);
   await writeIndex(homeDir, rebuilt);
@@ -247,6 +259,23 @@ export interface CreateGoalInput {
   readonly tags?: Goal['tags'];
 }
 
+/** A batch patch for a goal's roadmap. All operations run on the same in-memory array. */
+export interface RoadmapPatch {
+  readonly add?: readonly RoadmapItem[];
+  readonly edit?: readonly { readonly itemId: string; readonly patch: RoadmapItemPatch }[];
+  readonly remove?: readonly string[];
+  readonly reorder?: readonly string[];
+}
+
+/** A patch for a goal's scalar fields + an optional roadmap batch patch. */
+export interface GoalPatch {
+  readonly title?: string;
+  readonly state?: GoalState;
+  readonly approach?: RoadmapItemApproach;
+  readonly tags?: readonly string[];
+  readonly roadmapPatch?: RoadmapPatch;
+}
+
 export interface GoalStore {
   /** Goals, newest-touched first, optionally filtered by state/scope/projectKey. */
   list(filter?: {
@@ -268,6 +297,15 @@ export interface GoalStore {
    * runGoalLoop — never here. There is deliberately no "run this roadmap" path.
    */
   setState(id: string, state: GoalState): Promise<Goal | null>;
+  /**
+   * Patch a goal's scalar fields and/or roadmap in one atomic transaction.
+   * Bumps `lastTouched`. Returns the updated goal, or null if the id is unknown.
+   * The roadmap patch applies edit → add → remove → reorder on a single in-memory
+   * array, then the whole goal is capped and persisted. Verified-done items and
+   * depended-on items are retained during remove (same honesty rules as
+   * removeRoadmapItem).
+   */
+  patchGoal(id: string, patch: GoalPatch): Promise<Goal | null>;
   /**
    * Record the goal-level evidence-backed verdict (Elite-partner Part 3, the
    * anti-fabrication backbone). Bumps `lastTouched`. Returns the updated goal, or
@@ -411,7 +449,9 @@ export function createFileGoalStore(opts: {
   return {
     async list(filter): Promise<Goal[]> {
       await ensureDirs(home);
-      const goals = await withLock(getIndexLockPath(home), async () => readIndexLocked(home, onWarning));
+      const goals = await withLock(getIndexLockPath(home), async () =>
+        readIndexLocked(home, onWarning),
+      );
       return selectGoals(goals, filter);
     },
 
@@ -461,7 +501,103 @@ export function createFileGoalStore(opts: {
         if (target === undefined) return null;
         const updated = capGoal({ ...target, state, lastTouched: clock.isoNow() });
         await persistGoal(home, updated);
-        await writeIndex(home, goals.map((g) => (g.id === id ? updated : g)));
+        await writeIndex(
+          home,
+          goals.map((g) => (g.id === id ? updated : g)),
+        );
+        return updated;
+      });
+    },
+
+    async patchGoal(id, patch): Promise<Goal | null> {
+      if (!isValidId(id)) return null;
+      await ensureDirs(home);
+      return withLock(getIndexLockPath(home), async () => {
+        const goals = await readIndexLocked(home, onWarning);
+        const target = goals.find((g) => g.id === id);
+        if (target === undefined) return null;
+
+        // Work on a mutable copy of the roadmap so all roadmapPatch steps compose
+        // on one array before capping.
+        let roadmap: RoadmapItem[] = [...target.roadmap];
+        if (patch.roadmapPatch !== undefined) {
+          const { add, edit, remove, reorder } = patch.roadmapPatch;
+
+          // 1. Edit existing items keyed by itemId (verdict and other fields are preserved).
+          if (edit !== undefined) {
+            for (const { itemId, patch: itemPatch } of edit) {
+              const idx = roadmap.findIndex((it) => it.id === itemId);
+              if (idx === -1) continue;
+              roadmap[idx] = {
+                ...roadmap[idx],
+                ...(itemPatch.text !== undefined ? { text: itemPatch.text } : {}),
+                ...(itemPatch.acceptanceCriterion !== undefined
+                  ? { acceptanceCriterion: itemPatch.acceptanceCriterion }
+                  : {}),
+                ...(itemPatch.approach !== undefined ? { approach: itemPatch.approach } : {}),
+                ...(itemPatch.dependsOn !== undefined
+                  ? { dependsOn: [...itemPatch.dependsOn] }
+                  : {}),
+                ...(itemPatch.parentId !== undefined ? { parentId: itemPatch.parentId } : {}),
+              } as RoadmapItem;
+            }
+          }
+
+          // 2. Append new items (capped), dropping extras beyond ROADMAP_LIMIT and
+          // skipping ids that already exist.
+          if (add !== undefined) {
+            for (const item of add) {
+              if (roadmap.length >= ROADMAP_LIMIT) break;
+              const capped = capRoadmapItem(item);
+              if (roadmap.some((it) => it.id === capped.id)) continue;
+              roadmap.push(capped);
+            }
+          }
+
+          // 3. Remove requested items, retaining verified-done and depended-on ones.
+          if (remove !== undefined) {
+            const idsToRemove = new Set(remove);
+            roadmap = roadmap.filter((it) => {
+              if (!idsToRemove.has(it.id)) return true;
+              if (isVerifiedDone(it)) return true; // audit-trail honesty
+              if (isDependedOnByOthers(roadmap, it.id)) return true; // dependency safety
+              return false;
+            });
+          }
+
+          // 4. Reorder by listed ids; omitted ids stay at the end in original order.
+          if (reorder !== undefined) {
+            const byId = new Map(roadmap.map((it) => [it.id, it]));
+            const seen = new Set<string>();
+            const ordered: RoadmapItem[] = [];
+            for (const wantedId of reorder) {
+              const it = byId.get(wantedId);
+              if (it !== undefined && !seen.has(wantedId)) {
+                ordered.push(it);
+                seen.add(wantedId);
+              }
+            }
+            for (const it of roadmap) {
+              if (!seen.has(it.id)) ordered.push(it);
+            }
+            roadmap = ordered;
+          }
+        }
+
+        const updated = capGoal({
+          ...target,
+          ...(patch.title !== undefined ? { title: patch.title } : {}),
+          ...(patch.state !== undefined ? { state: patch.state } : {}),
+          ...(patch.approach !== undefined ? { approach: patch.approach } : {}),
+          ...(patch.tags !== undefined ? { tags: patch.tags } : {}),
+          roadmap,
+          lastTouched: clock.isoNow(),
+        });
+        await persistGoal(home, updated);
+        await writeIndex(
+          home,
+          goals.map((g) => (g.id === id ? updated : g)),
+        );
         return updated;
       });
     },
@@ -479,7 +615,10 @@ export function createFileGoalStore(opts: {
         // round-trip. lastTouched bumps so the board reflects the verdict immediately.
         const updated = capGoal({ ...target, goalVerdict: verdict, lastTouched: clock.isoNow() });
         await persistGoal(home, updated);
-        await writeIndex(home, goals.map((g) => (g.id === id ? updated : g)));
+        await writeIndex(
+          home,
+          goals.map((g) => (g.id === id ? updated : g)),
+        );
         return updated;
       });
     },
@@ -501,7 +640,10 @@ export function createFileGoalStore(opts: {
         );
         const updated = capGoal({ ...target, roadmap: nextRoadmap, lastTouched: clock.isoNow() });
         await persistGoal(home, updated);
-        await writeIndex(home, goals.map((g) => (g.id === id ? updated : g)));
+        await writeIndex(
+          home,
+          goals.map((g) => (g.id === id ? updated : g)),
+        );
         return updated;
       });
     },
@@ -519,7 +661,10 @@ export function createFileGoalStore(opts: {
         );
         const updated = capGoal({ ...target, roadmap: nextRoadmap, lastTouched: clock.isoNow() });
         await persistGoal(home, updated);
-        await writeIndex(home, goals.map((g) => (g.id === id ? updated : g)));
+        await writeIndex(
+          home,
+          goals.map((g) => (g.id === id ? updated : g)),
+        );
         return updated;
       });
     },
@@ -544,14 +689,13 @@ export function createFileGoalStore(opts: {
           typeof atIndex === 'number' && Number.isFinite(atIndex)
             ? Math.max(0, Math.min(Math.floor(atIndex), target.roadmap.length))
             : target.roadmap.length;
-        const nextRoadmap = [
-          ...target.roadmap.slice(0, at),
-          capped,
-          ...target.roadmap.slice(at),
-        ];
+        const nextRoadmap = [...target.roadmap.slice(0, at), capped, ...target.roadmap.slice(at)];
         const updated = capGoal({ ...target, roadmap: nextRoadmap, lastTouched: clock.isoNow() });
         await persistGoal(home, updated);
-        await writeIndex(home, goals.map((g) => (g.id === id ? updated : g)));
+        await writeIndex(
+          home,
+          goals.map((g) => (g.id === id ? updated : g)),
+        );
         return { ok: true, goal: updated };
       });
     },
@@ -586,7 +730,10 @@ export function createFileGoalStore(opts: {
         });
         const updated = capGoal({ ...target, roadmap: nextRoadmap, lastTouched: clock.isoNow() });
         await persistGoal(home, updated);
-        await writeIndex(home, goals.map((g) => (g.id === id ? updated : g)));
+        await writeIndex(
+          home,
+          goals.map((g) => (g.id === id ? updated : g)),
+        );
         return updated;
       });
     },
@@ -616,7 +763,10 @@ export function createFileGoalStore(opts: {
         }
         const updated = capGoal({ ...target, roadmap: ordered, lastTouched: clock.isoNow() });
         await persistGoal(home, updated);
-        await writeIndex(home, goals.map((g) => (g.id === id ? updated : g)));
+        await writeIndex(
+          home,
+          goals.map((g) => (g.id === id ? updated : g)),
+        );
         return updated;
       });
     },
@@ -643,7 +793,10 @@ export function createFileGoalStore(opts: {
         const nextRoadmap = target.roadmap.filter((it) => it.id !== itemId);
         const updated = capGoal({ ...target, roadmap: nextRoadmap, lastTouched: clock.isoNow() });
         await persistGoal(home, updated);
-        await writeIndex(home, goals.map((g) => (g.id === id ? updated : g)));
+        await writeIndex(
+          home,
+          goals.map((g) => (g.id === id ? updated : g)),
+        );
         return { ok: true, goal: updated };
       });
     },

@@ -64,7 +64,11 @@ import { renderSystemModelContext } from '../core/understanding.js';
 import { isPushBackQuestionSet, classifyPushBackAnswer } from '../core/brain.js';
 import { renderTastePlaybook, isImmediateRephrase, type TasteSignal } from '../core/taste.js';
 import { createFileGoalStore } from '../infra/goal-store.js';
+import type { GoalPatch } from '../infra/goal-store.js';
 import { createFileRulesStore } from '../infra/rules-store.js';
+import { runDecisionEngine, type MetaDecision } from './meta-decision.js';
+import { atomicAppendJSONL } from '../infra/atomic.js';
+import { getStateDir } from '../infra/paths.js';
 import {
   formatRulesForContext,
   selectRulesForScope,
@@ -2565,7 +2569,7 @@ export async function runChatLoop(
       let lastProposedPlan: Record<string, unknown> | null = null;
       let parkedGoals: Array<Record<string, unknown>> = [];
       let tasteSummary: Record<string, unknown> | null = null;
-      let boardSummary: Record<string, unknown> = {};
+      let boardSummary: { total?: number; parked?: number; running?: number; [k: string]: unknown } = {};
       // Map one persisted Goal → a flat board row using the PURE goal-todo.ts shapers
       // (goalGlyph for the lifecycle glyph, roadmapProgress for the to-do counts), so
       // the projection reuses the same vocabulary as the /goals menu rows. `agents`
@@ -2599,11 +2603,11 @@ export async function runChatLoop(
           ...(g.approach !== undefined ? { approach: g.approach } : {}),
         };
       };
-      // Snapshot the store and push it into the live board. Scoped to the current
-      // project + globals so the board mirrors what /goals lists. Fail-soft: any
-      // store/sink error degrades to no board update (never throws into the turn).
+      // Snapshot the store, update the conscious-layer summaries (parkedGoals,
+      // boardSummary), and push rows to the live board when enabled. The snapshot
+      // is computed even when the board display is OFF so the DecisionEngine and
+      // resume note always see the real state.
       const syncBoard = async (): Promise<void> => {
-        if (!boardOn || typeof out.syncBoard !== 'function') return;
         try {
           const projectKey = await resolveProjectKeyOnce();
           const all = await goalStore.list();
@@ -2630,7 +2634,9 @@ export async function runChatLoop(
             .map((x) => x.g);
           parkedGoals = ordered.filter((g) => g.state === 'parked').map((g) => ({ id: g.id, title: g.title, roadmap: g.roadmap?.slice(0, 3) }));
           boardSummary = { total: ordered.length, parked: parkedGoals.length, running: ordered.filter(g => g.state === 'running').length };
-          out.syncBoard(ordered.map(toBoardRow));
+          if (boardOn && typeof out.syncBoard === 'function') {
+            out.syncBoard(ordered.map(toBoardRow));
+          }
         } catch {
           /* board is best-effort chrome — never block or break a turn */
         }
@@ -2684,6 +2690,16 @@ export async function runChatLoop(
       await syncBoard();
       await refreshGoalContext();
       await refreshRulesContext();
+
+      // Resume note: if there are active/parked goals from a previous session,
+      // surface them so the user knows the chat context is continuous.
+      const runningCount = boardSummary.running ?? 0;
+      if (parkedGoals.length > 0 || runningCount > 0) {
+        const parts: string[] = [];
+        if (runningCount > 0) parts.push(`${runningCount} running`);
+        if (parkedGoals.length > 0) parts.push(`${parkedGoals.length} parked`);
+        out.write(dim(`  (resuming — ${parts.join(', ')} goal(s) active; chat "status", "accept", "pause", or "adjust" to control)\n`, out.color));
+      }
 
       // ---- VERIFIED-DONE goal-completion GATE (Elite-partner Part 3) -----------
       // DEFAULT OFF. When the truly-complete flag is ON, a goal can NO LONGER be
@@ -3199,7 +3215,7 @@ export async function runChatLoop(
         return null;
       };
 
-      const callStrongMetaForIntent = async (userLine: string, signal: AbortSignal, extraContext?: Record<string, unknown>): Promise<Record<string, unknown> | null> => {
+      const callStrongMeta = async (prompt: string, signal: AbortSignal, extraContext?: Record<string, unknown>): Promise<Record<string, unknown> | null> => {
         const pick = pickStrongMeta();
         if (!pick) return null;
         const prov = ctx.providers[pick.id];
@@ -3210,22 +3226,13 @@ export async function runChatLoop(
 FULL PICTURE CONTEXT (injected for you to see everything):
 ${JSON.stringify({ ...fullCtx, extra: extraContext || {} }, null, 2)}
 
-User natural language input: "${userLine}"
-
 Available strong CLI providers this session: ${Object.keys(ctx.providers || {}).join(', ') || 'none'} (use this knowledge for wise routing/approach choices in your rationale).
 
 HARD TASTE CONSTRAINTS: The taste object in the FULL PICTURE (if present) lists observed user preferences (memoryBias + lines). You MUST respect them as hard constraints when choosing intent, details, rationale, or suggested approaches. E.g. if user prefs "prefer background for long work", bias toward bg_directive; if "always ask on risky changes", lean clarify. Never ignore them. If input conflicts with taste, note the tension in rationale.
 
-Your job: Parse intent from the chat (the user may say anything). Output ONLY valid JSON (no prose, no markdown):
-{
-  "intent": "accept_plan" | "adjust_plan" | "bg_directive" | "new_plan" | "pause_goal" | "clarify" | "normal_chat" | "other",
-  "details": { "planTitle"?: string, "adjustment"?: string, "bgTarget"?: string, "reason"?: string, "goalId"?: string, ... },
-  "confidence": number 0-1,
-  "rationale": "short why you chose this intent using the full picture"
-}
+${prompt}
 
-Be wise like an elite pro. For acceptance, look for 'accept the plan', 'go', 'looks good', 'start all', 'unblocked'. For adjustments, detect 'pause', 'change', 'instead'. For bg, 'background', 'bg the', 'while we discuss'.
-If uncertain, use "clarify".`;
+Output ONLY valid JSON (no prose, no markdown).`;
 
         const req: ProviderRequest = {
           model: pick.model,
@@ -3254,47 +3261,342 @@ If uncertain, use "clarify".`;
         }
       };
 
-      const decideWithStrongModel = async (userLine: string, signal: AbortSignal): Promise<Record<string, unknown> | null> => {
-        const context = {
-          lastPlan: lastProposedPlan,
-          parked: parkedGoals,
-          taste: tasteSummary,
-          board: boardSummary,
-        };
-        return callStrongMetaForIntent(userLine, signal, context);
-      };
-
       const buildFullContext = async () => {
         const projectKey = await resolveProjectKeyOnce().catch(() => null);
         const allGoals = await goalStore.list({ projectKey }).catch(() => []);
-        const taste = tasteOn ? await (async () => {
-          try {
-            const pb = await tasteLedger.recall(projectKey);
-            return { bias: pb.memoryBias, lines: pb.lines.slice(0, 3) };
-          } catch { return null; }
-        })() : null;
+        const taste = tasteOn
+          ? (tasteSummary ?? (await (async () => {
+              try {
+                const pb = await tasteLedger.recall(projectKey);
+                return { bias: pb.memoryBias, lines: pb.lines.slice(0, 5), count: pb.lines.length };
+              } catch {
+                return null;
+              }
+            })()))
+          : null;
+        const history = await ctx.store.load(convId).catch(() => []);
+        const recentUser = history
+          .filter((e) => e.role === 'user')
+          .slice(-6)
+          .map((e) => e.content.slice(0, 120));
+        const authProviders = [
+          mutableCtx.env.claude,
+          mutableCtx.env.codex,
+          mutableCtx.env.opencode,
+          mutableCtx.env.grok,
+        ]
+          .filter((p) => p.authenticated)
+          .map((p) => ({ id: p.id, models: p.availableModels.slice(0, 4) }));
         return {
-          goals: allGoals.map(g => ({ id: g.id, title: g.title, state: g.state, approach: g.approach })),
+          goals: allGoals.map((g) => ({ id: g.id, title: g.title, state: g.state, approach: g.approach })),
+          goalStats: {
+            total: allGoals.length,
+            running: allGoals.filter((g) => g.state === 'running').length,
+            parked: allGoals.filter((g) => g.state === 'parked').length,
+            queued: allGoals.filter((g) => g.state === 'queued').length,
+            done: allGoals.filter((g) => g.state === 'done').length,
+          },
           taste,
           board: boardSummary,
           lastPlan: lastProposedPlan,
-          providers: Object.keys(ctx.providers || {}),
+          providers: authProviders,
+          historySummary: {
+            messageCount: history.length,
+            recentUserMessages: recentUser,
+          },
+          runtime: {
+            backgroundGoals: backgroundGoals.size,
+            pressure: currentPressure(),
+            sessionConsumption,
+          },
+          recentDecisions: await recentDecisionAudits(6),
         };
       };
 
-      const withMetaCritique = async <T>(fn: () => Promise<T>, context: unknown, signal: AbortSignal): Promise<T> => {
-        const result = await fn();
-        try {
-          const critique = await callStrongMetaForIntent(`At high effort, critique this result using full picture: ${JSON.stringify(result)}`, signal, { ... (context as Record<string, unknown>), task: 'meta_critique' });
-          const c = critique as Record<string, unknown> | null;
-          if (c && c.issues && (c.issues as unknown[]).length) {
-            // In full: feed back to revise the result (self-critique loop)
-            // For now, the meta call itself provides the intelligence.
+      const MAX_META_CRITIQUE_ITERS = 2;
+
+      const critiqueAndRevisePlan = async (
+        plan: GoalPlan,
+        userLine: string,
+        signal: AbortSignal,
+      ): Promise<{ plan: GoalPlan; critiqueNote?: string }> => {
+        let current = plan;
+        let critiqueNote: string | undefined;
+        for (let i = 0; i < MAX_META_CRITIQUE_ITERS; i += 1) {
+          try {
+            const critique = await callStrongMeta(
+              `At high effort, critique this plan for the input "${userLine}" using the full picture. Be harsh: look for missing steps, wrong ordering, ignored taste, unrealistic scope, or weak done criteria. Output JSON: { "issues": [{"severity":"fatal|major|minor","what":"..."}], "verdict":"pass|revise" }`,
+              signal,
+              { task: 'critique_plan', input: userLine },
+            );
+            const c = critique as Record<string, unknown> | null;
+            const issues = Array.isArray(c?.issues)
+              ? (c.issues as unknown[]).filter((x): x is Record<string, unknown> => x !== null && typeof x === 'object')
+              : [];
+            if (issues.length === 0 || c?.verdict === 'pass') break;
+            const top = issues.find((x) => typeof x.what === 'string')?.what as string | undefined;
+            if (top !== undefined && critiqueNote === undefined) critiqueNote = top;
+            const revise = await callStrongMeta(
+              `You previously produced this plan: ${JSON.stringify(current)}. The critic found these issues: ${JSON.stringify(issues)}. Output a REVISED plan in the SAME JSON shape (judgment, title, goals[] with todos/approach/doneWhen/dropped). Preserve everything already correct; only fix the issues.`,
+              signal,
+              { task: 'revise_plan', input: userLine },
+            );
+            if (
+              revise !== null &&
+              typeof revise === 'object' &&
+              Array.isArray((revise as Record<string, unknown>).goals)
+            ) {
+              current = revise as unknown as GoalPlan;
+            } else {
+              break;
+            }
+          } catch {
+            break;
           }
-        } catch {
-          /* fail-soft meta critique */
         }
-        return result;
+        return { plan: current, ...(critiqueNote !== undefined ? { critiqueNote } : {}) };
+      };
+
+      // Generic self-critique loop: generate → critique → revise (max iters). The
+      // generate callback receives the attempt number and the blocking issues from
+      // the previous critique so it can fix them. This closes the critique-revise
+      // loop for any meta result (plans, judgments, decisions).
+      const executeWithCritique = async <T>(
+        generate: (attempt: number, feedback: string[]) => Promise<T>,
+        serialize: (t: T) => string,
+        task: string,
+        signal: AbortSignal,
+        maxIters = MAX_META_CRITIQUE_ITERS,
+      ): Promise<T> => {
+        let current = await generate(1, []);
+        for (let i = 0; i < maxIters; i += 1) {
+          try {
+            const critique = await callStrongMeta(
+              `Critique this ${task} result harshly using the full picture. Look for missing context, ignored taste, factual errors, weak acceptance criteria, or goal conflicts. Output JSON: { "issues": [{"severity":"high|medium|low","description":"..."}], "shouldRevise": true|false, "feedback":"short revision instructions" }`,
+              signal,
+              { task: 'critique_revise', subject: task, attempt: i + 1, result: serialize(current) },
+            );
+            const c = critique as {
+              issues?: Array<{ severity?: string; description?: string }>;
+              shouldRevise?: boolean;
+              feedback?: string;
+            } | null;
+            if (!c || !Array.isArray(c.issues) || c.issues.length === 0 || c.shouldRevise === false) {
+              return current;
+            }
+            const blocking = c.issues.filter(
+              (x) => x.severity === 'high' || x.severity === 'medium',
+            );
+            if (blocking.length === 0) return current;
+            const feedback = blocking
+              .map((x) => x.description)
+              .filter((d): d is string => typeof d === 'string');
+            if (feedback.length === 0) return current;
+            const instruction = typeof c.feedback === 'string' ? c.feedback : feedback.join('; ');
+            current = await generate(i + 2, [instruction, ...feedback]);
+          } catch {
+            return current;
+          }
+        }
+        return current;
+      };
+
+      // Persistent decision-audit ledger. Lean JSONL in the state dir. The log is
+      // read back into buildFullContext so the model sees its own recent decisions
+      // (meta-awareness, avoids repetitive mistakes) and failures are surfaced.
+      const decisionAuditPath = (): string => join(getStateDir(ctx.cwd), 'decisions.jsonl');
+      const auditDecision = async (
+        decision: MetaDecision | null,
+        error?: string,
+      ): Promise<void> => {
+        try {
+          await atomicAppendJSONL(decisionAuditPath(), {
+            at: ctx.clock.isoNow(),
+            intent: decision?.intent ?? 'null',
+            confidence: decision?.confidence ?? 0,
+            rationale: decision?.rationale ?? '',
+            actionKinds: decision?.actions?.map((a) => a.kind) ?? [],
+            provider: pickStrongMeta()?.id ?? null,
+            ...(error !== undefined ? { error } : {}),
+          });
+        } catch {
+          /* audit is best-effort; never block chat */
+        }
+      };
+      const recentDecisionAudits = async (limit = 6): Promise<unknown[]> => {
+        try {
+          const pth = decisionAuditPath();
+          const raw = await fs.promises.readFile(pth, 'utf8');
+          return raw
+            .split('\n')
+            .filter(Boolean)
+            .slice(-limit)
+            .map((l) => JSON.parse(l));
+        } catch {
+          return [];
+        }
+      };
+
+      // Helpers for applying a structured GoalPatch from the DecisionEngine safely.
+      const mintRoadmapItemId = (): string => {
+        const raw = ctx.clock.uuid().replace(/[^A-Za-z0-9]/g, '');
+        return `rm_${raw.length > 0 ? raw : '0'}`;
+      };
+      const ensureRoadmapItemIds = (patch: GoalPatch): GoalPatch => {
+        if (!patch.roadmapPatch?.add) return patch;
+        const add = patch.roadmapPatch.add.map((it) => {
+          if (it.id && it.id.length > 0) return it;
+          return { ...it, id: mintRoadmapItemId() };
+        });
+        return { ...patch, roadmapPatch: { ...patch.roadmapPatch, add } };
+      };
+      const updatePlanMdAfterAdjust = async (goal: Goal, note?: string): Promise<void> => {
+        try {
+          const pth = join(ctx.cwd, 'PLAN.md');
+          const existing = await fs.promises.readFile(pth, 'utf8').catch(() => null);
+          const stamp = ctx.clock.isoNow().slice(0, 10);
+          const block =
+            `## Adjustment - ${stamp} - ${goal.title}\n\n` +
+            `${note ? `Note: ${note}\n\n` : ''}` +
+            `Updated roadmap:\n` +
+            goal.roadmap.map((it) => `- [${it.status}] ${it.text}`).join('\n') +
+            `\n\n`;
+          const updated = existing !== null ? `${existing}\n\n${block}` : block;
+          await fs.promises.writeFile(pth, updated, 'utf8');
+          out.write(dim(`  Updated ${pth} with adjustment.\n`, out.color));
+        } catch {
+          /* fail-soft: PLAN.md is nice-to-have */
+        }
+      };
+
+      // Apply a typed MetaDecision from the DecisionEngine to the real stores and
+      // scheduler. Returns true when the decision was fully handled and the chat
+      // loop should return 'continue' (skip normal chat / /goal fall-through).
+      const applyMetaDecision = async (
+        decision: MetaDecision,
+        userLine: string,
+        parkedIds: string[],
+        _signal: AbortSignal,
+      ): Promise<boolean> => {
+        const actionHandled = new Set<string>();
+        for (const action of decision.actions ?? []) {
+          switch (action.kind) {
+            case 'accept': {
+              const targets = action.goalIds.filter((id) => parkedIds.includes(id));
+              const idsToAccept = targets.length > 0 ? targets : parkedIds;
+              let launched = 0;
+              for (const pid of idsToAccept) {
+                await goalStore.setState(pid, 'running').catch(() => {});
+                const p = parkedGoals.find((x) => x.id === pid);
+                const gtitle = (p?.title as string) || 'accepted goal';
+                try {
+                  const label = await formGoalLabel(gtitle).catch(() => gtitle);
+                  spawnBackgroundGoal(pid, gtitle, label);
+                  launched++;
+                } catch {
+                  /* spawn fail must not block */
+                }
+              }
+              await syncBoard();
+              if (tasteOn && lastProposedPlan) {
+                const planTitle =
+                  ((lastProposedPlan as Record<string, unknown>)?.title as string | undefined) ??
+                  'plan';
+                void recordTaste('accept_unchanged', planTitle, 'chat accept');
+              }
+              const lpTitle = (lastProposedPlan as Record<string, unknown>)?.title ?? 'recent';
+              out.write(
+                dim(
+                  `  Plan "${String(lpTitle)}" accepted via chat — ${launched} goal(s) now running in background.\n`,
+                  out.color,
+                ),
+              );
+              lastProposedPlan = null;
+              actionHandled.add('accept');
+              break;
+            }
+            case 'pause': {
+              const after = await goalStore.setState(action.goalId, 'parked').catch(() => null);
+              await syncBoard();
+              if (after) {
+                out.write(
+                  dim(
+                    `  Paused goal "${after.title}"${action.reason ? ` — ${action.reason}` : ''}.\n`,
+                    out.color,
+                  ),
+                );
+                if (tasteOn) void recordTaste('immediate_edit', after.title, 'pause goal');
+              } else {
+                out.write(dim(`  Could not pause ${action.goalId} (not found).\n`, out.color));
+              }
+              actionHandled.add('pause');
+              break;
+            }
+            case 'bg': {
+              const targets = action.goalIds.filter((id) => parkedIds.includes(id));
+              const idsToBg = targets.length > 0 ? targets : parkedIds;
+              let launched = 0;
+              for (const pid of idsToBg) {
+                await goalStore.setState(pid, 'running').catch(() => {});
+                const p = parkedGoals.find((x) => x.id === pid);
+                const gtitle = (p?.title as string) || 'bg goal';
+                try {
+                  const label = await formGoalLabel(gtitle).catch(() => gtitle);
+                  spawnBackgroundGoal(pid, gtitle, label);
+                  launched++;
+                } catch {
+                  /* spawn fail must not block */
+                }
+              }
+              await syncBoard();
+              out.write(
+                dim(
+                  `  Moved ${launched} goal(s) to background per "${userLine}".\n`,
+                  out.color,
+                ),
+              );
+              actionHandled.add('bg');
+              break;
+            }
+            case 'adjust': {
+              const safePatch = ensureRoadmapItemIds(action.patch);
+              const after = await goalStore.patchGoal(action.goalId, safePatch);
+              await syncBoard();
+              if (after) {
+                out.write(
+                  dim(
+                    `  Adjusted goal "${after.title}" via structured patch (roadmap now ${after.roadmap.length} items).\n`,
+                    out.color,
+                  ),
+                );
+                await updatePlanMdAfterAdjust(after, action.note);
+                if (tasteOn) void recordTaste('immediate_edit', after.title, 'adjust plan');
+              } else {
+                out.write(
+                  dim(`  Could not apply adjustment to ${action.goalId} (not found).\n`, out.color),
+                );
+              }
+              actionHandled.add('adjust');
+              break;
+            }
+            case 'clarify': {
+              out.write(dim(`  ${action.question}\n`, out.color));
+              actionHandled.add('clarify');
+              break;
+            }
+            case 'new_plan': {
+              // Let the next auto-stage turn pick it up by falling through to normal chat.
+              return false;
+            }
+          }
+        }
+        if (actionHandled.size === 0 && decision.intent === 'normal_chat') {
+          return false;
+        }
+        // For intents that produced no executable actions (e.g. a low-confidence
+        // decision with an empty action list), fall through rather than silently
+        // swallowing the line.
+        return actionHandled.size > 0;
       };
 
       async function prepareAcknowledgedGoal(
@@ -3305,7 +3607,23 @@ If uncertain, use "clarify".`;
         if (!hasWorkIntent(line)) return 'normal-chat';
         if (currentPressure() >= 3) return 'normal-chat';
 
-        let plan = await withMetaCritique(() => judgeGoal(line), {line}, new AbortController().signal);
+        let plan = await executeWithCritique(
+          (attempt, feedback) =>
+            judgeGoal(
+              feedback.length > 0
+                ? `${line}\n[meta revision notes (attempt ${attempt}): ${feedback.join('; ')}]`
+                : line,
+            ),
+          (p) =>
+            JSON.stringify({
+              judgment: p.judgment,
+              title: p.title,
+              roadmap: p.roadmap,
+              clarifyingQuestion: p.clarifyingQuestion,
+            }),
+          'auto-stage plan',
+          new AbortController().signal,
+        );
         if (plan.judgment === 'none') return 'normal-chat';
 
         if (plan.judgment === 'clarify') {
@@ -5101,17 +5419,20 @@ If uncertain, use "clarify".`;
             out.write(dim('  No plan.\n', out.color));
             return 'continue';
           }
-          // High effort meta critique on the plan (using strong model, full context in helper)
+          // High effort meta critique + revise loop on the plan before user sees it.
+          let revisedPlan = plan.plan;
+          let critiqueNote: string | undefined;
           try {
-            const critique = await callStrongMetaForIntent(`Critique this plan for the input at high effort: ${JSON.stringify(plan.plan)}`, new AbortController().signal, { task: 'critique_plan', input: planText });
-            const crit = critique as Record<string, unknown> | null;
-            if (crit && (crit.issues as unknown[])?.length) {
-              out.write(dim(`  (strong meta critique: ${(crit.issues as unknown[])[0]})\n`, out.color));
-            }
+            const critiqueResult = await critiqueAndRevisePlan(plan.plan, planText, new AbortController().signal);
+            revisedPlan = critiqueResult.plan;
+            critiqueNote = critiqueResult.critiqueNote;
           } catch {
             /* fail-soft meta critique */
           }
-          const proposal = formatGoalProposal(plan.plan, plan.plan.dropped);
+          if (critiqueNote !== undefined) {
+            out.write(dim(`  (strong meta critique: ${critiqueNote})\n`, out.color));
+          }
+          const proposal = formatGoalProposal(revisedPlan, revisedPlan.dropped);
           if (proposal.length > 0) {
             out.write('\n' + proposal + '\n');
             for (const h of formatHeadsUp(plan.systemModel)) {
@@ -5157,24 +5478,30 @@ If uncertain, use "clarify".`;
               /* fail-soft: PLAN.md is nice-to-have; in-chat + /goals is primary */
             }
           }
-          lastProposedPlan = (plan.plan || null) as unknown as Record<string, unknown> | null;
+          const g0Revised = revisedPlan.goals[0];
+          const revisedTitle = (g0Revised?.title.trim().length ? g0Revised.title.trim() : plan.title) || plan.title;
+          const revisedRoadmap = g0Revised && g0Revised.todos.length > 0
+            ? todosToRoadmap(g0Revised.todos.slice(0, ROADMAP_LIMIT))
+            : plan.roadmap;
+          const revisedApproach = g0Revised?.approach ?? plan.approach;
+          lastProposedPlan = (revisedPlan || null) as unknown as Record<string, unknown> | null;
           out.write(dim('  (parked for /goals review; taste aware)\n', out.color));
           try {
             const gs = createFileGoalStore({ clock: ctx.clock });
             await gs.create({
-              title: plan.title,
-              roadmap: plan.roadmap,
+              title: revisedTitle,
+              roadmap: revisedRoadmap,
               scope: pk ? 'project' : 'global',
               projectKey: pk,
               conversationId: convId,
               source: 'user-explicit',
-              ...(plan.approach !== undefined ? { approach: plan.approach } : {}),
+              ...(revisedApproach !== undefined ? { approach: revisedApproach } : {}),
             });
           } catch {
             /* fail-soft: even if the capture misses, the plan was shown */
           }
           if (tasteOn) {
-            void recordTaste('immediate_edit', plan.title, 'plan proposal');
+            void recordTaste('immediate_edit', revisedTitle, 'plan proposal');
           }
         } catch (e: unknown) {
           out.write(dim(`  Failed: ${e instanceof Error ? e.message : String(e)}\n`, out.color));
@@ -5183,91 +5510,47 @@ If uncertain, use "clarify".`;
       }
 
       // Chat-first meta intent (NL primary, after explicit /plan handling)
-      // Uses strong model (opencode/kimi high effort) for parsing acceptance, adjustments, bg directives from natural language.
-      // This is the "conscious" layer: the model sees full picture (via context in helper) and decides.
+      // Uses the typed DecisionEngine (runDecisionEngine) to parse natural language
+      // into typed actions, then executes them. This is the "conscious" layer:
+      // the model decides, the system acts, and every decision is audited.
       if (!line.startsWith('/')) {
+        const signal = new AbortController().signal;
+        let decision: MetaDecision | null = null;
         try {
-          const signal = new AbortController().signal;
-          const intent = await decideWithStrongModel(line, signal);
-          const mi = intent as Record<string, unknown> | null;
+          const fullCtx = await buildFullContext();
+          decision = await runDecisionEngine({
+            userLine: line,
+            fullCtx,
+            callStrongMeta,
+            signal,
+          });
+        } catch (e: unknown) {
+          const err = e instanceof Error ? e.message : String(e);
+          await auditDecision(null, err);
+          if (/(accept|go |looks good|start|pause|adjust|bg |background|change .* to)/i.test(line)) {
+            out.write(dim('  (strong meta decision path hit an error — fell back to direct chat.)\n', out.color));
+          }
+        }
+        if (decision !== null) {
+          await auditDecision(decision);
           const pick = pickStrongMeta();
-          if (!intent && pick) {
-            // Transient meta failure on a potentially meta-worthy line — surface honestly (no silent "conscious" pretense).
-            if (/(accept|go |looks good|start|pause|adjust|bg |background|change .* to)/i.test(line)) {
-              out.write(dim('  (strong meta temporarily unavailable — fell back to direct chat. Your providers still work for execution.)\n', out.color));
-            }
+          if (decision.confidence > 0.5 && decision.intent !== 'normal_chat') {
+            const parkedIds = parkedGoals.map((p) => p.id as string);
+            const handled = await applyMetaDecision(decision, line, parkedIds, signal);
+            if (handled) return 'continue';
+          } else if (
+            !decision &&
+            pick &&
+            /(accept|go |looks good|start|pause|adjust|bg |background|change .* to)/i.test(line)
+          ) {
+            // Transient meta failure on a meta-worthy line — surface honestly.
+            out.write(
+              dim(
+                '  (strong meta temporarily unavailable — fell back to direct chat. Your providers still work for execution.)\n',
+                out.color,
+              ),
+            );
           }
-          if (mi && (mi.intent as string) === 'accept_plan' && ((mi.confidence as number) ?? 0) > 0.5) {
-            out.write(dim('  (strong meta detected plan acceptance via natural language)\n', out.color));
-            let launched = 0;
-            if (lastProposedPlan && parkedGoals.length > 0) {
-              // Promote to 'running' (matches explicit /goals go) and actually launch via bg spawns.
-              // This makes NL accept *start real work* (plug-and-play) instead of just a display-only 'queued' badge.
-              // Spawns are fire-and-forget bg so the chat loop stays responsive (true fg/bg).
-              for (const p of parkedGoals) {
-                const pid = (p as Record<string, unknown>).id as string;
-                await goalStore.setState(pid, 'running').catch(() => {});
-                await syncBoard();
-                const gtitle = ((p as Record<string, unknown>).title as string | undefined) || 'accepted goal';
-                try {
-                  const label = await formGoalLabel(gtitle).catch(() => gtitle);
-                  spawnBackgroundGoal(pid, gtitle, label);
-                  launched++;
-                } catch {
-                  /* spawn fail must not block */
-                }
-              }
-              await syncBoard();
-              if (tasteOn) {
-                const planTitle = ((lastProposedPlan as Record<string, unknown>)?.title as string | undefined) ?? 'plan';
-                void recordTaste('accept_unchanged', planTitle, 'chat accept');
-              }
-              const lpTitle = (lastProposedPlan as Record<string, unknown>)?.title ?? 'recent';
-              out.write(dim(`  Plan "${lpTitle}" accepted via chat — ${launched} goal(s) now running in background. Keep chatting; progress and board will update live.\n`, out.color));
-              lastProposedPlan = null;
-            } else if (lastProposedPlan) {
-              const lpTitle = (lastProposedPlan as Record<string, unknown>)?.title ?? 'recent';
-              out.write(dim(`  Plan "${lpTitle}" accepted via chat — goals now active on the board (scheduler will advance them).\n`, out.color));
-              lastProposedPlan = null;
-              await syncBoard();
-            }
-          } else if (mi && (mi.intent as string) === 'bg_directive' && mi.details) {
-            const d = mi.details as Record<string, unknown>;
-            out.write(dim(`  (strong meta: background directive for ${d.bgTarget || 'task'} — noted; scheduler can run in bg)\n`, out.color));
-            // Later: tag goals or spin via scheduler with bg flag, using model decision.
-          } else if (mi && (mi.intent as string) === 'adjust_plan' && mi.details) {
-            const d = mi.details as Record<string, unknown>;
-            if (d.adjustment) {
-              out.write(dim(`  (strong meta: plan adjustment "${d.adjustment}" — noted for refine)\n`, out.color));
-              if (lastProposedPlan) {
-                try {
-                  const refine = await callStrongMetaForIntent(`At high effort, produce JSON diff/refine for this plan based on the adjustment: ${JSON.stringify(lastProposedPlan)}`, new AbortController().signal, { task: 'refine_plan', adjustment: d.adjustment });
-                  if (refine) {
-                    lastProposedPlan = { ...(lastProposedPlan as Record<string, unknown>), lastRefine: refine };
-                    // Apply to store for living plan: prefer details.goalId (model can resolve "goal 3" or title from full ctx) else first parked.
-                    const dGid = (d.goalId as string | undefined) || (d.goalTitle as string | undefined);
-                    let g = (parkedGoals.find((pp: Record<string, unknown>) => pp.id === dGid || (typeof pp.title === 'string' && dGid && (pp.title as string).toLowerCase().includes(dGid.toLowerCase()))) || parkedGoals[0]) as Record<string, unknown> | undefined;
-                    if (g) {
-                      const gid = g.id as string;
-                      const goal = await goalStore.get(gid).catch(() => null);
-                      if (goal) {
-                        const newItem = { id: 'adj-' + Date.now(), text: `Adjusted per chat: ${d.adjustment}`, status: 'pending' as const };
-                        await goalStore.addRoadmapItem(gid, newItem).catch(() => {});
-                        await syncBoard();
-                        out.write(dim(`  Applied adjustment to goal ${g.title || gid} (new roadmap item added).\n`, out.color));
-                      }
-                    }
-                  }
-                } catch {
-                  /* fail-soft meta refine */
-                }
-              }
-            }
-            // Later: full diff apply to roadmap/approach using updateRoadmapItem, taste record 'immediate_edit'.
-          }
-          // TODO later phases: handle 'pause_goal' similarly with model-driven update.
-        } catch {
-          /* meta intent is best-effort; never block chat (honest note already surfaced above on likely meta lines) */
         }
       }
 
