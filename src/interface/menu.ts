@@ -1679,7 +1679,7 @@ export async function runChatLoop(
         dim('  Just type to chat — I pick the right model for each message.\n', out.color) +
         '  /retry        — regenerate my last answer\n' +
         '  /edit         — edit one of your recent messages and re-run from there\n' +
-        '  /goal <text>  — work autonomously until the goal is done (Ctrl+C to stop)\n' +
+        '  /goal <text>  — build + show a detailed plan (with approach/rationale + todos), write PLAN.md, then get your approval before autonomous execution (Ctrl+C to stop)\n' +
         '  /todo <text>  — park a goal + its to-do for later (/goals to manage)\n' +
         '  /todo add|done|block <g> ... — capture a to-do or check one off\n' +
         '  /goals        — list goals by state; show/go/drop a parked one\n' +
@@ -1696,7 +1696,7 @@ export async function runChatLoop(
         '\n' +
         dim('  About what you\'ll see:\n', out.color) +
         dim('    ※                      a recap of where we left off (on resume)\n', out.color) +
-        dim('    ※ Staged N goals        I plan real work into goals on the board as we talk;\n', out.color) +
+        dim('    ※ Staged N goals        I plan real work (with approach + rationale) into goals; for /goal I also write PLAN.md for review;\n', out.color) +
         dim('                            turn it off with MYSHELL_AUTO_GOAL=0 (board: MYSHELL_BOARD=0)\n', out.color) +
         dim('    "what I understood…"    I restate the task before big work — correct me anytime\n', out.color) +
         dim('    "Waiting on N models"   models running in parallel — no dollar charge on a\n', out.color) +
@@ -4989,6 +4989,21 @@ export async function runChatLoop(
             const proposal = formatGoalProposal(plan.plan, plan.plan.dropped);
             if (proposal.length > 0) {
               out.write('\n' + proposal + '\n');
+              // Nice-to-have for "one chat to rule them all": also drop a real PLAN.md
+              // next to the user so they can review/edit in their editor, grep it,
+              // share it, or diff it — exactly like Claude/GPT/Replit "make a plan doc".
+              // Best-effort (never blocks the flow or approval selector).
+              try {
+                const planPath = join(ctx.cwd, 'PLAN.md');
+                const planDoc =
+                  `# Proposed Plan — ${new Date().toISOString().slice(0, 10)}\n\n` +
+                  proposal +
+                  `\n\n---\nReview the checklist + approach above. Reply with "go", "start", "just the unblocked", or edit via /todo or chat; use /goals to manage. (This file is a snapshot; the live roadmap lives in /goals.)\n`;
+                await fs.promises.writeFile(planPath, planDoc, 'utf8');
+                out.write(dim(`  (plan doc also written to ${planPath} for review/edit outside chat)\n`, out.color));
+              } catch {
+                // fail-soft; the in-chat proposal + /goals UI is the primary contract
+              }
               // PROACTIVE HEADS-UP: 1–2 findings the understanding pass already computed
               // (open questions / hard constraints) — "heads up, X looks fragile". Dim,
               // near-free, fail-soft (none → nothing). Never fabricated.
