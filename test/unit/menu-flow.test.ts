@@ -779,17 +779,7 @@ describe('startMenu — immediate q → exits cleanly', () => {
     const priorEnv: EnvironmentStatus = {
       ...FAKE_ENV,
       claude: { ...FAKE_ENV.claude, plan: 'max_5x' },
-    
-  grok: {
-    id: 'grok',
-    installed: false,
-    version: null,
-    authenticated: false,
-    plan: null,
-    binaryPath: null,
-    availableModels: [],
-  },
-};
+    };
     const sink = makeSink();
     const clock = makeAdvanceableClock();
     let detectCalls = 0;
@@ -816,7 +806,11 @@ describe('startMenu — immediate q → exits cleanly', () => {
     await assert.doesNotReject(() => startMenu(ctx, sink));
 
     assert.equal(detectCalls, 1, 'stale refresh should attempt one detect');
-    assert.ok(sink.buf.includes('max_5x'), 'prior provider plan should remain rendered after a failed refresh');
+    // Plan labels are intentionally omitted from the compact main menu header (to avoid
+    // showing stale subscription info after external plan changes; see renderHeaderLines).
+    // Snapshot retention still matters for other live env-derived UI (provider status,
+    // auto-mode, etc.). Check for stable rendered provider info from the prior snapshot.
+    assert.ok(sink.buf.includes('claude: ready'), 'prior provider status from the env snapshot should remain rendered after a failed refresh');
   });
 
   it('explicit login forces an environment refresh even within the TTL', async () => {

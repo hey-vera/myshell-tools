@@ -29,6 +29,7 @@ import type { OutputSink } from './render.js';
 import type { MenuContext } from './menu.js';
 import { resolveAutoMode, renderAutoDetected } from './menu-auto-mode.js';
 import { readMenuKey } from './menu-key-confirm.js';
+import { tasteEnabled } from '../core/taste-flag.js';
 
 /**
  * Set an OPTIONAL config field while preserving every other key.
@@ -309,6 +310,7 @@ export async function runSettings(
     `  [7] Panel (experimental): ${cfg.panel === true ? 'on' : 'off'}`,
     `  [8] Learned routing (experimental): ${cfg.learnRouting === true ? 'on' : 'off'}`,
     `  [9] Hedged escalation (experimental): ${cfg.hedge === true ? 'on' : 'off'}`,
+    `  [t] Learned taste / prefs (free layer): ${tasteEnabled(process.env, cfg) ? 'on' : 'off'}`,
     `  [a] Auto-goal (quality-first): ${cfg.autoGoal === true ? 'on' : 'off'} — only takes effect under quality-first mode`,
     `  [b] Partner style: ${resolvePartnerStyle(cfg, effMode)}${cfg.partnerStyle === undefined ? ' (auto)' : ''}`,
     `  [c] Memory: ${cfg.memory !== false ? 'on' : 'off'}`,
@@ -345,6 +347,8 @@ export async function runSettings(
     mutableCtx.config = await toggleLearnRouting(mutableCtx.config, out);
   } else if (key === '9') {
     mutableCtx.config = await toggleHedge(mutableCtx.config, out);
+  } else if (key === 't') {
+    mutableCtx.config = await toggleLearnedTaste(mutableCtx.config, out);
   } else if (key === 'a') {
     mutableCtx.config = await toggleAutoGoal(mutableCtx.config, out);
   } else if (key === 'b') {
@@ -512,6 +516,23 @@ async function toggleLearnRouting(config: AppConfig, out: OutputSink): Promise<A
   const updated: AppConfig = withOptional(config, 'learnRouting', enable ? true : undefined);
   await saveConfig(updated);
   out.write(`Learned routing (experimental): ${enable ? 'on' : 'off'}\n`);
+  return updated;
+}
+
+/**
+ * Toggle the LEARNED-TASTE / PREFERENCE ledger (free observed layer).
+ * Default ON (max intelligence). Records only real user signals (edits, rephrases,
+ * fork choices, push-back outcomes). Distills to playbook + ask-vs-proceed bias
+ * for prompts/engagement. No quota fiction — pure preference + observed outcomes.
+ * Opt-out via explicit false (for compat with experimentalTaste).
+ */
+async function toggleLearnedTaste(config: AppConfig, out: OutputSink): Promise<AppConfig> {
+  const currently = tasteEnabled(process.env, config);
+  const enable = !currently;
+  // Persist explicit false only when off (absent or true = on). Spread full config.
+  const updated: AppConfig = withOptional(config, 'experimentalTaste', enable ? undefined : false);
+  await saveConfig(updated);
+  out.write(`Learned taste / prefs (free layer): ${enable ? 'on' : 'off'}\n`);
   return updated;
 }
 

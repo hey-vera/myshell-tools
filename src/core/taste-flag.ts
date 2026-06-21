@@ -4,29 +4,33 @@
  * src/core/taste.ts) is ACTIVE.
  *
  * Pure (no Ink/React, no JSX, no I/O) so it is exercised by the regular
- * `npm test` suite under strip-types. DEFAULT OFF — the taste ledger ships dark
- * and changes ZERO behavior unless the caller explicitly opts IN:
- * `MYSHELL_TASTE` ∈ {'1','true','on','yes'} (case-insensitive, trimmed) OR
- * `config.experimentalTaste === true`. This mirrors the rollout shape of the
- * decompose/scheduler features (opt-in, dark by default): the ledger learns the
- * user's actual decisions only AFTER an adversarial pass flips the flag.
+ * `npm test` suite under strip-types. DEFAULT ON for max intelligence — the
+ * ledger is a pure, free, observed-only preference layer (no tokens, no cost,
+ * no fabrication). It records the user's actual past decisions (fork choices,
+ * immediate edits/rephrases, accept/reject push-backs) and distills them into
+ * a prompt block + ask-vs-proceed bias so the partner reasons *with* the user's
+ * demonstrated taste instead of guessing.
  *
- * When the flag is OFF:
- *   - recall (taste playbook + memoryBias) returns the empty/neutral result, so
- *     NOTHING is injected into any prompt and the ask-vs-proceed dial is unmoved;
- *   - recording is inert at the wiring layer (the caller checks this flag before
- *     it ever calls record), so the ledger file is never even created.
- * OFF therefore means byte-for-byte the pre-taste path.
+ * Opt OUT explicitly: `MYSHELL_TASTE` ∈ {'0','false','off','no'} (case-insensitive)
+ * OR `config.experimentalTaste === false`. This keeps the "explicit off" escape
+ * hatch while making the intelligent default the "batter".
+ *
+ * When OFF: recall returns empty/neutral (no injection, no bias), recording is
+ * inert. Byte-identical to pre-taste.
+ *
+ * Quota note: we deliberately do *not* synthesize "remaining quota" numbers
+ * (flat-rate subs don't expose reliable real-time headroom via CLIs, and
+ * fabricating estimates for "quota-aware planning" would be dishonest and
+ * brittle). Preference + observed outcomes (this + routing-memory + capacity
+ * from real plan tiers) is the realistic, intelligent path.
  */
 
-/** Env values treated as an explicit opt-IN for MYSHELL_TASTE (case-insensitive). */
-const ON = new Set(['1', 'true', 'on', 'yes']);
+/** Env values treated as explicit opt-OUT for MYSHELL_TASTE (case-insensitive). */
+const OFF = new Set(['0', 'false', 'off', 'no', '']);
 
 /**
- * Decide whether the learned-taste ledger is enabled. DEFAULT FALSE. Returns true
- * ONLY when explicitly opted in: `MYSHELL_TASTE` is one of '1'/'true'/'on'/'yes'
- * (trimmed, case-insensitive) OR `config.experimentalTaste === true`. Any other
- * value (including absent, '0', 'false', '') → false. Never throws.
+ * Decide whether the learned-taste ledger is enabled. DEFAULT TRUE (max intel).
+ * Returns false ONLY on explicit opt-out. Never throws.
  */
 export function tasteEnabled(
   env: NodeJS.ProcessEnv | undefined,
@@ -34,10 +38,10 @@ export function tasteEnabled(
 ): boolean {
   try {
     const raw = env?.['MYSHELL_TASTE'];
-    if (typeof raw === 'string' && ON.has(raw.trim().toLowerCase())) return true;
-    if (config?.experimentalTaste === true) return true;
-    return false;
+    if (typeof raw === 'string' && OFF.has(raw.trim().toLowerCase())) return false;
+    if (config?.experimentalTaste === false) return false;
+    return true;
   } catch {
-    return false;
+    return true; // default on even on error
   }
 }

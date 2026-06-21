@@ -62,7 +62,7 @@ import {
 import { createNodeResearchPort } from '../infra/research-port.js';
 import { renderSystemModelContext } from '../core/understanding.js';
 import { isPushBackQuestionSet, classifyPushBackAnswer } from '../core/brain.js';
-import { renderTastePlaybook, isImmediateRephrase, type TasteSignal } from '../core/taste.js';
+import { renderTastePlaybook, isImmediateRephrase, distillTaste, type TasteSignal } from '../core/taste.js';
 import { createFileGoalStore } from '../infra/goal-store.js';
 import { createFileRulesStore } from '../infra/rules-store.js';
 import {
@@ -1687,6 +1687,7 @@ export async function runChatLoop(
         '  /mode         — quality vs speed (Efficient / Balanced / Max)\n' +
         '  /memory       — see, edit, export, or delete what I remember (/forget to remove)\n' +
         '  /recap        — short recap of where this conversation left off\n' +
+        '  /taste, /prefs — view what the system has learned about *your* style (free observed prefs for plans/asks/etc.)\n' +
         '  /copy         — copy my last answer to your clipboard\n' +
         '  /export       — save this conversation to a Markdown file\n' +
         '  /style        — how forward I am: ask-first vs just-do-it\n' +
@@ -1726,6 +1727,11 @@ export async function runChatLoop(
       }
       return 'continue';
     }
+
+    // ( /taste /prefs command impl is relocated later near /goal after all
+    // closure vars like tasteOn, tasteLedger, distillTaste are declared )
+
+    // ( /plan command impl relocated later near /goal for declaration order )
 
     // ---- /copy — last answer → system clipboard (real-chat gap #3) ----------
     // Local-only, fail-soft: pick the last assistant answer (stripped) and try
@@ -4885,6 +4891,70 @@ export async function runChatLoop(
         return 'continue';
       }
 
+      // ---- /taste /prefs — view distilled learned prefs (free observed layer)
+      if (line === '/taste' || line === '/prefs') {
+        if (!tasteOn) {
+          out.write(dim('  Learned taste/prefs off. Toggle in Settings [t].\n', out.color));
+          return 'continue';
+        }
+        try {
+          const pk = await resolveProjectKey(ctx.cwd).catch(() => null);
+          const tl = createFileTasteLedger({ clock: ctx.clock });
+          const pb = await tl.recall(pk);
+          out.write('\n  Learned taste / prefs (observed only):\n');
+          if (pb.lines.length === 0) {
+            out.write(dim('  (no strong signals yet)\n', out.color));
+          } else {
+            pb.lines.forEach((l) => out.write('  • ' + l + '\n'));
+            const b = pb.memoryBias > 0 ? 'PROCEED' : pb.memoryBias < 0 ? 'ASK more' : 'neutral';
+            out.write(`  Bias: ${b}\n`);
+          }
+        } catch {
+          out.write(dim('  No taste data.\n', out.color));
+        }
+        return 'continue';
+      }
+
+      // ---- /plan <text> — pure planning pass (no exec). Full proposal + PLAN.md.
+      // Uses planner, renders proposal, writes doc, parks for review (preference aware).
+      if (line === '/plan' || line.startsWith('/plan ')) {
+        const planText = line.slice('/plan'.length).trim();
+        if (!planText) {
+          out.write(dim('  Usage: /plan <text> — pure plan + PLAN.md (no auto exec).\n', out.color));
+          return 'continue';
+        }
+        if (!hasAuthenticatedProvider(mutableCtx.env)) return 'continue';
+        out.write(dim('  Pure planning...\n', out.color));
+        try {
+          const pk = await resolveProjectKey(ctx.cwd).catch(() => null);
+          const planner = makeGoalPlanner({ providers: ctx.providers, policy, cwd: ctx.cwd, timeoutMs: Math.min(ctx.timeoutMs, 60_000), sandbox: helperSandbox(ctx.sandbox) });
+          const planRes: any = await planner(planText, new AbortController().signal);
+          const gp = planRes?.plan;
+          if (!gp || gp.judgment !== 'stage' || !(gp.goals || []).length) {
+            out.write(dim('  No plan.\n', out.color));
+            return 'continue';
+          }
+          const proposal = formatGoalProposal(gp, (gp as any).dropped);
+          if (proposal.length > 0) {
+            out.write('\n' + proposal + '\n');
+            for (const h of formatHeadsUp(planRes?.systemModel)) out.write(dim(`  heads up: ${h}\n`, out.color));
+            try {
+              const pth = join(ctx.cwd, 'PLAN.md');
+              await fs.promises.writeFile(pth, `# Plan: ${planText}\n\n${proposal}\n`, 'utf8');
+              out.write(dim(`  Wrote ${pth}\n`, out.color));
+            } catch {}
+          }
+          out.write(dim('  (parked for /goals review; taste aware)\n', out.color));
+          try {
+            const gs = createFileGoalStore({ clock: ctx.clock });
+            await gs.create({ title: gp.title || planText.slice(0,80), roadmap: gp.roadmap || [], scope: pk ? 'project' : 'global', projectKey: pk, conversationId: convId, source: 'user-explicit' });
+          } catch {}
+        } catch (e: any) {
+          out.write(dim(`  Failed: ${e?.message || e}\n`, out.color));
+        }
+        return 'continue';
+      }
+
       // ---- /goal — explicit autonomous loop -----------------------------------
       // Exact `/goal`/`/goal <text>` ONLY — so `/goals …` is NOT swallowed here
       // and falls through to its own dispatch below.
@@ -5037,6 +5107,14 @@ export async function runChatLoop(
                 confirm !== null &&
                 /Start all|unblocked/i.test(confirm) &&
                 !/Edit|not yet/i.test(confirm);
+              // Preference-aware: record observed plan decision as taste signal.
+              // "Start" = accept_unchanged (user trusts the plan); "Edit/park" or
+              // free-text = immediate_edit (user wants adjustment). Feeds future
+              // plan proposals + bias. Only when taste layer on. Fail-soft.
+              if (tasteOn) {
+                const signal = wantsLaunch ? 'accept_unchanged' : 'immediate_edit';
+                void recordTaste(signal, plan.title, confirm || (wantsLaunch ? 'start' : 'edit/park'));
+              }
               if (!wantsLaunch) {
                 try {
                   await goalStore.create({

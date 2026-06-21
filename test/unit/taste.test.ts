@@ -272,26 +272,30 @@ describe('renderTastePlaybook', () => {
 });
 
 // ---------------------------------------------------------------------------
-// tasteEnabled — DEFAULT OFF
+// tasteEnabled — DEFAULT ON (max intelligence, preference layer; opt-out only)
 // ---------------------------------------------------------------------------
 
-describe('tasteEnabled (flag, default OFF)', () => {
-  it('is OFF with no env and no config', () => {
-    assert.equal(tasteEnabled(undefined, undefined), false);
-    assert.equal(tasteEnabled({}, {}), false);
+describe('tasteEnabled (flag, default ON)', () => {
+  it('is ON with no env and no config', () => {
+    assert.equal(tasteEnabled(undefined, undefined), true);
+    assert.equal(tasteEnabled({}, {}), true);
   });
 
-  it('is ON only with explicit env opt-in or config flag', () => {
+  it('is ON with explicit env opt-in or config (already default)', () => {
     for (const v of ['1', 'true', 'on', 'yes', 'TRUE', ' On ']) {
       assert.equal(tasteEnabled({ MYSHELL_TASTE: v }, undefined), true);
     }
     assert.equal(tasteEnabled({ experimentalTaste: undefined } as never, { experimentalTaste: true }), true);
   });
 
-  it('is OFF for falsey / unknown env values', () => {
-    for (const v of ['0', 'false', '', 'off', 'no', 'maybe']) {
+  it('is OFF only for explicit opt-out (falsy env or config false)', () => {
+    for (const v of ['0', 'false', '', 'off', 'no']) {
       assert.equal(tasteEnabled({ MYSHELL_TASTE: v }, undefined), false);
     }
     assert.equal(tasteEnabled(undefined, { experimentalTaste: false }), false);
+  });
+
+  it('never throws on hostile input (default-ON safe)', () => {
+    assert.doesNotThrow(() => tasteEnabled({ MYSHELL_TASTE: 42 as any }, { experimentalTaste: 'weird' as any }));
   });
 });

@@ -275,16 +275,17 @@ export interface AppConfig {
    */
   experimentalTrust?: boolean;
   /**
-   * EXPERIMENTAL LEARNED-TASTE LEDGER (default off; the Phase-7 free judgment
-   * layer). When true (or with `MYSHELL_TASTE` truthy in the environment), the
-   * chat loop RECORDS observed decision signals (fork choices, push-back outcomes,
-   * accept-unchanged vs. immediate-edit/rephrase) into an append-only JSONL ledger
-   * (src/infra/taste-ledger.ts) and RECALLS a distilled taste playbook that feeds
-   * the `memoryBias` ask-vs-proceed dial + a short taste-context prompt block.
-   * Records ONLY observed signals (never inferred), project-scoped via
-   * deriveProjectKey, fail-soft (a corrupt/missing ledger degrades to no-bias). The
-   * legacy path is byte-identical when this is absent/false. See
-   * src/core/taste-flag.ts / src/core/taste.ts.
+   * LEARNED-TASTE / PREFERENCE LEDGER (default on for max intelligence; the
+   * Phase-7 free judgment layer). Records *only* observed user decisions (fork
+   * choices, immediate edits/rephrases, push-back accept/reject, accept-unchanged)
+   * into append-only JSONL (taste-ledger.ts). Recalls distilled playbook (lines
+   * like "<subject>: <the call user keeps making>") + memoryBias (±1 ask-vs-proceed
+   * dial) for prompt injection and engagement. Pure observed, project-scoped,
+   * fail-soft, no fabrication, zero cost. Explicit opt-out via MYSHELL_TASTE=0 or
+   * experimentalTaste:false for compat. We do *not* synthesize quota numbers
+   * (unreliable for flat-rate subs; see user feedback). Preference + observed
+   * outcomes (this + routing-memory + real plan-tier capacity) is the honest path.
+   * See taste-flag.ts / taste.ts.
    */
   experimentalTaste?: boolean;
   /**

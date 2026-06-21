@@ -47,7 +47,7 @@ const SUBSYSTEMS: ReadonlyArray<{
 }> = [
   { envKey: 'MYSHELL_GOVERNOR', configKey: 'experimentalGovernor', optIn: governorEnabled },
   { envKey: 'MYSHELL_VERIFY', configKey: 'experimentalVerify', optIn: verifyEnabled },
-  { envKey: 'MYSHELL_TASTE', configKey: 'experimentalTaste', optIn: tasteEnabled },
+  // taste handled by direct tasteEnabled (default ON for max intel); not mixed in this experimental-default composition test
   { envKey: 'MYSHELL_JUDGMENT', configKey: 'experimentalJudgment', optIn: judgmentEnabled },
   { envKey: 'MYSHELL_TRUST', configKey: 'experimentalTrust', optIn: trustEnabled },
   { envKey: 'MYSHELL_TRIBUNAL', configKey: 'experimentalTribunal', optIn: tribunalEnabled },
