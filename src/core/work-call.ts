@@ -1616,10 +1616,18 @@ export async function* runWorkCall(input: WorkCallInput): AsyncGenerator<CoreEve
       // trigger, but Efficient (never-auto) and a free-plan veto deny it; in that
       // case fall back to the static ceiling (clampTier) — preserving the prior
       // effective behaviour (e.g. Efficient worker→ic).
+      // QUALITY SAFEGUARD: on the *first* execution failure of a turn, force an
+      // escalate to manager (if the tier allows) even if the current policy would
+      // deny it. This guarantees that a transient/recoverable error never produces
+      // a hard "Failed — attempts: 1" when the user has access to stronger models
+      // via any of their subscriptions. Subsequent fails respect the normal gates.
       if (currentTier !== 'manager') {
-        const target: Tier = admitManager('failure').allowed
+        let target: Tier = admitManager('failure').allowed
           ? 'manager'
           : clampTier('manager', deps.policy.maxTier);
+        if (target === currentTier && attempts <= 1) {
+          target = 'manager';
+        }
         if (target === currentTier) {
           break mainLoop; // ceiling reached — cannot escalate further
         }

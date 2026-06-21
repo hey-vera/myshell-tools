@@ -17,6 +17,7 @@
 import { chmod, lstat, mkdir, readFile, realpath, stat } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { atomicWrite } from '../infra/atomic.js';
+import { isReplit } from '../infra/state-dir.js';
 import type { OutputSink } from '../interface/render.js';
 
 // ---------------------------------------------------------------------------
@@ -466,6 +467,9 @@ export async function runInstall(
     out.write(`[info] Shortcuts available in new shells: cm / mst (both run myshell-tools).\n`);
     out.write(`[info] Opt out any time: export MYSHELL_SKIP=1 (bash/zsh) or $env:MYSHELL_SKIP='1' (PowerShell)\n`);
     out.write(`[info] To reverse: myshell-tools uninstall\n`);
+    if (isReplit(process.env)) {
+      out.write(`[info] Replit: the hook targets the rc for *this* container. On restart the persisted "set as default" flag will cause myshell-tools to automatically re-install the hook into the fresh rc on next launch.\n`);
+    }
   } else {
     out.write(`[info] Shell hook removed from: ${rcPath}\n`);
     if (target.resolvedFromSymlink) {

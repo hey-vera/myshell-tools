@@ -69,7 +69,7 @@ import { runCost } from './commands/cost.js';
 import { runEvalCommand } from './commands/eval.js';
 import { runMemoryCli } from './commands/memory.js';
 import { runLogin } from './commands/login.js';
-import { runInstall } from './commands/install.js';
+import { runInstall, isHookInstalled } from './commands/install.js';
 import { banner } from './ui/banner.js';
 import { commandHelpText } from './ui/help.js';
 import { createSpinner } from './ui/spinner.js';
@@ -694,6 +694,24 @@ async function main(): Promise<void> {
     ]);
     const providers = buildAuthenticatedProviders(cwd, env);
     spinner.stop();
+
+    // Self-heal "set as default shell" so the setting actually matches reality
+    // after events that clear the rc file (Replit container restart makes ~ ephemeral;
+    // new shells won't auto-launch until the hook is back in the current rc).
+    // If the persisted config says the user wants default but the live check says
+    // no hook in the rc that *this* shell will source, re-apply now. This makes
+    // "enabled in settings" actually cause auto-pop on new shells / after resume-kill.
+    // Best-effort only; errors never block the menu.
+    if (config.setAsDefault) {
+      try {
+        const hookPresent = await isHookInstalled(process.env, process.platform).catch(() => false);
+        if (!hookPresent) {
+          await runInstall(out).catch(() => undefined);
+        }
+      } catch {
+        // never block launch
+      }
+    }
 
     // Evaluate non-provider environment health once at startup. Surfaced in the
     // menu only when a problem exists — the user never runs a health command.

@@ -287,12 +287,20 @@ describe('renderHeaderLines', () => {
     assert.ok(claudeLine?.includes('not signed in'), 'installed but not authed → not signed in');
   });
 
-  it('appends plan label when ps.plan is non-null', () => {
+  it('deliberately omits plan labels (even when ps.plan non-null) to avoid staleness after external subscription changes', () => {
+    // See renderHeaderLines + user request: main menu header is compact + always
+    // visible; showing e.g. "(max_5x)" or "(Pro)" that may no longer match the
+    // user's current plan (they downgraded) is misleading. We still surface the
+    // live plan in `doctor` (re-detects) and use the value internally for mode
+    // auto-detect / capacity / free-veto at launch time. Header just says "ready".
     const lines = renderHeaderLines(FAKE_ENV_WITH_PLANS, '2.0.0');
+    for (const line of lines) {
+      assert.ok(!/\(.+\)/.test(line), `header must not contain plan suffix even when supplied: "${line}"`);
+    }
     const claudeLine = lines.find((l) => l.includes('claude')) ?? '';
     const codexLine = lines.find((l) => l.includes('codex')) ?? '';
-    assert.ok(claudeLine.includes('Max x5'), 'claude line shows plan "Max x5"');
-    assert.ok(codexLine.includes('Plus'), 'codex line shows plan "Plus"');
+    assert.ok(claudeLine.includes('ready'), 'claude still reports ready status');
+    assert.ok(codexLine.includes('ready'), 'codex still reports ready status');
   });
 
   it('omits plan label when ps.plan is null', () => {

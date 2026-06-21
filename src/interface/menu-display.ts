@@ -152,11 +152,13 @@ export function isRunningUnderNpx(
  * Build the header box lines (provider status) from real EnvironmentStatus.
  * Returns string[] safe to pass as the `lines` arg to box().
  *
- * Per-provider logic (uses REAL authenticated + plan fields):
+ * Per-provider logic (uses REAL authenticated fields):
  *   ✅  when ps.installed && ps.authenticated
  *   ⚠️  when ps.installed && !ps.authenticated  (append " not signed in")
  *   ❌  when !ps.installed                       (append install command)
- * Plan label appended when ps.plan is non-null (e.g. " (Max x5)").
+ * Plan-specific labels (e.g. " (max_5x)") are intentionally omitted from the
+ * compact header to avoid showing stale values after external subscription
+ * changes; they remain in `doctor` (live re-detect) and internal policy.
  *
  * @param claudeToken - Optional pre-computed token lifetime status. When the token
  *   is near expiry or expired, ONE concise warning line is appended. Computed by
@@ -183,14 +185,19 @@ export function renderHeaderLines(
   const lines: string[] = [];
 
   for (const ps of [env.claude, env.codex]) {
-    const planSuffix = ps.plan != null ? ` (${ps.plan})` : '';
-
+    // Note: we deliberately omit the plan suffix (e.g. " (max_5x)") here in the
+    // compact live header. Plans can change outside our process (user upgrades
+    // or downgrades their subscription) and the compact header is shown on every
+    // menu entry; showing a potentially-stale label is worse than omitting it.
+    // The authoritative current plan is still reported by `myshell-tools doctor`
+    // (which re-detects live) and used internally for auto-mode / capacity etc.
+    // See user request for cleanest handling of subscription type changes.
     if (!ps.installed) {
       lines.push(`${ps.id}: not installed — ${getInstallCommand(ps.id)}`);
     } else if (ps.authenticated) {
-      lines.push(`${ps.id}: ready${planSuffix}`);
+      lines.push(`${ps.id}: ready`);
     } else {
-      lines.push(`${ps.id}: not signed in${planSuffix}`);
+      lines.push(`${ps.id}: not signed in`);
     }
   }
 
@@ -201,13 +208,12 @@ export function renderHeaderLines(
   // shown as not signed in, with a hint to add a provider.
   if (env.opencode.installed) {
     const ps = env.opencode;
-    const planSuffix = ps.plan != null ? ` (${ps.plan})` : '';
     if (ps.authenticated) {
-      lines.push(`${ps.id}: ready${planSuffix}`);
+      lines.push(`${ps.id}: ready`);
     } else {
       // Concise status only — the [o] action lives in the menu below, so repeating
       // it here is redundant (and overflowed the box).
-      lines.push(`${ps.id}: not signed in${planSuffix}`);
+      lines.push(`${ps.id}: not signed in`);
     }
   }
 
@@ -215,11 +221,10 @@ export function renderHeaderLines(
   // Auth is probed via `grok models`; creds live in ~/.grok/ and are owned by grok.
   if (env.grok.installed) {
     const ps = env.grok;
-    const planSuffix = ps.plan != null ? ` (${ps.plan})` : '';
     if (ps.authenticated) {
-      lines.push(`${ps.id}: ready${planSuffix}`);
+      lines.push(`${ps.id}: ready`);
     } else {
-      lines.push(`${ps.id}: not signed in${planSuffix}`);
+      lines.push(`${ps.id}: not signed in`);
     }
   }
 
