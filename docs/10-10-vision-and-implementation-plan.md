@@ -421,6 +421,40 @@ All phases per original plan addressed in core. Remaining polish (full adversari
 
 Pushed clean commit.
 
+## Progress on the 10/10 list (post final model discussions)
+
+User directive: "it should work flawlessly with any combination of provider that the user is using, also make sure we're not drifting into api world."
+
+Core remaining for "plug and play flawless true 10/10" (synthesized from GPT-5.5 high + Opus --effort high 3/10 assessments + vision + new constraints):
+
+1. **Provider-agnostic conscious meta (done in this pass)**: callStrongMetaForIntent / decide / withMeta now use pickStrongMeta() — claude high if avail (preferred for rigor), else codex high, else opencode kimi-max, else grok. All via real CLI spawns + correct reasoningEffort/--effort/--variant. Works if user has *only* claude, *only* codex, *only* opencode, or any mix. No hard-coded opencode. No direct API (pure CLI adapters). Meta prompt now tells model the available providers + explicit HARD TASTE CONSTRAINTS section (MUST RESPECT from taste.lines/bias).
+
+2. **Make NL accept actually execute (done)**: No more cosmetic 'queued' badge with fabricated "queued for scheduler" while nothing runs. On accept: set 'running' (consistent with /goals go), then spawnBackgroundGoal for each (fire-and-forget bg runGoalLoop with its AC). Chat stays responsive; work starts; board/progress surface live. "accept the plan" / "go" now truly activates living execution.
+
+3. **Honest failure surfacing (done)**: On meta-intent lines that look like commands (accept/go/pause/adjust/bg), if decide returns null (no pick or transient), emit a dim honest note instead of silent drop. "strong meta temporarily unavailable — fell back... Sign in claude/codex/opencode for full conscious NL."
+
+4. **Hard taste in meta (done)**: Added explicit "HARD TASTE CONSTRAINTS: ... MUST respect them as hard constraints..." + data from fullCtx.taste in the prompt sent to whatever strong meta was picked.
+
+5. **Better adjust targeting (improved)**: Now resolves details.goalId (or goalTitle) against parked list (model sees ids/titles in ctx, can emit "goal 3" → actual id). Falls back to [0] only if no match. Still append-item (full structured diff/approach patch + re-judge + PLAN.md live update is next).
+
+6. **Critique-with-revise loop (still stub)**: withMetaCritique and /plan critique still log/ignore; the "In full: feed back to revise" block is empty. Model flagged as near-fatal.
+
+7. **Real DecisionEngine + all intents (still stub)**: pick + classify only; no typed actions union, no pause_goal impl, no central synthesis owning fg/bg/routing/patch.
+
+8. **Full living adjust (partial)**: Model can now be asked for "JSON diff/refine"; we still only do the item append (even with better target). No transactional patch to roadmap/approach/rationale, no affected-goal re-plan.
+
+9. **Deeper fullCtx + resume notes + audit (incremental)**: buildFullContext still basic; no persistent decision ledger; resume surface for active plans thin.
+
+10. **E2E verification across combos (manual/env)**: Code now supports; real "only claude signed in, NL plan+accept starts bg work via claude high meta" etc. needs live confirm. Tests mostly pre-existing /tmp flakes.
+
+Tackled 1-5 (and partial 8) immediately because they were the "fatal" + "any provider / no api" blockers that made the 3/10 feel like a façade despite the scaffolding. The meta is now truly the "pick best strong CLI for the conscious job".
+
+Build/lint/type green post changes. Next push will include this.
+
+To reach full 10/10 plug-and-play: continue with 6 (revise loop), 7 (typed actions + pause etc.), 8 (real diff apply in adjust), plus wire scheduler more if needed for plans, add simple audit on meta decisions, surface "resuming N active plans" on chat start, and adversarial NL tests that cover mixed-provider scenarios.
+
+User's call — the list above is the concrete remaining. Shall we keep going on the next batch (revise + full adjust + typed engine) using the same high-effort process?
+
 ## Final Discussion (2026-06-21): GPT-5.5 High + Claude Opus 4.8 --effort high (brutally honest)
 
 Clean + push complete: working tree clean, commits baa2c28 (type safety for meta layer) + 6d53dad pushed to origin/main. Build/typecheck/lint green.

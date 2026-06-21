@@ -3184,14 +3184,26 @@ export async function runChatLoop(
           },
         ],
       });
-      // ---- Strong meta model helper for conscious orchestration (high effort via opencode access)
-      // Use kimi (good for parallel/structured intent as per vision) or other strong with --variant max equivalent (reasoningEffort: 'max')
-      // The model gets full picture context, does the thinking (no dumb wiring).
-      // Launched properly with high effort in the req.
+      // ---- Strong meta model helper for conscious orchestration (provider-agnostic, high effort via real CLIs)
+      // Picks the best *available signed-in* provider for high-intel meta (intent parse, critique, refine, decisions).
+      // Supports any user combo: only-claude, only-codex, only-opencode, mixes, etc.
+      // Always routes through the CLI adapter (spawns claude/codex/opencode binary) with proper effort flag.
+      // No API world drift. Prefers claude (deep reasoning for orchestration) then codex high then opencode kimi-max.
+      // The model still gets full picture + is trusted for the thinking (no dumb wiring).
+      const pickStrongMeta = () => {
+        const ps = ctx.providers || {};
+        if (ps['claude']) return { id: 'claude' as const, model: 'claude-opus-4-8', effort: 'high' as const };
+        if (ps['codex']) return { id: 'codex' as const, model: 'gpt-5.5', effort: 'high' as const };
+        if (ps['opencode']) return { id: 'opencode' as const, model: 'opencode-go/kimi-k2.7-code', effort: 'max' as const };
+        if (ps['grok']) return { id: 'grok' as const, model: 'grok', effort: 'high' as const };
+        return null;
+      };
+
       const callStrongMetaForIntent = async (userLine: string, signal: AbortSignal, extraContext?: Record<string, unknown>): Promise<Record<string, unknown> | null> => {
-        if (!hasAuthenticatedProvider(mutableCtx.env)) return null;
-        const op = ctx.providers['opencode'];
-        if (!op) return null;
+        const pick = pickStrongMeta();
+        if (!pick) return null;
+        const prov = ctx.providers[pick.id];
+        if (!prov) return null;
         const fullCtx = await buildFullContext();
         const metaPrompt = `You are the high-intelligence meta-orchestrator for myshell-tools (conscious thinker, not dumb wiring).
 
@@ -3199,6 +3211,10 @@ FULL PICTURE CONTEXT (injected for you to see everything):
 ${JSON.stringify({ ...fullCtx, extra: extraContext || {} }, null, 2)}
 
 User natural language input: "${userLine}"
+
+Available strong CLI providers this session: ${Object.keys(ctx.providers || {}).join(', ') || 'none'} (use this knowledge for wise routing/approach choices in your rationale).
+
+HARD TASTE CONSTRAINTS: The taste object in the FULL PICTURE (if present) lists observed user preferences (memoryBias + lines). You MUST respect them as hard constraints when choosing intent, details, rationale, or suggested approaches. E.g. if user prefs "prefer background for long work", bias toward bg_directive; if "always ask on risky changes", lean clarify. Never ignore them. If input conflicts with taste, note the tension in rationale.
 
 Your job: Parse intent from the chat (the user may say anything). Output ONLY valid JSON (no prose, no markdown):
 {
@@ -3212,16 +3228,16 @@ Be wise like an elite pro. For acceptance, look for 'accept the plan', 'go', 'lo
 If uncertain, use "clarify".`;
 
         const req: ProviderRequest = {
-          model: 'opencode-go/kimi-k2.7-code',  // kimi good for this structured + parallel per vision; use high effort
+          model: pick.model,
           prompt: metaPrompt,
           cwd: ctx.cwd,
           sandbox: 'workspace-write',
           timeoutMs: 45000,
-          reasoningEffort: 'max',  // Proper high effort launch (equivalent to --variant max)
+          reasoningEffort: pick.effort,  // Proper high effort launch via the chosen CLI (claude --effort, codex model_reasoning_effort, opencode --variant)
         };
         let text = '';
         try {
-          for await (const ev of op.run(req, signal)) {
+          for await (const ev of prov.run(req, signal)) {
             if (ev.type === 'done') text = ev.text;
             else if (ev.type === 'error') return null;
           }
@@ -5174,12 +5190,32 @@ If uncertain, use "clarify".`;
           const signal = new AbortController().signal;
           const intent = await decideWithStrongModel(line, signal);
           const mi = intent as Record<string, unknown> | null;
+          const pick = pickStrongMeta();
+          if (!intent && pick) {
+            // Transient meta failure on a potentially meta-worthy line — surface honestly (no silent "conscious" pretense).
+            if (/(accept|go |looks good|start|pause|adjust|bg |background|change .* to)/i.test(line)) {
+              out.write(dim('  (strong meta temporarily unavailable — fell back to direct chat. Your providers still work for execution.)\n', out.color));
+            }
+          }
           if (mi && (mi.intent as string) === 'accept_plan' && ((mi.confidence as number) ?? 0) > 0.5) {
             out.write(dim('  (strong meta detected plan acceptance via natural language)\n', out.color));
+            let launched = 0;
             if (lastProposedPlan && parkedGoals.length > 0) {
+              // Promote to 'running' (matches explicit /goals go) and actually launch via bg spawns.
+              // This makes NL accept *start real work* (plug-and-play) instead of just a display-only 'queued' badge.
+              // Spawns are fire-and-forget bg so the chat loop stays responsive (true fg/bg).
               for (const p of parkedGoals) {
                 const pid = (p as Record<string, unknown>).id as string;
-                await goalStore.setState(pid, 'queued').catch(() => {});
+                await goalStore.setState(pid, 'running').catch(() => {});
+                await syncBoard();
+                const gtitle = ((p as Record<string, unknown>).title as string | undefined) || 'accepted goal';
+                try {
+                  const label = await formGoalLabel(gtitle).catch(() => gtitle);
+                  spawnBackgroundGoal(pid, gtitle, label);
+                  launched++;
+                } catch {
+                  /* spawn fail must not block */
+                }
               }
               await syncBoard();
               if (tasteOn) {
@@ -5187,7 +5223,7 @@ If uncertain, use "clarify".`;
                 void recordTaste('accept_unchanged', planTitle, 'chat accept');
               }
               const lpTitle = (lastProposedPlan as Record<string, unknown>)?.title ?? 'recent';
-              out.write(dim(`  Plan "${lpTitle}" accepted via chat — ${parkedGoals.length} goals activated (queued for scheduler).\n`, out.color));
+              out.write(dim(`  Plan "${lpTitle}" accepted via chat — ${launched} goal(s) now running in background. Keep chatting; progress and board will update live.\n`, out.color));
               lastProposedPlan = null;
             } else if (lastProposedPlan) {
               const lpTitle = (lastProposedPlan as Record<string, unknown>)?.title ?? 'recent';
@@ -5195,7 +5231,6 @@ If uncertain, use "clarify".`;
               lastProposedPlan = null;
               await syncBoard();
             }
-            // In full impl (later phases): actual state promotion in goalStore, taste record on accept, start bg work if model decides.
           } else if (mi && (mi.intent as string) === 'bg_directive' && mi.details) {
             const d = mi.details as Record<string, unknown>;
             out.write(dim(`  (strong meta: background directive for ${d.bgTarget || 'task'} — noted; scheduler can run in bg)\n`, out.color));
@@ -5209,8 +5244,9 @@ If uncertain, use "clarify".`;
                   const refine = await callStrongMetaForIntent(`At high effort, produce JSON diff/refine for this plan based on the adjustment: ${JSON.stringify(lastProposedPlan)}`, new AbortController().signal, { task: 'refine_plan', adjustment: d.adjustment });
                   if (refine) {
                     lastProposedPlan = { ...(lastProposedPlan as Record<string, unknown>), lastRefine: refine };
-                    // Apply to store for living plan: add a roadmap item reflecting the adjustment
-                    const g = parkedGoals[0] as Record<string, unknown> | undefined;
+                    // Apply to store for living plan: prefer details.goalId (model can resolve "goal 3" or title from full ctx) else first parked.
+                    const dGid = (d.goalId as string | undefined) || (d.goalTitle as string | undefined);
+                    let g = (parkedGoals.find((pp: Record<string, unknown>) => pp.id === dGid || (typeof pp.title === 'string' && dGid && (pp.title as string).toLowerCase().includes(dGid.toLowerCase()))) || parkedGoals[0]) as Record<string, unknown> | undefined;
                     if (g) {
                       const gid = g.id as string;
                       const goal = await goalStore.get(gid).catch(() => null);
@@ -5231,7 +5267,7 @@ If uncertain, use "clarify".`;
           }
           // TODO later phases: handle 'pause_goal' similarly with model-driven update.
         } catch {
-          /* meta intent is best-effort; never block chat */
+          /* meta intent is best-effort; never block chat (honest note already surfaced above on likely meta lines) */
         }
       }
 
