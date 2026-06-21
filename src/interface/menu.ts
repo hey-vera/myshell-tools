@@ -3238,7 +3238,7 @@ If uncertain, use "clarify".`;
         }
       };
 
-      const decideWithStrongModel = async (userLine: string, signal: AbortSignal): Promise<unknown> => {
+      const decideWithStrongModel = async (userLine: string, signal: AbortSignal): Promise<Record<string, unknown> | null> => {
         const context = {
           lastPlan: lastProposedPlan,
           parked: parkedGoals,
@@ -5088,8 +5088,9 @@ If uncertain, use "clarify".`;
           // High effort meta critique on the plan (using strong model, full context in helper)
           try {
             const critique = await callStrongMetaForIntent(`Critique this plan for the input at high effort: ${JSON.stringify(plan.plan)}`, new AbortController().signal, { task: 'critique_plan', input: planText });
-            if (critique && critique.issues && critique.issues.length) {
-              out.write(dim(`  (strong meta critique: ${critique.issues[0]})\n`, out.color));
+            const crit = critique as Record<string, unknown> | null;
+            if (crit && (crit.issues as unknown[])?.length) {
+              out.write(dim(`  (strong meta critique: ${(crit.issues as unknown[])[0]})\n`, out.color));
             }
           } catch {
             /* fail-soft meta critique */
@@ -5140,7 +5141,7 @@ If uncertain, use "clarify".`;
               /* fail-soft: PLAN.md is nice-to-have; in-chat + /goals is primary */
             }
           }
-          lastProposedPlan = plan.plan || null;
+          lastProposedPlan = (plan.plan || null) as unknown as Record<string, unknown> | null;
           out.write(dim('  (parked for /goals review; taste aware)\n', out.color));
           try {
             const gs = createFileGoalStore({ clock: ctx.clock });
@@ -5172,48 +5173,58 @@ If uncertain, use "clarify".`;
         try {
           const signal = new AbortController().signal;
           const intent = await decideWithStrongModel(line, signal);
-          if (intent && intent.intent === 'accept_plan' && (intent.confidence ?? 0) > 0.5) {
+          const mi = intent as Record<string, unknown> | null;
+          if (mi && (mi.intent as string) === 'accept_plan' && ((mi.confidence as number) ?? 0) > 0.5) {
             out.write(dim('  (strong meta detected plan acceptance via natural language)\n', out.color));
             if (lastProposedPlan && parkedGoals.length > 0) {
               for (const p of parkedGoals) {
-                await goalStore.setState(p.id, 'queued').catch(() => {});
+                const pid = (p as Record<string, unknown>).id as string;
+                await goalStore.setState(pid, 'queued').catch(() => {});
               }
               await syncBoard();
               if (tasteOn) {
-                void recordTaste('accept_unchanged', lastProposedPlan ? lastProposedPlan.title : 'plan', 'chat accept');
+                const planTitle = ((lastProposedPlan as Record<string, unknown>)?.title as string | undefined) ?? 'plan';
+                void recordTaste('accept_unchanged', planTitle, 'chat accept');
               }
-              out.write(dim(`  Plan "${lastProposedPlan.title || 'recent'}" accepted via chat — ${parkedGoals.length} goals activated (queued for scheduler).\n`, out.color));
+              const lpTitle = (lastProposedPlan as Record<string, unknown>)?.title ?? 'recent';
+              out.write(dim(`  Plan "${lpTitle}" accepted via chat — ${parkedGoals.length} goals activated (queued for scheduler).\n`, out.color));
               lastProposedPlan = null;
             } else if (lastProposedPlan) {
-              out.write(dim(`  Plan "${lastProposedPlan.title || 'recent'}" accepted via chat — goals now active on the board (scheduler will advance them).\n`, out.color));
+              const lpTitle = (lastProposedPlan as Record<string, unknown>)?.title ?? 'recent';
+              out.write(dim(`  Plan "${lpTitle}" accepted via chat — goals now active on the board (scheduler will advance them).\n`, out.color));
               lastProposedPlan = null;
               await syncBoard();
             }
             // In full impl (later phases): actual state promotion in goalStore, taste record on accept, start bg work if model decides.
-          } else if (intent.intent === 'bg_directive' && intent.details) {
-            out.write(dim(`  (strong meta: background directive for ${intent.details.bgTarget || 'task'} — noted; scheduler can run in bg)\n`, out.color));
+          } else if (mi && (mi.intent as string) === 'bg_directive' && mi.details) {
+            const d = mi.details as Record<string, unknown>;
+            out.write(dim(`  (strong meta: background directive for ${d.bgTarget || 'task'} — noted; scheduler can run in bg)\n`, out.color));
             // Later: tag goals or spin via scheduler with bg flag, using model decision.
-          } else if (intent.intent === 'adjust_plan' && intent.details && intent.details.adjustment) {
-            out.write(dim(`  (strong meta: plan adjustment "${intent.details.adjustment}" — noted for refine)\n`, out.color));
-            if (lastProposedPlan) {
-              try {
-                const refine = await callStrongMetaForIntent(`At high effort, produce JSON diff/refine for this plan based on the adjustment: ${JSON.stringify(lastProposedPlan)}`, new AbortController().signal, { task: 'refine_plan', adjustment: intent.details.adjustment });
-                if (refine) {
-                  lastProposedPlan = { ...lastProposedPlan, lastRefine: refine };
-                  // Apply to store for living plan: add a roadmap item reflecting the adjustment
-                  const g = parkedGoals[0];
-                  if (g) {
-                    const goal = await goalStore.get(g.id).catch(() => null);
-                    if (goal) {
-                      const newItem = { id: 'adj-' + Date.now(), text: `Adjusted per chat: ${intent.details.adjustment}`, status: 'pending' as const };
-                      await goalStore.addRoadmapItem(g.id, newItem).catch(() => {});
-                      await syncBoard();
-                      out.write(dim(`  Applied adjustment to goal ${g.title} (new roadmap item added).\n`, out.color));
+          } else if (mi && (mi.intent as string) === 'adjust_plan' && mi.details) {
+            const d = mi.details as Record<string, unknown>;
+            if (d.adjustment) {
+              out.write(dim(`  (strong meta: plan adjustment "${d.adjustment}" — noted for refine)\n`, out.color));
+              if (lastProposedPlan) {
+                try {
+                  const refine = await callStrongMetaForIntent(`At high effort, produce JSON diff/refine for this plan based on the adjustment: ${JSON.stringify(lastProposedPlan)}`, new AbortController().signal, { task: 'refine_plan', adjustment: d.adjustment });
+                  if (refine) {
+                    lastProposedPlan = { ...(lastProposedPlan as Record<string, unknown>), lastRefine: refine };
+                    // Apply to store for living plan: add a roadmap item reflecting the adjustment
+                    const g = parkedGoals[0] as Record<string, unknown> | undefined;
+                    if (g) {
+                      const gid = g.id as string;
+                      const goal = await goalStore.get(gid).catch(() => null);
+                      if (goal) {
+                        const newItem = { id: 'adj-' + Date.now(), text: `Adjusted per chat: ${d.adjustment}`, status: 'pending' as const };
+                        await goalStore.addRoadmapItem(gid, newItem).catch(() => {});
+                        await syncBoard();
+                        out.write(dim(`  Applied adjustment to goal ${g.title || gid} (new roadmap item added).\n`, out.color));
+                      }
                     }
                   }
+                } catch {
+                  /* fail-soft meta refine */
                 }
-              } catch {
-                /* fail-soft meta refine */
               }
             }
             // Later: full diff apply to roadmap/approach using updateRoadmapItem, taste record 'immediate_edit'.
@@ -5326,7 +5337,7 @@ If uncertain, use "clarify".`;
             // Pass the planner's honest cap-disclosure counts (present only when the
             // model's reply was actually truncated) so the proposal never hides a cap.
             const proposal = formatGoalProposal(plan.plan, plan.plan.dropped);
-            lastProposedPlan = plan.plan || null;
+            lastProposedPlan = (plan.plan || null) as unknown as Record<string, unknown> | null;
             if (proposal.length > 0) {
               out.write('\n' + proposal + '\n');
               // Nice-to-have for "one chat to rule them all": also drop a real PLAN.md
