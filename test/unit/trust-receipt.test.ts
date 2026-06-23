@@ -29,6 +29,7 @@ import {
   composeTrustReceipt,
   isEmptyReceipt,
   trustReceiptLines,
+  providerModeLine,
 } from '../../src/core/trust-receipt.ts';
 import type { Confidence } from '../../src/core/brain.ts';
 import type { VerifyOutcome, TestRunResult } from '../../src/core/verify.ts';
@@ -302,6 +303,55 @@ describe('composeTrustReceipt — only-present-signals composition', () => {
     assert.ok(lines.length >= 3);
     assert.match(lines[0], /x\.ts/); // confidence
     assert.match(lines[1], /review|self-check/i); // verify receipt
+    assert.match(lines[lines.length - 1], /^note: /); // self-audit last
+  });
+});
+
+// ---------------------------------------------------------------------------
+// (2b) PROVIDER POSTURE — neutral, additive, never fabricated
+// ---------------------------------------------------------------------------
+
+describe('providerModeLine + receipt provider posture', () => {
+  it('maps each derived mode to its neutral honest label', () => {
+    assert.equal(providerModeLine('zero'), 'provider mode: none');
+    assert.equal(providerModeLine('solo'), 'provider mode: single vendor');
+    assert.equal(providerModeLine('multi'), 'provider mode: cross-vendor');
+  });
+
+  it('ABSENT providerMode ⇒ NO provider line (purely optional; existing turns unchanged)', () => {
+    const r = composeTrustReceipt({ confidence: conf(), verify: passingVerify() }, 'Confident');
+    assert.equal(r.providerMode, undefined);
+  });
+
+  it('present providerMode + real turn ⇒ a neutral provider line', () => {
+    const r = composeTrustReceipt(
+      { confidence: conf(), verify: passingVerify(), providerMode: 'multi' },
+      'Confident',
+    );
+    assert.equal(r.providerMode, 'provider mode: cross-vendor');
+  });
+
+  it('providerMode WITHOUT a real turn ⇒ no line (neutrality: empty signals ⇒ empty receipt)', () => {
+    const r = composeTrustReceipt({ providerMode: 'solo' }, '');
+    assert.equal(r.providerMode, undefined);
+    assert.ok(isEmptyReceipt(r));
+  });
+
+  it('line order is confidence → verify → provider mode → self-audit (self-audit stays last)', () => {
+    const r = composeTrustReceipt(
+      {
+        confidence: conf(),
+        verify: reviewedVerify(),
+        providerMode: 'solo',
+        authedProviderCount: 1,
+        groundedFiles: ['x.ts'],
+      },
+      'Confident',
+    );
+    const lines = trustReceiptLines(r);
+    assert.match(lines[0], /x\.ts/); // confidence
+    assert.match(lines[1], /review|self-check/i); // verify receipt
+    assert.match(lines[2], /^provider mode:/); // provider posture
     assert.match(lines[lines.length - 1], /^note: /); // self-audit last
   });
 });

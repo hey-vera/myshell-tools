@@ -1,6 +1,8 @@
 import type { CommandTier } from './types.js';
 import type { VerifyOutcome } from './verify.js';
 
+export type ProviderMode = 'zero' | 'solo' | 'multi';
+
 export type ConfidenceLabel =
   | 'not-verified'
   | 'plausible'

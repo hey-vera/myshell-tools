@@ -35,6 +35,7 @@
  */
 
 import type { Confidence } from './brain.js';
+import type { ProviderMode } from './evidence.js';
 import type { VerifyOutcome } from './verify.js';
 import { buildVerifyReceipt } from './verify.js';
 
@@ -74,6 +75,14 @@ export interface TrustSignals {
    * count).
    */
   readonly authedProviderCount?: number;
+  /**
+   * The per-turn PROVIDER POSTURE derived at the verify/accept point (the SAME
+   * `zero | solo | multi` vocabulary {@link buildSnapshotFromVerify} emits): `zero` no
+   * provider engaged, `solo` a single vendor ran, `multi` independent vendors checked.
+   * ABSENT ⇒ no provider-mode line (we never assert a posture we didn't derive). Purely
+   * additive — its presence never alters any other line.
+   */
+  readonly providerMode?: ProviderMode;
 }
 
 /** Cap on how many grounded file names the confidence line lists (the rest summarized). */
@@ -225,6 +234,34 @@ export function selfAuditGaps(signals: TrustSignals): string[] {
 }
 
 // ---------------------------------------------------------------------------
+// (2b) PROVIDER POSTURE — the honest per-turn provider mode, neutrally stated
+// ---------------------------------------------------------------------------
+
+/**
+ * The honest provider-posture line for a derived {@link ProviderMode}. PURE; never
+ * throws. A NEUTRAL statement of what genuinely ran this turn (not a gap, not a boast)
+ * — it complements, never contradicts, the self-audit's cross-check disclosure:
+ *
+ *   - `multi` → `provider mode: cross-vendor`   (independent vendors checked)
+ *   - `solo`  → `provider mode: single vendor`  (one vendor ran)
+ *   - `zero`  → `provider mode: none`           (no provider engaged this turn)
+ *
+ * Returns `undefined` for an unrecognized value (never fabricates a posture).
+ */
+export function providerModeLine(mode: ProviderMode): string | undefined {
+  switch (mode) {
+    case 'multi':
+      return 'provider mode: cross-vendor';
+    case 'solo':
+      return 'provider mode: single vendor';
+    case 'zero':
+      return 'provider mode: none';
+    default:
+      return undefined;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // THE TRUST RECEIPT — one scannable block of notice lines, composed from reality
 // ---------------------------------------------------------------------------
 
@@ -247,6 +284,8 @@ export interface TrustReceipt {
   readonly confidence?: string;
   /** The four-state verify receipt, when verification ran. */
   readonly verify?: string;
+  /** The honest provider-posture line, when a provider mode was derived this turn. */
+  readonly providerMode?: string;
   /** The honest self-audit gap line, when there is a real gap to disclose. */
   readonly selfAudit?: string;
 }
@@ -264,7 +303,7 @@ export interface TrustReceipt {
  * ({@link isEmptyReceipt} true) and the caller emits nothing.
  */
 export function composeTrustReceipt(signals: TrustSignals, confidenceBase: string): TrustReceipt {
-  const receipt: { confidence?: string; verify?: string; selfAudit?: string } = {};
+  const receipt: { confidence?: string; verify?: string; providerMode?: string; selfAudit?: string } = {};
 
   // (1) AUDITABLE CONFIDENCE — only when a confidence tuple is genuinely present.
   if (signals.confidence !== undefined) {
@@ -277,6 +316,17 @@ export function composeTrustReceipt(signals: TrustSignals, confidenceBase: strin
     receipt.verify = buildVerifyReceipt(signals.verify);
   }
 
+  const hasTurnContext = signals.confidence !== undefined || signals.verify !== undefined;
+
+  // (2b) PROVIDER POSTURE — the neutral per-turn provider mode, only when one was
+  //      genuinely derived AND anchored to a real turn (same neutrality contract as the
+  //      self-audit: an empty signal set ⇒ an empty receipt). Purely additive; it never
+  //      alters another line.
+  if (hasTurnContext && signals.providerMode !== undefined) {
+    const line = providerModeLine(signals.providerMode);
+    if (line !== undefined) receipt.providerMode = line;
+  }
+
   // (3) THE SELF-AUDIT — only when there is a REAL gap to disclose honestly, AND
   //     only ANCHORED to a real turn. The self-audit is a disclosure ABOUT a
   //     substantial turn's trust signals ("didn't verify", "didn't cross-check"); with
@@ -285,7 +335,6 @@ export function composeTrustReceipt(signals: TrustSignals, confidenceBase: strin
   //     never even applicable — violating the neutrality contract (an empty signal set
   //     ⇒ an empty receipt ⇒ emit nothing). So the audit rides on a present positive
   //     signal; it never STANDS ALONE.
-  const hasTurnContext = signals.confidence !== undefined || signals.verify !== undefined;
   if (hasTurnContext) {
     const gaps = selfAuditGaps(signals);
     if (gaps.length > 0) {
@@ -301,18 +350,21 @@ export function isEmptyReceipt(receipt: TrustReceipt): boolean {
   return (
     receipt.confidence === undefined &&
     receipt.verify === undefined &&
+    receipt.providerMode === undefined &&
     receipt.selfAudit === undefined
   );
 }
 
 /**
  * Flatten the receipt into the ordered list of notice-message lines the caller emits
- * (confidence → verify → self-audit). PURE; never throws. Empty receipt ⇒ `[]`.
+ * (confidence → verify → provider mode → self-audit). PURE; never throws. Empty receipt
+ * ⇒ `[]`.
  */
 export function trustReceiptLines(receipt: TrustReceipt): string[] {
   const lines: string[] = [];
   if (receipt.confidence !== undefined) lines.push(receipt.confidence);
   if (receipt.verify !== undefined) lines.push(receipt.verify);
+  if (receipt.providerMode !== undefined) lines.push(receipt.providerMode);
   if (receipt.selfAudit !== undefined) lines.push(receipt.selfAudit);
   return lines;
 }
