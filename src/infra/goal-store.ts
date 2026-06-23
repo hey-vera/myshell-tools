@@ -41,6 +41,7 @@ import {
   ROADMAP_LIMIT,
   capGoal,
   capRoadmap,
+  cascadeTerminate,
   selectGoals,
   type Goal,
   type GoalScope,
@@ -411,6 +412,20 @@ export interface GoalStore {
   removeRoadmapItem(id: string, itemId: string): Promise<RemoveRoadmapItemResult>;
   /** Hard-remove a goal by id (never silent — the caller surfaces it). */
   remove(id: string): Promise<boolean>;
+  /**
+   * Cancel a whole goal TREE (Phase 4b): set `rootId` and all its transitive
+   * descendants (via `parentGoalId`) that are CURRENTLY non-terminal
+   * (parked|queued|running) to 'failed' in ONE atomic write transaction. Bumps
+   * `lastTouched` on each goal it flips. Returns the ids it terminated.
+   *
+   * HONESTY (mirrors the `blocked-item` precedent): a descendant already 'done'
+   * is PRESERVED — verified work is NEVER overwritten — and one already 'failed'
+   * is left untouched (no-op). The terminal is always 'failed' because there is
+   * no `cancelled` state (owner hard rule). Fail-soft: an unknown/invalid root
+   * yields `{ terminated: [] }` (nothing changed). The plan is computed purely by
+   * {@link cascadeTerminate}; this method only applies + persists it.
+   */
+  cancelGoalTree(rootId: string): Promise<{ readonly terminated: readonly string[] }>;
 }
 
 /** The fields a caller may patch on a to-do — NEVER `verdict` (verify-only). */
@@ -847,6 +862,34 @@ export function createFileGoalStore(opts: {
         if (next.length === goals.length && !present) return false;
         await writeIndex(home, next);
         return true;
+      });
+    },
+
+    async cancelGoalTree(rootId): Promise<{ readonly terminated: readonly string[] }> {
+      // Fail-soft on an invalid id (path-traversal guard) — nothing to cancel.
+      if (!isValidId(rootId)) return { terminated: [] };
+      await ensureDirs(home);
+      return withLock(getIndexLockPath(home), async () => {
+        const goals = await readIndexLocked(home, onWarning);
+        // PURE plan: root + transitive non-terminal descendants → 'failed'. A 'done'
+        // descendant is excluded (verified work preserved); 'failed' is a no-op.
+        const plan = cascadeTerminate(goals, rootId, 'failed');
+        if (plan.length === 0) return { terminated: [] }; // unknown root / nothing live
+        const now = clock.isoNow();
+        const stateById = new Map(plan.map((t) => [t.id, t.state]));
+        // Apply to the in-memory set, persisting each flipped goal's own file, then
+        // write the index ONCE — the same atomic read-inside-lock / rebuildable-index
+        // model the other mutators use.
+        const nextGoals = goals.map((g) => {
+          const newState = stateById.get(g.id);
+          if (newState === undefined) return g;
+          return capGoal({ ...g, state: newState, lastTouched: now });
+        });
+        for (const g of nextGoals) {
+          if (stateById.has(g.id)) await persistGoal(home, g);
+        }
+        await writeIndex(home, nextGoals);
+        return { terminated: plan.map((t) => t.id) };
       });
     },
   };

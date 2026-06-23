@@ -27,6 +27,7 @@ import {
   formatGoalsForContext,
   childrenOf,
   goalDepth,
+  cascadeTerminate,
   type Goal,
   type GoalVerdict,
 } from '../../src/core/goal-todo.ts';
@@ -288,6 +289,68 @@ describe('childrenOf + goalDepth (Phase 4a nesting helpers)', () => {
     const d = goalDepth(goals, 'goal_a');
     assert.ok(Number.isFinite(d), 'depth must be finite (no infinite loop)');
     assert.ok(d <= 64, `depth bails at the cap, got ${String(d)}`);
+  });
+});
+
+describe('cascadeTerminate (Phase 4b — goal-tree cancellation plan)', () => {
+  it('terminates only NON-TERMINAL descendants; preserves a done child', () => {
+    const goals = [
+      makeGoal({ id: 'goal_root', state: 'running' }),
+      makeGoal({ id: 'goal_a', state: 'queued', parentGoalId: 'goal_root' }),
+      makeGoal({ id: 'goal_b', state: 'done', parentGoalId: 'goal_root' }), // verified — preserve
+      makeGoal({ id: 'goal_c', state: 'failed', parentGoalId: 'goal_root' }), // already terminal — no-op
+      makeGoal({ id: 'goal_d', state: 'parked', parentGoalId: 'goal_root' }),
+    ];
+    const plan = cascadeTerminate(goals, 'goal_root', 'failed');
+    // Root first, then children in input order; done + failed EXCLUDED.
+    assert.deepEqual(
+      plan.map((t) => t.id),
+      ['goal_root', 'goal_a', 'goal_d'],
+    );
+    assert.ok(plan.every((t) => t.state === 'failed'));
+    assert.ok(!plan.some((t) => t.id === 'goal_b'), 'a done child is NOT terminated');
+    assert.ok(!plan.some((t) => t.id === 'goal_c'), 'an already-failed child is a no-op');
+  });
+
+  it('cascades to grandchildren (multi-level), reaching through a done parent', () => {
+    const goals = [
+      makeGoal({ id: 'goal_root', state: 'running' }),
+      makeGoal({ id: 'goal_a', state: 'done', parentGoalId: 'goal_root' }), // done, but...
+      makeGoal({ id: 'goal_gc', state: 'running', parentGoalId: 'goal_a' }), // ...its child is live
+      makeGoal({ id: 'goal_ggc', state: 'queued', parentGoalId: 'goal_gc' }),
+    ];
+    const plan = cascadeTerminate(goals, 'goal_root', 'failed');
+    // BFS: root, (a excluded — done), then a's child gc, then gc's child ggc.
+    assert.deepEqual(
+      plan.map((t) => t.id),
+      ['goal_root', 'goal_gc', 'goal_ggc'],
+    );
+  });
+
+  it('bails on a CYCLIC chain (no infinite loop)', () => {
+    const goals = [
+      makeGoal({ id: 'goal_a', state: 'running', parentGoalId: 'goal_b' }),
+      makeGoal({ id: 'goal_b', state: 'queued', parentGoalId: 'goal_a' }),
+    ];
+    const plan = cascadeTerminate(goals, 'goal_a', 'failed');
+    // Each goal visited at most once → both terminated, no duplicates, no hang.
+    const ids = plan.map((t) => t.id).sort();
+    assert.deepEqual(ids, ['goal_a', 'goal_b']);
+    assert.equal(new Set(ids).size, ids.length, 'no duplicate visits');
+  });
+
+  it('returns [] for an unknown root (fail-soft)', () => {
+    const goals = [makeGoal({ id: 'goal_root', state: 'running' })];
+    assert.deepEqual(cascadeTerminate(goals, 'goal_missing', 'failed'), []);
+    assert.deepEqual(cascadeTerminate(goals, '', 'failed'), []);
+  });
+
+  it('returns [] when the root itself is already terminal and has no live descendants', () => {
+    const goals = [
+      makeGoal({ id: 'goal_root', state: 'done' }),
+      makeGoal({ id: 'goal_a', state: 'failed', parentGoalId: 'goal_root' }),
+    ];
+    assert.deepEqual(cascadeTerminate(goals, 'goal_root', 'failed'), []);
   });
 });
 

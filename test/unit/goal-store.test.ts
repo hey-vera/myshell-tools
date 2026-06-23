@@ -956,3 +956,47 @@ describe('goal-store — patchGoal', () => {
     );
   });
 });
+
+describe('goal-store — cancelGoalTree (Phase 4b)', () => {
+  it('cancels the root + non-terminal descendants to failed; preserves done', async () => {
+    // Build a small tree: root → {a (live), b (done — verified), gc under a (live)}.
+    const root = await store.create({ title: 'root' });
+    const a = await store.create({ title: 'a', parentGoalId: root.id });
+    const b = await store.create({ title: 'b', parentGoalId: root.id });
+    const gc = await store.create({ title: 'grandchild', parentGoalId: a.id });
+    // Set live + terminal states.
+    await store.setState(root.id, 'running');
+    await store.setState(a.id, 'queued');
+    await store.setState(b.id, 'done'); // verified work — must be preserved
+    await store.setState(gc.id, 'running');
+
+    clock.setIso('2026-06-20T00:00:00.000Z');
+    const { terminated } = await store.cancelGoalTree(root.id);
+    assert.deepEqual([...terminated].sort(), [a.id, gc.id, root.id].sort());
+
+    // Re-read from a FRESH store to prove persistence across a reload.
+    const fresh = createFileGoalStore({ homeDir, clock });
+    const all = await fresh.list();
+    const byId = new Map(all.map((g) => [g.id, g]));
+    assert.equal(byId.get(root.id)?.state, 'failed');
+    assert.equal(byId.get(a.id)?.state, 'failed');
+    assert.equal(byId.get(gc.id)?.state, 'failed');
+    assert.equal(byId.get(b.id)?.state, 'done'); // untouched — verified work preserved
+    // lastTouched bumped only on the flipped goals.
+    assert.equal(byId.get(root.id)?.lastTouched, '2026-06-20T00:00:00.000Z');
+    assert.notEqual(byId.get(b.id)?.lastTouched, '2026-06-20T00:00:00.000Z');
+  });
+
+  it('fail-soft: unknown root → { terminated: [] }, nothing changed', async () => {
+    const g = await store.create({ title: 'solo' });
+    await store.setState(g.id, 'running');
+    const res = await store.cancelGoalTree('goal_doesnotexist');
+    assert.deepEqual(res, { terminated: [] });
+    const reloaded = await store.get(g.id);
+    assert.equal(reloaded?.state, 'running'); // untouched
+  });
+
+  it('fail-soft: invalid id (path-traversal reject) → { terminated: [] }', async () => {
+    assert.deepEqual(await store.cancelGoalTree('../evil'), { terminated: [] });
+  });
+});

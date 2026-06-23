@@ -764,3 +764,73 @@ export function goalDepth(goals: readonly Goal[], id: string): number {
   }
   return depth;
 }
+
+/** A terminal state a goal can be cascade-set to. There is NO `cancelled` state
+ *  (owner hard rule) — `failed` is the terminal for cancelled work. Kept as its
+ *  own narrowed type so the cascade signature documents the one legal terminal. */
+type CascadeTerminal = 'failed';
+
+/** A non-terminal goal state is one the cascade is allowed to TERMINATE. */
+const NON_TERMINAL_STATES: ReadonlySet<GoalState> = new Set<GoalState>(['parked', 'queued', 'running']);
+
+/** One planned cascade transition: a goal id + the terminal state to set it to. */
+export interface CascadeTransition {
+  readonly id: string;
+  readonly state: GoalState;
+}
+
+/**
+ * Plan a goal-tree CANCELLATION cascade: given `rootId`, return the root plus all
+ * its transitive descendants (via `parentGoalId`) that are CURRENTLY NON-TERMINAL
+ * (state ∈ parked|queued|running) and so should be set to `terminal` (always
+ * 'failed' — there is no `cancelled` state). Pure, total; never throws.
+ *
+ * HONESTY (mirrors the `blocked-item` verdict precedent): a descendant already
+ * 'done' is PRESERVED — verified work is NEVER overwritten by a cancellation — and
+ * a descendant already 'failed' is a no-op. Both are EXCLUDED from the result, so
+ * the caller only ever flips live work to failed. An unknown `rootId` (or a root
+ * not in `goals`) yields `[]` (nothing to cancel — fail-soft).
+ *
+ * TRAVERSAL: deterministic BFS from the root — root first, then each level's
+ * children in the input's order (childrenOf preserves input order). CYCLE GUARD:
+ * the SAME discipline as {@link goalDepth} — a `seen` set (each goal visited at
+ * most once) AND a hard hop cap ({@link GOAL_DEPTH_CAP} × goal count, generous but
+ * finite) — so a malformed cyclic parent chain (A→B→A) can never spin forever.
+ */
+export function cascadeTerminate(
+  goals: readonly Goal[],
+  rootId: string,
+  terminal: CascadeTerminal,
+): CascadeTransition[] {
+  if (!Array.isArray(goals) || typeof rootId !== 'string' || rootId.length === 0) return [];
+  const byId = new Map(goals.map((g) => [g.id, g]));
+  const root = byId.get(rootId);
+  if (root === undefined) return []; // unknown root ⇒ nothing to cancel (fail-soft)
+
+  const out: CascadeTransition[] = [];
+  const seen = new Set<string>();
+  // Generous-but-finite hop budget: even a fully-cyclic set can't exceed one visit
+  // per goal, but we cap explicitly (× GOAL_DEPTH_CAP) as belt-and-braces against
+  // a pathological structure, matching goalDepth's cap discipline.
+  let hops = 0;
+  const hopCap = (goals.length + 1) * GOAL_DEPTH_CAP;
+
+  // BFS queue, root first; children appended in input order at each level.
+  const queue: Goal[] = [root];
+  while (queue.length > 0 && hops < hopCap) {
+    hops += 1;
+    const current = queue.shift() as Goal;
+    if (seen.has(current.id)) continue; // CYCLE GUARD: never revisit a goal
+    seen.add(current.id);
+    // Only flip LIVE work; preserve 'done' (verified) + skip 'failed' (no-op).
+    if (NON_TERMINAL_STATES.has(current.state)) {
+      out.push({ id: current.id, state: terminal });
+    }
+    // Walk into the children regardless of the current goal's own state — a 'done'
+    // parent can still have live descendants that the cancel should reach.
+    for (const child of childrenOf(goals, current.id)) {
+      if (!seen.has(child.id)) queue.push(child);
+    }
+  }
+  return out;
+}
