@@ -21,6 +21,8 @@
  * only surfacing signals that genuinely occurred.
  */
 
+import { rollbackEngaged } from '../../core/rollback-flag.js';
+
 /** Env values treated as an explicit opt-IN for MYSHELL_TRUST (case-insensitive). */
 const ON = new Set(['1', 'true', 'on', 'yes']);
 
@@ -35,6 +37,7 @@ export function trustEnabled(
   config: { experimentalTrust?: boolean } | undefined,
 ): boolean {
   try {
+    if (rollbackEngaged(env)) return false;
     const raw = env?.['MYSHELL_TRUST'];
     if (typeof raw === 'string' && ON.has(raw.trim().toLowerCase())) return true;
     if (config?.experimentalTrust === true) return true;

@@ -19,6 +19,8 @@
  * cross-vendor critic.
  */
 
+import { rollbackEngaged } from '../../core/rollback-flag.js';
+
 /** Env values treated as an explicit opt-IN for MYSHELL_VERIFY (case-insensitive). */
 const ON = new Set(['1', 'true', 'on', 'yes']);
 
@@ -33,6 +35,7 @@ export function verifyEnabled(
   env: NodeJS.ProcessEnv | undefined,
   config: { experimentalVerify?: boolean } | undefined,
 ): boolean {
+  if (rollbackEngaged(env)) return false;
   const raw = env?.['MYSHELL_VERIFY'];
   if (typeof raw === 'string' && ON.has(raw.trim().toLowerCase())) return true;
   if (config?.experimentalVerify === true) return true;

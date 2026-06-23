@@ -24,6 +24,16 @@ import path from "node:path";
 const ROOT = path.resolve(import.meta.dirname, "../..");
 const SRC = path.join(ROOT, "src");
 
+const SHELL_EXEC_ALLOWLIST = new Set([
+  "src/infra/clipboard.ts",
+  "src/infra/controlling-tty.ts",
+  "src/infra/worktree.ts",
+  "src/infra/user-memory-store.ts",
+  "src/infra/verify-port.ts",
+  "src/infra/repo-scan.ts",
+  "src/infra/research-port.ts",
+]);
+
 /** Recursively collect all .ts files under a directory. Returns [] if dir does not exist. */
 function collectTs(dir: string): string[] {
   if (!fs.existsSync(dir)) return [];
@@ -42,6 +52,10 @@ function collectTs(dir: string): string[] {
 /** Read a file and return its text content. */
 function read(filePath: string): string {
   return fs.readFileSync(filePath, "utf8");
+}
+
+function relPosix(filePath: string): string {
+  return path.relative(ROOT, filePath).split(path.sep).join(path.posix.sep);
 }
 
 /**
@@ -196,7 +210,30 @@ describe("Single-entry guard — only src/cli.ts may call process.exit()", () =>
 });
 
 // ---------------------------------------------------------------------------
-// 4. No-Orphan Guard (basic reachability)
+// 4. Shell-Execution Guard
+// ---------------------------------------------------------------------------
+
+describe("Shell-execution guard — child_process imports must be reviewed infra sites", () => {
+  const ALL_SRC = collectTs(SRC);
+  const CHILD_PROCESS_IMPORT_RE =
+    /from\s+['"]node:child_process['"]|require\s*\(\s*['"](?:node:)?child_process['"]/;
+
+  it("child_process import sites are explicitly allowlisted", () => {
+    for (const file of ALL_SRC) {
+      const rel = relPosix(file);
+      if (!CHILD_PROCESS_IMPORT_RE.test(read(file))) continue;
+
+      assert.ok(
+        SHELL_EXEC_ALLOWLIST.has(rel),
+        `New shell-execution site detected in ${rel}. Route it through the command gate ` +
+          "(classifyCommand/gateCommand + CommandGatePort) and add it to SHELL_EXEC_ALLOWLIST after review."
+      );
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 5. No-Orphan Guard (basic reachability)
 // ---------------------------------------------------------------------------
 
 describe("No-orphan guard — every src/ .ts file must participate in the import graph", () => {
@@ -249,7 +286,7 @@ describe("No-orphan guard — every src/ .ts file must participate in the import
 });
 
 // ---------------------------------------------------------------------------
-// 5. Honesty-Lint
+// 6. Honesty-Lint
 // ---------------------------------------------------------------------------
 
 describe("Honesty-lint — src/ui/ and src/interface/ must not contain hardcoded percentages", () => {
