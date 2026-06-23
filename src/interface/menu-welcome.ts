@@ -12,6 +12,7 @@ import type { EnvironmentStatus } from '../providers/detect.js';
 import { installCommandFor } from '../providers/install.js';
 import type { ProviderId } from '../providers/port.js';
 import type { LoginMethod } from '../commands/login.js';
+import type { CommandGatePort } from '../core/command-gate.js';
 import { runInstall, isHookInstalled } from '../commands/install.js';
 import { modeLabel } from '../core/policy.js';
 import { box } from '../ui/tui.js';
@@ -39,6 +40,7 @@ export async function runWelcome(
       readLine?: () => Promise<string | null>;
       suspendStdin?: () => () => void;
       confirm?: Confirm;
+      commandGate?: CommandGatePort;
     },
   ) => Promise<number>,
   detectEnvironmentFn: () => Promise<EnvironmentStatus>,

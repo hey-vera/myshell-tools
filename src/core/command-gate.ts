@@ -18,6 +18,23 @@ export interface CommandGateDecision {
   readonly rationale: string;
 }
 
+export interface CommandAuditEvent {
+  readonly ts: string;
+  readonly command: string;
+  readonly commandTier: CommandTier;
+  readonly requireConfirmation: boolean;
+  readonly forbidBackground: boolean;
+  readonly confirmed: boolean | null;
+  readonly outcome: 'ran' | 'skipped' | 'denied';
+  readonly cwd: string;
+}
+
+export interface CommandGatePort {
+  gate(command: string, opts?: { readonly requestedBackground?: boolean }): CommandGateDecision;
+  confirm?(message: string): Promise<boolean>;
+  record?(event: CommandAuditEvent): Promise<void> | void;
+}
+
 interface CommandGatePolicy {
   readonly requireConfirmation: boolean;
   readonly forbidBackground: boolean;

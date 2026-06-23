@@ -43,6 +43,7 @@
 
 import type { OutputSink } from '../interface/render.js';
 import { runInteractiveChild } from '../infra/controlling-tty.js';
+import type { CommandGatePort } from '../core/command-gate.js';
 import type { ProviderId } from '../providers/port.js';
 import { detectProvider, getInstallCommand } from '../providers/detect.js';
 import { bold, dim, green, red } from '../ui/theme.js';
@@ -212,6 +213,7 @@ async function runCodeMethodForProvider(
   out: OutputSink,
   id: ProviderId,
   suspendStdin?: () => () => void,
+  commandGate?: CommandGatePort,
 ): Promise<void> {
   const { bin, args, guidance } = LOGIN_CODE_COMMAND[id];
   const cwd = process.cwd();
@@ -228,7 +230,7 @@ async function runCodeMethodForProvider(
     // Run the vendor sign-in interactively. We intentionally ignore the exit code
     // (it's unreliable — see below) and verify via a real credential probe instead.
     // runInteractiveChild hands the child /dev/tty as stdin in a pipe-stdin shell.
-    await runInteractiveChild(bin, args, { env: childEnv }).done;
+    await runInteractiveChild(bin, args, { env: childEnv, ...(commandGate !== undefined ? { commandGate } : {}) }).done;
   } finally {
     resumeStdin?.();
   }
@@ -312,6 +314,7 @@ export async function runLogin(
     readLine?: () => Promise<string | null>;
     suspendStdin?: () => () => void;
     confirm?: (defaultYes: boolean, opts?: { requireExplicit?: boolean }) => Promise<boolean>;
+    commandGate?: CommandGatePort;
   },
 ): Promise<number> {
   let targets: ProviderId[];
@@ -339,7 +342,7 @@ export async function runLogin(
     if (method === 'code') {
       // stdio:'inherit' hands the terminal to the provider CLI so its OAuth /
       // device / paste flow runs in place.
-      await runCodeMethodForProvider(out, id, opts?.suspendStdin);
+      await runCodeMethodForProvider(out, id, opts?.suspendStdin, opts?.commandGate);
     } else {
       // Browser method
       const { bin, args } = getLoginCommand(id, 'browser');
@@ -362,7 +365,11 @@ export async function runLogin(
       const resumeStdin = opts?.suspendStdin?.();
       let exitCode: number | null;
       try {
-        exitCode = await runInteractiveChild(bin, args, { env: childEnv }).done;
+        exitCode = await runInteractiveChild(
+          bin,
+          args,
+          { env: childEnv, ...(opts?.commandGate !== undefined ? { commandGate: opts.commandGate } : {}) },
+        ).done;
       } finally {
         resumeStdin?.();
       }
@@ -388,7 +395,7 @@ export async function runLogin(
               ? await opts.confirm(true)
               : shouldRetryWithCode(await opts.readLine());
           if (retryWithCode) {
-            await runCodeMethodForProvider(out, id, opts.suspendStdin);
+            await runCodeMethodForProvider(out, id, opts.suspendStdin, opts.commandGate);
           } else {
             out.write(
               dim(

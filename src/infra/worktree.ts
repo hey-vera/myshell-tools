@@ -28,8 +28,10 @@ import { join } from 'node:path';
 import { execa } from 'execa';
 
 import type { WorktreePort, Worktree } from '../core/tribunal.js';
+import type { CommandGatePort, CommandGateDecision } from '../core/command-gate.js';
 
 const execFileAsync = promisify(execFile);
+type ExecaRunner = typeof execa;
 
 /** Cap so a pathological `git worktree` op can never hang the tribunal. */
 const GIT_TIMEOUT_MS = 15_000;
@@ -41,7 +43,18 @@ const MAX_EXEC_OUTPUT_CHARS = 64 * 1024;
  * pure caller's degradation path (tear down + fall through to the normal work-call)
  * is never reached by a thrown error.
  */
-export const nodeWorktreePort: WorktreePort = {
+export function createNodeWorktreePort(deps: { readonly execa?: ExecaRunner } = {}): WorktreePort & {
+  execInWorktree(
+    wt: Worktree,
+    command: string,
+    args: readonly string[],
+    timeoutMs: number,
+    commandGate?: CommandGatePort,
+  ): Promise<{ exitCode: number | null; output: string }>;
+} {
+  const runExeca = deps.execa ?? execa;
+
+  return {
   async createWorktree(repoCwd: string, label: string): Promise<Worktree | null> {
     try {
       // A throwaway temp dir OUTSIDE the repo so the worktree is fully isolated.
@@ -75,10 +88,45 @@ export const nodeWorktreePort: WorktreePort = {
     command: string,
     args: readonly string[],
     timeoutMs: number,
+    commandGate?: CommandGatePort,
   ): Promise<{ exitCode: number | null; output: string }> {
+    if (commandGate !== undefined) {
+      const gate = commandGate.gate(displayCommand(command, args));
+      const confirmed = await confirmGate(commandGate, gate);
+      if (!gate.allowed || confirmed === false) {
+        await recordGate(commandGate, wt.cwd, displayCommand(command, args), gate, confirmed, 'denied');
+        return { exitCode: null, output: '' };
+      }
+
+      const result = await runWorktreeCommand(runExeca, wt.cwd, command, args, timeoutMs);
+      await recordGate(commandGate, wt.cwd, displayCommand(command, args), gate, confirmed, 'ran');
+      return result;
+    }
+
+    return runWorktreeCommand(runExeca, wt.cwd, command, args, timeoutMs);
+  },
+
+  async removeWorktree(repoCwd: string, wt: Worktree): Promise<void> {
+    // Best-effort, never throws: force-remove the worktree dir, then prune the
+    // bookkeeping so a half-removed entry can't accumulate.
+    await runGit(repoCwd, ['worktree', 'remove', '--force', wt.cwd]);
+    await runGit(repoCwd, ['worktree', 'prune']);
+  },
+  };
+}
+
+export const nodeWorktreePort = createNodeWorktreePort();
+
+async function runWorktreeCommand(
+  runExeca: ExecaRunner,
+  cwd: string,
+  command: string,
+  args: readonly string[],
+  timeoutMs: number,
+): Promise<{ exitCode: number | null; output: string }> {
     try {
-      const result = await execa(command, [...args], {
-        cwd: wt.cwd,
+      const result = await runExeca(command, [...args], {
+        cwd,
         timeout: Math.max(1000, timeoutMs),
         reject: false,
         all: true,
@@ -91,15 +139,46 @@ export const nodeWorktreePort: WorktreePort = {
     } catch {
       return { exitCode: null, output: '' };
     }
-  },
+}
 
-  async removeWorktree(repoCwd: string, wt: Worktree): Promise<void> {
-    // Best-effort, never throws: force-remove the worktree dir, then prune the
-    // bookkeeping so a half-removed entry can't accumulate.
-    await runGit(repoCwd, ['worktree', 'remove', '--force', wt.cwd]);
-    await runGit(repoCwd, ['worktree', 'prune']);
-  },
-};
+function displayCommand(command: string, args: readonly string[]): string {
+  return `${command} ${args.join(' ')}`;
+}
+
+async function confirmGate(
+  commandGate: CommandGatePort,
+  decision: CommandGateDecision,
+): Promise<boolean | null> {
+  if (!decision.allowed) return false;
+  if (!decision.requireConfirmation) return null;
+  if (commandGate.confirm === undefined) return false;
+  return commandGate.confirm(decision.rationale);
+}
+
+async function recordGate(
+  commandGate: CommandGatePort,
+  cwd: string,
+  command: string,
+  decision: CommandGateDecision,
+  confirmed: boolean | null,
+  outcome: 'ran' | 'skipped' | 'denied',
+): Promise<void> {
+  if (!decision.mustRecord || commandGate.record === undefined) return;
+  try {
+    await commandGate.record({
+      ts: new Date().toISOString(),
+      command,
+      commandTier: decision.commandTier,
+      requireConfirmation: decision.requireConfirmation,
+      forbidBackground: decision.forbidBackground,
+      confirmed,
+      outcome,
+      cwd,
+    });
+  } catch {
+    // Audit failures must not break fail-soft command execution.
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Helpers (best-effort, no-throw — the verify-port discipline)

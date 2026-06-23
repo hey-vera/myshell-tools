@@ -10,6 +10,7 @@ import type { AppConfig } from '../infra/config.js';
 import type { ConversationMeta } from '../infra/conversation-store.js';
 import type { EnvironmentStatus } from '../providers/detect.js';
 import type { LoginMethod } from '../commands/login.js';
+import type { CommandGatePort } from '../core/command-gate.js';
 import { listRecentNativeSessions, importNativeSession } from '../providers/native-sessions.js';
 import { replitPersistentEnv } from '../infra/credentials.js';
 import { separator } from '../ui/tui.js';
@@ -262,6 +263,7 @@ export async function runImportNative(
       readLine?: () => Promise<string | null>;
       suspendStdin?: () => () => void;
       confirm?: Confirm;
+      commandGate?: CommandGatePort;
     },
   ) => Promise<number>,
   detectEnvironmentFn: () => Promise<EnvironmentStatus>,

@@ -10,6 +10,7 @@ import type { OutputSink } from './render.js';
 import { readMenuKey } from './menu-key-confirm.js';
 import { countRecentInterrupts } from './menu-display.js';
 import { runInteractiveChild } from '../infra/controlling-tty.js';
+import type { CommandGatePort } from '../core/command-gate.js';
 
 /**
  * Decide whether a raw-session SIGINT count warrants escaping back to the menu.
@@ -56,6 +57,7 @@ export async function runRawProviderSession(
   // resolves on a SINGLE key through Ink's own input pipeline (the legacy raw
   // single-key feel). Absent → legacy path is byte-identical.
   inkReadKey?: () => Promise<string>,
+  commandGate?: CommandGatePort,
 ): Promise<void> {
   const choices: Array<{ label: string; bin: string }> = [];
   for (const ps of [env.claude, env.codex, env.opencode, env.grok]) {
@@ -104,7 +106,7 @@ export async function runRawProviderSession(
   // Suspend the menu reader so it cannot race the inherited-stdio child for keys.
   const resumeStdin = suspendStdin?.();
   try {
-    const subprocess = runInteractiveChild(bin, []);
+    const subprocess = runInteractiveChild(bin, [], commandGate !== undefined ? { commandGate } : {});
 
     // Unix-only: register the rapid-double-Ctrl+C escape handler.
     // On Windows: skip entirely — SIGINT/process-group semantics differ and

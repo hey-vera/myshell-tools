@@ -7,6 +7,7 @@
  */
 
 import { createRequire } from 'node:module';
+import readline from 'node:readline/promises';
 import { realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { execa } from 'execa';
@@ -14,6 +15,9 @@ import { prefixForRunningEntry } from './infra/update-prefix.js';
 import { systemClock } from './infra/clock.js';
 import { createSessionWriter } from './infra/session.js';
 import { createLedger, readLedger } from './infra/ledger.js';
+import { createCommandAuditRecorder } from './infra/command-audit.js';
+import { gateCommand } from './core/command-gate.js';
+import type { CommandGatePort } from './core/command-gate.js';
 import { learnProviderOrder, learnModelOutcomeOrder } from './core/routing-memory.js';
 import {
   DEFAULT_POLICY,
@@ -145,6 +149,28 @@ const DEFAULT_TIMEOUT_MS = 120000;
  */
 function resolveTimeoutMs(config: import('./infra/config.js').AppConfig): number {
   return config.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+}
+
+function createCliCommandGate(cwd: string, out: OutputSink, interactive: boolean): CommandGatePort {
+  const audit = createCommandAuditRecorder({ cwd });
+  return {
+    gate: gateCommand,
+    ...(interactive
+      ? {
+          confirm: async (message: string): Promise<boolean> => {
+            out.write(`\n${message}\nRun this command? Type y to confirm: `);
+            const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+            try {
+              const answer = (await rl.question('')).trim().toLowerCase();
+              return answer === 'y' || answer === 'yes';
+            } finally {
+              rl.close();
+            }
+          },
+        }
+      : {}),
+    record: (event) => audit.record(event),
+  };
 }
 
 const HELP = `\
@@ -340,6 +366,7 @@ async function main(): Promise<void> {
     color: process.stdout.isTTY === true && !process.env['NO_COLOR'],
     isTty: process.stdout.isTTY === true,
   };
+  const commandGate = createCliCommandGate(cwd, out, process.stdin.isTTY === true && out.isTty);
   const startupConfigPromise = args.length === 0 ? loadConfig() : null;
   let startupInput =
     args.length === 0 &&
@@ -411,7 +438,7 @@ async function main(): Promise<void> {
           ? ('browser' as const)
           : undefined;
     const provider = rest.find((a) => !a.startsWith('-'));
-    process.exit(await runLogin(out, provider, method !== undefined ? { method } : undefined));
+    process.exit(await runLogin(out, provider, { ...(method !== undefined ? { method } : {}), commandGate }));
   }
 
   // Health check — surfaced automatically in the control panel, so this is no

@@ -42,6 +42,7 @@
 
 import type { CoreEvent, OrchestrateDeps, Tier, Classification } from './types.js';
 import type { ProviderId } from '../providers/port.js';
+import type { CommandGatePort } from './command-gate.js';
 import { getModelPricing, calculateCost } from '../infra/pricing.js';
 import {
   runCandidate,
@@ -97,6 +98,7 @@ export interface WorktreePort {
     command: string,
     args: readonly string[],
     timeoutMs: number,
+    commandGate?: CommandGatePort,
   ): Promise<{ exitCode: number | null; output: string }>;
   /** Remove a worktree (force) + prune, best-effort, NEVER throws. */
   removeWorktree(repoCwd: string, wt: Worktree): Promise<void>;

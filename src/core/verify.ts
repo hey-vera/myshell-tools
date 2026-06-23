@@ -29,6 +29,8 @@
  * @see .tmp-master-build.md PHASE 3 — change-capture + verify
  */
 
+import type { CommandGatePort } from './command-gate.js';
+
 // ---------------------------------------------------------------------------
 // The four honest states
 // ---------------------------------------------------------------------------
@@ -120,6 +122,7 @@ export interface VerifyPort {
     cwd: string,
     command: DetectedTestCommand,
     timeoutMs: number,
+    commandGate?: CommandGatePort,
   ): Promise<TestRunResult>;
 }
 

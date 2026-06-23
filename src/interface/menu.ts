@@ -216,6 +216,11 @@ import { tribunalEnabled } from './ui/tribunal-flag.js';
 import { experimentalEnabledByDefault } from './ui/experimental-default.js';
 import { nodeVerifyPort } from '../infra/verify-port.js';
 import { nodeWorktreePort } from '../infra/worktree.js';
+import { createCommandAuditRecorder } from '../infra/command-audit.js';
+import { gateCommand } from '../core/command-gate.js';
+import type { CommandGatePort } from '../core/command-gate.js';
+import type { VerifyPort } from '../core/verify.js';
+import type { WorktreePort } from '../core/tribunal.js';
 import { runSchedule, type GoalSpec, type RunGoalPhase } from '../core/scheduler.js';
 import { decompose } from '../core/decompose.js';
 import { orchestrate } from '../core/orchestrate.js';
@@ -295,6 +300,7 @@ export interface MenuContext {
       readLine?: () => Promise<string | null>;
       suspendStdin?: () => () => void;
       confirm?: Confirm;
+      commandGate?: CommandGatePort;
     },
   ) => Promise<number>;
   /**
@@ -354,6 +360,8 @@ export interface MenuContext {
    * Used only for the opt-in auto-update path.
    */
   readonly relaunch?: (env?: NodeJS.ProcessEnv) => Promise<number>;
+  readonly verifyPort?: VerifyPort;
+  readonly worktreePort?: WorktreePort;
   readonly startupInput?: StartupInputBuffer;
   /**
    * Optional pre-computed Claude token lifetime status for testing. When provided,
@@ -464,6 +472,7 @@ async function promptForAuthBeforeChat(
       readLine?: () => Promise<string | null>;
       suspendStdin?: () => () => void;
       confirm?: Confirm;
+      commandGate?: CommandGatePort;
     },
   ) => Promise<number>,
   detectEnvironmentFn: () => Promise<EnvironmentStatus>,
@@ -619,6 +628,7 @@ export async function runChatLoop(
       readLine?: () => Promise<string | null>;
       suspendStdin?: () => () => void;
       confirm?: Confirm;
+      commandGate?: CommandGatePort;
     },
   ) => Promise<number>,
   detectEnvironmentFn: () => Promise<EnvironmentStatus>,
@@ -2421,7 +2431,7 @@ export async function runChatLoop(
             verifyEnabled,
           )
             ? {
-                verifyPort: nodeVerifyPort,
+                verifyPort: ctx.verifyPort ?? nodeVerifyPort,
                 verifyLevel: 'tests' as const,
                 verifyTestTimeoutMs: Math.min(ctx.timeoutMs, 120_000),
               }
@@ -2468,7 +2478,7 @@ export async function runChatLoop(
           )
             ? {
                 tribunalEnabled: true,
-                worktreePort: nodeWorktreePort,
+                worktreePort: ctx.worktreePort ?? nodeWorktreePort,
               }
             : {}),
           // RESEARCH-UNTIL-CONFIDENT (master-plan Phase 3a/3b) — DEFAULT OFF (opt-in;
@@ -2751,7 +2761,7 @@ export async function runChatLoop(
             output: '',
             provider: authed[0] ?? 'claude',
             tier: 'worker',
-            port: nodeVerifyPort,
+            port: ctx.verifyPort ?? nodeVerifyPort,
             level: 'tests', // tests-first only — the honest free signal (no critic call)
             cwd: ctx.cwd,
             testTimeoutMs: VERIFY_TEST_TIMEOUT_MS, // bound the test runner itself
@@ -6477,7 +6487,7 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
 
   // Resolve injected seams — use the real implementations when not provided.
   const installProviderFn = ctx.installProvider !== undefined ? ctx.installProvider : installProvider;
-  const loginFn = ctx.login !== undefined ? ctx.login : runLogin;
+  let loginFn = ctx.login !== undefined ? ctx.login : runLogin;
   const detectEnvironmentFn = ctx.detectEnvironment !== undefined ? ctx.detectEnvironment : detectEnvironment;
   const checkForUpdateFn = ctx.checkForUpdate;
   const updateSelfFn = ctx.updateSelf;
@@ -6584,6 +6594,29 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
   const inkResetTurn: (() => void) | undefined =
     inkHandle !== null ? () => inkHandle.resetTurn() : undefined;
   const confirm = makeConfirm(out, readLine, ctx.confirm, false, inkReadKey);
+  const commandAudit = createCommandAuditRecorder({ cwd: ctx.cwd });
+  const commandGate: CommandGatePort = {
+    gate: gateCommand,
+    confirm: async (message: string): Promise<boolean> => {
+      out.write(`\n${message}\nRun this command? ${yesNoHint('no', out.color)} `);
+      return confirm(false, { requireExplicit: true });
+    },
+    record: (event) => commandAudit.record(event),
+  };
+  const ungatedLoginFn = loginFn;
+  loginFn = (loginOut, providerArg, opts) =>
+    ungatedLoginFn(loginOut, providerArg, { ...opts, commandGate });
+  const gatedVerifyPort: VerifyPort = {
+    ...nodeVerifyPort,
+    runTests: (cwd, command, timeoutMs) =>
+      nodeVerifyPort.runTests(cwd, command, timeoutMs, commandGate),
+  };
+  const gatedWorktreePort: WorktreePort = {
+    ...nodeWorktreePort,
+    execInWorktree: (wt, command, args, timeoutMs) =>
+      nodeWorktreePort.execInWorktree(wt, command, args, timeoutMs, commandGate),
+  };
+  ctx = { ...ctx, verifyPort: gatedVerifyPort, worktreePort: gatedWorktreePort };
   // Lets the login flow release stdin while an inherited-stdio child (e.g.
   // `claude auth login`) owns the terminal, then take it back. Returns the
   // resume callback. Only wired for the real reader — the injected/test path
@@ -7015,7 +7048,7 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
 
       // ---- [r] Open a raw provider session ------------------------------------
       if (key === 'r') {
-        await runRawProviderSession(out, readLine, mutableCtx.env, suspendStdin, inkReadKey);
+        await runRawProviderSession(out, readLine, mutableCtx.env, suspendStdin, inkReadKey, commandGate);
         continue;
       }
 

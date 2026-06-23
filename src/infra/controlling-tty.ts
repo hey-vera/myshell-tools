@@ -20,6 +20,7 @@
 import fs from 'node:fs';
 import { spawn } from 'node:child_process';
 import { execa } from 'execa';
+import type { CommandGatePort, CommandGateDecision } from '../core/command-gate.js';
 
 /**
  * Resolve the stdin an interactive child should read from, plus a `cleanup` that
@@ -79,10 +80,21 @@ export interface InteractiveChildHandle {
 export function runInteractiveChild(
   bin: string,
   args: readonly string[],
-  opts: { readonly env?: NodeJS.ProcessEnv } = {},
+  opts: { readonly env?: NodeJS.ProcessEnv; readonly commandGate?: CommandGatePort } = {},
+): InteractiveChildHandle {
+  if (opts.commandGate !== undefined) {
+    return runGatedInteractiveChild(bin, args, opts.env ?? process.env, opts.commandGate);
+  }
+
+  return startInteractiveChild(bin, args, opts.env ?? process.env);
+}
+
+function startInteractiveChild(
+  bin: string,
+  args: readonly string[],
+  env: NodeJS.ProcessEnv,
 ): InteractiveChildHandle {
   const { stdin, cleanup } = resolveInteractiveChildStdin();
-  const env = opts.env ?? process.env;
 
   if (stdin === 'inherit') {
     const sub = execa(bin, [...args], {
@@ -147,4 +159,82 @@ export function runInteractiveChild(
       }
     },
   };
+}
+
+function runGatedInteractiveChild(
+  bin: string,
+  args: readonly string[],
+  env: NodeJS.ProcessEnv,
+  commandGate: CommandGatePort,
+): InteractiveChildHandle {
+  const command = displayCommand(bin, args);
+  const decision = commandGate.gate(command);
+  let inner: InteractiveChildHandle | null = null;
+  let pendingSignal: NodeJS.Signals | undefined;
+
+  const done = (async (): Promise<number | null> => {
+    const confirmed = await confirmGate(commandGate, decision);
+    if (!decision.allowed || confirmed === false) {
+      await recordGate(commandGate, process.cwd(), command, decision, confirmed, 'denied');
+      return null;
+    }
+
+    inner = startInteractiveChild(bin, args, env);
+    if (pendingSignal !== undefined) {
+      inner.kill(pendingSignal);
+    }
+    const exitCode = await inner.done;
+    await recordGate(commandGate, process.cwd(), command, decision, confirmed, 'ran');
+    return exitCode;
+  })();
+
+  return {
+    done,
+    kill: (signal) => {
+      if (inner !== null) {
+        inner.kill(signal);
+        return;
+      }
+      pendingSignal = signal;
+    },
+  };
+}
+
+function displayCommand(command: string, args: readonly string[]): string {
+  return `${command} ${args.join(' ')}`;
+}
+
+async function confirmGate(
+  commandGate: CommandGatePort,
+  decision: CommandGateDecision,
+): Promise<boolean | null> {
+  if (!decision.allowed) return false;
+  if (!decision.requireConfirmation) return null;
+  if (commandGate.confirm === undefined) return false;
+  return commandGate.confirm(decision.rationale);
+}
+
+async function recordGate(
+  commandGate: CommandGatePort,
+  cwd: string,
+  command: string,
+  decision: CommandGateDecision,
+  confirmed: boolean | null,
+  outcome: 'ran' | 'skipped' | 'denied',
+): Promise<void> {
+  if (!decision.mustRecord || commandGate.record === undefined) return;
+  try {
+    await commandGate.record({
+      ts: new Date().toISOString(),
+      command,
+      commandTier: decision.commandTier,
+      requireConfirmation: decision.requireConfirmation,
+      forbidBackground: decision.forbidBackground,
+      confirmed,
+      outcome,
+      cwd,
+    });
+  } catch {
+    // Audit failures must not break the interactive child contract.
+  }
 }

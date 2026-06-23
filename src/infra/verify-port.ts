@@ -29,8 +29,10 @@ import type {
   DetectedTestCommand,
   TestRunResult,
 } from '../core/verify.js';
+import type { CommandGatePort, CommandGateDecision } from '../core/command-gate.js';
 
 const execFileAsync = promisify(execFile);
+type ExecaRunner = typeof execa;
 
 /** Cap so a pathological `git diff` can never hang the verify gather. */
 const GIT_TIMEOUT_MS = 4000;
@@ -44,7 +46,17 @@ const MAX_TEST_OUTPUT_CHARS = 64 * 1024;
  * pure caller's try/catch is belt-and-suspenders — a misbehaving port can never
  * break the turn.
  */
-export const nodeVerifyPort: VerifyPort = {
+export function createNodeVerifyPort(deps: { readonly execa?: ExecaRunner } = {}): VerifyPort & {
+  runTests(
+    cwd: string,
+    command: DetectedTestCommand,
+    timeoutMs: number,
+    commandGate?: CommandGatePort,
+  ): Promise<TestRunResult>;
+} {
+  const runExeca = deps.execa ?? execa;
+
+  return {
   async captureDiff(cwd: string, editedFiles?: readonly string[]): Promise<CapturedDiff> {
     // Prefer the turn's real edited-files signal when work-call tracks it: scope
     // the diff to exactly those paths. Otherwise diff the whole working tree.
@@ -172,10 +184,39 @@ export const nodeVerifyPort: VerifyPort = {
     cwd: string,
     command: DetectedTestCommand,
     timeoutMs: number,
+    commandGate?: CommandGatePort,
   ): Promise<TestRunResult> {
     const start = Date.now();
+    if (commandGate !== undefined) {
+      const display = displayCommand(command.command, command.args);
+      const gate = commandGate.gate(display);
+      const confirmed = await confirmGate(commandGate, gate);
+      if (!gate.allowed || confirmed === false) {
+        await recordGate(commandGate, cwd, display, gate, confirmed, 'denied');
+        return { outcome: 'errored', output: '', durationMs: Date.now() - start };
+      }
+
+      const result = await runTestCommand(runExeca, cwd, command, timeoutMs, start);
+      await recordGate(commandGate, cwd, display, gate, confirmed, 'ran');
+      return result;
+    }
+
+    return runTestCommand(runExeca, cwd, command, timeoutMs, start);
+  },
+  };
+}
+
+export const nodeVerifyPort = createNodeVerifyPort();
+
+async function runTestCommand(
+  runExeca: ExecaRunner,
+  cwd: string,
+  command: DetectedTestCommand,
+  timeoutMs: number,
+  start: number,
+): Promise<TestRunResult> {
     try {
-      const result = await execa(command.command, [...command.args], {
+      const result = await runExeca(command.command, [...command.args], {
         cwd,
         timeout: Math.max(1000, timeoutMs),
         // Capture, never inherit (non-interactive); a non-zero exit must NOT throw
@@ -208,8 +249,46 @@ export const nodeVerifyPort: VerifyPort = {
       // Any unexpected throw (spawn error not caught by reject:false) → errored.
       return { outcome: 'errored', output: '', durationMs: Date.now() - start };
     }
-  },
-};
+}
+
+function displayCommand(command: string, args: readonly string[]): string {
+  return `${command} ${args.join(' ')}`;
+}
+
+async function confirmGate(
+  commandGate: CommandGatePort,
+  decision: CommandGateDecision,
+): Promise<boolean | null> {
+  if (!decision.allowed) return false;
+  if (!decision.requireConfirmation) return null;
+  if (commandGate.confirm === undefined) return false;
+  return commandGate.confirm(decision.rationale);
+}
+
+async function recordGate(
+  commandGate: CommandGatePort,
+  cwd: string,
+  command: string,
+  decision: CommandGateDecision,
+  confirmed: boolean | null,
+  outcome: 'ran' | 'skipped' | 'denied',
+): Promise<void> {
+  if (!decision.mustRecord || commandGate.record === undefined) return;
+  try {
+    await commandGate.record({
+      ts: new Date().toISOString(),
+      command,
+      commandTier: decision.commandTier,
+      requireConfirmation: decision.requireConfirmation,
+      forbidBackground: decision.forbidBackground,
+      confirmed,
+      outcome,
+      cwd,
+    });
+  } catch {
+    // Audit failures must not break fail-soft verification.
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Helpers (best-effort, no-throw — the repo-scan discipline)
