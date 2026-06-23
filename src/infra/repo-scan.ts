@@ -104,6 +104,10 @@ export const nodeRepoScanPort: RepoScanPort = {
       return null;
     }
   },
+
+  readRepoFingerprint(cwd: string): Promise<RepoFingerprint> {
+    return readRepoFingerprint(cwd);
+  },
 };
 
 export async function readRepoFingerprint(cwd: string): Promise<RepoFingerprint> {

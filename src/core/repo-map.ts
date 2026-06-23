@@ -24,6 +24,8 @@
  * partner posture).
  */
 
+import type { RepoFingerprint } from './repo-identity.js';
+
 // ---------------------------------------------------------------------------
 // Budget — coordinate with the existing CONTEXT_BLOCK_CHAR_CAP backstop (§5.1).
 // ---------------------------------------------------------------------------
@@ -481,6 +483,12 @@ export interface RepoScanPort {
   dirtyFiles(root: string): Promise<ReadonlySet<string>>;
   /** Read a UTF-8 file by repo-relative path; null when absent/unreadable. */
   readFile(root: string, rel: string): Promise<string | null>;
+  /**
+   * Cheap repo-identity fingerprint (HEAD sha + working-tree hash) used to key
+   * understanding-cache entries to the repo state. Fail-soft: a non-git dir /
+   * git error → empty fingerprint (stable per project).
+   */
+  readRepoFingerprint(cwd: string): Promise<RepoFingerprint>;
 }
 
 /** Doc files we surface presence of (§1.2 #4). */

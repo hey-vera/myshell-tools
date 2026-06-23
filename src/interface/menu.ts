@@ -39,6 +39,7 @@ import { assessGoalConfidence, chooseInitialPlanningDepth, choosePlannerTier, de
 import { classify, hasWorkIntent } from '../core/classify.js';
 import { resolveMemoryContextDetailed } from '../core/memory-injection.js';
 import { buildEnvironmentContext } from '../core/repo-map.js';
+import { repoCacheKey, repoStateChanged, type RepoFingerprint } from '../core/repo-identity.js';
 import {
   buildToolStateContext,
   buildCapabilitySummary,
@@ -2563,6 +2564,29 @@ export async function runChatLoop(
         return memoryProjectKey;
       };
 
+      // ---- Repo-identity cache key (v9 Phase 3b) ------------------------------
+      // The understanding cache is keyed on BOTH the project identity AND the repo
+      // state (HEAD sha + working-tree hash), so a mid-session commit / working-tree
+      // change re-grounds instead of serving a stale SystemModel. The fingerprint is
+      // resolved AT MOST ONCE per turn (one git call max, mirrors resolveProjectKeyOnce's
+      // memoize-once pattern) so we never add git latency to every cache lookup.
+      // Fail-soft: non-git dir / git error → empty fingerprint → repoCacheKey is stable
+      // per project → cache hit/miss behaviour is byte-identical to before this change.
+      let repoFingerprint: RepoFingerprint | undefined;
+      const resolveRepoFingerprintOnce = async (): Promise<RepoFingerprint> => {
+        if (repoFingerprint === undefined) {
+          repoFingerprint = await nodeRepoScanPort
+            .readRepoFingerprint(ctx.cwd)
+            .catch(() => ({ headSha: '', treeHash: '' }));
+        }
+        return repoFingerprint;
+      };
+      const resolveCacheKey = async (): Promise<string> => {
+        const projectKey = (await resolveProjectKeyOnce()) ?? '∅global';
+        const fp = await resolveRepoFingerprintOnce();
+        return repoCacheKey(projectKey, fp);
+      };
+
       // ---- Goal / to-do store (Phase 5a, .tmp-vision-todos.md) ----------------
       // The persistent home for goals in any lifecycle state. A "to-do list" is a
       // PARKED goal's roadmap — nothing floats. Fail-soft, shares the two-scope
@@ -2885,9 +2909,12 @@ export async function runChatLoop(
         systemModel?: SystemModel;
       }> => {
         if (!planningDepthOn) {
-          const cacheKey = (await resolveProjectKeyOnce()) ?? '∅global';
+          const cacheKey = await resolveCacheKey();
           const warm = systemModelCache.get(cacheKey)?.model;
-          if (understandingOn && warm === undefined) warmUnderstanding(cacheKey, goalText);
+          if (understandingOn && warm === undefined) {
+            noteStaleRepoIfNeeded();
+            warmUnderstanding(cacheKey, goalText);
+          }
           const roadmapFor = (todos: readonly GoalPlanTodo[]): RoadmapItem[] =>
             todos.length > 0
               ? todosToRoadmap(todos.slice(0, ROADMAP_LIMIT))
@@ -2941,12 +2968,12 @@ export async function runChatLoop(
           return { judgment: 'stage', title: await formGoalLabel(goalText), roadmap: todosToRoadmap([{ text: goalText }]) };
         }
 
-        const cacheKey = (await resolveProjectKeyOnce()) ?? '∅global';
+        const cacheKey = await resolveCacheKey();
         let warm = systemModelCache.get(cacheKey)?.model;
         const signal = new AbortController().signal;
         const classification = classify(goalText);
         const highStakes = classification.risk === 'high' || classification.risk === 'critical';
-        const repoOriented = cacheKey !== '∅global';
+        const repoOriented = (await resolveProjectKeyOnce()) !== null;
         const shape = highStakes
           ? 'risky'
           : classification.tier === 'manager'
@@ -3010,6 +3037,7 @@ export async function runChatLoop(
           warm === undefined &&
           understandingOn
         ) {
+          noteStaleRepoIfNeeded();
           out.write('  Planning deeper: grounding this first (one extra pass).\n');
           try {
             const repoContext = await resolveEnvironmentOnce().catch(() => '');
@@ -3017,7 +3045,7 @@ export async function runChatLoop(
             const model = pass === null ? null : await pass(goalText, signal);
             if (model !== null) {
               warm = model;
-              systemModelCache.set(cacheKey, { model, atTurn: autoStageTurns });
+              systemModelCache.set(cacheKey, { model, atTurn: autoStageTurns, fp: await resolveRepoFingerprintOnce() });
             } else {
               out.write('  Grounding unavailable; planning ungrounded.\n');
             }
@@ -3025,6 +3053,7 @@ export async function runChatLoop(
             out.write('  Grounding unavailable; planning ungrounded.\n');
           }
         } else if (warm === undefined && understandingOn) {
+          noteStaleRepoIfNeeded();
           warmUnderstanding(cacheKey, goalText);
         }
         const roadmapFor = (todos: readonly GoalPlanTodo[]): RoadmapItem[] =>
@@ -3864,9 +3893,27 @@ Output ONLY valid JSON (no prose, no markdown).`;
       // every UNDERSTANDING_REFRESH_TURNS auto-stage attempts to catch in-session
       // drift. This is what lets whole-picture grounding ride WITHOUT latency.
       const UNDERSTANDING_REFRESH_TURNS = 5;
-      const systemModelCache = new Map<string, { model: SystemModel; atTurn: number }>();
+      const systemModelCache = new Map<string, { model: SystemModel; atTurn: number; fp?: RepoFingerprint }>();
       const understandingWarmInFlight = new Set<string>();
       let autoStageTurns = 0;
+      // Emit the honest "repo changed since last understanding — re-grounding" note at
+      // most ONCE per turn (don't spam across the several warm-lookup sites).
+      let staleRepoFlagged = false;
+      // Detect a warm entry built under a PRIOR fingerprint that differs from the
+      // current one; emit one dim re-grounding line. Fail-soft + once-per-turn. We
+      // search by project (cacheKey is already fingerprint-qualified, so a changed
+      // repo simply misses; this scans for a stale-but-warm sibling to explain why).
+      const noteStaleRepoIfNeeded = (): void => {
+        if (staleRepoFlagged || !understandingOn || repoFingerprint === undefined) return;
+        const current = repoFingerprint;
+        for (const entry of systemModelCache.values()) {
+          if (entry.fp !== undefined && repoStateChanged(entry.fp, current)) {
+            staleRepoFlagged = true;
+            out.write(dim('  (repo changed since last understanding — re-grounding)\n', out.color));
+            return;
+          }
+        }
+      };
       // Kick off a NON-BLOCKING background warm of the project's SystemModel. Deduped
       // (one warm per key at a time), fail-soft (any error → stays ungrounded until a
       // later warm lands), generous timeout (it never blocks a turn). Pure side effect
@@ -3874,6 +3921,9 @@ Output ONLY valid JSON (no prose, no markdown).`;
       const warmUnderstanding = (cacheKey: string, line: string): void => {
         if (understandingWarmInFlight.has(cacheKey)) return;
         understandingWarmInFlight.add(cacheKey);
+        // Snapshot the (already-memoized) fingerprint so the warm entry records the
+        // repo state it was built under — lets a later turn detect staleness.
+        const fp = repoFingerprint;
         void (async (): Promise<void> => {
           try {
             const risk = classify(line).risk;
@@ -3885,7 +3935,9 @@ Output ONLY valid JSON (no prose, no markdown).`;
               // upstream of the turn that benefits from it.
               upstreamBlockingCalls += 1;
               const model = (await pass(line, new AbortController().signal)) ?? undefined;
-              if (model !== undefined) systemModelCache.set(cacheKey, { model, atTurn: autoStageTurns });
+              if (model !== undefined) {
+                systemModelCache.set(cacheKey, { model, atTurn: autoStageTurns, ...(fp !== undefined ? { fp } : {}) });
+              }
             }
           } catch {
             /* fail-soft: stays ungrounded until a future warm lands */
@@ -3917,13 +3969,14 @@ Output ONLY valid JSON (no prose, no markdown).`;
         // critical path (its latency is too variable), so it adds ZERO latency here.
         let systemModel: SystemModel | undefined;
         if (understandingOn) {
-          const cacheKey = (await resolveProjectKeyOnce()) ?? '∅global';
+          const cacheKey = await resolveCacheKey();
           const cached = systemModelCache.get(cacheKey);
           const fresh =
             cached !== undefined && autoStageTurns - cached.atTurn < UNDERSTANDING_REFRESH_TURNS;
           if (fresh) {
             systemModel = cached.model; // ground THIS turn from the warm cache
           } else {
+            noteStaleRepoIfNeeded();
             warmUnderstanding(cacheKey, line); // ungrounded now; grounded next time
           }
         }
