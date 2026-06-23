@@ -10,7 +10,7 @@
 
 import type { GoalPatch } from '../infra/goal-store.js';
 
-export type MetaIntent =
+type MetaIntent =
   | 'accept_plan'
   | 'adjust_plan'
   | 'bg_directive'
@@ -19,7 +19,7 @@ export type MetaIntent =
   | 'clarify'
   | 'normal_chat';
 
-export type MetaAction =
+type MetaAction =
   | { readonly kind: 'accept'; readonly goalIds: readonly string[] }
   | { readonly kind: 'pause'; readonly goalId: string; readonly reason?: string }
   | { readonly kind: 'bg'; readonly goalIds: readonly string[] }
@@ -114,7 +114,7 @@ function parseAction(raw: unknown): MetaAction | null {
 }
 
 /** Public parser so tests and the UI can inspect a raw model reply. */
-export function parseMetaDecision(raw: unknown): MetaDecision | null {
+function parseMetaDecision(raw: unknown): MetaDecision | null {
   if (!isPlainObject(raw)) return null;
   const intent = String(raw.intent ?? '');
   if (!VALID_INTENTS.has(intent)) return null;

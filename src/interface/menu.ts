@@ -3599,6 +3599,23 @@ Output ONLY valid JSON (no prose, no markdown).`;
         return actionHandled.size > 0;
       };
 
+      const shouldRunMetaDecision = (userLine: string): boolean => {
+        const trimmed = userLine.trim();
+        if (trimmed.length === 0 || trimmed.startsWith('/')) return false;
+        const hasPlanContext =
+          lastProposedPlan !== null ||
+          parkedGoals.length > 0 ||
+          typeof boardSummary.total === 'number' && boardSummary.total > 0;
+        if (
+          /\b(accept|looks good|start all|just the unblocked|unblocked ones|not yet|pause|hold off|adjust|change|drop|remove|bg|background)\b/i.test(
+            trimmed,
+          )
+        ) {
+          return hasPlanContext;
+        }
+        return /^(plan|make a plan|create a plan|new plan)\b/i.test(trimmed);
+      };
+
       async function prepareAcknowledgedGoal(
         line: string,
       ): Promise<AcknowledgedGoalLaunch | 'normal-chat' | 'cancelled' | 'staged-parked'> {
@@ -5452,7 +5469,7 @@ Output ONLY valid JSON (no prose, no markdown).`;
             }
             // Cross-vendor critique: the tribunal (ensemble) already provides selection
             // critique for deep plans; for /plan the note is sufficient (no bloat call).
-            out.write(dim('  (Cross-vendor critique via tribunal is used for deep plan selection.)\n', out.color));
+            out.write(dim('  (cross-vendor plan critique via tribunal is used for deep plan selection.)\n', out.color));
             // Compact plan viz: surface the lead goal's chosen approach + rationale
             // (the first that would run). Keeps /plan output scannable without
             // duplicating the full checklist.
@@ -5513,7 +5530,7 @@ Output ONLY valid JSON (no prose, no markdown).`;
       // Uses the typed DecisionEngine (runDecisionEngine) to parse natural language
       // into typed actions, then executes them. This is the "conscious" layer:
       // the model decides, the system acts, and every decision is audited.
-      if (!line.startsWith('/')) {
+      if (shouldRunMetaDecision(line)) {
         const signal = new AbortController().signal;
         let decision: MetaDecision | null = null;
         try {

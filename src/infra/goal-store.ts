@@ -260,7 +260,7 @@ export interface CreateGoalInput {
 }
 
 /** A batch patch for a goal's roadmap. All operations run on the same in-memory array. */
-export interface RoadmapPatch {
+interface RoadmapPatch {
   readonly add?: readonly RoadmapItem[];
   readonly edit?: readonly { readonly itemId: string; readonly patch: RoadmapItemPatch }[];
   readonly remove?: readonly string[];
