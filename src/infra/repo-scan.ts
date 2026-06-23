@@ -14,8 +14,10 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { readFile as fsReadFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { createHash } from 'node:crypto';
 
 import type { RepoScanPort } from '../core/repo-map.js';
+import type { RepoFingerprint } from '../core/repo-identity.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -103,6 +105,35 @@ export const nodeRepoScanPort: RepoScanPort = {
     }
   },
 };
+
+export async function readRepoFingerprint(cwd: string): Promise<RepoFingerprint> {
+  const [headSha, treeHash] = await Promise.all([readHeadSha(cwd), readTreeHash(cwd)]);
+  return { headSha, treeHash };
+}
+
+async function readHeadSha(cwd: string): Promise<string> {
+  try {
+    const { stdout } = await execFileAsync('git', ['rev-parse', 'HEAD'], {
+      cwd,
+      timeout: GIT_TIMEOUT_MS,
+    });
+    return stdout.trim();
+  } catch {
+    return '';
+  }
+}
+
+async function readTreeHash(cwd: string): Promise<string> {
+  try {
+    const { stdout } = await execFileAsync('git', ['status', '--porcelain'], {
+      cwd,
+      timeout: GIT_TIMEOUT_MS,
+    });
+    return createHash('sha256').update(stdout).digest('hex');
+  } catch {
+    return '';
+  }
+}
 
 /**
  * Tracked files ordered most-recently-committed-first via a single `git log`
