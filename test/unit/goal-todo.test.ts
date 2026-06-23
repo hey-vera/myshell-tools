@@ -25,6 +25,8 @@ import {
   goalVerdictTag,
   formatGoalApproachLine,
   formatGoalsForContext,
+  childrenOf,
+  goalDepth,
   type Goal,
   type GoalVerdict,
 } from '../../src/core/goal-todo.ts';
@@ -215,6 +217,77 @@ describe('capGoal — Phase 4 category + tags (the standing-rules gate key)', ()
     );
     assert.ok((g.category ?? '').length <= 40);
     assert.ok((g.tags ?? []).length <= 8);
+  });
+});
+
+describe('capGoal — Phase 4a parentGoalId (GOAL-level nesting)', () => {
+  it('keeps a valid parentGoalId (round-trips through capGoal)', () => {
+    const g = capGoal(makeGoal({ id: 'goal_child', parentGoalId: 'goal_parent' }));
+    assert.equal(g.parentGoalId, 'goal_parent');
+  });
+
+  it('a goal WITHOUT a parentGoalId is unchanged (byte-identical round-trip)', () => {
+    const g = capGoal(makeGoal());
+    assert.equal('parentGoalId' in g, false);
+  });
+
+  it('omits a self-parent (a goal may not parent itself)', () => {
+    const g = capGoal(makeGoal({ id: 'goal_x', parentGoalId: 'goal_x' }));
+    assert.equal('parentGoalId' in g, false);
+  });
+
+  it('omits an invalid-format parentGoalId', () => {
+    const g = capGoal(makeGoal({ id: 'goal_child', parentGoalId: '../etc/passwd' } as Goal));
+    assert.equal('parentGoalId' in g, false);
+    const g2 = capGoal(makeGoal({ id: 'goal_child', parentGoalId: 'parent_1' } as Goal));
+    assert.equal('parentGoalId' in g2, false);
+    const g3 = capGoal(makeGoal({ id: 'goal_child', parentGoalId: 42 } as unknown as Goal));
+    assert.equal('parentGoalId' in g3, false);
+  });
+});
+
+describe('childrenOf + goalDepth (Phase 4a nesting helpers)', () => {
+  it('childrenOf returns the DIRECT children of a parent, in order', () => {
+    const goals = [
+      makeGoal({ id: 'goal_root' }),
+      makeGoal({ id: 'goal_a', parentGoalId: 'goal_root' }),
+      makeGoal({ id: 'goal_b', parentGoalId: 'goal_root' }),
+      makeGoal({ id: 'goal_c', parentGoalId: 'goal_a' }), // grandchild — NOT direct
+    ];
+    assert.deepEqual(
+      childrenOf(goals, 'goal_root').map((g) => g.id),
+      ['goal_a', 'goal_b'],
+    );
+    assert.deepEqual(
+      childrenOf(goals, 'goal_a').map((g) => g.id),
+      ['goal_c'],
+    );
+    assert.deepEqual(childrenOf(goals, 'goal_b'), []); // leaf
+    assert.deepEqual(childrenOf(goals, ''), []); // empty parent id
+  });
+
+  it('goalDepth returns the correct depth along the parentGoalId chain', () => {
+    const goals = [
+      makeGoal({ id: 'goal_root' }),
+      makeGoal({ id: 'goal_a', parentGoalId: 'goal_root' }),
+      makeGoal({ id: 'goal_b', parentGoalId: 'goal_a' }),
+    ];
+    assert.equal(goalDepth(goals, 'goal_root'), 0);
+    assert.equal(goalDepth(goals, 'goal_a'), 1);
+    assert.equal(goalDepth(goals, 'goal_b'), 2);
+    assert.equal(goalDepth(goals, 'goal_unknown'), 0); // unknown id ⇒ root boundary
+  });
+
+  it('goalDepth bails on a CYCLIC chain (does NOT infinite-loop)', () => {
+    // Construct an A→B→A cycle. capGoal blocks self-parents but a longer cycle is
+    // possible in a hand-edited index; the walk must terminate at the cycle guard.
+    const goals = [
+      makeGoal({ id: 'goal_a', parentGoalId: 'goal_b' }),
+      makeGoal({ id: 'goal_b', parentGoalId: 'goal_a' }),
+    ];
+    const d = goalDepth(goals, 'goal_a');
+    assert.ok(Number.isFinite(d), 'depth must be finite (no infinite loop)');
+    assert.ok(d <= 64, `depth bails at the cap, got ${String(d)}`);
   });
 });
 

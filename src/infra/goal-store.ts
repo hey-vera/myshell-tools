@@ -257,6 +257,14 @@ export interface CreateGoalInput {
   readonly category?: Goal['category'];
   /** Free-form goal tags (forward-compatible). Additive + optional; capped by capGoal. */
   readonly tags?: Goal['tags'];
+  /**
+   * GOAL-LEVEL parent (Phase 4a) — the id of the goal this one was decomposed out
+   * of. Additive + optional (mirrors `approach`/`tags`): absent ⇒ a root goal that
+   * round-trips byte-identically. capGoal validates the id format + rejects a
+   * self-parent, omitting an invalid value entirely. SEPARATE from a RoadmapItem's
+   * within-goal `parentId`.
+   */
+  readonly parentGoalId?: Goal['parentGoalId'];
 }
 
 /** A batch patch for a goal's roadmap. All operations run on the same in-memory array. */
@@ -273,6 +281,13 @@ export interface GoalPatch {
   readonly state?: GoalState;
   readonly approach?: RoadmapItemApproach;
   readonly tags?: readonly string[];
+  /**
+   * GOAL-LEVEL parent (Phase 4a). A string SETS the parent (capGoal validates the
+   * id format + rejects a self-parent on round-trip); `null` CLEARS it (re-roots the
+   * goal). Omitted ⇒ the existing parent is preserved. SEPARATE from a RoadmapItem's
+   * within-goal `parentId` (patched via `roadmapPatch.edit`).
+   */
+  readonly parentGoalId?: string | null;
   readonly roadmapPatch?: RoadmapPatch;
 }
 
@@ -485,6 +500,9 @@ export function createFileGoalStore(opts: {
           // WITHOUT them round-trips byte-identically to before these fields existed.
           ...(input.category !== undefined ? { category: input.category } : {}),
           ...(input.tags !== undefined ? { tags: input.tags } : {}),
+          // Additive: capGoal validates the id format + rejects a self-parent, so a
+          // create WITHOUT a parent round-trips byte-identically to before.
+          ...(input.parentGoalId !== undefined ? { parentGoalId: input.parentGoalId } : {}),
         });
         await persistGoal(home, goal);
         await writeIndex(home, [...goals, goal]);
@@ -584,12 +602,25 @@ export function createFileGoalStore(opts: {
           }
         }
 
+        // GOAL-LEVEL parent: a string sets it (capGoal validates), `null` clears it
+        // (omit from the spread so the field is dropped), omitted preserves it.
+        const { parentGoalId: _existingParent, ...targetSansParent } = target;
+        const parentSpread =
+          patch.parentGoalId === undefined
+            ? _existingParent !== undefined
+              ? { parentGoalId: _existingParent }
+              : {}
+            : patch.parentGoalId === null
+              ? {}
+              : { parentGoalId: patch.parentGoalId };
+
         const updated = capGoal({
-          ...target,
+          ...targetSansParent,
           ...(patch.title !== undefined ? { title: patch.title } : {}),
           ...(patch.state !== undefined ? { state: patch.state } : {}),
           ...(patch.approach !== undefined ? { approach: patch.approach } : {}),
           ...(patch.tags !== undefined ? { tags: patch.tags } : {}),
+          ...parentSpread,
           roadmap,
           lastTouched: clock.isoNow(),
         });

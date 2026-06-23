@@ -143,6 +143,48 @@ describe('goal-store — CRUD round-trip', () => {
     assert.equal(await store.setState('goal_doesnotexist', 'done'), null);
   });
 
+  it('parentGoalId round-trips through create → get (GOAL-level nesting)', async () => {
+    const parent = await store.create({ title: 'big goal' });
+    const child = await store.create({ title: 'sub goal', parentGoalId: parent.id });
+    assert.equal(child.parentGoalId, parent.id);
+    const reloaded = await store.get(child.id);
+    assert.equal(reloaded?.parentGoalId, parent.id);
+  });
+
+  it('create WITHOUT a parentGoalId omits the field (byte-identical to before)', async () => {
+    const g = await store.create({ title: 'root goal' });
+    assert.equal('parentGoalId' in g, false);
+  });
+
+  it('an invalid-format / self parentGoalId is dropped by capGoal on create', async () => {
+    const g = await store.create({
+      title: 'bad parent',
+      parentGoalId: '../escape' as unknown as string,
+    });
+    assert.equal('parentGoalId' in g, false);
+  });
+
+  it('patchGoal sets, preserves, then clears a parentGoalId', async () => {
+    const parent = await store.create({ title: 'parent' });
+    const g = await store.create({ title: 'child' });
+    assert.equal('parentGoalId' in g, false);
+
+    // SET
+    const set = await store.patchGoal(g.id, { parentGoalId: parent.id });
+    assert.equal(set?.parentGoalId, parent.id);
+
+    // PRESERVE (an unrelated patch does not drop the parent)
+    const kept = await store.patchGoal(g.id, { title: 'child renamed' });
+    assert.equal(kept?.title, 'child renamed');
+    assert.equal(kept?.parentGoalId, parent.id);
+
+    // CLEAR (null re-roots the goal)
+    const cleared = await store.patchGoal(g.id, { parentGoalId: null });
+    assert.equal('parentGoalId' in (cleared ?? {}), false);
+    const reloaded = await store.get(g.id);
+    assert.equal('parentGoalId' in (reloaded ?? {}), false);
+  });
+
   it('setGoalVerdict persists EXACTLY the passed verdict (atomic, bumps lastTouched)', async () => {
     const g = await store.create({ title: 'ship it' });
     assert.equal(g.goalVerdict, undefined);

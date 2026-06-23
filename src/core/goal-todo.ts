@@ -152,6 +152,17 @@ export interface Goal {
    * goal without tags round-trips byte-identically (capGoal omits an empty list).
    */
   readonly tags?: readonly string[];
+  /**
+   * GOAL-LEVEL nesting (Phase 4a): the id of this goal's PARENT goal, when it was
+   * decomposed out of a larger goal. This is SEPARATE from RoadmapItem.parentId
+   * (work-contract.ts), which groups to-dos WITHIN one goal — this points one whole
+   * goal at another. Must match the goal id format (`/^goal_[A-Za-z0-9]+$/`) and may
+   * never equal this goal's own id (a goal can't parent itself). Additive + optional:
+   * a goal WITHOUT a parent round-trips byte-identically (capGoal omits an
+   * absent/invalid/self-referential value). The decomposer + tree view + cancellation
+   * propagation that consume this land in Phase 4b.
+   */
+  readonly parentGoalId?: string;
 }
 
 /** Roadmap cap — the SAME bound work-contract.ts enforces (cap 8). */
@@ -171,6 +182,10 @@ const GOAL_APPROACH_ALTS_LIMIT = 8;
 const GOAL_CATEGORY_LIMIT = 40;
 const GOAL_TAG_LIMIT = 40;
 const GOAL_TAGS_LIMIT = 8;
+
+/** Goal id format — the SAME `goal_<alnum>` shape goal-store.ts validates for the
+ *  filesystem path. A `parentGoalId` must match this or it is dropped (capGoal). */
+const GOAL_ID_RE = /^goal_[A-Za-z0-9]+$/;
 
 const VALID_STATES: ReadonlySet<string> = new Set<GoalState>([
   'parked',
@@ -322,9 +337,19 @@ export function capGoal(g: Goal): Goal {
     if (tags.length > 0) cappedTags = tags;
   }
 
+  const id = safeString(r['id']);
+
+  // parentGoalId (Phase 4a — GOAL-level nesting) — must match the goal id format
+  // and may NOT be this goal's own id (no self-parent). Omit otherwise, so a goal
+  // WITHOUT a parent (or with a malformed/self-referential one) round-trips
+  // byte-identically to before this field existed.
+  const pgRaw = r['parentGoalId'];
+  const cappedParentGoalId =
+    typeof pgRaw === 'string' && GOAL_ID_RE.test(pgRaw) && pgRaw !== id ? pgRaw : undefined;
+
   return {
     version: 1,
-    id: safeString(r['id']),
+    id,
     title: capText(r['title'], TITLE_LIMIT),
     state: capState(r['state']),
     source: capSource(r['source']),
@@ -339,6 +364,7 @@ export function capGoal(g: Goal): Goal {
     ...(cappedApproach !== undefined ? { approach: cappedApproach } : {}),
     ...(cappedCategory !== undefined ? { category: cappedCategory } : {}),
     ...(cappedTags !== undefined ? { tags: cappedTags } : {}),
+    ...(cappedParentGoalId !== undefined ? { parentGoalId: cappedParentGoalId } : {}),
   };
 }
 
@@ -688,4 +714,53 @@ export function selectGoals(
     if (filter?.projectKey !== undefined && g.projectKey !== filter.projectKey) return false;
     return true;
   });
+}
+
+// ---------------------------------------------------------------------------
+// GOAL-LEVEL nesting helpers (Phase 4a foundation — consumed by 4b's decomposer
+// + tree view). Pure, total; never throw. SEPARATE from RoadmapItem.parentId
+// (within-goal to-do grouping in work-contract.ts) — these operate on whole goals.
+// ---------------------------------------------------------------------------
+
+/**
+ * The DIRECT children of `parentId`: every goal whose `parentGoalId === parentId`,
+ * in the input's order. Pure; an empty/garbage `parentId` yields no matches (a goal
+ * with no `parentGoalId` can never match). The later tree view (4b) walks this.
+ */
+export function childrenOf(goals: readonly Goal[], parentId: string): Goal[] {
+  if (!Array.isArray(goals) || typeof parentId !== 'string' || parentId.length === 0) return [];
+  return goals.filter((g) => g.parentGoalId === parentId);
+}
+
+/** Hard ceiling on the parent chain a depth walk will follow before bailing — a
+ *  malformed cyclic chain (which capGoal blocks for self-parents but NOT for a
+ *  longer A→B→A cycle) must never spin forever. Far above any sane nesting depth. */
+const GOAL_DEPTH_CAP = 64;
+
+/**
+ * The nesting depth of goal `id`: 0 for a root (no `parentGoalId`), 1 for a direct
+ * child, and so on, by walking the `parentGoalId` chain upward through `goals`.
+ * Pure, total. CYCLE GUARD: the walk both tracks visited ids AND caps total hops at
+ * {@link GOAL_DEPTH_CAP}, so a malformed cyclic chain (A→B→A) bails at the cap
+ * instead of looping forever. An unknown id, or a parent pointer to a goal not in
+ * the set, terminates the walk (the missing link is treated as a root boundary).
+ */
+export function goalDepth(goals: readonly Goal[], id: string): number {
+  if (!Array.isArray(goals) || typeof id !== 'string' || id.length === 0) return 0;
+  const byId = new Map(goals.map((g) => [g.id, g]));
+  const seen = new Set<string>();
+  let depth = 0;
+  let current = byId.get(id);
+  while (current !== undefined) {
+    const parentId = current.parentGoalId;
+    if (parentId === undefined || parentId.length === 0) break; // reached a root
+    if (seen.has(current.id)) break; // CYCLE GUARD: re-visiting an id ⇒ a cycle, bail
+    if (depth >= GOAL_DEPTH_CAP) break; // CYCLE GUARD: pathological chain, bail at the cap
+    seen.add(current.id);
+    const parent = byId.get(parentId);
+    if (parent === undefined) break; // parent not in the set ⇒ boundary root
+    depth += 1;
+    current = parent;
+  }
+  return depth;
 }
