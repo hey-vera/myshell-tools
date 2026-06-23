@@ -133,6 +133,12 @@ export interface GoalBoardRow {
   readonly scope: 'global' | 'project';
   /** Live count of running agents attached to this goal on the current turn. */
   readonly agents: number;
+  /**
+   * GOAL-LEVEL nesting depth (Phase 4 tree-view): 0 for a root, 1 for a direct
+   * child, etc. Derived from Goal.parentGoalId by goalDepth(). Absent/0 keeps
+   * the flat board byte-identical; when present, StatusBlock indents the row.
+   */
+  readonly depth?: number;
   /** Bounded running-goal checklist rows for the expanded persistent board view. */
   readonly todos?: readonly GoalBoardTodoRow[];
   /**

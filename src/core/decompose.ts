@@ -84,6 +84,13 @@ export interface DecomposeContext {
   readonly repoMap?: string;
   /** Hard constraints from the work-contract / intent frame (e.g. "Node 22"). */
   readonly constraints?: readonly string[];
+  /**
+   * The id of the originating goal this plan is decomposed FROM. When present,
+   * every returned {@link GoalSpec} gets this as `parentGoalId` so the board /
+   * cancellation tree can track the parent/child relationship. Absent → no
+   * parentGoalId is set (byte-identical to before).
+   */
+  readonly parentGoalId?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -161,7 +168,7 @@ function capText(value: unknown, limit: number): string {
  *     model DAG degrades to independent goals, never a deadlock).
  * PURE; never throws. Exposed for unit coverage.
  */
-export function parseDecomposition(text: string | undefined): GoalSpec[] | null {
+export function parseDecomposition(text: string | undefined, parentGoalId?: string): GoalSpec[] | null {
   if (typeof text !== 'string' || text.trim().length === 0) return null;
   const obj = lastJsonObjectWithKey(text, 'goals');
   if (obj === null) return null;
@@ -202,6 +209,7 @@ export function parseDecomposition(text: string | undefined): GoalSpec[] | null 
   return collected.map((g) => ({
     id: g.id,
     title: g.title,
+    ...(parentGoalId !== undefined && parentGoalId.length > 0 ? { parentGoalId } : {}),
     ...(g.dependsOn.length > 0 ? { dependsOn: g.dependsOn } : {}),
   }));
 }
@@ -262,7 +270,15 @@ export async function decompose(
   deps: DecomposeDeps,
   signal: AbortSignal,
 ): Promise<GoalSpec[]> {
-  const fallback: GoalSpec[] = [{ id: 'g0', title: capText(plan, TITLE_LIMIT) || 'goal' }];
+  const fallback: GoalSpec[] = [
+    {
+      id: 'g0',
+      title: capText(plan, TITLE_LIMIT) || 'goal',
+      ...(context.parentGoalId !== undefined && context.parentGoalId.length > 0
+        ? { parentGoalId: context.parentGoalId }
+        : {}),
+    },
+  ];
 
   const planText = typeof plan === 'string' ? plan.trim() : '';
   if (planText.length === 0) return fallback;
@@ -309,7 +325,7 @@ export async function decompose(
     return fallback;
   }
 
-  const parsed = parseDecomposition(finalText);
+  const parsed = parseDecomposition(finalText, context.parentGoalId);
   if (parsed === null || parsed.length === 0) return fallback;
   return parsed;
 }

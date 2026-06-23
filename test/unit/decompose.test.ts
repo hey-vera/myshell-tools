@@ -89,6 +89,27 @@ describe('parseDecomposition — multi-part plan → GoalSpecs + DAG', () => {
     assert.equal(specs[0]?.dependsOn, undefined);
   });
 
+  it('sets parentGoalId on every spec when an originating goal id is supplied', () => {
+    const text = JSON.stringify({
+      goals: [
+        { id: 'g1', title: 'create the data layer' },
+        { id: 'g2', title: 'build the UI' },
+      ],
+    });
+    const specs = parseDecomposition(text, 'goal_origin');
+    assert.ok(specs !== null);
+    assert.equal(specs.length, 2);
+    assert.equal(specs[0]?.parentGoalId, 'goal_origin');
+    assert.equal(specs[1]?.parentGoalId, 'goal_origin');
+  });
+
+  it('omits parentGoalId when no originating goal id is supplied', () => {
+    const text = JSON.stringify({ goals: [{ id: 'g1', title: 'a' }] });
+    const specs = parseDecomposition(text);
+    assert.ok(specs !== null);
+    assert.equal('parentGoalId' in specs[0]!, false);
+  });
+
   it('extracts the JSON object even when wrapped in prose / fences', () => {
     const text = 'Here is the plan:\n```json\n' + JSON.stringify({ goals: [{ id: 'a', title: 'do a' }, { id: 'b', title: 'do b' }] }) + '\n```\nDone.';
     const specs = parseDecomposition(text);
@@ -242,6 +263,25 @@ describe('decompose — always returns >=1 spec; fail-soft to the whole-plan fal
     const specs = await decompose('one coherent piece', {}, baseDeps(provider), SIGNAL);
     assert.equal(specs.length, 1);
     assert.equal(specs[0]?.title, 'one coherent piece');
+  });
+
+  it('threads parentGoalId from context onto every returned spec', async () => {
+    const provider = fakeProvider([
+      { type: 'done', text: JSON.stringify({ goals: [{ id: 'a', title: 'do a' }, { id: 'b', title: 'do b' }] }), raw: {} },
+    ]);
+    const specs = await decompose('the plan', { parentGoalId: 'goal_parent' }, baseDeps(provider), SIGNAL);
+    assert.equal(specs.length, 2);
+    assert.equal(specs[0]?.parentGoalId, 'goal_parent');
+    assert.equal(specs[1]?.parentGoalId, 'goal_parent');
+  });
+
+  it('threads parentGoalId onto the fallback when decomposition fails', async () => {
+    const provider = fakeProvider([
+      { type: 'done', text: 'not valid json' },
+    ]);
+    const specs = await decompose('the plan', { parentGoalId: 'goal_parent' }, baseDeps(provider), SIGNAL);
+    assert.equal(specs.length, 1);
+    assert.equal(specs[0]?.parentGoalId, 'goal_parent');
   });
 
   it('no providers → single-goal fallback (the whole plan)', async () => {

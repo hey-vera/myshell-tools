@@ -36,6 +36,7 @@
 
 import type { Confidence } from './brain.js';
 import type { ProviderMode } from './evidence.js';
+import { ConfidenceLabel, deriveConfidenceLabel } from './evidence.js';
 import type { VerifyOutcome } from './verify.js';
 import { buildVerifyReceipt } from './verify.js';
 
@@ -91,6 +92,36 @@ const MAX_LISTED_FILES = 3;
 // ---------------------------------------------------------------------------
 // (1) AUDITABLE CONFIDENCE — the confidence statement that points at its grounds
 // ---------------------------------------------------------------------------
+
+/**
+ * Derive the honest per-turn provider mode from the trust signals when an explicit
+ * mode is not already present. Mirrors the evidence module's cap discipline:
+ * zero providers → `zero`, one provider (or a same-vendor critic) → `solo`,
+ * otherwise `multi`. PURE; never throws.
+ */
+function deriveReceiptProviderMode(signals: TrustSignals): ProviderMode {
+  const count = signals.authedProviderCount;
+  const critic = signals.verify?.critic;
+  if (count === 0) return 'zero';
+  if (count === 1 || critic?.sameVendor === true) return 'solo';
+  return 'multi';
+}
+
+/**
+ * The canonical 5-label confidence tier for the receipt, mapped onto the SAME
+ * {@link ConfidenceLabel} vocabulary {@link buildSnapshotFromVerify} uses in
+ * evidence.ts. Absent when verification did not run (no fabricated label).
+ * PURE; never throws.
+ */
+export function confidenceTier(signals: TrustSignals): ConfidenceLabel | undefined {
+  if (signals.verify === undefined) return undefined;
+  const providerMode = signals.providerMode ?? deriveReceiptProviderMode(signals);
+  const providerCount =
+    typeof signals.authedProviderCount === 'number'
+      ? signals.authedProviderCount
+      : Number.POSITIVE_INFINITY;
+  return deriveConfidenceLabel(signals.verify, providerMode, providerCount);
+}
 
 /**
  * Compose the human grounds the confidence rests on — REAL signals only, in a fixed
@@ -288,6 +319,12 @@ export interface TrustReceipt {
   readonly providerMode?: string;
   /** The honest self-audit gap line, when there is a real gap to disclose. */
   readonly selfAudit?: string;
+  /**
+   * The canonical 5-label confidence tier, when verification ran. This is the
+   * SAME vocabulary evidence.ts uses ({@link ConfidenceLabel}) — the receipt and
+   * the evidence store are now explicitly aligned, not two divergent wordings.
+   */
+  readonly confidenceLabel?: ConfidenceLabel;
 }
 
 /**
@@ -303,7 +340,7 @@ export interface TrustReceipt {
  * ({@link isEmptyReceipt} true) and the caller emits nothing.
  */
 export function composeTrustReceipt(signals: TrustSignals, confidenceBase: string): TrustReceipt {
-  const receipt: { confidence?: string; verify?: string; providerMode?: string; selfAudit?: string } = {};
+  const receipt: { confidence?: string; verify?: string; providerMode?: string; selfAudit?: string; confidenceLabel?: ConfidenceLabel } = {};
 
   // (1) AUDITABLE CONFIDENCE — only when a confidence tuple is genuinely present.
   if (signals.confidence !== undefined) {
@@ -314,6 +351,15 @@ export function composeTrustReceipt(signals: TrustSignals, confidenceBase: strin
   // (2) THE VERIFY RECEIPT — reused verbatim, only when verification ran.
   if (signals.verify !== undefined) {
     receipt.verify = buildVerifyReceipt(signals.verify);
+  }
+
+  // (2c) CONFIDENCE TIER — mapped to the canonical 5-label vocabulary shared with
+  //      evidence.ts, only when verification ran (no fabricated label).
+  if (signals.verify !== undefined) {
+    const tier = confidenceTier(signals);
+    if (tier !== undefined) {
+      receipt.confidenceLabel = tier;
+    }
   }
 
   const hasTurnContext = signals.confidence !== undefined || signals.verify !== undefined;

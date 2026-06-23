@@ -97,7 +97,12 @@ function deriveProviderMode(input: BuildSnapshotFromVerifyInput): EvidenceSnapsh
   return input.providerMode ?? 'multi';
 }
 
-function deriveConfidenceLabel(
+/**
+ * Map a verify outcome to the canonical 5-label {@link ConfidenceLabel} vocabulary.
+ * Mirrors the solo/multi cap discipline used for {@link EvidenceSnapshot} so the
+ * trust receipt and the evidence store speak the same tier language.
+ */
+export function deriveConfidenceLabel(
   outcome: VerifyOutcome,
   providerMode: EvidenceSnapshot['providerMode'],
   providerCount: number,

@@ -69,6 +69,12 @@ export interface GoalSpec {
   /** Human, one-line card label (becomes the goal card's title). */
   readonly title: string;
   /**
+   * GOAL-LEVEL parent id (Phase 4): when this spec was decomposed out of an
+   * originating persisted goal, its id. Purely additive; absent keeps the
+   * scheduler and receipt behavior byte-identical.
+   */
+  readonly parentGoalId?: string;
+  /**
    * The provider this goal PREFERS, when known. Used only to spread goals across
    * distinct subscription buckets and to bias queued-goal selection away from a
    * throttled provider. Absent → no preference (scheduled on availability order).

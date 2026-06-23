@@ -84,7 +84,7 @@ import {
   runRuleRemove,
   parseRuleCommand,
 } from '../commands/rules.js';
-import { goalGlyph, roadmapProgress, goalVerdictTag, goalVerdictFromOutcome, isGoalVerifiedDone, isDuplicateGoalTitle, formatGoalsForContext, ROADMAP_LIMIT } from '../core/goal-todo.js';
+import { goalGlyph, roadmapProgress, goalVerdictTag, goalVerdictFromOutcome, isGoalVerifiedDone, isDuplicateGoalTitle, formatGoalsForContext, ROADMAP_LIMIT, goalDepth } from '../core/goal-todo.js';
 import { buildVerifyReceipt } from '../core/verify.js';
 import type { Goal, GoalState } from '../core/goal-todo.js';
 import { boardEnabled } from './ui/board-flag.js';
@@ -2621,7 +2621,7 @@ export async function runChatLoop(
       // the projection reuses the same vocabulary as the /goals menu rows. `agents`
       // is seeded 0 here; the reducer re-derives the LIVE running-agent count from
       // its own attach-by-goalId truth, so a running goal shows its real agent count.
-      const toBoardRow = (g: Goal): GoalBoardRow => {
+      const toBoardRow = (g: Goal, allGoals: readonly Goal[]): GoalBoardRow => {
         const prog = roadmapProgress(g.roadmap);
         // The honest verdict tag (Elite-partner Part 3) rides on the row ONLY when the
         // goal has a REAL recorded verdict (goalVerdictTag returns undefined otherwise)
@@ -2635,6 +2635,7 @@ export async function runChatLoop(
                 status: item.status,
               }))
             : undefined;
+        const depth = goalDepth(allGoals, g.id);
         return {
           id: g.id,
           title: g.title,
@@ -2644,6 +2645,7 @@ export async function runChatLoop(
           glyph: goalGlyph(g),
           scope: g.scope,
           agents: 0,
+          ...(depth > 0 ? { depth } : {}),
           ...(todos !== undefined ? { todos } : {}),
           ...(verdict !== undefined ? { verdict } : {}),
           ...(g.approach !== undefined ? { approach: g.approach } : {}),
@@ -2681,7 +2683,7 @@ export async function runChatLoop(
           parkedGoals = ordered.filter((g) => g.state === 'parked').map((g) => ({ id: g.id, title: g.title, roadmap: g.roadmap?.slice(0, 3) }));
           boardSummary = { total: ordered.length, parked: parkedGoals.length, running: ordered.filter(g => g.state === 'running').length };
           if (boardOn && typeof out.syncBoard === 'function') {
-            out.syncBoard(ordered.map(toBoardRow));
+            out.syncBoard(ordered.map((g) => toBoardRow(g, ordered)));
           }
         } catch {
           /* board is best-effort chrome — never block or break a turn */
@@ -4648,6 +4650,7 @@ Output ONLY valid JSON (no prose, no markdown).`;
           goalSpecs = await decompose(
             goalText,
             {
+              ...(opts?.goalId !== undefined ? { parentGoalId: opts.goalId } : {}),
               ...(decomposeBaseDeps.environmentContext !== undefined &&
               decomposeBaseDeps.environmentContext.length > 0
                 ? { repoMap: decomposeBaseDeps.environmentContext }

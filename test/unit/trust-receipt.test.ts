@@ -30,6 +30,7 @@ import {
   isEmptyReceipt,
   trustReceiptLines,
   providerModeLine,
+  confidenceTier,
 } from '../../src/core/trust-receipt.ts';
 import type { Confidence } from '../../src/core/brain.ts';
 import type { VerifyOutcome, TestRunResult } from '../../src/core/verify.ts';
@@ -353,6 +354,53 @@ describe('providerModeLine + receipt provider posture', () => {
     assert.match(lines[1], /review|self-check/i); // verify receipt
     assert.match(lines[2], /^provider mode:/); // provider posture
     assert.match(lines[lines.length - 1], /^note: /); // self-audit last
+  });
+});
+
+// ---------------------------------------------------------------------------
+// (2c) CONFIDENCE TIER — aligned with evidence.ts ConfidenceLabel vocabulary
+// ---------------------------------------------------------------------------
+
+describe('confidenceTier / receipt.confidenceLabel — shared 5-label vocabulary', () => {
+  it('absent verify ⇒ no confidenceLabel (never fabricate a tier)', () => {
+    assert.equal(confidenceTier({}), undefined);
+    assert.equal(composeTrustReceipt({ confidence: conf() }, 'Confident').confidenceLabel, undefined);
+  });
+
+  it('passing tests ⇒ verified-by-tests', () => {
+    const tier = confidenceTier({ verify: passingVerify() });
+    assert.equal(tier, 'verified-by-tests');
+    assert.equal(composeTrustReceipt({ verify: passingVerify() }, '').confidenceLabel, 'verified-by-tests');
+  });
+
+  it('passing + approving cross-vendor critic ⇒ verified-by-tests-and-independent-review', () => {
+    const tier = confidenceTier({
+      verify: passingVerify({
+        critic: { vendor: 'codex', sameVendor: false, parsed: true, verdict: 'approve' },
+      }),
+      authedProviderCount: 2,
+    });
+    assert.equal(tier, 'verified-by-tests-and-independent-review');
+  });
+
+  it('reviewed (critic, no tests) ⇒ reviewed', () => {
+    const tier = confidenceTier({ verify: reviewedVerify() });
+    assert.equal(tier, 'reviewed');
+  });
+
+  it('failing tests ⇒ not-verified', () => {
+    assert.equal(confidenceTier({ verify: failingVerify() }), 'not-verified');
+  });
+
+  it('solo provider caps verified-by-tests down to reviewed', () => {
+    const tier = confidenceTier({ verify: passingVerify(), authedProviderCount: 1 });
+    assert.equal(tier, 'reviewed');
+  });
+
+  it('uses an explicit providerMode signal when present', () => {
+    // An explicit solo mode caps the tier even when the raw auth count is unknown.
+    const tier = confidenceTier({ verify: passingVerify(), providerMode: 'solo' });
+    assert.equal(tier, 'reviewed');
   });
 });
 

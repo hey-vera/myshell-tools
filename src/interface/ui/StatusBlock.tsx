@@ -462,17 +462,18 @@ export function BoardRow({ row, state, color = true }: BoardRowProps): React.Rea
     );
     if (liveTools > 0) parts.push('·', pluralize(liveTools, 'tool'));
   }
+  const indent = '  '.repeat(row.depth ?? 0);
   return (
     <Box flexDirection="column">
-      <Text dimColor={color}>{parts.join(' ')}</Text>
+      <Text dimColor={color}>{`${indent}${parts.join(' ')}`}</Text>
       {row.approach ? (
         <Text dimColor={color}>
-          {`   Approach: ${truncateToWidth(row.approach.chosen, 48)}${row.approach.rationale ? ' - ' + truncateToWidth(row.approach.rationale, 40) : ''}`}
+          {`${indent}   Approach: ${truncateToWidth(row.approach.chosen, 48)}${row.approach.rationale ? ' - ' + truncateToWidth(row.approach.rationale, 40) : ''}`}
         </Text>
       ) : null}
       {row.state === 'running'
         ? row.todos?.map((todo) => (
-            <Text key={todo.id} dimColor={color}>{`   [${boardTodoGlyph(todo.status)}] ${todo.text}`}</Text>
+            <Text key={todo.id} dimColor={color}>{`${indent}   [${boardTodoGlyph(todo.status)}] ${todo.text}`}</Text>
           ))
         : null}
     </Box>

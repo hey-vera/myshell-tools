@@ -36,6 +36,7 @@ function boardRow(over: Partial<GoalBoardRow> = {}): GoalBoardRow {
     glyph: over.glyph ?? '◷',
     scope: over.scope ?? 'project',
     agents: over.agents ?? 0,
+    ...(over.depth !== undefined ? { depth: over.depth } : {}),
     ...(over.todos !== undefined ? { todos: over.todos } : {}),
     ...(over.verdict !== undefined ? { verdict: over.verdict } : {}),
     ...(over.approach !== undefined ? { approach: over.approach } : {}),
@@ -545,6 +546,22 @@ test('BoardRow renders approach/rationale line for persistent plan viz (parked o
   const frame = lastFrame() ?? '';
   assert.match(frame, /goal Ship it — inactive/);
   assert.match(frame, /Approach: use incremental delivery - reduces risk on core paths/);
+});
+
+test('BoardRow indents nested goals by their depth (tree-view)', () => {
+  const state = active([]);
+  const { lastFrame } = render(
+    <BoardRow
+      row={boardRow({ id: 'goal_child', title: 'Child task', depth: 2 })}
+      state={state}
+      color={false}
+    />,
+  );
+  const frame = lastFrame() ?? '';
+  // two levels of indentation = 4 leading spaces before the goal line
+  assert.match(frame, /^ {4}goal Child task — inactive/);
+  // an un-nested (depth 0) row stays flush-left
+  assert.doesNotMatch(frame, /^goal Child task/);
 });
 
 test('BoardPanel shows the BOARD title, one row per goal, and a +K more overflow line', () => {
