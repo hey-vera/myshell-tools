@@ -160,6 +160,49 @@ describe('Candidate Quality Gate', () => {
     assert.equal(events.at(-1)?.type === 'final' && events.at(-1)?.success, true);
   });
 
+  it('emits evidence through an injected sink for a defined verify outcome', async () => {
+    const seen: Parameters<NonNullable<OrchestrateDeps['evidenceSink']>>[0][] = [];
+    const localDeps: OrchestrateDeps & { entries: SessionEntry[] } = {
+      ...deps(),
+      evidenceTaskId: 'task_1',
+      evidenceTurnNumber: 3,
+      evidenceSink: (snapshot) => { seen.push(snapshot); },
+    };
+
+    const events = await collect(runCandidateQualityGate({
+      deps: localDeps,
+      candidate: candidate(undefined, { availableProviders: ['claude', 'codex'] }),
+      goalTurn: false,
+      verify: async () => outcome('passing', {
+        testCommand: 'npm test',
+        testRun: { outcome: 'green', output: 'ok', durationMs: 4 },
+        critic: { vendor: 'codex', sameVendor: false, parsed: true, verdict: 'approve' },
+      }),
+      receiptEvents,
+    }));
+
+    assert.equal(events.at(-1)?.type === 'final' && events.at(-1)?.success, true);
+    assert.equal(seen.length, 1);
+    assert.equal(seen[0]?.taskId, 'task_1');
+    assert.equal(seen[0]?.turnNumber, 3);
+    assert.equal(seen[0]?.confidenceLabel, 'verified-by-tests-and-independent-review');
+    assert.deepEqual(seen[0]?.conclusionsReached, ['verify:passing']);
+  });
+
+  it('keeps the turn unchanged with no evidence sink', async () => {
+    const localDeps = deps();
+    const events = await collect(runCandidateQualityGate({
+      deps: localDeps,
+      candidate: candidate(),
+      goalTurn: false,
+      verify: async () => outcome('passing'),
+      receiptEvents,
+    }));
+
+    assert.equal(localDeps.entries.length, 1);
+    assert.equal(events.at(-1)?.type === 'final' && events.at(-1)?.success, true);
+  });
+
   it('persistent red blocks with no append and no memory proposal', async () => {
     const localDeps = deps();
     const red = outcome('failing', {

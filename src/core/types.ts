@@ -809,6 +809,27 @@ export interface OrchestrateDeps {
    */
   readonly verifyTestTimeoutMs?: number;
   /**
+   * Optional evidence emission adapter for the verify accept point. The core hands
+   * it the real VerifyOutcome plus turn context; the adapter owns all I/O such as
+   * hashing changed files and appending JSONL evidence. Absent → no-op, matching
+   * the verifyPort injection pattern.
+   */
+  readonly evidenceSink?: (
+    snapshot: import('./evidence.js').EvidenceSnapshot,
+  ) => Promise<void> | void;
+  readonly evidenceSnapshotBuilder?: (input: {
+    readonly taskId: string;
+    readonly turnNumber: number;
+    readonly verifyOutcome: import('./verify.js').VerifyOutcome;
+    readonly provider: import('../providers/port.js').ProviderId;
+    readonly availableProviders: readonly import('../providers/port.js').ProviderId[];
+    readonly conclusionsReached: readonly string[];
+  }) => Promise<import('./evidence.js').EvidenceSnapshot | undefined> |
+    import('./evidence.js').EvidenceSnapshot |
+    undefined;
+  readonly evidenceTaskId?: string;
+  readonly evidenceTurnNumber?: number;
+  /**
    * EXPERIMENTAL — whether THE TRUST SURFACE (master-plan PHASE 8; core/trust-receipt.ts)
    * consolidates the accept-point receipt into the scannable auditable-confidence +
    * verify + self-audit block. Resolved by the impure caller via the pure

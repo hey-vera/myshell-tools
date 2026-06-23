@@ -56,6 +56,8 @@ import {
 import { refreshCapabilities } from './core/model-capability-refresh.js';
 import { createCapabilityRefreshPort } from './infra/model-capability-port.js';
 import { nodeRepoScanPort } from './infra/repo-scan.js';
+import { nodeVerifyPort } from './infra/verify-port.js';
+import { createEvidenceSink, createEvidenceSnapshotBuilder } from './infra/evidence-sink.js';
 import { loadConfig, resolvePartnerStyle } from './infra/config.js';
 import { makeIntentExtractor } from './core/intent-extractor.js';
 import { replCapabilities } from './core/surface-capabilities.js';
@@ -79,6 +81,7 @@ import { commandHelpText } from './ui/help.js';
 import { createSpinner } from './ui/spinner.js';
 import { dim } from './ui/theme.js';
 import { inkEnabled } from './interface/ui/flag.js';
+import { verifyEnabled } from './interface/ui/verify-flag.js';
 const require = createRequire(import.meta.url);
 const pkg = require('../package.json');
 const version: string = pkg.version as string;
@@ -684,6 +687,29 @@ async function main(): Promise<void> {
       capability?.registry,
       modelOutcomeOrderByTaskKind,
     );
+    const verifyActive = verifyEnabled(process.env, config);
+    const depsWithVerify: OrchestrateDeps =
+      verifyActive
+        ? {
+            ...deps,
+            verifyPort: {
+              ...nodeVerifyPort,
+              runTests: (testCwd, command, timeoutMs) =>
+                nodeVerifyPort.runTests(testCwd, command, timeoutMs, commandGate),
+            },
+            verifyLevel: 'tests',
+            verifyTestTimeoutMs: Math.min(resolveTimeoutMs(config), 120_000),
+            evidenceSink: createEvidenceSink({
+              evidenceHomeDir: cwd,
+            }),
+            evidenceSnapshotBuilder: createEvidenceSnapshotBuilder({
+              cwd,
+              now: systemClock.now,
+            }),
+            evidenceTaskId: deps.session.id,
+            evidenceTurnNumber: 1,
+          }
+        : deps;
     // Image attachments (audit #4, image scope): the IMPURE existence check lives
     // here (fs allowed). The pure extractor finds candidate image paths in the
     // task; we keep only those that exist on disk and thread them onto deps so
@@ -691,7 +717,9 @@ async function main(): Promise<void> {
     // No real image → empty → field omitted → behaviour byte-for-byte unchanged.
     const imageAttachments = resolveImageAttachments(task, { cwd });
     const depsWithAttachments: OrchestrateDeps =
-      imageAttachments.length > 0 ? { ...deps, attachments: imageAttachments } : deps;
+      imageAttachments.length > 0
+        ? { ...depsWithVerify, attachments: imageAttachments }
+        : depsWithVerify;
     const result = await runTask(task, depsWithAttachments, out, new AbortController().signal);
     // Notify-only update nudge for the scripted / one-shot path. The interactive
     // menu auto-updates, but `run` must NEVER swap the binary mid-task. Written

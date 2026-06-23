@@ -238,11 +238,7 @@ describe("Shell-execution guard — child_process imports must be reviewed infra
 
 describe("No-orphan guard — every src/ .ts file must participate in the import graph", () => {
   const ALL_SRC = collectTs(SRC);
-  const STAGED_ORPHANS = new Set([
-    // Phase 2a ships the evidence store before verify/orchestrate wiring.
-    // Remove this when Phase 2b adds the runtime integration.
-    "src/infra/evidence-store.ts",
-  ]);
+  const STAGED_ORPHANS = new Set<string>();
 
   // Build a quick index: for each file, gather which other src basenames it imports.
   // We key by the file's basename (without .ts extension) to keep it simple.

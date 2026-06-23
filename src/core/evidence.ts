@@ -1,4 +1,5 @@
 import type { CommandTier } from './types.js';
+import type { VerifyOutcome } from './verify.js';
 
 export type ConfidenceLabel =
   | 'not-verified'
@@ -31,6 +32,21 @@ export interface EvidenceSnapshot {
   readonly timestamp: number;
 }
 
+export interface BuildSnapshotFromVerifyInput {
+  readonly taskId: string;
+  readonly turnNumber: number;
+  readonly verifyOutcome: VerifyOutcome;
+  readonly providerMode?: EvidenceSnapshot['providerMode'];
+  readonly providersAttempted: readonly string[];
+  readonly providersSucceeded: readonly string[];
+  readonly providersFailed: EvidenceSnapshot['providersFailed'];
+  readonly filesWritten: EvidenceSnapshot['filesWritten'];
+  readonly commandsRun: EvidenceSnapshot['commandsRun'];
+  readonly conclusionsReached: readonly string[];
+  readonly filesReadPre?: EvidenceSnapshot['filesReadPre'];
+  readonly timestamp?: number;
+}
+
 const COMMAND_TIERS = [
   'read-only',
   'test-build',
@@ -49,6 +65,87 @@ const CONFIDENCE_LABELS = [
   'verified-by-tests-and-independent-review',
 ] as const satisfies readonly ConfidenceLabel[];
 const PROVIDER_MODES = ['zero', 'solo', 'multi'] as const;
+
+function freezeArray<T>(items: readonly T[]): readonly T[] {
+  return Object.freeze([...items]);
+}
+
+function providerSet(input: BuildSnapshotFromVerifyInput): ReadonlySet<string> {
+  const providers = new Set<string>();
+  for (const provider of input.providersAttempted) providers.add(provider);
+  for (const provider of input.providersSucceeded) providers.add(provider);
+  for (const failure of input.providersFailed) providers.add(failure.provider);
+  if (input.verifyOutcome.critic?.vendor !== undefined) {
+    providers.add(input.verifyOutcome.critic.vendor);
+  }
+  return providers;
+}
+
+function deriveProviderMode(input: BuildSnapshotFromVerifyInput): EvidenceSnapshot['providerMode'] {
+  const providers = providerSet(input);
+  if (input.providerMode === 'zero' || providers.size === 0) return 'zero';
+  if (
+    input.providerMode === 'solo' ||
+    providers.size <= 1 ||
+    input.verifyOutcome.critic?.sameVendor === true
+  ) {
+    return 'solo';
+  }
+  if (input.verifyOutcome.critic?.sameVendor === false) return 'multi';
+  return input.providerMode ?? 'multi';
+}
+
+function deriveConfidenceLabel(
+  outcome: VerifyOutcome,
+  providerMode: EvidenceSnapshot['providerMode'],
+  providerCount: number,
+): ConfidenceLabel {
+  const critic = outcome.critic;
+  const independentApprove =
+    critic?.parsed === true && critic.verdict === 'approve' && critic.sameVendor === false;
+  const base: ConfidenceLabel =
+    outcome.verified === 'passing' && independentApprove
+      ? 'verified-by-tests-and-independent-review'
+      : outcome.verified === 'passing'
+        ? 'verified-by-tests'
+        : outcome.verified === 'reviewed'
+          ? 'reviewed'
+          : 'not-verified';
+
+  // SOLO CAP: with a solo provider set (or same-vendor critic), the snapshot must
+  // never claim an independent review. Cap any stronger confidence at "reviewed";
+  // tests may still be visible in commandsRun, but the headline confidence stays
+  // honest about the review topology.
+  const soloCapped =
+    providerMode === 'solo' || providerCount <= 1 || critic?.sameVendor === true;
+  if (
+    soloCapped &&
+    (base === 'verified-by-tests' || base === 'verified-by-tests-and-independent-review')
+  ) {
+    return 'reviewed';
+  }
+  return base;
+}
+
+export function buildSnapshotFromVerify(input: BuildSnapshotFromVerifyInput): EvidenceSnapshot {
+  const providerMode = deriveProviderMode(input);
+  const providers = providerSet(input);
+  const snapshot: EvidenceSnapshot = {
+    taskId: input.taskId,
+    turnNumber: input.turnNumber,
+    filesReadPre: freezeArray(input.filesReadPre ?? []),
+    filesWritten: freezeArray(input.filesWritten),
+    commandsRun: freezeArray(input.commandsRun),
+    conclusionsReached: freezeArray(input.conclusionsReached),
+    confidenceLabel: deriveConfidenceLabel(input.verifyOutcome, providerMode, providers.size),
+    providerMode,
+    providersAttempted: freezeArray(input.providersAttempted),
+    providersSucceeded: freezeArray(input.providersSucceeded),
+    providersFailed: freezeArray(input.providersFailed),
+    timestamp: input.timestamp ?? 0,
+  };
+  return Object.freeze(snapshot);
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);

@@ -215,6 +215,7 @@ import { trustEnabled } from './ui/trust-flag.js';
 import { tribunalEnabled } from './ui/tribunal-flag.js';
 import { experimentalEnabledByDefault } from './ui/experimental-default.js';
 import { nodeVerifyPort } from '../infra/verify-port.js';
+import { createEvidenceSink, createEvidenceSnapshotBuilder } from '../infra/evidence-sink.js';
 import { nodeWorktreePort } from '../infra/worktree.js';
 import { createCommandAuditRecorder } from '../infra/command-audit.js';
 import { gateCommand } from '../core/command-gate.js';
@@ -2248,6 +2249,14 @@ export async function runChatLoop(
             dynamicOrder[tier] = live;
           }
         }
+        const verifyActive = experimentalEnabledByDefault(
+          process.env,
+          mutableCtx.config,
+          'MYSHELL_VERIFY',
+          mutableCtx.config.experimentalVerify,
+          verifyEnabled,
+        );
+        const evidenceTurnNumber = hist.filter((entry) => entry.role === 'user').length + 1;
 
         return {
           clock: ctx.clock,
@@ -2423,17 +2432,20 @@ export async function runChatLoop(
           // undefined → the accept path is byte-for-byte unchanged (the
           // characterization + oracle suites prove that neutrality). The Governor's
           // `verify` lever, when its flag is also on, refines the level per turn.
-          ...(experimentalEnabledByDefault(
-            process.env,
-            mutableCtx.config,
-            'MYSHELL_VERIFY',
-            mutableCtx.config.experimentalVerify,
-            verifyEnabled,
-          )
+          ...(verifyActive
             ? {
                 verifyPort: ctx.verifyPort ?? nodeVerifyPort,
                 verifyLevel: 'tests' as const,
                 verifyTestTimeoutMs: Math.min(ctx.timeoutMs, 120_000),
+                evidenceSink: createEvidenceSink({
+                  evidenceHomeDir: ctx.cwd,
+                }),
+                evidenceSnapshotBuilder: createEvidenceSnapshotBuilder({
+                  cwd: ctx.cwd,
+                  now: ctx.clock.now,
+                }),
+                evidenceTaskId: convId,
+                evidenceTurnNumber,
               }
             : {}),
           // THE TRUST SURFACE (master-plan PHASE 8) — DEFAULT ON at the entry point
