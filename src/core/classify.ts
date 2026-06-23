@@ -35,7 +35,7 @@
  * the "key" critical signal).
  */
 
-import type { Classification, Tier, Risk } from './types.js';
+import type { Classification, Tier, Risk, CommandTier } from './types.js';
 
 // ---------------------------------------------------------------------------
 // Tier signal tables
@@ -400,5 +400,183 @@ export function classify(task: string): Classification {
     tier,
     risk,
     rationale: `${tierRationale}; ${riskRationale}`,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Command-tier classifier
+// ---------------------------------------------------------------------------
+
+interface CommandTierSignal {
+  readonly tier: CommandTier;
+  readonly label: string;
+  readonly patterns: readonly RegExp[];
+}
+
+function firstCommandSignal(
+  command: string,
+  signals: readonly CommandTierSignal[],
+): { readonly tier: CommandTier; readonly label: string } | null {
+  for (const signal of signals) {
+    for (const pattern of signal.patterns) {
+      if (pattern.test(command)) {
+        return { tier: signal.tier, label: signal.label };
+      }
+    }
+  }
+  return null;
+}
+
+const COMMAND_TIER_SIGNALS: readonly CommandTierSignal[] = [
+  {
+    tier: 'credential-sensitive',
+    label: 'credential-sensitive secret/auth signal',
+    patterns: [
+      /(?:^|[\s"'=:/])\.env(?:$|[\s"';])/i,
+      /(?:^|[\s"'=])~\/\.ssh(?:\/|\b)/i,
+      /(?:^|[\s"'=])(?:id_rsa|id_dsa|id_ecdsa|id_ed25519)(?:$|[\s"';])/i,
+      /(?:^|[\s"'=])\S+\.pem(?:$|[\s"';])/i,
+      /\b(?:TOKEN|SECRET|PASSWORD|API_KEY)\b/,
+      /\$[A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|API_KEY)[A-Z0-9_]*/,
+      /\bexport\s+[A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|API_KEY)[A-Z0-9_]*=/,
+      /\b(?:cat|echo)\b[^\n;&|]*(?:TOKEN|SECRET|PASSWORD|API_KEY)\b/,
+      /\bgh\s+auth\b/i,
+      /\bnpm\s+publish\b/i,
+      /\bgit\s+remote\s+set-url\b[^\n;&|]*(?:https?:\/\/[^/\s"'@]+:[^/\s"'@]+@|TOKEN|SECRET|PASSWORD|API_KEY)/i,
+      /\b(?:curl|wget)\b[^\n;&|]*(?:Authorization:|-u\s+\S+:\S+|token=|TOKEN|SECRET|PASSWORD|API_KEY)/i,
+      /\baws\b[^\n;&|]*(?:configure|sso|credentials?|access-key|secret-access-key|TOKEN|SECRET|PASSWORD|API_KEY)/i,
+      /\bgcloud\b[^\n;&|]*(?:auth|credentials?|service-account|access-token|TOKEN|SECRET|PASSWORD|API_KEY)/i,
+    ],
+  },
+  {
+    tier: 'destructive-filesystem',
+    label: 'destructive filesystem signal',
+    patterns: [
+      /:\s*\(\s*\)\s*\{[\s\S]*:\s*\|:\s*&[\s\S]*\}\s*;/,
+      /\brm\b/i,
+      /\brmdir\b/i,
+      /\bgit\s+clean\b[^\n;&|]*-[^\n;&|]*[fd]/i,
+      /\bgit\s+reset\b[^\n;&|]*--hard\b/i,
+      /\bgit\s+push\b[^\n;&|]*(?:--force|-f\b)/i,
+      /\btruncate\b/i,
+      /\bdd\b/i,
+      /\bmkfs(?:\.\w+)?\b/i,
+      /\bshred\b/i,
+      /\bfind\b[^\n;&|]*\s-delete\b/i,
+      /\bfind\b[^\n;&|]*\s-exec\s+rm\b/i,
+      /\b(?:mv|cp)\b[^\n;&|]*\s-[^\n;&|]*f\b/i,
+      /\b(?:chmod|chown)\b[^\n;&|]*\s-R\b/i,
+      /(?:^|[^>])>\s*(?:package(?:-lock)?\.json|tsconfig\.json|README\.md|src\/\S+|test\/\S+)/i,
+    ],
+  },
+  {
+    tier: 'dependency-install',
+    label: 'dependency installation signal',
+    patterns: [
+      /\bnpm\s+(?:install|i|ci|add)\b/i,
+      /\byarn\s+(?:add|install)\b/i,
+      /\bpnpm\s+(?:add|install)\b/i,
+      /\bpip(?:3)?\s+install\b/i,
+      /\bapt(?:-get)?\s+install\b/i,
+      /\bbrew\s+install\b/i,
+      /\bcargo\s+add\b/i,
+      /\bgo\s+get\b/i,
+      /\bgem\s+install\b/i,
+      /\bnpx\b/i,
+    ],
+  },
+  {
+    tier: 'local-write',
+    label: 'local write signal',
+    patterns: [
+      /\btouch\b/i,
+      /\bmkdir\b/i,
+      /\bmv\b/i,
+      /\bcp\b/i,
+      /\bgit\s+(?:add|commit|checkout|switch|stash|tag)\b/i,
+      /(?:^|[^>])>>?\s*\S+/,
+      /\bsed\b[^\n;&|]*\s-i(?:\b|['"])/i,
+      /\btee\b/i,
+      /\bln\b/i,
+      /\bchmod\b/i,
+      /\bchown\b/i,
+      /\benv\s+\w+=/,
+      /\bexport\s+\w+=/,
+    ],
+  },
+  {
+    tier: 'test-build',
+    label: 'test/build signal',
+    patterns: [
+      /\bnpm\s+test\b/i,
+      /\bnpm\s+run\s+(?:build|lint|typecheck)\b/i,
+      /\btsc\b/i,
+      /\beslint\b/i,
+      /\bjest\b/i,
+      /\bvitest\b/i,
+      /\bnode\s+--test\b/i,
+      /\bmake\b/i,
+      /\bcargo\s+(?:build|test)\b/i,
+      /\bpytest\b/i,
+      /\bgo\s+(?:build|test)\b/i,
+    ],
+  },
+  {
+    tier: 'read-only',
+    label: 'read-only inspection signal',
+    patterns: [
+      /\bls\b/i,
+      /\bcat\b/i,
+      /\bhead\b/i,
+      /\btail\b/i,
+      /\bwc\b/i,
+      /\bgrep\b/i,
+      /\brg\b/i,
+      /\bfind\b/i,
+      /\becho\b/i,
+      /\bpwd\b/i,
+      /\bwhich\b/i,
+      /\bgit\s+(?:status|log|diff|show|branch)\b/i,
+      /\bstat\b/i,
+      /\bfile\b/i,
+      /\btree\b/i,
+      /\benv\b/i,
+    ],
+  },
+];
+
+/**
+ * Classify a shell command line into the most dangerous matching command tier.
+ *
+ * This is intentionally orthogonal to {@link classify}: it does not affect task
+ * tier/risk routing and performs no enforcement. The whole command string is
+ * scanned, so compound lines using pipes, `&&`, or `;` inherit the most severe
+ * matching component. Empty or unrecognized commands default to `local-write`
+ * because an unknown shell command may mutate local state even when it is not
+ * known to be destructive.
+ */
+export function classifyCommand(command: string): {
+  readonly commandTier: CommandTier;
+  readonly rationale: string;
+} {
+  const normalized = command.trim();
+  if (normalized.length === 0) {
+    return {
+      commandTier: 'local-write',
+      rationale: 'command tier: local-write (empty command — defaulting conservatively because unknown commands may write local state)',
+    };
+  }
+
+  const match = firstCommandSignal(normalized, COMMAND_TIER_SIGNALS);
+  if (match !== null) {
+    return {
+      commandTier: match.tier,
+      rationale: `command tier: ${match.tier} (matched ${match.label}; most dangerous matching tier wins)`,
+    };
+  }
+
+  return {
+    commandTier: 'local-write',
+    rationale: 'command tier: local-write (no command-tier pattern matched — defaulting conservatively because unknown commands may write local state)',
   };
 }

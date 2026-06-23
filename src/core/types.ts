@@ -20,6 +20,13 @@ import type { NativeSessionPlan } from './native-session.js';
 
 export type Tier = 'worker' | 'ic' | 'manager';
 export type Risk = 'low' | 'medium' | 'high' | 'critical';
+export type CommandTier =
+  | 'read-only'
+  | 'test-build'
+  | 'local-write'
+  | 'dependency-install'
+  | 'destructive-filesystem'
+  | 'credential-sensitive';
 
 // ---------------------------------------------------------------------------
 // Structured user questions (assistant → user elicitation)
