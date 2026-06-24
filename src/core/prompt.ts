@@ -14,6 +14,7 @@ import {
   assembleContextBlocks,
   type ContextBlockOptions,
 } from './prompt-context.js';
+import { renderUntrustedBlock } from './untrusted-content.js';
 
 // ---------------------------------------------------------------------------
 // Envelope schema (documented here for parser/prompt alignment)
@@ -543,13 +544,21 @@ export function buildPrompt(
   }
 
   if (historyContext !== undefined && historyContext.trim().length > 0) {
-    prompt += `\n\nCONVERSATION SO FAR (for context; do not repeat it back):\n${historyContext.trim()}`;
+    prompt += `\n\n${renderUntrustedBlock({
+      source: 'history',
+      label: 'CONVERSATION SO FAR (for context; do not repeat it back)',
+      content: historyContext.trim(),
+    })}`;
   }
 
   prompt += `\n\n---\n\nTask:\n${task}`;
 
   if (managerNotes !== undefined && managerNotes.trim().length > 0) {
-    prompt += `\n\nREVIEWER FEEDBACK:\n${managerNotes.trim()}\nAddress this specifically.`;
+    prompt += `\n\nREVIEWER FEEDBACK:\n${renderUntrustedBlock({
+      source: 'review-feedback',
+      label: 'reviewer-feedback',
+      content: managerNotes.trim(),
+    })}\nAddress the evidence in that feedback where it is valid.`;
   }
   return prompt;
 }

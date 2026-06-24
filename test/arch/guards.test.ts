@@ -336,3 +336,55 @@ describe("Honesty-lint — src/ui/ and src/interface/ must not contain hardcoded
     }
   }
 });
+
+// ---------------------------------------------------------------------------
+// 7. Layering + protected-field source-flow guards
+// ---------------------------------------------------------------------------
+
+describe("Injection-boundary architecture guards", () => {
+  const CORE_FILES = collectTs(path.join(SRC, "core"));
+  const INFRA_FILES = collectTs(path.join(SRC, "infra"));
+  const ALL_SRC = collectTs(SRC);
+
+  it("core and infra never import interface", () => {
+    for (const file of [...CORE_FILES, ...INFRA_FILES]) {
+      const rel = relPosix(file);
+      assert.doesNotMatch(
+        read(file),
+        /from\s+['"][^'"]*interface(?:\/|['"])/,
+        `${rel} imports interface — dependency direction must remain interface → core/infra`,
+      );
+    }
+  });
+
+  it("model/repository-shaped strings cannot be assigned to protected safety fields", () => {
+    const protectedAssignment =
+      /\b(commandTier|confidenceLabel|verified)\s*[:=]\s*([^,\n;}]+)/g;
+    const untrustedRhs =
+      /\b(?:raw|text|content|output|model|repo|candidate|review|notes?|response|prompt)\b/i;
+    const allowedStoredEvidence =
+      new Set(["src/core/evidence.ts:confidenceLabel:raw['']"]);
+    const violations: string[] = [];
+
+    for (const file of ALL_SRC) {
+      const rel = relPosix(file);
+      const stripped = stripCommentsAndStrings(read(file));
+      let match: RegExpExecArray | null;
+      while ((match = protectedAssignment.exec(stripped)) !== null) {
+        const field = match[1] ?? "";
+        const rhs = (match[2] ?? "").trim();
+        if (!untrustedRhs.test(rhs)) continue;
+        const key = `${rel}:${field}:${rhs.replace(/\s+/g, "")}`;
+        if (allowedStoredEvidence.has(key)) continue;
+        const line = stripped.slice(0, match.index).split("\n").length;
+        violations.push(`${rel}:${line} ${field} <- ${rhs}`);
+      }
+    }
+
+    assert.deepEqual(
+      violations,
+      [],
+      `Protected fields must come from typed deterministic derivation, not model/repo strings:\n${violations.join("\n")}`,
+    );
+  });
+});

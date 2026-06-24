@@ -20,6 +20,7 @@
  */
 
 import type { Classification, Tier, Risk } from './types.js';
+import { renderUntrustedBlock } from './untrusted-content.js';
 
 // ---------------------------------------------------------------------------
 // The frame shape (§3)
@@ -404,8 +405,21 @@ export function buildIntentPrompt(task: string): string {
     ' "confidence":"medium","routeTier":"ic","routePlan":false,',
     ' "operationRisk":"medium","blastRadius":"medium","externalFreshness":"none"}',
     '',
-    `Message: ${task}`,
+    `Message: ${renderIntentTask(task)}`,
   ].join('\n');
+}
+
+function renderIntentTask(task: string): string {
+  const markerIndex = task.indexOf(ENVIRONMENT_GROUNDING_MARKER);
+  if (markerIndex < 0) return task;
+  const splitAt = task.lastIndexOf('\n', markerIndex);
+  const userText = task.slice(0, Math.max(0, splitAt)).trimEnd();
+  const repoText = task.slice(Math.max(0, splitAt)).trim();
+  return `${userText}\n\n${renderUntrustedBlock({
+    source: 'repo-file',
+    label: 'intent-repository-findings',
+    content: repoText,
+  })}`;
 }
 
 /**

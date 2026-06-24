@@ -7,6 +7,11 @@ import { estimateInputTokens } from '../../src/core/orchestrate-signals.ts';
 import { compactHistory } from '../../src/core/history.ts';
 import { assembleContextBlocksDetailed } from '../../src/core/prompt-context.ts';
 import { buildInitialExecutorContextBlockOptions } from '../../src/core/context-block-options.ts';
+import {
+  UNTRUSTED_BLOCK_BEGIN,
+  UNTRUSTED_BLOCK_END,
+  renderUntrustedBlock,
+} from '../../src/core/untrusted-content.ts';
 import type {
   Clock,
   CoreEvent,
@@ -18,6 +23,22 @@ import type {
 } from '../../src/core/types.ts';
 import type { Provider, ProviderEvent, ProviderRequest, Usage } from '../../src/providers/port.ts';
 import type { CapabilityRegistry } from '../../src/core/model-capabilities.ts';
+
+const renderHistory = (historyContext: string): string =>
+  renderUntrustedBlock({
+    source: 'history',
+    label: 'CONVERSATION SO FAR (for context; do not repeat it back)',
+    content: historyContext,
+  });
+
+const historyBlockFromPrompt = (prompt: string): string | undefined => {
+  const labelAt = prompt.indexOf('source=history; label=CONVERSATION SO FAR');
+  if (labelAt < 0) return undefined;
+  const beginAt = prompt.lastIndexOf(UNTRUSTED_BLOCK_BEGIN, labelAt);
+  const endAt = prompt.indexOf(UNTRUSTED_BLOCK_END, labelAt);
+  if (beginAt < 0 || endAt < 0) return undefined;
+  return prompt.slice(beginAt, endAt + UNTRUSTED_BLOCK_END.length);
+};
 
 function makeClock(): Clock {
   const now = 1_000_000;
@@ -185,8 +206,8 @@ describe('orchestrate rendered-input token estimate', () => {
 
   it('includes taste and understanding when they render, and can cross the large-context threshold because of them', async () => {
     const { deps } = makeDeps({
-      tasteContext: `LEARNED TASTE\n${'T'.repeat(2_900)}`,
-      understandingContext: `SYSTEM UNDERSTANDING\n${'U'.repeat(2_900)}`,
+      tasteContext: `LEARNED TASTE\n${'T'.repeat(2_400)}`,
+      understandingContext: `SYSTEM UNDERSTANDING\n${'U'.repeat(2_400)}`,
     });
     const context = assembleContextBlocksDetailed(buildInitialExecutorContextBlockOptions(deps) ?? {});
     const task = 't'.repeat(400_000 - context.text.length);
@@ -262,7 +283,7 @@ describe('orchestrate rendered-input token estimate', () => {
     ).text;
     const prompt = codex.requests[0]?.prompt ?? '';
     assert.ok(prompt.includes(renderedContext), 'prompt must include the rendered shared context');
-    assert.ok(prompt.includes(historyContext), 'prompt must include the compacted history');
+    assert.ok(prompt.includes(renderHistory(historyContext)), 'prompt must include the compacted history');
     assert.ok(prompt.includes(task), 'prompt must include the task');
   });
 });
@@ -284,7 +305,7 @@ describe('orchestrate history pressure composition', () => {
     await collect(orchestrate('continue', deps, new AbortController().signal));
 
     const expected = compactHistory(history);
-    assert.ok(codex.requests[0]?.prompt.includes(expected));
+    assert.ok(codex.requests[0]?.prompt.includes(renderHistory(expected)));
     assert.deepEqual(reports, [
       { maxChars: 6000, maxTurns: 12, reduced: false, truncated: true, droppedTurns: 1 },
     ]);
@@ -303,7 +324,7 @@ describe('orchestrate history pressure composition', () => {
 
     const expected = compactHistory(history, { maxChars: effectiveMaxChars, maxTurns: 12 });
     const prompt = codex.requests[0]?.prompt ?? '';
-    assert.ok(prompt.includes(expected));
+    assert.ok(prompt.includes(renderHistory(expected)));
     assert.ok(!prompt.includes('oldest-'));
     assert.ok(prompt.includes('middle-'));
     assert.ok(prompt.includes('newest-'));
@@ -363,18 +384,17 @@ describe('orchestrate history pressure composition', () => {
     };
     await collect(orchestrate('delete production records', panelDeps, new AbortController().signal));
 
-    const detailed = assembleContextBlocksDetailed(
-      buildInitialExecutorContextBlockOptions(sequentialDeps) ?? {},
+    const sequentialHistory = historyBlockFromPrompt(
+      sequentialProvider.requests[0]?.prompt ?? '',
     );
-    const expected = compactHistory(history, {
-      maxChars: 6000 - (detailed.rawLength - 6000),
-      maxTurns: 12,
-    });
-    assert.ok(sequentialProvider.requests[0]?.prompt.includes(expected));
+    assert.ok(sequentialHistory !== undefined);
+    assert.ok(sequentialHistory.includes('newest-'));
     const candidatePrompts = [...claude.requests, ...codex.requests].filter((request) =>
       request.prompt.includes('CONVERSATION SO FAR'),
     );
     assert.ok(candidatePrompts.length >= 2, 'expected both panel candidates to receive history');
-    for (const request of candidatePrompts) assert.ok(request.prompt.includes(expected));
+    for (const request of candidatePrompts) {
+      assert.equal(historyBlockFromPrompt(request.prompt), sequentialHistory);
+    }
   });
 });

@@ -21,6 +21,7 @@ import {
   type PanelDebateReceipt,
 } from '../../src/core/ensemble.ts';
 import { DEFAULT_POLICY } from '../../src/core/policy.ts';
+import { renderUntrustedBlock } from '../../src/core/untrusted-content.ts';
 import type {
   Classification,
   Clock,
@@ -267,15 +268,21 @@ Original task:
 design a cache
 
 Independent panel answers:
---- PANELIST 1 (claude) ---
-use an LRU
+${renderUntrustedBlock({
+  source: 'model-output',
+  label: 'panelist-1-claude',
+  content: 'PANELIST 1 (claude)\nuse an LRU',
+})}
 
---- PANELIST 2 (codex) ---
-use a TTL map
+${renderUntrustedBlock({
+  source: 'model-output',
+  label: 'panelist-2-codex',
+  content: 'PANELIST 2 (codex)\nuse a TTL map',
+})}
 
 Now write the single final answer for the user.`;
 
-  it('without a contract matches the existing prompt byte-for-byte', () => {
+  it('without a contract matches the boundary-aware prompt byte-for-byte', () => {
     assert.equal(
       buildPanelSynthesisPrompt('design a cache', [
         { provider: 'claude', output: 'use an LRU' },

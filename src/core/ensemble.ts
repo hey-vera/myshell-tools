@@ -49,6 +49,7 @@ import { modeFromPolicy } from './policy.js';
 import type { WorkContract } from './work-contract.js';
 import { capContract, renderContractForPrompt, shouldMaterializeContract, isCleanObjectiveTask } from './work-contract.js';
 import { assembleContextBlocks, type ContextBlockOptions } from './prompt-context.js';
+import { renderUntrustedBlock } from './untrusted-content.js';
 import { buildSharedContextBlockOptions } from './context-block-options.js';
 import {
   runCandidateQualityGate,
@@ -280,7 +281,11 @@ not a throwaway.`;
   }
 
   if (historyContext !== undefined && historyContext.trim().length > 0) {
-    prompt += `\n\nCONVERSATION SO FAR (for context; do not repeat it back):\n${historyContext.trim()}`;
+    prompt += `\n\n${renderUntrustedBlock({
+      source: 'history',
+      label: 'CONVERSATION SO FAR (for context; do not repeat it back)',
+      content: historyContext.trim(),
+    })}`;
   }
 
   prompt += `\n\n---\n\nTask:\n${task}`;
@@ -328,12 +333,21 @@ export function buildPanelSynthesisPrompt(
   const blocks =
     opts?.compactCandidates === true
       ? candidates
-          .map((c, i) => formatCompactSynthesisCandidate(c, i))
+          .map((c, i) =>
+            renderUntrustedBlock({
+              source: 'model-output',
+              label: `panelist-${i + 1}-${c.provider}`,
+              content: formatCompactSynthesisCandidate(c, i),
+            }),
+          )
           .join('\n\n')
       : candidates
-          .map(
-            (c, i) =>
-              `--- PANELIST ${i + 1} (${c.provider}) ---\n${c.output.trim()}`,
+          .map((c, i) =>
+            renderUntrustedBlock({
+              source: 'model-output',
+              label: `panelist-${i + 1}-${c.provider}`,
+              content: `PANELIST ${i + 1} (${c.provider})\n${c.output.trim()}`,
+            }),
           )
           .join('\n\n');
   const contractSection =
@@ -426,12 +440,16 @@ export function buildPanelCritiqueSynthesisPrompt(
   const blocks = candidates
     .map((c, i) => {
       const parts = splitFinalLineJson(c.output.trim());
-      return `--- CANDIDATE ${i + 1} (${c.provider}) ---
+      return renderUntrustedBlock({
+        source: 'model-output',
+        label: `critique-candidate-${i + 1}-${c.provider}`,
+        content: `CANDIDATE ${i + 1} (${c.provider})
 Conclusion:
 ${parts.finalLine ?? '(no parseable conclusion envelope)'}
 
 Answer:
-${parts.body.length > 0 ? parts.body : c.output.trim()}`;
+${parts.body.length > 0 ? parts.body : c.output.trim()}`,
+      });
     })
     .join('\n\n');
   return `\

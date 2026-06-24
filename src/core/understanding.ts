@@ -31,6 +31,7 @@
  */
 
 import { ELITE_VOICE_PREAMBLE } from './prompt.js';
+import { renderUntrustedBlock } from './untrusted-content.js';
 
 /** Hard cap on the SUMMARY — a crisp paragraph, not an essay. */
 const UNDERSTANDING_SUMMARY_MAX_CHARS = 600;
@@ -128,7 +129,14 @@ export function buildUnderstandingPrompt(task: string, repoContext?: string): st
     '    no code fences.',
   ];
   if (typeof repoContext === 'string' && repoContext.trim().length > 0) {
-    lines.push('', 'REPOSITORY ORIENTATION (the real tree — your PRIMARY source):', repoContext.trim());
+    lines.push(
+      '',
+      renderUntrustedBlock({
+        source: 'repo-file',
+        label: 'REPOSITORY ORIENTATION',
+        content: repoContext.trim(),
+      }),
+    );
   }
   lines.push('', 'THE WORK TO UNDERSTAND THE SYSTEM FOR:', text);
   return lines.join('\n');

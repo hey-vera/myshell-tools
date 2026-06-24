@@ -28,6 +28,8 @@
  * different angle, never the model re-reading + second-guessing its own answer.
  */
 
+import { renderUntrustedBlock } from './untrusted-content.js';
+
 // ---------------------------------------------------------------------------
 // The injected retrieval port (mirrors RepoScanPort — narrow, fail-soft).
 // ---------------------------------------------------------------------------
@@ -160,10 +162,18 @@ export async function buildRetrievalContext(
   }
   if (filesRead === 0 && lines.length <= 1) return '';
 
-  const block = lines.join('\n');
-  return block.length > RETRIEVAL_CONTEXT_CHAR_CAP
-    ? block.slice(0, RETRIEVAL_CONTEXT_CHAR_CAP)
-    : block;
+  const content = lines.join('\n');
+  const wrapperOverhead = renderUntrustedBlock({
+    source: 'repo-file',
+    label: 'retrieval-findings',
+    content: '',
+  }).length;
+  const rendered = renderUntrustedBlock({
+    source: 'repo-file',
+    label: 'retrieval-findings',
+    content: content.slice(0, Math.max(0, RETRIEVAL_CONTEXT_CHAR_CAP - wrapperOverhead)),
+  });
+  return rendered;
 }
 
 /**
@@ -186,6 +196,18 @@ export async function buildWebContext(
   const result = await safe(() => webSearch(q, signal), '');
   const text = (result ?? '').trim();
   if (text.length === 0) return '';
-  const block = `WEB FINDINGS (current external sources, for grounding):\n${text}`;
-  return block.length > WEB_CONTEXT_CHAR_CAP ? block.slice(0, WEB_CONTEXT_CHAR_CAP) : block;
+  const wrapperOverhead = renderUntrustedBlock({
+    source: 'tool-output',
+    label: 'web-findings',
+    content: '',
+  }).length;
+  const rendered = renderUntrustedBlock({
+    source: 'tool-output',
+    label: 'web-findings',
+    content: `WEB FINDINGS (current external sources, for grounding):\n${text}`.slice(
+      0,
+      Math.max(0, WEB_CONTEXT_CHAR_CAP - wrapperOverhead),
+    ),
+  });
+  return rendered;
 }
