@@ -55,17 +55,25 @@ delegate the design/coherence — only investigation and implementation of specc
 ## Phase 0 — Provider substrate: capability + effort/mode normalization
 
 **Why first:** every later phase rides on (a) the model reliably emitting parseable structured
-byproduct on *any* provider, and (b) the mode dial actually changing models/effort. This is the
-"a lot of this is probably missing" foundation. De-risks everything; prevents rework.
+byproduct on *any* provider, and (b) the firepower dial actually changing models/effort. The Phase 0
+investigation (below) established that **most of this substrate already exists** — providers, tier-based
+model selection, a real mode dial, a normalized reasoning-effort scale, a ledger, and a flag/rollback
+convention. Phase 0 is therefore mostly *re-expressing and extending* what's there (the logical role
+layer, the 5-level dial over the existing modes, the parse-fallback) rather than building from scratch.
+De-risks everything; prevents rework.
 
 - **Capability normalization layer:** emit structured byproduct (intent + routing + draft) with a
   robust **parse-from-text fallback** for providers with weak/odd structured-output support.
   Single biggest "works on any provider" risk — handle it here.
 - **Role abstraction:** chat / ghost / execution roles that resolve against the user's available
   models, collapsing gracefully to 1-provider and 1-model.
-- **Mode dial → normalized effort + model rung** (budget / balanced / high / max), *provider-relative*:
-  maps to per-role model rung + reasoning effort (OpenAI/Grok `reasoning_effort`, Anthropic
-  adaptive-thinking/budget) + verification depth + context budget.
+- **5-level firepower dial → normalized effort + model rung** (**Budget / Balanced / High / Max /
+  Auto**, Auto the default), *provider-relative*: each level maps to per-role model rung + reasoning
+  effort (OpenAI/Grok `reasoning_effort`, Anthropic adaptive-thinking/budget) + verification depth +
+  panel/hedge engagement + context budget. The levels layer OVER the existing 3-stop `Mode` /
+  `POLICY_PRESETS` machinery (Budget≈cost-saver, Balanced≈balanced, High = a new mid-high rung,
+  Max≈quality-first + full panel, Auto = per-turn). Intensity (1–5) folds UNDER the level as an
+  optional override. See "Phase 0 — Implementation Spec (slice 2)".
 - **Ledger groundwork** so later phases can surface spend.
 
 **Done when:** mode dial demonstrably changes models + effort across providers; byproduct parsing
@@ -212,10 +220,13 @@ hangs off them; timeouts are fixed structurally in Phase 1 and hardened in Phase
 
 ### 2. The mode dial (budget / balanced / high / max)
 
-- **The dial is `Mode = 'cost-saver' | 'balanced' | 'quality-first'`** (`src/core/policy.ts:100`),
-  user-labelled **Efficient / Balanced / Max** (`MODE_LABEL` `policy.ts:107`). The plan's
-  "budget/balanced/high/max" 4-stop framing does **not** match today's 3-stop dial — see open
-  question Q1.
+- **The internal dial is `Mode = 'cost-saver' | 'balanced' | 'quality-first'`**
+  (`src/core/policy.ts:100`), user-labelled **Efficient / Balanced / Max** (`MODE_LABEL`
+  `policy.ts:107`). **RESOLVED (Q1, see slice 2):** the user-facing dial is the **5-level**
+  Budget / Balanced / High / Max / Auto, layered OVER these 3 internal modes — Budget≈cost-saver,
+  Balanced≈balanced, **High = a new mid-high rung** (quality-first envelope, narrower panel),
+  Max≈quality-first + full panel, Auto = per-turn. `Mode` stays the internal substrate; the levels
+  are the surface. Persisted old `config.mode` values migrate (`migrateMode`).
 - **Stored** as `config.mode?` (`src/infra/config.ts:42-43`); **absent = Auto**, which derives the
   mode from the detected subscription plan(s) (`autoModeForPlans`/`autoModeForPlanInfos`
   `policy.ts:249-267`, `defaultModeForPlan` `policy.ts:163`). Persisted via `saveConfig` with the
@@ -374,6 +385,65 @@ a default-OFF flag and is **not consumed by `orchestrate`** yet (see "Built in t
 - Tests: `test/unit/roles.test.ts` (mapping table, multi-provider resolution, **single-provider /
   single-model degradation**) and `test/unit/role-flag.test.ts` (opt-in truth table + OFF default).
 
+### Phase 0 — Implementation Spec (slice 2): the 5-level firepower dial
+
+**The locked model (final).** Five user-facing levels — **Budget / Balanced / High / Max / Auto**,
+with **Auto the DEFAULT** — layered OVER the existing `Mode` / `POLICY_PRESETS` machinery rather than a
+parallel system:
+
+- **Budget** — cheapest models, low/no reasoning effort, local-first, **NO agent recursion**.
+  `≈ cost-saver` policy (no panel/hedge); default Intensity 1; base effort `low`.
+- **Balanced** — mid models, medium effort, standard verification. `≈ balanced` (DEFAULT_POLICY);
+  Intensity 3; effort `medium`.
+- **High** — strong models, high effort, thorough review. A **NEW mid-high rung**: the quality-first
+  escalation/review envelope but with a **narrowed 2-provider panel** (vs Max's 3); Intensity 4;
+  effort `high`.
+- **Max** — strongest models, **cross-provider deliberation** (the existing panel + hedge + review
+  machinery fully on, ≤3 providers), deepest effort. `≈ quality-first`; Intensity 5; effort `max`.
+- **Auto (smart)** — per-task: no fixed mode/policy of its own. The difficulty that drives Auto is a
+  **byproduct of the turn the user is already having** (principle #1 — no separate classification
+  call). `resolveLevel` is the clean seam for that byproduct (`AutoDifficulty` →
+  `levelFromAutoDifficulty`); until the byproduct emission lands (a later phase), Auto falls back to
+  the existing heuristics — the persisted legacy `config.mode` (migrated) then the plan-derived auto
+  mode, mirroring today's `config.mode ?? resolveAutoMode` precedence, with a `balanced` safety net.
+
+**Mapping onto the existing machinery (no parallel system).** All of the above is a set of PURE total
+functions in `src/core/mode-levels.ts` that REUSE `Mode`, `Policy` (built FROM `POLICY_PRESETS`),
+`Intensity`, and `ReasoningEffort` — `levelToMode`, `policyForLevel`, `defaultIntensityForLevel`,
+`baseEffortForLevel`, `allowsAgentRecursion`, `profileForLevel`, plus the Auto seam (`resolveLevel`,
+`levelFromAutoDifficulty`) and the backward-compat `migrateMode`.
+
+**Intensity folds UNDER the level.** Each level sets a sensible default Intensity (1/3/4/5; Auto →
+`'auto'`). Intensity remains only as an optional power-user override, not a primary dial.
+
+**Roles stay internal/auto-derived** (slice 1) — not user-facing.
+
+**Backward compat.** Persisted `config.mode` values migrate: `cost-saver→budget`,
+`balanced→balanced`, `quality-first→max` (the strongest old stop; High is genuinely new), absent →
+`auto`.
+
+#### Built in this slice (PR: 5-level dial over existing policy)
+
+- `src/core/mode-levels.ts` — pure: `Level` type, `ALL_LEVELS`, `isLevel`, `LEVEL_DESC`/`levelLabel`,
+  `levelToMode`, `policyForLevel`, `defaultIntensityForLevel`, `baseEffortForLevel`,
+  `allowsAgentRecursion`, `LevelProfile` + `profileForLevel`, `migrateMode`, the `AutoDifficulty`
+  seam + `levelFromAutoDifficulty`, and `resolveLevel`. No I/O.
+- `src/interface/ui/level-flag.ts` — pure default-OFF predicate `levelDialEnabled(env, config)`
+  matching the role/verify flag shape (`MYSHELL_LEVEL_DIAL` ∈ {1,true,on,yes} OR
+  `config.experimentalLevelDial === true`; rollback forces off).
+- `config.experimentalLevelDial?: boolean` on `AppConfig` (default absent → OFF).
+- `OrchestrateDeps.levelProfile?` — a purely-additive, **never-read** optional seam (mirrors
+  `roleMapping`). Off → field absent → byte-identical. `orchestrate` does not consume it; the live
+  route still reads `config.mode`/`effectiveMode` exactly as today. The field exists so the level
+  substrate wires through the src import graph (no-orphan) and so the next slice has a landing pad.
+- Tests: `test/unit/mode-levels.test.ts` (mapping table per level, Intensity-under-level, migration,
+  Auto byproduct seam + heuristic fallback, single-provider/single-model still resolves a level) and
+  `test/unit/level-flag.test.ts` (opt-in truth table + OFF default).
+
+**NOT in this slice (deferred):** the level selector UI, live consumption in `orchestrate`/`route`
+(so the level *demonstrably* picks models/effort), and the Auto byproduct emission itself. This slice
+lands the pure substrate behind the default-OFF flag only.
+
 ### Remaining Phase 0 slices — NOT yet built (specced, deferred)
 
 1. **Capability normalization + structured-output parse fallback.** The single biggest "works on any
@@ -383,21 +453,25 @@ a default-OFF flag and is **not consumed by `orchestrate`** yet (see "Built in t
 2. **Ledger groundwork for role/effort attribution.** Storage + `reasoningEffort`/`taskKind` columns
    already exist (`types.ts:188-201`, `infra/ledger.ts`). The deferred work is attributing spend
    **per role** and surfacing it (feeds Phase 6). *Not started.*
-3. **Live wiring of roles into `orchestrate`/`route`.** Making the mode dial *demonstrably* pick
-   role-resolved models + effort across providers (the Phase-0 "Done when"). This slice only lands
-   the pure substrate behind a flag; consuming it in the live path is the next slice.
+3. **Live wiring of roles into `orchestrate`/`route`.** Making the dial *demonstrably* pick
+   role-resolved models + effort across providers (the Phase-0 "Done when"). The pure substrate is
+   landed behind a flag; consuming it in the live path is a later slice.
+4. **Live wiring of the 5-level dial + the level selector UI.** Consuming `levelProfile` in the live
+   path (so the chosen level actually sets the policy/effort/intensity per turn), the Settings/menu
+   selector that writes the level, and the Auto byproduct emission that feeds `resolveLevel`. The pure
+   mapping + flag are landed (slice 2); live consumption + UI are the next slice.
 
 ### Open design questions (need the lead's decision — left unresolved on purpose)
 
-- **Q1 — Dial arity.** The plan names a 4-stop dial (**budget/balanced/high/max**) but the shipped
-  dial is 3-stop (**Efficient/Balanced/Max** = `cost-saver/balanced/quality-first`) plus a separate
-  1–5 `Intensity`. Do we (a) add a 4th mode stop, (b) keep 3 modes and treat "high" as Balanced+raised
-  effort, or (c) fold the new dial onto `Intensity`? The role-mapping table is written against the
-  **existing 3 modes** for now so nothing is presumed.
-- **Q2 — Role vs the existing two dials.** `Mode` (firepower/escalation) and `Intensity`
-  (concurrency regime) already exist. Is `Role` purely derived from `Mode` (my current assumption),
-  or should it become a first-class third axis the user can tune? I assumed derived-from-mode and did
-  NOT add any user-facing role setting.
+- **Q1 — Dial arity. RESOLVED (slice 2).** The user-facing dial is the **5-level** Budget / Balanced
+  / High / Max / Auto, with Auto the default — layered OVER the existing 3 modes (Budget≈cost-saver,
+  Balanced≈balanced, **High = a new mid-high rung**, Max≈quality-first + full panel, Auto = per-turn).
+  We did NOT invent a parallel policy system: `policyForLevel` builds every level's policy FROM
+  `POLICY_PRESETS`. Intensity folds UNDER the level (a per-level default + optional override).
+  Persisted `config.mode` migrates via `migrateMode`.
+- **Q2 — Role vs the dials. RESOLVED (slice 2).** Roles stay internal/auto-derived; they are NOT a
+  user-facing axis. The user tunes the single 5-level dial; roles resolve from the effective level's
+  mode under the hood (slice 1 substrate). No user-facing role setting was added.
 - **Q3 — Ghost provider preference.** "ghost = fastest model the user has" needs a *speed* signal.
   `costSpeedTier` exists on `ModelCapability` but is `unknown` for almost everything (the
   unknown-is-absent invariant). Until a real speed signal lands, ghost falls back to the

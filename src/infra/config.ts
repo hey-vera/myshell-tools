@@ -476,6 +476,18 @@ export interface AppConfig {
    */
   experimentalRoles?: boolean;
   /**
+   * EXPERIMENTAL 5-LEVEL FIREPOWER DIAL (redesign Phase 0, slice 2; default off).
+   * When true (or with `MYSHELL_LEVEL_DIAL` ∈ {1,true,on,yes} in the environment)
+   * the 5-level dial (src/core/mode-levels.ts — Budget / Balanced / High / Max /
+   * Auto) is permitted to participate. This is SCAFFOLDING ONLY: the level mapping
+   * functions are pure and NOT yet consumed by the live orchestrate/route path, so
+   * this flag changes ZERO behavior today regardless of its value — `orchestrate`
+   * never reads a level and the live path keeps reading `config.mode` exactly as
+   * today. Absent/false → byte-for-byte today's behavior. See
+   * src/interface/ui/level-flag.ts and docs/one-chat-redesign-plan.md.
+   */
+  experimentalLevelDial?: boolean;
+  /**
    * Per-user "first-touch explainer shown" flags (whole-tool-finish-5.5.md §0.1).
    * Absent → nothing shown yet (each surface explains itself once on first
    * encounter). Each key flips to true the first time that surface is met.
