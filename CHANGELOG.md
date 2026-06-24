@@ -4,7 +4,17 @@ All notable changes to **myshell-tools** are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [v9 Phase 7] — Prompt-injection boundary, rollback, goal cancellation, stable flags, docs
+## [3.154.0] - 2026-06-24 — v9 Phases 6–7: prompt-injection boundary, rollback, stable flags, eval dims, reliability
+
+### 6a — Eval harness: three new scored dimensions
+- Added **resilience** (recovery from a failed/timed-out provider mid-task), **long-session-coherence**
+  (a ~20-turn task keeps context coherent), and **safety** (gates destructive/credential commands and
+  refuses honestly) to the internal eval harness, each with deterministic fixtures (no live model calls).
+
+### 6b — Auth validation (`test/auth-spike.sh`)
+- A sign-in validator for the four provider flows (Claude / Codex / Grok OAuth-subscription + OpenCode
+  key). Fail-soft, reports what is and isn't authenticated, and **never prints token material** — no
+  exfiltration. OAuth-only; no API-key paths for Claude/Codex/Grok.
 
 ### 7a — Structural prompt-injection boundary (`src/core/untrusted-content.ts`)
 - Repository files (`CLAUDE.md`, `AGENTS.md`, `README.md`), tool output, conversation history,
@@ -61,8 +71,7 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   rollback and goal cancellation shipped in Phase 7, while arbitrary workspace undo remains
   explicitly out of scope.
 
-## [Unreleased / next]
-### Reliability, default shell, and honest UI (post 3.152)
+### Reliability, default shell, and honest UI (3.153.x dev work, shipped in 3.154.0)
 - **Default shell self-heals (esp. Replit)**: If `setAsDefault` is on in persisted config but the hook marker is missing from the current shell rc (common after Replit container restart, since ~ is ephemeral while our state lives in workspace), launch now best-effort re-runs the installer. Added Replit-specific note in install output. "On" in Settings now actually means new shells / fresh tabs will auto-pop the menu.
 - **Replit resume / kill-to-recover UX**: Combined with the hook self-heal, after a laggy/double-key resume (browser tab re-attach to live pty) you can kill the stuck process; the parent shell (now with hook ensured) + fresh launch gives a clean interactive session without manual re-typing `myshell-tools`.
 - **No stale subscription/plan labels in main menu header**: `renderHeaderLines` (the compact "claude: ready" box) no longer appends `(max_5x)`, `(Pro)`, etc. Plans can change externally (user downgrades subs) and the header is the always-visible surface; showing stale data is worse than silence. Live plans remain in `doctor` (re-detects fresh), internal policy/mode auto, capacity, free-veto, tool-state prompts to the model, etc. Updated tests + header docs. (Cleanest per user feedback.)
