@@ -218,6 +218,8 @@ import { governorEnabled } from './ui/governor-flag.js';
 import { verifyEnabled } from './ui/verify-flag.js';
 import { trustEnabled } from './ui/trust-flag.js';
 import { tribunalEnabled } from './ui/tribunal-flag.js';
+import { roleMappingEnabled } from './ui/role-flag.js';
+import { resolveAllRoles, type ProviderModels } from '../core/roles.js';
 import { experimentalEnabledByDefault } from './ui/experimental-default.js';
 import { nodeVerifyPort } from '../infra/verify-port.js';
 import { createEvidenceSink, createEvidenceSnapshotBuilder } from '../infra/evidence-sink.js';
@@ -2321,6 +2323,32 @@ export async function runChatLoop(
           // REUSED here so orchestrate's route()/selectReasoningEffort can use it.
           // Absent → no capability context, no effort flag (unchanged routing).
           ...(caps.registry !== undefined ? { capabilityRegistry: caps.registry } : {}),
+          // LOGICAL ROLE MAPPING (redesign Phase 0, slice 1) — DEFAULT OFF
+          // (src/interface/ui/role-flag.ts). When the flag is ON, attach the
+          // resolved chat/ghost/execution → (provider, model, effort) map computed
+          // PURELY by src/core/roles.ts `resolveAllRoles` from the SAME available-
+          // models snapshot + capability registry + effective mode already in scope.
+          // SCAFFOLDING ONLY: `orchestrate` does NOT read `roleMapping`, so this is a
+          // purely-additive seam — present or absent, the orchestrate path is
+          // byte-for-byte today's. When OFF the field is absent entirely. The next
+          // slice flips consumption on behind this same flag.
+          ...((): { roleMapping?: ReturnType<typeof resolveAllRoles> } => {
+            if (!roleMappingEnabled(process.env, mutableCtx.config)) return {};
+            const available: ProviderModels[] = Object.entries(availableModels)
+              .filter(([, models]) => models !== undefined && models.length > 0)
+              .map(([provider, models]) => ({
+                provider: provider as ProviderId,
+                models: models as readonly string[],
+              }));
+            if (available.length === 0) return {};
+            const roleMapping = resolveAllRoles({
+              mode: effectiveMode,
+              available,
+              ...(caps.registry !== undefined ? { registry: caps.registry } : {}),
+              preferredOrder: policy.providerOrderByTier.ic,
+            });
+            return Object.keys(roleMapping).length > 0 ? { roleMapping } : {};
+          })(),
           ...(nativeSession.length > 0 ? { nativeSession } : {}),
           ...(routeClassifier !== undefined ? { routeClassifier } : {}),
           ...(intentExtractor !== undefined ? { intentExtractor } : {}),

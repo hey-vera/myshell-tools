@@ -464,6 +464,18 @@ export interface AppConfig {
    */
   experimentalManager?: boolean;
   /**
+   * EXPERIMENTAL LOGICAL ROLE ABSTRACTION (redesign Phase 0, slice 1; default off).
+   * When true (or with `MYSHELL_ROLES` ∈ {1,true,on,yes} in the environment) the
+   * provider-agnostic role layer (src/core/roles.ts — chat / ghost / execution
+   * resolution + the mode→rung/effort mapping) is permitted to participate. This is
+   * SCAFFOLDING ONLY: the role functions are pure and NOT yet consumed by the live
+   * orchestrate/route path, so this flag changes ZERO behavior today regardless of
+   * its value — `orchestrate` never reads role data and the `OrchestrateDeps.roleMapping`
+   * seam is a purely-additive, never-read field. Absent/false → byte-for-byte today's
+   * behavior. See src/interface/ui/role-flag.ts and docs/one-chat-redesign-plan.md.
+   */
+  experimentalRoles?: boolean;
+  /**
    * Per-user "first-touch explainer shown" flags (whole-tool-finish-5.5.md §0.1).
    * Absent → nothing shown yet (each surface explains itself once on first
    * encounter). Each key flips to true the first time that surface is met.

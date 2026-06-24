@@ -894,6 +894,20 @@ export interface OrchestrateDeps {
    * leaf module.
    */
   readonly researchPort?: import('./research.js').ResearchPort;
+  /**
+   * EXPERIMENTAL LOGICAL ROLE MAPPING (redesign Phase 0, slice 1) — a purely-additive,
+   * currently NEVER-READ seam, mirroring the multi-goal `goalId` seams. When the
+   * default-OFF `roleMappingEnabled` flag (src/interface/ui/role-flag.ts) is on, the
+   * interface layer MAY attach the resolved chat/ghost/execution → (provider, model,
+   * effort) map here (computed by src/core/roles.ts `resolveAllRoles`). `orchestrate`
+   * does NOT consume it in this slice, so its presence or absence changes nothing — it
+   * exists so the role substrate participates in the src import graph and so the next
+   * slice (live consumption) has a single landing pad. DEFAULT ABSENT → byte-for-byte
+   * today's behavior. Type-only import to keep types.ts a leaf module.
+   */
+  readonly roleMapping?: Partial<
+    Record<import('./roles.js').Role, import('./roles.js').RoleResolution>
+  >;
 }
 
 /**
