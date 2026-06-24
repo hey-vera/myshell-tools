@@ -1715,6 +1715,7 @@ export async function runChatLoop(
         '  /todo <text>  — park a goal + its to-do for later (/goals to manage)\n' +
         '  /todo add|done|block <g> ... — capture a to-do or check one off\n' +
         '  /goals        — list goals by state; show/go/drop/cancel a parked one\n' +
+        '  /goals cancel <n> — cancel goal #n + its live work (done/verified work preserved; not a filesystem undo)\n' +
         '  /rule <text>  — set a standing rule I remember + enforce (/rule list, /rule rm <n>)\n' +
         '  /mode         — quality vs speed (Efficient / Balanced / Max)\n' +
         '  /memory       — see, edit, export, or delete what I remember (/forget to remove)\n' +
@@ -1726,6 +1727,12 @@ export async function runChatLoop(
         '  /oversight    — how much you review: review-all / checkpoint / autonomous\n' +
         '  /back, /exit  — return to the main menu\n' +
         '  /help         — show this help\n' +
+        '\n' +
+        dim('  Feature posture (stable, default-on in interactive chat):\n', out.color) +
+        dim('    verify/judgment/trust on · MYSHELL_VERIFY=0/JUDGMENT=0/TRUST=0 to disable · MYSHELL_BASIC=1 for all-off\n', out.color) +
+        dim('    myshell-tools rollback        — persistently disable verify, judgment, and trust (feature rollback only)\n', out.color) +
+        dim('    myshell-tools rollback off    — restore defaults\n', out.color) +
+        dim('    MYSHELL_ROLLBACK=1            — emergency no-write form (always takes precedence)\n', out.color) +
         '\n' +
         dim('  About what you\'ll see:\n', out.color) +
         dim('    ※                      a recap of where we left off (on resume)\n', out.color) +

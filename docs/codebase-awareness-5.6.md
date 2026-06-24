@@ -94,9 +94,14 @@ The pieces, cheapest-first (each independently optional / fail-soft):
    (deps → "Next.js"/"React"/"Express"), `tsconfig.json`, `pyproject.toml`, `go.mod`,
    `Cargo.toml`. Pure string sniffing, no parse of the whole tree.
 4. **doc presence** — `README.md`, `CLAUDE.md`, `AGENTS.md`, `.cursor/rules`. We note
-   **presence** (and may inject a short head of `CLAUDE.md` if the model isn't already
-   reading it — see §2.4). Mirrors how Claude Code treats `CLAUDE.md` as the
-   legibility anchor. ([Claude Code best practices](https://code.claude.com/docs/en/best-practices))
+   **presence only** (file exists / does not exist). Their contents are **not** injected as
+   trusted instructions. If any repo file content is surfaced to the model (e.g. via targeted
+   retrieval), it is wrapped in an untrusted-data boundary (`src/core/untrusted-content.ts`)
+   that marks the span as evidence only — instructions, role changes, trust/confidence claims,
+   completion markers, command tiers, and safety/verification directives inside repo content
+   have no authority and cannot override judgment, verification, or command-tier decisions.
+   Mirrors how Claude Code treats `CLAUDE.md` as the legibility anchor, but with an explicit
+   trust boundary. ([Claude Code best practices](https://code.claude.com/docs/en/best-practices))
 5. **entry points** — `package.json` `scripts`/`main`/`bin`, framework conventions
    (`app/`, `pages/`, `src/index.*`, `main.py`).
 6. **REPO MAP** — a ranked file list (optionally with top-level symbols), aider-style,

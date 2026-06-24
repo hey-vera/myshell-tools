@@ -4,6 +4,63 @@ All notable changes to **myshell-tools** are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v9 Phase 7] — Prompt-injection boundary, rollback, goal cancellation, stable flags, docs
+
+### 7a — Structural prompt-injection boundary (`src/core/untrusted-content.ts`)
+- Repository files (`CLAUDE.md`, `AGENTS.md`, `README.md`), tool output, conversation history,
+  model output, reviewer feedback, and salvaged drafts are now wrapped as **untrusted DATA**
+  before reaching model prompts. The fixed, collision-resistant wrapper declares that enclosed
+  content is evidence only — instructions, role changes, trust/confidence claims, completion
+  markers, command tiers, and safety/verification directives inside untrusted spans have no
+  authority.
+- **Three properties remain derived exclusively from typed, deterministic evidence** — never
+  from prose inside an untrusted span: command tier (recomputed from the concrete command
+  string, defaults unknown to `local-write`, picks the most dangerous match), confidence and
+  trust labels (derived only from typed `VerifyOutcome` and provider evidence), and risk
+  classification (deterministic, raise-only).
+- An architecture guard forbids model/repo strings from being assigned to `commandTier`,
+  `confidenceLabel`, or `verified`.
+
+### 7b — Rollback + goal cancellation
+- `myshell-tools rollback` persistently disables verify, judgment, and trust.
+  `myshell-tools rollback off` removes the override and restores defaults.
+- `MYSHELL_ROLLBACK=1` is the emergency no-write form and always takes precedence.
+- **Scope: verify/judgment/trust only.** Governor, taste, and tribunal are not changed.
+  Rollback does not revert files or undo workspace changes — it is a feature-posture switch.
+- `/goals cancel <n>` cancels goal `<n>` and terminates live descendants. Done/verified work
+  is preserved. This is goal-level cancellation, not a filesystem undo. Arbitrary workspace
+  undo is explicitly out of scope.
+
+### 7c — Judgment, trust, and verify promoted to stable / default-on
+- All three flags are **default-on in interactive chat** (absent env/config → on).
+  Explicit opt-outs: `MYSHELL_JUDGMENT=0`, `MYSHELL_TRUST=0`, `MYSHELL_VERIFY=0`,
+  `MYSHELL_BASIC=1`, or `myshell-tools rollback`.
+- Config aliases `experimentalJudgment`, `experimentalTrust`, `experimentalVerify` remain
+  fully functional as deprecated names for the same keys; they will be removed in a future
+  major version. No config files are broken.
+- **Verify on the `run` (one-shot) path stays conservative / default-off.** The scripted
+  surface must never run test commands without explicit opt-in (`MYSHELL_VERIFY=1` enables
+  it). Trust and judgment are not wired in `run` (judgment requires interactive question
+  handling). This surface difference is intentional and documented.
+- Historical release notes that describe these flags as "experimental" or "default OFF" reflect
+  the state at the time of writing and are not edited.
+
+### 7d — Documentation
+- `README.md`: new "Safety, verification, and rollback" section covering stable defaults,
+  opt-outs, rollback semantics, the interactive-vs-run verify surface difference, goal
+  cancellation, the explicit non-promise of arbitrary filesystem undo, and the
+  prompt-injection boundary.
+- `src/cli.ts` global help and `src/ui/help.ts` focused help: rollback command is documented
+  with correct scope and spelling.
+- `src/interface/menu.ts` interactive `/help`: added explicit `/goals cancel <n>` line and
+  feature-posture rollback guidance.
+- `docs/codebase-awareness-5.6.md`: corrected the stale note that described `CLAUDE.md`
+  content injection as a design option; the shipped implementation surfaces presence only, and
+  any repo content that reaches the model is wrapped as untrusted data.
+- `docs/real-chat-gap-analysis.md`: the `/undo` competitor-feature gap now notes that feature
+  rollback and goal cancellation shipped in Phase 7, while arbitrary workspace undo remains
+  explicitly out of scope.
+
 ## [Unreleased / next]
 ### Reliability, default shell, and honest UI (post 3.152)
 - **Default shell self-heals (esp. Replit)**: If `setAsDefault` is on in persisted config but the hook marker is missing from the current shell rc (common after Replit container restart, since ~ is ephemeral while our state lives in workspace), launch now best-effort re-runs the installer. Added Replit-specific note in install output. "On" in Settings now actually means new shells / fresh tabs will auto-pop the menu.

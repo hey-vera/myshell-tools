@@ -136,6 +136,22 @@ atomic via the existing `atomic.ts`). New `/retry` and `/edit` cases in the slas
 **(d) Effort: M-L (store mutation is the real cost). Impact: ★★★★★.** `/retry` alone is the
 single most-requested "real chat" verb and is a small slice; ship it first.
 
+**(e) v9 Phase 7 status — partial.** Two related, narrower capabilities shipped in Phase 7:
+
+- **Feature rollback** (`myshell-tools rollback` / `MYSHELL_ROLLBACK=1`) — disables verify,
+  judgment, and trust; restores the pre-v9 feature posture. This is a **feature-posture
+  switch**, not an undo of workspace file changes. Scope: verify/judgment/trust only.
+- **Goal cancellation** (`/goals cancel <n>`) — terminates a parked goal and its live
+  descendants, preserving already-completed or verified sub-work. This is **goal-level
+  cancellation**, not a filesystem undo.
+
+**Arbitrary workspace undo (reverting file edits made by model turns) remains OUT OF SCOPE.**
+It requires a separate transaction/snapshot design covering git/worktree snapshots,
+dirty-tree ownership, non-git workspaces, external commands, and provider-native edits.
+Calling either feature above "workspace undo" would be misleading. The `/undo`-style
+full-revert seen in aider and opencode is a distinct, unbuilt capability that needs its own
+design phase.
+
 ---
 
 ### Gap 3 — Can't **copy a response** or **export the conversation** ★★★★☆

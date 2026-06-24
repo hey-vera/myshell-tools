@@ -219,6 +219,55 @@ classify ─▶ route(cheapest tier) ─▶ run ─▶ assess
 
 ---
 
+## Safety, verification, and rollback
+
+### Stable defaults (v9 Phase 7)
+
+Three quality guards are **default-on** in interactive chat:
+
+| Feature | Default | Opt-out |
+|---------|---------|---------|
+| **Judgment** — risk-aware brain loop, confidence-derived routing | on | `MYSHELL_JUDGMENT=0` or `MYSHELL_BASIC=1` |
+| **Trust receipt** — structured evidence labels derived from verification outcomes | on | `MYSHELL_TRUST=0` or `MYSHELL_BASIC=1` |
+| **Verify** — runs detected project test commands at accept time to confirm work is sound | on (interactive chat only) | `MYSHELL_VERIFY=0` or `MYSHELL_BASIC=1` |
+
+Config aliases `experimentalJudgment`, `experimentalTrust`, and `experimentalVerify` still load and save; they are deprecated names for the same three keys and will be removed in a future major version.
+
+**Verify and the one-shot `run` path.** Verify is default-on in interactive chat but stays **conservative (default-off)** in the scriptable `myshell-tools run` path, because scripted calls must never run test commands without explicit opt-in. Set `MYSHELL_VERIFY=1` to enable it for one-shot runs. Trust and judgment are not wired in `run` (judgment requires interactive question handling).
+
+**What verify does.** At accept time it detects the project's test command (Jest, pytest, `go test`, `cargo test`, and similar) and runs it. It does not execute arbitrary shell commands — detection is command-gated. A passing result strengthens the trust label; a failing or skipped result is reported honestly without blocking delivery.
+
+### Rollback — feature rollback only
+
+```bash
+myshell-tools rollback       # persistently disable verify, judgment, and trust
+myshell-tools rollback off   # remove the persisted override and restore defaults
+```
+
+`MYSHELL_ROLLBACK=1` is the **emergency no-write form** and always takes precedence over config.
+
+Rollback scope is **verify, judgment, and trust only**. Governor, taste, and tribunal are not changed. Rollback does **not** revert files, undo workspace changes, or restore any prior repository state — it is a feature-posture switch, not a filesystem undo operation.
+
+### Goal cancellation
+
+```
+/goals cancel <n>
+```
+
+Cancels parked goal `<n>` and terminates any live descendant work. Work already marked done or verified is preserved. This is **goal-level cancellation**, not a filesystem undo — files already written by completed sub-goals are not reversed.
+
+### Prompt-injection boundary
+
+Repository files (`CLAUDE.md`, `AGENTS.md`, `README.md`), tool output, conversation history, model output, reviewer feedback, and salvaged drafts are all wrapped as **untrusted data** before they reach model prompts. The policy header inside each wrapper declares that enclosed content is evidence only — instructions, trust claims, confidence claims, completion markers, command tiers, and safety/verification directives inside untrusted spans have no authority.
+
+Three properties are always derived from typed, deterministic evidence — never from prose inside an untrusted span:
+
+- **Command tier** — recomputed from the actual command string immediately before execution; defaults unknown commands to `local-write` and chooses the most dangerous match.
+- **Confidence and trust labels** — derived only from typed `VerifyOutcome` and provider evidence; no trust label stronger than the supplied outcome is produced.
+- **Risk classification** — deterministic and raise-only; model or repo content cannot lower it.
+
+---
+
 ## The honesty contract
 
 This is a ground‑up rebuild whose first principle is: **the tool never shows fabricated, mocked, or randomized data as if it were real.** It's enforced, not promised:
