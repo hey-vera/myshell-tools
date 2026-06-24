@@ -33,9 +33,17 @@ describe('commandHelpText', () => {
   });
 
   it('covers run, install, uninstall, repl', () => {
-    for (const cmd of ['run', 'install', 'uninstall', 'repl']) {
+    for (const cmd of ['run', 'install', 'uninstall', 'repl', 'rollback']) {
       assert.ok(commandHelpText(cmd) !== null, `${cmd} should have focused help`);
     }
+  });
+
+  it('describes rollback scope and rejects workspace undo claims', () => {
+    const help = commandHelpText('rollback');
+    assert.ok(help !== null);
+    assert.match(help, /verify, judgment, and trust/);
+    assert.match(help, /Governor, taste, and tribunal are not changed/);
+    assert.match(help, /does not revert files or undo workspace changes/);
   });
 
   it('returns null for unknown commands (caller falls back to global help)', () => {
@@ -44,7 +52,7 @@ describe('commandHelpText', () => {
   });
 
   it('every help block ends with a trailing newline and has no ANSI codes', () => {
-    for (const cmd of ['login', 'cost', 'run', 'status', 'install', 'uninstall', 'repl']) {
+    for (const cmd of ['login', 'cost', 'run', 'status', 'install', 'uninstall', 'repl', 'rollback']) {
       const help = commandHelpText(cmd);
       assert.ok(help !== null);
       assert.ok(help.endsWith('\n'), `${cmd} help ends with newline`);

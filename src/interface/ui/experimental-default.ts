@@ -13,8 +13,9 @@
  * unchanged.
  *
  * DEFAULT ON. `experimentalEnabledByDefault` COMPOSES the subsystem's own pure opt-IN
- * helper (governorEnabled/verifyEnabled/…) with the global basic-mode switch, so the
- * helpers stay genuinely production-used (no src-graph orphan). An explicit per-feature
+ * helper (governorEnabled/verifyEnabled/…) with rollback and the global basic-mode
+ * switch, so the helpers stay genuinely production-used (no src-graph orphan).
+ * Rollback always disables verify/judgment/trust only. An explicit per-feature
  * opt-IN (env value ∈ {'1','true','on','yes'} OR config value === true) wins outright —
  * even over basic mode. Otherwise it returns FALSE when EXPLICITLY disabled — its env
  * value ∈ {'0','false','off','no'} (trimmed, case-insensitive), OR its config value ===
@@ -28,11 +29,16 @@
  * mode / explicit-off) rather than the silent default.
  */
 
+import { rollbackEngaged } from '../../core/rollback-flag.js';
+
 /** Env values treated as an explicit opt-OUT for a per-feature key (case-insensitive). */
 const OFF = new Set(['0', 'false', 'off', 'no']);
 
 /** Env values treated as an explicit opt-IN for the global MYSHELL_BASIC switch. */
 const BASIC_ON = new Set(['1', 'true', 'on', 'yes']);
+
+/** The deliberately narrow rollback scope; governor, taste, and tribunal stay untouched. */
+const ROLLBACK_FEATURES = new Set(['MYSHELL_VERIFY', 'MYSHELL_JUDGMENT', 'MYSHELL_TRUST']);
 
 /**
  * The global "plain mode" escape hatch. When set, ALL six intelligence subsystems
@@ -71,11 +77,12 @@ type OptInHelper = (
  * subsystem's own pure opt-IN helper with the global basic-mode switch. Truth table
  * (highest priority first):
  *
- *   1. explicit per-feature opt-IN  (optInHelper ⇒ true) → TRUE — even in basic mode
- *   2. global basic / plain mode set                     → FALSE
- *   3. explicit per-feature opt-OUT  (env ∈ '0'/'false'/'off'/'no' OR configValue===false)
+ *   1. rollback set + feature is verify/judgment/trust   → FALSE
+ *   2. explicit per-feature opt-IN  (optInHelper ⇒ true) → TRUE — even in basic mode
+ *   3. global basic / plain mode set                     → FALSE
+ *   4. explicit per-feature opt-OUT  (env ∈ '0'/'false'/'off'/'no' OR configValue===false)
  *                                                        → FALSE
- *   4. nothing set (absent)                              → TRUE (frictionless default)
+ *   5. nothing set (absent)                              → TRUE (frictionless default)
  *
  * Pure + never throws (try/catch → true, since the default is on).
  *
@@ -87,12 +94,16 @@ type OptInHelper = (
  */
 export function experimentalEnabledByDefault(
   env: NodeJS.ProcessEnv | undefined,
-  config: { experimentalBasic?: boolean } | undefined,
+  config: { experimentalBasic?: boolean; rollback?: boolean } | undefined,
   envKey: string,
   configValue: boolean | undefined,
   optInHelper: OptInHelper,
 ): boolean {
   try {
+    // Rollback has highest priority for its narrow feature set. This must happen
+    // before the helper/default-on fallthrough: helper false can also mean
+    // "not opted in", so it cannot carry rollback state through this resolver.
+    if (ROLLBACK_FEATURES.has(envKey) && rollbackEngaged(env, config)) return false;
     // 1. Explicit per-feature opt-IN wins outright — even over global basic mode.
     if (optInHelper(env, config as Record<string, boolean | undefined> | undefined)) {
       return true;

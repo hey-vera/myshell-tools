@@ -9039,6 +9039,7 @@ describe('completeChat — async completer over an injected readdir (T2–T4)', 
     assert.ok(CHAT_SLASH_ARG_MAP['/mode']);
     assert.ok(CHAT_SLASH_ARG_MAP['/style']);
     assert.ok(CHAT_SLASH_ARG_MAP['/memory']);
+    assert.ok(CHAT_SLASH_ARG_MAP['/goals']?.includes('cancel'));
   });
 });
 
@@ -9912,6 +9913,50 @@ describe('startMenu — goals: /goals go promotes THROUGH runGoalLoop (the brain
       assert.equal(all.length, 1);
       assert.notEqual(all[0]?.state, 'parked', 'promote flipped the goal out of parked');
       assert.notEqual(all[0]?.state, 'done', 'never inferred done without GOAL_COMPLETE evidence');
+    });
+  });
+});
+
+describe('startMenu — goals: /goals cancel terminates the tree and refreshes the board', () => {
+  it('reports each terminated id/title, preserves done descendants, and syncs failed rows', async () => {
+    await withStateHome(join(tmpdir(), `goals-cancel-${randomUUID()}`), async () => {
+      const clock = makeFakeClock();
+      const goalStore = createFileGoalStore({ clock });
+      const root = await goalStore.create({ title: 'cancel root' });
+      const live = await goalStore.create({ title: 'cancel live child', parentGoalId: root.id });
+      const done = await goalStore.create({ title: 'keep done child', parentGoalId: root.id });
+      await goalStore.setState(live.id, 'running');
+      await goalStore.setState(done.id, 'done');
+
+      let lastBoard: readonly import('../../src/interface/ui/state.ts').GoalBoardRow[] = [];
+      const sink: OutputSink & { buf: string } = {
+        buf: '',
+        write(s: string) { this.buf += s; },
+        color: false,
+        isTty: false,
+        syncBoard(rows) { lastBoard = rows; },
+      };
+      const ctx = makeCtx({
+        config: {
+          onboarded: true,
+          setAsDefault: false,
+          smartRoute: false,
+          experimentalBoard: true,
+        },
+        readLine: makeScriptedReader(['n', '/goals cancel 1', '/exit', 'q']),
+      }, clock);
+
+      await startMenu(ctx, sink);
+
+      assert.match(sink.buf, new RegExp(`${root.id} — cancel root`));
+      assert.match(sink.buf, new RegExp(`${live.id} — cancel live child`));
+      assert.doesNotMatch(sink.buf, new RegExp(`${done.id} — keep done child`));
+      assert.equal((await goalStore.get(root.id))?.state, 'failed');
+      assert.equal((await goalStore.get(live.id))?.state, 'failed');
+      assert.equal((await goalStore.get(done.id))?.state, 'done');
+      assert.equal(lastBoard.find((row) => row.id === root.id)?.state, 'failed');
+      assert.equal(lastBoard.find((row) => row.id === live.id)?.state, 'failed');
+      assert.equal(lastBoard.find((row) => row.id === done.id)?.state, 'done');
     });
   });
 });

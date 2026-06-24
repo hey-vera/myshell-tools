@@ -34,6 +34,11 @@ export type FirstTouchKey =
 export interface AppConfig {
   onboarded: boolean;
   setAsDefault: boolean;
+  /**
+   * Persistent rollback for verify, judgment, and trust only. The emergency
+   * `MYSHELL_ROLLBACK=1` environment form also engages rollback.
+   */
+  rollback?: boolean;
   /** Active routing mode. Absent → use DEFAULT_POLICY (same as 'balanced'). */
   mode?: 'cost-saver' | 'balanced' | 'quality-first';
   /** User-facing Intensity dial default (1=Focused … 5=Max). Absent → Auto (the smart default). */

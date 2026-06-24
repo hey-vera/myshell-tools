@@ -115,6 +115,13 @@ describe('saveConfig + loadConfig — round-trip', () => {
     assert.equal(loaded.autoGoal, true);
   });
 
+  it('round-trips the persistent rollback override', async () => {
+    const cfg: AppConfig = { onboarded: true, setAsDefault: false, rollback: true };
+    await saveConfig(cfg, homeDir);
+    const loaded = await loadConfig(homeDir);
+    assert.equal(loaded.rollback, true);
+  });
+
   it('saves and reloads partnerStyle', async () => {
     const cfg: AppConfig = { onboarded: true, setAsDefault: false, partnerStyle: 'collaborative' };
     await saveConfig(cfg, homeDir);

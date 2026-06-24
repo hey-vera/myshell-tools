@@ -65,6 +65,21 @@ export function commandHelpText(command: string): string | null {
         '  myshell-tools run "refactor the auth module and add tests"',
       ].join('\n') + '\n';
 
+    case 'rollback':
+      return [
+        'myshell-tools rollback [off]',
+        '',
+        'Feature rollback only: disable verify, judgment, and trust.',
+        'Governor, taste, and tribunal are not changed.',
+        '',
+        'Commands:',
+        '  myshell-tools rollback       Persistently engage rollback.',
+        '  myshell-tools rollback off   Remove the persisted override and restore defaults.',
+        '',
+        'MYSHELL_ROLLBACK=1 is the emergency no-write form and takes precedence.',
+        'This does not revert files or undo workspace changes.',
+      ].join('\n') + '\n';
+
     case 'status':
     case 'check':
     case 'doctor':

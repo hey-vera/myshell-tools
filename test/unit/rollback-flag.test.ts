@@ -29,9 +29,16 @@ describe('rollbackEngaged — default OFF, explicit opt-IN via env', () => {
     }
   });
 
+  it('persisted config engages rollback while absent/false stays off', () => {
+    assert.equal(rollbackEngaged({}, { rollback: true }), true);
+    assert.equal(rollbackEngaged({}, { rollback: false }), false);
+    assert.equal(rollbackEngaged({}, {}), false);
+  });
+
   it('never throws on a hostile env bag (defaults OFF)', () => {
     const hostile = new Proxy({}, { get() { throw new Error('boom'); } }) as Record<string, string | undefined>;
     assert.equal(rollbackEngaged(hostile), false);
+    assert.equal(rollbackEngaged(hostile, { rollback: true }), true);
   });
 });
 
@@ -55,6 +62,12 @@ describe('rollback kill-switch — forces canaried experimental flags off', () =
     assert.equal(verifyEnabled(env, { experimentalVerify: true }), false);
     assert.equal(judgmentEnabled(env, { experimentalJudgment: true }), false);
     assert.equal(trustEnabled(env, { experimentalTrust: true }), false);
+  });
+
+  it('persisted rollback overrides individual config opt-ins', () => {
+    assert.equal(verifyEnabled({}, { rollback: true, experimentalVerify: true }), false);
+    assert.equal(judgmentEnabled({}, { rollback: true, experimentalJudgment: true }), false);
+    assert.equal(trustEnabled({}, { rollback: true, experimentalTrust: true }), false);
   });
 
   it('without rollback, individual env opt-ins are unchanged', () => {

@@ -37,10 +37,10 @@ const ON = new Set(['1', 'true', 'on', 'yes']);
  */
 export function judgmentEnabled(
   env: NodeJS.ProcessEnv | undefined,
-  config: { experimentalJudgment?: boolean } | undefined,
+  config: { experimentalJudgment?: boolean; rollback?: boolean } | undefined,
 ): boolean {
   try {
-    if (rollbackEngaged(env)) return false;
+    if (rollbackEngaged(env, config)) return false;
     const raw = env?.['MYSHELL_JUDGMENT'];
     if (typeof raw === 'string' && ON.has(raw.trim().toLowerCase())) return true;
     if (config?.experimentalJudgment === true) return true;

@@ -33,9 +33,9 @@ const ON = new Set(['1', 'true', 'on', 'yes']);
  */
 export function verifyEnabled(
   env: NodeJS.ProcessEnv | undefined,
-  config: { experimentalVerify?: boolean } | undefined,
+  config: { experimentalVerify?: boolean; rollback?: boolean } | undefined,
 ): boolean {
-  if (rollbackEngaged(env)) return false;
+  if (rollbackEngaged(env, config)) return false;
   const raw = env?.['MYSHELL_VERIFY'];
   if (typeof raw === 'string' && ON.has(raw.trim().toLowerCase())) return true;
   if (config?.experimentalVerify === true) return true;

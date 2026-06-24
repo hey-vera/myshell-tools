@@ -79,6 +79,43 @@ describe('experimentalEnabledByDefault — DEFAULT ON, composing the real opt-in
     }
   });
 
+  it('rollback disables verify/judgment/trust in the production resolver path', () => {
+    for (const { envKey, configKey, optIn } of SUBSYSTEMS.filter(({ envKey }) =>
+      ['MYSHELL_VERIFY', 'MYSHELL_JUDGMENT', 'MYSHELL_TRUST'].includes(envKey),
+    )) {
+      assert.equal(
+        experimentalEnabledByDefault(
+          { MYSHELL_ROLLBACK: '1', [envKey]: '1' },
+          { [configKey]: true } as Record<string, boolean>,
+          envKey,
+          true,
+          optIn,
+        ),
+        false,
+        envKey,
+      );
+    }
+  });
+
+  it('persisted rollback wins over opt-in without widening rollback scope', () => {
+    for (const { envKey, configKey, optIn } of SUBSYSTEMS) {
+      const expected = ['MYSHELL_VERIFY', 'MYSHELL_JUDGMENT', 'MYSHELL_TRUST'].includes(envKey)
+        ? false
+        : true;
+      assert.equal(
+        experimentalEnabledByDefault(
+          { [envKey]: '1' },
+          { rollback: true, [configKey]: true } as Record<string, boolean>,
+          envKey,
+          true,
+          optIn,
+        ),
+        expected,
+        envKey,
+      );
+    }
+  });
+
   it('2. per-feature OPT-IN OVERRIDES basic mode (env opt-in wins over MYSHELL_BASIC)', () => {
     for (const { envKey, optIn } of SUBSYSTEMS) {
       assert.equal(

@@ -58,7 +58,8 @@ import { createCapabilityRefreshPort } from './infra/model-capability-port.js';
 import { nodeRepoScanPort } from './infra/repo-scan.js';
 import { nodeVerifyPort } from './infra/verify-port.js';
 import { createEvidenceSink, createEvidenceSnapshotBuilder } from './infra/evidence-sink.js';
-import { loadConfig, resolvePartnerStyle } from './infra/config.js';
+import { loadConfig, saveConfig, resolvePartnerStyle } from './infra/config.js';
+import { rollbackEngaged } from './core/rollback-flag.js';
 import { makeIntentExtractor } from './core/intent-extractor.js';
 import { replCapabilities } from './core/surface-capabilities.js';
 import { checkForUpdate } from './infra/update-check.js';
@@ -189,6 +190,7 @@ Commands:
   (none)            Open the interactive control panel (default)
   run <task...>     Run a one-shot task and exit
   repl              Start the plain line REPL (no menu)
+  rollback [off]    Disable or restore verify, judgment, and trust
   login [provider]  Sign in to a provider (claude, codex, opencode, or grok) via its own OAuth.
                     Add --code to use the no-localhost flow (paste a code for
                     claude, device code for codex/grok) — best inside containers /
@@ -531,6 +533,31 @@ async function main(): Promise<void> {
   // `/forget`, `/memory` live in the chat loop (menu.ts).
   if (args[0] === 'memory') {
     process.exit(await runMemoryCli(args.slice(1), cwd, out, systemClock));
+  }
+
+  if (args[0] === 'rollback') {
+    const action = args[1];
+    if (action !== undefined && action !== 'off') {
+      process.stderr.write('myshell-tools rollback: expected no argument or "off"\n');
+      process.exit(1);
+    }
+    const config = await loadConfig();
+    if (action === 'off') {
+      const restored = { ...config };
+      delete restored.rollback;
+      await saveConfig(restored);
+      if (rollbackEngaged(process.env, restored)) {
+        out.write(
+          'Rollback override removed. MYSHELL_ROLLBACK remains engaged. Disabled: verify, judgment, trust.\n',
+        );
+      } else {
+        out.write('Rollback override removed. Defaults restored for: verify, judgment, trust.\n');
+      }
+    } else {
+      await saveConfig({ ...config, rollback: true });
+      out.write('Rollback engaged. Disabled: verify, judgment, trust.\n');
+    }
+    process.exit(0);
   }
 
   if (args[0] === 'install') {

@@ -44,25 +44,27 @@ export type GoalsCommand =
   | { readonly kind: 'list' }
   | { readonly kind: 'go'; readonly n: number }
   | { readonly kind: 'drop'; readonly n: number }
+  | { readonly kind: 'cancel'; readonly n: number }
   | { readonly kind: 'park'; readonly n: number }
   | { readonly kind: 'show'; readonly n: number }
   | { readonly kind: 'usage' };
 
 /**
  * Parse the argument string after `/goals`. Pure, never throws. Bare or `list`
- * → list; `go|drop|park|show <n>` → that op on parked goal #n (1-based); an
+ * → list; `go|drop|cancel|park|show <n>` → that op on parked goal #n (1-based); an
  * unrecognised form → usage.
  */
 export function parseGoalsCommand(arg: string): GoalsCommand {
   const trimmed = (arg ?? '').trim();
   if (trimmed === '' || trimmed === 'list') return { kind: 'list' };
-  const m = /^(go|drop|park|show|expand)\s+(\d+)$/.exec(trimmed);
+  const m = /^(go|drop|cancel|park|show|expand)\s+(\d+)$/.exec(trimmed);
   if (m !== null) {
     const n = Number.parseInt(m[2] ?? '', 10);
     const verb = m[1];
     if (Number.isFinite(n) && n >= 1) {
       if (verb === 'go') return { kind: 'go', n };
       if (verb === 'drop') return { kind: 'drop', n };
+      if (verb === 'cancel') return { kind: 'cancel', n };
       if (verb === 'park') return { kind: 'park', n };
       return { kind: 'show', n }; // show | expand
     }
@@ -290,6 +292,39 @@ export async function listParked(store: GoalStore): Promise<Goal[]> {
 export function parkedAt(parked: readonly Goal[], n: number): Goal | null {
   if (!Number.isFinite(n) || n < 1 || n > parked.length) return null;
   return parked[n - 1] ?? null;
+}
+
+/**
+ * Cancel parked goal #n and every live descendant. Every terminated id/title is
+ * reported; done/failed descendants are absent because the store preserves them.
+ */
+export async function runGoalCancel(opts: {
+  readonly store: GoalStore;
+  readonly out: OutputSink;
+  readonly n: number;
+}): Promise<string> {
+  const parked = await listParked(opts.store);
+  const target = parkedAt(parked, opts.n);
+  if (target === null) {
+    const msg = `No parked goal #${opts.n}. Run /goals to see the list.`;
+    opts.out.write(dim(`  ${msg}\n`, opts.out.color));
+    return msg;
+  }
+  const all = await opts.store.list().catch(() => []);
+  const titleById = new Map(all.map((goal) => [goal.id, goal.title]));
+  const { terminated } = await opts.store.cancelGoalTree(target.id);
+  if (terminated.length === 0) {
+    const msg = `Goal "${target.title}" has no live work to cancel.`;
+    opts.out.write(dim(`  ${msg}\n`, opts.out.color));
+    return msg;
+  }
+  const lines = ['Cancelled goals:'];
+  for (const id of terminated) {
+    lines.push(`  ${id} — ${titleById.get(id) ?? '(unknown title)'}`);
+  }
+  const text = lines.join('\n');
+  opts.out.write(`${text}\n`);
+  return text;
 }
 
 // ---------------------------------------------------------------------------

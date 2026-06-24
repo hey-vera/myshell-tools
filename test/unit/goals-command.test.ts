@@ -21,6 +21,7 @@ import {
   runTodoCreate,
   runTodoAdd,
   runGoalsList,
+  runGoalCancel,
   listParked,
   parkedAt,
   renderGoalExpanded,
@@ -99,9 +100,10 @@ describe('parseGoalsCommand', () => {
     assert.equal(parseGoalsCommand('').kind, 'list');
     assert.equal(parseGoalsCommand('  list ').kind, 'list');
   });
-  it('go/drop/park/show <n>', () => {
+  it('go/drop/cancel/park/show <n>', () => {
     assert.deepEqual(parseGoalsCommand('go 2'), { kind: 'go', n: 2 });
     assert.deepEqual(parseGoalsCommand('drop 1'), { kind: 'drop', n: 1 });
+    assert.deepEqual(parseGoalsCommand('cancel 6'), { kind: 'cancel', n: 6 });
     assert.deepEqual(parseGoalsCommand('park 3'), { kind: 'park', n: 3 });
     assert.deepEqual(parseGoalsCommand('show 4'), { kind: 'show', n: 4 });
     assert.deepEqual(parseGoalsCommand('expand 5'), { kind: 'show', n: 5 });
@@ -251,6 +253,37 @@ describe('parkedAt', () => {
   });
 });
 
+describe('runGoalCancel', () => {
+  it('reports every terminated id/title and preserves done descendants', async () => {
+    const root = await store.create({ title: 'root' });
+    const live = await store.create({ title: 'live child', parentGoalId: root.id });
+    const done = await store.create({ title: 'done child', parentGoalId: root.id });
+    await store.setState(live.id, 'running');
+    await store.setState(done.id, 'done');
+    const out = makeSink();
+
+    const text = await runGoalCancel({ store, out, n: 1 });
+
+    assert.match(text, new RegExp(`${root.id} — root`));
+    assert.match(text, new RegExp(`${live.id} — live child`));
+    assert.doesNotMatch(text, new RegExp(done.id));
+    assert.equal((await store.get(root.id))?.state, 'failed');
+    assert.equal((await store.get(live.id))?.state, 'failed');
+    assert.equal((await store.get(done.id))?.state, 'done');
+  });
+
+  it('reports an unknown target without mutating goals', async () => {
+    const goal = await store.create({ title: 'unchanged' });
+    const before = await store.get(goal.id);
+    const out = makeSink();
+
+    const text = await runGoalCancel({ store, out, n: 9 });
+
+    assert.match(text, /No parked goal #9/);
+    assert.deepEqual(await store.get(goal.id), before);
+  });
+});
+
 
 describe('runTodoAdd', () => {
   it('appends a new to-do to an existing parked goal', async () => {
@@ -285,4 +318,3 @@ describe('runTodoAdd', () => {
     assert.match(msg, /No parked goal #9/);
   });
 });
-

@@ -87,6 +87,7 @@ export const CHAT_SLASH_ARG_MAP: Readonly<Record<string, readonly string[]>> = {
   '/mode': ['Efficient', 'Balanced', 'Max'],
   '/style': ['Direct', 'Balanced', 'Collaborative'],
   '/memory': ['list', 'all', 'loaded', 'export', 'edit'],
+  '/goals': ['list', 'show', 'go', 'drop', 'cancel'],
 };
 
 /** A classified Tab-completion request. PURE output of {@link classifyCompletion}. */

@@ -99,6 +99,7 @@ import {
   runGoalsList,
   runTodoCreate,
   runTodoAdd,
+  runGoalCancel,
   renderGoalExpanded,
   parseGoalsCommand,
   parseTodoCommand,
@@ -1713,7 +1714,7 @@ export async function runChatLoop(
         '  /goal <text>  — build + show a detailed plan (with approach/rationale + todos), write PLAN.md, then get your approval before autonomous execution (Ctrl+C to stop)\n' +
         '  /todo <text>  — park a goal + its to-do for later (/goals to manage)\n' +
         '  /todo add|done|block <g> ... — capture a to-do or check one off\n' +
-        '  /goals        — list goals by state; show/go/drop a parked one\n' +
+        '  /goals        — list goals by state; show/go/drop/cancel a parked one\n' +
         '  /rule <text>  — set a standing rule I remember + enforce (/rule list, /rule rm <n>)\n' +
         '  /mode         — quality vs speed (Efficient / Balanced / Max)\n' +
         '  /memory       — see, edit, export, or delete what I remember (/forget to remove)\n' +
@@ -5571,13 +5572,13 @@ Output ONLY valid JSON (no prose, no markdown).`;
         return 'continue';
       }
 
-      // ---- /goals — list by state, expand, promote, drop ----------------------
+      // ---- /goals — list by state, expand, promote, drop, cancel --------------
       if (line === '/goals' || line.startsWith('/goals ')) {
         const arg = line.slice('/goals'.length).trim();
         const cmd = parseGoalsCommand(arg);
         if (cmd.kind === 'usage') {
           out.write(
-            dim('  Usage: /goals  ·  /goals show <n>  ·  /goals go <n>  ·  /goals drop <n>\n', out.color),
+            dim('  Usage: /goals  ·  /goals show <n>  ·  /goals go <n>  ·  /goals drop <n>  ·  /goals cancel <n>\n', out.color),
           );
           return 'continue';
         }
@@ -5593,6 +5594,11 @@ Output ONLY valid JSON (no prose, no markdown).`;
         }
         if (cmd.kind === 'show') {
           renderGoalExpanded(target, out);
+          return 'continue';
+        }
+        if (cmd.kind === 'cancel') {
+          await runGoalCancel({ store: goalStore, out, n: cmd.n });
+          await syncBoard();
           return 'continue';
         }
         if (cmd.kind === 'drop') {
