@@ -81,8 +81,8 @@ function substantialSignals(over: Partial<EngagementSignals> = {}): EngagementSi
 // THE FLAG — off-guarantee
 // ===========================================================================
 
-describe('judgment-flag', () => {
-  it('default OFF (no env, no config)', () => {
+describe('judgment-flag (opt-IN helper — stable feature, default-on at entry points via experimentalEnabledByDefault)', () => {
+  it('absent env + absent config ⇒ false from this opt-IN helper (default-on is handled by the resolver)', () => {
     assert.equal(judgmentEnabled({}, undefined), false);
     assert.equal(judgmentEnabled({}, {}), false);
   });

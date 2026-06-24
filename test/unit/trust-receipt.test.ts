@@ -405,11 +405,11 @@ describe('confidenceTier / receipt.confidenceLabel — shared 5-label vocabulary
 });
 
 // ---------------------------------------------------------------------------
-// THE FLAG — default OFF; the neutrality contract
+// THE FLAG — opt-IN helper (stable feature, default-on at entry points)
 // ---------------------------------------------------------------------------
 
-describe('trustEnabled — DEFAULT OFF (the all-flags-off neutrality contract)', () => {
-  it('absent env + absent config ⇒ false (no new output)', () => {
+describe('trustEnabled — opt-IN helper (stable, default-on via experimentalEnabledByDefault; the neutrality contract)', () => {
+  it('absent env + absent config ⇒ false from this opt-IN helper (default-on is handled by the resolver)', () => {
     assert.equal(trustEnabled(undefined, undefined), false);
     assert.equal(trustEnabled({}, {}), false);
   });

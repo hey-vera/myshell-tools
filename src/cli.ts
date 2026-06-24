@@ -83,6 +83,8 @@ import { createSpinner } from './ui/spinner.js';
 import { dim } from './ui/theme.js';
 import { inkEnabled } from './interface/ui/flag.js';
 import { verifyEnabled } from './interface/ui/verify-flag.js';
+import { trustEnabled } from './interface/ui/trust-flag.js';
+import { experimentalEnabledByDefault } from './interface/ui/experimental-default.js';
 const require = createRequire(import.meta.url);
 const pkg = require('../package.json');
 const version: string = pkg.version as string;
@@ -714,7 +716,24 @@ async function main(): Promise<void> {
       capability?.registry,
       modelOutcomeOrderByTaskKind,
     );
+    // STABLE FEATURE RESOLUTION (v9 Phase 7c): trust resolves via the same stable
+    // default-on resolver used at the interactive entry point.
+    // VERIFY stays CONSERVATIVE here: the scriptable one-shot `run` path keeps verify
+    // OPT-IN (default-off) until real-project canary evidence justifies auto-running
+    // detected test commands in non-interactive/CI contexts. Interactive chat already
+    // resolves verify default-on; resolving the surface inconsistency toward default-on
+    // for `run` is deferred deliberately (operational risk on automation surfaces).
+    // JUDGMENT is NOT wired here: non-interactive one-shot runs lack question-handling
+    // infrastructure; judgment's push_back move expects an interactive loop to present
+    // the challenge and record accept/reject. Documented limitation, not broken behavior.
     const verifyActive = verifyEnabled(process.env, config);
+    const trustActive = experimentalEnabledByDefault(
+      process.env,
+      config,
+      'MYSHELL_TRUST',
+      config.experimentalTrust,
+      trustEnabled,
+    );
     const depsWithVerify: OrchestrateDeps =
       verifyActive
         ? {
@@ -735,8 +754,11 @@ async function main(): Promise<void> {
             }),
             evidenceTaskId: deps.session.id,
             evidenceTurnNumber: 1,
+            ...(trustActive ? { trustEnabled: true } : {}),
           }
-        : deps;
+        : trustActive
+          ? { ...deps, trustEnabled: true }
+          : deps;
     // Image attachments (audit #4, image scope): the IMPURE existence check lives
     // here (fs allowed). The pure extractor finds candidate image paths in the
     // task; we keep only those that exist on disk and thread them onto deps so

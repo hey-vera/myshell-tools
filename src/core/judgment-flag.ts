@@ -4,19 +4,24 @@
  * calibration; .tmp-master-judgment.md Parts 2 & 3, master-plan PHASE 5) is ACTIVE.
  *
  * Pure (no Ink/React, no JSX, no I/O) so it is exercised by the regular
- * `npm test` suite under strip-types. DEFAULT OFF — the judgment layer ships dark
- * and changes ZERO behavior unless the caller explicitly opts IN:
- * `MYSHELL_JUDGMENT` ∈ {'1','true','on','yes'} (case-insensitive, trimmed) OR
- * `config.experimentalJudgment === true`. This mirrors the rollout shape of the
- * governor/verify/taste features (opt-in, dark by default).
+ * `npm test` suite under strip-types.
  *
- * THE OFF-GUARANTEE (the load-bearing neutrality contract): when this returns
- * false, `decideNextMove` returns BYTE-FOR-BYTE today's moves — `push_back` is
- * NEVER offered, and the ask-vs-proceed calibration is UNCHANGED. The existing
- * brain/decideNextMove tests and the characterization + oracle suites pass
- * UNCHANGED, which IS the flag-off neutrality proof. The flag is read once and
- * threaded into the pure policy as a boolean; the policy short-circuits the new
- * `push_back` arm and the calibration sharpening when it is false.
+ * STABLE — promoted to stable default-on in v9 Phase 7c. The judgment layer is ON
+ * by default at the interactive entry point (resolved via
+ * `experimentalEnabledByDefault` in src/interface/ui/experimental-default.ts) and
+ * at the one-shot `run` surface (src/cli.ts). Explicit opt-out:
+ * `MYSHELL_JUDGMENT` ∈ {'0','false','off','no'} (case-insensitive, trimmed) OR
+ * `config.experimentalJudgment === false` OR `MYSHELL_BASIC` truthy OR rollback
+ * engaged. `experimentalJudgment` is a deprecated alias kept for config
+ * compatibility; a future major version may rename it.
+ *
+ * This helper returns true ONLY when the caller explicitly opts IN via the env/config
+ * values below. It is the low-level opt-IN predicate consumed by
+ * `experimentalEnabledByDefault`; the default-on behavior lives in that resolver, not
+ * here. The OFF-GUARANTEE is preserved: when this helper returns false AND
+ * `experimentalEnabledByDefault` returns false, `decideNextMove` returns
+ * BYTE-FOR-BYTE today's moves — `push_back` is NEVER offered and the ask-vs-proceed
+ * calibration is UNCHANGED.
  *
  * When ON, the `push_back` move may fire — but ONLY under its own deliberately
  * narrow grounded-reason gate (a correctness/irreversibility RED FLAG, or a
@@ -30,10 +35,16 @@ import { rollbackEngaged } from './rollback-flag.js';
 const ON = new Set(['1', 'true', 'on', 'yes']);
 
 /**
- * Decide whether the free judgment layer is enabled. DEFAULT FALSE. Returns true
- * ONLY when explicitly opted in: `MYSHELL_JUDGMENT` is one of '1'/'true'/'on'/'yes'
- * (trimmed, case-insensitive) OR `config.experimentalJudgment === true`. Any other
- * value (including absent, '0', 'false', '') → false. Never throws.
+ * The low-level explicit opt-IN predicate for the free judgment layer. Returns true
+ * ONLY when the caller explicitly opts in: `MYSHELL_JUDGMENT` is one of
+ * '1'/'true'/'on'/'yes' (trimmed, case-insensitive) OR
+ * `config.experimentalJudgment === true`. Any other value (including absent, '0',
+ * 'false', '') → false. Never throws.
+ *
+ * NOTE: The default-on behavior for interactive/run surfaces is handled by
+ * `experimentalEnabledByDefault` (src/interface/ui/experimental-default.ts), which
+ * COMPOSES this helper. Test this helper directly only for the opt-IN truth table;
+ * test the resolver for the default-on + opt-out + rollback + basic-mode table.
  */
 export function judgmentEnabled(
   env: NodeJS.ProcessEnv | undefined,

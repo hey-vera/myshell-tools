@@ -255,28 +255,32 @@ export interface AppConfig {
    */
   experimentalGovernor?: boolean;
   /**
-   * EXPERIMENTAL VERIFICATION CENTERPIECE (default off; master-plan PHASE 3). When
-   * true (or with `MYSHELL_VERIFY` truthy in the environment), a code-changing turn
-   * runs a graduated, honest verify stage at the accept point: capture the diff →
-   * tests-first (FREE local exec) → ONE diff-scoped cross-vendor critic when the
-   * Governor's `verify` lever (or the conservative built-in default) selects it →
-   * an honest four-state `verified` result {unverified|reviewed|passing|failing} +
-   * a concise receipt. Subscription-only (tests = free; critic = a seat the user
-   * owns). The accept path is BYTE-FOR-BYTE unchanged when this is absent/false (the
-   * verify port is simply not injected). See src/interface/ui/verify-flag.ts.
+   * VERIFICATION CENTERPIECE — stable, default on (promoted v9 Phase 7c).
+   * @deprecated alias — this key is kept for backward compatibility with existing
+   * config files. Do not add new code that sets it; use MYSHELL_VERIFY=0 or the
+   * global MYSHELL_BASIC escape hatch to opt out. When false, opts out of
+   * verification for this project regardless of the default-on interactive resolver.
+   * When true (or with `MYSHELL_VERIFY` ∈ {1,true,on,yes} in env), a code-changing
+   * turn runs a graduated, honest verify stage at the accept point: capture the diff →
+   * tests-first (FREE local exec, command-gated via verify-port.ts) → ONE diff-scoped
+   * cross-vendor critic when the Governor's `verify` lever selects it → an honest
+   * four-state `verified` result {unverified|reviewed|passing|failing} + a concise
+   * receipt. The accept path is BYTE-FOR-BYTE unchanged when the resolved value is
+   * false. See src/interface/ui/verify-flag.ts.
    */
   experimentalVerify?: boolean;
   /**
-   * EXPERIMENTAL TRUST SURFACE (default off; master-plan PHASE 8). When true (or with
-   * `MYSHELL_TRUST` truthy in the environment), the accept-point receipt is UPGRADED
-   * from the bare verify line into the consolidated, AUDITABLE trust receipt — an
-   * auditable confidence line (the confidence statement pointed at its real grounds:
-   * files changed, tests passing/failing, independent models agreeing), the four-state
-   * `verified` line, and an honest SELF-AUDIT of what the turn did NOT do (didn't run
-   * tests / didn't cross-check). Composed PURELY from the real signals already on the
-   * turn (no new model call); surfaces ONLY signals that genuinely occurred (absent
-   * signal ⇒ absent line). The accept path is BYTE-FOR-BYTE unchanged when this is
-   * absent/false. See src/interface/ui/trust-flag.ts / src/core/trust-receipt.ts.
+   * TRUST SURFACE — stable, default on (promoted v9 Phase 7c).
+   * @deprecated alias — this key is kept for backward compatibility with existing
+   * config files. Do not add new code that sets it; use MYSHELL_TRUST=0 or the
+   * global MYSHELL_BASIC escape hatch to opt out. When false, opts out of the trust
+   * surface for this project. When true (or with `MYSHELL_TRUST` ∈ {1,true,on,yes}
+   * in env), the accept-point receipt is UPGRADED from the bare verify line into the
+   * consolidated, AUDITABLE trust receipt — an auditable confidence line, the
+   * four-state `verified` line, and an honest SELF-AUDIT of what the turn did NOT do.
+   * Composed PURELY from real signals (no new model call); absent signal ⇒ absent
+   * line — never fabricated. The accept path is BYTE-FOR-BYTE unchanged when the
+   * resolved value is false. See src/interface/ui/trust-flag.ts / trust-receipt.ts.
    */
   experimentalTrust?: boolean;
   /**
@@ -294,18 +298,17 @@ export interface AppConfig {
    */
   experimentalTaste?: boolean;
   /**
-   * EXPERIMENTAL FREE JUDGMENT LAYER (default off; the master-plan PHASE 5 free
-   * arms). When true (or with `MYSHELL_JUDGMENT` truthy in the environment), the
-   * adaptive brain may emit a NARROWLY-gated `push_back` move — a single, grounded,
-   * falsifiable challenge fired ONLY when there is a real, nameable reason (a
-   * correctness/irreversibility RED FLAG, or a LEARNED-TASTE VIOLATION of the
-   * distilled taste playbook); with no grounded reason it stays silent — and the
-   * existing ask-vs-proceed calibration is sharpened (ask SHARPLY on a genuine fork,
-   * otherwise proceed-and-state the assumption). No new model call: pure decision
-   * logic + recording into the taste ledger (pushback_accept/pushback_reject). The
-   * existing decideNextMove calibration (trivial/medium fast-path, no nag) is
-   * preserved exactly — push_back is additive and RARE. `decideNextMove` returns
-   * BYTE-FOR-BYTE today's moves when this is absent/false. See
+   * FREE JUDGMENT LAYER — stable, default on (promoted v9 Phase 7c).
+   * @deprecated alias — this key is kept for backward compatibility with existing
+   * config files. Do not add new code that sets it; use MYSHELL_JUDGMENT=0 or the
+   * global MYSHELL_BASIC escape hatch to opt out. When false, opts out of the
+   * judgment layer for this project. When true (or with `MYSHELL_JUDGMENT` ∈
+   * {1,true,on,yes} in env), the adaptive brain may emit a NARROWLY-gated `push_back`
+   * move — a single, grounded, falsifiable challenge fired ONLY when there is a real,
+   * nameable reason (a correctness/irreversibility RED FLAG, or a LEARNED-TASTE
+   * VIOLATION); with no grounded reason it stays silent. No new model call: pure
+   * decision logic + recording into the taste ledger. `decideNextMove` returns
+   * BYTE-FOR-BYTE today's moves when the resolved value is false. See
    * src/core/judgment-flag.ts / src/core/brain.ts.
    */
   experimentalJudgment?: boolean;

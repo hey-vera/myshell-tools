@@ -461,12 +461,13 @@ export interface OrchestrateDeps {
    */
   readonly memoryBias?: -1 | 0 | 1;
   /**
-   * THE FREE JUDGMENT LAYER flag (master-plan PHASE 5; src/core/judgment-flag.ts).
-   * When true (the caller resolved `judgmentEnabled(env, config)`), the adaptive
-   * brain may emit a NARROWLY-gated `push_back` move. DEFAULT (absent/false) → the
-   * brain's `decideNextMove` returns BYTE-FOR-BYTE today's moves (push_back never
-   * offered; ask calibration unchanged) — the OFF-GUARANTEE. Set only by the
-   * interface layer when the judgment flag is ON.
+   * THE FREE JUDGMENT LAYER flag (master-plan PHASE 5; src/core/judgment-flag.ts) —
+   * stable, default-on at interactive and one-shot surfaces (v9 Phase 7c). When true
+   * (the caller resolved `experimentalEnabledByDefault` composing `judgmentEnabled`),
+   * the adaptive brain may emit a NARROWLY-gated `push_back` move. When absent/false
+   * → the brain's `decideNextMove` returns BYTE-FOR-BYTE today's moves (push_back
+   * never offered; ask calibration unchanged) — the OFF-GUARANTEE preserved. Set only
+   * by the interface layer when the resolved judgment value is ON.
    */
   readonly judgmentEnabled?: boolean;
   /**
@@ -780,16 +781,17 @@ export interface OrchestrateDeps {
    */
   readonly governorPressure?: 0 | 1 | 2 | 3;
   /**
-   * EXPERIMENTAL — the injected VERIFICATION PORT (master-plan PHASE 3, the
-   * centerpiece). The impure git-diff + test-detection + bounded test-runner
-   * (src/infra/verify-port.ts), wrapped fail-soft exactly like RepoScanPort. PRESENT
-   * ONLY when the verify flag is ON (`verifyEnabled(env, config)`); ABSENT (the
-   * default) → the verify stage is never armed and the work-call accept path is
-   * BYTE-FOR-BYTE today's (the flag-off neutrality the characterization + oracle
-   * suites prove). When present, the verify stage runs at the turn's accept point:
-   * capture the diff → tests-first (free) → ONE diff-scoped cross-vendor critic when
-   * the level selects it → the honest four-state `verified` result + a receipt.
-   * Type-only import to keep types.ts a leaf module.
+   * The injected VERIFICATION PORT (master-plan PHASE 3, the centerpiece) — stable,
+   * default-on at interactive and one-shot surfaces (v9 Phase 7c). The impure
+   * git-diff + test-detection + bounded test-runner (src/infra/verify-port.ts),
+   * command-gated before execution (verify-port.ts:187), wrapped fail-soft exactly
+   * like RepoScanPort. PRESENT ONLY when the verify resolver returns true; ABSENT →
+   * the verify stage is never armed and the work-call accept path is BYTE-FOR-BYTE
+   * unchanged (the flag-off neutrality the characterization + oracle suites prove).
+   * When present, the verify stage runs at the turn's accept point: capture the diff
+   * → tests-first (free) → ONE diff-scoped cross-vendor critic when the level selects
+   * it → the honest four-state `verified` result + a receipt. Type-only import to
+   * keep types.ts a leaf module.
    */
   readonly verifyPort?: import('./verify.js').VerifyPort;
   /**
@@ -830,19 +832,19 @@ export interface OrchestrateDeps {
   readonly evidenceTaskId?: string;
   readonly evidenceTurnNumber?: number;
   /**
-   * EXPERIMENTAL — whether THE TRUST SURFACE (master-plan PHASE 8; core/trust-receipt.ts)
+   * Whether THE TRUST SURFACE (master-plan PHASE 8; core/trust-receipt.ts)
    * consolidates the accept-point receipt into the scannable auditable-confidence +
-   * verify + self-audit block. Resolved by the impure caller via the pure
-   * `trustEnabled(env, config)` flag (src/interface/ui/trust-flag.ts).
+   * verify + self-audit block — stable, default-on at interactive and one-shot
+   * surfaces (v9 Phase 7c). Resolved by the impure caller via
+   * `experimentalEnabledByDefault` composing `trustEnabled(env, config)`.
    *
-   * DEFAULT OFF (absent/false): the accept path emits EXACTLY today's verify-receipt
-   * notice (one line, when verification ran; nothing otherwise) — BYTE-FOR-BYTE today's
-   * output (the characterization + oracle suites prove that neutrality). When true: the
-   * single verify line is UPGRADED into the consolidated trust receipt, composed PURELY
-   * from the real signals already on the turn (no new model call) and surfacing ONLY
-   * signals that genuinely occurred. The underlying signals are themselves flag-gated
-   * (verify needs MYSHELL_VERIFY, agreement needs MYSHELL_JUDGMENT), so an absent signal
-   * is an absent line — never a fabricated basis.
+   * When absent/false: the accept path emits EXACTLY today's verify-receipt notice
+   * (one line, when verification ran; nothing otherwise) — BYTE-FOR-BYTE neutrality
+   * (the characterization + oracle suites prove that). When true: the single verify
+   * line is UPGRADED into the consolidated trust receipt, composed PURELY from the
+   * real signals already on the turn (no new model call) and surfacing ONLY signals
+   * that genuinely occurred. The underlying signals are themselves resolved the same
+   * way (verify, judgment), so an absent signal is an absent line — never fabricated.
    */
   readonly trustEnabled?: boolean;
   /**

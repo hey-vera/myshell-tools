@@ -1,7 +1,8 @@
 /**
- * test/unit/rollback-flag.test.ts — the DEFAULT-OFF / explicit-opt-IN contract for
- * the unified rollback kill-switch. When engaged, canaried experimental flags are
- * forced off regardless of their own env/config opt-ins.
+ * test/unit/rollback-flag.test.ts — the rollback kill-switch contract. When engaged,
+ * verify/judgment/trust are forced off regardless of their own env/config opt-ins or
+ * the default-on resolver. Other features (governor, taste, tribunal) are unaffected
+ * by rollback (their defaults are controlled only by basic mode or explicit opt-out).
  */
 
 import { describe, it } from 'node:test';
@@ -12,7 +13,7 @@ import { trustEnabled } from '../../src/interface/ui/trust-flag.ts';
 import { verifyEnabled } from '../../src/interface/ui/verify-flag.ts';
 
 describe('rollbackEngaged — default OFF, explicit opt-IN via env', () => {
-  it('absent env ⇒ false (ships dark)', () => {
+  it('absent env ⇒ false (rollback itself ships dark; default-on behavior lives in the feature resolver)', () => {
     assert.equal(rollbackEngaged(undefined), false);
     assert.equal(rollbackEngaged({}), false);
   });
