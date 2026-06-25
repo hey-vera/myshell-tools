@@ -28,7 +28,6 @@ import {
   shouldDeEscalate,
   ESCALATE_FAILURE_MARGIN,
   DEESCALATE_CLEAN_MARGIN,
-  type IntentShape,
   type EscalationSignals,
 } from '../../src/core/auto-brain.ts';
 
