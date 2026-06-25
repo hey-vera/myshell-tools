@@ -222,6 +222,7 @@ import { roleMappingEnabled } from './ui/role-flag.js';
 import { resolveAllRoles, type ProviderModels } from '../core/roles.js';
 import { levelDialEnabled } from './ui/level-flag.js';
 import { resolveLevel, profileForLevel } from '../core/mode-levels.js';
+import { byproductFallbackEnabled } from './ui/byproduct-fallback-flag.js';
 import { experimentalEnabledByDefault } from './ui/experimental-default.js';
 import { nodeVerifyPort } from '../infra/verify-port.js';
 import { createEvidenceSink, createEvidenceSnapshotBuilder } from '../infra/evidence-sink.js';
@@ -2214,6 +2215,13 @@ export async function runChatLoop(
                 sandbox: helperSandbox(ctx.sandbox),
                 ...(Object.keys(availableModels).length > 0 ? { availableModels } : {}),
                 ...(authenticatedProviders.length > 0 ? { authenticatedProviders } : {}),
+                // CAPABILITY PARSE-FROM-TEXT FALLBACK (redesign Phase 0) — DEFAULT OFF.
+                // When on, the extractor tries the richer text-fallback chain
+                // (byproduct-parse.ts) if the primary parseIntentFrame returns null.
+                // PURELY ADDITIVE: on a clean primary parse this has zero effect.
+                ...(byproductFallbackEnabled(process.env, mutableCtx.config)
+                  ? { byproductFallback: true }
+                  : {}),
               })
             : undefined;
 
@@ -2371,6 +2379,17 @@ export async function runChatLoop(
             });
             return { levelProfile: profileForLevel(resolved) };
           })(),
+          // CAPABILITY PARSE-FROM-TEXT FALLBACK (redesign Phase 0) — DEFAULT OFF
+          // (src/interface/ui/byproduct-fallback-flag.ts). When the flag is ON,
+          // set `byproductFallback: true` so the intent extractor knows it may
+          // attempt the text-fallback chain on a primary-parse failure. PURELY
+          // ADDITIVE: `orchestrate` does NOT consume this field; it exists so the
+          // fallback substrate wires through the src import graph and so the next
+          // slice (live consumption) has a seam. When OFF the field is absent →
+          // byte-for-byte today's behavior (the OFF-GUARANTEE).
+          ...(byproductFallbackEnabled(process.env, mutableCtx.config)
+            ? { byproductFallback: true }
+            : {}),
           ...(nativeSession.length > 0 ? { nativeSession } : {}),
           ...(routeClassifier !== undefined ? { routeClassifier } : {}),
           ...(intentExtractor !== undefined ? { intentExtractor } : {}),

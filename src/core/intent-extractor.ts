@@ -23,6 +23,7 @@ import type { Provider, ProviderId, ProviderRequest, SandboxLevel } from '../pro
 import { route } from './route.js';
 import { buildIntentPrompt, parseIntentFrame } from './intent.js';
 import type { IntentExtractor, IntentExtraction } from './intent.js';
+import { parseFallbackIntentFrame } from './byproduct-parse.js';
 
 /** Everything the extractor needs to pick and run the cheapest model. */
 export interface IntentExtractorDeps {
@@ -34,6 +35,16 @@ export interface IntentExtractorDeps {
   readonly sandbox?: SandboxLevel;
   readonly availableModels?: Partial<Record<ProviderId, readonly string[]>>;
   readonly authenticatedProviders?: readonly ProviderId[];
+  /**
+   * EXPERIMENTAL (default absent/false). When true, if the primary
+   * `parseIntentFrame` returns null the extractor tries the richer
+   * `parseFallbackIntentFrame` chain (fenced JSON → partial JSON → prose
+   * markers) before returning null. PURELY ADDITIVE: on a clean primary parse
+   * this has zero effect. Sourced from `OrchestrateDeps.byproductFallback`
+   * (set by the interface layer when `byproductFallbackEnabled` is true).
+   * Absent/false → byte-for-byte today's behavior.
+   */
+  readonly byproductFallback?: boolean;
 }
 
 /** Extraction always runs at the cheapest tier — it only buckets understanding. */
@@ -98,7 +109,16 @@ export function makeIntentExtractor(deps: IntentExtractorDeps): IntentExtractor 
     } catch {
       return null;
     }
-    const frame = parseIntentFrame(finalText);
+    // PRIMARY parse: the standard `parseIntentFrame` (always attempted first).
+    let frame = parseIntentFrame(finalText);
+
+    // FALLBACK parse (ADDITIVE — only when primary returned null AND the flag
+    // is on).  Never alters a successful primary parse.  The fallback handles
+    // fenced JSON blocks, partial JSON missing `confidence`, and prose markers.
+    if (frame === null && deps.byproductFallback === true) {
+      frame = parseFallbackIntentFrame(finalText);
+    }
+
     // Carry usage alongside the frame (backward-compatible IntentExtraction union).
     // When usage is unavailable, return the bare frame (consumers see usage:
     // undefined and omit the token figure rather than print a false 0).
