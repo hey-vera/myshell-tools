@@ -55,10 +55,11 @@ export interface ProviderRequest {
    * The selected reasoning-effort knob for this run (capability registry §3/§5).
    * Set ONLY when the chosen model's ModelCapability declares it supports the
    * effort (selectReasoningEffort returns a supported effort, or undefined). When
-   * absent → no effort flag is threaded (byte-for-byte unchanged behaviour). Today
-   * only the Codex adapter maps this to a CLI flag (`-c model_reasoning_effort=…`);
-   * Claude/OpenCode ignore it (no stable per-model effort flag). Type-only import
-   * to keep port.ts a leaf module.
+   * absent → no effort flag is threaded (byte-for-byte unchanged behaviour). The
+   * Codex adapter always maps this to `-c model_reasoning_effort=…`; the Claude
+   * and Grok adapters thread `--effort <level>` only when `MYSHELL_PROVIDER_EFFORT`
+   * is ON (default off — see src/providers/provider-effort-flag.ts). Type-only
+   * import to keep port.ts a leaf module.
    */
   readonly reasoningEffort?: import('../core/model-capabilities.js').ReasoningEffort;
   /**

@@ -65,31 +65,61 @@ describe('buildGrokArgs', () => {
     assert.ok(!args.includes('--resume') && !args.includes('--session-id'));
   });
 
-  // ---- Reasoning effort (--effort) -----------------------------------------
+  // ---- Reasoning effort (--effort, MYSHELL_PROVIDER_EFFORT gate) -----------
+  //
+  // DEFAULT OFF: when effortEnabled is absent/false (the default), NO --effort
+  // flag is emitted — byte-for-byte unchanged. Tests must pass effortEnabled=true
+  // to exercise the on-path.
 
-  it('appends --effort <level> when reasoningEffort is set (grok supports max)', () => {
+  it('DEFAULT OFF: OMITS --effort even when reasoningEffort is set (flag not enabled)', () => {
+    // This is the byte-identity invariant: default-off means no --effort emitted.
     const args = buildGrokArgs(makeReq({ reasoningEffort: 'max' }));
+    assert.ok(!args.includes('--effort'), 'no --effort by default (flag off)');
+  });
+
+  it('DEFAULT OFF: OMITS --effort for any effort level (flag not enabled)', () => {
+    for (const effort of ['low', 'medium', 'high', 'xhigh', 'max'] as const) {
+      const args = buildGrokArgs(makeReq({ reasoningEffort: effort }));
+      assert.ok(!args.includes('--effort'), `no --effort for ${effort} when flag off`);
+    }
+  });
+
+  it('FLAG ON: appends --effort <level> when reasoningEffort is set and effortEnabled=true (max)', () => {
+    const args = buildGrokArgs(makeReq({ reasoningEffort: 'max' }), true);
     const i = args.indexOf('--effort');
-    assert.ok(i >= 0, 'should include --effort');
+    assert.ok(i >= 0, 'should include --effort when flag on');
     assert.strictEqual(args[i + 1], 'max');
   });
 
-  it('appends --effort xhigh when that level is selected', () => {
-    const args = buildGrokArgs(makeReq({ reasoningEffort: 'xhigh' }));
+  it('FLAG ON: appends --effort xhigh when that level is selected and effortEnabled=true', () => {
+    const args = buildGrokArgs(makeReq({ reasoningEffort: 'xhigh' }), true);
     const i = args.indexOf('--effort');
+    assert.ok(i >= 0, 'should include --effort when flag on');
     assert.strictEqual(args[i + 1], 'xhigh');
   });
 
-  it('OMITS --effort when reasoningEffort is absent', () => {
-    assert.ok(!buildGrokArgs(makeReq()).includes('--effort'));
+  it('FLAG ON: maps all supported effort levels correctly', () => {
+    const levels = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
+    for (const effort of levels) {
+      const args = buildGrokArgs(makeReq({ reasoningEffort: effort }), true);
+      const i = args.indexOf('--effort');
+      assert.ok(i >= 0, `--effort should be present for ${effort} when flag on`);
+      assert.strictEqual(args[i + 1], effort, `effort value should be ${effort}`);
+    }
   });
 
-  it("OMITS --effort when reasoningEffort is 'none'", () => {
-    assert.ok(!buildGrokArgs(makeReq({ reasoningEffort: 'none' })).includes('--effort'));
+  it('OMITS --effort when reasoningEffort is absent (byte-for-byte unchanged, flag on or off)', () => {
+    assert.ok(!buildGrokArgs(makeReq()).includes('--effort'), 'no --effort when absent, flag off');
+    assert.ok(!buildGrokArgs(makeReq(), true).includes('--effort'), 'no --effort when absent, flag on');
   });
 
-  it('--effort precedes the permission-mode flag', () => {
-    const args = buildGrokArgs(makeReq({ sandbox: 'read-only', reasoningEffort: 'high' }));
+  it("OMITS --effort when reasoningEffort is 'none' (no real thinking effort, flag on or off)", () => {
+    assert.ok(!buildGrokArgs(makeReq({ reasoningEffort: 'none' })).includes('--effort'), 'flag off');
+    assert.ok(!buildGrokArgs(makeReq({ reasoningEffort: 'none' }), true).includes('--effort'), 'flag on, none');
+  });
+
+  it('FLAG ON: --effort precedes the permission-mode flag', () => {
+    const args = buildGrokArgs(makeReq({ sandbox: 'read-only', reasoningEffort: 'high' }), true);
     assert.ok(args.indexOf('--effort') < args.indexOf('--permission-mode'));
   });
 

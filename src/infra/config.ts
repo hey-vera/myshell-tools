@@ -505,6 +505,23 @@ export interface AppConfig {
    */
   experimentalByproductFallback?: boolean;
   /**
+   * EXPERIMENTAL Claude/Grok provider effort wiring (redesign Phase 0; default off).
+   * When true (or with `MYSHELL_PROVIDER_EFFORT` ∈ {1,true,on,yes} in the
+   * environment) the Claude and Grok provider adapters thread the normalized
+   * `reasoningEffort` field from `ProviderRequest` onto their respective CLI flags
+   * (`--effort <low|medium|high|xhigh|max>`). This is a live behavior change for
+   * any run where `selectReasoningEffort` returns a non-`none` effort — the
+   * provider CLI receives an explicit effort directive instead of using its built-in
+   * default. Default-off is mandatory until this is validated across real runs.
+   * THE OFF-GUARANTEE: when absent/false, `buildClaudeArgs` and `buildGrokArgs`
+   * emit ZERO `--effort` flag — argv is byte-for-byte unchanged. See
+   * src/providers/provider-effort-flag.ts and docs/one-chat-redesign-plan.md (Q4).
+   *
+   * Enable: MYSHELL_PROVIDER_EFFORT=1  OR  set "experimentalProviderEffort": true
+   *         in ~/.myshell-tools/config.json.
+   */
+  experimentalProviderEffort?: boolean;
+  /**
    * Per-user "first-touch explainer shown" flags (whole-tool-finish-5.5.md §0.1).
    * Absent → nothing shown yet (each surface explains itself once on first
    * encounter). Each key flips to true the first time that surface is met.

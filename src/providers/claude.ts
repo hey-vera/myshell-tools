@@ -124,8 +124,13 @@ function claudeSandboxArgs(sandbox: SandboxLevel): string[] {
  * with our chosen id. When unset, the run is a stateless one-shot (the default).
  *
  * Sandbox flags are appended LAST because `--disallowedTools` is variadic.
+ *
+ * @param effortEnabled - When true, the `reasoningEffort` field on the request is
+ *   threaded onto `--effort <level>`. When false or absent (the DEFAULT), no
+ *   `--effort` flag is emitted and argv is byte-for-byte unchanged. Controlled by
+ *   `providerEffortEnabled` from src/providers/provider-effort-flag.ts.
  */
-export function buildClaudeArgs(req: ProviderRequest): string[] {
+export function buildClaudeArgs(req: ProviderRequest, effortEnabled?: boolean): string[] {
   const args = [
     '-p',
     '--output-format',
@@ -150,15 +155,16 @@ export function buildClaudeArgs(req: ProviderRequest): string[] {
       args.push('--session-id', req.sessionId);
     }
   }
-  // Reasoning-effort knob (capability registry §5): the Claude CLI exposes
-  // `--effort <low|medium|high|xhigh|max>`. Thread the selected effort ONLY when one
-  // is set AND it is a real "thinking" effort (not `none`). The effort is chosen
-  // upstream by selectReasoningEffort, which returns ONLY an effort the chosen
-  // model's ModelCapability declares it supports (or undefined) — so a set effort
-  // here is, by construction, a supported one. Absent/`none` → no flag at all
-  // (byte-for-byte unchanged). Placed BEFORE the variadic sandbox args so the
-  // trailing --disallowedTools list stays the tail of argv.
-  if (req.reasoningEffort !== undefined && req.reasoningEffort !== 'none') {
+  // Reasoning-effort knob (capability registry §5, MYSHELL_PROVIDER_EFFORT gate):
+  // the Claude CLI exposes `--effort <low|medium|high|xhigh|max>`. Thread the
+  // selected effort ONLY when the provider-effort flag is explicitly ON AND the
+  // effort is a real "thinking" effort (not `none`). The effort is chosen upstream
+  // by selectReasoningEffort, which returns ONLY an effort the chosen model's
+  // ModelCapability declares it supports (or undefined) — so a set effort here is,
+  // by construction, a supported one. Default-OFF: absent/false `effortEnabled` →
+  // no flag at all → byte-for-byte unchanged. Placed BEFORE the variadic sandbox
+  // args so the trailing --disallowedTools list stays the tail of argv.
+  if (effortEnabled === true && req.reasoningEffort !== undefined && req.reasoningEffort !== 'none') {
     args.push('--effort', req.reasoningEffort);
   }
   // Native web search (provider-capability audit #3). LIVE-VERIFIED: WITHOUT this
@@ -185,10 +191,14 @@ export function buildClaudeArgs(req: ProviderRequest): string[] {
 /**
  * Create a Claude provider adapter.
  *
- * @param opts.bin - Override the binary name/path (default: `'claude'`).
+ * @param opts.bin          - Override the binary name/path (default: `'claude'`).
+ * @param opts.effortEnabled - When true, `--effort <level>` is threaded onto the
+ *   CLI invocation when `req.reasoningEffort` is set and not `'none'`. Default
+ *   false (MYSHELL_PROVIDER_EFFORT gate; see provider-effort-flag.ts).
  */
-export function createClaudeProvider(opts?: { bin?: string }): Provider {
+export function createClaudeProvider(opts?: { bin?: string; effortEnabled?: boolean }): Provider {
   const bin = opts?.bin ?? 'claude';
+  const effortEnabled = opts?.effortEnabled === true;
 
   return {
     id: 'claude',
@@ -211,6 +221,7 @@ export function createClaudeProvider(opts?: { bin?: string }): Provider {
         req,
         signal,
         bin,
+        effortEnabled,
         register: (k) => killers.push(k),
       });
       return withHangCap(inner, {
@@ -234,10 +245,11 @@ async function* runClaudeRaw(args0: {
   req: ProviderRequest;
   signal: AbortSignal;
   bin: string;
+  effortEnabled: boolean;
   register: (killTree: () => void) => void;
 }): AsyncIterable<ProviderEvent> {
-  const { req, signal, bin, register } = args0;
-  const args = buildClaudeArgs(req);
+  const { req, signal, bin, effortEnabled, register } = args0;
+  const args = buildClaudeArgs(req, effortEnabled);
 
   // Prefer Claude's own current credentials. The legacy myshell token is used
   // only when Claude has no usable credentials file of its own.

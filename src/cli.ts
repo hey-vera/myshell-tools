@@ -256,7 +256,10 @@ function buildDeps(
     >
   >,
 ): OrchestrateDeps {
-  const providers = buildAuthenticatedProviders(cwd, env);
+  // Pass process.env so provider-effort-flag (MYSHELL_PROVIDER_EFFORT) is
+  // resolved at provider-construction time. Config is not available here in
+  // buildDeps; the env var path is sufficient for the run surface.
+  const providers = buildAuthenticatedProviders(cwd, env, process.env);
 
   // Populate advertised model lists from detection so route() can prefer a
   // model the provider CLI actually has. Only include installed providers.
@@ -498,7 +501,7 @@ async function main(): Promise<void> {
         .map((p) => p.plan),
     );
     const policy = POLICY_PRESETS[resolvedMode];
-    const providers = buildAuthenticatedProviders(cwd, env);
+    const providers = buildAuthenticatedProviders(cwd, env, process.env, config);
     const authenticatedProviders: import('./providers/port.js').ProviderId[] = [];
     if (env.claude.authenticated) authenticatedProviders.push('claude');
     if (env.codex.authenticated) authenticatedProviders.push('codex');
@@ -797,7 +800,7 @@ async function main(): Promise<void> {
       probeStateWritable(cwd),
       probeLedgerWritable(cwd),
     ]);
-    const providers = buildAuthenticatedProviders(cwd, env);
+    const providers = buildAuthenticatedProviders(cwd, env, process.env, config);
     spinner.stop();
 
     // Self-heal "set as default shell" so the setting actually matches reality

@@ -95,8 +95,13 @@ function grokSandboxArgs(sandbox: SandboxLevel): string[] {
  * Native session (opt-in): when `req.sessionId` is set, add `--resume <id>` to
  * continue an existing session, or `--session-id <id>` to establish a new one
  * with our chosen id. When unset, the run is a stateless one-shot (the default).
+ *
+ * @param effortEnabled - When true, the `reasoningEffort` field on the request is
+ *   threaded onto `--effort <level>`. When false or absent (the DEFAULT), no
+ *   `--effort` flag is emitted and argv is byte-for-byte unchanged. Controlled by
+ *   `providerEffortEnabled` from src/providers/provider-effort-flag.ts.
  */
-export function buildGrokArgs(req: ProviderRequest): string[] {
+export function buildGrokArgs(req: ProviderRequest, effortEnabled?: boolean): string[] {
   // Single-turn headless mode is triggered by `--prompt-file` (appended by the
   // caller at spawn time), NOT `--single`: grok's `--single` REQUIRES an inline
   // <PROMPT> value and cannot be combined with `--prompt-file` (verified live —
@@ -117,12 +122,14 @@ export function buildGrokArgs(req: ProviderRequest): string[] {
     }
   }
 
-  // Reasoning-effort knob. grok exposes `--effort <low|medium|high|xhigh|max>`
-  // (verified in DESIGN-GROK.md). Thread the selected effort ONLY when one is set
-  // AND it is a real "thinking" effort (not `none`). The effort is chosen upstream
-  // by selectReasoningEffort, which returns ONLY an effort the chosen model's
-  // ModelCapability declares it supports (or undefined).
-  if (req.reasoningEffort !== undefined && req.reasoningEffort !== 'none') {
+  // Reasoning-effort knob (MYSHELL_PROVIDER_EFFORT gate). grok exposes
+  // `--effort <low|medium|high|xhigh|max>` (verified in DESIGN-GROK.md). Thread the
+  // selected effort ONLY when the provider-effort flag is explicitly ON AND the effort
+  // is a real "thinking" effort (not `none`). The effort is chosen upstream by
+  // selectReasoningEffort, which returns ONLY an effort the chosen model's
+  // ModelCapability declares it supports (or undefined). Default-OFF: absent/false
+  // `effortEnabled` → no flag at all → byte-for-byte unchanged.
+  if (effortEnabled === true && req.reasoningEffort !== undefined && req.reasoningEffort !== 'none') {
     args.push('--effort', req.reasoningEffort);
   }
 
@@ -174,10 +181,14 @@ async function removePromptFile(path: string): Promise<void> {
 /**
  * Create a Grok provider adapter.
  *
- * @param opts.bin - Override the binary name/path (default: `'grok'`).
+ * @param opts.bin          - Override the binary name/path (default: `'grok'`).
+ * @param opts.effortEnabled - When true, `--effort <level>` is threaded onto the
+ *   CLI invocation when `req.reasoningEffort` is set and not `'none'`. Default
+ *   false (MYSHELL_PROVIDER_EFFORT gate; see provider-effort-flag.ts).
  */
-export function createGrokProvider(opts?: { bin?: string }): Provider {
+export function createGrokProvider(opts?: { bin?: string; effortEnabled?: boolean }): Provider {
   const bin = opts?.bin ?? 'grok';
+  const effortEnabled = opts?.effortEnabled === true;
 
   return {
     id: 'grok',
@@ -193,6 +204,7 @@ export function createGrokProvider(opts?: { bin?: string }): Provider {
         req,
         signal,
         bin,
+        effortEnabled,
         register: (k) => killers.push(k),
       });
       return withHangCap(inner, {
@@ -214,10 +226,11 @@ async function* runGrokRaw(args0: {
   req: ProviderRequest;
   signal: AbortSignal;
   bin: string;
+  effortEnabled: boolean;
   register: (killTree: () => void) => void;
 }): AsyncIterable<ProviderEvent> {
-  const { req, signal, bin, register } = args0;
-  const args = buildGrokArgs(req);
+  const { req, signal, bin, effortEnabled, register } = args0;
+  const args = buildGrokArgs(req, effortEnabled);
 
   // Deliver the prompt via a temporary file, never as an argv argument.
   const promptFile = await writePromptFile(req.prompt);
