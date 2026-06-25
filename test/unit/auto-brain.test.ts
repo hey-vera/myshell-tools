@@ -337,12 +337,21 @@ describe('adaptForSingleModel — model-rung collapses, effort stays', () => {
     assert.equal(adapted.verifyDepth, 'self-check');
   });
 
-  it('cross-vendor collapses to self-check even when toggle=false (1-model has no cross-vendor)', () => {
+  it('cross-vendor collapses to none when toggle=false (self-review pass off, quota-limited per locked decision #4)', () => {
     const frame = makeFrame({ routeTier: 'manager', operationRisk: 'critical', source: 'model' });
     const result = fuseRung({ frame, classifyTier: 'manager', classifyRisk: 'critical' });
     const adapted = adaptForSingleModel(result.rung, false);
-    // Without toggle, cross-vendor still collapses (no second vendor exists)
-    assert.equal(adapted.verifyDepth, 'self-check');
+    // Without toggle: no self-review pass runs — quota-limited, honest disclosure.
+    // (1 model can't cross-check; toggle=false means don't run the self-review substitute.)
+    assert.equal(adapted.verifyDepth, 'none');
+  });
+
+  it('cross-vendor collapses to none when toggle=false + balanced level (capped to high/max only)', () => {
+    // balanced level → self-check verifyDepth (not cross-vendor), so stays unchanged.
+    const result = fuseRung({ classifyTier: 'ic', classifyRisk: 'medium' });
+    // balanced → verifyDepth 'self-check', not cross-vendor
+    const adapted = adaptForSingleModel(result.rung, false);
+    assert.equal(adapted.verifyDepth, result.rung.verifyDepth); // unchanged
   });
 
   it('self-check stays self-check in 1-model case', () => {

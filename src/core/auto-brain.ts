@@ -368,26 +368,33 @@ export function fuseRung(input: FuseRungInput): FuseRungResult {
         reason = `hard turn: floor-clamped to ${floor} (classify: tier=${classifyTier ?? 'none'}, risk=${classifyRisk ?? 'none'})`;
       }
     } else {
-      // --- Step 2: start from classify floor ---
-      // Use the byproduct route hint via resolveLevel for non-hard turns.
+      // --- Step 2: byproduct hint drives the rung; floor is a SOFT safety net ---
+      // Per locked decision #3: byproduct hint MAY lower below the classify floor,
+      // but NEVER below Budget. So for non-hard turns, trust the byproduct hint
+      // (which may resolve to budget for genuinely trivial turns), then clamp to
+      // Budget as the absolute hard floor — NOT to the classify floor.
       const byproductLevel = frame?.routeTier !== undefined
         ? tierToLevel(frame.routeTier)
         : undefined;
 
       // exactOptionalPropertyTypes: only include fields when they have a real value.
+      // Pass `floor: 'budget'` as the hint floor so resolveRouteHint clamps to Budget
+      // (the locked hard floor) rather than to the classify-derived floor — this is
+      // what allows a trivial turn (worker, low-risk "thanks!") to resolve to budget.
       committed = resolveLevel({
         chosen: 'auto',
         ...(byproductLevel !== undefined
-          ? { routeHint: { suggestedLevel: byproductLevel, floor } }
+          ? { routeHint: { suggestedLevel: byproductLevel, floor: 'budget' } }
           : {}),
         ...(persistedMode !== undefined ? { persistedMode } : {}),
         ...(autoMode !== undefined ? { autoMode } : {}),
       });
 
-      // Clamp to floor as a safety net.
-      if (rankOf(committed) < rankOf(floor)) {
-        committed = floor;
-      }
+      // Hard floor: never below Budget (locked decision #3). The classify floor is a
+      // SOFT safety net surfaced in the receipt but NOT a clamping minimum — a trivial
+      // turn's byproduct is allowed to route below it (e.g. worker+low → budget even
+      // when classify says balanced) as long as we never go below Budget.
+      if (rankOf(committed) < 0) committed = 'budget'; // paranoia — rankOf always ≥ 0
 
       reason = buildReason(shape, classifyTier, classifyRisk, byproductLevel, committed);
     }
@@ -395,10 +402,10 @@ export function fuseRung(input: FuseRungInput): FuseRungResult {
     // --- Step 3: apply memory bias ---
     committed = applyMemoryBias(committed, memoryBias);
 
-    // Re-ensure floor after bias nudge.
-    if (rankOf(committed) < rankOf(floor)) {
-      committed = floor;
-    }
+    // Hard floor after bias: never below Budget (locked decision #3).
+    // Note: applyMemoryBias is already clamped to budget…max internally,
+    // so this is a belt-and-suspenders guard only.
+    if (rankOf(committed) < 0) committed = 'budget'; // paranoia
 
     // --- Step 4: clamp to capacity ceiling ---
     committed = clampToCeiling(committed, capacityCeiling);
@@ -622,20 +629,37 @@ export function adaptForSingleModel(
   selfReviewPassEnabled: boolean = false,
 ): RungTuple {
   try {
-    // Cross-vendor collapses to self-check ONLY when the toggle is on and the
-    // rung warrants it (high/max level — not budget/balanced).
+    // Cross-vendor verification requires two models — a 1-model setup cannot do it.
+    // What the toggle gates is whether a SELF-REVIEW PASS runs as a substitute.
+    //
+    // Per locked decision #4: self-review is capped to high/max turns and is OFF by
+    // default under quota pressure. The unconditional collapse (1 model can't
+    // cross-check) is preserved; the TOGGLE gates whether the collapse produces a
+    // self-check pass or collapses all the way to 'none':
+    //
+    //   - cross-vendor + toggle=true  + high/max → self-check  (1-model substitute)
+    //   - cross-vendor + toggle=false + any level → none        (quota-limited, honest)
+    //   - cross-vendor + toggle=true  + budget/balanced → none  (capped to high/max)
+    //   - non-cross-vendor → unchanged (self-check / none stay as-is)
     const isHighOrMax = rung.level === 'high' || rung.level === 'max';
-    const collapseVerify =
+    const selfReviewRunsThisTurn =
       rung.verifyDepth === 'cross-vendor' &&
       selfReviewPassEnabled &&
       isHighOrMax;
+
+    const newVerifyDepth: RungTuple['verifyDepth'] =
+      rung.verifyDepth === 'cross-vendor'
+        ? selfReviewRunsThisTurn
+          ? 'self-check'
+          : 'none'
+        : rung.verifyDepth;
 
     return {
       ...rung,
       // Pin modelRung to ic — the single model IS the ic rung.
       modelRung: 'ic',
-      // Cross-vendor → self-check only with toggle+high/critical; else unchanged.
-      verifyDepth: collapseVerify ? 'self-check' : rung.verifyDepth === 'cross-vendor' ? 'self-check' : rung.verifyDepth,
+      // Toggle gates whether self-review runs (per locked decision #4).
+      verifyDepth: newVerifyDepth,
     };
   } catch {
     return rung;
