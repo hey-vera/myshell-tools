@@ -1,10 +1,12 @@
 /**
  * test/unit/mode-levels.test.ts — unit tests for the PURE 5-level firepower dial
  * (src/core/mode-levels.ts; redesign Phase 0, slice 2). Covers: each level maps to
- * the specified mode/policy/intensity/effort; Auto resolves via the byproduct seam
- * then falls back to persisted-mode / auto-mode heuristics; persisted-old-mode
- * MIGRATION; recursion fact; and a single-provider/single-model run still resolves a
- * usable level. Pure: no spawn, no I/O.
+ * the specified mode/policy/intensity/effort; High is a GENUINELY-lighter rung than
+ * Max (lower effort AND lighter verification/escalation, not just a narrower panel);
+ * Auto resolves via the byproduct PER-TURN ROUTE-HINT seam (a suggested rung yielding
+ * a rung tuple, floor-clamped) then falls back to persisted-mode / auto-mode
+ * heuristics; persisted-old-mode MIGRATION; recursion fact; and a
+ * single-provider/single-model run still resolves a usable level. Pure: no spawn, no I/O.
  */
 
 import { describe, it } from 'node:test';
@@ -22,12 +24,20 @@ import {
   allowsAgentRecursion,
   profileForLevel,
   migrateMode,
-  levelFromAutoDifficulty,
+  resolveRouteHint,
+  rungTupleForLevel,
+  resolveRungTuple,
   resolveLevel,
   type Level,
 } from '../../src/core/mode-levels.ts';
 import { POLICY_PRESETS } from '../../src/core/policy.ts';
 import type { Mode } from '../../src/core/policy.ts';
+import { KNOWN_REASONING_EFFORTS } from '../../src/core/model-capabilities.ts';
+
+/** Rank a reasoning effort on the cheapest→deepest ladder (for High<Max assertions). */
+function effortRank(e: string): number {
+  return KNOWN_REASONING_EFFORTS.indexOf(e as never);
+}
 
 // ---------------------------------------------------------------------------
 // 1. The level set + guards
@@ -93,22 +103,80 @@ describe('policyForLevel — reuses POLICY_PRESETS, never a parallel system', ()
     assert.equal(p?.flagshipAdmission, 'always-eligible');
   });
 
-  it('high = quality-first envelope but a NARROWER 2-provider panel (mid-high rung)', () => {
+  it('high = quality-first flagship reachability but LIGHTER than Max (not just panel)', () => {
     const p = policyForLevel('high');
     assert.ok(p !== undefined);
-    // Same thorough-review / flagship posture as Max...
+    // Keeps flagship reachability + hard-turns panel posture...
     assert.equal(p.flagshipAdmission, 'always-eligible');
-    assert.equal(p.reviewPolicy, 'auto');
     assert.equal(p.panelPolicy, 'hard-turns');
-    // ...but a gentler panel than Max's 3.
+    // ...but LIGHTER verification than Max's 'auto'.
+    assert.equal(p.reviewPolicy, 'critical-only');
+    // ...a gentler panel than Max's 3.
     assert.equal(p.maxPanelProviders, 2);
     // It is a FRESH object — never mutates the shared quality-first preset.
     assert.notEqual(p, POLICY_PRESETS['quality-first']);
     assert.equal(POLICY_PRESETS['quality-first'].maxPanelProviders, 3);
+    assert.equal(POLICY_PRESETS['quality-first'].reviewPolicy, 'auto');
   });
 
   it('auto has no fixed policy (undefined — resolved per turn)', () => {
     assert.equal(policyForLevel('auto'), undefined);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 3b. High < Max DIFFERENTIATION — the genuine-rung gap (effort + verification +
+//     escalation), not merely panel width.
+// ---------------------------------------------------------------------------
+
+describe('High is a genuinely LIGHTER rung than Max (effort + verification + escalation)', () => {
+  it('High has a STRICTLY LOWER reasoning-effort floor than Max', () => {
+    const hi = baseEffortForLevel('high');
+    const mx = baseEffortForLevel('max');
+    assert.ok(hi !== undefined && mx !== undefined);
+    assert.ok(
+      effortRank(hi) < effortRank(mx),
+      `expected High effort (${hi}) < Max effort (${mx})`,
+    );
+  });
+
+  it('High has LIGHTER verification than Max (critical-only vs auto)', () => {
+    const hi = policyForLevel('high');
+    const mx = policyForLevel('max');
+    assert.equal(hi?.reviewPolicy, 'critical-only');
+    assert.equal(mx?.reviewPolicy, 'auto');
+    // critical-only is strictly a subset of auto's triggers → lighter verification.
+    assert.notEqual(hi?.reviewPolicy, mx?.reviewPolicy);
+  });
+
+  it('High escalates LESS EAGERLY than Max on every risk band', () => {
+    const hi = policyForLevel('high');
+    const mx = policyForLevel('max');
+    assert.ok(hi !== undefined && mx !== undefined);
+    for (const risk of ['low', 'medium', 'high', 'critical'] as const) {
+      assert.ok(
+        hi.escalateBelowConfidence[risk] < mx.escalateBelowConfidence[risk],
+        `High should escalate less eagerly than Max at ${risk} ` +
+          `(${hi.escalateBelowConfidence[risk]} < ${mx.escalateBelowConfidence[risk]})`,
+      );
+    }
+  });
+
+  it('High still narrows the panel (2 vs 3) — the original differentiator is kept too', () => {
+    assert.equal(policyForLevel('high')?.maxPanelProviders, 2);
+    assert.equal(policyForLevel('max')?.maxPanelProviders, 3);
+  });
+
+  it('the rung tuple expresses the gap: same manager rung, lighter verifyDepth', () => {
+    const hi = rungTupleForLevel('high');
+    const mx = rungTupleForLevel('max');
+    assert.equal(hi.modelRung, 'manager');
+    assert.equal(mx.modelRung, 'manager');
+    // High self-checks; Max runs the cross-vendor pass.
+    assert.equal(hi.verifyDepth, 'self-check');
+    assert.equal(mx.verifyDepth, 'cross-vendor');
+    // Effort gap carried through the tuple as well.
+    assert.ok(effortRank(hi.effort) < effortRank(mx.effort));
   });
 });
 
@@ -205,49 +273,91 @@ describe('migrateMode — persisted old config.mode values', () => {
 });
 
 // ---------------------------------------------------------------------------
-// 8. Auto resolution — byproduct seam then heuristic fallback
+// 8. Auto resolution — the PER-TURN ROUTE-HINT seam (suggested rung → tuple),
+//    floor-clamped, then heuristic fallback.
 // ---------------------------------------------------------------------------
 
-describe('levelFromAutoDifficulty — the byproduct seam', () => {
-  it('an explicit suggestedLevel wins outright', () => {
-    assert.equal(levelFromAutoDifficulty({ suggestedLevel: 'high' }), 'high');
-    assert.equal(
-      levelFromAutoDifficulty({ suggestedLevel: 'budget', difficulty: 'critical' }),
-      'budget',
-    );
+describe('resolveRouteHint — the per-turn suggested-rung seam (NOT a coarse bucket)', () => {
+  it('a byproduct-suggested rung is used directly', () => {
+    assert.equal(resolveRouteHint({ suggestedLevel: 'high' }), 'high');
+    assert.equal(resolveRouteHint({ suggestedLevel: 'budget' }), 'budget');
+    assert.equal(resolveRouteHint({ suggestedLevel: 'max' }), 'max');
   });
 
-  it('difficulty buckets project onto the ladder', () => {
-    assert.equal(levelFromAutoDifficulty({ difficulty: 'trivial' }), 'budget');
-    assert.equal(levelFromAutoDifficulty({ difficulty: 'low' }), 'budget');
-    assert.equal(levelFromAutoDifficulty({ difficulty: 'medium' }), 'balanced');
-    assert.equal(levelFromAutoDifficulty({ difficulty: 'high' }), 'high');
-    assert.equal(levelFromAutoDifficulty({ difficulty: 'critical' }), 'max');
+  it('the suggestion is clamped UP to the floor (hint may lower, never below floor)', () => {
+    // Suggestion below the floor is lifted to the floor.
+    assert.equal(resolveRouteHint({ suggestedLevel: 'budget', floor: 'balanced' }), 'balanced');
+    // Suggestion at/above the floor is honored.
+    assert.equal(resolveRouteHint({ suggestedLevel: 'max', floor: 'balanced' }), 'max');
+    assert.equal(resolveRouteHint({ suggestedLevel: 'high', floor: 'high' }), 'high');
   });
 
-  it('no usable signal → undefined (caller falls back)', () => {
-    assert.equal(levelFromAutoDifficulty(undefined), undefined);
-    assert.equal(levelFromAutoDifficulty({}), undefined);
+  it('the locked hard floor is Budget — an absent floor never routes below Budget', () => {
+    // Default floor is budget, so any suggested rung is honored as-is (nothing below budget exists).
+    assert.equal(resolveRouteHint({ suggestedLevel: 'budget' }), 'budget');
+  });
+
+  it('no usable suggestion → undefined (caller falls back to today’s session mode)', () => {
+    assert.equal(resolveRouteHint(undefined), undefined);
+    assert.equal(resolveRouteHint({}), undefined);
+    // A floor with no suggestion is NOT a signal on its own.
+    assert.equal(resolveRouteHint({ floor: 'max' }), undefined);
   });
 });
 
-describe('resolveLevel — the single Auto decision point', () => {
+describe('rungTupleForLevel — the six-dial rung tuple', () => {
+  it('expands each concrete level into the full {rung,effort,verify,decomp,concurrency,context} tuple', () => {
+    const budget = rungTupleForLevel('budget');
+    assert.equal(budget.modelRung, 'worker');
+    assert.equal(budget.effort, 'low');
+    assert.equal(budget.verifyDepth, 'none');
+    assert.equal(budget.decompDepth, 'shallow');
+    assert.equal(budget.concurrency, 1);
+    assert.equal(budget.contextBudget, 'lean');
+
+    const max = rungTupleForLevel('max');
+    assert.equal(max.modelRung, 'manager');
+    assert.equal(max.effort, 'max');
+    assert.equal(max.verifyDepth, 'cross-vendor');
+    assert.equal(max.decompDepth, 'deep');
+    assert.equal(max.concurrency, 5);
+    assert.equal(max.contextBudget, 'rich');
+  });
+
+  it('the tuple never disagrees with profileForLevel on effort/intensity', () => {
+    for (const l of ['budget', 'balanced', 'high', 'max'] as Exclude<Level, 'auto'>[]) {
+      const t = rungTupleForLevel(l);
+      const p = profileForLevel(l);
+      assert.equal(t.effort, p.baseEffort, `${l} effort`);
+      assert.equal(t.concurrency, p.intensity, `${l} concurrency`);
+    }
+  });
+});
+
+describe('resolveLevel — the single Auto decision point (route-hint shaped)', () => {
   it('a concrete chosen level wins over everything', () => {
     assert.equal(
-      resolveLevel({ chosen: 'budget', difficulty: { difficulty: 'critical' }, autoMode: 'quality-first' }),
+      resolveLevel({ chosen: 'budget', routeHint: { suggestedLevel: 'max' }, autoMode: 'quality-first' }),
       'budget',
     );
     assert.equal(resolveLevel({ chosen: 'max' }), 'max');
   });
 
-  it('Auto uses the byproduct difficulty signal when present', () => {
+  it('Auto uses the byproduct route hint (suggested rung) when present', () => {
     assert.equal(
-      resolveLevel({ chosen: 'auto', difficulty: { difficulty: 'high' } }),
+      resolveLevel({ chosen: 'auto', routeHint: { suggestedLevel: 'high' } }),
       'high',
     );
     assert.equal(
-      resolveLevel({ chosen: 'auto', difficulty: { suggestedLevel: 'max' }, autoMode: 'cost-saver' }),
+      resolveLevel({ chosen: 'auto', routeHint: { suggestedLevel: 'max' }, autoMode: 'cost-saver' }),
       'max',
+    );
+  });
+
+  it('the route hint is floor-clamped within resolveLevel too', () => {
+    assert.equal(
+      resolveLevel({ chosen: 'auto', routeHint: { suggestedLevel: 'budget', floor: 'high' } }),
+      'high',
     );
   });
 
@@ -261,12 +371,12 @@ describe('resolveLevel — the single Auto decision point', () => {
     assert.equal(resolveLevel({ chosen: 'auto', autoMode: 'cost-saver' }), 'budget');
   });
 
-  it('byproduct precedence: signal beats persisted mode beats auto mode', () => {
-    // persisted balanced but a byproduct says critical → max (byproduct wins).
+  it('byproduct precedence: route hint beats persisted mode beats auto mode', () => {
+    // persisted balanced but a byproduct suggests max → max (byproduct wins).
     assert.equal(
       resolveLevel({
         chosen: 'auto',
-        difficulty: { difficulty: 'critical' },
+        routeHint: { suggestedLevel: 'max' },
         persistedMode: 'balanced',
         autoMode: 'cost-saver',
       }),
@@ -286,6 +396,23 @@ describe('resolveLevel — the single Auto decision point', () => {
     const r = resolveLevel({ chosen: 'auto' });
     assert.notEqual(r, 'auto');
     assert.equal(isLevel(r), true);
+  });
+});
+
+describe('resolveRungTuple — the tuple-shaped Auto seam + byte-identical fallback', () => {
+  it('with NO byproduct hint, falls back to today’s session mode (byte-identical level)', () => {
+    // No route hint → identical fallback chain to resolveLevel; tuple expands that level.
+    const t = resolveRungTuple({ chosen: 'auto', persistedMode: 'quality-first' });
+    assert.equal(t.level, 'max');
+    assert.deepEqual(t, rungTupleForLevel('max'));
+    // Absent everything → balanced tuple (the safe middle).
+    assert.deepEqual(resolveRungTuple({ chosen: 'auto' }), rungTupleForLevel('balanced'));
+  });
+
+  it('a byproduct route hint drives the committed tuple', () => {
+    const t = resolveRungTuple({ chosen: 'auto', routeHint: { suggestedLevel: 'high' } });
+    assert.equal(t.level, 'high');
+    assert.equal(t.verifyDepth, 'self-check');
   });
 });
 

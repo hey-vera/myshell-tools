@@ -395,23 +395,31 @@ parallel system:
   `≈ cost-saver` policy (no panel/hedge); default Intensity 1; base effort `low`.
 - **Balanced** — mid models, medium effort, standard verification. `≈ balanced` (DEFAULT_POLICY);
   Intensity 3; effort `medium`.
-- **High** — strong models, high effort, thorough review. A **NEW mid-high rung**: the quality-first
-  escalation/review envelope but with a **narrowed 2-provider panel** (vs Max's 3); Intensity 4;
-  effort `high`.
-- **Max** — strongest models, **cross-provider deliberation** (the existing panel + hedge + review
-  machinery fully on, ≤3 providers), deepest effort. `≈ quality-first`; Intensity 5; effort `max`.
-- **Auto (smart)** — per-task: no fixed mode/policy of its own. The difficulty that drives Auto is a
-  **byproduct of the turn the user is already having** (principle #1 — no separate classification
-  call). `resolveLevel` is the clean seam for that byproduct (`AutoDifficulty` →
-  `levelFromAutoDifficulty`); until the byproduct emission lands (a later phase), Auto falls back to
-  the existing heuristics — the persisted legacy `config.mode` (migrated) then the plan-derived auto
-  mode, mirroring today's `config.mode ?? resolveAutoMode` precedence, with a `balanced` safety net.
+- **High** — a **NEW, genuinely-LIGHTER rung than Max** (not just a narrower panel). It keeps
+  quality-first flagship reachability but is stepped DOWN on **three independent levers**: a lower
+  reasoning-effort floor (`high` vs Max's `max`), **lighter verification** (`reviewPolicy:
+  'critical-only'` vs Max's `'auto'`), a **less-eager escalation** posture (`escalateBelowConfidence`
+  strictly between Balanced and Max), AND a narrowed **2-provider panel** (vs Max's 3); Intensity 4.
+  "Strong but restrained."
+- **Max** — the **TOP rung, strongest on every lever**: deepest effort (`max`), the most thorough
+  verification (`reviewPolicy: 'auto'`, eager escalation), full **cross-provider deliberation**
+  (panel + hedge, ≤3 providers). `≈ quality-first` verbatim; Intensity 5.
+- **Auto (smart)** — per-task: no fixed mode/policy of its own. Auto consumes a **per-turn ROUTE HINT
+  that yields a rung tuple** — a `suggestedLevel` (the rung itself, NOT a coarse difficulty bucket),
+  expanded into the six-dial `RungTuple` `{modelRung, effort, verifyDepth, decompDepth, concurrency,
+  contextBudget}`. This is the **byproduct of the turn the user is already having** (principle #1 —
+  no separate classification call). The hint MAY lower the deterministic floor but is **clamped never
+  below Budget**. `resolveLevel` / `resolveRungTuple` are the clean seam (`AutoRouteHint` →
+  `resolveRouteHint` → `rungTupleForLevel`); until the byproduct emission lands (a later phase), Auto
+  falls back to the existing heuristics — the persisted legacy `config.mode` (migrated) then the
+  plan-derived auto mode, mirroring today's `config.mode ?? resolveAutoMode` precedence, with a
+  `balanced` safety net. Hint absent → **byte-identical to today's session-`Mode` behavior**.
 
 **Mapping onto the existing machinery (no parallel system).** All of the above is a set of PURE total
 functions in `src/core/mode-levels.ts` that REUSE `Mode`, `Policy` (built FROM `POLICY_PRESETS`),
 `Intensity`, and `ReasoningEffort` — `levelToMode`, `policyForLevel`, `defaultIntensityForLevel`,
 `baseEffortForLevel`, `allowsAgentRecursion`, `profileForLevel`, plus the Auto seam (`resolveLevel`,
-`levelFromAutoDifficulty`) and the backward-compat `migrateMode`.
+`resolveRungTuple`, `resolveRouteHint`, `rungTupleForLevel`) and the backward-compat `migrateMode`.
 
 **Intensity folds UNDER the level.** Each level sets a sensible default Intensity (1/3/4/5; Auto →
 `'auto'`). Intensity remains only as an optional power-user override, not a primary dial.
@@ -425,9 +433,11 @@ functions in `src/core/mode-levels.ts` that REUSE `Mode`, `Policy` (built FROM `
 #### Built in this slice (PR: 5-level dial over existing policy)
 
 - `src/core/mode-levels.ts` — pure: `Level` type, `ALL_LEVELS`, `isLevel`, `LEVEL_DESC`/`levelLabel`,
-  `levelToMode`, `policyForLevel`, `defaultIntensityForLevel`, `baseEffortForLevel`,
-  `allowsAgentRecursion`, `LevelProfile` + `profileForLevel`, `migrateMode`, the `AutoDifficulty`
-  seam + `levelFromAutoDifficulty`, and `resolveLevel`. No I/O.
+  `levelToMode`, `policyForLevel` (High genuinely lighter than Max — effort + verification +
+  escalation, not just panel), `defaultIntensityForLevel`, `baseEffortForLevel`,
+  `allowsAgentRecursion`, `LevelProfile` + `profileForLevel`, `migrateMode`, and the route-hint Auto
+  seam: `RungTuple`, `rungTupleForLevel`, `AutoRouteHint`, `resolveRouteHint`, `resolveLevel`,
+  `resolveRungTuple`. No I/O.
 - `src/interface/ui/level-flag.ts` — pure default-OFF predicate `levelDialEnabled(env, config)`
   matching the role/verify flag shape (`MYSHELL_LEVEL_DIAL` ∈ {1,true,on,yes} OR
   `config.experimentalLevelDial === true`; rollback forces off).
@@ -472,11 +482,79 @@ lands the pure substrate behind the default-OFF flag only.
 - **Q2 — Role vs the dials. RESOLVED (slice 2).** Roles stay internal/auto-derived; they are NOT a
   user-facing axis. The user tunes the single 5-level dial; roles resolve from the effective level's
   mode under the hood (slice 1 substrate). No user-facing role setting was added.
-- **Q3 — Ghost provider preference.** "ghost = fastest model the user has" needs a *speed* signal.
-  `costSpeedTier` exists on `ModelCapability` but is `unknown` for almost everything (the
+- **Q3 — Auto driver: coarse bucket vs per-turn suggested rung. RESOLVED (refinement).** The Auto
+  seam consumes a **per-turn route hint that yields a rung tuple** — `AutoRouteHint.suggestedLevel`
+  (the rung itself) expanded by `rungTupleForLevel` into `{modelRung, effort, verifyDepth,
+  decompDepth, concurrency, contextBudget}` — **NOT** a coarse difficulty bucket. The earlier
+  `AutoDifficulty`/`levelFromAutoDifficulty` bucket seam was removed in favor of the suggested rung,
+  per the predict-and-commit design (see "Auto — Locked Design Decisions" below).
+- **Q3 (ghost) — Ghost provider preference.** "ghost = fastest model the user has" needs a *speed*
+  signal. `costSpeedTier` exists on `ModelCapability` but is `unknown` for almost everything (the
   unknown-is-absent invariant). Until a real speed signal lands, ghost falls back to the
   worker-tier rung (cheapest), which is a reasonable proxy but not literally "fastest". Confirm that
   proxy is acceptable, or specify the speed source.
 - **Q4 — Claude/Grok effort wiring.** Both declare an `--effort` ladder, but only Codex's adapter
   currently maps `reasoningEffort` to a flag. Promoting Claude/Grok to honor it is a behavior change
   to live runs and is deliberately OUT of this scaffolding slice. Confirm before wiring.
+
+---
+
+## Auto — Locked Design Decisions
+
+> These forks are **RESOLVED**. They are recorded here so future agents do NOT re-litigate them.
+> They lock the `docs/auto-mode-design.md` "predict-and-commit from free byproduct signals" design.
+> The seam shape in `src/core/mode-levels.ts` already reflects these (the Auto BRAIN that consumes
+> the seam is a later slice; the SHAPE is locked now).
+
+**Core Auto architecture (locked).** Auto is a **per-turn policy layer — no new model, no extra
+call**. Two layers:
+
+- **Layer A — predict & commit (the spine).** Resolve the rung UPFRONT from the free byproduct
+  (`IntentFrame` intent/routeTier/risk emitted by the turn the user is already paying for) ⊔ a
+  deterministic floor (`classify()` tier+risk) ⊔ per-project memory bias, then **clamp to capacity**
+  (rate-limit/cooldown). Commit ONCE at the right rung — no tentative cheap probe. This is the
+  per-turn `RungTuple` `{modelRung, effort, verifyDepth, decompDepth, concurrency, contextBudget}`.
+- **Layer B — objective-evidence-only escalation (the exception path).** Fires ONLY on objective,
+  machine-checkable evidence, with **hysteresis** (must clear a margin to move) and symmetric
+  **de-escalation** when a goal turns out mechanical (≥N clean todos).
+- **Legible per-turn receipt** for every committed turn (choice + objective reason + cost).
+- **1-model case** drives **reasoning effort** as the primary lever (model rung collapses; effort /
+  verification / decomposition carry the load).
+
+**The locked forks:**
+
+1. **Auto default floor = track the DETECTED byproduct signal, clamped to a sane floor** — NOT a
+   fixed "balanced" start. The floor follows the detected plan/byproduct posture and is clamped up to
+   a sane minimum; it is not pinned to Balanced regardless of signal. (Resolves design Q1.)
+2. **Layer-B escalation confirmation = CONFIRM before EXPENSIVE escalation** (crossing into
+   panel / manager / sub-agents on a substantial goal); **receipt-after** is enough for cheap,
+   within-tier escalation. (Resolves design Q2.)
+3. **Byproduct hint MAY lower the deterministic floor, but NEVER below Budget.** The hint is allowed
+   to *reduce* spend on obviously-trivial turns, but `resolveRouteHint` hard-clamps so it can never
+   route below the Budget rung. (Resolves design Q3 — the trust-the-hint question — with a hard
+   floor.)
+4. **1-model second-pass verification = capped to high/critical turns + a toggle, OFF by default
+   under quota pressure.** A second self-review pass on one model doubles the call, so it is bounded
+   to high/critical risk and is suppressible under rate-limit pressure (disclosed as "single pass —
+   quota-limited"). (Resolves design Q4.)
+5. **Self-confidence / self-report is BANNED from the escalation trigger** (tie-breaker at most).
+   Escalation fires ONLY on OBJECTIVE evidence: failed tests / typecheck / lint, scope growth,
+   explicit user pushback, or stall/timeout. Verbalized confidence / logprob / entropy are NEVER a
+   primary trigger (the calibration research). (Resolves design Q5.)
+6. **Memory bias scope = per-project, with a global fallback.** Rigor on the payments repo, speed on
+   a scratch project — per-project bias, falling back to a global default on a cold project.
+   (Resolves design Q6.)
+7. **Hysteresis constants = tuned on the eval harness (`core/eval/`), NOT hand-picked.** The
+   "how many objective failures before escalating / how many clean todos before de-escalating"
+   constants are tuned empirically before stable promotion. (Resolves design Q7.)
+8. **On byproduct-flagged HARD/BIG turns, Auto SKIPS the cheap attempt and routes straight to the
+   right rung / manager** (pure predict-and-commit — no wasted probe). Accept occasional over-spend
+   on the rare hard turn to kill latency and double-spend; the cheap-first cascade is explicitly NOT
+   the spine. (Resolves design Q8.)
+
+**Seam-shape consequence (already landed).** Because the Auto driver is a **per-turn suggested rung**
+(decision-shaped), the seam in `src/core/mode-levels.ts` is `AutoRouteHint { suggestedLevel, floor }`
+→ `resolveRouteHint` (floor-clamped per #3) → `rungTupleForLevel` → the six-dial `RungTuple`. The old
+coarse `AutoDifficulty` bucket was removed. The seam stays **pure, default-OFF, never read by
+`orchestrate`**, with a **byte-identical fallback to today's session `Mode`** when the byproduct hint
+is absent.
