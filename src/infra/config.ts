@@ -488,6 +488,24 @@ export interface AppConfig {
    */
   experimentalLevelDial?: boolean;
   /**
+   * AUTO BRAIN — per-turn rung-fusion + objective-evidence escalation (redesign
+   * Auto brain; default OFF). When true (or with `MYSHELL_AUTO_BRAIN` ∈
+   * {1,true,on,yes} in the environment) the per-turn policy layer resolves the
+   * RungTuple for the turn from: the IntentFrame byproduct route hint (structural
+   * read — no new model call) ⊔ the deterministic classify() floor ⊔ the
+   * per-project taste memory bias, then clamps to the user's capacity ceiling.
+   * On byproduct-flagged HARD/BIG turns Auto skips any cheap probe and commits
+   * straight to the right rung (predict-and-commit). Escalation fires ONLY on
+   * objective signals (test/typecheck/lint failures, scope growth, explicit
+   * pushback, stall) — self-confidence is BANNED from the trigger. A one-line
+   * legible receipt (rung + objective reason + cost tier) is written per turn.
+   *
+   * ZERO behavior change when absent/false — the `autoBrainRungTuple` seam on
+   * OrchestrateDeps is absent and orchestrate routes exactly as today. See
+   * src/interface/ui/auto-brain-flag.ts and src/core/auto-brain.ts.
+   */
+  experimentalAutoBrain?: boolean;
+  /**
    * Per-user "first-touch explainer shown" flags (whole-tool-finish-5.5.md §0.1).
    * Absent → nothing shown yet (each surface explains itself once on first
    * encounter). Each key flips to true the first time that surface is met.

@@ -921,6 +921,20 @@ export interface OrchestrateDeps {
    * byte-for-byte today's behavior. Type-only import to keep types.ts a leaf module.
    */
   readonly levelProfile?: import('./mode-levels.js').LevelProfile;
+  /**
+   * AUTO BRAIN per-turn rung-fusion result (redesign Auto brain) — a purely-
+   * additive, currently NEVER-READ seam, mirroring the `levelProfile` seam
+   * above. When the default-OFF `autoBrainEnabled` flag
+   * (src/interface/ui/auto-brain-flag.ts) is on, the interface layer MAY attach
+   * the per-turn fused {@link import('./auto-brain.js').FuseRungResult} here
+   * (computed by src/core/auto-brain.ts `fuseRung`). `orchestrate` does NOT
+   * consume it in this slice — the live path keeps routing exactly as today —
+   * so its presence or absence changes nothing. It exists so the auto-brain
+   * substrate participates in the src import graph and so the live-consumption
+   * slice (Layer-B wiring) has a single landing pad. DEFAULT ABSENT →
+   * byte-for-byte today's behavior. Type-only import to keep types.ts a leaf.
+   */
+  readonly autoBrainRungTuple?: import('./auto-brain.js').FuseRungResult;
 }
 
 /**
