@@ -222,6 +222,8 @@ import { roleMappingEnabled } from './ui/role-flag.js';
 import { resolveAllRoles, type ProviderModels } from '../core/roles.js';
 import { levelDialEnabled } from './ui/level-flag.js';
 import { resolveLevel, profileForLevel } from '../core/mode-levels.js';
+import { autoBrainEnabled } from './ui/auto-brain-flag.js';
+import { fuseRung, type FuseRungResult } from '../core/auto-brain.js';
 import { byproductFallbackEnabled } from './ui/byproduct-fallback-flag.js';
 import { experimentalEnabledByDefault } from './ui/experimental-default.js';
 import { nodeVerifyPort } from '../infra/verify-port.js';
@@ -2379,6 +2381,34 @@ export async function runChatLoop(
             });
             return { levelProfile: profileForLevel(resolved) };
           })(),
+          // AUTO BRAIN (redesign Auto brain) — DEFAULT OFF
+          // (src/interface/ui/auto-brain-flag.ts). When the flag is ON, attach the
+          // per-turn rung-fusion result computed PURELY by src/core/auto-brain.ts
+          // `fuseRung` from what is available at deps-assembly time: the persisted
+          // mode, the plan-derived effectiveMode, and the per-project memoryBias
+          // from the taste ledger. The classify() tier/risk and IntentFrame byproduct
+          // are NOT yet available here — they arrive inside orchestrate. For the
+          // scaffolding seam this pre-computes a partial result (without classify/
+          // frame signals) so the module participates in the src import graph.
+          // SCAFFOLDING ONLY: `orchestrate` does NOT read `autoBrainRungTuple` in
+          // this slice, so this is a purely-additive seam — present or absent, the
+          // orchestrate path is byte-for-byte today's. The live-consumption slice
+          // wires orchestrate to read it (after classify + intent extraction), at
+          // which point fuseRung will be called INSIDE orchestrate with all signals.
+          // When OFF the field is absent entirely. The next slice flips consumption.
+          ...((): { autoBrainRungTuple?: FuseRungResult } => {
+            if (!autoBrainEnabled(process.env, mutableCtx.config)) return {};
+            const brainResult = fuseRung({
+              ...(mutableCtx.config.mode !== undefined
+                ? { persistedMode: mutableCtx.config.mode }
+                : {}),
+              autoMode: effectiveMode,
+              ...(taste?.memoryBias !== undefined && taste.memoryBias !== 0
+                ? { memoryBias: taste.memoryBias }
+                : {}),
+            });
+            return { autoBrainRungTuple: brainResult };
+          })(),
           // CAPABILITY PARSE-FROM-TEXT FALLBACK (redesign Phase 0) — DEFAULT OFF
           // (src/interface/ui/byproduct-fallback-flag.ts). When the flag is ON,
           // set `byproductFallback: true` so the intent extractor knows it may
@@ -2389,8 +2419,7 @@ export async function runChatLoop(
           // byte-for-byte today's behavior (the OFF-GUARANTEE).
           ...(byproductFallbackEnabled(process.env, mutableCtx.config)
             ? { byproductFallback: true }
-            : {}),
-          ...(nativeSession.length > 0 ? { nativeSession } : {}),
+            : {}),          ...(nativeSession.length > 0 ? { nativeSession } : {}),
           ...(routeClassifier !== undefined ? { routeClassifier } : {}),
           ...(intentExtractor !== undefined ? { intentExtractor } : {}),
           // UNIFIED PREFLIGHT (rank-7). Set ONLY when the unify flag is ON; absent
