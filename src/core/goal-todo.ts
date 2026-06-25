@@ -48,7 +48,8 @@ type GoalSource =
   | 'declined-from-plan' // 5b: a decomposed goal the user did NOT pick
   | 'blocked-item' // 5b: a roadmap item left 'blocked' when its parent goal ended
   | 'inferred-defer-cue' // 5b: an explicit "later/TODO/remind me" cue (ask-gated)
-  | 'auto-staged'; // P6: judged + auto-staged by the planning brain post-turn (parked)
+  | 'auto-staged' // P6: judged + auto-staged by the planning brain post-turn (parked)
+  | 'byproduct-draft'; // redesign Phase 1: draft skeleton emitted as byproduct of a build-intent turn (parked, never auto-executed)
 
 /** A goal's scope — mirrors user-memory's two-scope model exactly. */
 export type GoalScope = 'global' | 'project';
@@ -201,6 +202,7 @@ const VALID_SOURCES: ReadonlySet<string> = new Set<GoalSource>([
   'blocked-item',
   'inferred-defer-cue',
   'auto-staged',
+  'byproduct-draft',
 ]);
 
 const VALID_SCOPES: ReadonlySet<string> = new Set<GoalScope>(['global', 'project']);

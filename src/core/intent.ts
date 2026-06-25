@@ -21,6 +21,7 @@
 
 import type { Classification, Tier, Risk } from './types.js';
 import { renderUntrustedBlock } from './untrusted-content.js';
+import { capDraftGoalSkeleton, type DraftGoalSkeleton } from './draft-goal.js';
 
 // ---------------------------------------------------------------------------
 // The frame shape (§3)
@@ -84,6 +85,25 @@ export interface IntentFrame {
   readonly operationRisk?: Risk;
   /** How WIDE the impact is — grounded in the EXISTING Risk taxonomy. */
   readonly blastRadius?: Risk;
+  /**
+   * OPTIONAL draft-goal skeleton emitted as a BYPRODUCT on BUILD-INTENT turns
+   * (redesign Phase 1 spine — "chat → draft goal").  The model emits this
+   * alongside its normal reply when it judges the turn is a build request.
+   * ABSENT on every non-build turn (questions, discussions, research) so
+   * existing frames / mocks / goldens are structurally unchanged.
+   *
+   * When present, the interface layer materialises this as an INACTIVE (parked)
+   * goal in the GoalStore (`state: 'parked'`, `source: 'byproduct-draft'`) —
+   * NEVER queued or executed without explicit user confirmation.  Capped by
+   * `capDraftGoalSkeleton` on round-trip so a malformed value is silently
+   * omitted rather than crashing.
+   *
+   * Gated behind the default-OFF `draftGoalsEnabled` flag
+   * (`src/interface/ui/draft-goals-flag.ts`).  When the flag is off this
+   * field is NEVER populated and the code path that reads it is never reached
+   * — byte-for-byte today's behavior.
+   */
+  readonly draftGoalSkeleton?: DraftGoalSkeleton;
 }
 
 /**
@@ -267,6 +287,11 @@ export function capIntentFrame(frame: IntentFrame): IntentFrame {
   const blastRadiusRaw = raw['blastRadius'];
   const freshnessRaw = raw['externalFreshness'];
 
+  // OPTIONAL draft-goal skeleton (Phase 1 byproduct): tolerant passthrough —
+  // cap it if present, silently omit if absent or malformed.  Absent on every
+  // existing frame → structurally unchanged.
+  const draftGoalSkeletonRaw = raw['draftGoalSkeleton'];
+
   const out: { -readonly [K in keyof IntentFrame]?: IntentFrame[K] } = {
     version: 1,
     goal,
@@ -290,6 +315,10 @@ export function capIntentFrame(frame: IntentFrame): IntentFrame {
   }
   if (typeof freshnessRaw === 'string' && VALID_FRESHNESS.has(freshnessRaw)) {
     out.externalFreshness = freshnessRaw as 'none' | 'helpful' | 'required';
+  }
+  if (draftGoalSkeletonRaw !== undefined) {
+    const capped = capDraftGoalSkeleton(draftGoalSkeletonRaw);
+    if (capped !== null) out.draftGoalSkeleton = capped;
   }
   return out as IntentFrame;
 }
@@ -395,6 +424,17 @@ export function buildIntentPrompt(task: string): string {
     '                     required), "required" (the answer genuinely depends on current/',
     '                     latest external facts — e.g. "latest version", "today\'s", recent',
     '                     news/releases). Omit or "none" for ordinary local work.',
+    '  draftGoalSkeleton— OPTIONAL. Emit ONLY when the message is a BUILD request',
+    '                     (create / implement / add / fix / refactor / deploy / migrate',
+    '                     or similar — something that produces or changes an artefact).',
+    '                     DO NOT emit for questions, explanations, discussions, or',
+    '                     research turns — omit entirely in those cases.',
+    '                     When emitted: a title (≤120 chars, an action phrase) and an',
+    '                     outline of 2–6 high-level sub-goals/steps. No deep nesting.',
+    '                     Example: {"title":"Add dark mode to settings screen",',
+    '                       "outline":[{"text":"Add a theme toggle to the settings UI"},',
+    '                                  {"text":"Implement CSS variable / Tailwind dark mode"},',
+    '                                  {"text":"Persist the preference and apply on load"}]}',
     '',
     'Reply with ONLY a JSON object, nothing else:',
     '{"goal":"...","kind":"coding","constraints":[],"nonGoals":[],"doneWhen":"",',
@@ -403,7 +443,8 @@ export function buildIntentPrompt(task: string): string {
     '              "Client SWR fetch — simpler, needs a /api route"],',
     '   "assumeIfUnasked":"Server-Component streaming"}],',
     ' "confidence":"medium","routeTier":"ic","routePlan":false,',
-    ' "operationRisk":"medium","blastRadius":"medium","externalFreshness":"none"}',
+    ' "operationRisk":"medium","blastRadius":"medium","externalFreshness":"none",',
+    ' "draftGoalSkeleton":{"title":"...","outline":[{"text":"..."},{"text":"..."}]}}',
     '',
     `Message: ${renderIntentTask(task)}`,
   ].join('\n');
@@ -460,6 +501,11 @@ export function parseIntentFrame(text: string | undefined): IntentFrame | null {
   const blastRadius = obj['blastRadius'];
   const externalFreshness = obj['externalFreshness'];
 
+  // OPTIONAL draft-goal skeleton (Phase 1 byproduct): forwarded raw to
+  // capIntentFrame, which caps it via capDraftGoalSkeleton (invalid → omitted,
+  // never a parse failure).  Absent on non-build turns.
+  const draftGoalSkeleton = obj['draftGoalSkeleton'];
+
   return capIntentFrame({
     version: 1,
     goal,
@@ -477,6 +523,7 @@ export function parseIntentFrame(text: string | undefined): IntentFrame | null {
     ...(typeof externalFreshness === 'string'
       ? { externalFreshness: externalFreshness as 'none' | 'helpful' | 'required' }
       : {}),
+    ...(draftGoalSkeleton !== undefined ? { draftGoalSkeleton: draftGoalSkeleton as DraftGoalSkeleton } : {}),
   });
 }
 
