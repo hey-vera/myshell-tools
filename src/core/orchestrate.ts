@@ -34,6 +34,8 @@ import { classify } from './classify.js';
 import { runWorkCall } from './work-call.js';
 import { type CapabilityRouteContext, type CapabilityTaskSignals } from './route.js';
 import { modeFromPolicy, type Mode } from './policy.js';
+import { fuseRung, buildAutoBrainReceipt, type FuseRungResult } from './auto-brain.js';
+import type { Level } from './mode-levels.js';
 import { deriveTaskKind, estimateInputTokens } from './orchestrate-signals.js';
 import { authorizeTier } from './flagship.js';
 import type { FlagshipTrigger, FlagshipDecision } from './flagship.js';
@@ -875,6 +877,47 @@ export async function* orchestrate(
   const wantsWebSearch = engagementPlan.actions.includes('WEB_RESEARCH');
 
   // -------------------------------------------------------------------------
+  // (a2c) AUTO BRAIN — Layer A rung-fusion (default OFF, behind autoBrainRungTuple).
+  //
+  // When `MYSHELL_AUTO_BRAIN` is ON, `depsArg.autoBrainRungTuple` is injected by
+  // menu.ts (a partial, pre-classification result). Here — AFTER classify() AND
+  // intentFrame extraction — we RE-FUSE with the NOW-AVAILABLE full signals: the
+  // byproduct IntentFrame (intent/routeTier/risk) + classify() tier/risk + memoryBias.
+  //
+  // OFF-GUARANTEE: when `autoBrainRungTuple` is absent (flag OFF), this entire block
+  // is dead — every variable below (`autoBrainResult`, `autoBrainTier`) is undefined,
+  // no notice is emitted, and every routing variable (`mode`, `currentTier`, the
+  // taskSignals.risk feed) is BYTE-IDENTICAL to the pre-auto-brain path.
+  //
+  // LAYER B (shouldEscalate / shouldDeEscalate) is NOT wired here — that is the
+  // separate Layer-B follow-on slice. Only Layer A (predict-and-commit) is live.
+  // -------------------------------------------------------------------------
+  let autoBrainResult: FuseRungResult | undefined;
+  /** The tier (modelRung) the auto-brain committed to this turn. Absent when flag off. */
+  let autoBrainTier: Tier | undefined;
+  if (depsArg.autoBrainRungTuple !== undefined) {
+    // Re-fuse with the FULL signals now available: byproduct IntentFrame from
+    // intent extraction + deterministic classify() tier/risk + the taste ledger
+    // memoryBias already threaded via depsArg.memoryBias. The pre-classification
+    // result injected by menu.ts is superseded — the full signals dominate.
+    autoBrainResult = fuseRung({
+      frame: intentFrame,
+      classifyTier: classification.tier,
+      classifyRisk: classification.risk,
+      ...(depsArg.memoryBias !== undefined ? { memoryBias: depsArg.memoryBias } : {}),
+      // Capacity ceiling: treat the policy's maxTier as a proxy (absent → no ceiling).
+      // A more precise ceiling (plan-aware) is a Layer-B seam; for Layer A this is
+      // sufficient to respect Efficient mode ("never-auto" → worker cap).
+      ...(depsArg.policy.maxTier === 'ic'
+        ? { capacityCeiling: 'balanced' as Exclude<Level, 'auto'> }
+        : depsArg.policy.maxTier === 'worker'
+          ? { capacityCeiling: 'budget' as Exclude<Level, 'auto'> }
+          : {}),
+    });
+    autoBrainTier = autoBrainResult.rung.modelRung;
+  }
+
+  // -------------------------------------------------------------------------
   // (a3) ADAPTIVE PARTNER ENGINE v2 — compile the enforced TurnDirective (Stage 1).
   //
   // The EngagementPlan above is ADVISORY (rendered as prompt text). The directive
@@ -1028,6 +1071,15 @@ export async function* orchestrate(
   }
   if (engagementBlock.length > 0) {
     yield { type: 'engagement', plan: engagementPlan };
+  }
+  // AUTO BRAIN RECEIPT — always-on one-line receipt when the flag is on.
+  // Emitted as a compact `notice:info` AFTER the intent+engagement events so it is
+  // the first routing-decision line the user sees before any tier-start. When
+  // `autoBrainResult` is undefined (flag off) this entire block is dead —
+  // BYTE-FOR-BYTE today's event stream (the OFF-GUARANTEE).
+  if (autoBrainResult !== undefined) {
+    const receipt = buildAutoBrainReceipt(autoBrainResult);
+    yield { type: 'notice', level: 'info', message: receipt };
   }
 
   const deps: OrchestrateDeps =
@@ -1745,7 +1797,15 @@ export async function* orchestrate(
   // failover/reviewed sets, the repair/revise budgets) is owned by runWorkCall —
   // it was used only inside the loop and moved there with the extraction.
   // -------------------------------------------------------------------------
-  let currentTier: Tier = classification.tier;
+  // AUTO BRAIN tier override (Layer A). When the flag is ON and the auto-brain
+  // committed a rung, use its `modelRung` as the starting tier INSTEAD of the raw
+  // classify tier. The existing admission gates below (`admitManager` / Oracle /
+  // vision-triage floor) still apply and may override this further — they remain
+  // the sole authority on manager-tier access and are NEVER bypassed.
+  //
+  // FLAG OFF (autoBrainTier === undefined): `classification.tier` is used exactly
+  // as before — BYTE-IDENTICAL to the pre-auto-brain path (the OFF-GUARANTEE).
+  let currentTier: Tier = autoBrainTier !== undefined ? autoBrainTier : classification.tier;
   /**
    * Manager-tier attempts used this turn — the quota guard for adaptive flagship
    * admission. Always 0 for the gate decisions below (the gates never increment

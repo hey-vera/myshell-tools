@@ -26,7 +26,10 @@
     "smoke:pty": "MYSHELL_INK=0 node scripts/pty-smoke.mjs",
     "smoke:pty:handoff": "node scripts/pty-smoke-handoff.mjs",
     "smoke:pty:ink": "node scripts/pty-smoke-ink.mjs",
-    "smoke:pty:menu-ink": "node scripts/pty-smoke-menu-ink.mjs"
+    "smoke:pty:menu-ink": "node scripts/pty-smoke-menu-ink.mjs",
+    "auto-brain:preview": "node --import tsx/esm scripts/auto-brain-preview.mjs",
+    "auto-brain:preview:pasted-code": "node --import tsx/esm scripts/auto-brain-preview.mjs pasted-code",
+    "auto-brain:preview:find-and-fix-bug": "node --import tsx/esm scripts/auto-brain-preview.mjs find-and-fix-bug"
   },
   "files": [
     "dist/",
