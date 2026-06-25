@@ -504,7 +504,23 @@ export interface AppConfig {
    * OrchestrateDeps is absent and orchestrate routes exactly as today. See
    * src/interface/ui/auto-brain-flag.ts and src/core/auto-brain.ts.
    */
-  experimentalAutoBrain?: boolean;
+  experimentalAutoBrain?: boolean;  /**
+   * EXPERIMENTAL CAPABILITY PARSE-FROM-TEXT FALLBACK (redesign Phase 0,
+   * capability-normalization slice; default off). When true (or with
+   * `MYSHELL_BYPRODUCT_FALLBACK` ∈ {1,true,on,yes} in the environment), when the
+   * primary structured parse of the model's byproduct (IntentFrame) returns null,
+   * a richer text-extraction fallback (src/core/byproduct-parse.ts) is tried before
+   * falling back to the deterministic `rulesIntentFrame`. The fallback handles
+   * fenced JSON blocks (```json…```), partial JSON missing `confidence`, and
+   * key-marker prose. PURELY ADDITIVE: on a clean primary parse the fallback is
+   * never called — behavior is byte-for-byte identical. On fallback activation, a
+   * frame is returned with `confidence: 'low'` for partial/prose extractions so
+   * downstream consumers are honest about uncertainty. Absent/false →
+   * byte-for-byte today's behavior (primary parse → rulesIntentFrame on null).
+   * See src/interface/ui/byproduct-fallback-flag.ts and
+   * docs/one-chat-redesign-plan.md Phase 0.
+   */
+  experimentalByproductFallback?: boolean;
   /**
    * Per-user "first-touch explainer shown" flags (whole-tool-finish-5.5.md §0.1).
    * Absent → nothing shown yet (each surface explains itself once on first

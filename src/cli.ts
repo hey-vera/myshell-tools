@@ -61,6 +61,7 @@ import { createEvidenceSink, createEvidenceSnapshotBuilder } from './infra/evide
 import { loadConfig, saveConfig, resolvePartnerStyle } from './infra/config.js';
 import { rollbackEngaged } from './core/rollback-flag.js';
 import { makeIntentExtractor } from './core/intent-extractor.js';
+import { byproductFallbackEnabled } from './interface/ui/byproduct-fallback-flag.js';
 import { replCapabilities } from './core/surface-capabilities.js';
 import { checkForUpdate } from './infra/update-check.js';
 import { refreshClaudeOauthIfNeeded } from './infra/claude-oauth-refresh.js';
@@ -1016,6 +1017,11 @@ async function main(): Promise<void> {
               : {}),
             ...(baseDeps.authenticatedProviders !== undefined
               ? { authenticatedProviders: baseDeps.authenticatedProviders }
+              : {}),
+            // CAPABILITY PARSE-FROM-TEXT FALLBACK — DEFAULT OFF.
+            // When on, try the text-fallback chain if primary parse returns null.
+            ...(byproductFallbackEnabled(process.env, config)
+              ? { byproductFallback: true }
               : {}),
           })
         : undefined;

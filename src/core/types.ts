@@ -934,7 +934,21 @@ export interface OrchestrateDeps {
    * slice (Layer-B wiring) has a single landing pad. DEFAULT ABSENT →
    * byte-for-byte today's behavior. Type-only import to keep types.ts a leaf.
    */
-  readonly autoBrainRungTuple?: import('./auto-brain.js').FuseRungResult;
+  readonly autoBrainRungTuple?: import('./auto-brain.js').FuseRungResult;  /**
+   * EXPERIMENTAL CAPABILITY PARSE-FROM-TEXT FALLBACK (redesign Phase 0,
+   * capability-normalization slice) — a purely-additive, currently NEVER-READ seam,
+   * mirroring the `roleMapping` / `levelProfile` seams. When the default-OFF
+   * `byproductFallbackEnabled` flag (src/interface/ui/byproduct-fallback-flag.ts)
+   * is on, the interface layer sets this true; intent-extractor.ts uses it as a
+   * signal to attempt the text-fallback chain (src/core/byproduct-parse.ts) when
+   * the primary `parseIntentFrame` returns null. `orchestrate` does NOT read this
+   * field directly — the flag is read by the extractor shim. DEFAULT ABSENT →
+   * byte-for-byte today's behavior (the fallback is never called). This field
+   * exists so the fallback substrate wires through the src import graph (no-orphan)
+   * and so the next slice has a landing pad. Type-only import to keep types.ts a
+   * leaf module.
+   */
+  readonly byproductFallback?: boolean;
 }
 
 /**
