@@ -16,6 +16,7 @@ import { createClaudeProvider } from './claude.js';
 import { createCodexProvider } from './codex.js';
 import { createOpencodeProvider } from './opencode.js';
 import { createGrokProvider } from './grok.js';
+import { providerEffortEnabled } from './provider-effort-flag.js';
 
 /**
  * Build the provider map for OrchestrateDeps from an already-detected
@@ -23,19 +24,27 @@ import { createGrokProvider } from './grok.js';
  * once and passing the result here — this avoids a second round of
  * `--version` spawns when the caller already holds the detection result.
  *
- * @param _cwd - Working directory (used by real adapters to locate project-
- *               level config; may be forwarded to adapters in a future phase).
- * @param env  - The environment status produced by detectEnvironment().
- * @returns      A (possibly empty) map of available providers.
+ * @param _cwd        - Working directory (used by real adapters to locate
+ *                      project-level config; may be forwarded to adapters in a
+ *                      future phase).
+ * @param env         - The environment status produced by detectEnvironment().
+ * @param processEnv  - The process environment (for feature-flag resolution).
+ *                      Absent → uses an empty object (flag defaults apply).
+ * @param config      - The loaded app config (for feature-flag resolution).
+ *                      Absent → uses undefined (flag defaults apply).
+ * @returns             A (possibly empty) map of available providers.
  */
 export function buildProviders(
   _cwd: string,
   env: EnvironmentStatus,
+  processEnv?: NodeJS.ProcessEnv,
+  config?: { experimentalProviderEffort?: boolean },
 ): Partial<Record<ProviderId, Provider>> {
   const providers: Partial<Record<ProviderId, Provider>> = {};
+  const effortEnabled = providerEffortEnabled(processEnv, config);
 
   if (env.claude.installed) {
-    providers.claude = createClaudeProvider();
+    providers.claude = createClaudeProvider({ effortEnabled });
   }
 
   if (env.codex.installed) {
@@ -47,7 +56,7 @@ export function buildProviders(
   }
 
   if (env.grok.installed) {
-    providers.grok = createGrokProvider();
+    providers.grok = createGrokProvider({ effortEnabled });
   }
 
   return providers;
@@ -66,8 +75,10 @@ export function buildProviders(
 export function buildAuthenticatedProviders(
   cwd: string,
   env: EnvironmentStatus,
+  processEnv?: NodeJS.ProcessEnv,
+  config?: { experimentalProviderEffort?: boolean },
 ): Partial<Record<ProviderId, Provider>> {
-  const installed = buildProviders(cwd, env);
+  const installed = buildProviders(cwd, env, processEnv, config);
   const authed: Partial<Record<ProviderId, Provider>> = {};
   for (const id of Object.keys(installed) as ProviderId[]) {
     const provider = installed[id];
