@@ -174,6 +174,8 @@ import { verifyStage } from '../core/work-call.js';
 import { isRecapStale, recapEligible, type RecapResult } from '../core/recap.js';
 import { makeRouteClassifier } from '../core/route-classifier.js';
 import { makeIntentExtractor } from '../core/intent-extractor.js';
+import type { IntentFrame } from '../core/intent.js';
+import { deriveDraftGoalSkeleton } from '../core/draft-goal.js';
 import { shouldShowFirstTouch, markSeen, FIRST_TOUCH_LINES } from '../core/first-touch.js';
 import { teach } from '../core/teach.js';
 import { decideShed, pressureFromSignals, type QuotaPressure } from '../core/capability-budget.js';
@@ -225,6 +227,7 @@ import { resolveLevel, profileForLevel } from '../core/mode-levels.js';
 import { autoBrainEnabled } from './ui/auto-brain-flag.js';
 import { fuseRung, type FuseRungResult } from '../core/auto-brain.js';
 import { byproductFallbackEnabled } from './ui/byproduct-fallback-flag.js';
+import { draftGoalsEnabled } from './ui/draft-goals-flag.js';
 import { experimentalEnabledByDefault } from './ui/experimental-default.js';
 import { nodeVerifyPort } from '../infra/verify-port.js';
 import { createEvidenceSink, createEvidenceSnapshotBuilder } from '../infra/evidence-sink.js';
@@ -1343,6 +1346,11 @@ export async function runChatLoop(
   // Ctrl+C escape model). Read by the post-turn slot to discard the typed-ahead
   // queue (per decidePostTurn) and print the ESC status once.
   let interruptedByEsc = false;
+  // DRAFT GOALS (redesign Phase 1): the last IntentFrame captured from the
+  // byproduct 'intent' event. Populated ONLY when draftGoalsEnabled() and the
+  // model emitted an 'intent' event during the turn; reset to null at the
+  // start of each normal-chat turn. Read by the post-turn draft-goal slot.
+  let lastDraftGoalFrame: IntentFrame | null = null;
 
   // Typed-ahead queue: full lines the user submits DURING a turn. Captured by
   // the LineReader (single owner — no second stdin consumer), drained FIFO after
@@ -2419,6 +2427,17 @@ export async function runChatLoop(
           // byte-for-byte today's behavior (the OFF-GUARANTEE).
           ...(byproductFallbackEnabled(process.env, mutableCtx.config)
             ? { byproductFallback: true }
+            : {}),
+          // DRAFT GOALS (redesign Phase 1 spine) — DEFAULT OFF
+          // (src/interface/ui/draft-goals-flag.ts). When the flag is ON, set
+          // `draftGoals: true` so the post-turn slot knows to read the
+          // IntentFrame.draftGoalSkeleton byproduct and materialise a PARKED
+          // goal. PURELY ADDITIVE: `orchestrate` does NOT read this field;
+          // it exists so the draft-goals substrate participates in the src
+          // import graph and the post-turn slot has a seam to read. When OFF
+          // the field is absent → byte-for-byte today's behavior.
+          ...(draftGoalsEnabled(process.env, mutableCtx.config)
+            ? { draftGoals: true }
             : {}),          ...(nativeSession.length > 0 ? { nativeSession } : {}),
           ...(routeClassifier !== undefined ? { routeClassifier } : {}),
           ...(intentExtractor !== undefined ? { intentExtractor } : {}),
@@ -5867,12 +5886,29 @@ Output ONLY valid JSON (no prose, no markdown).`;
       const ac = new AbortController();
       currentAc = ac;
       const oversight = resolveOversight(mutableCtx.config, process.env);
+      // DRAFT GOALS (Phase 1): reset the captured frame for this turn. When
+      // draftGoals is on, wrap the orchestrate event stream to intercept the
+      // 'intent' event and save the frame so the post-turn slot can use it to
+      // create a PARKED draft goal. When the flag is off, pass undefined (the
+      // default single-orchestrate path) — byte-for-byte today's behavior.
+      lastDraftGoalFrame = null;
+      const draftGoalsOn = draftGoalsEnabled(process.env, mutableCtx.config);
+      const captureIntentEvents = draftGoalsOn && deps !== null
+        ? (async function* (): AsyncIterable<CoreEvent> {
+            for await (const event of orchestrate(line, deps as OrchestrateDeps, ac.signal)) {
+              if (event.type === 'intent') {
+                lastDraftGoalFrame = event.frame;
+              }
+              yield event;
+            }
+          })()
+        : undefined;
       const result = await runTaskWithInputHooks(
         line,
         deps,
         ac.signal,
         mutableCtx.config.verbosity ?? 'normal',
-        undefined,
+        captureIntentEvents,
         oversight === 'autonomous' ? 'automatic' : 'prompt',
       );
       currentAc = null;
@@ -6139,6 +6175,56 @@ Output ONLY valid JSON (no prose, no markdown).`;
       ) {
         void resolveAutoStage(line);
       }
+
+      // ---- DRAFT GOALS (redesign Phase 1 spine) — AFTER the auto-stage slot ----
+      // DEFAULT OFF. When draftGoals is ON and the turn succeeded with a build-
+      // intent frame (captured from the byproduct 'intent' event), materialise the
+      // skeleton as a PARKED goal. NEVER queued / executed without explicit user
+      // confirmation — this just creates the inactive draft and surfaces a notice.
+      // Idempotent: we skip duplicate titles; fail-soft (any error is swallowed).
+      // Runs ONLY on a clean successful normal-chat turn (not a /goal command, not
+      // interrupted, not a question, not already staged by auto-stage).
+      if (
+        draftGoalsOn &&
+        acknowledgedGoal === 'normal-chat' &&
+        result.final?.success === true &&
+        result.final.questions === undefined &&
+        lastDraftGoalFrame !== null
+      ) {
+        const capturedFrame = lastDraftGoalFrame;
+        lastDraftGoalFrame = null;
+        void (async () => {
+          try {
+            const skeleton = deriveDraftGoalSkeleton(capturedFrame);
+            if (skeleton === null) return; // non-build turn — no draft goal
+            const projectKey = await resolveProjectKeyOnce();
+            const seenTitles = await existingLiveGoalTitles(projectKey);
+            if (isDuplicateGoalTitle(skeleton.title, seenTitles)) return; // idempotent
+            const created = await goalStore.create({
+              title: skeleton.title,
+              roadmap: skeleton.outline.map((item, i) => ({
+                id: `r${i + 1}`,
+                text: item.text,
+                status: 'pending' as const,
+              })),
+              scope: projectKey !== null ? 'project' : 'global',
+              projectKey,
+              conversationId: convId,
+              source: 'byproduct-draft',
+            });
+            await syncBoard();
+            out.write(
+              dim(
+                `  ※ Draft goal created (inactive): "${created.title}" — say "go" or /goals go ${created.id.slice(0, 8)} to start.\n`,
+                out.color,
+              ),
+            );
+          } catch {
+            // Fail-soft: a store error must never crash the chat loop.
+          }
+        })();
+      }
+
       return 'continue';
   }
 }

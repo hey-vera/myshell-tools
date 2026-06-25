@@ -949,6 +949,23 @@ export interface OrchestrateDeps {
    * leaf module.
    */
   readonly byproductFallback?: boolean;
+  /**
+   * DRAFT GOALS (redesign Phase 1 spine — "chat → draft goal") — a purely-
+   * additive, currently NEVER-READ seam, mirroring the `byproductFallback`
+   * seam. When the default-OFF `draftGoalsEnabled` flag
+   * (`src/interface/ui/draft-goals-flag.ts`) is on, the interface layer sets
+   * this `true`; the post-turn slot in menu.ts then reads the
+   * `IntentFrame.draftGoalSkeleton` byproduct and materialises it as a
+   * PARKED goal in the GoalStore (`state: 'parked'`,
+   * `source: 'byproduct-draft'`) — NEVER queued or executed without user
+   * confirmation. `orchestrate` does NOT read this field directly — the flag
+   * is consumed by the menu.ts post-turn slot. DEFAULT ABSENT → byte-for-
+   * byte today's behavior (no goal is created, the IntentFrame schema is
+   * unchanged). This field exists so the draft-goals substrate wires through
+   * the src import graph (no-orphan) and so the live-consumption slice has a
+   * single landing pad.
+   */
+  readonly draftGoals?: boolean;
 }
 
 /**

@@ -488,6 +488,21 @@ export interface AppConfig {
    */
   experimentalLevelDial?: boolean;
   /**
+   * DRAFT GOALS — "chat → draft goal" (redesign Phase 1 spine; default OFF).
+   * When true (or with `MYSHELL_DRAFT_GOALS` ∈ {1,true,on,yes} in env), a
+   * BUILD-INTENT turn causes the byproduct IntentFrame to carry an optional
+   * `draftGoalSkeleton` (title + high-level outline), which is materialised
+   * as an INACTIVE (parked) goal in the GoalStore (`source: 'byproduct-draft'`,
+   * `state: 'parked'`) — NEVER queued or executed without explicit user
+   * confirmation.  Non-build turns (questions / discussion) produce NO goal
+   * (zero over-triggering).  This is SCAFFOLDING ONLY in Phase 1: the
+   * confirmation gate, decomposition depth, and execution are later slices.
+   * Absent/false → byte-for-byte today's behavior (no goal created, no
+   * byproduct schema change).  See src/interface/ui/draft-goals-flag.ts and
+   * docs/one-chat-redesign-plan.md Phase 1.
+   */
+  experimentalDraftGoals?: boolean;
+  /**
    * AUTO BRAIN — per-turn rung-fusion + objective-evidence escalation (redesign
    * Auto brain; default OFF). When true (or with `MYSHELL_AUTO_BRAIN` ∈
    * {1,true,on,yes} in the environment) the per-turn policy layer resolves the
