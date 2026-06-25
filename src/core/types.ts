@@ -908,6 +908,19 @@ export interface OrchestrateDeps {
   readonly roleMapping?: Partial<
     Record<import('./roles.js').Role, import('./roles.js').RoleResolution>
   >;
+  /**
+   * EXPERIMENTAL 5-LEVEL FIREPOWER DIAL (redesign Phase 0, slice 2) — a
+   * purely-additive, currently NEVER-READ seam, mirroring the `roleMapping` seam
+   * above. When the default-OFF `levelDialEnabled` flag (src/interface/ui/level-flag.ts)
+   * is on, the interface layer MAY attach the per-turn resolved firepower profile
+   * here (computed by src/core/mode-levels.ts `resolveLevel` + `profileForLevel`).
+   * `orchestrate` does NOT consume it in this slice — the live path keeps reading
+   * `config.mode` exactly as today — so its presence or absence changes nothing. It
+   * exists so the level substrate participates in the src import graph and so the
+   * next slice (live consumption) has a single landing pad. DEFAULT ABSENT →
+   * byte-for-byte today's behavior. Type-only import to keep types.ts a leaf module.
+   */
+  readonly levelProfile?: import('./mode-levels.js').LevelProfile;
 }
 
 /**

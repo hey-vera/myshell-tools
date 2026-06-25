@@ -220,6 +220,8 @@ import { trustEnabled } from './ui/trust-flag.js';
 import { tribunalEnabled } from './ui/tribunal-flag.js';
 import { roleMappingEnabled } from './ui/role-flag.js';
 import { resolveAllRoles, type ProviderModels } from '../core/roles.js';
+import { levelDialEnabled } from './ui/level-flag.js';
+import { resolveLevel, profileForLevel } from '../core/mode-levels.js';
 import { experimentalEnabledByDefault } from './ui/experimental-default.js';
 import { nodeVerifyPort } from '../infra/verify-port.js';
 import { createEvidenceSink, createEvidenceSnapshotBuilder } from '../infra/evidence-sink.js';
@@ -2348,6 +2350,26 @@ export async function runChatLoop(
               preferredOrder: policy.providerOrderByTier.ic,
             });
             return Object.keys(roleMapping).length > 0 ? { roleMapping } : {};
+          })(),
+          // 5-LEVEL FIREPOWER DIAL (redesign Phase 0, slice 2) — DEFAULT OFF
+          // (src/interface/ui/level-flag.ts). When the flag is ON, attach the
+          // per-turn resolved firepower profile computed PURELY by
+          // src/core/mode-levels.ts `resolveLevel` (Auto falls back to the SAME
+          // persisted `config.mode` / plan-derived `effectiveMode` already in scope)
+          // + `profileForLevel`. SCAFFOLDING ONLY: `orchestrate` does NOT read
+          // `levelProfile`, so this is a purely-additive seam — present or absent,
+          // the orchestrate path is byte-for-byte today's, and the live route still
+          // reads `config.mode`/`effectiveMode` exactly as today. When OFF the field
+          // is absent entirely. The next slice flips consumption on behind this flag.
+          ...((): { levelProfile?: ReturnType<typeof profileForLevel> } => {
+            if (!levelDialEnabled(process.env, mutableCtx.config)) return {};
+            const resolved = resolveLevel({
+              ...(mutableCtx.config.mode !== undefined
+                ? { persistedMode: mutableCtx.config.mode }
+                : {}),
+              autoMode: effectiveMode,
+            });
+            return { levelProfile: profileForLevel(resolved) };
           })(),
           ...(nativeSession.length > 0 ? { nativeSession } : {}),
           ...(routeClassifier !== undefined ? { routeClassifier } : {}),
