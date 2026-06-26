@@ -248,7 +248,10 @@ describe('goal-store — CRUD round-trip', () => {
       at: '2026-06-07T00:00:00.000Z',
     });
     const itemPath = join(goalsDir(), 'items', `${g.id}.json`);
-    assert.equal((await stat(itemPath)).mode & 0o777, 0o600);
+    if (process.platform !== 'win32') {
+      // Windows has no Unix mode bits; profile dirs are owner-restricted by ACL.
+      assert.equal((await stat(itemPath)).mode & 0o777, 0o600);
+    }
   });
 
   it('setRoadmapItemVerdict persists EXACTLY the passed verdict, keyed by itemId (atomic, bumps lastTouched)', async () => {
@@ -399,8 +402,13 @@ describe('goal-store — security', () => {
     const g = await store.create({ title: 'x' });
     const itemPath = join(goalsDir(), 'items', `${g.id}.json`);
     const indexPath = join(goalsDir(), 'index.json');
-    assert.equal((await stat(itemPath)).mode & 0o777, 0o600);
-    assert.equal((await stat(indexPath)).mode & 0o777, 0o600);
+    if (process.platform !== 'win32') {
+      // Windows has no Unix mode bits; profile dirs are owner-restricted by ACL.
+      assert.equal((await stat(itemPath)).mode & 0o777, 0o600);
+    }
+    if (process.platform !== 'win32') {
+      assert.equal((await stat(indexPath)).mode & 0o777, 0o600);
+    }
   });
 
   it('the InvalidGoalIdError guard class exists for the internal path builder', () => {
@@ -783,7 +791,10 @@ describe('goal-store — CRUD recovery/atomicity preserved', () => {
     });
     await store.addRoadmapItem(g.id, { id: 'r2', text: 'two', status: 'pending' });
     const itemPath = join(goalsDir(), 'items', `${g.id}.json`);
-    assert.equal((await stat(itemPath)).mode & 0o777, 0o600);
+    if (process.platform !== 'win32') {
+      // Windows has no Unix mode bits; profile dirs are owner-restricted by ACL.
+      assert.equal((await stat(itemPath)).mode & 0o777, 0o600);
+    }
   });
 });
 

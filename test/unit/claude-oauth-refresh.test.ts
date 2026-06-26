@@ -122,14 +122,14 @@ describe('resolveClaudeCredsPath', () => {
   it('honours CLAUDE_CONFIG_DIR', () => {
     assert.equal(
       resolveClaudeCredsPath({ CLAUDE_CONFIG_DIR: '/cfg' }, '/cwd', '/home'),
-      '/cfg/.credentials.json',
+      join('/cfg', '.credentials.json'),
     );
   });
 
   it('falls back to ~/.claude when no config dir and no replit dir', () => {
     assert.equal(
       resolveClaudeCredsPath({}, '/nonexistent-cwd', '/home/me'),
-      '/home/me/.claude/.credentials.json',
+      join('/home/me', '.claude', '.credentials.json'),
     );
   });
 });

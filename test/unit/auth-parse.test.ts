@@ -9,6 +9,7 @@
 
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { join } from 'node:path';
 import {
   parseClaudeAuth,
   parseCodexAuth,
@@ -545,12 +546,12 @@ describe('parseOpencodeAuth — opencode holds the secret (oauth OR api counts)'
 describe('resolveOpencodeAuthPath', () => {
   it('uses $XDG_DATA_HOME/opencode/auth.json when XDG_DATA_HOME is set', () => {
     const p = resolveOpencodeAuthPath({ XDG_DATA_HOME: '/persist/data' }, '/home/u');
-    assert.equal(p, '/persist/data/opencode/auth.json');
+    assert.equal(p, join('/persist/data', 'opencode', 'auth.json'));
   });
 
   it('falls back to $HOME/.local/share/opencode/auth.json when XDG is unset', () => {
     const p = resolveOpencodeAuthPath({}, '/home/u');
-    assert.equal(p, '/home/u/.local/share/opencode/auth.json');
+    assert.equal(p, join('/home/u', '.local', 'share', 'opencode', 'auth.json'));
   });
 });
 
@@ -838,13 +839,13 @@ describe('codexPlanFromAuthJson — reads chatgpt_plan_type from the token claim
 describe('resolveCodexAuthPath', () => {
   it('uses $CODEX_HOME/auth.json when CODEX_HOME is set', () => {
     const p = resolveCodexAuthPath({ CODEX_HOME: '/persist/codex' }, '/work', '/home/u');
-    assert.equal(p, '/persist/codex/auth.json');
+    assert.equal(p, join('/persist/codex', 'auth.json'));
   });
 
   it('falls back to ~/.codex/auth.json when CODEX_HOME is unset and no persistent dir', () => {
     // cwd points somewhere with no .replit-tools/.codex-persistent/auth.json.
     const p = resolveCodexAuthPath({}, '/nonexistent-cwd-xyz', '/home/u');
-    assert.equal(p, '/home/u/.codex/auth.json');
+    assert.equal(p, join('/home/u', '.codex', 'auth.json'));
   });
 });
 
