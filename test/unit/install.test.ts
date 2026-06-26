@@ -495,7 +495,7 @@ describe('runInstall — writes to temp HOME, not real HOME', () => {
     });
   });
 
-  it('installs through a symlinked ~/.bashrc without replacing the symlink and preserves mode', async () => {
+  it('installs through a symlinked ~/.bashrc without replacing the symlink and preserves mode', { skip: process.platform === 'win32' }, async () => {
     await withTempHome(async (tempHome) => {
       const rcPath = join(tempHome, '.bashrc');
       const dotfilesDir = join(tempHome, 'dotfiles');
@@ -519,7 +519,7 @@ describe('runInstall — writes to temp HOME, not real HOME', () => {
     });
   });
 
-  it('refuses a dangling symlinked ~/.bashrc and prints the manual hook', async () => {
+  it('refuses a dangling symlinked ~/.bashrc and prints the manual hook', { skip: process.platform === 'win32' }, async () => {
     await withTempHome(async (tempHome) => {
       const rcPath = join(tempHome, '.bashrc');
       await symlink(join(tempHome, 'missing-bashrc'), rcPath);
