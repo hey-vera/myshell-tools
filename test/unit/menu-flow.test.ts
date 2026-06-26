@@ -21,6 +21,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import tty from 'node:tty';
 
 import { EventEmitter } from 'node:events';
@@ -3487,7 +3488,24 @@ describe('startMenu — auto-goal smart autonomy', () => {
       const clock = makeFakeClock();
       const store = makeStore(clock);
       const sink = makeSink();
-      const cwd = '/home/runner/workspace';
+      // A REAL temp repo so the codebase scan yields a non-empty environmentContext
+      // (repoPresent) and the rank-9 local retrieval has package.json build scripts to
+      // find — faithful to a real awareness-on session (the prior hardcoded
+      // '/home/runner/workspace' did not exist on runners, so the scan was empty).
+      const cwd = join(tmpdir(), `inv-repo-${randomUUID()}`);
+      fs.mkdirSync(cwd, { recursive: true });
+      fs.writeFileSync(
+        join(cwd, 'package.json'),
+        JSON.stringify(
+          { name: 'demo', scripts: { build: 'tsc -p .', test: 'node --test' } },
+          null,
+          2,
+        ),
+      );
+      // grepRepo uses `git grep` (tracked files only), so the fixture must be a real
+      // git repo with the file tracked for the rank-9 local retrieval to find it.
+      execFileSync('git', ['init', '-q'], { cwd });
+      execFileSync('git', ['add', 'package.json'], { cwd });
       const config: AppConfig = {
         onboarded: true,
         setAsDefault: false,
@@ -3579,7 +3597,24 @@ describe('startMenu — auto-goal smart autonomy', () => {
       const clock = makeFakeClock();
       const store = makeStore(clock);
       const sink = makeSink();
-      const cwd = '/home/runner/workspace';
+      // A REAL temp repo so the codebase scan yields a non-empty environmentContext
+      // (repoPresent) and the rank-9 local retrieval has package.json build scripts to
+      // find — faithful to a real awareness-on session (the prior hardcoded
+      // '/home/runner/workspace' did not exist on runners, so the scan was empty).
+      const cwd = join(tmpdir(), `inv-repo-${randomUUID()}`);
+      fs.mkdirSync(cwd, { recursive: true });
+      fs.writeFileSync(
+        join(cwd, 'package.json'),
+        JSON.stringify(
+          { name: 'demo', scripts: { build: 'tsc -p .', test: 'node --test' } },
+          null,
+          2,
+        ),
+      );
+      // grepRepo uses `git grep` (tracked files only), so the fixture must be a real
+      // git repo with the file tracked for the rank-9 local retrieval to find it.
+      execFileSync('git', ['init', '-q'], { cwd });
+      execFileSync('git', ['add', 'package.json'], { cwd });
       const config: AppConfig = {
         onboarded: true,
         setAsDefault: false,
