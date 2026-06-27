@@ -4313,7 +4313,7 @@ describe('resolveRawKeyInput — legacy raw stream capability', () => {
     assert.equal(resolveRawKeyInput(nonTtySink, stdin), null);
   });
 
-  it('falls back to cached /dev/tty when stdin is not raw-capable', () => {
+  it('falls back to cached /dev/tty when stdin is not raw-capable', { skip: process.platform === 'win32' }, () => {
     __resetControllingTtyRawInputForTest();
     const stdin = asStream(new FakeKeyStream([]));
     stdin.isTTY = false;
