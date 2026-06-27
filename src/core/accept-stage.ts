@@ -63,6 +63,14 @@ export interface CandidateQualityGateOptions {
     outcome: VerifyOutcome | undefined,
     candidate: CandidateResult,
   ) => readonly CoreEvent[];
+  /**
+   * LAYER B: when true, a candidate that FAILS its objective check after the
+   * bounded repair does NOT emit a failing `final` here — the failing
+   * {@link GateResult} is returned instead, so the caller (the work loop) can
+   * escalate to a higher tier and retry. DEFAULT false → byte-identical: the
+   * failing final is emitted here exactly as before.
+   */
+  readonly deferFailingFinal?: boolean;
 }
 
 export function classifyGateOutcome(outcome: VerifyOutcome | undefined): GateClassification {
@@ -269,13 +277,13 @@ function buildFallbackEvidenceSnapshot(input: {
 
 export async function* runCandidateQualityGate(
   options: CandidateQualityGateOptions,
-): AsyncGenerator<CoreEvent> {
-  const { deps, goalTurn, verify, receiptEvents } = options;
+): AsyncGenerator<CoreEvent, GateResult> {
+  const { deps, goalTurn, verify, receiptEvents, deferFailingFinal = false } = options;
   let candidate = options.candidate;
 
   if (goalTurn) {
     yield await finalizeAcceptedCandidate(deps, candidate);
-    return;
+    return { classification: 'unverified', repairRequired: false };
   }
 
   let outcome = await verify(candidate);
@@ -285,7 +293,7 @@ export async function* runCandidateQualityGate(
 
   if (!first.repairRequired) {
     yield await finalizeAcceptedCandidate(deps, candidate);
-    return;
+    return first;
   }
 
   yield {
@@ -308,17 +316,24 @@ export async function* runCandidateQualityGate(
   const finalGate = gateResult(outcome);
   if (repaired !== undefined && !finalGate.repairRequired) {
     yield await finalizeAcceptedCandidate(deps, candidate);
-    return;
+    return finalGate;
   }
 
-  yield {
-    type: 'final',
-    success: false,
-    output: candidate.content,
-    tier: candidate.tier,
-    totalCostUsd: candidate.totalCostUsd,
-    sessionId: deps.session.id,
-    attempts: candidate.attempts,
-    provider: candidate.provider,
-  };
+  // The candidate FAILED its objective check after a bounded repair — demonstrable
+  // repeated failure. DEFAULT: emit the failing final here (byte-identical). When
+  // `deferFailingFinal` is set (Layer B), SUPPRESS the final and hand the failing
+  // GateResult back so the caller can escalate-and-retry at a higher tier.
+  if (!deferFailingFinal) {
+    yield {
+      type: 'final',
+      success: false,
+      output: candidate.content,
+      tier: candidate.tier,
+      totalCostUsd: candidate.totalCostUsd,
+      sessionId: deps.session.id,
+      attempts: candidate.attempts,
+      provider: candidate.provider,
+    };
+  }
+  return finalGate;
 }

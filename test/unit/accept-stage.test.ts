@@ -87,6 +87,19 @@ async function collect(gen: AsyncGenerator<CoreEvent>): Promise<CoreEvent[]> {
   return events;
 }
 
+/** Drain a gate generator, capturing BOTH its events and its GateResult return. */
+async function drainWithReturn(
+  gen: AsyncGenerator<CoreEvent, GateResult>,
+): Promise<{ events: CoreEvent[]; result: GateResult }> {
+  const events: CoreEvent[] = [];
+  let step = await gen.next();
+  while (step.done !== true) {
+    events.push(step.value);
+    step = await gen.next();
+  }
+  return { events, result: step.value };
+}
+
 function receiptEvents(result: VerifyOutcome | undefined): readonly CoreEvent[] {
   return result === undefined
     ? []
@@ -158,6 +171,54 @@ describe('Candidate Quality Gate', () => {
     assert.equal(localDeps.entries[0]?.content, 'repaired');
     assert.equal(events.filter((event) => event.type === 'final').length, 1);
     assert.equal(events.at(-1)?.type === 'final' && events.at(-1)?.success, true);
+  });
+
+  it('deferFailingFinal SUPPRESSES the failing final and returns the failing GateResult (Layer B)', async () => {
+    const localDeps = deps();
+    const red = outcome('failing', {
+      testCommand: 'npm test',
+      testRun: { outcome: 'red', output: 'FAIL a.test.ts', durationMs: 5 },
+    });
+    // repair returns undefined → the candidate stays failing after the bounded repair.
+    const original = candidate(repairResult(undefined, () => {}));
+    const { events, result } = await drainWithReturn(
+      runCandidateQualityGate({
+        deps: localDeps,
+        candidate: original,
+        goalTurn: false,
+        verify: async () => red,
+        receiptEvents,
+        deferFailingFinal: true,
+      }),
+    );
+    assert.equal(result.classification, 'failing');
+    assert.equal(
+      events.some((event) => event.type === 'final'),
+      false,
+      'the failing final is deferred (left to the caller to escalate), not emitted',
+    );
+  });
+
+  it('default (deferFailingFinal off) — the failing final IS emitted (byte-identical neutrality)', async () => {
+    const localDeps = deps();
+    const red = outcome('failing', {
+      testCommand: 'npm test',
+      testRun: { outcome: 'red', output: 'FAIL a.test.ts', durationMs: 5 },
+    });
+    const original = candidate(repairResult(undefined, () => {}));
+    const { events, result } = await drainWithReturn(
+      runCandidateQualityGate({
+        deps: localDeps,
+        candidate: original,
+        goalTurn: false,
+        verify: async () => red,
+        receiptEvents,
+      }),
+    );
+    assert.equal(result.classification, 'failing');
+    const last = events.at(-1);
+    assert.equal(last?.type, 'final');
+    assert.equal(last?.type === 'final' && last.success, false);
   });
 
   it('emits evidence through an injected sink for a defined verify outcome', async () => {

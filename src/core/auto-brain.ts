@@ -607,6 +607,39 @@ export function shouldDeEscalate(signals: EscalationSignals): boolean {
   }
 }
 
+/**
+ * LAYER B — the LIVE within-turn escalation decision (Option B: repeated
+ * objective failure). This is the wired counterpart to {@link shouldEscalate}
+ * (whose ≥2-distinct-category model needs richer per-category evidence than the
+ * single-state `VerifyOutcome` currently provides — a future cross-turn upgrade).
+ *
+ * Faithful to auto-mode-design's "escalate only AFTER the cheaper attempt
+ * DEMONSTRABLY failed its objective check": the accept-stage quality gate already
+ * runs ONE bounded repair before it reports `'failing'`, so a `'failing'`
+ * classification IS demonstrable repeated objective failure (attempt → repair →
+ * still failing). Escalate on THAT — never on self-confidence — bounded by the
+ * attempt ceiling and the tier ceiling (cannot climb past `manager`). PURE,
+ * total, never throws. Returns false for any non-failing classification, so a
+ * `passing`/`unverified` gate never escalates.
+ */
+export function decideLayerBEscalation(input: {
+  readonly classification: 'passing' | 'failing' | 'unverified';
+  readonly currentTier: Tier;
+  readonly attempts: number;
+  readonly maxAttempts: number;
+}): boolean {
+  try {
+    if (input.classification !== 'failing') return false;
+    // Never exceed the policy ceiling on attempts.
+    if (input.attempts >= input.maxAttempts) return false;
+    // Already at the top rung — nowhere to escalate to.
+    if (input.currentTier === 'manager') return false;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // 1-model case: model-rung collapses, effort becomes the primary lever
 // ---------------------------------------------------------------------------
