@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(codex exec:*)",
+      "Bash(opencode run:*)",
+      "Bash(opencode auth list:*)"
+    ]
+  }
+}
