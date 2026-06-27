@@ -8,8 +8,10 @@
 import type { Classification } from './types.js';
 import type { ReviewVerdict } from './review.js';
 import type { VerifiedState } from './verify.js';
+import type { BlockedRecord } from './blocked.js';
+import { isBlockedRecord } from './blocked.js';
 
-export type RoadmapStatus = 'pending' | 'active' | 'done' | 'blocked';
+export type RoadmapStatus = 'pending' | 'active' | 'done' | 'blocked' | 'superseded';
 
 /**
  * Evidence-backed verdict for a single to-do item. `state` mirrors the
@@ -102,6 +104,9 @@ export interface WorkContract {
   readonly checkpoints?: readonly Checkpoint[];
   readonly verification?: ContractVerification;
   readonly intentVersionId?: string;
+  readonly blocked?: BlockedRecord;
+  readonly supersededByIntentId?: string;
+  readonly supersededReason?: string;
 }
 
 type MaterializeContext = 'goal' | 'keep_going' | 'normal';
@@ -140,6 +145,7 @@ const VALID_STATUSES: ReadonlySet<string> = new Set<RoadmapStatus>([
   'active',
   'done',
   'blocked',
+  'superseded',
 ]);
 
 function safeString(value: unknown): string {
@@ -382,6 +388,9 @@ export function capContract(c: WorkContract): WorkContract {
           readonly checkpoints?: unknown;
           readonly verification?: unknown;
           readonly intentVersionId?: unknown;
+          readonly blocked?: unknown;
+          readonly supersededByIntentId?: unknown;
+          readonly supersededReason?: unknown;
         })
       : {};
 
@@ -457,6 +466,13 @@ export function capContract(c: WorkContract): WorkContract {
         }
       : {}),
     ...(intentVersionId !== undefined ? { intentVersionId } : {}),
+    ...(isBlockedRecord(raw['blocked']) ? { blocked: raw['blocked'] as BlockedRecord } : {}),
+    ...(typeof raw['supersededByIntentId'] === 'string' && raw['supersededByIntentId'].trim().length > 0
+      ? { supersededByIntentId: raw['supersededByIntentId'] }
+      : {}),
+    ...(typeof raw['supersededReason'] === 'string' && raw['supersededReason'].trim().length > 0
+      ? { supersededReason: raw['supersededReason'] }
+      : {}),
   };
 }
 

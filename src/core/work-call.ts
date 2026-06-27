@@ -104,6 +104,21 @@ import {
   type GateResult,
 } from './accept-stage.js';
 import { decideLayerBEscalation } from './auto-brain.js';
+import { buildBlockedRecord, type BlockedReasonCode } from './blocked.js';
+
+function blockedCodeForError(
+  category: import('../providers/port.js').CliError['category'],
+): BlockedReasonCode | undefined {
+  switch (category) {
+    case 'auth': return 'missing_authority';
+    case 'rate-limit': return 'quota_exhausted';
+    case 'timeout':
+    case 'network':
+    case 'sandbox-environment': return 'environment_unavailable';
+    case 'permission': return 'risk_requires_approval';
+    default: return undefined;
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Partial-output salvage constants (draft-handoff on rate-limit failover)
@@ -2248,5 +2263,25 @@ export async function* runWorkCall(input: WorkCallInput): AsyncGenerator<CoreEve
     attempts,
     ...(lastErroredCategory !== undefined ? { errorCategory: lastErroredCategory } : {}),
     ...(lastAttemptedProvider !== undefined ? { provider: lastAttemptedProvider } : {}),
+    ...(deps.blockedStateV1 === true && lastErroredCategory !== undefined
+      ? (() => {
+          const code = blockedCodeForError(lastErroredCategory);
+          if (code === undefined) return {};
+          const br = buildBlockedRecord({
+            reason: `Work halted: ${lastErroredCategory}`,
+            nextAction: code === 'missing_authority'
+              ? 'Authenticate and retry the request.'
+              : code === 'quota_exhausted'
+                ? 'Wait for quota refresh or reduce usage, then retry.'
+                : code === 'environment_unavailable'
+                  ? 'Check environment availability and retry.'
+                  : 'Resolve the approval constraint before retrying.',
+            preservedWork: lastOutput.slice(0, 500),
+            code,
+          });
+          if (br === null) return {};
+          return { blocked: br } as const;
+        })()
+      : {}),
   };
 }

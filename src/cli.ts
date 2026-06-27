@@ -89,6 +89,8 @@ import { experimentalEnabledByDefault } from './interface/ui/experimental-defaul
 import { cacheAccountingV2Enabled } from './interface/ui/cache-accounting-flag.js';
 import { accountAuxEnabled } from './interface/ui/account-aux-flag.js';
 import { intentStoreV1Enabled } from './interface/ui/intent-store-flag.js';
+import { correctionForkV1Enabled } from './interface/ui/correction-fork-flag.js';
+import { blockedStateV1Enabled } from './interface/ui/blocked-state-flag.js';
 import { createIntentStore } from './infra/intent-store.js';
 const require = createRequire(import.meta.url);
 const pkg = require('../package.json');
@@ -302,6 +304,8 @@ function buildDeps(
   const accountAuxOn = accountAuxEnabled(process.env);
   const intentStoreOn = intentStoreV1Enabled(process.env);
   const intentStore = intentStoreOn ? createIntentStore({ cwd }) : undefined;
+  const correlationForkOn = correctionForkV1Enabled(process.env) && intentStoreOn;
+  const blockedStateOn = blockedStateV1Enabled(process.env);
   const intentVersionId = accountAuxOn || intentStoreOn ? systemClock.uuid() : undefined;
 
   return {
@@ -340,6 +344,7 @@ function buildDeps(
     ...(toolStateContext !== undefined && toolStateContext.length > 0
       ? { toolStateContext }
       : {}),
+    ...(blockedStateOn ? { blockedStateV1: true } : {}),
   };
 }
 

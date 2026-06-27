@@ -428,9 +428,11 @@ function boardTodoGlyph(status: GoalBoardTodoRow['status']): string {
     case 'done':
       return GLYPHS.success;
     case 'blocked':
-      return '⚠';
+      return '\u26A0';
+    case 'superseded':
+      return '\u2717';
     case 'active':
-      return '◐';
+      return '\u25D0';
     case 'pending':
       return ' ';
   }

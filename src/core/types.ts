@@ -985,6 +985,27 @@ export interface OrchestrateDeps {
    * so the draft-goals substrate wires through the src import graph.
    */
   readonly draftGoals?: boolean;
+  /**
+   * Blocked-state terminal flag (MYSHELL_BLOCKED_STATE_V1). When true, the
+   * orchestrator may emit blocked finals instead of failed ones.
+   * DEFAULT ABSENT → byte-identical to today.
+   */
+  readonly blockedStateV1?: boolean;
+  /**
+   * Correction-fork deps (MYSHELL_CORRECTION_FORK_V1). Present only when the
+   * flag is ON and the intent store is ON. Provides the reader + goal-store
+   * methods for correction detection and supersession.
+   * DEFAULT ABSENT → byte-identical to today (no correction detection, no fork).
+   */
+  readonly correctionFork?: {
+    readonly enabled: true;
+    readIntentVersions(): Promise<readonly import('./intent-version.js').IntentVersion[]>;
+    listGoals(): Promise<readonly import('./goal-todo.js').Goal[]>;
+    markGoalsSuperseded(
+      ids: readonly string[],
+      meta: { supersededByIntentId: string; reason: string }
+    ): Promise<readonly string[]>;
+  };
 }
 
 /**
@@ -1162,6 +1183,12 @@ export type CoreEvent =
        * the confidence bar. Absent on a normal, fully-accepted success.
        */
       readonly bestEffort?: true;
+      /**
+       * Blocked terminal record (MYSHELL_BLOCKED_STATE_V1). Never populated unless
+       * blockedStateV1 is true. When present, the renderer surfaces Blocked instead
+       * of Failed.
+       */
+      readonly blocked?: import('./blocked.js').BlockedRecord;
       /** OPTIONAL multi-goal seam — see `tier-start.goalId`. Marks which goal's
        *  phase finished when several run concurrently. Absent on today's single-
        *  goal path. Purely additive. */

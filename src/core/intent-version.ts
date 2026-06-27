@@ -34,6 +34,11 @@ export interface IntentStoreWriter {
   append(version: IntentVersion): Promise<void>;
 }
 
+/** Optional reader capability for correction-fork (MYSHELL_CORRECTION_FORK_V1). */
+export interface IntentStoreReader {
+  readAll(): Promise<readonly IntentVersion[]>;
+}
+
 export interface BuildIntentVersionInput {
   readonly id: string;
   readonly parentId?: string | null;

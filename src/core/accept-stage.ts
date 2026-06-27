@@ -12,6 +12,7 @@ import {
 } from './trust-receipt.js';
 import type { WorkContract } from './work-contract.js';
 import type { ProviderId } from '../providers/port.js';
+import { buildBlockedRecord } from './blocked.js';
 
 export const MAX_REVISE_RETRIES = 1;
 
@@ -182,6 +183,28 @@ async function finalizeAcceptedCandidate(
 ): Promise<Extract<CoreEvent, { readonly type: 'final' }>> {
   await appendAcceptedAssistant(deps, candidate);
   const memoryProposal = memoryProposalFor(candidate.content);
+  const blockedStateV1 = deps.blockedStateV1 === true;
+
+  if (candidate.disposition === 'bestEffort' && blockedStateV1) {
+    const br = buildBlockedRecord({
+      reason: 'Verification/repair budget exhausted without a clean accept.',
+      nextAction: 'Review the output manually; it may be usable but is unverified.',
+      preservedWork: candidate.content.slice(0, 500),
+      code: 'verification_failed',
+    });
+    return {
+      type: 'final',
+      success: false,
+      output: candidate.content,
+      tier: candidate.tier,
+      totalCostUsd: candidate.totalCostUsd,
+      sessionId: deps.session.id,
+      attempts: candidate.attempts,
+      ...(br !== null ? { blocked: br } : {}),
+      ...(memoryProposal !== undefined ? { memoryProposal } : {}),
+    };
+  }
+
   return {
     type: 'final',
     success: true,
@@ -324,6 +347,15 @@ export async function* runCandidateQualityGate(
   // `deferFailingFinal` is set (Layer B), SUPPRESS the final and hand the failing
   // GateResult back so the caller can escalate-and-retry at a higher tier.
   if (!deferFailingFinal) {
+    const blockedStateV1 = deps.blockedStateV1 === true;
+    const blockedRecord = blockedStateV1
+      ? buildBlockedRecord({
+          reason: 'Verification failed after bounded repair.',
+          nextAction: 'Review the negative evidence and fix the defects manually, then re-request.',
+          preservedWork: candidate.content.slice(0, 500),
+          code: 'verification_failed',
+        })
+      : null;
     yield {
       type: 'final',
       success: false,
@@ -333,6 +365,7 @@ export async function* runCandidateQualityGate(
       sessionId: deps.session.id,
       attempts: candidate.attempts,
       provider: candidate.provider,
+      ...(blockedRecord !== null ? { blocked: blockedRecord } : {}),
     };
   }
   return finalGate;

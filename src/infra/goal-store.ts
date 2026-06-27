@@ -427,6 +427,15 @@ export interface GoalStore {
    * {@link cascadeTerminate}; this method only applies + persists it.
    */
   cancelGoalTree(rootId: string): Promise<{ readonly terminated: readonly string[] }>;
+  /**
+   * Mark goals as SUPERSEDED (MYSHELL_CORRECTION_FORK_V1). Only updates goals
+   * currently in parked/queued/running; leaves done/failed/blocked/superseded
+   * and unrelated goals unchanged. Returns the ids actually changed.
+   */
+  markSuperseded(
+    ids: readonly string[],
+    meta: { supersededByIntentId: string; reason: string }
+  ): Promise<readonly string[]>;
 }
 
 /** The fields a caller may patch on a to-do — NEVER `verdict` (verify-only). */
@@ -892,6 +901,39 @@ export function createFileGoalStore(opts: {
         }
         await writeIndex(home, nextGoals);
         return { terminated: plan.map((t) => t.id) };
+      });
+    },
+
+    async markSuperseded(
+      ids,
+      meta,
+    ): Promise<readonly string[]> {
+      const targetSet = new Set(ids);
+      await ensureDirs(home);
+      return withLock(getIndexLockPath(home), async () => {
+        const goals = await readIndexLocked(home, onWarning);
+        const now = clock.isoNow();
+        const changed: string[] = [];
+        const LIVE_STATES = new Set<GoalState>(['parked', 'queued', 'running']);
+        const nextGoals = goals.map((g) => {
+          if (!targetSet.has(g.id)) return g;
+          if (!LIVE_STATES.has(g.state)) return g;
+          changed.push(g.id);
+          return capGoal({
+            ...g,
+            state: 'superseded',
+            supersededByIntentId: meta.supersededByIntentId,
+            supersededReason: meta.reason,
+            lastTouched: now,
+          });
+        });
+        if (changed.length > 0) {
+          for (const g of nextGoals) {
+            if (targetSet.has(g.id)) await persistGoal(home, g);
+          }
+          await writeIndex(home, nextGoals);
+        }
+        return changed;
       });
     },
   };

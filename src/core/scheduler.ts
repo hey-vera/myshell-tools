@@ -49,6 +49,7 @@ import type { CoreEvent } from './types.js';
 import type { ProviderId } from '../providers/port.js';
 import { pressureFromSignals, type QuotaPressure } from './capability-budget.js';
 import { availableAfterCooldown, cooldownExpiry } from './cooldown.js';
+import { buildBlockedRecord } from './blocked.js';
 
 // ---------------------------------------------------------------------------
 // Goal specs + plan types
@@ -242,10 +243,16 @@ export interface ScheduleDeps {
    * planSchedule call is byte-identical to before and the scheduler behaves
    * exactly as it did pre-D6. The live wiring computes it as
    * `min(tuningCeiling, callBudgetCeiling, genuineParallelGoalCount)`
-   * (see `interface/menu.ts`); combined with planSchedule's clamp this yields the
-   * exact `crossGoalCap` (capacity-allocator.ts).
-   */
+    * (see `interface/menu.ts`); combined with planSchedule's clamp this yields the
+    * exact `crossGoalCap` (capacity-allocator.ts).
+    */
   readonly maxActive?: number;
+  /**
+   * Blocked-state terminal flag (MYSHELL_BLOCKED_STATE_V1). When true, dependency
+   * skip finals include a blocked record with dependency_blocked code.
+   * DEFAULT ABSENT → byte-identical to today.
+   */
+  readonly blockedStateV1?: boolean;
 }
 
 /**
@@ -576,6 +583,14 @@ export async function* runSchedule(
           // Advance its phase counter to its (planned) total so the card reads
           // done-not-run rather than stuck mid-phase.
           phaseCurrent.set(q.spec.id, phaseTotal.get(q.spec.id) ?? 1);
+          const blockedTag = deps.blockedStateV1 === true
+            ? buildBlockedRecord({
+                reason: 'Prerequisite goal did not complete.',
+                nextAction: 'Resolve the prerequisite goal or revise the dependency.',
+                preservedWork: 'No work was started for this goal; prior completed work is preserved.',
+                code: 'dependency_blocked',
+              })
+            : null;
           events.push(
             tagEvent(
               {
@@ -586,6 +601,7 @@ export async function* runSchedule(
                 totalCostUsd: 0,
                 sessionId: '',
                 attempts: 0,
+                ...(blockedTag !== null ? { blocked: blockedTag } : {}),
               },
               q.spec.id,
             ),

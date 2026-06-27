@@ -232,6 +232,8 @@ import { experimentalEnabledByDefault } from './ui/experimental-default.js';
 import { cacheAccountingV2Enabled } from './ui/cache-accounting-flag.js';
 import { accountAuxEnabled } from './ui/account-aux-flag.js';
 import { intentStoreV1Enabled } from './ui/intent-store-flag.js';
+import { correctionForkV1Enabled } from './ui/correction-fork-flag.js';
+import { blockedStateV1Enabled } from './ui/blocked-state-flag.js';
 import { createIntentStore } from '../infra/intent-store.js';
 import { nodeVerifyPort } from '../infra/verify-port.js';
 import { createEvidenceSink, createEvidenceSnapshotBuilder } from '../infra/evidence-sink.js';
@@ -1358,6 +1360,9 @@ export async function runChatLoop(
   const intentStoreOn = intentStoreV1Enabled(process.env);
   const intentStore = intentStoreOn ? createIntentStore({ cwd: ctx.cwd }) : undefined;
   const cacheAccountingOn = cacheAccountingV2Enabled(process.env);
+  const correctionForkOn =
+    correctionForkV1Enabled(process.env) && intentStoreOn;
+  const blockedStateOn = blockedStateV1Enabled(process.env);
   void (async () => {
 
     try {
@@ -2115,6 +2120,12 @@ export async function runChatLoop(
       // This helper is inlined as a function so it can be called again after
       // inline re-login with the refreshed env (bug 5 fix: no stale auth state),
       // and re-called with fresh history each turn of a /goal run.
+
+      // Mutable goal store latch — buildDeps is defined BEFORE goalStore is created,
+      // but called AFTER; this mutable variable lets correctionFork deps access
+      // listGoals() and markGoalsSuperseded() at call time.
+      let mutableGoalStore: ReturnType<typeof createFileGoalStore> | null = null;
+
       const buildDeps = (
         hist: readonly SessionEntry[],
         // Pre-rendered, capped USER MEMORY block (Phase 4, memory §7), computed
@@ -2730,6 +2741,26 @@ export async function runChatLoop(
             const block = currentUnderstandingContext();
             return block.length > 0 ? { understandingContext: block } : {};
           })(),
+          // BLOCKED STATE (MYSHELL_BLOCKED_STATE_V1) — DEFAULT OFF. When on,
+          // the orchestrator may emit blocked finals instead of failed ones.
+          ...(blockedStateOn ? { blockedStateV1: true } : {}),
+          // CORRECTION FORK (MYSHELL_CORRECTION_FORK_V1) — DEFAULT OFF. When on,
+          // correction detection runs against prior intent versions; a detected
+          // correction creates a child IntentVersion and supersedes invalid
+          // descendants. Requires intentStore + goalStore to both exist.
+          ...(correctionForkOn && mutableGoalStore !== null && intentStore !== undefined
+            ? {
+                correctionFork: {
+                  enabled: true as const,
+                  readIntentVersions: () => intentStore.readAll(),
+                  listGoals: () => mutableGoalStore!.list(),
+                  markGoalsSuperseded: (
+                    ids: readonly string[],
+                    meta: { supersededByIntentId: string; reason: string },
+                  ) => mutableGoalStore!.markSuperseded(ids, meta),
+                },
+              }
+            : {}),
         };
       };
 
@@ -2809,6 +2840,7 @@ export async function runChatLoop(
       // PARKED goal's roadmap — nothing floats. Fail-soft, shares the two-scope
       // project key with memory. No model call to create/manage a manual to-do.
       const goalStore = createFileGoalStore({ clock: ctx.clock });
+      mutableGoalStore = goalStore;
 
       // ---- Standing RULES store (Phase 4) -------------------------------------
       // The persistent home for user-authored standing rules the partner remembers
@@ -2892,6 +2924,8 @@ export async function runChatLoop(
             parked: 2,
             done: 3,
             failed: 4,
+            blocked: 4,
+            superseded: 4,
           };
           const ordered = relevant
             .map((g, i) => ({ g, i }))

@@ -29,6 +29,8 @@ import type { RoadmapItem, RoadmapItemApproach, RoadmapStatus } from './work-con
 import { capRoadmapItem, normalizeRoadmapRelations } from './work-contract.js';
 import type { VerifiedState, VerifyOutcome } from './verify.js';
 import { buildVerifyReceipt } from './verify.js';
+import type { BlockedRecord } from './blocked.js';
+import { isBlockedRecord } from './blocked.js';
 
 // ---------------------------------------------------------------------------
 // The unified goal type
@@ -38,7 +40,7 @@ import { buildVerifyReceipt } from './verify.js';
  * The goal lifecycle. `queued|running|done|failed` === `AgentRunState`
  * (src/interface/ui/state.ts); `parked` is the one new pre-queue value.
  */
-export type GoalState = 'parked' | 'queued' | 'running' | 'done' | 'failed';
+export type GoalState = 'parked' | 'queued' | 'running' | 'done' | 'failed' | 'blocked' | 'superseded';
 
 /** How a goal entered the store. Phase 5a creates only `user-explicit` goals;
  *  the auto-capture sources (5b) are part of the shape so the store is forward
@@ -170,6 +172,17 @@ export interface Goal {
    * goal WITHOUT one round-trips byte-identically.
    */
   readonly intentVersionId?: string;
+  /**
+   * Blocked terminal record (MYSHELL_BLOCKED_STATE_V1). Additive + optional:
+   * a goal WITHOUT one round-trips byte-identically.
+   */
+  readonly blocked?: BlockedRecord;
+  /**
+   * Correction-fork supersession metadata (MYSHELL_CORRECTION_FORK_V1).
+   * Additive + optional: a goal WITHOUT these round-trips byte-identically.
+   */
+  readonly supersededByIntentId?: string;
+  readonly supersededReason?: string;
 }
 
 /** Roadmap cap — the SAME bound work-contract.ts enforces (cap 8). */
@@ -200,6 +213,8 @@ const VALID_STATES: ReadonlySet<string> = new Set<GoalState>([
   'running',
   'done',
   'failed',
+  'blocked',
+  'superseded',
 ]);
 
 const VALID_SOURCES: ReadonlySet<string> = new Set<GoalSource>([
@@ -361,6 +376,23 @@ export function capGoal(g: Goal): Goal {
   const cappedIntentVersionId =
     typeof ivRaw === 'string' && ivRaw.trim().length > 0 ? ivRaw : undefined;
 
+  // blocked — preserve only a valid BlockedRecord. Omit malformed/absent.
+  let cappedBlocked: BlockedRecord | undefined;
+  if (isBlockedRecord(r['blocked'])) {
+    cappedBlocked = r['blocked'] as BlockedRecord;
+  }
+
+  // supersededByIntentId / supersededReason — preserve only non-empty strings.
+  // Also require state to be 'superseded' to keep the shape honest.
+  const cappedSupersededByIntentId =
+    typeof r['supersededByIntentId'] === 'string' && r['supersededByIntentId'].trim().length > 0
+      ? r['supersededByIntentId']
+      : undefined;
+  const cappedSupersededReason =
+    typeof r['supersededReason'] === 'string' && r['supersededReason'].trim().length > 0
+      ? r['supersededReason']
+      : undefined;
+
   return {
     version: 1,
     id,
@@ -380,6 +412,9 @@ export function capGoal(g: Goal): Goal {
     ...(cappedTags !== undefined ? { tags: cappedTags } : {}),
     ...(cappedParentGoalId !== undefined ? { parentGoalId: cappedParentGoalId } : {}),
     ...(cappedIntentVersionId !== undefined ? { intentVersionId: cappedIntentVersionId } : {}),
+    ...(cappedBlocked !== undefined ? { blocked: cappedBlocked } : {}),
+    ...(cappedSupersededByIntentId !== undefined ? { supersededByIntentId: cappedSupersededByIntentId } : {}),
+    ...(cappedSupersededReason !== undefined ? { supersededReason: cappedSupersededReason } : {}),
   };
 }
 
@@ -437,13 +472,15 @@ export function isStale(goal: Goal, nowIso: string, staleDays = STALE_DAYS): boo
  * with a blocked roadmap item gets the `⚠` flag (vision doc §5). Pure.
  */
 export function goalGlyph(goal: Goal): string {
-  if (goal.state === 'done') return '✓';
-  if (goal.state === 'failed') return '✗';
-  if (goal.state === 'running') return '◐';
+  if (goal.state === 'done') return '\u2713';
+  if (goal.state === 'failed') return '\u2717';
+  if (goal.state === 'blocked') return '\u2717';
+  if (goal.state === 'superseded') return '\u2717';
+  if (goal.state === 'running') return '\u25D0';
   if (goal.state === 'parked') {
-    return roadmapProgress(goal.roadmap).blocked > 0 ? '⚠' : '◷';
+    return roadmapProgress(goal.roadmap).blocked > 0 ? '\u26A0' : '\u25F7';
   }
-  return '○'; // queued
+  return '\u25CB'; // queued
 }
 
 /**
@@ -552,10 +589,11 @@ export function formatGoalApproachLine(goal: Goal): string | undefined {
 }
 
 const ROADMAP_BOX: Record<RoadmapStatus, string> = {
-  done: '[✓]',
+  done: '[\u2713]',
   pending: '[ ]',
   active: '[ ]',
-  blocked: '[⚠]',
+  blocked: '[\u26A0]',
+  superseded: '[\u2717]',
 };
 
 /** Verified-done bar, local copy (mirrors isTodoVerifiedDone) so this module
@@ -620,6 +658,8 @@ const GOAL_CONTEXT_STATE_RANK: Record<GoalState, number> = {
   parked: 2,
   done: 3,
   failed: 4,
+  blocked: 4,
+  superseded: 4,
 };
 
 /** A short to-do status word for the plan block. Pure, total. */
@@ -662,7 +702,7 @@ export function formatGoalsForContext(goals: readonly Goal[]): string {
   const live: Goal[] = [];
   const terminal: Goal[] = [];
   for (const g of goals) {
-    if (g.state === 'done' || g.state === 'failed') terminal.push(g);
+    if (g.state === 'done' || g.state === 'failed' || g.state === 'blocked' || g.state === 'superseded') terminal.push(g);
     else live.push(g);
   }
   // Order live work by lifecycle rank (running → queued → parked), recency-stable
@@ -783,7 +823,7 @@ export function goalDepth(goals: readonly Goal[], id: string): number {
 /** A terminal state a goal can be cascade-set to. There is NO `cancelled` state
  *  (owner hard rule) — `failed` is the terminal for cancelled work. Kept as its
  *  own narrowed type so the cascade signature documents the one legal terminal. */
-type CascadeTerminal = 'failed';
+type CascadeTerminal = 'failed' | 'superseded';
 
 /** A non-terminal goal state is one the cascade is allowed to TERMINATE. */
 const NON_TERMINAL_STATES: ReadonlySet<GoalState> = new Set<GoalState>(['parked', 'queued', 'running']);

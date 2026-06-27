@@ -126,7 +126,7 @@ export interface GoalBoardTodoRow {
 export interface GoalBoardRow {
   readonly id: string;
   readonly title: string;
-  readonly state: 'parked' | 'queued' | 'running' | 'done' | 'failed';
+  readonly state: 'parked' | 'queued' | 'running' | 'done' | 'failed' | 'blocked' | 'superseded';
   readonly done: number;
   readonly total: number;
   readonly glyph: string;

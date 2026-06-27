@@ -93,6 +93,7 @@ import { ENGINE_BEHAVIOR_VERSION, isLegacyEngineEntry } from './engine-version.j
 import { deriveWorkStateFromHistory, renderWorkStateBlock } from './work-state.js';
 import { renderVisionTriageBlock } from './vision-triage.js';
 import type { TurnClass } from './capability-budget.js';
+import { detectCorrectionFork, planCorrectionGoalInvalidation } from './correction-fork.js';
 
 /** Tiny pure mapper: the budget's trivial / normal / substantial turn-class from the existing classification. */
 function turnClassOf(tier: Tier, risk: Risk): TurnClass {
@@ -1103,9 +1104,47 @@ export async function* orchestrate(
   // before render-optional events so a crash mid-write never orphans a stored
   // version with a different id than the one surfaced.
   if (depsArg.intentStore !== undefined && turnIntentVersionId !== undefined && intentFrame !== undefined) {
+    // CORRECTION FORK (MYSHELL_CORRECTION_FORK_V1) — guarded by depsArg.correctionFork.
+    // OFF → parentId = null, no invalidation (byte-identical to today).
+    let parentIdForWrite: string | null = null;
+    let invalidationPlan: {
+      supersedeGoalIds: readonly string[];
+      preserveCount: number;
+    } | null = null;
+
+    if (depsArg.correctionFork?.enabled === true) {
+      try {
+        const versions = await depsArg.correctionFork.readIntentVersions();
+        const prior = versions
+          .filter((v) => v.sessionId === depsArg.session.id)
+          .sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
+        const hasPriorIntent = prior !== undefined;
+
+        const detection = detectCorrectionFork({ text: task, hasPriorIntent });
+
+        if (detection !== null && prior !== undefined) {
+          parentIdForWrite = prior.id;
+
+          const goals = await depsArg.correctionFork.listGoals();
+          const plan = planCorrectionGoalInvalidation({
+            goals,
+            versions,
+            parentIntentId: prior.id,
+            newIntentId: turnIntentVersionId,
+          });
+          invalidationPlan = {
+            supersedeGoalIds: plan.supersedeGoalIds,
+            preserveCount: plan.preserveGoalIds.length,
+          };
+        }
+      } catch {
+        // Best-effort: if anything fails, skip correction fork and write as normal
+      }
+    }
+
     const version = buildIntentVersion({
       id: turnIntentVersionId,
-      parentId: null,
+      ...(parentIdForWrite !== null ? { parentId: parentIdForWrite } : { parentId: null }),
       sessionId: depsArg.session.id,
       createdAt: depsArg.clock.isoNow(),
       rawUserTurnText: task,
@@ -1114,6 +1153,32 @@ export async function* orchestrate(
     });
     if (version !== null) {
       await depsArg.intentStore.append(version).catch(() => undefined);
+
+      if (parentIdForWrite !== null) {
+        yield {
+          type: 'notice',
+          level: 'info',
+          message: `Correction fork created (child: ${turnIntentVersionId!}, parent: ${parentIdForWrite})`,
+        } as const;
+      }
+
+      if (
+        invalidationPlan !== null &&
+        invalidationPlan.supersedeGoalIds.length > 0 &&
+        depsArg.correctionFork?.enabled === true
+      ) {
+        try {
+          await depsArg.correctionFork.markGoalsSuperseded(
+            invalidationPlan.supersedeGoalIds,
+            {
+              supersededByIntentId: turnIntentVersionId!,
+              reason: `User corrected intent; superseded by ${turnIntentVersionId!}`,
+            },
+          );
+        } catch {
+          // Best-effort: invalidation failure does not block the turn
+        }
+      }
     }
   }
 

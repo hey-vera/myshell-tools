@@ -11,21 +11,25 @@
  */
 
 import { mkdir, readFile } from 'node:fs/promises';
-import type { IntentVersion, IntentStoreWriter } from '../core/intent-version.js';
+import type { IntentVersion, IntentStoreWriter, IntentStoreReader } from '../core/intent-version.js';
 import { atomicAppendJSONL } from './atomic.js';
 import { isIntentVersion } from './jsonl-guards.js';
 import { getStateDir, getIntentVersionsFile } from './paths.js';
 
 /**
- * Create an IntentStoreWriter for the given working directory.
+ * Create an IntentStoreWriter + IntentStoreReader for the given working directory.
  */
-export function createIntentStore(opts: { cwd: string }): IntentStoreWriter {
+export function createIntentStore(opts: { cwd: string }): IntentStoreWriter & IntentStoreReader {
   const { cwd } = opts;
 
   return {
     async append(version: IntentVersion): Promise<void> {
       await mkdir(getStateDir(cwd), { recursive: true });
       await atomicAppendJSONL(getIntentVersionsFile(cwd), version);
+    },
+
+    async readAll(): Promise<readonly IntentVersion[]> {
+      return readIntentVersions(cwd);
     },
   };
 }

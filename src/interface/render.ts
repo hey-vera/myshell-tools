@@ -905,6 +905,19 @@ export async function renderStream(
         prose.flush();
 
         if (!ev.success) {
+          // Blocked terminal (MYSHELL_BLOCKED_STATE_V1) — distinct from failed.
+          // Surface the reason, next action, and preserved work.
+          if (ev.blocked !== undefined) {
+            if (!isQuiet) {
+              out.write(`\n${completionDot('fail')}${bold(red('Blocked', c), c)}\n`);
+              out.write(`  ${dim('Reason:', c)} ${ev.blocked.reason}\n`);
+              out.write(`  ${dim('Next:', c)} ${ev.blocked.nextAction}\n`);
+              if (ev.blocked.preservedWork.length > 0) {
+                out.write(`  ${dim('Preserved:', c)} ${ev.blocked.preservedWork.slice(0, 200)}\n`);
+              }
+            }
+            break;
+          }
           if (ev.errorCategory === 'timeout') {
             if (!isQuiet) {
               // Follow-up: classify genuine progress vs. a stuck provider and
@@ -961,7 +974,8 @@ export async function renderStream(
         // honestly — the answer above is real and usable, but it stayed under the
         // confidence bar / wasn't fully verified. Shown in every non-quiet mode so
         // the user isn't misled into treating it as a clean success.
-        if (ev.bestEffort === true && !isQuiet) {
+        // Suppressed when blocked is present (blocked finals carry their own message).
+        if (ev.bestEffort === true && ev.blocked === undefined && !isQuiet) {
           out.write(
             `\n${yellow('Best-effort answer — reached the attempt limit without a fully-confident result; treat the above as unverified.', c)}\n`,
           );
