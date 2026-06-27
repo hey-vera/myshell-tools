@@ -71,7 +71,7 @@ export interface JudgedGoal {
 export interface AutoStageEngine {
   judgeGoal: (goalText: string) => Promise<JudgedGoal>;
   warmUnderstanding: WarmUnderstanding;
-  resolveAutoStage: (line: string, intentVersionId?: string) => Promise<void>;
+  resolveAutoStage: (line: string, opts?: { intentVersionId?: string; linkIntentVersion?: boolean }) => Promise<void>;
 }
 
 type GoalPlanner = (userMessage: string, signal: AbortSignal, opts?: { intentVersionId?: string }) => Promise<GoalPlan | null>;
@@ -490,7 +490,7 @@ export function createAutoStageEngine(deps: AutoStageEngineDeps): AutoStageEngin
     return { judgment: 'stage', title: await deps.formGoalLabel(goalText), roadmap: deps.todosToRoadmap([{ text: goalText }]) };
   };
 
-  const resolveAutoStage = async (line: string, intentVersionId?: string): Promise<void> => {
+  const resolveAutoStage = async (line: string, opts?: { intentVersionId?: string; linkIntentVersion?: boolean }): Promise<void> => {
     if (!deps.autoStageOn) return;
     // Quota gate: skip when ALL detected providers are in rate-limit cooldown
     // (pressure at the 3 ceiling) — honest cost discipline. (We do not have a
@@ -522,7 +522,7 @@ export function createAutoStageEngine(deps: AutoStageEngineDeps): AutoStageEngin
     if (planner === null) return;
     let plan: GoalPlan | null = null;
     try {
-      plan = await planner(line, new AbortController().signal, { ...(intentVersionId !== undefined ? { intentVersionId } : {}) });
+      plan = await planner(line, new AbortController().signal, { ...(opts?.intentVersionId !== undefined ? { intentVersionId: opts.intentVersionId } : {}) });
     } catch {
       plan = null;
     }
@@ -585,6 +585,9 @@ export function createAutoStageEngine(deps: AutoStageEngineDeps): AutoStageEngin
           source: 'auto-staged',
           // The best-approach the planner stated for this goal (when any).
           ...(g.approach !== undefined ? { approach: g.approach } : {}),
+          ...(opts?.linkIntentVersion === true && opts?.intentVersionId !== undefined
+            ? { intentVersionId: opts.intentVersionId }
+            : {}),
         });
         // Decide activation (mirror prepareAcknowledgedGoal). Confident + auto-run →
         // activate now and run in the BACKGROUND; else leave parked (today's behaviour).

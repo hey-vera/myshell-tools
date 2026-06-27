@@ -5,8 +5,9 @@
  * records from poisoning resume history or usage summaries.
  */
 
-import type { LedgerEntry, SessionEntry, Tier } from '../core/types.js';
+import type { LedgerEntry, SessionEntry, Tier, Risk } from '../core/types.js';
 import type { ProviderId } from '../providers/port.js';
+import type { IntentVersion } from '../core/intent-version.js';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -213,5 +214,49 @@ export function isLedgerEntry(value: unknown): value is LedgerEntry {
   ) {
     return false;
   }
+  return true;
+}
+
+function isIntentConfidence(value: unknown): boolean {
+  return value === 'high' || value === 'medium' || value === 'low';
+}
+
+function isIntentSource(value: unknown): boolean {
+  return value === 'model' || value === 'rules-fallback' || value === 'skipped';
+}
+
+function isRisk(value: unknown): value is Risk {
+  return value === 'low' || value === 'medium' || value === 'high' || value === 'critical';
+}
+
+export function isIntentVersion(value: unknown): value is IntentVersion {
+  if (!isRecord(value)) return false;
+  if (value['version'] !== 1) return false;
+  if (typeof value['id'] !== 'string' || value['id'].trim().length === 0) return false;
+  const parentId = value['parentId'];
+  if (
+    parentId !== undefined &&
+    parentId !== null &&
+    (typeof parentId !== 'string' || parentId.trim().length === 0)
+  ) return false;
+  if (typeof value['sessionId'] !== 'string' || value['sessionId'].trim().length === 0) return false;
+  if (typeof value['createdAt'] !== 'string' || value['createdAt'].trim().length === 0) return false;
+  if (
+    typeof value['rawUserTurnText'] !== 'string' ||
+    value['rawUserTurnText'].trim().length === 0
+  ) return false;
+
+  const intent = value['intent'];
+  if (!isRecord(intent)) return false;
+  if (typeof intent['objective'] !== 'string' || intent['objective'].trim().length === 0) return false;
+
+  if (intent['assumptions'] !== undefined && !isStringArray(intent['assumptions'])) return false;
+  if (intent['constraints'] !== undefined && !isStringArray(intent['constraints'])) return false;
+  if (intent['nonGoals'] !== undefined && !isStringArray(intent['nonGoals'])) return false;
+  if (intent['doneCriteria'] !== undefined && typeof intent['doneCriteria'] !== 'string') return false;
+  if (intent['risk'] !== undefined && !isRisk(intent['risk'])) return false;
+  if (intent['confidence'] !== undefined && !isIntentConfidence(intent['confidence'])) return false;
+  if (intent['source'] !== undefined && !isIntentSource(intent['source'])) return false;
+
   return true;
 }

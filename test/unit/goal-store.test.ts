@@ -185,6 +185,23 @@ describe('goal-store — CRUD round-trip', () => {
     assert.equal('parentGoalId' in (reloaded ?? {}), false);
   });
 
+  it('create preserves intentVersionId when provided', async () => {
+    const g = await store.create({ title: 'linked goal', intentVersionId: 'iv-1' });
+    assert.equal(g.intentVersionId, 'iv-1');
+    const reloaded = await store.get(g.id);
+    assert.equal(reloaded?.intentVersionId, 'iv-1');
+  });
+
+  it('create omits absent intentVersionId', async () => {
+    const g = await store.create({ title: 'no link' });
+    assert.equal('intentVersionId' in g, false);
+  });
+
+  it('capGoal drops blank intentVersionId', async () => {
+    const g = await store.create({ title: 'blank link', intentVersionId: '' });
+    assert.equal('intentVersionId' in g, false);
+  });
+
   it('setGoalVerdict persists EXACTLY the passed verdict (atomic, bumps lastTouched)', async () => {
     const g = await store.create({ title: 'ship it' });
     assert.equal(g.goalVerdict, undefined);

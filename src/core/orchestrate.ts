@@ -44,12 +44,14 @@ import { compactHistory, historyTruncationInfo, planHistoryCompaction } from './
 import { serializeQuestionSet } from './questions.js';
 import { planPanel, runPanel } from './ensemble.js';
 import { planHedge, runHedged } from './hedge.js';
-import { capContract, shouldMaterializeContract, isCleanObjectiveTask } from './work-contract.js';
+import { capContract, shouldMaterializeContract, isCleanObjectiveTask, stampContractIntentVersion } from './work-contract.js';
+import type { WorkContract } from './work-contract.js';
 import type { IntentFrame } from './intent.js';
 import { shouldExtractIntent, rulesIntentFrame, renderIntentBlock, normalizeExtraction } from './intent.js';
 import { capGoalLabel } from './goal.js';
 import { planEngagement, seedFromIntentAndPlan, renderEngagementBlock, deriveAskFromForks, isTrivial, hasGenuineFork } from './engagement.js';
 import type { EngagementSignals } from './engagement.js';
+import { buildIntentVersion } from './intent-version.js';
 import {
   assessConfidence,
   applyAgreement,
@@ -269,11 +271,13 @@ export async function* orchestrate(
   let blockingCallsSoFar = depsArg.observedBlockingCalls ?? 0;
 
   // MYSHELL_ACCOUNT_AUX intent-version correlation seam.
-  // When ON, every aux and work ledger entry written this turn shares the same
-  // intentVersionId for correlation. Pre-minted or generated here as a fallback.
-  // OFF (absent/false) → undefined → no stamped field, byte-identical to today.
+  // When accountAux is ON, every aux and work ledger entry written this turn
+  // shares the same intentVersionId for correlation. When intentStore is present
+  // (MYSHELL_INTENT_STORE_V1), the id is also used for the persisted intent version.
+  // Pre-minted or generated here as a fallback.
+  const wantsIntentVersionId = depsArg.accountAux === true || depsArg.intentStore !== undefined;
   const turnIntentVersionId =
-    depsArg.accountAux === true ? (depsArg.intentVersionId ?? depsArg.clock.uuid()) : undefined;
+    wantsIntentVersionId ? (depsArg.intentVersionId ?? depsArg.clock.uuid()) : undefined;
   // Reuse the SAME QuotaPressure signal the caller already computes from live
   // cooldown state (menu.ts governorPressure / decideShed). NO new probe.
   const pressure = depsArg.governorPressure ?? pressureFromSignals({});
@@ -1094,6 +1098,25 @@ export async function* orchestrate(
       ? depsArg.workStateContext
       : renderWorkStateBlock(workState);
 
+  // INTENT STORE WRITE (MYSHELL_INTENT_STORE_V1) — the single persistence point.
+  // After final intentFrame stabilisation (including re-extraction updates) and
+  // before render-optional events so a crash mid-write never orphans a stored
+  // version with a different id than the one surfaced.
+  if (depsArg.intentStore !== undefined && turnIntentVersionId !== undefined && intentFrame !== undefined) {
+    const version = buildIntentVersion({
+      id: turnIntentVersionId,
+      parentId: null,
+      sessionId: depsArg.session.id,
+      createdAt: depsArg.clock.isoNow(),
+      rawUserTurnText: task,
+      frame: intentFrame,
+      risk: classification.risk,
+    });
+    if (version !== null) {
+      await depsArg.intentStore.append(version).catch(() => undefined);
+    }
+  }
+
   // Render-optional events (locked APE default #1): surface intent ONLY when the
   // gated pass ran AND produced a non-empty reflection block; surface engagement
   // ONLY when the plan produces a VISIBLE action (a non-empty block). The silent
@@ -1134,24 +1157,37 @@ export async function* orchestrate(
   const depsWithIntent =
     turnIntentVersionId !== undefined ? { ...deps, intentVersionId: turnIntentVersionId } : deps;
 
+  // When the intent store is on, link the turn's intentVersionId onto every
+  // contract produced this turn — goals, work-contracts, and review contracts.
+  const intentStoreLinkId = depsArg.intentStore !== undefined ? turnIntentVersionId : undefined;
+
   // Work-contract seed: prefer the frame's goal/vision (and a plan-aware roadmap
   // when planFirst) over the verbatim task copy. Consumes route.plan THROUGH APE
   // (plan.planFirst). Falls back to the prior capContract seed when there's no
   // usable goal. Caps/render/checkpoints/verification stay the work-contract's.
   const incomingWorkContract =
-    deps.workContract !== undefined ? capContract(deps.workContract) : undefined;
+    deps.workContract !== undefined
+      ? stampContractIntentVersion(capContract(deps.workContract), intentStoreLinkId)
+      : undefined;
   const normalRoadmapDecision = shouldMaterializeContract({
     classification,
     routePlan,
     context: 'normal',
     reviewWillRun: false,
   });
+  const fallbackSeed = (): WorkContract | undefined => {
+    const base = capContract({ version: 1, objective: task });
+    if (intentStoreLinkId !== undefined) {
+      return capContract({ ...base, intentVersionId: intentStoreLinkId });
+    }
+    return base;
+  };
   const seededTrace =
     incomingWorkContract === undefined &&
     normalRoadmapDecision.roadmap &&
     isCleanObjectiveTask(task)
-      ? (seedFromIntentAndPlan(intentFrame, engagementPlan, task) ??
-        capContract({ version: 1, objective: task }))
+      ? (seedFromIntentAndPlan(intentFrame, engagementPlan, task, intentStoreLinkId) ??
+        fallbackSeed())
       : undefined;
   const workTrace =
     incomingWorkContract !== undefined ? incomingWorkContract : seededTrace;

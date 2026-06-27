@@ -51,7 +51,7 @@ import { buildPrompt } from './prompt.js';
 import { type ReasoningEffort, type TaskKind } from './model-capabilities.js';
 import { modeFromPolicy } from './policy.js';
 import type { WorkContract } from './work-contract.js';
-import { capContract, isCleanObjectiveTask, shouldMaterializeContract } from './work-contract.js';
+import { capContract, isCleanObjectiveTask, shouldMaterializeContract, stampContractIntentVersion } from './work-contract.js';
 import {
   runCandidateQualityGate,
   buildVerifyReceiptEvents,
@@ -555,7 +555,9 @@ export async function* runHedged(
   let attempts = 0;
   const classification = adequacyClassification(plan);
   const incomingWorkContract =
-    deps.workContract !== undefined ? capContract(deps.workContract) : undefined;
+    deps.workContract !== undefined
+      ? stampContractIntentVersion(capContract(deps.workContract), deps.intentStore !== undefined ? deps.intentVersionId : undefined)
+      : undefined;
   const generatedWorkTrace =
     incomingWorkContract === undefined &&
     shouldMaterializeContract({
@@ -565,7 +567,13 @@ export async function* runHedged(
       reviewWillRun: false,
     }).roadmap &&
     isCleanObjectiveTask(task)
-      ? capContract({ version: 1, objective: task })
+      ? capContract({
+          version: 1,
+          objective: task,
+          ...(deps.intentStore !== undefined && deps.intentVersionId !== undefined
+            ? { intentVersionId: deps.intentVersionId }
+            : {}),
+        })
       : undefined;
   const workTrace =
     incomingWorkContract !== undefined ? incomingWorkContract : generatedWorkTrace;

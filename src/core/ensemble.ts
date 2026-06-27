@@ -47,7 +47,7 @@ import { authorizeTier } from './flagship.js';
 import { type ReasoningEffort, type TaskKind } from './model-capabilities.js';
 import { modeFromPolicy } from './policy.js';
 import type { WorkContract } from './work-contract.js';
-import { capContract, renderContractForPrompt, shouldMaterializeContract, isCleanObjectiveTask } from './work-contract.js';
+import { capContract, renderContractForPrompt, shouldMaterializeContract, isCleanObjectiveTask, stampContractIntentVersion } from './work-contract.js';
 import { assembleContextBlocks, type ContextBlockOptions } from './prompt-context.js';
 import { renderUntrustedBlock } from './untrusted-content.js';
 import { buildSharedContextBlockOptions } from './context-block-options.js';
@@ -1686,7 +1686,9 @@ export async function* runPanel(
     reviewWillRun: true,
   });
   const incomingWorkContract =
-    deps.workContract !== undefined ? capContract(deps.workContract) : undefined;
+    deps.workContract !== undefined
+      ? stampContractIntentVersion(capContract(deps.workContract), deps.intentStore !== undefined ? deps.intentVersionId : undefined)
+      : undefined;
   const generatedWorkTrace =
     incomingWorkContract === undefined &&
     shouldMaterializeContract({
@@ -1696,7 +1698,13 @@ export async function* runPanel(
       reviewWillRun: false,
     }).roadmap &&
     isCleanObjectiveTask(task)
-      ? capContract({ version: 1, objective: task })
+      ? capContract({
+          version: 1,
+          objective: task,
+          ...(deps.intentStore !== undefined && deps.intentVersionId !== undefined
+            ? { intentVersionId: deps.intentVersionId }
+            : {}),
+        })
       : undefined;
   const workTrace =
     incomingWorkContract !== undefined ? incomingWorkContract : generatedWorkTrace;
@@ -1704,7 +1712,13 @@ export async function* runPanel(
     incomingWorkContract !== undefined
       ? incomingWorkContract
       : isCleanObjectiveTask(task)
-        ? capContract({ version: 1, objective: task })
+        ? capContract({
+            version: 1,
+            objective: task,
+            ...(deps.intentStore !== undefined && deps.intentVersionId !== undefined
+              ? { intentVersionId: deps.intentVersionId }
+              : {}),
+          })
         : undefined;
   const synthCandidates = succeeded.map((o) => ({ provider: o.provider, output: o.finalText }));
   const compactSynthesisCandidates =

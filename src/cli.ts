@@ -88,6 +88,8 @@ import { trustEnabled } from './interface/ui/trust-flag.js';
 import { experimentalEnabledByDefault } from './interface/ui/experimental-default.js';
 import { cacheAccountingV2Enabled } from './interface/ui/cache-accounting-flag.js';
 import { accountAuxEnabled } from './interface/ui/account-aux-flag.js';
+import { intentStoreV1Enabled } from './interface/ui/intent-store-flag.js';
+import { createIntentStore } from './infra/intent-store.js';
 const require = createRequire(import.meta.url);
 const pkg = require('../package.json');
 const version: string = pkg.version as string;
@@ -298,7 +300,9 @@ function buildDeps(
   const ledger = createLedger({ cwd });
   const session = createSessionWriter({ cwd, id: systemClock.uuid() });
   const accountAuxOn = accountAuxEnabled(process.env);
-  const intentVersionId = accountAuxOn ? systemClock.uuid() : undefined;
+  const intentStoreOn = intentStoreV1Enabled(process.env);
+  const intentStore = intentStoreOn ? createIntentStore({ cwd }) : undefined;
+  const intentVersionId = accountAuxOn || intentStoreOn ? systemClock.uuid() : undefined;
 
   return {
     clock: systemClock,
@@ -307,6 +311,10 @@ function buildDeps(
     ...(cacheAccountingV2Enabled(process.env) ? { cacheAccountingV2: true } : {}),
     ...(accountAuxOn && intentVersionId !== undefined
       ? { accountAux: true, intentVersionId }
+      : {}),
+    ...(intentStore !== undefined ? { intentStore } : {}),
+    ...(!accountAuxOn && intentVersionId !== undefined
+      ? { intentVersionId }
       : {}),
     policy,
     providers,

@@ -14,6 +14,7 @@ import {
   isCleanObjectiveTask,
   renderContractForPrompt,
   shouldMaterializeContract,
+  stampContractIntentVersion,
   type Checkpoint,
   type ContractVerification,
   type RoadmapItem,
@@ -574,5 +575,30 @@ describe('dependsOn / parentId — additive structural fields', () => {
     const capped = capContract(contract);
     assert.deepEqual(capped.roadmap?.[1]?.dependsOn, ['r1']);
     assert.equal(capped.roadmap?.[1]?.parentId, 'r1');
+  });
+
+  it('capContract preserves valid intentVersionId', () => {
+    const c = capContract({ version: 1, objective: 'task', intentVersionId: 'iv-1' });
+    assert.equal(c.intentVersionId, 'iv-1');
+  });
+
+  it('capContract drops blank intentVersionId', () => {
+    const c = capContract({ version: 1, objective: 'task', intentVersionId: '' });
+    assert.equal('intentVersionId' in c, false);
+  });
+
+  it('stampContractIntentVersion adds id only when provided', () => {
+    const c: WorkContract = { version: 1, objective: 'task' };
+    // undefined id → unchanged
+    const unchanged = stampContractIntentVersion(c, undefined);
+    assert.equal('intentVersionId' in (unchanged ?? {}), false);
+    // non-empty id → stamped
+    const stamped = stampContractIntentVersion(c, 'iv-2');
+    assert.equal(stamped?.intentVersionId, 'iv-2');
+    // undefined contract → undefined
+    assert.equal(stampContractIntentVersion(undefined, 'iv-3'), undefined);
+    // empty id → unchanged
+    const empty = stampContractIntentVersion(c, '');
+    assert.equal('intentVersionId' in (empty ?? {}), false);
   });
 });

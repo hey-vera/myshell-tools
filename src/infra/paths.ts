@@ -49,3 +49,11 @@ export function getLedgerFile(cwd: string): string {
 export function getEvalResultsFile(cwd: string): string {
   return join(getStateDir(cwd), 'eval-results.jsonl');
 }
+
+/**
+ * Returns the path to the intent-versions JSONL file.
+ * Path: <cwd>/.myshell-tools/intent-versions.jsonl
+ */
+export function getIntentVersionsFile(cwd: string): string {
+  return join(getStateDir(cwd), 'intent-versions.jsonl');
+}

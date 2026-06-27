@@ -358,6 +358,7 @@ export interface OrchestrateDeps {
   readonly cacheAccountingV2?: boolean;
   readonly accountAux?: boolean;
   readonly intentVersionId?: string;
+  readonly intentStore?: import('./intent-version.js').IntentStoreWriter;
   readonly policy: Policy;
   readonly cwd: string;
   readonly sandbox: SandboxLevel;

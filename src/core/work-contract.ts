@@ -101,6 +101,7 @@ export interface WorkContract {
   readonly roadmap?: readonly RoadmapItem[];
   readonly checkpoints?: readonly Checkpoint[];
   readonly verification?: ContractVerification;
+  readonly intentVersionId?: string;
 }
 
 type MaterializeContext = 'goal' | 'keep_going' | 'normal';
@@ -380,8 +381,14 @@ export function capContract(c: WorkContract): WorkContract {
           readonly roadmap?: unknown;
           readonly checkpoints?: unknown;
           readonly verification?: unknown;
+          readonly intentVersionId?: unknown;
         })
       : {};
+
+  const intentVersionId =
+    typeof raw.intentVersionId === 'string' && raw.intentVersionId.trim().length > 0
+      ? raw.intentVersionId
+      : undefined;
 
   const roadmap = Array.isArray(raw.roadmap)
     ? normalizeRoadmapRelations(raw.roadmap.slice(0, ROADMAP_LIMIT).map(capRoadmapItem))
@@ -449,6 +456,7 @@ export function capContract(c: WorkContract): WorkContract {
           },
         }
       : {}),
+    ...(intentVersionId !== undefined ? { intentVersionId } : {}),
   };
 }
 
@@ -528,4 +536,13 @@ export function isCleanObjectiveTask(task: string): boolean {
     return false;
   }
   return true;
+}
+
+export function stampContractIntentVersion(
+  c: WorkContract | undefined,
+  id: string | undefined,
+): WorkContract | undefined {
+  if (c === undefined) return undefined;
+  if (id === undefined || typeof id !== 'string' || id.trim().length === 0) return c;
+  return capContract({ ...c, intentVersionId: id });
 }

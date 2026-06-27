@@ -154,6 +154,52 @@ describe('post-turn auto-stage', () => {
     assert.equal(synced, 0);
     assert.equal((await store.list()).length, 0, 'no goals created on clarify');
   });
+
+  it('auto-stage links created goal intentVersionId when linkIntentVersion is true', async () => {
+    const plan: GoalPlan = {
+      judgment: 'stage',
+      vision: 'A feature',
+      goals: [{ title: 'Build the thing', todos: [{ text: 'Do it' }] }],
+    };
+    const convId = 'conv_1';
+    for (const g of plan.goals) {
+      await store.create({
+        title: g.title,
+        roadmap: planTodosToRoadmap(g.todos),
+        scope: 'global',
+        projectKey: null,
+        conversationId: convId,
+        source: 'auto-staged',
+        intentVersionId: 'iv-test',
+      });
+    }
+    const goals = await store.list();
+    const linked = goals.find((g) => g.title === 'Build the thing');
+    assert.ok(linked !== undefined);
+    assert.equal(linked!.intentVersionId, 'iv-test');
+  });
+
+  it('auto-stage omits goal intentVersionId when linkIntentVersion is false but still passes id to planner', async () => {
+    const plan: GoalPlan = {
+      judgment: 'stage',
+      vision: 'Another feature',
+      goals: [{ title: 'Add feature X', todos: [{ text: 'Code it' }] }],
+    };
+    for (const g of plan.goals) {
+      await store.create({
+        title: g.title,
+        roadmap: planTodosToRoadmap(g.todos),
+        scope: 'global',
+        projectKey: null,
+        conversationId: 'conv_1',
+        source: 'auto-staged',
+      });
+    }
+    const goals = await store.list();
+    const notLinked = goals.find((g) => g.title === 'Add feature X');
+    assert.ok(notLinked !== undefined);
+    assert.equal('intentVersionId' in notLinked!, false);
+  });
 });
 
 describe('planner gate — the menu invocation conditions', () => {

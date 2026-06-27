@@ -503,6 +503,7 @@ export function seedFromIntentAndPlan(
   frame: IntentFrame | undefined,
   plan: EngagementPlan | undefined,
   fallbackTask: string,
+  intentVersionId?: string,
 ): WorkContract | undefined {
   const goal = frame?.goal?.trim();
   const objective = goal !== undefined && goal.length > 0 ? goal : fallbackTask.trim();
@@ -524,6 +525,10 @@ export function seedFromIntentAndPlan(
     // A single pending roadmap anchor — the model fills the steps in-turn. We do
     // not fabricate sub-steps; the anchor just signals plan-then-act.
     seed.roadmap = [{ id: 'R1', text: objective, status: 'pending' }];
+  }
+
+  if (intentVersionId !== undefined && intentVersionId.trim().length > 0) {
+    seed.intentVersionId = intentVersionId;
   }
 
   return capContract(seed as WorkContract);

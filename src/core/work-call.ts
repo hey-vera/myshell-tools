@@ -75,7 +75,7 @@ import {
   type TrustSignals,
 } from './trust-receipt.js';
 import type { WorkContract } from './work-contract.js';
-import { capContract, shouldMaterializeContract, isCleanObjectiveTask } from './work-contract.js';
+import { capContract, shouldMaterializeContract, isCleanObjectiveTask, stampContractIntentVersion } from './work-contract.js';
 import type { IntentFrame } from './intent.js';
 import type { EngagementPlan } from './engagement.js';
 import { deriveAskFromForks } from './engagement.js';
@@ -1843,9 +1843,15 @@ export async function* runWorkCall(input: WorkCallInput): AsyncGenerator<CoreEve
         });
         const reviewContract =
           incomingWorkContract !== undefined
-            ? incomingWorkContract
+            ? stampContractIntentVersion(incomingWorkContract, deps.intentStore !== undefined ? deps.intentVersionId : undefined)
             : isCleanObjectiveTask(task)
-              ? capContract({ version: 1, objective: task })
+              ? capContract({
+                  version: 1,
+                  objective: task,
+                  ...(deps.intentStore !== undefined && deps.intentVersionId !== undefined
+                    ? { intentVersionId: deps.intentVersionId }
+                    : {}),
+                })
               : undefined;
         const reviewPrompt =
           reviewContractDecision.criteria && reviewContract !== undefined

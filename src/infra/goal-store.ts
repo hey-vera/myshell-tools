@@ -266,6 +266,7 @@ export interface CreateGoalInput {
    * within-goal `parentId`.
    */
   readonly parentGoalId?: Goal['parentGoalId'];
+  readonly intentVersionId?: string;
 }
 
 /** A batch patch for a goal's roadmap. All operations run on the same in-memory array. */
@@ -518,6 +519,7 @@ export function createFileGoalStore(opts: {
           // Additive: capGoal validates the id format + rejects a self-parent, so a
           // create WITHOUT a parent round-trips byte-identically to before.
           ...(input.parentGoalId !== undefined ? { parentGoalId: input.parentGoalId } : {}),
+          ...(input.intentVersionId !== undefined ? { intentVersionId: input.intentVersionId } : {}),
         });
         await persistGoal(home, goal);
         await writeIndex(home, [...goals, goal]);

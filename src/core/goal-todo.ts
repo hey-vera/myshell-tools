@@ -164,6 +164,12 @@ export interface Goal {
    * propagation that consume this land in Phase 4b.
    */
   readonly parentGoalId?: string;
+  /**
+   * Intent-version correlation id (MYSHELL_INTENT_STORE_V1). Links the goal back
+   * to the single captured turn intent that produced it. Additive + optional: a
+   * goal WITHOUT one round-trips byte-identically.
+   */
+  readonly intentVersionId?: string;
 }
 
 /** Roadmap cap — the SAME bound work-contract.ts enforces (cap 8). */
@@ -349,6 +355,12 @@ export function capGoal(g: Goal): Goal {
   const cappedParentGoalId =
     typeof pgRaw === 'string' && GOAL_ID_RE.test(pgRaw) && pgRaw !== id ? pgRaw : undefined;
 
+  // intentVersionId — preserve only a non-empty string. Omit blank/absent, so a
+  // goal WITHOUT one round-trips byte-identically.
+  const ivRaw = r['intentVersionId'];
+  const cappedIntentVersionId =
+    typeof ivRaw === 'string' && ivRaw.trim().length > 0 ? ivRaw : undefined;
+
   return {
     version: 1,
     id,
@@ -367,6 +379,7 @@ export function capGoal(g: Goal): Goal {
     ...(cappedCategory !== undefined ? { category: cappedCategory } : {}),
     ...(cappedTags !== undefined ? { tags: cappedTags } : {}),
     ...(cappedParentGoalId !== undefined ? { parentGoalId: cappedParentGoalId } : {}),
+    ...(cappedIntentVersionId !== undefined ? { intentVersionId: cappedIntentVersionId } : {}),
   };
 }
 

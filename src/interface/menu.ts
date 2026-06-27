@@ -231,6 +231,8 @@ import { draftGoalsEnabled } from './ui/draft-goals-flag.js';
 import { experimentalEnabledByDefault } from './ui/experimental-default.js';
 import { cacheAccountingV2Enabled } from './ui/cache-accounting-flag.js';
 import { accountAuxEnabled } from './ui/account-aux-flag.js';
+import { intentStoreV1Enabled } from './ui/intent-store-flag.js';
+import { createIntentStore } from '../infra/intent-store.js';
 import { nodeVerifyPort } from '../infra/verify-port.js';
 import { createEvidenceSink, createEvidenceSnapshotBuilder } from '../infra/evidence-sink.js';
 import { nodeWorktreePort } from '../infra/worktree.js';
@@ -1353,6 +1355,8 @@ export async function runChatLoop(
     },
   };
   const accountAuxOn = accountAuxEnabled(process.env);
+  const intentStoreOn = intentStoreV1Enabled(process.env);
+  const intentStore = intentStoreOn ? createIntentStore({ cwd: ctx.cwd }) : undefined;
   const cacheAccountingOn = cacheAccountingV2Enabled(process.env);
   void (async () => {
 
@@ -2365,7 +2369,7 @@ export async function runChatLoop(
         );
         const evidenceTurnNumber = hist.filter((entry) => entry.role === 'user').length + 1;
 
-        const intentVersionId = accountAuxOn ? ctx.clock.uuid() : undefined;
+        const intentVersionId = accountAuxOn || intentStoreOn ? ctx.clock.uuid() : undefined;
 
         return {
           clock: ctx.clock,
@@ -2374,6 +2378,10 @@ export async function runChatLoop(
           ...(cacheAccountingOn ? { cacheAccountingV2: true } : {}),
           ...(accountAuxOn && intentVersionId !== undefined
             ? { accountAux: true, intentVersionId }
+            : {}),
+          ...(intentStore !== undefined ? { intentStore } : {}),
+          ...(!accountAuxOn && intentVersionId !== undefined
+            ? { intentVersionId }
             : {}),
           policy,
           providers: ctx.providers,
@@ -6245,7 +6253,10 @@ Output ONLY valid JSON (no prose, no markdown).`;
         result.final.questions === undefined &&
         hasWorkIntent(line)
       ) {
-        void resolveAutoStage(line, deps.intentVersionId);
+        void resolveAutoStage(line, {
+          ...(deps.intentVersionId !== undefined ? { intentVersionId: deps.intentVersionId } : {}),
+          ...(intentStoreOn ? { linkIntentVersion: true } : {}),
+        });
       }
 
       // ---- DRAFT GOALS (redesign Phase 1 spine) — AFTER the auto-stage slot ----
@@ -6283,6 +6294,9 @@ Output ONLY valid JSON (no prose, no markdown).`;
               projectKey,
               conversationId: convId,
               source: 'byproduct-draft',
+              ...(intentStoreOn && deps.intentVersionId !== undefined
+                ? { intentVersionId: deps.intentVersionId }
+                : {}),
             });
             await syncBoard();
             out.write(
