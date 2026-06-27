@@ -13,6 +13,7 @@ import {
 import type { WorkContract } from './work-contract.js';
 import type { ProviderId } from '../providers/port.js';
 import { buildBlockedRecord } from './blocked.js';
+import { buildEvidenceReceipt } from './evidence-receipt.js';
 
 export const MAX_REVISE_RETRIES = 1;
 
@@ -177,9 +178,31 @@ export async function appendAcceptedAssistant(
   });
 }
 
+function receiptForFinal(
+  deps: OrchestrateDeps,
+  final: Extract<CoreEvent, { type: 'final' }>,
+  verifyOutcome: VerifyOutcome | undefined,
+): { readonly receipt?: Extract<CoreEvent, { type: 'final' }>['receipt'] } {
+  if (deps.evidenceReceiptV2 !== true) return {};
+  const entries = deps.receiptLedgerSnapshot?.() ?? [];
+  const receipt = buildEvidenceReceipt({
+    terminal: final.success ? 'done' : (final.blocked ? 'blocked' : 'failed'),
+    success: final.success,
+    ...(final.bestEffort === true ? { bestEffort: true as const } : {}),
+    ...(final.blocked !== undefined ? { blocked: final.blocked } : {}),
+    ...(verifyOutcome !== undefined ? { verifyOutcome } : {}),
+    totalCostUsd: final.totalCostUsd,
+    ...(deps.cacheAccountingV2 === true ? { cacheAccountingV2: true as const } : {}),
+    ledgerEntries: entries,
+    ...(deps.intentVersionId !== undefined ? { intentVersionId: deps.intentVersionId } : {}),
+  });
+  return receipt !== undefined ? { receipt } : {};
+}
+
 async function finalizeAcceptedCandidate(
   deps: OrchestrateDeps,
   candidate: CandidateResult,
+  verifyOutcome?: VerifyOutcome,
 ): Promise<Extract<CoreEvent, { readonly type: 'final' }>> {
   await appendAcceptedAssistant(deps, candidate);
   const memoryProposal = memoryProposalFor(candidate.content);
@@ -192,7 +215,7 @@ async function finalizeAcceptedCandidate(
       preservedWork: candidate.content.slice(0, 500),
       code: 'verification_failed',
     });
-    return {
+    const f: Extract<CoreEvent, { readonly type: 'final' }> = {
       type: 'final',
       success: false,
       output: candidate.content,
@@ -203,9 +226,10 @@ async function finalizeAcceptedCandidate(
       ...(br !== null ? { blocked: br } : {}),
       ...(memoryProposal !== undefined ? { memoryProposal } : {}),
     };
+    return { ...f, ...receiptForFinal(deps, f, verifyOutcome) } as Extract<CoreEvent, { readonly type: 'final' }>;
   }
 
-  return {
+  const f: Extract<CoreEvent, { readonly type: 'final' }> = {
     type: 'final',
     success: true,
     output: candidate.content,
@@ -216,6 +240,7 @@ async function finalizeAcceptedCandidate(
     ...(candidate.disposition === 'bestEffort' ? { bestEffort: true } : {}),
     ...(memoryProposal !== undefined ? { memoryProposal } : {}),
   };
+  return { ...f, ...receiptForFinal(deps, f, verifyOutcome) } as Extract<CoreEvent, { readonly type: 'final' }>;
 }
 
 async function emitEvidenceSnapshot(
@@ -315,7 +340,7 @@ export async function* runCandidateQualityGate(
   const first = gateResult(outcome);
 
   if (!first.repairRequired) {
-    yield await finalizeAcceptedCandidate(deps, candidate);
+    yield await finalizeAcceptedCandidate(deps, candidate, outcome);
     return first;
   }
 
@@ -338,7 +363,7 @@ export async function* runCandidateQualityGate(
 
   const finalGate = gateResult(outcome);
   if (repaired !== undefined && !finalGate.repairRequired) {
-    yield await finalizeAcceptedCandidate(deps, candidate);
+    yield await finalizeAcceptedCandidate(deps, candidate, outcome);
     return finalGate;
   }
 
@@ -356,7 +381,7 @@ export async function* runCandidateQualityGate(
           code: 'verification_failed',
         })
       : null;
-    yield {
+    const failureFinal: Extract<CoreEvent, { readonly type: 'final' }> = {
       type: 'final',
       success: false,
       output: candidate.content,
@@ -367,6 +392,7 @@ export async function* runCandidateQualityGate(
       provider: candidate.provider,
       ...(blockedRecord !== null ? { blocked: blockedRecord } : {}),
     };
+    yield { ...failureFinal, ...receiptForFinal(deps, failureFinal, outcome) } as Extract<CoreEvent, { readonly type: 'final' }>;
   }
   return finalGate;
 }

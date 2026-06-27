@@ -904,6 +904,54 @@ export async function renderStream(
         // completion/error line so the conversation reads in order.
         prose.flush();
 
+        // Render evidence receipt when present (MYSHELL_EVIDENCE_RECEIPT_V2).
+        // Append after any advisory notice and before the terminal completion line.
+        function renderReceipt(): void {
+          const finalEv = ev as Extract<CoreEvent, { type: 'final' }>;
+          const rc = finalEv.receipt;
+          if (rc === undefined || isQuiet) return;
+          const verdictLabel = ((): string => {
+            switch (rc.verdict) {
+              case 'verified': return bold(green('Verified', c), c);
+              case 'reviewed': return bold(yellow('Reviewed', c), c);
+              case 'unverified': return dim('Unverified', c);
+              case 'failing': return bold(red('Failing', c), c);
+              case 'answered': return dim('Answered', c);
+              default: return '';
+            }
+          })();
+          const lines: string[] = [];
+          lines.push(`\n${dim('Receipt', c)}`);
+          lines.push(`  ${dim('Verdict:', c)} ${verdictLabel}`);
+          if (rc.changedFiles !== undefined && rc.changedFiles.length > 0) {
+            lines.push(`  ${dim('Files:', c)} ${rc.changedFiles.join(', ')}`);
+          }
+          if (rc.commandsRun !== undefined && rc.commandsRun.length > 0) {
+            for (const cmd of rc.commandsRun) {
+              const dur = typeof cmd.durationMs === 'number' ? `, ${cmd.durationMs}ms` : '';
+              lines.push(`  ${dim('Commands:', c)} ${cmd.command} (${cmd.outcome}${dur})`);
+            }
+          }
+          if (rc.testsResult !== undefined) {
+            lines.push(`  ${dim('Tests:', c)} ${rc.testsResult.command} (${rc.testsResult.outcome}, ${rc.testsResult.durationMs}ms)`);
+          }
+          lines.push(`  ${dim('Cost:', c)} $${rc.costUsd.toFixed(4)}`);
+          if (rc.cacheAdjustedUsd !== undefined) {
+            lines.push(`  ${dim('Cache-adjusted:', c)} $${rc.cacheAdjustedUsd.toFixed(4)}`);
+          }
+          if (rc.auxCalls !== undefined) {
+            let auxLine = `  ${dim('Aux:', c)} ${rc.auxCalls.count} calls, ${rc.auxCalls.inputTokens + rc.auxCalls.outputTokens} tokens`;
+            if (rc.auxCalls.cachedInputTokens > 0) {
+              auxLine += ` (${rc.auxCalls.cachedInputTokens} cached)`;
+            }
+            lines.push(auxLine);
+          }
+          if (rc.intentVersionId !== undefined) {
+            lines.push(`  ${dim('Intent:', c)} ${rc.intentVersionId}`);
+          }
+          out.write(`${lines.join('\n')}\n`);
+        }
+
         if (!ev.success) {
           // Blocked terminal (MYSHELL_BLOCKED_STATE_V1) — distinct from failed.
           // Surface the reason, next action, and preserved work.
@@ -916,6 +964,7 @@ export async function renderStream(
                 out.write(`  ${dim('Preserved:', c)} ${ev.blocked.preservedWork.slice(0, 200)}\n`);
               }
             }
+            renderReceipt();
             break;
           }
           if (ev.errorCategory === 'timeout') {
@@ -956,6 +1005,7 @@ export async function renderStream(
               `session: ${ev.sessionId}\n`,
             );
           }
+          renderReceipt();
           break;
         }
 
@@ -980,6 +1030,8 @@ export async function renderStream(
             `\n${yellow('Best-effort answer — reached the attempt limit without a fully-confident result; treat the above as unverified.', c)}\n`,
           );
         }
+
+        renderReceipt();
 
         // Success: a single minimal completion line in normal/verbose; nothing
         // in quiet.

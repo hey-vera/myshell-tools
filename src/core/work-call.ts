@@ -105,6 +105,11 @@ import {
 } from './accept-stage.js';
 import { decideLayerBEscalation } from './auto-brain.js';
 import { buildBlockedRecord, type BlockedReasonCode } from './blocked.js';
+import { buildEvidenceReceipt } from './evidence-receipt.js';
+import {
+  buildNativeSessionTelemetry,
+  renderNativeSessionTelemetry,
+} from './native-session-telemetry.js';
 
 function blockedCodeForError(
   category: import('../providers/port.js').CliError['category'],
@@ -1209,6 +1214,16 @@ export async function* runWorkCall(input: WorkCallInput): AsyncGenerator<CoreEve
       : deps.nativeSession?.find((p) => p.provider === decision.provider);
     const useNative = nativePlan !== undefined;
 
+    // Compute fallback reason for telemetry (observed only, never alters behaviour).
+    let nativeFallbackReason: import('./native-session-telemetry.js').NativeSessionTelemetry['fallbackReason'] | undefined;
+    if (quarantined) {
+      nativeFallbackReason = 'quarantined';
+    } else if (!useNative && deps.nativeSession !== undefined && deps.nativeSession.length > 0) {
+      nativeFallbackReason = 'provider-mismatch';
+    } else if (!useNative) {
+      nativeFallbackReason = 'no-plan';
+    }
+
     // --- Build prompt (with optional reviewer feedback on retry + history context) ---
     // Bug 4 fix: inject managerNotes whenever defined, not just when currentTier === 'ic'.
     // When using a native session, skip the replayed history — the provider holds it.
@@ -1409,6 +1424,27 @@ export async function* runWorkCall(input: WorkCallInput): AsyncGenerator<CoreEve
     });
 
     // --- Yield tier-done ---
+    // Native session telemetry: emitted only when MYSHELL_NATIVE_SESSIONS_PROMOTE
+    // is on. Records the estimated token savings from skipping history replay.
+    let nativeTelemetry: import('./native-session-telemetry.js').NativeSessionTelemetry | undefined;
+    if (deps.nativeSessionsPromote === true) {
+      nativeTelemetry = buildNativeSessionTelemetry({
+        provider: decision.provider,
+        nativePlan,
+        useNative,
+        historyContext,
+        usage: usage ?? undefined,
+        fallbackReason: nativeFallbackReason,
+      });
+      if (nativeTelemetry !== undefined && nativeTelemetry.usedNative && nativeTelemetry.resume) {
+        yield {
+          type: 'notice',
+          level: 'info',
+          message: renderNativeSessionTelemetry(nativeTelemetry),
+        };
+      }
+    }
+
     yield {
       type: 'tier-done',
       tier: decision.tier,
@@ -1418,6 +1454,7 @@ export async function* runWorkCall(input: WorkCallInput): AsyncGenerator<CoreEve
       inputTokens: usage?.inputTokens ?? 0,
       outputTokens: usage?.outputTokens ?? 0,
       durationMs,
+      ...(nativeTelemetry !== undefined ? { nativeSessionTelemetry: nativeTelemetry } : {}),
     };
 
     lastOutput = finalText ?? (errored?.message ?? '');
@@ -1618,6 +1655,20 @@ export async function* runWorkCall(input: WorkCallInput): AsyncGenerator<CoreEve
           attempts,
           errorCategory: 'timeout',
           provider: decision.provider,
+          ...(deps.evidenceReceiptV2 === true
+            ? (() => {
+                const entries = deps.receiptLedgerSnapshot?.() ?? [];
+                const r = buildEvidenceReceipt({
+                  terminal: 'failed' as const,
+                  success: false,
+                  totalCostUsd,
+                  ...(deps.cacheAccountingV2 === true ? { cacheAccountingV2: true as const } : {}),
+                  ledgerEntries: entries,
+                  ...(deps.intentVersionId !== undefined ? { intentVersionId: deps.intentVersionId } : {}),
+                });
+                return r !== undefined ? { receipt: r } : {};
+              })()
+            : {}),
         };
         return;
       }
@@ -2281,6 +2332,34 @@ export async function* runWorkCall(input: WorkCallInput): AsyncGenerator<CoreEve
           });
           if (br === null) return {};
           return { blocked: br } as const;
+        })()
+      : {}),
+    ...(deps.evidenceReceiptV2 === true
+      ? (() => {
+          const entries = deps.receiptLedgerSnapshot?.() ?? [];
+          let blockedRecordForReceipt: import('./blocked.js').BlockedRecord | undefined;
+          if (deps.blockedStateV1 === true && lastErroredCategory !== undefined) {
+            const code = blockedCodeForError(lastErroredCategory);
+            if (code !== undefined) {
+              const br = buildBlockedRecord({
+                reason: `Work halted: ${lastErroredCategory}`,
+                nextAction: 'Review the output and retry.',
+                preservedWork: lastOutput.slice(0, 500),
+                code,
+              });
+              if (br !== null) blockedRecordForReceipt = br;
+            }
+          }
+          const r = buildEvidenceReceipt({
+            terminal: blockedRecordForReceipt ? 'blocked' as const : 'failed' as const,
+            success: false,
+            ...(blockedRecordForReceipt !== undefined ? { blocked: blockedRecordForReceipt } : {}),
+            totalCostUsd,
+            ...(deps.cacheAccountingV2 === true ? { cacheAccountingV2: true as const } : {}),
+            ledgerEntries: entries,
+            ...(deps.intentVersionId !== undefined ? { intentVersionId: deps.intentVersionId } : {}),
+          });
+          return r !== undefined ? { receipt: r } : {};
         })()
       : {}),
   };

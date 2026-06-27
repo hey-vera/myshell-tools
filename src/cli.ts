@@ -27,7 +27,7 @@ import {
   tunePolicyForMaxSubTier,
 } from './core/policy.js';
 import type { PlanInfo } from './core/policy.js';
-import type { OrchestrateDeps } from './core/types.js';
+import type { LedgerEntry, LedgerWriter, OrchestrateDeps } from './core/types.js';
 import type { OutputSink } from './interface/render.js';
 import { runTask } from './interface/run.js';
 import { resolveImageAttachments } from './infra/attachments.js';
@@ -91,6 +91,8 @@ import { accountAuxEnabled } from './interface/ui/account-aux-flag.js';
 import { intentStoreV1Enabled } from './interface/ui/intent-store-flag.js';
 import { correctionForkV1Enabled } from './interface/ui/correction-fork-flag.js';
 import { blockedStateV1Enabled } from './interface/ui/blocked-state-flag.js';
+import { evidenceReceiptV2Enabled } from './interface/ui/evidence-receipt-flag.js';
+import { nativeSessionsPromoteEnabled } from './interface/ui/native-sessions-promote-flag.js';
 import { createIntentStore } from './infra/intent-store.js';
 const require = createRequire(import.meta.url);
 const pkg = require('../package.json');
@@ -306,12 +308,25 @@ function buildDeps(
   const intentStore = intentStoreOn ? createIntentStore({ cwd }) : undefined;
   const correlationForkOn = correctionForkV1Enabled(process.env) && intentStoreOn;
   const blockedStateOn = blockedStateV1Enabled(process.env);
+  const evidenceReceiptOn = evidenceReceiptV2Enabled(process.env);
+  const nativeSessionsPromoteOn = nativeSessionsPromoteEnabled(process.env);
   const intentVersionId = accountAuxOn || intentStoreOn ? systemClock.uuid() : undefined;
+
+  // Per-run receipt ledger wrapper: capture entries for the receipt.
+  const receiptLedgerEntries: LedgerEntry[] = [];
+  const turnLedger: LedgerWriter = evidenceReceiptOn
+    ? {
+        async record(entry: LedgerEntry): Promise<void> {
+          receiptLedgerEntries.push(entry);
+          await ledger.record(entry);
+        },
+      }
+    : ledger;
 
   return {
     clock: systemClock,
     session,
-    ledger,
+    ledger: turnLedger,
     ...(cacheAccountingV2Enabled(process.env) ? { cacheAccountingV2: true } : {}),
     ...(accountAuxOn && intentVersionId !== undefined
       ? { accountAux: true, intentVersionId }
@@ -345,6 +360,13 @@ function buildDeps(
       ? { toolStateContext }
       : {}),
     ...(blockedStateOn ? { blockedStateV1: true } : {}),
+    ...(evidenceReceiptOn
+      ? {
+          evidenceReceiptV2: true,
+          receiptLedgerSnapshot: () => receiptLedgerEntries,
+        }
+      : {}),
+    ...(nativeSessionsPromoteOn ? { nativeSessionsPromote: true } : {}),
   };
 }
 

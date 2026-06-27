@@ -76,4 +76,14 @@ describe('planNativeSession', () => {
     assert.ok(planFor(plans, 'claude') !== undefined);
     assert.ok(planFor(plans, 'codex') !== undefined);
   });
+
+  it('promotion does not bypass quarantine — quarantined history blocks native plans', () => {
+    const plans = planNativeSession({
+      enabled: true,
+      conversationId: 'conv-1',
+      history: [userTurn, claudeTurn],
+      historyPolicy: { replayMode: 'quarantine_assistant_prose' },
+    });
+    assert.deepEqual(plans, []);
+  });
 });

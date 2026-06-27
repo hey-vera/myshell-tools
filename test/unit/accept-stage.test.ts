@@ -389,4 +389,161 @@ describe('Candidate Quality Gate', () => {
     assert.match(evidence, /truncated 1000 chars/);
     assert.ok(evidence.length < 8_300);
   });
+
+  // --- Evidence receipt V2 tests -------------------------------------------------
+
+  function depsWithReceipt(): OrchestrateDeps & { entries: SessionEntry[]; snapshot: ReturnType<OrchestrateDeps['receiptLedgerSnapshot']> } {
+    const entries: SessionEntry[] = [];
+    const snapshot: ReturnType<OrchestrateDeps['receiptLedgerSnapshot']> = () => [];
+    return {
+      providers: {},
+      clock: {
+        now: () => 1,
+        isoNow: () => '1970-01-01T00:00:00.001Z',
+        uuid: () => 'uuid',
+        random: () => 0.5,
+      },
+      session: {
+        id: 'session',
+        async append(entry): Promise<void> {
+          entries.push(entry);
+        },
+      },
+      ledger: { async record(): Promise<void> {} },
+      policy: DEFAULT_POLICY,
+      cwd: '/repo',
+      sandbox: 'workspace-write',
+      timeoutMs: 1_000,
+      evidenceReceiptV2: true,
+      receiptLedgerSnapshot: snapshot,
+      entries,
+      snapshot,
+    };
+  }
+
+  it('evidenceReceiptV2 off leaves final without receipt', async () => {
+    const localDeps = deps();
+    const events = await collect(runCandidateQualityGate({
+      deps: localDeps,
+      candidate: candidate(),
+      goalTurn: false,
+      verify: async () => outcome('passing'),
+      receiptEvents,
+    }));
+    const final = events.at(-1);
+    assert.equal(final?.type, 'final');
+    assert.equal(final?.type === 'final' && final.receipt === undefined, true);
+  });
+
+  it('evidenceReceiptV2 on attaches verified receipt after passing verification', async () => {
+    const localDeps = depsWithReceipt();
+    const events = await collect(runCandidateQualityGate({
+      deps: localDeps,
+      candidate: candidate(),
+      goalTurn: false,
+      verify: async () => outcome('passing', {
+        testCommand: 'npm test',
+        testRun: { outcome: 'green', output: 'ok', durationMs: 1234 },
+        changedPaths: ['src/a.ts', 'src/b.ts'],
+      }),
+      receiptEvents,
+    }));
+    const final = events.at(-1);
+    assert.equal(final?.type, 'final');
+    if (final?.type === 'final') {
+      assert.ok(final.receipt !== undefined, 'receipt should be present');
+      assert.equal(final.receipt!.verdict, 'verified');
+      assert.deepEqual(final.receipt!.changedFiles, ['src/a.ts', 'src/b.ts']);
+      assert.equal(final.receipt!.verifyVerdict, 'passing');
+    }
+  });
+
+  it('evidenceReceiptV2 on marks reviewed as reviewed not verified', async () => {
+    const localDeps = depsWithReceipt();
+    const events = await collect(runCandidateQualityGate({
+      deps: localDeps,
+      candidate: candidate(),
+      goalTurn: false,
+      verify: async () => outcome('reviewed', {
+        critic: { vendor: 'codex', sameVendor: false, parsed: true, verdict: 'approve' },
+      }),
+      receiptEvents,
+    }));
+    const final = events.at(-1);
+    assert.equal(final?.type, 'final');
+    if (final?.type === 'final') {
+      assert.equal(final.receipt?.verdict, 'reviewed');
+      assert.notEqual(final.receipt?.verdict, 'verified');
+    }
+  });
+
+  it('evidenceReceiptV2 on marks unverified accepted answer as unverified', async () => {
+    const localDeps = depsWithReceipt();
+    const events = await collect(runCandidateQualityGate({
+      deps: localDeps,
+      candidate: candidate(),
+      goalTurn: false,
+      verify: async () => outcome('unverified', { note: 'no test command detected' }),
+      receiptEvents,
+    }));
+    const final = events.at(-1);
+    assert.equal(final?.type, 'final');
+    if (final?.type === 'final') {
+      assert.equal(final.receipt?.verdict, 'unverified');
+      assert.equal(final.receipt?.verifyVerdict, 'unverified');
+    }
+  });
+
+  it('evidenceReceiptV2 on attaches blocked receipt to verification failed final', async () => {
+    const localDeps = depsWithReceipt();
+    // repair returns undefined -> stays failing
+    const red = outcome('failing', {
+      testCommand: 'npm test',
+      testRun: { outcome: 'red', output: 'FAIL', durationMs: 5 },
+    });
+    const original = candidate(repairResult(undefined, () => {}));
+    const { events } = await drainWithReturn(
+      runCandidateQualityGate({
+        deps: localDeps,
+        candidate: original,
+        goalTurn: false,
+        verify: async () => red,
+        receiptEvents,
+      }),
+    );
+    const final = events.at(-1);
+    assert.equal(final?.type, 'final');
+    assert.equal(final?.type === 'final' && final.success, false);
+    if (final?.type === 'final') {
+      assert.ok(final.receipt !== undefined, 'receipt should be present for failing final');
+    }
+  });
+
+  it('appends only after verification and immediately before final (with receipt when on)', async () => {
+    const log: string[] = [];
+    const receiptDeps = depsWithReceipt();
+    // Overwrite session with a log-tracking one
+    const localDeps: OrchestrateDeps = {
+      ...receiptDeps,
+      session: {
+        id: 'session',
+        async append(): Promise<void> { log.push('append'); },
+      },
+    };
+    const events: CoreEvent[] = [];
+    for await (const event of runCandidateQualityGate({
+      deps: localDeps,
+      candidate: candidate(),
+      goalTurn: false,
+      verify: async () => { log.push('verify'); return outcome('passing'); },
+      receiptEvents: (result) => { log.push('receipt'); return receiptEvents(result); },
+    })) {
+      log.push(event.type === 'final' ? 'final' : 'event');
+      events.push(event);
+    }
+    assert.deepEqual(log, ['verify', 'receipt', 'event', 'append', 'final']);
+    const final = events.at(-1);
+    assert.equal(final?.type, 'final');
+    assert.ok(final?.type === 'final' && final.receipt !== undefined, 'final should have receipt when flag is on');
+  });
 });

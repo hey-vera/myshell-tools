@@ -3207,6 +3207,122 @@ describe('orchestrate — native session (EXPERIMENTAL) skips history and passes
   });
 });
 
+describe('orchestrate — nativeSessionsPromote telemetry', () => {
+  it('nativeSessionsPromote telemetry emitted when native plan resumes', async () => {
+    const capturedReqs: ProviderRequest[] = [];
+    const tierDoneEvents: CoreEvent[] = [];
+
+    const provider: Provider = {
+      id: 'claude',
+      async detect() {
+        return { id: 'claude', installed: true, version: '1.0.0', authenticated: true, binaryPath: '/x', availableModels: [] };
+      },
+      async *run(req: ProviderRequest, _signal: AbortSignal): AsyncIterable<ProviderEvent> {
+        capturedReqs.push(req);
+        yield { type: 'done', text: FINAL_TEXT, usage: FAKE_USAGE, raw: {} };
+      },
+    };
+
+    const priorHistory: SessionEntry[] = [
+      { timestamp: '2026-05-31T00:00:00.000Z', role: 'user', content: 'earlier question' },
+      { timestamp: '2026-05-31T00:01:00.000Z', role: 'assistant', content: 'earlier answer', provider: 'claude' },
+    ];
+
+    const deps: OrchestrateDeps = {
+      providers: { claude: provider },
+      clock: makeFakeClock(),
+      session: makeFakeSession(),
+      ledger: makeFakeLedger(),
+      policy: DEFAULT_POLICY,
+      cwd: '/fake/cwd',
+      sandbox: 'workspace-write',
+      timeoutMs: 30_000,
+      history: priorHistory,
+      nativeSession: [{ provider: 'claude', sessionId: 'conv-xyz', resume: true }],
+      nativeSessionsPromote: true,
+    };
+
+    const events = await collectEvents(orchestrate('follow-up question', deps, new AbortController().signal));
+
+    // Find tier-done events
+    for (const ev of events) {
+      if (ev.type === 'tier-done') tierDoneEvents.push(ev);
+    }
+
+    // At least one tier-done should carry telemetry
+    const withTelemetry = tierDoneEvents.filter(
+      (ev) => ev.type === 'tier-done' && ev.nativeSessionTelemetry !== undefined,
+    );
+    assert.ok(withTelemetry.length > 0, 'expected telemetry on resumed native path');
+
+    const tel = withTelemetry[0]?.type === 'tier-done' ? withTelemetry[0].nativeSessionTelemetry : undefined;
+    assert.ok(tel !== undefined);
+    assert.equal(tel!.provider, 'claude');
+    assert.equal(tel!.usedNative, true);
+    assert.equal(tel!.resume, true);
+    assert.ok(tel!.inputTokenDropVsColdEstimate > 0, 'should estimate token savings');
+    assert.ok(capturedReqs.length >= 1);
+    assert.strictEqual(capturedReqs[0]!.sessionId, 'conv-xyz');
+  });
+
+  it('promotion fallback provider mismatch replays history and emits no savings claim', async () => {
+    const capturedReqs: ProviderRequest[] = [];
+    const tierDoneEvents: CoreEvent[] = [];
+
+    const provider: Provider = {
+      id: 'claude',
+      async detect() {
+        return { id: 'claude', installed: true, version: '1.0.0', authenticated: true, binaryPath: '/x', availableModels: [] };
+      },
+      async *run(req: ProviderRequest, _signal: AbortSignal): AsyncIterable<ProviderEvent> {
+        capturedReqs.push(req);
+        yield { type: 'done', text: FINAL_TEXT, usage: FAKE_USAGE, raw: {} };
+      },
+    };
+
+    const priorHistory: SessionEntry[] = [
+      { timestamp: '2026-05-31T00:00:00.000Z', role: 'user', content: 'earlier question' },
+      { timestamp: '2026-05-31T00:01:00.000Z', role: 'assistant', content: 'earlier answer', provider: 'claude' },
+    ];
+
+    const deps: OrchestrateDeps = {
+      providers: { claude: provider },
+      clock: makeFakeClock(),
+      session: makeFakeSession(),
+      ledger: makeFakeLedger(),
+      policy: DEFAULT_POLICY,
+      cwd: '/fake/cwd',
+      sandbox: 'workspace-write',
+      timeoutMs: 30_000,
+      history: priorHistory,
+      // Plan names a different provider
+      nativeSession: [{ provider: 'codex', sessionId: 'conv-xyz', resume: true }],
+      nativeSessionsPromote: true,
+    };
+
+    const events = await collectEvents(orchestrate('follow-up question', deps, new AbortController().signal));
+
+    for (const ev of events) {
+      if (ev.type === 'tier-done') tierDoneEvents.push(ev);
+    }
+
+    // Telemetry should exist but with usedNative: false and fallback
+    const withTelemetry = tierDoneEvents.filter(
+      (ev) => ev.type === 'tier-done' && ev.nativeSessionTelemetry !== undefined,
+    );
+    assert.ok(withTelemetry.length > 0, 'telemetry should still be emitted for fallback');
+
+    const tel = withTelemetry[0]?.type === 'tier-done' ? withTelemetry[0].nativeSessionTelemetry : undefined;
+    assert.equal(tel?.usedNative, false);
+    assert.equal(tel?.fallbackReason, 'provider-mismatch');
+    assert.equal(tel?.inputTokenDropVsColdEstimate, 0);
+
+    // History IS replayed
+    assert.ok(capturedReqs.length >= 1);
+    assert.ok(capturedReqs[0]!.prompt.includes('CONVERSATION SO FAR'));
+  });
+});
+
 describe('orchestrate — captures a provider session id and persists it on the assistant turn', () => {
   it('a Codex-style done.sessionId is written to the assistant SessionEntry (for later resume)', async () => {
     const provider: Provider = {

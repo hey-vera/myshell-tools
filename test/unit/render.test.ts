@@ -1839,4 +1839,154 @@ describe('renderStream — cleanup on a thrown event stream (item 1)', () => {
     const occurrences = joined.split('Hello world.').length - 1;
     assert.equal(occurrences, 1, `prose must appear exactly once, got ${occurrences}:\n${joined}`);
   });
+
+  // --- Evidence receipt V2 rendering tests ---
+
+  it('renderStream does not render receipt when absent', async () => {
+    const sink = makeSink();
+    const events: CoreEvent[] = [
+      { type: 'tier-start', tier: 'ic', provider: 'claude', model: 'opus', attempt: 0 } as CoreEvent,
+      { type: 'provider-event', event: { type: 'text', delta: 'Hello.' } } as CoreEvent,
+      {
+        type: 'tier-done',
+        tier: 'ic',
+        success: true,
+        confidence: 0.9,
+        inputTokens: 10,
+        outputTokens: 5,
+        durationMs: 1,
+      } as CoreEvent,
+      {
+        type: 'final',
+        success: true,
+        output: 'Hello.',
+        tier: 'ic',
+        totalCostUsd: 0,
+        sessionId: 's',
+        attempts: 1,
+      } as CoreEvent,
+    ];
+    const result = await renderStream(makeStream(events), sink);
+    assert.equal(result.success, true);
+    const joined = sink.buf.join('');
+    assert.ok(!joined.includes('Receipt'), `should not render receipt when absent, got:\n${joined}`);
+  });
+
+  it('renderStream renders receipt when final.receipt is present', async () => {
+    const sink = makeSink();
+    const receipt = {
+      version: 2 as const,
+      terminal: 'done' as const,
+      verdict: 'verified' as const,
+      verifyVerdict: 'passing' as const,
+      costUsd: 0.0123,
+      changedFiles: ['src/a.ts', 'src/b.ts'],
+      commandsRun: [{ command: 'npm test', outcome: 'success' as const, durationMs: 1234 }],
+    };
+    const events: CoreEvent[] = [
+      { type: 'tier-start', tier: 'ic', provider: 'claude', model: 'opus', attempt: 0 } as CoreEvent,
+      { type: 'provider-event', event: { type: 'text', delta: 'Hello.' } } as CoreEvent,
+      {
+        type: 'tier-done',
+        tier: 'ic',
+        success: true,
+        confidence: 0.9,
+        inputTokens: 10,
+        outputTokens: 5,
+        durationMs: 1,
+      } as CoreEvent,
+      {
+        type: 'final',
+        success: true,
+        output: 'Hello.',
+        tier: 'ic',
+        totalCostUsd: 0.0123,
+        sessionId: 's',
+        attempts: 1,
+        receipt,
+      } as CoreEvent,
+    ];
+    const result = await renderStream(makeStream(events), sink);
+    assert.equal(result.success, true);
+    const joined = sink.buf.join('');
+    assert.ok(joined.includes('Receipt'), `should render receipt when present, got:\n${joined}`);
+    assert.ok(joined.includes('Verdict:'), `should include Verdict line, got:\n${joined}`);
+    assert.ok(joined.includes('src/a.ts'), `should list changed files, got:\n${joined}`);
+    assert.ok(joined.includes('npm test'), `should list test command, got:\n${joined}`);
+  });
+
+  it('renderStream labels reviewed/unverified without the word verified', async () => {
+    const sink = makeSink();
+    const receipt = {
+      version: 2 as const,
+      terminal: 'done' as const,
+      verdict: 'reviewed' as const,
+      verifyVerdict: 'reviewed' as const,
+      costUsd: 0.01,
+    };
+    const events: CoreEvent[] = [
+      { type: 'tier-start', tier: 'ic', provider: 'claude', model: 'opus', attempt: 0 } as CoreEvent,
+      { type: 'provider-event', event: { type: 'text', delta: 'Hello.' } } as CoreEvent,
+      {
+        type: 'tier-done',
+        tier: 'ic',
+        success: true,
+        confidence: 0.9,
+        inputTokens: 10,
+        outputTokens: 5,
+        durationMs: 1,
+      } as CoreEvent,
+      {
+        type: 'final',
+        success: true,
+        output: 'Hello.',
+        tier: 'ic',
+        totalCostUsd: 0.01,
+        sessionId: 's',
+        attempts: 1,
+        receipt,
+      } as CoreEvent,
+    ];
+    const result = await renderStream(makeStream(events), sink);
+    assert.equal(result.success, true);
+    const joined = sink.buf.join('');
+    assert.ok(joined.includes('Reviewed'), `should say Reviewed for reviewed verdict, got:\n${joined}`);
+
+    // Unverified
+    const sink2 = makeSink();
+    const receipt2 = {
+      version: 2 as const,
+      terminal: 'done' as const,
+      verdict: 'unverified' as const,
+      verifyVerdict: 'unverified' as const,
+      costUsd: 0.01,
+    };
+    const events2: CoreEvent[] = [
+      { type: 'tier-start', tier: 'ic', provider: 'claude', model: 'opus', attempt: 0 } as CoreEvent,
+      { type: 'provider-event', event: { type: 'text', delta: 'Hello.' } } as CoreEvent,
+      {
+        type: 'tier-done',
+        tier: 'ic',
+        success: true,
+        confidence: 0.9,
+        inputTokens: 10,
+        outputTokens: 5,
+        durationMs: 1,
+      } as CoreEvent,
+      {
+        type: 'final',
+        success: true,
+        output: 'Hello.',
+        tier: 'ic',
+        totalCostUsd: 0.01,
+        sessionId: 's',
+        attempts: 1,
+        receipt: receipt2,
+      } as CoreEvent,
+    ];
+    const result2 = await renderStream(makeStream(events2), sink2);
+    assert.equal(result2.success, true);
+    const joined2 = sink2.buf.join('');
+    assert.ok(joined2.includes('Unverified'), `should say Unverified for unverified verdict, got:\n${joined2}`);
+  });
 });

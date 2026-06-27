@@ -20,7 +20,7 @@ import readline from 'node:readline';
 import fs from 'node:fs';
 import { join } from 'node:path';
 import { Writable } from 'node:stream';
-import type { Clock, CoreEvent, LedgerWriter, OrchestrateDeps, QuestionSet, SessionEntry, SessionWriter, Tier } from '../core/types.js';
+import type { Clock, CoreEvent, LedgerEntry, LedgerWriter, OrchestrateDeps, QuestionSet, SessionEntry, SessionWriter, Tier } from '../core/types.js';
 import { buildGoalTask, parseGoalSignal, parseGoalContinueText, decideGoalNext, formatGoalProgress, DEFAULT_MAX_GOAL_ITERATIONS, stripTrailingGoalConfidenceEnvelope, formConciseGoalLabel } from '../core/goal.js';
 import type { GoalCeilings } from '../core/goal.js';
 import { appendCheckpointFromContinue, capContract } from '../core/work-contract.js';
@@ -234,6 +234,8 @@ import { accountAuxEnabled } from './ui/account-aux-flag.js';
 import { intentStoreV1Enabled } from './ui/intent-store-flag.js';
 import { correctionForkV1Enabled } from './ui/correction-fork-flag.js';
 import { blockedStateV1Enabled } from './ui/blocked-state-flag.js';
+import { evidenceReceiptV2Enabled } from './ui/evidence-receipt-flag.js';
+import { nativeSessionsPromoteEnabled, nativeSessionsEffectiveEnabled } from './ui/native-sessions-promote-flag.js';
 import { createIntentStore } from '../infra/intent-store.js';
 import { nodeVerifyPort } from '../infra/verify-port.js';
 import { createEvidenceSink, createEvidenceSnapshotBuilder } from '../infra/evidence-sink.js';
@@ -1363,6 +1365,8 @@ export async function runChatLoop(
   const correctionForkOn =
     correctionForkV1Enabled(process.env) && intentStoreOn;
   const blockedStateOn = blockedStateV1Enabled(process.env);
+  const evidenceReceiptOn = evidenceReceiptV2Enabled(process.env);
+  const nativeSessionsPromoteOn = nativeSessionsPromoteEnabled(process.env);
   void (async () => {
 
     try {
@@ -2154,6 +2158,19 @@ export async function runChatLoop(
         const observedBlockingCalls = autoCtx.upstreamBlockingCalls;
         autoCtx.upstreamBlockingCalls = 0;
 
+        // Per-turn receipt ledger wrapper: when MYSHELL_EVIDENCE_RECEIPT_V2 is on,
+        // capture each ledger entry into a local array while still delegating to the
+        // real ledger. Off path passes the original ledger object unchanged.
+        const receiptLedgerEntries: LedgerEntry[] = [];
+        const turnLedger: LedgerWriter = evidenceReceiptOn
+          ? {
+              async record(entry: LedgerEntry): Promise<void> {
+                receiptLedgerEntries.push(entry);
+                await accountingLedger.record(entry);
+              },
+            }
+          : accountingLedger;
+
         // CURRENT GOALS / PLAN block (the partner's OWN plan). `goalStore` is created
         // AFTER buildDeps is defined, so we read it through the lazy
         // `currentGoalContext` closure (defined below, captured by reference): the
@@ -2239,7 +2256,12 @@ export async function runChatLoop(
             })),
         );
         const nativeSession = planNativeSession({
-          enabled: mutableCtx.config.nativeSessions === true,
+          enabled: nativeSessionsEffectiveEnabled({
+            ...(mutableCtx.config.nativeSessions !== undefined
+              ? { configNativeSessions: mutableCtx.config.nativeSessions }
+              : {}),
+            promoted: nativeSessionsPromoteOn,
+          }),
           conversationId: convId,
           history: hist,
           historyPolicy: nativeHistoryPolicy,
@@ -2263,7 +2285,7 @@ export async function runChatLoop(
                 ...(accountAuxOn
                   ? {
                       accountAux: true,
-                      ledger: accountingLedger,
+                      ledger: turnLedger,
                       clock: ctx.clock,
                       sessionId: convId,
                       ...(cacheAccountingOn ? { cacheAccountingV2: true } : {}),
@@ -2300,7 +2322,7 @@ export async function runChatLoop(
                 ...(accountAuxOn
                   ? {
                       accountAux: true,
-                      ledger: accountingLedger,
+                      ledger: turnLedger,
                       clock: ctx.clock,
                       sessionId: convId,
                       ...(cacheAccountingOn ? { cacheAccountingV2: true } : {}),
@@ -2385,7 +2407,7 @@ export async function runChatLoop(
         return {
           clock: ctx.clock,
           session: ctx.store.writer(convId),
-          ledger: accountingLedger,
+          ledger: turnLedger,
           ...(cacheAccountingOn ? { cacheAccountingV2: true } : {}),
           ...(accountAuxOn && intentVersionId !== undefined
             ? { accountAux: true, intentVersionId }
@@ -2525,6 +2547,19 @@ export async function runChatLoop(
           )
             ? { draftGoals: true }
             : {}),          ...(nativeSession.length > 0 ? { nativeSession } : {}),
+          // Evidence receipt: when the flag is on, pass the flag + the captured
+          // per-turn ledger snapshot so accept-stage / work-call can assemble the
+          // proof-of-done receipt from EXISTING data. Off → absent → byte-identical.
+          ...(evidenceReceiptOn
+            ? {
+                evidenceReceiptV2: true,
+                receiptLedgerSnapshot: () => receiptLedgerEntries,
+              }
+            : {}),
+          // Native session promotion: pass the flag so work-call can emit telemetry.
+          // Existing config.nativeSessions===true continues unchanged (effective-
+          // enabled helper already combined them above for planNativeSession).
+          ...(nativeSessionsPromoteOn ? { nativeSessionsPromote: true } : {}),
           ...(routeClassifier !== undefined ? { routeClassifier } : {}),
           ...(intentExtractor !== undefined ? { intentExtractor } : {}),
           // UNIFIED PREFLIGHT (rank-7). Set ONLY when the unify flag is ON; absent

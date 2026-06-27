@@ -358,6 +358,23 @@ export interface OrchestrateDeps {
   readonly cacheAccountingV2?: boolean;
   readonly accountAux?: boolean;
   readonly intentVersionId?: string;
+  /**
+   * Whether MYSHELL_EVIDENCE_RECEIPT_V2 is on. When on, a proof-of-done
+   * receipt is attached to terminal finals. Default off.
+   */
+  readonly evidenceReceiptV2?: boolean;
+  /**
+   * When evidenceReceiptV2 is on, captures this turn's ledger entries so the
+   * receipt can report cache-adjusted cost and aux-call breakdown without
+   * reading files or racing concurrent sessions.
+   */
+  readonly receiptLedgerSnapshot?: () => readonly LedgerEntry[];
+  /**
+   * Whether MYSHELL_NATIVE_SESSIONS_PROMOTE is on. When on, native provider
+   * sessions that are already wired become the default for interactive
+   * conversations, with telemetry emitted. Default off.
+   */
+  readonly nativeSessionsPromote?: boolean;
   readonly intentStore?: import('./intent-version.js').IntentStoreWriter;
   readonly policy: Policy;
   readonly cwd: string;
@@ -1121,6 +1138,11 @@ export type CoreEvent =
       readonly inputTokens: number;
       readonly outputTokens: number;
       readonly durationMs: number;
+      /**
+       * Native session telemetry emitted only when MYSHELL_NATIVE_SESSIONS_PROMOTE
+       * is on. Records the estimated token savings from skipping history replay.
+       */
+      readonly nativeSessionTelemetry?: import('./native-session-telemetry.js').NativeSessionTelemetry;
     }
   | {
       readonly type: 'escalate';
@@ -1189,6 +1211,12 @@ export type CoreEvent =
        * of Failed.
        */
       readonly blocked?: import('./blocked.js').BlockedRecord;
+      /**
+       * Evidence receipt (MYSHELL_EVIDENCE_RECEIPT_V2). Attached only when the
+       * flag is on. Reports the proof-of-done verdict, changed files, commands,
+       * tests, cost, and ledger breakdown.
+       */
+      readonly receipt?: import('./evidence-receipt.js').EvidenceReceiptV2;
       /** OPTIONAL multi-goal seam — see `tier-start.goalId`. Marks which goal's
        *  phase finished when several run concurrently. Absent on today's single-
        *  goal path. Purely additive. */
