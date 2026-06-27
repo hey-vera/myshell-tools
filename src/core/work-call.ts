@@ -101,7 +101,9 @@ import {
   runCandidateQualityGate,
   type AcceptedRunSessionData,
   type CandidateResult,
+  type GateResult,
 } from './accept-stage.js';
+import { decideLayerBEscalation } from './auto-brain.js';
 
 // ---------------------------------------------------------------------------
 // Partial-output salvage constants (draft-handoff on rate-limit failover)
@@ -513,6 +515,14 @@ export interface WorkCallInput {
    * run BEFORE this stage; the stage starts the loop at the tier they chose.
    */
   readonly startTier: Tier;
+  /**
+   * LAYER B (auto-brain escalation): when true, a candidate that FAILS its
+   * objective check after the bounded repair escalates the tier and RETRIES
+   * instead of finalizing — the live within-turn self-correction loop. Set by
+   * orchestrate when the auto-brain flag is on. DEFAULT (absent/false) → the loop
+   * finalizes on objective failure exactly as before (byte-for-byte neutrality).
+   */
+  readonly autoBrainEscalation?: boolean;
   /** Hard provider-invocation cap for this turn. Absent means unbounded by Governor. */
   readonly turnCallBudget?: number;
   /** Governor investigation-round allowance, threaded for executor authority. */
@@ -582,6 +592,7 @@ export async function* runWorkCall(input: WorkCallInput): AsyncGenerator<CoreEve
     wantsWebSearch,
     hasImageAttachment,
     startTier,
+    autoBrainEscalation,
     turnCallBudget,
     verifyLevel,
     trustEnabled,
@@ -998,17 +1009,61 @@ export async function* runWorkCall(input: WorkCallInput): AsyncGenerator<CoreEve
     return candidate;
   }
 
+  // LAYER B (auto-brain escalation) — live only when the auto-brain flag is on.
+  const layerBOn = autoBrainEscalation === true;
+
   const gateAcceptedRun = async function* (
     run: AcceptedRunSessionData,
     disposition: CandidateResult['disposition'],
-  ): AsyncGenerator<CoreEvent> {
-    yield* runCandidateQualityGate({
+    deferFailingFinal = false,
+  ): AsyncGenerator<CoreEvent, GateResult> {
+    return yield* runCandidateQualityGate({
       deps,
       candidate: makeCandidate(run, disposition),
       goalTurn: deps.goalTurn === true,
       verify: runVerifyAtAccept,
       receiptEvents,
+      deferFailingFinal,
     });
+  };
+
+  // Accept the candidate; on demonstrable repeated objective failure (a 'failing'
+  // gate AFTER the bounded repair) escalate the tier and tell the loop to RETRY
+  // (Layer B). When Layer B is off, or escalation is impossible (top tier / attempt
+  // ceiling / manager admission denied), this is byte-identical to gateAcceptedRun
+  // + finalize. Returns 'escalated' (caller: `continue mainLoop`) or 'final'
+  // (caller: `return`). The failing final is DEFERRED only when escalation is
+  // actually possible, so a deferred-but-not-escalated final never goes unemitted.
+  const acceptWithLayerB = async function* (
+    run: AcceptedRunSessionData,
+    disposition: CandidateResult['disposition'],
+    assessmentArg: Assessment,
+  ): AsyncGenerator<CoreEvent, 'escalated' | 'final'> {
+    const escalateTo = layerBOn ? nextTierUp(currentTier) : null;
+    const admissionOk =
+      escalateTo === 'manager' ? admitManager('failure', assessmentArg).allowed : escalateTo !== null;
+    const canEscalate = layerBOn && escalateTo !== null && admissionOk;
+    const gateRes = yield* gateAcceptedRun(run, disposition, canEscalate);
+    if (
+      canEscalate &&
+      escalateTo !== null &&
+      decideLayerBEscalation({
+        classification: gateRes.classification,
+        currentTier,
+        attempts,
+        maxAttempts: deps.policy.maxAttempts,
+      })
+    ) {
+      yield {
+        type: 'escalate',
+        from: currentTier,
+        to: escalateTo,
+        reason: 'objective failure after bounded repair (Layer B)',
+      };
+      currentTier = escalateTo;
+      return 'escalated';
+    }
+    return 'final';
   };
 
   // -------------------------------------------------------------------------
@@ -1908,7 +1963,9 @@ export async function* runWorkCall(input: WorkCallInput): AsyncGenerator<CoreEve
             if (acceptedRun === undefined) {
               throw new Error('orchestrate invariant violated: approved final without accepted run');
             }
-            yield* gateAcceptedRun(acceptedRun, 'clean');
+            if ((yield* acceptWithLayerB(acceptedRun, 'clean', assessment)) === 'escalated') {
+              continue mainLoop;
+            }
             return;
           }
 
@@ -1950,7 +2007,9 @@ export async function* runWorkCall(input: WorkCallInput): AsyncGenerator<CoreEve
             if (acceptedRun === undefined) {
               throw new Error('orchestrate invariant violated: revise-accept final without accepted run');
             }
-            yield* gateAcceptedRun(acceptedRun, 'bestEffort');
+            if ((yield* acceptWithLayerB(acceptedRun, 'bestEffort', assessment)) === 'escalated') {
+              continue mainLoop;
+            }
             return;
           }
 
@@ -1971,7 +2030,9 @@ export async function* runWorkCall(input: WorkCallInput): AsyncGenerator<CoreEve
             if (acceptedRun === undefined) {
               throw new Error('orchestrate invariant violated: ceiling-accepted final without accepted run');
             }
-            yield* gateAcceptedRun(acceptedRun, 'bestEffort');
+            if ((yield* acceptWithLayerB(acceptedRun, 'bestEffort', assessment)) === 'escalated') {
+              continue mainLoop;
+            }
             return;
           }
           if (escalateTo === null) {

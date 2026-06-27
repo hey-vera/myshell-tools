@@ -26,6 +26,7 @@ import {
   adaptForSingleModel,
   shouldEscalate,
   shouldDeEscalate,
+  decideLayerBEscalation,
   ESCALATE_FAILURE_MARGIN,
   DEESCALATE_CLEAN_MARGIN,
   type EscalationSignals,
@@ -519,6 +520,57 @@ describe('shouldDeEscalate — LAYER B (symmetric de-escalation)', () => {
 
   it('never throws on empty signals', () => {
     assert.doesNotThrow(() => shouldDeEscalate({}));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 10. Layer B: decideLayerBEscalation — the LIVE within-turn trigger (Option B)
+// ---------------------------------------------------------------------------
+
+describe('decideLayerBEscalation — LAYER B live trigger (repeated objective failure)', () => {
+  it('non-failing classifications never escalate', () => {
+    assert.equal(
+      decideLayerBEscalation({ classification: 'passing', currentTier: 'worker', attempts: 1, maxAttempts: 3 }),
+      false,
+    );
+    assert.equal(
+      decideLayerBEscalation({ classification: 'unverified', currentTier: 'worker', attempts: 1, maxAttempts: 3 }),
+      false,
+    );
+  });
+
+  it('a failing gate below the ceiling escalates (worker has room to climb)', () => {
+    assert.equal(
+      decideLayerBEscalation({ classification: 'failing', currentTier: 'worker', attempts: 1, maxAttempts: 3 }),
+      true,
+    );
+  });
+
+  it('a failing gate at IC still escalates (room to reach manager)', () => {
+    assert.equal(
+      decideLayerBEscalation({ classification: 'failing', currentTier: 'ic', attempts: 1, maxAttempts: 3 }),
+      true,
+    );
+  });
+
+  it('already at manager → no escalation (top tier)', () => {
+    assert.equal(
+      decideLayerBEscalation({ classification: 'failing', currentTier: 'manager', attempts: 1, maxAttempts: 3 }),
+      false,
+    );
+  });
+
+  it('attempt ceiling reached → no escalation', () => {
+    assert.equal(
+      decideLayerBEscalation({ classification: 'failing', currentTier: 'worker', attempts: 3, maxAttempts: 3 }),
+      false,
+    );
+  });
+
+  it('never throws on odd input', () => {
+    assert.doesNotThrow(() =>
+      decideLayerBEscalation({ classification: 'failing', currentTier: 'worker', attempts: 0, maxAttempts: 0 }),
+    );
   });
 });
 

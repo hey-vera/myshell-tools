@@ -1947,6 +1947,10 @@ export async function* orchestrate(
     wantsWebSearch,
     hasImageAttachment,
     startTier: currentTier,
+    // LAYER B (auto-brain escalation): live when the auto-brain flag committed a rung
+    // this turn (SAME gate as Layer A — autoBrainTier set). When absent the loop
+    // finalizes on objective failure exactly as before (byte-for-byte neutrality).
+    ...(autoBrainTier !== undefined ? { autoBrainEscalation: true } : {}),
     ...(governorPlan !== undefined
       ? {
           turnCallBudget: governorPlan.turnCallBudget,
