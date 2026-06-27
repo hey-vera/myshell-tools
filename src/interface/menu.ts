@@ -2436,7 +2436,13 @@ export async function runChatLoop(
           // it exists so the draft-goals substrate participates in the src
           // import graph and the post-turn slot has a seam to read. When OFF
           // the field is absent → byte-for-byte today's behavior.
-          ...(draftGoalsEnabled(process.env, mutableCtx.config)
+          ...(experimentalEnabledByDefault(
+            process.env,
+            mutableCtx.config,
+            'MYSHELL_DRAFT_GOALS',
+            mutableCtx.config.experimentalDraftGoals,
+            draftGoalsEnabled,
+          )
             ? { draftGoals: true }
             : {}),          ...(nativeSession.length > 0 ? { nativeSession } : {}),
           ...(routeClassifier !== undefined ? { routeClassifier } : {}),
@@ -5892,7 +5898,13 @@ Output ONLY valid JSON (no prose, no markdown).`;
       // create a PARKED draft goal. When the flag is off, pass undefined (the
       // default single-orchestrate path) — byte-for-byte today's behavior.
       lastDraftGoalFrame = null;
-      const draftGoalsOn = draftGoalsEnabled(process.env, mutableCtx.config);
+      const draftGoalsOn = experimentalEnabledByDefault(
+        process.env,
+        mutableCtx.config,
+        'MYSHELL_DRAFT_GOALS',
+        mutableCtx.config.experimentalDraftGoals,
+        draftGoalsEnabled,
+      );
       const captureIntentEvents = draftGoalsOn && deps !== null
         ? (async function* (): AsyncIterable<CoreEvent> {
             for await (const event of orchestrate(line, deps as OrchestrateDeps, ac.signal)) {
