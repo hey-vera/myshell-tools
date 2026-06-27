@@ -151,6 +151,10 @@ export function isLedgerEntry(value: unknown): value is LedgerEntry {
   ) {
     return false;
   }
+  const cacheWrite = value['cacheWriteInputTokens'];
+  if (cacheWrite !== undefined) {
+    if (typeof cacheWrite !== 'number' || !Number.isFinite(cacheWrite)) return false;
+  }
   if (typeof value['usd'] !== 'number' || !Number.isFinite(value['usd'])) return false;
   if (typeof value['durationMs'] !== 'number' || !Number.isFinite(value['durationMs'])) {
     return false;

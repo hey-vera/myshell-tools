@@ -80,6 +80,14 @@ describe('parseClaudeLine — pong fixture (real captured transcript)', () => {
     assert.equal(done.usage?.cachedInputTokens, 13247);
   });
 
+  it('done event has usage.cacheWriteInputTokens === 2201', () => {
+    const done = events.find(
+      (e): e is Extract<ProviderEvent, { type: 'done' }> => e.type === 'done',
+    );
+    assert.ok(done !== undefined, 'expected a done event');
+    assert.equal(done.usage?.cacheWriteInputTokens, 2201);
+  });
+
   it('done event has costUsd ≈ 0.02927775 (within 1e-6)', () => {
     const done = events.find(
       (e): e is Extract<ProviderEvent, { type: 'done' }> => e.type === 'done',

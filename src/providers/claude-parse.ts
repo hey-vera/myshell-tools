@@ -64,13 +64,17 @@ function mapUsage(u: WireUsage): Usage {
     outputTokens: u.output_tokens ?? 0,
   };
 
-  // exactOptionalPropertyTypes: only include cachedInputTokens if it is a
+  // exactOptionalPropertyTypes: only include optional fields when they are a
   // number — omit the key entirely otherwise.
+  let result = base;
   if (typeof u.cache_read_input_tokens === 'number') {
-    return { ...base, cachedInputTokens: u.cache_read_input_tokens };
+    result = { ...result, cachedInputTokens: u.cache_read_input_tokens };
+  }
+  if (typeof u.cache_creation_input_tokens === 'number') {
+    result = { ...result, cacheWriteInputTokens: u.cache_creation_input_tokens };
   }
 
-  return base;
+  return result;
 }
 
 /**

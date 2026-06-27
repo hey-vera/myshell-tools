@@ -877,20 +877,17 @@ export async function* orchestrate(
   const wantsWebSearch = engagementPlan.actions.includes('WEB_RESEARCH');
 
   // -------------------------------------------------------------------------
-  // (a2c) AUTO BRAIN — Layer A rung-fusion (default OFF, behind autoBrainRungTuple).
+  // (a2c) AUTO BRAIN — Layer A rung-fusion (default-on via experimentalEnabledByDefault).
   //
-  // When `MYSHELL_AUTO_BRAIN` is ON, `depsArg.autoBrainRungTuple` is injected by
-  // menu.ts (a partial, pre-classification result). Here — AFTER classify() AND
+  // Menu injects `depsArg.autoBrainRungTuple` by default. Here — AFTER classify() AND
   // intentFrame extraction — we RE-FUSE with the NOW-AVAILABLE full signals: the
   // byproduct IntentFrame (intent/routeTier/risk) + classify() tier/risk + memoryBias.
   //
-  // OFF-GUARANTEE: when `autoBrainRungTuple` is absent (flag OFF), this entire block
-  // is dead — every variable below (`autoBrainResult`, `autoBrainTier`) is undefined,
-  // no notice is emitted, and every routing variable (`mode`, `currentTier`, the
-  // taskSignals.risk feed) is BYTE-IDENTICAL to the pre-auto-brain path.
+  // OFF-GUARANTEE: when `autoBrainRungTuple` is absent (flag OFF/basic-mode), this
+  // entire block is dead — every variable below is undefined, no notice is emitted,
+  // and every routing variable is BYTE-IDENTICAL to the pre-auto-brain path.
   //
-  // LAYER B (shouldEscalate / shouldDeEscalate) is NOT wired here — that is the
-  // separate Layer-B follow-on slice. Only Layer A (predict-and-commit) is live.
+  // Layer B (shouldEscalate / shouldDeEscalate) is threaded into `runWorkCall`.
   // -------------------------------------------------------------------------
   let autoBrainResult: FuseRungResult | undefined;
   /** The tier (modelRung) the auto-brain committed to this turn. Absent when flag off. */

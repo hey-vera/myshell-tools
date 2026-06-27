@@ -9,6 +9,7 @@ import {
   PRICING_TABLE,
   getModelPricing,
   calculateCost,
+  calculateEffectiveCost,
   getCheapestForTier,
   isPricingStale,
 } from '../../src/infra/pricing.ts';
@@ -397,5 +398,64 @@ describe('isPricingStale', () => {
     // can at least verify the function runs without error when called with no args.
     const result = isPricingStale();
     assert.equal(typeof result, 'boolean');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// calculateEffectiveCost
+// ---------------------------------------------------------------------------
+
+describe('calculateEffectiveCost', () => {
+  it('returns calculateCost when no cache buckets are supplied', () => {
+    const pricing = getModelPricing('claude', 'claude-opus-4-7')!;
+    // Strip cache rates
+    const noCache = { ...pricing, cacheReadInputPer1M: undefined, cacheWriteInputPer1M: undefined };
+    const result = calculateEffectiveCost(1661, 4, noCache);
+    const expected = calculateCost(1661, 4, pricing);
+    assert.ok(Math.abs(result - expected) < 1e-9);
+  });
+
+  it('prices Claude-style separate cache buckets', () => {
+    const pricing = getModelPricing('claude', 'claude-opus-4-7')!;
+    // input=1661, output=4, read=13247, write=2201
+    // inputPer1M=5, outputPer1M=25, cacheReadInputPer1M=0.5, cacheWriteInputPer1M=6.25
+    // normal input = 1661 (Claude: cache not included in input)
+    // normalInputCost = 1661/1e6 * 5 = 0.008305
+    // readCost = 13247/1e6 * 0.5 = 0.0066235
+    // writeCost = 2201/1e6 * 6.25 = 0.01375625
+    // outputCost = 4/1e6 * 25 = 0.0001
+    // total = 0.008305 + 0.0066235 + 0.01375625 + 0.0001 = 0.02878475
+    const result = calculateEffectiveCost(1661, 4, pricing, {
+      cachedInputTokens: 13247,
+      cacheWriteInputTokens: 2201,
+    });
+    assert.ok(Math.abs(result - 0.02878475) < 1e-9, `expected 0.02878475, got ${result}`);
+  });
+
+  it('discounts included cached input for Codex-style rows', () => {
+    const pricing = getModelPricing('codex', 'gpt-5.5')!;
+    // inputPer1M=5, outputPer1M=30, cacheReadInputPer1M=0.5, cacheInputTokensIncludedInInput=true
+    // input=5000, output=10, read=3000
+    // normal input = max(0, 5000 - 3000) = 2000 (write=0)
+    // normalInputCost = 2000/1e6 * 5 = 0.01
+    // readCost = 3000/1e6 * 0.5 = 0.0015
+    // outputCost = 10/1e6 * 30 = 0.0003
+    // total = 0.01 + 0.0015 + 0.0003 = 0.0118
+    const result = calculateEffectiveCost(5000, 10, pricing, {
+      cachedInputTokens: 3000,
+    });
+    assert.ok(Math.abs(result - 0.0118) < 1e-9, `expected 0.0118, got ${result}`);
+  });
+
+  it('falls back to list input price for cache buckets when row lacks cache rates', () => {
+    // opencode rows have no cache rates
+    const pricing = getModelPricing('opencode', 'opencode')!;
+    // inputPer1M=0, outputPer1M=0
+    const result = calculateEffectiveCost(1000, 10, pricing, {
+      cachedInputTokens: 500,
+      cacheWriteInputTokens: 100,
+    });
+    // Both read and write cost fall back to inputPer1M (0), so total = 0
+    assert.ok(Math.abs(result - 0) < 1e-9);
   });
 });

@@ -107,14 +107,19 @@ function mapUsage(tokens: WireStepFinishTokens): Usage {
     outputTokens: tokens.output ?? 0,
   };
 
-  // exactOptionalPropertyTypes: only include cachedInputTokens when it is a
+  // exactOptionalPropertyTypes: only include optional fields when they are a
   // number — omit the key entirely otherwise.
+  let result = base;
   const cacheRead = tokens.cache?.read;
   if (typeof cacheRead === 'number') {
-    return { ...base, cachedInputTokens: cacheRead };
+    result = { ...result, cachedInputTokens: cacheRead };
+  }
+  const cacheWrite = tokens.cache?.write;
+  if (typeof cacheWrite === 'number') {
+    result = { ...result, cacheWriteInputTokens: cacheWrite };
   }
 
-  return base;
+  return result;
 }
 
 // ---------------------------------------------------------------------------
@@ -155,6 +160,7 @@ export function createOpencodeParser(): OpencodeParser {
   let accumulatedInputTokens = 0;
   let accumulatedOutputTokens = 0;
   let accumulatedCachedInputTokens: number | undefined = undefined;
+  let accumulatedCacheWriteInputTokens: number | undefined = undefined;
   let accumulatedCostUsd = 0;
   let terminalEmitted = false;
 
@@ -237,6 +243,11 @@ export function createOpencodeParser(): OpencodeParser {
           (accumulatedCachedInputTokens ?? 0) + stepUsage.cachedInputTokens;
       }
 
+      if (typeof stepUsage.cacheWriteInputTokens === 'number') {
+        accumulatedCacheWriteInputTokens =
+          (accumulatedCacheWriteInputTokens ?? 0) + stepUsage.cacheWriteInputTokens;
+      }
+
       if (typeof part.cost === 'number') {
         accumulatedCostUsd += part.cost;
       }
@@ -269,6 +280,7 @@ export function createOpencodeParser(): OpencodeParser {
       accumulatedInputTokens === 0 &&
       accumulatedOutputTokens === 0 &&
       (accumulatedCachedInputTokens ?? 0) === 0 &&
+      (accumulatedCacheWriteInputTokens ?? 0) === 0 &&
       accumulatedCostUsd === 0
     ) {
       terminalEmitted = true;
@@ -289,10 +301,14 @@ export function createOpencodeParser(): OpencodeParser {
         inputTokens: accumulatedInputTokens,
         outputTokens: accumulatedOutputTokens,
       };
+      let result = base;
       if (typeof accumulatedCachedInputTokens === 'number') {
-        return { ...base, cachedInputTokens: accumulatedCachedInputTokens };
+        result = { ...result, cachedInputTokens: accumulatedCachedInputTokens };
       }
-      return base;
+      if (typeof accumulatedCacheWriteInputTokens === 'number') {
+        result = { ...result, cacheWriteInputTokens: accumulatedCacheWriteInputTokens };
+      }
+      return result;
     })();
 
     // Build the done event. costUsd is only included when > 0 to avoid

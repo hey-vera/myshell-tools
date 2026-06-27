@@ -51,7 +51,7 @@ import type { FlagshipTrigger, FlagshipDecision } from './flagship.js';
 import { buildPrompt } from './prompt.js';
 import { assess } from './assess.js';
 import { parseQuestions } from './questions.js';
-import { getModelPricing, calculateCost } from '../infra/pricing.js';
+import { getModelPricing, calculateCost, calculateEffectiveCost } from '../infra/pricing.js';
 import { nextTierUp, pickReviewer } from './escalate.js';
 import { buildReviewPrompt, parseReviewVerdict } from './review.js';
 import {
@@ -775,11 +775,18 @@ export async function* runWorkCall(input: WorkCallInput): AsyncGenerator<CoreEve
         const reviewUsd =
           reviewOutcome.providerCostUsd ??
           (reviewOutcome.usage !== undefined && reviewPricing !== undefined
-            ? calculateCost(
-                reviewOutcome.usage.inputTokens,
-                reviewOutcome.usage.outputTokens,
-                reviewPricing,
-              )
+            ? (deps.cacheAccountingV2 === true
+              ? calculateEffectiveCost(
+                  reviewOutcome.usage.inputTokens,
+                  reviewOutcome.usage.outputTokens,
+                  reviewPricing,
+                  { cachedInputTokens: reviewOutcome.usage.cachedInputTokens, cacheWriteInputTokens: reviewOutcome.usage.cacheWriteInputTokens },
+                )
+              : calculateCost(
+                  reviewOutcome.usage.inputTokens,
+                  reviewOutcome.usage.outputTokens,
+                  reviewPricing,
+                ))
             : 0);
         totalCostUsd += reviewUsd;
         await deps.ledger.record({
@@ -792,6 +799,9 @@ export async function* runWorkCall(input: WorkCallInput): AsyncGenerator<CoreEve
           inputTokens: reviewOutcome.usage?.inputTokens ?? 0,
           outputTokens: reviewOutcome.usage?.outputTokens ?? 0,
           cachedInputTokens: reviewOutcome.usage?.cachedInputTokens ?? 0,
+          ...(deps.cacheAccountingV2 === true && reviewOutcome.usage?.cacheWriteInputTokens !== undefined
+            ? { cacheWriteInputTokens: reviewOutcome.usage.cacheWriteInputTokens }
+            : {}),
           usd: reviewUsd,
           durationMs: reviewDurationMs,
           success: true,
@@ -927,11 +937,18 @@ export async function* runWorkCall(input: WorkCallInput): AsyncGenerator<CoreEve
     const usd =
       outcome.providerCostUsd ??
       (outcome.usage !== undefined && pricing !== undefined
-        ? calculateCost(
-            outcome.usage.inputTokens,
-            outcome.usage.outputTokens,
-            pricing,
-          )
+        ? (deps.cacheAccountingV2 === true
+          ? calculateEffectiveCost(
+              outcome.usage.inputTokens,
+              outcome.usage.outputTokens,
+              pricing,
+              { cachedInputTokens: outcome.usage.cachedInputTokens, cacheWriteInputTokens: outcome.usage.cacheWriteInputTokens },
+            )
+          : calculateCost(
+              outcome.usage.inputTokens,
+              outcome.usage.outputTokens,
+              pricing,
+            ))
         : 0);
     totalCostUsd += usd;
     const assessment = assess(finalText);
@@ -946,6 +963,9 @@ export async function* runWorkCall(input: WorkCallInput): AsyncGenerator<CoreEve
       inputTokens: outcome.usage?.inputTokens ?? 0,
       outputTokens: outcome.usage?.outputTokens ?? 0,
       cachedInputTokens: outcome.usage?.cachedInputTokens ?? 0,
+      ...(deps.cacheAccountingV2 === true && outcome.usage?.cacheWriteInputTokens !== undefined
+        ? { cacheWriteInputTokens: outcome.usage.cacheWriteInputTokens }
+        : {}),
       usd,
       durationMs,
       success,
@@ -1308,7 +1328,14 @@ export async function* runWorkCall(input: WorkCallInput): AsyncGenerator<CoreEve
     const usd =
       providerCostUsd ??
       (usage !== undefined && pricing !== undefined
-        ? calculateCost(usage.inputTokens, usage.outputTokens, pricing)
+        ? (deps.cacheAccountingV2 === true
+          ? calculateEffectiveCost(
+              usage.inputTokens,
+              usage.outputTokens,
+              pricing,
+              { cachedInputTokens: usage.cachedInputTokens, cacheWriteInputTokens: usage.cacheWriteInputTokens },
+            )
+          : calculateCost(usage.inputTokens, usage.outputTokens, pricing))
         : 0);
     totalCostUsd += usd;
 
@@ -1342,6 +1369,9 @@ export async function* runWorkCall(input: WorkCallInput): AsyncGenerator<CoreEve
       inputTokens: usage?.inputTokens ?? 0,
       outputTokens: usage?.outputTokens ?? 0,
       cachedInputTokens: usage?.cachedInputTokens ?? 0,
+      ...(deps.cacheAccountingV2 === true && usage?.cacheWriteInputTokens !== undefined
+        ? { cacheWriteInputTokens: usage.cacheWriteInputTokens }
+        : {}),
       usd,
       durationMs,
       success,
@@ -1875,7 +1905,14 @@ export async function* runWorkCall(input: WorkCallInput): AsyncGenerator<CoreEve
         const reviewUsd =
           reviewOutcome.providerCostUsd ??
           (reviewOutcome.usage !== undefined && reviewPricing !== undefined
-            ? calculateCost(reviewOutcome.usage.inputTokens, reviewOutcome.usage.outputTokens, reviewPricing)
+            ? (deps.cacheAccountingV2 === true
+              ? calculateEffectiveCost(
+                  reviewOutcome.usage.inputTokens,
+                  reviewOutcome.usage.outputTokens,
+                  reviewPricing,
+                  { cachedInputTokens: reviewOutcome.usage.cachedInputTokens, cacheWriteInputTokens: reviewOutcome.usage.cacheWriteInputTokens },
+                )
+              : calculateCost(reviewOutcome.usage.inputTokens, reviewOutcome.usage.outputTokens, reviewPricing))
             : 0);
         totalCostUsd += reviewUsd;
 
@@ -1890,6 +1927,9 @@ export async function* runWorkCall(input: WorkCallInput): AsyncGenerator<CoreEve
           inputTokens: reviewOutcome.usage?.inputTokens ?? 0,
           outputTokens: reviewOutcome.usage?.outputTokens ?? 0,
           cachedInputTokens: reviewOutcome.usage?.cachedInputTokens ?? 0,
+          ...(deps.cacheAccountingV2 === true && reviewOutcome.usage?.cacheWriteInputTokens !== undefined
+            ? { cacheWriteInputTokens: reviewOutcome.usage.cacheWriteInputTokens }
+            : {}),
           usd: reviewUsd,
           durationMs: reviewDurationMs,
           success: reviewSuccess,

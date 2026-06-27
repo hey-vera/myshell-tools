@@ -128,4 +128,66 @@ describe('jsonl guards', () => {
       false,
     );
   });
+
+  it('valid ledger with cacheWriteInputTokens passes', () => {
+    assert.equal(
+      isLedgerEntry({
+        timestamp: '2024-01-01T00:00:00.000Z',
+        sessionId: 's1',
+        taskId: 't1',
+        provider: 'claude',
+        model: 'claude-sonnet-4-6',
+        tier: 'ic',
+        inputTokens: 10,
+        outputTokens: 5,
+        cachedInputTokens: 0,
+        cacheWriteInputTokens: 2201,
+        usd: 0.01,
+        durationMs: 1000,
+        success: true,
+      }),
+      true,
+    );
+  });
+
+  it('ledger with non-number cacheWriteInputTokens fails', () => {
+    assert.equal(
+      isLedgerEntry({
+        timestamp: '2024-01-01T00:00:00.000Z',
+        sessionId: 's1',
+        taskId: 't1',
+        provider: 'claude',
+        model: 'claude-sonnet-4-6',
+        tier: 'ic',
+        inputTokens: 10,
+        outputTokens: 5,
+        cachedInputTokens: 0,
+        cacheWriteInputTokens: 'not-a-number',
+        usd: 0.01,
+        durationMs: 1000,
+        success: true,
+      }),
+      false,
+    );
+  });
+
+  it('ledger without cacheWriteInputTokens still passes', () => {
+    assert.equal(
+      isLedgerEntry({
+        timestamp: '2024-01-01T00:00:00.000Z',
+        sessionId: 's1',
+        taskId: 't1',
+        provider: 'claude',
+        model: 'claude-sonnet-4-6',
+        tier: 'ic',
+        inputTokens: 10,
+        outputTokens: 5,
+        cachedInputTokens: 0,
+        usd: 0.01,
+        durationMs: 1000,
+        success: true,
+      }),
+      true,
+    );
+  });
 });

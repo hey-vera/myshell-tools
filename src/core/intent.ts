@@ -98,10 +98,10 @@ export interface IntentFrame {
    * `capDraftGoalSkeleton` on round-trip so a malformed value is silently
    * omitted rather than crashing.
    *
-   * Gated behind the default-OFF `draftGoalsEnabled` flag
-   * (`src/interface/ui/draft-goals-flag.ts`).  When the flag is off this
-   * field is NEVER populated and the code path that reads it is never reached
-   * — byte-for-byte today's behavior.
+   * Gated behind `draftGoalsEnabled` (`src/interface/ui/draft-goals-flag.ts`).
+   * The pure helper is default-false; production menu composes it default-on.
+   * When the flag is off/basic-mode this field is NEVER populated and the code
+   * path that reads it is never reached — byte-for-byte today's behavior.
    */
   readonly draftGoalSkeleton?: DraftGoalSkeleton;
 }

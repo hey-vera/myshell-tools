@@ -22,6 +22,9 @@ export interface ModelPricing {
   readonly inputPer1M: number; // USD per 1 M input tokens
   readonly outputPer1M: number; // USD per 1 M output tokens
   readonly contextWindow: number; // tokens
+  readonly cacheReadInputPer1M?: number;
+  readonly cacheWriteInputPer1M?: number;
+  readonly cacheInputTokensIncludedInInput?: boolean;
 }
 
 export interface PricingTable {
@@ -51,6 +54,9 @@ export const PRICING_TABLE: PricingTable = {
       inputPer1M: 5,
       outputPer1M: 25,
       contextWindow: 200_000,
+      cacheReadInputPer1M: 0.5,
+      cacheWriteInputPer1M: 6.25,
+      cacheInputTokensIncludedInInput: false,
     },
     {
       provider: 'claude',
@@ -60,6 +66,9 @@ export const PRICING_TABLE: PricingTable = {
       inputPer1M: 3,
       outputPer1M: 15,
       contextWindow: 200_000,
+      cacheReadInputPer1M: 0.3,
+      cacheWriteInputPer1M: 3.75,
+      cacheInputTokensIncludedInInput: false,
     },
     {
       provider: 'claude',
@@ -69,6 +78,9 @@ export const PRICING_TABLE: PricingTable = {
       inputPer1M: 0.8,
       outputPer1M: 4,
       contextWindow: 200_000,
+      cacheReadInputPer1M: 0.08,
+      cacheWriteInputPer1M: 1,
+      cacheInputTokensIncludedInInput: false,
     },
 
     // ---- OpenAI / Codex ----------------------------------------------------
@@ -80,6 +92,8 @@ export const PRICING_TABLE: PricingTable = {
       inputPer1M: 5,
       outputPer1M: 30,
       contextWindow: 128_000,
+      cacheReadInputPer1M: 0.5,
+      cacheInputTokensIncludedInInput: true,
     },
     {
       provider: 'codex',
@@ -89,6 +103,8 @@ export const PRICING_TABLE: PricingTable = {
       inputPer1M: 2.5,
       outputPer1M: 15,
       contextWindow: 128_000,
+      cacheReadInputPer1M: 0.25,
+      cacheInputTokensIncludedInInput: true,
     },
     {
       provider: 'codex',
@@ -98,6 +114,8 @@ export const PRICING_TABLE: PricingTable = {
       inputPer1M: 0.75,
       outputPer1M: 4.5,
       contextWindow: 128_000,
+      cacheReadInputPer1M: 0.075,
+      cacheInputTokensIncludedInInput: true,
     },
     {
       provider: 'codex',
@@ -107,6 +125,8 @@ export const PRICING_TABLE: PricingTable = {
       inputPer1M: 0.2,
       outputPer1M: 1.25,
       contextWindow: 128_000,
+      cacheReadInputPer1M: 0.02,
+      cacheInputTokensIncludedInInput: true,
     },
     {
       provider: 'codex',
@@ -116,6 +136,8 @@ export const PRICING_TABLE: PricingTable = {
       inputPer1M: 1.75,
       outputPer1M: 14,
       contextWindow: 128_000,
+      cacheReadInputPer1M: 0.175,
+      cacheInputTokensIncludedInInput: true,
     },
 
     // ---- opencode ----------------------------------------------------------
@@ -224,6 +246,49 @@ export function calculateCost(
   const inputCost = (inputTokens / 1_000_000) * pricing.inputPer1M;
   const outputCost = (outputTokens / 1_000_000) * pricing.outputPer1M;
   return inputCost + outputCost;
+}
+
+export interface CacheUsage {
+  readonly cachedInputTokens?: number | undefined;
+  readonly cacheWriteInputTokens?: number | undefined;
+}
+
+/**
+ * Calculate the cache-aware effective USD cost.
+ *
+ * Falls back to {@link calculateCost} when no cache rates are present on the
+ * pricing row. Otherwise prices cache reads and writes at their respective
+ * per-1M rates, and adjusts the normal input token count when
+ * `cacheInputTokensIncludedInInput` is true.
+ */
+export function calculateEffectiveCost(
+  inputTokens: number,
+  outputTokens: number,
+  pricing: ModelPricing,
+  cache?: CacheUsage,
+): number {
+  const readRate = pricing.cacheReadInputPer1M;
+  const writeRate = pricing.cacheWriteInputPer1M;
+  if (readRate === undefined && writeRate === undefined) {
+    return calculateCost(inputTokens, outputTokens, pricing);
+  }
+
+  const read = cache?.cachedInputTokens ?? 0;
+  const write = cache?.cacheWriteInputTokens ?? 0;
+
+  let normalInput: number;
+  if (pricing.cacheInputTokensIncludedInInput === true) {
+    normalInput = Math.max(0, inputTokens - read - write);
+  } else {
+    normalInput = inputTokens;
+  }
+
+  const normalInputCost = (normalInput / 1_000_000) * pricing.inputPer1M;
+  const readCost = (read / 1_000_000) * (readRate ?? pricing.inputPer1M);
+  const writeCost = (write / 1_000_000) * (writeRate ?? pricing.inputPer1M);
+  const outputCost = (outputTokens / 1_000_000) * pricing.outputPer1M;
+
+  return normalInputCost + readCost + writeCost + outputCost;
 }
 
 /**

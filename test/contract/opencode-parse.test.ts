@@ -104,6 +104,14 @@ describe('createOpencodeParser — hello fixture (real captured transcript)', ()
     assert.equal(done.usage?.cachedInputTokens, 0);
   });
 
+  it('done event has usage.cacheWriteInputTokens === 0', () => {
+    const done = events.find(
+      (e): e is Extract<ProviderEvent, { type: 'done' }> => e.type === 'done',
+    );
+    assert.ok(done !== undefined, 'expected a done event');
+    assert.equal(done.usage?.cacheWriteInputTokens, 0);
+  });
+
   it('done event does NOT have costUsd when provider reported cost=0', () => {
     // The fixture has cost:0 — the parser only includes costUsd when > 0
     // (exactOptionalPropertyTypes guard), so the field must be absent.
@@ -310,7 +318,7 @@ describe('createOpencodeParser — edge cases', () => {
     assert.equal(error.error.message, 'opencode produced no output');
   });
 
-  it('omits cachedInputTokens in done when cache.read is absent', () => {
+  it('omits cachedInputTokens and cacheWriteInputTokens in done when cache fields are absent', () => {
     const parser = createOpencodeParser();
     const line = JSON.stringify({
       type: 'step_finish',
@@ -331,5 +339,60 @@ describe('createOpencodeParser — edge cases', () => {
       !('cachedInputTokens' in (done.usage ?? {})),
       'cachedInputTokens must be absent when cache.read is not reported',
     );
+    assert.ok(
+      !('cacheWriteInputTokens' in (done.usage ?? {})),
+      'cacheWriteInputTokens must be absent when cache.write is not reported',
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Synthetic accumulation: two step_finish events with cache.read and cache.write
+// ---------------------------------------------------------------------------
+
+describe('createOpencodeParser — cache accumulation', () => {
+  it('two step_finish lines with cache.write and cache.read accumulate into both usage events and final done usage', () => {
+    const parser = createOpencodeParser();
+    const line1 = JSON.stringify({
+      type: 'step_finish',
+      part: {
+        type: 'step-finish',
+        reason: 'stop',
+        tokens: { input: 50, output: 10, cache: { read: 400, write: 200 } },
+        cost: 0,
+      },
+    });
+    const line2 = JSON.stringify({
+      type: 'step_finish',
+      part: {
+        type: 'step-finish',
+        reason: 'stop',
+        tokens: { input: 30, output: 5, cache: { read: 200, write: 100 } },
+        cost: 0,
+      },
+    });
+    const events1 = parser.parseLine(line1);
+    const events2 = parser.parseLine(line2);
+    const finalEvents = parser.finalize();
+
+    // First usage event has per-step caches
+    const usage1 = events1.find((e) => e.type === 'usage');
+    assert.ok(usage1 !== undefined, 'expected first usage event');
+    assert.equal(usage1?.usage?.cachedInputTokens, 400);
+    assert.equal(usage1?.usage?.cacheWriteInputTokens, 200);
+
+    // Second usage event has per-step caches
+    const usage2 = events2.find((e) => e.type === 'usage');
+    assert.ok(usage2 !== undefined, 'expected second usage event');
+    assert.equal(usage2?.usage?.cachedInputTokens, 200);
+    assert.equal(usage2?.usage?.cacheWriteInputTokens, 100);
+
+    // Final done has accumulated totals: read=600, write=300, input=80, output=15
+    const done = finalEvents.find((e) => e.type === 'done');
+    assert.ok(done !== undefined, 'expected a done event');
+    assert.equal(done?.usage?.inputTokens, 80);
+    assert.equal(done?.usage?.outputTokens, 15);
+    assert.equal(done?.usage?.cachedInputTokens, 600);
+    assert.equal(done?.usage?.cacheWriteInputTokens, 300);
   });
 });

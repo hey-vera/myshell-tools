@@ -86,6 +86,7 @@ import { inkEnabled } from './interface/ui/flag.js';
 import { verifyEnabled } from './interface/ui/verify-flag.js';
 import { trustEnabled } from './interface/ui/trust-flag.js';
 import { experimentalEnabledByDefault } from './interface/ui/experimental-default.js';
+import { cacheAccountingV2Enabled } from './interface/ui/cache-accounting-flag.js';
 const require = createRequire(import.meta.url);
 const pkg = require('../package.json');
 const version: string = pkg.version as string;
@@ -297,6 +298,7 @@ function buildDeps(
     clock: systemClock,
     session: createSessionWriter({ cwd, id: systemClock.uuid() }),
     ledger: createLedger({ cwd }),
+    ...(cacheAccountingV2Enabled(process.env) ? { cacheAccountingV2: true } : {}),
     policy,
     providers,
     cwd,

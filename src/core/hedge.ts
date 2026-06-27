@@ -44,7 +44,7 @@ import type {
 } from './types.js';
 import type { ProviderId } from '../providers/port.js';
 import { route, type CapabilityRouteContext, type CapabilityTaskSignals } from './route.js';
-import { getModelPricing, calculateCost } from '../infra/pricing.js';
+import { getModelPricing, calculateCost, calculateEffectiveCost } from '../infra/pricing.js';
 import { assess } from './assess.js';
 import { authorizeTier } from './flagship.js';
 import { buildPrompt } from './prompt.js';
@@ -464,12 +464,19 @@ function isAdequate(result: RunResult, policy: Policy, classification: Classific
 }
 
 /** Compute the real USD cost for a run (provider-reported preferred; never fabricated). */
-function costOf(result: RunResult): number {
+function costOf(result: RunResult, cacheAccountingV2: boolean): number {
   const pricing = getModelPricing(result.provider, result.model);
   return (
     result.providerCostUsd ??
     (result.usage !== undefined && pricing !== undefined
-      ? calculateCost(result.usage.inputTokens, result.usage.outputTokens, pricing)
+      ? (cacheAccountingV2
+        ? calculateEffectiveCost(
+            result.usage.inputTokens,
+            result.usage.outputTokens,
+            pricing,
+            { cachedInputTokens: result.usage.cachedInputTokens, cacheWriteInputTokens: result.usage.cacheWriteInputTokens },
+          )
+        : calculateCost(result.usage.inputTokens, result.usage.outputTokens, pricing))
       : 0)
   );
 }
@@ -599,7 +606,7 @@ export async function* runHedged(
   // run that actually executed (incl. cancelled losers, with their real captured
   // usage — 0 when none arrived; never fabricated).
   const recordRun = async (result: RunResult): Promise<number> => {
-    const usd = costOf(result);
+    const usd = costOf(result, deps.cacheAccountingV2 === true);
     totalCostUsd += usd;
     await deps.ledger.record({
       timestamp: deps.clock.isoNow(),
@@ -611,6 +618,9 @@ export async function* runHedged(
       inputTokens: result.usage?.inputTokens ?? 0,
       outputTokens: result.usage?.outputTokens ?? 0,
       cachedInputTokens: result.usage?.cachedInputTokens ?? 0,
+      ...(deps.cacheAccountingV2 === true && result.usage?.cacheWriteInputTokens !== undefined
+        ? { cacheWriteInputTokens: result.usage.cacheWriteInputTokens }
+        : {}),
       usd,
       // A cancelled run is not a successful run, even if it produced partial text.
       success: result.errored == null && !result.canceled,
@@ -701,7 +711,14 @@ export async function* runHedged(
         const reviewUsd =
           reviewProviderCostUsd ??
           (reviewUsage !== undefined && reviewPricing !== undefined
-            ? calculateCost(reviewUsage.inputTokens, reviewUsage.outputTokens, reviewPricing)
+            ? (deps.cacheAccountingV2 === true
+              ? calculateEffectiveCost(
+                  reviewUsage.inputTokens,
+                  reviewUsage.outputTokens,
+                  reviewPricing,
+                  { cachedInputTokens: reviewUsage.cachedInputTokens, cacheWriteInputTokens: reviewUsage.cacheWriteInputTokens },
+                )
+              : calculateCost(reviewUsage.inputTokens, reviewUsage.outputTokens, reviewPricing))
             : 0);
         totalCostUsd += reviewUsd;
         await deps.ledger.record({
@@ -714,6 +731,9 @@ export async function* runHedged(
           inputTokens: reviewUsage?.inputTokens ?? 0,
           outputTokens: reviewUsage?.outputTokens ?? 0,
           cachedInputTokens: reviewUsage?.cachedInputTokens ?? 0,
+          ...(deps.cacheAccountingV2 === true && reviewUsage?.cacheWriteInputTokens !== undefined
+            ? { cacheWriteInputTokens: reviewUsage.cacheWriteInputTokens }
+            : {}),
           usd: reviewUsd,
           durationMs: reviewDurationMs,
           success: true,
@@ -841,7 +861,14 @@ export async function* runHedged(
     const repairUsd =
       repairProviderCostUsd ??
       (repairUsage !== undefined && repairPricing !== undefined
-        ? calculateCost(repairUsage.inputTokens, repairUsage.outputTokens, repairPricing)
+        ? (deps.cacheAccountingV2 === true
+          ? calculateEffectiveCost(
+              repairUsage.inputTokens,
+              repairUsage.outputTokens,
+              repairPricing,
+              { cachedInputTokens: repairUsage.cachedInputTokens, cacheWriteInputTokens: repairUsage.cacheWriteInputTokens },
+            )
+          : calculateCost(repairUsage.inputTokens, repairUsage.outputTokens, repairPricing))
         : 0);
     totalCostUsd += repairUsd;
     const repairAssessment = assess(repairText ?? '');
@@ -855,6 +882,9 @@ export async function* runHedged(
       inputTokens: repairUsage?.inputTokens ?? 0,
       outputTokens: repairUsage?.outputTokens ?? 0,
       cachedInputTokens: repairUsage?.cachedInputTokens ?? 0,
+      ...(deps.cacheAccountingV2 === true && repairUsage?.cacheWriteInputTokens !== undefined
+        ? { cacheWriteInputTokens: repairUsage.cacheWriteInputTokens }
+        : {}),
       usd: repairUsd,
       durationMs: repairDurationMs,
       success: repairSuccess,
@@ -924,7 +954,7 @@ export async function* runHedged(
       provider: run.provider,
       model: run.model,
       confidence: assessment.confidence,
-      costUsd: costOf(run),
+      costUsd: costOf(run, deps.cacheAccountingV2 === true),
       durationMs: run.durationMs,
       ...(workTrace !== undefined ? { workTrace } : {}),
     };

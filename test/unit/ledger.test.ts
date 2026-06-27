@@ -145,6 +145,7 @@ describe('createLedger — record and readLedger', () => {
       inputTokens: 5000,
       outputTokens: 800,
       cachedInputTokens: 200,
+      cacheWriteInputTokens: 2201,
       usd: 0.037,
       durationMs: 3200,
       success: false,
@@ -161,6 +162,7 @@ describe('createLedger — record and readLedger', () => {
     assert.equal(got?.inputTokens, 5000);
     assert.equal(got?.outputTokens, 800);
     assert.equal(got?.cachedInputTokens, 200);
+    assert.equal(got?.cacheWriteInputTokens, 2201);
     assert.equal(got?.usd, 0.037);
     assert.equal(got?.durationMs, 3200);
     assert.equal(got?.success, false);

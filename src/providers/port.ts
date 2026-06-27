@@ -29,6 +29,7 @@ export interface Usage {
   readonly inputTokens: number;
   readonly outputTokens: number;
   readonly cachedInputTokens?: number;
+  readonly cacheWriteInputTokens?: number;
 }
 
 export interface ProviderRequest {

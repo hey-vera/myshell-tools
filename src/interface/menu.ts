@@ -229,6 +229,7 @@ import { fuseRung, type FuseRungResult } from '../core/auto-brain.js';
 import { byproductFallbackEnabled } from './ui/byproduct-fallback-flag.js';
 import { draftGoalsEnabled } from './ui/draft-goals-flag.js';
 import { experimentalEnabledByDefault } from './ui/experimental-default.js';
+import { cacheAccountingV2Enabled } from './ui/cache-accounting-flag.js';
 import { nodeVerifyPort } from '../infra/verify-port.js';
 import { createEvidenceSink, createEvidenceSnapshotBuilder } from '../infra/evidence-sink.js';
 import { nodeWorktreePort } from '../infra/worktree.js';
@@ -2310,6 +2311,7 @@ export async function runChatLoop(
           clock: ctx.clock,
           session: ctx.store.writer(convId),
           ledger: accountingLedger,
+          ...(cacheAccountingV2Enabled(process.env) ? { cacheAccountingV2: true } : {}),
           policy,
           providers: ctx.providers,
           cwd: ctx.cwd,
@@ -2389,21 +2391,12 @@ export async function runChatLoop(
             });
             return { levelProfile: profileForLevel(resolved) };
           })(),
-          // AUTO BRAIN (redesign Auto brain) — DEFAULT OFF
-          // (src/interface/ui/auto-brain-flag.ts). When the flag is ON, attach the
-          // per-turn rung-fusion result computed PURELY by src/core/auto-brain.ts
-          // `fuseRung` from what is available at deps-assembly time: the persisted
-          // mode, the plan-derived effectiveMode, and the per-project memoryBias
-          // from the taste ledger. The classify() tier/risk and IntentFrame byproduct
-          // are NOT yet available here — they arrive inside orchestrate. For the
-          // scaffolding seam this pre-computes a partial result (without classify/
-          // frame signals) so the module participates in the src import graph.
-          // SCAFFOLDING ONLY: `orchestrate` does NOT read `autoBrainRungTuple` in
-          // this slice, so this is a purely-additive seam — present or absent, the
-          // orchestrate path is byte-for-byte today's. The live-consumption slice
-          // wires orchestrate to read it (after classify + intent extraction), at
-          // which point fuseRung will be called INSIDE orchestrate with all signals.
-          // When OFF the field is absent entirely. The next slice flips consumption.
+          // AUTO BRAIN (redesign Auto brain) — default-on via experimentalEnabledByDefault
+          // (src/interface/ui/auto-brain-flag.ts). Menu injects `autoBrainRungTuple` by
+          // default; `orchestrate` reads it at `src/core/orchestrate.ts:898`; Layer B is
+          // threaded at `orchestrate.ts:1950-1953`. The classify() tier/risk and
+          // IntentFrame byproduct arrive inside orchestrate where the full-signal re-fuse
+          // happens. When OFF/basic-mode the field is absent entirely.
           ...((): { autoBrainRungTuple?: FuseRungResult } => {
             if (
               !experimentalEnabledByDefault(
@@ -2437,14 +2430,10 @@ export async function runChatLoop(
           ...(byproductFallbackEnabled(process.env, mutableCtx.config)
             ? { byproductFallback: true }
             : {}),
-          // DRAFT GOALS (redesign Phase 1 spine) — DEFAULT OFF
-          // (src/interface/ui/draft-goals-flag.ts). When the flag is ON, set
-          // `draftGoals: true` so the post-turn slot knows to read the
-          // IntentFrame.draftGoalSkeleton byproduct and materialise a PARKED
-          // goal. PURELY ADDITIVE: `orchestrate` does NOT read this field;
-          // it exists so the draft-goals substrate participates in the src
-          // import graph and the post-turn slot has a seam to read. When OFF
-          // the field is absent → byte-for-byte today's behavior.
+          // DRAFT GOALS (redesign Phase 1 spine) — default-on via experimentalEnabledByDefault
+          // (src/interface/ui/draft-goals-flag.ts). When on, set `draftGoals: true` so the
+          // post-turn slot reads the captured intent frame and creates a PARKED goal.
+          // Explicit off/basic-mode restores field absence → byte-for-byte today's.
           ...(experimentalEnabledByDefault(
             process.env,
             mutableCtx.config,
@@ -5901,10 +5890,9 @@ Output ONLY valid JSON (no prose, no markdown).`;
       const ac = new AbortController();
       currentAc = ac;
       const oversight = resolveOversight(mutableCtx.config, process.env);
-      // DRAFT GOALS (Phase 1): reset the captured frame for this turn. When
-      // draftGoals is on, wrap the orchestrate event stream to intercept the
-      // 'intent' event and save the frame so the post-turn slot can use it to
-      // create a PARKED draft goal. When the flag is off, pass undefined (the
+      // DRAFT GOALS (Phase 1): reset the captured frame for this turn. The
+      // post-turn slot reads the captured intent frame and creates PARKED
+      // draft goals. When the flag is off/basic-mode, pass undefined (the
       // default single-orchestrate path) — byte-for-byte today's behavior.
       lastDraftGoalFrame = null;
       const draftGoalsOn = experimentalEnabledByDefault(
@@ -6198,12 +6186,12 @@ Output ONLY valid JSON (no prose, no markdown).`;
       }
 
       // ---- DRAFT GOALS (redesign Phase 1 spine) — AFTER the auto-stage slot ----
-      // DEFAULT OFF. When draftGoals is ON and the turn succeeded with a build-
-      // intent frame (captured from the byproduct 'intent' event), materialise the
-      // skeleton as a PARKED goal. NEVER queued / executed without explicit user
-      // confirmation — this just creates the inactive draft and surfaces a notice.
-      // Idempotent: we skip duplicate titles; fail-soft (any error is swallowed).
-      // Runs ONLY on a clean successful normal-chat turn (not a /goal command, not
+      // Default-on via experimentalEnabledByDefault. When draftGoals is on and the
+      // turn succeeded with a build-intent frame, materialise the skeleton as a
+      // PARKED goal. NEVER queued / executed without explicit user confirmation —
+      // this just creates the inactive draft and surfaces a notice. Idempotent:
+      // we skip duplicate titles; fail-soft (any error is swallowed). Runs ONLY
+      // on a clean successful normal-chat turn (not a /goal command, not
       // interrupted, not a question, not already staged by auto-stage).
       if (
         draftGoalsOn &&

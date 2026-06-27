@@ -27,7 +27,7 @@ import type {
   OrchestrateDeps,
   CoreEvent,
 } from '../../src/core/types.ts';
-import type { Provider, ProviderEvent } from '../../src/providers/port.ts';
+import type { Provider, ProviderEvent, Usage } from '../../src/providers/port.ts';
 
 // ---- Fakes ----------------------------------------------------------------
 
@@ -166,5 +166,142 @@ describe('FIX 1 — runWorkCall priorCostUsd seeds the honest total', () => {
     const without = await collectEvents(runWorkCall(makeInput({ providerCostUsd: 0.05 })));
     assert.equal(finalCost(withZero), finalCost(without));
     assert.equal(finalCost(withZero), 0.05);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// cacheWriteInputTokens in work-call ledger entries
+// ---------------------------------------------------------------------------
+
+function makeFakeLedgerSpy(): LedgerWriter & { entries: LedgerEntry[] } {
+  const entries: LedgerEntry[] = [];
+  return {
+    async record(e: LedgerEntry) {
+      entries.push(e);
+    },
+    entries,
+  };
+}
+
+function makeFakeProviderWithCache(cache?: Usage): Provider {
+  const usage: Usage = {
+    inputTokens: 100,
+    outputTokens: 50,
+    ...(cache !== undefined ? { ...cache } : {}),
+  };
+  const events: ProviderEvent[] = [
+    { type: 'text', delta: 'The answer.\n' },
+    { type: 'done', text: `The answer.\n${CONFIDENCE_ENVELOPE}`, usage, raw: {} },
+  ];
+  return {
+    id: 'claude',
+    async detect() {
+      return { id: 'claude', installed: true, version: '1', authenticated: true, binaryPath: '/f', availableModels: [] };
+    },
+    async *run() {
+      for (const ev of events) yield ev;
+    },
+  };
+}
+
+describe('work-call cacheWriteInputTokens in ledger', () => {
+  it('cacheAccountingV2 off omits cacheWriteInputTokens from work-call ledger entry', async () => {
+    const ledger = makeFakeLedgerSpy();
+    const deps: OrchestrateDeps = {
+      providers: { claude: makeFakeProviderWithCache({ cachedInputTokens: 30, cacheWriteInputTokens: 20 }) },
+      clock: makeFakeClock(),
+      session: makeFakeSession(),
+      ledger,
+      policy: { ...DEFAULT_POLICY, panelPolicy: 'off', hedgePolicy: 'off' },
+      authenticatedProviders: ['claude'],
+      cwd: '/fake/cwd',
+      sandbox: 'workspace-write',
+      timeoutMs: 30_000,
+      // cacheAccountingV2 absent → off
+    };
+    const events = await collectEvents(
+      runWorkCall({
+        task: 'explain what this function returns',
+        deps,
+        signal: new AbortController().signal,
+        classification: classify('explain what this function returns'),
+        routePlan: false,
+        directive: compileTurnDirective({
+          frame: undefined,
+          plan: planEngagement({ classification: classify('explain what this function returns'), task: 'explain' }),
+          signals: { classification: classify('explain what this function returns'), task: 'explain' },
+        }),
+        intentFrame: undefined,
+        engagementPlan: planEngagement({ classification: classify('explain what this function returns'), task: 'explain' }),
+        goalTitle: '',
+        workTrace: undefined,
+        incomingWorkContract: undefined,
+        available: ['claude'],
+        mode: 'balanced',
+        taskSignals: { risk: 'low', routePlan: false, taskKind: 'unknown' as import('../../src/core/model-capabilities.js').TaskKind },
+        capabilityContext: undefined,
+        historyContext: undefined,
+        wantsWebSearch: false,
+        hasImageAttachment: false,
+        startTier: 'ic',
+      }),
+    );
+    // At least one ledger entry was recorded
+    assert.ok(ledger.entries.length > 0, 'expected at least one ledger entry');
+    // Every entry must NOT have cacheWriteInputTokens
+    for (const e of ledger.entries) {
+      assert.ok(!('cacheWriteInputTokens' in e), 'cacheWriteInputTokens must be absent when flag off');
+    }
+    // The entry still has cachedInputTokens from the provider
+    const mainEntry = ledger.entries.find((e) => e.tier === 'ic');
+    assert.ok(mainEntry !== undefined, 'expected a main tier entry');
+    assert.equal(mainEntry.cachedInputTokens, 30);
+  });
+
+  it('cacheAccountingV2 on records cacheWriteInputTokens from provider usage', async () => {
+    const ledger = makeFakeLedgerSpy();
+    const deps: OrchestrateDeps = {
+      providers: { claude: makeFakeProviderWithCache({ cachedInputTokens: 30, cacheWriteInputTokens: 20 }) },
+      clock: makeFakeClock(),
+      session: makeFakeSession(),
+      ledger,
+      policy: { ...DEFAULT_POLICY, panelPolicy: 'off', hedgePolicy: 'off' },
+      authenticatedProviders: ['claude'],
+      cwd: '/fake/cwd',
+      sandbox: 'workspace-write',
+      timeoutMs: 30_000,
+      cacheAccountingV2: true,
+    };
+    const events = await collectEvents(
+      runWorkCall({
+        task: 'explain what this function returns',
+        deps,
+        signal: new AbortController().signal,
+        classification: classify('explain what this function returns'),
+        routePlan: false,
+        directive: compileTurnDirective({
+          frame: undefined,
+          plan: planEngagement({ classification: classify('explain what this function returns'), task: 'explain' }),
+          signals: { classification: classify('explain what this function returns'), task: 'explain' },
+        }),
+        intentFrame: undefined,
+        engagementPlan: planEngagement({ classification: classify('explain what this function returns'), task: 'explain' }),
+        goalTitle: '',
+        workTrace: undefined,
+        incomingWorkContract: undefined,
+        available: ['claude'],
+        mode: 'balanced',
+        taskSignals: { risk: 'low', routePlan: false, taskKind: 'unknown' as import('../../src/core/model-capabilities.js').TaskKind },
+        capabilityContext: undefined,
+        historyContext: undefined,
+        wantsWebSearch: false,
+        hasImageAttachment: false,
+        startTier: 'ic',
+      }),
+    );
+    assert.ok(ledger.entries.length > 0, 'expected at least one ledger entry');
+    const mainEntry = ledger.entries.find((e) => e.tier === 'ic');
+    assert.ok(mainEntry !== undefined, 'expected a main tier entry');
+    assert.equal(mainEntry.cacheWriteInputTokens, 20, 'cacheWriteInputTokens must be recorded when flag on');
   });
 });

@@ -32,22 +32,25 @@
  *   `buildAutoBrainReceipt` renders the legible per-turn RECEIPT: one line
  *   surfacing the committed rung, the objective reason, and the cost tier.
  *
- * LAYER B — objective-evidence-only escalation (stubbed, not yet wired).
+ * LAYER B — objective-evidence-only escalation.
  *   The escalation re-point lives in `shouldEscalate` and `shouldDeEscalate`.
  *   Both are PURE decision functions over objective, machine-checkable signals
  *   (test/typecheck/lint failures, scope growth, explicit user pushback, stall).
  *   SELF-CONFIDENCE IS BANNED from the trigger (locked decision #5); it may
  *   appear as a tie-breaker at most. Hysteresis constants protect against
- *   thrash. These stubs are fully specced and tested but not yet consumed by
- *   the live escalation path — that wiring is the Layer-B follow-on slice.
+ *   thrash. These pure helpers remain tested helpers, and the live within-turn
+ *   Layer B path is `decideLayerBEscalation`, wired through
+ *   `src/core/work-call.ts:1012-1064` when Auto Brain committed a rung.
  *
  * PURE module: no I/O, no time, no randomness, no module state. Every export is
  * a total function that never throws (bad input → safe default). Enforced by
  * test/arch/guards.test.ts.
  *
- * DEFAULT OFF: behind `autoBrainEnabled` (src/interface/ui/auto-brain-flag.ts).
- * When the flag is off `orchestrate` never reads any field in this module and
- * the path is BYTE-FOR-BYTE today's. See the seam in `OrchestrateDeps.autoBrainRungTuple`.
+ * Default-on in production via `experimentalEnabledByDefault` composing
+ * `autoBrainEnabled` (src/interface/ui/auto-brain-flag.ts). The flag's pure helper
+ * is default-false for neutrality tests. When the flag is off/basic-mode,
+ * `orchestrate` never reads any field in this module and the path is
+ * BYTE-FOR-BYTE today's. See the seam in `OrchestrateDeps.autoBrainRungTuple`.
  */
 
 import type { Tier, Risk } from './types.js';
@@ -489,7 +492,7 @@ function costTierLabel(level: Exclude<Level, 'auto'>): string {
 }
 
 // ---------------------------------------------------------------------------
-// Layer B: objective-evidence-only escalation (STUBBED — specced, not yet wired)
+// Layer B: objective-evidence-only escalation (live, wired via work-call.ts)
 // ---------------------------------------------------------------------------
 
 /**
@@ -537,8 +540,8 @@ export const DEESCALATE_CLEAN_MARGIN = 3; // ≥3 clean todos to de-escalate
  * by default). PURE, total, never throws. Returns `true` only when objective
  * evidence clears the hysteresis margin AND the policy ceiling allows it.
  *
- * STUB: fully specced and tested but NOT YET WIRED into the live escalation
- * path. The live path wiring is the Layer-B follow-on slice.
+ * Live: fully specced, tested, and wired into the live escalation path via
+ * `decideLayerBEscalation` in `src/core/work-call.ts:1012-1064`.
  */
 export function shouldEscalate(signals: EscalationSignals): boolean {
   try {
@@ -581,7 +584,7 @@ export function shouldEscalate(signals: EscalationSignals): boolean {
  * objective failures. PURE, total. Returns `true` when the clean-todo count
  * clears DEESCALATE_CLEAN_MARGIN and the current level is above budget.
  *
- * STUB: fully specced and tested but NOT YET WIRED into the live path.
+ * Live: fully specced, tested, and wired into the live path via `decideLayerBEscalation`.
  */
 export function shouldDeEscalate(signals: EscalationSignals): boolean {
   try {

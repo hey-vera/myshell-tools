@@ -24,19 +24,17 @@
  * are refused up front, with the reason recorded on {@link AllocationPlan.reasons}
  * so the refusal reads as senior judgment, not a missing feature.
  *
- * PHASE 2 SCOPE — only the levers that ALREADY exist are ACTIVE:
+ * Active levers:
  *   - model tier   (ic | oracle)  → the FlagshipTrigger request the loop makes
  *   - depth        (round budget) → the brain's investigation-round budget
  *   - verbosity    (terse | laddered | deep) → pure prompt shaping
- * The later-phase cells — verification, the judgment poll, the Tribunal, and real
- * concurrency — are DECLARED but INACTIVE here: `verify` is always `'none'` and
- * `concurrency` is always `1` in Phase 2. They light up in their own phases without
- * a new governor; the governor is built once and the levers arrive over time.
+ *   - verification, the judgment poll, and the Tribunal are active levers;
+ *     `concurrency` remains `1`.
  *
  * SINGLE-VENDOR-AWARE: cross-vendor levers are LOCKED when fewer than two vendors
- * are authenticated. In Phase 2 no cross-vendor lever is yet active, so the lock is
- * recorded honestly (in {@link AllocationPlan.locked}) and never spent — the moment
- * a verification/poll/Tribunal lever lands, the same lock gates it automatically.
+ * are authenticated. The lock is recorded honestly (in {@link AllocationPlan.locked})
+ * and never spent — when a verification/poll/Tribunal lever lands, the same lock
+ * gates it automatically.
  *
  * PURITY (enforced by test/arch/guards.test.ts, identical to every core module):
  *   - No imports of fs / path / child_process
@@ -224,7 +222,7 @@ export interface AllocationPlan {
   readonly roundBudget: number;
   /** The verbosity ladder the prompt assembler reads. */
   readonly verbosity: Verbosity;
-  /** The verification level. PHASE 2: always `'none'` (machinery not built yet). */
+  /** The verification level (active lever, machinery is built). */
   readonly verify: Verify;
   /**
    * Whether the PLURAL JUDGMENT POLL is permitted to fire this turn (master-plan
@@ -660,13 +658,13 @@ export function tribunalPermittedConservative(
  *      order (the master docs' verdicts made mechanical) — and REFUSES every lever
  *      whose marginal gain is below the floor for this shape, recording WHY.
  *
- * PHASE 2 INVARIANTS (the deterministic tripwires the tests assert):
+ * INVARIANTS (the deterministic tripwires the tests assert):
  *   - `quick` → budget 1, NO escalation lever, terse, 0 rounds (provably instant).
  *   - `levers.length <= turnCallBudget` (the hard-cap promise).
  *   - a cross-vendor lever is NEVER in `levers` when `authedProviderCount < 2`
  *     (it sits in `locked` instead).
  *   - `cost-saver` (Free) NEVER requests the Oracle.
- *   - `verify` is `'none'` and `concurrency` is `1` (declared-but-inactive cells).
+ *   - `concurrency` is `1`.
  */
 export function allocate(input: AllocateInput): AllocationPlan {
   const reasons: string[] = [];

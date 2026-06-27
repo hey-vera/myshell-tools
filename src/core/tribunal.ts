@@ -43,7 +43,7 @@
 import type { CoreEvent, OrchestrateDeps, Tier, Classification } from './types.js';
 import type { ProviderId } from '../providers/port.js';
 import type { CommandGatePort } from './command-gate.js';
-import { getModelPricing, calculateCost } from '../infra/pricing.js';
+import { getModelPricing, calculateCost, calculateEffectiveCost } from '../infra/pricing.js';
 import {
   runCandidate,
   mergeCandidates,
@@ -600,7 +600,14 @@ export async function* runTribunal(
       const usd =
         outcome.providerCostUsd ??
         (outcome.usage !== undefined && pricing !== undefined
-          ? calculateCost(outcome.usage.inputTokens, outcome.usage.outputTokens, pricing)
+          ? (deps.cacheAccountingV2 === true
+            ? calculateEffectiveCost(
+                outcome.usage.inputTokens,
+                outcome.usage.outputTokens,
+                pricing,
+                { cachedInputTokens: outcome.usage.cachedInputTokens, cacheWriteInputTokens: outcome.usage.cacheWriteInputTokens },
+              )
+            : calculateCost(outcome.usage.inputTokens, outcome.usage.outputTokens, pricing))
           : 0);
       totalCostUsd += usd;
 
@@ -614,6 +621,9 @@ export async function* runTribunal(
         inputTokens: outcome.usage?.inputTokens ?? 0,
         outputTokens: outcome.usage?.outputTokens ?? 0,
         cachedInputTokens: outcome.usage?.cachedInputTokens ?? 0,
+        ...(deps.cacheAccountingV2 === true && outcome.usage?.cacheWriteInputTokens !== undefined
+          ? { cacheWriteInputTokens: outcome.usage.cacheWriteInputTokens }
+          : {}),
         usd,
         durationMs: outcome.durationMs,
         success,

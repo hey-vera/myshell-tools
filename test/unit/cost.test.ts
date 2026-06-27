@@ -262,3 +262,45 @@ describe('runCost — fail-soft on a throwing readLedger (FIX 5)', () => {
     await fs.promises.rm(tmp, { recursive: true, force: true });
   });
 });
+
+// ---------------------------------------------------------------------------
+// Cache accounting in formatCostReport
+// ---------------------------------------------------------------------------
+
+describe('formatCostReport — cache accounting', () => {
+  it('default output omits cache accounting even when entries have cacheWriteInputTokens', () => {
+    const entry = makeEntry({
+      provider: 'claude',
+      model: 'claude-opus-4-7',
+      usd: 0.005,
+      cachedInputTokens: 13247,
+      cacheWriteInputTokens: 2201,
+    });
+    const lines = formatCostReport([entry], false);
+    const hasCacheSection = lines.some((l) => l.includes('Cache accounting'));
+    assert.equal(hasCacheSection, false, 'default output must not show cache accounting section');
+  });
+
+  it('with cacheAccountingV2 shows cache reads, cache writes, effective estimate, and naive estimate', () => {
+    const entry = makeEntry({
+      provider: 'claude',
+      model: 'claude-opus-4-7',
+      usd: 0.005,
+      cachedInputTokens: 13247,
+      cacheWriteInputTokens: 2201,
+    });
+    const lines = formatCostReport([entry], false, { cacheAccountingV2: true });
+    const hasCacheSection = lines.some((l) => l.includes('Cache accounting'));
+    assert.equal(hasCacheSection, true, 'must show cache accounting section');
+    const hasReads = lines.some((l) => l.includes('Total cache reads'));
+    assert.equal(hasReads, true, 'must show total cache reads');
+    const hasWrites = lines.some((l) => l.includes('Total cache writes'));
+    assert.equal(hasWrites, true, 'must show total cache writes');
+    const hasEffective = lines.some((l) => l.includes('Cache-aware effective estimate'));
+    assert.equal(hasEffective, true, 'must show effective estimate');
+    const hasNaive = lines.some((l) => l.includes('Naive list estimate'));
+    assert.equal(hasNaive, true, 'must show naive estimate');
+    const hasDisclaimer = lines.some((l) => l.includes('list-pricing estimate, not a subscription bill'));
+    assert.equal(hasDisclaimer, true, 'must include dollar-figure disclaimer');
+  });
+});

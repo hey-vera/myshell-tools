@@ -41,7 +41,7 @@ import type { ProviderId } from '../providers/port.js';
 import { route, type CapabilityRouteContext, type CapabilityTaskSignals } from './route.js';
 import { effortForDecision } from './orchestrate-signals.js';
 import type { Attachment } from './attachments.js';
-import { getModelPricing, calculateCost } from '../infra/pricing.js';
+import { getModelPricing, calculateCost, calculateEffectiveCost } from '../infra/pricing.js';
 import { assess } from './assess.js';
 import { authorizeTier } from './flagship.js';
 import { type ReasoningEffort, type TaskKind } from './model-capabilities.js';
@@ -1487,7 +1487,14 @@ export async function* runPanel(
     const usd =
       outcome.providerCostUsd ??
       (outcome.usage !== undefined && pricing !== undefined
-        ? calculateCost(outcome.usage.inputTokens, outcome.usage.outputTokens, pricing)
+        ? (deps.cacheAccountingV2 === true
+          ? calculateEffectiveCost(
+              outcome.usage.inputTokens,
+              outcome.usage.outputTokens,
+              pricing,
+              { cachedInputTokens: outcome.usage.cachedInputTokens, cacheWriteInputTokens: outcome.usage.cacheWriteInputTokens },
+            )
+          : calculateCost(outcome.usage.inputTokens, outcome.usage.outputTokens, pricing))
         : 0);
     totalCostUsd += usd;
 
@@ -1508,6 +1515,9 @@ export async function* runPanel(
       inputTokens: outcome.usage?.inputTokens ?? 0,
       outputTokens: outcome.usage?.outputTokens ?? 0,
       cachedInputTokens: outcome.usage?.cachedInputTokens ?? 0,
+      ...(deps.cacheAccountingV2 === true && outcome.usage?.cacheWriteInputTokens !== undefined
+        ? { cacheWriteInputTokens: outcome.usage.cacheWriteInputTokens }
+        : {}),
       usd,
       durationMs: outcome.durationMs,
       success,
@@ -1822,11 +1832,18 @@ export async function* runPanel(
   const synthUsd =
     synthOutcome.providerCostUsd ??
     (synthOutcome.usage !== undefined && synthPricing !== undefined
-      ? calculateCost(
-          synthOutcome.usage.inputTokens,
-          synthOutcome.usage.outputTokens,
-          synthPricing,
-        )
+      ? (deps.cacheAccountingV2 === true
+        ? calculateEffectiveCost(
+            synthOutcome.usage.inputTokens,
+            synthOutcome.usage.outputTokens,
+            synthPricing,
+            { cachedInputTokens: synthOutcome.usage.cachedInputTokens, cacheWriteInputTokens: synthOutcome.usage.cacheWriteInputTokens },
+          )
+        : calculateCost(
+            synthOutcome.usage.inputTokens,
+            synthOutcome.usage.outputTokens,
+            synthPricing,
+          ))
       : 0);
   totalCostUsd += synthUsd;
 
@@ -1843,6 +1860,9 @@ export async function* runPanel(
     inputTokens: synthOutcome.usage?.inputTokens ?? 0,
     outputTokens: synthOutcome.usage?.outputTokens ?? 0,
     cachedInputTokens: synthOutcome.usage?.cachedInputTokens ?? 0,
+    ...(deps.cacheAccountingV2 === true && synthOutcome.usage?.cacheWriteInputTokens !== undefined
+      ? { cacheWriteInputTokens: synthOutcome.usage.cacheWriteInputTokens }
+      : {}),
     usd: synthUsd,
     durationMs: synthDurationMs,
     success: synthSuccess,
@@ -1983,11 +2003,18 @@ export async function* runPanel(
         const reviewUsd =
           reviewProviderCostUsd ??
           (reviewUsage !== undefined && reviewPricing !== undefined
-            ? calculateCost(
-                reviewUsage.inputTokens,
-                reviewUsage.outputTokens,
-                reviewPricing,
-              )
+            ? (deps.cacheAccountingV2 === true
+              ? calculateEffectiveCost(
+                  reviewUsage.inputTokens,
+                  reviewUsage.outputTokens,
+                  reviewPricing,
+                  { cachedInputTokens: reviewUsage.cachedInputTokens, cacheWriteInputTokens: reviewUsage.cacheWriteInputTokens },
+                )
+              : calculateCost(
+                  reviewUsage.inputTokens,
+                  reviewUsage.outputTokens,
+                  reviewPricing,
+                ))
             : 0);
         totalCostUsd += reviewUsd;
         await deps.ledger.record({
@@ -2000,6 +2027,9 @@ export async function* runPanel(
           inputTokens: reviewUsage?.inputTokens ?? 0,
           outputTokens: reviewUsage?.outputTokens ?? 0,
           cachedInputTokens: reviewUsage?.cachedInputTokens ?? 0,
+          ...(deps.cacheAccountingV2 === true && reviewUsage?.cacheWriteInputTokens !== undefined
+            ? { cacheWriteInputTokens: reviewUsage.cacheWriteInputTokens }
+            : {}),
           usd: reviewUsd,
           durationMs: reviewDurationMs,
           success: true,
@@ -2093,11 +2123,18 @@ export async function* runPanel(
     const repairUsd =
       repairOutcome.providerCostUsd ??
       (repairOutcome.usage !== undefined && repairPricing !== undefined
-        ? calculateCost(
-            repairOutcome.usage.inputTokens,
-            repairOutcome.usage.outputTokens,
-            repairPricing,
-          )
+        ? (deps.cacheAccountingV2 === true
+          ? calculateEffectiveCost(
+              repairOutcome.usage.inputTokens,
+              repairOutcome.usage.outputTokens,
+              repairPricing,
+              { cachedInputTokens: repairOutcome.usage.cachedInputTokens, cacheWriteInputTokens: repairOutcome.usage.cacheWriteInputTokens },
+            )
+          : calculateCost(
+              repairOutcome.usage.inputTokens,
+              repairOutcome.usage.outputTokens,
+              repairPricing,
+            ))
         : 0);
     totalCostUsd += repairUsd;
     const repairAssessment = assess(repairText);
@@ -2111,6 +2148,9 @@ export async function* runPanel(
       inputTokens: repairOutcome.usage?.inputTokens ?? 0,
       outputTokens: repairOutcome.usage?.outputTokens ?? 0,
       cachedInputTokens: repairOutcome.usage?.cachedInputTokens ?? 0,
+      ...(deps.cacheAccountingV2 === true && repairOutcome.usage?.cacheWriteInputTokens !== undefined
+        ? { cacheWriteInputTokens: repairOutcome.usage.cacheWriteInputTokens }
+        : {}),
       usd: repairUsd,
       durationMs: repairDurationMs,
       success: repairSuccess,

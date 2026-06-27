@@ -23,7 +23,8 @@ import type { LedgerEntry } from '../core/types.js';
 import type { OutputSink } from '../interface/render.js';
 import { readLedger, summarizeLedger } from '../infra/ledger.js';
 import { formatTokens } from '../infra/insights.js';
-import { getCheapestForTier, calculateCost, getModelPricing } from '../infra/pricing.js';
+import { getCheapestForTier, calculateCost, calculateEffectiveCost, getModelPricing } from '../infra/pricing.js';
+import { cacheAccountingV2Enabled } from '../interface/ui/cache-accounting-flag.js';
 import { bold, dim, cyan, divider, label } from '../ui/theme.js';
 
 // ---------------------------------------------------------------------------
@@ -36,7 +37,7 @@ import { bold, dim, cyan, divider, label } from '../ui/theme.js';
  * Pure function: no I/O, no process.exit, no Date/Math.random.
  * Called by runCost after reading the real ledger, and by unit tests.
  */
-export function formatCostReport(entries: LedgerEntry[], color = false): string[] {
+export function formatCostReport(entries: LedgerEntry[], color = false, opts?: { cacheAccountingV2?: boolean }): string[] {
   if (entries.length === 0) {
     return ['No usage recorded yet. Run a task first, e.g.  myshell-tools run "summarize this repo"'];
   }
@@ -110,6 +111,36 @@ export function formatCostReport(entries: LedgerEntry[], color = false): string[
     );
   }
 
+  // ---- Cache accounting (opt-in) ------------------------------------------
+  if (opts?.cacheAccountingV2 === true) {
+    let totalCacheReads = 0;
+    let totalCacheWrites = 0;
+    let effectiveEstimate = 0;
+    let naiveEstimate = 0;
+    for (const entry of entries) {
+      const entryCacheReads = entry.cachedInputTokens ?? 0;
+      const entryCacheWrites = entry.cacheWriteInputTokens ?? 0;
+      totalCacheReads += entryCacheReads;
+      totalCacheWrites += entryCacheWrites;
+
+      const entryPricing = getModelPricing(entry.provider, entry.model);
+      if (entryPricing) {
+        effectiveEstimate += calculateEffectiveCost(
+          entry.inputTokens, entry.outputTokens, entryPricing,
+          { cachedInputTokens: entryCacheReads, cacheWriteInputTokens: entryCacheWrites },
+        );
+        naiveEstimate += calculateCost(entry.inputTokens, entry.outputTokens, entryPricing);
+      }
+    }
+
+    lines.push(divider(color));
+    lines.push(bold('Cache accounting', color));
+    lines.push(`${label('Total cache reads', color)}: ${formatTokens(totalCacheReads)}`);
+    lines.push(`${label('Total cache writes', color)}: ${formatTokens(totalCacheWrites)}`);
+    lines.push(`${label('Cache-aware effective estimate', color)}: $${effectiveEstimate.toFixed(4)} ${dim('(list-pricing estimate, not a subscription bill)', color)}`);
+    lines.push(`${label('Naive list estimate', color)}: $${naiveEstimate.toFixed(4)} ${dim('(list-pricing estimate, not a subscription bill)', color)}`);
+  }
+
   // No dollar figures. myshell-tools drives your SUBSCRIPTION CLIs — you pay a
   // flat fee, not per token — so a "$x.xx" estimate would be fiction dressed as a
   // bill. Tokens are the honest unit; the efficiency RATIO above is billing-
@@ -142,7 +173,7 @@ export async function runCost(cwd: string, out: OutputSink): Promise<number> {
     out.write('Could not read the usage ledger right now — try again later.\n');
     return 0;
   }
-  const lines = formatCostReport(entries, out.color);
+  const lines = formatCostReport(entries, out.color, { cacheAccountingV2: cacheAccountingV2Enabled(process.env) });
   for (const line of lines) {
     out.write(line + '\n');
   }

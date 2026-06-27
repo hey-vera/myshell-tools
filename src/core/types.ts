@@ -174,6 +174,7 @@ export interface LedgerEntry {
   readonly inputTokens: number;
   readonly outputTokens: number;
   readonly cachedInputTokens: number;
+  readonly cacheWriteInputTokens?: number;
   readonly usd: number;
   readonly durationMs: number;
   readonly success: boolean;
@@ -333,6 +334,12 @@ export interface OrchestrateDeps {
   readonly clock: Clock;
   readonly session: SessionWriter;
   readonly ledger: LedgerWriter;
+  /**
+   * Whether cache-aware effective cost accounting is enabled
+   * (MYSHELL_CACHE_ACCOUNTING_V2 flag). Absent/false means no ledger
+   * cache-write field and old cost math.
+   */
+  readonly cacheAccountingV2?: boolean;
   readonly policy: Policy;
   readonly cwd: string;
   readonly sandbox: SandboxLevel;
@@ -922,17 +929,14 @@ export interface OrchestrateDeps {
    */
   readonly levelProfile?: import('./mode-levels.js').LevelProfile;
   /**
-   * AUTO BRAIN per-turn rung-fusion result (redesign Auto brain) — a purely-
-   * additive, currently NEVER-READ seam, mirroring the `levelProfile` seam
-   * above. When the default-OFF `autoBrainEnabled` flag
-   * (src/interface/ui/auto-brain-flag.ts) is on, the interface layer MAY attach
-   * the per-turn fused {@link import('./auto-brain.js').FuseRungResult} here
-   * (computed by src/core/auto-brain.ts `fuseRung`). `orchestrate` does NOT
-   * consume it in this slice — the live path keeps routing exactly as today —
-   * so its presence or absence changes nothing. It exists so the auto-brain
-   * substrate participates in the src import graph and so the live-consumption
-   * slice (Layer-B wiring) has a single landing pad. DEFAULT ABSENT →
-   * byte-for-byte today's behavior. Type-only import to keep types.ts a leaf.
+   * AUTO BRAIN per-turn rung-fusion result (redesign Auto brain). When the
+   * `autoBrainEnabled` flag (src/interface/ui/auto-brain-flag.ts) is on (default
+   * in production via `experimentalEnabledByDefault`), the interface layer
+   * attaches the per-turn fused {@link import('./auto-brain.js').FuseRungResult}
+   * here (computed by src/core/auto-brain.ts `fuseRung`). `orchestrate` reads
+   * this at src/core/orchestrate.ts:898 and re-fuses with full signals. DEFAULT
+   * ABSENT when flag off/basic-mode → byte-for-byte today's behavior. Type-only
+   * import to keep types.ts a leaf.
    */
   readonly autoBrainRungTuple?: import('./auto-brain.js').FuseRungResult;  /**
    * EXPERIMENTAL CAPABILITY PARSE-FROM-TEXT FALLBACK (redesign Phase 0,
@@ -950,20 +954,14 @@ export interface OrchestrateDeps {
    */
   readonly byproductFallback?: boolean;
   /**
-   * DRAFT GOALS (redesign Phase 1 spine — "chat → draft goal") — a purely-
-   * additive, currently NEVER-READ seam, mirroring the `byproductFallback`
-   * seam. When the default-OFF `draftGoalsEnabled` flag
-   * (`src/interface/ui/draft-goals-flag.ts`) is on, the interface layer sets
-   * this `true`; the post-turn slot in menu.ts then reads the
-   * `IntentFrame.draftGoalSkeleton` byproduct and materialises it as a
-   * PARKED goal in the GoalStore (`state: 'parked'`,
-   * `source: 'byproduct-draft'`) — NEVER queued or executed without user
-   * confirmation. `orchestrate` does NOT read this field directly — the flag
-   * is consumed by the menu.ts post-turn slot. DEFAULT ABSENT → byte-for-
-   * byte today's behavior (no goal is created, the IntentFrame schema is
-   * unchanged). This field exists so the draft-goals substrate wires through
-   * the src import graph (no-orphan) and so the live-consumption slice has a
-   * single landing pad.
+   * DRAFT GOALS (redesign Phase 1 spine — "chat → draft goal"). When the
+   * `draftGoalsEnabled` flag (`src/interface/ui/draft-goals-flag.ts`) is on
+   * (default in production via `experimentalEnabledByDefault`), the interface
+   * layer sets this `true`; the post-turn slot in menu.ts then reads the
+   * captured intent frame and materialises a PARKED goal in the GoalStore —
+   * NEVER queued or executed without user confirmation. DEFAULT ABSENT when
+   * flag off/basic-mode → byte-for-byte today's behavior. This field exists
+   * so the draft-goals substrate wires through the src import graph.
    */
   readonly draftGoals?: boolean;
 }
