@@ -230,6 +230,7 @@ import { byproductFallbackEnabled } from './ui/byproduct-fallback-flag.js';
 import { draftGoalsEnabled } from './ui/draft-goals-flag.js';
 import { experimentalEnabledByDefault } from './ui/experimental-default.js';
 import { cacheAccountingV2Enabled } from './ui/cache-accounting-flag.js';
+import { accountAuxEnabled } from './ui/account-aux-flag.js';
 import { nodeVerifyPort } from '../infra/verify-port.js';
 import { createEvidenceSink, createEvidenceSnapshotBuilder } from '../infra/evidence-sink.js';
 import { nodeWorktreePort } from '../infra/worktree.js';
@@ -741,6 +742,15 @@ export async function runChatLoop(
       sandbox: helperSandbox(ctx.sandbox),
       ...(Object.keys(availableModels).length > 0 ? { availableModels } : {}),
       ...(authenticatedProviders.length > 0 ? { authenticatedProviders } : {}),
+      ...(accountAuxOn
+        ? {
+            accountAux: true,
+            ledger: accountingLedger,
+            clock: ctx.clock,
+            sessionId: convId,
+            ...(cacheAccountingOn ? { cacheAccountingV2: true } : {}),
+          }
+        : {}),
     });
   };
 
@@ -846,6 +856,15 @@ export async function runChatLoop(
       // it; absent → the planner prompt is byte-for-byte today's.
       ...(systemModel !== undefined ? { systemModel } : {}),
       ...(tasteContext ? { tasteContext } : {}),
+      ...(accountAuxOn
+        ? {
+            accountAux: true,
+            ledger: accountingLedger,
+            clock: ctx.clock,
+            sessionId: convId,
+            ...(cacheAccountingOn ? { cacheAccountingV2: true } : {}),
+          }
+        : {}),
     });
   };
 
@@ -887,6 +906,15 @@ export async function runChatLoop(
       ...(authenticatedProviders.length > 0 ? { authenticatedProviders } : {}),
       ...(systemModel !== undefined ? { systemModel } : {}),
       ...(tasteContext ? { tasteContext } : {}),
+      ...(accountAuxOn
+        ? {
+            accountAux: true,
+            ledger: accountingLedger,
+            clock: ctx.clock,
+            sessionId: convId,
+            ...(cacheAccountingOn ? { cacheAccountingV2: true } : {}),
+          }
+        : {}),
     });
   };
 
@@ -997,6 +1025,15 @@ export async function runChatLoop(
       ...(authenticatedProviders.length > 0 ? { authenticatedProviders } : {}),
       ...(repoContext.trim().length > 0 ? { repoContext } : {}),
       ...(highStakes ? { highStakes: true } : {}),
+      ...(accountAuxOn
+        ? {
+            accountAux: true,
+            ledger: accountingLedger,
+            clock: ctx.clock,
+            sessionId: convId,
+            ...(cacheAccountingOn ? { cacheAccountingV2: true } : {}),
+          }
+        : {}),
     });
   };
 
@@ -1315,7 +1352,10 @@ export async function runChatLoop(
       }
     },
   };
+  const accountAuxOn = accountAuxEnabled(process.env);
+  const cacheAccountingOn = cacheAccountingV2Enabled(process.env);
   void (async () => {
+
     try {
       const allEntries = await readLedger(ctx.cwd);
       const initial = summarizeSessionProviderTokens(allEntries, convId);
@@ -2205,6 +2245,15 @@ export async function runChatLoop(
                 sandbox: helperSandbox(ctx.sandbox),
                 ...(Object.keys(availableModels).length > 0 ? { availableModels } : {}),
                 ...(authenticatedProviders.length > 0 ? { authenticatedProviders } : {}),
+                ...(accountAuxOn
+                  ? {
+                      accountAux: true,
+                      ledger: accountingLedger,
+                      clock: ctx.clock,
+                      sessionId: convId,
+                      ...(cacheAccountingOn ? { cacheAccountingV2: true } : {}),
+                    }
+                  : {}),
               })
             : undefined;
 
@@ -2232,6 +2281,15 @@ export async function runChatLoop(
                 // PURELY ADDITIVE: on a clean primary parse this has zero effect.
                 ...(byproductFallbackEnabled(process.env, mutableCtx.config)
                   ? { byproductFallback: true }
+                  : {}),
+                ...(accountAuxOn
+                  ? {
+                      accountAux: true,
+                      ledger: accountingLedger,
+                      clock: ctx.clock,
+                      sessionId: convId,
+                      ...(cacheAccountingOn ? { cacheAccountingV2: true } : {}),
+                    }
                   : {}),
               })
             : undefined;
@@ -2307,11 +2365,16 @@ export async function runChatLoop(
         );
         const evidenceTurnNumber = hist.filter((entry) => entry.role === 'user').length + 1;
 
+        const intentVersionId = accountAuxOn ? ctx.clock.uuid() : undefined;
+
         return {
           clock: ctx.clock,
           session: ctx.store.writer(convId),
           ledger: accountingLedger,
-          ...(cacheAccountingV2Enabled(process.env) ? { cacheAccountingV2: true } : {}),
+          ...(cacheAccountingOn ? { cacheAccountingV2: true } : {}),
+          ...(accountAuxOn && intentVersionId !== undefined
+            ? { accountAux: true, intentVersionId }
+            : {}),
           policy,
           providers: ctx.providers,
           cwd: ctx.cwd,
@@ -6182,7 +6245,7 @@ Output ONLY valid JSON (no prose, no markdown).`;
         result.final.questions === undefined &&
         hasWorkIntent(line)
       ) {
-        void resolveAutoStage(line);
+        void resolveAutoStage(line, deps.intentVersionId);
       }
 
       // ---- DRAFT GOALS (redesign Phase 1 spine) — AFTER the auto-stage slot ----

@@ -304,4 +304,124 @@ describe('work-call cacheWriteInputTokens in ledger', () => {
     assert.ok(mainEntry !== undefined, 'expected a main tier entry');
     assert.equal(mainEntry.cacheWriteInputTokens, 20, 'cacheWriteInputTokens must be recorded when flag on');
   });
+
+  describe('account aux stamping', () => {
+    it('accountAux off omits stage and intentVersionId from work-call ledger entry', async () => {
+      const clock = makeFakeClock();
+      const ledger = makeFakeLedger();
+      const session = makeFakeSession();
+
+      const provider = makeFakeProvider(0.01);
+      const deps: OrchestrateDeps = {
+        clock,
+        session,
+        ledger,
+        providers: { claude: provider },
+        policy: { ...DEFAULT_POLICY, escalateBelowConfidence: { low: 0, medium: 0, high: 0, critical: 0 } },
+        cwd: '/tmp',
+        sandbox: 'workspace-write',
+        timeoutMs: 20_000,
+      };
+      const signal = new AbortController();
+
+      const classification = classify('hello');
+      const engSig: EngagementSignals = {
+        depth: 'normal', planFirst: false, escalate: false, wantsReview: false, needsExternal: false,
+        substantial: false, repoOriented: false, investigationDepth: 'none', bestEffort: false, memoryBias: 0,
+      };
+      const directive = compileTurnDirective('hello', classification, 'balanced', undefined, false, 'direct');
+      const engagementPlan = planEngagement(engSig);
+
+      const gen = runWorkCall({
+        task: 'hello',
+        deps,
+        signal: signal.signal,
+        classification,
+        routePlan: false,
+        directive,
+        intentFrame: undefined,
+        engagementPlan,
+        goalTitle: 'test',
+        workTrace: undefined,
+        incomingWorkContract: undefined,
+        available: ['claude'],
+        mode: 'balanced',
+        taskSignals: { risk: 'low', routePlan: false, taskKind: 'unknown' as any },
+        capabilityContext: undefined,
+        historyContext: undefined,
+        wantsWebSearch: false,
+        hasImageAttachment: false,
+        startTier: 'worker',
+      });
+      const events: any[] = [];
+      for await (const ev of gen) events.push(ev);
+
+      const workEntries = ledger.entries.filter((e) => e.tier === 'worker');
+      assert.ok(workEntries.length >= 1, 'expected work ledger entry');
+      for (const e of workEntries) {
+        assert.equal(e.stage, undefined, 'stage must be absent when accountAux is off');
+        assert.equal(e.intentVersionId, undefined, 'intentVersionId must be absent when accountAux is off');
+      }
+    });
+
+    it('accountAux on stamps work stage and intentVersionId on work-call ledger entry', async () => {
+      const clock = makeFakeClock();
+      const ledger = makeFakeLedger();
+      const session = makeFakeSession();
+
+      const provider = makeFakeProvider(0.01);
+      const deps: OrchestrateDeps = {
+        clock,
+        session,
+        ledger,
+        providers: { claude: provider },
+        policy: { ...DEFAULT_POLICY, escalateBelowConfidence: { low: 0, medium: 0, high: 0, critical: 0 } },
+        cwd: '/tmp',
+        sandbox: 'workspace-write',
+        timeoutMs: 20_000,
+        accountAux: true,
+        intentVersionId: 'turn-ver-1',
+      };
+      const signal = new AbortController();
+
+      const classification = classify('build this');
+      const engSig: EngagementSignals = {
+        depth: 'normal', planFirst: false, escalate: false, wantsReview: false, needsExternal: false,
+        substantial: false, repoOriented: false, investigationDepth: 'none', bestEffort: false, memoryBias: 0,
+      };
+      const directive = compileTurnDirective('build this', classification, 'balanced', undefined, false, 'direct');
+      const engagementPlan = planEngagement(engSig);
+
+      const gen = runWorkCall({
+        task: 'build this',
+        deps,
+        signal: signal.signal,
+        classification,
+        routePlan: false,
+        directive,
+        intentFrame: undefined,
+        engagementPlan,
+        goalTitle: 'test',
+        workTrace: undefined,
+        incomingWorkContract: undefined,
+        available: ['claude'],
+        mode: 'balanced',
+        taskSignals: { risk: 'low', routePlan: false, taskKind: 'implementation' as any },
+        capabilityContext: undefined,
+        historyContext: undefined,
+        wantsWebSearch: false,
+        hasImageAttachment: false,
+        startTier: 'ic',
+      });
+      const events: any[] = [];
+      for await (const ev of gen) events.push(ev);
+
+      const workEntries = ledger.entries.filter((e) => e.tier === 'ic');
+      assert.ok(workEntries.length >= 1, 'expected work ledger entry');
+      for (const e of workEntries) {
+        assert.equal(e.stage, 'work', 'work entry must have stage=work');
+        assert.equal(e.intentVersionId, 'turn-ver-1', 'work entry must have intentVersionId');
+      }
+    });
+  });
 });

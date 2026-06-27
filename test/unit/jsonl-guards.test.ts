@@ -190,4 +190,110 @@ describe('jsonl guards', () => {
       true,
     );
   });
+
+  it('valid ledger with stage and intentVersionId passes', () => {
+    assert.equal(
+      isLedgerEntry({
+        timestamp: '2024-01-01T00:00:00.000Z',
+        sessionId: 's1',
+        taskId: 't1',
+        provider: 'claude',
+        model: 'claude-sonnet-4-6',
+        tier: 'ic',
+        inputTokens: 10,
+        outputTokens: 5,
+        cachedInputTokens: 0,
+        usd: 0.01,
+        durationMs: 1000,
+        success: true,
+        stage: 'intent',
+        intentVersionId: 'abc-123',
+      }),
+      true,
+    );
+  });
+
+  it('ledger without stage and intentVersionId still passes', () => {
+    assert.equal(
+      isLedgerEntry({
+        timestamp: '2024-01-01T00:00:00.000Z',
+        sessionId: 's1',
+        taskId: 't1',
+        provider: 'claude',
+        model: 'claude-sonnet-4-6',
+        tier: 'ic',
+        inputTokens: 10,
+        outputTokens: 5,
+        cachedInputTokens: 0,
+        usd: 0.01,
+        durationMs: 1000,
+        success: true,
+        // no stage, no intentVersionId
+      }),
+      true,
+    );
+  });
+
+  it('ledger with unknown stage fails', () => {
+    assert.equal(
+      isLedgerEntry({
+        timestamp: '2024-01-01T00:00:00.000Z',
+        sessionId: 's1',
+        taskId: 't1',
+        provider: 'claude',
+        model: 'claude-sonnet-4-6',
+        tier: 'ic',
+        inputTokens: 10,
+        outputTokens: 5,
+        cachedInputTokens: 0,
+        usd: 0.01,
+        durationMs: 1000,
+        success: true,
+        stage: 'not-a-real-stage',
+      }),
+      false,
+    );
+  });
+
+  it('ledger with blank intentVersionId fails', () => {
+    assert.equal(
+      isLedgerEntry({
+        timestamp: '2024-01-01T00:00:00.000Z',
+        sessionId: 's1',
+        taskId: 't1',
+        provider: 'claude',
+        model: 'claude-sonnet-4-6',
+        tier: 'ic',
+        inputTokens: 10,
+        outputTokens: 5,
+        cachedInputTokens: 0,
+        usd: 0.01,
+        durationMs: 1000,
+        success: true,
+        intentVersionId: '   ',
+      }),
+      false,
+    );
+  });
+
+  it('ledger with taskKind judgment passes', () => {
+    assert.equal(
+      isLedgerEntry({
+        timestamp: '2024-01-01T00:00:00.000Z',
+        sessionId: 's1',
+        taskId: 't1',
+        provider: 'claude',
+        model: 'claude-sonnet-4-6',
+        tier: 'ic',
+        inputTokens: 10,
+        outputTokens: 5,
+        cachedInputTokens: 0,
+        usd: 0.01,
+        durationMs: 1000,
+        success: true,
+        taskKind: 'judgment',
+      }),
+      true,
+    );
+  });
 });

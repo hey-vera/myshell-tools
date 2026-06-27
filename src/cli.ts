@@ -87,6 +87,7 @@ import { verifyEnabled } from './interface/ui/verify-flag.js';
 import { trustEnabled } from './interface/ui/trust-flag.js';
 import { experimentalEnabledByDefault } from './interface/ui/experimental-default.js';
 import { cacheAccountingV2Enabled } from './interface/ui/cache-accounting-flag.js';
+import { accountAuxEnabled } from './interface/ui/account-aux-flag.js';
 const require = createRequire(import.meta.url);
 const pkg = require('../package.json');
 const version: string = pkg.version as string;
@@ -294,11 +295,19 @@ function buildDeps(
   if (env.opencode.authenticated) planInfos['opencode'] = classifyPlan(env.opencode.plan);
   if (env.grok.authenticated) planInfos['grok'] = classifyPlan(env.grok.plan);
 
+  const ledger = createLedger({ cwd });
+  const session = createSessionWriter({ cwd, id: systemClock.uuid() });
+  const accountAuxOn = accountAuxEnabled(process.env);
+  const intentVersionId = accountAuxOn ? systemClock.uuid() : undefined;
+
   return {
     clock: systemClock,
-    session: createSessionWriter({ cwd, id: systemClock.uuid() }),
-    ledger: createLedger({ cwd }),
+    session,
+    ledger,
     ...(cacheAccountingV2Enabled(process.env) ? { cacheAccountingV2: true } : {}),
+    ...(accountAuxOn && intentVersionId !== undefined
+      ? { accountAux: true, intentVersionId }
+      : {}),
     policy,
     providers,
     cwd,
@@ -1027,6 +1036,17 @@ async function main(): Promise<void> {
             // When on, try the text-fallback chain if primary parse returns null.
             ...(byproductFallbackEnabled(process.env, config)
               ? { byproductFallback: true }
+              : {}),
+            ...(baseDeps.accountAux === true
+              ? {
+                  accountAux: true,
+                  ledger: baseDeps.ledger,
+                  clock: baseDeps.clock,
+                  sessionId: baseDeps.session.id,
+                  ...(baseDeps.cacheAccountingV2 === true
+                    ? { cacheAccountingV2: true }
+                    : {}),
+                }
               : {}),
           })
         : undefined;

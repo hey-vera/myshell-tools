@@ -5,14 +5,27 @@
  * routing quality (which can only be judged against a real model).
  */
 
-import { describe, it } from 'node:test';
+import { describe, it, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { makeRouteClassifier } from '../../src/core/route-classifier.ts';
 import { DEFAULT_POLICY } from '../../src/core/policy.ts';
-import type { Provider, ProviderEvent, ProviderRequest } from '../../src/providers/port.ts';
+import type { Provider, ProviderEvent, ProviderRequest, Usage } from '../../src/providers/port.ts';
+import type { Clock, LedgerWriter, LedgerEntry } from '../../src/core/types.ts';
 
 const SIGNAL = new AbortController().signal;
+
+function makeFakeClock(): Clock & { tick(ms: number): void } {
+  let now = 1_000_000;
+  let uuidCounter = 0;
+  return {
+    now(): number { return now; },
+    isoNow(): string { return new Date(now).toISOString(); },
+    uuid(): string { uuidCounter++; return `fake-uuid-${uuidCounter}`; },
+    random(): number { return 0.42; },
+    tick(ms: number): void { now += ms; },
+  };
+}
 
 /** A fake provider whose run() yields the given events and records its request. */
 function fakeProvider(events: ProviderEvent[], sink?: { req?: ProviderRequest }): Provider {
@@ -96,5 +109,47 @@ describe('makeRouteClassifier', () => {
     };
     const classify = makeRouteClassifier(baseDeps(provider));
     assert.equal(await classify('hmm', SIGNAL), null);
+  });
+
+  describe('account aux', () => {
+    let ledger: LedgerEntry[];
+    let clock: ReturnType<typeof makeFakeClock>;
+    const fakeLedger: LedgerWriter = { record: async (e) => { ledger.push(e); } };
+
+    beforeEach(() => {
+      ledger = [];
+      clock = makeFakeClock();
+    });
+
+    it('MYSHELL_ACCOUNT_AUX off records no route ledger entry', async () => {
+      const provider = fakeProvider([{ type: 'done', text: '{"tier":"worker","plan":false,"reason":"ok"}', raw: {} }]);
+      const classify = makeRouteClassifier({
+        ...baseDeps(provider),
+      });
+      const s = await classify('hello', SIGNAL);
+      assert.notEqual(s, null);
+      assert.equal(ledger.length, 0, 'no ledger entry when aux is off');
+    });
+
+    it('MYSHELL_ACCOUNT_AUX on records route stage usage cost and intentVersionId', async () => {
+      const provider = fakeProvider(
+        [{ type: 'done', text: '{"tier":"ic","plan":true,"reason":"multi-step"}', raw: {}, usage: { inputTokens: 100, outputTokens: 50 }, costUsd: 0.003 }],
+      );
+      const classify = makeRouteClassifier({
+        ...baseDeps(provider),
+        accountAux: true,
+        ledger: fakeLedger,
+        clock,
+        sessionId: 'sess-aux',
+      });
+      const s = await classify('complex task', SIGNAL, { intentVersionId: 'ver-1' });
+      assert.notEqual(s, null);
+      assert.equal(ledger.length, 1);
+      const e = ledger[0]!;
+      assert.equal(e.stage, 'route');
+      assert.equal(e.intentVersionId, 'ver-1');
+      assert.equal(e.provider, 'claude');
+      assert.equal(e.tier, 'worker');
+    });
   });
 });

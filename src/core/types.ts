@@ -164,6 +164,20 @@ export interface SessionWriter {
   append(entry: SessionEntry): Promise<void>;
 }
 
+export type LedgerStage =
+  | 'work'
+  | 'route'
+  | 'intent'
+  | 'reextract-web'
+  | 'reextract-local'
+  | 'recap'
+  | 'understanding'
+  | 'autostage'
+  | 'review'
+  | 'judgment'
+  | 'tribunal'
+  | 'escalation';
+
 export interface LedgerEntry {
   readonly timestamp: string;
   readonly sessionId: string;
@@ -178,6 +192,8 @@ export interface LedgerEntry {
   readonly usd: number;
   readonly durationMs: number;
   readonly success: boolean;
+  readonly stage?: LedgerStage;
+  readonly intentVersionId?: string;
   /**
    * The reasoning-effort knob this run used, when one was selected for the model
    * (capability registry §5). Recorded so a later outcome learner (Stage 4) can
@@ -340,6 +356,8 @@ export interface OrchestrateDeps {
    * cache-write field and old cost math.
    */
   readonly cacheAccountingV2?: boolean;
+  readonly accountAux?: boolean;
+  readonly intentVersionId?: string;
   readonly policy: Policy;
   readonly cwd: string;
   readonly sandbox: SandboxLevel;
@@ -609,6 +627,7 @@ export interface OrchestrateDeps {
   readonly intentExtractor?: (
     task: string,
     signal: AbortSignal,
+    opts?: { readonly stage?: LedgerStage; readonly intentVersionId?: string },
   ) => Promise<import('./intent.js').IntentExtraction>;
   /**
    * Optional model-brained route classifier. When wired, orchestrate consults it
@@ -624,6 +643,7 @@ export interface OrchestrateDeps {
   readonly routeClassifier?: (
     task: string,
     signal: AbortSignal,
+    opts?: { readonly stage?: LedgerStage; readonly intentVersionId?: string },
   ) => Promise<{ readonly tier: Tier; readonly plan: boolean; readonly reason: string } | null>;
   /**
    * UNIFIED PREFLIGHT flag (rank-7; core/router.ts `preflightUnifyEnabled`).

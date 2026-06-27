@@ -19,11 +19,13 @@
  */
 
 import type { Policy, Tier } from './types.js';
-import type { Provider, ProviderId, ProviderRequest, SandboxLevel } from '../providers/port.js';
+import type { LedgerStage, LedgerWriter, Clock } from './types.js';
+import type { Provider, ProviderId, ProviderRequest, SandboxLevel, Usage } from '../providers/port.js';
 import { route } from './route.js';
 import { buildIntentPrompt, parseIntentFrame } from './intent.js';
 import type { IntentExtractor, IntentExtraction } from './intent.js';
 import { parseFallbackIntentFrame } from './byproduct-parse.js';
+import { recordAuxLedger } from './aux-ledger.js';
 
 /** Everything the extractor needs to pick and run the cheapest model. */
 export interface IntentExtractorDeps {
@@ -45,6 +47,11 @@ export interface IntentExtractorDeps {
    * Absent/false → byte-for-byte today's behavior.
    */
   readonly byproductFallback?: boolean;
+  readonly accountAux?: boolean;
+  readonly ledger?: LedgerWriter;
+  readonly clock?: Clock;
+  readonly sessionId?: string;
+  readonly cacheAccountingV2?: boolean;
 }
 
 /** Extraction always runs at the cheapest tier — it only buckets understanding. */
@@ -58,7 +65,11 @@ const INTENT_SANDBOX: SandboxLevel = 'read-only';
  * `makeRouteClassifier` exactly.
  */
 export function makeIntentExtractor(deps: IntentExtractorDeps): IntentExtractor {
-  return async (task: string, signal: AbortSignal): Promise<IntentExtraction> => {
+  return async (
+    task: string,
+    signal: AbortSignal,
+    opts?: { readonly stage?: LedgerStage; readonly intentVersionId?: string },
+  ): Promise<IntentExtraction> => {
     const pool = (Object.keys(deps.providers) as ProviderId[]).filter(
       (id) => deps.providers[id] !== undefined,
     );
@@ -67,9 +78,6 @@ export function makeIntentExtractor(deps: IntentExtractorDeps): IntentExtractor 
     let provider: Provider | undefined;
     let model: string;
     try {
-      // As in route-classifier.ts: deliberately NOT threading the learned
-      // provider order — this throwaway worker-tier extraction is a cost decision
-      // about understanding a turn, not about doing the user's work.
       const decision = route(
         INTENT_TIER,
         pool,
@@ -93,17 +101,16 @@ export function makeIntentExtractor(deps: IntentExtractorDeps): IntentExtractor 
     };
 
     let finalText: string | undefined;
-    let usage: { inputTokens: number; outputTokens: number } | undefined;
+    let usage: Usage | undefined;
+    let providerCostUsd: number | undefined;
+    let startMs: number | undefined;
     try {
+      startMs = deps.clock?.now();
       for await (const ev of provider.run(req, signal)) {
         if (ev.type === 'done') {
           finalText = ev.text;
-          // Surface the REAL measured token usage (tokens-not-dollars) so the
-          // brain's codebase-scrape round can show real numbers on its tier-done
-          // rather than a hardcoded 0 (vision-brain §5).
-          if (ev.usage !== undefined) {
-            usage = { inputTokens: ev.usage.inputTokens, outputTokens: ev.usage.outputTokens };
-          }
+          usage = ev.usage;
+          providerCostUsd = ev.costUsd;
         } else if (ev.type === 'error') return null;
       }
     } catch {
@@ -119,11 +126,38 @@ export function makeIntentExtractor(deps: IntentExtractorDeps): IntentExtractor 
       frame = parseFallbackIntentFrame(finalText);
     }
 
+    const durationMs =
+      startMs !== undefined && deps.clock !== undefined
+        ? deps.clock.now() - startMs
+        : 0;
+    await recordAuxLedger({
+      enabled: deps.accountAux === true,
+      ledger: deps.ledger,
+      clock: deps.clock,
+      sessionId: deps.sessionId,
+      cacheAccountingV2: deps.cacheAccountingV2,
+      intentVersionId: opts?.intentVersionId,
+      stage: opts?.stage ?? 'intent',
+      provider: provider.id,
+      model,
+      tier: INTENT_TIER,
+      usage,
+      providerCostUsd,
+      durationMs,
+      success: frame !== null,
+    });
+
     // Carry usage alongside the frame (backward-compatible IntentExtraction union).
     // When usage is unavailable, return the bare frame (consumers see usage:
     // undefined and omit the token figure rather than print a false 0).
     if (usage !== undefined) {
-      const withUsage: IntentExtraction = { frame, usage };
+      const intentUsage = {
+        inputTokens: usage.inputTokens,
+        outputTokens: usage.outputTokens,
+        ...(usage.cachedInputTokens !== undefined ? { cachedInputTokens: usage.cachedInputTokens } : {}),
+        ...(usage.cacheWriteInputTokens !== undefined ? { cacheWriteInputTokens: usage.cacheWriteInputTokens } : {}),
+      };
+      const withUsage: IntentExtraction = { frame, usage: intentUsage };
       return withUsage;
     }
     return frame;

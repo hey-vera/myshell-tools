@@ -22,9 +22,11 @@
  */
 
 import type { Policy, SessionEntry, Tier } from './types.js';
-import type { Provider, ProviderId, ProviderRequest, SandboxLevel } from '../providers/port.js';
+import type { LedgerWriter, Clock } from './types.js';
+import type { Provider, ProviderId, ProviderRequest, SandboxLevel, Usage } from '../providers/port.js';
 import { route } from './route.js';
 import { buildRecapPrompt, parseRecapResult, type RecapResult } from './recap.js';
+import { recordAuxLedger } from './aux-ledger.js';
 
 /** Everything the generator needs to pick and run the cheapest model. */
 export interface RecapGeneratorDeps {
@@ -36,6 +38,11 @@ export interface RecapGeneratorDeps {
   readonly sandbox?: SandboxLevel;
   readonly availableModels?: Partial<Record<ProviderId, readonly string[]>>;
   readonly authenticatedProviders?: readonly ProviderId[];
+  readonly accountAux?: boolean;
+  readonly ledger?: LedgerWriter;
+  readonly clock?: Clock;
+  readonly sessionId?: string;
+  readonly cacheAccountingV2?: boolean;
 }
 
 /**
@@ -101,14 +108,41 @@ export function makeRecapGenerator(
     };
 
     let finalText: string | undefined;
+    let usage: Usage | undefined;
+    let providerCostUsd: number | undefined;
+    let startMs: number | undefined;
     try {
+      startMs = deps.clock?.now();
       for await (const ev of provider.run(req, signal)) {
-        if (ev.type === 'done') finalText = ev.text;
-        else if (ev.type === 'error') return null;
+        if (ev.type === 'done') {
+          finalText = ev.text;
+          usage = ev.usage;
+          providerCostUsd = ev.costUsd;
+        } else if (ev.type === 'error') return null;
       }
     } catch {
       return null;
     }
-    return parseRecapResult(finalText);
+    const result = parseRecapResult(finalText);
+    const durationMs =
+      startMs !== undefined && deps.clock !== undefined
+        ? deps.clock.now() - startMs
+        : 0;
+    await recordAuxLedger({
+      enabled: deps.accountAux === true,
+      ledger: deps.ledger,
+      clock: deps.clock,
+      sessionId: deps.sessionId,
+      cacheAccountingV2: deps.cacheAccountingV2,
+      stage: 'recap',
+      provider: provider.id,
+      model,
+      tier: RECAP_TIER,
+      usage,
+      providerCostUsd,
+      durationMs,
+      success: result !== null,
+    });
+    return result;
   };
 }

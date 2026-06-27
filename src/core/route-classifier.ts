@@ -17,10 +17,12 @@
  */
 
 import type { Policy, Tier } from './types.js';
-import type { Provider, ProviderId, ProviderRequest, SandboxLevel } from '../providers/port.js';
+import type { LedgerStage, LedgerWriter, Clock } from './types.js';
+import type { Provider, ProviderId, ProviderRequest, SandboxLevel, Usage } from '../providers/port.js';
 import { route } from './route.js';
 import { buildRouterPrompt, parseModelRoute } from './router.js';
 import type { ModelClassifier, ModelRouteSuggestion } from './router.js';
+import { recordAuxLedger } from './aux-ledger.js';
 
 /** Everything the classifier needs to pick and run the cheapest model. */
 export interface RouteClassifierDeps {
@@ -32,6 +34,11 @@ export interface RouteClassifierDeps {
   readonly sandbox?: SandboxLevel;
   readonly availableModels?: Partial<Record<ProviderId, readonly string[]>>;
   readonly authenticatedProviders?: readonly ProviderId[];
+  readonly accountAux?: boolean;
+  readonly ledger?: LedgerWriter;
+  readonly clock?: Clock;
+  readonly sessionId?: string;
+  readonly cacheAccountingV2?: boolean;
 }
 
 /** Classification always runs at the cheapest tier — it only buckets a turn. */
@@ -44,7 +51,11 @@ const ROUTER_SANDBOX: SandboxLevel = 'read-only';
  * Returns a function suitable for `OrchestrateDeps.routeClassifier`.
  */
 export function makeRouteClassifier(deps: RouteClassifierDeps): ModelClassifier {
-  return async (task: string, signal: AbortSignal): Promise<ModelRouteSuggestion | null> => {
+  return async (
+    task: string,
+    signal: AbortSignal,
+    opts?: { readonly stage?: LedgerStage; readonly intentVersionId?: string },
+  ): Promise<ModelRouteSuggestion | null> => {
     const pool = (Object.keys(deps.providers) as ProviderId[]).filter(
       (id) => deps.providers[id] !== undefined,
     );
@@ -52,13 +63,8 @@ export function makeRouteClassifier(deps: RouteClassifierDeps): ModelClassifier 
 
     let provider: Provider | undefined;
     let model: string;
+    let triedProvider = false;
     try {
-      // Deliberately NOT threading the learned provider order here: this call
-      // only picks the cheapest provider to run the tiny worker-tier routing
-      // prompt (a cost-discipline decision about classifying a turn, not about
-      // doing the user's work). The learned order biases the WORK routes in
-      // orchestrate()/ensemble(); applying it to the throwaway classifier run
-      // would add no value and `RouteClassifierDeps` intentionally omits it.
       const decision = route(
         ROUTER_TIER,
         pool,
@@ -82,14 +88,43 @@ export function makeRouteClassifier(deps: RouteClassifierDeps): ModelClassifier 
     };
 
     let finalText: string | undefined;
+    let usage: Usage | undefined;
+    let providerCostUsd: number | undefined;
+    let startMs: number | undefined;
     try {
+      startMs = deps.clock?.now();
+      triedProvider = true;
       for await (const ev of provider.run(req, signal)) {
-        if (ev.type === 'done') finalText = ev.text;
-        else if (ev.type === 'error') return null;
+        if (ev.type === 'done') {
+          finalText = ev.text;
+          usage = ev.usage;
+          providerCostUsd = ev.costUsd;
+        } else if (ev.type === 'error') return null;
       }
     } catch {
       return null;
     }
-    return parseModelRoute(finalText);
+    const suggestion = parseModelRoute(finalText);
+    const durationMs =
+      startMs !== undefined && deps.clock !== undefined
+        ? deps.clock.now() - startMs
+        : 0;
+    await recordAuxLedger({
+      enabled: deps.accountAux === true,
+      ledger: deps.ledger,
+      clock: deps.clock,
+      sessionId: deps.sessionId,
+      cacheAccountingV2: deps.cacheAccountingV2,
+      intentVersionId: opts?.intentVersionId,
+      stage: opts?.stage ?? 'route',
+      provider: provider.id,
+      model,
+      tier: ROUTER_TIER,
+      usage,
+      providerCostUsd,
+      durationMs,
+      success: suggestion !== null,
+    });
+    return suggestion;
   };
 }

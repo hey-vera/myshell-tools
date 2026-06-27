@@ -20,6 +20,7 @@
  */
 
 import type { Classification, Tier, Risk } from './types.js';
+import type { LedgerStage } from './types.js';
 import { renderUntrustedBlock } from './untrusted-content.js';
 import { capDraftGoalSkeleton, type DraftGoalSkeleton } from './draft-goal.js';
 
@@ -114,6 +115,8 @@ export interface IntentFrame {
 export interface IntentUsage {
   readonly inputTokens: number;
   readonly outputTokens: number;
+  readonly cachedInputTokens?: number;
+  readonly cacheWriteInputTokens?: number;
 }
 
 /**
@@ -137,6 +140,7 @@ export type IntentExtraction =
 export type IntentExtractor = (
   task: string,
   signal: AbortSignal,
+  opts?: { readonly stage?: LedgerStage; readonly intentVersionId?: string },
 ) => Promise<IntentExtraction>;
 
 /**

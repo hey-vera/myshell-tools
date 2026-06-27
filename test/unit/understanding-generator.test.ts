@@ -8,15 +8,28 @@
  * goal-plan-generator.test.ts.
  */
 
-import { describe, it } from 'node:test';
+import { describe, it, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { makeUnderstandingPass } from '../../src/core/understanding-generator.ts';
 import { DEFAULT_POLICY } from '../../src/core/policy.ts';
 import type { Provider, ProviderEvent, ProviderId, ProviderRequest } from '../../src/providers/port.ts';
+import type { Clock, LedgerWriter, LedgerEntry } from '../../src/core/types.ts';
 
 const SIGNAL = new AbortController().signal;
 const TASK = 'migrate the auth token refresh path to the new oauth flow';
+
+function makeFakeClock(): Clock & { tick(ms: number): void } {
+  let now = 1_000_000;
+  let uuidCounter = 0;
+  return {
+    now(): number { return now; },
+    isoNow(): string { return new Date(now).toISOString(); },
+    uuid(): string { uuidCounter++; return `fake-uuid-${uuidCounter}`; },
+    random(): number { return 0.42; },
+    tick(ms: number): void { now += ms; },
+  };
+}
 
 const GOOD = [
   'SUMMARY: auth lives in core/oauth, refreshed in infra/token-store',
@@ -150,5 +163,36 @@ describe('makeUnderstandingPass', () => {
     });
     await pass(TASK, SIGNAL);
     assert.equal(sink.req?.webSearch, true, 'high-stakes + Codex → native web search opt-in');
+  });
+
+  describe('account aux', () => {
+    let ledger: LedgerEntry[];
+    let clock: ReturnType<typeof makeFakeClock>;
+    const fakeLedger: LedgerWriter = { record: async (e) => { ledger.push(e); } };
+
+    beforeEach(() => {
+      ledger = [];
+      clock = makeFakeClock();
+    });
+
+    it('accountAux on records understanding stage', async () => {
+      const provider = fakeProvider('claude', [
+        { type: 'done', text: GOOD, raw: {}, usage: { inputTokens: 500, outputTokens: 200 } },
+      ]);
+      const pass = makeUnderstandingPass({
+        providers: { claude: provider },
+        policy: DEFAULT_POLICY,
+        cwd: '/p',
+        timeoutMs: 8000,
+        accountAux: true,
+        ledger: fakeLedger,
+        clock,
+        sessionId: 'sess-understanding',
+      });
+      const result = await pass(TASK, SIGNAL);
+      assert.notEqual(result, null);
+      assert.equal(ledger.length, 1);
+      assert.equal(ledger[0]!.stage, 'understanding');
+    });
   });
 });

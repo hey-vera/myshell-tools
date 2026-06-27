@@ -155,6 +155,28 @@ export function isLedgerEntry(value: unknown): value is LedgerEntry {
   if (cacheWrite !== undefined) {
     if (typeof cacheWrite !== 'number' || !Number.isFinite(cacheWrite)) return false;
   }
+  const stage = value['stage'];
+  if (
+    stage !== undefined &&
+    stage !== 'work' &&
+    stage !== 'route' &&
+    stage !== 'intent' &&
+    stage !== 'reextract-web' &&
+    stage !== 'reextract-local' &&
+    stage !== 'recap' &&
+    stage !== 'understanding' &&
+    stage !== 'autostage' &&
+    stage !== 'review' &&
+    stage !== 'judgment' &&
+    stage !== 'tribunal' &&
+    stage !== 'escalation'
+  ) return false;
+
+  const intentVersionId = value['intentVersionId'];
+  if (
+    intentVersionId !== undefined &&
+    (typeof intentVersionId !== 'string' || intentVersionId.trim().length === 0)
+  ) return false;
   if (typeof value['usd'] !== 'number' || !Number.isFinite(value['usd'])) return false;
   if (typeof value['durationMs'] !== 'number' || !Number.isFinite(value['durationMs'])) {
     return false;
@@ -186,6 +208,7 @@ export function isLedgerEntry(value: unknown): value is LedgerEntry {
     taskKind !== 'review' &&
     taskKind !== 'architecture' &&
     taskKind !== 'large-context' &&
+    taskKind !== 'judgment' &&
     taskKind !== 'unknown'
   ) {
     return false;

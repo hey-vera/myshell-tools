@@ -23,6 +23,7 @@
  */
 
 import type { Tier, Risk, Classification } from './types.js';
+import type { LedgerStage } from './types.js';
 import { classify, hasTierEvidence } from './classify.js';
 
 // ---------------------------------------------------------------------------
@@ -59,6 +60,7 @@ export interface ModelRouteSuggestion {
 export type ModelClassifier = (
   task: string,
   signal: AbortSignal,
+  opts?: { readonly stage?: LedgerStage; readonly intentVersionId?: string },
 ) => Promise<ModelRouteSuggestion | null>;
 
 // ---------------------------------------------------------------------------
@@ -201,7 +203,7 @@ export function riskClause(rationale: string): string {
  */
 export async function decideRoute(
   task: string,
-  opts: { readonly classifier?: ModelClassifier; readonly signal: AbortSignal },
+  opts: { readonly classifier?: ModelClassifier; readonly signal: AbortSignal; readonly intentVersionId?: string },
 ): Promise<RouteDecision> {
   const base = classify(task);
 
@@ -215,7 +217,10 @@ export async function decideRoute(
   // Ambiguous turn — consult the cheap model, but degrade gracefully.
   let suggestion: ModelRouteSuggestion | null = null;
   try {
-    suggestion = await opts.classifier(task, opts.signal);
+    suggestion = await opts.classifier(task, opts.signal, {
+      stage: 'route',
+      ...(opts.intentVersionId !== undefined ? { intentVersionId: opts.intentVersionId } : {}),
+    });
   } catch {
     suggestion = null;
   }

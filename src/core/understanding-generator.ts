@@ -34,9 +34,11 @@
  */
 
 import type { Policy, Tier } from './types.js';
-import type { Provider, ProviderId, ProviderRequest, SandboxLevel } from '../providers/port.js';
+import type { LedgerWriter, Clock } from './types.js';
+import type { Provider, ProviderId, ProviderRequest, SandboxLevel, Usage } from '../providers/port.js';
 import { route } from './route.js';
 import { buildUnderstandingPrompt, parseSystemModel, type SystemModel } from './understanding.js';
+import { recordAuxLedger } from './aux-ledger.js';
 
 /** Everything the understanding pass needs to pick and run the manager-tier model. */
 export interface UnderstandingGeneratorDeps {
@@ -58,6 +60,11 @@ export interface UnderstandingGeneratorDeps {
    * classify() risk signal upstream — never fabricated. Default false.
    */
   readonly highStakes?: boolean;
+  readonly accountAux?: boolean;
+  readonly ledger?: LedgerWriter;
+  readonly clock?: Clock;
+  readonly sessionId?: string;
+  readonly cacheAccountingV2?: boolean;
 }
 
 /**
@@ -139,14 +146,41 @@ export function makeUnderstandingPass(
     };
 
     let finalText: string | undefined;
+    let usage: Usage | undefined;
+    let providerCostUsd: number | undefined;
+    let startMs: number | undefined;
     try {
+      startMs = deps.clock?.now();
       for await (const ev of provider.run(req, signal)) {
-        if (ev.type === 'done') finalText = ev.text;
-        else if (ev.type === 'error') return null;
+        if (ev.type === 'done') {
+          finalText = ev.text;
+          usage = ev.usage;
+          providerCostUsd = ev.costUsd;
+        } else if (ev.type === 'error') return null;
       }
     } catch {
       return null;
     }
-    return parseSystemModel(finalText);
+    const result = parseSystemModel(finalText);
+    const durationMs =
+      startMs !== undefined && deps.clock !== undefined
+        ? deps.clock.now() - startMs
+        : 0;
+    await recordAuxLedger({
+      enabled: deps.accountAux === true,
+      ledger: deps.ledger,
+      clock: deps.clock,
+      sessionId: deps.sessionId,
+      cacheAccountingV2: deps.cacheAccountingV2,
+      stage: 'understanding',
+      provider: providerId,
+      model,
+      tier: UNDERSTANDING_TIER,
+      usage,
+      providerCostUsd,
+      durationMs,
+      success: result !== null,
+    });
+    return result;
   };
 }

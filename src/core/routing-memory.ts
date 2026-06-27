@@ -75,6 +75,7 @@ export function computeTierStats(
 
   for (const entry of entries) {
     if (entry === null || entry === undefined) continue;
+    if (entry.stage !== undefined && entry.stage !== 'work') continue;
     if (entry.tier !== tier) continue;
     const provider = entry.provider;
     // Defensive: ignore entries with no usable provider id.
@@ -237,6 +238,7 @@ export function computeModelOutcomeStats(
 
   for (const entry of entries) {
     if (entry === null || entry === undefined) continue;
+    if (entry.stage !== undefined && entry.stage !== 'work') continue;
     if (taskKindOf(entry) !== taskKind) continue;
     const provider: ProviderId = entry.provider;
     const model = entry.model;

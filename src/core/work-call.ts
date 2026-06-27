@@ -807,6 +807,10 @@ export async function* runWorkCall(input: WorkCallInput): AsyncGenerator<CoreEve
           success: true,
           ...(reviewEffort !== undefined ? { reasoningEffort: reviewEffort } : {}),
           taskKind: 'review',
+          ...(deps.accountAux === true ? { stage: 'review' as const } : {}),
+          ...(deps.accountAux === true && deps.intentVersionId !== undefined
+            ? { intentVersionId: deps.intentVersionId }
+            : {}),
         });
         const verdict = parseReviewVerdict(reviewOutcome.finalText ?? '');
         // A real, parseable verdict ⇒ the critic genuinely ran.
@@ -971,6 +975,10 @@ export async function* runWorkCall(input: WorkCallInput): AsyncGenerator<CoreEve
       success,
       ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
       taskKind: taskSignals.taskKind,
+      ...(deps.accountAux === true ? { stage: 'work' as const } : {}),
+      ...(deps.accountAux === true && deps.intentVersionId !== undefined
+        ? { intentVersionId: deps.intentVersionId }
+        : {}),
     });
     yield {
       type: 'tier-done',
@@ -1379,6 +1387,10 @@ export async function* runWorkCall(input: WorkCallInput): AsyncGenerator<CoreEve
       // Record the SAME taskKind orchestrate derived for routing (Stage 4, §2
       // Layer 3) so the model-level outcome learner weighs this run by task type.
       taskKind: taskSignals.taskKind,
+      ...(deps.accountAux === true ? { stage: 'work' as const } : {}),
+      ...(deps.accountAux === true && deps.intentVersionId !== undefined
+        ? { intentVersionId: deps.intentVersionId }
+        : {}),
     });
 
     // --- Yield tier-done ---
@@ -1936,6 +1948,10 @@ export async function* runWorkCall(input: WorkCallInput): AsyncGenerator<CoreEve
           ...(reviewEffort !== undefined ? { reasoningEffort: reviewEffort } : {}),
           // The reviewer run is always a 'review' taskKind (Stage 4).
           taskKind: 'review',
+          ...(deps.accountAux === true ? { stage: 'review' as const } : {}),
+          ...(deps.accountAux === true && deps.intentVersionId !== undefined
+            ? { intentVersionId: deps.intentVersionId }
+            : {}),
         });
 
         // Yield tier-done for reviewer

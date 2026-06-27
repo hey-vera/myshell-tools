@@ -5,15 +5,28 @@
  * never blocks), not recap quality. Twin of intent-extractor.test.ts.
  */
 
-import { describe, it } from 'node:test';
+import { describe, it, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { makeRecapGenerator } from '../../src/core/recap-generator.ts';
 import { DEFAULT_POLICY } from '../../src/core/policy.ts';
 import type { Provider, ProviderEvent, ProviderRequest } from '../../src/providers/port.ts';
 import type { SessionEntry } from '../../src/core/types.ts';
+import type { Clock, LedgerWriter, LedgerEntry } from '../../src/core/types.ts';
 
 const SIGNAL = new AbortController().signal;
+
+function makeFakeClock(): Clock & { tick(ms: number): void } {
+  let now = 1_000_000;
+  let uuidCounter = 0;
+  return {
+    now(): number { return now; },
+    isoNow(): string { return new Date(now).toISOString(); },
+    uuid(): string { uuidCounter++; return `fake-uuid-${uuidCounter}`; },
+    random(): number { return 0.42; },
+    tick(ms: number): void { now += ms; },
+  };
+}
 
 const HISTORY: SessionEntry[] = [
   { timestamp: '2024-01-01T00:00:00.000Z', role: 'user', content: 'Migrate auth to JWT' },
@@ -117,5 +130,51 @@ describe('makeRecapGenerator', () => {
     };
     const gen = makeRecapGenerator(baseDeps(provider));
     assert.equal(await gen(HISTORY, SIGNAL), null);
+  });
+
+  describe('account aux', () => {
+    let ledger: LedgerEntry[];
+    let clock: ReturnType<typeof makeFakeClock>;
+    const fakeLedger: LedgerWriter = { record: async (e) => { ledger.push(e); } };
+
+    beforeEach(() => {
+      ledger = [];
+      clock = makeFakeClock();
+    });
+
+    it('accountAux on records recap stage', async () => {
+      const provider = fakeProvider([
+        { type: 'done', text: 'TITLE: Hello\nSTATE: doing things.', raw: {}, usage: { inputTokens: 100, outputTokens: 50 } },
+      ]);
+      const gen = makeRecapGenerator({
+        providers: { claude: provider },
+        policy: DEFAULT_POLICY,
+        cwd: '/tmp/project',
+        timeoutMs: 8_000,
+        accountAux: true,
+        ledger: fakeLedger,
+        clock,
+        sessionId: 'sess-recap',
+      });
+      const result = await gen(HISTORY, SIGNAL);
+      assert.notEqual(result, null);
+      assert.equal(ledger.length, 1);
+      assert.equal(ledger[0]!.stage, 'recap');
+    });
+
+    it('accountAux off records no recap entry', async () => {
+      const provider = fakeProvider([
+        { type: 'done', text: 'TITLE: Hello\nSTATE: doing things.', raw: {} },
+      ]);
+      const gen = makeRecapGenerator({
+        providers: { claude: provider },
+        policy: DEFAULT_POLICY,
+        cwd: '/tmp/project',
+        timeoutMs: 8_000,
+      });
+      const result = await gen(HISTORY, SIGNAL);
+      assert.notEqual(result, null);
+      assert.equal(ledger.length, 0, 'no ledger entry when aux is off');
+    });
   });
 });

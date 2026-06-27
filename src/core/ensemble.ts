@@ -1523,6 +1523,10 @@ export async function* runPanel(
       success,
       ...(outcome.reasoningEffort !== undefined ? { reasoningEffort: outcome.reasoningEffort } : {}),
       taskKind: outcome.taskKind,
+      ...(deps.accountAux === true ? { stage: 'work' as const } : {}),
+      ...(deps.accountAux === true && deps.intentVersionId !== undefined
+        ? { intentVersionId: deps.intentVersionId }
+        : {}),
     });
 
     yield {
@@ -1869,6 +1873,10 @@ export async function* runPanel(
     ...(synthEffort !== undefined ? { reasoningEffort: synthEffort } : {}),
     // The synthesizer adjudicates the panel — always a 'review' taskKind (Stage 4).
     taskKind: 'review',
+    ...(deps.accountAux === true ? { stage: 'work' as const } : {}),
+    ...(deps.accountAux === true && deps.intentVersionId !== undefined
+      ? { intentVersionId: deps.intentVersionId }
+      : {}),
   });
 
   yield {
@@ -2035,6 +2043,10 @@ export async function* runPanel(
           success: true,
           ...(reviewEffort !== undefined ? { reasoningEffort: reviewEffort } : {}),
           taskKind: 'review',
+          ...(deps.accountAux === true ? { stage: 'review' as const } : {}),
+          ...(deps.accountAux === true && deps.intentVersionId !== undefined
+            ? { intentVersionId: deps.intentVersionId }
+            : {}),
         });
         const verdict = parseReviewVerdict(reviewText ?? '');
         return {
@@ -2156,6 +2168,10 @@ export async function* runPanel(
       success: repairSuccess,
       ...(synthEffort !== undefined ? { reasoningEffort: synthEffort } : {}),
       taskKind: 'review',
+      ...(deps.accountAux === true ? { stage: 'work' as const } : {}),
+      ...(deps.accountAux === true && deps.intentVersionId !== undefined
+        ? { intentVersionId: deps.intentVersionId }
+        : {}),
     });
     yield {
       type: 'tier-done',

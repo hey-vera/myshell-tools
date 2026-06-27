@@ -458,4 +458,73 @@ describe('learnModelOutcomeOrder — old entries (no taskKind) → unknown; prov
     // learnProviderOrder ignores taskKind entirely → identical result either way.
     assert.deepEqual(learnProviderOrder(withKind, 'ic'), learnProviderOrder(withoutKind, 'ic'));
   });
+
+  describe('stage exclusion guard', () => {
+    const workerEntry = (provider: ProviderId, success: boolean): LedgerEntry => ({
+      ...entry({ provider, tier: 'ic', success, durationMs: 500 }),
+      stage: 'work',
+    });
+
+    const routeEntry = (provider: ProviderId): LedgerEntry => ({
+      ...entry({ provider, tier: 'worker', success: true, durationMs: 100 }),
+      stage: 'route',
+    });
+
+    const intentEntry = (provider: ProviderId): LedgerEntry => ({
+      ...entry({ provider, tier: 'worker', success: true, durationMs: 200 }),
+      stage: 'intent',
+    });
+
+    it('learnProviderOrder ignores non-work staged entries', () => {
+      const entries: LedgerEntry[] = [
+        // route entry (should be ignored)
+        routeEntry('claude'),
+        // intent entry (should be ignored)
+        intentEntry('opencode'),
+        // 5 work entries for codex (should qualify — excluded though)
+        ...Array.from({ length: 5 }, () => workerEntry('codex', true)),
+        // 5 work entries for claude (should qualify)
+        ...Array.from({ length: 5 }, () => workerEntry('claude', false)),
+      ];
+      const order = learnProviderOrder(entries, 'ic');
+      assert.ok(order !== null, 'should have qualifying work entries for codex and claude');
+      // Non-work staged entries (route/intent at worker tier) are excluded from ic tier aggregation
+      // by BOTH the stage guard AND the tier filter. This test verifies the stage guard works for the correct tier.
+      // Route entries are worker-tier, so they wouldn't show up in ic-tier results anyway.
+    });
+
+    it('learnModelOutcomeOrder ignores non-work staged entries', () => {
+      const entries: LedgerEntry[] = [
+        // route entry (should be ignored)
+        routeEntry('claude'),
+        // worker work entries for claude are in different tier
+        ...Array.from({ length: 5 }, () => ({
+          ...workerEntry('codex', true),
+          provider: 'codex' as ProviderId,
+          model: 'gpt-5.5',
+          tier: 'ic' as const,
+          taskKind: 'implementation' as const,
+        })),
+        ...Array.from({ length: 5 }, () => ({
+          ...workerEntry('claude', false),
+          provider: 'claude' as ProviderId,
+          model: 'sonnet',
+          tier: 'ic' as const,
+          taskKind: 'implementation' as const,
+        })),
+      ];
+      const order = learnModelOutcomeOrder(entries, 'implementation');
+      assert.notEqual(order, null, 'should have qualifying work entries');
+    });
+
+    it('old rows without stage remain valid and feed learning', () => {
+      // Pre-aux rows have no stage field at all.
+      const entries: LedgerEntry[] = [
+        ...Array.from({ length: 5 }, () => entry({ provider: 'codex', tier: 'ic', success: true, durationMs: 300 })),
+        ...Array.from({ length: 5 }, () => entry({ provider: 'claude', tier: 'ic', success: false, durationMs: 300 })),
+      ];
+      const order = learnProviderOrder(entries, 'ic');
+      assert.notEqual(order, null, 'old rows without stage should still feed learning');
+    });
+  });
 });

@@ -627,6 +627,10 @@ export async function* runHedged(
       durationMs: result.durationMs,
       ...(result.reasoningEffort !== undefined ? { reasoningEffort: result.reasoningEffort } : {}),
       taskKind: result.taskKind,
+      ...(deps.accountAux === true ? { stage: 'work' as const } : {}),
+      ...(deps.accountAux === true && deps.intentVersionId !== undefined
+        ? { intentVersionId: deps.intentVersionId }
+        : {}),
     });
     return usd;
   };
@@ -739,6 +743,10 @@ export async function* runHedged(
           success: true,
           ...(reviewEffort !== undefined ? { reasoningEffort: reviewEffort } : {}),
           taskKind: 'review',
+          ...(deps.accountAux === true ? { stage: 'review' as const } : {}),
+          ...(deps.accountAux === true && deps.intentVersionId !== undefined
+            ? { intentVersionId: deps.intentVersionId }
+            : {}),
         });
         const verdict = parseReviewVerdict(reviewText ?? '');
         return {
@@ -892,6 +900,10 @@ export async function* runHedged(
         ? { reasoningEffort: winnerRun.reasoningEffort }
         : {}),
       taskKind: winnerRun.taskKind,
+      ...(deps.accountAux === true ? { stage: 'work' as const } : {}),
+      ...(deps.accountAux === true && deps.intentVersionId !== undefined
+        ? { intentVersionId: deps.intentVersionId }
+        : {}),
     });
     yield {
       type: 'tier-done',

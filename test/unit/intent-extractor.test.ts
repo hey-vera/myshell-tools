@@ -5,14 +5,27 @@
  * extraction quality. Twin of route-classifier.test.ts.
  */
 
-import { describe, it } from 'node:test';
+import { describe, it, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { makeIntentExtractor } from '../../src/core/intent-extractor.ts';
 import { DEFAULT_POLICY } from '../../src/core/policy.ts';
-import type { Provider, ProviderEvent, ProviderRequest } from '../../src/providers/port.ts';
+import type { Provider, ProviderEvent, ProviderRequest, Usage } from '../../src/providers/port.ts';
+import type { Clock, LedgerWriter, LedgerEntry } from '../../src/core/types.ts';
 
 const SIGNAL = new AbortController().signal;
+
+function makeFakeClock(): Clock & { tick(ms: number): void } {
+  let now = 1_000_000;
+  let uuidCounter = 0;
+  return {
+    now(): number { return now; },
+    isoNow(): string { return new Date(now).toISOString(); },
+    uuid(): string { uuidCounter++; return `fake-uuid-${uuidCounter}`; },
+    random(): number { return 0.42; },
+    tick(ms: number): void { now += ms; },
+  };
+}
 
 function fakeProvider(events: ProviderEvent[], sink?: { req?: ProviderRequest }): Provider {
   return {
@@ -105,5 +118,57 @@ describe('makeIntentExtractor', () => {
     };
     const extract = makeIntentExtractor(baseDeps(provider));
     assert.equal(await extract('hmm', SIGNAL), null);
+  });
+
+  describe('account aux', () => {
+    let ledger: LedgerEntry[];
+    let clock: ReturnType<typeof makeFakeClock>;
+    const fakeLedger: LedgerWriter = { record: async (e) => { ledger.push(e); } };
+
+    beforeEach(() => {
+      ledger = [];
+      clock = makeFakeClock();
+    });
+
+    it('MYSHELL_ACCOUNT_AUX on records intent stage with usage', async () => {
+      const provider = fakeProvider(
+        [{ type: 'done', text: '{"goal":"ship it","kind":"coding","confidence":"high"}', raw: {}, usage: { inputTokens: 200, outputTokens: 100 }, costUsd: 0.005 }],
+      );
+      const extract = makeIntentExtractor({
+        providers: { claude: provider },
+        policy: DEFAULT_POLICY,
+        cwd: '/tmp/project',
+        timeoutMs: 8_000,
+        accountAux: true,
+        ledger: fakeLedger,
+        clock,
+        sessionId: 'sess-aux',
+      });
+      const f = await extract('ship the feature', SIGNAL, { stage: 'intent', intentVersionId: 'ver-2' });
+      assert.notEqual(f, null);
+      assert.equal(ledger.length, 1);
+      const e = ledger[0]!;
+      assert.equal(e.stage, 'intent');
+      assert.equal(e.intentVersionId, 'ver-2');
+    });
+
+    it('intent extractor records caller-provided reextract stage', async () => {
+      const provider = fakeProvider(
+        [{ type: 'done', text: '{"goal":"debug","kind":"debug","confidence":"medium"}', raw: {} }],
+      );
+      const extract = makeIntentExtractor({
+        providers: { claude: provider },
+        policy: DEFAULT_POLICY,
+        cwd: '/tmp/project',
+        timeoutMs: 8_000,
+        accountAux: true,
+        ledger: fakeLedger,
+        clock,
+        sessionId: 'sess-reextract',
+      });
+      await extract('debug after findings', SIGNAL, { stage: 'reextract-web', intentVersionId: 'ver-3' });
+      assert.equal(ledger.length, 1);
+      assert.equal(ledger[0]!.stage, 'reextract-web');
+    });
   });
 });

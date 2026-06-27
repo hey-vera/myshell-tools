@@ -527,6 +527,10 @@ export async function* runJudgmentPoll(
       success,
       ...(outcome.reasoningEffort !== undefined ? { reasoningEffort: outcome.reasoningEffort } : {}),
       taskKind: outcome.taskKind,
+      ...(deps.accountAux === true ? { stage: 'judgment' as const } : {}),
+      ...(deps.accountAux === true && deps.intentVersionId !== undefined
+        ? { intentVersionId: deps.intentVersionId }
+        : {}),
     });
 
     yield {

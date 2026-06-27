@@ -149,6 +149,8 @@ describe('createLedger — record and readLedger', () => {
       usd: 0.037,
       durationMs: 3200,
       success: false,
+      stage: 'intent',
+      intentVersionId: 'ver-round-trip-1',
     });
 
     await ledger.record(entry);
@@ -166,6 +168,8 @@ describe('createLedger — record and readLedger', () => {
     assert.equal(got?.usd, 0.037);
     assert.equal(got?.durationMs, 3200);
     assert.equal(got?.success, false);
+    assert.equal(got?.stage, 'intent');
+    assert.equal(got?.intentVersionId, 'ver-round-trip-1');
   });
 });
 

@@ -71,10 +71,10 @@ export interface JudgedGoal {
 export interface AutoStageEngine {
   judgeGoal: (goalText: string) => Promise<JudgedGoal>;
   warmUnderstanding: WarmUnderstanding;
-  resolveAutoStage: (line: string) => Promise<void>;
+  resolveAutoStage: (line: string, intentVersionId?: string) => Promise<void>;
 }
 
-type GoalPlanner = (userMessage: string, signal: AbortSignal) => Promise<GoalPlan | null>;
+type GoalPlanner = (userMessage: string, signal: AbortSignal, opts?: { intentVersionId?: string }) => Promise<GoalPlan | null>;
 type GoalPlannerAttempt = {
   readonly plan: GoalPlan | null;
   readonly provider: ProviderId;
@@ -84,6 +84,7 @@ type GoalPlannerAttempt = {
 type GoalPlannerAttemptRunner = (
   userMessage: string,
   signal: AbortSignal,
+  opts?: { intentVersionId?: string },
 ) => Promise<GoalPlannerAttempt | null>;
 type TasteContext = {
   tasteContext?: string;
@@ -489,7 +490,7 @@ export function createAutoStageEngine(deps: AutoStageEngineDeps): AutoStageEngin
     return { judgment: 'stage', title: await deps.formGoalLabel(goalText), roadmap: deps.todosToRoadmap([{ text: goalText }]) };
   };
 
-  const resolveAutoStage = async (line: string): Promise<void> => {
+  const resolveAutoStage = async (line: string, intentVersionId?: string): Promise<void> => {
     if (!deps.autoStageOn) return;
     // Quota gate: skip when ALL detected providers are in rate-limit cooldown
     // (pressure at the 3 ceiling) — honest cost discipline. (We do not have a
@@ -521,7 +522,7 @@ export function createAutoStageEngine(deps: AutoStageEngineDeps): AutoStageEngin
     if (planner === null) return;
     let plan: GoalPlan | null = null;
     try {
-      plan = await planner(line, new AbortController().signal);
+      plan = await planner(line, new AbortController().signal, { ...(intentVersionId !== undefined ? { intentVersionId } : {}) });
     } catch {
       plan = null;
     }
