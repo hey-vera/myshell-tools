@@ -2405,7 +2405,16 @@ export async function runChatLoop(
           // which point fuseRung will be called INSIDE orchestrate with all signals.
           // When OFF the field is absent entirely. The next slice flips consumption.
           ...((): { autoBrainRungTuple?: FuseRungResult } => {
-            if (!autoBrainEnabled(process.env, mutableCtx.config)) return {};
+            if (
+              !experimentalEnabledByDefault(
+                process.env,
+                mutableCtx.config,
+                'MYSHELL_AUTO_BRAIN',
+                mutableCtx.config.experimentalAutoBrain,
+                autoBrainEnabled,
+              )
+            )
+              return {};
             const brainResult = fuseRung({
               ...(mutableCtx.config.mode !== undefined
                 ? { persistedMode: mutableCtx.config.mode }
