@@ -280,8 +280,9 @@ async function toggleDefaultShell(
   // Only adopt the new state if the hook write succeeded; otherwise keep the old.
   const setAsDefault = code === 0 ? enable : config.setAsDefault;
 
-  // Spread the full prior config so no key is dropped; set only setAsDefault.
-  const updated: AppConfig = { ...config, setAsDefault };
+  // Persist defaultShellOptOut so future loadConfig migrations can distinguish
+  // a deliberate toggle-off from an old inherited false.
+  const updated: AppConfig = { ...config, setAsDefault, defaultShellOptOut: !enable };
   await saveConfig(updated);
   return updated;
 }

@@ -35,6 +35,13 @@ export interface AppConfig {
   onboarded: boolean;
   setAsDefault: boolean;
   /**
+   * When true, the user has explicitly opted OUT of the default-shell feature
+   * (e.g. via Settings toggle). Distinguishes a real opt-out from an old
+   * inherited `setAsDefault: false` that pre-dates the default-on migration.
+   * Absent → no explicit opt-out recorded.
+   */
+  defaultShellOptOut?: boolean;
+  /**
    * Persistent rollback for verify, judgment, and trust only. The emergency
    * `MYSHELL_ROLLBACK=1` environment form also engages rollback.
    */
@@ -574,7 +581,7 @@ export interface AppConfig {
 
 const DEFAULTS: AppConfig = {
   onboarded: false,
-  setAsDefault: false,
+  setAsDefault: true,
   autoUpdate: true,
 };
 
@@ -611,7 +618,17 @@ export async function loadConfig(homeDir?: string): Promise<AppConfig> {
   try {
     const parsed = JSON.parse(raw) as Partial<AppConfig>;
     // Merge: defaults first, then on-disk values (new keys default safely)
-    return { ...DEFAULTS, ...parsed };
+    const merged = { ...DEFAULTS, ...parsed };
+
+    // One-time migration: old configs with setAsDefault:false but no explicit
+    // opt-out are ambiguous pre-default-on state → flip to default-on (true).
+    // An explicit defaultShellOptOut:true means a deliberate toggle-off after
+    // the migration, so leave setAsDefault false in that case.
+    if (!merged.defaultShellOptOut && merged.setAsDefault === false) {
+      merged.setAsDefault = true;
+    }
+
+    return merged;
   } catch {
     // Corrupt JSON — return defaults
     return { ...DEFAULTS };

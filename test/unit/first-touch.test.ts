@@ -19,7 +19,7 @@ import {
 } from '../../src/core/first-touch.ts';
 import type { AppConfig, FirstTouchKey } from '../../src/infra/config.ts';
 
-const BASE: AppConfig = { onboarded: true, setAsDefault: false };
+const BASE: AppConfig = { onboarded: true, setAsDefault: true };
 
 describe('shouldShowFirstTouch', () => {
   it('is true when the key is absent (nothing shown yet)', () => {

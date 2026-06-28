@@ -94,9 +94,13 @@ export function buildHookBlock(kind: ShellKind): string {
     return (
       `${HOOK_BEGIN}\n` +
       `# Launch myshell-tools on new interactive shells. Opt out: export MYSHELL_SKIP=1\n` +
+      `case "$-" in\n` +
+      `  *i*) ;;\n` +
+      `  *) return 0 2>/dev/null || exit 0 ;;\n` +
+      `esac\n` +
       `if [ -t 1 ] && [ -z "$MYSHELL_LOADED" ] && [ -z "$MYSHELL_SKIP" ]; then\n` +
       `  export MYSHELL_LOADED=1\n` +
-      `  command -v myshell-tools >/dev/null 2>&1 && myshell-tools\n` +
+      `  command -v myshell-tools >/dev/null 2>&1 && myshell-tools || true\n` +
       `fi\n` +
       `# Convenience aliases: cm / mst → myshell-tools (control menu)\n` +
       `if command -v myshell-tools >/dev/null 2>&1; then\n` +
@@ -107,18 +111,34 @@ export function buildHookBlock(kind: ShellKind): string {
     );
   }
 
-  // powershell
+  // powershell — ConstrainedLanguage-safe: no [Console]::OutputEncoding,
+  // no dot-sourcing, wrap launch+aliases in try/catch, prefer .cmd then .exe
+  // then bare name, use Set-Alias not function defs.
   return (
     `${HOOK_BEGIN}\n` +
     `# Launch myshell-tools on new interactive shells. Opt out: $env:MYSHELL_SKIP = '1'\n` +
-    `if ($null -eq $env:MYSHELL_LOADED -and $null -eq $env:MYSHELL_SKIP) {\n` +
-    `  $env:MYSHELL_LOADED = '1'\n` +
-    `  if (Get-Command myshell-tools -ErrorAction SilentlyContinue) { myshell-tools }\n` +
+    `try {\n` +
+    `  if ($null -eq $env:MYSHELL_LOADED -and $null -eq $env:MYSHELL_SKIP) {\n` +
+    `    $env:MYSHELL_LOADED = '1'\n` +
+    `    if (Get-Command myshell-tools.cmd -CommandType Application -ErrorAction SilentlyContinue) { myshell-tools.cmd }\n` +
+    `    elseif (Get-Command myshell-tools.exe -CommandType Application -ErrorAction SilentlyContinue) { myshell-tools.exe }\n` +
+    `    elseif (Get-Command myshell-tools -ErrorAction SilentlyContinue) { myshell-tools }\n` +
+    `  }\n` +
+    `} catch {\n` +
     `}\n` +
-    `# Convenience functions: cm / mst → myshell-tools (control menu)\n` +
-    `if (Get-Command myshell-tools -ErrorAction SilentlyContinue) {\n` +
-    `  function cm { myshell-tools @args }\n` +
-    `  function mst { myshell-tools @args }\n` +
+    `# Convenience aliases: cm / mst -> myshell-tools (control menu)\n` +
+    `try {\n` +
+    `  if (Get-Command myshell-tools.cmd -CommandType Application -ErrorAction SilentlyContinue) {\n` +
+    `    Set-Alias -Name cm -Value myshell-tools.cmd -Scope Global -ErrorAction SilentlyContinue\n` +
+    `    Set-Alias -Name mst -Value myshell-tools.cmd -Scope Global -ErrorAction SilentlyContinue\n` +
+    `  } elseif (Get-Command myshell-tools.exe -CommandType Application -ErrorAction SilentlyContinue) {\n` +
+    `    Set-Alias -Name cm -Value myshell-tools.exe -Scope Global -ErrorAction SilentlyContinue\n` +
+    `    Set-Alias -Name mst -Value myshell-tools.exe -Scope Global -ErrorAction SilentlyContinue\n` +
+    `  } elseif (Get-Command myshell-tools -ErrorAction SilentlyContinue) {\n` +
+    `    Set-Alias -Name cm -Value myshell-tools -Scope Global -ErrorAction SilentlyContinue\n` +
+    `    Set-Alias -Name mst -Value myshell-tools -Scope Global -ErrorAction SilentlyContinue\n` +
+    `  }\n` +
+    `} catch {\n` +
     `}\n` +
     `${HOOK_END}`
   );
@@ -160,7 +180,7 @@ export function upsertHook(existing: string, kind: ShellKind, enable: boolean): 
   const block = buildHookBlock(kind);
   const blockLines = splitLines(block + '\n');
   const existingLines = splitLines(existing);
-  const found = findManagedHookBlock(existingLines, blockLines);
+  const found = findManagedHookBlock(existingLines);
 
   if (!enable) {
     if (found === undefined) return existing;
@@ -168,6 +188,7 @@ export function upsertHook(existing: string, kind: ShellKind, enable: boolean): 
   }
 
   if (found !== undefined) {
+    // Replace any existing managed block (old/broken or current) with the new block.
     return [
       ...existingLines.slice(0, found.start),
       ...blockLines,
@@ -218,6 +239,25 @@ interface RcWriteTarget {
 
 const NEW_RC_MODE = 0o600;
 
+function removeManagedHookBlock(lines: readonly string[], block: ManagedHookBlock): string {
+  if (block.start > 0 && isBlankLine(lines[block.start - 1] ?? '')) {
+    return [...lines.slice(0, block.start - 1), ...lines.slice(block.end)].join('');
+  }
+
+  if (block.start > 0) {
+    const previous = lines[block.start - 1];
+    if (previous?.endsWith('\n') === true) {
+      return [
+        ...lines.slice(0, block.start - 1),
+        previous.slice(0, -1),
+        ...lines.slice(block.end),
+      ].join('');
+    }
+  }
+
+  return [...lines.slice(0, block.start), ...lines.slice(block.end)].join('');
+}
+
 function splitLines(content: string): string[] {
   const lines: string[] = [];
   let start = 0;
@@ -252,7 +292,7 @@ function isBlankLine(line: string): boolean {
   return line === '\n';
 }
 
-function findManagedHookBlock(lines: readonly string[], blockLines: readonly string[]): ManagedHookBlock | undefined {
+function findManagedHookBlock(lines: readonly string[]): ManagedHookBlock | undefined {
   let found: ManagedHookBlock | undefined;
 
   for (let index = 0; index < lines.length; index++) {
@@ -265,9 +305,21 @@ function findManagedHookBlock(lines: readonly string[], blockLines: readonly str
 
     if (!isHookBeginLine(line)) continue;
 
-    const end = index + blockLines.length;
-    const candidate = lines.slice(index, end);
-    if (candidate.length !== blockLines.length || !linesMatch(candidate, blockLines)) {
+    // Found a HOOK_BEGIN — find the matching HOOK_END regardless of content
+    // so old/broken managed blocks are replaced instead of erroring.
+    // Nested HOOK_BEGIN before HOOK_END is still treated as malformed.
+    let endIndex = -1;
+    for (let j = index + 1; j < lines.length; j++) {
+      if (isHookBeginLine(lines[j]!)) {
+        throw new MalformedHookError();
+      }
+      if (isHookEndLine(lines[j]!)) {
+        endIndex = j + 1; // inclusive end
+        break;
+      }
+    }
+
+    if (endIndex === -1) {
       throw new MalformedHookError();
     }
 
@@ -275,38 +327,11 @@ function findManagedHookBlock(lines: readonly string[], blockLines: readonly str
       throw new MalformedHookError();
     }
 
-    found = { start: index, end };
-    index = end - 1;
+    found = { start: index, end: endIndex };
+    index = endIndex - 1; // skip past this block
   }
 
   return found;
-}
-
-function linesMatch(a: readonly string[], b: readonly string[]): boolean {
-  if (a.length !== b.length) return false;
-  for (let index = 0; index < a.length; index++) {
-    if (a[index] !== b[index]) return false;
-  }
-  return true;
-}
-
-function removeManagedHookBlock(lines: readonly string[], block: ManagedHookBlock): string {
-  if (block.start > 0 && isBlankLine(lines[block.start - 1] ?? '')) {
-    return [...lines.slice(0, block.start - 1), ...lines.slice(block.end)].join('');
-  }
-
-  if (block.start > 0) {
-    const previous = lines[block.start - 1];
-    if (previous?.endsWith('\n') === true) {
-      return [
-        ...lines.slice(0, block.start - 1),
-        previous.slice(0, -1),
-        ...lines.slice(block.end),
-      ].join('');
-    }
-  }
-
-  return [...lines.slice(0, block.start), ...lines.slice(block.end)].join('');
 }
 
 async function resolveRcWriteTarget(rcPath: string): Promise<RcWriteTarget> {
@@ -352,6 +377,17 @@ async function resolveRcWriteTarget(rcPath: string): Promise<RcWriteTarget> {
 // ---------------------------------------------------------------------------
 
 /**
+ * On win32, returns both WindowsPowerShell and PowerShell 7 profile paths.
+ */
+function getWinProfilePaths(env: NodeJS.ProcessEnv): string[] {
+  const userProfile = env['USERPROFILE'] ?? 'C:\\Users\\Default';
+  return [
+    `${userProfile}\\Documents\\WindowsPowerShell\\Microsoft.PowerShell_profile.ps1`,
+    `${userProfile}\\Documents\\PowerShell\\Microsoft.PowerShell_profile.ps1`,
+  ];
+}
+
+/**
  * True when the myshell-tools shell hook is already present in the user's rc file.
  *
  * Never throws: a missing file, unreadable path, or any other I/O error simply
@@ -362,6 +398,17 @@ export async function isHookInstalled(
   platform: NodeJS.Platform,
 ): Promise<boolean> {
   try {
+    if (platform === 'win32') {
+      const paths = getWinProfilePaths(env);
+      for (const path of paths) {
+        try {
+          const content = await readFile(path, 'utf8');
+          if (content.includes(HOOK_BEGIN)) return true;
+        } catch { /* path missing — check next */ }
+      }
+      return false;
+    }
+
     const { path } = detectShellTarget(env, platform);
     const content = await readFile(path, 'utf8');
     return content.includes(HOOK_BEGIN);
@@ -400,6 +447,32 @@ export async function runInstall(
     return 1;
   }
 
+  // On win32, write/remove the hook in both WindowsPowerShell and PowerShell 7
+  // profile paths so the hook fires regardless of which PowerShell the user launches.
+  const isWin = process.platform === 'win32';
+  const targetPaths = isWin ? getWinProfilePaths(process.env) : [rcPath];
+
+  let anyOk = false;
+  for (const rcPathItem of targetPaths) {
+    const result = await upsertOneFile(rcPathItem, kind, enable, out, rcPathItem === rcPath);
+    if (result) anyOk = true;
+  }
+
+  if (anyOk) return 0;
+  return 1;
+}
+
+/**
+ * Upsert the hook into a single rc/profile file. Returns true on success.
+ * `isPrimary` controls whether the path is reported in the output.
+ */
+async function upsertOneFile(
+  rcPath: string,
+  kind: ShellKind,
+  enable: boolean,
+  out: OutputSink,
+  isPrimary: boolean,
+): Promise<boolean> {
   let target: RcWriteTarget;
   try {
     target = await resolveRcWriteTarget(rcPath);
@@ -409,12 +482,12 @@ export async function runInstall(
       out.write(`[error] Refusing to replace the symlink.\n`);
       out.write(`[info] Add this hook manually to the real rc file:\n`);
       out.write(buildHookBlock(kind) + '\n');
-      return 1;
+      return false;
     }
 
     const nodeErr = err as NodeJS.ErrnoException;
     out.write(`[error] Could not inspect ${rcPath}: ${nodeErr.message}\n`);
-    return 1;
+    return false;
   }
 
   // Read existing content (treat missing file as empty).
@@ -425,7 +498,7 @@ export async function runInstall(
     } catch (err) {
       const nodeErr = err as NodeJS.ErrnoException;
       out.write(`[error] Could not read ${target.writePath}: ${nodeErr.message}\n`);
-      return 1;
+      return false;
     }
   }
 
@@ -436,15 +509,17 @@ export async function runInstall(
     if (err instanceof MalformedHookError) {
       out.write(`[error] ${err.message}\n`);
       out.write(`[info] Markers to look for: ${HOOK_BEGIN} / ${HOOK_END}\n`);
-      return 1;
+      return false;
     }
     throw err;
   }
 
   // If uninstalling and the block wasn't present, report and return cleanly.
   if (!enable && updated === existing) {
-    out.write(`[info] No myshell-tools hook found in ${rcPath} — nothing to remove.\n`);
-    return 0;
+    if (isPrimary) {
+      out.write(`[info] No myshell-tools hook found in ${rcPath} — nothing to remove.\n`);
+    }
+    return true; // not an error — just nothing to do
   }
 
   // Write atomically — create parent dir if needed.
@@ -455,28 +530,32 @@ export async function runInstall(
   } catch (err) {
     const nodeErr = err as NodeJS.ErrnoException;
     out.write(`[error] Could not write ${target.writePath}: ${nodeErr.message}\n`);
-    return 1;
+    return false;
   }
 
   if (enable) {
-    out.write(`[info] Shell hook installed in: ${rcPath}\n`);
-    if (target.resolvedFromSymlink) {
-      out.write(`[info] Preserved symlink and wrote resolved target: ${target.writePath}\n`);
-    }
-    out.write(`[info] New interactive shells will launch myshell-tools automatically.\n`);
-    out.write(`[info] Shortcuts available in new shells: cm / mst (both run myshell-tools).\n`);
-    out.write(`[info] Opt out any time: export MYSHELL_SKIP=1 (bash/zsh) or $env:MYSHELL_SKIP='1' (PowerShell)\n`);
-    out.write(`[info] To reverse: myshell-tools uninstall\n`);
-    if (isReplit(process.env)) {
-      out.write(`[info] Replit: the hook targets the rc for *this* container. On restart the persisted "set as default" flag will cause myshell-tools to automatically re-install the hook into the fresh rc on next launch.\n`);
+    if (isPrimary) {
+      out.write(`[info] Shell hook installed in: ${rcPath}\n`);
+      if (target.resolvedFromSymlink) {
+        out.write(`[info] Preserved symlink and wrote resolved target: ${target.writePath}\n`);
+      }
+      out.write(`[info] New interactive shells will launch myshell-tools automatically.\n`);
+      out.write(`[info] Shortcuts available in new shells: cm / mst (both run myshell-tools).\n`);
+      out.write(`[info] Opt out any time: export MYSHELL_SKIP=1 (bash/zsh) or $env:MYSHELL_SKIP='1' (PowerShell)\n`);
+      out.write(`[info] To reverse: myshell-tools uninstall\n`);
+      if (isReplit(process.env)) {
+        out.write(`[info] Replit: the hook targets the rc for *this* container. On restart the persisted "set as default" flag will cause myshell-tools to automatically re-install the hook into the fresh rc on next launch.\n`);
+      }
     }
   } else {
-    out.write(`[info] Shell hook removed from: ${rcPath}\n`);
-    if (target.resolvedFromSymlink) {
-      out.write(`[info] Preserved symlink and wrote resolved target: ${target.writePath}\n`);
+    if (isPrimary) {
+      out.write(`[info] Shell hook removed from: ${rcPath}\n`);
+      if (target.resolvedFromSymlink) {
+        out.write(`[info] Preserved symlink and wrote resolved target: ${target.writePath}\n`);
+      }
+      out.write(`[info] myshell-tools will no longer auto-launch in new shells.\n`);
     }
-    out.write(`[info] myshell-tools will no longer auto-launch in new shells.\n`);
   }
 
-  return 0;
+  return true;
 }

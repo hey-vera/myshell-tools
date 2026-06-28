@@ -143,6 +143,16 @@ describe('buildHookBlock — pure, no I/O', () => {
     assert.ok(block.includes('[ -t 1 ]'), 'bash block must contain TTY guard "[ -t 1 ]"');
   });
 
+  it('bash block contains interactive-shell guard (*i*)', () => {
+    const block = buildHookBlock('bash');
+    assert.ok(block.includes('*i*)'), 'bash block must contain interactive-shell check "*i*)"');
+  });
+
+  it('bash block contains fail-soft launch (|| true)', () => {
+    const block = buildHookBlock('bash');
+    assert.ok(block.includes('|| true'), 'bash block must use fail-soft launch "|| true"');
+  });
+
   it('bash block references MYSHELL_SKIP opt-out variable', () => {
     const block = buildHookBlock('bash');
     assert.ok(block.includes('MYSHELL_SKIP'), 'bash block must reference MYSHELL_SKIP');
@@ -241,11 +251,11 @@ describe('buildHookBlock — pure, no I/O', () => {
     );
   });
 
-  it('powershell block contains Get-Command guard', () => {
+  it('powershell block contains Get-Command guard with myshell-tools.cmd preference', () => {
     const block = buildHookBlock('powershell');
     assert.ok(
-      block.includes('Get-Command myshell-tools'),
-      'powershell block must use Get-Command to check for myshell-tools',
+      block.includes('Get-Command myshell-tools.cmd'),
+      'powershell block must prefer myshell-tools.cmd via Get-Command',
     );
   });
 
@@ -257,30 +267,28 @@ describe('buildHookBlock — pure, no I/O', () => {
     );
   });
 
-  it('powershell block contains Get-Command guard for alias functions', () => {
+  it('powershell block wraps launch and aliases in try/catch', () => {
     const block = buildHookBlock('powershell');
-    // There should be a second Get-Command check guarding the cm/mst functions
-    const matches = block.match(/Get-Command myshell-tools/g) ?? [];
+    assert.ok(block.includes('try {'), 'powershell block must wrap launch in try');
+    assert.ok(block.includes('} catch {'), 'powershell block must wrap launch in catch');
+    // Two try/catch blocks: one for launch, one for aliases
+    const tryCount = (block.match(/\btry\s*\{/g) ?? []).length;
+    assert.ok(tryCount >= 2, 'powershell block must have at least two try blocks (launch + aliases)');
+  });
+
+  it('powershell block does NOT contain [Console]::OutputEncoding', () => {
+    const block = buildHookBlock('powershell');
     assert.ok(
-      matches.length >= 2,
-      'powershell block must use Get-Command at least twice (launch guard + alias guard)',
+      !block.includes('[Console]::OutputEncoding'),
+      'powershell block must NOT set [Console]::OutputEncoding',
     );
   });
 
-  it('powershell block defines function cm { myshell-tools @args }', () => {
+  it('powershell block uses Set-Alias not function definitions', () => {
     const block = buildHookBlock('powershell');
-    assert.ok(
-      block.includes('function cm { myshell-tools @args }'),
-      'powershell block must define function cm',
-    );
-  });
-
-  it('powershell block defines function mst { myshell-tools @args }', () => {
-    const block = buildHookBlock('powershell');
-    assert.ok(
-      block.includes('function mst { myshell-tools @args }'),
-      'powershell block must define function mst',
-    );
+    assert.ok(block.includes('Set-Alias'), 'powershell block must use Set-Alias');
+    assert.ok(!block.includes('function cm'), 'powershell block must NOT define function cm');
+    assert.ok(!block.includes('function mst'), 'powershell block must NOT define function mst');
   });
 
   it('does not contain digit-% literals (Honesty Contract)', () => {
@@ -334,11 +342,11 @@ describe('upsertHook — pure, no I/O', () => {
     assert.ok(!removed.includes("alias mst="), 'alias mst must be removed on uninstall');
   });
 
-  it('removes powershell alias functions when uninstalling', () => {
+  it('removes powershell Set-Alias aliases when uninstalling', () => {
     const withHook = upsertHook('', 'powershell', true);
     const removed = upsertHook(withHook, 'powershell', false);
-    assert.ok(!removed.includes('function cm'), 'function cm must be removed on uninstall');
-    assert.ok(!removed.includes('function mst'), 'function mst must be removed on uninstall');
+    assert.ok(!removed.includes('Set-Alias'), 'Set-Alias must be removed on uninstall');
+    assert.ok(!removed.includes('myshell-tools.cmd'), 'myshell-tools.cmd must be removed on uninstall');
   });
 
   it('aborts on malformed markers instead of removing across user content', () => {
@@ -388,6 +396,25 @@ describe('upsertHook — pure, no I/O', () => {
       assert.doesNotThrow(() => upsertHook('existing\n', kind, true));
       assert.doesNotThrow(() => upsertHook('existing\n', kind, false));
     }
+  });
+
+  it('replaces an old bounded block with the new block (idempotent upgrade)', () => {
+    // Simulate an old hook block with different content between the markers
+    const oldBlock = `${HOOK_BEGIN}\n# old launch line\necho old\n${HOOK_END}`;
+    const existing = `# before\n${oldBlock}\n# after\n`;
+    const result = upsertHook(existing, 'bash', true);
+    // Must contain exactly one HOOK_BEGIN and HOOK_END
+    const beginCount = (result.match(new RegExp(escapeForCount(HOOK_BEGIN), 'g')) ?? []).length;
+    const endCount = (result.match(new RegExp(escapeForCount(HOOK_END), 'g')) ?? []).length;
+    assert.equal(beginCount, 1, 'HOOK_BEGIN must appear exactly once after upgrade');
+    assert.equal(endCount, 1, 'HOOK_END must appear exactly once after upgrade');
+    // Old content must be gone
+    assert.ok(!result.includes('echo old'), 'old block content must be replaced');
+    // Surrounding content preserved
+    assert.ok(result.includes('# before'), 'content before block preserved');
+    assert.ok(result.includes('# after'), 'content after block preserved');
+    // New block content present
+    assert.ok(result.includes('myshell-tools'), 'new block must reference myshell-tools');
   });
 });
 

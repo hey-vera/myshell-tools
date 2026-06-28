@@ -48,7 +48,7 @@ describe('loadConfig — defaults', () => {
 
   it('returns default config when file does not exist', async () => {
     const config = await loadConfig(homeDir);
-    assert.deepEqual(config, { onboarded: false, setAsDefault: false, autoUpdate: true });
+    assert.deepEqual(config, { onboarded: false, setAsDefault: true, autoUpdate: true });
   });
 
   it('onboarded defaults to false', async () => {
@@ -56,9 +56,9 @@ describe('loadConfig — defaults', () => {
     assert.equal(config.onboarded, false);
   });
 
-  it('setAsDefault defaults to false', async () => {
+  it('setAsDefault defaults to true', async () => {
     const config = await loadConfig(homeDir);
-    assert.equal(config.setAsDefault, false);
+    assert.equal(config.setAsDefault, true);
   });
 
   it('autoUpdate defaults to true', async () => {
@@ -87,7 +87,8 @@ describe('saveConfig + loadConfig — round-trip', () => {
     await saveConfig(cfg, homeDir);
     const loaded = await loadConfig(homeDir);
     assert.equal(loaded.onboarded, true);
-    assert.equal(loaded.setAsDefault, false);
+    // Migration flips old false → true unless defaultShellOptOut is set
+    assert.equal(loaded.setAsDefault, true);
   });
 
   it('saves and reloads setAsDefault: true', async () => {
@@ -226,7 +227,7 @@ describe('loadConfig — resilience', () => {
       await writeFile(join(configDir, 'config.json'), 'CORRUPT JSON!!!', 'utf8');
 
       const config = await loadConfig(home2);
-      assert.deepEqual(config, { onboarded: false, setAsDefault: false, autoUpdate: true });
+      assert.deepEqual(config, { onboarded: false, setAsDefault: true, autoUpdate: true });
     } finally {
       await rm(home2, { recursive: true, force: true });
     }
@@ -243,7 +244,7 @@ describe('loadConfig — resilience', () => {
       const config = await loadConfig(home2);
       // onboarded from disk, setAsDefault + autoUpdate from defaults
       assert.equal(config.onboarded, true);
-      assert.equal(config.setAsDefault, false);
+      assert.equal(config.setAsDefault, true);
       assert.equal(config.autoUpdate, true);
     } finally {
       await rm(home2, { recursive: true, force: true });
@@ -255,9 +256,12 @@ describe('loadConfig — resilience', () => {
     try {
       const configDir = join(home2, '.myshell-tools');
       await mkdir(configDir, { recursive: true });
-      await writeFile(join(configDir, 'config.json'), JSON.stringify({ onboarded: true, setAsDefault: false, autoUpdate: false }), 'utf8');
+      const file = JSON.stringify({ onboarded: true, setAsDefault: false, autoUpdate: false });
+      await writeFile(join(configDir, 'config.json'), file, 'utf8');
 
       const config = await loadConfig(home2);
+      // setAsDefault:false without defaultShellOptOut → migration flips to true
+      assert.equal(config.setAsDefault, true, 'migration must flip old false to true');
       assert.equal(config.autoUpdate, false, 'explicit autoUpdate:false must not be overridden by defaults');
     } finally {
       await rm(home2, { recursive: true, force: true });
@@ -269,12 +273,74 @@ describe('loadConfig — resilience', () => {
     try {
       const configDir = join(home2, '.myshell-tools');
       await mkdir(configDir, { recursive: true });
-      await writeFile(join(configDir, 'config.json'), JSON.stringify({ onboarded: true, setAsDefault: false, autoUpdate: true }), 'utf8');
+      await writeFile(join(configDir, 'config.json'), JSON.stringify({ onboarded: true, setAsDefault: false, defaultShellOptOut: true, autoUpdate: true }), 'utf8');
 
       const config = await loadConfig(home2);
+      // defaultShellOptOut:true → migration leaves setAsDefault false
+      assert.equal(config.setAsDefault, false, 'explicit defaultShellOptOut must preserve false');
       assert.equal(config.autoUpdate, true, 'explicit autoUpdate:true must be preserved');
     } finally {
       await rm(home2, { recursive: true, force: true });
+    }
+  });
+
+  // -------------------------------------------------------------------------
+  // setAsDefault migration (default-on)
+  // -------------------------------------------------------------------------
+
+  it('migration: old setAsDefault:false without defaultShellOptOut → flipped to true', async () => {
+    const home = await mkdtemp(join(tmpdir(), `config-migrate-${randomUUID()}-`));
+    try {
+      const dir = join(home, '.myshell-tools');
+      await mkdir(dir, { recursive: true });
+      await writeFile(join(dir, 'config.json'), JSON.stringify({ onboarded: true, setAsDefault: false }), 'utf8');
+
+      const config = await loadConfig(home);
+      assert.equal(config.setAsDefault, true, 'old false without opt-out must be migrated to true');
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
+  it('migration: old setAsDefault:false with defaultShellOptOut:false still migrated', async () => {
+    const home = await mkdtemp(join(tmpdir(), `config-migrate2-${randomUUID()}-`));
+    try {
+      const dir = join(home, '.myshell-tools');
+      await mkdir(dir, { recursive: true });
+      await writeFile(join(dir, 'config.json'), JSON.stringify({ onboarded: true, setAsDefault: false, defaultShellOptOut: false }), 'utf8');
+
+      const config = await loadConfig(home);
+      assert.equal(config.setAsDefault, true, 'false opt-out + false setAsDefault still means no real opt-out');
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
+  it('migration: setAsDefault:true is never touched regardless of defaultShellOptOut', async () => {
+    const home = await mkdtemp(join(tmpdir(), `config-migrate3-${randomUUID()}-`));
+    try {
+      const dir = join(home, '.myshell-tools');
+      await mkdir(dir, { recursive: true });
+      await writeFile(join(dir, 'config.json'), JSON.stringify({ onboarded: true, setAsDefault: true, defaultShellOptOut: true }), 'utf8');
+
+      const config = await loadConfig(home);
+      assert.equal(config.setAsDefault, true, 'already-true must stay true');
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
+  it('migration: absent setAsDefault uses default (true)', async () => {
+    const home = await mkdtemp(join(tmpdir(), `config-migrate4-${randomUUID()}-`));
+    try {
+      const dir = join(home, '.myshell-tools');
+      await mkdir(dir, { recursive: true });
+      await writeFile(join(dir, 'config.json'), JSON.stringify({ onboarded: true }), 'utf8');
+
+      const config = await loadConfig(home);
+      assert.equal(config.setAsDefault, true, 'absent field must default to true');
+    } finally {
+      await rm(home, { recursive: true, force: true });
     }
   });
 });

@@ -167,11 +167,13 @@ export async function runWelcome(
   );
   const modeKey = await readMenuKey(out, readLine, undefined, false, inkReadKey);
 
-  // EOF during setup — save bare onboarded config and return
+  // EOF during setup — save bare onboarded config and return.
+  // Use the mutable config's setAsDefault (now defaults to true) so the
+  // default-on behaviour applies even when the user hits EOF before choosing.
   if (modeKey === null) {
     const saved: AppConfig = {
       onboarded: true,
-      setAsDefault: false,
+      setAsDefault: mutableConfig.setAsDefault,
       ...(mutableConfig.mode !== undefined ? { mode: mutableConfig.mode } : {}),
       ...(mutableConfig.autoGoal === true ? { autoGoal: true } : {}),
     };
@@ -199,16 +201,21 @@ export async function runWelcome(
   spinner.start('Checking your shell setup…');
   const alreadyDefault = await checkHook().catch(() => false);
   spinner.stop();
-  let setAsDefault: boolean;
+  let setAsDefault = alreadyDefault;
   if (alreadyDefault) {
     out.write(green('✓ Already set as your default shell tool.\n', out.color));
-    setAsDefault = true;
   } else {
-    // Opt-IN (default NO): making myshell your default shell hook edits your shell
-    // startup and can collide with another launcher you already use, so we never
-    // do it on a reflexive Enter — you have to choose it explicitly.
-    out.write(`Set myshell-tools as your default shell tool? (optional) ${yesNoHint('no', out.color)} `);
-    setAsDefault = await confirm(false);
+    // Default YES: Enter installs the hook. Only the user choosing n skips it.
+    out.write(`Set myshell-tools as your default shell tool? ${yesNoHint('yes', out.color)} `);
+    const wantsDefault = await confirm(true);
+
+    if (wantsDefault) {
+      // Only persist true when the installer actually succeeds — honest persistence.
+      const code = await runInstall(out);
+      setAsDefault = code === 0;
+    }
+    // else: wantsDefault is false → setAsDefault stays alreadyDefault (false).
+    // The caller persists defaultShellOptOut:true so the migration keeps it off.
   }
 
   // Default is YES: check for updates at launch and OFFER to install (we ask
@@ -232,19 +239,13 @@ export async function runWelcome(
   const saved: AppConfig = {
     onboarded: true,
     setAsDefault,
+    ...(alreadyDefault ? {} : { defaultShellOptOut: !setAsDefault } as Partial<AppConfig>),
     ...(updated.mode !== undefined ? { mode: updated.mode } : {}),
     ...(!autoUpdate ? { autoUpdate: false } : {}),
     ...(updated.autoGoal === true ? { autoGoal: true } : {}),
   };
 
   await saveConfig(saved);
-
-  // When the user opts in, actually write the shell startup hook (real install,
-  // not just a hint). runInstall reports what it wrote and how to reverse.
-  // Skip re-running the installer when the hook is already present.
-  if (setAsDefault && !alreadyDefault) {
-    await runInstall(out);
-  }
 
   return saved;
 }
