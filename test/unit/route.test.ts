@@ -29,7 +29,7 @@ const CLAUDE_ONLY: ProviderId[] = ['claude'];
 const CODEX_ONLY: ProviderId[] = ['codex'];
 const GROK_ONLY: ProviderId[] = ['grok'];
 const BOTH: ProviderId[] = ['claude', 'codex'];
-const WORKER_POOL: ProviderId[] = ['opencode', 'claude', 'codex'];
+
 const NEITHER: ProviderId[] = [];
 
 // ---------------------------------------------------------------------------
@@ -98,13 +98,8 @@ describe('route — worker tier', () => {
     assert.equal(decision.model, 'gpt-5.4-nano');
   });
 
-  it('both available → opencode first for worker tier', () => {
-    const decision = route('worker', WORKER_POOL, DEFAULT_POLICY);
-    assert.equal(decision.provider, 'opencode');
-  });
-
-  it('worker auth fallback: opencode unauthenticated → claude', () => {
-    const decision = route('worker', WORKER_POOL, DEFAULT_POLICY, undefined, ['claude']);
+  it('both available → claude first (per policy order)', () => {
+    const decision = route('worker', BOTH, DEFAULT_POLICY);
     assert.equal(decision.provider, 'claude');
   });
 
