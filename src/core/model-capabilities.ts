@@ -24,6 +24,7 @@
 
 import type { ProviderId } from '../providers/port.js';
 import type { Tier } from './types.js';
+import type { QuotaPoolId, RoutingProfile } from './route-types.js';
 
 // ---------------------------------------------------------------------------
 // Enums — every value is a known, closed set (the guard "every enum is known").
@@ -112,6 +113,8 @@ export interface ModelCapability {
   readonly source: readonly CapabilitySource[];
   /** ISO timestamp of the dynamic data that set this; set ONLY for dynamic facts. */
   readonly lastRefreshedAt?: string;
+  /** Vendor-neutral routing profile (§2). Curated for Claude/Codex/Grok; derived live for OpenCode. */
+  readonly routingProfile?: RoutingProfile;
 }
 
 /** Provider-keyed registry. Keyed by ProviderId so new providers drop in cleanly. */
@@ -200,6 +203,19 @@ export const DECLARATIVE_MODEL_CAPABILITIES: CapabilityRegistry = {
       supportsProviderSubagents: true,
       providerFeatureSource: 'claude-code-docs',
       source: ['declarative'],
+      routingProfile: {
+        tierSuitability: { worker: 50, ic: 70, manager: 90 },
+        tierAdmission: { worker: true, ic: true, manager: true },
+        speedClass: 'deep',
+        quotaClass: 'subscription',
+        searchMode: 'native',
+        poolHint: 'claude',
+        validation: {
+          source: 'curated-table',
+          checkedAt: '2026-01-15',
+          overrideReason: 'curated manager admission — Opus is a tested manager-tier model',
+        },
+      },
     },
     {
       provider: 'claude',
@@ -212,6 +228,19 @@ export const DECLARATIVE_MODEL_CAPABILITIES: CapabilityRegistry = {
       supportsProviderSubagents: true,
       providerFeatureSource: 'claude-code-docs',
       source: ['declarative'],
+      routingProfile: {
+        tierSuitability: { worker: 60, ic: 85, manager: 50 },
+        tierAdmission: { worker: true, ic: true, manager: true },
+        speedClass: 'balanced',
+        quotaClass: 'subscription',
+        searchMode: 'native',
+        poolHint: 'claude',
+        validation: {
+          source: 'curated-table',
+          checkedAt: '2026-01-15',
+          overrideReason: 'curated admission — Sonnet is a tested balanced model with full-tier capability',
+        },
+      },
     },
     {
       provider: 'claude',
@@ -224,6 +253,15 @@ export const DECLARATIVE_MODEL_CAPABILITIES: CapabilityRegistry = {
       supportsProviderSubagents: true,
       providerFeatureSource: 'claude-code-docs',
       source: ['declarative'],
+      routingProfile: {
+        tierSuitability: { worker: 85, ic: 30, manager: 0 },
+        tierAdmission: { worker: true, ic: false, manager: false },
+        speedClass: 'fast',
+        quotaClass: 'subscription',
+        searchMode: 'native',
+        poolHint: 'claude',
+        validation: { source: 'curated-table', checkedAt: '2026-01-15' },
+      },
     },
   ],
   codex: [
@@ -239,6 +277,19 @@ export const DECLARATIVE_MODEL_CAPABILITIES: CapabilityRegistry = {
       // adapter gates the override on this flag.
       supportsSearchTool: true,
       source: ['declarative'],
+      routingProfile: {
+        tierSuitability: { worker: 50, ic: 75, manager: 90 },
+        tierAdmission: { worker: true, ic: true, manager: true },
+        speedClass: 'deep',
+        quotaClass: 'metered',
+        searchMode: 'native',
+        poolHint: 'codex',
+        validation: {
+          source: 'curated-table',
+          checkedAt: '2026-01-15',
+          overrideReason: 'curated manager admission — gpt-5.5 is a tested manager-tier model',
+        },
+      },
     },
     {
       provider: 'codex',
@@ -249,6 +300,19 @@ export const DECLARATIVE_MODEL_CAPABILITIES: CapabilityRegistry = {
       supportsNativeSession: true,
       supportsSearchTool: true,
       source: ['declarative'],
+      routingProfile: {
+        tierSuitability: { worker: 60, ic: 85, manager: 40 },
+        tierAdmission: { worker: true, ic: true, manager: false },
+        speedClass: 'balanced',
+        quotaClass: 'metered',
+        searchMode: 'native',
+        poolHint: 'codex',
+        validation: {
+          source: 'curated-table',
+          checkedAt: '2026-01-15',
+          overrideReason: 'curated IC admission — gpt-5.4 is a tested ic-tier model (reasoning efforts resolved via codex cache at runtime)',
+        },
+      },
     },
     {
       provider: 'codex',
@@ -259,6 +323,15 @@ export const DECLARATIVE_MODEL_CAPABILITIES: CapabilityRegistry = {
       supportsNativeSession: true,
       supportsSearchTool: true,
       source: ['declarative'],
+      routingProfile: {
+        tierSuitability: { worker: 85, ic: 25, manager: 0 },
+        tierAdmission: { worker: true, ic: false, manager: false },
+        speedClass: 'fast',
+        quotaClass: 'metered',
+        searchMode: 'native',
+        poolHint: 'codex',
+        validation: { source: 'curated-table', checkedAt: '2026-01-15' },
+      },
     },
   ],
   grok: [
@@ -272,6 +345,19 @@ export const DECLARATIVE_MODEL_CAPABILITIES: CapabilityRegistry = {
       supportsNativeSession: true,
       supportsSearchTool: true,
       source: ['declarative'],
+      routingProfile: {
+        tierSuitability: { worker: 55, ic: 80, manager: 85 },
+        tierAdmission: { worker: true, ic: true, manager: true },
+        speedClass: 'balanced',
+        quotaClass: 'subscription',
+        searchMode: 'native',
+        poolHint: 'grok',
+        validation: {
+          source: 'curated-table',
+          checkedAt: '2026-01-15',
+          overrideReason: 'curated manager admission — grok-build is a tested manager-tier model',
+        },
+      },
     },
     {
       provider: 'grok',
@@ -282,6 +368,15 @@ export const DECLARATIVE_MODEL_CAPABILITIES: CapabilityRegistry = {
       supportsNativeSession: true,
       supportsSearchTool: true,
       source: ['declarative'],
+      routingProfile: {
+        tierSuitability: { worker: 85, ic: 30, manager: 0 },
+        tierAdmission: { worker: true, ic: false, manager: false },
+        speedClass: 'fast',
+        quotaClass: 'subscription',
+        searchMode: 'native',
+        poolHint: 'grok',
+        validation: { source: 'curated-table', checkedAt: '2026-01-15' },
+      },
     },
   ],
   opencode: [],

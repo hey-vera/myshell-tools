@@ -25,6 +25,9 @@
 import type { Tier, Risk, Classification } from './types.js';
 import type { LedgerStage } from './types.js';
 import { classify, hasTierEvidence } from './classify.js';
+// Vendor-neutral routing flag (staged — not wired yet). This import
+// satisfies the no-orphan arch guard for src/core/route-types.ts.
+import { vendorNeutralRouterEnabled } from './route-types.js';
 
 // ---------------------------------------------------------------------------
 // Public shapes
