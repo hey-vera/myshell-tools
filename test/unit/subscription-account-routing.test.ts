@@ -13,6 +13,9 @@ import {
   selectOpencodeAccount,
   selectSubscriptionAccount,
 } from '../../src/core/opencode-account-routing.ts';
+import {
+  priorityWeight,
+} from '../../src/infra/subscriptions.js';
 import type {
   OpencodeSubscriptionAccount,
   ClaudeSubscriptionAccount,
@@ -242,6 +245,151 @@ describe('selectSubscriptionAccount', () => {
       sessionTokensByAccount: {},
     });
     assert.equal(result, null);
+  });
+
+  // --- customWeight resolution (Slice 4) ---
+
+  it('priorityWeight uses customWeight when set', () => {
+    assert.equal(priorityWeight('low', 50), 50);
+    assert.equal(priorityWeight('medium', 5), 5);
+    assert.equal(priorityWeight('high', 300), 300);
+  });
+
+  it('priorityWeight falls back to label when no customWeight', () => {
+    assert.equal(priorityWeight('low'), 25);
+    assert.equal(priorityWeight('medium'), 100);
+    assert.equal(priorityWeight('high'), 200);
+  });
+
+  it('customWeight 0 excludes the account (priorityWeight=0)', () => {
+    const c1 = makeClaude({ id: 'c1', customWeight: 0, priorityWeight: 0, enabled: false });
+    const result = selectSubscriptionAccount({
+      accounts: [c1],
+      provider: 'claude',
+      nowMs,
+      cooldownUntil: new Map(),
+      sessionTokensByAccount: {},
+    });
+    assert.equal(result, null);
+  });
+
+  // --- sticky strategy (Slice 4) ---
+
+  it('sticky picks the highest priorityWeight account', () => {
+    const high = makeClaude({ id: 'high', priority: 'high', priorityWeight: 200 });
+    const low = makeClaude({ id: 'low', priority: 'low', priorityWeight: 25 });
+    const med = makeClaude({ id: 'med', priority: 'medium', priorityWeight: 100 });
+    // All 0 tokens → same load. Sticky picks highest weight.
+    const result = selectSubscriptionAccount({
+      accounts: [low, high, med],
+      provider: 'claude',
+      nowMs,
+      cooldownUntil: new Map(),
+      sessionTokensByAccount: {},
+      strategy: 'sticky',
+    });
+    assert.ok(result !== null);
+    assert.equal(result!.id, 'high');
+  });
+
+  it('sticky falls to lower weight when highest is cooling', () => {
+    const cd = new Map<string, number>([['high', nowMs + 60_000]]);
+    const high = makeClaude({ id: 'high', priority: 'high', priorityWeight: 200 });
+    const med = makeClaude({ id: 'med', priority: 'medium', priorityWeight: 100 });
+    const result = selectSubscriptionAccount({
+      accounts: [high, med],
+      provider: 'claude',
+      nowMs,
+      cooldownUntil: cd,
+      sessionTokensByAccount: {},
+      strategy: 'sticky',
+    });
+    assert.ok(result !== null);
+    assert.equal(result!.id, 'med');
+  });
+
+  it('sticky tiebreaker: same weight uses min normalized load', () => {
+    const a = makeClaude({ id: 'a', priority: 'high', priorityWeight: 200 });
+    const b = makeClaude({ id: 'b', priority: 'high', priorityWeight: 200 });
+    // a: 10/200=0.05, b: 100/200=0.5 → a wins
+    const result = selectSubscriptionAccount({
+      accounts: [a, b],
+      provider: 'claude',
+      nowMs,
+      cooldownUntil: new Map(),
+      sessionTokensByAccount: { 'a': 10, 'b': 100 },
+      strategy: 'sticky',
+    });
+    assert.ok(result !== null);
+    assert.equal(result!.id, 'a');
+  });
+
+  it('sticky with customWeight: higher custom weight wins', () => {
+    const custom = makeClaude({ id: 'custom', priority: 'low', priorityWeight: 500, customWeight: 500 });
+    const normal = makeClaude({ id: 'normal', priority: 'high', priorityWeight: 200 });
+    const result = selectSubscriptionAccount({
+      accounts: [custom, normal],
+      provider: 'claude',
+      nowMs,
+      cooldownUntil: new Map(),
+      sessionTokensByAccount: {},
+      strategy: 'sticky',
+    });
+    assert.ok(result !== null);
+    assert.equal(result!.id, 'custom');
+  });
+
+  it('spread unchanged — default strategy picks min normalized load', () => {
+    const high = makeClaude({ id: 'high', priority: 'high', priorityWeight: 200 });
+    const low = makeClaude({ id: 'low', priority: 'low', priorityWeight: 25 });
+    // Both 0 tokens → load=0 → tie → low (older createdAt? same) → lexical: high < low
+    // Actually both have same createdAt → lexical: high < low. But spread is min load.
+    const result = selectSubscriptionAccount({
+      accounts: [high, low],
+      provider: 'claude',
+      nowMs,
+      cooldownUntil: new Map(),
+      sessionTokensByAccount: {},
+    });
+    // Without strategy, defaults to 'spread'
+    // Both 0 load: tie → createdAt tie → id lexical: high < low
+    assert.ok(result !== null);
+    assert.equal(result!.id, 'high');
+  });
+
+  it('spread explicit does load-balancing even with high weight', () => {
+    const high = makeClaude({ id: 'high', priority: 'high', priorityWeight: 200 });
+    const low = makeClaude({ id: 'low', priority: 'low', priorityWeight: 25 });
+    // high: 199/200=0.995, low: 24/25=0.96 → low wins
+    const result = selectSubscriptionAccount({
+      accounts: [high, low],
+      provider: 'claude',
+      strategy: 'spread',
+      nowMs,
+      cooldownUntil: new Map(),
+      sessionTokensByAccount: { 'high': 199, 'low': 24 },
+    });
+    assert.ok(result !== null);
+    assert.equal(result!.id, 'low');
+  });
+
+  it('sticky never-strands: returns highest-weight of all-cooling', () => {
+    const cd = new Map<string, number>([
+      ['high', nowMs + 120_000],
+      ['low', nowMs + 60_000],
+    ]);
+    const high = makeClaude({ id: 'high', priority: 'high', priorityWeight: 200 });
+    const low = makeClaude({ id: 'low', priority: 'low', priorityWeight: 25 });
+    const result = selectSubscriptionAccount({
+      accounts: [high, low],
+      provider: 'claude',
+      nowMs,
+      cooldownUntil: cd,
+      sessionTokensByAccount: {},
+      strategy: 'sticky',
+    });
+    assert.ok(result !== null);
+    assert.equal(result!.id, 'high');
   });
 });
 

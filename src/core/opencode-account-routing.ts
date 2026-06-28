@@ -44,9 +44,14 @@ export function opencodePoolForModel(model: string): OpencodePool | null {
  *  3. Exclude cooling accounts (cooldownUntil > nowMs).
  *  4. If all eligible are cooling → never-strand: ignore cooldown for this
  *     selection.
- *  5. Pick the minimum normalizedLoad =
- *       (sessionTokensByAccount[id] ?? 0) / priorityWeight.
- *  6. Stable tiebreaker: createdAt, then id lexical.
+ *
+ * Strategy:
+ *  - `spread` (default): pick the minimum normalizedLoad =
+ *      (sessionTokensByAccount[id] ?? 0) / priorityWeight.
+ *    Stable tiebreaker: createdAt, then id lexical.
+ *  - `sticky`: pick the HIGHEST effective priorityWeight eligible account.
+ *    Tie → min normalizedLoad; only fall to a lower-weight sibling when
+ *    higher-weight ones are all excluded (disabled/expired) or cooling.
  */
 export function selectSubscriptionAccount<T extends SubscriptionAccount>(input: {
   accounts: readonly T[];
@@ -55,6 +60,7 @@ export function selectSubscriptionAccount<T extends SubscriptionAccount>(input: 
   nowMs: number;
   cooldownUntil: ReadonlyMap<string, number>;
   sessionTokensByAccount: Readonly<Record<string, number>>;
+  strategy?: 'sticky' | 'spread';
 }): T | null {
   const {
     accounts,
@@ -63,6 +69,7 @@ export function selectSubscriptionAccount<T extends SubscriptionAccount>(input: 
     nowMs,
     cooldownUntil,
     sessionTokensByAccount,
+    strategy = 'spread',
   } = input;
 
   const eligible: Array<T & { load: number }> = [];
@@ -88,12 +95,42 @@ export function selectSubscriptionAccount<T extends SubscriptionAccount>(input: 
 
   if (eligible.length === 0) return null;
 
-  const notCooling = eligible.filter((a) => {
+  const isCooling = (a: T & { load: number }): boolean => {
     const until = cooldownUntil.get(a.id);
-    return until === undefined || until <= nowMs;
-  });
+    return until !== undefined && until > nowMs;
+  };
 
+  const notCooling = eligible.filter((a) => !isCooling(a));
   const candidates = notCooling.length > 0 ? notCooling : eligible;
+
+  if (strategy === 'sticky') {
+    // Group by priorityWeight (highest first), pick within the top group
+    // that has at least one non-cooling candidate, ignoring cooling for
+    // lower groups. Within a group, use min normalizedLoad + tiebreaker.
+    const byWeight = new Map<number, Array<T & { load: number }>>();
+    for (const c of candidates) {
+      const list = byWeight.get(c.priorityWeight) ?? [];
+      list.push(c);
+      byWeight.set(c.priorityWeight, list);
+    }
+    const sortedWeights = [...byWeight.keys()].sort((a, b) => b - a);
+    for (const w of sortedWeights) {
+      const group = byWeight.get(w);
+      if (group === undefined) continue;
+      const groupNotCooling = group.filter((a) => !isCooling(a));
+      const pickFrom = groupNotCooling.length > 0 ? groupNotCooling : group;
+      pickFrom.sort((a, b) => {
+        if (a.load !== b.load) return a.load - b.load;
+        if (a.createdAt < b.createdAt) return -1;
+        if (a.createdAt > b.createdAt) return 1;
+        if (a.id < b.id) return -1;
+        if (a.id > b.id) return 1;
+        return 0;
+      });
+      return pickFrom[0] ?? null;
+    }
+    return null;
+  }
 
   candidates.sort((a, b) => {
     if (a.load !== b.load) return a.load - b.load;

@@ -22,6 +22,7 @@ export interface SubscriptionAccountBase {
   readonly homeDir: string;
   readonly priority: AccountPriority;
   readonly priorityWeight: number;
+  readonly customWeight?: number;
   readonly expiresAt?: string;
   readonly enabled: boolean;
   readonly createdAt: string;
@@ -39,6 +40,7 @@ export interface OpencodeSubscriptionAccount {
   readonly homeDir: string;
   readonly priority: AccountPriority;
   readonly priorityWeight: number;
+  readonly customWeight?: number;
   readonly expiresAt?: string;
   readonly enabled: boolean;
   readonly createdAt: string;
@@ -77,7 +79,11 @@ export interface SubscriptionsFileV1 {
 // Priority mapping
 // ---------------------------------------------------------------------------
 
-export function priorityWeight(priority: AccountPriority): number {
+export function priorityWeight(
+  priority: AccountPriority,
+  customWeight?: number,
+): number {
+  if (customWeight !== undefined) return customWeight;
   if (priority === 'low') return 25;
   if (priority === 'medium') return 100;
   if (priority === 'high') return 200;
@@ -187,11 +193,16 @@ export function newOpencodeAccount(input: {
   label: string;
   pool: OpencodePool;
   priority?: AccountPriority;
+  customWeight?: number;
   expiresAt?: string;
   nowIso: string;
   stateHome?: string;
 }): OpencodeSubscriptionAccount {
-  const resolvedPriority = input.priority ?? 'medium';
+  const resolvedPriority =
+    input.customWeight === 0
+      ? 'disabled'
+      : input.priority ?? 'medium';
+  const resolvedWeight = priorityWeight(resolvedPriority, input.customWeight);
   const homeDir = getOpencodeAccountHome(input.id, input.stateHome);
   return {
     id: input.id,
@@ -200,9 +211,10 @@ export function newOpencodeAccount(input: {
     pool: input.pool,
     homeDir,
     priority: resolvedPriority,
-    priorityWeight: priorityWeight(resolvedPriority),
+    priorityWeight: resolvedWeight,
+    ...(input.customWeight !== undefined ? { customWeight: input.customWeight } : {}),
     ...(input.expiresAt !== undefined ? { expiresAt: input.expiresAt } : {}),
-    enabled: resolvedPriority !== 'disabled',
+    enabled: resolvedWeight > 0 && resolvedPriority !== 'disabled',
     createdAt: input.nowIso,
   };
 }
@@ -211,11 +223,16 @@ export function newClaudeAccount(input: {
   id: string;
   label: string;
   priority?: AccountPriority;
+  customWeight?: number;
   expiresAt?: string;
   nowIso: string;
   stateHome?: string;
 }): ClaudeSubscriptionAccount {
-  const resolvedPriority = input.priority ?? 'medium';
+  const resolvedPriority =
+    input.customWeight === 0
+      ? 'disabled'
+      : input.priority ?? 'medium';
+  const resolvedWeight = priorityWeight(resolvedPriority, input.customWeight);
   return {
     id: input.id,
     provider: 'claude',
@@ -223,9 +240,10 @@ export function newClaudeAccount(input: {
     label: input.label,
     homeDir: getClaudeAccountHome(input.id, input.stateHome),
     priority: resolvedPriority,
-    priorityWeight: priorityWeight(resolvedPriority),
+    priorityWeight: resolvedWeight,
+    ...(input.customWeight !== undefined ? { customWeight: input.customWeight } : {}),
     ...(input.expiresAt !== undefined ? { expiresAt: input.expiresAt } : {}),
-    enabled: resolvedPriority !== 'disabled',
+    enabled: resolvedWeight > 0 && resolvedPriority !== 'disabled',
     createdAt: input.nowIso,
     status: 'unknown',
   };
@@ -235,11 +253,16 @@ export function newCodexAccount(input: {
   id: string;
   label: string;
   priority?: AccountPriority;
+  customWeight?: number;
   expiresAt?: string;
   nowIso: string;
   stateHome?: string;
 }): CodexSubscriptionAccount {
-  const resolvedPriority = input.priority ?? 'medium';
+  const resolvedPriority =
+    input.customWeight === 0
+      ? 'disabled'
+      : input.priority ?? 'medium';
+  const resolvedWeight = priorityWeight(resolvedPriority, input.customWeight);
   return {
     id: input.id,
     provider: 'codex',
@@ -247,9 +270,10 @@ export function newCodexAccount(input: {
     label: input.label,
     homeDir: getCodexAccountHome(input.id, input.stateHome),
     priority: resolvedPriority,
-    priorityWeight: priorityWeight(resolvedPriority),
+    priorityWeight: resolvedWeight,
+    ...(input.customWeight !== undefined ? { customWeight: input.customWeight } : {}),
     ...(input.expiresAt !== undefined ? { expiresAt: input.expiresAt } : {}),
-    enabled: resolvedPriority !== 'disabled',
+    enabled: resolvedWeight > 0 && resolvedPriority !== 'disabled',
     createdAt: input.nowIso,
     status: 'unknown',
   };
@@ -259,11 +283,16 @@ export function newGrokAccount(input: {
   id: string;
   label: string;
   priority?: AccountPriority;
+  customWeight?: number;
   expiresAt?: string;
   nowIso: string;
   stateHome?: string;
 }): GrokSubscriptionAccount {
-  const resolvedPriority = input.priority ?? 'medium';
+  const resolvedPriority =
+    input.customWeight === 0
+      ? 'disabled'
+      : input.priority ?? 'medium';
+  const resolvedWeight = priorityWeight(resolvedPriority, input.customWeight);
   return {
     id: input.id,
     provider: 'grok',
@@ -271,9 +300,10 @@ export function newGrokAccount(input: {
     label: input.label,
     homeDir: getGrokAccountHome(input.id, input.stateHome),
     priority: resolvedPriority,
-    priorityWeight: priorityWeight(resolvedPriority),
+    priorityWeight: resolvedWeight,
+    ...(input.customWeight !== undefined ? { customWeight: input.customWeight } : {}),
     ...(input.expiresAt !== undefined ? { expiresAt: input.expiresAt } : {}),
-    enabled: resolvedPriority !== 'disabled',
+    enabled: resolvedWeight > 0 && resolvedPriority !== 'disabled',
     createdAt: input.nowIso,
     status: 'unknown',
   };

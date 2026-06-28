@@ -61,6 +61,18 @@ describe('priorityWeight', () => {
   it('disabled → 0', () => {
     assert.equal(priorityWeight('disabled'), 0);
   });
+
+  // --- customWeight (Slice 4) ---
+
+  it('customWeight overrides label mapping', () => {
+    assert.equal(priorityWeight('low', 50), 50);
+    assert.equal(priorityWeight('medium', 500), 500);
+    assert.equal(priorityWeight('high', 999), 999);
+  });
+
+  it('customWeight 0 is allowed (returns 0)', () => {
+    assert.equal(priorityWeight('high', 0), 0);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -117,6 +129,48 @@ describe('path helpers', () => {
     assert.equal(acc.priorityWeight, 0);
     assert.equal(acc.enabled, false);
   });
+
+  it('newOpencodeAccount with customWeight overrides label weight', () => {
+    const acc = newOpencodeAccount({
+      id: 'acct_c1',
+      label: 'Custom',
+      pool: 'zen',
+      customWeight: 150,
+      nowIso: '2026-01-01T00:00:00.000Z',
+      stateHome,
+    });
+    assert.equal(acc.priority, 'medium');
+    assert.equal(acc.priorityWeight, 150);
+    assert.equal(acc.customWeight, 150);
+    assert.equal(acc.enabled, true);
+  });
+
+  it('newOpencodeAccount with customWeight 0 disables account', () => {
+    const acc = newOpencodeAccount({
+      id: 'acct_c2',
+      label: 'Zero',
+      pool: 'zen',
+      customWeight: 0,
+      nowIso: '2026-01-01T00:00:00.000Z',
+      stateHome,
+    });
+    assert.equal(acc.priority, 'disabled');
+    assert.equal(acc.priorityWeight, 0);
+    assert.equal(acc.customWeight, 0);
+    assert.equal(acc.enabled, false);
+  });
+
+  it('newClaudeAccount with customWeight applies correctly', () => {
+    const acc = newClaudeAccount({
+      id: 'claude_custom',
+      label: 'Claude Custom',
+      customWeight: 300,
+      nowIso: '2026-01-01T00:00:00.000Z',
+    });
+    assert.equal(acc.priority, 'medium');
+    assert.equal(acc.priorityWeight, 300);
+    assert.equal(acc.customWeight, 300);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -165,6 +219,7 @@ describe('writeSubscriptions', () => {
           homeDir: '/home/test/.myshell-tools/opencode-accounts/acct_1',
           priority: 'high',
           priorityWeight: 200,
+          customWeight: 150,
           expiresAt: '2026-12-31T00:00:00.000Z',
           enabled: true,
           createdAt: '2026-01-01T00:00:00.000Z',
@@ -178,6 +233,7 @@ describe('writeSubscriptions', () => {
     assert.equal(result.accounts[0]!.label, 'Zen Test');
     assert.equal(result.accounts[0]!.priority, 'high');
     assert.equal(result.accounts[0]!.priorityWeight, 200);
+    assert.equal((result.accounts[0] as OpencodeSubscriptionAccount).customWeight, 150);
     assert.equal(result.accounts[0]!.expiresAt, '2026-12-31T00:00:00.000Z');
   });
 

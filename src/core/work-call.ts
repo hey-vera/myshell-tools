@@ -1355,6 +1355,12 @@ export async function* runWorkCall(input: WorkCallInput): AsyncGenerator<CoreEve
     // for both opencode and claude; falls back to the legacy opencode-only deps
     // for backward compatibility. When no deps or no eligible account, every
     // subsequent path is byte-for-byte unchanged.
+    //
+    // MODE-AWARE STRATEGY (Slice 4):
+    //   cost-saver / balanced → 'sticky' (primary-first, fallback on cap)
+    //   quality-first          → 'spread'  (load-balance across accounts)
+    const accountStrategy: 'sticky' | 'spread' =
+      mode === 'quality-first' ? 'spread' : 'sticky';
     const subscriptionAccount: SubscriptionAccount | null = (() => {
       // Generic path: when menu.ts passes provider-generic deps
       if (
@@ -1371,6 +1377,7 @@ export async function* runWorkCall(input: WorkCallInput): AsyncGenerator<CoreEve
           nowMs: deps.clock.now(),
           cooldownUntil: deps.accountCooldownUntil ?? new Map(),
           sessionTokensByAccount: deps.sessionTokensByAccount ?? {},
+          strategy: accountStrategy,
         });
       }
       // Backward compat: legacy opencode-only deps (tests, pre-migration callers)

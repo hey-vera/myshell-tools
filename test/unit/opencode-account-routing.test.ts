@@ -10,6 +10,7 @@ import assert from 'node:assert/strict';
 import {
   opencodePoolForModel,
   selectOpencodeAccount,
+  selectSubscriptionAccount,
 } from '../../src/core/opencode-account-routing.ts';
 import { buildOpencodeEnv } from '../../src/providers/opencode.ts';
 import { buildOpencodeArgs } from '../../src/providers/opencode.ts';
@@ -298,6 +299,40 @@ describe('selectOpencodeAccount', () => {
     });
     assert.ok(result !== null);
     assert.equal(result!.id, 'aaa'); // lexical tiebreak
+  });
+
+  // --- sticky strategy (Slice 4) ---
+
+  it('sticky selects the highest-weight opencode account', () => {
+    const high = makeAccount({ id: 'go-high', pool: 'go', priority: 'high', priorityWeight: 200 });
+    const low = makeAccount({ id: 'go-low', pool: 'go', priority: 'low', priorityWeight: 25 });
+    const result = selectSubscriptionAccount({
+      accounts: [low, high],
+      provider: 'opencode',
+      pool: 'go',
+      nowMs,
+      cooldownUntil: new Map(),
+      sessionTokensByAccount: {},
+      strategy: 'sticky',
+    });
+    assert.ok(result !== null);
+    assert.equal(result!.id, 'go-high');
+  });
+
+  it('selectOpencodeAccount defaults to spread (unchanged)', () => {
+    // high has lower load ratio → wins under spread
+    const high = makeAccount({ id: 'go-a', pool: 'go', priority: 'high', priorityWeight: 200 });
+    const low = makeAccount({ id: 'go-b', pool: 'go', priority: 'low', priorityWeight: 25 });
+    // go-a: 50/200=0.25, go-b: 5/25=0.20 → go-b wins (spread picks lowest load)
+    const result = selectOpencodeAccount({
+      accounts: [high, low],
+      pool: 'go',
+      nowMs,
+      cooldownUntil: new Map(),
+      sessionTokensByAccount: { 'go-a': 50, 'go-b': 5 },
+    });
+    assert.ok(result !== null);
+    assert.equal(result!.id, 'go-b');
   });
 });
 

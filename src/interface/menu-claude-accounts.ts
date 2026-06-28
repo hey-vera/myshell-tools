@@ -39,7 +39,8 @@ function isClaudeAccount(a: SubscriptionAccount): a is ClaudeSubscriptionAccount
 function formatAccountRow(acc: SubscriptionAccount, index: number): string {
   const num = index.toString().padStart(2);
   const label = acc.label.padEnd(21);
-  const priority = acc.priority.padEnd(8);
+  const weight = `(${acc.priorityWeight})`;
+  const priority = `${acc.priority} ${weight}`.padEnd(17);
   const expiry = acc.expiresAt ? acc.expiresAt.slice(0, 10).padEnd(12) : '-'.padEnd(12);
   const status = acc.enabled === false ? 'disabled'
     : acc.status === 'expired' ? 'expired'
@@ -223,7 +224,7 @@ async function editAccountScreen(
     out.write(`  provider: claude\n`);
     out.write(`  id: ${account.id}\n`);
     out.write(`  status: ${statusDisplay}\n`);
-    out.write(`  priority: ${account.priority}\n`);
+    out.write(`  priority: ${account.priority} (weight=${account.priorityWeight})\n`);
     out.write(`  expiry: ${expiryDisplay}\n`);
     out.write(`  enabled: ${account.enabled ? 'yes' : 'no'}\n`);
     out.write(`  plan: ${planDisplay}\n\n`);
@@ -239,18 +240,40 @@ async function editAccountScreen(
     if (key === null || key === 'b') return;
 
     if (key === 'p') {
-      const newPriority = await prioritySelectScreen(out, readLine, inkReadKey);
-      if (newPriority !== null) {
-        const updateObj: Record<string, unknown> = {
-          priority: newPriority,
-          priorityWeight: priorityWeight(newPriority),
-        };
-        if (newPriority === 'disabled') {
-          updateObj.enabled = false;
+      const sel = await prioritySelectScreen(out, readLine, inkReadKey);
+      if (sel !== null) {
+        if (sel === 'custom') {
+          const weight = await customWeightPrompt(out, readLine);
+          if (weight !== null) {
+            const updateObj: Record<string, unknown> = {
+              customWeight: weight,
+              priorityWeight: weight,
+            };
+            if (weight === 0) {
+              updateObj.enabled = false;
+              updateObj.priority = 'disabled';
+            } else if (account.priority === 'disabled') {
+              updateObj.priority = 'medium';
+              updateObj.enabled = true;
+            }
+            await applyAccountUpdate(account.id, updateObj);
+            const updated = await findAccount(account.id);
+            if (updated) account = updated;
+          }
+        } else {
+          const newPriority = sel;
+          const updateObj: Record<string, unknown> = {
+            priority: newPriority,
+            priorityWeight: priorityWeight(newPriority),
+            customWeight: undefined,
+          };
+          if (newPriority === 'disabled') {
+            updateObj.enabled = false;
+          }
+          await applyAccountUpdate(account.id, updateObj);
+          const updated = await findAccount(account.id);
+          if (updated) account = updated;
         }
-        await applyAccountUpdate(account.id, updateObj);
-        const updated = await findAccount(account.id);
-        if (updated) account = updated;
       }
     } else if (key === 'x') {
       const newExpiry = await expirySelectScreen(out, readLine, account.expiresAt, inkReadKey);
@@ -267,6 +290,7 @@ async function editAccountScreen(
       if (newEnabled && account.priority === 'disabled') {
         updateObj.priority = 'medium';
         updateObj.priorityWeight = priorityWeight('medium');
+        updateObj.customWeight = undefined;
       }
       await applyAccountUpdate(account.id, updateObj);
       const updated = await findAccount(account.id);
@@ -331,11 +355,12 @@ async function prioritySelectScreen(
   out: OutputSink,
   readLine: () => Promise<string | null>,
   inkReadKey?: () => Promise<string>,
-): Promise<AccountPriority | null> {
+): Promise<AccountPriority | 'custom' | null> {
   out.write('\nPriority:\n\n');
-  out.write('  [l] low\n');
-  out.write('  [m] medium\n');
-  out.write('  [h] high\n');
+  out.write('  [l] low (25)\n');
+  out.write('  [m] medium (100)\n');
+  out.write('  [h] high (200)\n');
+  out.write('  [c] custom number\n');
   out.write('  [d] disabled\n');
   out.write('  [b] back\n\n');
   out.write('> ');
@@ -343,8 +368,25 @@ async function prioritySelectScreen(
   if (key === 'l') return 'low';
   if (key === 'm') return 'medium';
   if (key === 'h') return 'high';
+  if (key === 'c') return 'custom';
   if (key === 'd') return 'disabled';
   return null;
+}
+
+async function customWeightPrompt(
+  out: OutputSink,
+  readLine: () => Promise<string | null>,
+): Promise<number | null> {
+  out.write('\nCustom weight (0..1000, 0=disabled): ');
+  out.flush?.();
+  const raw = await readLine();
+  if (raw === null || raw.trim().length === 0) return null;
+  const num = parseInt(raw.trim(), 10);
+  if (isNaN(num) || num < 0 || num > 1000) {
+    out.write(yellow('Invalid weight (0..1000). Unchanged.', out.color) + '\n');
+    return null;
+  }
+  return num;
 }
 
 async function expirySelectScreen(
@@ -434,7 +476,7 @@ export async function runClaudeAccountsMenu(
       out.write('\n  (no accounts)\n');
     } else {
       out.write('\n');
-      out.write('  #  label                 priority  expiry       status\n');
+      out.write('  #  label                 priority          expiry       status\n');
       let index = 1;
       for (const acc of accounts) {
         out.write(formatAccountRow(acc, index) + '\n');
