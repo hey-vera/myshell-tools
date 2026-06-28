@@ -4,6 +4,24 @@ All notable changes to **myshell-tools** are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.158.0] - 2026-06-28 — multi-subscription foundation: OpenCode accounts (Slice 1, experimental)
+
+### Added — manage multiple OpenCode subscriptions (flag-gated, default OFF)
+- First slice of the multi-subscription system, behind `experimentalSubscriptions` /
+  `MYSHELL_SUBSCRIPTIONS=1`. **Flag OFF = byte-identical to today.**
+- **OpenCode Accounts management** (`[o]` when the flag is on): add multiple OpenCode
+  accounts via **(c) create** (paste key hidden → choose **Zen** or **Go** pool → optional
+  expiry/label) and **(e) edit** (priority **Low/Medium/High/Disabled**, expiry, enable/disable,
+  delete). Each account gets its own isolated credential home; the API key is written only into
+  that home's `auth.json` (mode 0600) and **never stored in `subscriptions.json`**.
+- **Account-aware routing**: when enabled, a turn that uses an OpenCode model selects a specific
+  account by priority-weighted load (`tokens ÷ weight`, Low/Med/High = 25/100/200), runs it in its
+  isolated home, records the account on the receipt/ledger, and applies **per-account cooldown** —
+  so when one subscription hits a 429, its siblings keep working. Expired/disabled accounts are
+  excluded; never strands (falls back if all are cooling).
+- Foundation for pooling 2–10 subscriptions of any provider; OAuth providers (Claude/GPT/Grok)
+  follow the same pattern in later slices.
+
 ## [3.157.0] - 2026-06-28 — Replit shell autoload (read-only bashrc symlink wrapper)
 
 ### Added — autoload now works in Replit containers
