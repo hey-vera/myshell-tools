@@ -310,10 +310,12 @@ function findManagedHookBlock(lines: readonly string[]): ManagedHookBlock | unde
     // Nested HOOK_BEGIN before HOOK_END is still treated as malformed.
     let endIndex = -1;
     for (let j = index + 1; j < lines.length; j++) {
-      if (isHookBeginLine(lines[j]!)) {
+      const lineJ = lines[j];
+      if (lineJ === undefined) continue;
+      if (isHookBeginLine(lineJ)) {
         throw new MalformedHookError();
       }
-      if (isHookEndLine(lines[j]!)) {
+      if (isHookEndLine(lineJ)) {
         endIndex = j + 1; // inclusive end
         break;
       }

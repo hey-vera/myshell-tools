@@ -4,6 +4,29 @@ All notable changes to **myshell-tools** are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.156.0] - 2026-06-28 — default-on shell autoload (Linux/Windows) + flatter TUI under long sessions
+
+### Added — myshell-tools auto-launches on a new shell by default
+- The "set as default shell" experience is now **default-on, opt-out**. New installs and old
+  ambiguous `setAsDefault:false` configs (no explicit opt-out) resolve to on, so killing a shell
+  returns you to myshell-tools without retyping it. A deliberate Settings toggle-off records an
+  explicit opt-out and is preserved. Onboarding now defaults the prompt to **yes** and persists the
+  flag only when the hook actually installs.
+
+### Fixed — Windows PowerShell hook broke shell startup on locked-down hosts
+- The PowerShell startup hook is now **ConstrainedLanguage-safe**: no `[Console]::OutputEncoding`
+  assignment, no dot-sourcing, launch + aliases wrapped in `try/catch`, prefers `myshell-tools.cmd`
+  → `.exe` → bare name, and uses `Set-Alias` instead of function definitions. A hook failure can no
+  longer break shell startup. The hook is installed into both **WindowsPowerShell and PowerShell 7**
+  profile paths. Linux/bash gains an interactive-shell guard and a fail-soft launch. Re-installs now
+  cleanly **upgrade** an old/broken managed block instead of erroring.
+
+### Performance — TUI stays responsive in long-lived sessions (esp. Replit)
+- Fixed progressive sluggishness over time. The committed transcript is now memoized so high-frequency
+  stream ticks no longer re-map the whole transcript each frame; input history is capped; and the
+  Ink line-reader's resume timeout is retained and cleared. (Further Replit-specific autoload
+  persistence and additional render optimizations are tracked as follow-ups pending soak testing.)
+
 ## [3.155.1] - 2026-06-28 — fix: chat was non-functional (worker tier hit a dead model with no failover)
 
 ### Fixed — chat failed every turn with "Failed — tier: worker, 0 tokens, attempts: 1"
