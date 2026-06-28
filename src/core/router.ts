@@ -28,6 +28,9 @@ import { classify, hasTierEvidence } from './classify.js';
 // Vendor-neutral routing flag (staged — not wired yet). This import
 // satisfies the no-orphan arch guard for src/core/route-types.ts.
 import { vendorNeutralRouterEnabled } from './route-types.js';
+// Vendor-neutral route core (staged — not wired yet). This import
+// satisfies the no-orphan arch guard for src/core/vendor-neutral-route.ts.
+import { vendorNeutralRoute } from './vendor-neutral-route.js';
 
 // ---------------------------------------------------------------------------
 // Public shapes

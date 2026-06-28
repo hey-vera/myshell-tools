@@ -7,7 +7,7 @@
 
 import type { ProviderId } from '../providers/port.js';
 import type { ModelCapability, ReasoningEffort } from './model-capabilities.js';
-import type { RouteDecision } from './types.js';
+import type { RouteDecision, LedgerEntry } from './types.js';
 
 // ---------------------------------------------------------------------------
 // §1 — Router types (no call sites)
@@ -308,4 +308,60 @@ export function poolForModelId(
   }
 
   return 'opencode-unknown-default';
+}
+
+// ---------------------------------------------------------------------------
+// §4 — Pool-aware session-load helper (slice 6)
+// ---------------------------------------------------------------------------
+
+/**
+ * Compute per-`QuotaPoolId` session-token load from ledger entries.
+ * Derives the pool from `LedgerEntry.provider/model` via `poolForModelId()`.
+ * Pure/additive — does NOT change how the menu currently keys session consumption.
+ */
+export function sessionTokenLoadByPool(
+  entries: readonly LedgerEntry[],
+  sessionId: string,
+): ReadonlyMap<QuotaPoolId, number> {
+  const loads = new Map<QuotaPoolId, number>();
+  for (const entry of entries) {
+    if (entry.sessionId !== sessionId) continue;
+    const poolId = poolForModelId(entry.model, entry.provider);
+    const tokens =
+      (Number.isFinite(entry.inputTokens) ? Math.max(0, entry.inputTokens) : 0) +
+      (Number.isFinite(entry.outputTokens) ? Math.max(0, entry.outputTokens) : 0);
+    loads.set(poolId, (loads.get(poolId) ?? 0) + tokens);
+  }
+  return loads;
+}
+
+// ---------------------------------------------------------------------------
+// §4 — Pool-aware cooldown helper (slice 7)
+// ---------------------------------------------------------------------------
+
+/** All OpenCode-related pool ids — used when a bare `opencode` placeholder hits a rate limit. */
+const ALL_OPENCODE_POOLS: readonly QuotaPoolId[] = [
+  'opencode-go',
+  'opencode-zen-or-free',
+  'opencode-unknown-default',
+];
+
+/**
+ * Resolve which pool(s) a cooldown applies to, given a model+provider.
+ *
+ * For Claude/Codex/Grok this is the provider's single pool.
+ * For `opencode-unknown-default` (bare `opencode` placeholder) it cools
+ * ALL opencode pools, per §4.
+ *
+ * Pure/additive — does NOT rewire live cooldown yet.
+ */
+export function resolveCooldownPools(
+  modelId: string,
+  provider: ProviderId,
+): readonly QuotaPoolId[] {
+  const poolId = poolForModelId(modelId, provider);
+  if (poolId === 'opencode-unknown-default') {
+    return ALL_OPENCODE_POOLS;
+  }
+  return [poolId];
 }

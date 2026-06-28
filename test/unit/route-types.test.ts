@@ -10,11 +10,16 @@ import {
   vendorNeutralRouterEnabled,
   poolForModelId,
   opencodeTierRank,
+  sessionTokenLoadByPool,
+  resolveCooldownPools,
 } from '../../src/core/route-types.ts';
 import type {
   OpencodeVerboseFacts,
   CredentialHints,
+  QuotaPoolId,
 } from '../../src/core/route-types.ts';
+import type { LedgerEntry } from '../../src/core/types.ts';
+import type { ProviderId } from '../../src/providers/port.ts';
 
 // ---------------------------------------------------------------------------
 // vendorNeutralRouterEnabled (§2 — DEFAULT OFF)
@@ -565,5 +570,141 @@ describe('opencodeTierRank — pure and deterministic', () => {
     // But 'code-pro' should match 'pro'
     const rank2 = opencodeTierRank('opencode-go/code-pro');
     assert.equal(rank2.speedClass, 'deep');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// sessionTokenLoadByPool (§4 — slice 6)
+// ---------------------------------------------------------------------------
+
+function makeEntry(overrides: Partial<LedgerEntry> & {
+  provider: ProviderId;
+  model: string;
+  sessionId: string;
+  inputTokens: number;
+  outputTokens: number;
+}): LedgerEntry {
+  return {
+    timestamp: '2026-01-15T00:00:00Z',
+    taskId: 'task-1',
+    tier: 'worker',
+    cachedInputTokens: 0,
+    cacheWriteInputTokens: 0,
+    usd: 0,
+    durationMs: 100,
+    success: true,
+    ...overrides,
+  };
+}
+
+describe('sessionTokenLoadByPool', () => {
+  it('empty entries → empty map', () => {
+    const load = sessionTokenLoadByPool([], 'session-1');
+    assert.equal(load.size, 0);
+  });
+
+  it('aggregates input + output tokens per pool for matching session', () => {
+    const entries: LedgerEntry[] = [
+      makeEntry({ provider: 'claude', model: 'sonnet', sessionId: 's1', inputTokens: 100, outputTokens: 50 }),
+      makeEntry({ provider: 'claude', model: 'haiku', sessionId: 's1', inputTokens: 200, outputTokens: 80 }),
+    ];
+    const load = sessionTokenLoadByPool(entries, 's1');
+    assert.equal(load.get('claude' as QuotaPoolId), 100 + 50 + 200 + 80);
+  });
+
+  it('ignores entries from other sessions', () => {
+    const entries: LedgerEntry[] = [
+      makeEntry({ provider: 'claude', model: 'sonnet', sessionId: 's1', inputTokens: 100, outputTokens: 50 }),
+      makeEntry({ provider: 'codex', model: 'gpt-5.5', sessionId: 's2', inputTokens: 200, outputTokens: 100 }),
+    ];
+    const load = sessionTokenLoadByPool(entries, 's1');
+    assert.equal(load.size, 1);
+    assert.equal(load.get('claude' as QuotaPoolId), 150);
+    assert.equal(load.get('codex' as QuotaPoolId), undefined);
+  });
+
+  it('derives pool from provider/model via poolForModelId', () => {
+    const entries: LedgerEntry[] = [
+      makeEntry({ provider: 'opencode', model: 'opencode-go/kimi-flash', sessionId: 's1', inputTokens: 100, outputTokens: 50 }),
+    ];
+    const load = sessionTokenLoadByPool(entries, 's1');
+    assert.equal(load.get('opencode-go' as QuotaPoolId), 150);
+  });
+
+  it('openCode zEn models map to opencode-zen-or-free pool', () => {
+    const entries: LedgerEntry[] = [
+      makeEntry({ provider: 'opencode', model: 'opencode/deepseek-v4-flash-free', sessionId: 's1', inputTokens: 50, outputTokens: 50 }),
+    ];
+    const load = sessionTokenLoadByPool(entries, 's1');
+    assert.equal(load.get('opencode-zen-or-free' as QuotaPoolId), 100);
+  });
+
+  it('multiple pools aggregated independently', () => {
+    const entries: LedgerEntry[] = [
+      makeEntry({ provider: 'claude', model: 'sonnet', sessionId: 's1', inputTokens: 100, outputTokens: 50 }),
+      makeEntry({ provider: 'codex', model: 'gpt-5.5', sessionId: 's1', inputTokens: 200, outputTokens: 100 }),
+      makeEntry({ provider: 'claude', model: 'haiku', sessionId: 's1', inputTokens: 30, outputTokens: 20 }),
+    ];
+    const load = sessionTokenLoadByPool(entries, 's1');
+    assert.equal(load.get('claude' as QuotaPoolId), 100 + 50 + 30 + 20);
+    assert.equal(load.get('codex' as QuotaPoolId), 200 + 100);
+  });
+
+  it('handles non-finite tokens gracefully (treats as 0)', () => {
+    const entries: LedgerEntry[] = [
+      makeEntry({ provider: 'claude', model: 'sonnet', sessionId: 's1', inputTokens: NaN, outputTokens: Infinity }),
+    ];
+    const load = sessionTokenLoadByPool(entries, 's1');
+    assert.equal(load.get('claude' as QuotaPoolId), 0);
+  });
+
+  it('handles negative tokens (clamped to 0)', () => {
+    const entries: LedgerEntry[] = [
+      makeEntry({ provider: 'claude', model: 'sonnet', sessionId: 's1', inputTokens: -5, outputTokens: -10 }),
+    ];
+    const load = sessionTokenLoadByPool(entries, 's1');
+    assert.equal(load.get('claude' as QuotaPoolId), 0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// resolveCooldownPools (§4 — slice 7)
+// ---------------------------------------------------------------------------
+
+describe('resolveCooldownPools', () => {
+  it('claude model → single claude pool', () => {
+    const pools = resolveCooldownPools('sonnet', 'claude');
+    assert.deepEqual(pools, ['claude']);
+  });
+
+  it('codex model → single codex pool', () => {
+    const pools = resolveCooldownPools('gpt-5.5', 'codex');
+    assert.deepEqual(pools, ['codex']);
+  });
+
+  it('grok model → single grok pool', () => {
+    const pools = resolveCooldownPools('grok-build', 'grok');
+    assert.deepEqual(pools, ['grok']);
+  });
+
+  it('opencode-go model → single opencode-go pool', () => {
+    const pools = resolveCooldownPools('opencode-go/kimi-k2.7-code', 'opencode');
+    assert.deepEqual(pools, ['opencode-go']);
+  });
+
+  it('opencode/ model → single opencode-zen-or-free pool', () => {
+    const pools = resolveCooldownPools('opencode/deepseek-v4-flash-free', 'opencode');
+    assert.deepEqual(pools, ['opencode-zen-or-free']);
+  });
+
+  it('bare opencode placeholder → ALL opencode pools cooled', () => {
+    const pools = resolveCooldownPools('opencode', 'opencode');
+    assert.deepEqual(pools, ['opencode-go', 'opencode-zen-or-free', 'opencode-unknown-default']);
+  });
+
+  it('unknown model → opencode-unknown-default pool', () => {
+    const pools = resolveCooldownPools('something-else', undefined as unknown as ProviderId);
+    // poolForModelId returns 'opencode-unknown-default' → resolveCooldownPools returns all opencode pools
+    assert.deepEqual(pools, ['opencode-go', 'opencode-zen-or-free', 'opencode-unknown-default']);
   });
 });
