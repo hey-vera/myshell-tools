@@ -14,7 +14,7 @@
  *   - No digit-% literals.
  */
 
-import { chmod, lstat, mkdir, readFile, realpath, stat } from 'node:fs/promises';
+import { chmod, lstat, mkdir, readFile, realpath, rename, stat, symlink } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { atomicWrite } from '../infra/atomic.js';
 import { isReplit } from '../infra/state-dir.js';
@@ -33,6 +33,24 @@ type DetectShellKind = ShellKind | 'fish';
 
 export const HOOK_BEGIN = '# >>> myshell-tools >>>';
 export const HOOK_END = '# <<< myshell-tools <<<';
+
+// ---------------------------------------------------------------------------
+// Replit bashrc wrapper markers (separate from the standard hook markers)
+// ---------------------------------------------------------------------------
+
+const REPLIT_WRAPPER_BEGIN = '# >>> myshell-tools replit bashrc wrapper >>>';
+const REPLIT_WRAPPER_END = '# <<< myshell-tools replit bashrc wrapper <<<';
+const REPLIT_ORIGINAL_PREFIX = '# myshell-tools-replit-original-bashrc: ';
+
+interface ReplitShellHookResult {
+  readonly ok: boolean;
+  readonly changed: boolean;
+  readonly installed: boolean;
+  readonly restored?: boolean;
+  readonly rcPath: string;
+  readonly originalTarget?: string;
+  readonly reason?: string;
+}
 
 // ---------------------------------------------------------------------------
 // detectShellTarget — PURE
@@ -159,6 +177,46 @@ function buildFishManualHookBlock(): string {
     `end\n` +
     `${HOOK_END}`
   );
+}
+
+// ---------------------------------------------------------------------------
+// Replit pure helpers (shell quoting, wrapper build/parse)
+// ---------------------------------------------------------------------------
+
+export function shellSingleQuote(value: string): string {
+  return `'${value.replaceAll("'", "'\\''")}'`;
+}
+
+export function buildReplitWrappedBashrc(originalTarget: string): string {
+  const quotedTarget = shellSingleQuote(originalTarget);
+  return [
+    REPLIT_WRAPPER_BEGIN,
+    '# Managed by myshell-tools for Replit read-only bashrc symlinks.',
+    `${REPLIT_ORIGINAL_PREFIX}${originalTarget}`,
+    '',
+    '# Source Replit original startup logic first: tracking, completion, aliases.',
+    `if [ -r ${quotedTarget} ]; then`,
+    `  . ${quotedTarget}`,
+    'fi',
+    '',
+    buildHookBlock('bash'),
+    REPLIT_WRAPPER_END,
+    '',
+  ].join('\n');
+}
+
+export function isReplitWrappedBashrc(content: string): boolean {
+  return content.includes(REPLIT_WRAPPER_BEGIN);
+}
+
+export function parseReplitOriginalTarget(content: string): string | undefined {
+  const prefix = REPLIT_ORIGINAL_PREFIX;
+  const start = content.indexOf(prefix);
+  if (start === -1) return undefined;
+  const valueStart = start + prefix.length;
+  const newline = content.indexOf('\n', valueStart);
+  const end = newline === -1 ? content.length : newline;
+  return content.slice(valueStart, end);
 }
 
 // ---------------------------------------------------------------------------
@@ -420,6 +478,156 @@ export async function isHookInstalled(
 }
 
 // ---------------------------------------------------------------------------
+// Replit bashrc wrapper — I/O helpers (fail-soft)
+// ---------------------------------------------------------------------------
+
+async function uninstallReplitBashrcWrapper(
+  rcPath: string,
+  _out: OutputSink,
+): Promise<ReplitShellHookResult> {
+  try {
+    const st = await lstat(rcPath);
+    if (st.isSymbolicLink()) {
+      return { ok: true, changed: false, installed: false, rcPath };
+    }
+
+    if (!st.isFile()) {
+      return {
+        ok: true,
+        changed: false,
+        installed: false,
+        rcPath,
+        reason: 'bashrc is not a regular file or symlink during uninstall',
+      };
+    }
+
+    const content = await readFile(rcPath, 'utf8');
+
+    if (isReplitWrappedBashrc(content)) {
+      const originalTarget = parseReplitOriginalTarget(content);
+      if (originalTarget === undefined) {
+        return {
+          ok: false,
+          changed: false,
+          installed: false,
+          rcPath,
+          reason: 'wrapped bashrc is missing original target metadata',
+        };
+      }
+
+      const tempSymlink = `${rcPath}.${Date.now()}.${Math.random().toString(36).slice(2)}`;
+      await symlink(originalTarget, tempSymlink);
+      await rename(tempSymlink, rcPath);
+
+      return { ok: true, changed: true, installed: false, restored: true, rcPath, originalTarget };
+    }
+
+    if (content.includes(HOOK_BEGIN)) {
+      return {
+        ok: true,
+        changed: false,
+        installed: false,
+        rcPath,
+        reason: 'regular unwrapped bashrc with hook present — fall through to generic uninstall',
+      };
+    }
+
+    return { ok: true, changed: false, installed: false, rcPath, reason: 'no managed hook present' };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return { ok: false, changed: false, installed: false, rcPath, reason: message };
+  }
+}
+
+export async function ensureReplitShellHook(
+  out: OutputSink,
+  opts?: { uninstall?: boolean },
+): Promise<ReplitShellHookResult> {
+  const doUninstall = opts?.uninstall === true;
+
+  if (!isReplit(process.env) || process.platform === 'win32') {
+    return { ok: true, changed: false, installed: false, rcPath: '' };
+  }
+
+  const home = process.env['HOME'] ?? '/home/runner';
+  const rcPath = `${home}/.bashrc`;
+
+  try {
+    const st = await lstat(rcPath).catch((err: NodeJS.ErrnoException) => {
+      if (err.code === 'ENOENT') return undefined;
+      throw err;
+    });
+
+    if (doUninstall) {
+      return await uninstallReplitBashrcWrapper(rcPath, out);
+    }
+
+    if (st?.isSymbolicLink() === true) {
+      const originalTarget = await realpath(rcPath);
+      if (!originalTarget.startsWith('/nix/store/')) {
+        return {
+          ok: true,
+          changed: false,
+          installed: false,
+          rcPath,
+          reason: 'bashrc symlink is not a Nix store target',
+        };
+      }
+
+      const content = buildReplitWrappedBashrc(originalTarget);
+      await atomicWrite(rcPath, content, 0o644);
+      return { ok: true, changed: true, installed: true, rcPath, originalTarget };
+    }
+
+    if (st !== undefined && st.isFile()) {
+      const existing = await readFile(rcPath, 'utf8');
+
+      if (isReplitWrappedBashrc(existing)) {
+        const originalTarget = parseReplitOriginalTarget(existing);
+        if (originalTarget === undefined) {
+          return {
+            ok: false,
+            changed: false,
+            installed: false,
+            rcPath,
+            reason: 'wrapped bashrc is missing original target metadata',
+          };
+        }
+
+        const updated = buildReplitWrappedBashrc(originalTarget);
+        if (existing === updated) {
+          return { ok: true, changed: false, installed: true, rcPath, originalTarget };
+        }
+
+        const savedMode = st.mode & 0o7777;
+        await atomicWrite(rcPath, updated, savedMode);
+        return { ok: true, changed: true, installed: true, rcPath, originalTarget };
+      }
+
+      return {
+        ok: true,
+        changed: false,
+        installed: existing.includes(HOOK_BEGIN),
+        rcPath,
+        reason: 'regular unwrapped bashrc',
+      };
+    }
+
+    return {
+      ok: true,
+      changed: false,
+      installed: false,
+      rcPath,
+      reason: 'bashrc is not a symlink or regular file',
+    };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    out.write(`[warn] Replit shell hook heal failed: ${message}\n`);
+    return { ok: false, changed: false, installed: false, rcPath, reason: message };
+  }
+}
+
+// ---------------------------------------------------------------------------
 // runInstall — I/O runner
 // ---------------------------------------------------------------------------
 
@@ -447,6 +655,23 @@ export async function runInstall(
     out.write(`[info] Closest manual fish guidance for ${rcPath}:\n`);
     out.write(buildFishManualHookBlock() + '\n');
     return 1;
+  }
+
+  if (isReplit(process.env) && process.platform !== 'win32' && kind === 'bash') {
+    const result = await ensureReplitShellHook(out, { uninstall: !enable });
+    if (result.ok && result.installed && enable) {
+      out.write(`[info] Replit shell hook installed in: ${result.rcPath}\n`);
+      if (result.originalTarget !== undefined) {
+        out.write(`[info] Replit original bashrc preserved: ${result.originalTarget}\n`);
+      }
+      out.write(`[info] New Replit shell tabs will launch myshell-tools automatically.\n`);
+      return 0;
+    }
+    if (result.ok && result.restored && !enable) {
+      out.write(`[info] Replit shell hook removed from: ${result.rcPath}\n`);
+      out.write(`[info] Original bashrc symlink restored.\n`);
+      return 0;
+    }
   }
 
   // On win32, write/remove the hook in both WindowsPowerShell and PowerShell 7

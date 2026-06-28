@@ -76,7 +76,8 @@ import { runCost } from './commands/cost.js';
 import { runEvalCommand } from './commands/eval.js';
 import { runMemoryCli } from './commands/memory.js';
 import { runLogin } from './commands/login.js';
-import { runInstall, isHookInstalled } from './commands/install.js';
+import { runInstall, isHookInstalled, ensureReplitShellHook } from './commands/install.js';
+import { isReplit } from './infra/state-dir.js';
 import { banner } from './ui/banner.js';
 import { commandHelpText } from './ui/help.js';
 import { createSpinner } from './ui/spinner.js';
@@ -818,6 +819,10 @@ async function main(): Promise<void> {
     // Best-effort only; errors never block the menu.
     if (config.setAsDefault) {
       try {
+        if (isReplit(process.env)) {
+          await ensureReplitShellHook(out).catch(() => undefined);
+        }
+
         const hookPresent = await isHookInstalled(process.env, process.platform).catch(() => false);
         if (!hookPresent) {
           await runInstall(out).catch(() => undefined);
