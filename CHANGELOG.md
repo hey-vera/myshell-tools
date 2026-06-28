@@ -4,6 +4,20 @@ All notable changes to **myshell-tools** are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.155.1] - 2026-06-28 — fix: chat was non-functional (worker tier hit a dead model with no failover)
+
+### Fixed — chat failed every turn with "Failed — tier: worker, 0 tokens, attempts: 1"
+- The default-on **vendor-neutral router** was never threaded into the live chat path, so the TUI
+  silently fell back to the legacy provider picker and resolved the worker turn to a model that
+  returns no usable output on some auths (`claude-haiku-4-5`), failing the whole turn. The router
+  flag is now passed end-to-end (`config → OrchestrateDeps → orchestrate → runWorkCall`; `menu.ts`
+  computes it). Opt out with `experimentalVendorNeutralRouter: false` or
+  `MYSHELL_VENDOR_NEUTRAL_ROUTER=0`.
+- Added **cross-provider failover for dead/empty worker output even on quick turns**
+  (`turnCallBudget=1`): a worker model that returns empty/errored output now degrades gracefully to
+  the next authenticated provider instead of hard-failing the turn. Timeouts remain terminal; normal
+  escalation/review budget is unchanged. Vendor-agnostic — no provider is hardcoded.
+
 ## [3.154.0] - 2026-06-24 — v9 Phases 6–7: prompt-injection boundary, rollback, stable flags, eval dims, reliability
 
 ### 6a — Eval harness: three new scored dimensions
