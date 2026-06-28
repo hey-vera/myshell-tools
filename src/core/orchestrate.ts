@@ -625,7 +625,7 @@ export async function* orchestrate(
         );
         const webProvider: ProviderId =
           (depsArg.authenticatedProviders ?? []).find((id) => depsArg.providers[id] !== undefined) ??
-          presentProviders[0]!;
+          presentProviders[0] as ProviderId;
         yield { type: 'notice', level: 'info', message: move.narration };
         yield {
           type: 'tier-start',
@@ -751,7 +751,7 @@ export async function* orchestrate(
       );
       const scrapeProvider: ProviderId =
         (depsArg.authenticatedProviders ?? []).find((id) => depsArg.providers[id] !== undefined) ??
-        presentProvs[0]!;
+        presentProvs[0] as ProviderId;
       yield { type: 'notice', level: 'info', message: move.narration };
       yield {
         type: 'tier-start',
@@ -1158,7 +1158,7 @@ export async function* orchestrate(
         yield {
           type: 'notice',
           level: 'info',
-          message: `Correction fork created (child: ${turnIntentVersionId!}, parent: ${parentIdForWrite})`,
+          message: `Correction fork created (child: ${turnIntentVersionId as string}, parent: ${parentIdForWrite})`,
         } as const;
       }
 
@@ -1171,8 +1171,8 @@ export async function* orchestrate(
           await depsArg.correctionFork.markGoalsSuperseded(
             invalidationPlan.supersedeGoalIds,
             {
-              supersededByIntentId: turnIntentVersionId!,
-              reason: `User corrected intent; superseded by ${turnIntentVersionId!}`,
+              supersededByIntentId: turnIntentVersionId as string,
+              reason: `User corrected intent; superseded by ${turnIntentVersionId as string}`,
             },
           );
         } catch {

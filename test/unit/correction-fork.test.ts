@@ -5,7 +5,6 @@ import {
   detectCorrectionFork,
   intentDescendantIds,
   planCorrectionGoalInvalidation,
-  latestIntentVersionForSession,
 } from '../../src/core/correction-fork.ts';
 import type { IntentVersion } from '../../src/core/intent-version.ts';
 import type { Goal } from '../../src/core/goal-todo.ts';

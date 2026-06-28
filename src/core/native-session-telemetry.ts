@@ -54,10 +54,11 @@ export function buildNativeSessionTelemetry(
 
   const fallbackReason = input.fallbackReason;
 
-  const hasCacheWrite = input.usage?.cacheWriteInputTokens !== undefined &&
-    input.usage.cacheWriteInputTokens > 0;
+  const usage = input.usage;
+  const hasCacheWrite = usage?.cacheWriteInputTokens !== undefined &&
+    usage.cacheWriteInputTokens > 0;
   const cacheWriteInputTokens = hasCacheWrite
-    ? input.usage!.cacheWriteInputTokens
+    ? usage.cacheWriteInputTokens
     : undefined;
 
   return {

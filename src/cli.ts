@@ -88,7 +88,6 @@ import { experimentalEnabledByDefault } from './interface/ui/experimental-defaul
 import { cacheAccountingV2Enabled } from './interface/ui/cache-accounting-flag.js';
 import { accountAuxEnabled } from './interface/ui/account-aux-flag.js';
 import { intentStoreV1Enabled } from './interface/ui/intent-store-flag.js';
-import { correctionForkV1Enabled } from './interface/ui/correction-fork-flag.js';
 import { blockedStateV1Enabled } from './interface/ui/blocked-state-flag.js';
 import { evidenceReceiptV2Enabled } from './interface/ui/evidence-receipt-flag.js';
 import { nativeSessionsPromoteEnabled } from './interface/ui/native-sessions-promote-flag.js';
@@ -293,7 +292,6 @@ function buildDeps(
   const accountAuxOn = accountAuxEnabled(process.env);
   const intentStoreOn = intentStoreV1Enabled(process.env);
   const intentStore = intentStoreOn ? createIntentStore({ cwd }) : undefined;
-  const correlationForkOn = correctionForkV1Enabled(process.env) && intentStoreOn;
   const blockedStateOn = blockedStateV1Enabled(process.env);
   const evidenceReceiptOn = evidenceReceiptV2Enabled(process.env);
   const nativeSessionsPromoteOn = nativeSessionsPromoteEnabled(process.env);

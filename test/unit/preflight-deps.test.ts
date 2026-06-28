@@ -4,23 +4,27 @@
 
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import type { ProviderId } from '../../src/providers/port.ts';
+import type { ProviderId, Provider, ProviderRequest, ProviderEvent } from '../../src/providers/port.ts';
 import type { Policy } from '../../src/core/types.ts';
+import type { AppConfig } from '../../src/infra/config.js';
+import type { BuildPreflightDepsInput } from '../../src/interface/preflight-deps.ts';
 import { DEFAULT_POLICY } from '../../src/core/policy.ts';
 import { buildPreflightDeps } from '../../src/interface/preflight-deps.ts';
 
-// A minimal Provider stub — only the fields buildPreflightDeps reaches.
-function providerStub(id: ProviderId) {
+function providerStub(id: ProviderId): Provider {
   return {
     id,
     installed: true,
     authenticated: true,
     plan: null,
     availableModels: [],
-    run: async function* () {
+    run: async function* (
+      _req: ProviderRequest,
+      _signal: AbortSignal,
+    ): AsyncGenerator<ProviderEvent> {
       yield { type: 'done' as const, text: 'ok' };
     },
-  } as any;
+  };
 }
 
 const providers = {
@@ -29,10 +33,10 @@ const providers = {
 } as const;
 
 const env = { ...process.env };
-const config = { onboarded: true, setAsDefault: true } as any;
+const config: AppConfig = { onboarded: true, setAsDefault: true };
 const policy: Policy = DEFAULT_POLICY;
 
-function baseInput(overrides: any = {}) {
+function baseInput(overrides: Partial<BuildPreflightDepsInput> = {}) {
   return {
     providers,
     policy,

@@ -14,6 +14,7 @@ import type {
   LedgerWriter,
   LedgerEntry,
   OrchestrateDeps,
+  CoreEvent,
 } from '../../src/core/types.ts';
 import type { IntentVersion, IntentStoreWriter } from '../../src/core/intent-version.ts';
 import type { Provider, ProviderRequest, ProviderEvent } from '../../src/providers/port.ts';
@@ -93,7 +94,7 @@ describe('orchestrate intent store', () => {
       cwd: '/tmp/project',
       sandbox: 'workspace-write',
       timeoutMs: 20_000,
-      intentExtractor: undefined as any,
+      intentExtractor: undefined,
       routeClassifier: undefined,
       ...(useAccountAux && intentVersionId !== undefined ? { accountAux: true, intentVersionId } : {}),
       ...(useIntentStore ? { intentStore: fakeIntentStore } : {}),
@@ -101,8 +102,8 @@ describe('orchestrate intent store', () => {
     };
   }
 
-  async function drain(gen: AsyncGenerator<any>): Promise<any[]> {
-    const events: any[] = [];
+  async function drain(gen: AsyncGenerator<CoreEvent>): Promise<CoreEvent[]> {
+    const events: CoreEvent[] = [];
     for await (const ev of gen) events.push(ev);
     return events;
   }

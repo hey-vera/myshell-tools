@@ -28,6 +28,7 @@ import type {
   CoreEvent,
 } from '../../src/core/types.ts';
 import type { Provider, ProviderEvent, Usage } from '../../src/providers/port.ts';
+import type { TaskKind } from '../../src/core/model-capabilities.js';
 
 // ---- Fakes ----------------------------------------------------------------
 
@@ -219,7 +220,7 @@ describe('work-call cacheWriteInputTokens in ledger', () => {
       timeoutMs: 30_000,
       // cacheAccountingV2 absent → off
     };
-    const events = await collectEvents(
+    await collectEvents(
       runWorkCall({
         task: 'explain what this function returns',
         deps,
@@ -272,7 +273,7 @@ describe('work-call cacheWriteInputTokens in ledger', () => {
       timeoutMs: 30_000,
       cacheAccountingV2: true,
     };
-    const events = await collectEvents(
+    await collectEvents(
       runWorkCall({
         task: 'explain what this function returns',
         deps,
@@ -346,14 +347,14 @@ describe('work-call cacheWriteInputTokens in ledger', () => {
         incomingWorkContract: undefined,
         available: ['claude'],
         mode: 'balanced',
-        taskSignals: { risk: 'low', routePlan: false, taskKind: 'unknown' as any },
+        taskSignals: { risk: 'low', routePlan: false, taskKind: 'unknown' as TaskKind },
         capabilityContext: undefined,
         historyContext: undefined,
         wantsWebSearch: false,
         hasImageAttachment: false,
         startTier: 'worker',
       });
-      const events: any[] = [];
+      const events: CoreEvent[] = [];
       for await (const ev of gen) events.push(ev);
 
       const workEntries = ledger.entries.filter((e) => e.tier === 'worker');
@@ -406,14 +407,14 @@ describe('work-call cacheWriteInputTokens in ledger', () => {
         incomingWorkContract: undefined,
         available: ['claude'],
         mode: 'balanced',
-        taskSignals: { risk: 'low', routePlan: false, taskKind: 'implementation' as any },
+        taskSignals: { risk: 'low', routePlan: false, taskKind: 'implementation' as TaskKind },
         capabilityContext: undefined,
         historyContext: undefined,
         wantsWebSearch: false,
         hasImageAttachment: false,
         startTier: 'ic',
       });
-      const events: any[] = [];
+      const events: CoreEvent[] = [];
       for await (const ev of gen) events.push(ev);
 
       const workEntries = ledger.entries.filter((e) => e.tier === 'ic');

@@ -24,7 +24,7 @@
 
 import type { ProviderId } from '../providers/port.js';
 import type { Tier } from './types.js';
-import type { QuotaPoolId, RoutingProfile } from './route-types.js';
+import type { RoutingProfile } from './route-types.js';
 
 // ---------------------------------------------------------------------------
 // Enums — every value is a known, closed set (the guard "every enum is known").

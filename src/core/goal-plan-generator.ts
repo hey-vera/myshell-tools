@@ -88,8 +88,8 @@ function resolveGoalPlanEffort(provider: ProviderId, model: string): ReasoningEf
 
   // Walk from deepest to shallowest, return the first (deepest) supported
   for (let i = KNOWN_REASONING_EFFORTS.length - 1; i >= 0; i--) {
-    const eff = KNOWN_REASONING_EFFORTS[i]!;
-    if (eff === 'none') continue;
+    const eff = KNOWN_REASONING_EFFORTS[i];
+    if (eff === undefined || eff === 'none') continue;
     if ((supported as readonly string[]).includes(eff)) return eff;
   }
   return undefined;
@@ -153,9 +153,9 @@ export function makeGoalPlannerAttempt(
     } catch {
       return null;
     }
-    if (provider === undefined) return null;
+    if (provider === undefined || routedProvider === undefined) return null;
 
-    const goalPlanEffort = resolveGoalPlanEffort(routedProvider!, model);
+    const goalPlanEffort = resolveGoalPlanEffort(routedProvider, model);
 
     const req: ProviderRequest = {
       model,

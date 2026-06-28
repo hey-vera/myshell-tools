@@ -342,12 +342,12 @@ describe('classify — worker tier comprehensive', () => {
 });
 
 describe('classify — exact-output tie-break (IC wins)', () => {
-  it('"implement the endpoint and reply exactly \"done\"" → ic (IC signal wins on tie)', () => {
+  it('"implement the endpoint and reply exactly "done"" → ic (IC signal wins on tie)', () => {
     const result = classify('implement the endpoint and reply exactly "done"');
     assert.equal(result.tier, 'ic', `rationale: ${result.rationale}`);
   });
 
-  it('"fix the bug and respond exactly \"fixed\"" → ic (IC signal wins on tie)', () => {
+  it('"fix the bug and respond exactly "fixed"" → ic (IC signal wins on tie)', () => {
     const result = classify('fix the bug and respond exactly "fixed"');
     assert.equal(result.tier, 'ic', `rationale: ${result.rationale}`);
   });

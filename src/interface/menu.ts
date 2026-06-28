@@ -2679,17 +2679,19 @@ export async function runChatLoop(
           // correction creates a child IntentVersion and supersedes invalid
           // descendants. Requires intentStore + goalStore to both exist.
           ...(correctionForkOn && mutableGoalStore !== null && intentStore !== undefined
-            ? {
-                correctionFork: {
-                  enabled: true as const,
-                  readIntentVersions: () => intentStore.readAll(),
-                  listGoals: () => mutableGoalStore!.list(),
-                  markGoalsSuperseded: (
-                    ids: readonly string[],
-                    meta: { supersededByIntentId: string; reason: string },
-                  ) => mutableGoalStore!.markSuperseded(ids, meta),
-                },
-              }
+            ? (
+                (goalStore) => ({
+                  correctionFork: {
+                    enabled: true as const,
+                    readIntentVersions: () => intentStore.readAll(),
+                    listGoals: () => goalStore.list(),
+                    markGoalsSuperseded: (
+                      ids: readonly string[],
+                      meta: { supersededByIntentId: string; reason: string },
+                    ) => goalStore.markSuperseded(ids, meta),
+                  },
+                })
+              )(mutableGoalStore)
             : {}),
         };
       };

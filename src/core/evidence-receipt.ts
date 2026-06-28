@@ -101,12 +101,6 @@ function mapTerminal(input: BuildEvidenceReceiptInput): ReceiptTerminal {
   return 'done';
 }
 
-function mapTestOutcome(
-  run: NonNullable<VerifyOutcome['testRun']>,
-): 'green' | 'red' | 'timeout' | 'errored' {
-  return run.outcome;
-}
-
 export function summarizeReceiptLedger(
   entries: readonly LedgerEntry[],
 ): EvidenceReceiptV2['cacheAdjustedUsd'] {

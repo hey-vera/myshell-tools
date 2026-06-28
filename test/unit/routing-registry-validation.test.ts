@@ -273,7 +273,7 @@ describe('Capability Registry — validation harness self-test (§2)', () => {
     const bad: RoutingProfile = {
       tierSuitability: { worker: 50, ic: 30, manager: 0 },
       tierAdmission: { worker: true, ic: false, manager: false },
-      speedClass: 'slow' as any,
+      speedClass: 'slow' as RoutingProfile['speedClass'],
       quotaClass: 'subscription',
       searchMode: 'native',
       validation: { source: 'curated-table', checkedAt: '2026-01-01' },
@@ -288,7 +288,7 @@ describe('Capability Registry — validation harness self-test (§2)', () => {
       tierAdmission: { worker: true, ic: false, manager: false },
       speedClass: 'balanced',
       quotaClass: 'subscription',
-      searchMode: 'off' as any,
+      searchMode: 'off' as RoutingProfile['searchMode'],
       validation: { source: 'curated-table', checkedAt: '2026-01-01' },
     };
     const errors = validateRoutingProfile(bad, 'test', 'bad-model');

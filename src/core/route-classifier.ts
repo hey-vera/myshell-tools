@@ -63,7 +63,6 @@ export function makeRouteClassifier(deps: RouteClassifierDeps): ModelClassifier 
 
     let provider: Provider | undefined;
     let model: string;
-    let triedProvider = false;
     try {
       const decision = route(
         ROUTER_TIER,
@@ -93,7 +92,6 @@ export function makeRouteClassifier(deps: RouteClassifierDeps): ModelClassifier 
     let startMs: number | undefined;
     try {
       startMs = deps.clock?.now();
-      triedProvider = true;
       for await (const ev of provider.run(req, signal)) {
         if (ev.type === 'done') {
           finalText = ev.text;

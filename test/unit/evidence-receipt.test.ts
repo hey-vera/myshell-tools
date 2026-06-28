@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { buildEvidenceReceipt, type EvidenceReceiptV2 } from '../../src/core/evidence-receipt.ts';
+import { buildEvidenceReceipt } from '../../src/core/evidence-receipt.ts';
 import type { VerifyOutcome } from '../../src/core/verify.ts';
 import type { LedgerEntry } from '../../src/core/types.ts';
 

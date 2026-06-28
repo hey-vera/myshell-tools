@@ -110,9 +110,7 @@ import {
   buildNativeSessionTelemetry,
   renderNativeSessionTelemetry,
 } from './native-session-telemetry.js';
-import { vendorNeutralRoute, type VendorNeutralRouteParams } from './vendor-neutral-route.js';
-import { NoCapableProvider, poolForModelId, sessionTokenLoadByPool } from './route-types.js';
-import type { QuotaPoolId } from './route-types.js';
+import { vendorNeutralRoute } from './vendor-neutral-route.js';
 
 function blockedCodeForError(
   category: import('../providers/port.js').CliError['category'],

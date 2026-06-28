@@ -102,7 +102,8 @@ export function intentDescendantIds(
   if (excludeRoot !== undefined) {
     const queue: string[] = [excludeRoot];
     while (queue.length > 0) {
-      const id = queue.shift()!;
+      const id = queue.shift();
+      if (id === undefined) continue;
       if (excludeSet.has(id)) continue;
       excludeSet.add(id);
       for (const child of children.get(id) ?? []) {
@@ -115,7 +116,8 @@ export function intentDescendantIds(
   const queue: string[] = [parentId];
   const visited = new Set<string>();
   while (queue.length > 0) {
-    const id = queue.shift()!;
+    const id = queue.shift();
+    if (id === undefined) continue;
     if (visited.has(id) || excludeSet.has(id)) continue;
     visited.add(id);
     descendant.add(id);

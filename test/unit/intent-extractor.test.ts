@@ -10,7 +10,7 @@ import assert from 'node:assert/strict';
 
 import { makeIntentExtractor } from '../../src/core/intent-extractor.ts';
 import { DEFAULT_POLICY } from '../../src/core/policy.ts';
-import type { Provider, ProviderEvent, ProviderRequest, Usage } from '../../src/providers/port.ts';
+import type { Provider, ProviderEvent, ProviderRequest } from '../../src/providers/port.ts';
 import type { Clock, LedgerWriter, LedgerEntry } from '../../src/core/types.ts';
 
 const SIGNAL = new AbortController().signal;

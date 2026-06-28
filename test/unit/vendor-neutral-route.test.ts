@@ -34,13 +34,6 @@ const OPENCODE_ZEN_MODELS = [
   'opencode/deepseek-v4-pro',
 ] as const;
 
-const MODEL_IDS: Record<ProviderId, readonly string[]> = {
-  claude: [...CLAUDE_MODELS],
-  codex: [...CODEX_MODELS],
-  grok: [...GROK_MODELS],
-  opencode: [],
-};
-
 // ---------------------------------------------------------------------------
 // Verbose facts for opencode models
 // ---------------------------------------------------------------------------

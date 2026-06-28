@@ -47,7 +47,7 @@ import { authorizeTier } from './flagship.js';
 import { type ReasoningEffort, type TaskKind } from './model-capabilities.js';
 import { findCapability } from './model-capabilities.js';
 import type { CapabilityRegistry } from './model-capabilities.js';
-import { opencodeTierRank, poolForModelId } from './route-types.js';
+import { opencodeTierRank } from './route-types.js';
 import { modeFromPolicy } from './policy.js';
 import type { WorkContract } from './work-contract.js';
 import { capContract, renderContractForPrompt, shouldMaterializeContract, isCleanObjectiveTask, stampContractIntentVersion } from './work-contract.js';
@@ -168,7 +168,6 @@ export function planPanel(opts: {
       let managerScore = -1;
       for (const model of models) {
         const cap = findCapability(registry, provider, model);
-        const poolId = poolForModelId(model, provider);
         let worker = 0; let ic = 0; let manager = 0;
         if (provider === 'opencode') {
           const rank = opencodeTierRank(model);
@@ -196,7 +195,9 @@ export function planPanel(opts: {
     }
 
     // Synthesizer: highest manager-suitability among candidates.
-    let bestSynth: ProviderId = candidates[0]!;
+    const firstCandidate = candidates[0];
+    if (firstCandidate === undefined) return null;
+    let bestSynth: ProviderId = firstCandidate;
     let bestSynthScore = -1;
     for (const s of scored) {
       if (candidates.includes(s.provider) && s.managerScore > bestSynthScore) {

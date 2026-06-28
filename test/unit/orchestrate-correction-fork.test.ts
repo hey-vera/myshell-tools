@@ -14,6 +14,7 @@ import type {
   LedgerWriter,
   LedgerEntry,
   OrchestrateDeps,
+  CoreEvent,
 } from '../../src/core/types.ts';
 import type { IntentVersion, IntentStoreWriter, IntentStoreReader } from '../../src/core/intent-version.ts';
 import type { Goal } from '../../src/core/goal-todo.ts';
@@ -110,7 +111,7 @@ describe('orchestrate correction fork', () => {
       cwd: '/tmp/project',
       sandbox: 'workspace-write',
       timeoutMs: 20_000,
-      intentExtractor: undefined as any,
+      intentExtractor: undefined,
       routeClassifier: undefined,
       ...(useIntentStore && intentVersionId !== undefined ? { intentStore: fakeIntentStore, intentVersionId } : {}),
       ...(useCorrectionFork ? {
@@ -127,8 +128,8 @@ describe('orchestrate correction fork', () => {
     };
   }
 
-  async function drain(gen: AsyncGenerator<any>): Promise<any[]> {
-    const events: any[] = [];
+  async function drain(gen: AsyncGenerator<CoreEvent>): Promise<CoreEvent[]> {
+    const events: CoreEvent[] = [];
     for await (const ev of gen) events.push(ev);
     return events;
   }
@@ -189,7 +190,7 @@ describe('orchestrate correction fork', () => {
     const childVersion = intentVersions[1]!;
     assert.equal(childVersion.parentId, 'prior-iv-1', 'child should have parentId set');
 
-    const notice = events.find((e: any) => e.type === 'notice' && e.message.includes('Correction fork'));
+    const notice = events.find((e: CoreEvent) => e.type === 'notice' && e.message.includes('Correction fork'));
     assert.notEqual(notice, undefined, 'should emit correction fork notice');
   });
 

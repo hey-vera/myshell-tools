@@ -8,8 +8,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { runWorkCall, type WorkCallInput } from '../../src/core/work-call.ts';
-import { runHedged, planHedge, type HedgePlan } from '../../src/core/hedge.ts';
-import { route } from '../../src/core/route.ts';
+import { runHedged, type HedgePlan } from '../../src/core/hedge.ts';
 import { DEFAULT_POLICY } from '../../src/core/policy.ts';
 import { DECLARATIVE_MODEL_CAPABILITIES } from '../../src/core/model-capabilities.ts';
 import type {
@@ -21,20 +20,15 @@ import type {
   LedgerEntry,
   OrchestrateDeps,
   CoreEvent,
-  Tier,
 } from '../../src/core/types.ts';
 import type {
   Provider,
   ProviderRequest,
   ProviderEvent,
   ProviderId,
-  Usage,
 } from '../../src/providers/port.ts';
 import type { TurnDirective } from '../../src/core/turn-directive.ts';
-import type { IntentFrame } from '../../src/core/intent.ts';
 import type { EngagementPlan } from '../../src/core/engagement.ts';
-import type { WorkContract } from '../../src/core/work-contract.ts';
-import type { CapabilityRouteContext } from '../../src/core/route.ts';
 
 // ---------------------------------------------------------------------------
 // Shared fakes
@@ -88,7 +82,6 @@ function makeFakeProvider(id: ProviderId, text: string): Provider {
   } as Provider;
 }
 
-const WORKER: Tier = 'worker';
 const HIGH_IC: Classification = { tier: 'ic', risk: 'high', rationale: 'test' };
 const EMPTY_DIRECTIVE: TurnDirective = {
   version: 1,

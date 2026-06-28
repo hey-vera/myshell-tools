@@ -11,7 +11,7 @@ import type { Tier } from './types.js';
 import type { ProviderId } from '../providers/port.js';
 import type { CapabilityRegistry } from './model-capabilities.js';
 import { findCapability } from './model-capabilities.js';
-import { opencodeTierRank, poolForModelId } from './route-types.js';
+import { opencodeTierRank } from './route-types.js';
 
 // ---------------------------------------------------------------------------
 // Tier chain
@@ -77,7 +77,6 @@ export function pickReviewer(
       const models = opts.availableModels.get(provider) ?? [];
       for (const model of models) {
         const cap = findCapability(opts.registry, provider, model);
-        const poolId = poolForModelId(model, provider);
         let score = 0;
         if (provider === 'opencode') {
           const rank = opencodeTierRank(model);

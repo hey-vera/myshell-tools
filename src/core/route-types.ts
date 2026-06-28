@@ -23,9 +23,7 @@ export type QuotaPoolId =
   | 'opencode-unknown-default';
 
 /** Live inventory built from detection, auth, refresh, cooldowns, and load. */
-export interface ProviderInventory {
-  // populated in later slices
-}
+export type ProviderInventory = Record<string, never>;
 
 /** Serializable routing-profile facts for one model. (§2) */
 export interface RoutingProfile {

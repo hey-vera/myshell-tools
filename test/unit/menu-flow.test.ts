@@ -94,35 +94,6 @@ async function readPersistedConfig(): Promise<AppConfig> {
   return loadConfig(resolveStateHome(process.env, process.cwd(), homedir()));
 }
 
-/**
- * Run `fn` with all 7 graduated intelligence-spine flags forced to '0'.
- * Tests not about the spine use this to eliminate flag noise.
- */
-const SPINE_FLAGS = [
-  'MYSHELL_CACHE_ACCOUNTING_V2',
-  'MYSHELL_ACCOUNT_AUX',
-  'MYSHELL_INTENT_STORE_V1',
-  'MYSHELL_CORRECTION_FORK_V1',
-  'MYSHELL_BLOCKED_STATE_V1',
-  'MYSHELL_EVIDENCE_RECEIPT_V2',
-  'MYSHELL_NATIVE_SESSIONS_PROMOTE',
-] as const;
-
-async function withSpineOff<T>(fn: () => Promise<T>): Promise<T> {
-  const orig = new Map<string, string | undefined>();
-  for (const k of SPINE_FLAGS) {
-    orig.set(k, process.env[k]);
-    process.env[k] = '0';
-  }
-  try {
-    return await fn();
-  } finally {
-    for (const [k, v] of orig) {
-      if (v !== undefined) process.env[k] = v;
-      else Reflect.deleteProperty(process.env, k);
-    }
-  }
-}
 
 // ---------------------------------------------------------------------------
 // Scripted readLine helper

@@ -8,12 +8,11 @@
 
 import type { ProviderId } from '../providers/port.js';
 import type { Tier, RouteDecision } from './types.js';
-import type { CapabilityRegistry, ModelCapability } from './model-capabilities.js';
+import type { CapabilityRegistry } from './model-capabilities.js';
 import { findCapability } from './model-capabilities.js';
 import type {
   QuotaPoolId,
   RoutingCandidate,
-  RoutingProfile,
   OpencodeVerboseFacts,
 } from './route-types.js';
 import {
@@ -21,7 +20,6 @@ import {
   poolForModelId,
   opencodeTierRank,
   type RouteResult,
-  type RouteTrace,
 } from './route-types.js';
 
 // ---------------------------------------------------------------------------
@@ -167,7 +165,11 @@ function costQuotaTiebreak(
   params: VendorNeutralRouteParams,
 ): RoutingCandidate {
   if (scored.length === 0) throw new Error('costQuotaTiebreak: empty scored array');
-  if (scored.length === 1) return scored[0]!.candidate;
+  if (scored.length === 1) {
+    const only = scored[0];
+    if (only === undefined) throw new Error('costQuotaTiebreak: unexpected empty slot');
+    return only.candidate;
+  }
 
   const cooled = params.cooledPools;
 
@@ -193,7 +195,9 @@ function costQuotaTiebreak(
     return aHash - bHash;
   });
 
-  return sorted[0]!.candidate;
+  const first = sorted[0];
+  if (first === undefined) throw new Error('costQuotaTiebreak: sort produced empty array');
+  return first.candidate;
 }
 
 // ---------------------------------------------------------------------------
@@ -399,7 +403,13 @@ export function vendorNeutralRoute(
     );
     return { ok: false, error: err, trace: { steps: trace } };
   }
-  const topS = scored[0]!;
+  const topS = scored[0];
+  if (topS === undefined) {
+    const err = new NoCapableProvider(
+      `No provider can satisfy tier "${params.tier}" after scoring`,
+    );
+    return { ok: false, error: err, trace: { steps: trace } };
+  }
   const topScore = topS.score;
 
   trace.push(

@@ -14,6 +14,7 @@ import type {
   LedgerWriter,
   LedgerEntry,
   OrchestrateDeps,
+  CoreEvent,
 } from '../../src/core/types.ts';
 import type { Provider, ProviderRequest, ProviderEvent } from '../../src/providers/port.ts';
 
@@ -89,7 +90,7 @@ describe('orchestrate account aux', () => {
       cwd: '/tmp/project',
       sandbox: 'workspace-write',
       timeoutMs: 20_000,
-      intentExtractor: undefined as any, // we set it below
+      intentExtractor: undefined,
       routeClassifier: undefined,
       ...(accountAux && intentVersionId !== undefined ? { accountAux: true, intentVersionId } : {}),
     };
@@ -99,8 +100,8 @@ describe('orchestrate account aux', () => {
    * Consumes the generator and returns the set of events. The deps used are
    * mutable (clock), so call orchestrate directly.
    */
-  async function drain(gen: AsyncGenerator<any>): Promise<any[]> {
-    const events: any[] = [];
+  async function drain(gen: AsyncGenerator<CoreEvent>): Promise<CoreEvent[]> {
+    const events: CoreEvent[] = [];
     for await (const ev of gen) events.push(ev);
     return events;
   }
@@ -112,7 +113,7 @@ describe('orchestrate account aux', () => {
     deps.policy = { ...DEFAULT_POLICY, escalateBelowConfidence: { low: 0, medium: 0, high: 0, critical: 0 } };
     const signal = new AbortController();
     const gen = orchestrate('hello', deps, signal.signal);
-    const events = await drain(gen);
+    await drain(gen);
 
     // Filter ledger entries from the work call (stage-less).
     const workEntries = ledger.filter((e) => e.tier === 'worker' || e.tier === 'ic' || e.tier === 'manager');
@@ -139,14 +140,14 @@ describe('orchestrate account aux', () => {
     });
 
     const deps = buildDeps(true);
-    deps.intentExtractor = intentExtractor as any;
+    deps.intentExtractor = intentExtractor as NonNullable<OrchestrateDeps['intentExtractor']>;
     // Use a multi-clause/long task so shouldExtractIntent fires the intent pass.
     const task = 'please implement a new user login flow that handles multi-factor authentication and also supports password reset via email and SMS';
     deps.policy = { ...DEFAULT_POLICY, escalateBelowConfidence: { low: 0, medium: 0, high: 0, critical: 0 } };
 
     const signal = new AbortController();
     const gen = orchestrate(task, deps, signal.signal);
-    const events = await drain(gen);
+    await drain(gen);
 
     // There should be an intent entry (stage=intent) and at least one work entry (stage=work).
     const intentEntries = ledger.filter((e) => e.stage === 'intent');
