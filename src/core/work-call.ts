@@ -1658,6 +1658,18 @@ export async function* runWorkCall(input: WorkCallInput): AsyncGenerator<CoreEve
           ...(deps.evidenceReceiptV2 === true
             ? (() => {
                 const entries = deps.receiptLedgerSnapshot?.() ?? [];
+                const cooldownProviders = (() => {
+                  const cd = deps.cooldownUntil;
+                  if (!cd || cd.size === 0) return undefined;
+                  const now = deps.clock.now();
+                  const result: { provider: ProviderId; remainingMs: number }[] = [];
+                  for (const [provider, until] of cd) {
+                    if (until > now) {
+                      result.push({ provider, remainingMs: until - now });
+                    }
+                  }
+                  return result.length > 0 ? result : undefined;
+                })();
                 const r = buildEvidenceReceipt({
                   terminal: 'failed' as const,
                   success: false,
@@ -1665,6 +1677,8 @@ export async function* runWorkCall(input: WorkCallInput): AsyncGenerator<CoreEve
                   ...(deps.cacheAccountingV2 === true ? { cacheAccountingV2: true as const } : {}),
                   ledgerEntries: entries,
                   ...(deps.intentVersionId !== undefined ? { intentVersionId: deps.intentVersionId } : {}),
+                  ...(cooldownProviders !== undefined ? { cooldownProviders } : {}),
+                  ...(deps.sessionTokensForReceipt !== undefined ? { sessionTokens: deps.sessionTokensForReceipt } : {}),
                 });
                 return r !== undefined ? { receipt: r } : {};
               })()
@@ -2350,6 +2364,18 @@ export async function* runWorkCall(input: WorkCallInput): AsyncGenerator<CoreEve
               if (br !== null) blockedRecordForReceipt = br;
             }
           }
+          const cooldownProviders = (() => {
+            const cd = deps.cooldownUntil;
+            if (!cd || cd.size === 0) return undefined;
+            const now = deps.clock.now();
+            const result: { provider: ProviderId; remainingMs: number }[] = [];
+            for (const [provider, until] of cd) {
+              if (until > now) {
+                result.push({ provider, remainingMs: until - now });
+              }
+            }
+            return result.length > 0 ? result : undefined;
+          })();
           const r = buildEvidenceReceipt({
             terminal: blockedRecordForReceipt ? 'blocked' as const : 'failed' as const,
             success: false,
@@ -2358,6 +2384,8 @@ export async function* runWorkCall(input: WorkCallInput): AsyncGenerator<CoreEve
             ...(deps.cacheAccountingV2 === true ? { cacheAccountingV2: true as const } : {}),
             ledgerEntries: entries,
             ...(deps.intentVersionId !== undefined ? { intentVersionId: deps.intentVersionId } : {}),
+            ...(cooldownProviders !== undefined ? { cooldownProviders } : {}),
+            ...(deps.sessionTokensForReceipt !== undefined ? { sessionTokens: deps.sessionTokensForReceipt } : {}),
           });
           return r !== undefined ? { receipt: r } : {};
         })()

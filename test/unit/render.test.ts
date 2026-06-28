@@ -1882,6 +1882,7 @@ describe('renderStream — cleanup on a thrown event stream (item 1)', () => {
       costUsd: 0.0123,
       changedFiles: ['src/a.ts', 'src/b.ts'],
       commandsRun: [{ command: 'npm test', outcome: 'success' as const, durationMs: 1234 }],
+      headroom: 'unknown' as const,
     };
     const events: CoreEvent[] = [
       { type: 'tier-start', tier: 'ic', provider: 'claude', model: 'opus', attempt: 0 } as CoreEvent,
@@ -1923,6 +1924,7 @@ describe('renderStream — cleanup on a thrown event stream (item 1)', () => {
       verdict: 'reviewed' as const,
       verifyVerdict: 'reviewed' as const,
       costUsd: 0.01,
+      headroom: 'unknown' as const,
     };
     const events: CoreEvent[] = [
       { type: 'tier-start', tier: 'ic', provider: 'claude', model: 'opus', attempt: 0 } as CoreEvent,
@@ -1960,6 +1962,7 @@ describe('renderStream — cleanup on a thrown event stream (item 1)', () => {
       verdict: 'unverified' as const,
       verifyVerdict: 'unverified' as const,
       costUsd: 0.01,
+      headroom: 'unknown' as const,
     };
     const events2: CoreEvent[] = [
       { type: 'tier-start', tier: 'ic', provider: 'claude', model: 'opus', attempt: 0 } as CoreEvent,
@@ -1988,5 +1991,55 @@ describe('renderStream — cleanup on a thrown event stream (item 1)', () => {
     assert.equal(result2.success, true);
     const joined2 = sink2.buf.join('');
     assert.ok(joined2.includes('Unverified'), `should say Unverified for unverified verdict, got:\n${joined2}`);
+  });
+
+  it('receipt shows tokens and headroom unknown, never a dollar bill', async () => {
+    const sink = makeSink();
+    const receipt = {
+      version: 2 as const,
+      terminal: 'done' as const,
+      verdict: 'verified' as const,
+      verifyVerdict: 'passing' as const,
+      costUsd: 0.0123,
+      headroom: 'unknown' as const,
+      turnTokens: [
+        { provider: 'claude' as const, model: 'sonnet', inputTokens: 1200, outputTokens: 500, cachedInputTokens: 200 },
+      ],
+    };
+    const events: CoreEvent[] = [
+      { type: 'tier-start', tier: 'ic', provider: 'claude', model: 'sonnet', attempt: 0 } as CoreEvent,
+      { type: 'provider-event', event: { type: 'text', delta: 'Hello.' } } as CoreEvent,
+      {
+        type: 'tier-done',
+        tier: 'ic',
+        success: true,
+        confidence: 0.9,
+        inputTokens: 10,
+        outputTokens: 5,
+        durationMs: 1,
+      } as CoreEvent,
+      {
+        type: 'final',
+        success: true,
+        output: 'Hello.',
+        tier: 'ic',
+        totalCostUsd: 0.0123,
+        sessionId: 's',
+        attempts: 1,
+        receipt,
+      } as CoreEvent,
+    ];
+    const result = await renderStream(makeStream(events), sink);
+    assert.equal(result.success, true);
+    const joined = sink.buf.join('');
+    assert.ok(joined.includes('Receipt'), `should render receipt, got:\n${joined}`);
+    assert.ok(joined.includes('Headroom:'), `should display Headroom line, got:\n${joined}`);
+    assert.ok(joined.includes('unknown'), `headroom should be unknown, got:\n${joined}`);
+    assert.ok(joined.includes('Tokens:'), `should display Tokens line, got:\n${joined}`);
+    assert.ok(joined.includes('claude'), `should show provider, got:\n${joined}`);
+    assert.ok(joined.includes('sonnet'), `should show model, got:\n${joined}`);
+    assert.ok(!joined.includes('Cost:'), `should NOT show dollar Cost line, got:\n${joined}`);
+    assert.ok(!joined.includes('Cache-adjusted:'), `should NOT show Cache-adjusted line, got:\n${joined}`);
+    assert.ok(!joined.includes('%'), `should NOT show fake percentages, got:\n${joined}`);
   });
 });

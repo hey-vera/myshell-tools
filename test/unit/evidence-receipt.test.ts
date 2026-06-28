@@ -57,6 +57,7 @@ describe('buildEvidenceReceipt', () => {
     assert.equal(receipt!.testsResult?.durationMs, 1234);
     assert.equal(receipt!.verifyVerdict, 'passing');
     assert.equal(receipt!.costUsd, 0.01);
+    assert.equal(receipt!.headroom, 'unknown');
   });
 
   it('reviewed produce verdict reviewed not verified', () => {
@@ -206,5 +207,66 @@ describe('buildEvidenceReceipt', () => {
     assert.equal(receipt!.terminal, 'failed');
     assert.equal(receipt!.verdict, 'unverified');
     assert.equal(receipt!.verifyVerdict, 'not-run');
+  });
+
+  it('turnTokens aggregates ledger entries by provider + model', () => {
+    const receipt = buildEvidenceReceipt({
+      terminal: 'done',
+      success: true,
+      totalCostUsd: 0.03,
+      ledgerEntries: [
+        ledgerEntry({ provider: 'claude', model: 'sonnet', inputTokens: 100, outputTokens: 50, cachedInputTokens: 20 }),
+        ledgerEntry({ provider: 'claude', model: 'sonnet', inputTokens: 200, outputTokens: 100, cachedInputTokens: 30 }),
+        ledgerEntry({ provider: 'codex', model: 'gpt-5', inputTokens: 300, outputTokens: 150 }),
+      ],
+    });
+    assert.ok(receipt !== undefined);
+    assert.equal(receipt!.headroom, 'unknown');
+    assert.ok(receipt!.turnTokens !== undefined);
+    assert.equal(receipt!.turnTokens!.length, 2);
+    const claude = receipt!.turnTokens!.find(t => t.provider === 'claude');
+    assert.ok(claude !== undefined);
+    assert.equal(claude!.model, 'sonnet');
+    assert.equal(claude!.inputTokens, 300);
+    assert.equal(claude!.outputTokens, 150);
+    assert.equal(claude!.cachedInputTokens, 50);
+    const codex = receipt!.turnTokens!.find(t => t.provider === 'codex');
+    assert.ok(codex !== undefined);
+    assert.equal(codex!.model, 'gpt-5');
+    assert.equal(codex!.inputTokens, 300);
+    assert.equal(codex!.outputTokens, 150);
+    assert.equal(codex!.cachedInputTokens, 0);
+  });
+
+  it('receipt includes headroom unknown and never shows dollar in user-visible summary', () => {
+    const receipt = buildEvidenceReceipt({
+      terminal: 'done',
+      success: true,
+      totalCostUsd: 0.05,
+      ledgerEntries: [
+        ledgerEntry({ provider: 'claude', model: 'opus', inputTokens: 500, outputTokens: 200, usd: 0.05 }),
+      ],
+    });
+    assert.equal(receipt!.headroom, 'unknown');
+    assert.notEqual(receipt!.headroom, 'unknown%');
+    assert.notEqual(receipt!.headroom, '100%');
+    // costUsd remains in schema for internal routing but should not be shown to user
+    assert.equal(receipt!.costUsd, 0.05);
+    assert.ok(receipt!.turnTokens !== undefined);
+    assert.equal(receipt!.turnTokens!.length, 1);
+  });
+
+  it('threads cooldownProviders and sessionTokens when provided', () => {
+    const receipt = buildEvidenceReceipt({
+      terminal: 'done',
+      success: true,
+      totalCostUsd: 0.01,
+      ledgerEntries: [],
+      cooldownProviders: [{ provider: 'codex', remainingMs: 180_000 }],
+      sessionTokens: { claude: 91_000, codex: 45_000 },
+    });
+    assert.equal(receipt!.headroom, 'unknown');
+    assert.deepEqual(receipt!.cooldownProviders, [{ provider: 'codex', remainingMs: 180_000 }]);
+    assert.deepEqual(receipt!.sessionTokens, { claude: 91_000, codex: 45_000 });
   });
 });

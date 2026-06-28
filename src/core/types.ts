@@ -370,6 +370,20 @@ export interface OrchestrateDeps {
    */
   readonly receiptLedgerSnapshot?: () => readonly LedgerEntry[];
   /**
+   * When evidenceReceiptV2 is on, the providers currently in rate-limit cooldown
+   * and their expiry epoch-ms. The receipt builder uses deps.clock to compute
+   * the remaining time so the receipt can show honest cooldown status without
+   * fabricating headroom. Absent → receipt omits cooldown lines gracefully.
+   */
+  readonly cooldownUntil?: ReadonlyMap<ProviderId, number>;
+  /**
+   * When evidenceReceiptV2 is on, the per-provider session token consumption
+   * total so far. Tracked by the conversation layer (the same
+   * sessionConsumption map that deriveLiveProviderOrder uses). Absent →
+   * receipt shows this-turn tokens only; still fully honest.
+   */
+  readonly sessionTokensForReceipt?: Readonly<Partial<Record<ProviderId, number>>>;
+  /**
    * Whether MYSHELL_NATIVE_SESSIONS_PROMOTE is on. When on, native provider
    * sessions that are already wired become the default for interactive
    * conversations, with telemetry emitted. Default off.

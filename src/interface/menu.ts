@@ -2486,6 +2486,8 @@ export async function runChatLoop(
             ? {
                 evidenceReceiptV2: true,
                 receiptLedgerSnapshot: () => receiptLedgerEntries,
+                ...(providerCooldownUntil.size > 0 ? { cooldownUntil: providerCooldownUntil } : {}),
+                ...(Object.keys(sessionConsumption).length > 0 ? { sessionTokensForReceipt: sessionConsumption } : {}),
               }
             : {}),
           // Native session promotion: pass the flag so work-call can emit telemetry.

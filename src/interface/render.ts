@@ -935,10 +935,33 @@ export async function renderStream(
           if (rc.testsResult !== undefined) {
             lines.push(`  ${dim('Tests:', c)} ${rc.testsResult.command} (${rc.testsResult.outcome}, ${rc.testsResult.durationMs}ms)`);
           }
-          lines.push(`  ${dim('Cost:', c)} $${rc.costUsd.toFixed(4)}`);
-          if (rc.cacheAdjustedUsd !== undefined) {
-            lines.push(`  ${dim('Cache-adjusted:', c)} $${rc.cacheAdjustedUsd.toFixed(4)}`);
+          if (rc.turnTokens !== undefined && rc.turnTokens.length > 0) {
+            for (const tt of rc.turnTokens) {
+              let tokenLine = `  ${dim('Tokens:', c)} ${tt.provider} \u00b7 ${tt.model} \u00b7 ${formatTokens(tt.inputTokens)} in / ${formatTokens(tt.outputTokens)} out`;
+              if (tt.cachedInputTokens > 0) {
+                tokenLine += `, ${formatTokens(tt.cachedInputTokens)} cached`;
+              }
+              lines.push(tokenLine);
+            }
           }
+          if (rc.sessionTokens !== undefined) {
+            const parts: string[] = [];
+            for (const [provider, tokens] of Object.entries(rc.sessionTokens)) {
+              if (typeof tokens === 'number' && tokens > 0) {
+                parts.push(`${provider} ${formatTokens(tokens)}`);
+              }
+            }
+            if (parts.length > 0) {
+              lines.push(`  ${dim('Session:', c)} ${parts.join(', ')}`);
+            }
+          }
+          if (rc.cooldownProviders !== undefined && rc.cooldownProviders.length > 0) {
+            for (const cp of rc.cooldownProviders) {
+              const mins = Math.max(1, Math.ceil(cp.remainingMs / 60_000));
+              lines.push(`  ${dim('Cooldown:', c)} ${cp.provider} cooling ${mins}m`);
+            }
+          }
+          lines.push(`  ${dim('Headroom:', c)} ${rc.headroom}`);
           if (rc.auxCalls !== undefined) {
             let auxLine = `  ${dim('Aux:', c)} ${rc.auxCalls.count} calls, ${rc.auxCalls.inputTokens + rc.auxCalls.outputTokens} tokens`;
             if (rc.auxCalls.cachedInputTokens > 0) {

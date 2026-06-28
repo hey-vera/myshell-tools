@@ -9,6 +9,7 @@
 
 import type { VerifiedState, VerifyOutcome } from './verify.js';
 import type { LedgerEntry } from './types.js';
+import type { ProviderId } from '../providers/port.js';
 
 export type ReceiptTerminal = 'done' | 'blocked' | 'failed' | 'answered';
 export type ReceiptVerdict =
@@ -45,6 +46,19 @@ export interface EvidenceReceiptV2 {
     readonly usd: number;
   };
   readonly intentVersionId?: string;
+  readonly turnTokens?: readonly {
+    readonly provider: ProviderId;
+    readonly model: string;
+    readonly inputTokens: number;
+    readonly outputTokens: number;
+    readonly cachedInputTokens: number;
+  }[];
+  readonly cooldownProviders?: readonly {
+    readonly provider: ProviderId;
+    readonly remainingMs: number;
+  }[];
+  readonly sessionTokens?: Readonly<Partial<Record<ProviderId, number>>>;
+  readonly headroom: 'unknown';
 }
 
 export interface BuildEvidenceReceiptInput {
@@ -57,6 +71,11 @@ export interface BuildEvidenceReceiptInput {
   readonly cacheAccountingV2?: boolean;
   readonly ledgerEntries: readonly LedgerEntry[];
   readonly intentVersionId?: string;
+  readonly cooldownProviders?: readonly {
+    readonly provider: ProviderId;
+    readonly remainingMs: number;
+  }[];
+  readonly sessionTokens?: Readonly<Partial<Record<ProviderId, number>>>;
 }
 
 function mapVerdict(input: BuildEvidenceReceiptInput): ReceiptVerdict {
@@ -129,6 +148,31 @@ function summarizeAuxCalls(
   return result;
 }
 
+function summarizeTurnTokens(
+  entries: readonly LedgerEntry[],
+): EvidenceReceiptV2['turnTokens'] {
+  if (entries.length === 0) return undefined;
+  const groups = new Map<string, {
+    provider: ProviderId;
+    model: string;
+    inputTokens: number;
+    outputTokens: number;
+    cachedInputTokens: number;
+  }>();
+  for (const e of entries) {
+    const key = `${e.provider}\x00${e.model}`;
+    let g = groups.get(key);
+    if (!g) {
+      g = { provider: e.provider, model: e.model, inputTokens: 0, outputTokens: 0, cachedInputTokens: 0 };
+      groups.set(key, g);
+    }
+    g.inputTokens += e.inputTokens;
+    g.outputTokens += e.outputTokens;
+    g.cachedInputTokens += e.cachedInputTokens;
+  }
+  return [...groups.values()];
+}
+
 export function buildEvidenceReceipt(
   input: BuildEvidenceReceiptInput,
 ): EvidenceReceiptV2 | undefined {
@@ -137,6 +181,7 @@ export function buildEvidenceReceipt(
   const verdict = mapVerdict(input);
   const verifyVerdict = input.verifyOutcome?.verified ?? ('not-run' as const);
   const costUsd = input.totalCostUsd;
+  const headroom = 'unknown' as const;
 
   const vo = input.verifyOutcome;
 
@@ -180,6 +225,8 @@ export function buildEvidenceReceipt(
 
   const intentVersionId = input.intentVersionId;
 
+  const turnTokens = summarizeTurnTokens(input.ledgerEntries);
+
   return {
     version,
     terminal,
@@ -192,5 +239,9 @@ export function buildEvidenceReceipt(
     ...(cacheAdjustedUsd !== undefined ? { cacheAdjustedUsd } : {}),
     ...(auxCalls !== undefined ? { auxCalls } : {}),
     ...(intentVersionId !== undefined ? { intentVersionId } : {}),
+    ...(turnTokens !== undefined ? { turnTokens } : {}),
+    ...(input.cooldownProviders !== undefined ? { cooldownProviders: input.cooldownProviders } : {}),
+    ...(input.sessionTokens !== undefined ? { sessionTokens: input.sessionTokens } : {}),
+    headroom,
   };
 }

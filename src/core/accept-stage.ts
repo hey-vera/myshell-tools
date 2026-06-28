@@ -185,6 +185,18 @@ function receiptForFinal(
 ): { readonly receipt?: Extract<CoreEvent, { type: 'final' }>['receipt'] } {
   if (deps.evidenceReceiptV2 !== true) return {};
   const entries = deps.receiptLedgerSnapshot?.() ?? [];
+  const cooldownProviders = (() => {
+    const cd = deps.cooldownUntil;
+    if (!cd || cd.size === 0) return undefined;
+    const now = deps.clock.now();
+    const result: { provider: ProviderId; remainingMs: number }[] = [];
+    for (const [provider, until] of cd) {
+      if (until > now) {
+        result.push({ provider, remainingMs: until - now });
+      }
+    }
+    return result.length > 0 ? result : undefined;
+  })();
   const receipt = buildEvidenceReceipt({
     terminal: final.success ? 'done' : (final.blocked ? 'blocked' : 'failed'),
     success: final.success,
@@ -195,6 +207,8 @@ function receiptForFinal(
     ...(deps.cacheAccountingV2 === true ? { cacheAccountingV2: true as const } : {}),
     ledgerEntries: entries,
     ...(deps.intentVersionId !== undefined ? { intentVersionId: deps.intentVersionId } : {}),
+    ...(cooldownProviders !== undefined ? { cooldownProviders } : {}),
+    ...(deps.sessionTokensForReceipt !== undefined ? { sessionTokens: deps.sessionTokensForReceipt } : {}),
   });
   return receipt !== undefined ? { receipt } : {};
 }
