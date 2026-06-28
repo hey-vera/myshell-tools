@@ -214,10 +214,15 @@ async function runCodeMethodForProvider(
   id: ProviderId,
   suspendStdin?: () => () => void,
   commandGate?: CommandGatePort,
+  accountEnv?: Readonly<Partial<NodeJS.ProcessEnv>>,
 ): Promise<void> {
   const { bin, args, guidance } = LOGIN_CODE_COMMAND[id];
   const cwd = process.cwd();
-  const childEnv = { ...process.env, ...loginPersistentEnv(process.env, cwd, [id]) };
+  const childEnv = {
+    ...process.env,
+    ...loginPersistentEnv(process.env, cwd, [id]),
+    ...(accountEnv ?? {}),
+  };
   out.write(bold(`\nSigning in to ${id} — no localhost needed.\n`, out.color));
   out.write(dim(guidance + '\n', out.color));
   // Release our readline's grip on stdin so the provider CLI is the SOLE reader
@@ -305,6 +310,8 @@ async function finishClaudeSignIn(out: OutputSink): Promise<void> {
  *   browser-failed "retry with code?" prompt reuses the single readline interface.
  * @param opts.suspendStdin - Releases our readline's grip on stdin while the
  *   vendor CLI owns the terminal, then restores it (prevents a paste byte-race).
+ * @param opts.accountEnv - Environment overrides merged last into the child
+ *   process env (e.g. CLAUDE_CONFIG_DIR for account-scoped login).
  */
 export async function runLogin(
   out: OutputSink,
@@ -315,6 +322,7 @@ export async function runLogin(
     suspendStdin?: () => () => void;
     confirm?: (defaultYes: boolean, opts?: { requireExplicit?: boolean }) => Promise<boolean>;
     commandGate?: CommandGatePort;
+    accountEnv?: Readonly<Partial<NodeJS.ProcessEnv>>;
   },
 ): Promise<number> {
   let targets: ProviderId[];
@@ -342,12 +350,16 @@ export async function runLogin(
     if (method === 'code') {
       // stdio:'inherit' hands the terminal to the provider CLI so its OAuth /
       // device / paste flow runs in place.
-      await runCodeMethodForProvider(out, id, opts?.suspendStdin, opts?.commandGate);
+      await runCodeMethodForProvider(out, id, opts?.suspendStdin, opts?.commandGate, opts?.accountEnv);
     } else {
       // Browser method
       const { bin, args } = getLoginCommand(id, 'browser');
       const cwd = process.cwd();
-      const childEnv = { ...process.env, ...loginPersistentEnv(process.env, cwd, [id]) };
+      const childEnv = {
+        ...process.env,
+        ...loginPersistentEnv(process.env, cwd, [id]),
+        ...(opts?.accountEnv ?? {}),
+      };
       out.write(bold(`\nSigning in to ${id} — a browser window may open…\n`, out.color));
       // Prime the user for the classic localhost trap BEFORE it happens, so a
       // "can't be reached" redirect error reads as a known step, not a failure.
@@ -395,7 +407,7 @@ export async function runLogin(
               ? await opts.confirm(true)
               : shouldRetryWithCode(await opts.readLine());
           if (retryWithCode) {
-            await runCodeMethodForProvider(out, id, opts.suspendStdin, opts.commandGate);
+            await runCodeMethodForProvider(out, id, opts.suspendStdin, opts.commandGate, opts.accountEnv);
           } else {
             out.write(
               dim(

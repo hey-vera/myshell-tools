@@ -13,9 +13,15 @@ import {
   writeSubscriptions,
   updateSubscriptions,
   newOpencodeAccount,
+  newClaudeAccount,
   writeOpencodeAuthJson,
   deleteOpencodeAccountHome,
+  deleteAccountHome,
+  accountEnvFor,
+  subscriptionAccountKind,
+  getClaudeAccountHome,
   type OpencodeSubscriptionAccount,
+  type SubscriptionAccount,
   type SubscriptionsFileV1,
 } from '../../src/infra/subscriptions.ts';
 
@@ -365,5 +371,297 @@ describe('deleteOpencodeAccountHome', () => {
       deleteOpencodeAccountHome(account, stateHome),
       /outside accounts root/,
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Half A: generalized model tests
+// ---------------------------------------------------------------------------
+
+describe('accountEnvFor', () => {
+  it('claude account → CLAUDE_CONFIG_DIR', () => {
+    const account = newClaudeAccount({
+      id: 'acct_c1',
+      label: 'C1',
+      nowIso: '2026-01-01T00:00:00.000Z',
+      stateHome,
+    });
+    const env = accountEnvFor(account);
+    assert.equal(env['CLAUDE_CONFIG_DIR'], account.homeDir);
+    assert.equal(env['CODEX_HOME'], undefined);
+    assert.equal(env['GROK_HOME'], undefined);
+    assert.equal(env['XDG_DATA_HOME'], undefined);
+  });
+
+  it('codex account → CODEX_HOME', () => {
+    const account: SubscriptionAccount = {
+      id: 'acct_cx1',
+      provider: 'codex',
+      kind: 'oauth-sub',
+      label: 'CX1',
+      homeDir: '/tmp/codex-home',
+      priority: 'medium',
+      priorityWeight: 100,
+      enabled: true,
+      createdAt: '2026-01-01T00:00:00.000Z',
+    };
+    const env = accountEnvFor(account);
+    assert.equal(env['CODEX_HOME'], '/tmp/codex-home');
+    assert.equal(env['CLAUDE_CONFIG_DIR'], undefined);
+    assert.equal(env['XDG_DATA_HOME'], undefined);
+  });
+
+  it('grok account → GROK_HOME', () => {
+    const account: SubscriptionAccount = {
+      id: 'acct_g1',
+      provider: 'grok',
+      kind: 'oauth-sub',
+      label: 'G1',
+      homeDir: '/tmp/grok-home',
+      priority: 'medium',
+      priorityWeight: 100,
+      enabled: true,
+      createdAt: '2026-01-01T00:00:00.000Z',
+    };
+    const env = accountEnvFor(account);
+    assert.equal(env['GROK_HOME'], '/tmp/grok-home');
+    assert.equal(env['CLAUDE_CONFIG_DIR'], undefined);
+    assert.equal(env['XDG_DATA_HOME'], undefined);
+  });
+
+  it('opencode account → XDG_DATA_HOME (unchanged Slice 1 behavior)', () => {
+    const account = newOpencodeAccount({
+      id: 'acct_o1',
+      label: 'O1',
+      pool: 'zen',
+      nowIso: '2026-01-01T00:00:00.000Z',
+      stateHome,
+    });
+    const env = accountEnvFor(account);
+    assert.equal(env['XDG_DATA_HOME'], account.homeDir);
+    assert.equal(env['CLAUDE_CONFIG_DIR'], undefined);
+  });
+});
+
+describe('newClaudeAccount', () => {
+  it('creates a Claude account with correct provider and kind', () => {
+    const acc = newClaudeAccount({
+      id: 'acct_c2',
+      label: 'Claude Test',
+      nowIso: '2026-01-01T00:00:00.000Z',
+      stateHome,
+    });
+    assert.equal(acc.provider, 'claude');
+    assert.equal(acc.kind, 'oauth-sub');
+    assert.equal(acc.priority, 'medium');
+    assert.equal(acc.priorityWeight, 100);
+    assert.equal(acc.enabled, true);
+    assert.equal(acc.status, 'unknown');
+  });
+
+  it('disabled priority → enabled false', () => {
+    const acc = newClaudeAccount({
+      id: 'acct_c3',
+      label: 'Claude Disabled',
+      priority: 'disabled',
+      nowIso: '2026-01-01T00:00:00.000Z',
+      stateHome,
+    });
+    assert.equal(acc.priority, 'disabled');
+    assert.equal(acc.enabled, false);
+  });
+
+  it('homeDir uses provider-homes/claude path', () => {
+    const acc = newClaudeAccount({
+      id: 'acct_c4',
+      label: 'C4',
+      nowIso: '2026-01-01T00:00:00.000Z',
+      stateHome,
+    });
+    assert.ok(acc.homeDir.includes('provider-homes'));
+    assert.ok(acc.homeDir.includes('claude'));
+    assert.ok(acc.homeDir.includes('acct_c4'));
+  });
+});
+
+describe('subscriptionAccountKind', () => {
+  it('opencode without kind → api-key', () => {
+    const account: OpencodeSubscriptionAccount = {
+      id: 'acct_ok',
+      provider: 'opencode',
+      label: 'NoKind',
+      pool: 'zen',
+      homeDir: '/tmp',
+      priority: 'medium',
+      priorityWeight: 100,
+      enabled: true,
+      createdAt: '2026-01-01T00:00:00.000Z',
+    };
+    assert.equal(subscriptionAccountKind(account), 'api-key');
+  });
+
+  it('opencode with kind → returns kind', () => {
+    const account: OpencodeSubscriptionAccount = {
+      id: 'acct_ok2',
+      provider: 'opencode',
+      kind: 'api-key',
+      label: 'WithKind',
+      pool: 'zen',
+      homeDir: '/tmp',
+      priority: 'medium',
+      priorityWeight: 100,
+      enabled: true,
+      createdAt: '2026-01-01T00:00:00.000Z',
+    };
+    assert.equal(subscriptionAccountKind(account), 'api-key');
+  });
+
+  it('claude → oauth-sub', () => {
+    const account = newClaudeAccount({
+      id: 'acct_ck',
+      label: 'CK',
+      nowIso: '2026-01-01T00:00:00.000Z',
+      stateHome,
+    });
+    assert.equal(subscriptionAccountKind(account), 'oauth-sub');
+  });
+});
+
+describe('mixed accounts read/write', () => {
+  it('reads legacy opencode-only file without kind', async () => {
+    const filePath = getSubscriptionsPath(stateHome);
+    const legacy = {
+      version: 1,
+      accounts: [
+        {
+          id: 'acct_legacy',
+          provider: 'opencode',
+          label: 'Legacy',
+          pool: 'zen',
+          homeDir: '/tmp/legacy',
+          priority: 'medium',
+          priorityWeight: 100,
+          enabled: true,
+          createdAt: '2026-01-01T00:00:00.000Z',
+        },
+      ],
+    };
+    await writeFile(filePath, JSON.stringify(legacy));
+    const result = await readSubscriptions(stateHome);
+    assert.equal(result.accounts.length, 1);
+    const a = result.accounts[0];
+    assert.ok(a !== undefined);
+    assert.equal(a.provider, 'opencode');
+    assert.equal(subscriptionAccountKind(a), 'api-key');
+  });
+
+  it('mixed claude + opencode in one file round-trips', async () => {
+    const claudeAcc = newClaudeAccount({
+      id: 'acct_cl1',
+      label: 'Claude Max',
+      priority: 'high',
+      expiresAt: '2026-12-31T00:00:00.000Z',
+      nowIso: '2026-01-01T00:00:00.000Z',
+      stateHome,
+    });
+    const opencodeAcc = newOpencodeAccount({
+      id: 'acct_op1',
+      label: 'OpenCode Zen',
+      pool: 'zen',
+      nowIso: '2026-01-01T00:00:00.000Z',
+      stateHome,
+    });
+
+    const file: SubscriptionsFileV1 = {
+      version: 1,
+      accounts: [claudeAcc, opencodeAcc],
+    };
+    await writeSubscriptions(file, stateHome);
+    const result = await readSubscriptions(stateHome);
+    assert.equal(result.accounts.length, 2);
+
+    const claude = result.accounts.find((a) => a.provider === 'claude');
+    assert.ok(claude !== undefined);
+    assert.equal(claude.label, 'Claude Max');
+    assert.equal(claude.priority, 'high');
+
+    const opencode = result.accounts.find((a) => a.provider === 'opencode');
+    assert.ok(opencode !== undefined);
+    assert.equal(opencode.label, 'OpenCode Zen');
+  });
+
+  it('migration: old file with only opencode accounts loads unchanged', async () => {
+    const oldFile = {
+      version: 1,
+      accounts: [
+        {
+          id: 'acct_old1',
+          provider: 'opencode',
+          label: 'Old Zen',
+          pool: 'zen',
+          homeDir: '/tmp/old-zen',
+          priority: 'high',
+          priorityWeight: 200,
+          enabled: true,
+          createdAt: '2026-01-01T00:00:00.000Z',
+          expiresAt: '2026-12-31T00:00:00.000Z',
+        },
+      ],
+    };
+    await writeSubscriptions(oldFile as SubscriptionsFileV1, stateHome);
+    const result = await readSubscriptions(stateHome);
+    assert.equal(result.accounts.length, 1);
+    assert.equal(result.accounts[0]!.label, 'Old Zen');
+    assert.equal(subscriptionAccountKind(result.accounts[0]!), 'api-key');
+
+    // Verify no kind was injected during read
+    const raw = JSON.parse(
+      await readFile(getSubscriptionsPath(stateHome), 'utf8'),
+    ) as { accounts: Array<Record<string, unknown>> };
+    assert.equal(raw.accounts[0]!['kind'], undefined);
+  });
+});
+
+describe('deleteAccountHome', () => {
+  it('deletes scoped provider-homes directory', async () => {
+    const account = newClaudeAccount({
+      id: 'acct_del2',
+      label: 'DeleteMe',
+      nowIso: '2026-01-01T00:00:00.000Z',
+      stateHome,
+    });
+    // Create the home dir
+    await mkdir(account.homeDir, { recursive: true });
+    await assert.doesNotReject(fsStat(account.homeDir));
+
+    await deleteAccountHome(account, stateHome);
+    await assert.rejects(fsStat(account.homeDir), { code: 'ENOENT' });
+  });
+
+  it('refuses path outside accounts root', async () => {
+    const account: SubscriptionAccount = {
+      id: 'acct_bad2',
+      provider: 'claude',
+      kind: 'oauth-sub',
+      label: 'Bad',
+      homeDir: join(tmpdir(), 'outside-claude'),
+      priority: 'medium',
+      priorityWeight: 100,
+      enabled: true,
+      createdAt: '2026-01-01T00:00:00.000Z',
+    };
+    await assert.rejects(
+      deleteAccountHome(account, stateHome),
+      /outside accounts root/,
+    );
+  });
+});
+
+describe('getClaudeAccountHome', () => {
+  it('returns scoped path under provider-homes/claude', () => {
+    const p = getClaudeAccountHome('acct_ch1', stateHome);
+    assert.ok(p.includes('provider-homes'));
+    assert.ok(p.includes('claude'));
+    assert.ok(p.endsWith('acct_ch1'));
   });
 });

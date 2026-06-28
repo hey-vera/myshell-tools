@@ -1,83 +1,139 @@
 import type { OutputSink } from './render.js';
 import type { Confirm } from './menu-key-confirm.js';
 import { readMenuKey } from './menu-key-confirm.js';
-import { readSecretLine } from './menu-secret-input.js';
-import { dim, bold, yellow } from '../ui/theme.js';
-import type { ReadlineEchoController } from './menu-readline.js';
+import { bold, yellow, green } from '../ui/theme.js';
 import type { Clock } from '../core/types.js';
+import type { LoginMethod } from '../commands/login.js';
+import type { CommandGatePort } from '../core/command-gate.js';
 import {
-  type OpencodeSubscriptionAccount,
+  type ClaudeSubscriptionAccount,
+  type SubscriptionAccount,
   type AccountPriority,
-  type OpencodePool,
   readSubscriptions,
   updateSubscriptions,
-  newOpencodeAccount,
-  writeOpencodeAuthJson,
-  deleteOpencodeAccountHome,
+  newClaudeAccount,
+  deleteAccountHome,
   priorityWeight,
-  type SubscriptionAccount,
+  subscriptionAccountKind,
 } from '../infra/subscriptions.js';
+import { detectSubscriptionAccount } from '../infra/subscription-detect.js';
+import { mkdir } from 'node:fs/promises';
 
-function isOpencodeAccount(a: SubscriptionAccount): a is OpencodeSubscriptionAccount {
-  return a.provider === 'opencode';
+type LoginFn = (
+  out: OutputSink,
+  providerArg?: string,
+  opts?: {
+    method?: LoginMethod;
+    readLine?: () => Promise<string | null>;
+    suspendStdin?: () => () => void;
+    confirm?: (defaultYes: boolean, opts?: { requireExplicit?: boolean }) => Promise<boolean>;
+    commandGate?: CommandGatePort;
+    accountEnv?: Readonly<Partial<NodeJS.ProcessEnv>>;
+  },
+) => Promise<number>;
+
+function isClaudeAccount(a: SubscriptionAccount): a is ClaudeSubscriptionAccount {
+  return a.provider === 'claude' && subscriptionAccountKind(a) === 'oauth-sub';
 }
 
-function formatAccountRow(acc: OpencodeSubscriptionAccount, index: number): string {
+function formatAccountRow(acc: SubscriptionAccount, index: number): string {
   const num = index.toString().padStart(2);
   const label = acc.label.padEnd(21);
-  const pool = acc.pool.padEnd(4);
   const priority = acc.priority.padEnd(8);
   const expiry = acc.expiresAt ? acc.expiresAt.slice(0, 10).padEnd(12) : '-'.padEnd(12);
-  const status = acc.enabled ? 'active' : 'disabled';
-  return `  ${num}  ${label}  ${pool}  ${priority}  ${expiry}  ${status}`;
+  const status = acc.enabled === false ? 'disabled'
+    : acc.status === 'expired' ? 'expired'
+    : acc.status === 'auth-failed' ? 'auth-failed'
+    : acc.status === 'active' ? 'active'
+    : 'unknown';
+  return `  ${num}  ${label}  ${priority}  ${expiry}  ${status}`;
 }
 
-function formatPoolLabel(pool: OpencodePool): string {
-  return pool === 'go' ? 'Go' : 'Zen';
-}
-
-async function selectPoolScreen(
+async function createClaudeAccountFlow(
   out: OutputSink,
   readLine: () => Promise<string | null>,
-  inkReadKey?: () => Promise<string>,
-): Promise<OpencodePool | null> {
-  out.write('\nChoose pool:\n\n');
-  out.write('  [z] Zen\n');
-  out.write('  [g] Go\n');
-  out.write('  [b] back\n\n');
-  out.write('> ');
-  const key = await readMenuKey(out, readLine, undefined, false, inkReadKey);
-  if (key === 'z') return 'zen';
-  if (key === 'g') return 'go';
-  return null;
-}
-
-async function createAccountFlow(
-  out: OutputSink,
-  readLine: () => Promise<string | null>,
-  readlineEcho: ReadlineEchoController,
+  confirm: Confirm,
   clock: Clock,
-  inkReadKey?: () => Promise<string>,
+  login: LoginFn,
+  suspendStdin?: (() => () => void) | undefined,
+  inkReadKey?: (() => Promise<string>) | undefined,
+  platform: NodeJS.Platform = process.platform,
 ): Promise<void> {
-  // Step 1: Read API key (hidden)
-  const setEchoMuted = (muted: boolean): void => { readlineEcho.muted = muted; };
-  const apiKey = await readSecretLine({
-    out,
-    readLine,
-    setEchoMuted,
-    prompt: 'Paste OpenCode API key: ',
-  });
+  const file = await readSubscriptions();
+  const existingClaudeOauth = file.accounts.filter(isClaudeAccount);
 
-  if (apiKey === null || apiKey.length === 0) {
-    out.write(dim('Cancelled.', out.color) + '\n');
+  // macOS guard: block a 2nd claude oauth account on darwin
+  if (platform === 'darwin' && existingClaudeOauth.length >= 1) {
+    out.write(
+      yellow(
+        'Claude Code OAuth accounts cannot be isolated on macOS because Claude ' +
+        'stores OAuth tokens in a shared Keychain service. Keep the existing ' +
+        'Claude account or delete it before creating another.',
+        out.color,
+      ) + '\n',
+    );
     return;
   }
 
-  // Step 2: Choose pool
-  const pool = await selectPoolScreen(out, readLine, inkReadKey);
-  if (pool === null) return;
+  const rawId = clock.uuid();
+  const safeId = 'acct_' + rawId.replace(/[^a-zA-Z0-9_-]/g, '');
 
-  // Step 3: Optional expiry
+  const defaultLabel = `Claude ${existingClaudeOauth.length + 1}`;
+  const account = newClaudeAccount({
+    id: safeId,
+    label: defaultLabel,
+    nowIso: clock.isoNow(),
+  });
+
+  try {
+    await mkdir(account.homeDir, { recursive: true, mode: 0o700 });
+  } catch {
+    out.write(yellow('Failed to create account directory.', out.color) + '\n');
+    return;
+  }
+
+  // Run Claude OAuth login with account-scoped env
+  out.write(bold('\nStarting Claude sign-in for this account...\n', out.color));
+  await login(out, 'claude', {
+    readLine,
+    confirm,
+    ...(suspendStdin !== undefined ? { suspendStdin } : {}),
+    accountEnv: { CLAUDE_CONFIG_DIR: account.homeDir },
+  });
+
+  // Verify success by detecting with the scoped home
+  const detection = await detectSubscriptionAccount({
+    account,
+    cwd: process.cwd(),
+    nowMs: clock.now(),
+  });
+
+  if (detection.status !== 'active') {
+    out.write(
+      yellow(
+        'Claude sign-in did not authenticate with this account. ' +
+        'Auth may have failed or been cancelled.',
+        out.color,
+      ) + '\n',
+    );
+    // Clean up the scoped home
+    try {
+      await deleteAccountHome(account);
+    } catch {
+      // best-effort
+    }
+    return;
+  }
+
+  // Prompt optional label
+  out.write(`Label (Enter for default "${defaultLabel}"): `);
+  out.flush?.();
+  let label = (await readLine())?.trim() ?? '';
+  if (label.length === 0) {
+    label = defaultLabel;
+  }
+
+  // Prompt optional expiry
   out.write('\nExpiry date (YYYY-MM-DD, or Enter to skip): ');
   out.flush?.();
   const expiryRaw = await readLine();
@@ -92,54 +148,27 @@ async function createAccountFlow(
     }
   }
 
-  // Step 4: Optional label
-  const poolLabel = formatPoolLabel(pool);
-  out.write(`Label (Enter for default "OpenCode ${poolLabel}"): `);
-  out.flush?.();
-  let label = (await readLine())?.trim() ?? '';
-  if (label.length === 0) {
-    let subsFile: { version: 1; accounts: readonly SubscriptionAccount[] };
-    try {
-      subsFile = await readSubscriptions();
-    } catch {
-      subsFile = { version: 1, accounts: [] };
-    }
-    const samePool = subsFile.accounts.filter((a) => isOpencodeAccount(a) && a.pool === pool).length;
-    label = `OpenCode ${poolLabel} ${samePool + 1}`;
-  }
-
-  // Step 5: Create account ID
-  const rawId = clock.uuid();
-  const safeId = 'acct_' + rawId.replace(/[^a-zA-Z0-9_-]/g, '');
-
-  // Step 6: Build + write auth + append record
-  const account = newOpencodeAccount({
-    id: safeId,
+  // Build final account record
+  const finalAccount: ClaudeSubscriptionAccount = {
+    ...account,
     label,
-    pool,
+    status: 'active',
+    plan: detection.plan,
     ...(expiresAt !== undefined ? { expiresAt } : {}),
-    nowIso: clock.isoNow(),
-  });
+    ...(detection.expiresAt !== undefined ? { expiresAt: detection.expiresAt } : {}),
+  };
 
   try {
-    await writeOpencodeAuthJson({ account, apiKey });
-  } catch {
-    out.write(yellow('Failed to write auth.json.', out.color) + '\n');
-    return;
-  }
-
-  try {
-    await updateSubscriptions((file) => ({
-      ...file,
-      accounts: [...file.accounts, account],
+    await updateSubscriptions((f) => ({
+      ...f,
+      accounts: [...f.accounts, finalAccount],
     }));
-    out.write(`Account "${label}" created.\n`);
+    out.write(green(`Account "${label}" created.\n`, out.color));
   } catch {
-    // Best-effort cleanup of the auth we already wrote
     try {
-      await deleteOpencodeAccountHome(account);
+      await deleteAccountHome(account);
     } catch {
-      // ignore cleanup failures
+      // best-effort
     }
     out.write(yellow('Failed to save account record.', out.color) + '\n');
   }
@@ -148,12 +177,13 @@ async function createAccountFlow(
 async function editAccountFlow(
   out: OutputSink,
   readLine: () => Promise<string | null>,
-  readlineEcho: ReadlineEchoController,
   confirm: Confirm,
-  accounts: readonly OpencodeSubscriptionAccount[],
-  inkReadKey?: () => Promise<string>,
+  accounts: readonly SubscriptionAccount[],
+  login: LoginFn,
+  suspendStdin?: (() => () => void) | undefined,
+  inkReadKey?: (() => Promise<string>) | undefined,
 ): Promise<void> {
-  let selected: OpencodeSubscriptionAccount | undefined;
+  let selected: SubscriptionAccount | undefined;
   if (accounts.length === 1) {
     const first = accounts[0];
     if (first === undefined) return;
@@ -172,34 +202,35 @@ async function editAccountFlow(
     selected = picked;
   }
 
-  await editAccountScreen(
-    out,
-    readLine,
-    readlineEcho,
-    confirm,
-    selected,
-    inkReadKey,
-  );
+  await editAccountScreen(out, readLine, confirm, selected, login, suspendStdin, inkReadKey);
 }
 
 async function editAccountScreen(
   out: OutputSink,
   readLine: () => Promise<string | null>,
-  readlineEcho: ReadlineEchoController,
   confirm: Confirm,
-  account: OpencodeSubscriptionAccount,
-  inkReadKey?: () => Promise<string>,
+  account: SubscriptionAccount,
+  login: LoginFn,
+  suspendStdin?: (() => () => void) | undefined,
+  inkReadKey?: (() => Promise<string>) | undefined,
 ): Promise<void> {
   for (;;) {
     const expiryDisplay = account.expiresAt ? account.expiresAt.slice(0, 10) : '-';
-    out.write(`\n${bold('Edit OpenCode Account: ' + account.label, out.color)}\n\n`);
-    out.write(`  pool: ${account.pool}\n`);
+    const planDisplay = account.plan ?? '-';
+    const statusDisplay = account.enabled === false ? 'disabled'
+      : account.status ?? 'unknown';
+    out.write(`\n${bold('Edit Claude Account: ' + account.label, out.color)}\n\n`);
+    out.write(`  provider: claude\n`);
+    out.write(`  id: ${account.id}\n`);
+    out.write(`  status: ${statusDisplay}\n`);
     out.write(`  priority: ${account.priority}\n`);
     out.write(`  expiry: ${expiryDisplay}\n`);
-    out.write(`  enabled: ${account.enabled ? 'yes' : 'no'}\n\n`);
+    out.write(`  enabled: ${account.enabled ? 'yes' : 'no'}\n`);
+    out.write(`  plan: ${planDisplay}\n\n`);
     out.write('  [p] priority\n');
     out.write('  [x] set/clear expiry\n');
     out.write('  [t] toggle enabled\n');
+    out.write('  [r] re-auth\n');
     out.write('  [d] delete\n');
     out.write('  [b] back\n\n');
     out.write('> ');
@@ -240,6 +271,37 @@ async function editAccountScreen(
       await applyAccountUpdate(account.id, updateObj);
       const updated = await findAccount(account.id);
       if (updated) account = updated;
+    } else if (key === 'r') {
+      out.write(bold('\nRe-authenticating Claude account...\n', out.color));
+      await login(out, 'claude', {
+        readLine,
+        confirm,
+        ...(suspendStdin !== undefined ? { suspendStdin } : {}),
+        accountEnv: { CLAUDE_CONFIG_DIR: account.homeDir },
+      });
+
+      const detection = await detectSubscriptionAccount({
+        account,
+        cwd: process.cwd(),
+        nowMs: Date.now(),
+      });
+
+      const updateObj: Record<string, unknown> = {
+        status: detection.status,
+        plan: detection.plan,
+        lastUsedAt: new Date().toISOString(),
+      };
+      if (detection.expiresAt !== undefined) {
+        updateObj.expiresAt = detection.expiresAt;
+      }
+      await applyAccountUpdate(account.id, updateObj);
+      const updated = await findAccount(account.id);
+      if (updated) account = updated;
+      out.write(
+        detection.status === 'active'
+          ? green('Re-auth successful.\n', out.color)
+          : yellow('Re-auth did not authenticate.\n', out.color) + '\n',
+      );
     } else if (key === 'd') {
       out.write(`\n${yellow('Delete account "' + account.label + '"?', out.color)} `);
       const yes = await confirm(false, { requireExplicit: true });
@@ -254,7 +316,7 @@ async function editAccountScreen(
           return;
         }
         try {
-          await deleteOpencodeAccountHome(account);
+          await deleteAccountHome(account);
         } catch {
           // best-effort
         }
@@ -334,24 +396,28 @@ async function applyAccountUpdate(
 
 async function findAccount(
   accountId: string,
-): Promise<OpencodeSubscriptionAccount | undefined> {
+): Promise<SubscriptionAccount | undefined> {
   try {
     const file = await readSubscriptions();
-    const found = file.accounts.find((a) => a.id === accountId);
-    return found !== undefined && isOpencodeAccount(found) ? found : undefined;
+    return file.accounts.find((a) => a.id === accountId);
   } catch {
     return undefined;
   }
 }
 
-export async function runOpencodeAccountsMenu(
+export async function runClaudeAccountsMenu(
   out: OutputSink,
   readLine: () => Promise<string | null>,
-  readlineEcho: ReadlineEchoController,
   confirm: Confirm,
   clock: Clock,
-  inkReadKey?: () => Promise<string>,
+  deps: {
+    login: LoginFn;
+    suspendStdin?: (() => () => void) | undefined;
+    inkReadKey?: (() => Promise<string>) | undefined;
+    cwd?: string | undefined;
+  },
 ): Promise<void> {
+  const { login, suspendStdin, inkReadKey } = deps;
   for (;;) {
     let allAccounts: readonly SubscriptionAccount[];
     try {
@@ -360,15 +426,15 @@ export async function runOpencodeAccountsMenu(
     } catch {
       allAccounts = [];
     }
-    const accounts = allAccounts.filter(isOpencodeAccount);
+    const accounts = allAccounts.filter(isClaudeAccount);
 
-    out.write('\n' + bold('OpenCode Accounts', out.color) + '\n');
+    out.write('\n' + bold('Claude Accounts', out.color) + '\n');
 
     if (accounts.length === 0) {
       out.write('\n  (no accounts)\n');
     } else {
       out.write('\n');
-      out.write('  #  label                 pool  priority  expiry       status\n');
+      out.write('  #  label                 priority  expiry       status\n');
       let index = 1;
       for (const acc of accounts) {
         out.write(formatAccountRow(acc, index) + '\n');
@@ -388,9 +454,25 @@ export async function runOpencodeAccountsMenu(
     if (key === null || key === 'b') return;
 
     if (key === 'c') {
-      await createAccountFlow(out, readLine, readlineEcho, clock, inkReadKey);
+      await createClaudeAccountFlow(
+        out,
+        readLine,
+        confirm,
+        clock,
+        login,
+        suspendStdin,
+        inkReadKey,
+      );
     } else if (key === 'e' && accounts.length > 0) {
-      await editAccountFlow(out, readLine, readlineEcho, confirm, accounts, inkReadKey);
+      await editAccountFlow(
+        out,
+        readLine,
+        confirm,
+        accounts,
+        login,
+        suspendStdin,
+        inkReadKey,
+      );
     }
   }
 }

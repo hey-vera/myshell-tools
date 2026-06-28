@@ -271,6 +271,7 @@ import {
   runSettings,
 } from './menu-settings.js';
 import { runOpencodeAccountsMenu } from './menu-opencode-accounts.js';
+import { runClaudeAccountsMenu } from './menu-claude-accounts.js';
 import { resolveOversight, shouldPauseBeforeLaunch, standingRuleCheckpoint } from './ui/oversight.js';
 import type { Oversight } from './ui/oversight.js';
 import {
@@ -2749,7 +2750,11 @@ export async function runChatLoop(
         if (!subscriptionsEnabled(process.env, mutableCtx.config)) return base;
         try {
           const subs = await readSubscriptions();
-          const accounts = subs.accounts;
+          const allAccounts = subs.accounts;
+          const accounts = allAccounts.filter(
+            (a): a is import('../infra/subscriptions.js').OpencodeSubscriptionAccount =>
+              a.provider === 'opencode',
+          );
           if (accounts.length === 0) return base;
           const onAccountUsed = async (
             accountId: string,
@@ -7013,12 +7018,20 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
         continue;
       }
 
-      // ---- [j] Login Claude ---------------------------------------------------
-      // loginFn auto-detects the right sign-in method (code in containers/SSH,
-      // browser on a desktop). Force either with `myshell-tools login claude --code|--browser`.
-      // Pass readLine so the token-paste prompt shares the menu's single reader
-      // (avoids creating a second readline interface that would double-consume stdin).
+      // ---- [j] Claude Accounts / Login Claude --------------------------------
+      // When the experimental subscriptions flag is on, opens the Claude
+      // Accounts management screen. When off, runs the existing single-login flow.
       if (key === 'j') {
+        if (subscriptionsEnabled(process.env, mutableCtx.config)) {
+          await runClaudeAccountsMenu(out, readLine, confirm, ctx.clock, {
+            login: loginFn,
+            suspendStdin,
+            inkReadKey,
+            cwd: ctx.cwd,
+          });
+          await refreshEnvironmentIfStale(true);
+          continue;
+        }
         await loginFn(out, 'claude', {
           readLine,
           confirm,

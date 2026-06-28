@@ -1,5 +1,5 @@
 /**
- * src/core/opencode-account-routing.ts — OpenCode account-aware routing.
+ * src/core/opencode-account-routing.ts — subscription-account-aware routing.
  *
  * Pure pool detection + account selection helpers. No I/O, no env/process, no
  * random. The caller owns the mutable cooldown/session maps and the Clock;
@@ -15,6 +15,8 @@
 import type {
   OpencodePool,
   OpencodeSubscriptionAccount,
+  SubscriptionAccount,
+  SubscriptionProvider,
 } from '../infra/subscriptions.js';
 
 /**
@@ -30,42 +32,52 @@ export function opencodePoolForModel(model: string): OpencodePool | null {
 }
 
 /**
- * Select the best OpenCode account from the matching pool for the current turn.
+ * Select the best subscription account for the given provider for the current turn.
  *
  * Returns `null` when no eligible account exists — the caller MUST fall back to
- * the current global OpenCode path with NO account env injection.
+ * the provider's global path with NO account env injection.
  *
  * Algorithm:
- *  1. Keep only accounts matching `pool`, enabled, not disabled-priority,
+ *  1. Keep only accounts matching `provider`, enabled, not disabled-priority,
  *     not expired, priorityWeight > 0.
- *  2. Exclude cooling accounts (cooldownUntil > nowMs).
- *  3. If all eligible are cooling → never-strand: ignore cooldown for this
- *     selection (mirrors src/core/cooldown.ts:39-59).
- *  4. Pick the minimum normalizedLoad =
+ *  2. For opencode, additionally filter by `pool`.
+ *  3. Exclude cooling accounts (cooldownUntil > nowMs).
+ *  4. If all eligible are cooling → never-strand: ignore cooldown for this
+ *     selection.
+ *  5. Pick the minimum normalizedLoad =
  *       (sessionTokensByAccount[id] ?? 0) / priorityWeight.
- *  5. Stable tiebreaker: createdAt, then id lexical.
+ *  6. Stable tiebreaker: createdAt, then id lexical.
  */
-export function selectOpencodeAccount(input: {
-  accounts: readonly OpencodeSubscriptionAccount[];
-  pool: OpencodePool;
+export function selectSubscriptionAccount<T extends SubscriptionAccount>(input: {
+  accounts: readonly T[];
+  provider: SubscriptionProvider;
+  pool?: OpencodePool;
   nowMs: number;
   cooldownUntil: ReadonlyMap<string, number>;
   sessionTokensByAccount: Readonly<Record<string, number>>;
-}): OpencodeSubscriptionAccount | null {
-  const { accounts, pool, nowMs, cooldownUntil, sessionTokensByAccount } =
-    input;
+}): T | null {
+  const {
+    accounts,
+    provider,
+    pool,
+    nowMs,
+    cooldownUntil,
+    sessionTokensByAccount,
+  } = input;
 
-  // Step 1 — filter to eligible candidates
-  const eligible: Array<OpencodeSubscriptionAccount & { load: number }> = [];
+  const eligible: Array<T & { load: number }> = [];
   for (const a of accounts) {
     if (
-      a.provider === 'opencode' &&
-      a.pool === pool &&
+      a.provider === provider &&
       a.enabled === true &&
       a.priority !== 'disabled' &&
       a.priorityWeight > 0 &&
       (a.expiresAt === undefined || new Date(a.expiresAt).getTime() > nowMs)
     ) {
+      if (provider === 'opencode') {
+        const opencode = a as unknown as OpencodeSubscriptionAccount;
+        if (pool !== undefined && opencode.pool !== pool) continue;
+      }
       eligible.push({
         ...a,
         load:
@@ -76,16 +88,13 @@ export function selectOpencodeAccount(input: {
 
   if (eligible.length === 0) return null;
 
-  // Step 2 — split by cooldown
   const notCooling = eligible.filter((a) => {
     const until = cooldownUntil.get(a.id);
     return until === undefined || until <= nowMs;
   });
 
-  // Step 3 — never-strand: if all are cooling, ignore cooldown
   const candidates = notCooling.length > 0 ? notCooling : eligible;
 
-  // Step 4 + 5 — pick minimum load then stable tiebreaker
   candidates.sort((a, b) => {
     if (a.load !== b.load) return a.load - b.load;
     if (a.createdAt < b.createdAt) return -1;
@@ -96,4 +105,25 @@ export function selectOpencodeAccount(input: {
   });
 
   return candidates[0] ?? null;
+}
+
+/**
+ * Compatibility wrapper: select the best OpenCode account from the matching pool.
+ * Delegates to {@link selectSubscriptionAccount} with `provider: 'opencode'`.
+ */
+export function selectOpencodeAccount(input: {
+  accounts: readonly OpencodeSubscriptionAccount[];
+  pool: OpencodePool;
+  nowMs: number;
+  cooldownUntil: ReadonlyMap<string, number>;
+  sessionTokensByAccount: Readonly<Record<string, number>>;
+}): OpencodeSubscriptionAccount | null {
+  return selectSubscriptionAccount({
+    accounts: input.accounts,
+    provider: 'opencode',
+    pool: input.pool,
+    nowMs: input.nowMs,
+    cooldownUntil: input.cooldownUntil,
+    sessionTokensByAccount: input.sessionTokensByAccount,
+  });
 }
