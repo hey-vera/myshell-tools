@@ -2,8 +2,8 @@
  * src/interface/ui/account-aux-flag.ts — pure helper for whether
  * MYSHELL_ACCOUNT_AUX auxiliary-model ledger accounting is active.
  *
- * Pure (no I/O, no React/Ink), same pattern as every sibling flag. DEFAULT OFF.
- * Returns true only for explicit opt-IN.
+ * Pure (no I/O, no React/Ink), same pattern as every sibling flag. DEFAULT ON.
+ * Returns false only for explicit opt-out.
  */
 
 const ON = new Set(['1', 'true', 'on', 'yes']);
@@ -17,8 +17,8 @@ export function accountAuxEnabled(env: NodeJS.ProcessEnv | undefined): boolean {
       if (ON.has(cleaned)) return true;
       if (OFF.has(cleaned)) return false;
     }
-    return false;
+    return true;
   } catch {
-    return false;
+    return true;
   }
 }

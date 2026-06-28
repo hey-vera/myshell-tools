@@ -2,8 +2,8 @@
  * src/interface/ui/correction-fork-flag.ts — pure helper for whether
  * MYSHELL_CORRECTION_FORK_V1 correction-fork branching is active.
  *
- * Pure (no I/O, no React/Ink), same pattern as every sibling flag. DEFAULT OFF.
- * Returns true only for explicit opt-IN. Requires MYSHELL_INTENT_STORE_V1 to also
+ * Pure (no I/O, no React/Ink), same pattern as every sibling flag. DEFAULT ON.
+ * Returns false only for explicit opt-out. Requires MYSHELL_INTENT_STORE_V1 to also
  * be on at the call site; this helper only checks its own flag.
  */
 
@@ -18,8 +18,8 @@ export function correctionForkV1Enabled(env: NodeJS.ProcessEnv | undefined): boo
       if (ON.has(cleaned)) return true;
       if (OFF.has(cleaned)) return false;
     }
-    return false;
+    return true;
   } catch {
-    return false;
+    return true;
   }
 }

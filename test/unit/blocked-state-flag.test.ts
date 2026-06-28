@@ -4,9 +4,9 @@ import assert from 'node:assert/strict';
 import { blockedStateV1Enabled } from '../../src/interface/ui/blocked-state-flag.ts';
 
 describe('blockedStateV1Enabled', () => {
-  it('defaults false', () => {
-    assert.equal(blockedStateV1Enabled(undefined), false);
-    assert.equal(blockedStateV1Enabled({}), false);
+  it('defaults true', () => {
+    assert.equal(blockedStateV1Enabled(undefined), true);
+    assert.equal(blockedStateV1Enabled({}), true);
   });
 
   it('accepts explicit on values', () => {
@@ -23,12 +23,15 @@ describe('blockedStateV1Enabled', () => {
     assert.equal(blockedStateV1Enabled({ MYSHELL_BLOCKED_STATE_V1: 'false' }), false);
     assert.equal(blockedStateV1Enabled({ MYSHELL_BLOCKED_STATE_V1: 'off' }), false);
     assert.equal(blockedStateV1Enabled({ MYSHELL_BLOCKED_STATE_V1: 'no' }), false);
-    assert.equal(blockedStateV1Enabled({ MYSHELL_BLOCKED_STATE_V1: '' }), false);
-    assert.equal(blockedStateV1Enabled({ MYSHELL_BLOCKED_STATE_V1: 'garbage' }), false);
   });
 
-  it('returns false for hostile env access', () => {
+  it('returns true for empty and ambiguous values', () => {
+    assert.equal(blockedStateV1Enabled({ MYSHELL_BLOCKED_STATE_V1: '' }), true);
+    assert.equal(blockedStateV1Enabled({ MYSHELL_BLOCKED_STATE_V1: 'garbage' }), true);
+  });
+
+  it('returns true for hostile env access', () => {
     const hostile = { get MYSHELL_BLOCKED_STATE_V1() { throw new Error('boom'); } } as NodeJS.ProcessEnv;
-    assert.equal(blockedStateV1Enabled(hostile), false);
+    assert.equal(blockedStateV1Enabled(hostile), true);
   });
 });

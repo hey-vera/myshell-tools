@@ -7,9 +7,9 @@ import {
 } from '../../src/interface/ui/native-sessions-promote-flag.ts';
 
 describe('nativeSessionsPromoteEnabled', () => {
-  it('absent env returns false', () => {
-    assert.equal(nativeSessionsPromoteEnabled(undefined), false);
-    assert.equal(nativeSessionsPromoteEnabled({}), false);
+  it('absent env returns true (default on)', () => {
+    assert.equal(nativeSessionsPromoteEnabled(undefined), true);
+    assert.equal(nativeSessionsPromoteEnabled({}), true);
   });
 
   it('accepts opt-in values', () => {
@@ -21,19 +21,22 @@ describe('nativeSessionsPromoteEnabled', () => {
     assert.equal(nativeSessionsPromoteEnabled({ MYSHELL_NATIVE_SESSIONS_PROMOTE: 'On' }), true);
   });
 
-  it('rejects off and ambiguous values', () => {
+  it('rejects only explicit off values', () => {
     assert.equal(nativeSessionsPromoteEnabled({ MYSHELL_NATIVE_SESSIONS_PROMOTE: '0' }), false);
     assert.equal(nativeSessionsPromoteEnabled({ MYSHELL_NATIVE_SESSIONS_PROMOTE: 'false' }), false);
     assert.equal(nativeSessionsPromoteEnabled({ MYSHELL_NATIVE_SESSIONS_PROMOTE: 'off' }), false);
     assert.equal(nativeSessionsPromoteEnabled({ MYSHELL_NATIVE_SESSIONS_PROMOTE: 'no' }), false);
-    assert.equal(nativeSessionsPromoteEnabled({ MYSHELL_NATIVE_SESSIONS_PROMOTE: '' }), false);
-    assert.equal(nativeSessionsPromoteEnabled({ MYSHELL_NATIVE_SESSIONS_PROMOTE: 'garbage' }), false);
+  });
+
+  it('returns true for empty and ambiguous values', () => {
+    assert.equal(nativeSessionsPromoteEnabled({ MYSHELL_NATIVE_SESSIONS_PROMOTE: '' }), true);
+    assert.equal(nativeSessionsPromoteEnabled({ MYSHELL_NATIVE_SESSIONS_PROMOTE: 'garbage' }), true);
   });
 });
 
 describe('nativeSessionsEffectiveEnabled', () => {
   it('preserves config nativeSessions and adds promotion', () => {
-    // Both off
+    // Both off (no config, promoted false — but promoted false requires explicit opt-out)
     assert.equal(nativeSessionsEffectiveEnabled({ promoted: false }), false);
     // Config on
     assert.equal(nativeSessionsEffectiveEnabled({ configNativeSessions: true, promoted: false }), true);

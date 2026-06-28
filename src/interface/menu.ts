@@ -2776,10 +2776,10 @@ export async function runChatLoop(
             const block = currentUnderstandingContext();
             return block.length > 0 ? { understandingContext: block } : {};
           })(),
-          // BLOCKED STATE (MYSHELL_BLOCKED_STATE_V1) — DEFAULT OFF. When on,
+          // BLOCKED STATE (MYSHELL_BLOCKED_STATE_V1) — DEFAULT ON (opt-out). When on,
           // the orchestrator may emit blocked finals instead of failed ones.
           ...(blockedStateOn ? { blockedStateV1: true } : {}),
-          // CORRECTION FORK (MYSHELL_CORRECTION_FORK_V1) — DEFAULT OFF. When on,
+          // CORRECTION FORK (MYSHELL_CORRECTION_FORK_V1) — DEFAULT ON (opt-out). When on,
           // correction detection runs against prior intent versions; a detected
           // correction creates a child IntentVersion and supersedes invalid
           // descendants. Requires intentStore + goalStore to both exist.
