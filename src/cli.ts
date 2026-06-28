@@ -60,14 +60,13 @@ import { nodeVerifyPort } from './infra/verify-port.js';
 import { createEvidenceSink, createEvidenceSnapshotBuilder } from './infra/evidence-sink.js';
 import { loadConfig, saveConfig, resolvePartnerStyle } from './infra/config.js';
 import { rollbackEngaged } from './core/rollback-flag.js';
-import { makeIntentExtractor } from './core/intent-extractor.js';
-import { byproductFallbackEnabled } from './interface/ui/byproduct-fallback-flag.js';
 import { replCapabilities } from './core/surface-capabilities.js';
 import { checkForUpdate } from './infra/update-check.js';
 import { refreshClaudeOauthIfNeeded } from './infra/claude-oauth-refresh.js';
 import { syncConversationMirror } from './infra/session-mirror.js';
 import { replitPersistentEnv } from './infra/credentials.js';
 import { helperSandbox, sandboxForEnvironment } from './infra/sandbox.js';
+import { buildPreflightDeps } from './interface/preflight-deps.js';
 import { dim as dimText } from './ui/theme.js';
 import { defaultStateDir, evaluateHealth, probeLedgerWritable, probeStateWritable } from './infra/health.js';
 import { getStateDir } from './infra/paths.js';
@@ -766,6 +765,33 @@ async function main(): Promise<void> {
       capability?.registry,
       modelOutcomeOrderByTaskKind,
     );
+    const preflightDeps = buildPreflightDeps({
+      providers: deps.providers,
+      policy: deps.policy,
+      cwd: deps.cwd,
+      timeoutMs: deps.timeoutMs,
+      sandbox: deps.sandbox,
+      ...(deps.availableModels !== undefined && Object.keys(deps.availableModels).length > 0
+        ? { availableModels: deps.availableModels }
+        : {}),
+      ...(deps.authenticatedProviders !== undefined && deps.authenticatedProviders.length > 0
+        ? { authenticatedProviders: deps.authenticatedProviders }
+        : {}),
+      config,
+      env: process.env,
+      autoMode: resolvedMode,
+      intentPass: true,
+      ...(deps.accountAux === true
+        ? {
+            accountAux: true,
+            ledger: deps.ledger,
+            clock: deps.clock,
+            sessionId: deps.session.id,
+            ...(deps.cacheAccountingV2 === true ? { cacheAccountingV2: true } : {}),
+          }
+        : {}),
+    });
+    const depsWithPreflight: OrchestrateDeps = { ...deps, ...preflightDeps };
     // STABLE FEATURE RESOLUTION (v9 Phase 7c): trust resolves via the same stable
     // default-on resolver used at the interactive entry point.
     // VERIFY stays CONSERVATIVE here: the scriptable one-shot `run` path keeps verify
@@ -787,7 +813,7 @@ async function main(): Promise<void> {
     const depsWithVerify: OrchestrateDeps =
       verifyActive
         ? {
-            ...deps,
+            ...depsWithPreflight,
             verifyPort: {
               ...nodeVerifyPort,
               runTests: (testCwd, command, timeoutMs) =>
@@ -807,8 +833,8 @@ async function main(): Promise<void> {
             ...(trustActive ? { trustEnabled: true } : {}),
           }
         : trustActive
-          ? { ...deps, trustEnabled: true }
-          : deps;
+          ? { ...depsWithPreflight, trustEnabled: true }
+          : depsWithPreflight;
     // Image attachments (audit #4, image scope): the IMPURE existence check lives
     // here (fs allowed). The pure extractor finds candidate image paths in the
     // task; we keep only those that exist on disk and thread them onto deps so
@@ -1050,46 +1076,37 @@ async function main(): Promise<void> {
       replCapability?.registry,
     );
 
-    // Intent FRAME (deps concern, not UI): a read-only extractor for sharper
-    // prompts. Gated by config.intentEngine like the menu; absent → rules frame.
-    const INTENT_TIMEOUT_MS = 8_000;
-    const replIntentExtractor =
-      caps.has('intentFrame') && config.intentEngine !== false
-        ? makeIntentExtractor({
-            providers: baseDeps.providers,
-            policy: replPolicy,
-            cwd,
-            timeoutMs: Math.min(resolveTimeoutMs(config), INTENT_TIMEOUT_MS),
-            sandbox: helperSandbox(baseDeps.sandbox),
-            ...(baseDeps.availableModels !== undefined
-              ? { availableModels: baseDeps.availableModels }
-              : {}),
-            ...(baseDeps.authenticatedProviders !== undefined
-              ? { authenticatedProviders: baseDeps.authenticatedProviders }
-              : {}),
-            // CAPABILITY PARSE-FROM-TEXT FALLBACK — DEFAULT OFF.
-            // When on, try the text-fallback chain if primary parse returns null.
-            ...(byproductFallbackEnabled(process.env, config)
-              ? { byproductFallback: true }
-              : {}),
-            ...(baseDeps.accountAux === true
-              ? {
-                  accountAux: true,
-                  ledger: baseDeps.ledger,
-                  clock: baseDeps.clock,
-                  sessionId: baseDeps.session.id,
-                  ...(baseDeps.cacheAccountingV2 === true
-                    ? { cacheAccountingV2: true }
-                    : {}),
-                }
-              : {}),
-          })
-        : undefined;
+    const preflightDeps = buildPreflightDeps({
+      providers: baseDeps.providers,
+      policy: replPolicy,
+      cwd,
+      timeoutMs: resolveTimeoutMs(config),
+      sandbox: baseDeps.sandbox,
+      ...(baseDeps.availableModels !== undefined
+        ? { availableModels: baseDeps.availableModels }
+        : {}),
+      ...(baseDeps.authenticatedProviders !== undefined
+        ? { authenticatedProviders: baseDeps.authenticatedProviders }
+        : {}),
+      config,
+      env: process.env,
+      autoMode: replMode,
+      intentPass: caps.has('intentFrame'),
+      ...(baseDeps.accountAux === true
+        ? {
+            accountAux: true,
+            ledger: baseDeps.ledger,
+            clock: baseDeps.clock,
+            sessionId: baseDeps.session.id,
+            ...(baseDeps.cacheAccountingV2 === true ? { cacheAccountingV2: true } : {}),
+          }
+        : {}),
+    });
 
     const deps: OrchestrateDeps = {
       ...baseDeps,
+      ...preflightDeps,
       partnerStyle: resolvePartnerStyle(config, replMode),
-      ...(replIntentExtractor !== undefined ? { intentExtractor: replIntentExtractor } : {}),
     };
 
     out.write(welcome(deps, out.color) + '\n\n');

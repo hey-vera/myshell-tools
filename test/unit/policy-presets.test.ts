@@ -217,3 +217,41 @@ describe('POLICY_PRESETS — reviewPolicy field', () => {
     );
   });
 });
+
+// ---------------------------------------------------------------------------
+// POLICY_PRESETS — provider order semantics (worker prefers opencode)
+// ---------------------------------------------------------------------------
+
+describe('POLICY_PRESETS — provider order', () => {
+  it("DEFAULT_POLICY worker[0] === 'opencode'", () => {
+    assert.equal(DEFAULT_POLICY.providerOrderByTier.worker[0], 'opencode');
+  });
+
+  it("cost-saver worker[0] === 'opencode'", () => {
+    assert.equal(POLICY_PRESETS['cost-saver'].providerOrderByTier.worker[0], 'opencode');
+  });
+
+  it("quality-first worker[0] === 'opencode'", () => {
+    assert.equal(POLICY_PRESETS['quality-first'].providerOrderByTier.worker[0], 'opencode');
+  });
+
+  it("every preset's ic[0] === 'claude'", () => {
+    for (const mode of ['cost-saver', 'balanced', 'quality-first'] as const) {
+      assert.equal(
+        POLICY_PRESETS[mode].providerOrderByTier.ic[0],
+        'claude',
+        `${mode} ic[0] should be claude`,
+      );
+    }
+  });
+
+  it("every preset's manager[0] === 'claude'", () => {
+    for (const mode of ['cost-saver', 'balanced', 'quality-first'] as const) {
+      assert.equal(
+        POLICY_PRESETS[mode].providerOrderByTier.manager[0],
+        'claude',
+        `${mode} manager[0] should be claude`,
+      );
+    }
+  });
+});

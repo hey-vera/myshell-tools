@@ -306,6 +306,30 @@ describe('classify — worker tier comprehensive', () => {
       risk: 'low',
       note: 'worker keyword "where are"',
     },
+    {
+      task: 'Reply with exactly: SPINE_OK',
+      tier: 'worker',
+      risk: 'low',
+      note: 'exact-output "reply exactly"',
+    },
+    {
+      task: 'respond exactly "OK"',
+      tier: 'worker',
+      risk: 'low',
+      note: 'exact-output "respond exactly"',
+    },
+    {
+      task: 'say only hello',
+      tier: 'worker',
+      risk: 'low',
+      note: 'exact-output "say only"',
+    },
+    {
+      task: 'answer with just "yes"',
+      tier: 'worker',
+      risk: 'low',
+      note: 'exact-output "answer with just"',
+    },
   ];
 
   for (const row of workerCases) {
@@ -315,6 +339,18 @@ describe('classify — worker tier comprehensive', () => {
       assert.equal(result.risk, row.risk, `risk mismatch: ${result.rationale}`);
     });
   }
+});
+
+describe('classify — exact-output tie-break (IC wins)', () => {
+  it('"implement the endpoint and reply exactly \"done\"" → ic (IC signal wins on tie)', () => {
+    const result = classify('implement the endpoint and reply exactly "done"');
+    assert.equal(result.tier, 'ic', `rationale: ${result.rationale}`);
+  });
+
+  it('"fix the bug and respond exactly \"fixed\"" → ic (IC signal wins on tie)', () => {
+    const result = classify('fix the bug and respond exactly "fixed"');
+    assert.equal(result.tier, 'ic', `rationale: ${result.rationale}`);
+  });
 });
 
 describe('classify — ic tier comprehensive', () => {

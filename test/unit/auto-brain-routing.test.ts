@@ -76,7 +76,7 @@ describe('auto-brain routing: SCENARIO 1 — pasted-code (explain intent, low ri
     );
   });
 
-  it('fuseRung() routes to budget or balanced (cheap rung for trivial explain)', () => {
+  it('fuseRung() routes to budget (cheap rung for trivial explain)', () => {
     const cl = classify(PASTED_CODE_TASK);
     const result = fuseRung({
       frame: PASTED_CODE_FRAME,
@@ -84,12 +84,9 @@ describe('auto-brain routing: SCENARIO 1 — pasted-code (explain intent, low ri
       classifyRisk: cl.risk,
     });
 
-    // The byproduct says worker+explain → should resolve to budget or balanced.
-    // Budget is ideal (cheap, locked decision #3 — byproduct may lower floor).
-    assert.ok(
-      result.rung.level === 'budget' || result.rung.level === 'balanced',
-      `expected budget or balanced for paste-code, got ${result.rung.level}`,
-    );
+    // The byproduct says worker+explain → should resolve to budget.
+    assert.equal(result.rung.level, 'budget');
+    assert.equal(result.rung.modelRung, 'worker');
 
     // predictAndCommit should be FALSE for a trivial explain turn.
     assert.equal(result.predictAndCommit, false);
@@ -117,10 +114,10 @@ describe('auto-brain routing: SCENARIO 1 — pasted-code (explain intent, low ri
     // Receipt format: "auto-brain: <level> (<cost-tier>) — <reason>"
     assert.ok(receipt.startsWith('auto-brain:'), `receipt should start with auto-brain: got: ${receipt}`);
     assert.ok(receipt.includes(result.rung.level), `receipt missing level: ${receipt}`);
-    // cheap = budget, moderate = balanced
+    // cheap = budget
     assert.ok(
-      receipt.includes('cheap') || receipt.includes('moderate'),
-      `expected cheap or moderate cost label in receipt: ${receipt}`,
+      receipt.includes('cheap'),
+      `expected cheap cost label in receipt: ${receipt}`,
     );
     assert.ok(receipt.includes('—'), `receipt missing reason separator: ${receipt}`);
   });

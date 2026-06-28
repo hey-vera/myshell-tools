@@ -231,11 +231,28 @@ describe('fuseRung — Layer A rung-fusion (predict-and-commit)', () => {
     assert.equal(result.rung.level, 'max');
   });
 
-  it('paste-code shape → does NOT predict-and-commit, routes to budget or balanced', () => {
+  it('paste-code shape → does NOT predict-and-commit, routes to budget', () => {
     const frame = makeFrame({ routeTier: 'worker', source: 'model' });
     const result = fuseRung({ frame, classifyTier: 'worker', classifyRisk: 'low' });
     assert.equal(result.predictAndCommit, false);
-    assert.ok(result.rung.level === 'budget' || result.rung.level === 'balanced');
+    assert.equal(result.rung.level, 'budget');
+    assert.equal(result.rung.modelRung, 'worker');
+  });
+
+  it('worker + low risk + no frame → keeps worker/budget rung', () => {
+    const result = fuseRung({ classifyTier: 'worker', classifyRisk: 'low' });
+    assert.equal(result.predictAndCommit, false);
+    assert.equal(result.rung.level, 'budget');
+    assert.equal(result.rung.modelRung, 'worker');
+  });
+
+  it('worker + low risk + fix-bug frame (no routeTier) → NOT forced to budget by new fallback', () => {
+    const frame = makeFrame({ kind: 'fix bug', source: 'model' });
+    const result = fuseRung({ frame, classifyTier: 'worker', classifyRisk: 'low' });
+    assert.ok(
+      result.rung.level !== 'budget',
+      `fix-bug shape should not be forced to budget by classification-derived hint, got ${result.rung.level}`,
+    );
   });
 
   it('vague-discuss shape → does NOT predict-and-commit', () => {

@@ -42,10 +42,12 @@ export const DEFAULT_POLICY: Policy = {
   // Provider preference per tier. route() picks the first available provider in
   // this order that has a model for the tier; otherwise it falls back to the
   // cheapest available model for that tier (via pricing.getCheapestForTier).
-  // opencode is listed last — it is a fallback / explicit-choice provider and
-  // must NOT displace claude or codex when those are available.
+  // Worker tier prefers opencode to preserve Anthropic quota (owner's standing
+  // policy: prefer the OpenCode Go sub over Anthropic quota wherever possible).
+  // Higher tiers (ic, manager) remain claude-first. route() respects
+  // authenticated-provider fallback regardless of order.
   providerOrderByTier: {
-    worker: ['claude', 'codex', 'opencode', 'grok'],
+    worker: ['opencode', 'claude', 'codex', 'grok'],
     ic: ['claude', 'codex', 'opencode', 'grok'],
     manager: ['claude', 'codex', 'opencode', 'grok'],
   },
@@ -389,7 +391,7 @@ export const POLICY_PRESETS: Record<Mode, Policy> = {
       critical: 0.65,
     },
     providerOrderByTier: {
-      worker: ['claude', 'codex', 'opencode', 'grok'],
+      worker: ['opencode', 'claude', 'codex', 'grok'],
       ic: ['claude', 'codex', 'opencode', 'grok'],
       manager: ['claude', 'codex', 'opencode', 'grok'],
     },
@@ -418,7 +420,7 @@ export const POLICY_PRESETS: Record<Mode, Policy> = {
       critical: 0.92,
     },
     providerOrderByTier: {
-      worker: ['claude', 'codex', 'opencode', 'grok'],
+      worker: ['opencode', 'claude', 'codex', 'grok'],
       ic: ['claude', 'codex', 'opencode', 'grok'],
       manager: ['claude', 'codex', 'opencode', 'grok'],
     },

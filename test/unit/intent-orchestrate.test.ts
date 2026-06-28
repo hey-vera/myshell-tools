@@ -125,6 +125,23 @@ describe('orchestrate intent gate', () => {
     const intent = events.find((e) => e.type === 'intent');
     assert.ok(intent !== undefined && intent.type === 'intent');
     assert.equal(intent.frame.goal, 'redesign the auth and billing subsystems');
+    assert.equal(intent.frame.source, 'model', 'source is model when extractor is wired');
+  });
+
+  it('a substantial turn WITHOUT extractor → if intent emitted, source is "skipped" (rules fallback)', async () => {
+    const events = await collect(
+      orchestrate(
+        'implement the login endpoint with oauth',
+        baseDeps(),
+        new AbortController().signal,
+      ),
+    );
+    const intent = events.find((e) => e.type === 'intent');
+    // Without an extractor, an intent event may or may not be emitted;
+    // if it IS emitted, the source must be "skipped" (rules fallback).
+    if (intent !== undefined) {
+      assert.equal(intent.frame.source, 'skipped', 'source is skipped when no extractor');
+    }
   });
 });
 

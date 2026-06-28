@@ -172,8 +172,7 @@ import { planningDepthEnabled } from './ui/planning-depth-flag.js';
 import { verifiedDoneEnabled } from './ui/truly-complete-flag.js';
 import { verifyStage } from '../core/work-call.js';
 import { isRecapStale, recapEligible, type RecapResult } from '../core/recap.js';
-import { makeRouteClassifier } from '../core/route-classifier.js';
-import { makeIntentExtractor } from '../core/intent-extractor.js';
+import { buildPreflightDeps } from './preflight-deps.js';
 import type { IntentFrame } from '../core/intent.js';
 import { deriveDraftGoalSkeleton } from '../core/draft-goal.js';
 import { shouldShowFirstTouch, markSeen, FIRST_TOUCH_LINES } from '../core/first-touch.js';
@@ -224,8 +223,6 @@ import { roleMappingEnabled } from './ui/role-flag.js';
 import { resolveAllRoles, type ProviderModels } from '../core/roles.js';
 import { levelDialEnabled } from './ui/level-flag.js';
 import { resolveLevel, profileForLevel } from '../core/mode-levels.js';
-import { autoBrainEnabled } from './ui/auto-brain-flag.js';
-import { fuseRung, type FuseRungResult } from '../core/auto-brain.js';
 import { byproductFallbackEnabled } from './ui/byproduct-fallback-flag.js';
 import { draftGoalsEnabled } from './ui/draft-goals-flag.js';
 import { experimentalEnabledByDefault } from './ui/experimental-default.js';
@@ -2268,69 +2265,6 @@ export async function runChatLoop(
         });
         // planNativeSession returns [] when disabled / no conversation id / quarantined.
 
-        // Smart routing (opt-in): on ambiguous turns, let a cheap model pick the
-        // tier. Capped at 20s so the worst-case fallback delay is bounded; the
-        // classifier always runs worker-tier read-only (see route-classifier.ts).
-        const ROUTER_TIMEOUT_MS = 20_000;
-        const routeClassifier =
-          mutableCtx.config.smartRoute !== false
-            ? makeRouteClassifier({
-                providers: ctx.providers,
-                policy,
-                cwd: ctx.cwd,
-                timeoutMs: Math.min(ctx.timeoutMs, ROUTER_TIMEOUT_MS),
-                sandbox: helperSandbox(ctx.sandbox),
-                ...(Object.keys(availableModels).length > 0 ? { availableModels } : {}),
-                ...(authenticatedProviders.length > 0 ? { authenticatedProviders } : {}),
-                ...(accountAuxOn
-                  ? {
-                      accountAux: true,
-                      ledger: turnLedger,
-                      clock: ctx.clock,
-                      sessionId: convId,
-                      ...(cacheAccountingOn ? { cacheAccountingV2: true } : {}),
-                    }
-                  : {}),
-              })
-            : undefined;
-
-        // Intent engine (default ON, gated): the cheap, read-only, short-timeout
-        // extractor that populates an IntentFrame ONLY on substantial/ambiguous
-        // turns (see shouldExtractIntent). Capped like the router so the worst-case
-        // pause is bounded; absent → orchestrate uses the deterministic rules frame.
-        const INTENT_TIMEOUT_MS = 8_000;
-        const intentExtractor =
-          // Quota-shed rung 3: under heavy pressure the intent pass is skipped
-          // (orchestrate falls back to the deterministic rules frame — no call, no
-          // latency), exactly the timeout-fallback path. Absent extractor → rules.
-          mutableCtx.config.intentEngine !== false && shedPlan.intentPass
-            ? makeIntentExtractor({
-                providers: ctx.providers,
-                policy,
-                cwd: ctx.cwd,
-                timeoutMs: Math.min(ctx.timeoutMs, INTENT_TIMEOUT_MS),
-                sandbox: helperSandbox(ctx.sandbox),
-                ...(Object.keys(availableModels).length > 0 ? { availableModels } : {}),
-                ...(authenticatedProviders.length > 0 ? { authenticatedProviders } : {}),
-                // CAPABILITY PARSE-FROM-TEXT FALLBACK (redesign Phase 0) — DEFAULT OFF.
-                // When on, the extractor tries the richer text-fallback chain
-                // (byproduct-parse.ts) if the primary parseIntentFrame returns null.
-                // PURELY ADDITIVE: on a clean primary parse this has zero effect.
-                ...(byproductFallbackEnabled(process.env, mutableCtx.config)
-                  ? { byproductFallback: true }
-                  : {}),
-                ...(accountAuxOn
-                  ? {
-                      accountAux: true,
-                      ledger: turnLedger,
-                      clock: ctx.clock,
-                      sessionId: convId,
-                      ...(cacheAccountingOn ? { cacheAccountingV2: true } : {}),
-                    }
-                  : {}),
-              })
-            : undefined;
-
         // ---- TOOL SELF-AWARENESS (tool-state §) ---------------------------------
         // Render the authoritative "ABOUT THIS TOOL" block from the LIVE env + the
         // effective mode (explicit vs auto) + config, so the partner answers "how
@@ -2403,6 +2337,32 @@ export async function runChatLoop(
         const evidenceTurnNumber = hist.filter((entry) => entry.role === 'user').length + 1;
 
         const intentVersionId = accountAuxOn || intentStoreOn ? ctx.clock.uuid() : undefined;
+
+        const preflightDeps = buildPreflightDeps({
+          providers: ctx.providers,
+          policy,
+          cwd: ctx.cwd,
+          timeoutMs: ctx.timeoutMs,
+          sandbox: ctx.sandbox,
+          ...(Object.keys(availableModels).length > 0 ? { availableModels } : {}),
+          ...(authenticatedProviders.length > 0 ? { authenticatedProviders } : {}),
+          config: mutableCtx.config,
+          env: process.env,
+          autoMode: effectiveMode,
+          intentPass: shedPlan.intentPass,
+          ...(accountAuxOn
+            ? {
+                accountAux: true,
+                ledger: turnLedger,
+                clock: ctx.clock,
+                sessionId: convId,
+                ...(cacheAccountingOn ? { cacheAccountingV2: true } : {}),
+              }
+            : {}),
+          ...(taste?.memoryBias !== undefined && taste.memoryBias !== 0
+            ? { memoryBias: taste.memoryBias }
+            : {}),
+        });
 
         return {
           clock: ctx.clock,
@@ -2495,34 +2455,6 @@ export async function runChatLoop(
             });
             return { levelProfile: profileForLevel(resolved) };
           })(),
-          // AUTO BRAIN (redesign Auto brain) — default-on via experimentalEnabledByDefault
-          // (src/interface/ui/auto-brain-flag.ts). Menu injects `autoBrainRungTuple` by
-          // default; `orchestrate` reads it at `src/core/orchestrate.ts:898`; Layer B is
-          // threaded at `orchestrate.ts:1950-1953`. The classify() tier/risk and
-          // IntentFrame byproduct arrive inside orchestrate where the full-signal re-fuse
-          // happens. When OFF/basic-mode the field is absent entirely.
-          ...((): { autoBrainRungTuple?: FuseRungResult } => {
-            if (
-              !experimentalEnabledByDefault(
-                process.env,
-                mutableCtx.config,
-                'MYSHELL_AUTO_BRAIN',
-                mutableCtx.config.experimentalAutoBrain,
-                autoBrainEnabled,
-              )
-            )
-              return {};
-            const brainResult = fuseRung({
-              ...(mutableCtx.config.mode !== undefined
-                ? { persistedMode: mutableCtx.config.mode }
-                : {}),
-              autoMode: effectiveMode,
-              ...(taste?.memoryBias !== undefined && taste.memoryBias !== 0
-                ? { memoryBias: taste.memoryBias }
-                : {}),
-            });
-            return { autoBrainRungTuple: brainResult };
-          })(),
           // CAPABILITY PARSE-FROM-TEXT FALLBACK (redesign Phase 0) — DEFAULT OFF
           // (src/interface/ui/byproduct-fallback-flag.ts). When the flag is ON,
           // set `byproductFallback: true` so the intent extractor knows it may
@@ -2560,8 +2492,7 @@ export async function runChatLoop(
           // Existing config.nativeSessions===true continues unchanged (effective-
           // enabled helper already combined them above for planNativeSession).
           ...(nativeSessionsPromoteOn ? { nativeSessionsPromote: true } : {}),
-          ...(routeClassifier !== undefined ? { routeClassifier } : {}),
-          ...(intentExtractor !== undefined ? { intentExtractor } : {}),
+          ...preflightDeps,
           // UNIFIED PREFLIGHT (rank-7). Set ONLY when the unify flag is ON; absent
           // when off → orchestrate runs today's verbatim decideRoute + intent block
           // (the OFF-GUARANTEE). On the affected turn class (ambiguous + substantial,

@@ -380,14 +380,29 @@ export function fuseRung(input: FuseRungInput): FuseRungResult {
         ? tierToLevel(frame.routeTier)
         : undefined;
 
-      // exactOptionalPropertyTypes: only include fields when they have a real value.
-      // Pass `floor: 'budget'` as the hint floor so resolveRouteHint clamps to Budget
-      // (the locked hard floor) rather than to the classify-derived floor — this is
-      // what allows a trivial turn (worker, low-risk "thanks!") to resolve to budget.
+      const hasElevatedByproductRisk =
+        frame?.operationRisk === 'medium' ||
+        frame?.operationRisk === 'high' ||
+        frame?.operationRisk === 'critical' ||
+        frame?.blastRadius === 'medium' ||
+        frame?.blastRadius === 'high' ||
+        frame?.blastRadius === 'critical';
+
+      const classifiedWorkerLevel =
+        byproductLevel === undefined &&
+        classifyTier === 'worker' &&
+        classifyRisk === 'low' &&
+        shape !== 'fix-bug' &&
+        !hasElevatedByproductRisk
+          ? 'budget'
+          : undefined;
+
+      const suggestedLevel = byproductLevel ?? classifiedWorkerLevel;
+
       committed = resolveLevel({
         chosen: 'auto',
-        ...(byproductLevel !== undefined
-          ? { routeHint: { suggestedLevel: byproductLevel, floor: 'budget' } }
+        ...(suggestedLevel !== undefined
+          ? { routeHint: { suggestedLevel, floor: 'budget' } }
           : {}),
         ...(persistedMode !== undefined ? { persistedMode } : {}),
         ...(autoMode !== undefined ? { autoMode } : {}),

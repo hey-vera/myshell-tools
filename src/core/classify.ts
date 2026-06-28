@@ -93,6 +93,10 @@ const MANAGER_SIGNALS: readonly RegExp[] = [
  * no file mutation implied.
  */
 const WORKER_SIGNALS: readonly RegExp[] = [
+  // Exact-output / reply-only prompts: a short, anchored format-only command that
+  // asks the model to echo a specific string — no file mutation, no engineering work.
+  // Conservative: the full prompt must match this anchored pattern start-to-end.
+  /^\s*(?:please\s+)?(?:reply|respond|say|answer)\s+(?:(?:with\s+)?(?:exactly|just|only)|(?:exactly|just|only)\s+(?:with\s+)?)\s*:?\s*(?:"[^"\r\n]{1,120}"|'[^'\r\n]{1,120}'|`[^`\r\n]{1,120}`|[A-Za-z0-9_ .,:;!?-]{1,80})\s*$/i,
   /\bfind\b/i,
   /\bsearch\b/i,
   /\bgrep\b/i,
