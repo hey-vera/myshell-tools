@@ -123,18 +123,26 @@ describe('makeUnderstandingPass', () => {
     assert.equal(await pass(TASK, SIGNAL), null);
   });
 
-  it('does NOT set webSearch on a non-Codex provider when flag is OFF (byte-identical)', async () => {
-    const sink: { req?: ProviderRequest } = {};
-    const provider = fakeProvider('claude', [{ type: 'done', text: GOOD, raw: {} }], sink);
-    const pass = makeUnderstandingPass({
-      providers: { claude: provider },
-      policy: DEFAULT_POLICY,
-      cwd: '/p',
-      timeoutMs: 8000,
-      highStakes: true,
-    });
-    await pass(TASK, SIGNAL);
-    assert.equal(sink.req?.webSearch, undefined, 'flag-off: Claude does not get webSearch');
+  it('does NOT set webSearch on a non-Codex provider when EXPLICITLY opted out (byte-identical legacy)', async () => {
+    // Explicit opt-OUT restores the legacy Codex-only webSearch path.
+    const prev = process.env.MYSHELL_VENDOR_NEUTRAL_ROUTER;
+    process.env.MYSHELL_VENDOR_NEUTRAL_ROUTER = '0';
+    try {
+      const sink: { req?: ProviderRequest } = {};
+      const provider = fakeProvider('claude', [{ type: 'done', text: GOOD, raw: {} }], sink);
+      const pass = makeUnderstandingPass({
+        providers: { claude: provider },
+        policy: DEFAULT_POLICY,
+        cwd: '/p',
+        timeoutMs: 8000,
+        highStakes: true,
+      });
+      await pass(TASK, SIGNAL);
+      assert.equal(sink.req?.webSearch, undefined, 'opt-out: Claude does not get webSearch (legacy Codex-only path)');
+    } finally {
+      if (prev === undefined) delete process.env.MYSHELL_VENDOR_NEUTRAL_ROUTER;
+      else process.env.MYSHELL_VENDOR_NEUTRAL_ROUTER = prev;
+    }
   });
 
   it('does NOT set webSearch on Codex when NOT high-stakes', async () => {

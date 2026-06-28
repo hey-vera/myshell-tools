@@ -22,30 +22,32 @@ import type { LedgerEntry } from '../../src/core/types.ts';
 import type { ProviderId } from '../../src/providers/port.ts';
 
 // ---------------------------------------------------------------------------
-// vendorNeutralRouterEnabled (§2 — DEFAULT OFF)
+// vendorNeutralRouterEnabled (§2 — DEFAULT ON / explicit opt-OUT)
 // ---------------------------------------------------------------------------
 
 describe('vendorNeutralRouterEnabled', () => {
-  it('returns false with no env and no config (default-off)', () => {
-    assert.equal(vendorNeutralRouterEnabled(undefined, undefined), false);
+  it('returns true with no env and no config (default-on — shipped default)', () => {
+    assert.equal(vendorNeutralRouterEnabled(undefined, undefined), true);
   });
 
-  it('returns false with empty env and no config', () => {
-    assert.equal(vendorNeutralRouterEnabled({}, undefined), false);
+  it('returns true with empty env and no config', () => {
+    assert.equal(vendorNeutralRouterEnabled({}, undefined), true);
   });
 
-  it('returns false with garbage env value', () => {
+  it('returns true with garbage env value (unrecognised → default on)', () => {
     assert.equal(
       vendorNeutralRouterEnabled({ MYSHELL_VENDOR_NEUTRAL_ROUTER: 'maybe' }, undefined),
-      false,
+      true,
     );
   });
 
-  it('returns false with explicit off env value (0)', () => {
-    assert.equal(
-      vendorNeutralRouterEnabled({ MYSHELL_VENDOR_NEUTRAL_ROUTER: '0' }, undefined),
-      false,
-    );
+  it('returns false with explicit opt-out env values (case-insensitive, trimmed)', () => {
+    for (const v of ['0', 'false', 'off', 'no', ' FALSE ', 'Off']) {
+      assert.equal(
+        vendorNeutralRouterEnabled({ MYSHELL_VENDOR_NEUTRAL_ROUTER: v }, undefined),
+        false,
+      );
+    }
   });
 
   it('returns true with env "1"', () => {
@@ -76,26 +78,33 @@ describe('vendorNeutralRouterEnabled', () => {
     );
   });
 
-  it('returns false with config.experimentalVendorNeutralRouter === false', () => {
+  it('config opt-OUT (experimentalVendorNeutralRouter === false) ⇒ false', () => {
     assert.equal(
       vendorNeutralRouterEnabled(undefined, { experimentalVendorNeutralRouter: false }),
       false,
     );
   });
 
-  it('config true wins when env is not an ON value', () => {
-    // env '0' is not in ON set → falls through to config check → config true → returns true
+  it('explicit env opt-OUT overrides config true ⇒ false', () => {
+    // env '0' is opt-OUT — processed first → returns false regardless of config
     assert.equal(
       vendorNeutralRouterEnabled({ MYSHELL_VENDOR_NEUTRAL_ROUTER: '0' }, { experimentalVendorNeutralRouter: true }),
-      true,
+      false,
     );
   });
 
-  it('explicit env on overrides config false', () => {
+  it('explicit env opt-IN overrides config false ⇒ true', () => {
     assert.equal(
       vendorNeutralRouterEnabled({ MYSHELL_VENDOR_NEUTRAL_ROUTER: 'yes' }, { experimentalVendorNeutralRouter: false }),
       true,
     );
+  });
+
+  it('never throws on a hostile env bag (defaults ON)', () => {
+    const hostile = new Proxy({} as NodeJS.ProcessEnv, {
+      get() { throw new Error('hostile'); },
+    });
+    assert.equal(vendorNeutralRouterEnabled(hostile, undefined), true);
   });
 });
 
