@@ -11,18 +11,22 @@ import assert from 'node:assert/strict';
 
 import { makeGoalPlanner, makeGoalPlannerAttempt } from '../../src/core/goal-plan-generator.ts';
 import { DEFAULT_POLICY } from '../../src/core/policy.ts';
-import type { Provider, ProviderEvent, ProviderRequest } from '../../src/providers/port.ts';
+import type { Provider, ProviderEvent, ProviderId, ProviderRequest } from '../../src/providers/port.ts';
 
 const SIGNAL = new AbortController().signal;
 
 const SUBSTANTIAL = 'build the whole billing system with stripe and invoices';
 
-function fakeProvider(events: ProviderEvent[], sink?: { req?: ProviderRequest }): Provider {
+function fakeProvider(
+  events: ProviderEvent[],
+  sink?: { req?: ProviderRequest },
+  id: ProviderId = 'claude',
+): Provider {
   return {
-    id: 'claude',
+    id,
     async detect() {
       return {
-        id: 'claude',
+        id,
         installed: true,
         version: '1.0.0',
         authenticated: true,
@@ -38,12 +42,15 @@ function fakeProvider(events: ProviderEvent[], sink?: { req?: ProviderRequest })
   };
 }
 
-const baseDeps = (provider: Provider) => ({
-  providers: { claude: provider },
-  policy: DEFAULT_POLICY,
-  cwd: '/tmp/project',
-  timeoutMs: 8_000,
-});
+function baseDeps(provider: Provider) {
+  const deps: Record<string, unknown> = {
+    providers: { [provider.id]: provider },
+    policy: DEFAULT_POLICY,
+    cwd: '/tmp/project',
+    timeoutMs: 8_000,
+  };
+  return deps as Parameters<typeof makeGoalPlanner>[0];
+}
 
 describe('makeGoalPlanner', () => {
   it('returns null when no providers are available', async () => {
@@ -146,5 +153,38 @@ describe('makeGoalPlannerAttempt', () => {
       await makeGoalPlannerAttempt({ providers: {}, policy: DEFAULT_POLICY, cwd: '/x', timeoutMs: 1000 })(SUBSTANTIAL, SIGNAL),
       null,
     );
+  });
+
+  it('sets reasoningEffort to deepest supported for Claude (max is supported)', async () => {
+    const sink: { req?: ProviderRequest } = {};
+    const provider = fakeProvider([
+      { type: 'done', text: 'JUDGMENT: stage\nGOAL: Build billing\nTODO: Wire invoices', raw: {} },
+    ], sink, 'claude');
+    const attempt = makeGoalPlannerAttempt(baseDeps(provider));
+    await attempt(SUBSTANTIAL, SIGNAL);
+    // Claude sonnet declares 'max' → highest supported = 'max'
+    assert.equal(sink.req?.reasoningEffort, 'max');
+  });
+
+  it('sets reasoningEffort to deepest supported for Grok (max is supported)', async () => {
+    const sink: { req?: ProviderRequest } = {};
+    const provider = fakeProvider([
+      { type: 'done', text: 'JUDGMENT: stage\nGOAL: Build billing\nTODO: Wire invoices', raw: {} },
+    ], sink, 'grok');
+    const attempt = makeGoalPlannerAttempt(baseDeps(provider));
+    await attempt(SUBSTANTIAL, SIGNAL);
+    // Grok models declare 'max' → highest supported = 'max'
+    assert.equal(sink.req?.reasoningEffort, 'max');
+  });
+
+  it('does NOT set reasoningEffort for Codex (no supported efforts declared)', async () => {
+    const sink: { req?: ProviderRequest } = {};
+    const provider = fakeProvider([
+      { type: 'done', text: 'JUDGMENT: stage\nGOAL: Build billing\nTODO: Wire invoices', raw: {} },
+    ], sink, 'codex');
+    const attempt = makeGoalPlannerAttempt(baseDeps(provider));
+    await attempt(SUBSTANTIAL, SIGNAL);
+    // Codex declarative registry has empty supportedReasoningEfforts → undefined
+    assert.equal(sink.req?.reasoningEffort, undefined);
   });
 });

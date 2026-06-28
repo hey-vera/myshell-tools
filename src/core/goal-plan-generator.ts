@@ -24,10 +24,12 @@
 import type { Policy, Tier } from './types.js';
 import type { LedgerWriter, Clock } from './types.js';
 import type { Provider, ProviderId, ProviderRequest, SandboxLevel, Usage } from '../providers/port.js';
+import type { ReasoningEffort } from './model-capabilities.js';
 import { route } from './route.js';
 import { buildGoalPlanPrompt, parseGoalPlan, type GoalPlan } from './goal-plan.js';
 import type { SystemModel } from './understanding.js';
 import { recordAuxLedger } from './aux-ledger.js';
+import { findCapability, DECLARATIVE_MODEL_CAPABILITIES, KNOWN_REASONING_EFFORTS } from './model-capabilities.js';
 
 /** Everything the planner needs to pick and run the manager-tier model. */
 export interface GoalPlanGeneratorDeps {
@@ -72,6 +74,27 @@ const GOAL_PLAN_TIER: Tier = 'manager';
 /** It reads the turn text and emits a tagged plan — it never touches files. */
 const GOAL_PLAN_SANDBOX: SandboxLevel = 'read-only';
 
+/**
+ * Resolve the reasoning effort for a goal-planning pass from the model's
+ * capability record. For manager-tier planning we prefer the deepest supported
+ * effort, but NEVER fabricate 'max' for a model that doesn't declare it.
+ * Falls back to undefined when the model declares no efforts (adapter default).
+ */
+function resolveGoalPlanEffort(provider: ProviderId, model: string): ReasoningEffort | undefined {
+  const cap = findCapability(DECLARATIVE_MODEL_CAPABILITIES, provider, model);
+  if (cap === undefined) return undefined;
+  const supported = cap.supportedReasoningEfforts;
+  if (supported.length === 0) return undefined;
+
+  // Walk from deepest to shallowest, return the first (deepest) supported
+  for (let i = KNOWN_REASONING_EFFORTS.length - 1; i >= 0; i--) {
+    const eff = KNOWN_REASONING_EFFORTS[i]!;
+    if (eff === 'none') continue;
+    if ((supported as readonly string[]).includes(eff)) return eff;
+  }
+  return undefined;
+}
+
 export interface GoalPlanAttempt {
   readonly plan: GoalPlan | null;
   readonly provider: ProviderId;
@@ -112,6 +135,7 @@ export function makeGoalPlannerAttempt(
 
     let provider: Provider | undefined;
     let model: string;
+    let routedProvider: ProviderId;
     try {
       // As in goal-objective-generator.ts: deliberately NOT threading the learned
       // provider order — this throwaway pass is a cost decision about judging the
@@ -125,10 +149,13 @@ export function makeGoalPlannerAttempt(
       );
       provider = deps.providers[decision.provider];
       model = decision.model;
+      routedProvider = decision.provider;
     } catch {
       return null;
     }
     if (provider === undefined) return null;
+
+    const goalPlanEffort = resolveGoalPlanEffort(routedProvider!, model);
 
     const req: ProviderRequest = {
       model,
@@ -136,7 +163,7 @@ export function makeGoalPlannerAttempt(
       cwd: deps.cwd,
       sandbox: deps.sandbox ?? GOAL_PLAN_SANDBOX,
       timeoutMs: deps.timeoutMs,
-      reasoningEffort: 'max',  // High effort for planning meta (conscious thinker, not dumb wiring)
+      ...(goalPlanEffort !== undefined ? { reasoningEffort: goalPlanEffort } : {}),
     };
 
     let finalText: string | undefined;

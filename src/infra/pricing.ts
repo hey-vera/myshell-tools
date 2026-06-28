@@ -117,28 +117,6 @@ export const PRICING_TABLE: PricingTable = {
       cacheReadInputPer1M: 0.075,
       cacheInputTokensIncludedInInput: true,
     },
-    {
-      provider: 'codex',
-      model: 'gpt-5.4-nano',
-      aliases: ['gpt5.4-nano', 'gpt-5-4-nano'],
-      tier: 'worker',
-      inputPer1M: 0.2,
-      outputPer1M: 1.25,
-      contextWindow: 128_000,
-      cacheReadInputPer1M: 0.02,
-      cacheInputTokensIncludedInInput: true,
-    },
-    {
-      provider: 'codex',
-      model: 'gpt-5.2-codex',
-      aliases: ['codex', 'gpt5.2-codex', 'gpt-5-2-codex'],
-      tier: 'ic',
-      inputPer1M: 1.75,
-      outputPer1M: 14,
-      contextWindow: 128_000,
-      cacheReadInputPer1M: 0.175,
-      cacheInputTokensIncludedInInput: true,
-    },
 
     // ---- opencode ----------------------------------------------------------
     // opencode is a multi-provider subscription/credits agent. The router picks a

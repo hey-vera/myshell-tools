@@ -88,7 +88,7 @@ function makeRecordingCodex(): Provider & { requests: ProviderRequest[] } {
         version: '1.0.0',
         authenticated: true,
         binaryPath: '/usr/bin/codex',
-        availableModels: ['gpt-5.4', 'gpt-5.2-codex'],
+        availableModels: ['gpt-5.4', 'gpt-5.4-mini'],
       };
     },
     async *run(req: ProviderRequest): AsyncIterable<ProviderEvent> {
@@ -139,15 +139,6 @@ const REGISTRY: CapabilityRegistry = {
       contextWindow: 400_000,
       source: ['codex-cache'],
     },
-    {
-      provider: 'codex',
-      id: 'gpt-5.2-codex',
-      aliases: ['codex'],
-      tierHint: 'ic',
-      supportedReasoningEfforts: [],
-      contextWindow: 128_000,
-      source: ['codex-cache'],
-    },
   ],
 };
 
@@ -166,7 +157,7 @@ function makeDeps(overrides: Partial<OrchestrateDeps> = {}): {
     sandbox: 'workspace-write',
     timeoutMs: 30_000,
     authenticatedProviders: ['codex'],
-    availableModels: { codex: ['gpt-5.4', 'gpt-5.2-codex'] },
+    availableModels: { codex: ['gpt-5.4', 'gpt-5.4-mini'] },
     capabilityRegistry: REGISTRY,
     ...overrides,
   };
@@ -201,7 +192,7 @@ describe('orchestrate rendered-input token estimate', () => {
 
     const start = await firstTierStart(task, deps);
     assert.equal(start.provider, 'codex');
-    assert.equal(start.model, 'gpt-5.2-codex');
+    assert.equal(start.model, 'gpt-5.4');
   });
 
   it('includes taste and understanding when they render, and can cross the large-context threshold because of them', async () => {
@@ -252,7 +243,7 @@ describe('orchestrate rendered-input token estimate', () => {
     );
 
     const start = await firstTierStart(task, deps);
-    assert.equal(start.model, 'gpt-5.2-codex');
+    assert.equal(start.model, 'gpt-5.4');
   });
 
   it('keeps the actual work prompt bytes aligned with the shared initial-executor context builder', async () => {

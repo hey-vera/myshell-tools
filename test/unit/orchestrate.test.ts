@@ -3357,7 +3357,7 @@ describe('orchestrate — captures a provider session id and persists it on the 
     assert.equal(assistant.content, FINAL_TEXT);
     assert.equal(assistant.tier, 'ic');
     assert.equal(assistant.provider, 'codex');
-    assert.equal(assistant.model, 'gpt-5.2-codex');
+    assert.equal(assistant.model, 'gpt-5.4');
     assert.equal(assistant.confidence, 0.88);
     assert.ok(assistant.costUsd !== undefined && assistant.costUsd > 0);
     assert.equal(assistant.durationMs, 0);

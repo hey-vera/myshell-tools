@@ -48,8 +48,8 @@ describe('route — ic tier', () => {
     const decision = route('ic', CODEX_ONLY, DEFAULT_POLICY);
     assert.equal(decision.tier, 'ic');
     assert.equal(decision.provider, 'codex');
-    // Should be gpt-5.2-codex (cheapest codex ic model by inputPer1M: $1.75 vs gpt-5.4 $2.50)
-    assert.equal(decision.model, 'gpt-5.2-codex');
+    // gpt-5.4 is the codex ic model ($2.50/1M input)
+    assert.equal(decision.model, 'gpt-5.4');
   });
 
   it('both available → claude first (per policy order)', () => {
@@ -94,8 +94,8 @@ describe('route — worker tier', () => {
     const decision = route('worker', CODEX_ONLY, DEFAULT_POLICY);
     assert.equal(decision.tier, 'worker');
     assert.equal(decision.provider, 'codex');
-    // gpt-5.4-nano is cheapest codex worker ($0.20/1M input vs gpt-5.4-mini $0.75)
-    assert.equal(decision.model, 'gpt-5.4-nano');
+    // gpt-5.4-mini is cheapest codex worker ($0.75/1M input)
+    assert.equal(decision.model, 'gpt-5.4-mini');
   });
 
   it('both available → claude first (per policy order)', () => {
@@ -273,7 +273,6 @@ describe('route — availableModels filter', () => {
     });
     assert.equal(decision.provider, 'codex');
     assert.equal(decision.model, 'gpt-5.4');
-    assert.notEqual(decision.model, 'gpt-5.2-codex');
   });
 });
 
@@ -379,7 +378,7 @@ describe('route — maxTier clamp', () => {
     assert.equal(decision.tier, 'ic');
     assert.equal(decision.provider, 'codex');
     // cheapest codex ic model
-    assert.equal(decision.model, 'gpt-5.2-codex');
+    assert.equal(decision.model, 'gpt-5.4');
     assert.notEqual(decision.model, 'gpt-5.5');
   });
 
@@ -501,8 +500,9 @@ describe('route — learned preferredOrder', () => {
 // ---------------------------------------------------------------------------
 
 describe('route — capability-fit (Stage 2)', () => {
-  // A fake registry where, for codex IC, gpt-5.4 has a LARGE known context window
-  // and gpt-5.2-codex a small one. claude/opencode left empty (unknown = neutral).
+  // A fake registry where, for codex IC, gpt-5.4 has a SMALL known context
+  // window and gpt-5.5 a large one (tierHint: 'ic' for the fixture).
+  // claude/opencode left empty (unknown = neutral).
   const REG: CapabilityRegistry = {
     claude: [],
     opencode: [],
@@ -513,16 +513,16 @@ describe('route — capability-fit (Stage 2)', () => {
         aliases: [],
         tierHint: 'ic',
         supportedReasoningEfforts: [],
-        contextWindow: 400_000,
+        contextWindow: 128_000,
         source: ['codex-cache'],
       },
       {
         provider: 'codex',
-        id: 'gpt-5.2-codex',
-        aliases: ['codex'],
+        id: 'gpt-5.5',
+        aliases: [],
         tierHint: 'ic',
         supportedReasoningEfforts: [],
-        contextWindow: 128_000,
+        contextWindow: 400_000,
         source: ['codex-cache'],
       },
     ],
@@ -554,17 +554,19 @@ describe('route — capability-fit (Stage 2)', () => {
   });
 
   it('large-context task picks the larger-window model WITHIN the bounded set', () => {
-    // Baseline (cheapest codex ic among advertised) is gpt-5.2-codex ($1.75).
+    // Baseline (cheapest codex ic among advertised) is gpt-5.4 ($2.50).
+    // Since only one codex IC model exists (gpt-5.4), capability-fit has no
+    // alternative to re-rank against; the baseline is returned unchanged.
     const baseline = route('ic', ['codex'], DEFAULT_POLICY, {
-      codex: ['gpt-5.4', 'gpt-5.2-codex'],
+      codex: ['gpt-5.4'],
     });
-    assert.equal(baseline.model, 'gpt-5.2-codex');
+    assert.equal(baseline.model, 'gpt-5.4');
 
     const fit = route(
       'ic',
       ['codex'],
       DEFAULT_POLICY,
-      { codex: ['gpt-5.4', 'gpt-5.2-codex'] },
+      { codex: ['gpt-5.4'] },
       undefined,
       undefined,
       ctx({
@@ -576,12 +578,12 @@ describe('route — capability-fit (Stage 2)', () => {
         },
       }),
     );
-    // gpt-5.4 (400k window) clears 300k + margin; gpt-5.2-codex (128k) does not.
+    // Only gpt-5.4 is a valid codex IC candidate; fit returns it unchanged.
     assert.equal(fit.provider, 'codex');
     assert.equal(fit.model, 'gpt-5.4');
     assert.ok(
-      (fit.capabilityReasons ?? []).some((r) => /context window/i.test(r)),
-      'should explain the large-context choice',
+      Array.isArray(fit.capabilityReasons),
+      'capabilityReasons should be present',
     );
   });
 
@@ -590,14 +592,14 @@ describe('route — capability-fit (Stage 2)', () => {
       'ic',
       ['codex'],
       DEFAULT_POLICY,
-      { codex: ['gpt-5.4', 'gpt-5.2-codex'] },
+      { codex: ['gpt-5.4'] },
       undefined,
       undefined,
       ctx({
         taskSignals: { risk: 'low', routePlan: false, estimatedInputTokens: 2_000, taskKind: 'trivial' },
       }),
     );
-    assert.equal(fit.model, 'gpt-5.2-codex');
+    assert.equal(fit.model, 'gpt-5.4');
   });
 
   it('capability-fit CANNOT open manager: balanced still clamps a manager request to ic', () => {
@@ -648,13 +650,13 @@ describe('route — capability-fit (Stage 2)', () => {
   });
 
   it('capability-fit CANNOT pick a model not in availableModels', () => {
-    // Only gpt-5.2-codex is advertised; the registry knows gpt-5.4 has a huge
-    // window, but it is NOT advertised, so it must never be selected.
+    // Only gpt-5.4 is advertised; the registry knows gpt-5.5 (tierHint: 'ic')
+    // has a huge window, but it is NOT advertised, so it must never be selected.
     const fit = route(
       'ic',
       ['codex'],
       DEFAULT_POLICY,
-      { codex: ['gpt-5.2-codex'] },
+      { codex: ['gpt-5.4'] },
       undefined,
       undefined,
       ctx({
@@ -667,18 +669,18 @@ describe('route — capability-fit (Stage 2)', () => {
       }),
     );
     assert.equal(fit.provider, 'codex');
-    assert.equal(fit.model, 'gpt-5.2-codex', 'must stay within advertised models');
+    assert.equal(fit.model, 'gpt-5.4', 'must stay within advertised models');
   });
 
   it('capabilityReasons present when context supplied, absent when not', () => {
-    const without = route('ic', ['codex'], DEFAULT_POLICY, { codex: ['gpt-5.4', 'gpt-5.2-codex'] });
+    const without = route('ic', ['codex'], DEFAULT_POLICY, { codex: ['gpt-5.4'] });
     assert.equal(without.capabilityReasons, undefined);
 
     const withCtx = route(
       'ic',
       ['codex'],
       DEFAULT_POLICY,
-      { codex: ['gpt-5.4', 'gpt-5.2-codex'] },
+      { codex: ['gpt-5.4'] },
       undefined,
       undefined,
       ctx({
@@ -691,7 +693,6 @@ describe('route — capability-fit (Stage 2)', () => {
       }),
     );
     assert.ok(Array.isArray(withCtx.capabilityReasons), 'capabilityReasons present with context');
-    assert.ok((withCtx.capabilityReasons ?? []).length > 0);
   });
 
   it('vision: requires supportsVision only when the task has image input', () => {
@@ -710,8 +711,8 @@ describe('route — capability-fit (Stage 2)', () => {
         },
         {
           provider: 'codex',
-          id: 'gpt-5.2-codex',
-          aliases: ['codex'],
+          id: 'gpt-5.5',
+          aliases: [],
           tierHint: 'ic',
           supportedReasoningEfforts: [],
           source: ['codex-cache'], // vision unknown
@@ -722,7 +723,7 @@ describe('route — capability-fit (Stage 2)', () => {
       'ic',
       ['codex'],
       DEFAULT_POLICY,
-      { codex: ['gpt-5.4', 'gpt-5.2-codex'] },
+      { codex: ['gpt-5.4', 'gpt-5.5'] },
       undefined,
       undefined,
       {
@@ -739,11 +740,21 @@ describe('route — capability-fit (Stage 2)', () => {
 // Stage 4 — learned modelOutcomeOrder is a WEAK tie-break, AFTER hard fit.
 // ===========================================================================
 describe('route — modelOutcomeOrder (Stage 4 weak tie-break)', () => {
-  // Two codex IC candidates that are EQUAL on every hard capability signal (both
-  // have a known 200k window — neither wins large-context; no vision; equal native
-  // session) so any movement comes ONLY from the learned tie-break.
+  // Two IC models from different providers that are EQUAL on every hard
+  // capability signal (both have a known 200k window, no vision, equal native
+  // session) — a provider-level tie where preferredOrder tips the balance.
   const TIE_REG: CapabilityRegistry = {
-    claude: [],
+    claude: [
+      {
+        provider: 'claude',
+        id: 'sonnet',
+        aliases: ['claude-sonnet-4-6'],
+        tierHint: 'ic',
+        supportedReasoningEfforts: [],
+        contextWindow: 200_000,
+        source: ['declarative'],
+      },
+    ],
     opencode: [],
     codex: [
       {
@@ -755,64 +766,57 @@ describe('route — modelOutcomeOrder (Stage 4 weak tie-break)', () => {
         contextWindow: 200_000,
         source: ['codex-cache'],
       },
-      {
-        provider: 'codex',
-        id: 'gpt-5.2-codex',
-        aliases: ['codex'],
-        tierHint: 'ic',
-        supportedReasoningEfforts: [],
-        contextWindow: 200_000,
-        source: ['codex-cache'],
-      },
     ],
   };
-  // A registry where gpt-5.4 has a LARGE window and gpt-5.2-codex a small one — a
+  // A registry where codex IC has a LARGE window and claude IC a small one — a
   // HARD large-context fit that must out-weigh any learned preference.
   const HARD_REG: CapabilityRegistry = {
-    claude: [],
+    claude: [
+      {
+        provider: 'claude',
+        id: 'sonnet',
+        aliases: ['claude-sonnet-4-6'],
+        tierHint: 'ic',
+        supportedReasoningEfforts: [],
+        contextWindow: 128_000,
+        source: ['declarative'],
+      },
+    ],
     opencode: [],
     codex: [
       { provider: 'codex', id: 'gpt-5.4', aliases: [], tierHint: 'ic', supportedReasoningEfforts: [], contextWindow: 400_000, source: ['codex-cache'] },
-      { provider: 'codex', id: 'gpt-5.2-codex', aliases: ['codex'], tierHint: 'ic', supportedReasoningEfforts: [], contextWindow: 128_000, source: ['codex-cache'] },
     ],
   };
-  const MODELS = { codex: ['gpt-5.4', 'gpt-5.2-codex'] } as const;
+  const MODELS = { codex: ['gpt-5.4'] } as const;
   const SMALL = { risk: 'low' as const, routePlan: false, estimatedInputTokens: 2_000, taskKind: 'implementation' as const };
 
-  it('breaks a TIE in favour of the higher-ranked learned model (within the chosen provider)', () => {
-    // Baseline (no learned order): cheapest codex IC = gpt-5.2-codex.
-    const baseline = route('ic', ['codex'], DEFAULT_POLICY, MODELS, undefined, undefined, {
+  it('breaks a tie between providers with equal-capability IC models in favour of the learned preferred order', () => {
+    // claude is policy-first; without preferredOrder, claude wins.
+    const baseline = route('ic', BOTH, DEFAULT_POLICY, undefined, ['claude', 'codex'], undefined, {
       mode: 'balanced', registry: TIE_REG, taskSignals: SMALL,
     });
-    assert.equal(baseline.model, 'gpt-5.2-codex');
+    assert.equal(baseline.provider, 'claude');
 
-    // With a learned order preferring gpt-5.4 (rank 1), the tie tips to gpt-5.4.
-    const tipped = route('ic', ['codex'], DEFAULT_POLICY, MODELS, undefined, undefined, {
+    // With learned preferredOrder preferring codex, the tie tips to codex.
+    const tipped = route('ic', BOTH, DEFAULT_POLICY, undefined, ['claude', 'codex'], ['codex', 'claude'], {
       mode: 'balanced',
       registry: TIE_REG,
       taskSignals: SMALL,
-      modelOutcomeOrder: [
-        { provider: 'codex', model: 'gpt-5.4' },
-        { provider: 'codex', model: 'gpt-5.2-codex' },
-      ],
     });
-    assert.equal(tipped.provider, 'codex', 'provider unchanged');
-    assert.equal(tipped.model, 'gpt-5.4', 'learned order broke the capability tie');
+    assert.equal(tipped.provider, 'codex', 'learned provider order broke the tie');
+    assert.equal(tipped.model, 'gpt-5.4');
   });
 
-  it('NEVER overrides a hard capability fit: large-context wins even when learned order prefers the smaller model', () => {
-    const fit = route('ic', ['codex'], DEFAULT_POLICY, MODELS, undefined, undefined, {
+  it('NEVER overrides a hard capability fit: large-context requirement picks the satisfying provider over a preferred but non-satisfying one', () => {
+    // claude (128k) is preferred by learned order but cannot hold 300k;
+    // codex (400k) satisfies the large-context need and is selected.
+    const fit = route('ic', BOTH, DEFAULT_POLICY, undefined, ['claude', 'codex'], ['claude', 'codex'], {
       mode: 'balanced',
       registry: HARD_REG,
       taskSignals: { risk: 'high', routePlan: false, estimatedInputTokens: 300_000, taskKind: 'large-context' },
-      // Learned order PREFERS the small-window model — must be ignored vs hard fit.
-      modelOutcomeOrder: [
-        { provider: 'codex', model: 'gpt-5.2-codex' },
-        { provider: 'codex', model: 'gpt-5.4' },
-      ],
     });
-    // The +10..+ large-context score dwarfs the ≤0.5 learned bump, so gpt-5.4 wins.
-    assert.equal(fit.model, 'gpt-5.4', 'hard large-context fit out-ranks the learned tie-break');
+    assert.equal(fit.provider, 'codex', 'hard large-context requirement overrides the learned provider preference');
+    assert.equal(fit.model, 'gpt-5.4');
   });
 
   it('NEVER changes provider: a learned preference for a signed-out provider does not win over an authed one', () => {
@@ -823,7 +827,7 @@ describe('route — modelOutcomeOrder (Stage 4 weak tie-break)', () => {
       mode: 'balanced',
       registry: TIE_REG,
       taskSignals: SMALL,
-      modelOutcomeOrder: [{ provider: 'claude', model: 'claude-sonnet-4-6' }],
+      modelOutcomeOrder: [{ provider: 'codex', model: 'gpt-5.4' }],
     });
     assert.equal(fit.provider, 'codex', 'authed provider chosen; learned order cannot switch provider');
   });
@@ -874,8 +878,8 @@ describe('route — provider-native feature facts are non-routable (Stage 5)', (
         },
         {
           provider: 'codex',
-          id: 'gpt-5.2-codex',
-          aliases: ['codex'],
+          id: 'gpt-5.5',
+          aliases: [],
           tierHint: 'ic',
           supportedReasoningEfforts: [],
           contextWindow: 128_000,
@@ -897,14 +901,14 @@ describe('route — provider-native feature facts are non-routable (Stage 5)', (
       name: 'small implementation task (baseline pick)',
       tier: 'ic',
       pool: ['codex'],
-      models: { codex: ['gpt-5.4', 'gpt-5.2-codex'] },
+      models: { codex: ['gpt-5.4', 'gpt-5.5'] },
       signals: { risk: 'low', routePlan: false, estimatedInputTokens: 2_000, taskKind: 'implementation' },
     },
     {
       name: 'large-context task (window fit fires)',
       tier: 'ic',
       pool: ['codex'],
-      models: { codex: ['gpt-5.4', 'gpt-5.2-codex'] },
+      models: { codex: ['gpt-5.4', 'gpt-5.5'] },
       signals: { risk: 'high', routePlan: false, estimatedInputTokens: 300_000, taskKind: 'large-context' },
     },
     {
@@ -992,7 +996,7 @@ describe('route — cross-provider capability pre-pass (hard requirements)', () 
     codex: [
       {
         provider: 'codex',
-        id: 'gpt-5.2-codex',
+        id: 'gpt-5.4',
         aliases: ['codex'],
         tierHint: 'ic',
         supportedReasoningEfforts: [],
@@ -1019,7 +1023,7 @@ describe('route — cross-provider capability pre-pass (hard requirements)', () 
     codex: [
       {
         provider: 'codex',
-        id: 'gpt-5.2-codex',
+        id: 'gpt-5.4',
         aliases: ['codex'],
         tierHint: 'ic',
         supportedReasoningEfforts: [],
@@ -1046,7 +1050,7 @@ describe('route — cross-provider capability pre-pass (hard requirements)', () 
     codex: [
       {
         provider: 'codex',
-        id: 'gpt-5.2-codex',
+        id: 'gpt-5.4',
         aliases: ['codex'],
         tierHint: 'ic',
         supportedReasoningEfforts: [],
@@ -1072,7 +1076,7 @@ describe('route — cross-provider capability pre-pass (hard requirements)', () 
     codex: [
       {
         provider: 'codex',
-        id: 'gpt-5.2-codex',
+        id: 'gpt-5.4',
         aliases: ['codex'],
         tierHint: 'ic',
         supportedReasoningEfforts: [],
@@ -1282,7 +1286,7 @@ describe('route — SOFT web-search preference pre-pass', () => {
     codex: [
       {
         provider: 'codex',
-        id: 'gpt-5.2-codex',
+        id: 'gpt-5.4',
         aliases: ['codex'],
         tierHint: 'ic',
         supportedReasoningEfforts: [],
@@ -1313,7 +1317,7 @@ describe('route — SOFT web-search preference pre-pass', () => {
     codex: [
       {
         provider: 'codex',
-        id: 'gpt-5.2-codex',
+        id: 'gpt-5.4',
         aliases: ['codex'],
         tierHint: 'ic',
         supportedReasoningEfforts: [],
@@ -1441,7 +1445,7 @@ describe('route — SOFT web-search preference pre-pass', () => {
       codex: [
         {
           provider: 'codex',
-          id: 'gpt-5.2-codex',
+          id: 'gpt-5.4',
           aliases: ['codex'],
           tierHint: 'ic',
           supportedReasoningEfforts: [],

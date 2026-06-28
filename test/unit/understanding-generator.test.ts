@@ -4,11 +4,11 @@
  * Provider, so no live-model dependency: it verifies the PLUMBING (manager-tier
  * READ-ONLY request shape, repoContext threaded, parse into a SystemModel, every
  * failure → null so the caller plans ungrounded) plus the webSearch contract
- * (set ONLY for high-stakes work AND a web-capable provider, i.e. Codex). Twin of
- * goal-plan-generator.test.ts.
+ * (capability-driven via registry searchMode when the vendor-neutral flag is ON;
+ * byte-identical Codex-only when OFF). Twin of goal-plan-generator.test.ts.
  */
 
-import { describe, it, beforeEach } from 'node:test';
+import { describe, it, beforeEach, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { makeUnderstandingPass } from '../../src/core/understanding-generator.ts';
@@ -123,7 +123,7 @@ describe('makeUnderstandingPass', () => {
     assert.equal(await pass(TASK, SIGNAL), null);
   });
 
-  it('does NOT set webSearch on a non-Codex provider even when high-stakes', async () => {
+  it('does NOT set webSearch on a non-Codex provider when flag is OFF (byte-identical)', async () => {
     const sink: { req?: ProviderRequest } = {};
     const provider = fakeProvider('claude', [{ type: 'done', text: GOOD, raw: {} }], sink);
     const pass = makeUnderstandingPass({
@@ -134,7 +134,7 @@ describe('makeUnderstandingPass', () => {
       highStakes: true,
     });
     await pass(TASK, SIGNAL);
-    assert.equal(sink.req?.webSearch, undefined, 'Claude never honours webSearch → flag omitted');
+    assert.equal(sink.req?.webSearch, undefined, 'flag-off: Claude does not get webSearch');
   });
 
   it('does NOT set webSearch on Codex when NOT high-stakes', async () => {
@@ -151,7 +151,7 @@ describe('makeUnderstandingPass', () => {
     assert.equal(sink.req?.webSearch, undefined, 'low-stakes → no web search');
   });
 
-  it('sets webSearch=true ONLY for high-stakes work on Codex (the web-capable provider)', async () => {
+  it('sets webSearch=true for high-stakes work on Codex (flag-off byte-identical)', async () => {
     const sink: { req?: ProviderRequest } = {};
     const provider = fakeProvider('codex', [{ type: 'done', text: GOOD, raw: {} }], sink);
     const pass = makeUnderstandingPass({
@@ -163,6 +163,71 @@ describe('makeUnderstandingPass', () => {
     });
     await pass(TASK, SIGNAL);
     assert.equal(sink.req?.webSearch, true, 'high-stakes + Codex → native web search opt-in');
+  });
+
+  describe('webSearch — flag-ON (capability-driven via searchMode)', () => {
+    const originalEnv = process.env.MYSHELL_VENDOR_NEUTRAL_ROUTER;
+    before(() => { process.env.MYSHELL_VENDOR_NEUTRAL_ROUTER = '1'; });
+    after(() => {
+      if (originalEnv === undefined) delete process.env.MYSHELL_VENDOR_NEUTRAL_ROUTER;
+      else process.env.MYSHELL_VENDOR_NEUTRAL_ROUTER = originalEnv;
+    });
+
+    it('sets webSearch on Claude when high-stakes (Claude has searchMode:native)', async () => {
+      const sink: { req?: ProviderRequest } = {};
+      const provider = fakeProvider('claude', [{ type: 'done', text: GOOD, raw: {} }], sink);
+      const pass = makeUnderstandingPass({
+        providers: { claude: provider },
+        policy: DEFAULT_POLICY,
+        cwd: '/p',
+        timeoutMs: 8000,
+        highStakes: true,
+      });
+      await pass(TASK, SIGNAL);
+      assert.equal(sink.req?.webSearch, true, 'flag-on: Claude gets webSearch (searchMode:native)');
+    });
+
+    it('sets webSearch on Codex when high-stakes (Codex has searchMode:native)', async () => {
+      const sink: { req?: ProviderRequest } = {};
+      const provider = fakeProvider('codex', [{ type: 'done', text: GOOD, raw: {} }], sink);
+      const pass = makeUnderstandingPass({
+        providers: { codex: provider },
+        policy: DEFAULT_POLICY,
+        cwd: '/p',
+        timeoutMs: 8000,
+        highStakes: true,
+      });
+      await pass(TASK, SIGNAL);
+      assert.equal(sink.req?.webSearch, true, 'flag-on: Codex gets webSearch (searchMode:native)');
+    });
+
+    it('sets webSearch on Grok when high-stakes (Grok has searchMode:native)', async () => {
+      const sink: { req?: ProviderRequest } = {};
+      const provider = fakeProvider('grok', [{ type: 'done', text: GOOD, raw: {} }], sink);
+      const pass = makeUnderstandingPass({
+        providers: { grok: provider },
+        policy: DEFAULT_POLICY,
+        cwd: '/p',
+        timeoutMs: 8000,
+        highStakes: true,
+      });
+      await pass(TASK, SIGNAL);
+      assert.equal(sink.req?.webSearch, true, 'flag-on: Grok gets webSearch (searchMode:native)');
+    });
+
+    it('does NOT set webSearch on OpenCode even when high-stakes (no native search)', async () => {
+      const sink: { req?: ProviderRequest } = {};
+      const provider = fakeProvider('opencode', [{ type: 'done', text: GOOD, raw: {} }], sink);
+      const pass = makeUnderstandingPass({
+        providers: { opencode: provider },
+        policy: DEFAULT_POLICY,
+        cwd: '/p',
+        timeoutMs: 8000,
+        highStakes: true,
+      });
+      await pass(TASK, SIGNAL);
+      assert.equal(sink.req?.webSearch, undefined, 'flag-on: OpenCode does not get webSearch (no native search)');
+    });
   });
 
   describe('account aux', () => {

@@ -620,12 +620,12 @@ export async function* orchestrate(
           break brainLoop;
         }
         const beforeUnderstandingWeb = conf.understanding;
+        const presentProviders = (Object.keys(depsArg.providers) as ProviderId[]).filter(
+          (id) => depsArg.providers[id] !== undefined,
+        );
         const webProvider: ProviderId =
           (depsArg.authenticatedProviders ?? []).find((id) => depsArg.providers[id] !== undefined) ??
-          ((Object.keys(depsArg.providers) as ProviderId[]).find(
-            (id) => depsArg.providers[id] !== undefined,
-          ) ??
-            'claude');
+          presentProviders[0]!;
         yield { type: 'notice', level: 'info', message: move.narration };
         yield {
           type: 'tier-start',
@@ -745,13 +745,13 @@ export async function* orchestrate(
       const beforeUnderstanding = conf.understanding;
       // The provider label for the goal card: the cheapest available provider the
       // intent extractor routes over (honest — that's who does the re-extraction).
-      // Falls back to the first present provider; both are real, never fabricated.
+      // Falls back to any present provider; never fabricated.
+      const presentProvs = (Object.keys(depsArg.providers) as ProviderId[]).filter(
+        (id) => depsArg.providers[id] !== undefined,
+      );
       const scrapeProvider: ProviderId =
         (depsArg.authenticatedProviders ?? []).find((id) => depsArg.providers[id] !== undefined) ??
-        ((Object.keys(depsArg.providers) as ProviderId[]).find(
-          (id) => depsArg.providers[id] !== undefined,
-        ) ??
-          'claude');
+        presentProvs[0]!;
       yield { type: 'notice', level: 'info', message: move.narration };
       yield {
         type: 'tier-start',

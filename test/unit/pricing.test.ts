@@ -115,12 +115,6 @@ describe('getModelPricing', () => {
     assert.equal(result.model, 'gpt-5.5');
   });
 
-  it('finds gpt-5.2-codex by alias "codex"', () => {
-    const result = getModelPricing('codex', 'codex');
-    assert.ok(result !== undefined);
-    assert.equal(result.model, 'gpt-5.2-codex');
-  });
-
   it('lookup is case-insensitive', () => {
     const result = getModelPricing('claude', 'OPUS');
     assert.ok(result !== undefined, 'case-insensitive lookup should succeed');
@@ -182,14 +176,14 @@ describe('calculateCost', () => {
     assert.equal(cost, 35);
   });
 
-  it('calculates gpt-5.4-nano cost correctly', () => {
-    // nano: $0.20 / 1M input, $1.25 / 1M output
-    // 1M input => $0.20, 1M output => $1.25 => $1.45
-    const pricing = getModelPricing('codex', 'gpt-5.4-nano')!;
+  it('calculates gpt-5.4-mini cost correctly', () => {
+    // mini: $0.75 / 1M input, $4.50 / 1M output
+    // 1M input => $0.75, 1M output => $4.50 => $5.25
+    const pricing = getModelPricing('codex', 'gpt-5.4-mini')!;
     const cost = calculateCost(1_000_000, 1_000_000, pricing);
     assert.ok(
-      Math.abs(cost - 1.45) < 1e-9,
-      `expected $1.45, got $${cost}`,
+      Math.abs(cost - 5.25) < 1e-9,
+      `expected $5.25, got $${cost}`,
     );
   });
 });
@@ -261,9 +255,9 @@ describe('getCheapestForTier', () => {
     assert.equal(cheapest.inputPer1M, 0);
   });
 
-  it('gpt-5.4-nano is the cheapest non-opencode worker', () => {
+  it('gpt-5.4-mini is the cheapest non-opencode worker', () => {
     const cheapest = getCheapestForTier('worker', ['claude', 'codex']);
-    assert.equal(cheapest.model, 'gpt-5.4-nano');
+    assert.equal(cheapest.model, 'gpt-5.4-mini');
   });
 });
 
@@ -273,7 +267,7 @@ describe('getCheapestForTier', () => {
 
 describe('getCheapestForTier — allowedModels filter', () => {
   it('prefers a model whose exact id is in the allowed set', () => {
-    // gpt-5.4 (ic) is in the allowed set; should be picked over gpt-5.2-codex for codex ic
+    // gpt-5.4 (ic) is in the allowed set; should be picked for codex ic
     const result = getCheapestForTier('ic', ['codex'], ['gpt-5.4']);
     assert.equal(result.model, 'gpt-5.4');
     assert.equal(result.provider, 'codex');

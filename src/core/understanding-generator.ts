@@ -14,12 +14,11 @@
  * planner UNGROUNDED (today's behaviour). It never throws and never writes.
  *
  * WEB SEARCH (high-stakes only): when the engagement is high-stakes AND the routed
- * provider's adapter can honour the native web-search tool, the request sets
- * `ProviderRequest.webSearch: true` (port.ts:74). Today ONLY the Codex adapter
- * honours it (`-c tools.web_search=true`); Claude/OpenCode ignore it — so we set
- * it only when the routed provider is Codex, and otherwise fail-soft to a non-web
- * read-only investigation. This mirrors how orchestrate/hedge/work-call derive the
- * flag from the EXISTING knowledge-boundary signal rather than fabricating one.
+ * provider/model can honour the native web-search tool (Claude/Codex/Grok per
+ * registry `searchMode:'native'`; OpenCode unknown/none), the request sets
+ * `ProviderRequest.webSearch: true` (port.ts:74). Flag-gated: flag-OFF = Codex only
+ * (byte-identical); flag-ON = capability-driven via the registry. Otherwise
+ * fail-soft to a non-web read-only investigation.
  *
  * Cost discipline: this is ONE manager pass per auto-stage attempt (the menu gates
  * it on the flag + the non-trivial signal + quota pressure, run POST-turn, non-
@@ -39,6 +38,8 @@ import type { Provider, ProviderId, ProviderRequest, SandboxLevel, Usage } from 
 import { route } from './route.js';
 import { buildUnderstandingPrompt, parseSystemModel, type SystemModel } from './understanding.js';
 import { recordAuxLedger } from './aux-ledger.js';
+import { findCapability, DECLARATIVE_MODEL_CAPABILITIES } from './model-capabilities.js';
+import { vendorNeutralRouterEnabled } from './route-types.js';
 
 /** Everything the understanding pass needs to pick and run the manager-tier model. */
 export interface UnderstandingGeneratorDeps {
@@ -82,13 +83,36 @@ const UNDERSTANDING_TIER: Tier = 'manager';
 const UNDERSTANDING_SANDBOX: SandboxLevel = 'read-only';
 
 /**
- * Only the Codex adapter honours `ProviderRequest.webSearch` today (port.ts:74 —
- * Claude/OpenCode ignore it). So web search is requested ONLY when the routed
- * provider is one that can honour it. Fail-soft: a non-web provider simply runs the
- * investigation without the flag.
+ * Whether the routed provider/model can honour native web search.
+ *
+ * Flag-OFF (byte-identical): Codex only.
+ * Flag-ON (capability-driven): checks the selected model's routing profile
+ * `searchMode:'native'` in the registry (Claude/Codex/Grok per curated rows).
+ * OpenCode stays unknown/none until verified.
+ *
+ * Fail-soft: a non-search provider simply runs the investigation without the flag.
+ * Never hard-fails a turn for lack of search.
  */
-function providerHonoursWebSearch(id: ProviderId): boolean {
-  return id === 'codex';
+function providerHonoursWebSearch(
+  id: ProviderId,
+  model: string,
+  flagOn: boolean,
+): boolean {
+  // Flag-off: byte-identical (Codex only)
+  if (!flagOn) return id === 'codex';
+
+  // Flag-on: lookup the selected model's routing profile in the declarative registry
+  const cap = findCapability(DECLARATIVE_MODEL_CAPABILITIES, id, model);
+  if (cap?.routingProfile?.searchMode === 'native') return true;
+
+  // Fallback: check any model from this provider (model not found by name)
+  const providerCaps = DECLARATIVE_MODEL_CAPABILITIES[id];
+  if (providerCaps) {
+    for (const c of providerCaps) {
+      if (c.routingProfile?.searchMode === 'native') return true;
+    }
+  }
+  return false;
 }
 
 /**
@@ -132,9 +156,11 @@ export function makeUnderstandingPass(
     if (provider === undefined) return null;
 
     // webSearch ONLY when the work is high-stakes AND the routed provider can
-    // honour the native web-search tool (Codex today). Otherwise the flag is
-    // omitted and the request is byte-for-byte a plain read-only investigation.
-    const wantsWebSearch = deps.highStakes === true && providerHonoursWebSearch(providerId);
+    // honour the native web-search tool. Flag-gated: when the vendor-neutral
+    // router is ON, this is capability-driven via the registry's searchMode;
+    // when OFF it is byte-identical (Codex only).
+    const flagOn = vendorNeutralRouterEnabled(process.env, undefined);
+    const wantsWebSearch = deps.highStakes === true && providerHonoursWebSearch(providerId, model, flagOn);
 
     const req: ProviderRequest = {
       model,

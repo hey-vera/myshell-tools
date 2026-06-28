@@ -215,7 +215,7 @@ function modelFrame(confidence: IntentFrame['confidence']): IntentFrame {
 }
 
 /**
- * Registry that ALSO declares the cheap IC codex model (`gpt-5.2-codex`) the
+ * Registry that ALSO declares the Codex IC model (`gpt-5.4`) the
  * Balanced IC route resolves to, so findCapability matches and effort is selected.
  */
 const CODEX_IC_REGISTRY: CapabilityRegistry = {
@@ -224,8 +224,8 @@ const CODEX_IC_REGISTRY: CapabilityRegistry = {
     ...CODEX_XHIGH_REGISTRY.codex,
     {
       provider: 'codex',
-      id: 'gpt-5.2-codex',
-      aliases: ['codex'],
+      id: 'gpt-5.4',
+      aliases: [],
       tierHint: 'ic',
       supportedReasoningEfforts: ['low', 'medium', 'high', 'xhigh'],
       source: ['codex-cache'],
