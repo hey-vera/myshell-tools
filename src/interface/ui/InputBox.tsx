@@ -330,9 +330,9 @@ export function InputBox({
 
   // Register the imperative API + queued subscriber; consume the history seed.
   useEffect(() => {
-    bridge.attach({ currentLine: () => value });
+    bridge.attach({ currentLine: () => valueRef.current });
     return () => bridge.attach(null);
-  });
+  }, [bridge]);
   useEffect(() => {
     bridge.onQueued((n) => setQueued(n));
     return () => {
@@ -380,7 +380,11 @@ export function InputBox({
   // path so both have byte-identical submit semantics (the reader trims).
   const submit = (submitted: string): void => {
     if (submitted.trim() !== '') {
-      setHistory((h) => (h[h.length - 1] === submitted ? h : [...h, submitted]));
+      const HISTORY_CAP = 500;
+      setHistory((h) => {
+        if (h[h.length - 1] === submitted) return h;
+        return [...h, submitted].slice(-HISTORY_CAP);
+      });
     }
     setValue('');
     setCursor(0);

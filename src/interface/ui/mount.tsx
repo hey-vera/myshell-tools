@@ -239,6 +239,14 @@ export function createInkLineReader(bridge: InkAppBridge): LineReader {
   // prompt. Mirrors menu-readline.ts `suppressEmptyUntil`/`suppressGeneration`.
   let suppressEmptyUntil = 0;
   let suppressGeneration = 0;
+  let suppressTimer: ReturnType<typeof setTimeout> | null = null;
+
+  function clearSuppressTimer(): void {
+    if (suppressTimer !== null) {
+      clearTimeout(suppressTimer);
+      suppressTimer = null;
+    }
+  }
 
   bridge.onSubmit((raw: string) => {
     if (closed) return;
@@ -326,12 +334,15 @@ export function createInkLineReader(bridge: InkAppBridge): LineReader {
       if (control === null || control.isRawModeSupported) {
         suppressEmptyUntil = Date.now() + 250;
         const generation = suppressGeneration;
-        setTimeout(() => {
+        clearSuppressTimer();
+        suppressTimer = setTimeout(() => {
+          suppressTimer = null;
           if (suppressGeneration === generation) {
             suppressEmptyUntil = 0;
             buffered.length = 0;
           }
-        }, 250).unref?.();
+        }, 250);
+        suppressTimer.unref?.();
       }
       // 3. Re-activate Ink's input hook. On the refcount 0→1 transition Ink
       //    re-adds the `'readable'` listener and re-enables raw mode, so the FIRST
@@ -352,6 +363,7 @@ export function createInkLineReader(bridge: InkAppBridge): LineReader {
     },
     close(): void {
       closed = true;
+      clearSuppressTimer();
       while (waiters.length > 0) {
         const waiter = waiters.shift();
         if (waiter !== undefined) waiter(null);

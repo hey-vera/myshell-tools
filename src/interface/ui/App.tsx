@@ -383,6 +383,24 @@ export function App(props: AppProps): React.ReactElement {
   );
 }
 
+const CommittedTranscript = React.memo(function CommittedTranscript({
+  lines,
+  color,
+}: {
+  readonly lines: readonly TranscriptLine[];
+  readonly color: boolean;
+}): React.ReactElement {
+  const items = React.useMemo(
+    () => lines.map((line, index) => ({ line, key: index })),
+    [lines],
+  );
+  return (
+    <Static items={items}>
+      {(item) => <CommittedLine key={item.key} line={item.line} color={color} />}
+    </Static>
+  );
+});
+
 /**
  * The Ink chat app body: a write-once `<Static>` transcript above a pinned, real
  * `<InputBox>` editor (cursor movement, history, multiline-compose, queued
@@ -544,8 +562,6 @@ function AppBody({
   // only the pre-first-state fallback (e.g. the idle skeleton before any state),
   // and committed[] is the sole <Static> source the instant a turn or chrome lands.
   if (uiState !== null && liveLayout !== null) {
-    const committed: Array<{ readonly line: TranscriptLine; readonly key: number }> =
-      uiState.committed.map((line, index) => ({ line, key: index }));
     // The live-status layout was computed ONCE above (memoized): `streamLines` is
     // the buffer's TRUE wrapped-row count at the live width; `plan` is the SAME
     // layoutForHeight result the StatusBlock now consumes via a prop (no second
@@ -562,9 +578,7 @@ function AppBody({
     const { streamLines, plan, cappedStreamBuffer } = liveLayout;
     return (
       <Box flexDirection="column">
-        <Static items={committed}>
-          {(item) => <CommittedLine key={item.key} line={item.line} color={color} />}
-        </Static>
+        <CommittedTranscript lines={uiState.committed} color={color} />
         {uiState.chrome.length > 0 ? (
           <Box flexDirection="column">
             {uiState.chrome.map((line, index) => (
