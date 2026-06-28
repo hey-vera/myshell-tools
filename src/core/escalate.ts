@@ -9,6 +9,9 @@
 
 import type { Tier } from './types.js';
 import type { ProviderId } from '../providers/port.js';
+import type { CapabilityRegistry } from './model-capabilities.js';
+import { findCapability } from './model-capabilities.js';
+import { opencodeTierRank, poolForModelId } from './route-types.js';
 
 // ---------------------------------------------------------------------------
 // Tier chain
@@ -49,8 +52,49 @@ export function nextTierUp(tier: Tier): Tier | null {
  * @param available - Provider IDs that are currently reachable.
  * @param primary   - The provider ID that ran the IC work being reviewed.
  */
-export function pickReviewer(available: ProviderId[], primary: ProviderId): ProviderId | null {
+export function pickReviewer(
+  available: ProviderId[],
+  primary: ProviderId,
+  opts?: {
+    /** When true, select the cross-vendor reviewer with the highest manager suitability. */
+    readonly vendorNeutralEnabled?: boolean;
+    readonly registry?: CapabilityRegistry;
+    readonly availableModels?: ReadonlyMap<ProviderId, readonly string[]>;
+  },
+): ProviderId | null {
   if (available.length === 0) return null;
+
+  if (opts?.vendorNeutralEnabled === true && opts.registry !== undefined && opts.availableModels !== undefined) {
+    const crossVendors = available.filter((id) => id !== primary);
+    if (crossVendors.length === 0) {
+      if (available.includes(primary)) return primary;
+      return null;
+    }
+    // Pick the cross-vendor provider whose best model has the highest manager suitability.
+    let best: ProviderId | null = null;
+    let bestScore = -1;
+    for (const provider of crossVendors) {
+      const models = opts.availableModels.get(provider) ?? [];
+      for (const model of models) {
+        const cap = findCapability(opts.registry, provider, model);
+        const poolId = poolForModelId(model, provider);
+        let score = 0;
+        if (provider === 'opencode') {
+          const rank = opencodeTierRank(model);
+          score = rank.manager;
+        } else if (cap?.routingProfile) {
+          score = cap.routingProfile.tierSuitability.manager;
+        }
+        if (score > bestScore) {
+          bestScore = score;
+          best = provider;
+        }
+      }
+    }
+    if (best !== null) return best;
+    // No scored cross-vendor — fall back to first cross-vendor.
+    return crossVendors[0] ?? null;
+  }
 
   // Prefer a different vendor (cross-vendor review is the goal)
   const crossVendor = available.find((id) => id !== primary);

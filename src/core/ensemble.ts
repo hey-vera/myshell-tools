@@ -45,6 +45,9 @@ import { getModelPricing, calculateCost, calculateEffectiveCost } from '../infra
 import { assess } from './assess.js';
 import { authorizeTier } from './flagship.js';
 import { type ReasoningEffort, type TaskKind } from './model-capabilities.js';
+import { findCapability } from './model-capabilities.js';
+import type { CapabilityRegistry } from './model-capabilities.js';
+import { opencodeTierRank, poolForModelId } from './route-types.js';
 import { modeFromPolicy } from './policy.js';
 import type { WorkContract } from './work-contract.js';
 import { capContract, renderContractForPrompt, shouldMaterializeContract, isCleanObjectiveTask, stampContractIntentVersion } from './work-contract.js';
@@ -123,6 +126,10 @@ export function planPanel(opts: {
   readonly authenticatedProviders: readonly ProviderId[];
   readonly maxPanelProviders: number;
   readonly qualificationOverride?: boolean;
+  /** When true, rank candidates by suitability + pick highest manager-suitability synthesizer. */
+  readonly vendorNeutralEnabled?: boolean;
+  readonly registry?: CapabilityRegistry;
+  readonly availableModels?: ReadonlyMap<ProviderId, readonly string[]>;
 }): PanelPlan | null {
   const {
     panelPolicy,
@@ -146,6 +153,60 @@ export function planPanel(opts: {
 
   // Cap concurrent candidates — never below 2 (a panel needs ≥2 to be a panel).
   const cap = Math.max(2, maxPanelProviders);
+
+  // Vendor-neutral: rank candidates by tier suitability + pick highest manager-suitability synthesizer.
+  if (
+    opts.vendorNeutralEnabled === true &&
+    opts.registry !== undefined &&
+    opts.availableModels !== undefined
+  ) {
+    const registry = opts.registry;
+    const availableModels = opts.availableModels;
+    const scored = authenticatedProviders.map((provider): { provider: ProviderId; bestScore: number; managerScore: number } => {
+      const models = availableModels.get(provider) ?? [];
+      let bestScore = -1;
+      let managerScore = -1;
+      for (const model of models) {
+        const cap = findCapability(registry, provider, model);
+        const poolId = poolForModelId(model, provider);
+        let worker = 0; let ic = 0; let manager = 0;
+        if (provider === 'opencode') {
+          const rank = opencodeTierRank(model);
+          worker = rank.worker; ic = rank.ic; manager = rank.manager;
+        } else if (cap?.routingProfile) {
+          worker = cap.routingProfile.tierSuitability.worker;
+          ic = cap.routingProfile.tierSuitability.ic;
+          manager = cap.routingProfile.tierSuitability.manager;
+        }
+        const candidateScore = tier === 'worker' ? worker : tier === 'ic' ? ic : manager;
+        if (candidateScore > bestScore) bestScore = candidateScore;
+        if (manager > managerScore) managerScore = manager;
+      }
+      return { provider, bestScore, managerScore };
+    });
+    scored.sort((a, b) => b.bestScore - a.bestScore);
+
+    const candidates = scored.slice(0, cap).map((s) => s.provider);
+    if (candidates.length < 2) {
+      // Fall back to non-ranked when ranking produces <2
+      const fallback = authenticatedProviders.slice(0, cap);
+      if (fallback.length < 2) return null;
+      const synth = fallback[0] as ProviderId;
+      return { tier, candidates: fallback, synthesizer: synth, classification };
+    }
+
+    // Synthesizer: highest manager-suitability among candidates.
+    let bestSynth: ProviderId = candidates[0]!;
+    let bestSynthScore = -1;
+    for (const s of scored) {
+      if (candidates.includes(s.provider) && s.managerScore > bestSynthScore) {
+        bestSynthScore = s.managerScore;
+        bestSynth = s.provider;
+      }
+    }
+    return { tier, candidates, synthesizer: bestSynth, classification };
+  }
+
   const candidates = authenticatedProviders.slice(0, cap);
 
   // <2 distinct providers → no real panel; defer to the single-model path.

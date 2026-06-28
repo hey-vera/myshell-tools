@@ -49,6 +49,11 @@ import { assess } from './assess.js';
 import { authorizeTier } from './flagship.js';
 import { buildPrompt } from './prompt.js';
 import { type ReasoningEffort, type TaskKind } from './model-capabilities.js';
+import type { CapabilityRegistry } from './model-capabilities.js';
+import { findCapability } from './model-capabilities.js';
+import { vendorNeutralRoute, type VendorNeutralRouteParams } from './vendor-neutral-route.js';
+import { NoCapableProvider, poolForModelId, sessionTokenLoadByPool } from './route-types.js';
+import type { QuotaPoolId } from './route-types.js';
 import { modeFromPolicy } from './policy.js';
 import type { WorkContract } from './work-contract.js';
 import { capContract, isCleanObjectiveTask, shouldMaterializeContract, stampContractIntentVersion } from './work-contract.js';
@@ -91,6 +96,10 @@ export interface HedgeAuthorityInput {
   readonly turnCallBudget?: number;
   readonly verifyLevel?: import('./verify.js').VerifyLevel;
   readonly roundBudget?: number;
+  /** When true, use vendor-neutral routing behind the flag. */
+  readonly vendorNeutralEnabled?: boolean;
+  readonly registry?: CapabilityRegistry;
+  readonly sessionId?: string;
 }
 
 /**
@@ -233,20 +242,56 @@ async function runAttempt(
   risk: Risk,
   capabilityContext: CapabilityRouteContext | undefined,
   wantsWebSearch: boolean,
+  vendorNeutralEnabled: boolean,
 ): Promise<RunResult> {
-  const decision = route(
-    requestedTier,
+  const routePool =
     deps.authenticatedProviders !== undefined && deps.authenticatedProviders.length > 0
       ? [...deps.authenticatedProviders]
       : (Object.keys(deps.providers) as ProviderId[]).filter(
           (id) => deps.providers[id] !== undefined,
-        ),
-    effPolicy,
-    deps.availableModels,
-    deps.authenticatedProviders,
-    deps.learnedProviderOrder?.[requestedTier],
-    capabilityContext,
-  );
+        );
+
+  let decision: ReturnType<typeof route>;
+  if (vendorNeutralEnabled && deps.capabilityRegistry) {
+    const availableModelsMap = new Map<ProviderId, readonly string[]>();
+    if (deps.availableModels) {
+      for (const [p, models] of Object.entries(deps.availableModels)) {
+        if (models !== undefined) availableModelsMap.set(p as ProviderId, models);
+      }
+    }
+    const params: VendorNeutralRouteParams = {
+      tier: requestedTier,
+      authedProviders: deps.authenticatedProviders ?? routePool,
+      availableModels: availableModelsMap,
+      registry: deps.capabilityRegistry,
+      needsWebSearch: wantsWebSearch,
+      sessionId: deps.session.id,
+    };
+    const result = vendorNeutralRoute(params);
+    if (result.ok) {
+      decision = result.decision;
+    } else {
+      decision = route(
+        requestedTier,
+        routePool,
+        effPolicy,
+        deps.availableModels,
+        deps.authenticatedProviders,
+        deps.learnedProviderOrder?.[requestedTier],
+        capabilityContext,
+      );
+    }
+  } else {
+    decision = route(
+      requestedTier,
+      routePool,
+      effPolicy,
+      deps.availableModels,
+      deps.authenticatedProviders,
+      deps.learnedProviderOrder?.[requestedTier],
+      capabilityContext,
+    );
+  }
   // The REAL task kind + difficulty signals for this turn (P0.3): the SAME
   // taskSignals the sequential path uses, threaded via capabilityContext from
   // orchestrate (taskKind from deriveTaskKind + difficulty from engagement/intent).
@@ -1014,6 +1059,7 @@ export async function* runHedged(
       plan.risk,
       capabilityContext,
       wantsWebSearch,
+      authority.vendorNeutralEnabled ?? false,
     );
 
     // --- Race the primary against the delay. ---
@@ -1079,6 +1125,7 @@ export async function* runHedged(
         plan.risk,
         capabilityContext,
         wantsWebSearch,
+        authority.vendorNeutralEnabled ?? false,
       );
       await recordRun(speculative);
 
@@ -1130,6 +1177,7 @@ export async function* runHedged(
       plan.risk,
       capabilityContext,
       wantsWebSearch,
+      authority.vendorNeutralEnabled ?? false,
     );
 
     // Take the FIRST to finish with an adequate result; cancel the other.

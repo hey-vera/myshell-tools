@@ -81,3 +81,69 @@ describe('pickReviewer — reviewer selection', () => {
     assert.equal(reviewer, 'codex');
   });
 });
+
+// ---------------------------------------------------------------------------
+// pickReviewer — vendor-neutral (flag ON, slice 13)
+// ---------------------------------------------------------------------------
+
+import { DECLARATIVE_MODEL_CAPABILITIES } from '../../src/core/model-capabilities.ts';
+import type { CapabilityRegistry } from '../../src/core/model-capabilities.ts';
+import type { ProviderId } from '../../src/providers/port.ts';
+
+function makeModels(...providers: ProviderId[]): ReadonlyMap<ProviderId, readonly string[]> {
+  const m = new Map<ProviderId, readonly string[]>();
+  for (const p of providers) {
+    if (p === 'claude') m.set(p, ['opus', 'sonnet', 'haiku']);
+    else if (p === 'codex') m.set(p, ['gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini']);
+    else if (p === 'grok') m.set(p, ['grok-build', 'grok-composer-2.5-fast']);
+    else if (p === 'opencode') m.set(p, ['opencode/deepseek-v4-pro']);
+  }
+  return m;
+}
+
+describe('pickReviewer — flag-ON (vendor-neutral reviewer choice)', () => {
+  const registry: CapabilityRegistry = DECLARATIVE_MODEL_CAPABILITIES;
+
+  it('flag-OFF: first cross-vendor wins (byte-identical)', () => {
+    const reviewer = pickReviewer(['codex', 'grok'], 'claude');
+    assert.equal(reviewer, 'codex'); // first cross-vendor
+  });
+
+  it('flag-ON: picks highest manager-suitability cross-vendor reviewer', () => {
+    // among available [grok, codex], codex's best model has higher manager suitability
+    const reviewer = pickReviewer(['grok', 'codex'], 'claude', {
+      vendorNeutralEnabled: true,
+      registry,
+      availableModels: makeModels('grok', 'codex'),
+    });
+    // codex gpt-5.5 manager=80, grok-build manager=75 → codex wins
+    assert.equal(reviewer, 'codex');
+  });
+
+  it('flag-ON: when no cross-vendor exists, falls back to primary', () => {
+    const reviewer = pickReviewer(['claude'], 'claude', {
+      vendorNeutralEnabled: true,
+      registry,
+      availableModels: makeModels('claude'),
+    });
+    assert.equal(reviewer, 'claude');
+  });
+
+  it('flag-ON: returns null when available is empty', () => {
+    const reviewer = pickReviewer([], 'claude', {
+      vendorNeutralEnabled: true,
+      registry,
+      availableModels: new Map(),
+    });
+    assert.equal(reviewer, null);
+  });
+
+  it('flag-ON without registry falls back to first cross-vendor', () => {
+    const reviewer = pickReviewer(['grok', 'codex'], 'claude', {
+      vendorNeutralEnabled: true,
+      availableModels: makeModels('grok', 'codex'),
+    });
+    // no registry → fall back to first cross-vendor
+    assert.equal(reviewer, 'grok');
+  });
+});

@@ -110,6 +110,9 @@ import {
   buildNativeSessionTelemetry,
   renderNativeSessionTelemetry,
 } from './native-session-telemetry.js';
+import { vendorNeutralRoute, type VendorNeutralRouteParams } from './vendor-neutral-route.js';
+import { NoCapableProvider, poolForModelId, sessionTokenLoadByPool } from './route-types.js';
+import type { QuotaPoolId } from './route-types.js';
 
 function blockedCodeForError(
   category: import('../providers/port.js').CliError['category'],
@@ -581,6 +584,8 @@ export interface WorkCallInput {
    * poll/tribunal generators never re-enter this loop). Read ONLY here, in (e).
    */
   readonly priorCostUsd?: number;
+  /** When true, use vendor-neutral routing behind the flag (slices 9-10). */
+  readonly vendorNeutralEnabled?: boolean;
 }
 
 /**
@@ -591,6 +596,43 @@ export interface WorkCallInput {
  * admission GATES are NOT relocated — `admitManager` here is the in-loop admission
  * wrapper over the loop-local tier, identical to the inlined closure.
  */
+
+/**
+ * Build {@link VendorNeutralRouteParams} from live context and call
+ * vendor-neutral-route. Returns the decision on ok, or null on NoCapableProvider.
+ * For web-search turns the router already soft-prefers native search internally;
+ * this helper surfaces the disclosure when needed.
+ */
+function vendorNeutralDecision(
+  tier: Tier,
+  pool: readonly ProviderId[],
+  deps: OrchestrateDeps,
+  sessionId: string,
+  wantsWebSearch: boolean,
+  hasImageAttachment: boolean,
+): ReturnType<typeof route> | null {
+  const registry = deps.capabilityRegistry;
+  if (!registry) return null;
+  const availableModelsMap = new Map<ProviderId, readonly string[]>();
+  if (deps.availableModels) {
+    for (const [p, models] of Object.entries(deps.availableModels)) {
+      if (models !== undefined) availableModelsMap.set(p as ProviderId, models);
+    }
+  }
+  const result = vendorNeutralRoute({
+    tier,
+    authedProviders: deps.authenticatedProviders ?? pool,
+    availableModels: availableModelsMap,
+    registry,
+    sessionId,
+    ...(wantsWebSearch ? { needsWebSearch: true as const } : {}),
+    ...(hasImageAttachment ? { needsVision: true as const } : {}),
+    ...(deps.attachments !== undefined && deps.attachments.length > 0 ? { hasAttachments: true as const } : {}),
+  });
+  if (result.ok) return result.decision;
+  return null;
+}
+
 export async function* runWorkCall(input: WorkCallInput): AsyncGenerator<CoreEvent> {
   const {
     task,
@@ -618,6 +660,7 @@ export async function* runWorkCall(input: WorkCallInput): AsyncGenerator<CoreEve
     trustEnabled,
     brainConfidence,
     priorCostUsd,
+    vendorNeutralEnabled,
   } = input;
 
   // -------------------------------------------------------------------------
@@ -758,15 +801,27 @@ export async function* runWorkCall(input: WorkCallInput): AsyncGenerator<CoreEve
                   : {}),
               }
             : undefined;
-        const reviewDecision = route(
-          'manager',
-          [input.reviewer],
-          deps.policy,
-          deps.availableModels,
-          deps.authenticatedProviders,
-          deps.learnedProviderOrder?.['manager'],
-          reviewCapabilityContext,
-        );
+        let reviewDecision: ReturnType<typeof route>;
+        if (vendorNeutralEnabled && deps.capabilityRegistry) {
+          const vnDecision = vendorNeutralDecision(
+            'manager', [input.reviewer], deps, deps.session.id, false, false,
+          );
+          if (vnDecision) {
+            reviewDecision = vnDecision;
+          } else {
+            return { ran: false };
+          }
+        } else {
+          reviewDecision = route(
+            'manager',
+            [input.reviewer],
+            deps.policy,
+            deps.availableModels,
+            deps.authenticatedProviders,
+            deps.learnedProviderOrder?.['manager'],
+            reviewCapabilityContext,
+          );
+        }
         const reviewEffort = effortForDecision(
           deps.capabilityRegistry,
           input.reviewer,
@@ -1143,15 +1198,32 @@ export async function* runWorkCall(input: WorkCallInput): AsyncGenerator<CoreEve
     // currentTier (the requested tier); route() applies it after its own clamp,
     // and an entry for a tier the run clamps away simply finds no eligible match
     // and falls through to the static order.
-    const decision = route(
-      currentTier,
-      routePool,
-      effPolicy,
-      deps.availableModels,
-      deps.authenticatedProviders,
-      deps.learnedProviderOrder?.[currentTier],
-      capabilityContext,
-    );
+    let decision: ReturnType<typeof route>;
+    if (vendorNeutralEnabled && deps.capabilityRegistry) {
+      const vnDecision = vendorNeutralDecision(
+        currentTier, routePool, deps, deps.session.id, wantsWebSearch, hasImageAttachment,
+      );
+      if (vnDecision) {
+        decision = vnDecision;
+      } else {
+        yield {
+          type: 'notice',
+          level: 'error',
+          message: `Vendor-neutral routing could not find a provider for tier "${currentTier}". No capable provider available.`,
+        };
+        break mainLoop;
+      }
+    } else {
+      decision = route(
+        currentTier,
+        routePool,
+        effPolicy,
+        deps.availableModels,
+        deps.authenticatedProviders,
+        deps.learnedProviderOrder?.[currentTier],
+        capabilityContext,
+      );
+    }
 
     // Reasoning effort for THIS run, selected against the resolved model's
     // capability facts (capability registry §3/§5). decision.tier is the tier the
@@ -1708,15 +1780,32 @@ export async function* runWorkCall(input: WorkCallInput): AsyncGenerator<CoreEve
         // tier), independent of the escalation / repair maxAttempts ceiling.
         // This also makes sandbox-environment failures switch CLIs immediately
         // instead of spending another ordinary retry on the broken sandbox.
-        const nextDecision = route(
-          currentTier,
-          remaining,
-          effPolicy,
-          deps.availableModels,
-          deps.authenticatedProviders,
-          deps.learnedProviderOrder?.[currentTier],
-          capabilityContext,
-        );
+        let nextDecision: ReturnType<typeof route>;
+        if (vendorNeutralEnabled && deps.capabilityRegistry) {
+          const vnDecision = vendorNeutralDecision(
+            currentTier, remaining, deps, deps.session.id, wantsWebSearch, hasImageAttachment,
+          );
+          if (vnDecision) {
+            nextDecision = vnDecision;
+          } else {
+            yield {
+              type: 'notice',
+              level: 'error',
+              message: `Vendor-neutral routing could not find a failover provider for tier "${currentTier}". No capable provider available.`,
+            };
+            break mainLoop;
+          }
+        } else {
+          nextDecision = route(
+            currentTier,
+            remaining,
+            effPolicy,
+            deps.availableModels,
+            deps.authenticatedProviders,
+            deps.learnedProviderOrder?.[currentTier],
+            capabilityContext,
+          );
+        }
         yield {
           type: 'failover',
           from: decision.provider,
@@ -1894,15 +1983,41 @@ export async function* runWorkCall(input: WorkCallInput): AsyncGenerator<CoreEve
                   : {}),
               }
             : undefined;
-        const reviewDecision = route(
-          'manager',
-          [reviewerId],
-          reviewPolicy,
-          deps.availableModels,
-          deps.authenticatedProviders,
-          deps.learnedProviderOrder?.['manager'],
-          reviewCapabilityContext,
-        );
+        let reviewDecision: ReturnType<typeof route>;
+        if (vendorNeutralEnabled && deps.capabilityRegistry) {
+          const vnDecision = vendorNeutralDecision(
+            'manager', [reviewerId], deps, deps.session.id, wantsWebSearch, hasImageAttachment,
+          );
+          if (vnDecision) {
+            reviewDecision = vnDecision;
+          } else {
+            yield {
+              type: 'notice',
+              level: 'error',
+              message: `Vendor-neutral routing could not find a review provider. Skipping review.`,
+            };
+            // skip review — fall through to accept path
+            reviewDecision = route(
+              'manager',
+              [reviewerId],
+              reviewPolicy,
+              deps.availableModels,
+              deps.authenticatedProviders,
+              deps.learnedProviderOrder?.['manager'],
+              reviewCapabilityContext,
+            );
+          }
+        } else {
+          reviewDecision = route(
+            'manager',
+            [reviewerId],
+            reviewPolicy,
+            deps.availableModels,
+            deps.authenticatedProviders,
+            deps.learnedProviderOrder?.['manager'],
+            reviewCapabilityContext,
+          );
+        }
         const reviewTier = reviewDecision.tier;
         // Reasoning effort for the reviewer run, against the resolved reviewer
         // model. reviewTier is the tier admission already granted to the reviewer,

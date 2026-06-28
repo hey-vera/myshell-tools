@@ -21,6 +21,7 @@ import {
   type PanelDebateReceipt,
 } from '../../src/core/ensemble.ts';
 import { DEFAULT_POLICY } from '../../src/core/policy.ts';
+import { DECLARATIVE_MODEL_CAPABILITIES } from '../../src/core/model-capabilities.ts';
 import { renderUntrustedBlock } from '../../src/core/untrusted-content.ts';
 import type {
   Classification,
@@ -215,6 +216,67 @@ describe('planPanel — composition', () => {
       maxPanelProviders: 2,
     };
     assert.deepEqual(planPanel(opts), planPanel(opts));
+  });
+
+  it('flag-OFF: synthesizer is first candidate (byte-identical)', () => {
+    const plan = planPanel({
+      panelPolicy: 'always',
+      classification: HIGH,
+      tier: 'ic',
+      authenticatedProviders: ['grok', 'codex', 'claude'],
+      maxPanelProviders: 3,
+    });
+    assert.ok(plan !== null);
+    assert.equal(plan.synthesizer, 'grok');
+    assert.deepEqual(plan.candidates, ['grok', 'codex', 'claude']);
+  });
+
+  it('flag-ON: candidates ranked by suitability, synthesizer by highest manager score', () => {
+    const registry = DECLARATIVE_MODEL_CAPABILITIES;
+    const availableModels = new Map<ProviderId, readonly string[]>();
+    availableModels.set('claude', ['opus', 'sonnet', 'haiku']);
+    availableModels.set('codex', ['gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini']);
+    availableModels.set('grok', ['grok-build', 'grok-composer-2.5-fast']);
+    const plan = planPanel({
+      panelPolicy: 'always',
+      classification: HIGH,
+      tier: 'ic',
+      authenticatedProviders: ['grok', 'codex', 'claude'],
+      maxPanelProviders: 3,
+      vendorNeutralEnabled: true,
+      registry,
+      availableModels,
+    });
+    assert.ok(plan !== null);
+    assert.equal(plan.candidates.length, 3);
+    // IC suitability: codex gpt-5.4 ic=85, claude sonnet ic=85, grok-build ic=80
+    // Candidates sorted [codex, claude, grok] (both ic=85, stable sort keeps relative order)
+    // Manager suitability: claude opus=90, codex gpt-5.5=90 (tie) → first in scored wins (codex)
+    assert.equal(plan.synthesizer, 'codex');
+  });
+
+  it('flag-ON: with 2 providers, still works', () => {
+    const registry = DECLARATIVE_MODEL_CAPABILITIES;
+    const availableModels = new Map<ProviderId, readonly string[]>();
+    availableModels.set('grok', ['grok-build', 'grok-composer-2.5-fast']);
+    availableModels.set('codex', ['gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini']);
+    const plan = planPanel({
+      panelPolicy: 'always',
+      classification: HIGH,
+      tier: 'worker',
+      authenticatedProviders: ['grok', 'codex'],
+      maxPanelProviders: 2,
+      vendorNeutralEnabled: true,
+      registry,
+      availableModels,
+    });
+    assert.ok(plan !== null);
+    assert.equal(plan.candidates.length, 2);
+    // worker tier: grok-composer-2.5-fast=85, gpt-5.4-mini=85 → order depends on scoring tie
+    // Both have worker=85, so tiebreak sorts by original order (both same score)
+    // Synthesizer should be the one with highest manager score
+    // codex gpt-5.5 manager=80 > grok-build manager=75
+    assert.equal(plan.synthesizer, 'codex');
   });
 });
 
