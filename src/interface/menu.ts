@@ -229,6 +229,7 @@ import { draftGoalsEnabled } from './ui/draft-goals-flag.js';
 import { experimentalEnabledByDefault } from './ui/experimental-default.js';
 import { cacheAccountingV2Enabled } from './ui/cache-accounting-flag.js';
 import { accountAuxEnabled } from './ui/account-aux-flag.js';
+import { subscriptionsEnabled } from './ui/subscriptions-flag.js';
 import { intentStoreV1Enabled } from './ui/intent-store-flag.js';
 import { correctionForkV1Enabled } from './ui/correction-fork-flag.js';
 import { blockedStateV1Enabled } from './ui/blocked-state-flag.js';
@@ -268,6 +269,7 @@ import {
   runOversightSelect,
   runSettings,
 } from './menu-settings.js';
+import { runOpencodeAccountsMenu } from './menu-opencode-accounts.js';
 import { resolveOversight, shouldPauseBeforeLaunch, standingRuleCheckpoint } from './ui/oversight.js';
 import type { Oversight } from './ui/oversight.js';
 import {
@@ -6368,6 +6370,7 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
   // backed by a real readline interface driven by the event-driven LineReader queue.
   let readLine: () => Promise<string | null>;
   let lineReader: LineReader | null = null;
+  let readlineEcho: ReadlineEchoController = { muted: false };
 
   if (inkHandle !== null) {
     // Ink path: the Ink LineReader IS a full LineReader (nextLine/suspend/resume/
@@ -6386,7 +6389,7 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
     // Injected reader — no real readline needed.
     readLine = ctx.readLine;
   } else {
-    const readlineEcho: ReadlineEchoController = { muted: false };
+    readlineEcho = { muted: false };
     const readlineOutput = new ReadlineOutputProxy(process.stdout, readlineEcho);
     // Create ONE readline interface for the whole menu lifecycle and drive it
     // through the event-driven queue (NOT per-prompt rl.question). This buffers
@@ -6943,10 +6946,15 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
       }
 
       // ---- [o] Connect / Login opencode ---------------------------------------
-      // Always handles the key. When opencode is not yet installed, asks for
-      // consent then installs it (using the injected installProviderFn seam so
-      // tests stay hermetic). If install succeeds, proceeds to sign in.
+      // Always handles the key. When the experimental subscriptions flag is on,
+      // opens the OpenCode Accounts management screen. When off, runs the existing
+      // single-login flow: if opencode is not yet installed, asks for consent then
+      // installs it; if install succeeds, proceeds to sign in.
       if (key === 'o') {
+        if (subscriptionsEnabled(process.env, mutableCtx.config)) {
+          await runOpencodeAccountsMenu(out, readLine, readlineEcho, confirm, ctx.clock, inkReadKey);
+          continue;
+        }
         if (!mutableCtx.env.opencode.installed) {
           out.write(`Install opencode (${installCommandFor('opencode').replace('npm install -g ', '')})? ${yesNoHint('yes', out.color)} `);
           // Preserve the install-safety rule from the line-mode path: EOF means

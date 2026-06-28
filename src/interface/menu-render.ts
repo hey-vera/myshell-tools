@@ -28,6 +28,7 @@ import {
   renderConversationList,
   hasAnyAuthenticatedProvider,
 } from './menu-display.js';
+import { subscriptionsEnabled } from './ui/subscriptions-flag.js';
 
 export async function renderMainScreen(
   ctx: MenuContext,
@@ -155,7 +156,12 @@ export async function renderMainScreen(
   // and connect opencode even before it is installed. Label parallels the other
   // two providers; when opencode isn't installed yet, the handler offers to
   // install it (with consent) before signing in.
-  const opencodeLabel = mutableCtx.env.opencode.installed
+  // When the experimental subscriptions flag is on, [o] opens the OpenCode
+  // Accounts management screen instead of the single-login flow.
+  const subsOn = subscriptionsEnabled(process.env, mutableCtx.config);
+  const opencodeLabel = subsOn
+    ? 'OpenCode Accounts'
+    : mutableCtx.env.opencode.installed
     ? 'Login opencode'
     : 'Login opencode (installs it first)';
   const grokLabel = mutableCtx.env.grok.installed

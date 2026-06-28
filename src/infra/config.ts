@@ -565,6 +565,13 @@ export interface AppConfig {
    */
   experimentalProviderEffort?: boolean;
   /**
+   * EXPERIMENTAL OpenCode account subscriptions (default off).
+   * When true, and/or MYSHELL_SUBSCRIPTIONS is truthy, myshell may read
+   * subscriptions.json, show the OpenCode Accounts menu, and route OpenCode
+   * model calls through account-scoped XDG_DATA_HOME.
+   */
+  experimentalSubscriptions?: boolean;
+  /**
    * Per-user "first-touch explainer shown" flags (whole-tool-finish-5.5.md §0.1).
    * Absent → nothing shown yet (each surface explains itself once on first
    * encounter). Each key flips to true the first time that surface is met.
