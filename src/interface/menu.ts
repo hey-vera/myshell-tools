@@ -54,6 +54,7 @@ import { createFileTasteLedger } from '../infra/taste-ledger.js';
 import { tasteEnabled } from '../core/taste-flag.js';
 import { judgmentEnabled } from '../core/judgment-flag.js';
 import { researchEnabled } from '../core/research-flag.js';
+import { vendorNeutralRouterEnabled } from '../core/route-types.js';
 import {
   preflightUnifyEnabled,
   preflightRiskSignalsEnabled,
@@ -2374,6 +2375,9 @@ export async function runChatLoop(
           // REUSED here so orchestrate's route()/selectReasoningEffort can use it.
           // Absent → no capability context, no effort flag (unchanged routing).
           ...(caps.registry !== undefined ? { capabilityRegistry: caps.registry } : {}),
+          ...(vendorNeutralRouterEnabled(process.env, mutableCtx.config)
+            ? { vendorNeutralEnabled: true }
+            : {}),
           // LOGICAL ROLE MAPPING (redesign Phase 0, slice 1) — DEFAULT OFF
           // (src/interface/ui/role-flag.ts). When the flag is ON, attach the
           // resolved chat/ghost/execution → (provider, model, effort) map computed

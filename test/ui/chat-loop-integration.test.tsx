@@ -151,7 +151,7 @@ function makeCtx(store: ConversationStore, clock: Clock, answer: string): MenuCo
     providers: { claude: makeFakeProvider(answer) },
     env: FAKE_ENV,
     store,
-    config: { onboarded: true, setAsDefault: false, smartRoute: false } as AppConfig,
+    config: { onboarded: true, setAsDefault: false, smartRoute: false, experimentalVendorNeutralRouter: false } as AppConfig,
     cwd: join(tmpdir(), `ink-chat-${randomUUID()}`),
     sandbox: 'workspace-write',
     timeoutMs: 5_000,

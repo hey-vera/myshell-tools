@@ -1175,8 +1175,8 @@ export async function* runWorkCall(input: WorkCallInput): AsyncGenerator<CoreEve
   // an authenticated, untried provider at this tier, that provider gets its one
   // execution even when the ordinary attempt ceiling has been reached.
   mainLoop: while (
-    (attempts < deps.policy.maxAttempts || failoverPool !== null) &&
-    callBudgetAvailable()
+    failoverPool !== null ||
+    (attempts < deps.policy.maxAttempts && callBudgetAvailable())
   ) {
     attempts++;
 
@@ -1670,11 +1670,6 @@ export async function* runWorkCall(input: WorkCallInput): AsyncGenerator<CoreEve
       }
     }
 
-    // The provider invocation that just completed consumes one unit regardless
-    // of success, error, or cancellation. Once exhausted, use the existing loop-
-    // exhausted best-effort/failure terminal without announcing work we cannot run.
-    if (!callBudgetAvailable()) break mainLoop;
-
     // -----------------------------------------------------------------------
     // Decision tree
     // -----------------------------------------------------------------------
@@ -1856,6 +1851,8 @@ export async function* runWorkCall(input: WorkCallInput): AsyncGenerator<CoreEve
         continue mainLoop;
       }
 
+      if (!callBudgetAvailable()) break mainLoop;
+
       // An auth failure can be provider-local, so authenticated alternatives
       // above must get their failover execution. Once none remain, however,
       // escalating tiers would only retry a CLI whose authentication is broken.
@@ -1902,6 +1899,8 @@ export async function* runWorkCall(input: WorkCallInput): AsyncGenerator<CoreEve
         break mainLoop; // already at manager; emit failing final below
       }
     }
+
+    if (!callBudgetAvailable()) break mainLoop;
 
     // 2) Cross-vendor review for high/critical risk or needsReview — any tier
     //    Guard: each attempt is reviewed at most once (prevents infinite loops).

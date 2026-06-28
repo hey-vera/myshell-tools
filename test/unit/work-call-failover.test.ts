@@ -1,6 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { orchestrate } from '../../src/core/orchestrate.ts';
+import { runWorkCall, type WorkCallInput } from '../../src/core/work-call.ts';
 import { DEFAULT_POLICY } from '../../src/core/policy.ts';
 import type {
   Clock,
@@ -11,7 +12,9 @@ import type {
   SessionEntry,
   SessionWriter,
 } from '../../src/core/types.ts';
-import type { Provider, ProviderEvent, ProviderRequest } from '../../src/providers/port.ts';
+import type { Provider, ProviderEvent, ProviderRequest, ProviderId } from '../../src/providers/port.ts';
+import type { EngagementPlan } from '../../src/core/engagement.ts';
+import type { TurnDirective } from '../../src/core/turn-directive.ts';
 
 const LOW_CONFIDENCE =
   'Initial IC result.\n{"confidence":0.2,"escalate":false,"reason":"needs stronger model","needs_review":false}';
@@ -492,5 +495,126 @@ describe('partial-output salvage on rate-limit failover', () => {
     const finalEv = events.find((ev) => ev.type === 'final');
     assert.ok(finalEv !== undefined && finalEv.type === 'final');
     assert.equal(finalEv.success, true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Quick-turn failover: turnCallBudget=1, empty first output, second succeeds
+// ---------------------------------------------------------------------------
+
+const WORKER_TIER = { tier: 'worker' as const, risk: 'medium' as const, rationale: 'test' };
+const EMPTY_DIRECTIVE: TurnDirective = {
+  version: 1,
+  substantial: false,
+  repoOriented: false,
+  historyPolicy: { replayMode: 'normal' },
+  outputValidators: [],
+  requiredBeforeAnswer: [],
+};
+
+function makeQuickFailoverDeps(opts?: {
+  turnCallBudget?: number;
+  claudeEvents?: ProviderEvent[];
+  opencodeEvents?: ProviderEvent[];
+}): { deps: OrchestrateDeps; input: WorkCallInput } {
+  let now = 2_000_000;
+  let uuidCounter = 0;
+  const deps: OrchestrateDeps = {
+    providers: {
+      claude: {
+        id: 'claude' as ProviderId,
+        async* run(_req: ProviderRequest, _signal: AbortSignal): AsyncGenerator<ProviderEvent> {
+          for (const ev of (opts?.claudeEvents ?? [{ type: 'done', text: '' }])) yield ev;
+        },
+      } as Provider,
+      opencode: {
+        id: 'opencode' as ProviderId,
+        async* run(_req: ProviderRequest, _signal: AbortSignal): AsyncGenerator<ProviderEvent> {
+          for (const ev of (opts?.opencodeEvents ?? [{ type: 'done', text: 'OK' }])) yield ev;
+        },
+      } as Provider,
+    },
+    clock: {
+      now: () => (now += 10),
+      isoNow: () => new Date(1_000_000).toISOString(),
+      uuid: () => `qf-${++uuidCounter}`,
+      random: () => 0.42,
+    },
+    session: { id: 'qf-sess', async append(_e: SessionEntry): Promise<void> {} },
+    ledger: { async record(_e: LedgerEntry): Promise<void> {} },
+    policy: {
+      ...DEFAULT_POLICY,
+      maxAttempts: 3,
+      panelPolicy: 'off',
+      hedgePolicy: 'off',
+      reviewPolicy: 'off',
+    },
+    cwd: '/test',
+    sandbox: 'none',
+    timeoutMs: 5000,
+    availableModels: {
+      claude: ['opus', 'sonnet', 'haiku'] as readonly string[],
+      opencode: ['opencode-go/deepseek-v4-flash'] as readonly string[],
+    },
+    authenticatedProviders: ['claude', 'opencode'],
+  };
+  const input: WorkCallInput = {
+    task: 'test task',
+    deps,
+    signal: new AbortController().signal,
+    classification: WORKER_TIER,
+    routePlan: false,
+    directive: EMPTY_DIRECTIVE,
+    intentFrame: undefined,
+    engagementPlan: { actions: ['IMPLEMENT'], tone: 'neutral' } as EngagementPlan,
+    goalTitle: '',
+    workTrace: undefined,
+    incomingWorkContract: undefined,
+    available: ['claude', 'opencode'],
+    mode: 'balanced',
+    taskSignals: { risk: 'medium', routePlan: false, taskKind: 'implementation' },
+    capabilityContext: undefined,
+    historyContext: undefined,
+    wantsWebSearch: false,
+    hasImageAttachment: false,
+    startTier: 'worker',
+    autoBrainEscalation: false,
+    turnCallBudget: opts?.turnCallBudget,
+  };
+  return { deps, input };
+}
+
+async function collectQuick(gen: AsyncGenerator<CoreEvent>): Promise<CoreEvent[]> {
+  const events: CoreEvent[] = [];
+  for await (const ev of gen) events.push(ev);
+  return events;
+}
+
+describe('quick-turn cross-provider failover with turnCallBudget=1', () => {
+  it('failover from claude (empty output) to opencode succeeds despite turnCallBudget=1', async () => {
+    const { input } = makeQuickFailoverDeps({
+      turnCallBudget: 1,
+      claudeEvents: [{ type: 'done', text: '' }],
+      opencodeEvents: [{ type: 'done', text: 'OK' }],
+    });
+    const events = await collectQuick(runWorkCall(input));
+
+    const finals = events.filter((e) => e.type === 'final');
+    assert.equal(finals.length, 1, 'exactly one final');
+    const final = finals[0];
+    assert.ok(final !== undefined && final.type === 'final');
+    if (final.type === 'final') {
+      assert.equal(final.success, true);
+      assert.equal(final.attempts, 2, 'failover attempt counts toward total');
+    }
+
+    const failovers = events.filter((e) => e.type === 'failover');
+    assert.ok(failovers.length >= 1, 'at least one failover event emitted');
+    const fo = failovers[0];
+    assert.ok(fo !== undefined && fo.type === 'failover');
+    if (fo.type === 'failover') {
+      assert.equal(fo.from, 'claude');
+      assert.equal(fo.to, 'opencode');
+    }
   });
 });

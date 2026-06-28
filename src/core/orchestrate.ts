@@ -2088,6 +2088,7 @@ export async function* orchestrate(
     // this turn (SAME gate as Layer A — autoBrainTier set). When absent the loop
     // finalizes on objective failure exactly as before (byte-for-byte neutrality).
     ...(autoBrainTier !== undefined ? { autoBrainEscalation: true } : {}),
+    ...(deps.vendorNeutralEnabled === true ? { vendorNeutralEnabled: true } : {}),
     ...(governorPlan !== undefined
       ? {
           turnCallBudget: governorPlan.turnCallBudget,

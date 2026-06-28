@@ -146,9 +146,9 @@ describe('governor execution authority', () => {
     assert.equal(governedClaude.calls + governedCodex.calls, 1);
   });
 
-  it('turnCallBudget=1 counts an errored call once and prevents failover', async () => {
+  it('turnCallBudget=1 counts an errored call once but allows provider failover (cross-vendor only)', async () => {
     const claude = provider('claude', errored);
-    const codex = provider('codex', done('must not run'));
+    const codex = provider('codex', done('recovered via failover'));
     const events = await collect(orchestrate(
       'what time is it',
       deps(
@@ -163,12 +163,12 @@ describe('governor execution authority', () => {
     ));
 
     assert.equal(claude.calls, 1);
-    assert.equal(codex.calls, 0);
-    assert.ok(!events.some((e) => e.type === 'failover' || e.type === 'escalate'));
+    assert.equal(codex.calls, 1, 'cross-provider failover proceeds despite turnCallBudget=1');
+    assert.ok(events.some((e) => e.type === 'failover'), 'failover event emitted');
     const final = events.at(-1);
     assert.ok(final !== undefined && final.type === 'final');
-    assert.equal(final.success, false);
-    assert.equal(final.attempts, 1);
+    assert.equal(final.success, true);
+    assert.equal(final.attempts, 2);
   });
 
   it('a cancelled provider invocation consumes exactly one budget unit', async () => {

@@ -347,6 +347,7 @@ export interface Policy {
 export interface OrchestrateDeps {
   /** Available providers, keyed by id. Absent key = provider unavailable. */
   readonly providers: Partial<Record<ProviderId, Provider>>;
+  readonly vendorNeutralEnabled?: boolean;
   readonly clock: Clock;
   readonly session: SessionWriter;
   readonly ledger: LedgerWriter;

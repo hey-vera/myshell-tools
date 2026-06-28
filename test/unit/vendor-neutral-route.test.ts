@@ -1003,3 +1003,45 @@ describe('vendorNeutralRoute — RouteTrace', () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// Cross-provider worker failover: claude+opencode
+// ---------------------------------------------------------------------------
+
+describe('vendorNeutralRoute — cross-provider worker failover', () => {
+  const crossModels = modelsFor({
+    claude: ['opus', 'sonnet', 'haiku'] as const,
+    opencode: ['opencode-go/deepseek-v4-flash'] as const,
+  });
+
+  it('first selects claude/haiku on worker tier with both providers available', () => {
+    const result = vendorNeutralRoute({
+      tier: 'worker',
+      authedProviders: ['claude', 'opencode'],
+      availableModels: crossModels,
+      registry: REGISTRY,
+      opencodeVerboseFacts: VERBOSE_FACTS,
+      sessionId: 'test-session',
+    });
+    assert.equal(result.ok, true);
+    if (!result.ok) throw result.error;
+    assert.equal(result.decision.provider, 'claude');
+    assert.equal(result.decision.model, 'haiku');
+  });
+
+  it('after claude is excluded, selects opencode/opencode-go/deepseek-v4-flash on worker tier', () => {
+    const result = vendorNeutralRoute({
+      tier: 'worker',
+      authedProviders: ['claude', 'opencode'],
+      availableModels: crossModels,
+      registry: REGISTRY,
+      opencodeVerboseFacts: VERBOSE_FACTS,
+      excludedPools: ['claude'],
+      sessionId: 'test-session',
+    });
+    assert.equal(result.ok, true);
+    if (!result.ok) throw result.error;
+    assert.equal(result.decision.provider, 'opencode');
+    assert.equal(result.decision.model, 'opencode-go/deepseek-v4-flash');
+  });
+});

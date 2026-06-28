@@ -59,6 +59,13 @@ export interface AppConfig {
    */
   nativeSessions?: boolean;
   /**
+   * EXPERIMENTAL Vendor-Neutral Router (default ON). When absent/true, live chat
+   * routing uses the vendor-neutral router instead of the legacy static-provider-
+   * order path. Set to false (or `MYSHELL_VENDOR_NEUTRAL_ROUTER` ∈ {0,false,off,no}
+   * in the environment) to restore the legacy path byte-for-byte.
+   */
+  experimentalVendorNeutralRouter?: boolean;
+  /**
    * EXPERIMENTAL Parallel Subscription Panel (default off). When true, hard
    * (high/critical-risk) turns run as a CONCURRENT panel of the user's signed-in
    * providers — each answers independently — then a cross-vendor synthesizer
