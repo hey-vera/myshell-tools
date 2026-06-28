@@ -30,6 +30,7 @@ export type TurnRenderer = (
   success: boolean;
   final?: Extract<CoreEvent, { type: 'final' }>;
   rateLimitedProviders: readonly import('../providers/port.js').ProviderId[];
+  rateLimitedAccounts: readonly string[];
 }>;
 
 /** Result returned by {@link runTask}. */
@@ -44,6 +45,11 @@ export interface RunTaskResult {
    * these down for the next turn. Empty when none were throttled.
    */
   readonly rateLimitedProviders?: readonly import('../providers/port.js').ProviderId[];
+  /**
+   * OpenCode subscription accounts that hit a rate-limit. The conversation layer
+   * cools these down per-account so sibling accounts stay available.
+   */
+  readonly rateLimitedAccounts?: readonly string[];
 }
 
 /**
@@ -93,6 +99,9 @@ export async function runTask(
       ...(result.final !== undefined ? { final: result.final } : {}),
       ...(result.rateLimitedProviders.length > 0
         ? { rateLimitedProviders: result.rateLimitedProviders }
+        : {}),
+      ...(result.rateLimitedAccounts.length > 0
+        ? { rateLimitedAccounts: result.rateLimitedAccounts }
         : {}),
     };
   } catch (err) {

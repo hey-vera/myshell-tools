@@ -444,6 +444,7 @@ export function createTurnDriver(
   success: boolean;
   final?: Extract<CoreEvent, { type: 'final' }>;
   rateLimitedProviders: readonly ProviderId[];
+  rateLimitedAccounts: readonly string[];
 }> {
   return async (events, opts = {}) => {
     // Reset ONLY the per-turn slice; committed[] and tokens.session carry forward.
@@ -513,6 +514,7 @@ export interface InkMountHandle {
     success: boolean;
     final?: Extract<CoreEvent, { type: 'final' }>;
     rateLimitedProviders: readonly ProviderId[];
+    rateLimitedAccounts: readonly string[];
   }>;
   /** Resolves when the Ink app unmounts (e.g. Ctrl-C / explicit unmount). */
   waitUntilExit(): Promise<void>;

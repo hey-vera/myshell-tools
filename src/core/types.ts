@@ -216,6 +216,13 @@ export interface LedgerEntry {
    * keep types.ts a leaf module.
    */
   readonly taskKind?: import('./model-capabilities.js').TaskKind;
+  /**
+   * Optional OpenCode subscription account id for account-routed calls.
+   * Set when the work-call selected an account-scoped OpenCode run. Absent
+   * on non-account (global) paths and on all non-OpenCode providers.
+   * Type-only import to keep types.ts a leaf module.
+   */
+  readonly accountId?: string;
 }
 
 export interface LedgerWriter {
@@ -460,6 +467,30 @@ export interface OrchestrateDeps {
    * Only include providers whose `authenticated` flag is `true`; exactOptionalPropertyTypes is ON.
    */
   readonly authenticatedProviders?: readonly ProviderId[];
+  /**
+   * OpenCode subscription accounts loaded by the interface layer when
+   * subscriptions are enabled. Absent when the flag is off or no accounts
+   * exist, so existing routing/execution is byte-identical.
+   * Type-only import to keep types.ts a leaf module.
+   */
+  readonly opencodeAccounts?: readonly import('../infra/subscriptions.js').OpencodeSubscriptionAccount[];
+  /**
+   * Per-account cooldown map for OpenCode subscription accounts (keyed by
+   * accountId). Absent when subscriptions are off. The account selector uses
+   * this, NOT provider-level cooldown, so sibling accounts stay available.
+   */
+  readonly opencodeAccountCooldownUntil?: ReadonlyMap<string, number>;
+  /**
+   * Per-account session token consumption map (keyed by accountId). Absent
+   * when subscriptions are off. Powers normalized-load account selection.
+   */
+  readonly sessionTokensByAccount?: Readonly<Record<string, number>>;
+  /**
+   * Optional callback to update an account's lastUsedAt after a provider run
+   * starts. Called best-effort; a failure must not fail the model call.
+   */
+  readonly onAccountUsed?: (accountId: string, usedAtIso: string) => void | Promise<void>;
+  /**
   /**
    * EXPERIMENTAL native session plans (opt-in via config.nativeSessions), one
    * per provider that has an active native session for this conversation. When
@@ -1128,6 +1159,13 @@ export type CoreEvent =
        * only. Phase 2 of the orchestration-UX redesign.
        */
       readonly risk?: Risk;
+      /**
+       * Optional OpenCode subscription account id for account-routed calls.
+       * Set when the work-call selected an account so the renderer can track
+       * the running account for per-account cooldown on 429s. Absent on
+       * non-account paths.
+       */
+      readonly accountId?: string;
     }
   | {
       readonly type: 'provider-event';
@@ -1232,6 +1270,13 @@ export type CoreEvent =
        * tests, cost, and ledger breakdown.
        */
       readonly receipt?: import('./evidence-receipt.js').EvidenceReceiptV2;
+      /**
+       * Optional OpenCode subscription account id for account-routed calls.
+       * Set when the work-call selected an account-scoped OpenCode run so the
+       * renderer's 429 tracking can cool THIS specific account. Absent on
+       * non-account (global) paths and on all non-OpenCode providers.
+       */
+      readonly accountId?: string;
       /** OPTIONAL multi-goal seam — see `tier-start.goalId`. Marks which goal's
        *  phase finished when several run concurrently. Absent on today's single-
        *  goal path. Purely additive. */

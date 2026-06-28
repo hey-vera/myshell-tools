@@ -110,6 +110,22 @@ export function buildOpencodeArgs(req: ProviderRequest): string[] {
   return args;
 }
 
+/**
+ * Build the child env for an opencode spawn. PURE — merges process.env,
+ * replitPersistentEnv, and optional account env overrides (XDG_DATA_HOME).
+ * Extracted so tests can assert env composition without spawning a real process.
+ */
+export function buildOpencodeEnv(
+  req: ProviderRequest,
+  parentEnv: NodeJS.ProcessEnv = process.env,
+): NodeJS.ProcessEnv {
+  return {
+    ...parentEnv,
+    ...replitPersistentEnv(parentEnv, req.cwd),
+    ...(req.accountEnv ?? {}),
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Factory
 // ---------------------------------------------------------------------------
@@ -173,10 +189,9 @@ async function* runOpencodeRaw(args0: {
 
   // Point opencode at the Replit-persistent XDG dirs when present so your own
   // configured provider/subscription (Kimi etc.) is remembered across restarts.
-  const childEnv: NodeJS.ProcessEnv = {
-    ...process.env,
-    ...replitPersistentEnv(process.env, req.cwd),
-  };
+  // accountEnv (e.g. XDG_DATA_HOME) overrides Replit/global XDG values so the
+  // account-scoped auth.json is resolved.
+  const childEnv = buildOpencodeEnv(req);
 
   // Spawn with reject:false so we always get the result object (never throws).
   // cancelSignal wires our AbortSignal directly to execa's termination path.

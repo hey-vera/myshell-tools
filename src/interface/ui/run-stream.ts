@@ -177,6 +177,7 @@ export async function renderStreamInk(
   success: boolean;
   final?: Extract<CoreEvent, { type: 'final' }>;
   rateLimitedProviders: readonly ProviderId[];
+  rateLimitedAccounts: readonly string[];
 }> {
   const verbosity: Verbosity = opts.verbosity ?? 'normal';
   const color = opts.color ?? false;
@@ -201,7 +202,9 @@ export async function renderStreamInk(
 
   // --- impure side state the pure reducer cannot derive ---
   const rateLimitedProviders = new Set<ProviderId>();
+  const rateLimitedAccounts = new Set<string>();
   let currentProvider: ProviderId | undefined;
+  let currentAccountId: string | undefined;
   // Live panel state, mirroring render.ts. The reducer infers candidate-vs-normal
   // from stream.phase, but render.ts keys it off (panelMode && synthesizing===null)
   // at DISPATCH time — so we compute panelCandidate here and override the pure
@@ -296,6 +299,7 @@ export async function renderStreamInk(
         // Remember a 429 against the running provider (survives a rescuing
         // failover) — invisible side state, no reducer action.
         rateLimitedProviders.add(currentProvider);
+        if (currentAccountId !== undefined) rateLimitedAccounts.add(currentAccountId);
         continue;
       }
       // tool / reasoning → structural actions; usage/done produce none. A
@@ -328,6 +332,7 @@ export async function renderStreamInk(
     switch (ev.type) {
       case 'tier-start': {
         currentProvider = ev.provider;
+        currentAccountId = ev.accountId;
         if (narration !== null) {
           dispatchNarration(
             narration.beginTier({
@@ -452,8 +457,9 @@ export async function renderStreamInk(
   }
 
   const rl = [...rateLimitedProviders];
+  const ra = [...rateLimitedAccounts];
   if (finalEvent !== undefined) {
-    return { success: finalEvent.success, final: finalEvent, rateLimitedProviders: rl };
+    return { success: finalEvent.success, final: finalEvent, rateLimitedProviders: rl, rateLimitedAccounts: ra };
   }
-  return { success: false, rateLimitedProviders: rl };
+  return { success: false, rateLimitedProviders: rl, rateLimitedAccounts: ra };
 }

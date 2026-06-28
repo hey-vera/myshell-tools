@@ -230,6 +230,7 @@ import { experimentalEnabledByDefault } from './ui/experimental-default.js';
 import { cacheAccountingV2Enabled } from './ui/cache-accounting-flag.js';
 import { accountAuxEnabled } from './ui/account-aux-flag.js';
 import { subscriptionsEnabled } from './ui/subscriptions-flag.js';
+import { readSubscriptions } from '../infra/subscriptions.js';
 import { intentStoreV1Enabled } from './ui/intent-store-flag.js';
 import { correctionForkV1Enabled } from './ui/correction-fork-flag.js';
 import { blockedStateV1Enabled } from './ui/blocked-state-flag.js';
@@ -1049,6 +1050,12 @@ export async function runChatLoop(
   // epoch ms) so the next turn prefers an un-throttled provider; noteRateLimit
   // (below) populates it, availableAfterCooldown filters on it.
   const providerCooldownUntil = new Map<ProviderId, number>();
+  // Per-account cooldown for OpenCode subscription accounts. Keyed by accountId;
+  // the account selector uses THIS map, not provider-level cooldown, so siblings
+  // stay available when one account hits a 429.
+  const opencodeAccountCooldownUntil = new Map<string, number>();
+  // Per-account session token consumption for normalized-load account selection.
+  const sessionTokensByAccount: Record<string, number> = {};
 
   // ---- MODEL CAPABILITY REGISTRY (Stage 1, §4) ----------------------------
   // Refresh the objective capability facts ONCE per chat session (the local Codex
@@ -1336,6 +1343,10 @@ export async function runChatLoop(
         const outputTokens = Number.isFinite(entry.outputTokens) ? Math.max(0, entry.outputTokens) : 0;
         sessionConsumption[entry.provider] =
           (sessionConsumption[entry.provider] ?? 0) + inputTokens + outputTokens;
+        if (entry.accountId !== undefined) {
+          sessionTokensByAccount[entry.accountId] =
+            (sessionTokensByAccount[entry.accountId] ?? 0) + inputTokens + outputTokens;
+        }
       }
     },
   };
@@ -1355,6 +1366,14 @@ export async function runChatLoop(
       const initial = summarizeSessionProviderTokens(allEntries, convId);
       for (const [k, v] of Object.entries(initial)) {
         if (typeof v === 'number') sessionConsumption[k as ProviderId] = v;
+      }
+      for (const e of allEntries) {
+        if (e.sessionId === convId && e.accountId !== undefined) {
+          const t = (Number.isFinite(e.inputTokens) ? Math.max(0, e.inputTokens) : 0) +
+            (Number.isFinite(e.outputTokens) ? Math.max(0, e.outputTokens) : 0);
+          sessionTokensByAccount[e.accountId] =
+            (sessionTokensByAccount[e.accountId] ?? 0) + t;
+        }
       }
     } catch {
       /* best-effort; first turn just runs with empty baseline */
@@ -1609,8 +1628,10 @@ export async function runChatLoop(
   const noteRateLimit = (result: {
     final?: Extract<CoreEvent, { type: 'final' }>;
     rateLimitedProviders?: readonly ProviderId[];
+    rateLimitedAccounts?: readonly string[];
   }, sink: OutputSink = out): void => {
     const throttled = new Set<ProviderId>(result.rateLimitedProviders ?? []);
+    const throttledAccounts = new Set<string>(result.rateLimitedAccounts ?? []);
     const final = result.final;
     if (
       final !== undefined &&
@@ -1620,16 +1641,32 @@ export async function runChatLoop(
     ) {
       throttled.add(final.provider);
     }
-    if (throttled.size === 0) return;
+    // Fallback: also cool the account from the final's accountId if it's a
+    // rate-limit failure and the renderer didn't already capture it.
+    if (
+      final !== undefined &&
+      !final.success &&
+      final.errorCategory === 'rate-limit' &&
+      final.accountId !== undefined
+    ) {
+      throttledAccounts.add(final.accountId);
+    }
 
     const now = ctx.clock.now();
+
+    // Provider-level cooldown
     const newlyCooled: ProviderId[] = [];
     for (const id of throttled) {
-      // Only announce providers entering cooldown fresh — refreshing an active
-      // cooldown (e.g. a repeat 429 within a goal loop) must not spam the notice.
       if ((providerCooldownUntil.get(id) ?? 0) <= now) newlyCooled.push(id);
       providerCooldownUntil.set(id, cooldownExpiry(now));
     }
+
+    // Per-account cooldown — cools only the specific account so siblings stay
+    // available. Mirror of provider cooldown but keyed by accountId.
+    for (const id of throttledAccounts) {
+      opencodeAccountCooldownUntil.set(id, cooldownExpiry(now));
+    }
+
     // Be legible: if another signed-in provider can absorb the load, say so.
     const others = [mutableCtx.env.claude, mutableCtx.env.codex, mutableCtx.env.opencode, mutableCtx.env.grok].filter(
       (p) => p.authenticated && !throttled.has(p.id),
@@ -2700,6 +2737,50 @@ export async function runChatLoop(
               )(mutableGoalStore)
             : {}),
         };
+      };
+
+      // Account-aware deps enrichment — adds account fields when subscriptions
+      // are enabled and accounts exist. Best-effort; failures → global path
+      // unchanged. Defined after buildDeps so it has access to the account
+      // cooldown/session state declared earlier.
+      const enrichDepsWithAccounts = async (
+        base: OrchestrateDeps,
+      ): Promise<OrchestrateDeps> => {
+        if (!subscriptionsEnabled(process.env, mutableCtx.config)) return base;
+        try {
+          const subs = await readSubscriptions();
+          const accounts = subs.accounts;
+          if (accounts.length === 0) return base;
+          const onAccountUsed = async (
+            accountId: string,
+            usedAtIso: string,
+          ): Promise<void> => {
+            try {
+              const { updateSubscriptions } = await import(
+                '../infra/subscriptions.js'
+              );
+              await updateSubscriptions((file) => ({
+                ...file,
+                accounts: file.accounts.map((a) =>
+                  a.id === accountId ? { ...a, lastUsedAt: usedAtIso } : a,
+                ),
+              }));
+            } catch {
+              /* best-effort */
+            }
+          };
+          return {
+            ...base,
+            opencodeAccounts: accounts,
+            opencodeAccountCooldownUntil,
+            ...(Object.keys(sessionTokensByAccount).length > 0
+              ? { sessionTokensByAccount }
+              : {}),
+            onAccountUsed,
+          };
+        } catch {
+          return base;
+        }
       };
 
       // ---- USER MEMORY (Phase 4, §7) — per-turn retrieval/injection ----------
@@ -4575,7 +4656,9 @@ Output ONLY valid JSON (no prose, no markdown).`;
               const turnSession = opts?.background === true
                 ? ctx.store.writer(cycleGoalId ?? convId)
                 : deps.session;
-              const turnDeps = { ...deps, session: turnSession, workContract: goalContract, goalTurn: true } as typeof deps;
+              const turnDeps = await enrichDepsWithAccounts(
+                { ...deps, session: turnSession, workContract: goalContract, goalTurn: true } as typeof deps,
+              );
               const ac = bindAc(new AbortController());
               const result = opts?.background === true
                 ? await runTask(
@@ -4978,12 +5061,14 @@ Output ONLY valid JSON (no prose, no markdown).`;
             goalHistory = [];
             goalOut.write(dim("  Couldn't read prior history — continuing without it.\n", goalOut.color));
           }
-          const goalDeps = buildDeps(
-            goalHistory,
-            await resolveTurnMemory(goalText),
-            await resolveEnvironmentOnce(),
-            undefined,
-            goalOut,
+          const goalDeps = await enrichDepsWithAccounts(
+            buildDeps(
+              goalHistory,
+              await resolveTurnMemory(goalText),
+              await resolveEnvironmentOnce(),
+              undefined,
+              goalOut,
+            ),
           );
           const contractedGoalTask = buildGoalTask(goalText, i, goalContract);
           const replayGoalTask = buildGoalTask(goalText, i);
@@ -5929,6 +6014,9 @@ Output ONLY valid JSON (no prose, no markdown).`;
         throw new Error('chat turn dependencies were not prepared');
       }
 
+      // Enrich with account fields (best-effort; flag off → no-op).
+      deps = await enrichDepsWithAccounts(deps);
+
       inkBeginTurn?.();
       const ac = new AbortController();
       currentAc = ac;
@@ -6337,17 +6425,23 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
     // reassigning the seam bindings the shared loop below already uses.
     out = inkHandle.out;
     const handle = inkHandle;
-    inkRenderTurn = (events, _sink, verbosity, _turnInput, timeoutContinuation) => {
+    inkRenderTurn = async (events, _sink, verbosity, _turnInput, timeoutContinuation) => {
       // Parity with legacy renderStream's spinner clock: stamp the turn start and
       // report wall-clock elapsed seconds so the Ink success line keeps its
       // `· Ns` suffix (`✓ done · N tokens · 12s`). Mirrors mount.tsx's
       // clock={() => Date.now()}; run-stream only reads this on a successful final.
       const startMs = ctx.clock.now();
-      return handle.renderTurn(events, {
+      const result = await handle.renderTurn(events, {
         verbosity,
         ...(timeoutContinuation !== undefined ? { timeoutContinuation } : {}),
         elapsedSecs: () => Math.max(0, Math.round((ctx.clock.now() - startMs) / 1000)),
       });
+      return {
+        success: result.success,
+        ...(result.final !== undefined ? { final: result.final } : {}),
+        rateLimitedProviders: result.rateLimitedProviders,
+        rateLimitedAccounts: result.rateLimitedAccounts,
+      };
     };
   }
 

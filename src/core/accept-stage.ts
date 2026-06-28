@@ -29,6 +29,7 @@ export interface AcceptedRunSessionData {
   readonly durationMs: number;
   readonly sessionId?: string;
   readonly workTrace?: WorkContract;
+  readonly accountId?: string;
 }
 
 export interface CandidateResult extends AcceptedRunSessionData {
@@ -239,6 +240,7 @@ async function finalizeAcceptedCandidate(
       attempts: candidate.attempts,
       ...(br !== null ? { blocked: br } : {}),
       ...(memoryProposal !== undefined ? { memoryProposal } : {}),
+      ...(candidate.accountId !== undefined ? { accountId: candidate.accountId } : {}),
     };
     return { ...f, ...receiptForFinal(deps, f, verifyOutcome) } as Extract<CoreEvent, { readonly type: 'final' }>;
   }
@@ -253,6 +255,7 @@ async function finalizeAcceptedCandidate(
     attempts: candidate.attempts,
     ...(candidate.disposition === 'bestEffort' ? { bestEffort: true } : {}),
     ...(memoryProposal !== undefined ? { memoryProposal } : {}),
+    ...(candidate.accountId !== undefined ? { accountId: candidate.accountId } : {}),
   };
   return { ...f, ...receiptForFinal(deps, f, verifyOutcome) } as Extract<CoreEvent, { readonly type: 'final' }>;
 }
@@ -404,6 +407,7 @@ export async function* runCandidateQualityGate(
       sessionId: deps.session.id,
       attempts: candidate.attempts,
       provider: candidate.provider,
+      ...(candidate.accountId !== undefined ? { accountId: candidate.accountId } : {}),
       ...(blockedRecord !== null ? { blocked: blockedRecord } : {}),
     };
     yield { ...failureFinal, ...receiptForFinal(deps, failureFinal, outcome) } as Extract<CoreEvent, { readonly type: 'final' }>;

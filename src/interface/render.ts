@@ -411,6 +411,7 @@ export async function renderStream(
   success: boolean;
   final?: Extract<CoreEvent, { type: 'final' }>;
   rateLimitedProviders: readonly ProviderId[];
+  rateLimitedAccounts: readonly string[];
 }> {
   const c = out.color;
   const isVerbose = verbosity === 'verbose';
@@ -423,7 +424,9 @@ export async function renderStream(
   // uses this to cool those providers down for the next turn (a success final's
   // errorCategory alone would miss the failed-then-recovered provider).
   const rateLimitedProviders = new Set<ProviderId>();
+  const rateLimitedAccounts = new Set<string>();
   let currentProvider: ProviderId | undefined;
+  let currentAccountId: string | undefined;
   // Accumulate REAL tokens across tiers so the final summary shows a measured
   // total instead of an estimated dollar figure (subscription tool, not API).
   let runningTokens = 0;
@@ -631,6 +634,7 @@ export async function renderStream(
         streamedChars = 0;
         attemptHadProse = false;
         currentProvider = ev.provider;
+        currentAccountId = ev.accountId;
         // In panel mode the candidates' up-front tier-starts are collapsed into
         // the single "Waiting on N models" line; a candidate not pre-registered
         // by the `phase:'panel'` event (defensive) is added as running. Once
@@ -728,6 +732,7 @@ export async function renderStream(
           // Remember a 429 against the running provider so the conversation layer
           // can cool it down next turn — even if failover later rescues this run.
           rateLimitedProviders.add(currentProvider);
+          if (currentAccountId !== undefined) rateLimitedAccounts.add(currentAccountId);
         }
         // 'usage', 'done' are handled via tier-done / final
         break;
@@ -1105,8 +1110,9 @@ export async function renderStream(
   }
 
   const rl = [...rateLimitedProviders];
+  const ra = [...rateLimitedAccounts];
   if (finalEvent !== undefined) {
-    return { success: finalEvent.success, final: finalEvent, rateLimitedProviders: rl };
+    return { success: finalEvent.success, final: finalEvent, rateLimitedProviders: rl, rateLimitedAccounts: ra };
   }
-  return { success: false, rateLimitedProviders: rl };
+  return { success: false, rateLimitedProviders: rl, rateLimitedAccounts: ra };
 }

@@ -183,6 +183,13 @@ export function isLedgerEntry(value: unknown): value is LedgerEntry {
     return false;
   }
   if (typeof value['success'] !== 'boolean') return false;
+  // Optional accountId for OpenCode account-routed calls. Absent on old entries
+  // and non-account paths. When present it must be a non-empty string.
+  const accountId = value['accountId'];
+  if (
+    accountId !== undefined &&
+    (typeof accountId !== 'string' || accountId.trim().length === 0)
+  ) return false;
   // Optional capability-registry effort (Stage 3). Absent on old entries; when
   // present it must be a known reasoning-effort string.
   const effort = value['reasoningEffort'];

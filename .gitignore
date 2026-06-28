@@ -21,3 +21,4 @@ coverage
 
 # transient run logs under docs/
 docs/*.log
+.eslintcache

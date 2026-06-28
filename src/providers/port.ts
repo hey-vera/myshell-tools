@@ -90,6 +90,18 @@ export interface ProviderRequest {
    * to keep port.ts a leaf module.
    */
   readonly attachments?: readonly import('../core/attachments.js').Attachment[];
+  /**
+   * Optional OpenCode subscription account id for account-routed calls.
+   * Set when work-call selects an account-scoped OpenCode run so the adapter
+   * can stamp it on error events and the renderer can cool it down.
+   */
+  readonly accountId?: string;
+  /**
+   * Optional child env overrides for account-scoped OpenCode runs (e.g.
+   * XDG_DATA_HOME pointing to the selected account's auth dir). Absent →
+   * adapter env is unchanged.
+   */
+  readonly accountEnv?: Readonly<Partial<NodeJS.ProcessEnv>>;
 }
 
 /**
