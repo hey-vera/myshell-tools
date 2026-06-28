@@ -4,6 +4,18 @@ All notable changes to **myshell-tools** are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.157.0] - 2026-06-28 — Replit shell autoload (read-only bashrc symlink wrapper)
+
+### Added — autoload now works in Replit containers
+- Replit's `~/.bashrc` is a **read-only symlink into `/nix/store`**, so the installer's hook write
+  failed and a killed/respawned shell tab never relaunched myshell-tools. myshell now detects this
+  case (Replit + bash + a `/nix/store` symlink) and replaces the symlink with a **writable wrapper**
+  (atomic temp+rename — the read-only target is never written) that **sources Replit's original
+  bashrc first** (preserving command/pwd tracking, completion, aliases) and then runs the standard
+  guarded hook. The original target is recorded so **uninstall atomically restores the symlink**.
+  Self-heals at launch (re-wraps if Replit recreates the symlink on container boot), is idempotent
+  and fail-soft, and is strictly Replit-gated so Linux/macOS/Windows behavior is unchanged.
+
 ## [3.156.0] - 2026-06-28 — default-on shell autoload (Linux/Windows) + flatter TUI under long sessions
 
 ### Added — myshell-tools auto-launches on a new shell by default
