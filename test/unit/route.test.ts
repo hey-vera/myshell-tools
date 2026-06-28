@@ -434,16 +434,16 @@ describe('route — maxTier clamp', () => {
 // Learned preferred order (Local Outcome Learner)
 // ---------------------------------------------------------------------------
 
-describe('route — learned preferredOrder', () => {
-  it('honours the learned order first: codex preferred over the static claude-first order', () => {
+describe('route — dynamic preferredOrder', () => {
+  it('honours the dynamic order first: codex preferred over the static claude-first order', () => {
     // Static policy order is claude-first; with BOTH available, route() normally
     // picks claude. A learned order [codex, claude] must flip it to codex.
     const decision = route('ic', BOTH, DEFAULT_POLICY, undefined, undefined, ['codex', 'claude']);
     assert.equal(decision.provider, 'codex');
   });
 
-  it('prefers a learned provider that is available AND authenticated', () => {
-    // Both authenticated; learned order prefers codex → codex wins (auth-aware).
+  it('prefers a dynamic provider that is available AND authenticated', () => {
+    // Both authenticated; dynamic order prefers codex → codex wins (auth-aware).
     const decision = route(
       'ic',
       BOTH,
@@ -455,22 +455,22 @@ describe('route — learned preferredOrder', () => {
     assert.equal(decision.provider, 'codex');
   });
 
-  it('falls back to the static order when the learned order has no eligible provider', () => {
-    // Learned order names only opencode, which is NOT available → fall back to the
+  it('falls back to the static order when the dynamic order has no eligible provider', () => {
+    // Dynamic order names only opencode, which is NOT available → fall back to the
     // static order (claude first) among the available pool.
     const decision = route('ic', BOTH, DEFAULT_POLICY, undefined, undefined, ['opencode']);
     assert.equal(decision.provider, 'claude');
   });
 
-  it('learned order never expands the candidate set (only available providers win)', () => {
-    // Only codex available; learned order prefers claude (unreachable) → codex.
+  it('dynamic order never expands the candidate set (only available providers win)', () => {
+    // Only codex available; dynamic order prefers claude (unreachable) → codex.
     const decision = route('ic', CODEX_ONLY, DEFAULT_POLICY, undefined, undefined, ['claude', 'codex']);
     assert.equal(decision.provider, 'codex');
   });
 
-  it('a learned provider that is available but NOT authenticated is skipped for an authenticated one', () => {
-    // Learned prefers codex, but only claude is authenticated → claude wins
-    // (auth-aware: the learned order respects authentication).
+  it('a dynamic provider that is available but NOT authenticated is skipped for an authenticated one', () => {
+    // Dynamic prefers codex, but only claude is authenticated → claude wins
+    // (auth-aware: the dynamic order respects authentication).
     const decision = route(
       'ic',
       BOTH,
@@ -737,9 +737,9 @@ describe('route — capability-fit (Stage 2)', () => {
 });
 
 // ===========================================================================
-// Stage 4 — learned modelOutcomeOrder is a WEAK tie-break, AFTER hard fit.
+// Stage 4 — modelOutcomeOrder is a WEAK tie-break, AFTER hard fit.
 // ===========================================================================
-describe('route — modelOutcomeOrder (Stage 4 weak tie-break)', () => {
+describe('route — modelOutcomeOrder (weak tie-break)', () => {
   // Two IC models from different providers that are EQUAL on every hard
   // capability signal (both have a known 200k window, no vision, equal native
   // session) — a provider-level tie where preferredOrder tips the balance.
@@ -790,38 +790,38 @@ describe('route — modelOutcomeOrder (Stage 4 weak tie-break)', () => {
   const MODELS = { codex: ['gpt-5.4'] } as const;
   const SMALL = { risk: 'low' as const, routePlan: false, estimatedInputTokens: 2_000, taskKind: 'implementation' as const };
 
-  it('breaks a tie between providers with equal-capability IC models in favour of the learned preferred order', () => {
+  it('breaks a tie between providers with equal-capability IC models in favour of the dynamic preferred order', () => {
     // claude is policy-first; without preferredOrder, claude wins.
     const baseline = route('ic', BOTH, DEFAULT_POLICY, undefined, ['claude', 'codex'], undefined, {
       mode: 'balanced', registry: TIE_REG, taskSignals: SMALL,
     });
     assert.equal(baseline.provider, 'claude');
 
-    // With learned preferredOrder preferring codex, the tie tips to codex.
+    // With dynamic preferredOrder preferring codex, the tie tips to codex.
     const tipped = route('ic', BOTH, DEFAULT_POLICY, undefined, ['claude', 'codex'], ['codex', 'claude'], {
       mode: 'balanced',
       registry: TIE_REG,
       taskSignals: SMALL,
     });
-    assert.equal(tipped.provider, 'codex', 'learned provider order broke the tie');
+    assert.equal(tipped.provider, 'codex', 'dynamic provider order broke the tie');
     assert.equal(tipped.model, 'gpt-5.4');
   });
 
   it('NEVER overrides a hard capability fit: large-context requirement picks the satisfying provider over a preferred but non-satisfying one', () => {
-    // claude (128k) is preferred by learned order but cannot hold 300k;
+    // claude (128k) is preferred by dynamic order but cannot hold 300k;
     // codex (400k) satisfies the large-context need and is selected.
     const fit = route('ic', BOTH, DEFAULT_POLICY, undefined, ['claude', 'codex'], ['claude', 'codex'], {
       mode: 'balanced',
       registry: HARD_REG,
       taskSignals: { risk: 'high', routePlan: false, estimatedInputTokens: 300_000, taskKind: 'large-context' },
     });
-    assert.equal(fit.provider, 'codex', 'hard large-context requirement overrides the learned provider preference');
+    assert.equal(fit.provider, 'codex', 'hard large-context requirement overrides the dynamic provider preference');
     assert.equal(fit.model, 'gpt-5.4');
   });
 
-  it('NEVER changes provider: a learned preference for a signed-out provider does not win over an authed one', () => {
-    // codex authenticated; claude signed out. A learned order ranking claude first
-    // must not override auth (route() picks the authed provider; the learned term
+  it('NEVER changes provider: a preference for a signed-out provider does not win over an authed one', () => {
+    // codex authenticated; claude signed out. A dynamic order ranking claude first
+    // must not override auth (route() picks the authed provider; modelOutcomeOrder
     // only ever re-ranks WITHIN the chosen provider's models).
     const fit = route('ic', ['codex', 'claude'], DEFAULT_POLICY, MODELS, ['codex'], undefined, {
       mode: 'balanced',
@@ -829,7 +829,7 @@ describe('route — modelOutcomeOrder (Stage 4 weak tie-break)', () => {
       taskSignals: SMALL,
       modelOutcomeOrder: [{ provider: 'codex', model: 'gpt-5.4' }],
     });
-    assert.equal(fit.provider, 'codex', 'authed provider chosen; learned order cannot switch provider');
+    assert.equal(fit.provider, 'codex', 'authed provider chosen; modelOutcomeOrder cannot switch provider');
   });
 });
 

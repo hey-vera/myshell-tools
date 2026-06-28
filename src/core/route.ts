@@ -70,9 +70,9 @@ export interface CapabilityRouteContext {
   readonly registry?: CapabilityRegistry;
   readonly taskSignals?: CapabilityTaskSignals;
   /**
-   * Learned (provider, model) outcome order (Stage 4). Accepted in the shape now,
-   * consumed only minimally in Stage 2 as a tie-breaker WITHIN the chosen
-   * provider's candidate models; it never expands the candidate set or switches
+   * Provider/model outcome order for capability-fit tie-breaking (Stage 2).
+   * Consumed only minimally as a tie-breaker WITHIN the chosen provider's
+   * candidate models; it never expands the candidate set or switches
    * provider. Absent → no effect.
    */
   readonly modelOutcomeOrder?: readonly ModelPreference[];
@@ -135,13 +135,13 @@ export function clampTier(requested: Tier, ceiling: Tier | undefined): Tier {
  *   - When supplied and non-empty → authenticated+available providers are
  *     preferred over signed-out+available ones within the policy order.
  *
- * The `preferredOrder` parameter is additive/opt-in (the Local Outcome Learner):
+ * The `preferredOrder` parameter is additive/opt-in (dynamic provider order):
  *   - When absent or empty → behaviour is IDENTICAL to today (no change).
- *   - When supplied and non-empty → this LEARNED order is tried FIRST, using the
+ *   - When supplied and non-empty → this dynamic order is tried FIRST, using the
  *     SAME auth-aware logic (prefer the first provider that is in `available`
  *     AND, when auth info is present, in `authenticatedProviders`). Only when the
- *     learned order yields no eligible provider does route() fall back to
- *     `policy.providerOrderByTier`. The learned order never expands the candidate
+ *     dynamic order yields no eligible provider does route() fall back to
+ *     `policy.providerOrderByTier`. The dynamic order never expands the candidate
  *     set (a provider must still be in `available`), so it can only REORDER which
  *     reachable provider wins — never route to an unreachable one.
  *
@@ -150,7 +150,7 @@ export function clampTier(requested: Tier, ceiling: Tier | undefined): Tier {
  * @param policy                 - Active routing policy (from `DEFAULT_POLICY` or overrides).
  * @param availableModels        - Optional per-provider advertised model sets from detection.
  * @param authenticatedProviders - Optional set of provider IDs known to be signed in.
- * @param preferredOrder         - Optional learned, observed-only provider order
+ * @param preferredOrder         - Optional dynamic provider order
  *                                 (for the clamped tier) to try before the static
  *                                 policy order. Absent/empty → no effect.
  */
@@ -286,15 +286,15 @@ export function route(
     return { tier, provider: id, model: best, capabilityReasons: bestReasons };
   }
 
-  // Order in which we consult provider-preference lists: the LEARNED order first
-  // (when supplied and non-empty — the Local Outcome Learner), then the static
-  // policy order. Each list is walked auth-aware then first-available, so the
-  // learned order can only REORDER among reachable providers; it never strands
-  // routing (an empty/non-eligible learned list simply falls through to policy).
-  const learnedOrder =
+  // Order in which we consult provider-preference lists: the dynamic order first
+  // (when supplied and non-empty — session-load/cooldown reordering), then the
+  // static policy order. Each list is walked auth-aware then first-available, so
+  // the dynamic order can only REORDER among reachable providers; it never strands
+  // routing (an empty/non-eligible dynamic list simply falls through to policy).
+  const dynamicOrder =
     preferredOrder !== undefined && preferredOrder.length > 0 ? preferredOrder : undefined;
   const candidateOrders: ReadonlyArray<readonly ProviderId[]> =
-    learnedOrder !== undefined ? [learnedOrder, preferredOrder_policy] : [preferredOrder_policy];
+    dynamicOrder !== undefined ? [dynamicOrder, preferredOrder_policy] : [preferredOrder_policy];
 
   // -------------------------------------------------------------------------
   // Capability-aware provider PRE-PASS (cross-provider hard-requirement fit).
@@ -363,8 +363,8 @@ export function route(
 
       // Pick within the SATISFYING set using the existing preference logic: prefer
       // an authenticated+available satisfying provider (when auth info is present),
-      // walking learned→policy order; then a first-available satisfying provider,
-      // walking learned→policy order. This is the same two-phase walk as below,
+      // walking dynamic→policy order; then a first-available satisfying provider,
+      // walking dynamic→policy order. This is the same two-phase walk as below,
       // just gated by `knownSatisfies` — so a satisfying provider is never picked
       // ahead of an equally-eligible one in a way the standard passes wouldn't.
       if (hasAuthInfo) {
@@ -421,8 +421,8 @@ export function route(
   //     stranded on a signed-out provider just because the search-capable one is
   //     gone. (Without auth info we also do nothing, to avoid promoting a
   //     possibly-signed-out provider on a soft preference.)
-  //   - It walks the SAME learned→policy preference orders, so among equally
-  //     eligible search-capable providers the existing precedence still decides.
+  //   - It walks the SAME dynamic→policy preference orders, so among equally
+      //     eligible search-capable providers the existing precedence still decides.
   // Bounds preserved: only ever picks a provider in `available` that is also
   // authenticated; never changes tier, bypasses a gate, or reorders on a guess
   // (only KNOWN-search-capable providers qualify).
@@ -457,7 +457,7 @@ export function route(
 
   // Auth-aware pass: when authenticatedProviders is supplied and non-empty, prefer
   // the first provider that is both available AND authenticated. We try the
-  // learned order's authenticated match BEFORE the policy order's, so a learned
+  // dynamic order's authenticated match BEFORE the policy order's, so a dynamic
   // preference wins when it is eligible. This prevents wasting an attempt on a
   // signed-out provider when a ready one exists later in a preference order.
   if (hasAuthInfo) {
@@ -475,7 +475,7 @@ export function route(
     // standard first-available pass below (signed-out provider as last resort).
   }
 
-  // Standard pass: walk each preference order (learned first) and pick the first
+  // Standard pass: walk each preference order (dynamic first) and pick the first
   // available provider.
   for (const order of candidateOrders) {
     for (const preferred of order) {

@@ -4126,12 +4126,12 @@ describe('orchestrate — hedge delegation (hedgePolicy)', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Local Outcome Learner — learnedProviderOrder threads into routing
+// Dynamic provider order — learnedProviderOrder threads into routing
 // ---------------------------------------------------------------------------
 
-describe('orchestrate — learnedProviderOrder (Local Outcome Learner)', () => {
-  it('routes a turn to the learned-preferred provider over the static order', async () => {
-    // Static policy order is claude-first; both providers authenticated. A learned
+describe('orchestrate — learnedProviderOrder (dynamic provider order)', () => {
+  it('routes a turn to the dynamic-preferred provider over the static order', async () => {
+    // Static policy order is claude-first; both providers authenticated. A dynamic
     // ic order [codex, claude] must flip the first tier-start to codex.
     const deps: OrchestrateDeps = {
       providers: { claude: makeFakeProvider('claude'), codex: makeFakeProvider('codex') },
@@ -4152,7 +4152,7 @@ describe('orchestrate — learnedProviderOrder (Local Outcome Learner)', () => {
     const tierStart = events.find((e) => e.type === 'tier-start');
     assert.ok(tierStart !== undefined && tierStart.type === 'tier-start');
     if (tierStart.type === 'tier-start') {
-      assert.equal(tierStart.provider, 'codex', 'learned order should route to codex first');
+      assert.equal(tierStart.provider, 'codex', 'dynamic order should route to codex first');
     }
   });
 
@@ -4175,7 +4175,7 @@ describe('orchestrate — learnedProviderOrder (Local Outcome Learner)', () => {
     const tierStart = events.find((e) => e.type === 'tier-start');
     assert.ok(tierStart !== undefined && tierStart.type === 'tier-start');
     if (tierStart.type === 'tier-start') {
-      assert.equal(tierStart.provider, 'claude', 'without a learned order, the static order wins');
+      assert.equal(tierStart.provider, 'claude', 'without a dynamic order, the static order wins');
     }
   });
 });

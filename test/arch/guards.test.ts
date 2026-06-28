@@ -238,7 +238,11 @@ describe("Shell-execution guard — child_process imports must be reviewed infra
 
 describe("No-orphan guard — every src/ .ts file must participate in the import graph", () => {
   const ALL_SRC = collectTs(SRC);
-  const STAGED_ORPHANS = new Set<string>();
+  const STAGED_ORPHANS = new Set<string>([
+    // Post-graduation (slices 19-20): routing-memory retained for diagnostics/reporting
+    // only (cost/insights), no longer wired as a routing input.
+    path.join('src', 'core', 'routing-memory.ts'),
+  ]);
 
   // Build a quick index: for each file, gather which other src basenames it imports.
   // We key by the file's basename (without .ts extension) to keep it simple.

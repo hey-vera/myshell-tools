@@ -14,11 +14,11 @@ import { execa } from 'execa';
 import { prefixForRunningEntry } from './infra/update-prefix.js';
 import { systemClock } from './infra/clock.js';
 import { createSessionWriter } from './infra/session.js';
-import { createLedger, readLedger } from './infra/ledger.js';
+import { createLedger } from './infra/ledger.js';
 import { createCommandAuditRecorder } from './infra/command-audit.js';
 import { gateCommand } from './core/command-gate.js';
 import type { CommandGatePort } from './core/command-gate.js';
-import { learnProviderOrder, learnModelOutcomeOrder } from './core/routing-memory.js';
+// routing-memory retained for diagnostics/reporting only (cost/insights), not routing input
 import {
   DEFAULT_POLICY,
   POLICY_PRESETS,
@@ -228,9 +228,6 @@ function buildDeps(
   env: import('./providers/detect.js').EnvironmentStatus,
   policy = DEFAULT_POLICY,
   timeoutMs: number = DEFAULT_TIMEOUT_MS,
-  learnedProviderOrder?: Partial<
-    Record<import('./core/types.js').Tier, readonly import('./providers/port.js').ProviderId[]>
-  >,
   // Inject a delay port only when Latency-Hedged Escalation is enabled (policy
   // hedgePolicy 'on'); absent → planHedge returns null and the sequential path
   // runs unchanged. setTimeout-based real impl (the pure core never calls it
@@ -253,15 +250,6 @@ function buildDeps(
   // present, orchestrate threads it into route()/selectReasoningEffort. Absent →
   // no capability context, no effort flag (byte-for-byte unchanged routing).
   capabilityRegistry?: import('./core/model-capabilities.js').CapabilityRegistry,
-  // Stage 4 (§2 Layer 3): learned MODEL-level outcome order per task kind, computed
-  // by the caller from this user's own ledger (learnModelOutcomeOrder). Absent /
-  // below-threshold → no entry → route() gets no learned tie-break (unchanged).
-  modelOutcomeOrderByTaskKind?: Partial<
-    Record<
-      import('./core/model-capabilities.js').TaskKind,
-      readonly import('./core/model-capabilities.js').ModelPreference[]
-    >
-  >,
 ): OrchestrateDeps {
   // Pass process.env so provider-effort-flag (MYSHELL_PROVIDER_EFFORT) is
   // resolved at provider-construction time. Config is not available here in
@@ -343,13 +331,6 @@ function buildDeps(
     ...(authenticatedProviders.length > 0 ? { authenticatedProviders } : {}),
     ...(Object.keys(planInfos).length > 0 ? { planInfos } : {}),
     ...(capabilityRegistry !== undefined ? { capabilityRegistry } : {}),
-    ...(learnedProviderOrder !== undefined && Object.keys(learnedProviderOrder).length > 0
-      ? { learnedProviderOrder }
-      : {}),
-    ...(modelOutcomeOrderByTaskKind !== undefined &&
-    Object.keys(modelOutcomeOrderByTaskKind).length > 0
-      ? { modelOutcomeOrderByTaskKind }
-      : {}),
     ...(sleep !== undefined ? { sleep } : {}),
     ...(memoryContext !== undefined && memoryContext.length > 0 ? { memoryContext } : {}),
     ...(environmentContext !== undefined && environmentContext.length > 0
@@ -664,49 +645,6 @@ async function main(): Promise<void> {
       ...(config.panel === true ? { panelPolicy: 'hard-turns' as const } : {}),
       ...(config.hedge === true ? { hedgePolicy: 'on' as const } : {}),
     };
-    // EXPERIMENTAL Local Outcome Learner (opt-in via config.learnRouting;
-    // default off → not read, no field, routing unchanged). Read the ledger once
-    // and learn a per-tier provider order from this user's own recorded outcomes
-    // (observed-only: success + duration). Pre-filter to the most recent 500
-    // entries so stale history doesn't dominate.
-    let learnedProviderOrder:
-      | Partial<Record<import('./core/types.js').Tier, readonly import('./providers/port.js').ProviderId[]>>
-      | undefined;
-    // Stage 4 (§2 Layer 3): the model-level outcome order per task kind, learned
-    // from the SAME recent-ledger slice. Weakest signal; below-threshold task
-    // kinds get no entry (learnModelOutcomeOrder → null) so routing is unchanged.
-    let modelOutcomeOrderByTaskKind:
-      | Partial<
-          Record<
-            import('./core/model-capabilities.js').TaskKind,
-            readonly import('./core/model-capabilities.js').ModelPreference[]
-          >
-        >
-      | undefined;
-    if (config.learnRouting === true) {
-      const recent = (await readLedger(cwd)).slice(-500);
-      const learned: Partial<
-        Record<import('./core/types.js').Tier, readonly import('./providers/port.js').ProviderId[]>
-      > = {};
-      for (const tier of ['worker', 'ic', 'manager'] as const) {
-        const order = learnProviderOrder(recent, tier);
-        if (order !== null) learned[tier] = order;
-      }
-      if (Object.keys(learned).length > 0) learnedProviderOrder = learned;
-      const byKind: Partial<
-        Record<
-          import('./core/model-capabilities.js').TaskKind,
-          readonly import('./core/model-capabilities.js').ModelPreference[]
-        >
-      > = {};
-      for (const kind of [
-        'trivial', 'implementation', 'debug', 'review', 'architecture', 'large-context', 'unknown',
-      ] as const) {
-        const order = learnModelOutcomeOrder(recent, kind);
-        if (order !== null) byKind[kind] = order;
-      }
-      if (Object.keys(byKind).length > 0) modelOutcomeOrderByTaskKind = byKind;
-    }
     const task = taskParts.join(' ');
     // ---- USER MEMORY (Phase 4, §7) — read-only inject for the one-shot path.
     // Resolve the project key, run the lazy decay sweep on open, select+render
@@ -757,13 +695,11 @@ async function main(): Promise<void> {
       env,
       policy,
       resolveTimeoutMs(config),
-      learnedProviderOrder,
       config.hedge === true ? (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms)) : undefined,
       memoryContext,
       environmentContext,
       toolStateContext,
       capability?.registry,
-      modelOutcomeOrderByTaskKind,
     );
     const preflightDeps = buildPreflightDeps({
       providers: deps.providers,
@@ -1068,7 +1004,6 @@ async function main(): Promise<void> {
       env,
       replPolicy,
       resolveTimeoutMs(config),
-      undefined,
       undefined,
       memoryContext,
       undefined,

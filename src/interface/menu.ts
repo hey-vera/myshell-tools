@@ -137,7 +137,7 @@ import { planNativeSession } from '../core/native-session.js';
 import { decideHistoryPolicy } from '../core/turn-directive.js';
 import { availableAfterCooldown, cooldownExpiry } from '../core/cooldown.js';
 import { autoIntensityForTurn, concurrencyCeilingForRegime, deriveBaselineOrder, deriveLiveProviderOrder, regimeForIntensity } from '../core/capacity-allocator.js';
-import { learnProviderOrder, learnModelOutcomeOrder } from '../core/routing-memory.js';
+// routing-memory retained for diagnostics/reporting only (cost/insights), not routing input
 import type { OutputSink, TurnInputSurface, Verbosity } from './render.js';
 import {
   canRenderInputBox,
@@ -1322,25 +1322,6 @@ export async function runChatLoop(
   // Read the ledger ONCE here, before the chat loop. The session accumulator
   // powers live capacity allocation; the optional outcome learner reuses the
   // same snapshot to learn a per-tier provider-preference
-  // order from this user's own recorded outcomes. We compute it once per chat
-  // session (not per turn) so a long ledger isn't re-read every message; the
-  // closure below spreads it into deps. We pre-filter to the most recent 500
-  // entries so stale history doesn't dominate, then learn each tier
-  // independently (omitting tiers with insufficient signal → learnProviderOrder
-  // returns null). Observed-only; never fabricated.
-  const learnedProviderOrder: Partial<Record<Tier, readonly ProviderId[]>> = {};
-  // Stage 4 (§2 Layer 3): learned MODEL-level outcome order per task kind, from the
-  // SAME recent-ledger slice. Weakest signal; below-threshold task kinds get no
-  // entry (learnModelOutcomeOrder → null) so routing is unchanged.
-  const modelOutcomeOrderByTaskKind: Partial<
-    Record<
-      import('../core/model-capabilities.js').TaskKind,
-      readonly import('../core/model-capabilities.js').ModelPreference[]
-    >
-  > = {};
-  // IMPORTANT: do NOT await the ledger read here. On resume the chat composer
-  // is already visible (inkSetChatActive) and we must reach the readLine() await
-  // with the event loop free so first keystrokes are processed with zero lag.
   // Seed empty; a fire-and-forget populates for this session (first turn may see
   // the update or start with zeroed baseline — both acceptable; records grow it).
   const sessionConsumption: Partial<Record<ProviderId, number>> = {};
@@ -1364,26 +1345,13 @@ export async function runChatLoop(
   const blockedStateOn = blockedStateV1Enabled(process.env);
   const evidenceReceiptOn = evidenceReceiptV2Enabled(process.env);
   const nativeSessionsPromoteOn = nativeSessionsPromoteEnabled(process.env);
-  void (async () => {
+      void (async () => {
 
     try {
       const allEntries = await readLedger(ctx.cwd);
       const initial = summarizeSessionProviderTokens(allEntries, convId);
       for (const [k, v] of Object.entries(initial)) {
         if (typeof v === 'number') sessionConsumption[k as ProviderId] = v;
-      }
-      if (mutableCtx.config.learnRouting === true) {
-        const recent = allEntries.slice(-500);
-        for (const tier of ['worker', 'ic', 'manager'] as const) {
-          const order = learnProviderOrder(recent, tier);
-          if (order !== null) learnedProviderOrder[tier] = order;
-        }
-        for (const kind of [
-          'trivial', 'implementation', 'debug', 'review', 'architecture', 'large-context', 'unknown',
-        ] as const) {
-          const order = learnModelOutcomeOrder(recent, kind);
-          if (order !== null) modelOutcomeOrderByTaskKind[kind] = order;
-        }
       }
     } catch {
       /* best-effort; first turn just runs with empty baseline */
@@ -2314,9 +2282,6 @@ export async function runChatLoop(
           baselineOrderByTier: policy.providerOrderByTier,
           capacityWeightByProvider,
           sessionTokensByProvider: sessionConsumption,
-          ...(Object.keys(learnedProviderOrder).length > 0
-            ? { learnedOutcomeOrderByTier: learnedProviderOrder }
-            : {}),
           coolingProviders,
         });
         const dynamicOrder: Partial<Record<Tier, readonly ProviderId[]>> = {};
@@ -2525,11 +2490,8 @@ export async function runChatLoop(
             ? { observedBlockingCalls }
             : {}),
           // Composed dynamic provider order: capacity + session consumption +
-          // optional learned outcomes + current cooldown state.
+          // current cooldown state.
           ...(Object.keys(dynamicOrder).length > 0 ? { learnedProviderOrder: dynamicOrder } : {}),
-          ...(Object.keys(modelOutcomeOrderByTaskKind).length > 0
-            ? { modelOutcomeOrderByTaskKind }
-            : {}),
           // Partner posture (soft bias, APE §2). Explicit config wins; else the
           // default is derived from the effective mode. Threaded once per turn so
           // it rides sequential, hedge, AND panel prompts via assembleContextBlocks.

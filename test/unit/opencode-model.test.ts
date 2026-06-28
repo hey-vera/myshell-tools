@@ -1,43 +1,17 @@
 /**
- * test/unit/opencode-model.test.ts — selectOpencodeModel / opencodeModelScore.
+ * test/unit/opencode-model.test.ts — selectOpencodeModel (thin fallback).
  *
- * Pure heuristic over the user's REAL `opencode models` list. We assert the
- * tier ORDERING properties (manager ≥ ic ≥ worker capability) and the fail-safe
- * contract (only ever returns a model from the supplied list, or undefined),
- * rather than brittle exact picks — except for the live free roster, which we
- * pin since detection actually returns it here.
+ * Thin fallback for the opt-out legacy path: returns the first model.
+ * The default vendor-neutral router uses opencodeTierRank() instead.
+ * Contract: only ever returns a model from the supplied list, or undefined.
  */
 
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 
-import {
-  selectOpencodeModel,
-  opencodeModelScore,
-} from '../../src/core/opencode-model.ts';
+import { selectOpencodeModel } from '../../src/core/opencode-model.ts';
 
-// The live free roster (captured from `opencode models` with 0 credentials).
-const FREE = [
-  'opencode/big-pickle',
-  'opencode/deepseek-v4-flash-free',
-  'opencode/mimo-v2.5-free',
-  'opencode/minimax-m3-free',
-  'opencode/nemotron-3-super-free',
-];
-
-// A representative OpenCode Go roster (documented open models).
-const GO = [
-  'opencode-go/kimi-k2.6',
-  'opencode-go/glm-5.1',
-  'opencode-go/deepseek-v4-pro',
-  'opencode-go/deepseek-v4-flash',
-  'opencode-go/qwen3.7-max',
-  'opencode-go/mimo-v2.5-pro',
-  'opencode-go/mimo-v2.5',
-  'opencode-go/minimax-m3',
-];
-
-describe('selectOpencodeModel — fail-safe contract', () => {
+describe('selectOpencodeModel — thin fallback contract', () => {
   it('returns undefined for an empty / undefined list (caller omits -m)', () => {
     assert.equal(selectOpencodeModel('manager', []), undefined);
     assert.equal(selectOpencodeModel('manager', undefined), undefined);
@@ -51,53 +25,17 @@ describe('selectOpencodeModel — fail-safe contract', () => {
   });
 
   it('only ever returns a model from the supplied list', () => {
+    const list = ['opencode/a', 'opencode/b', 'opencode/c'];
     for (const tier of ['worker', 'ic', 'manager'] as const) {
-      assert.ok(FREE.includes(selectOpencodeModel(tier, FREE)!), `free/${tier}`);
-      assert.ok(GO.includes(selectOpencodeModel(tier, GO)!), `go/${tier}`);
+      const pick = selectOpencodeModel(tier, list)!;
+      assert.ok(list.includes(pick), `thin/${tier}: ${pick} not in list`);
     }
   });
-});
 
-describe('selectOpencodeModel — tier ordering (manager ≥ ic ≥ worker capability)', () => {
-  for (const [name, roster] of [['free', FREE], ['go', GO]] as const) {
-    it(`${name}: manager picks a stronger model than worker`, () => {
-      const manager = selectOpencodeModel('manager', roster)!;
-      const worker = selectOpencodeModel('worker', roster)!;
-      assert.ok(
-        opencodeModelScore(manager) > opencodeModelScore(worker),
-        `${name}: manager(${manager}) should outrank worker(${worker})`,
-      );
-    });
-
-    it(`${name}: ic sits between worker and manager (inclusive)`, () => {
-      const manager = opencodeModelScore(selectOpencodeModel('manager', roster)!);
-      const ic = opencodeModelScore(selectOpencodeModel('ic', roster)!);
-      const worker = opencodeModelScore(selectOpencodeModel('worker', roster)!);
-      assert.ok(ic <= manager && ic >= worker, `${name}: worker ${worker} ≤ ic ${ic} ≤ manager ${manager}`);
-    });
-  }
-
-  it('free roster: manager → big-pickle, worker → a free/flash model', () => {
-    assert.equal(selectOpencodeModel('manager', FREE), 'opencode/big-pickle');
-    const worker = selectOpencodeModel('worker', FREE)!;
-    assert.ok(/free|flash/.test(worker), `worker should be a free/flash model, got ${worker}`);
-  });
-
-  it('go roster: manager → a top model (qwen-max / kimi / deepseek-pro)', () => {
-    const manager = selectOpencodeModel('manager', GO)!;
-    assert.ok(/max|kimi|pro/.test(manager), `manager should be a top Go model, got ${manager}`);
-  });
-});
-
-describe('opencodeModelScore — sanity', () => {
-  it('penalises free/flash variants below their pro/max siblings', () => {
-    assert.ok(
-      opencodeModelScore('opencode-go/deepseek-v4-pro') >
-        opencodeModelScore('opencode-go/deepseek-v4-flash'),
-    );
-    assert.ok(
-      opencodeModelScore('opencode-go/qwen3.7-max') >
-        opencodeModelScore('opencode/mimo-v2.5-free'),
-    );
+  it('returns the first model for all tiers (thin fallback)', () => {
+    const list = ['opencode-go/alpha', 'opencode-go/beta', 'opencode-go/gamma'];
+    assert.equal(selectOpencodeModel('worker', list), 'opencode-go/alpha');
+    assert.equal(selectOpencodeModel('ic', list), 'opencode-go/alpha');
+    assert.equal(selectOpencodeModel('manager', list), 'opencode-go/alpha');
   });
 });

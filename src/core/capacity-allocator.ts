@@ -244,7 +244,6 @@ export interface LiveCapacityInput {
   readonly baselineOrderByTier: Record<Tier, readonly ProviderId[]>;
   readonly capacityWeightByProvider: Readonly<Partial<Record<ProviderId, number>>>;
   readonly sessionTokensByProvider: Readonly<Partial<Record<ProviderId, number>>>;
-  readonly learnedOutcomeOrderByTier?: Partial<Record<Tier, readonly ProviderId[]>>;
   readonly coolingProviders: ReadonlySet<ProviderId>;
 }
 
@@ -262,14 +261,7 @@ function deriveLiveTierOrder(
   tier: Tier,
   input: LiveCapacityInput,
 ): readonly ProviderId[] {
-  const baseline = input.baselineOrderByTier[tier];
-  const learned = input.learnedOutcomeOrderByTier?.[tier];
-  const composed = learned !== undefined && learned.length > 0
-    ? [
-        ...learned,
-        ...baseline.filter((provider) => !learned.includes(provider)),
-      ]
-    : [...baseline];
+  const composed = [...input.baselineOrderByTier[tier]];
 
   const totalObservedTokens = composed.reduce(
     (sum, provider) => sum + (input.sessionTokensByProvider[provider] ?? 0),

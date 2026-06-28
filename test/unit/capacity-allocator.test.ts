@@ -375,18 +375,15 @@ describe('deriveLiveProviderOrder', () => {
     manager: ['claude', 'codex', 'opencode'],
   } as const;
 
-  it('returns the step-a order unchanged on cold start and with absent consumption', () => {
+  it('returns the baseline order unchanged on cold start and with absent consumption', () => {
     const order = deriveLiveProviderOrder({
       baselineOrderByTier: baseline,
       capacityWeightByProvider: { claude: 10, codex: 1, opencode: 1 },
       sessionTokensByProvider: {},
-      learnedOutcomeOrderByTier: {
-        worker: ['codex', 'claude'],
-      },
       coolingProviders: new Set(),
     });
 
-    assert.deepEqual(order.worker, ['codex', 'claude', 'opencode']);
+    assert.deepEqual(order.worker, ['claude', 'codex', 'opencode']);
     assert.deepEqual(order.ic, ['claude', 'codex', 'opencode']);
     assert.deepEqual(order.manager, ['claude', 'codex', 'opencode']);
   });
@@ -418,13 +415,12 @@ describe('deriveLiveProviderOrder', () => {
       baselineOrderByTier: baseline,
       capacityWeightByProvider: { claude: 10, codex: 1, opencode: 1 },
       sessionTokensByProvider: { claude: 10, codex: 1, opencode: 100 },
-      learnedOutcomeOrderByTier: {
-        worker: ['codex', 'claude', 'opencode'],
-      },
       coolingProviders: new Set(),
     });
 
-    assert.deepEqual(order.worker, ['codex', 'claude', 'opencode']);
+    // claude and codex both have normalized load 1 → index tie-break keeps
+    // claude (index 0) before codex (index 1); opencode (load 100) last.
+    assert.deepEqual(order.worker, ['claude', 'codex', 'opencode']);
   });
 
   it('moves cooling providers to the tail, preserves relative order, and keeps all-cooled deterministic', () => {
