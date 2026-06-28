@@ -1051,10 +1051,10 @@ export async function runChatLoop(
   // epoch ms) so the next turn prefers an un-throttled provider; noteRateLimit
   // (below) populates it, availableAfterCooldown filters on it.
   const providerCooldownUntil = new Map<ProviderId, number>();
-  // Per-account cooldown for OpenCode subscription accounts. Keyed by accountId;
+  // Per-account cooldown for subscription accounts. Keyed by accountId;
   // the account selector uses THIS map, not provider-level cooldown, so siblings
   // stay available when one account hits a 429.
-  const opencodeAccountCooldownUntil = new Map<string, number>();
+  const accountCooldownUntil = new Map<string, number>();
   // Per-account session token consumption for normalized-load account selection.
   const sessionTokensByAccount: Record<string, number> = {};
 
@@ -1665,7 +1665,7 @@ export async function runChatLoop(
     // Per-account cooldown — cools only the specific account so siblings stay
     // available. Mirror of provider cooldown but keyed by accountId.
     for (const id of throttledAccounts) {
-      opencodeAccountCooldownUntil.set(id, cooldownExpiry(now));
+      accountCooldownUntil.set(id, cooldownExpiry(now));
     }
 
     // Be legible: if another signed-in provider can absorb the load, say so.
@@ -2751,11 +2751,13 @@ export async function runChatLoop(
         try {
           const subs = await readSubscriptions();
           const allAccounts = subs.accounts;
-          const accounts = allAccounts.filter(
+          if (allAccounts.length === 0) return base;
+          // Backward compat: also pass legacy opencode-only deps so callsites
+          // that still read opencodeAccounts get the filtered subset.
+          const opencodeAccounts = allAccounts.filter(
             (a): a is import('../infra/subscriptions.js').OpencodeSubscriptionAccount =>
               a.provider === 'opencode',
           );
-          if (accounts.length === 0) return base;
           const onAccountUsed = async (
             accountId: string,
             usedAtIso: string,
@@ -2776,8 +2778,9 @@ export async function runChatLoop(
           };
           return {
             ...base,
-            opencodeAccounts: accounts,
-            opencodeAccountCooldownUntil,
+            subscriptionAccounts: allAccounts,
+            accountCooldownUntil,
+            opencodeAccounts,
             ...(Object.keys(sessionTokensByAccount).length > 0
               ? { sessionTokensByAccount }
               : {}),

@@ -236,6 +236,77 @@ export function createClaudeProvider(opts?: { bin?: string; effortEnabled?: bool
 }
 
 /**
+ * Pure helper: build the account-scoped base env with req.accountEnv merged in.
+ * Exported for testing so callers can assert env composition without spawning.
+ */
+export function buildAccountScopedBase(
+  parentEnv: NodeJS.ProcessEnv,
+  accountEnv: Readonly<Partial<NodeJS.ProcessEnv>> | undefined,
+): NodeJS.ProcessEnv {
+  if (accountEnv === undefined) return parentEnv;
+  return {
+    ...parentEnv,
+    ...accountEnv,
+  };
+}
+
+/**
+ * Pure helper: apply accountEnv LAST on top of a fallback result so
+ * CLAUDE_CONFIG_DIR from accountEnv is never shadowed.
+ * Exported for testing.
+ */
+export function applyAccountEnvOverride(
+  fallbackEnv: NodeJS.ProcessEnv,
+  accountEnv: Readonly<Partial<NodeJS.ProcessEnv>> | undefined,
+): NodeJS.ProcessEnv {
+  if (accountEnv === undefined) return fallbackEnv;
+  return {
+    ...fallbackEnv,
+    ...accountEnv,
+  };
+}
+
+/**
+ * Build the child env for a claude spawn.
+ *
+ * When req.accountEnv is present (account-scoped run), CLAUDE_CONFIG_DIR
+ * overrides the global env AND is re-merged LAST so it is NOT shadowed by
+ * claudeEnvWithStoredFallback. Stored credential fallback is also disabled
+ * so a legacy CLAUDE_CODE_OAUTH_TOKEN never shadows the selected account.
+ *
+ * When req.accountEnv is absent, behaviour is byte-identical to the current
+ * claudeEnvWithStoredFallback(process.env, req.cwd) path.
+ *
+ * PURE / fail-soft: never throws — falls back to the account-scoped base on
+ * any error (exactly replicating today's catch-clause behaviour).
+ */
+export async function buildClaudeEnv(
+  req: ProviderRequest,
+  parentEnv: NodeJS.ProcessEnv = process.env,
+): Promise<NodeJS.ProcessEnv> {
+  if (req.accountEnv !== undefined) {
+    const accountScopedBase = buildAccountScopedBase(parentEnv, req.accountEnv);
+    try {
+      const withFallback = await claudeEnvWithStoredFallback(
+        accountScopedBase,
+        req.cwd,
+        false, // disable stored credential injection for account-scoped runs
+      );
+      return applyAccountEnvOverride(withFallback, req.accountEnv);
+    } catch {
+      return accountScopedBase;
+    }
+  }
+
+  // Flag-off / global path: byte-identical to today
+  try {
+    return await claudeEnvWithStoredFallback(parentEnv, req.cwd);
+  } catch {
+    return parentEnv;
+  }
+}
+
+/**
  * The raw Claude spawn + stdout drain — the exact behaviour that existed before the
  * hang cap, factored out so the public `run` can wrap it with `withHangCap` while the
  * happy path stays byte-identical. `register` hands the caller a `killTree` for the
@@ -251,14 +322,7 @@ async function* runClaudeRaw(args0: {
   const { req, signal, bin, effortEnabled, register } = args0;
   const args = buildClaudeArgs(req, effortEnabled);
 
-  // Prefer Claude's own current credentials. The legacy myshell token is used
-  // only when Claude has no usable credentials file of its own.
-  let childEnv: NodeJS.ProcessEnv = process.env;
-  try {
-    childEnv = await claudeEnvWithStoredFallback(process.env, req.cwd);
-  } catch {
-    // Never throw — fall back to the unmodified env
-  }
+  const childEnv = await buildClaudeEnv(req);
 
   // Spawn with reject:false so we always get the result object (never throws).
   // cancelSignal wires our AbortSignal directly to execa's termination path.

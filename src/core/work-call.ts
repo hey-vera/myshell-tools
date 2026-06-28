@@ -111,7 +111,9 @@ import {
   renderNativeSessionTelemetry,
 } from './native-session-telemetry.js';
 import { vendorNeutralRoute } from './vendor-neutral-route.js';
-import { opencodePoolForModel, selectOpencodeAccount } from './opencode-account-routing.js';
+import { opencodePoolForModel, selectOpencodeAccount, selectSubscriptionAccount } from './opencode-account-routing.js';
+import { accountEnvFor } from '../infra/subscriptions.js';
+import type { SubscriptionAccount } from '../infra/subscriptions.js';
 
 function blockedCodeForError(
   category: import('../providers/port.js').CliError['category'],
@@ -681,7 +683,7 @@ export async function* runWorkCall(input: WorkCallInput): AsyncGenerator<CoreEve
   /** Track the last attempted provider (for the failing final). */
   let lastAttemptedProvider: ProviderId | undefined;
   /** Track the last selected account id (for the failing final after the loop). */
-  let lastOpenCodeAccountId: string | undefined;
+  let lastSubscriptionAccountId: string | undefined;
   /**
    * Manager-tier attempts used this turn — the quota guard for adaptive flagship
    * admission (Balanced earns a bounded number of flagship passes per turn). The
@@ -1348,29 +1350,52 @@ export async function* runWorkCall(input: WorkCallInput): AsyncGenerator<CoreEve
     salvagedDraft = undefined;
 
     // --- Yield tier-start ---
-    // Account-aware routing: select an OpenCode subscription account when
-    // applicable. Guarded — when deps has no accounts or the provider is not
-    // opencode, `openCodeAccount` is null and every subsequent path is
-    // byte-for-byte unchanged.
-    const openCodeAccount =
-      decision.provider === 'opencode' &&
-      deps.opencodeAccounts !== undefined &&
-      deps.opencodeAccounts.length > 0
-        ? selectOpencodeAccount({
-            accounts: deps.opencodeAccounts,
-            pool: opencodePoolForModel(decision.model) ?? 'zen',
-            nowMs: deps.clock.now(),
-            cooldownUntil: deps.opencodeAccountCooldownUntil ?? new Map(),
-            sessionTokensByAccount: deps.sessionTokensByAccount ?? {},
-          })
-        : null;
+    // Account-aware routing: select a subscription account when applicable.
+    // Prefers the generic deps (subscriptionAccounts + accountCooldownUntil)
+    // for both opencode and claude; falls back to the legacy opencode-only deps
+    // for backward compatibility. When no deps or no eligible account, every
+    // subsequent path is byte-for-byte unchanged.
+    const subscriptionAccount: SubscriptionAccount | null = (() => {
+      // Generic path: when menu.ts passes provider-generic deps
+      if (
+        deps.subscriptionAccounts !== undefined &&
+        deps.subscriptionAccounts.length > 0 &&
+        (decision.provider === 'opencode' || decision.provider === 'claude')
+      ) {
+        return selectSubscriptionAccount({
+          accounts: deps.subscriptionAccounts,
+          provider: decision.provider,
+          ...(decision.provider === 'opencode'
+            ? { pool: opencodePoolForModel(decision.model) ?? 'zen' }
+            : {}),
+          nowMs: deps.clock.now(),
+          cooldownUntil: deps.accountCooldownUntil ?? new Map(),
+          sessionTokensByAccount: deps.sessionTokensByAccount ?? {},
+        });
+      }
+      // Backward compat: legacy opencode-only deps (tests, pre-migration callers)
+      if (
+        decision.provider === 'opencode' &&
+        deps.opencodeAccounts !== undefined &&
+        deps.opencodeAccounts.length > 0
+      ) {
+        return selectOpencodeAccount({
+          accounts: deps.opencodeAccounts,
+          pool: opencodePoolForModel(decision.model) ?? 'zen',
+          nowMs: deps.clock.now(),
+          cooldownUntil: deps.opencodeAccountCooldownUntil ?? new Map(),
+          sessionTokensByAccount: deps.sessionTokensByAccount ?? {},
+        });
+      }
+      return null;
+    })();
     const accountEnv =
-      openCodeAccount !== null
-        ? { XDG_DATA_HOME: openCodeAccount.homeDir }
+      subscriptionAccount !== null
+        ? accountEnvFor(subscriptionAccount)
         : undefined;
 
-    if (openCodeAccount !== null) {
-      lastOpenCodeAccountId = openCodeAccount.id;
+    if (subscriptionAccount !== null) {
+      lastSubscriptionAccountId = subscriptionAccount.id;
     }
 
     yield {
@@ -1381,7 +1406,7 @@ export async function* runWorkCall(input: WorkCallInput): AsyncGenerator<CoreEve
       attempt: attempts,
       ...(goalTitle.length > 0 ? { title: goalTitle } : {}),
       risk: classification.risk,
-      ...(openCodeAccount !== null ? { accountId: openCodeAccount.id } : {}),
+      ...(subscriptionAccount !== null ? { accountId: subscriptionAccount.id } : {}),
     };
 
     // --- Build request and record start time ---
@@ -1404,9 +1429,9 @@ export async function* runWorkCall(input: WorkCallInput): AsyncGenerator<CoreEve
       ...(hasImageAttachment && deps.attachments !== undefined
         ? { attachments: deps.attachments }
         : {}),
-      ...(openCodeAccount !== null
+      ...(subscriptionAccount !== null
         ? {
-            accountId: openCodeAccount.id,
+            accountId: subscriptionAccount.id,
             accountEnv: accountEnv as Readonly<Partial<NodeJS.ProcessEnv>>,
           }
         : {} as Record<string, never>),
@@ -1415,10 +1440,10 @@ export async function* runWorkCall(input: WorkCallInput): AsyncGenerator<CoreEve
 
     // --- Stream provider events ---
     providerCalls++;
-    if (openCodeAccount !== null && deps.onAccountUsed !== undefined) {
+    if (subscriptionAccount !== null && deps.onAccountUsed !== undefined) {
       const cb = deps.onAccountUsed;
       void (async () => {
-        try { await cb(openCodeAccount.id, deps.clock.isoNow()); } catch { /* best-effort */ }
+        try { await cb(subscriptionAccount.id, deps.clock.isoNow()); } catch { /* best-effort */ }
       })();
     }
     const outcome = yield* streamProvider(provider, req, decision.tier, signal);
@@ -1437,7 +1462,7 @@ export async function* runWorkCall(input: WorkCallInput): AsyncGenerator<CoreEve
         attempts,
         ...(outcome.canceled ? { canceled: true } : {}),
         ...(lastAttemptedProvider !== undefined ? { provider: lastAttemptedProvider } : {}),
-        ...(openCodeAccount !== null ? { accountId: openCodeAccount.id } : {}),
+        ...(subscriptionAccount !== null ? { accountId: subscriptionAccount.id } : {}),
       };
       return;
     }
@@ -1533,7 +1558,7 @@ export async function* runWorkCall(input: WorkCallInput): AsyncGenerator<CoreEve
       ...(deps.accountAux === true && deps.intentVersionId !== undefined
         ? { intentVersionId: deps.intentVersionId }
         : {}),
-      ...(openCodeAccount !== null ? { accountId: openCodeAccount.id } : {}),
+      ...(subscriptionAccount !== null ? { accountId: subscriptionAccount.id } : {}),
     });
 
     // --- Yield tier-done ---
@@ -1582,7 +1607,7 @@ export async function* runWorkCall(input: WorkCallInput): AsyncGenerator<CoreEve
         durationMs,
         ...(outcome.sessionId !== undefined ? { sessionId: outcome.sessionId } : {}),
         ...(workTrace !== undefined ? { workTrace } : {}),
-        ...(openCodeAccount !== null ? { accountId: openCodeAccount.id } : {}),
+        ...(subscriptionAccount !== null ? { accountId: subscriptionAccount.id } : {}),
       };
     }
 
@@ -1709,7 +1734,7 @@ export async function* runWorkCall(input: WorkCallInput): AsyncGenerator<CoreEve
           sessionId: deps.session.id,
           attempts,
           questions,
-          ...(openCodeAccount !== null ? { accountId: openCodeAccount.id } : {}),
+          ...(subscriptionAccount !== null ? { accountId: subscriptionAccount.id } : {}),
         };
         return;
       }
@@ -1765,7 +1790,7 @@ export async function* runWorkCall(input: WorkCallInput): AsyncGenerator<CoreEve
           attempts,
           errorCategory: 'timeout',
           provider: decision.provider,
-          ...(openCodeAccount !== null ? { accountId: openCodeAccount.id } : {}),
+          ...(subscriptionAccount !== null ? { accountId: subscriptionAccount.id } : {}),
           ...(deps.evidenceReceiptV2 === true
             ? (() => {
                 const entries = deps.receiptLedgerSnapshot?.() ?? [];
@@ -1913,7 +1938,7 @@ export async function* runWorkCall(input: WorkCallInput): AsyncGenerator<CoreEve
           attempts,
           errorCategory: 'auth',
           provider: decision.provider,
-          ...(openCodeAccount !== null ? { accountId: openCodeAccount.id } : {}),
+          ...(subscriptionAccount !== null ? { accountId: subscriptionAccount.id } : {}),
         };
         return;
       }
@@ -2151,7 +2176,7 @@ export async function* runWorkCall(input: WorkCallInput): AsyncGenerator<CoreEve
             attempts,
             ...(reviewOutcome.canceled ? { canceled: true } : {}),
             ...(lastAttemptedProvider !== undefined ? { provider: lastAttemptedProvider } : {}),
-            ...(openCodeAccount !== null ? { accountId: openCodeAccount.id } : {}),
+            ...(subscriptionAccount !== null ? { accountId: subscriptionAccount.id } : {}),
           };
           return;
         }
@@ -2251,7 +2276,7 @@ export async function* runWorkCall(input: WorkCallInput): AsyncGenerator<CoreEve
               sessionId: deps.session.id,
               attempts,
               ...(lastAttemptedProvider !== undefined ? { provider: lastAttemptedProvider } : {}),
-              ...(openCodeAccount !== null ? { accountId: openCodeAccount.id } : {}),
+              ...(subscriptionAccount !== null ? { accountId: subscriptionAccount.id } : {}),
             };
             return;
           }
@@ -2356,7 +2381,7 @@ export async function* runWorkCall(input: WorkCallInput): AsyncGenerator<CoreEve
               sessionId: deps.session.id,
               attempts,
               ...(lastAttemptedProvider !== undefined ? { provider: lastAttemptedProvider } : {}),
-              ...(openCodeAccount !== null ? { accountId: openCodeAccount.id } : {}),
+              ...(subscriptionAccount !== null ? { accountId: subscriptionAccount.id } : {}),
             };
             return;
           }
@@ -2490,7 +2515,7 @@ export async function* runWorkCall(input: WorkCallInput): AsyncGenerator<CoreEve
     attempts,
     ...(lastErroredCategory !== undefined ? { errorCategory: lastErroredCategory } : {}),
     ...(lastAttemptedProvider !== undefined ? { provider: lastAttemptedProvider } : {}),
-    ...(lastOpenCodeAccountId !== undefined ? { accountId: lastOpenCodeAccountId } : {}),
+    ...(lastSubscriptionAccountId !== undefined ? { accountId: lastSubscriptionAccountId } : {}),
     ...(deps.blockedStateV1 === true && lastErroredCategory !== undefined
       ? (() => {
           const code = blockedCodeForError(lastErroredCategory);

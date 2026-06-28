@@ -471,6 +471,7 @@ export interface OrchestrateDeps {
    * OpenCode subscription accounts loaded by the interface layer when
    * subscriptions are enabled. Absent when the flag is off or no accounts
    * exist, so existing routing/execution is byte-identical.
+   * @deprecated Prefer {@link subscriptionAccounts} for provider-generic routing.
    * Type-only import to keep types.ts a leaf module.
    */
   readonly opencodeAccounts?: readonly import('../infra/subscriptions.js').OpencodeSubscriptionAccount[];
@@ -478,8 +479,22 @@ export interface OrchestrateDeps {
    * Per-account cooldown map for OpenCode subscription accounts (keyed by
    * accountId). Absent when subscriptions are off. The account selector uses
    * this, NOT provider-level cooldown, so sibling accounts stay available.
+   * @deprecated Prefer {@link accountCooldownUntil} for provider-generic routing.
    */
   readonly opencodeAccountCooldownUntil?: ReadonlyMap<string, number>;
+  /**
+   * Subscription accounts (all providers) loaded by the interface layer when
+   * subscriptions are enabled. Absent when the flag is off or no accounts
+   * exist, so existing routing/execution is byte-identical.
+   * Type-only import to keep types.ts a leaf module.
+   */
+  readonly subscriptionAccounts?: readonly import('../infra/subscriptions.js').SubscriptionAccount[];
+  /**
+   * Per-account cooldown map for subscription accounts (keyed by accountId).
+   * Absent when subscriptions are off. The account selector uses this, NOT
+   * provider-level cooldown, so sibling accounts stay available.
+   */
+  readonly accountCooldownUntil?: ReadonlyMap<string, number>;
   /**
    * Per-account session token consumption map (keyed by accountId). Absent
    * when subscriptions are off. Powers normalized-load account selection.
