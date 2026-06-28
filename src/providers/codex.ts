@@ -187,9 +187,12 @@ async function* runCodexRaw(args0: {
 
   // Point codex at the Replit-persistent CODEX_HOME when present so a plainly-
   // launched run finds the durable one-time sign-in (matches replit-tools).
+  // Account-scoped env (CODEX_HOME from subscription account) is merged LAST
+  // so it overrides any default — absent → byte-identical to today.
   const childEnv: NodeJS.ProcessEnv = {
     ...process.env,
     ...replitPersistentEnv(process.env, req.cwd),
+    ...(req.accountEnv ?? {}),
   };
 
   // Spawn with reject:false so we always get the result object (never throws).

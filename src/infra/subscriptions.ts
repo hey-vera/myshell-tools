@@ -122,6 +122,14 @@ export function getClaudeAccountHome(accountId: string, stateHome?: string): str
   return getProviderAccountHome('claude', accountId, stateHome);
 }
 
+export function getCodexAccountHome(accountId: string, stateHome?: string): string {
+  return getProviderAccountHome('codex', accountId, stateHome);
+}
+
+export function getGrokAccountHome(accountId: string, stateHome?: string): string {
+  return getProviderAccountHome('grok', accountId, stateHome);
+}
+
 export function accountEnvFor(account: SubscriptionAccount): Readonly<Partial<NodeJS.ProcessEnv>> {
   if (account.provider === 'claude') return { CLAUDE_CONFIG_DIR: account.homeDir };
   if (account.provider === 'codex') return { CODEX_HOME: account.homeDir };
@@ -214,6 +222,54 @@ export function newClaudeAccount(input: {
     kind: 'oauth-sub',
     label: input.label,
     homeDir: getClaudeAccountHome(input.id, input.stateHome),
+    priority: resolvedPriority,
+    priorityWeight: priorityWeight(resolvedPriority),
+    ...(input.expiresAt !== undefined ? { expiresAt: input.expiresAt } : {}),
+    enabled: resolvedPriority !== 'disabled',
+    createdAt: input.nowIso,
+    status: 'unknown',
+  };
+}
+
+export function newCodexAccount(input: {
+  id: string;
+  label: string;
+  priority?: AccountPriority;
+  expiresAt?: string;
+  nowIso: string;
+  stateHome?: string;
+}): CodexSubscriptionAccount {
+  const resolvedPriority = input.priority ?? 'medium';
+  return {
+    id: input.id,
+    provider: 'codex',
+    kind: 'oauth-sub',
+    label: input.label,
+    homeDir: getCodexAccountHome(input.id, input.stateHome),
+    priority: resolvedPriority,
+    priorityWeight: priorityWeight(resolvedPriority),
+    ...(input.expiresAt !== undefined ? { expiresAt: input.expiresAt } : {}),
+    enabled: resolvedPriority !== 'disabled',
+    createdAt: input.nowIso,
+    status: 'unknown',
+  };
+}
+
+export function newGrokAccount(input: {
+  id: string;
+  label: string;
+  priority?: AccountPriority;
+  expiresAt?: string;
+  nowIso: string;
+  stateHome?: string;
+}): GrokSubscriptionAccount {
+  const resolvedPriority = input.priority ?? 'medium';
+  return {
+    id: input.id,
+    provider: 'grok',
+    kind: 'oauth-sub',
+    label: input.label,
+    homeDir: getGrokAccountHome(input.id, input.stateHome),
     priority: resolvedPriority,
     priorityWeight: priorityWeight(resolvedPriority),
     ...(input.expiresAt !== undefined ? { expiresAt: input.expiresAt } : {}),

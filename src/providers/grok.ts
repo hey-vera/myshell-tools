@@ -46,6 +46,7 @@ import type { ProviderStatus } from './detect.js';
 import { detectProvider } from './detect.js';
 import { classifyError } from './errors.js';
 import { createGrokParser } from './grok-parse.js';
+import { replitPersistentEnv } from '../infra/credentials.js';
 import { spawnGuarded, withHangCap, providerHangCapMs } from './hang-cap.js';
 
 // ---------------------------------------------------------------------------
@@ -236,12 +237,21 @@ async function* runGrokRaw(args0: {
   const promptFile = await writePromptFile(req.prompt);
   args.push('--prompt-file', promptFile);
 
+  // Account-scoped env (GROK_HOME from subscription account) + Replit-persistent
+  // env (matches codex.ts pattern). Account env is merged LAST so it overrides
+  // any default — absent → byte-identical to today.
+  const childEnv: NodeJS.ProcessEnv = {
+    ...process.env,
+    ...replitPersistentEnv(process.env, req.cwd),
+    ...(req.accountEnv ?? {}),
+  };
+
   const { subprocess, killTree } = spawnGuarded(bin, args, {
     cwd: req.cwd,
     cancelSignal: signal,
     timeout: req.timeoutMs,
     reject: false,
-    env: process.env,
+    env: childEnv,
   });
   register(killTree);
 

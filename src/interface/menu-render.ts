@@ -167,12 +167,17 @@ export async function renderMainScreen(
   const claudeLabel = subsOn
     ? 'Claude Accounts'
     : 'Login Claude';
-  const grokLabel = mutableCtx.env.grok.installed
+  const codexLabel = subsOn
+    ? 'Codex Accounts'
+    : 'Login Codex';
+  const grokLabel = subsOn
+    ? 'Grok Accounts'
+    : mutableCtx.env.grok.installed
     ? 'Login grok'
     : 'Login grok (installs it first)';
   const authEntries: Array<{ key: string; label: string; section: string }> = [
     { key: 'j', label: claudeLabel, section: 'Auth' },
-    { key: 'k', label: 'Login Codex', section: 'Auth' },
+    { key: 'k', label: codexLabel, section: 'Auth' },
     { key: 'o', label: opencodeLabel, section: 'Auth' },
     { key: 'p', label: grokLabel, section: 'Auth' },
   ];

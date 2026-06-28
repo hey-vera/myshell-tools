@@ -272,6 +272,8 @@ import {
 } from './menu-settings.js';
 import { runOpencodeAccountsMenu } from './menu-opencode-accounts.js';
 import { runClaudeAccountsMenu } from './menu-claude-accounts.js';
+import { runCodexAccountsMenu } from './menu-codex-accounts.js';
+import { runGrokAccountsMenu } from './menu-grok-accounts.js';
 import { resolveOversight, shouldPauseBeforeLaunch, standingRuleCheckpoint } from './ui/oversight.js';
 import type { Oversight } from './ui/oversight.js';
 import {
@@ -7044,8 +7046,20 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
         continue;
       }
 
-      // ---- [k] Login Codex ----------------------------------------------------
+      // ---- [k] Codex Accounts / Login Codex ----------------------------------
+      // When the experimental subscriptions flag is on, opens the Codex
+      // Accounts management screen. When off, runs the existing single-login flow.
       if (key === 'k') {
+        if (subscriptionsEnabled(process.env, mutableCtx.config)) {
+          await runCodexAccountsMenu(out, readLine, confirm, ctx.clock, {
+            login: loginFn,
+            suspendStdin,
+            inkReadKey,
+            cwd: ctx.cwd,
+          });
+          await refreshEnvironmentIfStale(true);
+          continue;
+        }
         await loginFn(out, 'codex', {
           readLine,
           confirm,
@@ -7103,11 +7117,21 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
         continue;
       }
 
-      // ---- [p] Connect / Login grok -------------------------------------------
-      // Always handles the key. When grok is not yet installed, asks for consent
-      // then installs it (using the injected installProviderFn seam so tests stay
-      // hermetic). If install succeeds, proceeds to sign in.
+      // ---- [p] Grok Accounts / Login grok ------------------------------------
+      // When the experimental subscriptions flag is on, opens the Grok
+      // Accounts management screen. When off, runs the existing single-login flow
+      // (including install-if-needed).
       if (key === 'p') {
+        if (subscriptionsEnabled(process.env, mutableCtx.config)) {
+          await runGrokAccountsMenu(out, readLine, confirm, ctx.clock, {
+            login: loginFn,
+            suspendStdin,
+            inkReadKey,
+            cwd: ctx.cwd,
+          });
+          await refreshEnvironmentIfStale(true);
+          continue;
+        }
         if (!mutableCtx.env.grok.installed) {
           out.write(`Install grok (${installCommandFor('grok').replace('npm install -g ', '')})? ${yesNoHint('yes', out.color)} `);
           // Preserve the install-safety rule from the line-mode path: EOF means

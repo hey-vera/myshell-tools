@@ -1360,7 +1360,7 @@ export async function* runWorkCall(input: WorkCallInput): AsyncGenerator<CoreEve
       if (
         deps.subscriptionAccounts !== undefined &&
         deps.subscriptionAccounts.length > 0 &&
-        (decision.provider === 'opencode' || decision.provider === 'claude')
+        (decision.provider === 'opencode' || decision.provider === 'claude' || decision.provider === 'codex' || decision.provider === 'grok')
       ) {
         return selectSubscriptionAccount({
           accounts: deps.subscriptionAccounts,

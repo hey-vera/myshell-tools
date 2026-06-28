@@ -69,6 +69,40 @@ export async function detectSubscriptionAccount(input: {
     };
   }
 
+  if (account.provider === 'codex') {
+    const env = { ...process.env, ...accountEnv };
+    const status = await detectProvider('codex', {
+      env,
+      cwd,
+    }).catch(() => null);
+
+    if (status === null) {
+      return { status: 'auth-failed', plan: null };
+    }
+
+    return {
+      status: status.authenticated ? 'active' : 'auth-failed',
+      plan: status.plan,
+    };
+  }
+
+  if (account.provider === 'grok') {
+    const env = { ...process.env, ...accountEnv };
+    const status = await detectProvider('grok', {
+      env,
+      cwd,
+    }).catch(() => null);
+
+    if (status === null) {
+      return { status: 'auth-failed', plan: null };
+    }
+
+    return {
+      status: status.authenticated ? 'active' : 'auth-failed',
+      plan: status.plan,
+    };
+  }
+
   // Other providers not yet supported for per-account detection
   return { status: 'unknown', plan: null };
 }
