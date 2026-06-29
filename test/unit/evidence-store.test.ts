@@ -15,6 +15,8 @@ import {
   type ConfidenceLabel,
   type EvidenceSnapshot,
 } from '../../src/core/evidence.ts';
+import { defaultStateLayout, projectStateDirs } from '../../src/infra/state-layout.ts';
+import { withStateHome } from '../with-state-home.ts';
 
 function makeSnapshot(overrides: Partial<EvidenceSnapshot> = {}): EvidenceSnapshot {
   return {
@@ -48,7 +50,7 @@ function makeSnapshot(overrides: Partial<EvidenceSnapshot> = {}): EvidenceSnapsh
 }
 
 function evidencePath(homeDir: string, taskId: string): string {
-  return join(homeDir, '.myshell-tools', 'evidence', `${taskId}.jsonl`);
+  return join(projectStateDirs(defaultStateLayout(), homeDir).evidenceDir, `${taskId}.jsonl`);
 }
 
 let homeDir: string;
@@ -75,6 +77,7 @@ describe('normalizeEvidenceSnapshot', () => {
 
 describe('evidence-store', () => {
   it('appends and reads full snapshots with fields intact', async () => {
+    await withStateHome(homeDir, async () => {
     const first = makeSnapshot({ turnNumber: 1 });
     const reviewed: ConfidenceLabel = 'reviewed';
     const second = makeSnapshot({
@@ -95,9 +98,11 @@ describe('evidence-store', () => {
     const snapshots = await readEvidence(homeDir, 'task_1');
     assert.deepEqual(snapshots, [first, second]);
     assert.equal(snapshots[0]?.commandsRun[0]?.tier, 'test-build');
+    });
   });
 
   it('compacts 35 turns to the newest 30 by turnNumber', async () => {
+    await withStateHome(homeDir, async () => {
     for (let turnNumber = 1; turnNumber <= 35; turnNumber += 1) {
       await appendEvidence(
         homeDir,
@@ -117,14 +122,17 @@ describe('evidence-store', () => {
       snapshots.map((snapshot) => snapshot.turnNumber),
       Array.from({ length: 30 }, (_, index) => index + 6),
     );
+    });
   });
 
   it('skips malformed JSONL lines on read', async () => {
+    await withStateHome(homeDir, async () => {
     const snapshot = makeSnapshot();
     await appendEvidence(homeDir, snapshot);
     await appendFile(evidencePath(homeDir, 'task_1'), 'NOT JSON\n', 'utf8');
 
     assert.deepEqual(await readEvidence(homeDir, 'task_1'), [snapshot]);
+    });
   });
 
   it('throws a guard error for invalid task ids', async () => {

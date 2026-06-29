@@ -13,10 +13,10 @@
 
 import fs from 'node:fs';
 import { join } from 'node:path';
-import os from 'node:os';
 import { createFileGoalStore } from '../infra/goal-store.js';
 import { createFileUserMemoryStore, resolveProjectKey } from '../infra/user-memory-store.js';
 import { createFileRulesStore } from '../infra/rules-store.js';
+import { defaultStateContext } from '../infra/state-layout.js';
 import type { Goal } from '../core/goal-todo.js';
 import type { UserMemoryFact } from '../core/user-memory.js';
 import type { Rule } from '../core/rules.js';
@@ -230,7 +230,7 @@ function isSubsequence(needle: string, hay: string): boolean {
  */
 export function expandPathToken(
   token: string,
-  home: string = os.homedir(),
+  home: string = defaultStateContext().homeDir,
   cwd: string = process.cwd(),
 ): { dir: string; base: string; displayPrefix: string } {
   let raw = token;
@@ -329,7 +329,7 @@ export interface CompleteChatDeps {
 const defaultCompleteChatDeps = (): CompleteChatDeps => ({
   readdir: (dir: string) => fs.promises.readdir(dir, { withFileTypes: true }),
   cwd: process.cwd(),
-  home: os.homedir(),
+  home: defaultStateContext().homeDir,
   commands: CHAT_SLASH_COMMANDS,
   argMap: CHAT_SLASH_ARG_MAP,
   dynamicWorldItems: [],
@@ -411,7 +411,7 @@ export async function completeChat(
               }
             }
             const pk = await resolveProjectKey(process.cwd()).catch(() => 'default');
-            const mStore = createFileUserMemoryStore({ clock, homeDir: os.homedir() });
+            const mStore = createFileUserMemoryStore({ clock });
             const mems: UserMemoryFact[] = await mStore.listAll(pk ? { scope: 'project', projectKey: pk } : undefined).catch(() => []);
             if (mems.length) {
               const memItems = mems.slice(0, 30).map((m: UserMemoryFact) => (m.id || m.text || '').replace(/[^a-z0-9_-]/gi, '-').toLowerCase().slice(0, 32));

@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import type { EvidenceSnapshot } from '../core/evidence.js';
 import { normalizeEvidenceSnapshot } from '../core/evidence.js';
 import { atomicAppendJSONL, atomicWrite, withLock } from './atomic.js';
+import { defaultStateLayout, projectStateDirs } from './state-layout.js';
 
 const MAX_SNAPSHOTS_PER_TASK = 30;
 const VALID_TASK_ID_RE = /^[A-Za-z0-9_-]+$/;
@@ -19,23 +20,23 @@ function isValidTaskId(taskId: string): boolean {
   return typeof taskId === 'string' && taskId.length > 0 && VALID_TASK_ID_RE.test(taskId);
 }
 
-function getEvidenceDir(homeDir: string): string {
-  return join(homeDir, '.myshell-tools', 'evidence');
+function getEvidenceDir(cwd: string): string {
+  return projectStateDirs(defaultStateLayout(), cwd).evidenceDir;
 }
 
-function getEvidencePath(homeDir: string, taskId: string): string {
+function getEvidencePath(cwd: string, taskId: string): string {
   if (!isValidTaskId(taskId)) {
     throw new InvalidEvidenceTaskIdError(taskId);
   }
-  return join(getEvidenceDir(homeDir), `${taskId}.jsonl`);
+  return join(getEvidenceDir(cwd), `${taskId}.jsonl`);
 }
 
-function getEvidenceLockPath(homeDir: string, taskId: string): string {
-  return `${getEvidencePath(homeDir, taskId)}.lock`;
+function getEvidenceLockPath(cwd: string, taskId: string): string {
+  return `${getEvidencePath(cwd, taskId)}.lock`;
 }
 
-async function ensureEvidenceDir(homeDir: string): Promise<void> {
-  await mkdir(getEvidenceDir(homeDir), { recursive: true });
+async function ensureEvidenceDir(cwd: string): Promise<void> {
+  await mkdir(getEvidenceDir(cwd), { recursive: true });
 }
 
 function parseEvidenceLines(raw: string): EvidenceSnapshot[] {
@@ -72,12 +73,12 @@ async function compactEvidenceLocked(path: string): Promise<void> {
 }
 
 export async function appendEvidence(
-  homeDir: string,
+  cwd: string,
   snapshot: EvidenceSnapshot,
 ): Promise<void> {
-  const path = getEvidencePath(homeDir, snapshot.taskId);
-  const lockPath = getEvidenceLockPath(homeDir, snapshot.taskId);
-  await ensureEvidenceDir(homeDir);
+  const path = getEvidencePath(cwd, snapshot.taskId);
+  const lockPath = getEvidenceLockPath(cwd, snapshot.taskId);
+  await ensureEvidenceDir(cwd);
 
   await withLock(lockPath, async () => {
     await atomicAppendJSONL(path, snapshot);
@@ -89,8 +90,8 @@ export async function appendEvidence(
  * Read task evidence in chronological turn order. Malformed JSONL rows and rows
  * with the wrong snapshot shape are skipped so partial hand edits remain safe.
  */
-export async function readEvidence(homeDir: string, taskId: string): Promise<EvidenceSnapshot[]> {
-  const path = getEvidencePath(homeDir, taskId);
+export async function readEvidence(cwd: string, taskId: string): Promise<EvidenceSnapshot[]> {
+  const path = getEvidencePath(cwd, taskId);
   try {
     return (await readEvidenceFile(path)).sort(byTurnNumber);
   } catch {

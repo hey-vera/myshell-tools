@@ -2691,7 +2691,7 @@ export async function runChatLoop(
                 verifyLevel: 'tests' as const,
                 verifyTestTimeoutMs: Math.min(ctx.timeoutMs, 120_000),
                 evidenceSink: createEvidenceSink({
-                  evidenceHomeDir: ctx.cwd,
+                  cwd: ctx.cwd,
                 }),
                 evidenceSnapshotBuilder: createEvidenceSnapshotBuilder({
                   cwd: ctx.cwd,

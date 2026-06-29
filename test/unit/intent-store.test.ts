@@ -11,6 +11,7 @@ import { tmpdir } from 'node:os';
 
 import { createIntentStore, readIntentVersions, readIntentVersionById } from '../../src/infra/intent-store.ts';
 import type { IntentVersion } from '../../src/core/intent-version.ts';
+import { withStateHome } from '../with-state-home.ts';
 
 function makeVersion(id: string): IntentVersion {
   return {
@@ -40,6 +41,7 @@ describe('intent-store', () => {
   });
 
   it('createIntentStore writes and readIntentVersionById returns the matching version', async () => {
+    await withStateHome(cwd, async () => {
     const store = createIntentStore({ cwd });
     const v1 = makeVersion('id-1');
     await store.append(v1);
@@ -51,14 +53,18 @@ describe('intent-store', () => {
 
     const notFound = await readIntentVersionById(cwd, 'nonexistent');
     assert.equal(notFound, null);
+    });
   });
 
   it('readIntentVersions returns empty for missing file', async () => {
+    await withStateHome(cwd, async () => {
     const entries = await readIntentVersions('/nonexistent/path/should/fail');
     assert.deepEqual(entries, []);
+    });
   });
 
   it('readIntentVersions skips malformed and wrong-shape rows', async () => {
+    await withStateHome(cwd, async () => {
     const store = createIntentStore({ cwd });
     await store.append(makeVersion('id-1'));
     // Write a malformed line directly
@@ -72,5 +78,6 @@ describe('intent-store', () => {
     const entries = await readIntentVersions(cwd);
     assert.equal(entries.length, 1);
     assert.equal(entries[0].id, 'id-1');
+    });
   });
 });

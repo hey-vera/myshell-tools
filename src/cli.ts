@@ -777,7 +777,7 @@ async function main(): Promise<void> {
             verifyLevel: 'tests',
             verifyTestTimeoutMs: Math.min(resolveTimeoutMs(config), 120_000),
             evidenceSink: createEvidenceSink({
-              evidenceHomeDir: cwd,
+              cwd,
             }),
             evidenceSnapshotBuilder: createEvidenceSnapshotBuilder({
               cwd,

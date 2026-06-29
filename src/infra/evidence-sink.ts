@@ -62,10 +62,10 @@ function providerModeFromAvailable(
 }
 
 export function createEvidenceSink(options: {
-  readonly evidenceHomeDir: string;
+  readonly cwd: string;
 }): NonNullable<OrchestrateDeps['evidenceSink']> {
   return async (snapshot) => {
-    await appendEvidence(options.evidenceHomeDir, snapshot);
+    await appendEvidence(options.cwd, snapshot);
   };
 }
 

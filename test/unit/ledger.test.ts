@@ -12,8 +12,9 @@ import { randomUUID } from 'node:crypto';
 
 import { createLedger, readLedger, summarizeLedger } from '../../src/infra/ledger.ts';
 import { summarizeSpend } from '../../src/infra/insights.ts';
-import { getLedgerFile } from '../../src/infra/paths.ts';
+import { getLedgerFile, getStateDir } from '../../src/infra/paths.ts';
 import type { LedgerEntry } from '../../src/core/types.ts';
+import { withStateHome } from '../with-state-home.ts';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -53,6 +54,7 @@ describe('createLedger — record and readLedger', () => {
   });
 
   it('records two entries and readLedger returns them both', async () => {
+    await withStateHome(dir, async () => {
     const cwd = join(dir, 'two-entries');
     const ledger = createLedger({ cwd });
 
@@ -68,27 +70,33 @@ describe('createLedger — record and readLedger', () => {
     assert.equal(entries[0]?.usd, 0.001);
     assert.equal(entries[1]?.model, 'claude-sonnet-4-6');
     assert.equal(entries[1]?.usd, 0.005);
+    });
   });
 
-  it('record creates .myshell-tools/ directory when it does not exist', async () => {
+  it('record creates state directory when it does not exist', async () => {
+    await withStateHome(dir, async () => {
     const cwd = join(dir, 'dir-creation');
     const ledger = createLedger({ cwd });
 
     await ledger.record(makeEntry());
 
     const { stat } = await import('node:fs/promises');
-    const stateDir = join(cwd, '.myshell-tools');
+    const stateDir = getStateDir(cwd);
     const st = await stat(stateDir);
-    assert.ok(st.isDirectory(), '.myshell-tools dir should be a directory');
+    assert.ok(st.isDirectory(), 'state dir should be a directory');
+    });
   });
 
   it('readLedger returns empty array when file does not exist', async () => {
+    await withStateHome(dir, async () => {
     const cwd = join(dir, 'nonexistent-ledger');
     const entries = await readLedger(cwd);
     assert.deepEqual(entries, []);
+    });
   });
 
   it('readLedger skips malformed lines', async () => {
+    await withStateHome(dir, async () => {
     const cwd = join(dir, 'malformed');
     const ledger = createLedger({ cwd });
 
@@ -105,9 +113,11 @@ describe('createLedger — record and readLedger', () => {
     assert.equal(entries.length, 2);
     assert.equal(entries[0]?.model, 'model-a');
     assert.equal(entries[1]?.model, 'model-b');
+    });
   });
 
   it('readLedger skips valid JSON records with the wrong shape', async () => {
+    await withStateHome(dir, async () => {
     const cwd = join(dir, 'wrong-shape');
     const ledger = createLedger({ cwd });
 
@@ -132,9 +142,11 @@ describe('createLedger — record and readLedger', () => {
     assert.equal(entries[0]?.model, 'model-valid');
     assert.doesNotThrow(() => summarizeSpend(entries, new Date().toISOString()));
     assert.equal(summarizeSpend(entries, new Date().toISOString()).calls, 1);
+    });
   });
 
   it('preserves all LedgerEntry fields round-trip', async () => {
+    await withStateHome(dir, async () => {
     const cwd = join(dir, 'round-trip');
     const ledger = createLedger({ cwd });
 
@@ -170,6 +182,7 @@ describe('createLedger — record and readLedger', () => {
     assert.equal(got?.success, false);
     assert.equal(got?.stage, 'intent');
     assert.equal(got?.intentVersionId, 'ver-round-trip-1');
+    });
   });
 });
 
@@ -278,6 +291,7 @@ describe('createLedger + summarizeLedger integration', () => {
   });
 
   it('records entries then summarizes with correct totals', async () => {
+    await withStateHome(dir, async () => {
     const cwd = join(dir, 'summary-integration');
     const ledger = createLedger({ cwd });
 
@@ -292,5 +306,6 @@ describe('createLedger + summarizeLedger integration', () => {
     assert.ok(Math.abs(summary.totalUsd - 0.008) < 1e-9);
     assert.equal(summary.byModel['claude-haiku-4-5']?.calls, 2);
     assert.equal(summary.byModel['claude-sonnet-4-6']?.calls, 1);
+    });
   });
 });
