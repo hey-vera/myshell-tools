@@ -52,7 +52,7 @@ import type { Provider, ProviderRequest, ProviderEvent, Usage } from '../../src/
 import type { EnvironmentStatus } from '../../src/providers/detect.ts';
 import type { AppConfig } from '../../src/infra/config.ts';
 import { loadConfig, saveConfig } from '../../src/infra/config.ts';
-import { resolveStateHome } from '../../src/infra/state-dir.ts';
+import { defaultStateLayout } from '../../src/infra/state-layout.js';
 import { createFileGoalStore } from '../../src/infra/goal-store.ts';
 import { itemBlockReason, CLARIFY_PREFIX } from '../../src/core/goal-manager.ts';
 import type { RoadmapItem } from '../../src/core/work-contract.ts';
@@ -63,15 +63,20 @@ import { reduce } from '../../src/interface/ui/reduce.ts';
 import { initialState, type UiState } from '../../src/interface/ui/state.ts';
 
 /**
- * Run `fn` with the app state home forced to `home`: HOME (POSIX) and USERPROFILE
- * (Windows — `os.homedir()` reads USERPROFILE, NOT HOME) are both overridden, and
- * the Replit env vars are cleared, so `defaultStateHome()` (used by menu's
- * saveConfig and goal-store, which take no explicit homeDir) resolves to `home` on
- * every platform. Without the USERPROFILE override, Windows test runs leak into the
- * real `~/.myshell-tools`. Restores env after.
+ * Run `fn` with the app state home forced to `home`: HOME, USERPROFILE, APPDATA,
+ * and LOCALAPPDATA are all set to `home` so `resolveStateLayout()` resolves
+ * config/state/cache INTO `home`. XDG vars are deleted so POSIX stays on the
+ * legacy `~/.myshell-tools` path (which becomes `home/.myshell-tools`). Cloud
+ * IDE vars are cleared so detection never leaks in. Restores env after.
  */
 async function withStateHome<T>(home: string, fn: () => Promise<T>): Promise<T> {
-  const keys = ['HOME', 'USERPROFILE', 'REPL_ID', 'REPLIT_DEV_DOMAIN'] as const;
+  const keys = [
+    'HOME', 'USERPROFILE',
+    'APPDATA', 'LOCALAPPDATA',
+    'XDG_CONFIG_HOME', 'XDG_STATE_HOME', 'XDG_CACHE_HOME',
+    'REPL_ID', 'REPLIT_DEV_DOMAIN',
+    'CODESPACES', 'CODESPACE_NAME', 'GITPOD_WORKSPACE_ID', 'MYSHELL_CLOUD_WORKSPACE',
+  ] as const;
   const orig = new Map(keys.map((k) => [k, process.env[k]] as const));
   const restore = (k: string, v: string | undefined): void => {
     if (v !== undefined) process.env[k] = v;
@@ -79,8 +84,19 @@ async function withStateHome<T>(home: string, fn: () => Promise<T>): Promise<T> 
   };
   process.env['HOME'] = home;
   process.env['USERPROFILE'] = home;
+  process.env['APPDATA'] = home;
+  process.env['LOCALAPPDATA'] = home;
+  // POSIX: delete XDG vars so POSIX stays on legacy ~/.myshell-tools = home/.myshell-tools
+  restore('XDG_CONFIG_HOME', undefined);
+  restore('XDG_STATE_HOME', undefined);
+  restore('XDG_CACHE_HOME', undefined);
+  // Clear cloud IDE vars so detection never leaks into tests
   restore('REPL_ID', undefined);
   restore('REPLIT_DEV_DOMAIN', undefined);
+  restore('CODESPACES', undefined);
+  restore('CODESPACE_NAME', undefined);
+  restore('GITPOD_WORKSPACE_ID', undefined);
+  restore('MYSHELL_CLOUD_WORKSPACE', undefined);
   await fs.promises.mkdir(home, { recursive: true });
   try {
     return await fn();
@@ -90,12 +106,11 @@ async function withStateHome<T>(home: string, fn: () => Promise<T>): Promise<T> 
 }
 
 /**
- * Read the config back the same way production resolves its state home (with the
- * env that `withStateHome` installed), so persistence assertions match what the
- * menu's saveConfig actually wrote.
+ * Read the config back through the layout-aware path so assertions match what the
+ * menu's saveConfig actually wrote (both resolve via the same state-layout authority).
  */
 async function readPersistedConfig(): Promise<AppConfig> {
-  return loadConfig(resolveStateHome(process.env, process.cwd(), homedir()));
+  return loadConfig(undefined, defaultStateLayout());
 }
 
 
@@ -1289,7 +1304,9 @@ describe('startMenu — /goal PROPOSES the plan before running it (manager cycle
   });
 
   it('oversight=autonomous SKIPS the confirm — says "On it" and runs without a go prompt', async () => {
-    let goalWorkTurns = 0;
+    const dir = join(tmpdir(), `menu-flow-autonomous-${randomUUID()}`);
+    await withStateHome(dir, async () => {
+      let goalWorkTurns = 0;
     const provider: Provider = {
       id: 'claude',
       async detect() {
@@ -1372,9 +1389,12 @@ describe('startMenu — /goal PROPOSES the plan before running it (manager cycle
       'autonomous must NOT present the launch confirm prompt',
     );
     assert.ok(goalWorkTurns >= 1, 'autonomous launches the manager cycle (a goal-work turn ran)');
+    });
   });
 
   it('[Start all] on a MULTI-goal plan runs EVERY goal sequentially to verified-done', async () => {
+    const dir = join(tmpdir(), `menu-flow-multigoal-${randomUUID()}`);
+    await withStateHome(dir, async () => {
     // The over-promise bug this fixes: a 2-goal proposal offered [Start all] but only
     // the FIRST goal ever ran. Assert BOTH goals reach a goal-work turn (each goal's
     // title appears as the `Goal: <title>` work input) and the hand-off is narrated.
@@ -1461,6 +1481,7 @@ describe('startMenu — /goal PROPOSES the plan before running it (manager cycle
       sink.buf.includes('moving to goal 2 of 2: "Add a session audit log"'),
       'narrates the hand-off between goals',
     );
+    });
   });
 });
 

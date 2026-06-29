@@ -9,38 +9,55 @@
  */
 
 import { mkdir, readFile, readdir, rename, stat, unlink } from 'node:fs/promises';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
 import type { Clock, SessionEntry, SessionWriter } from '../core/types.js';
 import type { Intensity } from '../core/capacity-allocator.js';
 import type { GoalActivationOverride } from '../core/autonomy.js';
 import type { ConversationMeta, ConversationMode, ConversationStore } from './conversation-store.js';
 import { atomicAppendJSONL, atomicWrite, withLock } from './atomic.js';
 import { isConversationMessage } from './jsonl-guards.js';
-import { defaultStateHome } from './state-dir.js';
+import { defaultStateLayout, resolveStateLayout, type AppStateLayout } from './state-layout.js';
 import { archiveConversation } from './session-mirror.js';
 
 // ---------------------------------------------------------------------------
-// Path helpers (local — conversations dir lives in homeDir, not cwd)
+// Layout resolution (homeDir compat bridge)
 // ---------------------------------------------------------------------------
 
-function getConversationsDir(homeDir: string): string {
-  return join(homeDir, '.myshell-tools', 'conversations');
+function resolveLayout(homeDir?: string, layout?: AppStateLayout): AppStateLayout {
+  if (layout) return layout;
+  if (homeDir !== undefined) {
+    return resolveStateLayout({
+      env: {},
+      platform: 'linux',
+      cwd: homeDir,
+      homeDir,
+    });
+  }
+  return defaultStateLayout();
 }
 
-function getIndexPath(homeDir: string): string {
-  return join(getConversationsDir(homeDir), 'index.json');
+// ---------------------------------------------------------------------------
+// Path helpers (layout-based)
+// ---------------------------------------------------------------------------
+
+function getConversationsDir(l: AppStateLayout): string {
+  return l.paths.conversationsDir;
 }
 
-function getCorruptIndexPath(homeDir: string): string {
-  return join(getConversationsDir(homeDir), 'index.json.corrupt');
+function getIndexPath(l: AppStateLayout): string {
+  return join(getConversationsDir(l), 'index.json');
 }
 
-function getIndexLockPath(homeDir: string): string {
-  return join(getConversationsDir(homeDir), 'index.json.lock');
+function getCorruptIndexPath(l: AppStateLayout): string {
+  return join(getConversationsDir(l), 'index.json.corrupt');
 }
 
-function getMessagePath(homeDir: string, id: string): string {
-  return join(getConversationsDir(homeDir), `${id}.jsonl`);
+function getIndexLockPath(l: AppStateLayout): string {
+  return join(getConversationsDir(l), 'index.json.lock');
+}
+
+function getMessagePath(l: AppStateLayout, id: string): string {
+  return join(getConversationsDir(l), `${id}.jsonl`);
 }
 
 /**
@@ -66,8 +83,8 @@ type IndexReadResult =
   | { readonly kind: 'absent' }
   | { readonly kind: 'corrupt'; readonly reason: string };
 
-async function ensureDir(homeDir: string): Promise<void> {
-  await mkdir(getConversationsDir(homeDir), { recursive: true });
+async function ensureDir(l: AppStateLayout): Promise<void> {
+  await mkdir(getConversationsDir(l), { recursive: true });
 }
 
 /**
@@ -147,9 +164,9 @@ function modeFields(m: ConversationMeta): Pick<ConversationMeta, 'mode'> {
   return out;
 }
 
-async function readIndexFile(homeDir: string): Promise<IndexReadResult> {
+async function readIndexFile(l: AppStateLayout): Promise<IndexReadResult> {
   try {
-    const raw = await readFile(getIndexPath(homeDir), 'utf8');
+    const raw = await readFile(getIndexPath(l), 'utf8');
     const parsed = JSON.parse(raw);
     if (!Array.isArray(parsed)) {
       return { kind: 'corrupt', reason: 'index.json is not an array' };
@@ -165,8 +182,8 @@ async function readIndexFile(homeDir: string): Promise<IndexReadResult> {
   }
 }
 
-async function writeIndex(homeDir: string, index: ConversationMeta[]): Promise<void> {
-  await atomicWrite(getIndexPath(homeDir), JSON.stringify(index, null, 2));
+async function writeIndex(l: AppStateLayout, index: ConversationMeta[]): Promise<void> {
+  await atomicWrite(getIndexPath(l), JSON.stringify(index, null, 2));
 }
 
 function parseMessageLines(raw: string): SessionEntry[] {
@@ -283,8 +300,8 @@ function metaFromMessages(
   };
 }
 
-async function rebuildIndexFromMessages(homeDir: string): Promise<ConversationMeta[]> {
-  const dir = getConversationsDir(homeDir);
+async function rebuildIndexFromMessages(l: AppStateLayout): Promise<ConversationMeta[]> {
+  const dir = getConversationsDir(l);
   const files = await readdir(dir, { withFileTypes: true });
   const rebuilt: ConversationMeta[] = [];
 
@@ -303,10 +320,10 @@ async function rebuildIndexFromMessages(homeDir: string): Promise<ConversationMe
   return rebuilt.sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1));
 }
 
-async function preserveCorruptIndex(homeDir: string): Promise<string> {
-  const corruptPath = getCorruptIndexPath(homeDir);
+async function preserveCorruptIndex(l: AppStateLayout): Promise<string> {
+  const corruptPath = getCorruptIndexPath(l);
   try {
-    await rename(getIndexPath(homeDir), corruptPath);
+    await rename(getIndexPath(l), corruptPath);
   } catch (err) {
     const nodeErr = err as NodeJS.ErrnoException;
     if (nodeErr.code !== 'ENOENT') throw err;
@@ -315,13 +332,13 @@ async function preserveCorruptIndex(homeDir: string): Promise<string> {
 }
 
 async function recoverIndex(
-  homeDir: string,
+  l: AppStateLayout,
   reason: string,
   onWarning: ConversationStoreWarning | undefined,
 ): Promise<ConversationMeta[]> {
-  const corruptPath = await preserveCorruptIndex(homeDir);
-  const rebuilt = await rebuildIndexFromMessages(homeDir);
-  await writeIndex(homeDir, rebuilt);
+  const corruptPath = await preserveCorruptIndex(l);
+  const rebuilt = await rebuildIndexFromMessages(l);
+  await writeIndex(l, rebuilt);
   onWarning?.(
     `Recovered conversations index (${reason}); rebuilt ${rebuilt.length} conversation(s), preserved original at ${corruptPath}.`,
   );
@@ -329,24 +346,24 @@ async function recoverIndex(
 }
 
 async function readIndexLocked(
-  homeDir: string,
+  l: AppStateLayout,
   onWarning: ConversationStoreWarning | undefined,
 ): Promise<ConversationMeta[]> {
-  const result = await readIndexFile(homeDir);
+  const result = await readIndexFile(l);
   if (result.kind === 'ok') return result.index;
   if (result.kind === 'absent') return [];
-  return recoverIndex(homeDir, result.reason, onWarning);
+  return recoverIndex(l, result.reason, onWarning);
 }
 
 async function readIndex(
-  homeDir: string,
+  l: AppStateLayout,
   onWarning: ConversationStoreWarning | undefined,
 ): Promise<ConversationMeta[]> {
-  const result = await readIndexFile(homeDir);
+  const result = await readIndexFile(l);
   if (result.kind === 'ok') return result.index;
   if (result.kind === 'absent') return [];
 
-  return withLock(getIndexLockPath(homeDir), async () => readIndexLocked(homeDir, onWarning));
+  return withLock(getIndexLockPath(l), async () => readIndexLocked(l, onWarning));
 }
 
 // ---------------------------------------------------------------------------
@@ -359,19 +376,20 @@ async function readIndex(
  */
 export function createFileConversationStore(opts: {
   homeDir?: string;
+  layout?: AppStateLayout;
   clock: Clock;
   onWarning?: ConversationStoreWarning;
 }): ConversationStore {
   const { clock } = opts;
   const onWarning = opts.onWarning;
-  const home = opts.homeDir ?? defaultStateHome();
+  const l = resolveLayout(opts.homeDir, opts.layout);
 
   return {
     // -----------------------------------------------------------------------
     // list
     // -----------------------------------------------------------------------
     async list(): Promise<ConversationMeta[]> {
-      const index = await readIndex(home, onWarning);
+      const index = await readIndex(l, onWarning);
       return [...index].sort((a, b) => {
         // Pinned items always come before unpinned
         if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
@@ -384,7 +402,7 @@ export function createFileConversationStore(opts: {
     // create
     // -----------------------------------------------------------------------
     async create(title: string, mode?: ConversationMode): Promise<ConversationMeta> {
-      await ensureDir(home);
+      await ensureDir(l);
       const id = clock.uuid();
       const now = clock.isoNow();
       const meta: ConversationMeta = {
@@ -398,9 +416,9 @@ export function createFileConversationStore(opts: {
         ...(mode !== undefined && mode !== 'auto' ? { mode } : {}),
       };
 
-      await withLock(getIndexLockPath(home), async () => {
-        const index = await readIndexLocked(home, onWarning);
-        await writeIndex(home, [meta, ...index]);
+      await withLock(getIndexLockPath(l), async () => {
+        const index = await readIndexLocked(l, onWarning);
+        await writeIndex(l, [meta, ...index]);
       });
 
       return meta;
@@ -412,7 +430,7 @@ export function createFileConversationStore(opts: {
     async load(id: string): Promise<SessionEntry[]> {
       let raw: string;
       try {
-        raw = await readFile(getMessagePath(home, id), 'utf8');
+        raw = await readFile(getMessagePath(l, id), 'utf8');
       } catch (err) {
         const nodeErr = err as NodeJS.ErrnoException;
         if (nodeErr.code === 'ENOENT') return [];
@@ -429,13 +447,13 @@ export function createFileConversationStore(opts: {
       return {
         id,
         async append(entry: SessionEntry): Promise<void> {
-          await ensureDir(home);
+          await ensureDir(l);
           // Append the entry to the conversation's JSONL file
-          await atomicAppendJSONL(getMessagePath(home, id), entry);
+          await atomicAppendJSONL(getMessagePath(l, id), entry);
 
           // Update index under lock
-          await withLock(getIndexLockPath(home), async () => {
-            const index = await readIndexLocked(home, onWarning);
+          await withLock(getIndexLockPath(l), async () => {
+            const index = await readIndexLocked(l, onWarning);
             const idx = index.findIndex((m) => m.id === id);
             if (idx === -1) return;
 
@@ -475,7 +493,7 @@ export function createFileConversationStore(opts: {
 
             const newIndex = [...index];
             newIndex[idx] = updated;
-            await writeIndex(home, newIndex);
+            await writeIndex(l, newIndex);
           });
         },
       };
@@ -492,12 +510,12 @@ export function createFileConversationStore(opts: {
       if (!isValidConversationId(id)) return 0;
 
       const keep = Math.max(0, Math.floor(Number.isFinite(keepCount) ? keepCount : 0));
-      const messagePath = getMessagePath(home, id);
+      const messagePath = getMessagePath(l, id);
 
       // The conversations dir must exist before acquiring the lock (the lock file
       // lives there) — matches setPinned/setCategory/setRecap. Fail-soft.
       try {
-        await ensureDir(home);
+        await ensureDir(l);
       } catch {
         return 0;
       }
@@ -506,7 +524,7 @@ export function createFileConversationStore(opts: {
       // whole read-decide-rewrite INSIDE the index lock — the same lock that
       // guards the messageCount/recap update — so a concurrent append can't
       // interleave with the rewrite.
-      return withLock(getIndexLockPath(home), async () => {
+      return withLock(getIndexLockPath(l), async () => {
         let entries: SessionEntry[];
         try {
           entries = await loadMessageFile(messagePath);
@@ -539,7 +557,7 @@ export function createFileConversationStore(opts: {
         // Update the index: new count + CLEAR the cached recap (it may describe
         // turns that no longer exist). Best-effort — the log is already the
         // source of truth; an index miss self-heals on the next rebuild.
-        const index = await readIndexLocked(home, onWarning);
+        const index = await readIndexLocked(l, onWarning);
         const idx = index.findIndex((m) => m.id === id);
         if (idx !== -1) {
           const existing = index[idx];
@@ -562,7 +580,7 @@ export function createFileConversationStore(opts: {
             };
             const newIndex = [...index];
             newIndex[idx] = updated;
-            await writeIndex(home, newIndex);
+            await writeIndex(l, newIndex);
           }
         }
 
@@ -574,8 +592,8 @@ export function createFileConversationStore(opts: {
     // rename
     // -----------------------------------------------------------------------
     async rename(id: string, title: string): Promise<void> {
-      await withLock(getIndexLockPath(home), async () => {
-        const index = await readIndexLocked(home, onWarning);
+      await withLock(getIndexLockPath(l), async () => {
+        const index = await readIndexLocked(l, onWarning);
         const idx = index.findIndex((m) => m.id === id);
         if (idx === -1) return;
 
@@ -596,7 +614,7 @@ export function createFileConversationStore(opts: {
         };
         const newIndex = [...index];
         newIndex[idx] = updated;
-        await writeIndex(home, newIndex);
+        await writeIndex(l, newIndex);
       });
     },
 
@@ -606,21 +624,21 @@ export function createFileConversationStore(opts: {
     async remove(id: string): Promise<void> {
       // Preserve the conversation in the append-only archive BEFORE unlinking, so
       // a delete is recoverable (the archive only ever grows). Best-effort.
-      await archiveConversation(id, home);
+      await archiveConversation(id, undefined, l);
 
       // Best-effort delete of message file
       try {
-        await unlink(getMessagePath(home, id));
+        await unlink(getMessagePath(l, id));
       } catch {
         // Missing or already gone — ignore
       }
 
       // Remove from index under lock
-      await withLock(getIndexLockPath(home), async () => {
-        const index = await readIndexLocked(home, onWarning);
+      await withLock(getIndexLockPath(l), async () => {
+        const index = await readIndexLocked(l, onWarning);
         const filtered = index.filter((m) => m.id !== id);
         if (filtered.length === index.length) return; // not found, no-op
-        await writeIndex(home, filtered);
+        await writeIndex(l, filtered);
       });
     },
 
@@ -628,9 +646,9 @@ export function createFileConversationStore(opts: {
     // setPinned
     // -----------------------------------------------------------------------
     async setPinned(id: string, pinned: boolean): Promise<void> {
-      await ensureDir(home);
-      await withLock(getIndexLockPath(home), async () => {
-        const index = await readIndexLocked(home, onWarning);
+      await ensureDir(l);
+      await withLock(getIndexLockPath(l), async () => {
+        const index = await readIndexLocked(l, onWarning);
         const idx = index.findIndex((m) => m.id === id);
         if (idx === -1) return; // no-op if missing
 
@@ -651,7 +669,7 @@ export function createFileConversationStore(opts: {
         };
         const newIndex = [...index];
         newIndex[idx] = updated;
-        await writeIndex(home, newIndex);
+        await writeIndex(l, newIndex);
       });
     },
 
@@ -659,9 +677,9 @@ export function createFileConversationStore(opts: {
     // setCategory
     // -----------------------------------------------------------------------
     async setCategory(id: string, category: string | null): Promise<void> {
-      await ensureDir(home);
-      await withLock(getIndexLockPath(home), async () => {
-        const index = await readIndexLocked(home, onWarning);
+      await ensureDir(l);
+      await withLock(getIndexLockPath(l), async () => {
+        const index = await readIndexLocked(l, onWarning);
         const idx = index.findIndex((m) => m.id === id);
         if (idx === -1) return; // no-op if missing
 
@@ -682,7 +700,7 @@ export function createFileConversationStore(opts: {
         };
         const newIndex = [...index];
         newIndex[idx] = updated;
-        await writeIndex(home, newIndex);
+        await writeIndex(l, newIndex);
       });
     },
 
@@ -690,9 +708,9 @@ export function createFileConversationStore(opts: {
     // setRecap — cache the conversation recap (text + provenance) under the lock
     // -----------------------------------------------------------------------
     async setRecap(id: string, recap: string | null, atMessageCount: number): Promise<void> {
-      await ensureDir(home);
-      await withLock(getIndexLockPath(home), async () => {
-        const index = await readIndexLocked(home, onWarning);
+      await ensureDir(l);
+      await withLock(getIndexLockPath(l), async () => {
+        const index = await readIndexLocked(l, onWarning);
         const idx = index.findIndex((m) => m.id === id);
         if (idx === -1) return; // no-op if missing
 
@@ -715,7 +733,7 @@ export function createFileConversationStore(opts: {
         };
         const newIndex = [...index];
         newIndex[idx] = updated;
-        await writeIndex(home, newIndex);
+        await writeIndex(l, newIndex);
       });
     },
 
@@ -724,9 +742,9 @@ export function createFileConversationStore(opts: {
     // lock, canonicalizing Auto/inherit to absence.
     // -----------------------------------------------------------------------
     async setIntensity(id: string, intensity: Intensity | undefined): Promise<void> {
-      await ensureDir(home);
-      await withLock(getIndexLockPath(home), async () => {
-        const index = await readIndexLocked(home, onWarning);
+      await ensureDir(l);
+      await withLock(getIndexLockPath(l), async () => {
+        const index = await readIndexLocked(l, onWarning);
         const idx = index.findIndex((m) => m.id === id);
         if (idx === -1) return; // no-op if missing
 
@@ -747,7 +765,7 @@ export function createFileConversationStore(opts: {
         };
         const newIndex = [...index];
         newIndex[idx] = updated;
-        await writeIndex(home, newIndex);
+        await writeIndex(l, newIndex);
       });
     },
 
@@ -759,9 +777,9 @@ export function createFileConversationStore(opts: {
       id: string,
       activation: GoalActivationOverride | undefined,
     ): Promise<void> {
-      await ensureDir(home);
-      await withLock(getIndexLockPath(home), async () => {
-        const index = await readIndexLocked(home, onWarning);
+      await ensureDir(l);
+      await withLock(getIndexLockPath(l), async () => {
+        const index = await readIndexLocked(l, onWarning);
         const idx = index.findIndex((m) => m.id === id);
         if (idx === -1) return;
 
@@ -782,7 +800,7 @@ export function createFileConversationStore(opts: {
         };
         const newIndex = [...index];
         newIndex[idx] = updated;
-        await writeIndex(home, newIndex);
+        await writeIndex(l, newIndex);
       });
     },
 
@@ -791,9 +809,9 @@ export function createFileConversationStore(opts: {
     // under the lock, canonicalizing auto/inherit to absence.
     // -----------------------------------------------------------------------
     async setMode(id: string, mode: ConversationMode | undefined): Promise<void> {
-      await ensureDir(home);
-      await withLock(getIndexLockPath(home), async () => {
-        const index = await readIndexLocked(home, onWarning);
+      await ensureDir(l);
+      await withLock(getIndexLockPath(l), async () => {
+        const index = await readIndexLocked(l, onWarning);
         const idx = index.findIndex((m) => m.id === id);
         if (idx === -1) return;
 
@@ -814,7 +832,7 @@ export function createFileConversationStore(opts: {
         };
         const newIndex = [...index];
         newIndex[idx] = updated;
-        await writeIndex(home, newIndex);
+        await writeIndex(l, newIndex);
       });
     },
   };

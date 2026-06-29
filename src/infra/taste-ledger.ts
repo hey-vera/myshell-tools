@@ -28,7 +28,7 @@ import { join } from 'node:path';
 
 import type { Clock } from '../core/types.js';
 import { atomicAppendJSONL } from './atomic.js';
-import { defaultStateHome } from './state-dir.js';
+import { defaultStateLayout, resolveStateLayout, type AppStateLayout } from './state-layout.js';
 import {
   normalizeTasteEvent,
   isTasteEvent,
@@ -47,14 +47,31 @@ import {
 export { deriveProjectKey } from './user-memory-store.js';
 
 // ---------------------------------------------------------------------------
+// Layout resolution (homeDir compat bridge)
+// ---------------------------------------------------------------------------
+
+function resolveLayout(homeDir?: string, layout?: AppStateLayout): AppStateLayout {
+  if (layout) return layout;
+  if (homeDir !== undefined) {
+    return resolveStateLayout({
+      env: {},
+      platform: 'linux',
+      cwd: homeDir,
+      homeDir,
+    });
+  }
+  return defaultStateLayout();
+}
+
+// ---------------------------------------------------------------------------
 // Path helpers
 // ---------------------------------------------------------------------------
 
-function getMemoryDir(homeDir: string): string {
-  return join(homeDir, '.myshell-tools', 'memory');
+function getMemoryDir(l: AppStateLayout): string {
+  return l.paths.memoryDir;
 }
-function getTasteFile(homeDir: string): string {
-  return join(getMemoryDir(homeDir), 'taste.jsonl');
+function getTasteFile(l: AppStateLayout): string {
+  return join(getMemoryDir(l), 'taste.jsonl');
 }
 
 // ---------------------------------------------------------------------------
@@ -94,18 +111,18 @@ export interface TasteLedger {
  * (defaults to the persistent state home, like the memory store). The `clock` is
  * injected (no wall-clock) so event timestamps are deterministic in tests.
  */
-export function createFileTasteLedger(opts: { homeDir?: string; clock: Clock }): TasteLedger {
-  const home = opts.homeDir ?? defaultStateHome();
+export function createFileTasteLedger(opts: { homeDir?: string; layout?: AppStateLayout; clock: Clock }): TasteLedger {
+  const l = resolveLayout(opts.homeDir, opts.layout);
   const { clock } = opts;
 
   async function ensureDir(): Promise<void> {
-    await mkdir(getMemoryDir(home), { recursive: true });
+    await mkdir(getMemoryDir(l), { recursive: true });
   }
 
   async function readEvents(): Promise<TasteEvent[]> {
     let raw: string;
     try {
-      raw = await readFile(getTasteFile(home), 'utf8');
+      raw = await readFile(getTasteFile(l), 'utf8');
     } catch (err) {
       const nodeErr = err as NodeJS.ErrnoException;
       if (nodeErr.code === 'ENOENT') return []; // no ledger yet — no taste
@@ -143,7 +160,7 @@ export function createFileTasteLedger(opts: { homeDir?: string; clock: Clock }):
         // Observed-only gate: an unvalidatable observation is DROPPED (never faked).
         if (event === null) return;
         await ensureDir();
-        const file = getTasteFile(home);
+        const file = getTasteFile(l);
         await atomicAppendJSONL(file, event);
         // Best-effort 0o600 (the memory perimeter); a chmod failure is non-fatal.
         try {

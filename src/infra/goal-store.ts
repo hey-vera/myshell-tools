@@ -35,7 +35,7 @@ import { join } from 'node:path';
 
 import type { Clock } from '../core/types.js';
 import { atomicWrite, withLock } from './atomic.js';
-import { defaultStateHome } from './state-dir.js';
+import { defaultStateLayout, resolveStateLayout, type AppStateLayout } from './state-layout.js';
 import { deriveProjectKey, resolveProjectKey } from './user-memory-store.js';
 import {
   ROADMAP_LIMIT,
@@ -62,23 +62,40 @@ import {
 export { deriveProjectKey, resolveProjectKey };
 
 // ---------------------------------------------------------------------------
+// Layout resolution (homeDir compat bridge)
+// ---------------------------------------------------------------------------
+
+function resolveLayout(homeDir?: string, layout?: AppStateLayout): AppStateLayout {
+  if (layout) return layout;
+  if (homeDir !== undefined) {
+    return resolveStateLayout({
+      env: {},
+      platform: 'linux',
+      cwd: homeDir,
+      homeDir,
+    });
+  }
+  return defaultStateLayout();
+}
+
+// ---------------------------------------------------------------------------
 // Path helpers
 // ---------------------------------------------------------------------------
 
-function getGoalsDir(homeDir: string): string {
-  return join(homeDir, '.myshell-tools', 'goals');
+function getGoalsDir(l: AppStateLayout): string {
+  return l.paths.goalsDir;
 }
-function getItemsDir(homeDir: string): string {
-  return join(getGoalsDir(homeDir), 'items');
+function getItemsDir(l: AppStateLayout): string {
+  return join(getGoalsDir(l), 'items');
 }
-function getIndexPath(homeDir: string): string {
-  return join(getGoalsDir(homeDir), 'index.json');
+function getIndexPath(l: AppStateLayout): string {
+  return join(getGoalsDir(l), 'index.json');
 }
-function getCorruptIndexPath(homeDir: string): string {
-  return join(getGoalsDir(homeDir), 'index.json.corrupt');
+function getCorruptIndexPath(l: AppStateLayout): string {
+  return join(getGoalsDir(l), 'index.json.corrupt');
 }
-function getIndexLockPath(homeDir: string): string {
-  return join(getGoalsDir(homeDir), 'index.json.lock');
+function getIndexLockPath(l: AppStateLayout): string {
+  return join(getGoalsDir(l), 'index.json.lock');
 }
 
 /** Path-traversal guard: only `goal_<alnum>` ids ever touch the filesystem. */
@@ -94,11 +111,11 @@ export class InvalidGoalIdError extends Error {
   }
 }
 
-function getItemPath(homeDir: string, id: string): string {
+function getItemPath(l: AppStateLayout, id: string): string {
   if (!isValidId(id)) {
     throw new InvalidGoalIdError(id);
   }
-  return join(getItemsDir(homeDir), `${id}.json`);
+  return join(getItemsDir(l), `${id}.json`);
 }
 
 // ---------------------------------------------------------------------------
@@ -117,13 +134,13 @@ type IndexReadResult =
   | { readonly kind: 'absent' }
   | { readonly kind: 'corrupt'; readonly reason: string };
 
-async function ensureDirs(homeDir: string): Promise<void> {
-  await mkdir(getItemsDir(homeDir), { recursive: true });
+async function ensureDirs(l: AppStateLayout): Promise<void> {
+  await mkdir(getItemsDir(l), { recursive: true });
 }
 
-async function readIndexFile(homeDir: string): Promise<IndexReadResult> {
+async function readIndexFile(l: AppStateLayout): Promise<IndexReadResult> {
   try {
-    const raw = await readFile(getIndexPath(homeDir), 'utf8');
+    const raw = await readFile(getIndexPath(l), 'utf8');
     const parsed = JSON.parse(raw) as unknown;
     if (
       parsed === null ||
@@ -152,29 +169,29 @@ function sortNewestFirst(goals: Goal[]): Goal[] {
   );
 }
 
-async function writeIndex(homeDir: string, goals: Goal[]): Promise<void> {
+async function writeIndex(l: AppStateLayout, goals: Goal[]): Promise<void> {
   const index: GoalIndex = { version: 1, goals: sortNewestFirst(goals) };
-  await atomicWrite(getIndexPath(homeDir), JSON.stringify(index, null, 2), 0o600);
+  await atomicWrite(getIndexPath(l), JSON.stringify(index, null, 2), 0o600);
 }
 
-async function persistGoal(homeDir: string, goal: Goal): Promise<void> {
-  await atomicWrite(getItemPath(homeDir, goal.id), JSON.stringify(goal, null, 2), 0o600);
+async function persistGoal(l: AppStateLayout, goal: Goal): Promise<void> {
+  await atomicWrite(getItemPath(l, goal.id), JSON.stringify(goal, null, 2), 0o600);
 }
 
-async function readGoalFile(homeDir: string, id: string): Promise<Goal | null> {
+async function readGoalFile(l: AppStateLayout, id: string): Promise<Goal | null> {
   if (!isValidId(id)) return null;
   try {
-    const raw = await readFile(getItemPath(homeDir, id), 'utf8');
+    const raw = await readFile(getItemPath(l, id), 'utf8');
     return capGoal(JSON.parse(raw) as Goal);
   } catch {
     return null;
   }
 }
 
-async function preserveCorruptIndex(homeDir: string): Promise<string> {
-  const corruptPath = getCorruptIndexPath(homeDir);
+async function preserveCorruptIndex(l: AppStateLayout): Promise<string> {
+  const corruptPath = getCorruptIndexPath(l);
   try {
-    await rename(getIndexPath(homeDir), corruptPath);
+    await rename(getIndexPath(l), corruptPath);
   } catch (err) {
     const nodeErr = err as NodeJS.ErrnoException;
     if (nodeErr.code !== 'ENOENT') throw err;
@@ -183,8 +200,8 @@ async function preserveCorruptIndex(homeDir: string): Promise<string> {
 }
 
 /** Rebuild the index from items/*.json (the goal files are authoritative). */
-async function rebuildIndexFromItems(homeDir: string): Promise<Goal[]> {
-  const dir = getItemsDir(homeDir);
+async function rebuildIndexFromItems(l: AppStateLayout): Promise<Goal[]> {
+  const dir = getItemsDir(l);
   let files: string[] = [];
   try {
     files = (await readdir(dir, { withFileTypes: true }))
@@ -209,13 +226,13 @@ async function rebuildIndexFromItems(homeDir: string): Promise<Goal[]> {
 }
 
 async function recoverIndex(
-  homeDir: string,
+  l: AppStateLayout,
   reason: string,
   onWarning?: StoreWarning,
 ): Promise<Goal[]> {
-  const corruptPath = await preserveCorruptIndex(homeDir);
-  const rebuilt = await rebuildIndexFromItems(homeDir);
-  await writeIndex(homeDir, rebuilt);
+  const corruptPath = await preserveCorruptIndex(l);
+  const rebuilt = await rebuildIndexFromItems(l);
+  await writeIndex(l, rebuilt);
   onWarning?.(
     `Recovered goal index (${reason}); rebuilt ${rebuilt.length} goal(s), preserved original at ${corruptPath}.`,
   );
@@ -223,11 +240,11 @@ async function recoverIndex(
 }
 
 /** Read the index INSIDE the lock (RC-4). Recovers a missing/corrupt index. */
-async function readIndexLocked(homeDir: string, onWarning?: StoreWarning): Promise<Goal[]> {
-  const result = await readIndexFile(homeDir);
+async function readIndexLocked(l: AppStateLayout, onWarning?: StoreWarning): Promise<Goal[]> {
+  const result = await readIndexFile(l);
   if (result.kind === 'ok') return result.goals;
   if (result.kind === 'absent') return [];
-  return recoverIndex(homeDir, result.reason, onWarning);
+  return recoverIndex(l, result.reason, onWarning);
 }
 
 // ---------------------------------------------------------------------------
@@ -497,10 +514,11 @@ function isDependedOnByOthers(roadmap: readonly RoadmapItem[], itemId: string): 
 
 export function createFileGoalStore(opts: {
   homeDir?: string;
+  layout?: AppStateLayout;
   clock: Clock;
   onWarning?: StoreWarning;
 }): GoalStore {
-  const home = opts.homeDir ?? defaultStateHome();
+  const l = resolveLayout(opts.homeDir, opts.layout);
   const { clock } = opts;
   const onWarning = opts.onWarning;
 
@@ -511,23 +529,23 @@ export function createFileGoalStore(opts: {
 
   return {
     async list(filter): Promise<Goal[]> {
-      await ensureDirs(home);
-      const goals = await withLock(getIndexLockPath(home), async () =>
-        readIndexLocked(home, onWarning),
+      await ensureDirs(l);
+      const goals = await withLock(getIndexLockPath(l), async () =>
+        readIndexLocked(l, onWarning),
       );
       return selectGoals(goals, filter);
     },
 
     async get(id): Promise<Goal | null> {
       if (!isValidId(id)) return null;
-      return readGoalFile(home, id);
+      return readGoalFile(l, id);
     },
 
     async create(input): Promise<Goal> {
-      await ensureDirs(home);
+      await ensureDirs(l);
       const scope: GoalScope = input.scope ?? 'project';
-      return withLock(getIndexLockPath(home), async () => {
-        const goals = await readIndexLocked(home, onWarning);
+      return withLock(getIndexLockPath(l), async () => {
+        const goals = await readIndexLocked(l, onWarning);
         const now = clock.isoNow();
         const goal: Goal = capGoal({
           version: 1,
@@ -553,23 +571,23 @@ export function createFileGoalStore(opts: {
           ...(input.parentGoalId !== undefined ? { parentGoalId: input.parentGoalId } : {}),
           ...(input.intentVersionId !== undefined ? { intentVersionId: input.intentVersionId } : {}),
         });
-        await persistGoal(home, goal);
-        await writeIndex(home, [...goals, goal]);
+        await persistGoal(l, goal);
+        await writeIndex(l, [...goals, goal]);
         return goal;
       });
     },
 
     async setState(id, state): Promise<Goal | null> {
       if (!isValidId(id)) return null;
-      await ensureDirs(home);
-      return withLock(getIndexLockPath(home), async () => {
-        const goals = await readIndexLocked(home, onWarning);
+      await ensureDirs(l);
+      return withLock(getIndexLockPath(l), async () => {
+        const goals = await readIndexLocked(l, onWarning);
         const target = goals.find((g) => g.id === id);
         if (target === undefined) return null;
         const updated = capGoal({ ...target, state, lastTouched: clock.isoNow() });
-        await persistGoal(home, updated);
+        await persistGoal(l, updated);
         await writeIndex(
-          home,
+          l,
           goals.map((g) => (g.id === id ? updated : g)),
         );
         return updated;
@@ -578,9 +596,9 @@ export function createFileGoalStore(opts: {
 
     async patchGoal(id, patch): Promise<Goal | null> {
       if (!isValidId(id)) return null;
-      await ensureDirs(home);
-      return withLock(getIndexLockPath(home), async () => {
-        const goals = await readIndexLocked(home, onWarning);
+      await ensureDirs(l);
+      return withLock(getIndexLockPath(l), async () => {
+        const goals = await readIndexLocked(l, onWarning);
         const target = goals.find((g) => g.id === id);
         if (target === undefined) return null;
 
@@ -673,9 +691,9 @@ export function createFileGoalStore(opts: {
           roadmap,
           lastTouched: clock.isoNow(),
         });
-        await persistGoal(home, updated);
+        await persistGoal(l, updated);
         await writeIndex(
-          home,
+          l,
           goals.map((g) => (g.id === id ? updated : g)),
         );
         return updated;
@@ -684,9 +702,9 @@ export function createFileGoalStore(opts: {
 
     async setGoalVerdict(id, verdict): Promise<Goal | null> {
       if (!isValidId(id)) return null;
-      await ensureDirs(home);
-      return withLock(getIndexLockPath(home), async () => {
-        const goals = await readIndexLocked(home, onWarning);
+      await ensureDirs(l);
+      return withLock(getIndexLockPath(l), async () => {
+        const goals = await readIndexLocked(l, onWarning);
         const target = goals.find((g) => g.id === id);
         if (target === undefined) return null;
         // The ONLY write path for goalVerdict. The value is EXACTLY the caller's
@@ -694,9 +712,9 @@ export function createFileGoalStore(opts: {
         // malformed verdict can never green-wash — the honesty boundary survives the
         // round-trip. lastTouched bumps so the board reflects the verdict immediately.
         const updated = capGoal({ ...target, goalVerdict: verdict, lastTouched: clock.isoNow() });
-        await persistGoal(home, updated);
+        await persistGoal(l, updated);
         await writeIndex(
-          home,
+          l,
           goals.map((g) => (g.id === id ? updated : g)),
         );
         return updated;
@@ -705,9 +723,9 @@ export function createFileGoalStore(opts: {
 
     async setRoadmapItemVerdict(id, itemId, verdict): Promise<Goal | null> {
       if (!isValidId(id)) return null;
-      await ensureDirs(home);
-      return withLock(getIndexLockPath(home), async () => {
-        const goals = await readIndexLocked(home, onWarning);
+      await ensureDirs(l);
+      return withLock(getIndexLockPath(l), async () => {
+        const goals = await readIndexLocked(l, onWarning);
         const target = goals.find((g) => g.id === id);
         if (target === undefined) return null;
         if (!target.roadmap.some((it) => it.id === itemId)) return null;
@@ -719,9 +737,9 @@ export function createFileGoalStore(opts: {
           it.id === itemId ? { ...it, verdict } : it,
         );
         const updated = capGoal({ ...target, roadmap: nextRoadmap, lastTouched: clock.isoNow() });
-        await persistGoal(home, updated);
+        await persistGoal(l, updated);
         await writeIndex(
-          home,
+          l,
           goals.map((g) => (g.id === id ? updated : g)),
         );
         return updated;
@@ -730,9 +748,9 @@ export function createFileGoalStore(opts: {
 
     async setRoadmapItemStatus(id, index, status): Promise<Goal | null> {
       if (!isValidId(id)) return null;
-      await ensureDirs(home);
-      return withLock(getIndexLockPath(home), async () => {
-        const goals = await readIndexLocked(home, onWarning);
+      await ensureDirs(l);
+      return withLock(getIndexLockPath(l), async () => {
+        const goals = await readIndexLocked(l, onWarning);
         const target = goals.find((g) => g.id === id);
         if (target === undefined) return null;
         if (index < 0 || index >= target.roadmap.length) return null;
@@ -740,9 +758,9 @@ export function createFileGoalStore(opts: {
           i === index ? { ...item, status } : item,
         );
         const updated = capGoal({ ...target, roadmap: nextRoadmap, lastTouched: clock.isoNow() });
-        await persistGoal(home, updated);
+        await persistGoal(l, updated);
         await writeIndex(
-          home,
+          l,
           goals.map((g) => (g.id === id ? updated : g)),
         );
         return updated;
@@ -751,9 +769,9 @@ export function createFileGoalStore(opts: {
 
     async addRoadmapItem(id, item, atIndex): Promise<AddRoadmapItemResult> {
       if (!isValidId(id)) return { ok: false, reason: 'unknown-goal' };
-      await ensureDirs(home);
-      return withLock(getIndexLockPath(home), async () => {
-        const goals = await readIndexLocked(home, onWarning);
+      await ensureDirs(l);
+      return withLock(getIndexLockPath(l), async () => {
+        const goals = await readIndexLocked(l, onWarning);
         const target = goals.find((g) => g.id === id);
         if (target === undefined) return { ok: false, reason: 'unknown-goal' };
         const capped = capRoadmapItem(item);
@@ -771,9 +789,9 @@ export function createFileGoalStore(opts: {
             : target.roadmap.length;
         const nextRoadmap = [...target.roadmap.slice(0, at), capped, ...target.roadmap.slice(at)];
         const updated = capGoal({ ...target, roadmap: nextRoadmap, lastTouched: clock.isoNow() });
-        await persistGoal(home, updated);
+        await persistGoal(l, updated);
         await writeIndex(
-          home,
+          l,
           goals.map((g) => (g.id === id ? updated : g)),
         );
         return { ok: true, goal: updated };
@@ -782,9 +800,9 @@ export function createFileGoalStore(opts: {
 
     async updateRoadmapItem(id, itemId, patch): Promise<Goal | null> {
       if (!isValidId(id)) return null;
-      await ensureDirs(home);
-      return withLock(getIndexLockPath(home), async () => {
-        const goals = await readIndexLocked(home, onWarning);
+      await ensureDirs(l);
+      return withLock(getIndexLockPath(l), async () => {
+        const goals = await readIndexLocked(l, onWarning);
         const target = goals.find((g) => g.id === id);
         if (target === undefined) return null;
         if (!target.roadmap.some((it) => it.id === itemId)) return null;
@@ -809,9 +827,9 @@ export function createFileGoalStore(opts: {
           };
         });
         const updated = capGoal({ ...target, roadmap: nextRoadmap, lastTouched: clock.isoNow() });
-        await persistGoal(home, updated);
+        await persistGoal(l, updated);
         await writeIndex(
-          home,
+          l,
           goals.map((g) => (g.id === id ? updated : g)),
         );
         return updated;
@@ -820,9 +838,9 @@ export function createFileGoalStore(opts: {
 
     async reorderRoadmap(id, orderedItemIds): Promise<Goal | null> {
       if (!isValidId(id)) return null;
-      await ensureDirs(home);
-      return withLock(getIndexLockPath(home), async () => {
-        const goals = await readIndexLocked(home, onWarning);
+      await ensureDirs(l);
+      return withLock(getIndexLockPath(l), async () => {
+        const goals = await readIndexLocked(l, onWarning);
         const target = goals.find((g) => g.id === id);
         if (target === undefined) return null;
         const byId = new Map(target.roadmap.map((it) => [it.id, it]));
@@ -842,9 +860,9 @@ export function createFileGoalStore(opts: {
           if (!seen.has(it.id)) ordered.push(it);
         }
         const updated = capGoal({ ...target, roadmap: ordered, lastTouched: clock.isoNow() });
-        await persistGoal(home, updated);
+        await persistGoal(l, updated);
         await writeIndex(
-          home,
+          l,
           goals.map((g) => (g.id === id ? updated : g)),
         );
         return updated;
@@ -853,9 +871,9 @@ export function createFileGoalStore(opts: {
 
     async removeRoadmapItem(id, itemId): Promise<RemoveRoadmapItemResult> {
       if (!isValidId(id)) return { ok: false, reason: 'unknown' };
-      await ensureDirs(home);
-      return withLock(getIndexLockPath(home), async () => {
-        const goals = await readIndexLocked(home, onWarning);
+      await ensureDirs(l);
+      return withLock(getIndexLockPath(l), async () => {
+        const goals = await readIndexLocked(l, onWarning);
         const target = goals.find((g) => g.id === id);
         if (target === undefined) return { ok: false, reason: 'unknown' };
         const item = target.roadmap.find((it) => it.id === itemId);
@@ -872,9 +890,9 @@ export function createFileGoalStore(opts: {
         }
         const nextRoadmap = target.roadmap.filter((it) => it.id !== itemId);
         const updated = capGoal({ ...target, roadmap: nextRoadmap, lastTouched: clock.isoNow() });
-        await persistGoal(home, updated);
+        await persistGoal(l, updated);
         await writeIndex(
-          home,
+          l,
           goals.map((g) => (g.id === id ? updated : g)),
         );
         return { ok: true, goal: updated };
@@ -883,18 +901,18 @@ export function createFileGoalStore(opts: {
 
     async remove(id): Promise<boolean> {
       if (!isValidId(id)) return false;
-      await ensureDirs(home);
-      return withLock(getIndexLockPath(home), async () => {
-        const goals = await readIndexLocked(home, onWarning);
+      await ensureDirs(l);
+      return withLock(getIndexLockPath(l), async () => {
+        const goals = await readIndexLocked(l, onWarning);
         const present = goals.some((g) => g.id === id);
         try {
-          await unlink(getItemPath(home, id));
+          await unlink(getItemPath(l, id));
         } catch {
           // already gone — still purge from the index below
         }
         const next = goals.filter((g) => g.id !== id);
         if (next.length === goals.length && !present) return false;
-        await writeIndex(home, next);
+        await writeIndex(l, next);
         return true;
       });
     },
@@ -902,9 +920,9 @@ export function createFileGoalStore(opts: {
     async cancelGoalTree(rootId): Promise<{ readonly terminated: readonly string[] }> {
       // Fail-soft on an invalid id (path-traversal guard) — nothing to cancel.
       if (!isValidId(rootId)) return { terminated: [] };
-      await ensureDirs(home);
-      return withLock(getIndexLockPath(home), async () => {
-        const goals = await readIndexLocked(home, onWarning);
+      await ensureDirs(l);
+      return withLock(getIndexLockPath(l), async () => {
+        const goals = await readIndexLocked(l, onWarning);
         // PURE plan: root + transitive non-terminal descendants → 'failed'. A 'done'
         // descendant is excluded (verified work preserved); 'failed' is a no-op.
         const plan = cascadeTerminate(goals, rootId, 'failed');
@@ -920,9 +938,9 @@ export function createFileGoalStore(opts: {
           return capGoal({ ...g, state: newState, lastTouched: now });
         });
         for (const g of nextGoals) {
-          if (stateById.has(g.id)) await persistGoal(home, g);
+          if (stateById.has(g.id)) await persistGoal(l, g);
         }
-        await writeIndex(home, nextGoals);
+        await writeIndex(l, nextGoals);
         return { terminated: plan.map((t) => t.id) };
       });
     },
@@ -932,9 +950,9 @@ export function createFileGoalStore(opts: {
       meta,
     ): Promise<readonly string[]> {
       const targetSet = new Set(ids);
-      await ensureDirs(home);
-      return withLock(getIndexLockPath(home), async () => {
-        const goals = await readIndexLocked(home, onWarning);
+      await ensureDirs(l);
+      return withLock(getIndexLockPath(l), async () => {
+        const goals = await readIndexLocked(l, onWarning);
         const now = clock.isoNow();
         const changed: string[] = [];
         const LIVE_STATES = new Set<GoalState>(['parked', 'queued', 'running']);
@@ -952,9 +970,9 @@ export function createFileGoalStore(opts: {
         });
         if (changed.length > 0) {
           for (const g of nextGoals) {
-            if (targetSet.has(g.id)) await persistGoal(home, g);
+            if (targetSet.has(g.id)) await persistGoal(l, g);
           }
-          await writeIndex(home, nextGoals);
+          await writeIndex(l, nextGoals);
         }
         return changed;
       });
@@ -967,9 +985,9 @@ export function createFileGoalStore(opts: {
 
     async markVerifiedComplete(goalId): Promise<Goal | null> {
       if (!isValidId(goalId)) return null;
-      await ensureDirs(home);
-      return withLock(getIndexLockPath(home), async () => {
-        const goals = await readIndexLocked(home, onWarning);
+      await ensureDirs(l);
+      return withLock(getIndexLockPath(l), async () => {
+        const goals = await readIndexLocked(l, onWarning);
         const target = goals.find((g) => g.id === goalId);
         if (target === undefined) return null;
 
@@ -986,9 +1004,9 @@ export function createFileGoalStore(opts: {
         }
 
         const updated = capGoal({ ...target, state: 'done', lastTouched: clock.isoNow() });
-        await persistGoal(home, updated);
+        await persistGoal(l, updated);
         await writeIndex(
-          home,
+          l,
           goals.map((g) => (g.id === goalId ? updated : g)),
         );
         return updated;

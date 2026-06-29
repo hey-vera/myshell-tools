@@ -13,9 +13,9 @@
  */
 
 import { mkdir, readFile } from 'node:fs/promises';
-import { defaultStateHome } from './state-dir.js';
-import { join } from 'node:path';
+import { dirname } from 'node:path';
 import { atomicWrite } from './atomic.js';
+import { defaultStateLayout, resolveStateLayout, type AppStateLayout } from './state-layout.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -50,15 +50,32 @@ const TTL_MS_WHEN_CURRENT = 30 * 1000; // 30 seconds
 const FETCH_TIMEOUT_MS = 1_500;
 
 // ---------------------------------------------------------------------------
+// Layout resolution (homeDir compat bridge)
+// ---------------------------------------------------------------------------
+
+function resolveLayout(homeDir?: string, layout?: AppStateLayout): AppStateLayout {
+  if (layout) return layout;
+  if (homeDir !== undefined) {
+    return resolveStateLayout({
+      env: {},
+      platform: 'linux',
+      cwd: homeDir,
+      homeDir,
+    });
+  }
+  return defaultStateLayout();
+}
+
+// ---------------------------------------------------------------------------
 // Path helpers
 // ---------------------------------------------------------------------------
 
-function getCacheDir(homeDir: string): string {
-  return join(homeDir, '.myshell-tools');
+function getCachePath(l: AppStateLayout): string {
+  return l.paths.updateCacheFile;
 }
 
-function getCachePath(homeDir: string): string {
-  return join(getCacheDir(homeDir), 'update-check.json');
+function getCacheDir(l: AppStateLayout): string {
+  return dirname(l.paths.updateCacheFile);
 }
 
 // ---------------------------------------------------------------------------
@@ -69,10 +86,10 @@ function getCachePath(homeDir: string): string {
  * Load the update cache from disk.  Returns null on missing/corrupt file.
  * Never throws.
  */
-export async function loadUpdateCache(homeDir?: string): Promise<UpdateCache | null> {
-  const home = homeDir ?? defaultStateHome();
+export async function loadUpdateCache(homeDir?: string, layout?: AppStateLayout): Promise<UpdateCache | null> {
+  const l = resolveLayout(homeDir, layout);
   try {
-    const raw = await readFile(getCachePath(home), 'utf8');
+    const raw = await readFile(getCachePath(l), 'utf8');
     const parsed = JSON.parse(raw) as unknown;
     if (
       parsed !== null &&
@@ -98,12 +115,13 @@ export async function saveUpdateCache(
   latest: string,
   now: number,
   homeDir?: string,
+  layout?: AppStateLayout,
 ): Promise<void> {
-  const home = homeDir ?? defaultStateHome();
+  const l = resolveLayout(homeDir, layout);
   try {
-    await mkdir(getCacheDir(home), { recursive: true });
+    await mkdir(getCacheDir(l), { recursive: true });
     const cache: UpdateCache = { checkedAt: now, latest };
-    await atomicWrite(getCachePath(home), JSON.stringify(cache, null, 2));
+    await atomicWrite(getCachePath(l), JSON.stringify(cache, null, 2));
   } catch {
     // Silently ignore — failing to cache is not a fatal error.
   }
@@ -193,6 +211,7 @@ export interface CheckForUpdateOpts {
   readonly currentVersion: string;
   readonly now: number;
   readonly homeDir?: string;
+  readonly layout?: AppStateLayout;
   readonly ttlMs?: number;
   readonly fetchLatest?: () => Promise<string | null>;
 }
@@ -206,12 +225,12 @@ export interface CheckForUpdateOpts {
  * Never throws.
  */
 export async function checkForUpdate(opts: CheckForUpdateOpts): Promise<UpdateCheckResult> {
-  const { currentVersion, now, homeDir, ttlMs = TTL_MS_DEFAULT } = opts;
+  const { currentVersion, now, homeDir, layout, ttlMs = TTL_MS_DEFAULT } = opts;
   const fetchFn = opts.fetchLatest ?? fetchLatestFromNpm;
 
   try {
     // Check if we have a fresh cache
-    const cache = await loadUpdateCache(homeDir);
+    const cache = await loadUpdateCache(homeDir, layout);
     if (cache !== null) {
       const updateAvailable = isNewerVersion(cache.latest, currentVersion);
       // A cache that already knows about a pending update is trustworthy for the
@@ -228,7 +247,7 @@ export async function checkForUpdate(opts: CheckForUpdateOpts): Promise<UpdateCh
     // Cache is stale or missing — fetch from the registry
     const latest = await fetchFn();
     if (latest !== null) {
-      await saveUpdateCache(latest, now, homeDir);
+      await saveUpdateCache(latest, now, homeDir, layout);
     }
 
     if (latest === null) {
