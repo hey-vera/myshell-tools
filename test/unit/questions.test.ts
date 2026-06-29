@@ -6,7 +6,7 @@
  * never throws, non-ask_user text → null) and formatAnswers.
  */
 
-import { describe, it } from 'node:test';
+import { describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 import { parseQuestions, formatAnswers, isKeepGoingOffer, serializeQuestionSet } from '../../src/core/questions.ts';
 import type { QuestionSet } from '../../src/core/types.ts';

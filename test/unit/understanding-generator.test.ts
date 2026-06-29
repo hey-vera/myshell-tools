@@ -8,7 +8,7 @@
  * byte-identical Codex-only when OFF). Twin of goal-plan-generator.test.ts.
  */
 
-import { describe, it, beforeEach, before, after } from 'node:test';
+import { afterAll, beforeAll, beforeEach, describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 
 import { makeUnderstandingPass } from '../../src/core/understanding-generator.ts';
@@ -175,8 +175,8 @@ describe('makeUnderstandingPass', () => {
 
   describe('webSearch — flag-ON (capability-driven via searchMode)', () => {
     const originalEnv = process.env.MYSHELL_VENDOR_NEUTRAL_ROUTER;
-    before(() => { process.env.MYSHELL_VENDOR_NEUTRAL_ROUTER = '1'; });
-    after(() => {
+    beforeAll(() => { process.env.MYSHELL_VENDOR_NEUTRAL_ROUTER = '1'; });
+    afterAll(() => {
       if (originalEnv === undefined) delete process.env.MYSHELL_VENDOR_NEUTRAL_ROUTER;
       else process.env.MYSHELL_VENDOR_NEUTRAL_ROUTER = originalEnv;
     });

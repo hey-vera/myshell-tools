@@ -10,7 +10,7 @@
  * injects raw key bytes Ink decodes into `key.*`; the `inkReadKey` wired into the
  * sub-menus is `() => bridge.readKey()`, exactly as startMenu wires it.
  */
-import test from 'node:test';
+import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import os from 'node:os';
 import fs from 'node:fs';

@@ -2,7 +2,7 @@
  * test/unit/preflight-deps.test.ts — unit tests for src/interface/preflight-deps.ts
  */
 
-import { describe, it } from 'node:test';
+import { describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 import type { ProviderId, Provider, ProviderRequest, ProviderEvent } from '../../src/providers/port.ts';
 import type { Policy } from '../../src/core/types.ts';

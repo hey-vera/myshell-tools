@@ -2,7 +2,7 @@
  * test/unit/help.test.ts — unit tests for per-command help text.
  */
 
-import { describe, it } from 'node:test';
+import { describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 
 import { commandHelpText } from '../../src/ui/help.ts';

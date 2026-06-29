@@ -6,7 +6,7 @@
  * byte-for-byte legacy fake-card UI.
  */
 
-import { describe, it } from 'node:test';
+import { describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 import { boardEnabled } from '../../src/interface/ui/board-flag.ts';
 

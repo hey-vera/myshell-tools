@@ -12,7 +12,7 @@
  * so the suite is fully deterministic and does not race against setInterval.
  */
 
-import { describe, it, mock } from 'node:test';
+import { describe, it, vi } from 'vitest';
 import assert from 'node:assert/strict';
 import { createSpinner } from '../../src/ui/spinner.ts';
 import type { OutputSink } from '../../src/interface/render.ts';
@@ -166,26 +166,26 @@ describe('createSpinner — resume()', () => {
   });
 
   it('TTY: resume() continues the elapsed count instead of resetting to 0s', () => {
-    mock.timers.enable({ apis: ['setInterval'] });
+    vi.useFakeTimers();
     try {
       const sink = makeSink(true);
       const spinner = createSpinner(sink);
 
       spinner.start('phase one');
-      mock.timers.tick(80 * 30); // ~30 ticks → ~2s elapsed
+      vi.advanceTimersByTime(80 * 30); // ~30 ticks → ~2s elapsed
       spinner.stop();
       assert.ok(sink.buf.join('').includes('· 2s'), 'should show ~2s elapsed before the pause');
 
       sink.buf.length = 0;
       spinner.resume('phase two');
-      mock.timers.tick(80 * 2); // a couple more ticks
+      vi.advanceTimersByTime(80 * 2); // a couple more ticks
       spinner.stop();
 
       const after = sink.buf.join('');
       assert.ok(after.includes('· 2s'), `resume must CONTINUE elapsed (~2s), got: ${JSON.stringify(after)}`);
       assert.ok(!after.includes('· 0s'), 'resume must not reset the elapsed counter to 0s');
     } finally {
-      mock.timers.reset();
+      vi.useRealTimers();
     }
   });
 });
@@ -196,20 +196,20 @@ describe('createSpinner — resume()', () => {
 
 describe('createSpinner — elapsed()', () => {
   it('TTY: reports whole seconds derived from real ticks and persists after stop()', () => {
-    mock.timers.enable({ apis: ['setInterval'] });
+    vi.useFakeTimers();
     try {
       const sink = makeSink(true);
       const spinner = createSpinner(sink);
 
       assert.equal(spinner.elapsed(), 0, 'elapsed is 0 before any tick');
       spinner.start('working');
-      mock.timers.tick(80 * 30); // ~30 ticks → 2s at 80ms/12.5fps
+      vi.advanceTimersByTime(80 * 30); // ~30 ticks → 2s at 80ms/12.5fps
       assert.equal(spinner.elapsed(), 2, 'elapsed reflects the real tick count (2s)');
       spinner.stop();
       // stop() must NOT reset the counter — the completion line reads it after stop.
       assert.equal(spinner.elapsed(), 2, 'elapsed survives stop() so the completion line can show it');
     } finally {
-      mock.timers.reset();
+      vi.useRealTimers();
     }
   });
 

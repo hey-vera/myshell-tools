@@ -3,7 +3,7 @@
  * src/interface/ui/intent-store-flag.ts.
  */
 
-import { describe, it } from 'node:test';
+import { describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 
 import { intentStoreV1Enabled } from '../../src/interface/ui/intent-store-flag.ts';

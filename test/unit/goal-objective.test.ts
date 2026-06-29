@@ -9,7 +9,7 @@
  * model reply into a crisp objective, NOT the raw text, with the preamble stripped.
  */
 
-import { describe, it } from 'node:test';
+import { describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 
 import {

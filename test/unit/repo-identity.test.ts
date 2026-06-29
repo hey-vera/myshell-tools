@@ -1,4 +1,4 @@
-import { describe, it } from 'node:test';
+import { describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 
 import { repoCacheKey, repoStateChanged, type RepoFingerprint } from '../../src/core/repo-identity.ts';

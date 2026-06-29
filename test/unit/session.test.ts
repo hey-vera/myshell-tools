@@ -3,7 +3,7 @@
  * Run with: node --experimental-strip-types --test
  */
 
-import { describe, it, before, after } from 'node:test';
+import { afterAll, beforeAll, describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 import { mkdtemp, rm, appendFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -34,11 +34,11 @@ function makeEntry(overrides?: Partial<SessionEntry>): SessionEntry {
 describe('createSessionWriter — append and readSession', () => {
   let dir: string;
 
-  before(async () => {
+  beforeAll(async () => {
     dir = await mkdtemp(join(tmpdir(), `session-test-${randomUUID()}-`));
   });
 
-  after(async () => {
+  afterAll(async () => {
     await rm(dir, { recursive: true, force: true });
   });
 
@@ -183,11 +183,11 @@ describe('createSessionWriter — append and readSession', () => {
 describe('createSessionWriter — concurrent appends', () => {
   let dir: string;
 
-  before(async () => {
+  beforeAll(async () => {
     dir = await mkdtemp(join(tmpdir(), `session-concurrent-${randomUUID()}-`));
   });
 
-  after(async () => {
+  afterAll(async () => {
     await rm(dir, { recursive: true, force: true });
   });
 

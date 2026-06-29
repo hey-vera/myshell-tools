@@ -11,7 +11,7 @@
  * The SELF-TEST at the bottom proves the harness catches a bad row.
  */
 
-import { describe, it } from 'node:test';
+import { describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 
 import { DECLARATIVE_MODEL_CAPABILITIES } from '../../src/core/model-capabilities.ts';

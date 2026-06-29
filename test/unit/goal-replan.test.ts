@@ -10,7 +10,7 @@
  *     invariants (a verified-done item is immovable, never edited, never pruned).
  */
 
-import { describe, it } from 'node:test';
+import { describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 
 import {

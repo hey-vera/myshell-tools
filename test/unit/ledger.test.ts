@@ -3,7 +3,7 @@
  * Run with: node --experimental-strip-types --test
  */
 
-import { describe, it, before, after } from 'node:test';
+import { afterAll, beforeAll, describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 import { mkdtemp, rm, appendFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -44,11 +44,11 @@ function makeEntry(overrides?: Partial<LedgerEntry>): LedgerEntry {
 describe('createLedger — record and readLedger', () => {
   let dir: string;
 
-  before(async () => {
+  beforeAll(async () => {
     dir = await mkdtemp(join(tmpdir(), `ledger-test-${randomUUID()}-`));
   });
 
-  after(async () => {
+  afterAll(async () => {
     await rm(dir, { recursive: true, force: true });
   });
 
@@ -269,11 +269,11 @@ describe('summarizeLedger — pure reduction', () => {
 describe('createLedger + summarizeLedger integration', () => {
   let dir: string;
 
-  before(async () => {
+  beforeAll(async () => {
     dir = await mkdtemp(join(tmpdir(), `ledger-summary-${randomUUID()}-`));
   });
 
-  after(async () => {
+  afterAll(async () => {
     await rm(dir, { recursive: true, force: true });
   });
 

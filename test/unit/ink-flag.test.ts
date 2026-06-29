@@ -3,7 +3,7 @@
  *
  * Runs under the REGULAR `npm test` (strip-types) — flag.ts has no JSX.
  */
-import test from 'node:test';
+import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import { inkEnabled } from '../../src/interface/ui/flag.ts';
 

@@ -11,7 +11,7 @@
  * Run with: node --import ./test/register.mjs --test test/unit/work-call-prior-cost.test.ts
  */
 
-import { describe, it } from 'node:test';
+import { describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 import { runWorkCall, type WorkCallInput } from '../../src/core/work-call.ts';
 import { classify } from '../../src/core/classify.ts';

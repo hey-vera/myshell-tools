@@ -3,7 +3,7 @@
  * including the EXPERIMENTAL native-session resume form. Pure: no spawn.
  */
 
-import { describe, it } from 'node:test';
+import { describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 
 import { buildCodexArgs } from '../../src/providers/codex.ts';

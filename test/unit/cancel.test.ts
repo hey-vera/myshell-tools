@@ -10,7 +10,7 @@
  * `claude` binary so the test is hermetic and quota-free.
  */
 
-import { describe, it } from 'node:test';
+import { describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 import { execa } from 'execa';
 

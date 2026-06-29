@@ -3,7 +3,7 @@
  * for orchestrate(). Verifies intentVersionId correlation and off-flag byte-identity.
  */
 
-import { describe, it, beforeEach } from 'node:test';
+import { beforeEach, describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 import { orchestrate } from '../../src/core/orchestrate.ts';
 import { DEFAULT_POLICY } from '../../src/core/policy.ts';

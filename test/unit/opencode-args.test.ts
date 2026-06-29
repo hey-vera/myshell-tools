@@ -5,7 +5,7 @@
  * existing -m / byte-for-byte default behaviour. Pure: no spawn.
  */
 
-import { describe, it } from 'node:test';
+import { describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 
 import { buildOpencodeArgs } from '../../src/providers/opencode.ts';

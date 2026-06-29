@@ -1,4 +1,4 @@
-import { describe, it } from 'node:test';
+import { describe, it } from 'vitest';
 import assert from 'node:assert';
 import { cacheAccountingV2Enabled } from '../../src/interface/ui/cache-accounting-flag.js';
 

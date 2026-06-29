@@ -1,4 +1,4 @@
-import { describe, it } from 'node:test';
+import { describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 
 import { subscriptionsEnabled } from '../../src/interface/ui/subscriptions-flag.ts';

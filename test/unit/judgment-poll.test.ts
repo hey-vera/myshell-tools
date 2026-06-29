@@ -14,7 +14,7 @@
  *   - the verdict parser only counts a REAL in-vocabulary option id.
  */
 
-import { describe, it } from 'node:test';
+import { describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 import {
   planJudgment,

@@ -6,7 +6,7 @@
  * Contract: only ever returns a model from the supplied list, or undefined.
  */
 
-import { describe, it } from 'node:test';
+import { describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 
 import { selectOpencodeModel } from '../../src/core/opencode-model.ts';

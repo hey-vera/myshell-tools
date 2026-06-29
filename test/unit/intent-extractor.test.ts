@@ -5,7 +5,7 @@
  * extraction quality. Twin of route-classifier.test.ts.
  */
 
-import { describe, it, beforeEach } from 'node:test';
+import { beforeEach, describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 
 import { makeIntentExtractor } from '../../src/core/intent-extractor.ts';

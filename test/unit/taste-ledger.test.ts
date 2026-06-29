@@ -12,7 +12,7 @@
  * Run: node --experimental-strip-types --test test/unit/taste-ledger.test.ts
  */
 
-import { describe, it, beforeEach, afterEach } from 'node:test';
+import { afterEach, beforeEach, describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 import { mkdtemp, rm, readFile, writeFile, stat, mkdir } from 'node:fs/promises';
 import { join } from 'node:path';

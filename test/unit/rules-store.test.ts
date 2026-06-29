@@ -8,7 +8,7 @@
  * reject, the two-scope project key, and the newest-first ordering.
  */
 
-import { describe, it, beforeEach, afterEach } from 'node:test';
+import { afterEach, beforeEach, describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 import { mkdtemp, rm, readFile, writeFile, stat } from 'node:fs/promises';
 import { join } from 'node:path';

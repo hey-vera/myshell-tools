@@ -9,7 +9,7 @@
  * No real /dev/tty: fs.openSync/closeSync are mocked for the duration of each test.
  */
 
-import { describe, it, afterEach } from 'node:test';
+import { afterEach, describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 

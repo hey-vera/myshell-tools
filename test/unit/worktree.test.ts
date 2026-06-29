@@ -6,10 +6,10 @@
  *
  * NEVER runs `npm install` (the firewall gotcha) — instead it asserts the node_modules
  * SYMLINK path is created when a source node_modules exists. Everything is torn down in
- * after().
+ * afterAll().
  */
 
-import { describe, it, before, after } from 'node:test';
+import { afterAll, beforeAll, describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync, existsSync, lstatSync } from 'node:fs';
@@ -33,7 +33,7 @@ describe('nodeWorktreePort — real git, throwaway tmp repo', { skip: !HAVE_GIT 
   let repoCwd: string;
   const created: Worktree[] = [];
 
-  before(() => {
+  beforeAll(() => {
     repoCwd = mkdtempSync(join(tmpdir(), 'myshell-wt-repo-'));
     const run = (args: string[]) => execFileSync('git', args, { cwd: repoCwd, stdio: 'ignore' });
     run(['init']);
@@ -46,7 +46,7 @@ describe('nodeWorktreePort — real git, throwaway tmp repo', { skip: !HAVE_GIT 
     run(['commit', '-m', 'init']);
   });
 
-  after(() => {
+  afterAll(() => {
     // Best-effort teardown of any worktree + the repo itself.
     for (const wt of created) {
       try {

@@ -4,7 +4,7 @@
  * buildProviders now accepts a pre-detected EnvironmentStatus (no internal spawn).
  */
 
-import { describe, it } from 'node:test';
+import { describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 import { buildProviders, buildAuthenticatedProviders } from '../../src/providers/registry.ts';
 import type { EnvironmentStatus } from '../../src/providers/detect.ts';

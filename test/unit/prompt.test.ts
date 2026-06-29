@@ -3,7 +3,7 @@
  * Run with: node --experimental-strip-types --test test/unit/prompt.test.ts
  */
 
-import { describe, it } from 'node:test';
+import { describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 import { buildPrompt } from '../../src/core/prompt.ts';
 

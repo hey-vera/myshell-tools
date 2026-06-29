@@ -10,7 +10,7 @@
  * Run: node --import ./test/register.mjs --experimental-strip-types --test test/unit/eval-harness.test.ts
  */
 
-import { describe, it } from 'node:test';
+import { describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 
 import {

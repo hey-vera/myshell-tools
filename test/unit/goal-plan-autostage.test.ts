@@ -13,7 +13,7 @@
  * Hermetic: temp homeDir + injected Clock, mirroring goal-store.test.ts.
  */
 
-import { describe, it, beforeEach, afterEach } from 'node:test';
+import { afterEach, beforeEach, describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { join } from 'node:path';

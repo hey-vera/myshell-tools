@@ -9,7 +9,7 @@
  * usd/tokens are ignored in ranking.
  */
 
-import { describe, it } from 'node:test';
+import { describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 import { learnProviderOrder, computeTierStats } from '../../src/core/routing-memory.ts';
 import type { ProviderTierStats } from '../../src/core/routing-memory.ts';

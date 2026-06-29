@@ -3,7 +3,7 @@
  * No I/O, no clock — `nowIso` is injected. Table-tested.
  */
 
-import { describe, it } from 'node:test';
+import { describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 
 import {

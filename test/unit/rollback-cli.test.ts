@@ -6,7 +6,7 @@
  * and reports an emergency environment override honestly.
  */
 
-import { after, before, describe, it } from 'node:test';
+import { afterAll, beforeAll, describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -22,11 +22,11 @@ const TSX_LOADER = import.meta.resolve('tsx/esm');
 describe('myshell-tools rollback CLI', () => {
   let homeDir: string;
 
-  before(async () => {
+  beforeAll(async () => {
     homeDir = await mkdtemp(join(tmpdir(), `rollback-cli-${randomUUID()}-`));
   });
 
-  after(async () => {
+  afterAll(async () => {
     await rm(homeDir, { recursive: true, force: true });
   });
 

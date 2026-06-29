@@ -33,7 +33,7 @@
  * All dependencies are faked in-memory — no network, fs, or child processes.
  */
 
-import { describe, it } from 'node:test';
+import { describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 import { orchestrate } from '../../src/core/orchestrate.ts';
 import { verifyStage, type VerifyStageContext } from '../../src/core/work-call.ts';

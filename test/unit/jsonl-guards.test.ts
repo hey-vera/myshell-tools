@@ -2,7 +2,7 @@
  * Unit tests for src/infra/jsonl-guards.ts
  */
 
-import { describe, it } from 'node:test';
+import { describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 
 import { isConversationMessage, isLedgerEntry, isSessionEntry, isWorkTrace } from '../../src/infra/jsonl-guards.ts';

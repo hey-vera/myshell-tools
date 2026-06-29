@@ -8,7 +8,7 @@
  * score-then-fill retrieval (RC-3), decay (RC-5), render, and parseRememberUser.
  */
 
-import { describe, it } from 'node:test';
+import { describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 
 import {

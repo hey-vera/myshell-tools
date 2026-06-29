@@ -17,7 +17,7 @@
  * Run with: node --experimental-strip-types --test test/unit/real-chat-copy-export-title.test.ts
  */
 
-import { describe, it } from 'node:test';
+import { describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 import {
   pickCopyText,

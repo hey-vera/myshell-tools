@@ -7,7 +7,7 @@
  * timers — the formatting seam is fully deterministic.
  */
 
-import { describe, it } from 'node:test';
+import { describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 import { turnMarker, isPlainMode, GLYPHS, formatRecapLine, blue, type TurnState } from '../../src/ui/theme.ts';
 

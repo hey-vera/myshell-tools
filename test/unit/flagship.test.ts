@@ -9,7 +9,7 @@
  * Pure-function tests: no I/O, explicit fixtures only.
  */
 
-import { describe, it } from 'node:test';
+import { describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 
 import { authorizeTier } from '../../src/core/flagship.ts';

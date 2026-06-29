@@ -9,7 +9,7 @@
  * Run: node --import ./test/register.mjs --experimental-strip-types --test test/unit/eval-store.test.ts
  */
 
-import { describe, it, beforeEach, afterEach } from 'node:test';
+import { afterEach, beforeEach, describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 import { mkdtemp, rm, appendFile } from 'node:fs/promises';
 import { join } from 'node:path';

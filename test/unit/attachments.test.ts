@@ -6,7 +6,7 @@
  * Image-attachment channel, provider-capability audit opportunity #4 (image scope).
  */
 
-import { describe, it } from 'node:test';
+import { describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 import { resolve } from 'node:path';
 

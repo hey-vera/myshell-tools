@@ -8,7 +8,7 @@
  * AI-response phrases.
  */
 
-import { describe, it } from 'node:test';
+import { describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 
 import { POLICY_PRESETS, DEFAULT_POLICY } from '../../src/core/policy.ts';

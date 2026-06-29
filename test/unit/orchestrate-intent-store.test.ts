@@ -3,7 +3,7 @@
  * for orchestrate(). Verifies intent-version persistence when MYSHELL_INTENT_STORE_V1 is on.
  */
 
-import { describe, it, beforeEach } from 'node:test';
+import { beforeEach, describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 import { orchestrate } from '../../src/core/orchestrate.ts';
 import { DEFAULT_POLICY } from '../../src/core/policy.ts';

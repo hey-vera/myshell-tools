@@ -3,7 +3,7 @@
  * including the EXPERIMENTAL native-session flags. Pure: no spawn.
  */
 
-import { describe, it } from 'node:test';
+import { describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 
 import { buildClaudeArgs } from '../../src/providers/claude.ts';

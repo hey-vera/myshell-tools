@@ -8,7 +8,7 @@
  * providers honestly rather than crashing.
  */
 
-import { describe, it } from 'node:test';
+import { describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 import { access } from 'node:fs/promises';
 import { constants } from 'node:fs';

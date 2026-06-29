@@ -6,7 +6,7 @@
  * prose quality. Twin of goal-objective-generator.test.ts.
  */
 
-import { describe, it } from 'node:test';
+import { describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 
 import { makeGoalPlanner, makeGoalPlannerAttempt } from '../../src/core/goal-plan-generator.ts';

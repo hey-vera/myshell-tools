@@ -7,7 +7,7 @@
  * wires its own stdin (a small EventEmitter with setRawMode); rendering the real
  * <App> through it exercises the useStdin()-captured control end-to-end.
  */
-import test from 'node:test';
+import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import React from 'react';
 import { render } from 'ink-testing-library';

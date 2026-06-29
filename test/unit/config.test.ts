@@ -3,7 +3,7 @@
  * Run with: node --import ./test/register.mjs --test "test/unit/config.test.ts"
  */
 
-import { describe, it, before, after } from 'node:test';
+import { afterAll, beforeAll, describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 import { mkdtemp, rm, mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -38,11 +38,11 @@ describe('resolvePartnerStyle', () => {
 describe('loadConfig — defaults', () => {
   let homeDir: string;
 
-  before(async () => {
+  beforeAll(async () => {
     homeDir = await mkdtemp(join(tmpdir(), `config-test-${randomUUID()}-`));
   });
 
-  after(async () => {
+  afterAll(async () => {
     await rm(homeDir, { recursive: true, force: true });
   });
 
@@ -83,11 +83,11 @@ describe('loadConfig — defaults', () => {
 describe('saveConfig + loadConfig — round-trip', () => {
   let homeDir: string;
 
-  before(async () => {
+  beforeAll(async () => {
     homeDir = await mkdtemp(join(tmpdir(), `config-roundtrip-${randomUUID()}-`));
   });
 
-  after(async () => {
+  afterAll(async () => {
     await rm(homeDir, { recursive: true, force: true });
   });
 

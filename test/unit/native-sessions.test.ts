@@ -14,7 +14,7 @@
  * All I/O uses real temp directories; no real claude/codex binaries are spawned.
  */
 
-import { describe, it, before, after } from 'node:test';
+import { afterAll, beforeAll, describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 import { mkdtemp, rm, writeFile, mkdir, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -64,7 +64,7 @@ describe('deriveTitle — skips system-wrapper first messages', () => {
   });
 });
 import type { ConversationMeta, ConversationStore } from '../../src/infra/conversation-store.ts';
-import type { SessionEntry, SessionWriter } from '../../src/core/types.ts';
+import type { SessionWriter } from '../../src/core/types.ts';
 
 // ---------------------------------------------------------------------------
 // Fake in-memory ConversationStore
@@ -490,11 +490,11 @@ describe('parseCodexSession — pure parser', () => {
 describe('listNativeSessions', () => {
   let homeDir: string;
 
-  before(async () => {
+  beforeAll(async () => {
     homeDir = await mkdtemp(join(tmpdir(), `native-list-${randomUUID()}-`));
   });
 
-  after(async () => {
+  afterAll(async () => {
     await rm(homeDir, { recursive: true, force: true });
   });
 
@@ -613,11 +613,11 @@ describe('listNativeSessions', () => {
 describe('importNativeSession', () => {
   let homeDir: string;
 
-  before(async () => {
+  beforeAll(async () => {
     homeDir = await mkdtemp(join(tmpdir(), `native-import-${randomUUID()}-`));
   });
 
-  after(async () => {
+  afterAll(async () => {
     await rm(homeDir, { recursive: true, force: true });
   });
 

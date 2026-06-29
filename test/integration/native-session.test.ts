@@ -23,7 +23,7 @@
  * Honesty Contract: no fabricated data. The test asserts real CLI output.
  */
 
-import { describe, it } from 'node:test';
+import { describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 

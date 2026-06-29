@@ -1,4 +1,4 @@
-import { describe, it } from 'node:test';
+import { describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 import { mkdtemp, readFile, writeFile, stat } from 'node:fs/promises';
 import { existsSync } from 'node:fs';

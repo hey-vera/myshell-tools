@@ -7,7 +7,7 @@
  * restores the legacy model-said-so completion.
  */
 
-import { describe, it } from 'node:test';
+import { describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 import { verifiedDoneEnabled } from '../../src/interface/ui/truly-complete-flag.ts';
 

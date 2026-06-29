@@ -1,4 +1,4 @@
-import { describe, it, before, after } from 'node:test';
+import { afterAll, beforeAll, describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 import { mkdtemp, rm, readFile, writeFile, stat as fsStat, mkdir } from 'node:fs/promises';
 import { join, sep } from 'node:path';
@@ -32,12 +32,12 @@ import {
 let dir: string;
 let stateHome: string;
 
-before(async () => {
+beforeAll(async () => {
   dir = await mkdtemp(join(tmpdir(), 'subs-test-'));
   stateHome = dir;
 });
 
-after(async () => {
+afterAll(async () => {
   await rm(dir, { recursive: true, force: true });
 });
 

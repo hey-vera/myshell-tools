@@ -5,7 +5,7 @@
  * ink-testing-library's `stdin.write(...)` injects raw key bytes; we use the
  * ANSI control sequences Ink decodes into `key.*` (arrows, etc.).
  */
-import test from 'node:test';
+import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import React from 'react';
 import { render } from 'ink-testing-library';

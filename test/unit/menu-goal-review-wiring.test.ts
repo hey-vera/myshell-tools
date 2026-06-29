@@ -8,7 +8,7 @@
  * Run with: node --import ./test/register.mjs --test "test/unit/menu-goal-review-wiring.test.ts"
  */
 
-import { describe, it } from 'node:test';
+import { describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 
 import { reviewConversationGoals } from '../../src/interface/menu-goal-review-wiring.js';

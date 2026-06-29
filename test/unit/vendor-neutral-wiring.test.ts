@@ -5,7 +5,7 @@
  * work-call.ts and hedge.ts.
  */
 
-import { describe, it } from 'node:test';
+import { describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 import { runWorkCall, type WorkCallInput } from '../../src/core/work-call.ts';
 import { runHedged, type HedgePlan } from '../../src/core/hedge.ts';

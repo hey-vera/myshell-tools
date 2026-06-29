@@ -12,7 +12,7 @@
  *   8. Risky turn under Auto earns larger budget/stronger model
  */
 
-import { describe, it } from 'node:test';
+import { describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 
 import { autoSmartEnabled } from '../../src/interface/ui/auto-smart-flag.ts';

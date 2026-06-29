@@ -2,7 +2,7 @@
  * test/unit/native-session.test.ts — unit tests for the pure native-session planner.
  */
 
-import { describe, it } from 'node:test';
+import { describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 
 import { planNativeSession } from '../../src/core/native-session.ts';

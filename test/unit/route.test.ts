@@ -3,7 +3,7 @@
  * Run with: node --experimental-strip-types --test test/unit/route.test.ts
  */
 
-import { describe, it } from 'node:test';
+import { describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 import { route, selectReasoningEffort } from '../../src/core/route.ts';
 import type { CapabilityRouteContext } from '../../src/core/route.ts';
@@ -1106,7 +1106,7 @@ describe('route — cross-provider capability pre-pass (hard requirements)', () 
 
   // --- Non-regression: no hard requirement → deep-equals today --------------
   it('no hard requirement → route() deep-equals today across every call shape (with registry present)', () => {
-    const cases: Array<[Tier, ProviderId[], Policy, Parameters<typeof route>[3]?, readonly ProviderId[]?, readonly ProviderId[]?]> = [
+    const cases: Array<[tier: Tier, pool: ProviderId[], policy: Policy, avail?: Parameters<typeof route>[3], authed?: readonly ProviderId[], learned?: readonly ProviderId[]]> = [
       ['ic', CLAUDE_ONLY, DEFAULT_POLICY],
       ['ic', CODEX_ONLY, DEFAULT_POLICY],
       ['worker', BOTH, DEFAULT_POLICY],

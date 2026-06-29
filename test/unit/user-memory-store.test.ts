@@ -8,7 +8,7 @@
  * audit append, decay sweep, and the privacy-preserving project key.
  */
 
-import { describe, it, beforeEach, afterEach } from 'node:test';
+import { afterEach, beforeEach, describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 import { mkdtemp, rm, readFile, writeFile, stat, mkdir, readdir } from 'node:fs/promises';
 import { join } from 'node:path';

@@ -25,7 +25,7 @@
  * own wall-clock — the release only tidies up after.
  */
 
-import { describe, it } from 'node:test';
+import { describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 import { withHangCap, providerHangCapMs } from '../../src/providers/hang-cap.ts';
 import type { ProviderEvent } from '../../src/providers/port.ts';

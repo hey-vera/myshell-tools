@@ -22,7 +22,7 @@
  * Honesty Contract: no fabricated data, no digit-% literals, no Math.random.
  */
 
-import { describe, it, before } from 'node:test';
+import { beforeAll, describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { existsSync, mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
@@ -134,7 +134,7 @@ function runCli(input: string, overrideEnv: Partial<NodeJS.ProcessEnv> = {}): Pr
 }
 
 describe('menu CLI (real spawn, piped stdin)', () => {
-  before(() => {
+  beforeAll(() => {
     // The fix is only meaningful against the compiled artifact — build if needed.
     if (!existsSync(CLI_PATH)) {
       execSync('npm run build', { cwd: REPO_ROOT, stdio: 'inherit' });

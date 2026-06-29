@@ -13,7 +13,7 @@
  * All dependencies are faked in-memory — no network, no fs, no child process.
  */
 
-import { describe, it, beforeEach } from 'node:test';
+import { beforeEach, describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 
 import { orchestrate } from '../../src/core/orchestrate.ts';

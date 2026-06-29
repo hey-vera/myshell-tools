@@ -8,7 +8,7 @@
  * garbage → null, and the no-echo / persona / judge rules in the prompt.
  */
 
-import { describe, it } from 'node:test';
+import { describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 
 import {

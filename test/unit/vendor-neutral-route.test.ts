@@ -3,7 +3,7 @@
  * tests for the vendor-neutral route core (§1, §4, §5).
  */
 
-import { describe, it } from 'node:test';
+import { describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 
 import { vendorNeutralRoute } from '../../src/core/vendor-neutral-route.ts';

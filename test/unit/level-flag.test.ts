@@ -4,7 +4,7 @@
  * rollback forces off, never throws. Mirrors the role/verify flag shape.
  */
 
-import { describe, it } from 'node:test';
+import { describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 import { levelDialEnabled } from '../../src/interface/ui/level-flag.ts';
 

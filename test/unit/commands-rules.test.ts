@@ -6,7 +6,7 @@
  * Honesty Contract: no Math.random, no fabricated AI output, no digit-% literals.
  */
 
-import { describe, it, beforeEach } from 'node:test';
+import { beforeEach, describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 
 import {

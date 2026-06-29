@@ -15,7 +15,7 @@
  * Run: node --import ./test/register.mjs --test "test/unit/ap2-hardening.test.ts"
  */
 
-import { describe, it, after } from 'node:test';
+import { afterAll, describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 import { mkdtemp, rm, appendFile, writeFile, mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -218,7 +218,7 @@ describe('engineBehaviorVersion — guard + store round-trip (AP2-F §3)', () =>
 
   it('a marker written to the JSONL log round-trips through store.load(); legacy lines still load', async () => {
     const home = await mkdtemp(join(tmpdir(), 'ap2f-store-'));
-    after(async () => {
+    afterAll(async () => {
       await rm(home, { recursive: true, force: true });
     });
     const store = createFileConversationStore({ homeDir: home, clock: makeFakeClock() });

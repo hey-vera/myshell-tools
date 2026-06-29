@@ -15,7 +15,7 @@
  * ZERO model calls, ZERO auth needed. Pure classify() + fuseRung().
  */
 
-import { describe, it } from 'node:test';
+import { describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 
 import { classify } from '../../src/core/classify.ts';

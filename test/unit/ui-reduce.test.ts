@@ -11,7 +11,7 @@
  * PURE: no Ink, no JSX, no I/O — runs under the regular `npm test` strip-types.
  */
 
-import { describe, it } from 'node:test';
+import { describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 // Import through the pure barrel (src/interface/ui/index.ts) — the same stable
 // entry point 3b's rendering wiring will consume — so this test also exercises

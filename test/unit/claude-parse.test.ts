@@ -2,7 +2,7 @@
  * Unit tests for src/providers/claude-parse.ts parser robustness.
  */
 
-import { describe, it } from 'node:test';
+import { describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 import { parseClaudeLine } from '../../src/providers/claude-parse.ts';
 

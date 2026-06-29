@@ -5,7 +5,7 @@
  * and `undefined` when the model declares no efforts. Pure: no spawn, no I/O.
  */
 
-import { describe, it } from 'node:test';
+import { describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 
 import { selectReasoningEffort } from '../../src/core/route.ts';
