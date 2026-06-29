@@ -156,6 +156,20 @@ export interface InkAppBridge {
    *  by the InputBox's bare-ESC branch. `null`/undefined when idle. */
   _interrupt?: (() => void) | null;
   /** @internal the attached Ink stdin control */ _stdinControl?: InkStdinControl | null;
+  /**
+   * Enable or disable the main-menu key-capture window. While active, a printable
+   * key arriving while NO readKey resolver is pending is queued in a small FIFO
+   * (instead of falling into the hidden InputBox editor) so it is consumed by the
+   * NEXT readKey() in the menu loop. The menu loop sets this true at the top of
+   * each iteration (before any awaited paint/I/O) and false before entering a
+   * sub-flow (chat, settings, login, readLine prompts). Undefined on the legacy
+   * (non-Ink) path where no capture is needed.
+   */
+  setMenuCaptureActive(active: boolean): void;
+  /** @internal one-key FIFO drained by readKey() while menu capture is active */
+  _menuKeyQueue: string[];
+  /** @internal true when the main menu loop has armed capture */
+  _menuCaptureActive: boolean;
 }
 
 /**
@@ -170,6 +184,8 @@ export function createInkAppBridge(): InkAppBridge {
     _stdinControl: null,
     _keyResolver: null,
     _interrupt: null,
+    _menuKeyQueue: [],
+    _menuCaptureActive: false,
     commit(line: string): void {
       bridge._setLines?.((prev) => [...prev, line]);
     },
@@ -189,15 +205,23 @@ export function createInkAppBridge(): InkAppBridge {
       bridge._setChatActive?.(active);
     },
     readKey(): Promise<string> {
-      // Exactly-one-key guarantee: a second readKey() while one is pending would
-      // leave two resolvers racing for one keystroke — a real logic error in the
-      // caller (the menu loop is strictly sequential). Reject rather than steal.
+      // Drain the menu FIFO before awaiting a new key. A key queued during paint
+      // or ledger refresh (while menu capture was active but no resolver pending)
+      // is returned immediately; otherwise the resolver arms for the next key.
+      if (bridge._menuCaptureActive && bridge._menuKeyQueue.length > 0) {
+        const queued = bridge._menuKeyQueue.shift();
+        if (queued !== undefined) return Promise.resolve(queued);
+      }
       if (bridge._keyResolver != null) {
         return Promise.reject(new Error('InkAppBridge: readKey already pending'));
       }
       return new Promise<string>((resolve) => {
         bridge._keyResolver = resolve;
       });
+    },
+    setMenuCaptureActive(active: boolean): void {
+      bridge._menuCaptureActive = active;
+      if (!active) bridge._menuKeyQueue.length = 0;
     },
     setInterrupt(handler: (() => void) | null): void {
       bridge._interrupt = handler;
@@ -364,6 +388,8 @@ export function App(props: AppProps): React.ReactElement {
     //    BEFORE invoking so a double-resolve is a safe no-op.
     const pendingKey = bridge._keyResolver;
     bridge._keyResolver = null;
+    bridge._menuKeyQueue.length = 0;
+    bridge._menuCaptureActive = false;
     if (pendingKey != null) pendingKey('\x03');
     // 2. Restore cooked mode via Ink's stdin control (never process.stdin directly),
     //    if one is attached — so the terminal is not left in raw mode.
@@ -538,14 +564,6 @@ function AppBody({
     inputBoxRows,
   ]);
 
-  // Deliver exactly one captured key to the pending readKey() resolver. Nulling the
-  // resolver before invoking it makes a second event editor input, not a double-fire.
-  const onCapturedKey = (rawKey: string): void => {
-    const resolver = bridge._keyResolver;
-    bridge._keyResolver = null;
-    if (resolver != null) resolver(rawKey);
-  };
-
   // Structured mode (the single source of truth once the Node side has pushed any
   // state): render committed lines (write-once via <Static>, coloured by kind)
   // plus the live answer buffer (<Stream>, repaints as prose streams). The
@@ -615,8 +633,17 @@ function AppBody({
           dynamicWorldItems={uiState?.dynamicWorldItems ?? []}
           onStdinControl={bridge.attachStdinControl}
           onEscape={() => bridge.interrupt()}
-          readPending={() => bridge._keyResolver != null}
-          onReadKey={(input, key) => onCapturedKey(normalizeInkKey(input, key))}
+          readPending={() => bridge._keyResolver != null || bridge._menuCaptureActive}
+          onReadKey={(input, key) => {
+            const normalized = normalizeInkKey(input, key);
+            const resolver = bridge._keyResolver;
+            if (resolver != null) {
+              bridge._keyResolver = null;
+              resolver(normalized);
+            } else if (bridge._menuCaptureActive) {
+              bridge._menuKeyQueue.push(normalized);
+            }
+          }}
         />
       </Box>
     );
@@ -636,8 +663,17 @@ function AppBody({
         suspended={suspended}
         onStdinControl={bridge.attachStdinControl}
         onEscape={() => bridge.interrupt()}
-        readPending={() => bridge._keyResolver != null}
-        onReadKey={(input, key) => onCapturedKey(normalizeInkKey(input, key))}
+        readPending={() => bridge._keyResolver != null || bridge._menuCaptureActive}
+        onReadKey={(input, key) => {
+          const normalized = normalizeInkKey(input, key);
+          const resolver = bridge._keyResolver;
+          if (resolver != null) {
+            bridge._keyResolver = null;
+            resolver(normalized);
+          } else if (bridge._menuCaptureActive) {
+            bridge._menuKeyQueue.push(normalized);
+          }
+        }}
         pressure={0}
         dynamicWorldItems={[]}
       />

@@ -6607,6 +6607,12 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
   // never in the menu / auth-login / settings. Undefined off the Ink path.
   const inkSetChatActive: ((active: boolean) => void) | undefined =
     inkHandle !== null ? (active) => inkHandle.setChatActive(active) : undefined;
+  // Menu key-capture gate (BUG 2): while the main menu panel is showing, arm the
+  // bridge's one-key FIFO so a key arriving during paint/refresh is queued instead
+  // of falling into the hidden InputBox editor. Cleared before every sub-flow
+  // (chat, settings, login, readLine). Undefined off the Ink path.
+  const inkSetMenuCaptureActive: ((active: boolean) => void) | undefined =
+    inkHandle !== null ? (active) => inkHandle.setMenuCaptureActive(active) : undefined;
   const inkBeginTurn: (() => void) | undefined =
     inkHandle !== null ? () => inkHandle.beginTurn() : undefined;
   const inkResetTurn: (() => void) | undefined =
@@ -6910,28 +6916,66 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
 
     // Repaint triggered by an async fill resolving: only on the live-region path,
     // only once the first frame is up, and only while we're sitting on the menu.
-    const repaintIfActive = (): void => {
+    // Serialized: overlapping fill callbacks coalesce into one microtask-timer
+    // repaint; stale generations are dropped when inMainMenu flips false.
+    let repaintScheduled = false;
+    const scheduleRepaint = (): void => {
       if (!liveRegion || !started || !inMainMenu) return;
-      void paintMenu();
+      if (repaintScheduled) return;
+      repaintScheduled = true;
+      void Promise.resolve().then(() => {
+        repaintScheduled = false;
+        if (!inMainMenu || !started) return;
+        void paintMenu();
+      });
     };
 
     while (true) {
       // We're sitting on the menu again — late async fills may repaint here.
       inMainMenu = true;
+
+      // ARM menu capture BEFORE any awaited paint or I/O (BUG 2 core fix).
+      // While capture is active, a printable key arriving with no readKey
+      // resolver pending is queued in the bridge's FIFO instead of falling
+      // into the hidden InputBox editor — so it is consumed by the next
+      // readMenuKey in order, never dropped. Cleared before every sub-flow.
+      if (liveRegion) {
+        inkSetMenuCaptureActive?.(true);
+      }
+
+      // --- Dirty refreshes: render from cached data immediately, refresh in
+      // background (stale-while-revalidate) — keep disk reads off the key path.
       if (spendDirty) {
-        spend = summarizeSpend(await readLedger(ctx.cwd).catch(() => []), ctx.clock.isoNow());
-        spendLoading = false;
         spendDirty = false;
+        if (liveRegion) {
+          void (async () => {
+            spend = summarizeSpend(await readLedger(ctx.cwd).catch(() => []), ctx.clock.isoNow());
+            spendLoading = false;
+            scheduleRepaint();
+          })();
+        } else {
+          spend = summarizeSpend(await readLedger(ctx.cwd).catch(() => []), ctx.clock.isoNow());
+          spendLoading = false;
+        }
       }
       if (listDirty) {
-        metas = await ctx.store.list().catch(() => []);
-        parkedGoals = await menuGoalStore.list({ state: 'parked' }).catch(() => []);
-        listsLoading = false;
         listDirty = false;
+        if (liveRegion) {
+          void (async () => {
+            metas = await ctx.store.list().catch(() => []);
+            parkedGoals = await menuGoalStore.list({ state: 'parked' }).catch(() => []);
+            listsLoading = false;
+            scheduleRepaint();
+          })();
+        } else {
+          metas = await ctx.store.list().catch(() => []);
+          parkedGoals = await menuGoalStore.list({ state: 'parked' }).catch(() => []);
+          listsLoading = false;
+        }
       }
       if (liveRegion) {
         void refreshEnvironmentIfStale().then(() => {
-          repaintIfActive();
+          scheduleRepaint();
         });
       } else {
         await refreshEnvironmentIfStale();
@@ -6947,9 +6991,9 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
       // via the same chrome/replace path. Fail-soft inside each fill (never throws).
       // Fired once, right after the very first frame.
       if (liveRegion && !started) {
-        void fillToken().then(repaintIfActive);
-        void fillSpend().then(repaintIfActive);
-        void fillLists().then(repaintIfActive);
+        void fillToken().then(() => { scheduleRepaint(); });
+        void fillSpend().then(() => { scheduleRepaint(); });
+        void fillLists().then(() => { scheduleRepaint(); });
       }
       started = true;
 
@@ -6962,6 +7006,7 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
 
       // ---- EOF / close — exit gracefully (FIX 1: no ERR_USE_AFTER_CLOSE) ----
       if (key === null) {
+        inkSetMenuCaptureActive?.(false);
         break;
       }
 
@@ -6979,7 +7024,10 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
       out.promoteFrame?.();
       // Leaving the menu for a sub-flow — suppress any late async-fill repaint so it
       // can't paint the menu over the sub-flow's output. Re-enabled at loop top.
+      // Also disarm menu key capture so login/settings/readLine prompts receive
+      // input normally (not queued into the menu FIFO).
       inMainMenu = false;
+      inkSetMenuCaptureActive?.(false);
 
       // ---- [q] Quit -----------------------------------------------------------
       if (key === 'q') {

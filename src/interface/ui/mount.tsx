@@ -500,6 +500,14 @@ export interface InkMountHandle {
   /** Clear an optimistic preflight turn that never reached renderTurn(). */
   resetTurn(): void;
   /**
+   * Enable or disable the main-menu key-capture window (BUG 2 fix). While active,
+   * printable keys arriving while no readKey resolver is pending are queued in a
+   * FIFO instead of falling into the hidden InputBox editor, so the menu loop
+   * processes them in order. The menu loop arms this before paint and disarms
+   * before sub-flows (chat, settings, login). No-op on the legacy path.
+   */
+  setMenuCaptureActive(active: boolean): void;
+  /**
    * Drive one model turn's CoreEvent stream into the reducer-backed transcript
    * (the STEP-3b streaming path). Same return shape as render.ts `renderStream`.
    */
@@ -605,6 +613,7 @@ export function mountInk(opts: InkMountOptions): InkMountHandle {
     setInterrupt: (handler) => bridge.setInterrupt(handler),
     setInputInfo: (info) => bridge.setInputInfo(info),
     setChatActive: (active) => bridge.setChatActive(active),
+    setMenuCaptureActive: (active) => bridge.setMenuCaptureActive(active),
     beginTurn,
     resetTurn,
     renderTurn,
@@ -612,15 +621,10 @@ export function mountInk(opts: InkMountOptions): InkMountHandle {
       await instance.waitUntilExit();
     },
     unmount(): void {
-      // Resolve a pending single-key read (App.readKey()) BEFORE tearing down the
-      // React tree, else the awaiting readMenuKey/confirmViaInkKey orphans and
-      // hangs forever (M1). The sentinel is '\x03' (Ctrl-C/ETX): readMenuKey maps
-      // it to `null` (the caller exits) and confirmViaInkKey's interpretYesNoKey
-      // maps it to 'abort' (cancel) — both treat a teardown as a clean cancel/exit
-      // rather than looping for another key (which '' would cause confirm to do).
-      // Null the resolver BEFORE invoking it so a double-resolve is a safe no-op.
       const pendingKey = bridge._keyResolver;
       bridge._keyResolver = null;
+      bridge._menuKeyQueue.length = 0;
+      bridge._menuCaptureActive = false;
       if (pendingKey != null) pendingKey('\x03');
       // reader.close() resolves every pending/future nextLine() waiter with null.
       reader.close();
