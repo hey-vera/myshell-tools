@@ -230,7 +230,8 @@ import { experimentalEnabledByDefault } from './ui/experimental-default.js';
 import { cacheAccountingV2Enabled } from './ui/cache-accounting-flag.js';
 import { accountAuxEnabled } from './ui/account-aux-flag.js';
 import { subscriptionsEnabled } from './ui/subscriptions-flag.js';
-import { readSubscriptions } from '../infra/subscriptions.js';
+import { accountParallelismEnabled } from './ui/account-parallelism-flag.js';
+import { readSubscriptions, type SubscriptionProvider } from '../infra/subscriptions.js';
 import { intentStoreV1Enabled } from './ui/intent-store-flag.js';
 import { correctionForkV1Enabled } from './ui/correction-fork-flag.js';
 import { blockedStateV1Enabled } from './ui/blocked-state-flag.js';
@@ -1060,6 +1061,14 @@ export async function runChatLoop(
   // Per-account session token consumption for normalized-load account selection.
   const sessionTokensByAccount: Record<string, number> = {};
 
+  // Correlated-429 safety valve (Slice 5): detect when two DISTINCT same-provider
+  // accounts rate-limit within 60s and disable same-provider account fanout for
+  // the rest of the session. Maps accountId → provider so noteRateLimit can look
+  // up the provider from a rate-limited account id.
+  const accountProviderById = new Map<string, SubscriptionProvider>();
+  const recentAccount429sByProvider = new Map<SubscriptionProvider, Array<{ accountId: string; atMs: number }>>();
+  const accountParallelismDisabledProviders = new Set<SubscriptionProvider>();
+
   // ---- MODEL CAPABILITY REGISTRY (Stage 1, §4) ----------------------------
   // Refresh the objective capability facts ONCE per chat session (the local Codex
   // cache + advertised model set are stable within a session, like the repo map)
@@ -1668,6 +1677,32 @@ export async function runChatLoop(
     // available. Mirror of provider cooldown but keyed by accountId.
     for (const id of throttledAccounts) {
       accountCooldownUntil.set(id, cooldownExpiry(now));
+    }
+
+    // Correlated-429 safety valve (Slice 5): detect when two DISTINCT
+    // same-provider accounts rate-limit within 60s and disable same-provider
+    // account fanout for the rest of the session.
+    for (const id of throttledAccounts) {
+      const provider = accountProviderById.get(id);
+      if (provider === undefined) continue;
+      let entries = recentAccount429sByProvider.get(provider);
+      if (entries === undefined) {
+        entries = [];
+        recentAccount429sByProvider.set(provider, entries);
+      }
+      entries.push({ accountId: id, atMs: now });
+      entries = entries.filter((e) => now - e.atMs < 60_000);
+      recentAccount429sByProvider.set(provider, entries);
+      const distinctIds = new Set(entries.map((e) => e.accountId));
+      if (distinctIds.size >= 2 && !accountParallelismDisabledProviders.has(provider)) {
+        accountParallelismDisabledProviders.add(provider);
+        sink.write(
+          dim(
+            `  (shared vendor limit suspected for ${provider} — disabling same-provider account fanout this session)\n`,
+            sink.color,
+          ),
+        );
+      }
     }
 
     // Be legible: if another signed-in provider can absorb the load, say so.
@@ -2754,6 +2789,10 @@ export async function runChatLoop(
           const subs = await readSubscriptions();
           const allAccounts = subs.accounts;
           if (allAccounts.length === 0) return base;
+          // Populate the accountProviderById map for correlated-429 detection.
+          for (const a of allAccounts) {
+            accountProviderById.set(a.id, a.provider);
+          }
           // Backward compat: also pass legacy opencode-only deps so callsites
           // that still read opencodeAccounts get the filtered subset.
           const opencodeAccounts = allAccounts.filter(
@@ -2787,6 +2826,14 @@ export async function runChatLoop(
               ? { sessionTokensByAccount }
               : {}),
             onAccountUsed,
+            ...(accountParallelismEnabled(process.env, mutableCtx.config)
+              ? {
+                  accountParallelism: true,
+                  ...(accountParallelismDisabledProviders.size > 0
+                    ? { accountParallelismDisabledProviders }
+                    : {}),
+                }
+              : {}),
           };
         } catch {
           return base;

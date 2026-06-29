@@ -63,6 +63,13 @@ import {
 import { verifyStage, type CriticRunInput, type CriticRunOutput } from './work-call.js';
 import { effortForDecision } from './orchestrate-signals.js';
 import { parseReviewVerdict } from './review.js';
+import {
+  selectSubscriptionAccount,
+  selectSiblingSubscriptionAccount,
+  opencodePoolForModel,
+} from './opencode-account-routing.js';
+import { accountEnvFor } from '../infra/subscriptions.js';
+import type { SubscriptionProvider } from '../infra/subscriptions.js';
 
 // ---------------------------------------------------------------------------
 // Plan
@@ -97,6 +104,15 @@ export interface HedgeAuthorityInput {
   readonly vendorNeutralEnabled?: boolean;
   readonly registry?: CapabilityRegistry;
   readonly sessionId?: string;
+}
+
+/** Role context for runAttempt in the hedge race. */
+interface HedgeRunRole {
+  readonly role: 'primary' | 'speculative';
+  /** For the speculative arm: the primary arm's account id to avoid reusing. */
+  readonly avoidAccountId?: string;
+  /** For the speculative arm: the primary arm's provider so we can find a sibling. */
+  readonly preferSiblingProvider?: ProviderId;
 }
 
 /**
@@ -202,6 +218,8 @@ interface RunResult {
   /** The taskKind this run served (Stage 4 ledger signal). Hedge is always
    *  'implementation' (its job is fast independent work, not adjudication). */
   readonly taskKind: TaskKind;
+  /** Optional subscription account id for account-parallel hedge arms. */
+  readonly accountId?: string;
 }
 
 /**
@@ -240,6 +258,7 @@ async function runAttempt(
   capabilityContext: CapabilityRouteContext | undefined,
   wantsWebSearch: boolean,
   vendorNeutralEnabled: boolean,
+  role: HedgeRunRole = { role: 'primary' },
 ): Promise<RunResult> {
   const routePool =
     deps.authenticatedProviders !== undefined && deps.authenticatedProviders.length > 0
@@ -358,6 +377,89 @@ async function runAttempt(
     };
   }
 
+  // --- Account-aware parallelism (Slice 5): select a subscription account for
+  // this hedge arm. Only when the flag is on, base subscriptions are on, mode is
+  // quality-first, and accounts exist. The speculative arm may additionally get a
+  // same-provider sibling distinct from the primary.
+  let accountId: string | undefined;
+  let accountEnv: Readonly<Partial<NodeJS.ProcessEnv>> | undefined;
+  const mode = modeFromPolicy(deps.policy);
+  if (
+    deps.accountParallelism === true &&
+    mode === 'quality-first' &&
+    deps.subscriptionAccounts !== undefined &&
+    deps.subscriptionAccounts.length > 0
+  ) {
+    const provider = decision.provider as SubscriptionProvider;
+    if (
+      deps.accountParallelismDisabledProviders === undefined ||
+      !deps.accountParallelismDisabledProviders.has(provider)
+    ) {
+      const pool = provider === 'opencode'
+        ? (opencodePoolForModel(decision.model) ?? undefined)
+        : undefined;
+      const nowMs = deps.clock.now();
+      const cooldown = deps.accountCooldownUntil ?? new Map();
+      const tokensByAccount = deps.sessionTokensByAccount ?? {};
+
+      if (
+        role.role === 'speculative' &&
+        role.preferSiblingProvider !== undefined &&
+        role.preferSiblingProvider === provider &&
+        role.avoidAccountId !== undefined
+      ) {
+        const sibling = selectSiblingSubscriptionAccount({
+          accounts: deps.subscriptionAccounts,
+          provider: provider as SubscriptionProvider,
+          ...(pool !== undefined ? { pool } : {}),
+          primaryAccountId: role.avoidAccountId,
+          nowMs,
+          cooldownUntil: cooldown,
+          sessionTokensByAccount: tokensByAccount,
+        });
+        if (sibling !== null) {
+          accountId = sibling.id;
+          accountEnv = accountEnvFor(sibling);
+        }
+      } else {
+        const selected = selectSubscriptionAccount({
+          accounts: deps.subscriptionAccounts,
+          provider: provider as SubscriptionProvider,
+          ...(pool !== undefined ? { pool } : {}),
+          nowMs,
+          cooldownUntil: cooldown,
+          sessionTokensByAccount: tokensByAccount,
+          strategy: 'spread',
+        });
+        if (selected !== null) {
+          accountId = selected.id;
+          accountEnv = accountEnvFor(selected);
+        }
+      }
+    }
+  }
+
+  // Emit tier-start with accountId when an account was selected.
+  if (accountId !== undefined) {
+    events.push({
+      type: 'tier-start',
+      tier: decision.tier,
+      provider: decision.provider,
+      model: decision.model,
+      attempt: 1,
+      accountId,
+    });
+  }
+
+  // Best-effort update the account's lastUsedAt.
+  if (accountId !== undefined && deps.onAccountUsed !== undefined) {
+    try {
+      await deps.onAccountUsed(accountId, deps.clock.isoNow());
+    } catch {
+      /* best-effort */
+    }
+  }
+
   const req: import('../providers/port.js').ProviderRequest = {
     model: decision.model,
     ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
@@ -390,6 +492,8 @@ async function runAttempt(
     ...(hasImageAttachment(deps.attachments) && deps.attachments !== undefined
       ? { attachments: deps.attachments }
       : {}),
+    ...(accountId !== undefined ? { accountId } : {}),
+    ...(accountEnv !== undefined ? { accountEnv } : {}),
   };
 
   let canceled = false;
@@ -433,6 +537,7 @@ async function runAttempt(
     events,
     reasoningEffort,
     taskKind,
+    ...(accountId !== undefined ? { accountId } : {}),
   };
 }
 
@@ -681,6 +786,7 @@ export async function* runHedged(
       ...(deps.accountAux === true && deps.intentVersionId !== undefined
         ? { intentVersionId: deps.intentVersionId }
         : {}),
+      ...(result.accountId !== undefined ? { accountId: result.accountId } : {}),
     });
     return usd;
   };
@@ -1044,6 +1150,53 @@ export async function* runHedged(
   };
 
   try {
+    // --- Pre-select primary account for sibling fanout (Slice 5). ---
+    // When account parallelism is on in quality-first mode, pre-compute the
+    // primary arm's provider and accountId so the speculative arm can avoid
+    // reusing the same account. This runs the same routing + selection logic
+    // that runAttempt would run internally, so the sibling logic gets the
+    // identity without waiting for the primary promise to resolve (needed for
+    // CASE B where both start in parallel).
+    let primaryPreSelectedAccountId: string | undefined;
+    let primaryPreSelectedProvider: ProviderId | undefined;
+    if (
+      deps.accountParallelism === true &&
+      modeFromPolicy(deps.policy) === 'quality-first' &&
+      deps.subscriptionAccounts !== undefined &&
+      deps.subscriptionAccounts.length > 0
+    ) {
+      const routePool =
+        deps.authenticatedProviders !== undefined && deps.authenticatedProviders.length > 0
+          ? [...deps.authenticatedProviders]
+          : (Object.keys(deps.providers) as ProviderId[]).filter(
+              (id) => deps.providers[id] !== undefined,
+            );
+      const primaryDecision = route(
+        plan.primaryTier,
+        routePool,
+        deps.policy,
+        deps.availableModels,
+        deps.authenticatedProviders,
+        deps.learnedProviderOrder?.[plan.primaryTier],
+        capabilityContext,
+      );
+      primaryPreSelectedProvider = primaryDecision.provider;
+      const pool =
+        primaryPreSelectedProvider === 'opencode'
+          ? (opencodePoolForModel(primaryDecision.model) ?? undefined)
+          : undefined;
+      const selected = selectSubscriptionAccount({
+        accounts: deps.subscriptionAccounts,
+        provider: primaryPreSelectedProvider as SubscriptionProvider,
+        ...(pool !== undefined ? { pool } : {}),
+        nowMs: deps.clock.now(),
+        cooldownUntil: deps.accountCooldownUntil ?? new Map(),
+        sessionTokensByAccount: deps.sessionTokensByAccount ?? {},
+        strategy: 'spread',
+      });
+      primaryPreSelectedAccountId = selected?.id;
+    }
+
     // --- Start the PRIMARY run as a background promise. ---
     attempts++;
     const primaryPromise = runAttempt(
@@ -1057,6 +1210,7 @@ export async function* runHedged(
       capabilityContext,
       wantsWebSearch,
       authority.vendorNeutralEnabled ?? false,
+      { role: 'primary' },
     );
 
     // --- Race the primary against the delay. ---
@@ -1123,6 +1277,13 @@ export async function* runHedged(
         capabilityContext,
         wantsWebSearch,
         authority.vendorNeutralEnabled ?? false,
+        {
+          role: 'speculative',
+          ...(primary.accountId !== undefined
+            ? { avoidAccountId: primary.accountId }
+            : {}),
+          preferSiblingProvider: primary.provider,
+        },
       );
       await recordRun(speculative);
 
@@ -1175,6 +1336,15 @@ export async function* runHedged(
       capabilityContext,
       wantsWebSearch,
       authority.vendorNeutralEnabled ?? false,
+      {
+        role: 'speculative',
+        ...(primaryPreSelectedAccountId !== undefined
+          ? { avoidAccountId: primaryPreSelectedAccountId }
+          : {}),
+        ...(primaryPreSelectedProvider !== undefined
+          ? { preferSiblingProvider: primaryPreSelectedProvider }
+          : {}),
+      },
     );
 
     // Take the FIRST to finish with an adequate result; cancel the other.

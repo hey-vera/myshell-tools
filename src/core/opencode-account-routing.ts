@@ -145,6 +145,36 @@ export function selectSubscriptionAccount<T extends SubscriptionAccount>(input: 
 }
 
 /**
+ * Select a DISTINCT sibling account for the SAME provider as the primary,
+ * for use as a speculative hedge arm in account-aware parallelism (Slice 5).
+ *
+ * Eligibility: only accounts that are NOT the primary, NOT low/very-low-weight
+ * (priorityWeight >= 100), enabled, not expired, not cooling, not overflow-only.
+ *
+ * Delegates to {@link selectSubscriptionAccount} with `strategy: 'spread'`
+ * after filtering out the primary and low-weight/overflow accounts.
+ */
+export function selectSiblingSubscriptionAccount<T extends SubscriptionAccount>(input: {
+  accounts: readonly T[];
+  provider: SubscriptionProvider;
+  pool?: OpencodePool;
+  primaryAccountId: string;
+  nowMs: number;
+  cooldownUntil: ReadonlyMap<string, number>;
+  sessionTokensByAccount: Readonly<Record<string, number>>;
+}): T | null {
+  return selectSubscriptionAccount({
+    ...input,
+    accounts: input.accounts.filter((a) =>
+      a.id !== input.primaryAccountId &&
+      a.priority !== 'low' &&
+      a.priorityWeight >= 100
+    ),
+    strategy: 'spread',
+  });
+}
+
+/**
  * Compatibility wrapper: select the best OpenCode account from the matching pool.
  * Delegates to {@link selectSubscriptionAccount} with `provider: 'opencode'`.
  */

@@ -572,6 +572,15 @@ export interface AppConfig {
    */
   experimentalSubscriptions?: boolean;
   /**
+   * EXPERIMENTAL Account-Aware Parallelism for hedged escalation (default off).
+   * When true, and/or MYSHELL_ACCOUNT_PARALLELISM is truthy (AND the base
+   * experimentalSubscriptions / MYSHELL_SUBSCRIPTIONS flag is also on), the hedge
+   * path may use a distinct same-provider subscription account for its speculative
+   * sibling arm in quality-first mode. Gated behind the base subscriptions flag;
+   * default OFF. Absent means off.
+   */
+  experimentalAccountParallelism?: boolean;
+  /**
    * Per-user "first-touch explainer shown" flags (whole-tool-finish-5.5.md §0.1).
    * Absent → nothing shown yet (each surface explains itself once on first
    * encounter). Each key flips to true the first time that surface is met.

@@ -506,6 +506,18 @@ export interface OrchestrateDeps {
    */
   readonly onAccountUsed?: (accountId: string, usedAtIso: string) => void | Promise<void>;
   /**
+   * EXPERIMENTAL Account-Aware Parallelism flag (Slice 5). When true,
+   * the hedge path may use a distinct same-provider subscription account
+   * for its speculative sibling arm in quality-first mode. Absent → off.
+   */
+  readonly accountParallelism?: boolean;
+  /**
+   * EXPERIMENTAL providers temporarily excluded from same-provider account
+   * fanout because of a correlated-429 detection. Threaded into deps only
+   * when accountParallelism is true. Absent → no exclusions.
+   */
+  readonly accountParallelismDisabledProviders?: ReadonlySet<import('../infra/subscriptions.js').SubscriptionProvider>;
+  /**
   /**
    * EXPERIMENTAL native session plans (opt-in via config.nativeSessions), one
    * per provider that has an active native session for this conversation. When

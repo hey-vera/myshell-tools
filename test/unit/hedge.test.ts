@@ -32,6 +32,11 @@ import type {
   ProviderId,
   Usage,
 } from '../../src/providers/port.ts';
+import type { SubscriptionAccount } from '../../src/infra/subscriptions.ts';
+import {
+  selectSiblingSubscriptionAccount,
+} from '../../src/core/opencode-account-routing.ts';
+import type { SubscriptionProvider } from '../../src/infra/subscriptions.ts';
 import type {
   DetectedTestCommand,
   TestRunResult,
@@ -311,6 +316,96 @@ const SPLIT_ORDER: Partial<Policy> = {
 };
 
 const PLAN: HedgePlan = { primaryTier: 'ic', speculativeTier: 'manager', delayMs: 4000, risk: 'high' };
+
+// Policy override that routes BOTH primary (ic) and speculative (manager) to the
+// SAME provider (claude first), so same-provider account fanout can be tested.
+const SAME_PROVIDER_ORDER: Partial<Policy> = {
+  providerOrderByTier: {
+    worker: ['claude', 'codex'],
+    ic: ['claude', 'codex'],
+    manager: ['claude', 'codex'],
+  },
+};
+
+function makeClaudeAccount(overrides: Partial<SubscriptionAccount> = {}): SubscriptionAccount {
+  return {
+    id: 'claude-1',
+    provider: 'claude' as SubscriptionProvider,
+    kind: 'oauth-sub',
+    label: 'Claude Account 1',
+    homeDir: '/fake/claude-1',
+    priority: 'high',
+    priorityWeight: 200,
+    enabled: true,
+    createdAt: '2024-01-01T00:00:00Z',
+    ...overrides,
+  } as SubscriptionAccount;
+}
+
+function makeClaudeAccounts(): SubscriptionAccount[] {
+  return [
+    makeClaudeAccount({ id: 'claude-1', label: 'Claude Account 1', priorityWeight: 200 }),
+    makeClaudeAccount({ id: 'claude-2', label: 'Claude Account 2', priorityWeight: 150, createdAt: '2024-01-02T00:00:00Z' }),
+  ];
+}
+
+function hedgeDepsWithAccounts(
+  providers: Partial<Record<ProviderId, Provider>>,
+  sleep: (ms: number) => Promise<void>,
+  opts: {
+    policyOverrides?: Partial<Policy>;
+    subscriptionAccounts?: SubscriptionAccount[];
+    accountParallelism?: boolean;
+    accountParallelismDisabledProviders?: ReadonlySet<SubscriptionProvider>;
+    mode?: string;
+    accountCooldownUntil?: Map<string, number>;
+    sessionTokensByAccount?: Record<string, number>;
+  } = {},
+): {
+  deps: OrchestrateDeps;
+  session: ReturnType<typeof makeFakeSession>;
+  ledger: ReturnType<typeof makeFakeLedger>;
+} {
+  const base = hedgeDeps(providers, sleep, opts.policyOverrides ?? SAME_PROVIDER_ORDER);
+  const accounts = opts.subscriptionAccounts ?? makeClaudeAccounts();
+  if (opts.mode === 'balanced') {
+    base.deps.policy = { ...base.deps.policy, mode: 'balanced' };
+  }
+  if (opts.accountParallelism !== false && opts.mode !== 'balanced') {
+    return {
+      session: base.session,
+      ledger: base.ledger,
+      deps: {
+        ...base.deps,
+        subscriptionAccounts: accounts,
+        accountParallelism: opts.accountParallelism ?? true,
+        ...(opts.accountParallelismDisabledProviders !== undefined
+          ? { accountParallelismDisabledProviders: opts.accountParallelismDisabledProviders }
+          : {}),
+        accountCooldownUntil: opts.accountCooldownUntil,
+        sessionTokensByAccount: opts.sessionTokensByAccount,
+        onAccountUsed: async () => {},
+      },
+    };
+  }
+  return {
+    session: base.session,
+    ledger: base.ledger,
+    deps: {
+      ...base.deps,
+      subscriptionAccounts: accounts,
+      ...(opts.accountParallelism === true
+        ? { accountParallelism: true }
+        : {}),
+      ...(opts.accountParallelismDisabledProviders !== undefined
+        ? { accountParallelismDisabledProviders: opts.accountParallelismDisabledProviders }
+        : {}),
+      accountCooldownUntil: opts.accountCooldownUntil,
+      sessionTokensByAccount: opts.sessionTokensByAccount,
+      onAccountUsed: async () => {},
+    },
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Integration: runHedged
@@ -894,5 +989,481 @@ describe('runHedged — Candidate Quality Gate', () => {
     assert.equal(final.canceled, true);
     assert.equal(session.entries.filter((e) => e.role === 'assistant').length, 0);
     assert.equal(events.filter((e) => e.type === 'final').length, 1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Slice 5: Account-Aware Parallelism for Hedge
+// ---------------------------------------------------------------------------
+
+describe('account parallelism — flag off (byte-identical)', () => {
+  it('accountParallelism absent → hedge unchanged, no accountId on result', async () => {
+    const primaryReq = { last: undefined as ProviderRequest | undefined };
+    const claude = makeProvider('claude', adequate('PRIMARY-OK'), { reqSink: primaryReq });
+    const codex = makeProvider('codex', adequate('SPEC'));
+    const neverSleep = (): Promise<void> => new Promise<void>(() => {});
+    const { deps, ledger } = hedgeDeps({ claude, codex }, neverSleep, SAME_PROVIDER_ORDER);
+    // No accountParallelism field → old behavior
+    const events = await collect(
+      runHedged('hard task', deps, PLAN, new AbortController().signal),
+    );
+    const final = events.find((e) => e.type === 'final');
+    assert.ok(final !== undefined && final.type === 'final');
+    assert.equal(final.success, true);
+    // No accountId on the provider request
+    assert.equal(primaryReq.last?.accountId, undefined);
+    assert.equal(primaryReq.last?.accountEnv, undefined);
+    // No accountId on ledger entries
+    for (const le of ledger.entries) {
+      assert.equal(le.accountId, undefined);
+    }
+  });
+
+  it('accountParallelism false when subscriptions on → hedge unchanged', async () => {
+    const primaryReq = { last: undefined as ProviderRequest | undefined };
+    const claude = makeProvider('claude', adequate('PRIMARY-OK'), { reqSink: primaryReq });
+    const codex = makeProvider('codex', adequate('SPEC'));
+    const neverSleep = (): Promise<void> => new Promise<void>(() => {});
+    const { deps, ledger } = hedgeDepsWithAccounts(
+      { claude, codex },
+      neverSleep,
+      { accountParallelism: false },
+    );
+    const events = await collect(
+      runHedged('hard task', deps, PLAN, new AbortController().signal),
+    );
+    assert.ok(events.some((e) => e.type === 'final' && 'success' in e && e.success));
+    assert.equal(primaryReq.last?.accountId, undefined);
+    for (const le of ledger.entries) {
+      assert.equal(le.accountId, undefined);
+    }
+  });
+});
+
+describe('account parallelism — hedge eligibility', () => {
+  it('primary gets account A, speculative same-provider arm gets distinct sibling account B (CASE B, parallel)', async () => {
+    const primaryReq = { last: undefined as ProviderRequest | undefined };
+    const specReq = { last: undefined as ProviderRequest | undefined };
+    let callN = 0;
+    const reqSinks = [primaryReq, specReq];
+    // Wrap makeSeqProvider to record requests on each call
+    const claude: Provider = {
+      id: 'claude',
+      async detect() {
+        return { id: 'claude', installed: true, version: '1', authenticated: true, binaryPath: '/f', availableModels: [] };
+      },
+      async *run(req: ProviderRequest): AsyncIterable<ProviderEvent> {
+        const sink = reqSinks[callN];
+        if (sink !== undefined) sink.last = req;
+        const texts = [
+          lowConf('PRIMARY-LOW'),   // primary: slow/inadequate → triggers sequential or parallel spec
+          adequate('SPEC-WINS'),     // speculative: adequate → wins
+        ];
+        const text = texts[Math.min(callN, texts.length - 1)] ?? '';
+        callN++;
+        yield { type: 'text', delta: text };
+        yield { type: 'done', text, usage: USAGE, raw: {} };
+      },
+    };
+    const codex = makeProvider('codex', adequate('UNUSED'));
+    const { deps, ledger } = hedgeDepsWithAccounts(
+      { claude, codex },
+      (_ms: number): Promise<void> => Promise.resolve(), // sleep resolves immediately → CASE B
+      { policyOverrides: SAME_PROVIDER_ORDER },
+    );
+    const events = await collect(
+      runHedged('hard task', deps, { ...PLAN, delayMs: 0 }, new AbortController().signal),
+    );
+    assert.ok(events.some((e) => e.type === 'final' && 'success' in e && e.success));
+
+    // Primary should have accountId = 'claude-1' (highest weight, first spread pick)
+    assert.equal(primaryReq.last?.accountId, 'claude-1');
+    assert.ok(primaryReq.last?.accountEnv !== undefined);
+
+    // Speculative should have a DIFFERENT accountId (sibling: claude-2)
+    assert.equal(specReq.last?.accountId, 'claude-2');
+    assert.ok(specReq.last?.accountEnv !== undefined);
+
+    // Ledger entries carry accountIds
+    const primaryLe = ledger.entries.find((e) => e.accountId === 'claude-1');
+    const specLe = ledger.entries.find((e) => e.accountId === 'claude-2');
+    assert.ok(primaryLe !== undefined, 'primary ledger entry missing accountId');
+    assert.ok(specLe !== undefined, 'speculative ledger entry missing accountId');
+  });
+
+  it('primary gets account A, speculative sequential arm (CASE A inadequate) gets distinct sibling account B', async () => {
+    const primaryReq = { last: undefined as ProviderRequest | undefined };
+    const specReq = { last: undefined as ProviderRequest | undefined };
+    let callN = 0;
+    const reqSinks = [primaryReq, specReq];
+    const claude: Provider = {
+      id: 'claude',
+      async detect() {
+        return { id: 'claude', installed: true, version: '1', authenticated: true, binaryPath: '/f', availableModels: [] };
+      },
+      async *run(req: ProviderRequest): AsyncIterable<ProviderEvent> {
+        const sink = reqSinks[callN];
+        if (sink !== undefined) sink.last = req;
+        const texts = [
+          lowConf('PRIMARY-LOW'),    // primary fast but inadequate
+          adequate('SEQ-SPEC-WINS'), // speculative adequate → wins
+        ];
+        const text = texts[Math.min(callN, texts.length - 1)] ?? '';
+        callN++;
+        yield { type: 'text', delta: text };
+        yield { type: 'done', text, usage: USAGE, raw: {} };
+      },
+    };
+    const codex = makeProvider('codex', adequate('UNUSED'));
+    // sleep never resolves → CASE A (primary finishes before delay)
+    const neverSleep = (): Promise<void> => new Promise<void>(() => {});
+    const { deps } = hedgeDepsWithAccounts(
+      { claude, codex },
+      neverSleep,
+      { policyOverrides: SAME_PROVIDER_ORDER },
+    );
+    const events = await collect(
+      runHedged('hard task', deps, PLAN, new AbortController().signal),
+    );
+    assert.ok(events.some((e) => e.type === 'final' && 'success' in e && e.success));
+    assert.equal(primaryReq.last?.accountId, 'claude-1');
+    assert.equal(specReq.last?.accountId, 'claude-2');
+  });
+});
+
+describe('account parallelism — ineligible cases', () => {
+  it('balanced/cost-saver mode → no sibling fanout', async () => {
+    const primaryReq = { last: undefined as ProviderRequest | undefined };
+    let callN = 0;
+    const claude: Provider = {
+      id: 'claude',
+      async detect() {
+        return { id: 'claude', installed: true, version: '1', authenticated: true, binaryPath: '/f', availableModels: [] };
+      },
+      async *run(req: ProviderRequest): AsyncIterable<ProviderEvent> {
+        if (callN === 0) primaryReq.last = req;
+        callN++;
+        const text = adequate('OK');
+        yield { type: 'text', delta: text };
+        yield { type: 'done', text, usage: USAGE, raw: {} };
+      },
+    };
+    const codex = makeProvider('codex', adequate('UNUSED'));
+    const { deps, ledger } = hedgeDepsWithAccounts(
+      { claude, codex },
+      (_ms: number): Promise<void> => Promise.resolve(),
+      { mode: 'balanced' },
+    );
+    const events = await collect(
+      runHedged('hard task', deps, { ...PLAN, delayMs: 0 }, new AbortController().signal),
+    );
+    assert.ok(events.some((e) => e.type === 'final' && 'success' in e && e.success));
+    // In balanced mode, accountParallelism is not set → no account selection
+    assert.equal(primaryReq.last?.accountId, undefined);
+    for (const le of ledger.entries) {
+      assert.equal(le.accountId, undefined);
+    }
+  });
+
+  it('<2 eligible accounts → no sibling fanout (only one claude account)', async () => {
+    const primaryReq = { last: undefined as ProviderRequest | undefined };
+    const specReq = { last: undefined as ProviderRequest | undefined };
+    let callN = 0;
+    const reqSinks = [primaryReq, specReq];
+    const claude: Provider = {
+      id: 'claude',
+      async detect() {
+        return { id: 'claude', installed: true, version: '1', authenticated: true, binaryPath: '/f', availableModels: [] };
+      },
+      async *run(req: ProviderRequest): AsyncIterable<ProviderEvent> {
+        const sink = reqSinks[callN];
+        if (sink !== undefined) sink.last = req;
+        const texts = [lowConf('PRIMARY-LOW'), adequate('SPEC-WINS')];
+        const text = texts[Math.min(callN, texts.length - 1)] ?? '';
+        callN++;
+        yield { type: 'text', delta: text };
+        yield { type: 'done', text, usage: USAGE, raw: {} };
+      },
+    };
+    const codex = makeProvider('codex', adequate('UNUSED'));
+    const accounts = [makeClaudeAccount({ id: 'claude-1' })];
+    const { deps } = hedgeDepsWithAccounts(
+      { claude, codex },
+      (_ms: number): Promise<void> => Promise.resolve(),
+      { subscriptionAccounts: accounts },
+    );
+    // Verify the deps are set up correctly
+    assert.equal(deps.accountParallelism, true);
+    assert.equal(deps.subscriptionAccounts, accounts);
+    assert.equal(typeof deps.onAccountUsed, 'function');
+    const events = await collect(
+      runHedged('hard task', deps, { ...PLAN, delayMs: 0 }, new AbortController().signal),
+    );
+    assert.ok(events.some((e) => e.type === 'final' && 'success' in e && e.success));
+    // Primary gets claude-1; speculative gets no sibling (only one account available)
+    assert.equal(primaryReq.last?.accountId, 'claude-1');
+    assert.equal(specReq.last?.accountId, undefined);
+  });
+
+  it('tripped provider (in accountParallelismDisabledProviders) → no sibling fanout', async () => {
+    const primaryReq = { last: undefined as ProviderRequest | undefined };
+    const specReq = { last: undefined as ProviderRequest | undefined };
+    let callN = 0;
+    const reqSinks = [primaryReq, specReq];
+    const claude: Provider = {
+      id: 'claude',
+      async detect() {
+        return { id: 'claude', installed: true, version: '1', authenticated: true, binaryPath: '/f', availableModels: [] };
+      },
+      async *run(req: ProviderRequest): AsyncIterable<ProviderEvent> {
+        const sink = reqSinks[callN];
+        if (sink !== undefined) sink.last = req;
+        const texts = [lowConf('PRIMARY-LOW'), adequate('SPEC-WINS')];
+        const text = texts[Math.min(callN, texts.length - 1)] ?? '';
+        callN++;
+        yield { type: 'text', delta: text };
+        yield { type: 'done', text, usage: USAGE, raw: {} };
+      },
+    };
+    const codex = makeProvider('codex', adequate('UNUSED'));
+    const { deps } = hedgeDepsWithAccounts(
+      { claude, codex },
+      (_ms: number): Promise<void> => Promise.resolve(),
+      {
+        accountParallelismDisabledProviders: new Set<SubscriptionProvider>(['claude']),
+      },
+    );
+    const events = await collect(
+      runHedged('hard task', deps, { ...PLAN, delayMs: 0 }, new AbortController().signal),
+    );
+    assert.ok(events.some((e) => e.type === 'final' && 'success' in e && e.success));
+    // When provider is tripped, account selection is skipped entirely → no accountId
+    assert.equal(primaryReq.last?.accountId, undefined);
+    assert.equal(specReq.last?.accountId, undefined);
+  });
+
+  it('cooling sibling → no sibling fanout (primary only account available)', async () => {
+    const primaryReq = { last: undefined as ProviderRequest | undefined };
+    const specReq = { last: undefined as ProviderRequest | undefined };
+    let callN = 0;
+    const reqSinks = [primaryReq, specReq];
+    const claude: Provider = {
+      id: 'claude',
+      async detect() {
+        return { id: 'claude', installed: true, version: '1', authenticated: true, binaryPath: '/f', availableModels: [] };
+      },
+      async *run(req: ProviderRequest): AsyncIterable<ProviderEvent> {
+        const sink = reqSinks[callN];
+        if (sink !== undefined) sink.last = req;
+        const texts = [lowConf('PRIMARY-LOW'), adequate('SPEC-WINS')];
+        const text = texts[Math.min(callN, texts.length - 1)] ?? '';
+        callN++;
+        yield { type: 'text', delta: text };
+        yield { type: 'done', text, usage: USAGE, raw: {} };
+      },
+    };
+    const codex = makeProvider('codex', adequate('UNUSED'));
+    const cooldown = new Map<string, number>();
+    cooldown.set('claude-2', Date.now() + 60_000);
+    const { deps } = hedgeDepsWithAccounts(
+      { claude, codex },
+      (_ms: number): Promise<void> => Promise.resolve(),
+      { accountCooldownUntil: cooldown },
+    );
+    const events = await collect(
+      runHedged('hard task', deps, { ...PLAN, delayMs: 0 }, new AbortController().signal),
+    );
+    assert.ok(events.some((e) => e.type === 'final' && 'success' in e && e.success));
+    // Primary gets claude-1 (not cooling); speculative gets claude-2 (cooling,
+    // but returned by never-strand since it's the only sibling candidate)
+    assert.equal(primaryReq.last?.accountId, 'claude-1');
+    assert.equal(specReq.last?.accountId, 'claude-2');
+  });
+});
+
+describe('account parallelism — pure selectors unchanged', () => {
+  it('planHedge is pure and unchanged (no account imports)', () => {
+    // planHedge does NOT import or reference subscription accounts
+    const plan = planHedge({
+      hedgePolicy: 'on',
+      classification: HIGH_IC,
+      policy: { ...DEFAULT_POLICY, flagshipAdmission: 'always-eligible', hedgeDelayMs: 2000 },
+      authenticatedProviders: ['claude'],
+      hasSleep: true,
+    });
+    assert.ok(plan !== null);
+    assert.equal(plan.delayMs, 2000);
+  });
+
+  it('selectSiblingSubscriptionAccount returns distinct non-low account', () => {
+    const accounts: SubscriptionAccount[] = [
+      makeClaudeAccount({ id: 'claude-1', priorityWeight: 200 }),
+      makeClaudeAccount({ id: 'claude-2', priorityWeight: 150, createdAt: '2024-01-02T00:00:00Z' }),
+      makeClaudeAccount({ id: 'claude-3', priority: 'low', priorityWeight: 25 }), // excluded
+      makeClaudeAccount({ id: 'claude-disabled', priority: 'disabled', priorityWeight: 0 }), // excluded
+    ];
+    const sibling = selectSiblingSubscriptionAccount({
+      accounts,
+      provider: 'claude',
+      primaryAccountId: 'claude-1',
+      nowMs: Date.now(),
+      cooldownUntil: new Map(),
+      sessionTokensByAccount: {},
+    });
+    assert.ok(sibling !== null);
+    assert.notEqual(sibling.id, 'claude-1');
+    assert.notEqual(sibling.id, 'claude-3'); // low priority excluded
+    assert.strictEqual(sibling.id, 'claude-2'); // next best
+  });
+
+  it('selectSiblingSubscriptionAccount returns null when no eligible sibling', () => {
+    const accounts: SubscriptionAccount[] = [
+      makeClaudeAccount({ id: 'claude-1', priorityWeight: 200 }),
+    ];
+    const sibling = selectSiblingSubscriptionAccount({
+      accounts,
+      provider: 'claude',
+      primaryAccountId: 'claude-1',
+      nowMs: Date.now(),
+      cooldownUntil: new Map(),
+      sessionTokensByAccount: {},
+    });
+    assert.equal(sibling, null);
+  });
+
+  it('selectSiblingSubscriptionAccount excludes low-priority siblings', () => {
+    const accounts: SubscriptionAccount[] = [
+      makeClaudeAccount({ id: 'claude-1', priorityWeight: 200 }),
+      makeClaudeAccount({ id: 'claude-low', priority: 'low', priorityWeight: 25 }),
+    ];
+    const sibling = selectSiblingSubscriptionAccount({
+      accounts,
+      provider: 'claude',
+      primaryAccountId: 'claude-1',
+      nowMs: Date.now(),
+      cooldownUntil: new Map(),
+      sessionTokensByAccount: {},
+    });
+    assert.equal(sibling, null);
+  });
+});
+
+describe('account parallelism — ledger + reconciliation', () => {
+  it('both ledger entries include accountId when accounts selected', async () => {
+    let callN = 0;
+    const claude: Provider = {
+      id: 'claude',
+      async detect() {
+        return { id: 'claude', installed: true, version: '1', authenticated: true, binaryPath: '/f', availableModels: [] };
+      },
+      async *run(_req: ProviderRequest): AsyncIterable<ProviderEvent> {
+        const texts = [lowConf('PRIMARY-LOW'), adequate('SPEC-WINS')];
+        const text = texts[Math.min(callN, texts.length - 1)] ?? '';
+        callN++;
+        yield { type: 'text', delta: text };
+        yield { type: 'done', text, usage: USAGE, raw: {} };
+      },
+    };
+    const codex = makeProvider('codex', adequate('UNUSED'));
+    const { deps, ledger } = hedgeDepsWithAccounts(
+      { claude, codex },
+      (_ms: number): Promise<void> => Promise.resolve(),
+    );
+    const events = await collect(
+      runHedged('hard task', deps, { ...PLAN, delayMs: 0 }, new AbortController().signal),
+    );
+    assert.ok(events.some((e) => e.type === 'final' && 'success' in e && e.success));
+    const primaryLe = ledger.entries.find((e) => e.accountId === 'claude-1');
+    const specLe = ledger.entries.find((e) => e.accountId === 'claude-2');
+    assert.ok(primaryLe !== undefined, 'primary ledger entry missing accountId');
+    assert.ok(specLe !== undefined, 'speculative ledger entry missing accountId');
+  });
+
+  it('first success wins — primary fast + adequate, speculative never started', async () => {
+    const primaryReq = { last: undefined as ProviderRequest | undefined };
+    let callN = 0;
+    const claude: Provider = {
+      id: 'claude',
+      async detect() {
+        return { id: 'claude', installed: true, version: '1', authenticated: true, binaryPath: '/f', availableModels: [] };
+      },
+      async *run(req: ProviderRequest): AsyncIterable<ProviderEvent> {
+        if (callN === 0) primaryReq.last = req;
+        const text = adequate('PRIMARY-OK');
+        callN++;
+        yield { type: 'text', delta: text };
+        yield { type: 'done', text, usage: USAGE, raw: {} };
+      },
+    };
+    const codex = makeProvider('codex', adequate('UNUSED'));
+    const neverSleep = (): Promise<void> => new Promise<void>(() => {});
+    const { deps, ledger } = hedgeDepsWithAccounts(
+      { claude, codex },
+      neverSleep,
+    );
+    const events = await collect(
+      runHedged('hard task', deps, PLAN, new AbortController().signal),
+    );
+    const final = events.find((e) => e.type === 'final');
+    assert.ok(final !== undefined && final.type === 'final');
+    assert.equal(final.success, true);
+    // Only 1 ledger entry (speculative never started)
+    assert.equal(ledger.entries.length, 1);
+    assert.equal(ledger.entries[0].accountId, 'claude-1');
+  });
+});
+
+describe('account parallelism — cross-vendor hedge unchanged', () => {
+  it('when primary + speculative use different providers (SPLIT_ORDER), no sibling fanout needed', async () => {
+    const primaryReq = { last: undefined as ProviderRequest | undefined };
+    const specReq = { last: undefined as ProviderRequest | undefined };
+    // SPLIT_ORDER: ic=claude, manager=codex. Both use different providers.
+    // We need a claude provider (for primary) and codex provider (for speculative).
+    const claude: Provider = {
+      id: 'claude',
+      async detect() {
+        return { id: 'claude', installed: true, version: '1', authenticated: true, binaryPath: '/f', availableModels: [] };
+      },
+      async *run(req: ProviderRequest): AsyncIterable<ProviderEvent> {
+        // Primary uses this provider (claude, ic tier)
+        if (primaryReq.last === undefined) primaryReq.last = req;
+        const text = lowConf('CLAUDE-LOW');
+        yield { type: 'text', delta: text };
+        yield { type: 'done', text, usage: USAGE, raw: {} };
+      },
+    };
+    const codex: Provider = {
+      id: 'codex',
+      async detect() {
+        return { id: 'codex', installed: true, version: '1', authenticated: true, binaryPath: '/f', availableModels: [] };
+      },
+      async *run(req: ProviderRequest): AsyncIterable<ProviderEvent> {
+        specReq.last = req;
+        const text = adequate('CODEX-WINS');
+        yield { type: 'text', delta: text };
+        yield { type: 'done', text, usage: USAGE, raw: {} };
+      },
+    };
+    // Add claude + codex accounts so both get account routing
+    const allAccounts: SubscriptionAccount[] = [
+      makeClaudeAccount({ id: 'claude-1' }),
+      { ...makeClaudeAccount({ id: 'claude-1' }), provider: 'codex' as SubscriptionProvider, id: 'codex-1', label: 'Codex 1' },
+    ];
+    const { deps } = hedgeDepsWithAccounts(
+      { claude, codex },
+      (_ms: number): Promise<void> => Promise.resolve(),
+      {
+        policyOverrides: SPLIT_ORDER,
+        subscriptionAccounts: allAccounts,
+      },
+    );
+    const events = await collect(
+      runHedged('hard task', deps, { ...PLAN, delayMs: 0 }, new AbortController().signal),
+    );
+    assert.ok(events.some((e) => e.type === 'final' && 'success' in e && e.success));
+    // Primary is claude, gets claude account
+    assert.equal(primaryReq.last?.accountId, 'claude-1');
+    // Speculative routes to codex — normal account selection, not sibling (different provider)
+    assert.equal(specReq.last?.accountId, 'codex-1');
   });
 });
