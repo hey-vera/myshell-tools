@@ -103,6 +103,26 @@ export function resolveAutoMode(env: EnvironmentStatus): Mode {
   return autoModeForPlanInfos(authedProviderPlans(env).map((p) => p.info));
 }
 
+/**
+ * The per-turn budget ceiling implied by the user's subscription plans.
+ * Maps plan-derived mode to a budget number the governor can use as a CAP
+ * when Auto Smart is on (Redesign Slice C): Max → 3, Pro/none → 2, Free → 1.
+ * Used only as a ceiling — the governor's base budget still comes from the
+ * neutral balanced policy.
+ */
+export function planBudgetCeiling(env: EnvironmentStatus): number {
+  const autoMode = resolveAutoMode(env);
+  switch (autoMode) {
+    case 'quality-first':
+      return 3;
+    case 'cost-saver':
+      return 1;
+    case 'balanced':
+    default:
+      return 2;
+  }
+}
+
 export function hasAuthenticatedProvider(env: EnvironmentStatus): boolean {
   return env.claude.authenticated || env.codex.authenticated || env.opencode.authenticated || env.grok.authenticated;
 }
@@ -114,17 +134,17 @@ export function hasAuthenticatedProvider(env: EnvironmentStatus): boolean {
  * screen — the full per-provider story (including who reported nothing) lives on
  * the mode screen's "Auto detected" breakdown, not here.
  *
- * TIER-ADAPTIVE AUTO (master-plan PHASE 4 / experience §3.2): the suffix names the
- * adaptive POSTURE the detected tier sets — "→ full" (Max), "→ balanced" (Pro /
- * unknown — the SAFE middle, never assumed Max), "→ conservative" (Free). The word
- * is a pure projection of the SAME `Mode` the Governor derives its budget from
- * (`autoPostureForMode`), so the label can never overstate what the plan actually
- * buys. The LABEL is always-on (honest display of the auto intent); the budget
- * ADAPTATION it describes is Governor behaviour, gated by the Governor flag.
+ * When `autoSmart` is true (Redesign Slice C), the suffix describes per-turn
+ * scaling instead of pinning to a plan-derived posture — the plan raises the
+ * ceiling but doesn't define what Auto "is."
  */
-export function autoModeReason(env: EnvironmentStatus): string {
+export function autoModeReason(env: EnvironmentStatus, autoSmart = false): string {
   const infos = authedProviderPlans(env).map((p) => p.info);
   const observed = infos.filter((i) => i.confidence === 'observed');
+  if (autoSmart) {
+    const planPart = observed.length === 0 ? 'auto' : `auto · ${describePlanSet(observed)}`;
+    return `${planPart} — per-turn effort from task + risk + provider headroom`;
+  }
   const posture = autoPostureForMode(autoModeForPlanInfos(infos));
   const planPart = observed.length === 0 ? 'auto' : `auto · ${describePlanSet(observed)}`;
   return `${planPart} → ${posture}`;

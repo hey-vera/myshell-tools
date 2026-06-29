@@ -1804,7 +1804,9 @@ export async function* orchestrate(
       deps.planInfos !== undefined
         ? (Object.values(deps.planInfos).filter((p) => p !== undefined) as PlanInfo[])
         : [];
-    const governorMode = planInfoList.length > 0 ? autoModeForPlanInfos(planInfoList) : mode;
+    const governorMode = deps.governorBudgetCeiling !== undefined
+      ? mode // AutoSmart: neutral base, plan ceiling raises budget separately
+      : (planInfoList.length > 0 ? autoModeForPlanInfos(planInfoList) : mode);
     governorPlan = allocate({
       conf,
       frame: intentFrame,
@@ -1816,6 +1818,9 @@ export async function* orchestrate(
       authedProviderCount: (deps.authenticatedProviders ?? []).length,
       pressure: deps.governorPressure ?? pressureFromSignals({}),
       maxRounds: maxRoundsFor(deps.partnerStyle),
+      ...(deps.governorBudgetCeiling !== undefined
+        ? { budgetCeiling: deps.governorBudgetCeiling }
+        : {}),
     });
   }
 

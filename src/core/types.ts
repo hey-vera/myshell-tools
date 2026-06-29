@@ -899,6 +899,14 @@ export interface OrchestrateDeps {
    */
   readonly governorPressure?: 0 | 1 | 2 | 3;
   /**
+   * Per-turn budget ceiling from plan-derived capacity (Redesign Slice C:
+   * Auto Smart Default). When set, the governor raises its base budget to this
+   * ceiling for substantial turns — the plan raises what Auto CAN afford without
+   * changing what Auto IS. Absent → the mode's base budget is the ceiling.
+   * Only ever set when Auto+experimentalAutoSmart is active.
+   */
+  readonly governorBudgetCeiling?: number;
+  /**
    * The injected VERIFICATION PORT (master-plan PHASE 3, the centerpiece) — stable,
    * default-on at interactive and one-shot surfaces (v9 Phase 7c). The impure
    * git-diff + test-detection + bounded test-runner (src/infra/verify-port.ts),

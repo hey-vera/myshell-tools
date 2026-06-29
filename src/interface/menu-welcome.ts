@@ -14,7 +14,7 @@ import type { ProviderId } from '../providers/port.js';
 import type { LoginMethod } from '../commands/login.js';
 import type { CommandGatePort } from '../core/command-gate.js';
 import { runInstall, isHookInstalled } from '../commands/install.js';
-import { modeLabel } from '../core/policy.js';
+import { levelLabel, LEVEL_DESC, ALL_LEVELS } from '../core/mode-levels.js';
 import { box } from '../ui/tui.js';
 import { dim, green } from '../ui/theme.js';
 import { createSpinner } from '../ui/spinner.js';
@@ -158,13 +158,21 @@ export async function runWelcome(
     }
   }
 
-  // ---- Mode selection — single collapsed prompt ----------------------------
-  // Accepts 1/2/3 directly; Enter keeps the auto default (derived from your plan).
-  // flagshipAdmission governs the strongest model: Efficient never auto-opens it,
-  // Balanced earns one pass per turn when warranted, Max opens it on demand.
-  out.write(
-    `\nMode — [1] ${modeLabel('cost-saver')}  [2] ${modeLabel('balanced')}  [3] ${modeLabel('quality-first')}  (Enter = auto from your subscription): `,
-  );
+  // ---- Mode — optional picker, Auto (smart) is the default -----------------
+  // No forced mode choice: Auto is on by default. Press 1-5 to set an explicit
+  // mode, or Enter to keep the smart default. The picker uses the 5-level dial.
+  // newMode === undefined means Auto (no config.mode persisted).
+  out.write('\n');
+  out.write('Mode: Auto (smart) is on by default.\n');
+  out.write('  It chooses effort each turn from task, risk, goals, and provider headroom.\n');
+  for (const level of ALL_LEVELS) {
+    const idx = ALL_LEVELS.indexOf(level) + 1;
+    const desc = LEVEL_DESC[level];
+    const suffix = level === 'auto' ? `  ‹default›` : '';
+    const line = `  [${idx}] ${levelLabel(level)}${level === 'auto' ? ' (smart)' : ''} — ${desc}${suffix}`;
+    out.write(level === 'auto' ? line + '\n' : dim(line, out.color) + '\n');
+  }
+  out.write('\nPress Enter to keep Auto, or 1-5 to change: ');
   const modeKey = await readMenuKey(out, readLine, undefined, false, inkReadKey);
 
   // EOF during setup — save bare onboarded config and return.
@@ -181,11 +189,13 @@ export async function runWelcome(
     return saved;
   }
 
-  let newMode = mutableConfig.mode;
-  if (modeKey === '1') newMode = 'cost-saver';
-  else if (modeKey === '2') newMode = 'balanced';
-  else if (modeKey === '3') newMode = 'quality-first';
-  // Enter/empty/anything else → keep current (balanced default)
+  let newMode = mutableConfig.mode; // undefined means Auto (smart)
+  if (modeKey === '1') newMode = undefined;       // Auto (smart)
+  else if (modeKey === '2') newMode = 'cost-saver'; // Budget
+  else if (modeKey === '3') newMode = 'balanced';   // Balanced
+  else if (modeKey === '4') newMode = 'quality-first'; // High (alias Max)
+  else if (modeKey === '5') newMode = 'quality-first'; // Max
+  // Enter/empty/anything else → keep current (Auto smart default)
 
   const updated: AppConfig = {
     onboarded: mutableConfig.onboarded,

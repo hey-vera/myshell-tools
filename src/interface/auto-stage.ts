@@ -35,7 +35,8 @@ import type { ProviderId } from '../providers/port.js';
 import { dim } from '../ui/theme.js';
 import type { OutputSink } from './render.js';
 import type { MenuContext } from './menu.js';
-import { resolveAutoMode, resolveIntensity } from './menu-auto-mode.js';
+import { resolveAutoMode, resolveIntensity, planBudgetCeiling } from './menu-auto-mode.js';
+import { autoSmartEnabled } from './ui/auto-smart-flag.js';
 
 export type WarmUnderstanding = (cacheKey: string, line: string) => void;
 
@@ -291,9 +292,14 @@ export function createAutoStageEngine(deps: AutoStageEngineDeps): AutoStageEngin
           ...(highStakes ? { needsReview: true } : {}),
         })
       : resolved.value;
-    const effectiveMode: Mode = deps.mutableCtx.config.mode ?? resolveAutoMode(deps.mutableCtx.env);
+    const autoSmartOn = autoSmartEnabled(process.env, deps.mutableCtx.config);
+    const effectiveMode: Mode = deps.mutableCtx.config.mode ??
+      (autoSmartOn ? 'balanced' : resolveAutoMode(deps.mutableCtx.env));
     const modeBudget = effectiveMode === 'quality-first' ? 3 : effectiveMode === 'balanced' ? 2 : 1;
-    const callBudgetCeiling = Math.max(1, modeBudget - deps.currentPressure()) as 1 | 2 | 3;
+    const planCeiling = autoSmartOn && deps.mutableCtx.config.mode === undefined
+      ? planBudgetCeiling(deps.mutableCtx.env)
+      : modeBudget;
+    const callBudgetCeiling = Math.max(1, Math.max(modeBudget, planCeiling) - deps.currentPressure()) as 1 | 2 | 3;
     const cap = planningDepthCap({ resolvedIntensity, callBudgetCeiling, shape });
     const depth = chooseInitialPlanningDepth({
       cap,

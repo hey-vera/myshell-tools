@@ -315,6 +315,14 @@ export interface AllocateInput {
    * collaborative). The governor's `roundBudget` never exceeds it.
    */
   readonly maxRounds: number;
+  /**
+   * Optional per-turn budget ceiling from plan-derived capacity (Redesign Slice C:
+   * Auto Smart Default). When set, the governor raises its base budget to this
+   * ceiling for substantial turns — the plan raises what Auto CAN afford without
+   * changing what Auto IS. Absent → the mode's {@link baseBudgetForMode} is the
+   * ceiling. Only ever set by Auto+flag callers; explicit modes ignore it.
+   */
+  readonly budgetCeiling?: number;
 }
 
 /**
@@ -682,11 +690,16 @@ export function allocate(input: AllocateInput): AllocationPlan {
   // A trivial turn is PROVABLY 1 — it bypasses every metered lever (the surgical
   // claim, perf doc §3.3). For every other shape the allowance is the tier base,
   // shrunk honestly by live pressure.
+  // budgetCeiling (Auto Smart Default): when set, the plan-derived capacity raises
+  // the budget CAP for substantial turns while the mode's base stays the floor.
   const base = baseBudgetForMode(input.mode);
+  const cap = input.budgetCeiling !== undefined ? Math.max(base, input.budgetCeiling) : base;
   const pressure = input.pressure;
-  const turnCallBudget = shape === 'quick' ? 1 : effectiveBudget(base, pressure);
+  const turnCallBudget = shape === 'quick' ? 1 : effectiveBudget(cap, pressure);
   if (shape === 'quick') {
     reasons.push('trivial turn — budget 1, no metered lever (instant)');
+  } else if (input.budgetCeiling !== undefined && cap > base) {
+    reasons.push(`auto-smart — plan capacity raised the budget ceiling ${base}→${cap}`);
   } else if (pressure > 0 && turnCallBudget < base) {
     reasons.push(`conserving — quota pressure shrank the budget ${base}→${turnCallBudget}`);
   }

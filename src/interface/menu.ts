@@ -189,6 +189,7 @@ import {
   hasAuthenticatedProvider,
   subscriptionInventoryFromEnvironment,
   resolveIntensity,
+  planBudgetCeiling,
 } from './menu-auto-mode.js';
 import { levelToMode, migrateMode } from '../core/mode-levels.js';
 import { decidePostTurn } from './menu-post-turn.js';
@@ -218,6 +219,7 @@ import { STARTUP_INPUT_CARRIER_ENV } from './startup-input.js';
 import { schedulerEnabled, schedulerExplicitlyOff } from './ui/scheduler-flag.js';
 import { itemParkingEnabled } from './ui/item-park-flag.js';
 import { governorEnabled } from './ui/governor-flag.js';
+import { autoSmartEnabled } from './ui/auto-smart-flag.js';
 import { verifyEnabled } from './ui/verify-flag.js';
 import { trustEnabled } from './ui/trust-flag.js';
 import { tribunalEnabled } from './ui/tribunal-flag.js';
@@ -710,12 +712,17 @@ export async function runChatLoop(
   // mode (set on the conversation record) overrides the global default
   // (config.mode), which itself overrides the plan-derived Auto detection.
   // Existing conversations without a mode field default to 'auto' (inherit).
+  // Auto Smart Default (experimentalAutoSmart flag ON): absent config.mode
+  // uses a neutral balanced base policy (per-turn governor scaling) instead of
+  // collapsing to a plan-derived preset (often quality-first/Max).
   const allMetas = await ctx.store.list();
   const convMeta = allMetas.find((m) => m.id === convId);
   const convExplicitMode = convMeta?.mode !== undefined && convMeta.mode !== 'auto';
+  const autoSmartOn = autoSmartEnabled(process.env, mutableCtx.config);
   const effectiveMode: Mode = convExplicitMode
     ? (levelToMode(convMeta.mode) ?? resolveAutoMode(mutableCtx.env))
-    : (mutableCtx.config.mode ?? resolveAutoMode(mutableCtx.env));
+    : (mutableCtx.config.mode ??
+       (autoSmartOn ? 'balanced' : resolveAutoMode(mutableCtx.env)));
 
   // -------------------------------------------------------------------------
   // RECAP (Phase 7, docs/recap-feature-5.5.md) — a ※ orientation line on resume
@@ -2662,6 +2669,9 @@ export async function runChatLoop(
                 // consult falls back to the honest zero either way), so it never
                 // changes a no-pressure turn.
                 governorPressure: currentPressure(),
+                ...(autoSmartOn && mutableCtx.config.mode === undefined
+                  ? { governorBudgetCeiling: planBudgetCeiling(mutableCtx.env) }
+                  : {}),
               }
             : {}),
           // VERIFICATION CENTERPIECE (master-plan PHASE 3) — DEFAULT ON at the entry
