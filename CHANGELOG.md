@@ -4,6 +4,48 @@ All notable changes to **myshell-tools** are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.160.0] - 2026-06-29 — chat/menu bug fixes + control-panel redesign + goal steward
+
+### Fixed
+- **Chat no longer marks a responded turn as "Failed."** The OpenCode adapter gave a
+  post-output nonzero exit / trailing error precedence over the answer it already
+  streamed (skipping finalize), so a complete reply (with real token usage) was
+  reported as failed. It now finalizes streamed answers as `done`; timeouts/cancels
+  stay terminal. An accepted "blocked"/unverified answer also renders as best-effort
+  instead of "Failed" in the Ink UI.
+- **Menus stop dropping keypresses.** The menu key reader was armed only after awaited
+  repaint + ledger refresh, so keys pressed during that window (common on Replit's slow
+  terminal) fell through and looked dropped. Input is now captured before paint via a
+  one-key FIFO, scoped to the main panel (login/settings prompts unaffected).
+
+### Changed — control panel & home redesign
+- **Home is conversations-first**: numbered conversations with each conversation's mode
+  and message count; goals no longer clutter the home (they surface inside a
+  conversation). Honest provider status ("not installed" / "not signed in" / "signed in"
+  / "N active accounts") replaces "ready". Removed Diagnose and Usage from the panel
+  (the `doctor`/`cost` CLIs remain); auth collapses into a single **Accounts** entry.
+- **Per-conversation mode**: each conversation runs in its own mode (auto/budget/balanced/
+  high/max), shown in the list. The main-menu mode control sets the default for FUTURE new
+  conversations; an existing conversation's mode is changed in Manage Conversations — and a
+  global-default change never retroactively alters running conversations.
+- **Auto is now a standalone smart default** (flag `MYSHELL_AUTO_SMART`): instead of
+  resolving to a fixed preset (often Max on a strong plan), Auto lets the per-turn governor
+  choose effort from task shape, risk, and provider headroom — the subscription is treated
+  as capacity (a ceiling), not the mode's identity. Onboarding defaults to Auto.
+- **Ruthlessly simplified settings**: the page now shows only real preferences (mode,
+  oversight, output detail, appearance, privacy & memory); implementation toggles are
+  automated and hidden, and redundant ones removed. Safe intelligence features default-on
+  (native sessions, smart routing, learned routing, intent engine, vendor-neutral router);
+  quota-spending panel/hedge are intentionally NOT statically on. Old config files still load.
+
+### Added — Goal Steward (flag `MYSHELL_GOAL_STEWARD`)
+- Stale/inactive goals are no longer ignored. On opening a conversation, a deterministic
+  audit surfaces the top stale/blocked/inactive linked goal with one prompt (resume / ask /
+  dismiss / cancel). No autonomous resume, no model call; the only auto-mutation is
+  verified-complete → done.
+
+_All new behaviors are flag-gated and default-off-compatible; chat + menu fixes are always on._
+
 ## [3.159.0] - 2026-06-28 — multi-subscription: all providers + smart balancing (Slices 2–5, experimental)
 
 Completes the multi-subscription system across all providers. Everything is behind
