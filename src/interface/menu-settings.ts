@@ -1,10 +1,13 @@
 /**
  * src/interface/menu-settings.ts — Extracted from menu.ts — behavior-preserving.
  *
- * The Settings screen: the mode/verbosity/partner-style selectors and the
- * feature toggles (default-shell, auto-update, native sessions, smart routing,
- * panel, hedge, learned routing, auto-goal, memory, intent engine). Each
- * dialog reads a single key via {@link readMenuKey}, then builds the next
+ * The simplified Settings screen: mode, oversight, verbosity, appearance, and a
+ * Privacy & memory subpage (Memory, Learned preferences, Codebase awareness).
+ * Internal implementation toggles (routing, panel, hedge, intent engine, etc.)
+ * are now automated default-on and hidden from the user-facing UI. Auto-goal and
+ * Partner style are removed from settings (superseded by Auto/Goal Steward).
+ *
+ * Each dialog reads a single key via {@link readMenuKey}, then builds the next
  * AppConfig by spreading the FULL prior config and changing only the field it
  * owns (via {@link withOptional}), persists via {@link saveConfig}, and returns
  * the updated config. Spreading the whole config is load-bearing: a setter must
@@ -301,37 +304,103 @@ async function toggleDefaultShell(
   return updated;
 }
 
+/**
+ * Toggle the CODEBASE AWARENESS master switch and persist it.
+ *
+ * Default-on: absent/true means the chat gathers repo-map orientation context
+ * once per session. `false` is the kill-switch: no scan, no block. Toggling
+ * when on writes `codebaseAwareness:false`; toggling when off removes the flag
+ * (restores default-on). Preserves all other keys.
+ */
+async function toggleCodebaseAwareness(config: AppConfig, out: OutputSink): Promise<AppConfig> {
+  const currentlyEnabled = config.codebaseAwareness !== false;
+  const enable = !currentlyEnabled;
+  const updated: AppConfig = withOptional(config, 'codebaseAwareness', enable ? undefined : false);
+  await saveConfig(updated);
+  out.write(`Codebase awareness: ${enable ? 'on' : 'off'}\n`);
+  return updated;
+}
+
+/**
+ * Privacy & memory subpage. Groups the three privacy-related toggles.
+ */
+async function runPrivacyMemory(
+  config: AppConfig,
+  out: OutputSink,
+  readLine: () => Promise<string | null>,
+  inkReadKey?: () => Promise<string>,
+): Promise<AppConfig> {
+  const lines = [
+    '',
+    `  [1] Memory: ${config.memory !== false ? 'on' : 'off'}`,
+    `  [2] Learned preferences: ${tasteEnabled(process.env, config) ? 'on' : 'off'}`,
+    `  [3] Codebase awareness: ${config.codebaseAwareness !== false ? 'on' : 'off'}`,
+    '',
+    '  [Enter] Back',
+    '',
+  ];
+  out.write('\n' + box('Privacy & memory', lines) + '\n\n');
+
+  out.write('> ');
+  const key = await readMenuKey(out, readLine, undefined, false, inkReadKey);
+
+  if (key === null || key.length === 0) return config;
+
+  if (key === '1') return toggleMemory(config, out);
+  if (key === '2') return toggleLearnedTaste(config, out);
+  if (key === '3') return toggleCodebaseAwareness(config, out);
+
+  return config;
+}
+
+/**
+ * Setup subpage. Contains install/integration actions, not daily tuning.
+ */
+async function runSetup(
+  config: AppConfig,
+  out: OutputSink,
+  readLine: () => Promise<string | null>,
+  inkReadKey?: () => Promise<string>,
+): Promise<AppConfig> {
+  const lines = [
+    '',
+    `  [1] Set as default shell: ${config.setAsDefault ? 'on' : 'off'}`,
+    '',
+    '  [Enter] Back',
+    '',
+  ];
+  out.write('\n' + box('Setup', lines) + '\n\n');
+
+  out.write('> ');
+  const key = await readMenuKey(out, readLine, undefined, false, inkReadKey);
+
+  if (key === null || key.length === 0) return config;
+
+  if (key === '1') return toggleDefaultShell(config, out);
+
+  return config;
+}
+
 export async function runSettings(
   _ctx: MenuContext,
   mutableCtx: { config: AppConfig; env: EnvironmentStatus },
   out: OutputSink,
   readLine: () => Promise<string | null>,
   // Single-key reader for the Ink path. Threaded into the top-level Settings menu
-  // read AND into every sub-dialog (mode/verbosity/style) so ALL menu navigation is
+  // read AND into every sub-dialog (mode/verbosity/privacy) so ALL menu navigation is
   // single-key under Ink. Absent → legacy path is byte-identical.
   inkReadKey?: () => Promise<string>,
 ): Promise<void> {
   const cfg = mutableCtx.config;
   const autoMode = resolveAutoMode(mutableCtx.env);
-  const effMode = cfg.mode ?? autoMode;
   const settingsLines = [
     '',
     `  [1] New conversation mode: ${cfg.mode === undefined ? 'Auto (smart)' : levelLabel(migrateMode(cfg.mode))}`,
-    `  [2] Set as default shell: ${cfg.setAsDefault ? 'on' : 'off'}`,
-    `  [3] Update on launch: ${cfg.autoUpdate !== false ? 'on' : 'off'}`,
-    `  [4] Native sessions (opt-in): ${cfg.nativeSessions === true ? 'on' : 'off'}`,
-    `  [5] Output detail: ${cfg.verbosity ?? 'normal'}`,
-    `  [6] Smart routing: ${cfg.smartRoute !== false ? 'on' : 'off'}`,
-    `  [7] Panel (advanced): ${cfg.panel === true ? 'on' : 'off'}`,
-    `  [8] Learned routing (advanced): ${cfg.learnRouting === true ? 'on' : 'off'}`,
-    `  [9] Hedged escalation (advanced): ${cfg.hedge === true ? 'on' : 'off'}`,
-    `  [t] Learned taste / prefs (free layer): ${tasteEnabled(process.env, cfg) ? 'on' : 'off'}`,
-    `  [a] Auto-goal (quality-first): ${cfg.autoGoal === true ? 'on' : 'off'} — only takes effect under quality-first mode`,
-    `  [b] Partner style: ${resolvePartnerStyle(cfg, effMode)}${cfg.partnerStyle === undefined ? ' (auto)' : ''}`,
-    `  [c] Memory: ${cfg.memory !== false ? 'on' : 'off'}`,
-    `  [d] Intent engine: ${cfg.intentEngine !== false ? 'on' : 'off'}`,
-    `  [e] Oversight: ${resolveOversight(cfg)}`,
-    `  [f] Theme: ${cfg.colorTheme ?? 'dark'}`,
+    `  [2] Oversight: ${resolveOversight(cfg)}`,
+    `  [3] Output detail: ${cfg.verbosity ?? 'normal'}`,
+    `  [4] Appearance: ${cfg.colorTheme ?? 'dark'}`,
+    `  [5] Privacy & memory`,
+    `  [6] Setup`,
     '',
     '  [Enter] Back',
     '',
@@ -347,58 +416,17 @@ export async function runSettings(
   if (key === '1') {
     mutableCtx.config = await runModeSelect(mutableCtx.config, out, readLine, autoMode, mutableCtx.env, inkReadKey);
   } else if (key === '2') {
-    mutableCtx.config = await toggleDefaultShell(mutableCtx.config, out);
-  } else if (key === '3') {
-    mutableCtx.config = await toggleAutoUpdate(mutableCtx.config, out);
-  } else if (key === '4') {
-    mutableCtx.config = await toggleNativeSessions(mutableCtx.config, out);
-  } else if (key === '5') {
-    mutableCtx.config = await runVerbositySelect(mutableCtx.config, out, readLine, inkReadKey);
-  } else if (key === '6') {
-    mutableCtx.config = await toggleSmartRoute(mutableCtx.config, out);
-  } else if (key === '7') {
-    mutableCtx.config = await togglePanel(mutableCtx.config, out);
-  } else if (key === '8') {
-    mutableCtx.config = await toggleLearnRouting(mutableCtx.config, out);
-  } else if (key === '9') {
-    mutableCtx.config = await toggleHedge(mutableCtx.config, out);
-  } else if (key === 't') {
-    mutableCtx.config = await toggleLearnedTaste(mutableCtx.config, out);
-  } else if (key === 'a') {
-    mutableCtx.config = await toggleAutoGoal(mutableCtx.config, out);
-  } else if (key === 'b') {
-    mutableCtx.config = await runStyleSelect(mutableCtx.config, out, readLine, autoMode, inkReadKey);
-  } else if (key === 'c') {
-    mutableCtx.config = await toggleMemory(mutableCtx.config, out);
-  } else if (key === 'd') {
-    mutableCtx.config = await toggleIntentEngine(mutableCtx.config, out);
-  } else if (key === 'e') {
     mutableCtx.config = await runOversightSelect(mutableCtx.config, out, readLine, inkReadKey);
-  } else if (key === 'f') {
+  } else if (key === '3') {
+    mutableCtx.config = await runVerbositySelect(mutableCtx.config, out, readLine, inkReadKey);
+  } else if (key === '4') {
     mutableCtx.config = await toggleColorTheme(mutableCtx.config, out);
+  } else if (key === '5') {
+    mutableCtx.config = await runPrivacyMemory(mutableCtx.config, out, readLine, inkReadKey);
+  } else if (key === '6') {
+    mutableCtx.config = await runSetup(mutableCtx.config, out, readLine, inkReadKey);
   }
   // anything else → back
-}
-
-/**
- * Toggle the INTENT ENGINE master switch (intent-engine §4) and persist it.
- *
- * Default-on but GATED: when enabled, orchestrate runs ONE cheap, read-only,
- * short-timeout extractor pass ONLY on substantial/ambiguous turns; trivial turns
- * skip it (zero overhead). Toggling when on writes `intentEngine:false` (no
- * extractor wired — orchestrate uses the deterministic rules frame, and the
- * engagement policy still runs from {tier,risk}/route.plan); toggling when off
- * removes the flag (restores default-on). Preserves all other keys.
- */
-async function toggleIntentEngine(config: AppConfig, out: OutputSink): Promise<AppConfig> {
-  const currentlyEnabled = config.intentEngine !== false;
-  const enable = !currentlyEnabled;
-  // Persist only the explicit-OFF; absent means default-on. Spreading the full
-  // prior config preserves every other key.
-  const updated: AppConfig = withOptional(config, 'intentEngine', enable ? undefined : false);
-  await saveConfig(updated);
-  out.write(`Intent engine: ${enable ? 'on' : 'off'}\n`);
-  return updated;
 }
 
 /**
@@ -417,120 +445,6 @@ async function toggleMemory(config: AppConfig, out: OutputSink): Promise<AppConf
   const updated: AppConfig = withOptional(config, 'memory', enable ? undefined : false);
   await saveConfig(updated);
   out.write(`Memory: ${enable ? 'on' : 'off'}\n`);
-  return updated;
-}
-
-/**
- * Toggle smart routing and persist it.
- *
- * When on (the DEFAULT), turns the keyword classifier can't route (no tier
- * keyword matched) are handed to a cheap model that picks the tier; clear keyword
- * turns still route instantly with no model call. It adds ~5-10s on those
- * ambiguous turns only (a worker-tier classification spawn), so it can be turned
- * off here. See core/router.ts + core/route-classifier.ts.
- */
-async function toggleSmartRoute(config: AppConfig, out: OutputSink): Promise<AppConfig> {
-  // Default-on: enabled unless explicitly false (mirrors auto-update).
-  const currentlyEnabled = config.smartRoute !== false;
-  const enable = !currentlyEnabled;
-  // Persist only the explicit-OFF; absent means default-on. Full-config spread
-  // preserves every other key.
-  const updated: AppConfig = withOptional(config, 'smartRoute', enable ? undefined : false);
-  await saveConfig(updated);
-  out.write(`Smart routing: ${enable ? 'on' : 'off'}\n`);
-  return updated;
-}
-
-/**
- * Toggle the auto-update preference and persist the updated config.
- * Reports the new state so the user knows what changed.
- *
- * Since auto-update now defaults to ON (undefined → enabled), toggling when
- * currently enabled (true or undefined) sets it explicitly to false; toggling
- * when currently disabled (false) removes the explicit flag (restores default-on).
- */
-async function toggleAutoUpdate(config: AppConfig, out: OutputSink): Promise<AppConfig> {
-  // Currently enabled when autoUpdate !== false (undefined counts as on)
-  const currentlyEnabled = config.autoUpdate !== false;
-  const enable = !currentlyEnabled;
-  // Persist only the explicit-OFF; absent means default-on. Full-config spread
-  // preserves every other key.
-  const updated: AppConfig = withOptional(config, 'autoUpdate', enable ? undefined : false);
-  await saveConfig(updated);
-  out.write(`Update on launch: ${enable ? 'on' : 'off'}\n`);
-  return updated;
-}
-
-/**
- * Toggle the EXPERIMENTAL native-session preference and persist it.
- *
- * When on, conversations that stay on the same provider reuse that provider's
- * native session (Claude `--session-id`/`--resume`) instead of replaying a
- * compacted history block — better context fidelity and less re-sent context.
- * Default OFF; live behavior should be verified with the gated integration test
- * (`npm run test:integration`) before relying on it.
- */
-async function toggleNativeSessions(config: AppConfig, out: OutputSink): Promise<AppConfig> {
-  const enable = config.nativeSessions !== true;
-  // Default-off: persist only the explicit-ON; absent means off. Full-config
-  // spread preserves every other key.
-  const updated: AppConfig = withOptional(config, 'nativeSessions', enable ? true : undefined);
-  await saveConfig(updated);
-  out.write(`Native sessions (opt-in): ${enable ? 'on' : 'off'}\n`);
-  return updated;
-}
-
-/**
- * Toggle the EXPERIMENTAL Parallel Subscription Panel and persist it.
- *
- * When on, high/critical-risk turns run as a CONCURRENT panel of your signed-in
- * providers, then a cross-vendor synthesizer reconciles their answers into one.
- * Flat-rate makes the extra concurrent runs free in dollars — the cost is quota
- * + latency. Needs ≥2 signed-in providers to do anything. Default OFF.
- */
-async function togglePanel(config: AppConfig, out: OutputSink): Promise<AppConfig> {
-  const enable = config.panel !== true;
-  // Default-off: persist only the explicit-ON. Full-config spread preserves
-  // every other key.
-  const updated: AppConfig = withOptional(config, 'panel', enable ? true : undefined);
-  await saveConfig(updated);
-  out.write(`Panel (advanced): ${enable ? 'on' : 'off'}\n`);
-  return updated;
-}
-
-/**
- * Toggle the EXPERIMENTAL Latency-Hedged Escalation and persist it.
- *
- * When on, high/critical-risk turns hedge against latency: if the cheap primary
- * attempt is slow, a flagship attempt is started IN PARALLEL and whichever
- * finishes first with adequate confidence wins (the slower branch is cancelled).
- * Flat-rate makes the cancelled branch free in dollars — it spends quota to buy
- * wall-clock. Needs ≥1 signed-in provider. Default OFF.
- */
-async function toggleHedge(config: AppConfig, out: OutputSink): Promise<AppConfig> {
-  const enable = config.hedge !== true;
-  // Default-off: persist only the explicit-ON. Full-config spread preserves
-  // every other key.
-  const updated: AppConfig = withOptional(config, 'hedge', enable ? true : undefined);
-  await saveConfig(updated);
-  out.write(`Hedged escalation (advanced): ${enable ? 'on' : 'off'}\n`);
-  return updated;
-}
-
-/**
- * Toggle the EXPERIMENTAL Local Outcome Learner and persist it.
- *
- * When on, routing learns from YOUR ledger which provider finishes your work
- * best per tier (observed success rate, tie-broken by latency) and prefers it.
- * Observed-only; needs real history before it changes anything. Default OFF.
- */
-async function toggleLearnRouting(config: AppConfig, out: OutputSink): Promise<AppConfig> {
-  const enable = config.learnRouting !== true;
-  // Default-off: persist only the explicit-ON. Full-config spread preserves
-  // every other key.
-  const updated: AppConfig = withOptional(config, 'learnRouting', enable ? true : undefined);
-  await saveConfig(updated);
-  out.write(`Learned routing (advanced): ${enable ? 'on' : 'off'}\n`);
   return updated;
 }
 
@@ -570,19 +484,3 @@ async function toggleColorTheme(config: AppConfig, out: OutputSink): Promise<App
   return updated;
 }
 
-/**
- * Toggle opt-in auto-goal and persist it.
- *
- * When on, quality-first mode may automatically enter the existing /goal loop
- * for conservatively detected multi-step work. Other modes ignore it. Default
- * OFF; absent/false means unchanged single-turn dispatch.
- */
-async function toggleAutoGoal(config: AppConfig, out: OutputSink): Promise<AppConfig> {
-  const enable = config.autoGoal !== true;
-  // Default-off: persist only the explicit-ON. Full-config spread preserves
-  // every other key.
-  const updated: AppConfig = withOptional(config, 'autoGoal', enable ? true : undefined);
-  await saveConfig(updated);
-  out.write(`Auto-goal (quality-first): ${enable ? 'on' : 'off'}\n`);
-  return updated;
-}

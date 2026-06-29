@@ -105,7 +105,7 @@ function makeClock(): Clock {
 // Settings sub-menu — a single digit (no Enter) selects a dialog under Ink.
 // ---------------------------------------------------------------------------
 
-test('runSettings: a single [5] keypress (no Enter) opens Output-detail under Ink', async () => {
+test('runSettings: a single [3] keypress (no Enter) opens Output-detail under Ink', async () => {
   const env = withTmpHome();
   try {
     const bridge = createInkAppBridge();
@@ -122,14 +122,14 @@ test('runSettings: a single [5] keypress (no Enter) opens Output-detail under In
 
     const done = runSettings(ctx, mutableCtx, sink, readLineNever, () => bridge.readKey());
     await tick();
-    stdin.write('5'); // open Output-detail (NO Enter)
+    stdin.write('3'); // open Output-detail (NO Enter)
     await tick();
     stdin.write('1'); // pick "quiet" in the verbosity sub-dialog (NO Enter)
     await tick();
     await done;
 
     // The single keys drove the whole flow: verbosity was set to quiet and saved.
-    assert.equal(mutableCtx.config.verbosity, 'quiet', 'single-key [5] then [1] set verbosity');
+    assert.equal(mutableCtx.config.verbosity, 'quiet', 'single-key [3] then [1] set verbosity');
     const saved = await loadConfig(env.home);
     assert.equal(saved.verbosity, 'quiet', 'the choice persisted via saveConfig');
   } finally {

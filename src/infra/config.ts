@@ -616,6 +616,15 @@ const DEFAULTS: AppConfig = {
   onboarded: false,
   setAsDefault: true,
   autoUpdate: true,
+  nativeSessions: true,
+  smartRoute: true,
+  // NOTE: panel + hedge are intentionally NOT statically default-on. They spend
+  // extra quota (concurrent multi-provider panel / latency hedge) and the design
+  // calls for them to be GOVERNED PER TURN by Auto, not a static always-on switch.
+  // Leaving them off avoids a quota spike; per-turn Auto governance is future work.
+  learnRouting: true,
+  intentEngine: true,
+  experimentalVendorNeutralRouter: true,
 };
 
 // ---------------------------------------------------------------------------

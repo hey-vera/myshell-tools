@@ -48,7 +48,16 @@ describe('loadConfig — defaults', () => {
 
   it('returns default config when file does not exist', async () => {
     const config = await loadConfig(homeDir);
-    assert.deepEqual(config, { onboarded: false, setAsDefault: true, autoUpdate: true });
+    assert.deepEqual(config, {
+      onboarded: false,
+      setAsDefault: true,
+      autoUpdate: true,
+      nativeSessions: true,
+      smartRoute: true,
+      learnRouting: true,
+      intentEngine: true,
+      experimentalVendorNeutralRouter: true,
+    });
   });
 
   it('onboarded defaults to false', async () => {
@@ -227,7 +236,16 @@ describe('loadConfig — resilience', () => {
       await writeFile(join(configDir, 'config.json'), 'CORRUPT JSON!!!', 'utf8');
 
       const config = await loadConfig(home2);
-      assert.deepEqual(config, { onboarded: false, setAsDefault: true, autoUpdate: true });
+      assert.deepEqual(config, {
+        onboarded: false,
+        setAsDefault: true,
+        autoUpdate: true,
+        nativeSessions: true,
+        smartRoute: true,
+        learnRouting: true,
+        intentEngine: true,
+        experimentalVendorNeutralRouter: true,
+      });
     } finally {
       await rm(home2, { recursive: true, force: true });
     }
@@ -339,6 +357,64 @@ describe('loadConfig — resilience', () => {
 
       const config = await loadConfig(home);
       assert.equal(config.setAsDefault, true, 'absent field must default to true');
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
+  // -------------------------------------------------------------------------
+  // Backward compat: removed-feature keys still parse from old config files
+  // -------------------------------------------------------------------------
+
+  it('old config with autoGoal, partnerStyle, and intensity still loads without error', async () => {
+    const home = await mkdtemp(join(tmpdir(), `config-oldkeys-${randomUUID()}-`));
+    try {
+      const dir = join(home, '.myshell-tools');
+      await mkdir(dir, { recursive: true });
+      const oldConfig = JSON.stringify({
+        onboarded: true,
+        setAsDefault: false,
+        defaultShellOptOut: true,
+        mode: 'quality-first',
+        intensity: 4,
+        autoGoal: true,
+        partnerStyle: 'collaborative',
+        autoUpdate: false,
+      });
+      await writeFile(join(dir, 'config.json'), oldConfig, 'utf8');
+
+      const config = await loadConfig(home);
+      assert.equal(config.onboarded, true);
+      assert.equal(config.mode, 'quality-first');
+      assert.equal(config.intensity, 4);
+      assert.equal(config.autoGoal, true);
+      assert.equal(config.partnerStyle, 'collaborative');
+      assert.equal(config.autoUpdate, false);
+      // defaultShellOptOut preserves the explicit false
+      assert.equal(config.setAsDefault, false);
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
+  it('old config with experimental* removed-feature keys still loads', async () => {
+    const home = await mkdtemp(join(tmpdir(), `config-oldkeys2-${randomUUID()}-`));
+    try {
+      const dir = join(home, '.myshell-tools');
+      await mkdir(dir, { recursive: true });
+      const oldConfig = JSON.stringify({
+        onboarded: true,
+        setAsDefault: false,
+        defaultShellOptOut: true,
+        experimentalAutoGoal: true,
+        experimentalLevelDial: true,
+      });
+      await writeFile(join(dir, 'config.json'), oldConfig, 'utf8');
+
+      const config = await loadConfig(home);
+      assert.equal(config.onboarded, true);
+      assert.equal(config.experimentalAutoGoal, true);
+      assert.equal(config.experimentalLevelDial, true);
     } finally {
       await rm(home, { recursive: true, force: true });
     }
