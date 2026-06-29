@@ -156,6 +156,26 @@ async function waitForGoalCount(clock: Clock, count: number, timeoutMs = 1_000) 
   return last;
 }
 
+/**
+ * Poll `sink.buf` until it contains `substring` (or the timeout elapses), then
+ * return whether it did. Post-turn auto-stage narration is fire-and-forget (it
+ * must NOT block the reply), so it can land a few microtasks after startMenu()
+ * resolves. Asserting `sink.buf.includes(...)` synchronously races that flush;
+ * `await waitForSink(...)` removes the flake without weakening the assertion.
+ */
+async function waitForSink(
+  sink: { readonly buf: string },
+  substring: string,
+  timeoutMs = 1_000,
+): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (sink.buf.includes(substring)) return true;
+    await delay(10);
+  }
+  return sink.buf.includes(substring);
+}
+
 // ---------------------------------------------------------------------------
 // Fake clock
 // ---------------------------------------------------------------------------
@@ -1978,7 +1998,7 @@ describe('startMenu — auto-goal smart autonomy', () => {
       ]);
       assert.ok(!sink.buf.includes('On it — Ship the billing migration'));
       assert.ok(
-        sink.buf.includes('※ Staged 1 goal on the board: Ship the billing migration · 2 to-dos · shall I start?'),
+        await waitForSink(sink, '※ Staged 1 goal on the board: Ship the billing migration · 2 to-dos · shall I start?'),
       );
     });
   });
@@ -2057,7 +2077,7 @@ describe('startMenu — auto-goal smart autonomy', () => {
       );
       assert.ok(!sink.buf.includes('On it —'));
       assert.ok(
-        sink.buf.includes('※ Staged 1 goal on the board: Refresh the billing module · 3 to-dos · shall I start?'),
+        await waitForSink(sink, '※ Staged 1 goal on the board: Refresh the billing module · 3 to-dos · shall I start?'),
       );
     });
   });
@@ -2126,7 +2146,7 @@ describe('startMenu — auto-goal smart autonomy', () => {
       assert.ok(!sink.buf.includes('On it — Rebuild the settings module'));
       assert.ok(!sink.buf.includes('※ Starting "Rebuild the settings module" in the background — keep chatting.'));
       assert.ok(
-        sink.buf.includes('※ Staged 1 goal on the board: Rebuild the settings module · 3 to-dos · shall I start?'),
+        await waitForSink(sink, '※ Staged 1 goal on the board: Rebuild the settings module · 3 to-dos · shall I start?'),
       );
     });
   });
@@ -2190,7 +2210,7 @@ describe('startMenu — auto-goal smart autonomy', () => {
       assert.ok(sink.buf.includes("Activation: I'll relay the plan first from now on (this chat)."));
       assert.ok(!sink.buf.includes('On it —'));
       assert.ok(
-        sink.buf.includes('※ Staged 1 goal on the board: Implement the parser module · 2 to-dos · shall I start?'),
+        await waitForSink(sink, '※ Staged 1 goal on the board: Implement the parser module · 2 to-dos · shall I start?'),
       );
     });
   });
@@ -2262,7 +2282,7 @@ describe('startMenu — auto-goal smart autonomy', () => {
       );
       assert.ok(!sink.buf.includes('On it —'));
       assert.ok(
-        sink.buf.includes('※ Staged 1 goal on the board: Refresh the billing module · 2 to-dos · shall I start?'),
+        await waitForSink(sink, '※ Staged 1 goal on the board: Refresh the billing module · 2 to-dos · shall I start?'),
       );
     });
   });
