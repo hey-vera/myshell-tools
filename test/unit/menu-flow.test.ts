@@ -122,7 +122,15 @@ async function readPersistedConfig(): Promise<AppConfig> {
  * Build an injected readLine that yields each string from `lines` in order,
  * then returns null (EOF) for every subsequent call.
  */
-type ScriptedLine = string | null | { value: string | null; delayMs: number };
+type ScriptedLine =
+  | string
+  | null
+  | { value: string | null; delayMs: number }
+  // Hold this input until `sink()` contains `untilSinkContains` (or timeout). Used
+  // to wait for fire-and-forget post-turn narration (e.g. auto-stage notes) to
+  // flush BEFORE the next input (typically '/exit') tears the turn down — removes
+  // the race deterministically instead of asserting against an abandoned task.
+  | { value: string | null; untilSinkContains: string; sink: () => string; timeoutMs?: number };
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -135,6 +143,13 @@ function makeScriptedReader(lines: ReadonlyArray<ScriptedLine>): () => Promise<s
       const val = lines[i];
       i += 1;
       if (typeof val === 'object' && val !== null) {
+        if ('untilSinkContains' in val) {
+          const deadline = Date.now() + (val.timeoutMs ?? 5_000);
+          while (Date.now() < deadline && !val.sink().includes(val.untilSinkContains)) {
+            await delay(10);
+          }
+          return val.value;
+        }
         await delay(val.delayMs);
         return val.value;
       }
@@ -144,7 +159,7 @@ function makeScriptedReader(lines: ReadonlyArray<ScriptedLine>): () => Promise<s
   };
 }
 
-async function waitForGoalCount(clock: Clock, count: number, timeoutMs = 1_000) {
+async function waitForGoalCount(clock: Clock, count: number, timeoutMs = 5_000) {
   const goalStore = createFileGoalStore({ clock });
   const deadline = Date.now() + timeoutMs;
   let last = await goalStore.list();
@@ -166,7 +181,7 @@ async function waitForGoalCount(clock: Clock, count: number, timeoutMs = 1_000) 
 async function waitForSink(
   sink: { readonly buf: string },
   substring: string,
-  timeoutMs = 1_000,
+  timeoutMs = 5_000,
 ): Promise<boolean> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -1975,7 +1990,7 @@ describe('startMenu — auto-goal smart autonomy', () => {
           readLine: makeScriptedReader([
             'n',
             'implement the new formatter module',
-            { value: '/exit', delayMs: 50 },
+            { value: '/exit', untilSinkContains: '※ Staged 1 goal on the board', sink: () => sink.buf },
             'q',
           ]),
         },
@@ -2055,7 +2070,7 @@ describe('startMenu — auto-goal smart autonomy', () => {
           readLine: makeScriptedReader([
             'n',
             'implement the settings module in three steps',
-            { value: '/exit', delayMs: 50 },
+            { value: '/exit', untilSinkContains: '※ Staged 1 goal on the board', sink: () => sink.buf },
             'q',
           ]),
         },
@@ -2127,7 +2142,7 @@ describe('startMenu — auto-goal smart autonomy', () => {
           readLine: makeScriptedReader([
             'n',
             "from now on just go when you're confident, and implement the settings module in three steps",
-            { value: '/exit', delayMs: 50 },
+            { value: '/exit', untilSinkContains: '※ Staged 1 goal on the board', sink: () => sink.buf },
             'q',
           ]),
         },
@@ -2193,7 +2208,7 @@ describe('startMenu — auto-goal smart autonomy', () => {
           readLine: makeScriptedReader([
             'n',
             'always relay the plan first, and implement the parser module',
-            { value: '/exit', delayMs: 50 },
+            { value: '/exit', untilSinkContains: '※ Staged 1 goal on the board', sink: () => sink.buf },
             'q',
           ]),
         },
@@ -2260,7 +2275,7 @@ describe('startMenu — auto-goal smart autonomy', () => {
           readLine: makeScriptedReader([
             'n',
             'implement the settings module',
-            { value: '/exit', delayMs: 50 },
+            { value: '/exit', untilSinkContains: '※ Staged 1 goal on the board', sink: () => sink.buf },
             'q',
           ]),
         },
