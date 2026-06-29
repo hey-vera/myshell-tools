@@ -14,7 +14,7 @@ import type { EnvironmentStatus } from '../providers/detect.js';
 import { getInstallCommand } from '../providers/detect.js';
 import type { SpendSummary } from '../infra/insights.js';
 import { formatTokens } from '../infra/insights.js';
-import type { ConversationMeta } from '../infra/conversation-store.js';
+import type { ConversationMeta, ConversationMode } from '../infra/conversation-store.js';
 import { dim } from '../ui/theme.js';
 import { claudeTokenStatus } from '../infra/credentials.js';
 
@@ -285,6 +285,15 @@ export function renderBudgetLine(
 }
 
 /**
+ * Format a conversation's mode as a compact lowercase label for the list render.
+ * Absent/'auto' → 'auto' (the default). PURE.
+ */
+export function conversationModeLabel(mode: ConversationMode | undefined): string {
+  if (mode === undefined || mode === 'auto') return 'auto';
+  return mode;
+}
+
+/**
  * Build the conversation list lines from real ConversationMeta[].
  * Format: "[N] <pin> <relative-time>  <title>[  [<category>]]"
  *
@@ -310,7 +319,9 @@ export function renderConversationList(
     const count = typeof m.messageCount === 'number' ? m.messageCount : 0;
     const countSuffix =
       count > 0 ? `  ${dim(`· ${count} msg${count === 1 ? '' : 's'}`, color)}` : '';
-    const row = `[${idx}] ${pin}${rel}  ${m.title}${categorySuffix}${countSuffix}`;
+    const mode = conversationModeLabel(m.mode);
+    const modeSuffix = `  ${dim(`| ${mode}`, color)}`;
+    const row = `[${idx}] ${pin}${rel}  ${m.title}${categorySuffix}${modeSuffix}${countSuffix}`;
     // Optional second dim line = the cached ※ recap (state, not just the opening
     // words). Only when a non-empty recap exists; legacy rows show the title alone
     // (docs/recap-feature-5.5.md §5.3). Truncated; indented to align under the title.

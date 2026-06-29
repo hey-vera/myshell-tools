@@ -13,14 +13,14 @@ import type { EnvironmentStatus } from '../providers/detect.js';
 import type { UpdateCheckResult } from '../infra/update-check.js';
 import type { ClaudeTokenStatus } from '../infra/credentials.js';
 import type { HealthIssue } from '../infra/health.js';
-import { modeLabel } from '../core/policy.js';
+import { migrateMode, levelLabel } from '../core/mode-levels.js';
 import { box, separator, menu } from '../ui/tui.js';
 import { dim, yellow } from '../ui/theme.js';
 import type { OutputSink } from './render.js';
 import type { MenuContext } from './menu.js';
 import type { Goal } from '../core/goal-todo.js';
 import { renderParkedSection } from '../commands/goals.js';
-import { resolveAutoMode, autoModeReason } from './menu-auto-mode.js';
+import { autoModeReason } from './menu-auto-mode.js';
 import {
   versionStatusLabel,
   renderHeaderLines,
@@ -105,19 +105,19 @@ export async function renderMainScreen(
   // unbounded ledger.jsonl on every keypress.
   out.write('  ' + renderBudgetLine(spend, out.color, authed, spendLoading) + '\n');
 
-  // Mode line — visible and one keystroke to change (no settings dive). Shows the
-  // effective mode: the user's explicit choice, else the subscription-derived auto
-  // default. This is the default for NEW chats; each chat can override its own.
+  // Global new-conversation default mode. Unset → Auto (smart). Explicit modes
+  // use the redesigned labels (Budget / Balanced / Max) mapped from the legacy
+  // config.mode keys.
   {
-    const autoMode = resolveAutoMode(mutableCtx.env);
-    const eff = mutableCtx.config.mode ?? autoMode;
-    const autoSuffix = mutableCtx.config.mode === undefined
-      ? ` (${autoModeReason(mutableCtx.env)})`
+    const isAuto = mutableCtx.config.mode === undefined;
+    const label = isAuto ? 'Auto (smart)' : levelLabel(migrateMode(mutableCtx.config.mode ?? 'balanced'));
+    const autoSuffix = isAuto
+      ? `  |  ${autoModeReason(mutableCtx.env)}`
       : '';
     out.write(
       '  ' +
         dim(
-          `Mode: ${modeLabel(eff)}${autoSuffix}  ·  press m to change`,
+          `New conversation default: ${label}${autoSuffix}  ·  press m to change`,
           out.color,
         ) +
         '\n\n',
@@ -205,7 +205,7 @@ export async function renderMainScreen(
       ...(parkedGoals.length > 0
         ? [{ key: 'g', label: 'Manage goals', section: 'Options' }]
         : []),
-      { key: 'm', label: 'Change mode', section: 'Options' },
+      { key: 'm', label: 'New conversation mode', section: 'Options' },
       { key: 's', label: 'Settings', section: 'Options' },
       { key: 'd', label: 'Diagnose', section: 'Options' },
       { key: '$', label: 'Usage (tokens)', section: 'Options' },

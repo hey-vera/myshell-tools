@@ -15,6 +15,9 @@ import type { SessionEntry, SessionWriter } from '../core/types.js';
 import type { Intensity } from '../core/capacity-allocator.js';
 import type { GoalActivationOverride } from '../core/autonomy.js';
 
+/** Per-conversation mode — the user-facing firepower level for this conversation's turns. */
+export type ConversationMode = 'auto' | 'budget' | 'balanced' | 'high' | 'max';
+
 export interface ConversationMeta {
   readonly id: string;
   readonly title: string;
@@ -40,13 +43,22 @@ export interface ConversationMeta {
   readonly intensity?: Intensity;
   /** Conversation-scoped goal activation preference; absent means adaptive. */
   readonly activation?: Exclude<GoalActivationOverride, 'adaptive'>;
+  /**
+   * Per-conversation override for the firepower mode used by this conversation's
+   * turns. Absent (or 'auto') → inherits the global default (config.mode or Auto).
+   */
+  readonly mode?: ConversationMode;
 }
 
 export interface ConversationStore {
   /** All conversations, pinned first then most-recently-updated first. */
   list(): Promise<ConversationMeta[]>;
-  /** Create a new conversation; returns its metadata (with a fresh id). */
-  create(title: string): Promise<ConversationMeta>;
+  /**
+   * Create a new conversation; returns its metadata (with a fresh id).
+   * If `mode` is provided, the conversation is stamped with it; otherwise the
+   * caller should set the mode via {@link setMode} after creation.
+   */
+  create(title: string, mode?: ConversationMode): Promise<ConversationMeta>;
   /** Read a conversation's full message history (oldest first); [] if missing. */
   load(id: string): Promise<SessionEntry[]>;
   /** Rename a conversation. No-op if the id does not exist. */
@@ -90,4 +102,9 @@ export interface ConversationStore {
   setIntensity(id: string, intensity: Intensity | undefined): Promise<void>;
   /** Set or clear the conversation goal activation preference. No-op if id missing. */
   setActivation(id: string, activation: GoalActivationOverride | undefined): Promise<void>;
+  /**
+   * Set or clear the per-conversation firepower mode override. No-op if id
+   * missing. Pass `'auto'` or `undefined` to clear the override (inherit global).
+   */
+  setMode(id: string, mode: ConversationMode | undefined): Promise<void>;
 }

@@ -20,7 +20,8 @@ import type { PartnerStyle } from '../core/prompt-context.js';
 import type { Oversight } from './ui/oversight.js';
 import { resolveOversight } from './ui/oversight.js';
 import type { Mode } from '../core/policy.js';
-import { modeLabel, MODE_DESC } from '../core/policy.js';
+import { levelLabel, LEVEL_DESC, migrateMode, ALL_LEVELS } from '../core/mode-levels.js';
+import type { Level } from '../core/mode-levels.js';
 import type { EnvironmentStatus } from '../providers/detect.js';
 import { runInstall } from '../commands/install.js';
 import { box } from '../ui/tui.js';
@@ -68,54 +69,67 @@ export async function runModeSelect(
   config: AppConfig,
   out: OutputSink,
   readLine: () => Promise<string | null>,
-  autoMode: Mode = 'balanced',
+  _autoMode: Mode = 'balanced',
   env?: EnvironmentStatus,
-  // Single-key reader for the Ink path. When provided, the menu choice resolves on
-  // a SINGLE keypress through Ink's own input pipeline (matching the legacy raw
-  // single-key feel) instead of a line read. Absent → legacy path is byte-identical.
   inkReadKey?: () => Promise<string>,
 ): Promise<AppConfig> {
-  // Effective mode = explicit choice, else the subscription-derived auto default.
-  const effective = config.mode ?? autoMode;
-  const mark = (m: Mode): string => (effective === m && config.mode !== undefined ? '  ‹active›' : '');
+  // Map the persisted config.mode (legacy 3-stop dial) to a Level so the picker
+  // always shows the 5-choice labels. Unset → 'auto'.
+  const currentLevel: Level = migrateMode(config.mode);
+  const mark = (l: Level): string =>
+    l === currentLevel && config.mode !== undefined ? '  ‹active›' : '';
   const autoActive = config.mode === undefined;
-  const autoEntry = autoActive
-    ? `  [4] Auto — picks from your subscriptions (now: ${modeLabel(autoMode)})  ‹active›`
-    : `  [4] Auto — picks from your subscriptions`;
-  // Plain lines (NOT box()) — the descriptions are long and would overflow a
-  // fixed-width box border.
+
+  // Build the display lines with the redesigned labels.
   const lines = [
     '',
-    bold('Mode — how readily routing reaches the strongest model', out.color),
-    dim('Efficient never auto-opens it; Balanced earns one pass when a turn proves it needs it; Max opens it whenever asked.', out.color),
+    bold('New conversation mode — default for future conversations', out.color),
+    dim('This is the default new conversations start with. Existing conversations keep their own mode.', out.color),
     '',
-    `  [1] ${bold(modeLabel('cost-saver'), out.color)} — ${MODE_DESC['cost-saver']}${mark('cost-saver')}`,
-    `  [2] ${bold(modeLabel('balanced'), out.color)} — ${MODE_DESC['balanced']}${mark('balanced')}`,
-    `  [3] ${bold(modeLabel('quality-first'), out.color)} — ${MODE_DESC['quality-first']}${mark('quality-first')}`,
-    autoActive ? autoEntry : dim(autoEntry, out.color),
-    // Honest per-provider breakdown of what Auto saw and why it decided.
-    ...(env !== undefined ? ['', ...renderAutoDetected(env, out.color)] : []),
   ];
+
+  for (const level of ALL_LEVELS) {
+    const label = levelLabel(level);
+    const desc = LEVEL_DESC[level];
+    // Deliberately keep High shown but call out "(future)" since no separate preset exists yet.
+    const suffix = level === 'high' ? ' (future)' : '';
+    const active = level === currentLevel && config.mode !== undefined ? '  ‹active›' : '';
+    const idx = ALL_LEVELS.indexOf(level) + 1;
+    if (level === 'auto') {
+      const autoLine = autoActive
+        ? `  [${idx}] ${bold(label, out.color)} (smart) — ${desc}${suffix}  ‹active›`
+        : `  [${idx}] ${bold(label, out.color)} (smart) — ${desc}${suffix}`;
+      lines.push(autoActive ? autoLine : dim(autoLine, out.color));
+    } else {
+      const line = `  [${idx}] ${bold(label, out.color)} — ${desc}${suffix}${active}`;
+      lines.push(mark(level) !== '' ? line : dim(line, out.color));
+    }
+  }
+
+  // Honest per-provider breakdown of what Auto detected.
+  if (env !== undefined) {
+    lines.push('', ...renderAutoDetected(env, out.color));
+  }
+
   out.write('\n' + lines.filter((l) => l !== '').join('\n') + '\n\n');
 
-  out.write('[1/2/3/4 to change, Enter to keep] ');
+  out.write('[1-5 to change, Enter to keep] ');
   const key = await readMenuKey(out, readLine, undefined, false, inkReadKey);
 
-  // EOF / Enter → keep current mode
-  let newMode = config.mode;
-  if (key === '1') newMode = 'cost-saver';
-  else if (key === '2') newMode = 'balanced';
-  else if (key === '3') newMode = 'quality-first';
-  else if (key === '4') newMode = undefined; // clear pin → auto
+  // Map keypress to the legacy config.mode value (or clear for Auto).
+  // High aliases Max (quality-first) until a separate High preset exists.
+  let newMode: AppConfig['mode'];
+  if (key === '1') newMode = undefined;        // Auto — clear pin
+  else if (key === '2') newMode = 'cost-saver'; // Budget
+  else if (key === '3') newMode = 'balanced';   // Balanced
+  else if (key === '4') newMode = 'quality-first'; // High (alias Max)
+  else if (key === '5') newMode = 'quality-first'; // Max
+  else newMode = config.mode; // Enter / EOF — keep current
 
-  // Spread the FULL prior config so no key is ever dropped, then set only the
-  // field this dialog owns. `mode === undefined` means "Auto" → omit the key
-  // entirely (don't write `mode: undefined`, which violates
-  // exactOptionalPropertyTypes and would be a meaningless on-disk key).
   const updated: AppConfig = withOptional(config, 'mode', newMode);
-
   await saveConfig(updated);
-  out.write(`Mode: ${modeLabel(newMode ?? autoMode)}${newMode === undefined ? ' (auto)' : ''}\n`);
+  const displayLabel = newMode === undefined ? 'Auto (smart)' : levelLabel(migrateMode(newMode));
+  out.write(`New conversation default: ${displayLabel}\n`);
   return updated;
 }
 
@@ -302,7 +316,7 @@ export async function runSettings(
   const effMode = cfg.mode ?? autoMode;
   const settingsLines = [
     '',
-    `  [1] Mode: ${modeLabel(effMode)}${cfg.mode === undefined ? ' (auto)' : ''}`,
+    `  [1] New conversation mode: ${cfg.mode === undefined ? 'Auto (smart)' : levelLabel(migrateMode(cfg.mode))}`,
     `  [2] Set as default shell: ${cfg.setAsDefault ? 'on' : 'off'}`,
     `  [3] Update on launch: ${cfg.autoUpdate !== false ? 'on' : 'off'}`,
     `  [4] Native sessions (opt-in): ${cfg.nativeSessions === true ? 'on' : 'off'}`,

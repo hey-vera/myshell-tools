@@ -7,7 +7,7 @@
  */
 
 import type { AppConfig } from '../infra/config.js';
-import type { ConversationMeta } from '../infra/conversation-store.js';
+import type { ConversationMeta, ConversationMode } from '../infra/conversation-store.js';
 import type { EnvironmentStatus } from '../providers/detect.js';
 import type { LoginMethod } from '../commands/login.js';
 import type { CommandGatePort } from '../core/command-gate.js';
@@ -25,6 +25,7 @@ import type { GoalStore } from '../infra/goal-store.js';
 import { renderGoalExpanded } from '../commands/goals.js';
 import { formatGoalRow } from '../core/goal-todo.js';
 import { dim, bold } from '../ui/theme.js';
+import { ALL_LEVELS, levelLabel, LEVEL_DESC, migrateMode } from '../core/mode-levels.js';
 
 // ---------------------------------------------------------------------------
 // Manage conversations screen
@@ -52,7 +53,7 @@ export async function runManage(
     for (const line of lines) {
       out.write(`  ${line}\n`);
     }
-    out.write('\n  [p] Pin/unpin  [t] Set category  [r] Rename  [x] Delete  [Enter] Back\n\n');
+    out.write('\n  [p] Pin/unpin  [t] Set category  [r] Rename  [m] Change mode  [x] Delete  [Enter] Back\n\n');
     return latest;
   }
 
@@ -113,6 +114,52 @@ export async function runManage(
           out.write(`Renamed to "${newTitle}"\n`);
           await renderList();
         }
+      }
+    }
+  } else if (key === 'm') {
+    out.write('Change mode for conversation number: ');
+    const numStr = await readLine();
+    const num = parseInt(numStr ?? '', 10);
+    if (!Number.isNaN(num) && num >= 1 && num <= metas.length) {
+      const conv = metas[num - 1];
+      if (conv !== undefined) {
+        const current = conv.mode ?? 'auto';
+        const lines = [
+          '',
+          bold(`Conversation mode for "${conv.title}"`, out.color),
+          dim('Changes only this conversation. Future new conversations use the global default.', out.color),
+          '',
+        ];
+        for (const level of ALL_LEVELS) {
+          const label = levelLabel(level);
+          const desc = LEVEL_DESC[level];
+          const active = level === current;
+          const displayLabel = level === 'auto' ? `${label} (smart)` : label;
+          const suffix = level === 'high' ? ' (future)' : '';
+          const idx = ALL_LEVELS.indexOf(level) + 1;
+          const line = `  [${idx}] ${bold(displayLabel, out.color)} — ${desc}${suffix}${active ? '  ‹active›' : ''}`;
+          lines.push(active ? line : dim(line, out.color));
+        }
+        lines.push(`  [0] ${bold('Inherit', out.color)} — use the global new-conversation default`);
+        out.write('\n' + lines.filter((l) => l !== '').join('\n') + '\n\n');
+
+        out.write('[1-5 or 0 to change, Enter to keep] ');
+        const modeKey = await readMenuKey(out, readLine, undefined, false, inkReadKey);
+        let newMode: ConversationMode | undefined;
+        if (modeKey === '1') newMode = 'auto';
+        else if (modeKey === '2') newMode = 'budget';
+        else if (modeKey === '3') newMode = 'balanced';
+        else if (modeKey === '4') newMode = 'high';
+        else if (modeKey === '5') newMode = 'max';
+        else if (modeKey === '0') newMode = 'auto';
+        // else: Enter/EOF — keep current
+
+        if (newMode !== undefined) {
+          await ctx.store.setMode(conv.id, newMode);
+          const label = newMode === 'auto' ? 'Auto (smart)' : levelLabel(newMode);
+          out.write(`Mode for "${conv.title}" set to ${label}\n`);
+        }
+        await renderList();
       }
     }
   } else if (key === 'x') {
@@ -318,7 +365,8 @@ export async function runImportNative(
   const session = sessions[num - 1];
   if (session === undefined) return 'menu';
 
-  const { id, imported } = await importNativeSession(session, ctx.store);
+  const convMode = migrateMode(mutableCtx.config.mode);
+  const { id, imported } = await importNativeSession(session, ctx.store, convMode);
   const convTitle = session.title.length > 0 ? session.title : '(untitled)';
   out.write(`Resuming ${session.provider} session "${convTitle}" (${imported} messages)…\n`);
 

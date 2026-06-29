@@ -190,6 +190,7 @@ import {
   subscriptionInventoryFromEnvironment,
   resolveIntensity,
 } from './menu-auto-mode.js';
+import { levelToMode, migrateMode } from '../core/mode-levels.js';
 import { decidePostTurn } from './menu-post-turn.js';
 import { planRetryTruncation, recentUserMessages } from './menu-message-redo.js';
 import { completeChat } from './menu-completion.js';
@@ -704,6 +705,17 @@ export async function runChatLoop(
   inkBeginTurn?: () => void,
   _inkResetTurn?: () => void,
 ): Promise<'menu' | 'exit'> {
+  // Resolve the effective routing mode for THIS conversation. Per-conversation
+  // mode (set on the conversation record) overrides the global default
+  // (config.mode), which itself overrides the plan-derived Auto detection.
+  // Existing conversations without a mode field default to 'auto' (inherit).
+  const allMetas = await ctx.store.list();
+  const convMeta = allMetas.find((m) => m.id === convId);
+  const convExplicitMode = convMeta?.mode !== undefined && convMeta.mode !== 'auto';
+  const effectiveMode: Mode = convExplicitMode
+    ? (levelToMode(convMeta.mode) ?? resolveAutoMode(mutableCtx.env))
+    : (mutableCtx.config.mode ?? resolveAutoMode(mutableCtx.env));
+
   // -------------------------------------------------------------------------
   // RECAP (Phase 7, docs/recap-feature-5.5.md) — a ※ orientation line on resume
   // and on /recap, replacing the old raw-tail-echo. The recap is conversation-
@@ -722,7 +734,6 @@ export async function runChatLoop(
     | ((history: readonly SessionEntry[], signal: AbortSignal) => Promise<RecapResult | null>)
     | null => {
     if (!hasAuthenticatedProvider(mutableCtx.env)) return null;
-    const effectiveMode: Mode = mutableCtx.config.mode ?? resolveAutoMode(mutableCtx.env);
     const policy = POLICY_PRESETS[effectiveMode];
 
     const availableModels: Partial<Record<ProviderId, readonly string[]>> = {};
@@ -778,7 +789,6 @@ export async function runChatLoop(
     | ((rawText: string, signal: AbortSignal) => Promise<string | null>)
     | null => {
     if (!hasAuthenticatedProvider(mutableCtx.env)) return null;
-    const effectiveMode: Mode = mutableCtx.config.mode ?? resolveAutoMode(mutableCtx.env);
     const policy = POLICY_PRESETS[effectiveMode];
 
     const availableModels: Partial<Record<ProviderId, readonly string[]>> = {};
@@ -830,7 +840,6 @@ export async function runChatLoop(
     | ((userMessage: string, signal: AbortSignal) => Promise<GoalPlan | null>)
     | null => {
     if (!hasAuthenticatedProvider(mutableCtx.env)) return null;
-    const effectiveMode: Mode = mutableCtx.config.mode ?? resolveAutoMode(mutableCtx.env);
     const policy = POLICY_PRESETS[effectiveMode];
 
     const availableModels: Partial<Record<ProviderId, readonly string[]>> = {};
@@ -885,7 +894,6 @@ export async function runChatLoop(
     tasteContext?: string,
   ): ReturnType<typeof makeGoalPlannerAttempt> | null => {
     if (!hasAuthenticatedProvider(mutableCtx.env)) return null;
-    const effectiveMode: Mode = mutableCtx.config.mode ?? resolveAutoMode(mutableCtx.env);
     const policy = POLICY_PRESETS[effectiveMode];
     const availableModels: Partial<Record<ProviderId, readonly string[]>> = {};
     if (mutableCtx.env.claude.installed && mutableCtx.env.claude.availableModels.length > 0) {
@@ -943,7 +951,6 @@ export async function runChatLoop(
     systemModel?: SystemModel,
   ): ((goal: Goal, signal: AbortSignal) => Promise<RoadmapEdit[] | null>) | null => {
     if (!hasAuthenticatedProvider(mutableCtx.env)) return null;
-    const effectiveMode: Mode = mutableCtx.config.mode ?? resolveAutoMode(mutableCtx.env);
     const policy = POLICY_PRESETS[effectiveMode];
 
     const availableModels: Partial<Record<ProviderId, readonly string[]>> = {};
@@ -1000,7 +1007,6 @@ export async function runChatLoop(
     timeoutMs?: number,
   ): ((task: string, signal: AbortSignal) => Promise<SystemModel | null>) | null => {
     if (!hasAuthenticatedProvider(mutableCtx.env)) return null;
-    const effectiveMode: Mode = mutableCtx.config.mode ?? resolveAutoMode(mutableCtx.env);
     const policy = POLICY_PRESETS[effectiveMode];
     const availableModels: Partial<Record<ProviderId, readonly string[]>> = {};
     if (mutableCtx.env.claude.installed && mutableCtx.env.claude.availableModels.length > 0) {
@@ -1296,9 +1302,7 @@ export async function runChatLoop(
   // never block the user from typing. The recap resolves concurrently and prints when
   // ready (a beat after the prompt is already live; instant input beats perfect order).
   {
-    const entryMode = modeLabel(
-      mutableCtx.config.mode ?? resolveAutoMode(mutableCtx.env),
-    );
+    const entryMode = modeLabel(effectiveMode);
     // Show the chat composer now that an active conversation is starting (the
     // menu/sub-flows ran with it hidden). Cleared in the loop's finally on exit.
     inkSetChatActive?.(true);
@@ -2056,8 +2060,6 @@ export async function runChatLoop(
 
     // Effective mode: the user's explicit choice, else auto-detected from their
     // subscription plan (Max → top of the knob, etc.) — no interrogation.
-    const effectiveMode: Mode =
-        mutableCtx.config.mode ?? resolveAutoMode(mutableCtx.env);
       // Concurrency (panel / hedge) is now owned by the mode preset: Balanced and
       // Max auto-engage them on hard turns, Efficient leaves them off (see
       // POLICY_PRESETS). config.panel / config.hedge remain as explicit power-user
@@ -4017,7 +4019,7 @@ Output ONLY valid JSON (no prose, no markdown).`;
             (id) => ctx.providers[id] !== undefined,
           );
           if (pool.length === 0) return '';
-          const effMode: Mode = mutableCtx.config.mode ?? resolveAutoMode(mutableCtx.env);
+          const effMode: Mode = effectiveMode;
           const pol = POLICY_PRESETS[effMode];
           const avail: Partial<Record<ProviderId, readonly string[]>> = {};
           if (mutableCtx.env.claude.installed && mutableCtx.env.claude.availableModels.length > 0)
@@ -4556,8 +4558,7 @@ Output ONLY valid JSON (no prose, no markdown).`;
           const tuningCeiling = concurrencyCeilingForRegime(
             regimeForIntensity(schedResolvedIntensity),
           );
-          const schedEffectiveMode: Mode =
-            mutableCtx.config.mode ?? resolveAutoMode(mutableCtx.env);
+          const schedEffectiveMode: Mode = effectiveMode;
           const schedModeBudget =
             schedEffectiveMode === 'quality-first' ? 3 : schedEffectiveMode === 'balanced' ? 2 : 1;
           const schedTurnCallBudget = Math.max(1, schedModeBudget - currentPressure());
@@ -7043,7 +7044,8 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
         // lets you type. The title is derived silently from the first user message
         // (conversations.ts append()), so create an untitled conversation and drop
         // straight into it.
-        const meta = await ctx.store.create('');
+        const convMode = migrateMode(mutableCtx.config.mode);
+        const meta = await ctx.store.create('', convMode);
         const chatResult = await runChatLoop(ctx, mutableCtx, meta.id, out, readLine, loginFn, detectEnvironmentFn, confirm, suspendStdin, lineReader, inkRenderTurn, inkReadKey, inkSetInterrupt, inkSetInputInfo, inkSetChatActive, inkBeginTurn, inkResetTurn);
         spendDirty = true; // a task may have run — refresh the spend summary
         listDirty = true; // a new conversation was created (and goals may be parked)

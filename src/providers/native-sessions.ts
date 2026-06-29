@@ -31,7 +31,7 @@ import type { Dirent } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import type { SessionEntry } from '../core/types.js';
-import type { ConversationStore } from '../infra/conversation-store.js';
+import type { ConversationStore, ConversationMode } from '../infra/conversation-store.js';
 import type { ProviderId } from './port.js';
 
 // ---------------------------------------------------------------------------
@@ -397,6 +397,7 @@ function deriveId(_provider: ProviderId, file: string): string {
 export async function importNativeSession(
   session: NativeSession,
   store: ConversationStore,
+  mode?: ConversationMode,
 ): Promise<{ id: string; imported: number }> {
   const content = await readFile(session.file, 'utf8');
   const entries =
@@ -407,7 +408,7 @@ export async function importNativeSession(
   const title =
     session.title.length > 0 ? session.title : `Imported from ${session.provider} — ${session.id}`;
 
-  const meta = await store.create(title);
+  const meta = await store.create(title, mode);
   const writer = store.writer(meta.id);
 
   for (const entry of entries) {

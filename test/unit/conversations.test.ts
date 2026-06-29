@@ -734,6 +734,137 @@ describe('createFileConversationStore — setActivation', () => {
 });
 
 // ---------------------------------------------------------------------------
+// setMode — per-conversation mode round-trip, normalization, clearing, preservation
+// ---------------------------------------------------------------------------
+
+describe('createFileConversationStore — setMode', () => {
+  it('stamps mode on create and list reflects it', async () => {
+    const home2 = await mkdtemp(join(tmpdir(), `conv-mode-create-${randomUUID()}-`));
+    try {
+      const clock = makeFakeClock();
+      const store = createFileConversationStore({ homeDir: home2, clock });
+      const meta = await store.create('Mode test', 'max');
+      assert.equal(meta.mode, 'max');
+
+      const found = (await store.list()).find((m) => m.id === meta.id);
+      assert.ok(found !== undefined);
+      assert.equal(found.mode, 'max');
+    } finally {
+      await rm(home2, { recursive: true, force: true });
+    }
+  });
+
+  it('create defaults to mode absent without explicit mode', async () => {
+    const home2 = await mkdtemp(join(tmpdir(), `conv-mode-default-${randomUUID()}-`));
+    try {
+      const clock = makeFakeClock();
+      const store = createFileConversationStore({ homeDir: home2, clock });
+      const meta = await store.create('Default mode');
+      assert.equal(meta.mode, undefined);
+    } finally {
+      await rm(home2, { recursive: true, force: true });
+    }
+  });
+
+  it('canonicalizes create with mode auto to absent', async () => {
+    const home2 = await mkdtemp(join(tmpdir(), `conv-mode-auto-${randomUUID()}-`));
+    try {
+      const clock = makeFakeClock();
+      const store = createFileConversationStore({ homeDir: home2, clock });
+      const meta = await store.create('Auto mode', 'auto');
+      assert.equal(meta.mode, undefined);
+    } finally {
+      await rm(home2, { recursive: true, force: true });
+    }
+  });
+
+  it('setMode persists and list reflects it', async () => {
+    const home2 = await mkdtemp(join(tmpdir(), `conv-mode-persist-${randomUUID()}-`));
+    try {
+      const clock = makeFakeClock();
+      const store = createFileConversationStore({ homeDir: home2, clock });
+      const meta = await store.create('Dial me');
+      await store.setMode(meta.id, 'budget');
+
+      const found = (await store.list()).find((m) => m.id === meta.id);
+      assert.ok(found !== undefined);
+      assert.equal(found.mode, 'budget');
+    } finally {
+      await rm(home2, { recursive: true, force: true });
+    }
+  });
+
+  it('setMode clears with undefined and preserves unrelated metadata', async () => {
+    const home2 = await mkdtemp(join(tmpdir(), `conv-mode-clear-${randomUUID()}-`));
+    try {
+      const clock = makeFakeClock('2024-06-01T10:00:00.000Z');
+      const store = createFileConversationStore({ homeDir: home2, clock });
+      const meta = await store.create('Preserve me');
+      await store.rename(meta.id, 'Preserve me renamed');
+      await store.setPinned(meta.id, true);
+      await store.setCategory(meta.id, 'refactor');
+      await store.setRecap(meta.id, 'where we were', 6);
+      await store.setMode(meta.id, 'max');
+      await store.setMode(meta.id, undefined);
+
+      const found = (await store.list()).find((m) => m.id === meta.id);
+      assert.ok(found !== undefined);
+      assert.equal(found.title, 'Preserve me renamed');
+      assert.equal(found.pinned, true);
+      assert.equal(found.category, 'refactor');
+      assert.equal(found.recap, 'where we were');
+      assert.equal(found.recapAt, '2024-06-01T10:00:00.000Z');
+      assert.equal(found.recapMessageCount, 6);
+      assert.equal(found.mode, undefined);
+
+      const indexPath = join(home2, '.myshell-tools', 'conversations', 'index.json');
+      const rawAfterClear = await readFile(indexPath, 'utf8');
+      assert.equal(rawAfterClear.includes('"mode"'), false);
+    } finally {
+      await rm(home2, { recursive: true, force: true });
+    }
+  });
+
+  it('setMode auto clears to absent', async () => {
+    const home2 = await mkdtemp(join(tmpdir(), `conv-mode-auto-clear-${randomUUID()}-`));
+    try {
+      const clock = makeFakeClock();
+      const store = createFileConversationStore({ homeDir: home2, clock });
+      const meta = await store.create('Set auto');
+      await store.setMode(meta.id, 'balanced');
+      await store.setMode(meta.id, 'auto');
+
+      const found = (await store.list()).find((m) => m.id === meta.id);
+      assert.ok(found !== undefined);
+      assert.equal(found.mode, undefined);
+    } finally {
+      await rm(home2, { recursive: true, force: true });
+    }
+  });
+
+  it('legacy index entries without mode default to absent', async () => {
+    const home2 = await mkdtemp(join(tmpdir(), `conv-mode-legacy-${randomUUID()}-`));
+    try {
+      const clock = makeFakeClock();
+      const store = createFileConversationStore({ homeDir: home2, clock });
+      const meta = await store.create('Legacy');
+      // Simulate a legacy index — write the meta without the mode key
+      const indexPath = join(home2, '.myshell-tools', 'conversations', 'index.json');
+      const rawLegacy = JSON.stringify([{ id: meta.id, title: 'Legacy', createdAt: meta.createdAt, updatedAt: meta.updatedAt, messageCount: 0, pinned: false, category: null }], null, 2);
+      const { writeFile } = await import('node:fs/promises');
+      await writeFile(indexPath, rawLegacy);
+
+      const reopened = createFileConversationStore({ homeDir: home2, clock });
+      const found = (await reopened.list()).find((m) => m.id === meta.id);
+      assert.ok(found !== undefined);
+      assert.equal(found.mode, undefined);
+    } finally {
+      await rm(home2, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
 // truncateAfter — controlled, atomic, fail-soft departure from append-only
 // (powers /retry and /edit). Round-trip, index update, recap-clear, validation,
 // atomicity, fail-soft.

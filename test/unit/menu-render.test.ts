@@ -180,7 +180,7 @@ function envWithClaudePlan(plan: string | null): EnvironmentStatus {
 describe('renderMainScreen — tier-adaptive auto posture label', () => {
   it('Max plan → the auto line reads "→ full"', async () => {
     const out = await render(envWithClaudePlan('claude max 20x'));
-    assert.ok(out.includes('(auto'), 'mode line shows the auto indicator');
+    assert.ok(out.includes('Auto (smart)'), 'mode line shows Auto (smart) when unset');
     assert.ok(out.includes('→ full'), `Max plan must read "→ full"; got:\n${out}`);
   });
 
