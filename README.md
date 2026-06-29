@@ -105,7 +105,7 @@ You can also enable **auto-update** so the CLI updates and relaunches itself sil
 To opt out:
 - During first-run setup: answer `n` to the `Keep myshell-tools up to date automatically? (Y/n)` prompt.
 - In the control panel: `[s] Settings → [3] Auto-update: on → off`.
-- Or set `"autoUpdate": false` in `~/.myshell-tools/config.json`.
+- Or set `"autoUpdate": false` in your `config.json` (in the platform config dir: `~/.myshell-tools/` or `$XDG_CONFIG_HOME/myshell-tools/` on Linux/macOS, `%APPDATA%\myshell-tools\` on Windows, or the workspace `.myshell-tools/` on Replit/Codespaces/Gitpod).
 - Or set `MYSHELL_NO_UPDATE=1` in your environment to disable auto-update permanently without changing config.
 
 To update manually at any time:
@@ -215,7 +215,7 @@ classify ─▶ route(cheapest tier) ─▶ run ─▶ assess
 
 - **Tiers** map to stable model *aliases* (`haiku`/`sonnet`/`opus`, or the Codex tiers), so when a vendor ships a newer model the alias resolves to it automatically — no myshell-tools update needed.
 - **Cost** prefers the provider CLI's own reported figure (Claude does this); otherwise it estimates from real token counts and a dated, staleness‑warned price seed.
-- Every run is recorded to an append‑only **session log** and **cost ledger** under `.myshell-tools/`.
+- Every run is recorded to an append‑only **session log** and **cost ledger** under the project's `.myshell-tools/`. App‑level state (config, conversations, goals, credentials) lives in the platform's standard dir (see above) and is migrated forward automatically on first launch.
 
 ---
 
