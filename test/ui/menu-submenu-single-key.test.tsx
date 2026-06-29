@@ -22,6 +22,7 @@ import { App, createInkAppBridge } from '../../src/interface/ui/App.js';
 import { runSettings } from '../../src/interface/menu-settings.js';
 import { runManage } from '../../src/interface/menu-conversations.js';
 import { loadConfig } from '../../src/infra/config.js';
+import { defaultStateLayout } from '../../src/infra/state-layout.js';
 import type { AppConfig } from '../../src/infra/config.js';
 import type { OutputSink } from '../../src/interface/render.js';
 import type { EnvironmentStatus } from '../../src/providers/detect.js';
@@ -72,24 +73,39 @@ function withTmpHome(): { home: string; restore: () => void } {
   const prev = {
     HOME: process.env.HOME,
     USERPROFILE: process.env.USERPROFILE,
+    APPDATA: process.env.APPDATA,
+    LOCALAPPDATA: process.env.LOCALAPPDATA,
+    XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME,
+    XDG_STATE_HOME: process.env.XDG_STATE_HOME,
+    XDG_CACHE_HOME: process.env.XDG_CACHE_HOME,
     REPL_ID: process.env.REPL_ID,
     REPLIT_DEV_DOMAIN: process.env.REPLIT_DEV_DOMAIN,
-  };
-  const set = (k: 'HOME' | 'USERPROFILE' | 'REPL_ID' | 'REPLIT_DEV_DOMAIN', v: string | undefined): void => {
+    CODESPACES: process.env.CODESPACES,
+    CODESPACE_NAME: process.env.CODESPACE_NAME,
+    GITPOD_WORKSPACE_ID: process.env.GITPOD_WORKSPACE_ID,
+    MYSHELL_CLOUD_WORKSPACE: process.env.MYSHELL_CLOUD_WORKSPACE,
+  } as Record<string, string | undefined>;
+  const set = (k: string, v: string | undefined): void => {
     if (v === undefined) Reflect.deleteProperty(process.env, k);
     else process.env[k] = v;
   };
   process.env.HOME = home;
   process.env.USERPROFILE = home;
+  process.env.APPDATA = home;
+  process.env.LOCALAPPDATA = home;
+  set('XDG_CONFIG_HOME', undefined);
+  set('XDG_STATE_HOME', undefined);
+  set('XDG_CACHE_HOME', undefined);
   set('REPL_ID', undefined);
   set('REPLIT_DEV_DOMAIN', undefined);
+  set('CODESPACES', undefined);
+  set('CODESPACE_NAME', undefined);
+  set('GITPOD_WORKSPACE_ID', undefined);
+  set('MYSHELL_CLOUD_WORKSPACE', undefined);
   return {
     home,
     restore(): void {
-      set('HOME', prev.HOME);
-      set('USERPROFILE', prev.USERPROFILE);
-      set('REPL_ID', prev.REPL_ID);
-      set('REPLIT_DEV_DOMAIN', prev.REPLIT_DEV_DOMAIN);
+      for (const [k, v] of Object.entries(prev)) set(k, v);
       fs.rmSync(home, { recursive: true, force: true });
     },
   };
@@ -130,7 +146,7 @@ test('runSettings: a single [3] keypress (no Enter) opens Output-detail under In
 
     // The single keys drove the whole flow: verbosity was set to quiet and saved.
     assert.equal(mutableCtx.config.verbosity, 'quiet', 'single-key [3] then [1] set verbosity');
-    const saved = await loadConfig(env.home);
+    const saved = await loadConfig(undefined, defaultStateLayout());
     assert.equal(saved.verbosity, 'quiet', 'the choice persisted via saveConfig');
   } finally {
     env.restore();
