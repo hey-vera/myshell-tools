@@ -20,6 +20,8 @@ import type { EnvironmentStatus, ProviderStatus } from '../../src/providers/dete
 import type { AppConfig } from '../../src/infra/config.ts';
 import type { SpendSummary } from '../../src/infra/insights.ts';
 import type { OutputSink } from '../../src/interface/render.ts';
+import type { ConversationMeta } from '../../src/infra/conversation-store.ts';
+import type { Goal } from '../../src/core/goal-todo.ts';
 
 // ---------------------------------------------------------------------------
 // Minimal fakes — renderMainScreen reads only ctx.version, ctx.clock.now(),
@@ -114,10 +116,7 @@ describe('renderMainScreen — sign-in call-to-action', () => {
       out.includes('Not signed in yet'),
       `expected the sign-in CTA when unauthenticated, got:\n${out}`,
     );
-    // Names the exact keys so a brand-new user knows the next step.
-    assert.ok(out.includes('[j] Claude'), 'CTA must name the [j] Claude key');
-    assert.ok(out.includes('[k] Codex'), 'CTA must name the [k] Codex key');
-    assert.ok(out.includes('[o] opencode'), 'CTA must name the [o] opencode key');
+    assert.ok(out.includes('[a] Accounts'), 'CTA must name the [a] Accounts entry');
   });
 
   it('the CTA is a single line', async () => {
@@ -197,5 +196,127 @@ describe('renderMainScreen — tier-adaptive auto posture label', () => {
     assert.ok(!out.includes('→ full'), 'an undetected plan must never assume the Max "full"');
     // And it must not nag the compact line with "no plan reported".
     assert.ok(!out.includes('no plan reported'), 'compact line never nags about a missing plan');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Slice B — Home Screen & Control Panel Restructure
+// ---------------------------------------------------------------------------
+
+describe('renderMainScreen — Slice B home screen restructure', () => {
+  it('does NOT render a parked-goals section', async () => {
+    const out = await render(ENV_CLAUDE_AUTHED);
+    assert.ok(!out.includes('Goals · Parked'), 'home screen must not show parked-goals section');
+  });
+
+  it('does NOT render [g] Manage goals entry', async () => {
+    const out = await render(ENV_CLAUDE_AUTHED);
+    assert.ok(!out.includes('[g]'), 'home screen must not show [g] Manage goals');
+  });
+
+  it('does NOT render [d] Diagnose entry', async () => {
+    const out = await render(ENV_CLAUDE_AUTHED);
+    assert.ok(!out.includes('[d]'), 'home screen must not show [d] Diagnose');
+  });
+
+  it('does NOT render [$] Usage entry', async () => {
+    const out = await render(ENV_CLAUDE_AUTHED);
+    assert.ok(!out.includes('[$]'), 'home screen must not show [$] Usage');
+  });
+
+  it('renders [a] Accounts entry collapsed (not individual provider entries)', async () => {
+    const out = await render(ENV_CLAUDE_AUTHED);
+    assert.ok(out.includes('[a]'), 'home screen must show [a] Accounts entry');
+    assert.ok(!out.includes('[j]'), 'home screen must not show individual [j] Claude entry');
+    assert.ok(!out.includes('[k]'), 'home screen must not show individual [k] Codex entry');
+    assert.ok(!out.includes('[o]'), 'home screen must not show individual [o] opencode entry');
+    assert.ok(!out.includes('[p]'), 'home screen must not show individual [p] grok entry');
+  });
+
+  it('renders conversation rows with mode and message count', async () => {
+    const { sink, text } = makeSink();
+    const meta: ConversationMeta = {
+      id: 'conv-1',
+      title: 'Test conversation',
+      createdAt: '2023-11-14T20:13:20.000Z',
+      updatedAt: '2023-11-14T21:13:20.000Z',
+      messageCount: 42,
+      pinned: false,
+      category: null,
+      mode: 'budget',
+    };
+    await renderMainScreen(
+      makeCtx(),
+      { config: {} as AppConfig, env: ENV_CLAUDE_AUTHED },
+      [meta],
+      EMPTY_SPEND,
+      sink,
+    );
+    const out = text();
+    assert.ok(out.includes('Test conversation'), 'row shows title');
+    assert.ok(out.includes('| budget'), 'row shows mode label');
+    assert.ok(out.includes('42 msgs'), 'row shows message count');
+  });
+
+  it('shows goal badge on conversation row when linked goals exist', async () => {
+    const { sink, text } = makeSink();
+    const meta: ConversationMeta = {
+      id: 'conv-1',
+      title: 'Goal conversation',
+      createdAt: '2023-11-14T20:13:20.000Z',
+      updatedAt: '2023-11-14T21:13:20.000Z',
+      messageCount: 5,
+      pinned: false,
+      category: null,
+    };
+    const goal: Goal = {
+      id: 'goal-1',
+      title: 'Test goal',
+      state: 'running',
+      roadmap: [],
+      createdAt: '2023-11-14T18:00:00.000Z',
+      lastTouched: '2023-11-14T21:00:00.000Z',
+      source: 'user-explicit' as const,
+      scope: 'global' as const,
+      projectKey: null,
+      conversationId: 'conv-1',
+      goalVerdict: null,
+      children: [],
+    };
+    await renderMainScreen(
+      makeCtx(),
+      { config: {} as AppConfig, env: ENV_CLAUDE_AUTHED },
+      [meta],
+      EMPTY_SPEND,
+      sink,
+      undefined, undefined, false, [],
+      [goal],
+    );
+    const out = text();
+    assert.ok(out.includes('Goal conversation'), 'row shows title');
+    assert.ok(out.includes('goals: active'), 'row shows goals: active badge');
+  });
+
+  it('does NOT show goal badge when no linked goals', async () => {
+    const { sink, text } = makeSink();
+    const meta: ConversationMeta = {
+      id: 'conv-1',
+      title: 'No-goal conversation',
+      createdAt: '2023-11-14T20:13:20.000Z',
+      updatedAt: '2023-11-14T21:13:20.000Z',
+      messageCount: 3,
+      pinned: false,
+      category: null,
+    };
+    await renderMainScreen(
+      makeCtx(),
+      { config: {} as AppConfig, env: ENV_CLAUDE_AUTHED },
+      [meta],
+      EMPTY_SPEND,
+      sink,
+    );
+    const out = text();
+    assert.ok(out.includes('No-goal conversation'), 'row shows title');
+    assert.ok(!out.includes('goals:'), 'row must not show goal badge when no linked goals');
   });
 });

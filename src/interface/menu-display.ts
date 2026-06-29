@@ -11,12 +11,13 @@
 
 import type { UpdateCheckResult } from '../infra/update-check.js';
 import type { EnvironmentStatus } from '../providers/detect.js';
-import { getInstallCommand } from '../providers/detect.js';
 import type { SpendSummary } from '../infra/insights.js';
 import { formatTokens } from '../infra/insights.js';
 import type { ConversationMeta, ConversationMode } from '../infra/conversation-store.js';
 import { dim } from '../ui/theme.js';
 import { claudeTokenStatus } from '../infra/credentials.js';
+import type { Goal } from '../core/goal-todo.js';
+import { isStale } from '../core/goal-todo.js';
 
 /**
  * Decide whether auto-update is enabled for this launch.
@@ -177,58 +178,44 @@ export function hasAnyAuthenticatedProvider(env: EnvironmentStatus): boolean {
   return env.claude.authenticated || env.codex.authenticated || env.opencode.authenticated || env.grok.authenticated;
 }
 
+export interface ProviderAccountSummary {
+  readonly active: number;
+  readonly total: number;
+  readonly planLabels: readonly string[];
+  readonly needsAttention: boolean;
+}
+
 export function renderHeaderLines(
   env: EnvironmentStatus,
   _version: string,
   claudeToken?: ReturnType<typeof claudeTokenStatus>,
+  accountStates?: Record<string, ProviderAccountSummary>,
 ): string[] {
   const lines: string[] = [];
 
-  for (const ps of [env.claude, env.codex]) {
-    // Note: we deliberately omit the plan suffix (e.g. " (max_5x)") here in the
-    // compact live header. Plans can change outside our process (user upgrades
-    // or downgrades their subscription) and the compact header is shown on every
-    // menu entry; showing a potentially-stale label is worse than omitting it.
-    // The authoritative current plan is still reported by `myshell-tools doctor`
-    // (which re-detects live) and used internally for auto-mode / capacity etc.
-    // See user request for cleanest handling of subscription type changes.
+  for (const ps of [env.claude, env.codex, env.opencode, env.grok]) {
+    const accts = accountStates?.[ps.id];
+
     if (!ps.installed) {
-      lines.push(`${ps.id}: not installed — ${getInstallCommand(ps.id)}`);
+      lines.push(`${ps.id}: not installed`);
+    } else if (accts !== undefined && accts.total > 0) {
+      if (accts.needsAttention) {
+        lines.push(`${ps.id}: accounts need attention`);
+      } else {
+        const planSuffix = accts.planLabels.length > 0
+          ? ` (${accts.planLabels.join(', ')})`
+          : '';
+        const n = accts.active;
+        const label = n === 1 ? '1 active account' : `${n} active accounts`;
+        lines.push(`${ps.id}: ${label}${planSuffix}`);
+      }
     } else if (ps.authenticated) {
-      lines.push(`${ps.id}: ready`);
+      lines.push(`${ps.id}: signed in`);
     } else {
       lines.push(`${ps.id}: not signed in`);
     }
   }
 
-  // opencode: only show when installed (never nag users who only use claude/codex).
-  // authenticated reflects a real credential probe (`opencode auth list`) — ready
-  // only when the user has logged a provider/subscription in. Free models alone
-  // are not "ready" (they can't do serious work), so an unconfigured opencode is
-  // shown as not signed in, with a hint to add a provider.
-  if (env.opencode.installed) {
-    const ps = env.opencode;
-    if (ps.authenticated) {
-      lines.push(`${ps.id}: ready`);
-    } else {
-      // Concise status only — the [o] action lives in the menu below, so repeating
-      // it here is redundant (and overflowed the box).
-      lines.push(`${ps.id}: not signed in`);
-    }
-  }
-
-  // grok: only show when installed (neutral-by-default; ordered last in policy).
-  // Auth is probed via `grok models`; creds live in ~/.grok/ and are owned by grok.
-  if (env.grok.installed) {
-    const ps = env.grok;
-    if (ps.authenticated) {
-      lines.push(`${ps.id}: ready`);
-    } else {
-      lines.push(`${ps.id}: not signed in`);
-    }
-  }
-
-  // Token expiry warning — only when near-expiry or expired (not on every launch).
   if (claudeToken != null && (claudeToken.expired || claudeToken.nearExpiry)) {
     if (claudeToken.expired) {
       lines.push(`claude token EXPIRED — run: myshell-tools login claude --code`);
@@ -294,6 +281,44 @@ export function conversationModeLabel(mode: ConversationMode | undefined): strin
 }
 
 /**
+ * Compute a map of conversationId → goal badge kind from the full goal list.
+ *
+ * - `'active'`  — at least one linked goal is running, queued, or parked and NOT stale.
+ * - `'review'`  — at least one linked goal is stale, blocked, or inactive (none active).
+ * - absent       — no linked live goals exist.
+ */
+export function computeGoalBadges(
+  goals: readonly Goal[],
+  nowIso: string,
+): Map<string, 'active' | 'review'> {
+  const result = new Map<string, 'active' | 'review'>();
+  const byConv = new Map<string, Goal[]>();
+  for (const g of goals) {
+    const cid = g.conversationId;
+    if (cid === null || cid === undefined) continue;
+    const bucket = byConv.get(cid);
+    if (bucket !== undefined) {
+      bucket.push(g);
+    } else {
+      byConv.set(cid, [g]);
+    }
+  }
+  for (const [cid, gs] of byConv) {
+    const live = gs.filter((g) =>
+      g.state === 'running' || g.state === 'queued' || g.state === 'parked',
+    );
+    if (live.length === 0) continue;
+    const hasActive = live.some((g) => !isStale(g, nowIso) && g.state !== 'blocked');
+    if (hasActive) {
+      result.set(cid, 'active');
+    } else {
+      result.set(cid, 'review');
+    }
+  }
+  return result;
+}
+
+/**
  * Build the conversation list lines from real ConversationMeta[].
  * Format: "[N] <pin> <relative-time>  <title>[  [<category>]]"
  *
@@ -305,6 +330,7 @@ export function renderConversationList(
   metas: ConversationMeta[],
   nowMs: number,
   color = false,
+  goalBadges?: ReadonlyMap<string, 'active' | 'review'>,
 ): string[] {
   return metas.slice(0, 7).map((m, i) => {
     const thenMs = new Date(m.updatedAt).getTime();
@@ -312,19 +338,16 @@ export function renderConversationList(
     const idx = i + 1;
     const pin = m.pinned ? '📌 ' : '   ';
     const categorySuffix = m.category != null ? `  [${m.category}]` : '';
-    // At-a-glance message count (real-chat gap #4): a dim "· N msgs" cue from the
-    // already-stored messageCount, so the picker shows how much is in each thread.
-    // Only when there's at least one message; degrades under no-color (dim is a
-    // no-op when color:false → plain " · N msgs"). Singular/plural kept honest.
     const count = typeof m.messageCount === 'number' ? m.messageCount : 0;
     const countSuffix =
       count > 0 ? `  ${dim(`· ${count} msg${count === 1 ? '' : 's'}`, color)}` : '';
     const mode = conversationModeLabel(m.mode);
     const modeSuffix = `  ${dim(`| ${mode}`, color)}`;
-    const row = `[${idx}] ${pin}${rel}  ${m.title}${categorySuffix}${modeSuffix}${countSuffix}`;
-    // Optional second dim line = the cached ※ recap (state, not just the opening
-    // words). Only when a non-empty recap exists; legacy rows show the title alone
-    // (docs/recap-feature-5.5.md §5.3). Truncated; indented to align under the title.
+    const badge = goalBadges?.get(m.id);
+    const goalSuffix = badge !== undefined
+      ? `  ${dim(`| goals: ${badge}`, color)}`
+      : '';
+    const row = `[${idx}] ${pin}${rel}  ${m.title}${categorySuffix}${modeSuffix}${countSuffix}${goalSuffix}`;
     const recap = typeof m.recap === 'string' ? m.recap.trim() : '';
     if (recap.length === 0) return row;
     const shown = recap.length > 72 ? recap.slice(0, 71) + '…' : recap;

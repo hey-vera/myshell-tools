@@ -232,7 +232,7 @@ import { cacheAccountingV2Enabled } from './ui/cache-accounting-flag.js';
 import { accountAuxEnabled } from './ui/account-aux-flag.js';
 import { subscriptionsEnabled } from './ui/subscriptions-flag.js';
 import { accountParallelismEnabled } from './ui/account-parallelism-flag.js';
-import { readSubscriptions, type SubscriptionProvider } from '../infra/subscriptions.js';
+import { readSubscriptions, type SubscriptionAccount, type SubscriptionProvider } from '../infra/subscriptions.js';
 import { intentStoreV1Enabled } from './ui/intent-store-flag.js';
 import { correctionForkV1Enabled } from './ui/correction-fork-flag.js';
 import { blockedStateV1Enabled } from './ui/blocked-state-flag.js';
@@ -6453,6 +6453,33 @@ Output ONLY valid JSON (no prose, no markdown).`;
  * created from `process.stdin` as usual; the `close` event is wired up so
  * that EOF resolves gracefully instead of throwing.
  */
+
+import type { ProviderAccountSummary } from './menu-display.js';
+
+function computeProviderAccountStates(
+  subs: { accounts: readonly SubscriptionAccount[] },
+): Record<string, ProviderAccountSummary> {
+  const result: Record<string, ProviderAccountSummary> = {};
+  for (const provider of ['claude', 'codex', 'opencode', 'grok'] as const) {
+    const accts = subs.accounts.filter((a) => a.provider === provider);
+    const active = accts.filter((a) => a.enabled && a.status === 'active').length;
+    const total = accts.length;
+    const planLabels: string[] = [];
+    for (const a of accts) {
+      if (a.plan !== null && a.plan !== undefined && a.plan !== '' && !planLabels.includes(a.plan)) {
+        planLabels.push(a.plan);
+      }
+    }
+    result[provider] = {
+      active,
+      total,
+      planLabels,
+      needsAttention: total > 0 && active === 0,
+    };
+  }
+  return result;
+}
+
 export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void> {
   // EXPERIMENTAL Ink UI (Step 5, default OFF). When the flag is on AND we are not
   // under an injected test reader, mount the Ink rendering+input layer and drive
@@ -6849,19 +6876,17 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
     // Same persistent home + injected clock as the chat-loop store; fail-soft.
     const menuGoalStore = createFileGoalStore({ clock: ctx.clock });
 
-    // Cached, dirty-tracked state — the menu hot path stays O(1) in ledger size:
-    // recomputed only when a flag says the underlying data may have changed.
     const emptySpend = summarizeSpend([], ctx.clock.isoNow());
     let claudeTokenInfo: ClaudeTokenStatus | null | undefined;
     let spend = emptySpend;
     let metas: Awaited<ReturnType<typeof ctx.store.list>> = [];
-    let parkedGoals: Awaited<ReturnType<typeof menuGoalStore.list>> = [];
+    let allGoals: Awaited<ReturnType<typeof menuGoalStore.list>> = [];
     let spendDirty = false;
     let listDirty = false;
-    // First-paint placeholders are active until the async fills resolve. On the
-    // legacy/sync path they're satisfied immediately below (never seen).
+    let acctsDirty = false;
     let spendLoading = true;
     let listsLoading = true;
+    let accountStates: Record<string, ProviderAccountSummary> | undefined;
 
     // Tests (and any caller) may inject the token status to skip the disk read.
     if (ctx.claudeTokenInfo !== undefined) {
@@ -6884,7 +6909,7 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
     };
     const fillLists = async (): Promise<void> => {
       metas = await ctx.store.list().catch(() => []);
-      parkedGoals = await menuGoalStore.list({ state: 'parked' }).catch(() => []);
+      allGoals = await menuGoalStore.list().catch(() => []);
       listsLoading = false;
     };
 
@@ -6906,9 +6931,13 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
       // per keypress (the progressive-lag / duplicate-menu root cause). On legacy /
       // test sinks beginFrame/endFrame are no-ops, so the byte stream is unchanged.
       out.beginFrame?.();
+      if (accountStates === undefined) {
+        const subs = await readSubscriptions().catch(() => ({ version: 1 as const, accounts: [] }));
+        accountStates = computeProviderAccountStates(subs);
+      }
       await renderMainScreen(
         ctx, mutableCtx, metas, spend, out, updateInfo, claudeTokenInfo,
-        runningUnderNpx, ctx.healthIssues ?? [], parkedGoals,
+        runningUnderNpx, ctx.healthIssues ?? [], allGoals, accountStates,
         spendLoading, listsLoading,
       );
       out.write('> ');
@@ -6964,15 +6993,19 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
         if (liveRegion) {
           void (async () => {
             metas = await ctx.store.list().catch(() => []);
-            parkedGoals = await menuGoalStore.list({ state: 'parked' }).catch(() => []);
+            allGoals = await menuGoalStore.list().catch(() => []);
             listsLoading = false;
             scheduleRepaint();
           })();
         } else {
           metas = await ctx.store.list().catch(() => []);
-          parkedGoals = await menuGoalStore.list({ state: 'parked' }).catch(() => []);
+          allGoals = await menuGoalStore.list().catch(() => []);
           listsLoading = false;
         }
+      }
+      if (acctsDirty) {
+        acctsDirty = false;
+        accountStates = undefined; // recompute on next paint
       }
       if (liveRegion) {
         void refreshEnvironmentIfStale().then(() => {
@@ -7089,10 +7122,177 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
         continue;
       }
 
-      // ---- [e] Manage conversations -------------------------------------------
+      // ---- [e] Library ---------------------------------------------------------
       if (key === 'e') {
-        await runManage(ctx, out, readLine, confirm, inkReadKey);
-        listDirty = true; // manage can rename/delete conversations
+        // Library submenu: Manage conversations, Import native session, Raw session.
+        // inMainMenu is already false from the dispatch preamble.
+        let keepRunning = true;
+        while (keepRunning) {
+          out.write('\n  Library\n');
+          out.write('    [m] Manage conversations\n');
+          out.write('    [i] Import a Claude/Codex session\n');
+          out.write('    [r] Raw provider session\n');
+          out.write('    [b] Back\n\n> ');
+          const libKey = await readMenuKey(out, readLine, undefined, false, inkReadKey);
+          if (libKey === 'b' || libKey === null) {
+            keepRunning = false;
+            continue;
+          }
+          if (libKey === 'm') {
+            await runManage(ctx, out, readLine, confirm, inkReadKey);
+            listDirty = true;
+          } else if (libKey === 'i') {
+            const importResult = await runImportNative(ctx, mutableCtx, out, readLine, loginFn, detectEnvironmentFn, confirm, suspendStdin, lineReader, inkRenderTurn, inkReadKey, inkSetInterrupt, inkSetInputInfo, inkSetChatActive);
+            spendDirty = true;
+            listDirty = true;
+            if (importResult === 'exit') { keepRunning = false; }
+          } else if (libKey === 'r') {
+            await runRawProviderSession(out, readLine, mutableCtx.env, suspendStdin, inkReadKey, commandGate);
+          }
+        }
+        continue;
+      }
+
+      // ---- [a] Accounts ---------------------------------------------------------
+      if (key === 'a') {
+        const subs = await readSubscriptions().catch(() => ({ version: 1 as const, accounts: [] }));
+        if (subscriptionsEnabled(process.env, mutableCtx.config) && subs.accounts.length > 0) {
+          // Show a provider selection submenu for Accounts management.
+          let keepRunning = true;
+          while (keepRunning) {
+            const acctStates = computeProviderAccountStates(subs);
+            out.write('\n  Accounts\n');
+            for (const provider of ['claude', 'codex', 'opencode', 'grok'] as const) {
+              const s = acctStates[provider];
+              if (s === undefined) continue;
+              const key = provider === 'claude' ? 'j' : provider === 'codex' ? 'k' : provider === 'opencode' ? 'o' : 'p';
+              const statusLine = s.total > 0
+                ? `${s.active} active${s.total !== s.active ? `, ${s.total - s.active} disabled` : ''}`
+                : 'no accounts';
+              out.write(`    [${key}] ${provider}  ${statusLine}\n`);
+            }
+            out.write('    [b] Back\n\n> ');
+            const accKey = await readMenuKey(out, readLine, undefined, false, inkReadKey);
+            if (accKey === 'b' || accKey === null) {
+              keepRunning = false;
+              continue;
+            }
+            if (accKey === 'j') {
+              await runClaudeAccountsMenu(out, readLine, confirm, ctx.clock, {
+                login: loginFn, suspendStdin, inkReadKey, cwd: ctx.cwd,
+              });
+              await refreshEnvironmentIfStale(true);
+            } else if (accKey === 'k') {
+              await runCodexAccountsMenu(out, readLine, confirm, ctx.clock, {
+                login: loginFn, suspendStdin, inkReadKey, cwd: ctx.cwd,
+              });
+              await refreshEnvironmentIfStale(true);
+            } else if (accKey === 'o') {
+              await runOpencodeAccountsMenu(out, readLine, readlineEcho, confirm, ctx.clock, inkReadKey);
+              await refreshEnvironmentIfStale(true);
+            } else if (accKey === 'p') {
+              await runGrokAccountsMenu(out, readLine, confirm, ctx.clock, {
+                login: loginFn, suspendStdin, inkReadKey, cwd: ctx.cwd,
+              });
+              await refreshEnvironmentIfStale(true);
+            }
+          }
+        } else {
+          // Subscriptions off or no accounts: provider sign-in submenu.
+          let keepRunning = true;
+          while (keepRunning) {
+            out.write('\n  Accounts / Sign in\n');
+            out.write('    [j] Claude\n');
+            out.write('    [k] Codex\n');
+            out.write('    [o] OpenCode\n');
+            out.write('    [p] Grok\n');
+            out.write('    [b] Back\n\n> ');
+            const accKey = await readMenuKey(out, readLine, undefined, false, inkReadKey);
+            if (accKey === 'b' || accKey === null) {
+              keepRunning = false;
+              continue;
+            }
+            if (accKey === 'j') {
+              await loginFn(out, 'claude', {
+                readLine, confirm,
+                ...(suspendStdin !== undefined ? { suspendStdin } : {}),
+              });
+              await refreshEnvironmentIfStale(true);
+            } else if (accKey === 'k') {
+              await loginFn(out, 'codex', {
+                readLine, confirm,
+                ...(suspendStdin !== undefined ? { suspendStdin } : {}),
+              });
+              await refreshEnvironmentIfStale(true);
+            } else if (accKey === 'o') {
+              if (!mutableCtx.env.opencode.installed) {
+                out.write(`Install opencode (${installCommandFor('opencode').replace('npm install -g ', '')})? ${yesNoHint('yes', out.color)} `);
+                const canRawConfirm =
+                  out.isTty &&
+                  process.stdin.isTTY === true &&
+                  typeof process.stdin.setRawMode === 'function';
+                const shouldInstall = canRawConfirm
+                  ? await confirm(true)
+                  : (() => readLine().then((ans) => ans !== null && parseYesNo(ans, true)))();
+                if (!(await shouldInstall)) {
+                  out.write(`\x1b[2mSkipped. You can install it later: ${installCommandFor('opencode')}\x1b[0m\n`);
+                  continue;
+                }
+                const resumeStdin = suspendStdin?.();
+                let ok = false;
+                try {
+                  ok = await installProviderFn('opencode', out);
+                } finally {
+                  resumeStdin?.();
+                }
+                await refreshEnvironmentIfStale(true);
+                if (!ok || !mutableCtx.env.opencode.installed) {
+                  out.write(`Install failed. Run it yourself: ${installCommandFor('opencode')}\n`);
+                  continue;
+                }
+              }
+              await loginFn(out, 'opencode', {
+                readLine, confirm,
+                ...(suspendStdin !== undefined ? { suspendStdin } : {}),
+              });
+              await refreshEnvironmentIfStale(true);
+            } else if (accKey === 'p') {
+              if (!mutableCtx.env.grok.installed) {
+                out.write(`Install grok (${installCommandFor('grok').replace('npm install -g ', '')})? ${yesNoHint('yes', out.color)} `);
+                const canRawConfirm =
+                  out.isTty &&
+                  process.stdin.isTTY === true &&
+                  typeof process.stdin.setRawMode === 'function';
+                const shouldInstall = canRawConfirm
+                  ? await confirm(true)
+                  : (() => readLine().then((ans) => ans !== null && parseYesNo(ans, true)))();
+                if (!(await shouldInstall)) {
+                  out.write(`\x1b[2mSkipped. You can install it later: ${installCommandFor('grok')}\x1b[0m\n`);
+                  continue;
+                }
+                const resumeStdin = suspendStdin?.();
+                let ok = false;
+                try {
+                  ok = await installProviderFn('grok', out);
+                } finally {
+                  resumeStdin?.();
+                }
+                await refreshEnvironmentIfStale(true);
+                if (!ok || !mutableCtx.env.grok.installed) {
+                  out.write(`Install failed. Run it yourself: ${installCommandFor('grok')}\n`);
+                  continue;
+                }
+              }
+              await loginFn(out, 'grok', {
+                readLine, confirm,
+                ...(suspendStdin !== undefined ? { suspendStdin } : {}),
+              });
+              await refreshEnvironmentIfStale(true);
+            }
+          }
+        }
+        listDirty = true;
+        acctsDirty = true;
         continue;
       }
 
@@ -7132,6 +7332,7 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
             cwd: ctx.cwd,
           });
           await refreshEnvironmentIfStale(true);
+          acctsDirty = true;
           continue;
         }
         await loginFn(out, 'claude', {
@@ -7140,6 +7341,7 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
           ...(suspendStdin !== undefined ? { suspendStdin } : {}),
         });
         await refreshEnvironmentIfStale(true);
+        acctsDirty = true;
         continue;
       }
 
@@ -7155,6 +7357,7 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
             cwd: ctx.cwd,
           });
           await refreshEnvironmentIfStale(true);
+          acctsDirty = true;
           continue;
         }
         await loginFn(out, 'codex', {
@@ -7163,6 +7366,7 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
           ...(suspendStdin !== undefined ? { suspendStdin } : {}),
         });
         await refreshEnvironmentIfStale(true);
+        acctsDirty = true;
         continue;
       }
 
@@ -7174,6 +7378,7 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
       if (key === 'o') {
         if (subscriptionsEnabled(process.env, mutableCtx.config)) {
           await runOpencodeAccountsMenu(out, readLine, readlineEcho, confirm, ctx.clock, inkReadKey);
+          acctsDirty = true;
           continue;
         }
         if (!mutableCtx.env.opencode.installed) {
@@ -7211,6 +7416,7 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
           ...(suspendStdin !== undefined ? { suspendStdin } : {}),
         });
         await refreshEnvironmentIfStale(true);
+        acctsDirty = true;
         continue;
       }
 
@@ -7227,6 +7433,7 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
             cwd: ctx.cwd,
           });
           await refreshEnvironmentIfStale(true);
+          acctsDirty = true;
           continue;
         }
         if (!mutableCtx.env.grok.installed) {
@@ -7264,6 +7471,7 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
           ...(suspendStdin !== undefined ? { suspendStdin } : {}),
         });
         await refreshEnvironmentIfStale(true);
+        acctsDirty = true;
         continue;
       }
 

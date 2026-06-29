@@ -256,15 +256,16 @@ describe('relativeTime', () => {
 // ---------------------------------------------------------------------------
 
 describe('renderHeaderLines', () => {
-  it('returns two lines (one per provider)', () => {
+  it('returns four lines (one per provider, always shown)', () => {
     const lines = renderHeaderLines(FAKE_ENV_BOTH_INSTALLED, '2.0.0');
-    assert.strictEqual(lines.length, 2);
+    assert.strictEqual(lines.length, 4);
   });
 
-  it('shows "ready" for installed providers', () => {
+  it('shows "signed in" for installed + authenticated providers (not "ready")', () => {
     const lines = renderHeaderLines(FAKE_ENV_BOTH_INSTALLED, '2.0.0');
-    assert.ok(lines.some((l) => l.includes('ready') && l.includes('claude')));
-    assert.ok(lines.some((l) => l.includes('ready') && l.includes('codex')));
+    assert.ok(lines.some((l) => l.includes('signed in') && l.includes('claude')));
+    assert.ok(lines.some((l) => l.includes('signed in') && l.includes('codex')));
+    assert.ok(!lines.some((l) => l.includes('ready')), 'must not use "ready" wording');
   });
 
   it('shows "not installed" for not-installed providers', () => {
@@ -273,11 +274,11 @@ describe('renderHeaderLines', () => {
     assert.ok(lines.some((l) => l.includes('not installed') && l.includes('codex')));
   });
 
-  it('shows "ready" for claude and "not installed" for codex in mixed env', () => {
+  it('shows "signed in" for claude and "not installed" for codex in mixed env', () => {
     const lines = renderHeaderLines(FAKE_ENV_MIXED, '2.0.0');
     const claudeLine = lines.find((l) => l.includes('claude'));
     const codexLine = lines.find((l) => l.includes('codex'));
-    assert.ok(claudeLine?.includes('ready'), 'claude installed + authed → ready');
+    assert.ok(claudeLine?.includes('signed in'), 'claude installed + authed → signed in');
     assert.ok(codexLine?.includes('not installed'), 'codex not installed → not installed');
   });
 
@@ -287,20 +288,16 @@ describe('renderHeaderLines', () => {
     assert.ok(claudeLine?.includes('not signed in'), 'installed but not authed → not signed in');
   });
 
-  it('deliberately omits plan labels (even when ps.plan non-null) to avoid staleness after external subscription changes', () => {
-    // See renderHeaderLines + user request: main menu header is compact + always
-    // visible; showing e.g. "(max_5x)" or "(Pro)" that may no longer match the
-    // user's current plan (they downgraded) is misleading. We still surface the
-    // live plan in `doctor` (re-detects) and use the value internally for mode
-    // auto-detect / capacity / free-veto at launch time. Header just says "ready".
+  it('without accounts, installed+authed shows "signed in" (not plan labels)', () => {
     const lines = renderHeaderLines(FAKE_ENV_WITH_PLANS, '2.0.0');
     for (const line of lines) {
-      assert.ok(!/\(.+\)/.test(line), `header must not contain plan suffix even when supplied: "${line}"`);
+      assert.ok(!/\(.+\)/.test(line), `header must not contain plan suffix without accounts: "${line}"`);
     }
     const claudeLine = lines.find((l) => l.includes('claude')) ?? '';
     const codexLine = lines.find((l) => l.includes('codex')) ?? '';
-    assert.ok(claudeLine.includes('ready'), 'claude still reports ready status');
-    assert.ok(codexLine.includes('ready'), 'codex still reports ready status');
+    assert.ok(claudeLine.includes('signed in'), 'claude reports signed in status');
+    assert.ok(codexLine.includes('signed in'), 'codex reports signed in status');
+    assert.ok(!claudeLine.includes('ready'), 'must not use "ready"');
   });
 
   it('omits plan label when ps.plan is null', () => {
@@ -310,10 +307,11 @@ describe('renderHeaderLines', () => {
     }
   });
 
-  it('shows install hint for missing providers', () => {
+  it('shows "not installed" (no install command) for missing providers', () => {
     const lines = renderHeaderLines(FAKE_ENV_NONE_INSTALLED, '2.0.0');
     const claudeLine = lines.find((l) => l.includes('claude')) ?? '';
-    assert.ok(claudeLine.includes('npm install'), 'missing provider shows install command');
+    assert.ok(claudeLine.includes('not installed'), 'missing provider shows not installed');
+    assert.ok(!claudeLine.includes('npm install'), 'header does not show install command');
   });
 
   it('color=false → no ANSI codes (lines are plain strings)', () => {
@@ -340,36 +338,34 @@ describe('renderHeaderLines', () => {
     }
   });
 
-  // ---- opencode conditional rendering ----------------------------------------
+  // ---- opencode & grok always shown -----------------------------------------
 
-  it('shows opencode line (ready) when opencode is installed AND authenticated', () => {
+  it('shows opencode line (signed in) when opencode is installed AND authenticated', () => {
     const envWithOpencode: EnvironmentStatus = {
       ...FAKE_ENV_BOTH_INSTALLED,
       opencode: makeProvider('opencode', { installed: true, version: '0.1.0', authenticated: true }),
     };
     const lines = renderHeaderLines(envWithOpencode, '2.0.0');
-    // Should now be 3 lines: claude, codex, opencode
-    assert.strictEqual(lines.length, 3);
+    assert.strictEqual(lines.length, 4);
     const opencodeLine = lines.find((l) => l.includes('opencode'));
     assert.ok(opencodeLine !== undefined, 'opencode line must appear when installed');
-    assert.ok(opencodeLine.includes('ready'), 'opencode installed+authed → ready');
-    assert.ok(!opencodeLine.includes('free models'), 'no longer claims "free models" — real auth now');
+    assert.ok(opencodeLine.includes('signed in'), 'opencode installed+authed → signed in');
   });
 
-  it('does NOT show opencode line when opencode is not installed', () => {
-    // All existing fixtures have opencode not-installed — verify no nag line.
+  it('shows opencode line (not installed) even when opencode is not installed', () => {
     const lines = renderHeaderLines(FAKE_ENV_BOTH_INSTALLED, '2.0.0');
-    assert.strictEqual(lines.length, 2, 'only claude+codex lines when opencode not installed');
+    assert.strictEqual(lines.length, 4, 'all 4 providers always shown');
     const opencodeLine = lines.find((l) => l.includes('opencode'));
-    assert.ok(opencodeLine === undefined, 'no opencode line when not installed');
+    assert.ok(opencodeLine !== undefined, 'opencode line always appears');
+    assert.ok(opencodeLine.includes('not installed'), 'opencode not installed → not installed');
   });
 
-  it('existing header assertions unchanged when opencode is not installed', () => {
-    // Regression: existing tests (2 lines, "ready" claude, "ready" codex) must still hold.
+  it('shows "signed in" for installed+authed (not "ready") when opencode not installed', () => {
     const lines = renderHeaderLines(FAKE_ENV_BOTH_INSTALLED, '2.0.0');
-    assert.strictEqual(lines.length, 2);
-    assert.ok(lines.some((l) => l.includes('ready') && l.includes('claude')));
-    assert.ok(lines.some((l) => l.includes('ready') && l.includes('codex')));
+    assert.strictEqual(lines.length, 4);
+    assert.ok(lines.some((l) => l.includes('signed in') && l.includes('claude')));
+    assert.ok(lines.some((l) => l.includes('signed in') && l.includes('codex')));
+    assert.ok(!lines.some((l) => l.includes('ready')), 'must not use "ready" wording');
   });
 
   it('shows "not signed in" for opencode installed but not authenticated', () => {
@@ -381,6 +377,31 @@ describe('renderHeaderLines', () => {
     const opencodeLine = lines.find((l) => l.includes('opencode'));
     assert.ok(opencodeLine !== undefined, 'opencode line must appear when installed');
     assert.ok(opencodeLine.includes('not signed in'), 'opencode installed but not authed → not signed in');
+  });
+
+  // ---- account-based provider status ----------------------------------------
+
+  it('shows "N active accounts" when accounts exist for a provider', () => {
+    const lines = renderHeaderLines(FAKE_ENV_BOTH_INSTALLED, '2.0.0', undefined, {
+      claude: { active: 2, total: 2, planLabels: ['Max 20x', 'Pro'], needsAttention: false },
+      codex: { active: 0, total: 0, planLabels: [], needsAttention: false },
+      opencode: { active: 0, total: 0, planLabels: [], needsAttention: false },
+      grok: { active: 0, total: 0, planLabels: [], needsAttention: false },
+    });
+    const claudeLine = lines.find((l) => l.includes('claude'));
+    assert.ok(claudeLine?.includes('2 active accounts'), 'shows active account count');
+    assert.ok(claudeLine?.includes('Max 20x, Pro'), 'shows plan summary');
+  });
+
+  it('shows "accounts need attention" when all accounts disabled', () => {
+    const lines = renderHeaderLines(FAKE_ENV_BOTH_INSTALLED, '2.0.0', undefined, {
+      claude: { active: 0, total: 1, planLabels: [], needsAttention: true },
+      codex: { active: 0, total: 0, planLabels: [], needsAttention: false },
+      opencode: { active: 0, total: 0, planLabels: [], needsAttention: false },
+      grok: { active: 0, total: 0, planLabels: [], needsAttention: false },
+    });
+    const claudeLine = lines.find((l) => l.includes('claude'));
+    assert.ok(claudeLine?.includes('accounts need attention'), 'shows accounts need attention');
   });
 });
 
@@ -649,24 +670,24 @@ function makeClaudeTokenStatus(overrides: Partial<ClaudeTokenStatus>): ClaudeTok
 describe('renderHeaderLines — token warning line shown only near-expiry or expired', () => {
   it('adds NO extra line when claudeToken is omitted (undefined)', () => {
     const lines = renderHeaderLines(FAKE_ENV_BOTH_INSTALLED, '2.0.0');
-    assert.strictEqual(lines.length, 2, 'exactly 2 provider lines when no token info');
+    assert.strictEqual(lines.length, 4, 'exactly 4 provider lines (all providers always shown) when no token info');
   });
 
   it('adds NO extra line when claudeToken is null', () => {
     const lines = renderHeaderLines(FAKE_ENV_BOTH_INSTALLED, '2.0.0', null);
-    assert.strictEqual(lines.length, 2, 'exactly 2 provider lines when null');
+    assert.strictEqual(lines.length, 4, 'exactly 4 provider lines when null');
   });
 
   it('adds NO extra line when token is healthy (not near expiry)', () => {
     const tokenInfo = makeClaudeTokenStatus({ daysLeft: 200, expired: false, nearExpiry: false });
     const lines = renderHeaderLines(FAKE_ENV_BOTH_INSTALLED, '2.0.0', tokenInfo);
-    assert.strictEqual(lines.length, 2, 'no warning line when healthy token');
+    assert.strictEqual(lines.length, 4, 'no warning line when healthy token');
   });
 
   it('adds a warning line when token is near-expiry', () => {
     const tokenInfo = makeClaudeTokenStatus({ daysLeft: 10, expired: false, nearExpiry: true });
     const lines = renderHeaderLines(FAKE_ENV_BOTH_INSTALLED, '2.0.0', tokenInfo);
-    assert.strictEqual(lines.length, 3, 'one extra warning line when near-expiry');
+    assert.strictEqual(lines.length, 5, 'one extra warning line when near-expiry (4 providers + 1 warning)');
     const warnLine = lines.find((l) => l.includes('token'));
     assert.ok(warnLine !== undefined, 'warning line mentions "token"');
     assert.ok(warnLine.includes('10'), 'warning line shows days remaining');
@@ -675,7 +696,7 @@ describe('renderHeaderLines — token warning line shown only near-expiry or exp
   it('adds a warning line when token is expired', () => {
     const tokenInfo = makeClaudeTokenStatus({ daysLeft: -5, expired: true, nearExpiry: false });
     const lines = renderHeaderLines(FAKE_ENV_BOTH_INSTALLED, '2.0.0', tokenInfo);
-    assert.strictEqual(lines.length, 3, 'one extra warning line when expired');
+    assert.strictEqual(lines.length, 5, 'one extra warning line when expired (4 providers + 1 warning)');
     const warnLine = lines.find((l) => l.includes('EXPIRED'));
     assert.ok(warnLine !== undefined, 'warning line contains "EXPIRED"');
   });
@@ -707,15 +728,15 @@ describe('renderHeaderLines — token warning line shown only near-expiry or exp
     assert.ok(!ANSI_RE.test(warnLine), `warning line must not contain ANSI: "${warnLine}"`);
   });
 
-  it('also adds warning line when opencode is installed (4th line total)', () => {
+  it('token warning still works with all providers (5 lines total)', () => {
     const envWithOpencode: EnvironmentStatus = {
       ...FAKE_ENV_BOTH_INSTALLED,
       opencode: makeProvider('opencode', { installed: true, version: '0.1.0', authenticated: true }),
     };
     const tokenInfo = makeClaudeTokenStatus({ daysLeft: 3, expired: false, nearExpiry: true });
     const lines = renderHeaderLines(envWithOpencode, '2.0.0', tokenInfo);
-    // 3 provider lines + 1 token warning = 4
-    assert.strictEqual(lines.length, 4, 'claude + codex + opencode + token warning = 4 lines');
+    // 4 provider lines (all always shown) + 1 token warning = 5
+    assert.strictEqual(lines.length, 5, '4 providers + token warning = 5 lines');
   });
 });
 
