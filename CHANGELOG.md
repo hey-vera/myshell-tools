@@ -4,6 +4,39 @@ All notable changes to **myshell-tools** are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.159.0] - 2026-06-28 — multi-subscription: all providers + smart balancing (Slices 2–5, experimental)
+
+Completes the multi-subscription system across all providers. Everything is behind
+`experimentalSubscriptions` / `MYSHELL_SUBSCRIPTIONS=1`; flag OFF = byte-identical.
+
+### Added — manage multiple accounts for every provider
+- **Claude, Codex/GPT, and Grok** now join OpenCode with full multi-account
+  management screens (`[j]`/`[k]`/`[p]`/`[o]`): **(c) create** runs the provider's
+  existing OAuth flow into an isolated, account-scoped credential home
+  (`CLAUDE_CONFIG_DIR` / `CODEX_HOME` / `GROK_HOME`; OpenCode uses a scoped
+  `XDG_DATA_HOME` + pasted key); **(e) edit** sets priority, expiry, enable/disable,
+  re-auth, delete. myshell never stores raw OAuth tokens — the vendor CLI owns its
+  own auth in the scoped home.
+- **macOS guard**: a 2nd OAuth account per provider is blocked on macOS, where the
+  shared system Keychain prevents real per-account isolation (Claude bug #20553;
+  conservative for codex/grok).
+
+### Added — account-aware routing, balancing, and pooling
+- A turn selects a specific **account** (not just a provider), runs it in its
+  isolated home, records the account on the receipt/ledger, and applies
+  **per-account cooldown** — when one subscription hits a 429, its siblings keep
+  working.
+- **Priority** is **Low / Medium / High / Disabled** (weights 25/100/200/0) with an
+  optional **custom number** escape hatch. **Mode-aware** selection: budget/balanced
+  **stick** to your primary account until it caps, then fall to the next;
+  quality-first **spreads** load across accounts by priority. (Realizes "put High on
+  the fresh sub, Low on the nearly-spent one, and let the mode balance.")
+- **Optional same-provider parallelism** (separate flag
+  `MYSHELL_ACCOUNT_PARALLELISM=1`, default OFF): a quality-first hedge may use one
+  distinct same-provider sibling for throughput, with a **correlated-429 safety
+  valve** (two same-provider 429s within 60s disables fanout) since per-account vs
+  per-IP limits are unproven. Judgment panels stay provider-diverse.
+
 ## [3.158.0] - 2026-06-28 — multi-subscription foundation: OpenCode accounts (Slice 1, experimental)
 
 ### Added — manage multiple OpenCode subscriptions (flag-gated, default OFF)
