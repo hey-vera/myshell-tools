@@ -261,6 +261,7 @@ import {
   parseYesNo,
   yesNoHint,
 } from './menu-questions.js';
+import { reviewConversationGoals } from './menu-goal-review-wiring.js';
 import { runQuestionSelector } from './menu-question-flow.js';
 import { renderDecisionPrompt } from './decision-prompt.js';
 import { runRawProviderSession } from './menu-raw-session.js';
@@ -7079,6 +7080,10 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
         // straight into it.
         const convMode = migrateMode(mutableCtx.config.mode);
         const meta = await ctx.store.create('', convMode);
+        if (!(await reviewConversationGoals(
+          { goalStore: menuGoalStore, clock: ctx.clock, out, readLine, readMenuKey, inkReadKey, env: process.env, config: mutableCtx.config },
+          meta.id,
+        ))) break;
         const chatResult = await runChatLoop(ctx, mutableCtx, meta.id, out, readLine, loginFn, detectEnvironmentFn, confirm, suspendStdin, lineReader, inkRenderTurn, inkReadKey, inkSetInterrupt, inkSetInputInfo, inkSetChatActive, inkBeginTurn, inkResetTurn);
         spendDirty = true; // a task may have run — refresh the spend summary
         listDirty = true; // a new conversation was created (and goals may be parked)
@@ -7094,6 +7099,10 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
           if (!(await promptForAuthBeforeChat(out, readLine, mutableCtx, loginFn, detectEnvironmentFn, confirm, suspendStdin, inkReadKey))) {
             continue;
           }
+          if (!(await reviewConversationGoals(
+            { goalStore: menuGoalStore, clock: ctx.clock, out, readLine, readMenuKey, inkReadKey, env: process.env, config: mutableCtx.config },
+            latest.id,
+          ))) break;
           const chatResult = await runChatLoop(ctx, mutableCtx, latest.id, out, readLine, loginFn, detectEnvironmentFn, confirm, suspendStdin, lineReader, inkRenderTurn, inkReadKey, inkSetInterrupt, inkSetInputInfo, inkSetChatActive, inkBeginTurn, inkResetTurn);
           spendDirty = true; // a task may have run — refresh the spend summary
           listDirty = true; // conversation order/goals may have changed
@@ -7112,6 +7121,10 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
           if (!(await promptForAuthBeforeChat(out, readLine, mutableCtx, loginFn, detectEnvironmentFn, confirm, suspendStdin, inkReadKey))) {
             continue;
           }
+          if (!(await reviewConversationGoals(
+            { goalStore: menuGoalStore, clock: ctx.clock, out, readLine, readMenuKey, inkReadKey, env: process.env, config: mutableCtx.config },
+            target.id,
+          ))) break;
           const chatResult = await runChatLoop(ctx, mutableCtx, target.id, out, readLine, loginFn, detectEnvironmentFn, confirm, suspendStdin, lineReader, inkRenderTurn, inkReadKey, inkSetInterrupt, inkSetInputInfo, inkSetChatActive, inkBeginTurn, inkResetTurn);
           spendDirty = true; // a task may have run — refresh the spend summary
           listDirty = true; // conversation order/goals may have changed
