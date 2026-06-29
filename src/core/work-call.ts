@@ -684,8 +684,14 @@ export async function* runWorkCall(input: WorkCallInput): AsyncGenerator<CoreEve
   let managerNotes: string | undefined;
   let attempts = 0;
   let providerCalls = 0;
+  // Core-answer reservation: the first work provider call is un-sheddable (the
+  // product invariant — see menu.ts shed-ladder + capability-budget SheddingPlan).
+  // turnCallBudget caps optional work AFTER that first call, and may arrive 0 or
+  // "remaining-after-preflight" from upstream; the core slot survives regardless.
   const callBudgetAvailable = (): boolean =>
-    turnCallBudget === undefined || providerCalls < turnCallBudget;
+    turnCallBudget === undefined ||
+    providerCalls === 0 ||
+    providerCalls < turnCallBudget;
   // Seed from any prior metered spend this turn (poll/tribunal). Defaults to 0 when
   // absent → byte-for-byte the prior path; the prior cost is folded in exactly once.
   let totalCostUsd = priorCostUsd ?? 0;
@@ -1215,22 +1221,8 @@ export async function* runWorkCall(input: WorkCallInput): AsyncGenerator<CoreEve
     // and an entry for a tier the run clamps away simply finds no eligible match
     // and falls through to the static order.
     let decision: ReturnType<typeof route>;
-    if (vendorNeutralEnabled && deps.capabilityRegistry) {
-      const vnDecision = vendorNeutralDecision(
-        currentTier, routePool, deps, deps.session.id, wantsWebSearch, hasImageAttachment,
-      );
-      if (vnDecision) {
-        decision = vnDecision;
-      } else {
-        yield {
-          type: 'notice',
-          level: 'error',
-          message: `Vendor-neutral routing could not find a provider for tier "${currentTier}". No capable provider available.`,
-        };
-        break mainLoop;
-      }
-    } else {
-      decision = route(
+    const staticRoute = (): ReturnType<typeof route> =>
+      route(
         currentTier,
         routePool,
         effPolicy,
@@ -1239,6 +1231,21 @@ export async function* runWorkCall(input: WorkCallInput): AsyncGenerator<CoreEve
         deps.learnedProviderOrder?.[currentTier],
         capabilityContext,
       );
+    if (vendorNeutralEnabled && deps.capabilityRegistry) {
+      const vnDecision = vendorNeutralDecision(
+        currentTier, routePool, deps, deps.session.id, wantsWebSearch, hasImageAttachment,
+      );
+      if (vnDecision) {
+        decision = vnDecision;
+      } else {
+        // Un-sheddable core answer: VN routing could not resolve a capable model
+        // (e.g. an authenticated provider whose model is not in the capability
+        // catalog). Rather than abort the turn with no answer, fall back to the
+        // static policy router so the core answer still runs.
+        decision = staticRoute();
+      }
+    } else {
+      decision = staticRoute();
     }
 
     // Reasoning effort for THIS run, selected against the resolved model's
@@ -1865,22 +1872,8 @@ export async function* runWorkCall(input: WorkCallInput): AsyncGenerator<CoreEve
         // This also makes sandbox-environment failures switch CLIs immediately
         // instead of spending another ordinary retry on the broken sandbox.
         let nextDecision: ReturnType<typeof route>;
-        if (vendorNeutralEnabled && deps.capabilityRegistry) {
-          const vnDecision = vendorNeutralDecision(
-            currentTier, remaining, deps, deps.session.id, wantsWebSearch, hasImageAttachment,
-          );
-          if (vnDecision) {
-            nextDecision = vnDecision;
-          } else {
-            yield {
-              type: 'notice',
-              level: 'error',
-              message: `Vendor-neutral routing could not find a failover provider for tier "${currentTier}". No capable provider available.`,
-            };
-            break mainLoop;
-          }
-        } else {
-          nextDecision = route(
+        const staticFailoverRoute = (): ReturnType<typeof route> =>
+          route(
             currentTier,
             remaining,
             effPolicy,
@@ -1889,6 +1882,16 @@ export async function* runWorkCall(input: WorkCallInput): AsyncGenerator<CoreEve
             deps.learnedProviderOrder?.[currentTier],
             capabilityContext,
           );
+        if (vendorNeutralEnabled && deps.capabilityRegistry) {
+          const vnDecision = vendorNeutralDecision(
+            currentTier, remaining, deps, deps.session.id, wantsWebSearch, hasImageAttachment,
+          );
+          // VN routing could not resolve a capable failover model: fall back to the
+          // static router over the remaining untried pool rather than aborting with
+          // no answer (mirrors the initial-route fallback above).
+          nextDecision = vnDecision ?? staticFailoverRoute();
+        } else {
+          nextDecision = staticFailoverRoute();
         }
         yield {
           type: 'failover',

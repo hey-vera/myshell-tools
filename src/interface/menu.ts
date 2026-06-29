@@ -4034,7 +4034,7 @@ Output ONLY valid JSON (no prose, no markdown).`;
           const pol = POLICY_PRESETS[effMode];
           const avail: Partial<Record<ProviderId, readonly string[]>> = {};
           if (mutableCtx.env.claude.installed && mutableCtx.env.claude.availableModels.length > 0)
-            avail['grok'] = mutableCtx.env.grok.availableModels;
+            avail['claude'] = mutableCtx.env.claude.availableModels;
 
           const authed: ProviderId[] = [];
           if (mutableCtx.env.claude.authenticated) authed.push('claude');
