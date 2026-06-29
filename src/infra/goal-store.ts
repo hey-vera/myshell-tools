@@ -43,6 +43,7 @@ import {
   capRoadmap,
   cascadeTerminate,
   selectGoals,
+  isGoalVerifiedDone,
   type Goal,
   type GoalScope,
   type GoalState,
@@ -436,6 +437,28 @@ export interface GoalStore {
     ids: readonly string[],
     meta: { supersededByIntentId: string; reason: string }
   ): Promise<readonly string[]>;
+  /**
+   * List goals linked to a specific conversation. Returns newest-touched first,
+   * or an empty array when no goals are linked. Read-only — never mutates.
+   *
+   * NOTE: goals without a `conversationId` are invisible to this query.
+   * Callers that need all goals should use `list()` instead.
+   */
+  listByConversation(conversationId: string): Promise<Goal[]>;
+  /**
+   * Mark a verified-complete goal as done — the ONE allowed steward auto-mutation.
+   *
+   * PRECONDITION (re-checked inside the lock, never auto-fired):
+   * - The goal's `goalVerdict` exists AND `isGoalVerifiedDone` returns true.
+   *
+   * When the precondition holds: sets the goal's state to `'done'` and bumps
+   * `lastTouched`. Returns the updated goal.
+   *
+   * When the precondition does NOT hold (no verdict, wrong verdict state,
+   * unknown id, already done, terminal state): returns `null` — a safe no-op.
+   * Never throws for an expected miss.
+   */
+  markVerifiedComplete(goalId: string): Promise<Goal | null>;
 }
 
 /** The fields a caller may patch on a to-do — NEVER `verdict` (verify-only). */
@@ -934,6 +957,41 @@ export function createFileGoalStore(opts: {
           await writeIndex(home, nextGoals);
         }
         return changed;
+      });
+    },
+
+    async listByConversation(conversationId): Promise<Goal[]> {
+      const all = await this.list();
+      return all.filter((g) => g.conversationId === conversationId);
+    },
+
+    async markVerifiedComplete(goalId): Promise<Goal | null> {
+      if (!isValidId(goalId)) return null;
+      await ensureDirs(home);
+      return withLock(getIndexLockPath(home), async () => {
+        const goals = await readIndexLocked(home, onWarning);
+        const target = goals.find((g) => g.id === goalId);
+        if (target === undefined) return null;
+
+        // Precondition re-check (inside the lock): verdict must exist and be
+        // passing/reviewed. Never auto-fires otherwise.
+        const verdict = target.goalVerdict;
+        if (verdict === undefined || !isGoalVerifiedDone(verdict)) {
+          return null;
+        }
+
+        // Already done — idempotent, return the goal as-is.
+        if (target.state === 'done') {
+          return target;
+        }
+
+        const updated = capGoal({ ...target, state: 'done', lastTouched: clock.isoNow() });
+        await persistGoal(home, updated);
+        await writeIndex(
+          home,
+          goals.map((g) => (g.id === goalId ? updated : g)),
+        );
+        return updated;
       });
     },
   };

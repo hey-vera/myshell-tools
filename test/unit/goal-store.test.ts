@@ -1028,3 +1028,108 @@ describe('goal-store — cancelGoalTree (Phase 4b)', () => {
     assert.deepEqual(await store.cancelGoalTree('../evil'), { terminated: [] });
   });
 });
+
+describe('goal-store — listByConversation', () => {
+  it('returns goals linked to a specific conversationId', async () => {
+    const g1 = await store.create({ title: 'conv A goal', conversationId: 'conv_A' });
+    const g2 = await store.create({ title: 'also conv A', conversationId: 'conv_A' });
+    await store.create({ title: 'conv B goal', conversationId: 'conv_B' });
+    await store.create({ title: 'unlinked goal' });
+
+    const results = await store.listByConversation('conv_A');
+    const ids = results.map((g) => g.id);
+    assert.deepEqual(ids.sort(), [g1.id, g2.id].sort());
+  });
+
+  it('returns empty array when no goals are linked to conversationId', async () => {
+    await store.create({ title: 'other conv', conversationId: 'conv_X' });
+    const results = await store.listByConversation('conv_nonexistent');
+    assert.equal(results.length, 0);
+  });
+
+  it('returns empty array when no goals exist at all', async () => {
+    const results = await store.listByConversation('conv_A');
+    assert.equal(results.length, 0);
+  });
+
+  it('only matches exact conversationId — null is not a match', async () => {
+    await store.create({ title: 'unlinked', conversationId: null });
+    const results = await store.listByConversation('conv_A');
+    assert.equal(results.length, 0);
+  });
+});
+
+describe('goal-store — markVerifiedComplete', () => {
+  it('sets state to done when goalVerdict is passing', async () => {
+    const g = await store.create({ title: 'verified goal', conversationId: 'conv_1' });
+    await store.setState(g.id, 'running');
+    await store.setGoalVerdict(g.id, { state: 'passing', receipt: 'all green', at: '2026-06-10T00:00:00.000Z' });
+
+    const result = await store.markVerifiedComplete(g.id);
+    assert.notEqual(result, null);
+    assert.equal(result!.state, 'done');
+    // Persisted across reload
+    const reloaded = await store.get(g.id);
+    assert.equal(reloaded!.state, 'done');
+  });
+
+  it('sets state to done when goalVerdict is reviewed', async () => {
+    const g = await store.create({ title: 'reviewed goal' });
+    await store.setState(g.id, 'queued');
+    await store.setGoalVerdict(g.id, { state: 'reviewed', receipt: 'critic okay', at: '2026-06-10T00:00:00.000Z' });
+
+    const result = await store.markVerifiedComplete(g.id);
+    assert.notEqual(result, null);
+    assert.equal(result!.state, 'done');
+  });
+
+  it('no-op when goalVerdict is failing', async () => {
+    const g = await store.create({ title: 'failing goal' });
+    await store.setState(g.id, 'running');
+    await store.setGoalVerdict(g.id, { state: 'failing', receipt: 'tests fail', at: '2026-06-10T00:00:00.000Z' });
+
+    const result = await store.markVerifiedComplete(g.id);
+    assert.equal(result, null);
+    const reloaded = await store.get(g.id);
+    assert.equal(reloaded!.state, 'running');
+  });
+
+  it('no-op when goalVerdict is unverified', async () => {
+    const g = await store.create({ title: 'unverified goal' });
+    await store.setState(g.id, 'running');
+    await store.setGoalVerdict(g.id, { state: 'unverified', receipt: 'no diff', at: '2026-06-10T00:00:00.000Z' });
+
+    const result = await store.markVerifiedComplete(g.id);
+    assert.equal(result, null);
+  });
+
+  it('no-op when no goalVerdict exists', async () => {
+    const g = await store.create({ title: 'no verdict' });
+    await store.setState(g.id, 'running');
+
+    const result = await store.markVerifiedComplete(g.id);
+    assert.equal(result, null);
+    const reloaded = await store.get(g.id);
+    assert.equal(reloaded!.state, 'running');
+  });
+
+  it('no-op for unknown goal id', async () => {
+    const result = await store.markVerifiedComplete('goal_doesnotexist');
+    assert.equal(result, null);
+  });
+
+  it('no-op for invalid goal id (path-traversal reject)', async () => {
+    const result = await store.markVerifiedComplete('../evil');
+    assert.equal(result, null);
+  });
+
+  it('idempotent: already done with verdict → returns the goal unchanged', async () => {
+    const g = await store.create({ title: 'already done' });
+    await store.setGoalVerdict(g.id, { state: 'passing', receipt: 'done', at: '2026-06-10T00:00:00.000Z' });
+    await store.setState(g.id, 'done');
+
+    const result = await store.markVerifiedComplete(g.id);
+    assert.notEqual(result, null);
+    assert.equal(result!.state, 'done');
+  });
+});

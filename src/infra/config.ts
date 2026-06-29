@@ -581,6 +581,13 @@ export interface AppConfig {
    */
   experimentalAccountParallelism?: boolean;
   /**
+   * EXPERIMENTAL Goal Steward deterministic audit (default off).
+   * When true, and/or MYSHELL_GOAL_STEWARD is truthy, the goal steward
+   * audits live goals for stale/inactive/blocked/verified-complete states
+   * and surfaces findings in-conversation. No autonomous execution.
+   */
+  experimentalGoalSteward?: boolean;
+  /**
    * Per-user "first-touch explainer shown" flags (whole-tool-finish-5.5.md §0.1).
    * Absent → nothing shown yet (each surface explains itself once on first
    * encounter). Each key flips to true the first time that surface is met.
