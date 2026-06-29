@@ -134,6 +134,14 @@ export interface OpencodeParser {
   parseLine(line: string): ProviderEvent[];
 
   /**
+   * True when the parser has accumulated non-empty trimmed answer text
+   * (i.e. the model produced a substantive answer). Used by the adapter to
+   * decide whether a post-output process failure is a true error or just a
+   * spurious nonzero exit after a complete answer.
+   */
+  hasSubstantiveText(): boolean;
+
+  /**
    * Called by the adapter after the subprocess stdout stream ends.
    *
    * Returns a `done` event built from accumulated text/usage/cost, OR an
@@ -163,6 +171,10 @@ export function createOpencodeParser(): OpencodeParser {
   let accumulatedCacheWriteInputTokens: number | undefined = undefined;
   let accumulatedCostUsd = 0;
   let terminalEmitted = false;
+
+  function hasSubstantiveText(): boolean {
+    return accumulatedText.trim().length > 0;
+  }
 
   function parseLine(line: string): ProviderEvent[] {
     const trimmed = line.trim();
@@ -256,12 +268,17 @@ export function createOpencodeParser(): OpencodeParser {
     }
 
     // -------------------------------------------------------------------------
-    // error — emit an error event and mark terminal as emitted
+    // error — emit an error event; mark terminal only when no substantive
+    // answer text has been accumulated (a late error after a complete answer
+    // is diagnostic, not a terminal failure).
     // -------------------------------------------------------------------------
     if (eventType === 'error') {
       const ev = parsed as WireErrorEvent;
       const message =
         ev.error?.data?.message ?? ev.error?.name ?? 'opencode error';
+      if (accumulatedText.trim().length > 0) {
+        return [{ type: 'error', error: classifyError(message, 1) }];
+      }
       terminalEmitted = true;
       return [{ type: 'error', error: classifyError(message, 1) }];
     }
@@ -333,5 +350,5 @@ export function createOpencodeParser(): OpencodeParser {
     return [doneEvent];
   }
 
-  return { parseLine, finalize };
+  return { parseLine, finalize, hasSubstantiveText };
 }

@@ -166,6 +166,7 @@ export function coreEventToActions(
           ...(ev.provider !== undefined ? { provider: ev.provider } : {}),
           ...(ev.questions !== undefined ? { hasQuestions: true } : {}),
           ...(ev.bestEffort === true ? { bestEffort: true } : {}),
+          ...(ev.blocked !== undefined ? { blocked: ev.blocked } : {}),
         },
       ];
   }

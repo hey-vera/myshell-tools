@@ -221,7 +221,14 @@ async function* runOpencodeRaw(args0: {
           const events = parser.parseLine(line);
           for (const ev of events) {
             yield ev;
-            if (ev.type === 'done' || ev.type === 'error') {
+            if (ev.type === 'done') {
+              emittedTerminal = true;
+              break stdoutLoop;
+            }
+            if (ev.type === 'error') {
+              if (parser.hasSubstantiveText()) {
+                continue;
+              }
               emittedTerminal = true;
               break stdoutLoop;
             }
@@ -253,14 +260,16 @@ async function* runOpencodeRaw(args0: {
           };
           emittedTerminal = true;
         } else if (result.failed || (result.exitCode !== undefined && result.exitCode !== 0)) {
-          yield {
-            type: 'error',
-            error: classifyError(
-              typeof result.stderr === 'string' ? result.stderr : '',
-              result.exitCode ?? 1,
-            ),
-          };
-          emittedTerminal = true;
+          if (!parser.hasSubstantiveText()) {
+            yield {
+              type: 'error',
+              error: classifyError(
+                typeof result.stderr === 'string' ? result.stderr : '',
+                result.exitCode ?? 1,
+              ),
+            };
+            emittedTerminal = true;
+          }
         }
       }
 

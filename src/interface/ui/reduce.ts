@@ -684,6 +684,20 @@ export function reduce(state: UiState, action: Action): UiState {
       }
 
       if (!action.success) {
+        if (action.blocked !== undefined) {
+          if (!isQuiet) {
+            next = commit(next, { kind: 'completion', text: '✗ Blocked' });
+            next = commit(next, { kind: 'notice', text: `  Reason: ${action.blocked.reason}` });
+            next = commit(next, { kind: 'notice', text: `  Next: ${action.blocked.nextAction}` });
+            if (action.blocked.preservedWork.length > 0) {
+              next = commit(next, {
+                kind: 'notice',
+                text: `  Preserved: ${action.blocked.preservedWork.slice(0, 200)}`,
+              });
+            }
+          }
+          return next;
+        }
         if (action.errorCategory === 'timeout') {
           if (!isQuiet) {
             // Follow-up: classify genuine progress vs. a stuck provider and retain

@@ -442,12 +442,39 @@ describe('createOpencodeParser — finalize() produces done event', () => {
     }
   });
 
-  it('finalize() returns [] after an error event (terminal already emitted)', () => {
+  it('finalize() returns [] after an error event with NO prior text (terminal already emitted)', () => {
     const p = createOpencodeParser();
-    p.parseLine(TEXT_LINE_HI);
-    p.parseLine(ERROR_LINE); // sets terminalEmitted
+    p.parseLine(ERROR_LINE); // no prior text → terminalEmitted = true
     const finalEvents = p.finalize();
     assert.deepEqual(finalEvents, []);
+  });
+
+  it('finalize() returns done after an error event with prior substantive text (non-terminal diagnostic)', () => {
+    const p = createOpencodeParser();
+    p.parseLine(TEXT_LINE_HI);
+    p.parseLine(ERROR_LINE); // text accumulated → NOT terminal
+    const finalEvents = p.finalize();
+    assert.equal(finalEvents.length, 1);
+    const ev = finalEvents[0];
+    assert.ok(ev !== undefined);
+    assert.equal(ev.type, 'done');
+  });
+
+  it('hasSubstantiveText() returns false when no text accumulated', () => {
+    const p = createOpencodeParser();
+    assert.equal(p.hasSubstantiveText(), false);
+  });
+
+  it('hasSubstantiveText() returns true after text accumulated', () => {
+    const p = createOpencodeParser();
+    p.parseLine(TEXT_LINE_HI);
+    assert.equal(p.hasSubstantiveText(), true);
+  });
+
+  it('hasSubstantiveText() returns false with only whitespace text', () => {
+    const p = createOpencodeParser();
+    p.parseLine(JSON.stringify({ type: 'text', part: { type: 'text', text: '   ' } }));
+    assert.equal(p.hasSubstantiveText(), false);
   });
 
   it('calling finalize() twice returns [] on the second call', () => {

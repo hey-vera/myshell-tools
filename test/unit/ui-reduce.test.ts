@@ -1144,6 +1144,47 @@ describe('ui reduce — final', () => {
     );
     assert.deepEqual(lines(s), ['auth err']);
   });
+
+  it('blocked final renders "✗ Blocked" with reason/next/preserved details (not "Failed")', () => {
+    const s = reduce(
+      initialState,
+      finalAction({
+        success: false,
+        blocked: { reason: 'rate-limited', nextAction: 'retry later', preservedWork: 'partial answer' },
+      }),
+    );
+    assert.deepEqual(lines(s), [
+      '✗ Blocked',
+      '  Reason: rate-limited',
+      '  Next: retry later',
+      '  Preserved: partial answer',
+    ]);
+    assert.equal(s.committed[0]?.kind, 'completion');
+    assert.equal(s.committed[1]?.kind, 'notice');
+  });
+
+  it('blocked final is suppressed in quiet mode', () => {
+    const s = reduce(
+      initialState,
+      finalAction({
+        success: false,
+        verbosity: 'quiet',
+        blocked: { reason: 'x', nextAction: 'y', preservedWork: 'z' },
+      }),
+    );
+    assert.equal(s.committed.length, 0);
+  });
+
+  it('blocked final with empty preservedWork omits the Preserved line', () => {
+    const s = reduce(
+      initialState,
+      finalAction({
+        success: false,
+        blocked: { reason: 'r', nextAction: 'n', preservedWork: '' },
+      }),
+    );
+    assert.deepEqual(lines(s), ['✗ Blocked', '  Reason: r', '  Next: n']);
+  });
 });
 
 describe('ui reduce — classified / intent / engagement no-ops in normal mode', () => {

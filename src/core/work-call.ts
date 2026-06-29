@@ -234,6 +234,7 @@ async function* streamProvider(
   let usage: Usage | undefined;
   let providerCostUsd: number | undefined;
   let sessionId: string | undefined;
+  let hadDoneWithText = false;
 
   // Pre-stream abort check
   if (signal.aborted) {
@@ -245,6 +246,16 @@ async function* streamProvider(
 
     if (ev.type === 'done') {
       finalText = ev.text;
+      if (finalText !== undefined && finalText.trim().length > 0) {
+        hadDoneWithText = true;
+        // A substantive done supersedes a soft (unknown-category) error that
+        // arrived earlier in the same attempt (e.g. an opencode inline error
+        // line emitted before the adapter recovered via finalize()). Timeout/
+        // cancel/auth/rate-limit keep their specific categories and still fail.
+        if (errored !== undefined && errored.category === 'unknown') {
+          errored = undefined;
+        }
+      }
       // done.usage is the authoritative accumulated total.
       if (ev.usage !== undefined) {
         usage = ev.usage;
@@ -256,7 +267,9 @@ async function* streamProvider(
         sessionId = ev.sessionId;
       }
     } else if (ev.type === 'error') {
-      errored = ev.error;
+      if (!(hadDoneWithText && ev.error.category === 'unknown')) {
+        errored = ev.error;
+      }
     } else if (ev.type === 'usage' && usage === undefined) {
       usage = ev.usage;
     }

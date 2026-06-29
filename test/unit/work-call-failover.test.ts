@@ -618,3 +618,119 @@ describe('quick-turn cross-provider failover with turnCallBudget=1', () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// streamProvider done-then-error guard (Bug 1 item 2)
+// ---------------------------------------------------------------------------
+
+function makeSingleProviderDeps(
+  events: ProviderEvent[],
+  opts?: { maxAttempts?: number; available?: ProviderId[] },
+): { deps: OrchestrateDeps; input: WorkCallInput } {
+  let now = 2_000_000;
+  let uuidCounter = 0;
+  const deps: OrchestrateDeps = {
+    providers: {
+      claude: {
+        id: 'claude' as ProviderId,
+        async* run(_req: ProviderRequest, _signal: AbortSignal): AsyncGenerator<ProviderEvent> {
+          for (const ev of events) yield ev;
+        },
+      } as Provider,
+    },
+    clock: {
+      now: () => (now += 10),
+      isoNow: () => new Date(1_000_000).toISOString(),
+      uuid: () => `sp-${++uuidCounter}`,
+      random: () => 0.42,
+    },
+    session: { id: 'sp-sess', async append(_e: SessionEntry): Promise<void> {} },
+    ledger: { async record(_e: LedgerEntry): Promise<void> {} },
+    policy: {
+      ...DEFAULT_POLICY,
+      maxAttempts: opts?.maxAttempts ?? 1,
+      panelPolicy: 'off',
+      hedgePolicy: 'off',
+      reviewPolicy: 'off',
+    },
+    cwd: '/test',
+    sandbox: 'none',
+    timeoutMs: 5000,
+    availableModels: {
+      claude: ['sonnet'] as readonly string[],
+    },
+    authenticatedProviders: ['claude'],
+  };
+  const input: WorkCallInput = {
+    task: 'test task',
+    deps,
+    signal: new AbortController().signal,
+    classification: WORKER_TIER,
+    routePlan: false,
+    directive: EMPTY_DIRECTIVE,
+    intentFrame: undefined,
+    engagementPlan: { actions: ['IMPLEMENT'], tone: 'neutral' } as EngagementPlan,
+    goalTitle: '',
+    workTrace: undefined,
+    incomingWorkContract: undefined,
+    available: opts?.available ?? ['claude'],
+    mode: 'balanced',
+    taskSignals: { risk: 'medium', routePlan: false, taskKind: 'implementation' },
+    capabilityContext: undefined,
+    historyContext: undefined,
+    wantsWebSearch: false,
+    hasImageAttachment: false,
+    startTier: 'worker',
+    autoBrainEscalation: false,
+  };
+  return { deps, input };
+}
+
+describe('streamProvider done-then-error guard', () => {
+  const DONE_TEXT: ProviderEvent = { type: 'done', text: 'substantive answer', raw: {} };
+  const UNKNOWN_ERROR: ProviderEvent = {
+    type: 'error',
+    error: { category: 'unknown', recoverable: false, message: 'exit 1', suggestion: '' },
+  };
+  const RATE_LIMIT_ERROR: ProviderEvent = {
+    type: 'error',
+    error: { category: 'rate-limit', recoverable: true, message: '429', suggestion: 'retry later' },
+  };
+
+  it('done-with-text followed by unknown error → attempt stays success (guard suppresses generic post-output error)', async () => {
+    const { input } = makeSingleProviderDeps([DONE_TEXT, UNKNOWN_ERROR], { maxAttempts: 1, available: ['claude'] });
+    const events = await collectQuick(runWorkCall(input));
+    const finals = events.filter((e) => e.type === 'final');
+    assert.equal(finals.length, 1, 'exactly one final');
+    const final = finals[0];
+    assert.ok(final !== undefined && final.type === 'final');
+    if (final.type === 'final') {
+      assert.equal(final.success, true, 'done-with-text must win over generic post-output error');
+      assert.equal(final.output, 'substantive answer');
+    }
+  });
+
+  it('done-with-text followed by rate-limit error → attempt stays failure (real provider errors still tracked)', async () => {
+    const { input } = makeSingleProviderDeps([DONE_TEXT, RATE_LIMIT_ERROR], { maxAttempts: 1, available: ['claude'] });
+    const events = await collectQuick(runWorkCall(input));
+    const finals = events.filter((e) => e.type === 'final');
+    assert.equal(finals.length, 1, 'exactly one final');
+    const final = finals[0];
+    assert.ok(final !== undefined && final.type === 'final');
+    if (final.type === 'final') {
+      assert.equal(final.success, false, 'rate-limit after done-with-text must still be a failure');
+    }
+  });
+
+  it('error without prior done → still a failure', async () => {
+    const { input } = makeSingleProviderDeps([UNKNOWN_ERROR], { maxAttempts: 1, available: ['claude'] });
+    const events = await collectQuick(runWorkCall(input));
+    const finals = events.filter((e) => e.type === 'final');
+    assert.equal(finals.length, 1, 'exactly one final');
+    const final = finals[0];
+    assert.ok(final !== undefined && final.type === 'final');
+    if (final.type === 'final') {
+      assert.equal(final.success, false, 'error without done must be a failure');
+    }
+  });
+});

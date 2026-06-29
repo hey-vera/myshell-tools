@@ -22,6 +22,7 @@ import type { RoadmapItemApproach } from '../../core/work-contract.js';
 import type { RoadmapStatus } from '../../core/work-contract.js';
 import type { ProviderId } from '../../providers/port.js';
 import type { ErrorCategory } from '../../providers/errors.js';
+import type { BlockedRecord } from '../../core/blocked.js';
 
 // ---------------------------------------------------------------------------
 // View sub-shapes
@@ -522,6 +523,10 @@ export type Action =
        *  completion line — the caller drives a selector). */
       readonly hasQuestions?: boolean;
       readonly bestEffort?: boolean;
+      /** Blocked terminal record (MYSHELL_BLOCKED_STATE_V1). When present, the
+       *  reducer renders Blocked instead of Failed. Mirrors the legacy renderer's
+       *  distinct blocked branch. */
+      readonly blocked?: BlockedRecord;
       /** The real elapsed seconds the spinner was visible, for the success line's
        *  `· Ns` suffix. Injected (never fabricated) — 0/absent omits the suffix. */
       readonly elapsedSecs?: number;
