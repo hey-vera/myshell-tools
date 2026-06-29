@@ -69,6 +69,10 @@ import { helperSandbox, sandboxForEnvironment } from './infra/sandbox.js';
 import { buildPreflightDeps } from './interface/preflight-deps.js';
 import { dim as dimText } from './ui/theme.js';
 import { defaultStateDir, evaluateHealth, probeLedgerWritable, probeStateWritable } from './infra/health.js';
+import { planStateMigration, runStateMigration } from './infra/state-migration.js';
+import type { MigrationReport } from './infra/state-migration.js';
+import { ensureStateGitignored } from './infra/state-gitignore.js';
+import { defaultStateLayout, defaultStateContext } from './infra/state-layout.js';
 import { getStateDir } from './infra/paths.js';
 import { isPricingStale } from './infra/pricing.js';
 import { runDoctor } from './commands/doctor.js';
@@ -403,6 +407,22 @@ async function main(): Promise<void> {
     isTty: process.stdout.isTTY === true,
   };
   const commandGate = createCliCommandGate(cwd, out, process.stdin.isTTY === true && out.isTty);
+
+  // ── State migration + gitignore guard (fail-soft — never blocks startup) ──
+  let lastMigrationReport: MigrationReport | undefined;
+  let lastGitignoreResult: { ok: boolean; reason?: string } | undefined;
+  try {
+    const layout = defaultStateLayout();
+    const ctx = defaultStateContext();
+    const plan = await planStateMigration(layout, ctx);
+    if (plan.actions.length > 0) {
+      lastMigrationReport = await runStateMigration(plan);
+    }
+    lastGitignoreResult = await ensureStateGitignored(layout, ctx);
+  } catch {
+    // never block startup
+  }
+
   const startupConfigPromise = args.length === 0 ? loadConfig() : null;
   let startupInput =
     args.length === 0 &&
@@ -841,6 +861,8 @@ async function main(): Promise<void> {
       ledgerWritable,
       ledgerDir: getStateDir(cwd),
       pricingStale: isPricingStale(),
+      ...(lastMigrationReport !== undefined ? { migrationReport: lastMigrationReport } : {}),
+      ...(lastGitignoreResult !== undefined ? { gitignoreStatus: lastGitignoreResult } : {}),
     });
 
     const store = createFileConversationStore({

@@ -242,8 +242,6 @@ describe("No-orphan guard — every src/ .ts file must participate in the import
     // Post-graduation (slices 19-20): routing-memory retained for diagnostics/reporting
     // only (cost/insights), no longer wired as a routing input.
     path.join('src', 'core', 'routing-memory.ts'),
-    // Chunk: state-migration module created; cli.ts wiring is the next chunk.
-    path.join('src', 'infra', 'state-migration.ts'),
   ]);
 
   // Build a quick index: for each file, gather which other src basenames it imports.
