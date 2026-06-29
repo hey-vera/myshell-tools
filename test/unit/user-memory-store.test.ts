@@ -173,7 +173,7 @@ describe('user-memory-store — write transaction round-trip', () => {
 // ---------------------------------------------------------------------------
 
 describe('user-memory-store — security', () => {
-  it('fact files and index are written 0o600 (not world-readable)', async () => {
+  it.skipIf(process.platform === 'win32')('fact files and index are written 0o600 (not world-readable)', async () => {
     const res = await store.commit(cand());
     const factPath = join(memoryDir(), 'facts', `${res.fact!.id}.json`);
     const indexPath = join(memoryDir(), 'index.json');

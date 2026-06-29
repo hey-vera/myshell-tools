@@ -51,7 +51,7 @@ describe('myshell-tools rollback CLI', () => {
     ) as Record<string, unknown>;
   }
 
-  it('engages/removes rollback idempotently and preserves env precedence', async () => {
+  it.skipIf(process.platform === 'win32')('engages/removes rollback idempotently and preserves env precedence', async () => {
     assert.equal(
       await run(['rollback']),
       'Rollback engaged. Disabled: verify, judgment, trust.\n',

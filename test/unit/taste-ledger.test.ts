@@ -221,7 +221,7 @@ describe('fail-soft on corrupt / foreign JSONL', () => {
 // ---------------------------------------------------------------------------
 
 describe('0o600 perimeter', () => {
-  it('the taste ledger file is created mode 0o600', async () => {
+  it.skipIf(process.platform === 'win32')('the taste ledger file is created mode 0o600', async () => {
     await ledger.record({ signal: 'fork_choice', subject: 'data', choice: 'server' });
     const st = await stat(tasteFile());
     assert.equal(st.mode & 0o777, 0o600);

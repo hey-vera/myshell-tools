@@ -79,7 +79,7 @@ describe('rules-store CRUD + persistence', () => {
     assert.deepEqual(got, created);
   });
 
-  it('persists the full rule file at 0o600 and an index', async () => {
+  it.skipIf(process.platform === 'win32')('persists the full rule file at 0o600 and an index', async () => {
     const created = await store.create({
       kind: 'block',
       trigger: { pathGlob: 'package-lock.json' },

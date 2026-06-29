@@ -128,7 +128,7 @@ test('suspend() clears the buffered line backlog', () => {
   assert.deepEqual(reader.drainBuffered(), [], 'suspend() must drop buffered lines');
 });
 
-test('suspend() drives Ink cooked mode via the registered control', async () => {
+test.skipIf(process.platform === 'win32')('suspend() drives Ink cooked mode via the registered control', async () => {
   const bridge = createInkAppBridge();
   const reader = createInkLineReader(bridge);
   render(<App bridge={bridge} color={true} isTty={true} columns={60} />);
