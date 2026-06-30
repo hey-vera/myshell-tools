@@ -121,3 +121,27 @@ test('empty board renders "No goals yet"', () => {
   const frame = lastFrame() ?? '';
   assert.match(frame, /No goals yet/);
 });
+
+test('active={false} disables arrow/j/k/Escape/Ctrl+G — neither callback fires', async () => {
+  const onHighlightGoal = vi.fn();
+  const onClose = vi.fn();
+  const { stdin } = render(
+    <GoalsPanel
+      board={[boardRow({ id: 'a', title: 'A' }), boardRow({ id: 'b', title: 'B' })]}
+      onHighlightGoal={onHighlightGoal}
+      onClose={onClose}
+      active={false}
+    />,
+  );
+  await act(async () => {
+    stdin.write('\x1b[B');
+    stdin.write('\x1b[A');
+    stdin.write('j');
+    stdin.write('k');
+    stdin.write('\x1b');
+    stdin.write('\x07');
+    await tick();
+  });
+  assert.equal(onHighlightGoal.mock.calls.length, 0, 'onHighlightGoal should NOT be called when active=false');
+  assert.equal(onClose.mock.calls.length, 0, 'onClose should NOT be called when active=false');
+});

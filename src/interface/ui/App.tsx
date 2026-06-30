@@ -13,6 +13,7 @@ import { Box, Static, Text, useStdout } from 'ink';
 import { InputBox, createInputBoxBridge, type InputBoxBridge } from './InputBox.js';
 import { Stream, CommittedLine } from './Stream.js';
 import { StatusBlock } from './StatusBlock.js';
+import { GoalsPanel } from './GoalsPanel.js';
 import { layoutForHeight, streamWrappedRows, tailStreamToRows, INPUT_ROWS } from './layout.js';
 import { backfillTerminalSize } from './mount.js';
 import type { Action, TranscriptLine, UiState } from './state.js';
@@ -509,6 +510,7 @@ function AppBody({
   const inputInfoText = formatInputBoxInfo(inputInfo);
   const liveColumns = columns ?? stdout.columns ?? process.stdout.columns ?? 80;
   const liveRows = rows ?? stdout.rows ?? process.stdout.rows ?? 24;
+  const panelOpen = uiState?.goalsPanel.enabled === true && uiState.goalsPanel.open === true;
 
   // Wire the bridge to this component's state on mount so the Node-side
   // OutputSink can push committed lines in and the LineReader can toggle suspend.
@@ -634,28 +636,42 @@ function AppBody({
     return (
       <Box flexDirection="column">
         <CommittedTranscript lines={uiState.committed} color={color} />
-        {uiState.chrome.length > 0 ? (
-          <Box flexDirection="column">
-            {uiState.chrome.map((line, index) => (
-              <CommittedLine key={index} line={line} color={color} />
-            ))}
+        {panelOpen ? (
+          <Box height={Math.max(1, liveRows - 1)} overflowY="hidden">
+            <GoalsPanel
+              board={uiState.board}
+              {...(uiState.goalsPanel.highlightedGoalId !== undefined ? { highlightedGoalId: uiState.goalsPanel.highlightedGoalId } : {})}
+              onHighlightGoal={(goalId) => bridge.routeGoalsPanelAction({ type: 'goals-panel/highlight', goalId })}
+              onClose={() => { bridge.routeGoalsPanelAction({ type: 'goals-panel/close' }); }}
+              active={!suspended}
+            />
           </Box>
-        ) : null}
-        {uiState.goals.length > 1 && (
-          <Text dimColor={ (uiState.pressure ?? 0) >= 2 }>
-            {'  Goal DAG active — ' + uiState.goals.length + ' branches' + ((uiState.pressure ?? 0) >= 2 ? ' (pressure shedding)' : '') + ' (j/k to navigate branches in review)'}
-          </Text>
+        ) : (
+          <>
+            {uiState.chrome.length > 0 ? (
+              <Box flexDirection="column">
+                {uiState.chrome.map((line, index) => (
+                  <CommittedLine key={index} line={line} color={color} />
+                ))}
+              </Box>
+            ) : null}
+            {uiState.goals.length > 1 && (
+              <Text dimColor={ (uiState.pressure ?? 0) >= 2 }>
+                {'  Goal DAG active — ' + uiState.goals.length + ' branches' + ((uiState.pressure ?? 0) >= 2 ? ' (pressure shedding)' : '') + ' (j/k to navigate branches in review)'}
+              </Text>
+            )}
+            <StatusBlock
+              state={uiState}
+              color={color}
+              rows={liveRows}
+              streamLines={streamLines}
+              inputRows={inputBoxRows}
+              plan={plan}
+              {...(clock !== undefined ? { clock } : {})}
+            />
+            <Stream buffer={cappedStreamBuffer} color={color} />
+          </>
         )}
-        <StatusBlock
-          state={uiState}
-          color={color}
-          rows={liveRows}
-          streamLines={streamLines}
-          inputRows={inputBoxRows}
-          plan={plan}
-          {...(clock !== undefined ? { clock } : {})}
-        />
-        <Stream buffer={cappedStreamBuffer} color={color} />
         <InputBox
           bridge={bridge.input}
           color={color}
@@ -664,8 +680,9 @@ function AppBody({
           rows={liveRows}
           onMeasureRows={setInputBoxRows}
           info={inputInfoText}
-          visible={chatActive}
+          visible={panelOpen ? false : chatActive}
           suspended={suspended}
+          active={!panelOpen}
           pressure={uiState?.pressure ?? 0}
           dynamicWorldItems={uiState?.dynamicWorldItems ?? []}
           onStdinControl={bridge.attachStdinControl}

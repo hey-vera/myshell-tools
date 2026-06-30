@@ -154,6 +154,14 @@ export interface InputBoxProps {
    */
   readonly suspended?: boolean;
   /**
+   * Whether this input consumer is ACTIVE for key handling. Defaults to true.
+   * Distinct from `suspended`: `suspended` means an inherited child owns the TTY;
+   * `active` only selects which mounted Ink component handles keys. When false,
+   * the component stays mounted (editor state/bridge/stdin are preserved) but
+   * `useInput` is inactive so keystrokes are ignored here.
+   */
+  readonly active?: boolean;
+  /**
    * Register the Ink-side stdin control (raw-mode toggle + stream pause/resume)
    * the LineReader's suspend()/resume() drive. Called from inside `useStdin()`
    * on mount; called with `null` on unmount. Optional (tests may omit it).
@@ -302,6 +310,7 @@ export function InputBox({
   info,
   visible = true,
   suspended = false,
+  active = true,
   onStdinControl,
   onEscape,
   onToggleGoalsPanel,
@@ -646,7 +655,7 @@ export function InputBox({
   const stableInputHandler = useCallback<Parameters<typeof useInput>[0]>((input, key) => {
     inputHandlerRef.current(input, key);
   }, []);
-  useInput(stableInputHandler, { isActive: !suspended });
+  useInput(stableInputHandler, { isActive: active && !suspended });
 
   // Eager raw-mode arm for the (Replit /dev/tty) stream the instant the editor
   // is live. Ink's internal effect will also do this, but doing it here on mount
