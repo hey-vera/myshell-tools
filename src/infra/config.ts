@@ -418,6 +418,16 @@ export interface AppConfig {
    */
   experimentalGoalsPanel?: boolean;
   /**
+   * Opt-in for the FULLSCREEN CONTROL PANEL (default off). When true (or with
+   * `MYSHELL_CONTROL_PANEL` truthy in the environment), the Ink UI may render a
+   * fullscreen keyboard-nav control panel with Status, Goals, and Settings
+   * sections. Absent/false → the panel is disabled and the render tree is
+   * byte-for-byte unchanged. Default-off; also enabled by MYSHELL_CONTROL_PANEL;
+   * independent of the goals-panel flag (precedence handled in a later slice).
+   * See src/interface/ui/control-panel-flag.ts.
+   */
+  experimentalControlPanel?: boolean;
+  /**
    * Opt-in for the PLANNING BRAIN / AUTO-STAGE pass (Elite-partner Phase 6).
    * Absent/false → the post-turn slot is byte-for-byte today's: the partner never
    * judges a turn for staging and creates no goals automatically. When true (or
