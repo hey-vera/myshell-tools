@@ -409,16 +409,29 @@ async function main(): Promise<void> {
   const commandGate = createCliCommandGate(cwd, out, process.stdin.isTTY === true && out.isTty);
 
   // ── State migration + gitignore guard (fail-soft — never blocks startup) ──
+  // Bounded by a short deadline: a one-time state copy must NEVER be able to
+  // delay (let alone hang) an interactive launch — e.g. an unexpectedly large
+  // legacy state tree. If it exceeds the deadline, startup proceeds and the
+  // copy-only, idempotent migration simply finishes (or retries) on a later run.
   let lastMigrationReport: MigrationReport | undefined;
   let lastGitignoreResult: { ok: boolean; reason?: string } | undefined;
   try {
     const layout = defaultStateLayout();
     const ctx = defaultStateContext();
-    const plan = await planStateMigration(layout, ctx);
-    if (plan.actions.length > 0) {
-      lastMigrationReport = await runStateMigration(plan);
-    }
-    lastGitignoreResult = await ensureStateGitignored(layout, ctx);
+    const migrate = (async () => {
+      const plan = await planStateMigration(layout, ctx);
+      if (plan.actions.length > 0) {
+        lastMigrationReport = await runStateMigration(plan);
+      }
+      lastGitignoreResult = await ensureStateGitignored(layout, ctx);
+    })();
+    migrate.catch(() => {}); // an abandoned (post-deadline) migration must not reject unhandled
+    const deadline = new Promise<void>((resolve) => {
+      const t = setTimeout(resolve, 3000);
+      // Do not let the deadline timer keep the process alive at exit.
+      (t as { unref?: () => void }).unref?.();
+    });
+    await Promise.race([migrate, deadline]);
   } catch {
     // never block startup
   }

@@ -73,16 +73,10 @@ jobs:
         run: npm ci
 
       - name: Run tests with coverage
-        run: >
-          npx c8
-          --reporter=text
-          --reporter=lcov
-          --include='src/**'
-          --lines=85
-          --branches=80
-          --functions=85
-          --check-coverage
-          npm test
+        # Native vitest coverage (v8). c8 cannot instrument vitest's worker
+        # processes, so wrapping `npm test` in c8 reported near-zero coverage.
+        # Provider, include, reporters, and thresholds live in vitest.config.ts.
+        run: npx vitest run test/unit test/arch --coverage
 
       - name: Upload coverage report
         if: always()
