@@ -63,3 +63,11 @@ export {
   type UiState,
   type Verbosity,
 } from './state.js';
+export {
+  buildControlPanelModel,
+  nextControlPanelSection,
+  CONTROL_PANEL_SECTIONS,
+  type ControlPanelModel,
+  type ControlPanelProviderStatus,
+  type ControlPanelSettingRow,
+} from './control-panel-model.js';
