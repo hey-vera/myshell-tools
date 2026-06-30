@@ -14,7 +14,8 @@ import {
   configureGoalsPanelStore,
 } from '../../src/interface/ui/mount.js';
 import { App } from '../../src/interface/ui/App.js';
-import type { GoalBoardRow } from '../../src/interface/ui/index.js';
+import { initialState } from '../../src/interface/ui/index.js';
+import type { GoalBoardRow, UiState } from '../../src/interface/ui/index.js';
 
 const tick = (ms = 50): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
@@ -310,4 +311,128 @@ test('board/todo rows exceeding rows → live frame stays within viewport cap', 
       `frame should have at most 8 lines (viewport ${8}), got ${newlineCount + 1}:\n${frame}`,
     );
   }
+});
+
+// ---------------------------------------------------------------------------
+// Slice 7 — flag-off byte-for-byte frame regression tests
+// ---------------------------------------------------------------------------
+
+/**
+ * Build a deterministic UiState for the structured compact-board control.
+ * goalsPanel is explicitly off, board enabled, >=2 goals so the BOARD panel
+ * paints, and all other fields are fixed so the frame is fully deterministic.
+ */
+function structuredControlState(): UiState {
+  return {
+    committed: [],
+    chrome: [],
+    goals: [],
+    stream: initialState.stream,
+    turnActive: false,
+    tokens: { turn: 0, session: 0 },
+    board: [
+      boardRow({ id: 'g1', title: 'Redesign feed', state: 'parked', done: 3, total: 8 }),
+      boardRow({ id: 'g2', title: 'Fix auth', state: 'parked', done: 0, total: 2 }),
+    ],
+    boardEnabled: true,
+    pressure: 0,
+    dynamicWorldItems: [],
+    goalsPanel: { enabled: false, open: false },
+  };
+}
+
+test('flag-off structured compact-board frame is byte-for-byte identical to baseline golden', async () => {
+  const bridge = createInkAppBridge();
+  const store = createInkStore(bridge);
+
+  // Explicit dispatch so the reducer sees enabled:false.
+  store.dispatch({ type: 'goals-panel/configure', enabled: false });
+
+  // Push board data so the compact BOARD panel is visible.
+  store.dispatch({
+    type: 'board/sync',
+    rows: structuredControlState().board,
+    enabled: true,
+  });
+
+  const { lastFrame } = render(
+    <App bridge={bridge} color={false} isTty={false} rows={24} columns={80} clock={() => 0} />,
+  );
+  bridge.pushState(store.getState());
+  await tick();
+
+  const frame = lastFrame() ?? '';
+
+  // Semantic guards — an accidentally-empty golden must fail.
+  assert.match(frame, /BOARD/, 'structured control must contain BOARD text');
+  assert.doesNotMatch(frame, /Goals · To-dos/, 'flag-off frame must NOT contain Goals text');
+
+  // Golden captured from the pre-wiring renderer with color=false, stdout.columns=100.
+  // Stored as hex to avoid any source-file encoding ambiguity.
+  const STRUCTURED_GOLDEN_HEX = 'e295ade29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e295ae0ae2948220424f4152442020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020e294820ae2948220676f616c20526564657369676e206665656420e2809420696e6163746976652020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020e294820ae2948220676f616c20466978206175746820e2809420696e61637469766520202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020e294820ae295b0e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e295af0a';
+  const golden = Buffer.from(STRUCTURED_GOLDEN_HEX, 'hex').toString('utf-8');
+  assert.equal(frame, golden, 'structured flag-off frame must match baseline golden byte-for-byte');
+});
+
+test('legacy/pre-first-state frame matches its golden; Ctrl+G does not change it when route is unarmed', async () => {
+  const bridge = createInkAppBridge();
+  const { lastFrame, stdin } = render(
+    <App bridge={bridge} color={false} isTty={false} rows={24} columns={80} clock={() => 0} />,
+  );
+  await tick();
+
+  const frame = lastFrame() ?? '';
+  // Golden: the legacy (pre-first-state) render produces an empty frame.
+  const golden = '';
+  assert.equal(frame, golden, 'legacy frame must match baseline golden byte-for-byte');
+
+  // Send Ctrl+G with the route unarmed (flag off) — frame must NOT repaint.
+  await act(async () => {
+    stdin.write('\x07');
+    await tick();
+  });
+  const afterCtrlG = lastFrame() ?? '';
+  assert.equal(afterCtrlG, golden, 'Ctrl+G with unarmed route must not change the legacy frame');
+});
+
+test('structured flag-off: Left Arrow then no-op key do not change the frame', async () => {
+  const bridge = createInkAppBridge();
+  const store = createInkStore(bridge);
+
+  store.dispatch({ type: 'goals-panel/configure', enabled: false });
+  store.dispatch({
+    type: 'board/sync',
+    rows: structuredControlState().board,
+    enabled: true,
+  });
+
+  const { lastFrame, stdin } = render(
+    <App bridge={bridge} color={false} isTty={false} rows={24} columns={80} clock={() => 0} />,
+  );
+  bridge.pushState(store.getState());
+  await tick();
+
+  const original = lastFrame() ?? '';
+
+  // Left Arrow on empty editor (cursor already at 0) is a pure no-op.
+  await act(async () => {
+    stdin.write('\x1b[D');
+    await tick();
+  });
+  assert.equal(
+    lastFrame() ?? '',
+    original,
+    'Left Arrow on empty buffer must not change the frame',
+  );
+
+  // A no-op key that does not match any panel/buffer branch.
+  await act(async () => {
+    stdin.write('x');
+    await tick();
+  });
+  assert.equal(
+    lastFrame() ?? '',
+    original,
+    'ordinary no-op key must not change the structured flag-off frame',
+  );
 });
