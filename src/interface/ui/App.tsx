@@ -15,7 +15,7 @@ import { Stream, CommittedLine } from './Stream.js';
 import { StatusBlock } from './StatusBlock.js';
 import { layoutForHeight, streamWrappedRows, tailStreamToRows, INPUT_ROWS } from './layout.js';
 import { backfillTerminalSize } from './mount.js';
-import type { TranscriptLine, UiState } from './state.js';
+import type { Action, TranscriptLine, UiState } from './state.js';
 
 export interface InputBoxInfo {
   readonly mode: string;
@@ -26,6 +26,15 @@ function formatInputBoxInfo(info: InputBoxInfo | null): string | undefined {
   if (info === null) return undefined;
   return `Mode: ${info.mode} · ${info.hints.join(' · ')}`;
 }
+
+/**
+ * The subset of {@link Action} the renderer may route through the bridge for
+ * the goals panel. Excludes configure (Node-owned) and open (only toggle opens).
+ */
+export type GoalsPanelBridgeAction =
+  | Extract<Action, { type: 'goals-panel/toggle' }>
+  | Extract<Action, { type: 'goals-panel/close' }>
+  | Extract<Action, { type: 'goals-panel/highlight' }>;
 
 /**
  * The Ink-side control surface the LineReader's `suspend()`/`resume()` need to
@@ -134,6 +143,20 @@ export interface InkAppBridge {
    */
   interrupt(): boolean;
   /**
+   * Register (or clear with `null`) the Node-side handler for goals-panel
+   * actions. When a handler is set, `routeGoalsPanelAction` forwards the action
+   * there; when null, routing returns false (off path). Called by the mount
+   * once at init; never changed afterward.
+   */
+  onGoalsPanelAction(handler: ((action: GoalsPanelBridgeAction) => void) | null): void;
+  /**
+   * Route a goals-panel action through the bridge from the React tree (InputBox
+   * Ctrl+G). Returns `false` when no handler is armed (feature off — the caller
+   * falls through to the existing key handler). When a handler is set, invokes it
+   * once and returns `true`.
+   */
+  routeGoalsPanelAction(action: GoalsPanelBridgeAction): boolean;
+  /**
    * Register the Ink-side stdin control (raw-mode toggle + stream pause/resume).
    * The `<InputBox>` calls this from inside `useStdin()` on mount; the LineReader
    * reads it in `suspend()`/`resume()`. `null` after unmount.
@@ -155,6 +178,10 @@ export interface InkAppBridge {
   /** @internal the installed turn-interrupt handler, set by setInterrupt(); read
    *  by the InputBox's bare-ESC branch. `null`/undefined when idle. */
   _interrupt?: (() => void) | null;
+  /** @internal the installed goals-panel action handler, set by
+   *  onGoalsPanelAction(); read by routeGoalsPanelAction(). `null` when the
+   *  feature flag is off. */
+  _goalsPanelAction?: ((action: GoalsPanelBridgeAction) => void) | null;
   /** @internal the attached Ink stdin control */ _stdinControl?: InkStdinControl | null;
   /**
    * Enable or disable the main-menu key-capture window. While active, a printable
@@ -184,6 +211,7 @@ export function createInkAppBridge(): InkAppBridge {
     _stdinControl: null,
     _keyResolver: null,
     _interrupt: null,
+    _goalsPanelAction: null,
     _menuKeyQueue: [],
     _menuCaptureActive: false,
     commit(line: string): void {
@@ -230,6 +258,15 @@ export function createInkAppBridge(): InkAppBridge {
       const handler = bridge._interrupt;
       if (handler == null) return false;
       handler();
+      return true;
+    },
+    onGoalsPanelAction(handler: ((action: GoalsPanelBridgeAction) => void) | null): void {
+      bridge._goalsPanelAction = handler;
+    },
+    routeGoalsPanelAction(action: GoalsPanelBridgeAction): boolean {
+      const handler = bridge._goalsPanelAction;
+      if (handler == null) return false;
+      handler(action);
       return true;
     },
     attachStdinControl(control: InkStdinControl | null): void {
@@ -633,6 +670,7 @@ function AppBody({
           dynamicWorldItems={uiState?.dynamicWorldItems ?? []}
           onStdinControl={bridge.attachStdinControl}
           onEscape={() => bridge.interrupt()}
+          onToggleGoalsPanel={() => bridge.routeGoalsPanelAction({ type: 'goals-panel/toggle' })}
           readPending={() => bridge._keyResolver != null || bridge._menuCaptureActive}
           onReadKey={(input, key) => {
             const normalized = normalizeInkKey(input, key);
@@ -663,6 +701,7 @@ function AppBody({
         suspended={suspended}
         onStdinControl={bridge.attachStdinControl}
         onEscape={() => bridge.interrupt()}
+        onToggleGoalsPanel={() => bridge.routeGoalsPanelAction({ type: 'goals-panel/toggle' })}
         readPending={() => bridge._keyResolver != null || bridge._menuCaptureActive}
         onReadKey={(input, key) => {
           const normalized = normalizeInkKey(input, key);

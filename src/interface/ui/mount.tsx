@@ -580,9 +580,14 @@ export function mountInk(opts: InkMountOptions): InkMountHandle {
   const store = createInkStore(bridge);
   // Configure the goals-panel feature flag in the persistent store immediately
   // so the reducer state is settled before any consumer (OutputSink, LineReader,
-  // TurnDriver, React) reads it. The returned boolean is left for later slices
-  // to arm the route; an explicit void keeps eslint clean until then.
-  void configureGoalsPanelStore(store, opts.env, opts.config);
+  // TurnDriver, React) reads it. The returned boolean arms the bridge route for
+  // Slice 4 so Ctrl+G can toggle the panel open.
+  const goalsPanelOn = configureGoalsPanelStore(store, opts.env, opts.config);
+  if (goalsPanelOn) {
+    bridge.onGoalsPanelAction((action) => store.dispatch(action));
+  } else {
+    bridge.onGoalsPanelAction(null);
+  }
   const out = createInkOutputSink(store, { color: opts.color, isTty: opts.isTty });
   const reader = createInkLineReader(bridge);
   const renderTurn = createTurnDriver(store, { color: opts.color, isTty: opts.isTty });

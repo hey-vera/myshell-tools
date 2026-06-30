@@ -169,6 +169,14 @@ export interface InputBoxProps {
    */
   readonly onEscape?: (() => boolean) | undefined;
   /**
+   * Empty-buffer Ctrl+G handler. When the flag is on, the bridge routes
+   * `goals-panel/toggle` through it; returns true when consumed. When absent or
+   * returning false, the key falls through to the existing handler chain (menu
+   * single-key capture when the feature is off). Only fires on a truly empty
+   * editor; a non-empty buffer sends Ctrl+G through to editing as before.
+   */
+  readonly onToggleGoalsPanel?: (() => boolean) | undefined;
+  /**
    * Returns `true` while a single-key menu/confirm read is pending (the App's
    * `readKey()`). The editor's single input handler routes that event to the menu
    * resolver instead of mutating the edit buffer. Optional (tests/Step-1 paths may
@@ -296,6 +304,7 @@ export function InputBox({
   suspended = false,
   onStdinControl,
   onEscape,
+  onToggleGoalsPanel,
   readPending,
   onReadKey,
   rows,
@@ -403,6 +412,14 @@ export function InputBox({
   // state and callbacks.
   const inputHandlerRef = useRef<Parameters<typeof useInput>[0]>(() => undefined);
   inputHandlerRef.current = (input, key): void => {
+    // --- Empty-buffer Ctrl+G → toggle goals panel ------------------------------
+    // The one narrow bridge route from React events back to the reducer. Matches
+    // only a truly empty editor with Ctrl+G; non-empty or absent callback falls
+    // through to the existing handler chain (menu single-key capture when flag off).
+    if (value === '' && key.ctrl && input === 'g') {
+      if (onToggleGoalsPanel?.() === true) return;
+    }
+
     // --- Pending menu/confirm read -------------------------------------------
     // This is the first dispatch branch: exactly one continuously-mounted input
     // consumer serves both menu capture and editor input, with no listener handoff.
