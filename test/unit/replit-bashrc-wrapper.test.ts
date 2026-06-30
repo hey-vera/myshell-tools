@@ -255,10 +255,16 @@ describe('ensureReplitShellHook — I/O (Replit env)', () => {
 
     const origHome = process.env['HOME'];
     const origReplId = process.env['REPL_ID'];
+    const origNixRoot = process.env['MYSHELL_NIX_STORE_ROOT'];
     const origPlatform = process.platform;
 
     process.env['HOME'] = tempHome;
     process.env['REPL_ID'] = 'test-repl-id';
+    // Point the Nix-store-root detection at this test's temp nix store. A sandbox
+    // cannot create files under the real /nix/store/, so we resolve symlinks in
+    // the temp home (e.g. macOS /var → /private/var) to match realpath() output.
+    const resolvedHome = await realpath(tempHome);
+    process.env['MYSHELL_NIX_STORE_ROOT'] = `${join(resolvedHome, 'nix', 'store')}/`;
     Object.defineProperty(process, 'platform', {
       value: 'linux',
       configurable: true,
@@ -276,6 +282,11 @@ describe('ensureReplitShellHook — I/O (Replit env)', () => {
         process.env['REPL_ID'] = origReplId;
       } else {
         delete process.env['REPL_ID'];
+      }
+      if (origNixRoot !== undefined) {
+        process.env['MYSHELL_NIX_STORE_ROOT'] = origNixRoot;
+      } else {
+        delete process.env['MYSHELL_NIX_STORE_ROOT'];
       }
       Object.defineProperty(process, 'platform', {
         value: origPlatform,
