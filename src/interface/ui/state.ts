@@ -236,6 +236,18 @@ export interface TokenView {
 }
 
 /**
+ * The fullscreen goals-panel UI state. Every field is default-off so the panel
+ * is invisible/disabled until the user explicitly turns it on via a
+ * `goals-panel/configure` action. Neutrality is mandatory: no feature is
+ * auto-enabled, and the panel never renders unless enabled===true.
+ */
+export interface GoalsPanelUiState {
+  readonly enabled: boolean;
+  readonly open: boolean;
+  readonly highlightedGoalId?: string;
+}
+
+/**
  * The whole immutable UI model. `committed` is the append-only transcript
  * (everything `renderStream` has written as a finished line); `stream` is the
  * live status region; `goals` is the structured work view; `turnActive` is true
@@ -279,6 +291,8 @@ export interface UiState {
   readonly pressure?: number;
   /** Optional live dynamic world items for @-mention completion. */
   readonly dynamicWorldItems?: ReadonlyArray<{ prefix: string; items: readonly string[] }>;
+  /** The fullscreen goals-panel UI state (default-off; see GoalsPanelUiState). */
+  readonly goalsPanel: GoalsPanelUiState;
 }
 
 // ---------------------------------------------------------------------------
@@ -321,6 +335,7 @@ export const initialState: UiState = {
   boardEnabled: false,
   pressure: 0,
   dynamicWorldItems: [],
+  goalsPanel: { enabled: false, open: false },
 };
 
 // ---------------------------------------------------------------------------
@@ -534,4 +549,17 @@ export type Action =
        *  impure caller via cliErrorForCategory/formatErrorMessage. When present on
        *  a failing final, committed as an `error` line before the Failed line. */
       readonly actionableError?: string;
-    };
+    }
+  // --- goals-panel/configure: enable/disable the fullscreen panel feature.
+  //     When disabled, the panel is closed and the highlighted goal is cleared.
+  | { readonly type: 'goals-panel/configure'; readonly enabled: boolean }
+  // --- goals-panel/open: open the panel (no-op when disabled).
+  //     Optionally set the highlighted goal on open.
+  | { readonly type: 'goals-panel/open'; readonly highlightedGoalId?: string }
+  // --- goals-panel/close: close the panel (keeps enabled state, keeps highlight).
+  | { readonly type: 'goals-panel/close' }
+  // --- goals-panel/toggle: flip open/closed (no-op when disabled).
+  | { readonly type: 'goals-panel/toggle' }
+  // --- goals-panel/highlight: set the highlighted goal (no-op when disabled or closed).
+  | { readonly type: 'goals-panel/highlight'; readonly goalId: string }
+  ;
