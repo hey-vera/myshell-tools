@@ -195,7 +195,7 @@ function isJSONLMerge(relPath: string): boolean {
 
 /** Check that the top-level component of `relPath` is a known myshell entry. */
 function isKnownTopLevel(relPosix: string): boolean {
-  const top = relPosix.split('/')[0]!;
+  const top = relPosix.split('/')[0] ?? '';
   return KNOWN_TOP_LEVEL.has(top) || top === '.migrated-to';
 }
 
@@ -217,7 +217,7 @@ async function walkDir(root: string, dir: string = root): Promise<string[]> {
     const relPosix = relative(root, full).replace(/\\/g, '/');
 
     if (entry.isDirectory()) {
-      const top = relPosix.split('/')[0]!;
+      const top = relPosix.split('/')[0] ?? '';
       if (KNOWN_TOP_LEVEL.has(top)) {
         results.push(...(await walkDir(root, full)));
       }

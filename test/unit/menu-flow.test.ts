@@ -57,7 +57,6 @@ import { createFileGoalStore } from '../../src/infra/goal-store.ts';
 import { itemBlockReason, CLARIFY_PREFIX } from '../../src/core/goal-manager.ts';
 import type { RoadmapItem } from '../../src/core/work-contract.ts';
 import { createLedger } from '../../src/infra/ledger.ts';
-import { homedir } from 'node:os';
 import { renderStreamInk } from '../../src/interface/ui/run-stream.ts';
 import { reduce } from '../../src/interface/ui/reduce.ts';
 import { initialState, type UiState } from '../../src/interface/ui/state.ts';

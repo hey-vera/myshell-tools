@@ -19,7 +19,6 @@ import { homedir } from 'node:os';
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
-export type StateCategory = 'config' | 'state' | 'cache';
 
 export type StateLocationKind =
   | 'cloud-workspace'

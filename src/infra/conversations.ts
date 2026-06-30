@@ -9,7 +9,7 @@
  */
 
 import { mkdir, readFile, readdir, rename, stat, unlink } from 'node:fs/promises';
-import { join, dirname } from 'node:path';
+import { join } from 'node:path';
 import type { Clock, SessionEntry, SessionWriter } from '../core/types.js';
 import type { Intensity } from '../core/capacity-allocator.js';
 import type { GoalActivationOverride } from '../core/autonomy.js';

@@ -9,7 +9,6 @@
 
 import { readFile, stat, writeFile } from 'node:fs/promises';
 import { join, dirname } from 'node:path';
-import { posix } from 'node:path';
 
 import type { AppStateLayout, StateContext } from './state-layout.js';
 

@@ -14,7 +14,6 @@ import {
   isReplit,
   isCloudIde,
   resolveStateLayout,
-  defaultStateContext,
   defaultStateLayout,
   projectStateDirs,
   resolveStateHome,
@@ -22,7 +21,6 @@ import {
 } from '../../src/infra/state-layout.ts';
 import type {
   StateContext,
-  StateLocationKind,
   AppStateLayout,
 } from '../../src/infra/state-layout.ts';
 
@@ -38,19 +36,6 @@ function ctx(overrides: Partial<StateContext> = {}): StateContext {
   };
 }
 
-function winCtx(overrides: Partial<StateContext> = {}): StateContext {
-  return {
-    env: {
-      USERPROFILE: 'C:\\Users\\josh',
-      APPDATA: 'C:\\Users\\josh\\AppData\\Roaming',
-      LOCALAPPDATA: 'C:\\Users\\josh\\AppData\\Local',
-    },
-    platform: 'win32',
-    cwd: 'C:\\Users\\josh\\project',
-    homeDir: 'C:\\Users\\josh',
-    ...overrides,
-  };
-}
 
 /** Quick sanity check on layout shape. */
 function assertLayoutShape(layout: AppStateLayout): void {
