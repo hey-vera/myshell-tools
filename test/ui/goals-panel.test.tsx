@@ -11,7 +11,8 @@ import { test, vi } from 'vitest';
 import assert from 'node:assert/strict';
 import React, { act } from 'react';
 import { render } from 'ink-testing-library';
-import { GoalsPanel } from '../../src/interface/ui/GoalsPanel.js';
+import { GoalsPanel, GoalsPanelBody } from '../../src/interface/ui/GoalsPanel.js';
+import { buildGoalsPanelModel } from '../../src/interface/ui/goals-panel-model.js';
 import type { GoalBoardRow } from '../../src/interface/ui/index.js';
 
 const tick = (ms = 50): Promise<void> => new Promise((r) => setTimeout(r, ms));
@@ -120,6 +121,16 @@ test('empty board renders "No goals yet"', () => {
   );
   const frame = lastFrame() ?? '';
   assert.match(frame, /No goals yet/);
+});
+
+test('GoalsPanelBody renders from a prebuilt model', () => {
+  const model = buildGoalsPanelModel({
+    board: [boardRow({ id: 'a', title: 'Ship it' })],
+  });
+  const { lastFrame } = render(<GoalsPanelBody model={model} />);
+  const frame = lastFrame() ?? '';
+  assert.match(frame, /Goals · To-dos/);
+  assert.match(frame, /Ship it/);
 });
 
 test('active={false} disables arrow/j/k/Escape/Ctrl+G — neither callback fires', async () => {
