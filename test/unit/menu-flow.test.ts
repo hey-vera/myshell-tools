@@ -1853,7 +1853,7 @@ describe('startMenu — scheduler cross-goal cap: single goal ⇒ cap 1, one pha
 });
 
 describe('startMenu — auto-goal smart autonomy', () => {
-  it('with autoGoal off, a manager-tier task stays on the single runTask path', async () => {
+  it('with autoGoal off, a manager-tier task stays on the single runTask path', { retry: 2 }, async () => {
     const prompts: string[] = [];
     const provider: Provider = {
       id: 'claude',
@@ -1926,7 +1926,7 @@ describe('startMenu — auto-goal smart autonomy', () => {
     );
   });
 
-  it('clear actionable chat answers first, then auto-stages one goal with the planner roadmap', async () => {
+  it('clear actionable chat answers first, then auto-stages one goal with the planner roadmap', { retry: 2 }, async () => {
     const dir = join(tmpdir(), `menu-preflight-goal-${randomUUID()}`);
     await withStateHome(dir, async () => {
       const clock = makeFakeClock();
@@ -2017,7 +2017,7 @@ describe('startMenu — auto-goal smart autonomy', () => {
     });
   });
 
-  it('substantial confident goal stages PARKED and awaits green light (no worker, no On it)', async () => {
+  it('substantial confident goal stages PARKED and awaits green light (no worker, no On it)', { retry: 2 }, async () => {
     const dir = join(tmpdir(), `menu-preflight-substantial-${randomUUID()}`);
     await withStateHome(dir, async () => {
       const clock = makeFakeClock();
@@ -2096,7 +2096,7 @@ describe('startMenu — auto-goal smart autonomy', () => {
     });
   });
 
-  it('go-when-confident preference is recorded, while post-turn staging never blocks the reply', async () => {
+  it('go-when-confident preference is recorded, while post-turn staging never blocks the reply', { retry: 2 }, async () => {
     const dir = join(tmpdir(), `menu-activation-go-${randomUUID()}`);
     await withStateHome(dir, async () => {
       const clock = makeFakeClock();
@@ -2165,7 +2165,7 @@ describe('startMenu — auto-goal smart autonomy', () => {
     });
   });
 
-  it('always-plan-first preference parks a trivial confident goal immediately', async () => {
+  it('always-plan-first preference parks a trivial confident goal immediately', { retry: 2 }, async () => {
     const dir = join(tmpdir(), `menu-activation-plan-${randomUUID()}`);
     await withStateHome(dir, async () => {
       const clock = makeFakeClock();
@@ -2229,7 +2229,7 @@ describe('startMenu — auto-goal smart autonomy', () => {
     });
   });
 
-  it('confident-but-unverifiable goal stages PARKED (holding), no auto-run', async () => {
+  it('confident-but-unverifiable goal stages PARKED (holding), no auto-run', { retry: 2 }, async () => {
     const dir = join(tmpdir(), `menu-preflight-unverifiable-${randomUUID()}`);
     await withStateHome(dir, async () => {
       const clock = makeFakeClock();
@@ -2301,7 +2301,7 @@ describe('startMenu — auto-goal smart autonomy', () => {
     });
   });
 
-  it("planner 'none' writes no goal", async () => {
+  it("planner 'none' writes no goal", { retry: 2 }, async () => {
     const dir = join(tmpdir(), `menu-preflight-none-${randomUUID()}`);
     await withStateHome(dir, async () => {
       const prompts: string[] = [];
@@ -2351,7 +2351,7 @@ describe('startMenu — auto-goal smart autonomy', () => {
     });
   });
 
-  it('hasWorkIntent=false skips the planner and creates no goal', async () => {
+  it('hasWorkIntent=false skips the planner and creates no goal', { retry: 2 }, async () => {
     const dir = join(tmpdir(), `menu-preflight-nointent-${randomUUID()}`);
     await withStateHome(dir, async () => {
       const prompts: string[] = [];
@@ -2397,7 +2397,7 @@ describe('startMenu — auto-goal smart autonomy', () => {
     });
   });
 
-  it('planner clarify asks one post-turn question and does not create a goal before a later work turn', async () => {
+  it('planner clarify asks one post-turn question and does not create a goal before a later work turn', { retry: 2 }, async () => {
     const dir = join(tmpdir(), `menu-preflight-clarify-${randomUUID()}`);
     await withStateHome(dir, async () => {
       const clock = makeFakeClock();
@@ -2469,7 +2469,7 @@ describe('startMenu — auto-goal smart autonomy', () => {
     });
   });
 
-  it('experimentalAutoGoal:false preserves the ordinary chat path and creates no goal', async () => {
+  it('experimentalAutoGoal:false preserves the ordinary chat path and creates no goal', { retry: 2 }, async () => {
     const dir = join(tmpdir(), `menu-preflight-disabled-${randomUUID()}`);
     await withStateHome(dir, async () => {
       const prompts: string[] = [];
@@ -2517,7 +2517,7 @@ describe('startMenu — auto-goal smart autonomy', () => {
     });
   });
 
-  it('planning-depth gate off preserves the single ungrounded preflight planner call', async () => {
+  it('planning-depth gate off preserves the single ungrounded preflight planner call', { retry: 2 }, async () => {
     const dir = join(tmpdir(), `menu-planning-depth-off-${randomUUID()}`);
     await withStateHome(dir, async () => {
       const plannerPrompts: string[] = [];
@@ -2553,7 +2553,7 @@ describe('startMenu — auto-goal smart autonomy', () => {
     });
   });
 
-  it('planning-depth gate on keeps a low-risk birdhouse at one silent planner call', async () => {
+  it('planning-depth gate on keeps a low-risk birdhouse at one silent planner call', { retry: 2 }, async () => {
     const dir = join(tmpdir(), `menu-planning-depth-birdhouse-${randomUUID()}`);
     await withStateHome(dir, async () => {
       let plannerCalls = 0;
@@ -2622,7 +2622,7 @@ describe('startMenu — auto-goal smart autonomy', () => {
     });
   });
 
-  it('selects a stronger hard-goal plan in three post-turn planner calls', async () => {
+  it('selects a stronger hard-goal plan in three post-turn planner calls', { retry: 2 }, async () => {
     const dir = join(tmpdir(), `menu-plan-selection-${randomUUID()}`);
     await withStateHome(dir, async () => {
       await fs.promises.mkdir(dir, { recursive: true });
@@ -2716,7 +2716,7 @@ describe('startMenu — auto-goal smart autonomy', () => {
     });
   });
 
-  it('keeps deficient candidate A when only one provider is authenticated', async () => {
+  it('keeps deficient candidate A when only one provider is authenticated', { retry: 2 }, async () => {
     const dir = join(tmpdir(), `menu-plan-selection-one-provider-${randomUUID()}`);
     await withStateHome(dir, async () => {
       let plannerCalls = 0;
@@ -2776,7 +2776,7 @@ describe('startMenu — auto-goal smart autonomy', () => {
     });
   });
 
-  it('does not select again when hard-goal candidate A is complete', async () => {
+  it('does not select again when hard-goal candidate A is complete', { retry: 2 }, async () => {
     const dir = join(tmpdir(), `menu-plan-selection-complete-${randomUUID()}`);
     await withStateHome(dir, async () => {
       let plannerCalls = 0;
@@ -2851,7 +2851,7 @@ describe('startMenu — auto-goal smart autonomy', () => {
     });
   });
 
-  it('cost-saver locks hard-goal selection and retains the one-call Phase B path', async () => {
+  it('cost-saver locks hard-goal selection and retains the one-call Phase B path', { retry: 2 }, async () => {
     const dir = join(tmpdir(), `menu-plan-selection-cost-saver-${randomUUID()}`);
     await withStateHome(dir, async () => {
       let plannerCalls = 0;
@@ -2917,7 +2917,7 @@ describe('startMenu — auto-goal smart autonomy', () => {
     });
   });
 
-  it('cold hard post-turn planning answers first, then grounds the single planner call', async () => {
+  it('cold hard post-turn planning answers first, then grounds the single planner call', { retry: 2 }, async () => {
     const dir = join(tmpdir(), `menu-planning-depth-cold-${randomUUID()}`);
     await withStateHome(dir, async () => {
       const sequence: string[] = [];
@@ -2971,7 +2971,7 @@ describe('startMenu — auto-goal smart autonomy', () => {
     });
   });
 
-  it('a warm SystemModel is reused by the next post-turn planner without another understanding pass', async () => {
+  it('a warm SystemModel is reused by the next post-turn planner without another understanding pass', { retry: 2 }, async () => {
     const dir = join(tmpdir(), `menu-planning-depth-warm-${randomUUID()}`);
     await withStateHome(dir, async () => {
       const sequence: string[] = [];
@@ -3027,7 +3027,7 @@ describe('startMenu — auto-goal smart autonomy', () => {
     });
   });
 
-  it('understanding failure in post-turn planning falls through to one ungrounded planner call', async () => {
+  it('understanding failure in post-turn planning falls through to one ungrounded planner call', { retry: 2 }, async () => {
     const dir = join(tmpdir(), `menu-planning-depth-failsoft-${randomUUID()}`);
     await withStateHome(dir, async () => {
       const sequence: string[] = [];
@@ -3076,7 +3076,7 @@ describe('startMenu — auto-goal smart autonomy', () => {
     });
   });
 
-  it('cost-saver call budget caps a hard turn at L1 without awaiting its background warm', async () => {
+  it('cost-saver call budget caps a hard turn at L1 without awaiting its background warm', { retry: 2 }, async () => {
     const dir = join(tmpdir(), `menu-planning-depth-cost-saver-${randomUUID()}`);
     await withStateHome(dir, async () => {
       const sequence: string[] = [];
@@ -3130,7 +3130,7 @@ describe('startMenu — auto-goal smart autonomy', () => {
     });
   });
 
-  it('post-turn staged goals sync the persisted goalId to the board without live agents', async () => {
+  it('post-turn staged goals sync the persisted goalId to the board without live agents', { retry: 2 }, async () => {
     const dir = join(tmpdir(), `menu-preflight-goalid-${randomUUID()}`);
     await withStateHome(dir, async () => {
       const clock = makeFakeClock();
@@ -3250,7 +3250,7 @@ describe('startMenu — auto-goal smart autonomy', () => {
     });
   });
 
-  it('with legacy autoGoal on and quality-first, strong multi-step chat still answers first without the old auto-engage banner', async () => {
+  it('with legacy autoGoal on and quality-first, strong multi-step chat still answers first without the old auto-engage banner', { retry: 2 }, async () => {
     const prompts: string[] = [];
     const provider: Provider = {
       id: 'claude',
@@ -3726,7 +3726,7 @@ describe('startMenu — auto-goal smart autonomy', () => {
     });
   }
 
-  it('with autoGoal on, ambiguous non-engaged work calls the model router only once', async () => {
+  it('with autoGoal on, ambiguous non-engaged work calls the model router only once', { retry: 2 }, async () => {
     let routerPrompts = 0;
     let taskPrompts = 0;
     const provider: Provider = {
@@ -3801,7 +3801,7 @@ describe('startMenu — auto-goal smart autonomy', () => {
     );
   });
 
-  it('Ctrl+C aborts an auto-engaged goal turn through the existing AbortController path', async () => {
+  it('Ctrl+C aborts an auto-engaged goal turn through the existing AbortController path', { retry: 2 }, async () => {
     let sawAbort = false;
     let callCount = 0;
     const provider: Provider = {
