@@ -110,24 +110,6 @@ const MODE_LABEL: Record<Mode, string> = {
   'quality-first': 'Max',
 };
 
-/**
- * One-line descriptions, framed around how readily each mode reaches the flagship
- * (strongest) model — governed by flagshipAdmission, not a static ceiling:
- *   - Efficient never auto-opens the flagship;
- *   - Balanced EARNS a single flagship pass on a turn that proves it needs one
- *     (high/critical risk, low confidence, reviewer escalation), vetoed on an
- *     observed free plan;
- *   - Max opens the flagship whenever a turn asks for it.
- * (Honest copy: earlier wording claimed every mode "always escalates to the
- * strongest model" — false under the old maxTier clamp — and a later revision
- * over-corrected to "reserved for Max", which adaptive Balanced now makes false.)
- */
-export const MODE_DESC: Record<Mode, string> = {
-  'cost-saver': 'lean & fast — stays on the lighter models, escalating among them only when a turn needs it (won\'t open the top model)',
-  'balanced': 'sensible middle — earns one pass at the strongest model on a turn that proves it needs it (high-risk or low-confidence); otherwise stays mid-tier',
-  'quality-first': 'best answers — opens and reaches for the strongest model on hard turns; slower, never capped',
-};
-
 export function modeLabel(mode: Mode): string {
   return MODE_LABEL[mode];
 }

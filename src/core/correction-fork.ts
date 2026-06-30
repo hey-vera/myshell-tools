@@ -130,28 +130,6 @@ export function intentDescendantIds(
 }
 
 // ---------------------------------------------------------------------------
-// Session helpers
-// ---------------------------------------------------------------------------
-
-/**
- * Find the latest (by createdAt) IntentVersion for a given sessionId.
- * Returns null when no version exists.
- */
-export function latestIntentVersionForSession(
-  versions: readonly IntentVersion[],
-  sessionId: string,
-): IntentVersion | null {
-  let latest: IntentVersion | null = null;
-  for (const v of versions) {
-    if (v.sessionId !== sessionId) continue;
-    if (latest === null || v.createdAt > latest.createdAt) {
-      latest = v;
-    }
-  }
-  return latest;
-}
-
-// ---------------------------------------------------------------------------
 // Invalidation planning
 // ---------------------------------------------------------------------------
 
