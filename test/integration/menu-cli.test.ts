@@ -58,6 +58,10 @@ const HERMETIC_ENV: NodeJS.ProcessEnv = {
   XDG_DATA_HOME: EMPTY_AUTH_DIR,
   HOME: EMPTY_AUTH_DIR,
   USERPROFILE: EMPTY_AUTH_DIR,
+  // Windows state-layout reads %APPDATA%/%LOCALAPPDATA% (never HOME); pin them too
+  // so config/state resolve into the empty dir on every platform.
+  APPDATA: EMPTY_AUTH_DIR,
+  LOCALAPPDATA: EMPTY_AUTH_DIR,
 };
 // Clear Replit detection so replitPersistentEnv() is a no-op and never points the
 // homes above back at the workspace's real persistent credentials.
@@ -67,14 +71,15 @@ delete HERMETIC_ENV['REPL_SLUG'];
 delete HERMETIC_ENV['REPL_OWNER'];
 // Model a RETURNING user who simply isn't signed in (not a brand-new install):
 // seed `onboarded: true` so the menu renders directly instead of the first-run
-// setup wizard. Off-Replit the state home is HOME (= EMPTY_AUTH_DIR), so the
-// config lives at <EMPTY_AUTH_DIR>/.myshell-tools/config.json. loadConfig merges
-// this partial over DEFAULTS, so onboarded:true is all that's needed.
-mkdirSync(join(EMPTY_AUTH_DIR, '.myshell-tools'), { recursive: true });
-writeFileSync(
-  join(EMPTY_AUTH_DIR, '.myshell-tools', 'config.json'),
-  JSON.stringify({ onboarded: true }),
-);
+// setup wizard (which is interactive and HANGS on piped stdin). The state-layout
+// resolves config per platform; this hermetic env sets XDG_CONFIG_HOME (POSIX) and
+// APPDATA (Windows) to EMPTY_AUTH_DIR, so the config the CLI reads now lives at
+// <EMPTY_AUTH_DIR>/myshell-tools/config.json — NOT the legacy ~/.myshell-tools.
+// Seed BOTH so onboarded:true is found regardless of how the layout resolves.
+for (const dir of ['myshell-tools', '.myshell-tools']) {
+  mkdirSync(join(EMPTY_AUTH_DIR, dir), { recursive: true });
+  writeFileSync(join(EMPTY_AUTH_DIR, dir, 'config.json'), JSON.stringify({ onboarded: true }));
+}
 
 /** Generous per-spawn timeout so a hung child can never wedge CI. */
 const SPAWN_TIMEOUT_MS = 30_000;
