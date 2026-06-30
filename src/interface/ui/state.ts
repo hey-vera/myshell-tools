@@ -247,6 +247,14 @@ export interface GoalsPanelUiState {
   readonly highlightedGoalId?: string;
 }
 
+export type ControlPanelSection = 'status' | 'goals' | 'settings';
+
+export interface ControlPanelUiState {
+  readonly enabled: boolean;
+  readonly open: boolean;
+  readonly activeSection: ControlPanelSection;
+}
+
 /**
  * The whole immutable UI model. `committed` is the append-only transcript
  * (everything `renderStream` has written as a finished line); `stream` is the
@@ -293,6 +301,8 @@ export interface UiState {
   readonly dynamicWorldItems?: ReadonlyArray<{ prefix: string; items: readonly string[] }>;
   /** The fullscreen goals-panel UI state (default-off; see GoalsPanelUiState). */
   readonly goalsPanel: GoalsPanelUiState;
+  /** The sectioned Control Panel UI state (default-off; see ControlPanelUiState). */
+  readonly controlPanel: ControlPanelUiState;
 }
 
 // ---------------------------------------------------------------------------
@@ -336,6 +346,7 @@ export const initialState: UiState = {
   pressure: 0,
   dynamicWorldItems: [],
   goalsPanel: { enabled: false, open: false },
+  controlPanel: { enabled: false, open: false, activeSection: 'goals' },
 };
 
 // ---------------------------------------------------------------------------
@@ -562,4 +573,16 @@ export type Action =
   | { readonly type: 'goals-panel/toggle' }
   // --- goals-panel/highlight: set the highlighted goal (no-op when disabled or closed).
   | { readonly type: 'goals-panel/highlight'; readonly goalId: string }
+  // --- control-panel/configure: enable/disable the sectioned Control Panel.
+  | { readonly type: 'control-panel/configure'; readonly enabled: boolean }
+  // --- control-panel/open: open the panel, optionally to a specific section.
+  | { readonly type: 'control-panel/open'; readonly section?: ControlPanelSection }
+  // --- control-panel/close: close the panel (keeps enabled + activeSection + shared highlight).
+  | { readonly type: 'control-panel/close' }
+  // --- control-panel/toggle: flip open/closed (no-op when disabled).
+  | { readonly type: 'control-panel/toggle' }
+  // --- control-panel/set-section: switch the active tab (no-op unless enabled+open).
+  | { readonly type: 'control-panel/set-section'; readonly section: ControlPanelSection }
+  // --- control-panel/highlight-goal: update shared goals highlight (no-op unless enabled+open+goals).
+  | { readonly type: 'control-panel/highlight-goal'; readonly goalId: string }
   ;

@@ -52,6 +52,8 @@ export {
   type Action,
   type AgentRunState,
   type AgentView,
+  type ControlPanelSection,
+  type ControlPanelUiState,
   type GoalBoardRow,
   type GoalView,
   type StreamPhase,
