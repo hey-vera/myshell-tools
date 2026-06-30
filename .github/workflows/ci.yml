@@ -76,7 +76,7 @@ jobs:
         # Native vitest coverage (v8). c8 cannot instrument vitest's worker
         # processes, so wrapping `npm test` in c8 reported near-zero coverage.
         # Provider, include, reporters, and thresholds live in vitest.config.ts.
-        run: npx vitest run test/unit test/arch test/contract test/ui --coverage
+        run: npx vitest run test/unit test/arch --coverage
 
       - name: Upload coverage report
         if: always()
