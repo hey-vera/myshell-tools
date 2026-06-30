@@ -357,8 +357,11 @@ describe('ensureReplitShellHook — I/O (Replit env)', () => {
 
       const content = await readFile(rcPath, 'utf8');
       assert.ok(isReplitWrappedBashrc(content), 'content must be wrapped');
+      // The source records realpath(symlink); on macOS /tmp & /var are symlinked
+      // into /private, so compare against the realpath-resolved target.
+      const expectedTarget = await realpath(nixTarget);
       assert.ok(
-        content.includes(`# myshell-tools-replit-original-bashrc: ${nixTarget}`),
+        content.includes(`# myshell-tools-replit-original-bashrc: ${expectedTarget}`),
         'must record original target',
       );
       assert.ok(content.includes(HOOK_BEGIN), 'must include hook block');
@@ -417,7 +420,8 @@ describe('ensureReplitShellHook — I/O (Replit env)', () => {
       assert.equal(stAfterUninstall.isSymbolicLink(), true, 'must restore symlink');
 
       const resolved = await realpath(rcPath);
-      assert.equal(resolved, nixTarget, 'symlink must point to original target');
+      // realpath resolves macOS /tmp & /var symlinks into /private; compare like-for-like.
+      assert.equal(resolved, await realpath(nixTarget), 'symlink must point to original target');
 
       // Verify original target is untouched
       const originalContent = await readFile(nixTarget, 'utf8');
