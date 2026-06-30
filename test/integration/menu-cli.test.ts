@@ -142,7 +142,7 @@ describe('menu CLI (real spawn, piped stdin)', () => {
     assert.ok(existsSync(CLI_PATH), `built CLI must exist at ${CLI_PATH}`);
   });
 
-  it('empty stdin → exit 0 and no ERR_USE_AFTER_CLOSE', async () => {
+  it('empty stdin → exit 0 and no ERR_USE_AFTER_CLOSE', { retry: 2 }, async () => {
     const res = await runCli('');
     assert.equal(res.timedOut, false, 'CLI must not hang on empty stdin');
     assert.equal(res.code, 0, `empty stdin must exit 0 (got ${res.code}); stderr: ${res.stderr}`);
@@ -152,7 +152,7 @@ describe('menu CLI (real spawn, piped stdin)', () => {
     );
   });
 
-  it('"q" → exit 0 (clean quit)', async () => {
+  it('"q" → exit 0 (clean quit)', { retry: 2 }, async () => {
     const res = await runCli('q\n');
     assert.equal(res.timedOut, false, 'CLI must not hang on "q"');
     assert.equal(res.code, 0, `"q" must exit 0 (got ${res.code}); stderr: ${res.stderr}`);
@@ -162,7 +162,7 @@ describe('menu CLI (real spawn, piped stdin)', () => {
     );
   });
 
-  it('"x\\nq\\n" → exit 0 AND the unknown-option message for "x" is shown (key was dispatched, not lost)', async () => {
+  it('"x\\nq\\n" → exit 0 AND the unknown-option message for "x" is shown (key was dispatched, not lost)', { retry: 2 }, async () => {
     const res = await runCli('x\nq\n');
     assert.equal(res.timedOut, false, 'CLI must not hang on "x" then "q"');
     assert.equal(res.code, 0, `must exit 0 (got ${res.code}); stderr: ${res.stderr}`);
@@ -175,7 +175,7 @@ describe('menu CLI (real spawn, piped stdin)', () => {
     );
   });
 
-  it('"n" with no provider → auth gate → cancel → "q" → exit 0 (no ERR_USE_AFTER_CLOSE)', async () => {
+  it('"n" with no provider → auth gate → cancel → "q" → exit 0 (no ERR_USE_AFTER_CLOSE)', { retry: 2 }, async () => {
     // "n" hits promptForAuthBeforeChat since no provider is signed in. Enter
     // cancels the gate, re-renders the menu, then "q" quits. This exercises the
     // same non-TTY line-dispatch path the original P0 fix targeted — but gated

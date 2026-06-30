@@ -22,9 +22,6 @@ export type QuotaPoolId =
   | 'opencode-zen-or-free'
   | 'opencode-unknown-default';
 
-/** Live inventory built from detection, auth, refresh, cooldowns, and load. */
-export type ProviderInventory = Record<string, never>;
-
 /** Serializable routing-profile facts for one model. (§2) */
 export interface RoutingProfile {
   readonly tierSuitability: { readonly worker: number; readonly ic: number; readonly manager: number };
