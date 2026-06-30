@@ -1,9 +1,12 @@
 /**
  * Unit tests for src/infra/paths.ts
  * Run with: node --experimental-strip-types --test
+ *
+ * Phase D: paths now delegate to projectStateDirs so state lands under
+ * <stateRoot>/projects/<projectKey>/... instead of <cwd>/.myshell-tools/...
  */
 
-import { describe, it } from 'node:test';
+import { describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 
@@ -12,6 +15,9 @@ import {
   getSessionsDir,
   getSessionFile,
   getLedgerFile,
+  getEvalResultsFile,
+  getIntentVersionsFile,
+  getCommandAuditFile,
 } from '../../src/infra/paths.ts';
 
 const CWD = path.join('some', 'project', 'dir');
@@ -21,17 +27,15 @@ const CWD = path.join('some', 'project', 'dir');
 // ---------------------------------------------------------------------------
 
 describe('getStateDir()', () => {
-  it('ends with .myshell-tools segment', () => {
+  it('returns a non-empty string', () => {
     const result = getStateDir(CWD);
-    assert.ok(
-      result.endsWith(path.join('.myshell-tools')),
-      `expected result to end with ".myshell-tools", got: ${result}`,
-    );
+    assert.ok(result.length > 0);
   });
 
-  it('is rooted in the given cwd', () => {
+  it('contains the project-key segment', () => {
     const result = getStateDir(CWD);
-    assert.ok(result.startsWith(CWD), `expected result to start with cwd "${CWD}", got: ${result}`);
+    // The path includes a project key derived from CWD
+    assert.ok(result.includes('some--project--dir'));
   });
 });
 
@@ -40,14 +44,6 @@ describe('getStateDir()', () => {
 // ---------------------------------------------------------------------------
 
 describe('getSessionsDir()', () => {
-  it('ends with .myshell-tools/sessions', () => {
-    const result = getSessionsDir(CWD);
-    assert.ok(
-      result.endsWith(path.join('.myshell-tools', 'sessions')),
-      `expected result to end with ".myshell-tools/sessions", got: ${result}`,
-    );
-  });
-
   it('is a subdirectory of getStateDir()', () => {
     const stateDir = getStateDir(CWD);
     const sessions = getSessionsDir(CWD);
@@ -56,6 +52,10 @@ describe('getSessionsDir()', () => {
       `sessions dir "${sessions}" should be inside state dir "${stateDir}"`,
     );
   });
+
+  it('ends with sessions', () => {
+    assert.ok(getSessionsDir(CWD).endsWith('sessions'));
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -63,14 +63,6 @@ describe('getSessionsDir()', () => {
 // ---------------------------------------------------------------------------
 
 describe('getSessionFile()', () => {
-  it('ends with .myshell-tools/sessions/current.jsonl', () => {
-    const result = getSessionFile(CWD);
-    assert.ok(
-      result.endsWith(path.join('.myshell-tools', 'sessions', 'current.jsonl')),
-      `expected result to end with ".myshell-tools/sessions/current.jsonl", got: ${result}`,
-    );
-  });
-
   it('is inside the sessions dir', () => {
     const sessions = getSessionsDir(CWD);
     const file = getSessionFile(CWD);
@@ -90,15 +82,7 @@ describe('getSessionFile()', () => {
 // ---------------------------------------------------------------------------
 
 describe('getLedgerFile()', () => {
-  it('ends with .myshell-tools/ledger.jsonl', () => {
-    const result = getLedgerFile(CWD);
-    assert.ok(
-      result.endsWith(path.join('.myshell-tools', 'ledger.jsonl')),
-      `expected result to end with ".myshell-tools/ledger.jsonl", got: ${result}`,
-    );
-  });
-
-  it('is inside the myshell-tools dir', () => {
+  it('is inside the state dir', () => {
     const stateDir = getStateDir(CWD);
     const file = getLedgerFile(CWD);
     assert.ok(
@@ -113,6 +97,63 @@ describe('getLedgerFile()', () => {
 });
 
 // ---------------------------------------------------------------------------
+// getEvalResultsFile
+// ---------------------------------------------------------------------------
+
+describe('getEvalResultsFile()', () => {
+  it('is inside the state dir', () => {
+    const stateDir = getStateDir(CWD);
+    const file = getEvalResultsFile(CWD);
+    assert.ok(
+      file.startsWith(stateDir),
+      `eval results file "${file}" should be inside state dir "${stateDir}"`,
+    );
+  });
+
+  it('basename is eval-results.jsonl', () => {
+    assert.equal(path.basename(getEvalResultsFile(CWD)), 'eval-results.jsonl');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// getIntentVersionsFile
+// ---------------------------------------------------------------------------
+
+describe('getIntentVersionsFile()', () => {
+  it('is inside the state dir', () => {
+    const stateDir = getStateDir(CWD);
+    const file = getIntentVersionsFile(CWD);
+    assert.ok(
+      file.startsWith(stateDir),
+      `intent versions file "${file}" should be inside state dir "${stateDir}"`,
+    );
+  });
+
+  it('basename is intent-versions.jsonl', () => {
+    assert.equal(path.basename(getIntentVersionsFile(CWD)), 'intent-versions.jsonl');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// getCommandAuditFile
+// ---------------------------------------------------------------------------
+
+describe('getCommandAuditFile()', () => {
+  it('is inside the state dir', () => {
+    const stateDir = getStateDir(CWD);
+    const file = getCommandAuditFile(CWD);
+    assert.ok(
+      file.startsWith(stateDir),
+      `command audit file "${file}" should be inside state dir "${stateDir}"`,
+    );
+  });
+
+  it('basename is command-audit.jsonl', () => {
+    assert.equal(path.basename(getCommandAuditFile(CWD)), 'command-audit.jsonl');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Cross-function consistency checks
 // ---------------------------------------------------------------------------
 
@@ -120,7 +161,6 @@ describe('path consistency', () => {
   it('getSessionFile is deeper than getLedgerFile (sessions/ subdir)', () => {
     const ledger = getLedgerFile(CWD);
     const session = getSessionFile(CWD);
-    // session file has an extra path segment (sessions/)
     assert.ok(
       session.length > ledger.length,
       'session file path should be longer than ledger file path',
@@ -133,5 +173,18 @@ describe('path consistency', () => {
     assert.ok(path.isAbsolute(getSessionsDir(absCwd)));
     assert.ok(path.isAbsolute(getSessionFile(absCwd)));
     assert.ok(path.isAbsolute(getLedgerFile(absCwd)));
+    assert.ok(path.isAbsolute(getEvalResultsFile(absCwd)));
+    assert.ok(path.isAbsolute(getIntentVersionsFile(absCwd)));
+    assert.ok(path.isAbsolute(getCommandAuditFile(absCwd)));
+  });
+
+  it('all paths resolve to the same state root for the same cwd', () => {
+    const root = getStateDir(CWD);
+    assert.ok(getSessionsDir(CWD).startsWith(root));
+    assert.ok(getSessionFile(CWD).startsWith(root));
+    assert.ok(getLedgerFile(CWD).startsWith(root));
+    assert.ok(getEvalResultsFile(CWD).startsWith(root));
+    assert.ok(getIntentVersionsFile(CWD).startsWith(root));
+    assert.ok(getCommandAuditFile(CWD).startsWith(root));
   });
 });

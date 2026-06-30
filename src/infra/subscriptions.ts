@@ -1,7 +1,7 @@
 import { join, sep } from 'node:path';
 import { mkdir, readFile, rm } from 'node:fs/promises';
 import { atomicWrite } from './atomic.js';
-import { defaultStateHome } from './state-dir.js';
+import { defaultStateLayout, resolveStateLayout, type AppStateLayout } from './state-layout.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -91,19 +91,37 @@ export function priorityWeight(
 }
 
 // ---------------------------------------------------------------------------
+// Layout resolution (homeDir compat bridge)
+// ---------------------------------------------------------------------------
+
+function resolveLayout(stateHome?: string, layout?: AppStateLayout): AppStateLayout {
+  if (layout) return layout;
+  if (stateHome !== undefined) {
+    return resolveStateLayout({
+      env: {},
+      platform: 'linux',
+      cwd: stateHome,
+      homeDir: stateHome,
+    });
+  }
+  return defaultStateLayout();
+}
+
+// ---------------------------------------------------------------------------
 // Path helpers
 // ---------------------------------------------------------------------------
 
-export function getSubscriptionsDir(stateHome?: string): string {
-  return join(stateHome ?? defaultStateHome(), '.myshell-tools');
+export function getSubscriptionsDir(stateHome?: string, layout?: AppStateLayout): string {
+  return resolveLayout(stateHome, layout).stateRoot;
 }
 
-export function getSubscriptionsPath(stateHome?: string): string {
-  return join(getSubscriptionsDir(stateHome), 'subscriptions.json');
+export function getSubscriptionsPath(stateHome?: string, layout?: AppStateLayout): string {
+  return resolveLayout(stateHome, layout).paths.subscriptionsFile;
 }
 
-export function getOpencodeAccountHome(accountId: string, stateHome?: string): string {
-  return join(getSubscriptionsDir(stateHome), 'opencode-accounts', accountId);
+export function getOpencodeAccountHome(accountId: string, stateHome?: string, layout?: AppStateLayout): string {
+  const l = resolveLayout(stateHome, layout);
+  return join(l.stateRoot, 'opencode-accounts', accountId);
 }
 
 export function getOpencodeAccountAuthPath(account: OpencodeSubscriptionAccount): string {
@@ -119,21 +137,22 @@ export function getProviderAccountHome(
   provider: SubscriptionProvider,
   accountId: string,
   stateHome?: string,
+  layout?: AppStateLayout,
 ): string {
-  const root = join(getSubscriptionsDir(stateHome), 'provider-homes');
-  return join(root, provider, accountId);
+  const l = resolveLayout(stateHome, layout);
+  return join(l.paths.providerHomesDir, provider, accountId);
 }
 
-export function getClaudeAccountHome(accountId: string, stateHome?: string): string {
-  return getProviderAccountHome('claude', accountId, stateHome);
+export function getClaudeAccountHome(accountId: string, stateHome?: string, layout?: AppStateLayout): string {
+  return getProviderAccountHome('claude', accountId, stateHome, layout);
 }
 
-export function getCodexAccountHome(accountId: string, stateHome?: string): string {
-  return getProviderAccountHome('codex', accountId, stateHome);
+export function getCodexAccountHome(accountId: string, stateHome?: string, layout?: AppStateLayout): string {
+  return getProviderAccountHome('codex', accountId, stateHome, layout);
 }
 
-export function getGrokAccountHome(accountId: string, stateHome?: string): string {
-  return getProviderAccountHome('grok', accountId, stateHome);
+export function getGrokAccountHome(accountId: string, stateHome?: string, layout?: AppStateLayout): string {
+  return getProviderAccountHome('grok', accountId, stateHome, layout);
 }
 
 export function accountEnvFor(account: SubscriptionAccount): Readonly<Partial<NodeJS.ProcessEnv>> {
@@ -147,10 +166,10 @@ export function accountEnvFor(account: SubscriptionAccount): Readonly<Partial<No
 // Read / Write / Update
 // ---------------------------------------------------------------------------
 
-export async function readSubscriptions(stateHome?: string): Promise<SubscriptionsFileV1> {
+export async function readSubscriptions(stateHome?: string, layout?: AppStateLayout): Promise<SubscriptionsFileV1> {
   const empty: SubscriptionsFileV1 = { version: 1, accounts: [] };
   try {
-    const raw = await readFile(getSubscriptionsPath(stateHome), 'utf8');
+    const raw = await readFile(getSubscriptionsPath(stateHome, layout), 'utf8');
     const parsed = JSON.parse(raw) as Partial<SubscriptionsFileV1>;
     if (parsed && parsed.version === 1 && Array.isArray(parsed.accounts)) {
       return { version: 1, accounts: parsed.accounts };
@@ -164,11 +183,12 @@ export async function readSubscriptions(stateHome?: string): Promise<Subscriptio
 export async function writeSubscriptions(
   file: SubscriptionsFileV1,
   stateHome?: string,
+  layout?: AppStateLayout,
 ): Promise<void> {
-  const dir = getSubscriptionsDir(stateHome);
+  const dir = getSubscriptionsDir(stateHome, layout);
   await mkdir(dir, { recursive: true });
   await atomicWrite(
-    getSubscriptionsPath(stateHome),
+    getSubscriptionsPath(stateHome, layout),
     JSON.stringify(file, null, 2),
     0o600,
   );
@@ -177,10 +197,11 @@ export async function writeSubscriptions(
 export async function updateSubscriptions(
   updater: (file: SubscriptionsFileV1) => SubscriptionsFileV1,
   stateHome?: string,
+  layout?: AppStateLayout,
 ): Promise<SubscriptionsFileV1> {
-  const current = await readSubscriptions(stateHome);
+  const current = await readSubscriptions(stateHome, layout);
   const next = updater(current);
-  await writeSubscriptions(next, stateHome);
+  await writeSubscriptions(next, stateHome, layout);
   return next;
 }
 
@@ -197,13 +218,14 @@ export function newOpencodeAccount(input: {
   expiresAt?: string;
   nowIso: string;
   stateHome?: string;
+  layout?: AppStateLayout;
 }): OpencodeSubscriptionAccount {
   const resolvedPriority =
     input.customWeight === 0
       ? 'disabled'
       : input.priority ?? 'medium';
   const resolvedWeight = priorityWeight(resolvedPriority, input.customWeight);
-  const homeDir = getOpencodeAccountHome(input.id, input.stateHome);
+  const homeDir = getOpencodeAccountHome(input.id, input.stateHome, input.layout);
   return {
     id: input.id,
     provider: 'opencode',
@@ -227,6 +249,7 @@ export function newClaudeAccount(input: {
   expiresAt?: string;
   nowIso: string;
   stateHome?: string;
+  layout?: AppStateLayout;
 }): ClaudeSubscriptionAccount {
   const resolvedPriority =
     input.customWeight === 0
@@ -238,7 +261,7 @@ export function newClaudeAccount(input: {
     provider: 'claude',
     kind: 'oauth-sub',
     label: input.label,
-    homeDir: getClaudeAccountHome(input.id, input.stateHome),
+    homeDir: getClaudeAccountHome(input.id, input.stateHome, input.layout),
     priority: resolvedPriority,
     priorityWeight: resolvedWeight,
     ...(input.customWeight !== undefined ? { customWeight: input.customWeight } : {}),
@@ -257,6 +280,7 @@ export function newCodexAccount(input: {
   expiresAt?: string;
   nowIso: string;
   stateHome?: string;
+  layout?: AppStateLayout;
 }): CodexSubscriptionAccount {
   const resolvedPriority =
     input.customWeight === 0
@@ -268,7 +292,7 @@ export function newCodexAccount(input: {
     provider: 'codex',
     kind: 'oauth-sub',
     label: input.label,
-    homeDir: getCodexAccountHome(input.id, input.stateHome),
+    homeDir: getCodexAccountHome(input.id, input.stateHome, input.layout),
     priority: resolvedPriority,
     priorityWeight: resolvedWeight,
     ...(input.customWeight !== undefined ? { customWeight: input.customWeight } : {}),
@@ -287,6 +311,7 @@ export function newGrokAccount(input: {
   expiresAt?: string;
   nowIso: string;
   stateHome?: string;
+  layout?: AppStateLayout;
 }): GrokSubscriptionAccount {
   const resolvedPriority =
     input.customWeight === 0
@@ -298,7 +323,7 @@ export function newGrokAccount(input: {
     provider: 'grok',
     kind: 'oauth-sub',
     label: input.label,
-    homeDir: getGrokAccountHome(input.id, input.stateHome),
+    homeDir: getGrokAccountHome(input.id, input.stateHome, input.layout),
     priority: resolvedPriority,
     priorityWeight: resolvedWeight,
     ...(input.customWeight !== undefined ? { customWeight: input.customWeight } : {}),
@@ -337,9 +362,10 @@ export async function writeOpencodeAuthJson(input: {
 export async function deleteOpencodeAccountHome(
   account: OpencodeSubscriptionAccount,
   stateHome?: string,
+  layout?: AppStateLayout,
 ): Promise<void> {
   const accountsRoot = join(
-    getSubscriptionsDir(stateHome),
+    getSubscriptionsDir(stateHome, layout),
     'opencode-accounts',
   );
   const resolved = join(account.homeDir);
@@ -353,10 +379,11 @@ export async function deleteOpencodeAccountHome(
 export async function deleteAccountHome(
   account: SubscriptionAccount,
   stateHome?: string,
+  layout?: AppStateLayout,
 ): Promise<void> {
+  const l = resolveLayout(stateHome, layout);
   const accountsRoot = join(
-    getSubscriptionsDir(stateHome),
-    'provider-homes',
+    l.paths.providerHomesDir,
     account.provider,
   );
   const resolved = join(account.homeDir);

@@ -8,7 +8,7 @@
  * '' on a throwing port; respects the char cap. NO model, NO real I/O.
  */
 
-import { describe, it } from 'node:test';
+import { describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 
 import {

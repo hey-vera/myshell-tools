@@ -20,14 +20,27 @@
 import { randomBytes } from 'node:crypto';
 import { mkdir, stat, readdir, copyFile, rename, unlink, readFile, open } from 'node:fs/promises';
 import { join, dirname } from 'node:path';
-import { defaultStateHome } from './state-dir.js';
+import { defaultStateLayout, resolveStateLayout, type AppStateLayout } from './state-layout.js';
 
-function conversationsDir(home: string): string {
-  return join(home, '.myshell-tools', 'conversations');
+function resolveLayout(homeDir?: string, layout?: AppStateLayout): AppStateLayout {
+  if (layout) return layout;
+  if (homeDir !== undefined) {
+    return resolveStateLayout({
+      env: {},
+      platform: 'linux',
+      cwd: homeDir,
+      homeDir,
+    });
+  }
+  return defaultStateLayout();
 }
 
-function archiveDir(home: string): string {
-  return join(home, '.myshell-tools', '.session-archive');
+function conversationsDir(l: AppStateLayout): string {
+  return l.paths.conversationsDir;
+}
+
+function archiveDir(l: AppStateLayout): string {
+  return l.paths.conversationArchiveDir;
 }
 
 export interface MirrorSyncResult {
@@ -133,12 +146,12 @@ async function archiveGrowOnly(
  * BEFORE deleting a conversation so the content is preserved even though the
  * live file is about to be unlinked. Grow-only, best-effort, never throws.
  */
-export async function archiveConversation(id: string, homeDir?: string): Promise<void> {
+export async function archiveConversation(id: string, homeDir?: string, layout?: AppStateLayout): Promise<void> {
   try {
-    const home = homeDir ?? defaultStateHome();
+    const l = resolveLayout(homeDir, layout);
     await archiveGrowOnly(
-      join(conversationsDir(home), `${id}.jsonl`),
-      join(archiveDir(home), `${id}.jsonl`),
+      join(conversationsDir(l), `${id}.jsonl`),
+      join(archiveDir(l), `${id}.jsonl`),
     );
   } catch {
     /* best-effort */
@@ -150,12 +163,12 @@ export async function archiveConversation(id: string, homeDir?: string): Promise
  * call at launch: cheap (a stat per file, copy only when grown), best-effort,
  * never throws. Returns counts for optional surfacing/telemetry.
  */
-export async function syncConversationMirror(homeDir?: string): Promise<MirrorSyncResult> {
+export async function syncConversationMirror(homeDir?: string, layout?: AppStateLayout): Promise<MirrorSyncResult> {
   let copied = 0;
   let grew = 0;
   try {
-    const home = homeDir ?? defaultStateHome();
-    const src = conversationsDir(home);
+    const l = resolveLayout(homeDir, layout);
+    const src = conversationsDir(l);
     let entries: string[];
     try {
       entries = await readdir(src);
@@ -164,7 +177,7 @@ export async function syncConversationMirror(homeDir?: string): Promise<MirrorSy
     }
     for (const name of entries) {
       if (!name.endsWith('.jsonl')) continue;
-      const r = await archiveGrowOnly(join(src, name), join(archiveDir(home), name));
+      const r = await archiveGrowOnly(join(src, name), join(archiveDir(l), name));
       if (r === 'copied') copied++;
       else if (r === 'grew') grew++;
     }

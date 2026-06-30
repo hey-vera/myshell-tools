@@ -6,7 +6,7 @@
  * network or provider CLIs are called.
  */
 
-import { describe, it, before, after } from 'node:test';
+import { afterAll, beforeAll, describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 import { mkdtemp, rm, mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -27,12 +27,12 @@ import {
 let dir: string;
 let stateHome: string;
 
-before(async () => {
+beforeAll(async () => {
   dir = await mkdtemp(join(tmpdir(), 'claude-menu-test-'));
   stateHome = dir;
 });
 
-after(async () => {
+afterAll(async () => {
   await rm(dir, { recursive: true, force: true });
 });
 

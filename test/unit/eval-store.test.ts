@@ -9,7 +9,7 @@
  * Run: node --import ./test/register.mjs --experimental-strip-types --test test/unit/eval-store.test.ts
  */
 
-import { describe, it, beforeEach, afterEach } from 'node:test';
+import { afterEach, beforeEach, describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 import { mkdtemp, rm, appendFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -21,6 +21,7 @@ import { getEvalResultsFile } from '../../src/infra/paths.ts';
 import { runEvalCommand } from '../../src/commands/eval.ts';
 import type { RunResult } from '../../src/core/eval/harness.ts';
 import type { OutputSink } from '../../src/interface/render.ts';
+import { withStateHome } from '../with-state-home.ts';
 
 const SIGNAL = new AbortController().signal;
 
@@ -68,10 +69,13 @@ describe('eval store — append-only JSONL', () => {
   });
 
   it('returns [] when the file does not exist', async () => {
+    await withStateHome(dir, async () => {
     assert.deepEqual(await readEvalRuns(dir), []);
+    });
   });
 
   it('appends runs and reads them back oldest-first', async () => {
+    await withStateHome(dir, async () => {
     await appendEvalRun(dir, makeRun('t1', 4));
     await appendEvalRun(dir, makeRun('t2', 8));
     const runs = await readEvalRuns(dir);
@@ -79,14 +83,17 @@ describe('eval store — append-only JSONL', () => {
     assert.equal(runs[0]!.timestamp, 't1');
     assert.equal(runs[1]!.timestamp, 't2');
     assert.equal(runs[1]!.scorecard.aggregate, 8);
+    });
   });
 
   it('skips malformed lines without crashing', async () => {
+    await withStateHome(dir, async () => {
     await appendEvalRun(dir, makeRun('t1', 5));
     await appendFile(getEvalResultsFile(dir), 'not json\n{"partial":true}\n', 'utf8');
     const runs = await readEvalRuns(dir);
     assert.equal(runs.length, 1);
     assert.equal(runs[0]!.timestamp, 't1');
+    });
   });
 });
 
@@ -113,6 +120,7 @@ describe('eval command — opt-in, cost-stated, never auto-spends', () => {
   });
 
   it('without --yes: prints the cost statement and makes NO model call', async () => {
+    await withStateHome(dir, async () => {
     const s = sink();
     const code = await runEvalCommand([], baseDeps(dir), s.out, SIGNAL);
     assert.equal(code, 0);
@@ -120,30 +128,37 @@ describe('eval command — opt-in, cost-stated, never auto-spends', () => {
     assert.match(s.text(), /--yes/);
     // No results file was written (nothing ran).
     assert.deepEqual(await readEvalRuns(dir), []);
+    });
   });
 
   it('with no providers: reports honestly and returns non-zero', async () => {
+    await withStateHome(dir, async () => {
     const s = sink();
     const deps = { ...baseDeps(dir), providers: {} as never, authenticatedProviders: [] as const };
     const code = await runEvalCommand(['--yes'], deps, s.out, SIGNAL);
     assert.equal(code, 1);
     assert.match(s.text(), /No providers/);
+    });
   });
 
   it('--compare with <2 stored runs reports the shortfall (no model call)', async () => {
+    await withStateHome(dir, async () => {
     const s = sink();
     await appendEvalRun(dir, makeRun('t1', 5));
     const code = await runEvalCommand(['--compare'], baseDeps(dir), s.out, SIGNAL);
     assert.equal(code, 0);
     assert.match(s.text(), /at least two/i);
+    });
   });
 
   it('--compare with ≥2 runs prints the before→after diff', async () => {
+    await withStateHome(dir, async () => {
     const s = sink();
     await appendEvalRun(dir, makeRun('t1', 4));
     await appendEvalRun(dir, makeRun('t2', 8));
     const code = await runEvalCommand(['--compare'], baseDeps(dir), s.out, SIGNAL);
     assert.equal(code, 0);
     assert.match(s.text(), /4\.0 → 8\.0/);
+    });
   });
 });

@@ -8,7 +8,7 @@
  * the decay sweep on open, and full fail-soft (a throwing store → '').
  */
 
-import { describe, it } from 'node:test';
+import { describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 
 import {

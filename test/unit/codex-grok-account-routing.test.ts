@@ -5,7 +5,7 @@
  * Mirrors subscription-account-routing.test.ts patterns.
  */
 
-import { describe, it } from 'node:test';
+import { describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 
 import { selectSubscriptionAccount } from '../../src/core/opencode-account-routing.ts';

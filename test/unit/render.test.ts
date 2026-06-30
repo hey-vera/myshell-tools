@@ -6,7 +6,7 @@
  * no fabricated metrics, no hardcoded mock substrings.
  */
 
-import { describe, it } from 'node:test';
+import { describe, it, vi } from 'vitest';
 import assert from 'node:assert/strict';
 import { renderInputPrompt, renderQueuedIndicator, renderStream } from '../../src/interface/render.ts';
 import type { OutputSink } from '../../src/interface/render.ts';
@@ -1451,14 +1451,13 @@ describe('renderStream — completion line carries the final-state dot/colour', 
 
   it('appends the spinner elapsed (· Ns) to the normal success line when time passed', async () => {
     // Drive real ticks so spinner.elapsed() > 0, then assert it reaches the line.
-    const { mock } = await import('node:test');
-    mock.timers.enable({ apis: ['setInterval'] });
+    vi.useFakeTimers();
     try {
       const sink = makeColorTtySink();
       // A generator that lets the spinner animate between tier-start and final.
       async function* timedStream(): AsyncIterable<CoreEvent> {
         yield { type: 'tier-start', tier: 'ic', provider: 'claude', model: 'm', attempt: 1 };
-        mock.timers.tick(80 * 30); // ~2s of spinner ticks
+        vi.advanceTimersByTime(80 * 30); // ~2s of spinner ticks
         yield { type: 'final', success: true, output: '', tier: 'ic', totalCostUsd: 0, sessionId: 's', attempts: 1 };
       }
       await renderStream(timedStream(), sink, 'normal');
@@ -1466,7 +1465,7 @@ describe('renderStream — completion line carries the final-state dot/colour', 
       // No usage reported → token segment omitted; the elapsed suffix still appears.
       assert.ok(/✓ done · 2s/.test(joined), `success line carries elapsed "· 2s", got:\n${JSON.stringify(joined)}`);
     } finally {
-      mock.timers.reset();
+      vi.useRealTimers();
     }
   });
 

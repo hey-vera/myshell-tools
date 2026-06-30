@@ -9,7 +9,7 @@
  * returns the exact ordered ladder and the core answer ALWAYS survives.
  */
 
-import { describe, it } from 'node:test';
+import { describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 
 import {

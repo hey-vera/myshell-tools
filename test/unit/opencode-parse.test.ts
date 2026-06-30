@@ -22,7 +22,7 @@
  * Honesty Contract: no Math.random, no fabricated AI responses, no digit-% literals.
  */
 
-import { describe, it } from 'node:test';
+import { describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 import { createOpencodeParser } from '../../src/providers/opencode-parse.ts';
 import type { ProviderEvent } from '../../src/providers/port.ts';

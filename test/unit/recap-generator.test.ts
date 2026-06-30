@@ -5,7 +5,7 @@
  * never blocks), not recap quality. Twin of intent-extractor.test.ts.
  */
 
-import { describe, it, beforeEach } from 'node:test';
+import { beforeEach, describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 
 import { makeRecapGenerator } from '../../src/core/recap-generator.ts';

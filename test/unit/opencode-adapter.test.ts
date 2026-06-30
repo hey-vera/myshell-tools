@@ -5,7 +5,7 @@
  * category before execa's cancellation flag can turn it into a generic cancel.
  */
 
-import { describe, it, before, after } from 'node:test';
+import { afterAll, beforeAll, describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 import { mkdtemp, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -29,7 +29,7 @@ let dir: string;
 let stubPath: string;
 let errorThenExtraStubPath: string;
 
-before(async () => {
+beforeAll(async () => {
   dir = await mkdtemp(join(tmpdir(), 'opencode-adapter-'));
   stubPath = join(dir, 'sleeper.mjs');
   errorThenExtraStubPath = join(dir, 'error-then-extra.mjs');
@@ -37,7 +37,7 @@ before(async () => {
   await writeFile(errorThenExtraStubPath, ERROR_THEN_EXTRA_SOURCE, { mode: 0o755 });
 });
 
-after(async () => {
+afterAll(async () => {
   await rm(dir, { recursive: true, force: true });
 });
 

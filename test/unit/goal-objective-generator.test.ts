@@ -6,7 +6,7 @@
  * objective's prose quality. Twin of recap-generator.test.ts.
  */
 
-import { describe, it } from 'node:test';
+import { describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 
 import { makeGoalObjectiveGenerator } from '../../src/core/goal-objective-generator.ts';

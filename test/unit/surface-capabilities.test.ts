@@ -9,7 +9,7 @@
  * feature without deciding its REPL status fails the test.
  */
 
-import { describe, it } from 'node:test';
+import { describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 
 import {

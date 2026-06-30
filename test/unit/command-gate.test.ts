@@ -1,4 +1,4 @@
-import { describe, it } from 'node:test';
+import { describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 import { gateCommand } from '../../src/core/command-gate.ts';
 import type { CommandGateDecision } from '../../src/core/command-gate.ts';

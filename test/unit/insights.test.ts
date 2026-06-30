@@ -7,7 +7,7 @@
  * AI-response phrases, no digit-% literals in source.
  */
 
-import { describe, it } from 'node:test';
+import { describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 

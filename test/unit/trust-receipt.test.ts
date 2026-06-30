@@ -19,7 +19,7 @@
  *   - all-flags-off ⇒ no new output (the flag is DEFAULT OFF; neutrality contract).
  */
 
-import { describe, it } from 'node:test';
+import { describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 
 import {

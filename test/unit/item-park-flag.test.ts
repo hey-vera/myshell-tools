@@ -1,4 +1,4 @@
-import { describe, it } from 'node:test';
+import { describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 // Imported through scheduler-flag.ts (which re-exports it) so the re-export that
 // satisfies the no-orphan arch guard is also a consumed binding (knip-clean).

@@ -79,7 +79,7 @@ export function selectSubscriptionAccount<T extends SubscriptionAccount>(input: 
       a.enabled === true &&
       a.priority !== 'disabled' &&
       a.priorityWeight > 0 &&
-      (a.expiresAt === undefined || new Date(a.expiresAt).getTime() > nowMs)
+      (a.expiresAt === undefined || Date.parse(a.expiresAt) > nowMs)
     ) {
       if (provider === 'opencode') {
         const opencode = a as unknown as OpencodeSubscriptionAccount;

@@ -5,7 +5,7 @@
  *   {"type":"end","stopReason":"EndTurn","sessionId":"…","requestId":"…"}
  */
 
-import { describe, it } from 'node:test';
+import { describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 
 import { createGrokParser } from '../../src/providers/grok-parse.ts';

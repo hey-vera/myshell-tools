@@ -4,7 +4,7 @@
  * Run with: node --experimental-strip-types --test
  */
 
-import { describe, it } from 'node:test';
+import { describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 
 import { prefixForRunningEntry } from '../../src/infra/update-prefix.ts';

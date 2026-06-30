@@ -3,7 +3,7 @@
  * Run with: node --import ./test/register.mjs --test "test/unit/goal-steward.test.ts"
  */
 
-import { describe, it } from 'node:test';
+import { describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 
 import type { Goal, GoalVerdict } from '../../src/core/goal-todo.ts';

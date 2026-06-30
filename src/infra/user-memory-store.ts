@@ -32,7 +32,7 @@ import { promisify } from 'node:util';
 
 import type { Clock } from '../core/types.js';
 import { atomicWrite, withLock } from './atomic.js';
-import { defaultStateHome } from './state-dir.js';
+import { defaultStateLayout, resolveStateLayout, type AppStateLayout } from './state-layout.js';
 import {
   decideConsolidation,
   importanceFor,
@@ -47,26 +47,43 @@ import {
 const execFileAsync = promisify(execFile);
 
 // ---------------------------------------------------------------------------
+// Layout resolution (homeDir compat bridge)
+// ---------------------------------------------------------------------------
+
+function resolveLayout(homeDir?: string, layout?: AppStateLayout): AppStateLayout {
+  if (layout) return layout;
+  if (homeDir !== undefined) {
+    return resolveStateLayout({
+      env: {},
+      platform: 'linux',
+      cwd: homeDir,
+      homeDir,
+    });
+  }
+  return defaultStateLayout();
+}
+
+// ---------------------------------------------------------------------------
 // Path helpers
 // ---------------------------------------------------------------------------
 
-function getMemoryDir(homeDir: string): string {
-  return join(homeDir, '.myshell-tools', 'memory');
+function getMemoryDir(l: AppStateLayout): string {
+  return l.paths.memoryDir;
 }
-function getFactsDir(homeDir: string): string {
-  return join(getMemoryDir(homeDir), 'facts');
+function getFactsDir(l: AppStateLayout): string {
+  return join(getMemoryDir(l), 'facts');
 }
-function getIndexPath(homeDir: string): string {
-  return join(getMemoryDir(homeDir), 'index.json');
+function getIndexPath(l: AppStateLayout): string {
+  return join(getMemoryDir(l), 'index.json');
 }
-function getCorruptIndexPath(homeDir: string): string {
-  return join(getMemoryDir(homeDir), 'index.json.corrupt');
+function getCorruptIndexPath(l: AppStateLayout): string {
+  return join(getMemoryDir(l), 'index.json.corrupt');
 }
-function getIndexLockPath(homeDir: string): string {
-  return join(getMemoryDir(homeDir), 'index.json.lock');
+function getIndexLockPath(l: AppStateLayout): string {
+  return join(getMemoryDir(l), 'index.json.lock');
 }
-function getAuditPath(homeDir: string): string {
-  return join(getMemoryDir(homeDir), 'audit.jsonl');
+function getAuditPath(l: AppStateLayout): string {
+  return join(getMemoryDir(l), 'audit.jsonl');
 }
 
 /** Path-traversal guard (§10): only `mem_<alnum>` ids ever touch the filesystem. */
@@ -74,11 +91,11 @@ const VALID_ID_RE = /^mem_[A-Za-z0-9]+$/;
 function isValidId(id: string): boolean {
   return typeof id === 'string' && VALID_ID_RE.test(id);
 }
-function getFactPath(homeDir: string, id: string): string {
+function getFactPath(l: AppStateLayout, id: string): string {
   if (!isValidId(id)) {
     throw new InvalidFactIdError(id);
   }
-  return join(getFactsDir(homeDir), `${id}.json`);
+  return join(getFactsDir(l), `${id}.json`);
 }
 
 export class InvalidFactIdError extends Error {
@@ -105,16 +122,16 @@ interface AuditEntry {
 
 const AUDIT_MAX_LINES = 5000;
 
-async function appendAudit(homeDir: string, entry: AuditEntry): Promise<void> {
+async function appendAudit(l: AppStateLayout, entry: AuditEntry): Promise<void> {
   // Caller MUST hold the index lock for ordered appends (RC-4 — audit is inside
   // the critical section). Rotation: when the log exceeds the line cap, keep the
   // newest half (it is a log, not a source of truth).
-  const path = getAuditPath(homeDir);
-  await rotateAuditIfNeeded(homeDir, path);
+  const path = getAuditPath(l);
+  await rotateAuditIfNeeded(l, path);
   await appendFile(path, JSON.stringify(entry) + '\n', 'utf8');
 }
 
-async function rotateAuditIfNeeded(homeDir: string, path: string): Promise<void> {
+async function rotateAuditIfNeeded(l: AppStateLayout, path: string): Promise<void> {
   try {
     const raw = await readFile(path, 'utf8');
     const lines = raw.split('\n').filter((l) => l.trim().length > 0);
@@ -183,13 +200,13 @@ function facetOf(f: UserMemoryFact): FactFacet {
   };
 }
 
-async function ensureDirs(homeDir: string): Promise<void> {
-  await mkdir(getFactsDir(homeDir), { recursive: true });
+async function ensureDirs(l: AppStateLayout): Promise<void> {
+  await mkdir(getFactsDir(l), { recursive: true });
 }
 
-async function readIndexFile(homeDir: string): Promise<IndexReadResult> {
+async function readIndexFile(l: AppStateLayout): Promise<IndexReadResult> {
   try {
-    const raw = await readFile(getIndexPath(homeDir), 'utf8');
+    const raw = await readFile(getIndexPath(l), 'utf8');
     const parsed = JSON.parse(raw) as unknown;
     if (parsed === null || typeof parsed !== 'object' || !Array.isArray((parsed as MemoryIndex).facts)) {
       return { kind: 'corrupt', reason: 'index.json missing facts array' };
@@ -205,15 +222,15 @@ async function readIndexFile(homeDir: string): Promise<IndexReadResult> {
   }
 }
 
-async function writeIndex(homeDir: string, facets: FactFacet[]): Promise<void> {
+async function writeIndex(l: AppStateLayout, facets: FactFacet[]): Promise<void> {
   const index: MemoryIndex = { version: 1, facts: facets };
-  await atomicWrite(getIndexPath(homeDir), JSON.stringify(index, null, 2), 0o600);
+  await atomicWrite(getIndexPath(l), JSON.stringify(index, null, 2), 0o600);
 }
 
-async function preserveCorruptIndex(homeDir: string): Promise<string> {
-  const corruptPath = getCorruptIndexPath(homeDir);
+async function preserveCorruptIndex(l: AppStateLayout): Promise<string> {
+  const corruptPath = getCorruptIndexPath(l);
   try {
-    await rename(getIndexPath(homeDir), corruptPath);
+    await rename(getIndexPath(l), corruptPath);
   } catch (err) {
     const nodeErr = err as NodeJS.ErrnoException;
     if (nodeErr.code !== 'ENOENT') throw err;
@@ -221,9 +238,9 @@ async function preserveCorruptIndex(homeDir: string): Promise<string> {
   return corruptPath;
 }
 
-async function readFactFile(homeDir: string, id: string): Promise<UserMemoryFact | null> {
+async function readFactFile(l: AppStateLayout, id: string): Promise<UserMemoryFact | null> {
   try {
-    const raw = await readFile(getFactPath(homeDir, id), 'utf8');
+    const raw = await readFile(getFactPath(l, id), 'utf8');
     const parsed = JSON.parse(raw) as UserMemoryFact;
     return parsed;
   } catch {
@@ -232,8 +249,8 @@ async function readFactFile(homeDir: string, id: string): Promise<UserMemoryFact
 }
 
 /** Rebuild the index from `facts/*.json` (the facts are authoritative, §2). */
-async function rebuildIndexFromFacts(homeDir: string): Promise<FactFacet[]> {
-  const dir = getFactsDir(homeDir);
+async function rebuildIndexFromFacts(l: AppStateLayout): Promise<FactFacet[]> {
+  const dir = getFactsDir(l);
   let files: string[] = [];
   try {
     files = (await readdir(dir, { withFileTypes: true }))
@@ -257,10 +274,10 @@ async function rebuildIndexFromFacts(homeDir: string): Promise<FactFacet[]> {
   return facets;
 }
 
-async function recoverIndex(homeDir: string, reason: string, onWarning?: StoreWarning): Promise<FactFacet[]> {
-  const corruptPath = await preserveCorruptIndex(homeDir);
-  const rebuilt = await rebuildIndexFromFacts(homeDir);
-  await writeIndex(homeDir, rebuilt);
+async function recoverIndex(l: AppStateLayout, reason: string, onWarning?: StoreWarning): Promise<FactFacet[]> {
+  const corruptPath = await preserveCorruptIndex(l);
+  const rebuilt = await rebuildIndexFromFacts(l);
+  await writeIndex(l, rebuilt);
   onWarning?.(
     `Recovered memory index (${reason}); rebuilt ${rebuilt.length} fact(s), preserved original at ${corruptPath}.`,
   );
@@ -268,11 +285,11 @@ async function recoverIndex(homeDir: string, reason: string, onWarning?: StoreWa
 }
 
 /** Read the index INSIDE the lock (RC-4). Recovers a missing/corrupt index. */
-async function readIndexLocked(homeDir: string, onWarning?: StoreWarning): Promise<FactFacet[]> {
-  const result = await readIndexFile(homeDir);
+async function readIndexLocked(l: AppStateLayout, onWarning?: StoreWarning): Promise<FactFacet[]> {
+  const result = await readIndexFile(l);
   if (result.kind === 'ok') return result.index;
   if (result.kind === 'absent') return [];
-  return recoverIndex(homeDir, result.reason, onWarning);
+  return recoverIndex(l, result.reason, onWarning);
 }
 
 // ---------------------------------------------------------------------------
@@ -392,29 +409,30 @@ export interface UserMemoryStore {
 
 export function createFileUserMemoryStore(opts: {
   homeDir?: string;
+  layout?: AppStateLayout;
   clock: Clock;
   onWarning?: StoreWarning;
 }): UserMemoryStore {
-  const home = opts.homeDir ?? defaultStateHome();
+  const l = resolveLayout(opts.homeDir, opts.layout);
   const { clock } = opts;
   const onWarning = opts.onWarning;
 
   async function persistFact(fact: UserMemoryFact): Promise<void> {
-    await atomicWrite(getFactPath(home, fact.id), JSON.stringify(fact, null, 2), 0o600);
+    await atomicWrite(getFactPath(l, fact.id), JSON.stringify(fact, null, 2), 0o600);
   }
 
   return {
     async listFacets(): Promise<FactFacet[]> {
-      await ensureDirs(home);
-      return withLock(getIndexLockPath(home), async () => {
-        const index = await readIndexLocked(home, onWarning);
+      await ensureDirs(l);
+      return withLock(getIndexLockPath(l), async () => {
+        const index = await readIndexLocked(l, onWarning);
         return index.filter((f) => !f.archived && f.validTo === null && f.supersededBy === null);
       });
     },
 
     async listAll(scope): Promise<UserMemoryFact[]> {
-      await ensureDirs(home);
-      const facets = await withLock(getIndexLockPath(home), async () => readIndexLocked(home, onWarning));
+      await ensureDirs(l);
+      const facets = await withLock(getIndexLockPath(l), async () => readIndexLocked(l, onWarning));
       const facts: UserMemoryFact[] = [];
       for (const facet of facets) {
         if (scope !== undefined) {
@@ -422,7 +440,7 @@ export function createFileUserMemoryStore(opts: {
           if (scope.scope === 'project' && scope.projectKey !== undefined && facet.projectKey !== scope.projectKey)
             continue;
         }
-        const f = await readFactFile(home, facet.id);
+        const f = await readFactFile(l, facet.id);
         if (f !== null) facts.push(f);
       }
       return facts;
@@ -430,21 +448,21 @@ export function createFileUserMemoryStore(opts: {
 
     async get(id): Promise<UserMemoryFact | null> {
       if (!isValidId(id)) return null;
-      return readFactFile(home, id);
+      return readFactFile(l, id);
     },
 
     async commit(c, commitOpts): Promise<CommitResult> {
-      await ensureDirs(home);
+      await ensureDirs(l);
       const projectKey = commitOpts?.projectKey ?? c.projectKey ?? null;
       const cand: Candidate = { ...c, projectKey: c.scope === 'project' ? projectKey : null };
 
-      return withLock(getIndexLockPath(home), async () => {
+      return withLock(getIndexLockPath(l), async () => {
         // RC-4: read the index INSIDE the lock, then load the FULL facts the
         // decision needs, decide, write, and append the audit — all here.
-        const facets = await readIndexLocked(home, onWarning);
+        const facets = await readIndexLocked(l, onWarning);
         const existing: UserMemoryFact[] = [];
         for (const facet of facets) {
-          const f = await readFactFile(home, facet.id);
+          const f = await readFactFile(l, facet.id);
           if (f !== null) existing.push(f);
         }
 
@@ -458,8 +476,8 @@ export function createFileUserMemoryStore(opts: {
             const fact = newFactFromCandidate(cand, subject, id, now);
             await persistFact(fact);
             const next = [...facets, facetOf(fact)];
-            await writeIndex(home, next);
-            await appendAudit(home, auditRow('ADD', fact));
+            await writeIndex(l, next);
+            await appendAudit(l, auditRow('ADD', fact));
             return { op: 'ADD', fact };
           }
           case 'UPDATE': {
@@ -490,8 +508,8 @@ export function createFileUserMemoryStore(opts: {
             };
             await persistFact(updated);
             const next = facets.map((f) => (f.id === updated.id ? facetOf(updated) : f));
-            await writeIndex(home, next);
-            await appendAudit(home, {
+            await writeIndex(l, next);
+            await appendAudit(l, {
               ...auditRow('UPDATE', updated),
               ...(decision.snapshotPrior ? { priorText: target.text } : {}),
             });
@@ -514,8 +532,8 @@ export function createFileUserMemoryStore(opts: {
             const next = facets
               .map((f) => (f.id === invalidated.id ? facetOf(invalidated) : f))
               .concat(facetOf(replacement));
-            await writeIndex(home, next);
-            await appendAudit(home, { ...auditRow('SUPERSEDE', replacement), priorText: target.text });
+            await writeIndex(l, next);
+            await appendAudit(l, { ...auditRow('SUPERSEDE', replacement), priorText: target.text });
             return { op: 'SUPERSEDE', fact: replacement };
           }
           case 'NOOP':
@@ -532,7 +550,7 @@ export function createFileUserMemoryStore(opts: {
                 };
                 await persistFact(touched);
                 const next = facets.map((f) => (f.id === touched.id ? facetOf(touched) : f));
-                await writeIndex(home, next);
+                await writeIndex(l, next);
                 return { op: 'NOOP', fact: touched };
               }
             }
@@ -544,20 +562,20 @@ export function createFileUserMemoryStore(opts: {
 
     async forget(id): Promise<boolean> {
       if (!isValidId(id)) return false;
-      await ensureDirs(home);
-      return withLock(getIndexLockPath(home), async () => {
-        const facets = await readIndexLocked(home, onWarning);
+      await ensureDirs(l);
+      return withLock(getIndexLockPath(l), async () => {
+        const facets = await readIndexLocked(l, onWarning);
         const facet = facets.find((f) => f.id === id);
         try {
-          await unlink(getFactPath(home, id));
+          await unlink(getFactPath(l, id));
         } catch {
           // already gone — still purge from the index below
         }
         const next = facets.filter((f) => f.id !== id);
         if (next.length === facets.length && facet === undefined) return false;
-        await writeIndex(home, next);
+        await writeIndex(l, next);
         if (facet !== undefined) {
-          await appendAudit(home, {
+          await appendAudit(l, {
             ts: clock.isoNow(),
             op: 'FORGET',
             id,
@@ -573,18 +591,18 @@ export function createFileUserMemoryStore(opts: {
 
     async markUsed(ids): Promise<void> {
       if (ids.length === 0) return;
-      await ensureDirs(home);
+      await ensureDirs(l);
       const idSet = new Set(ids.filter(isValidId));
       if (idSet.size === 0) return;
-      await withLock(getIndexLockPath(home), async () => {
-        const facets = await readIndexLocked(home, onWarning);
+      await withLock(getIndexLockPath(l), async () => {
+        const facets = await readIndexLocked(l, onWarning);
         const now = clock.isoNow();
         let changed = false;
         const nextFacets = [...facets];
         for (let i = 0; i < nextFacets.length; i++) {
           const facet = nextFacets[i];
           if (facet === undefined || !idSet.has(facet.id)) continue;
-          const fact = await readFactFile(home, facet.id);
+          const fact = await readFactFile(l, facet.id);
           if (fact === null) continue;
           const touched: UserMemoryFact = {
             ...fact,
@@ -595,20 +613,20 @@ export function createFileUserMemoryStore(opts: {
           nextFacets[i] = facetOf(touched);
           changed = true;
         }
-        if (changed) await writeIndex(home, nextFacets);
+        if (changed) await writeIndex(l, nextFacets);
       });
     },
 
     async sweepDecay(sweepOpts): Promise<string[]> {
-      await ensureDirs(home);
+      await ensureDirs(l);
       const base = sweepOpts?.base ?? 90;
       const max = sweepOpts?.max ?? 200;
       const now = clock.isoNow();
-      return withLock(getIndexLockPath(home), async () => {
-        const facets = await readIndexLocked(home, onWarning);
+      return withLock(getIndexLockPath(l), async () => {
+        const facets = await readIndexLocked(l, onWarning);
         const facts: UserMemoryFact[] = [];
         for (const facet of facets) {
-          const f = await readFactFile(home, facet.id);
+          const f = await readFactFile(l, facet.id);
           if (f !== null) facts.push(f);
         }
         const toArchive = new Set<string>();
@@ -630,7 +648,7 @@ export function createFileUserMemoryStore(opts: {
             nextFacets.push(facetOf(f));
           }
         }
-        await writeIndex(home, nextFacets);
+        await writeIndex(l, nextFacets);
         return [...toArchive];
       });
     },

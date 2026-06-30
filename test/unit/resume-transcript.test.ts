@@ -11,7 +11,7 @@
  * Run with: node --experimental-strip-types --test test/unit/resume-transcript.test.ts
  */
 
-import { describe, it } from 'node:test';
+import { describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 import { renderResumeTranscript } from '../../src/interface/render.ts';
 import type { ResumeMessage } from '../../src/interface/render.ts';

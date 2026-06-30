@@ -7,7 +7,7 @@
  * cycle still only engages on EXPLICIT activation with a non-empty roadmap.)
  */
 
-import { describe, it } from 'node:test';
+import { describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 import { managerCycleEnabled } from '../../src/interface/ui/manager-flag.ts';
 

@@ -2,7 +2,7 @@
  * test/unit/work-call-blocked-state.test.ts — blocked-state terminal tests
  * for blocked record construction and validation.
  */
-import { describe, it } from 'node:test';
+import { describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 
 import { buildBlockedRecord, isBlockedRecord, type BlockedRecord } from '../../src/core/blocked.ts';

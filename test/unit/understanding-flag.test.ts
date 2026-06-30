@@ -8,7 +8,7 @@
  * the planner ungrounded as the legacy path.
  */
 
-import { describe, it } from 'node:test';
+import { describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 import { understandingEnabled } from '../../src/interface/ui/understanding-flag.ts';
 

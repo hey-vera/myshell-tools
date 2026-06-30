@@ -12,7 +12,7 @@
  * does) makes the child read the real value first. This test proves both halves.
  */
 
-import { describe, it } from 'node:test';
+import { describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 

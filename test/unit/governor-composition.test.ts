@@ -18,7 +18,7 @@
  * would hide.
  */
 
-import { describe, it } from 'node:test';
+import { describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 
 import { allocate, type AllocateInput, type Lever, type TaskShape } from '../../src/core/governor.ts';

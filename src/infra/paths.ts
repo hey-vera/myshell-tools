@@ -1,59 +1,62 @@
 /**
  * src/infra/paths.ts — Pure path helpers for myshell-tools's filesystem layout.
  *
- * All functions are pure path joins (no fs I/O). The canonical layout is:
- *   <cwd>/
- *     .myshell-tools/
- *       sessions/
- *         current.jsonl   ← active session log
- *       ledger.jsonl       ← cost/usage ledger
+ * All functions delegate to projectStateDirs from state-layout so project-scoped
+ * state lands under <stateRoot>/projects/<projectKey>/... instead of in the
+ * working directory.
  */
 
-import { join } from 'node:path';
+import { defaultStateLayout, projectStateDirs } from './state-layout.js';
 
-/**
- * Returns the path to the `.myshell-tools` directory inside the given working dir.
- */
-export function getStateDir(cwd: string): string {
-  return join(cwd, '.myshell-tools');
+function dirs(cwd: string) {
+  return projectStateDirs(defaultStateLayout(), cwd);
 }
 
 /**
- * Returns the path to the `sessions` subdirectory inside `.myshell-tools`.
+ * Returns the root project state directory under the global state home.
+ */
+export function getStateDir(cwd: string): string {
+  return dirs(cwd).root;
+}
+
+/**
+ * Returns the path to the `sessions` subdirectory inside project state.
  */
 export function getSessionsDir(cwd: string): string {
-  return join(getStateDir(cwd), 'sessions');
+  return dirs(cwd).sessionsDir;
 }
 
 /**
  * Returns the path to the current session JSONL file.
- * Path: <cwd>/.myshell-tools/sessions/current.jsonl
  */
 export function getSessionFile(cwd: string): string {
-  return join(getSessionsDir(cwd), 'current.jsonl');
+  return dirs(cwd).sessionFile;
 }
 
 /**
  * Returns the path to the cost/usage ledger JSONL file.
- * Path: <cwd>/.myshell-tools/ledger.jsonl
  */
 export function getLedgerFile(cwd: string): string {
-  return join(getStateDir(cwd), 'ledger.jsonl');
+  return dirs(cwd).ledgerFile;
 }
 
 /**
- * Returns the path to the eval-results JSONL file (Phase 0, the ruler). One
- * timestamped RunResult per line, append-only, so runs can be compared over time.
- * Path: <cwd>/.myshell-tools/eval-results.jsonl
+ * Returns the path to the eval-results JSONL file (Phase 0, the ruler).
  */
 export function getEvalResultsFile(cwd: string): string {
-  return join(getStateDir(cwd), 'eval-results.jsonl');
+  return dirs(cwd).evalResultsFile;
 }
 
 /**
  * Returns the path to the intent-versions JSONL file.
- * Path: <cwd>/.myshell-tools/intent-versions.jsonl
  */
 export function getIntentVersionsFile(cwd: string): string {
-  return join(getStateDir(cwd), 'intent-versions.jsonl');
+  return dirs(cwd).intentVersionsFile;
+}
+
+/**
+ * Returns the path to the command-audit JSONL file.
+ */
+export function getCommandAuditFile(cwd: string): string {
+  return dirs(cwd).commandAuditFile;
 }

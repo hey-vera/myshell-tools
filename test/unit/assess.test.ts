@@ -3,7 +3,7 @@
  * Run with: node --experimental-strip-types --test test/unit/assess.test.ts
  */
 
-import { describe, it } from 'node:test';
+import { describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 import { assess } from '../../src/core/assess.ts';
 

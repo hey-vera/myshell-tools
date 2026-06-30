@@ -76,7 +76,7 @@
  * the wording of a line, this harness would fail — that is the point.
  */
 
-import { describe, it } from 'node:test';
+import { describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 import { renderStream, type OutputSink } from '../../src/interface/render.ts';
 import { renderStreamInk } from '../../src/interface/ui/run-stream.ts';

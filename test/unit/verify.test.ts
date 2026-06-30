@@ -14,7 +14,7 @@
  *   - the receipt NEVER reads 'passing' without green tests; 'reviewed' != 'passing'.
  */
 
-import { describe, it } from 'node:test';
+import { describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 
 import {

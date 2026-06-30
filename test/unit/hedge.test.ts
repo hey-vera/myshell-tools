@@ -10,7 +10,7 @@
  * Run with: node --experimental-strip-types --test test/unit/hedge.test.ts
  */
 
-import { describe, it } from 'node:test';
+import { describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 import { planHedge, runHedged, type HedgePlan } from '../../src/core/hedge.ts';
 import { DEFAULT_POLICY } from '../../src/core/policy.ts';

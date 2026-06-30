@@ -8,7 +8,7 @@
  * real npm/login/detect subprocesses are ever spawned.
  */
 
-import { describe, it } from 'node:test';
+import { describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 import type { EnvironmentStatus, ProviderStatus } from '../../src/providers/detect.ts';
 import type { DoctorExtras } from '../../src/commands/doctor.ts';

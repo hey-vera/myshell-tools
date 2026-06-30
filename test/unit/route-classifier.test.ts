@@ -5,7 +5,7 @@
  * routing quality (which can only be judged against a real model).
  */
 
-import { describe, it, beforeEach } from 'node:test';
+import { beforeEach, describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 
 import { makeRouteClassifier } from '../../src/core/route-classifier.ts';

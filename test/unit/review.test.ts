@@ -3,7 +3,7 @@
  * Run with: node --import ./test/register.mjs --test "test/unit/review.test.ts"
  */
 
-import { describe, it } from 'node:test';
+import { describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 import { parseReviewVerdict, buildReviewPrompt } from '../../src/core/review.ts';
 

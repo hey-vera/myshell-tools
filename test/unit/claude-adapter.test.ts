@@ -13,7 +13,7 @@
  * `claude`. The adapter appends its own argv (`-p …`) which the stub ignores.
  */
 
-import { describe, it, before, after } from 'node:test';
+import { afterAll, beforeAll, describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 import { mkdtemp, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -55,7 +55,7 @@ let stubPath: string;
 let noParseableOutputStubPath: string;
 let terminalThenExtraStubPath: string;
 
-before(async () => {
+beforeAll(async () => {
   dir = await mkdtemp(join(tmpdir(), 'claude-adapter-'));
   stubPath = join(dir, 'sleeper.mjs');
   noParseableOutputStubPath = join(dir, 'no-parseable-output.mjs');
@@ -65,7 +65,7 @@ before(async () => {
   await writeFile(terminalThenExtraStubPath, TERMINAL_THEN_EXTRA_SOURCE, { mode: 0o755 });
 });
 
-after(async () => {
+afterAll(async () => {
   await rm(dir, { recursive: true, force: true });
 });
 

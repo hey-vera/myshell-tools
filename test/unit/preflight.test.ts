@@ -10,7 +10,7 @@
  * calls these yet, so they change ZERO live behavior.
  */
 
-import { describe, it } from 'node:test';
+import { describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 
 import { combineRoute, unifiedPreflightApplies } from '../../src/core/router.ts';

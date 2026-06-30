@@ -6,7 +6,7 @@
  * restores the byte-for-byte legacy post-turn slot.
  */
 
-import { describe, it } from 'node:test';
+import { describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 import { autoStageEnabled } from '../../src/interface/ui/auto-goal-flag.ts';
 

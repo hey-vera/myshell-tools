@@ -3,7 +3,7 @@
  * completion engine (src/interface/menu-completion.ts). Filesystem-free: only the
  * pure slash-name / classification seams are exercised here.
  */
-import test from 'node:test';
+import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import {
   completeSlash,

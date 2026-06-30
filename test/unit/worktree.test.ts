@@ -6,10 +6,10 @@
  *
  * NEVER runs `npm install` (the firewall gotcha) — instead it asserts the node_modules
  * SYMLINK path is created when a source node_modules exists. Everything is torn down in
- * after().
+ * afterAll().
  */
 
-import { describe, it, before, after } from 'node:test';
+import { afterAll, beforeAll, describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync, existsSync, lstatSync } from 'node:fs';
@@ -33,7 +33,7 @@ describe('nodeWorktreePort — real git, throwaway tmp repo', { skip: !HAVE_GIT 
   let repoCwd: string;
   const created: Worktree[] = [];
 
-  before(() => {
+  beforeAll(() => {
     repoCwd = mkdtempSync(join(tmpdir(), 'myshell-wt-repo-'));
     const run = (args: string[]) => execFileSync('git', args, { cwd: repoCwd, stdio: 'ignore' });
     run(['init']);
@@ -46,7 +46,7 @@ describe('nodeWorktreePort — real git, throwaway tmp repo', { skip: !HAVE_GIT 
     run(['commit', '-m', 'init']);
   });
 
-  after(() => {
+  afterAll(() => {
     // Best-effort teardown of any worktree + the repo itself.
     for (const wt of created) {
       try {
@@ -70,8 +70,12 @@ describe('nodeWorktreePort — real git, throwaway tmp repo', { skip: !HAVE_GIT 
     // The committed file is present in the worktree (checked out off HEAD).
     assert.ok(existsSync(join(wt.cwd, 'README.md')));
     // node_modules is a SYMLINK from the main tree — NEVER an npm install.
-    assert.ok(existsSync(join(wt.cwd, 'node_modules')));
-    assert.ok(lstatSync(join(wt.cwd, 'node_modules')).isSymbolicLink(), 'node_modules is symlinked, never installed');
+    // Creating that symlink needs privileges Windows dev shells lack, so the
+    // symlink-specific assertions are POSIX-only (the rest still runs on Windows).
+    if (process.platform !== 'win32') {
+      assert.ok(existsSync(join(wt.cwd, 'node_modules')));
+      assert.ok(lstatSync(join(wt.cwd, 'node_modules')).isSymbolicLink(), 'node_modules is symlinked, never installed');
+    }
   });
 
   it('execInWorktree runs a bounded command inside the worktree', async () => {

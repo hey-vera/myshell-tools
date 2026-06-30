@@ -18,7 +18,7 @@
  * All deps faked in-memory — no live model.
  */
 
-import { describe, it } from 'node:test';
+import { describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 
 import {

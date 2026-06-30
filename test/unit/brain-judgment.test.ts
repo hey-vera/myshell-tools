@@ -10,7 +10,7 @@
  * property (no grounded reason ⇒ no push_back; silence is correct).
  */
 
-import { describe, it } from 'node:test';
+import { describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 import {
   assessConfidence,

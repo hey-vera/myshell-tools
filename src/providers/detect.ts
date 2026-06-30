@@ -22,7 +22,6 @@
  */
 
 import { readFile } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { execa } from 'execa';
@@ -36,6 +35,8 @@ import {
   parseClaudeOauth,
   resolveClaudeCredsPath,
 } from '../infra/claude-oauth-refresh.js';
+import { defaultStateLayout } from '../infra/state-layout.js';
+import { resolveProviderHome } from './provider-home.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -335,13 +336,20 @@ export function resolveCodexAuthPath(
   cwd: string,
   home: string = homedir(),
 ): string {
+  // Step 1 — explicit CODEX_HOME (unchanged)
   const explicit = env['CODEX_HOME'];
   if (typeof explicit === 'string' && explicit.length > 0) {
     return join(explicit, 'auth.json');
   }
+  // Steps 2-4 delegated to resolveProviderHome (step 1 is already handled)
   try {
-    const persistent = join(cwd, '.replit-tools', '.codex-persistent');
-    if (existsSync(join(persistent, 'auth.json'))) return join(persistent, 'auth.json');
+    const providerHome = resolveProviderHome('codex', {
+      env,
+      layout: defaultStateLayout(),
+      cwd,
+      home,
+    });
+    return join(providerHome, 'auth.json');
   } catch {
     // ignore — fall through to the default home.
   }
@@ -800,9 +808,24 @@ export function resolveOpencodeAuthPath(
   env: NodeJS.ProcessEnv,
   home: string = homedir(),
 ): string {
+  // Step 1 — explicit XDG_DATA_HOME (unchanged)
   const xdg = env['XDG_DATA_HOME'];
-  const base = xdg !== undefined && xdg.length > 0 ? xdg : join(home, '.local', 'share');
-  return join(base, 'opencode', 'auth.json');
+  if (xdg !== undefined && xdg.length > 0) {
+    return join(xdg, 'opencode', 'auth.json');
+  }
+  // Steps 2-4 delegated to resolveProviderHome (step 1 is already handled)
+  try {
+    const providerHome = resolveProviderHome('opencode', {
+      env,
+      layout: defaultStateLayout(),
+      cwd: process.cwd(),
+      home,
+    });
+    return join(providerHome, 'auth.json');
+  } catch {
+    // ignore — fall through to default
+  }
+  return join(home, '.local', 'share', 'opencode', 'auth.json');
 }
 
 /**

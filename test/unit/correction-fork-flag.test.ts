@@ -1,4 +1,4 @@
-import { describe, it } from 'node:test';
+import { describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 
 import { correctionForkV1Enabled } from '../../src/interface/ui/correction-fork-flag.ts';

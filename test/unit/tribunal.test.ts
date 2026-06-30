@@ -14,7 +14,7 @@
  *   - worktrees are ALWAYS torn down (the finally-safe teardown).
  */
 
-import { describe, it } from 'node:test';
+import { describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 import {
   planTribunal,

@@ -12,7 +12,7 @@
  * All deps faked — no network, no fs, no child process.
  */
 
-import { describe, it } from 'node:test';
+import { describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 
 import { orchestrate } from '../../src/core/orchestrate.ts';

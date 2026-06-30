@@ -4,7 +4,7 @@
  * FALSE, rollback forces off, never throws. Mirrors the verify/governor flag shape.
  */
 
-import { describe, it } from 'node:test';
+import { describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 import { roleMappingEnabled } from '../../src/interface/ui/role-flag.ts';
 

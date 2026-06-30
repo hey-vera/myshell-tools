@@ -3,7 +3,7 @@
  * Run with: node --experimental-strip-types --test test/unit
  */
 
-import { describe, it } from 'node:test';
+import { describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 import {
   PRICING_TABLE,

@@ -6,26 +6,22 @@
  */
 
 import { mkdir } from 'node:fs/promises';
-import { join } from 'node:path';
 import type { CommandAuditEvent } from '../core/command-gate.js';
 import { atomicAppendJSONL } from './atomic.js';
-import { getStateDir } from './paths.js';
+import { defaultStateLayout, projectStateDirs } from './state-layout.js';
 
 interface CommandAuditRecorder {
   record(event: CommandAuditEvent): Promise<void>;
 }
 
-function getCommandAuditFile(cwd: string): string {
-  return join(getStateDir(cwd), 'command-audit.jsonl');
-}
-
 export function createCommandAuditRecorder(opts: { readonly cwd: string }): CommandAuditRecorder {
   const { cwd } = opts;
+  const file = projectStateDirs(defaultStateLayout(), cwd).commandAuditFile;
 
   return {
     async record(event: CommandAuditEvent): Promise<void> {
-      await mkdir(getStateDir(cwd), { recursive: true });
-      await atomicAppendJSONL(getCommandAuditFile(cwd), event);
+      await mkdir(projectStateDirs(defaultStateLayout(), cwd).root, { recursive: true });
+      await atomicAppendJSONL(file, event);
     },
   };
 }

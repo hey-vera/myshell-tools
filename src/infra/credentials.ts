@@ -18,9 +18,9 @@
 
 import { mkdir, readFile, chmod } from 'node:fs/promises';
 import { existsSync, mkdirSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
 import { atomicWrite } from './atomic.js';
-import { defaultStateHome, isReplit } from './state-dir.js';
+import { defaultStateLayout, resolveStateLayout, isReplit, type AppStateLayout } from './state-layout.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -88,15 +88,28 @@ export function claudeTokenStatus(
 }
 
 // ---------------------------------------------------------------------------
+// Layout resolution (homeDir compat bridge)
+// ---------------------------------------------------------------------------
+
+function resolveLayout(homeDir?: string, layout?: AppStateLayout): AppStateLayout {
+  if (layout) return layout;
+  if (homeDir !== undefined) {
+    return resolveStateLayout({
+      env: {},
+      platform: 'linux',
+      cwd: homeDir,
+      homeDir,
+    });
+  }
+  return defaultStateLayout();
+}
+
+// ---------------------------------------------------------------------------
 // Path helpers (pure)
 // ---------------------------------------------------------------------------
 
-function getCredentialsDir(home: string): string {
-  return join(home, '.myshell-tools');
-}
-
-function getCredentialsPath(home: string): string {
-  return join(getCredentialsDir(home), 'credentials.json');
+function getCredentialsPath(l: AppStateLayout): string {
+  return l.paths.credentialsFile;
 }
 
 function replitClaudeConfigDir(cwd: string): string {
@@ -154,10 +167,10 @@ function parseCredentials(raw: string): Credentials {
 /**
  * Load stored credentials. Never throws — missing or corrupt files return `{}`.
  */
-export async function loadCredentials(homeDir?: string): Promise<Credentials> {
-  const home = homeDir ?? defaultStateHome();
+export async function loadCredentials(homeDir?: string, layout?: AppStateLayout): Promise<Credentials> {
+  const l = resolveLayout(homeDir, layout);
   try {
-    const raw = await readFile(getCredentialsPath(home), 'utf8');
+    const raw = await readFile(getCredentialsPath(l), 'utf8');
     return parseCredentials(raw);
   } catch {
     return {};
@@ -171,9 +184,9 @@ export async function loadCredentials(homeDir?: string): Promise<Credentials> {
  * This is a thin convenience wrapper over `loadCredentials` that returns the
  * token string directly so callers don't need to destructure `Credentials`.
  */
-export async function loadClaudeToken(homeDir?: string): Promise<string | null> {
+export async function loadClaudeToken(homeDir?: string, layout?: AppStateLayout): Promise<string | null> {
   try {
-    const creds = await loadCredentials(homeDir);
+    const creds = await loadCredentials(homeDir, layout);
     return creds.claudeOauthToken ?? null;
   } catch {
     return null;
@@ -329,17 +342,16 @@ export function claudeEnv(
  * Records `claudeTokenCapturedAt` (ISO timestamp) so the token's age can be
  * tracked for expiry warnings.
  */
-export async function saveClaudeToken(token: string, homeDir?: string): Promise<void> {
-  const home = homeDir ?? defaultStateHome();
-  const dir = getCredentialsDir(home);
-  const path = getCredentialsPath(home);
+export async function saveClaudeToken(token: string, homeDir?: string, layout?: AppStateLayout): Promise<void> {
+  const l = resolveLayout(homeDir, layout);
+  const path = getCredentialsPath(l);
 
-  // Create the directory with restrictive permissions (0o700) so it is never
+  // Create directory with restrictive permissions (0o700) so it is never
   // world-readable.  recursive:true is a no-op when it already exists.
-  await mkdir(dir, { recursive: true, mode: 0o700 });
+  await mkdir(dirname(path), { recursive: true, mode: 0o700 });
 
   // Load existing credentials so we only replace the token key, preserving others.
-  const existing = await loadCredentials(homeDir);
+  const existing = await loadCredentials(homeDir, layout);
   const updated: Credentials = {
     ...existing,
     claudeOauthToken: token,
@@ -364,9 +376,9 @@ export async function saveClaudeToken(token: string, homeDir?: string): Promise<
  * Returns `undefined` when no token has been saved, or when the stored value
  * is missing from an older credential file. Never throws.
  */
-export async function loadClaudeTokenCapturedAt(homeDir?: string): Promise<string | undefined> {
+export async function loadClaudeTokenCapturedAt(homeDir?: string, layout?: AppStateLayout): Promise<string | undefined> {
   try {
-    const creds = await loadCredentials(homeDir);
+    const creds = await loadCredentials(homeDir, layout);
     return creds.claudeTokenCapturedAt;
   } catch {
     return undefined;
@@ -378,13 +390,12 @@ export async function loadClaudeTokenCapturedAt(homeDir?: string): Promise<strin
  * token key so any future credential fields are preserved.
  * Never throws.
  */
-export async function clearClaudeToken(homeDir?: string): Promise<void> {
+export async function clearClaudeToken(homeDir?: string, layout?: AppStateLayout): Promise<void> {
   try {
-    const home = homeDir ?? defaultStateHome();
-    const dir = getCredentialsDir(home);
-    const path = getCredentialsPath(home);
+    const l = resolveLayout(homeDir, layout);
+    const path = getCredentialsPath(l);
 
-    await mkdir(dir, { recursive: true });
+    await mkdir(dirname(path), { recursive: true });
 
     // Load the raw file to preserve unknown future keys.
     let rawObj: Record<string, unknown> = {};
@@ -419,13 +430,14 @@ export async function clearClaudeToken(homeDir?: string): Promise<void> {
 export async function applyStoredCredentials(
   env: NodeJS.ProcessEnv,
   homeDir?: string,
+  layout?: AppStateLayout,
 ): Promise<void> {
   try {
     // Never overwrite an explicitly-set env var — user's env wins.
     if (env['CLAUDE_CODE_OAUTH_TOKEN'] !== undefined) {
       return;
     }
-    const creds = await loadCredentials(homeDir);
+    const creds = await loadCredentials(homeDir, layout);
     if (creds.claudeOauthToken !== undefined) {
       env['CLAUDE_CODE_OAUTH_TOKEN'] = creds.claudeOauthToken;
     }

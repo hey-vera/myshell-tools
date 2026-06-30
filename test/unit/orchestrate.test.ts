@@ -6,7 +6,7 @@
  * processes.  The fake Provider yields scripted ProviderEvents.
  */
 
-import { describe, it, beforeEach } from 'node:test';
+import { beforeEach, describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 import { orchestrate } from '../../src/core/orchestrate.ts';
 import { withMemoryProposalAttached } from '../../src/core/orchestrate-memory.ts';

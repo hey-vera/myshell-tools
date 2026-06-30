@@ -2,7 +2,7 @@
  * test/unit/goal.test.ts — the pure `/goal` decision core (core/goal.ts).
  */
 
-import { describe, it } from 'node:test';
+import { describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 
 import {

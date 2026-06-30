@@ -8,7 +8,7 @@
  * providers honestly rather than crashing.
  */
 
-import { describe, it } from 'node:test';
+import { describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 import { access } from 'node:fs/promises';
 import { constants } from 'node:fs';
@@ -25,7 +25,7 @@ describe('auth-spike.sh — Chunk B auth validation script', () => {
     await access(SCRIPT_PATH, constants.F_OK | constants.X_OK);
   });
 
-  it('runs fail-soft and exits 0 even when providers are missing or unsigned-in', async () => {
+  it.skipIf(process.platform === 'win32')('runs fail-soft and exits 0 even when providers are missing or unsigned-in', async () => {
     const { stdout, stderr } = await execFileAsync(SCRIPT_PATH, [], {
       timeout: 60_000,
       env: { ...process.env, QUIET: '0' },

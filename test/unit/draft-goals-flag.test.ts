@@ -6,7 +6,7 @@
  * auto-brain-flag.test.ts. All pure — no I/O, no model call.
  */
 
-import { describe, it } from 'node:test';
+import { describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 
 import { draftGoalsEnabled } from '../../src/interface/ui/draft-goals-flag.ts';

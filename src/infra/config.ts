@@ -7,9 +7,9 @@
  */
 
 import { mkdir, readFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { dirname } from 'node:path';
 import { atomicWrite } from './atomic.js';
-import { defaultStateHome } from './state-dir.js';
+import { defaultStateLayout, resolveStateLayout, type AppStateLayout } from './state-layout.js';
 import type { Intensity } from '../core/capacity-allocator.js';
 import type { PartnerStyle } from '../core/prompt-context.js';
 
@@ -628,15 +628,20 @@ const DEFAULTS: AppConfig = {
 };
 
 // ---------------------------------------------------------------------------
-// Path helpers
+// Layout resolution (homeDir compat bridge)
 // ---------------------------------------------------------------------------
 
-function getConfigDir(homeDir: string): string {
-  return join(homeDir, '.myshell-tools');
-}
-
-function getConfigPath(homeDir: string): string {
-  return join(getConfigDir(homeDir), 'config.json');
+function resolveLayout(homeDir?: string, layout?: AppStateLayout): AppStateLayout {
+  if (layout) return layout;
+  if (homeDir !== undefined) {
+    return resolveStateLayout({
+      env: {},
+      platform: 'linux',
+      cwd: homeDir,
+      homeDir,
+    });
+  }
+  return defaultStateLayout();
 }
 
 // ---------------------------------------------------------------------------
@@ -647,11 +652,11 @@ function getConfigPath(homeDir: string): string {
  * Load the global app config.  Returns defaults merged with any on-disk
  * values so unknown/corrupt files never throw and new keys are always present.
  */
-export async function loadConfig(homeDir?: string): Promise<AppConfig> {
-  const home = homeDir ?? defaultStateHome();
+export async function loadConfig(homeDir?: string, layout?: AppStateLayout): Promise<AppConfig> {
+  const l = resolveLayout(homeDir, layout);
   let raw: string;
   try {
-    raw = await readFile(getConfigPath(home), 'utf8');
+    raw = await readFile(l.paths.configFile, 'utf8');
   } catch {
     // Missing file — return defaults
     return { ...DEFAULTS };
@@ -693,10 +698,10 @@ export async function loadConfig(homeDir?: string): Promise<AppConfig> {
  * spread in the setters plus loadConfig's `{ ...DEFAULTS, ...parsed }` round-trip
  * (which preserves every on-disk key) — not a lossy merge in the writer.
  */
-export async function saveConfig(config: AppConfig, homeDir?: string): Promise<void> {
-  const home = homeDir ?? defaultStateHome();
-  await mkdir(getConfigDir(home), { recursive: true });
-  await atomicWrite(getConfigPath(home), JSON.stringify(config, null, 2));
+export async function saveConfig(config: AppConfig, homeDir?: string, layout?: AppStateLayout): Promise<void> {
+  const l = resolveLayout(homeDir, layout);
+  await mkdir(dirname(l.paths.configFile), { recursive: true });
+  await atomicWrite(l.paths.configFile, JSON.stringify(config, null, 2));
 }
 
 /**

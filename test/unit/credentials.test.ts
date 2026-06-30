@@ -6,7 +6,7 @@
  * extensively for correctness and never-throw guarantees.
  */
 
-import { describe, it, before, after } from 'node:test';
+import { afterAll, beforeAll, describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 import { existsSync } from 'node:fs';
 import { mkdtemp, rm, mkdir, writeFile, stat } from 'node:fs/promises';
@@ -38,11 +38,11 @@ import {
 describe('replitPersistentEnv', () => {
   let dir = '';
 
-  before(async () => {
+  beforeAll(async () => {
     dir = await mkdtemp(join(tmpdir(), `myshell-replit-${randomUUID()}-`));
   });
 
-  after(async () => {
+  afterAll(async () => {
     if (dir) await rm(dir, { recursive: true, force: true });
   });
 
@@ -309,11 +309,11 @@ describe('claudeEnv — pure (never throws)', () => {
 describe('loadClaudeToken — returns null when no token is stored', () => {
   let homeDir: string;
 
-  before(async () => {
+  beforeAll(async () => {
     homeDir = await mkdtemp(join(tmpdir(), `creds-lct-missing-${randomUUID()}-`));
   });
 
-  after(async () => {
+  afterAll(async () => {
     await rm(homeDir, { recursive: true, force: true });
   });
 
@@ -330,12 +330,12 @@ describe('loadClaudeToken — returns null when no token is stored', () => {
 describe('loadClaudeToken — returns stored token', () => {
   let homeDir: string;
 
-  before(async () => {
+  beforeAll(async () => {
     homeDir = await mkdtemp(join(tmpdir(), `creds-lct-saved-${randomUUID()}-`));
     await saveClaudeToken('sk-ant-oat01-load-TOKEN', homeDir);
   });
 
-  after(async () => {
+  afterAll(async () => {
     await rm(homeDir, { recursive: true, force: true });
   });
 
@@ -348,13 +348,13 @@ describe('loadClaudeToken — returns stored token', () => {
 describe('loadClaudeToken — returns null after clearClaudeToken', () => {
   let homeDir: string;
 
-  before(async () => {
+  beforeAll(async () => {
     homeDir = await mkdtemp(join(tmpdir(), `creds-lct-clear-${randomUUID()}-`));
     await saveClaudeToken('sk-ant-oat01-to-clear-TOKEN', homeDir);
     await clearClaudeToken(homeDir);
   });
 
-  after(async () => {
+  afterAll(async () => {
     await rm(homeDir, { recursive: true, force: true });
   });
 
@@ -450,11 +450,11 @@ describe('extractClaudeToken — pure token extraction', () => {
 describe('loadCredentials — missing file returns {}', () => {
   let homeDir: string;
 
-  before(async () => {
+  beforeAll(async () => {
     homeDir = await mkdtemp(join(tmpdir(), `creds-missing-${randomUUID()}-`));
   });
 
-  after(async () => {
+  afterAll(async () => {
     await rm(homeDir, { recursive: true, force: true });
   });
 
@@ -471,14 +471,14 @@ describe('loadCredentials — missing file returns {}', () => {
 describe('loadCredentials — corrupt file returns {}', () => {
   let homeDir: string;
 
-  before(async () => {
+  beforeAll(async () => {
     homeDir = await mkdtemp(join(tmpdir(), `creds-corrupt-${randomUUID()}-`));
     const dir = join(homeDir, '.myshell-tools');
     await mkdir(dir, { recursive: true });
     await writeFile(join(dir, 'credentials.json'), 'THIS IS NOT JSON', 'utf8');
   });
 
-  after(async () => {
+  afterAll(async () => {
     await rm(homeDir, { recursive: true, force: true });
   });
 
@@ -495,14 +495,14 @@ describe('loadCredentials — corrupt file returns {}', () => {
 describe('loadCredentials — non-object JSON returns {}', () => {
   let homeDir: string;
 
-  before(async () => {
+  beforeAll(async () => {
     homeDir = await mkdtemp(join(tmpdir(), `creds-nonobj-${randomUUID()}-`));
     const dir = join(homeDir, '.myshell-tools');
     await mkdir(dir, { recursive: true });
     await writeFile(join(dir, 'credentials.json'), '"just a string"', 'utf8');
   });
 
-  after(async () => {
+  afterAll(async () => {
     await rm(homeDir, { recursive: true, force: true });
   });
 
@@ -519,11 +519,11 @@ describe('loadCredentials — non-object JSON returns {}', () => {
 describe('saveClaudeToken + loadCredentials — round-trip', () => {
   let homeDir: string;
 
-  before(async () => {
+  beforeAll(async () => {
     homeDir = await mkdtemp(join(tmpdir(), `creds-save-${randomUUID()}-`));
   });
 
-  after(async () => {
+  afterAll(async () => {
     await rm(homeDir, { recursive: true, force: true });
   });
 
@@ -569,11 +569,11 @@ if (process.platform !== 'win32') {
   describe('saveClaudeToken — credentials file mode', () => {
     let homeDir: string;
 
-    before(async () => {
+    beforeAll(async () => {
       homeDir = await mkdtemp(join(tmpdir(), `creds-mode-${randomUUID()}-`));
     });
 
-    after(async () => {
+    afterAll(async () => {
       await rm(homeDir, { recursive: true, force: true });
     });
 
@@ -598,11 +598,11 @@ if (process.platform !== 'win32') {
 describe('clearClaudeToken', () => {
   let homeDir: string;
 
-  before(async () => {
+  beforeAll(async () => {
     homeDir = await mkdtemp(join(tmpdir(), `creds-clear-${randomUUID()}-`));
   });
 
-  after(async () => {
+  afterAll(async () => {
     await rm(homeDir, { recursive: true, force: true });
   });
 
@@ -646,11 +646,11 @@ describe('clearClaudeToken', () => {
 describe('applyStoredCredentials — injects token when not already in env', () => {
   let homeDir: string;
 
-  before(async () => {
+  beforeAll(async () => {
     homeDir = await mkdtemp(join(tmpdir(), `creds-apply-${randomUUID()}-`));
   });
 
-  after(async () => {
+  afterAll(async () => {
     await rm(homeDir, { recursive: true, force: true });
   });
 
@@ -1055,14 +1055,14 @@ describe('saveClaudeToken — records claudeTokenCapturedAt', () => {
   let beforeSaveMs: number;
   let afterSaveMs: number;
 
-  before(async () => {
+  beforeAll(async () => {
     homeDir = await mkdtemp(join(tmpdir(), `creds-capturedat-${randomUUID()}-`));
     beforeSaveMs = Date.now();
     await saveClaudeToken('sk-ant-oat01-capturedat-TOKEN', homeDir);
     afterSaveMs = Date.now();
   });
 
-  after(async () => {
+  afterAll(async () => {
     await rm(homeDir, { recursive: true, force: true });
   });
 
@@ -1093,12 +1093,12 @@ describe('saveClaudeToken — records claudeTokenCapturedAt', () => {
 describe('loadClaudeTokenCapturedAt — round-trip after saveClaudeToken', () => {
   let homeDir: string;
 
-  before(async () => {
+  beforeAll(async () => {
     homeDir = await mkdtemp(join(tmpdir(), `creds-lctat-${randomUUID()}-`));
     await saveClaudeToken('sk-ant-oat01-lctat-TOKEN', homeDir);
   });
 
-  after(async () => {
+  afterAll(async () => {
     await rm(homeDir, { recursive: true, force: true });
   });
 
@@ -1121,11 +1121,11 @@ describe('loadClaudeTokenCapturedAt — round-trip after saveClaudeToken', () =>
 describe('loadClaudeTokenCapturedAt — missing file returns undefined', () => {
   let homeDir: string;
 
-  before(async () => {
+  beforeAll(async () => {
     homeDir = await mkdtemp(join(tmpdir(), `creds-lctat-missing-${randomUUID()}-`));
   });
 
-  after(async () => {
+  afterAll(async () => {
     await rm(homeDir, { recursive: true, force: true });
   });
 
@@ -1142,7 +1142,7 @@ describe('loadClaudeTokenCapturedAt — missing file returns undefined', () => {
 describe('loadClaudeTokenCapturedAt — backward compat: old file without field', () => {
   let homeDir: string;
 
-  before(async () => {
+  beforeAll(async () => {
     homeDir = await mkdtemp(join(tmpdir(), `creds-lctat-compat-${randomUUID()}-`));
     // Write an old-style credentials file without claudeTokenCapturedAt
     const dir = join(homeDir, '.myshell-tools');
@@ -1154,7 +1154,7 @@ describe('loadClaudeTokenCapturedAt — backward compat: old file without field'
     );
   });
 
-  after(async () => {
+  afterAll(async () => {
     await rm(homeDir, { recursive: true, force: true });
   });
 

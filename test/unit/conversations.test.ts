@@ -3,7 +3,7 @@
  * Run with: node --import ./test/register.mjs --test "test/unit/conversations.test.ts"
  */
 
-import { describe, it, before, after } from 'node:test';
+import { afterAll, beforeAll, describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 import { appendFile, mkdtemp, readFile, rm, writeFile, mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -60,11 +60,11 @@ function makeEntry(overrides?: Partial<SessionEntry>): SessionEntry {
 describe('createFileConversationStore — create and list', () => {
   let homeDir: string;
 
-  before(async () => {
+  beforeAll(async () => {
     homeDir = await mkdtemp(join(tmpdir(), `conv-test-${randomUUID()}-`));
   });
 
-  after(async () => {
+  afterAll(async () => {
     await rm(homeDir, { recursive: true, force: true });
   });
 
@@ -123,11 +123,11 @@ describe('createFileConversationStore — create and list', () => {
 describe('createFileConversationStore — writer and load', () => {
   let homeDir: string;
 
-  before(async () => {
+  beforeAll(async () => {
     homeDir = await mkdtemp(join(tmpdir(), `conv-writer-${randomUUID()}-`));
   });
 
-  after(async () => {
+  afterAll(async () => {
     await rm(homeDir, { recursive: true, force: true });
   });
 
@@ -251,11 +251,11 @@ describe('createFileConversationStore — writer and load', () => {
 describe('createFileConversationStore — rename and remove', () => {
   let homeDir: string;
 
-  before(async () => {
+  beforeAll(async () => {
     homeDir = await mkdtemp(join(tmpdir(), `conv-rr-${randomUUID()}-`));
   });
 
-  after(async () => {
+  afterAll(async () => {
     await rm(homeDir, { recursive: true, force: true });
   });
 

@@ -8,7 +8,7 @@
  *   - Never fabricates responses; output honestly describes state
  */
 
-import { describe, it, beforeEach } from 'node:test';
+import { beforeEach, describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 import { runTask } from '../../src/interface/run.ts';
 import type { OutputSink } from '../../src/interface/render.ts';

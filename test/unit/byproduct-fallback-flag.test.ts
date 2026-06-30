@@ -6,7 +6,7 @@
  * All pure — no I/O, no model call.
  */
 
-import { describe, it } from 'node:test';
+import { describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 
 import { byproductFallbackEnabled } from '../../src/interface/ui/byproduct-fallback-flag.ts';

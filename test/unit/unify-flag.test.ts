@@ -6,7 +6,7 @@
  * throws. Pure — no I/O.
  */
 
-import { describe, it } from 'node:test';
+import { describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 
 import {

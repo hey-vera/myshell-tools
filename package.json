@@ -11,16 +11,17 @@
   },
   "scripts": {
     "build": "tsc",
-    "test": "find test/unit test/arch -name '*.test.ts' | sort | xargs node --import tsx/esm --test",
-    "test:ui": "find test/ui -name '*.test.tsx' | sort | xargs node --import tsx/esm --test",
-    "test:contract": "find test/contract -name '*.test.ts' | sort | xargs node --import tsx/esm --test",
-    "test:e2e": "CORTEX_E2E=1 find test/integration -name '*.test.ts' | sort | xargs node --import tsx/esm --test",
+    "test": "vitest run test/unit test/arch",
+    "test:watch": "vitest test/unit test/arch",
+    "test:ui": "vitest run test/ui",
+    "test:contract": "vitest run test/contract",
+    "test:e2e": "CORTEX_E2E=1 vitest run test/integration",
     "eval": "node --import tsx/esm src/cli.ts eval",
     "lint": "eslint src test",
     "format": "prettier --check .",
     "typecheck": "tsc --noEmit",
     "knip": "knip",
-    "test:integration": "node --test \"test/integration/**/*.test.ts\"",
+    "test:integration": "vitest run test/integration",
     "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
     "prepublishOnly": "npm run clean && npm run typecheck && npm run lint && npm run build",
     "smoke:pty": "MYSHELL_INK=0 node scripts/pty-smoke.mjs",
@@ -63,7 +64,8 @@
     "prettier": "^3.0.0",
     "tsx": "^4.22.4",
     "typescript": "^5.0.0",
-    "typescript-eslint": "^8.0.0"
+    "typescript-eslint": "^8.0.0",
+    "vitest": "^4.1.9"
   },
   "dependencies": {
     "execa": "^9.6.1",

@@ -20,7 +20,7 @@
  * tests + the flag-off neutrality suites; this module flips only the boolean SOURCE
  * used at the menu wiring.
  */
-import { describe, it } from 'node:test';
+import { describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 import {
   experimentalEnabledByDefault,

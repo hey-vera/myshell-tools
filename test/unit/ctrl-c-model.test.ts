@@ -9,7 +9,7 @@
  * output phrases. Only the two exported pure helpers are exercised here.
  */
 
-import { describe, it } from 'node:test';
+import { describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 
 import {

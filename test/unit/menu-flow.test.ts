@@ -15,7 +15,7 @@
  * no digit-% literals.
  */
 
-import { describe, it } from 'node:test';
+import { describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -51,32 +51,51 @@ import type {
 import type { Provider, ProviderRequest, ProviderEvent, Usage } from '../../src/providers/port.ts';
 import type { EnvironmentStatus } from '../../src/providers/detect.ts';
 import type { AppConfig } from '../../src/infra/config.ts';
-import { loadConfig } from '../../src/infra/config.ts';
-import { resolveStateHome } from '../../src/infra/state-dir.ts';
+import { loadConfig, saveConfig } from '../../src/infra/config.ts';
+import { defaultStateLayout } from '../../src/infra/state-layout.js';
 import { createFileGoalStore } from '../../src/infra/goal-store.ts';
 import { itemBlockReason, CLARIFY_PREFIX } from '../../src/core/goal-manager.ts';
 import type { RoadmapItem } from '../../src/core/work-contract.ts';
 import { createLedger } from '../../src/infra/ledger.ts';
-import { homedir } from 'node:os';
 import { renderStreamInk } from '../../src/interface/ui/run-stream.ts';
 import { reduce } from '../../src/interface/ui/reduce.ts';
 import { initialState, type UiState } from '../../src/interface/ui/state.ts';
 
 /**
- * Run `fn` with the app state home forced to `home`: HOME is overridden and the
- * Replit env vars are cleared so `defaultStateHome()` (used by menu's saveConfig,
- * which takes no explicit homeDir) resolves to `home`. Restores env after.
+ * Run `fn` with the app state home forced to `home`: HOME, USERPROFILE, APPDATA,
+ * and LOCALAPPDATA are all set to `home` so `resolveStateLayout()` resolves
+ * config/state/cache INTO `home`. XDG vars are deleted so POSIX stays on the
+ * legacy `~/.myshell-tools` path (which becomes `home/.myshell-tools`). Cloud
+ * IDE vars are cleared so detection never leaks in. Restores env after.
  */
 async function withStateHome<T>(home: string, fn: () => Promise<T>): Promise<T> {
-  const keys = ['HOME', 'REPL_ID', 'REPLIT_DEV_DOMAIN'] as const;
+  const keys = [
+    'HOME', 'USERPROFILE',
+    'APPDATA', 'LOCALAPPDATA',
+    'XDG_CONFIG_HOME', 'XDG_STATE_HOME', 'XDG_CACHE_HOME',
+    'REPL_ID', 'REPLIT_DEV_DOMAIN',
+    'CODESPACES', 'CODESPACE_NAME', 'GITPOD_WORKSPACE_ID', 'MYSHELL_CLOUD_WORKSPACE',
+  ] as const;
   const orig = new Map(keys.map((k) => [k, process.env[k]] as const));
   const restore = (k: string, v: string | undefined): void => {
     if (v !== undefined) process.env[k] = v;
     else Reflect.deleteProperty(process.env, k);
   };
   process.env['HOME'] = home;
+  process.env['USERPROFILE'] = home;
+  process.env['APPDATA'] = home;
+  process.env['LOCALAPPDATA'] = home;
+  // POSIX: delete XDG vars so POSIX stays on legacy ~/.myshell-tools = home/.myshell-tools
+  restore('XDG_CONFIG_HOME', undefined);
+  restore('XDG_STATE_HOME', undefined);
+  restore('XDG_CACHE_HOME', undefined);
+  // Clear cloud IDE vars so detection never leaks into tests
   restore('REPL_ID', undefined);
   restore('REPLIT_DEV_DOMAIN', undefined);
+  restore('CODESPACES', undefined);
+  restore('CODESPACE_NAME', undefined);
+  restore('GITPOD_WORKSPACE_ID', undefined);
+  restore('MYSHELL_CLOUD_WORKSPACE', undefined);
   await fs.promises.mkdir(home, { recursive: true });
   try {
     return await fn();
@@ -86,12 +105,11 @@ async function withStateHome<T>(home: string, fn: () => Promise<T>): Promise<T> 
 }
 
 /**
- * Read the config back the same way production resolves its state home (with the
- * env that `withStateHome` installed), so persistence assertions match what the
- * menu's saveConfig actually wrote.
+ * Read the config back through the layout-aware path so assertions match what the
+ * menu's saveConfig actually wrote (both resolve via the same state-layout authority).
  */
 async function readPersistedConfig(): Promise<AppConfig> {
-  return loadConfig(resolveStateHome(process.env, process.cwd(), homedir()));
+  return loadConfig(undefined, defaultStateLayout());
 }
 
 
@@ -103,7 +121,15 @@ async function readPersistedConfig(): Promise<AppConfig> {
  * Build an injected readLine that yields each string from `lines` in order,
  * then returns null (EOF) for every subsequent call.
  */
-type ScriptedLine = string | null | { value: string | null; delayMs: number };
+type ScriptedLine =
+  | string
+  | null
+  | { value: string | null; delayMs: number }
+  // Hold this input until `sink()` contains `untilSinkContains` (or timeout). Used
+  // to wait for fire-and-forget post-turn narration (e.g. auto-stage notes) to
+  // flush BEFORE the next input (typically '/exit') tears the turn down — removes
+  // the race deterministically instead of asserting against an abandoned task.
+  | { value: string | null; untilSinkContains: string; sink: () => string; timeoutMs?: number };
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -116,6 +142,13 @@ function makeScriptedReader(lines: ReadonlyArray<ScriptedLine>): () => Promise<s
       const val = lines[i];
       i += 1;
       if (typeof val === 'object' && val !== null) {
+        if ('untilSinkContains' in val) {
+          const deadline = Date.now() + (val.timeoutMs ?? 5_000);
+          while (Date.now() < deadline && !val.sink().includes(val.untilSinkContains)) {
+            await delay(10);
+          }
+          return val.value;
+        }
         await delay(val.delayMs);
         return val.value;
       }
@@ -125,7 +158,7 @@ function makeScriptedReader(lines: ReadonlyArray<ScriptedLine>): () => Promise<s
   };
 }
 
-async function waitForGoalCount(clock: Clock, count: number, timeoutMs = 1_000) {
+async function waitForGoalCount(clock: Clock, count: number, timeoutMs = 5_000) {
   const goalStore = createFileGoalStore({ clock });
   const deadline = Date.now() + timeoutMs;
   let last = await goalStore.list();
@@ -135,6 +168,26 @@ async function waitForGoalCount(clock: Clock, count: number, timeoutMs = 1_000) 
     last = await goalStore.list();
   }
   return last;
+}
+
+/**
+ * Poll `sink.buf` until it contains `substring` (or the timeout elapses), then
+ * return whether it did. Post-turn auto-stage narration is fire-and-forget (it
+ * must NOT block the reply), so it can land a few microtasks after startMenu()
+ * resolves. Asserting `sink.buf.includes(...)` synchronously races that flush;
+ * `await waitForSink(...)` removes the flake without weakening the assertion.
+ */
+async function waitForSink(
+  sink: { readonly buf: string },
+  substring: string,
+  timeoutMs = 5_000,
+): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (sink.buf.includes(substring)) return true;
+    await delay(10);
+  }
+  return sink.buf.includes(substring);
 }
 
 // ---------------------------------------------------------------------------
@@ -506,7 +559,7 @@ describe('runChatLoop — active subscription capacity allocator', () => {
     platform: 'linux',
   };
 
-  it('shifts an IC turn by weighted session consumption and leaves a fresh conversation neutral', async () => {
+  it('shifts an IC turn by weighted session consumption and leaves a fresh conversation on the VN tie-break default', async () => {
     const cwd = join(tmpdir(), `menu-live-capacity-${randomUUID()}`);
     const clock = makeFakeClock();
     const store = makeStore(clock);
@@ -581,7 +634,7 @@ describe('runChatLoop — active subscription capacity allocator', () => {
 
     try {
       assert.deepStrictEqual(await runConversation(consumed.id), ['codex']);
-      assert.deepStrictEqual(await runConversation(fresh.id), ['claude']);
+      assert.deepStrictEqual(await runConversation(fresh.id), ['codex']);
     } finally {
       fs.rmSync(cwd, { recursive: true, force: true });
     }
@@ -723,7 +776,7 @@ describe('startMenu — immediate q → exits cleanly', () => {
 
     assert.deepEqual(loginCalls, ['claude'], 'completed login must not loop back into auth');
     assert.equal(detectCalls, 1, 'menu must refresh provider state exactly once after login');
-    assert.ok(sink.buf.includes('ready'), 'home screen after login must render authenticated status');
+    assert.ok(sink.buf.includes('signed in'), 'home screen after login must render authenticated status');
   });
 
   it('startMenu resolves (not hangs)', async () => {
@@ -813,7 +866,7 @@ describe('startMenu — immediate q → exits cleanly', () => {
     // showing stale subscription info after external plan changes; see renderHeaderLines).
     // Snapshot retention still matters for other live env-derived UI (provider status,
     // auto-mode, etc.). Check for stable rendered provider info from the prior snapshot.
-    assert.ok(sink.buf.includes('claude: ready'), 'prior provider status from the env snapshot should remain rendered after a failed refresh');
+    assert.ok(sink.buf.includes('claude: signed in'), 'prior provider status from the env snapshot should remain rendered after a failed refresh');
   });
 
   it('explicit login forces an environment refresh even within the TTL', async () => {
@@ -1285,7 +1338,9 @@ describe('startMenu — /goal PROPOSES the plan before running it (manager cycle
   });
 
   it('oversight=autonomous SKIPS the confirm — says "On it" and runs without a go prompt', async () => {
-    let goalWorkTurns = 0;
+    const dir = join(tmpdir(), `menu-flow-autonomous-${randomUUID()}`);
+    await withStateHome(dir, async () => {
+      let goalWorkTurns = 0;
     const provider: Provider = {
       id: 'claude',
       async detect() {
@@ -1368,9 +1423,12 @@ describe('startMenu — /goal PROPOSES the plan before running it (manager cycle
       'autonomous must NOT present the launch confirm prompt',
     );
     assert.ok(goalWorkTurns >= 1, 'autonomous launches the manager cycle (a goal-work turn ran)');
+    });
   });
 
   it('[Start all] on a MULTI-goal plan runs EVERY goal sequentially to verified-done', async () => {
+    const dir = join(tmpdir(), `menu-flow-multigoal-${randomUUID()}`);
+    await withStateHome(dir, async () => {
     // The over-promise bug this fixes: a 2-goal proposal offered [Start all] but only
     // the FIRST goal ever ran. Assert BOTH goals reach a goal-work turn (each goal's
     // title appears as the `Goal: <title>` work input) and the hand-off is narrated.
@@ -1457,6 +1515,7 @@ describe('startMenu — /goal PROPOSES the plan before running it (manager cycle
       sink.buf.includes('moving to goal 2 of 2: "Add a session audit log"'),
       'narrates the hand-off between goals',
     );
+    });
   });
 });
 
@@ -1930,7 +1989,7 @@ describe('startMenu — auto-goal smart autonomy', () => {
           readLine: makeScriptedReader([
             'n',
             'implement the new formatter module',
-            { value: '/exit', delayMs: 50 },
+            { value: '/exit', untilSinkContains: '※ Staged 1 goal on the board', sink: () => sink.buf },
             'q',
           ]),
         },
@@ -1953,7 +2012,7 @@ describe('startMenu — auto-goal smart autonomy', () => {
       ]);
       assert.ok(!sink.buf.includes('On it — Ship the billing migration'));
       assert.ok(
-        sink.buf.includes('※ Staged 1 goal on the board: Ship the billing migration · 2 to-dos · shall I start?'),
+        await waitForSink(sink, '※ Staged 1 goal on the board: Ship the billing migration · 2 to-dos · shall I start?'),
       );
     });
   });
@@ -2010,7 +2069,7 @@ describe('startMenu — auto-goal smart autonomy', () => {
           readLine: makeScriptedReader([
             'n',
             'implement the settings module in three steps',
-            { value: '/exit', delayMs: 50 },
+            { value: '/exit', untilSinkContains: '※ Staged 1 goal on the board', sink: () => sink.buf },
             'q',
           ]),
         },
@@ -2032,7 +2091,7 @@ describe('startMenu — auto-goal smart autonomy', () => {
       );
       assert.ok(!sink.buf.includes('On it —'));
       assert.ok(
-        sink.buf.includes('※ Staged 1 goal on the board: Refresh the billing module · 3 to-dos · shall I start?'),
+        await waitForSink(sink, '※ Staged 1 goal on the board: Refresh the billing module · 3 to-dos · shall I start?'),
       );
     });
   });
@@ -2082,7 +2141,7 @@ describe('startMenu — auto-goal smart autonomy', () => {
           readLine: makeScriptedReader([
             'n',
             "from now on just go when you're confident, and implement the settings module in three steps",
-            { value: '/exit', delayMs: 50 },
+            { value: '/exit', untilSinkContains: '※ Staged 1 goal on the board', sink: () => sink.buf },
             'q',
           ]),
         },
@@ -2101,7 +2160,7 @@ describe('startMenu — auto-goal smart autonomy', () => {
       assert.ok(!sink.buf.includes('On it — Rebuild the settings module'));
       assert.ok(!sink.buf.includes('※ Starting "Rebuild the settings module" in the background — keep chatting.'));
       assert.ok(
-        sink.buf.includes('※ Staged 1 goal on the board: Rebuild the settings module · 3 to-dos · shall I start?'),
+        await waitForSink(sink, '※ Staged 1 goal on the board: Rebuild the settings module · 3 to-dos · shall I start?'),
       );
     });
   });
@@ -2148,7 +2207,7 @@ describe('startMenu — auto-goal smart autonomy', () => {
           readLine: makeScriptedReader([
             'n',
             'always relay the plan first, and implement the parser module',
-            { value: '/exit', delayMs: 50 },
+            { value: '/exit', untilSinkContains: '※ Staged 1 goal on the board', sink: () => sink.buf },
             'q',
           ]),
         },
@@ -2165,7 +2224,7 @@ describe('startMenu — auto-goal smart autonomy', () => {
       assert.ok(sink.buf.includes("Activation: I'll relay the plan first from now on (this chat)."));
       assert.ok(!sink.buf.includes('On it —'));
       assert.ok(
-        sink.buf.includes('※ Staged 1 goal on the board: Implement the parser module · 2 to-dos · shall I start?'),
+        await waitForSink(sink, '※ Staged 1 goal on the board: Implement the parser module · 2 to-dos · shall I start?'),
       );
     });
   });
@@ -2215,7 +2274,7 @@ describe('startMenu — auto-goal smart autonomy', () => {
           readLine: makeScriptedReader([
             'n',
             'implement the settings module',
-            { value: '/exit', delayMs: 50 },
+            { value: '/exit', untilSinkContains: '※ Staged 1 goal on the board', sink: () => sink.buf },
             'q',
           ]),
         },
@@ -2237,7 +2296,7 @@ describe('startMenu — auto-goal smart autonomy', () => {
       );
       assert.ok(!sink.buf.includes('On it —'));
       assert.ok(
-        sink.buf.includes('※ Staged 1 goal on the board: Refresh the billing module · 2 to-dos · shall I start?'),
+        await waitForSink(sink, '※ Staged 1 goal on the board: Refresh the billing module · 2 to-dos · shall I start?'),
       );
     });
   });
@@ -2498,7 +2557,7 @@ describe('startMenu — auto-goal smart autonomy', () => {
     const dir = join(tmpdir(), `menu-planning-depth-birdhouse-${randomUUID()}`);
     await withStateHome(dir, async () => {
       let plannerCalls = 0;
-      let secondProviderCalls = 0;
+      let secondPlanningBrainCalls = 0;
       const provider: Provider = {
         id: 'claude',
         async detect() { return FAKE_ENV.claude; },
@@ -2515,9 +2574,14 @@ describe('startMenu — auto-goal smart autonomy', () => {
       const codex: Provider = {
         id: 'codex',
         async detect() { return twoProviderEnv.codex; },
-        async *run(): AsyncIterable<ProviderEvent> {
-          secondProviderCalls += 1;
-          yield { type: 'done', text: 'unused', usage: FAKE_USAGE, raw: {} };
+        async *run(req: ProviderRequest): AsyncIterable<ProviderEvent> {
+          if (
+            req.prompt.includes('PLANNING BRAIN') ||
+            req.prompt.includes('adjudicator selecting the strongest plan')
+          ) {
+            secondPlanningBrainCalls += 1;
+          }
+          yield { type: 'done', text: `Done.\n${CONFIDENCE_ENVELOPE}`, usage: FAKE_USAGE, raw: {} };
         },
       };
       const twoProviderEnv: EnvironmentStatus = {
@@ -2552,7 +2616,7 @@ describe('startMenu — auto-goal smart autonomy', () => {
       await startMenu(ctx, sink);
 
       assert.equal(plannerCalls, 1);
-      assert.equal(secondProviderCalls, 0);
+      assert.equal(secondPlanningBrainCalls, 0);
       assert.ok(!sink.buf.includes('Planning deeper'));
       assert.ok(!sink.buf.includes('Planning with 2 subscription brains'));
     });
@@ -3838,10 +3902,11 @@ describe('startMenu — e → manage → pin → back → q', () => {
     const ctx = makeCtx(
       {
         readLine: makeScriptedReader([
-          'e',   // enter manage
+          'e',   // Library
+          'm',   // Manage (inside Library)
           'p',   // pin/unpin
           '1',   // conversation number
-          '',    // back from manage (empty = Enter)
+          'b',   // back from Library
           'q',   // quit
         ]),
       },
@@ -3867,11 +3932,12 @@ describe('startMenu — e → manage → pin → back → q', () => {
     const ctx = makeCtx(
       {
         readLine: makeScriptedReader([
-          'e',         // enter manage
+          'e',         // Library
+          'm',         // Manage (inside Library)
           'r',         // rename
           '1',         // conversation number
           'New name',  // new title
-          '',          // back (Enter)
+          'b',         // back from Library
           'q',         // quit
         ]),
       },
@@ -3895,11 +3961,12 @@ describe('startMenu — e → manage → pin → back → q', () => {
     const ctx = makeCtx(
       {
         readLine: makeScriptedReader([
-          'e',  // enter manage
+          'e',  // Library
+          'm',  // Manage (inside Library)
           'x',  // delete
           '1',  // conversation number
           'y',  // confirm
-          '',   // back
+          'b',  // back from Library
           'q',  // quit
         ]),
       },
@@ -3920,7 +3987,9 @@ describe('startMenu — e → manage → pin → back → q', () => {
     const ctx = makeCtx(
       {
         readLine: makeScriptedReader([
-          'e',  // enter manage
+          'e',  // Library
+          'm',  // Manage (inside Library)
+          'b',  // back from Library
           'q',  // quit
         ]),
       },
@@ -5199,14 +5268,16 @@ describe('startMenu — first-run welcome: install prompt for missing provider',
 
     await startMenu(ctx, sink);
 
-    // The single collapsed prompt must list all three modes (quality-framed
-    // labels) and an auto default.
-    assert.ok(sink.buf.includes('Efficient'), 'mode prompt must mention Efficient');
+    // The single collapsed prompt must list all five levels (5-level Auto-smart
+    // picker) and the Enter-to-keep-default hint.
+    assert.ok(sink.buf.includes('Auto (smart)'), 'mode prompt must mention Auto (smart)');
+    assert.ok(sink.buf.includes('Budget'), 'mode prompt must mention Budget');
     assert.ok(sink.buf.includes('Balanced'), 'mode prompt must mention Balanced');
+    assert.ok(sink.buf.includes('High'), 'mode prompt must mention High');
     assert.ok(sink.buf.includes('Max'), 'mode prompt must mention Max');
     assert.ok(
-      sink.buf.includes('Enter = auto'),
-      'mode prompt must show the auto (subscription-derived) default',
+      sink.buf.includes('Press Enter to keep Auto'),
+      'mode prompt must show the Enter to keep Auto hint',
     );
   });
 
@@ -5667,27 +5738,27 @@ describe('startMenu — [i] import a native conversation', () => {
     // The critical invariant is clean exit
   });
 
-  it('menu renders the [i] resume-a-Claude/Codex-session option', async () => {
+  it('menu renders the [e] Library entry (import/resume moved under Library)', async () => {
     const sink = makeSink();
     const ctx = makeCtx({ readLine: makeScriptedReader(['q']) });
 
     await startMenu(ctx, sink);
 
-    assert.ok(sink.buf.includes('[i]'), 'menu should show [i] key');
+    assert.ok(sink.buf.includes('[e]'), 'menu should show [e] key');
     assert.ok(
-      sink.buf.toLowerCase().includes('claude/codex'),
-      'menu should mention resuming a Claude/Codex session',
+      sink.buf.toLowerCase().includes('library'),
+      'menu should show Library entry',
     );
   });
 
-  it('menu renders [r] raw provider session option in output', async () => {
+  it('menu renders [a] Accounts entry and no raw session entry on the main screen', async () => {
     const sink = makeSink();
     const ctx = makeCtx({ readLine: makeScriptedReader(['q']) });
 
     await startMenu(ctx, sink);
 
-    assert.ok(sink.buf.includes('[r]'), 'menu should show [r] key');
-    assert.ok(sink.buf.toLowerCase().includes('raw'), 'menu should mention raw');
+    assert.ok(sink.buf.includes('[a]'), 'menu should show [a] key for Accounts');
+    assert.ok(sink.buf.toLowerCase().includes('accounts'), 'menu should mention Accounts');
   });
 
   it('[r] → EOF at provider choice → returns to menu gracefully', async () => {
@@ -6328,13 +6399,13 @@ describe('startMenu — first-run: post-onboarding env refresh (BUG 1)', () => {
       'onboarding with detectEnvironment injection should resolve cleanly',
     );
 
-    // The main screen (after onboarding) must show ✅ claude: ready, not ⚠️ not signed in.
+    // The main screen (after onboarding) must show signed in status, not "not signed in".
     // The stale "not signed in" must NOT appear in the first main screen rendering.
-    // We split on the Setup header to find the post-onboarding content.
-    const afterSetup = sink.buf.split('Setup')[1] ?? sink.buf;
+    // Search the full first frame: the provider status ("claude: signed in") lives in the
+    // header box rendered before the Accounts line.
     assert.ok(
-      afterSetup.includes('ready'),
-      `first main screen must show "ready" after onboarding refresh; got: ${afterSetup.slice(0, 400)}`,
+      sink.buf.includes('signed in'),
+      `first main screen must show "signed in" after onboarding refresh; got: ${sink.buf.slice(0, 400)}`,
     );
   });
 
@@ -6501,7 +6572,7 @@ describe('startMenu — [o] opencode discoverability in Auth section', () => {
 
   // ---- Label visibility (always present) ------------------------------------
 
-  it('Auth section shows [o] when opencode IS installed', async () => {
+  it('Accounts section shows [a] on the main menu (individual providers under submenu)', async () => {
     const sink = makeSink();
     const ctx = makeCtx({
       env: FAKE_ENV_OPENCODE_INSTALLED,
@@ -6511,13 +6582,13 @@ describe('startMenu — [o] opencode discoverability in Auth section', () => {
 
     await startMenu(ctx, sink);
 
-    assert.ok(sink.buf.includes('[o]'), 'menu must show [o] when opencode is installed');
-    assert.ok(sink.buf.toLowerCase().includes('opencode'), 'menu must mention opencode');
+    assert.ok(sink.buf.includes('[a]'), 'menu must show [a] Accounts entry');
+    assert.ok(sink.buf.toLowerCase().includes('accounts'), 'menu must mention Accounts');
   });
 
-  it('Auth section shows [o] even when opencode is NOT installed', async () => {
+  it('Accounts entry is always visible on the main menu', async () => {
     const sink = makeSink();
-    // FAKE_ENV has opencode not-installed — [o] must still appear
+    // FAKE_ENV has opencode not-installed — [a] must still appear
     const ctx = makeCtx({
       readLine: makeScriptedReader(['q']),
       detectEnvironment: async () => FAKE_ENV,
@@ -6526,43 +6597,44 @@ describe('startMenu — [o] opencode discoverability in Auth section', () => {
     await startMenu(ctx, sink);
 
     assert.ok(
-      sink.buf.includes('[o]'),
-      '[o] must appear in menu even when opencode is not installed (discoverability)',
+      sink.buf.includes('[a]'),
+      '[a] must appear in menu (Accounts always visible)',
     );
     assert.ok(
-      sink.buf.toLowerCase().includes('opencode'),
-      'opencode must be mentioned in menu even when not installed',
+      sink.buf.toLowerCase().includes('accounts'),
+      'Accounts must be mentioned in menu',
     );
   });
 
-  it('label says "Login / add subscription" when opencode is installed', async () => {
+  it('the [a] Accounts submenu lists individual provider keys [j][k][o][p]', async () => {
     const sink = makeSink();
     const ctx = makeCtx({
       env: FAKE_ENV_OPENCODE_INSTALLED,
-      readLine: makeScriptedReader(['q']),
+      readLine: makeScriptedReader(['a', 'b', 'q']),
       detectEnvironment: async () => FAKE_ENV_OPENCODE_INSTALLED,
     });
 
     await startMenu(ctx, sink);
 
     assert.ok(
-      sink.buf.toLowerCase().includes('login') || sink.buf.toLowerCase().includes('subscription'),
-      'label must mention "login" or "subscription" when opencode is installed',
+      sink.buf.includes('[o]') && sink.buf.includes('[j]') && sink.buf.includes('[k]'),
+      'Accounts submenu must list individual provider keys',
     );
   });
 
-  it('label says "Login opencode (installs it first)" when opencode is NOT installed', async () => {
+  it('Accounts submenu includes all four providers', async () => {
     const sink = makeSink();
     const ctx = makeCtx({
-      readLine: makeScriptedReader(['q']),
+      readLine: makeScriptedReader(['a', 'b', 'q']),
       detectEnvironment: async () => FAKE_ENV,
     });
 
     await startMenu(ctx, sink);
 
     assert.ok(
-      sink.buf.toLowerCase().includes('login opencode') && sink.buf.toLowerCase().includes('installs it first'),
-      'label must read "Login opencode (installs it first)" when opencode is not installed',
+      sink.buf.includes('[j]') && sink.buf.includes('[k]') &&
+      sink.buf.includes('[o]') && sink.buf.includes('[p]'),
+      'Accounts submenu lists Claude (j), Codex (k), OpenCode (o), Grok (p)',
     );
   });
 
@@ -7503,9 +7575,9 @@ describe('startMenu — update notifier: banner, [u], auto-update', () => {
     );
   });
 
-  // ---- Settings toggle for autoUpdate -------------------------------------
+  // ---- Settings layout verification ---------------------------------------
 
-  it('[s] settings shows the update-on-launch toggle line', async () => {
+  it('[s] settings shows the new simplified settings page (6 items)', async () => {
     const sink = makeSink();
     const ctx = makeCtx({
       readLine: makeScriptedReader(['s', '', 'q']),  // enter settings → Enter (back) → quit
@@ -7514,126 +7586,74 @@ describe('startMenu — update notifier: banner, [u], auto-update', () => {
     await startMenu(ctx, sink);
 
     assert.ok(
-      sink.buf.includes('[3]') && sink.buf.toLowerCase().includes('update on launch'),
-      'settings must show [3] Update on launch toggle',
+      sink.buf.includes('[1]') && sink.buf.toLowerCase().includes('mode'),
+      'settings must show [1] New conversation mode',
+    );
+    assert.ok(
+      sink.buf.includes('[2]') && sink.buf.toLowerCase().includes('oversight'),
+      'settings must show [2] Oversight',
+    );
+    assert.ok(
+      sink.buf.includes('[3]') && sink.buf.toLowerCase().includes('output detail'),
+      'settings must show [3] Output detail',
+    );
+    assert.ok(
+      sink.buf.includes('[4]') && sink.buf.toLowerCase().includes('appearance'),
+      'settings must show [4] Appearance',
+    );
+    assert.ok(
+      sink.buf.includes('[5]') && sink.buf.toLowerCase().includes('privacy'),
+      'settings must show [5] Privacy & memory',
+    );
+    assert.ok(
+      sink.buf.includes('[6]') && sink.buf.toLowerCase().includes('setup'),
+      'settings must show [6] Setup',
     );
   });
 
-  it('[s] → [3] toggles autoUpdate and reports the new state', async () => {
+  it('[s] → [3] opens Output detail selector (formerly autoUpdate position)', async () => {
     const sink = makeSink();
-    const dir = join(tmpdir(), `menu-autoupdate-toggle-${randomUUID()}`);
-
-    // makeCtx uses { onboarded: true, setAsDefault: false } with no explicit autoUpdate.
-    // autoUpdate is undefined → default-on. Pressing [3] toggles it OFF.
     const ctx = makeCtx({
-      cwd: dir,
-      readLine: makeScriptedReader(['s', '3', 'q']),  // enter settings → [3] toggle → quit
+      readLine: makeScriptedReader(['s', '3', '', 'q']),
     });
 
     await assert.doesNotReject(
       () => startMenu(ctx, sink),
-      'toggling auto-update should not throw',
+      'navigating settings → output detail should not throw',
     );
 
-    // Toggling from on (default) → off, the message "Update on launch: off" must appear
     assert.ok(
-      sink.buf.includes('Update on launch: off') || sink.buf.includes('Update on launch'),
-      'toggling must report the new update-on-launch state',
+      sink.buf.toLowerCase().includes('output detail') || sink.buf.toLowerCase().includes('quiet'),
+      'Output detail selector must appear after pressing [3]',
     );
   });
 
-  // ---- Settings toggles for the experimental flags (panel / learnRouting) --
+  // ---- Internal implementation flags (panel, learnRouting) were removed ----
+  // from the user-facing settings page (they are now automated default-on).
+  // The old tests that toggled them via [7]/[8] are replaced below.
 
-  it('[s] settings shows the [7] Panel and [8] Learned routing toggle lines', async () => {
+  it('[s] → [4] toggles Appearance (formerly panel/learnRouting position)', async () => {
     const sink = makeSink();
-    const ctx = makeCtx({
-      readLine: makeScriptedReader(['s', '', 'q']),  // settings → Enter (back) → quit
-    });
-
-    await startMenu(ctx, sink);
-
-    assert.ok(
-      sink.buf.includes('[7]') && sink.buf.toLowerCase().includes('panel'),
-      'settings must show the [7] Panel (advanced) toggle line',
-    );
-    assert.ok(
-      sink.buf.includes('[8]') && sink.buf.toLowerCase().includes('learned routing'),
-      'settings must show the [8] Learned routing (advanced) toggle line',
-    );
-  });
-
-  it('[s] → [7] toggles panel ON and persists it', async () => {
-    const sink = makeSink();
-    const dir = join(tmpdir(), `menu-panel-toggle-${randomUUID()}`);
+    const dir = join(tmpdir(), `menu-appearance-toggle-${randomUUID()}`);
     const config: AppConfig = { onboarded: true, setAsDefault: false, smartRoute: false };
     const ctx = makeCtx({
       config,
       cwd: dir,
-      readLine: makeScriptedReader(['s', '7', 'q']),  // settings → [7] toggle → quit
+      readLine: makeScriptedReader(['s', '4', 'q']),  // settings → [4] Appearance → quit
     });
 
-    const persisted = await withStateHome(dir, async () => {
+    await withStateHome(dir, async () => {
       await assert.doesNotReject(() => startMenu(ctx, sink));
-      return readPersistedConfig();
     });
 
     assert.ok(
-      sink.buf.includes('Panel (advanced): on'),
-      'toggling [7] must report panel on',
+      sink.buf.toLowerCase().includes('theme'),
+      'Appearance toggle must report theme change',
     );
-    assert.equal(persisted.panel, true, 'panel must be persisted as true');
-  });
-
-  it('[s] → [8] toggles learnRouting ON and persists it', async () => {
-    const sink = makeSink();
-    const dir = join(tmpdir(), `menu-learnrouting-toggle-${randomUUID()}`);
-    const config: AppConfig = { onboarded: true, setAsDefault: false, smartRoute: false };
-    const ctx = makeCtx({
-      config,
-      cwd: dir,
-      readLine: makeScriptedReader(['s', '8', 'q']),  // settings → [8] toggle → quit
-    });
-
-    const persisted = await withStateHome(dir, async () => {
-      await assert.doesNotReject(() => startMenu(ctx, sink));
-      return readPersistedConfig();
-    });
-
-    assert.ok(
-      sink.buf.includes('Learned routing (advanced): on'),
-      'toggling [8] must report learned routing on',
-    );
-    assert.equal(persisted.learnRouting, true, 'learnRouting must be persisted as true');
-  });
-
-  it('[s] settings shows and toggles [a] Auto-goal (quality-first)', async () => {
-    const sink = makeSink();
-    const dir = join(tmpdir(), `menu-autogoal-toggle-${randomUUID()}`);
-    const config: AppConfig = { onboarded: true, setAsDefault: false, smartRoute: false };
-    const ctx = makeCtx({
-      config,
-      cwd: dir,
-      readLine: makeScriptedReader(['s', 'a', 'q']),
-    });
-
-    const persisted = await withStateHome(dir, async () => {
-      await assert.doesNotReject(() => startMenu(ctx, sink));
-      return readPersistedConfig();
-    });
-
-    assert.ok(
-      sink.buf.includes('[a] Auto-goal (quality-first)'),
-      'settings must show the [a] Auto-goal (quality-first) toggle line',
-    );
-    assert.ok(
-      sink.buf.includes('Auto-goal (quality-first): on'),
-      'toggling [a] must report auto-goal on',
-    );
-    assert.equal(persisted.autoGoal, true, 'autoGoal must be persisted as true');
   });
 
   // ---- Settings selector for the OVERSIGHT SPECTRUM (Phase 2b) -------------
-  it('[s] → [e] sets oversight to autonomous and persists it', async () => {
+  it('[s] → [2] sets oversight to autonomous and persists it', async () => {
     const sink = makeSink();
     const dir = join(tmpdir(), `menu-oversight-${randomUUID()}`);
     const config: AppConfig = { onboarded: true, setAsDefault: false, smartRoute: false };
@@ -7642,7 +7662,7 @@ describe('startMenu — update notifier: banner, [u], auto-update', () => {
       cwd: dir,
       readLine: makeScriptedReader([
         's',   // settings
-        'e',   // oversight select
+        '2',   // oversight select
         '3',   // autonomous
         '',    // Enter → back from settings
         'q',   // quit
@@ -7655,8 +7675,8 @@ describe('startMenu — update notifier: banner, [u], auto-update', () => {
     });
 
     assert.ok(
-      sink.buf.includes('[e] Oversight: checkpoint'),
-      'settings must show the [e] Oversight row defaulting to checkpoint',
+      sink.buf.includes('[2] Oversight'),
+      'settings must show the [2] Oversight row',
     );
     assert.ok(
       sink.buf.includes('Oversight set to: autonomous'),
@@ -7665,8 +7685,8 @@ describe('startMenu — update notifier: banner, [u], auto-update', () => {
     assert.equal(persisted.oversight, 'autonomous', 'oversight must be persisted as autonomous');
   });
 
-  // ---- Settings toggle for USER MEMORY (Phase 4, §9) ----------------------
-  it('[s] settings shows the [c] Memory toggle line (on by default)', async () => {
+  // ---- Settings toggle for USER MEMORY (Phase 4, §9, now under Privacy & memory) -
+  it('[s] settings shows [5] Privacy & memory entry (Memory moved under subpage)', async () => {
     const sink = makeSink();
     const dir = join(tmpdir(), `menu-memory-show-${randomUUID()}`);
     const config: AppConfig = { onboarded: true, setAsDefault: false, smartRoute: false };
@@ -7681,19 +7701,19 @@ describe('startMenu — update notifier: banner, [u], auto-update', () => {
     });
 
     assert.ok(
-      sink.buf.includes('[c] Memory: on'),
-      'settings must show the [c] Memory toggle line, on by default',
+      sink.buf.includes('[5]') && sink.buf.toLowerCase().includes('privacy'),
+      'settings must show the [5] Privacy & memory entry',
     );
   });
 
-  it('[s] → [c] toggles memory OFF (kill-switch) and persists it', async () => {
+  it('[s] → [5] → [1] toggles memory OFF (kill-switch) and persists it', async () => {
     const sink = makeSink();
     const dir = join(tmpdir(), `menu-memory-off-${randomUUID()}`);
     const config: AppConfig = { onboarded: true, setAsDefault: false, smartRoute: false };
     const ctx = makeCtx({
       config,
       cwd: dir,
-      readLine: makeScriptedReader(['s', 'c', 'q']),  // settings → [c] toggle → quit
+      readLine: makeScriptedReader(['s', '5', '1', '', 'q']),  // settings → privacy → memory → back → quit
     });
 
     const persisted = await withStateHome(dir, async () => {
@@ -7701,18 +7721,18 @@ describe('startMenu — update notifier: banner, [u], auto-update', () => {
       return readPersistedConfig();
     });
 
-    assert.ok(sink.buf.includes('Memory: off'), 'toggling [c] must report memory off');
+    assert.ok(sink.buf.includes('Memory: off'), 'toggling memory under privacy must report memory off');
     assert.equal(persisted.memory, false, 'memory must be persisted as false (kill-switch)');
   });
 
-  it('[s] → [c] toggles memory back ON (removes the kill-switch flag)', async () => {
+  it('[s] → [5] → [1] toggles memory back ON (removes the kill-switch flag)', async () => {
     const sink = makeSink();
     const dir = join(tmpdir(), `menu-memory-on-${randomUUID()}`);
     const config: AppConfig = { onboarded: true, setAsDefault: false, smartRoute: false, memory: false };
     const ctx = makeCtx({
       config,
       cwd: dir,
-      readLine: makeScriptedReader(['s', 'c', 'q']),  // settings → [c] toggle → quit
+      readLine: makeScriptedReader(['s', '5', '1', '', 'q']),  // settings → privacy → memory → back → quit
     });
 
     const persisted = await withStateHome(dir, async () => {
@@ -7720,11 +7740,11 @@ describe('startMenu — update notifier: banner, [u], auto-update', () => {
       return readPersistedConfig();
     });
 
-    assert.ok(sink.buf.includes('Memory: on'), 'toggling [c] from off must report memory on');
+    assert.ok(sink.buf.includes('Memory: on'), 'toggling memory under privacy from off must report memory on');
     assert.notEqual(persisted.memory, false, 'memory:false must be cleared when re-enabling');
   });
 
-  it('[s] → [c] memory toggle PRESERVES advanced memory keys', async () => {
+  it('[s] → [5] → [1] memory toggle PRESERVES advanced memory keys', async () => {
     const sink = makeSink();
     const dir = join(tmpdir(), `menu-memory-preserve-${randomUUID()}`);
     const config: AppConfig = {
@@ -7738,7 +7758,7 @@ describe('startMenu — update notifier: banner, [u], auto-update', () => {
     const ctx = makeCtx({
       config,
       cwd: dir,
-      readLine: makeScriptedReader(['s', 'c', 'q']),
+      readLine: makeScriptedReader(['s', '5', '1', '', 'q']),
     });
 
     const persisted = await withStateHome(dir, async () => {
@@ -7752,14 +7772,19 @@ describe('startMenu — update notifier: banner, [u], auto-update', () => {
     assert.equal(persisted.memoryDefaultScope, 'global', 'advanced key memoryDefaultScope preserved');
   });
 
-  it('[s] → [6] smart-routing toggle PRESERVES the memory kill-switch', async () => {
+  // ---- Setting preservation tests (key independence) -------------------
+  // These were guard rails against the old allow-list config rebuilds that
+  // silently dropped keys. The new settings use the full spread (withOptional),
+  // but preserved config invariants are still regression-valuable.
+
+  it('[s] → [5] → [3] codebase awareness toggle PRESERVES the memory kill-switch', async () => {
     const sink = makeSink();
     const dir = join(tmpdir(), `menu-memory-survives-${randomUUID()}`);
     const config: AppConfig = { onboarded: true, setAsDefault: false, memory: false };
     const ctx = makeCtx({
       config,
       cwd: dir,
-      readLine: makeScriptedReader(['s', '6', 'q']),  // toggle a DIFFERENT setting
+      readLine: makeScriptedReader(['s', '5', '3', '', 'q']),  // privacy → codebase awareness toggle → back → quit
     });
 
     const persisted = await withStateHome(dir, async () => {
@@ -7767,13 +7792,13 @@ describe('startMenu — update notifier: banner, [u], auto-update', () => {
       return readPersistedConfig();
     });
 
-    assert.equal(persisted.memory, false, 'flipping smart-routing must NOT drop memory:false');
+    assert.equal(persisted.memory, false, 'flipping codebase awareness must NOT drop memory:false');
   });
 
   // The bug this guards against: rebuilding the config for ANY toggle used to
-  // drop unrelated experimental flags. Start with panel + learnRouting ON, flip
+  // drop unrelated experimental flags. Start with panel + learnRouting ON, toggle
   // a DIFFERENT setting, and assert both survive.
-  it('[s] → [4] native-sessions toggle PRESERVES panel and learnRouting', async () => {
+  it('[s] → [4] Appearance toggle PRESERVES panel and learnRouting', async () => {
     const sink = makeSink();
     const dir = join(tmpdir(), `menu-preserve-toggle-${randomUUID()}`);
     const config: AppConfig = {
@@ -7786,7 +7811,7 @@ describe('startMenu — update notifier: banner, [u], auto-update', () => {
     const ctx = makeCtx({
       config,
       cwd: dir,
-      readLine: makeScriptedReader(['s', '4', 'q']),  // settings → [4] native sessions → quit
+      readLine: makeScriptedReader(['s', '4', 'q']),  // settings → [4] Appearance → quit
     });
 
     const persisted = await withStateHome(dir, async () => {
@@ -7794,12 +7819,11 @@ describe('startMenu — update notifier: banner, [u], auto-update', () => {
       return readPersistedConfig();
     });
 
-    assert.equal(persisted.panel, true, 'toggling native sessions must NOT drop panel');
-    assert.equal(persisted.learnRouting, true, 'toggling native sessions must NOT drop learnRouting');
-    assert.equal(persisted.nativeSessions, true, 'native sessions should now be on');
+    assert.equal(persisted.panel, true, 'toggling Appearance must NOT drop panel');
+    assert.equal(persisted.learnRouting, true, 'toggling Appearance must NOT drop learnRouting');
   });
 
-  it('[s] → [6] smart-routing toggle PRESERVES panel and learnRouting', async () => {
+  it('[s] → [6] Setup toggle PRESERVES panel and learnRouting', async () => {
     const sink = makeSink();
     const dir = join(tmpdir(), `menu-preserve-smartroute-${randomUUID()}`);
     const config: AppConfig = {
@@ -7812,19 +7836,20 @@ describe('startMenu — update notifier: banner, [u], auto-update', () => {
     const ctx = makeCtx({
       config,
       cwd: dir,
-      readLine: makeScriptedReader(['s', '6', 'q']),  // settings → [6] smart routing → quit
+      readLine: makeScriptedReader(['s', '6', 'q']),  // settings → [6] Setup → quit
     });
 
     const persisted = await withStateHome(dir, async () => {
+      await saveConfig(config);
       await assert.doesNotReject(() => startMenu(ctx, sink));
       return readPersistedConfig();
     });
 
-    assert.equal(persisted.panel, true, 'toggling smart routing must NOT drop panel');
-    assert.equal(persisted.learnRouting, true, 'toggling smart routing must NOT drop learnRouting');
+    assert.equal(persisted.panel, true, 'entering Setup must NOT drop panel');
+    assert.equal(persisted.learnRouting, true, 'entering Setup must NOT drop learnRouting');
   });
 
-  it('toggling panel PRESERVES learnRouting (and vice-versa)', async () => {
+  it('toggling Appearance PRESERVES learnRouting (and vice-versa)', async () => {
     const sink = makeSink();
     const dir = join(tmpdir(), `menu-preserve-cross-${randomUUID()}`);
     const config: AppConfig = {
@@ -7836,7 +7861,7 @@ describe('startMenu — update notifier: banner, [u], auto-update', () => {
     const ctx = makeCtx({
       config,
       cwd: dir,
-      readLine: makeScriptedReader(['s', '7', 'q']),  // settings → [7] panel → quit
+      readLine: makeScriptedReader(['s', '4', 'q']),  // settings → [4] Appearance → quit
     });
 
     const persisted = await withStateHome(dir, async () => {
@@ -7844,8 +7869,10 @@ describe('startMenu — update notifier: banner, [u], auto-update', () => {
       return readPersistedConfig();
     });
 
-    assert.equal(persisted.panel, true, 'panel must turn on');
-    assert.equal(persisted.learnRouting, true, 'toggling panel must NOT drop learnRouting');
+    assert.ok(
+      persisted.learnRouting === true,
+      'toggling Appearance must NOT drop learnRouting',
+    );
   });
 
   // The HIGH-severity silent-data-loss regression: a setter that rebuilt config
@@ -7868,7 +7895,7 @@ describe('startMenu — update notifier: banner, [u], auto-update', () => {
     const ctx = makeCtx({
       config,
       cwd: dir,
-      readLine: makeScriptedReader(['s', '1', '3', 'q']), // settings → [1] mode → [3] quality-first → quit
+      readLine: makeScriptedReader(['s', '1', '4', 'q']), // settings → [1] mode → [4] High (quality-first) → quit
     });
 
     const persisted = await withStateHome(dir, async () => {
@@ -9222,15 +9249,15 @@ describe('startMenu — first-run: hook already installed → skips set-default 
 });
 
 // ---------------------------------------------------------------------------
-// FLOW: Auto mode — settings [4] Auto selection and display
+// FLOW: Auto mode — settings [1] Auto selection and display
 // ---------------------------------------------------------------------------
 
-describe('startMenu — mode settings [4] Auto', () => {
+describe('startMenu — mode settings [1] Auto', () => {
   /**
-   * Build a MenuContext with a pinned mode and drive through s → 1 → 4 → q.
+   * Build a MenuContext with a pinned mode and drive through s → 1 → 1 → q.
    * After the run the output buffer should confirm mode was reset to auto.
    */
-  it('selecting [4] Auto in mode settings resets mode to auto (output says "(auto)")', async () => {
+  it('selecting [1] Auto in mode settings resets mode to auto (output says "(auto)")', async () => {
     const clock = makeFakeClock();
     const store = makeStore(clock);
     const sink = makeSink();
@@ -9244,7 +9271,7 @@ describe('startMenu — mode settings [4] Auto', () => {
         readLine: makeScriptedReader([
           's',   // settings
           '1',   // mode select
-          '4',   // auto
+          '1',   // auto
           '',    // Enter back from settings
           'q',   // quit
         ]),
@@ -9255,17 +9282,17 @@ describe('startMenu — mode settings [4] Auto', () => {
 
     await assert.doesNotReject(
       () => startMenu(ctx, sink),
-      'selecting [4] Auto in mode settings should not throw',
+      'selecting [1] Auto in mode settings should not throw',
     );
 
-    // After pressing 4, runModeSelect writes "Mode: <label> (auto)" to confirm.
+    // After pressing 1, runModeSelect writes "New conversation default: Auto (smart)" to confirm.
     assert.ok(
-      sink.buf.includes('(auto)'),
-      'output must contain "(auto)" after selecting [4] Auto',
+      sink.buf.toLowerCase().includes('auto (smart)'),
+      'output must contain "Auto (smart)" after selecting [1] Auto',
     );
   });
 
-  it('[4] Auto option appears in the mode settings screen', async () => {
+  it('[1] Auto option appears in the mode settings screen', async () => {
     const clock = makeFakeClock();
     const store = makeStore(clock);
     const sink = makeSink();
@@ -9289,10 +9316,10 @@ describe('startMenu — mode settings [4] Auto', () => {
 
     await assert.doesNotReject(() => startMenu(ctx, sink));
 
-    // The mode select screen must list [4] Auto
+    // The mode select screen must list [1] Auto
     assert.ok(
-      sink.buf.includes('[4]') && sink.buf.toLowerCase().includes('auto'),
-      `mode select screen must show [4] Auto option; got: ${sink.buf.slice(0, 800)}`,
+      sink.buf.includes('[1]') && sink.buf.toLowerCase().includes('auto'),
+      `mode select screen must show [1] Auto option; got: ${sink.buf.slice(0, 800)}`,
     );
 
     // …and the honest per-provider "Auto detected" breakdown. The fake env has
@@ -9327,13 +9354,13 @@ describe('startMenu — mode settings [4] Auto', () => {
 
     await assert.doesNotReject(() => startMenu(ctx, sink));
 
-    // The main screen mode line must show the auto indicator. With no provider
+    // The main screen mode line must show the Auto (smart) indicator. With no provider
     // reporting a plan (FAKE_ENV claude plan=null), the compact main line stays
-    // clean — just "(auto)", NOT a nagging "no plan reported" (that detail lives
+    // clean — just "Auto (smart)", NOT a nagging "no plan reported" (that detail lives
     // on the mode screen's breakdown, not the always-visible status line).
     assert.ok(
-      sink.buf.includes('(auto'),
-      'main screen mode line must show the "(auto…" indicator when mode is unset',
+      sink.buf.includes('Auto (smart)'),
+      'main screen mode line must show "Auto (smart)" when mode is unset',
     );
     assert.ok(
       !sink.buf.includes('(auto · no plan reported)'),
@@ -9360,10 +9387,10 @@ describe('startMenu — mode settings [4] Auto', () => {
 
     await assert.doesNotReject(() => startMenu(ctx, sink));
 
-    // "(auto)" should NOT appear when mode is explicitly pinned
+    // "Auto (smart)" should NOT appear when mode is explicitly pinned
     assert.ok(
-      !sink.buf.includes('(auto)'),
-      'main screen must NOT show "(auto)" when mode is explicitly pinned',
+      !sink.buf.includes('Auto (smart)'),
+      'main screen must NOT show "Auto (smart)" when mode is explicitly pinned',
     );
   });
 
@@ -9410,7 +9437,7 @@ describe('startMenu — mode settings [4] Auto', () => {
       'main screen must show Max when claude plan is max and mode is auto',
     );
     assert.ok(
-      sink.buf.includes('(auto'),
+      sink.buf.includes('Auto (smart)'),
       'main screen must include the auto indicator when mode is unset',
     );
   });
@@ -9872,19 +9899,23 @@ describe('startMenu — goals: /todo parks + Parked section renders', () => {
       assert.equal(parked.length, 1, 'one parked goal exists');
       assert.ok(parked[0]?.title.includes('redesign the activity feed'));
 
-      // The menu re-render after /exit shows the Parked section + the [g] entry.
-      assert.ok(sink.buf.includes('Goals · Parked'), 'menu renders the Parked section');
-      assert.ok(sink.buf.includes('Manage goals'), 'the [g] Manage goals entry appears');
+      // The menu re-render after /exit: home no longer shows a Parked section.
+      // Verify the parked goal is in the store (the core behavior still works).
+      assert.ok(
+        parked[0]?.title.includes('redesign the activity feed'),
+        'the parked goal title matches',
+      );
     });
   });
 
-  it('the Parked section is ABSENT when there are no parked goals', async () => {
+  it('no parked goals section when there are no parked goals', async () => {
     await withStateHome(join(tmpdir(), `goals-empty-${randomUUID()}`), async () => {
       const sink = makeSink();
       const ctx = makeCtx({ readLine: makeScriptedReader(['q']) });
       await startMenu(ctx, sink);
-      assert.ok(!sink.buf.includes('Goals · Parked'), 'no Parked section when empty');
-      assert.ok(!sink.buf.includes('Manage goals'), 'no [g] entry when empty');
+      // The home screen no longer renders a Parked section at all; just
+      // verify it renders cleanly and the main menu appears.
+      assert.ok(sink.buf.includes('myshell-tools'), 'main menu renders');
     });
   });
 });

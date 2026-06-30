@@ -11,7 +11,7 @@
  *  - Rationale names matched signals (honesty contract)
  */
 
-import { describe, it } from 'node:test';
+import { describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 import { classify, hasWorkIntent } from '../../src/core/classify.ts';
 

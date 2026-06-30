@@ -9,7 +9,7 @@
  * '' / [] (the fail-soft additive contract). No I/O, no clock — table-tested.
  */
 
-import { describe, it } from 'node:test';
+import { describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 
 import {

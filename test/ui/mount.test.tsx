@@ -4,7 +4,7 @@
  * adapter functions. Lives under test/ui so it runs via `tsx` (mount.tsx is a
  * .tsx module and imports App.tsx).
  */
-import test from 'node:test';
+import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import {
   backfillTerminalSize,

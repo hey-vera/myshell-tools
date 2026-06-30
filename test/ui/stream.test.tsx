@@ -6,7 +6,7 @@
  * Runs under `npm run test:ui` (tsx + ink-testing-library), NOT the strip-types
  * `npm test` suite — JSX is transpiled by tsx.
  */
-import test from 'node:test';
+import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import React from 'react';
 import { render } from 'ink-testing-library';

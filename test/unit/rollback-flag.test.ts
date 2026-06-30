@@ -5,7 +5,7 @@
  * by rollback (their defaults are controlled only by basic mode or explicit opt-out).
  */
 
-import { describe, it } from 'node:test';
+import { describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 import { rollbackEngaged } from '../../src/core/rollback-flag.ts';
 import { judgmentEnabled } from '../../src/core/judgment-flag.ts';

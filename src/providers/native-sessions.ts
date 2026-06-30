@@ -33,6 +33,8 @@ import { join } from 'node:path';
 import type { SessionEntry } from '../core/types.js';
 import type { ConversationStore, ConversationMode } from '../infra/conversation-store.js';
 import type { ProviderId } from './port.js';
+import { defaultStateLayout } from '../infra/state-layout.js';
+import { resolveProviderHome } from './provider-home.js';
 
 // ---------------------------------------------------------------------------
 // Public interface
@@ -260,12 +262,27 @@ export function deriveTitle(entries: SessionEntry[]): string {
  * Resolve a provider's config base dir. Honours `CLAUDE_CONFIG_DIR` / `CODEX_HOME`
  * (set by Replit/bashrc or our own replitPersistentEnv) so we find sessions in the
  * PERSISTENT workspace dir, not just the ephemeral `~/.claude` / `~/.codex`.
+ *
+ * Delegates to resolveProviderHome so the full precedence (explicit env →
+ * myshell-managed → .replit-tools back-compat → home-dir fallback) is
+ * centralised in provider-home.ts.
  */
 function providerBaseDir(
   provider: ProviderId,
   homeDir: string,
+  cwd: string,
   env?: NodeJS.ProcessEnv,
 ): string {
+  try {
+    return resolveProviderHome(provider, {
+      env: env ?? process.env,
+      layout: defaultStateLayout(),
+      cwd,
+      home: homeDir,
+    });
+  } catch {
+    // Fall through to legacy logic
+  }
   if (provider === 'claude') {
     const cfg = env?.['CLAUDE_CONFIG_DIR'];
     return cfg !== undefined && cfg.length > 0 ? cfg : join(homeDir, '.claude');
@@ -275,8 +292,8 @@ function providerBaseDir(
 }
 
 /** Return the directories to scan for a given provider. */
-function nativeDirs(provider: ProviderId, homeDir: string, env?: NodeJS.ProcessEnv): string[] {
-  const base = providerBaseDir(provider, homeDir, env);
+function nativeDirs(provider: ProviderId, homeDir: string, cwd: string, env?: NodeJS.ProcessEnv): string[] {
+  const base = providerBaseDir(provider, homeDir, cwd, env);
   if (provider === 'claude') {
     return [join(base, 'projects'), join(base, 'sessions')];
   }
@@ -303,11 +320,12 @@ function isNativeFile(provider: ProviderId, name: string): boolean {
  */
 export async function listNativeSessions(
   provider: ProviderId,
-  opts?: { homeDir?: string; limit?: number; env?: NodeJS.ProcessEnv },
+  opts?: { homeDir?: string; limit?: number; env?: NodeJS.ProcessEnv; cwd?: string },
 ): Promise<NativeSession[]> {
   const home = opts?.homeDir ?? homedir();
   const limit = opts?.limit ?? 12;
-  const dirs = nativeDirs(provider, home, opts?.env);
+  const cwd = opts?.cwd ?? process.cwd();
+  const dirs = nativeDirs(provider, home, cwd, opts?.env);
 
   // Collect candidate files across all directories
   const candidates: Array<{ file: string; mtimeMs: number }> = [];
@@ -437,11 +455,14 @@ export async function listRecentNativeSessions(opts?: {
   env?: NodeJS.ProcessEnv;
   limit?: number;
   providers?: readonly ProviderId[];
+  cwd?: string;
 }): Promise<NativeSession[]> {
   const limit = opts?.limit ?? 9;
   const providers = opts?.providers ?? (['claude', 'codex'] as const);
-  const perProvider: { homeDir?: string; env?: NodeJS.ProcessEnv; limit: number } = {
+  const cwd = opts?.cwd ?? process.cwd();
+  const perProvider: { homeDir?: string; env?: NodeJS.ProcessEnv; limit: number; cwd: string } = {
     limit,
+    cwd,
     ...(opts?.homeDir !== undefined ? { homeDir: opts.homeDir } : {}),
     ...(opts?.env !== undefined ? { env: opts.env } : {}),
   };

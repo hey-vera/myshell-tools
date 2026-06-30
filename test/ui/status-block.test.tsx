@@ -7,7 +7,7 @@
  * shown with goals when active, the "Waiting on N models" status-line wording,
  * and the height-cap COLLAPSE to the compact summary at a small `rows`.
  */
-import test, { mock } from 'node:test';
+import { test, vi } from 'vitest';
 import assert from 'node:assert/strict';
 import React, { act } from 'react';
 import { render } from 'ink-testing-library';
@@ -361,7 +361,7 @@ test('StatusBlock with an injected clock shows a deterministic elapsed', async (
   const actEnvironment = globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean };
   const previousActEnvironment = actEnvironment.IS_REACT_ACT_ENVIRONMENT;
   actEnvironment.IS_REACT_ACT_ENVIRONMENT = true;
-  mock.timers.enable({ apis: ['setInterval'] });
+  vi.useFakeTimers();
   try {
     const goals = [goal({ state: 'running', agents: [agent({ state: 'running', tokens: 1300 })] })];
     const state = active(goals);
@@ -373,11 +373,11 @@ test('StatusBlock with an injected clock shows a deterministic elapsed', async (
     });
     await act(async () => {
       now = 16_000;
-      mock.timers.tick(1000);
+      vi.advanceTimersByTime(1000);
     });
     assert.match(lastFrame?.() ?? '', /· 6s/);
   } finally {
-    mock.timers.reset();
+    vi.useRealTimers();
     actEnvironment.IS_REACT_ACT_ENVIRONMENT = previousActEnvironment;
   }
 });

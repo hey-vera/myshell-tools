@@ -17,7 +17,7 @@
  * Run with: node --experimental-strip-types --test test/unit/stream-filter.test.ts
  */
 
-import { describe, it } from 'node:test';
+import { describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 import { EnvelopeFilter, cleanAssistantText } from '../../src/interface/stream-filter.ts';
 import type { OutputSink } from '../../src/interface/stream-filter.ts';

@@ -1,4 +1,4 @@
-import { describe, it } from 'node:test';
+import { describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 import { planningDepthEnabled } from '../../src/interface/ui/planning-depth-flag.ts';
 

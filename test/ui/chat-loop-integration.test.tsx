@@ -16,7 +16,7 @@
  *
  * Runs under `npm run test:ui` (tsx) because it imports the .tsx Ink modules.
  */
-import test from 'node:test';
+import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';

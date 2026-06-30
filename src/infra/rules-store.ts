@@ -33,7 +33,7 @@ import { join } from 'node:path';
 
 import type { Clock } from '../core/types.js';
 import { atomicWrite, withLock } from './atomic.js';
-import { defaultStateHome } from './state-dir.js';
+import { defaultStateLayout, resolveStateLayout, type AppStateLayout } from './state-layout.js';
 import { deriveProjectKey } from './user-memory-store.js';
 import { capRule, type Rule, type RuleKind, type RuleScope, type RuleTrigger } from '../core/rules.js';
 
@@ -43,23 +43,40 @@ import { capRule, type Rule, type RuleKind, type RuleScope, type RuleTrigger } f
 export { deriveProjectKey };
 
 // ---------------------------------------------------------------------------
+// Layout resolution (homeDir compat bridge)
+// ---------------------------------------------------------------------------
+
+function resolveLayout(homeDir?: string, layout?: AppStateLayout): AppStateLayout {
+  if (layout) return layout;
+  if (homeDir !== undefined) {
+    return resolveStateLayout({
+      env: {},
+      platform: 'linux',
+      cwd: homeDir,
+      homeDir,
+    });
+  }
+  return defaultStateLayout();
+}
+
+// ---------------------------------------------------------------------------
 // Path helpers
 // ---------------------------------------------------------------------------
 
-function getRulesDir(homeDir: string): string {
-  return join(homeDir, '.myshell-tools', 'rules');
+function getRulesDir(l: AppStateLayout): string {
+  return l.paths.rulesDir;
 }
-function getItemsDir(homeDir: string): string {
-  return join(getRulesDir(homeDir), 'items');
+function getItemsDir(l: AppStateLayout): string {
+  return join(getRulesDir(l), 'items');
 }
-function getIndexPath(homeDir: string): string {
-  return join(getRulesDir(homeDir), 'index.json');
+function getIndexPath(l: AppStateLayout): string {
+  return join(getRulesDir(l), 'index.json');
 }
-function getCorruptIndexPath(homeDir: string): string {
-  return join(getRulesDir(homeDir), 'index.json.corrupt');
+function getCorruptIndexPath(l: AppStateLayout): string {
+  return join(getRulesDir(l), 'index.json.corrupt');
 }
-function getIndexLockPath(homeDir: string): string {
-  return join(getRulesDir(homeDir), 'index.json.lock');
+function getIndexLockPath(l: AppStateLayout): string {
+  return join(getRulesDir(l), 'index.json.lock');
 }
 
 /** Path-traversal guard: only `rule_<alnum>` ids ever touch the filesystem. */
@@ -75,11 +92,11 @@ export class InvalidRuleIdError extends Error {
   }
 }
 
-function getItemPath(homeDir: string, id: string): string {
+function getItemPath(l: AppStateLayout, id: string): string {
   if (!isValidId(id)) {
     throw new InvalidRuleIdError(id);
   }
-  return join(getItemsDir(homeDir), `${id}.json`);
+  return join(getItemsDir(l), `${id}.json`);
 }
 
 // ---------------------------------------------------------------------------
@@ -98,13 +115,13 @@ type IndexReadResult =
   | { readonly kind: 'absent' }
   | { readonly kind: 'corrupt'; readonly reason: string };
 
-async function ensureDirs(homeDir: string): Promise<void> {
-  await mkdir(getItemsDir(homeDir), { recursive: true });
+async function ensureDirs(l: AppStateLayout): Promise<void> {
+  await mkdir(getItemsDir(l), { recursive: true });
 }
 
-async function readIndexFile(homeDir: string): Promise<IndexReadResult> {
+async function readIndexFile(l: AppStateLayout): Promise<IndexReadResult> {
   try {
-    const raw = await readFile(getIndexPath(homeDir), 'utf8');
+    const raw = await readFile(getIndexPath(l), 'utf8');
     const parsed = JSON.parse(raw) as unknown;
     if (parsed === null || typeof parsed !== 'object' || !Array.isArray((parsed as RuleIndex).rules)) {
       return { kind: 'corrupt', reason: 'index.json missing rules array' };
@@ -126,19 +143,19 @@ function sortNewestFirst(rules: Rule[]): Rule[] {
   return [...rules].sort((a, b) => (a.createdAt < b.createdAt ? 1 : a.createdAt > b.createdAt ? -1 : 0));
 }
 
-async function writeIndex(homeDir: string, rules: Rule[]): Promise<void> {
+async function writeIndex(l: AppStateLayout, rules: Rule[]): Promise<void> {
   const index: RuleIndex = { version: 1, rules: sortNewestFirst(rules) };
-  await atomicWrite(getIndexPath(homeDir), JSON.stringify(index, null, 2), 0o600);
+  await atomicWrite(getIndexPath(l), JSON.stringify(index, null, 2), 0o600);
 }
 
-async function persistRule(homeDir: string, rule: Rule): Promise<void> {
-  await atomicWrite(getItemPath(homeDir, rule.id), JSON.stringify(rule, null, 2), 0o600);
+async function persistRule(l: AppStateLayout, rule: Rule): Promise<void> {
+  await atomicWrite(getItemPath(l, rule.id), JSON.stringify(rule, null, 2), 0o600);
 }
 
-async function preserveCorruptIndex(homeDir: string): Promise<string> {
-  const corruptPath = getCorruptIndexPath(homeDir);
+async function preserveCorruptIndex(l: AppStateLayout): Promise<string> {
+  const corruptPath = getCorruptIndexPath(l);
   try {
-    await rename(getIndexPath(homeDir), corruptPath);
+    await rename(getIndexPath(l), corruptPath);
   } catch (err) {
     const nodeErr = err as NodeJS.ErrnoException;
     if (nodeErr.code !== 'ENOENT') throw err;
@@ -147,8 +164,8 @@ async function preserveCorruptIndex(homeDir: string): Promise<string> {
 }
 
 /** Rebuild the index from items/*.json (the rule files are authoritative). */
-async function rebuildIndexFromItems(homeDir: string): Promise<Rule[]> {
-  const dir = getItemsDir(homeDir);
+async function rebuildIndexFromItems(l: AppStateLayout): Promise<Rule[]> {
+  const dir = getItemsDir(l);
   let files: string[] = [];
   try {
     files = (await readdir(dir, { withFileTypes: true }))
@@ -172,10 +189,10 @@ async function rebuildIndexFromItems(homeDir: string): Promise<Rule[]> {
   return sortNewestFirst(rules);
 }
 
-async function recoverIndex(homeDir: string, reason: string, onWarning?: StoreWarning): Promise<Rule[]> {
-  const corruptPath = await preserveCorruptIndex(homeDir);
-  const rebuilt = await rebuildIndexFromItems(homeDir);
-  await writeIndex(homeDir, rebuilt);
+async function recoverIndex(l: AppStateLayout, reason: string, onWarning?: StoreWarning): Promise<Rule[]> {
+  const corruptPath = await preserveCorruptIndex(l);
+  const rebuilt = await rebuildIndexFromItems(l);
+  await writeIndex(l, rebuilt);
   onWarning?.(
     `Recovered rules index (${reason}); rebuilt ${rebuilt.length} rule(s), preserved original at ${corruptPath}.`,
   );
@@ -183,11 +200,11 @@ async function recoverIndex(homeDir: string, reason: string, onWarning?: StoreWa
 }
 
 /** Read the index INSIDE the lock (RC-4). Recovers a missing/corrupt index. */
-async function readIndexLocked(homeDir: string, onWarning?: StoreWarning): Promise<Rule[]> {
-  const result = await readIndexFile(homeDir);
+async function readIndexLocked(l: AppStateLayout, onWarning?: StoreWarning): Promise<Rule[]> {
+  const result = await readIndexFile(l);
   if (result.kind === 'ok') return result.rules;
   if (result.kind === 'absent') return [];
-  return recoverIndex(homeDir, result.reason, onWarning);
+  return recoverIndex(l, result.reason, onWarning);
 }
 
 // ---------------------------------------------------------------------------
@@ -219,10 +236,11 @@ export interface RulesStore {
 
 export function createFileRulesStore(opts: {
   homeDir?: string;
+  layout?: AppStateLayout;
   clock: Clock;
   onWarning?: StoreWarning;
 }): RulesStore {
-  const home = opts.homeDir ?? defaultStateHome();
+  const l = resolveLayout(opts.homeDir, opts.layout);
   const { clock } = opts;
   const onWarning = opts.onWarning;
 
@@ -233,8 +251,8 @@ export function createFileRulesStore(opts: {
 
   return {
     async list(filter): Promise<Rule[]> {
-      await ensureDirs(home);
-      const rules = await withLock(getIndexLockPath(home), async () => readIndexLocked(home, onWarning));
+      await ensureDirs(l);
+      const rules = await withLock(getIndexLockPath(l), async () => readIndexLocked(l, onWarning));
       return rules.filter((r) => {
         if (filter?.scope !== undefined && r.scope !== filter.scope) return false;
         if (filter?.projectKey !== undefined && r.projectKey !== filter.projectKey) return false;
@@ -245,7 +263,7 @@ export function createFileRulesStore(opts: {
     async get(id): Promise<Rule | null> {
       if (!isValidId(id)) return null;
       try {
-        const raw = await readFile(getItemPath(home, id), 'utf8');
+        const raw = await readFile(getItemPath(l, id), 'utf8');
         return capRule(JSON.parse(raw) as Rule);
       } catch {
         return null;
@@ -253,10 +271,10 @@ export function createFileRulesStore(opts: {
     },
 
     async create(input): Promise<Rule> {
-      await ensureDirs(home);
+      await ensureDirs(l);
       const scope: RuleScope = input.scope ?? 'project';
-      return withLock(getIndexLockPath(home), async () => {
-        const rules = await readIndexLocked(home, onWarning);
+      return withLock(getIndexLockPath(l), async () => {
+        const rules = await readIndexLocked(l, onWarning);
         const rule: Rule = capRule({
           version: 1,
           id: mintId(),
@@ -267,26 +285,26 @@ export function createFileRulesStore(opts: {
           projectKey: scope === 'project' ? (input.projectKey ?? null) : null,
           createdAt: clock.isoNow(),
         });
-        await persistRule(home, rule);
-        await writeIndex(home, [...rules, rule]);
+        await persistRule(l, rule);
+        await writeIndex(l, [...rules, rule]);
         return rule;
       });
     },
 
     async remove(id): Promise<boolean> {
       if (!isValidId(id)) return false;
-      await ensureDirs(home);
-      return withLock(getIndexLockPath(home), async () => {
-        const rules = await readIndexLocked(home, onWarning);
+      await ensureDirs(l);
+      return withLock(getIndexLockPath(l), async () => {
+        const rules = await readIndexLocked(l, onWarning);
         const present = rules.some((r) => r.id === id);
         try {
-          await unlink(getItemPath(home, id));
+          await unlink(getItemPath(l, id));
         } catch {
           // already gone — still purge from the index below
         }
         const next = rules.filter((r) => r.id !== id);
         if (next.length === rules.length && !present) return false;
-        await writeIndex(home, next);
+        await writeIndex(l, next);
         return true;
       });
     },
