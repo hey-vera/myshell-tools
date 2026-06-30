@@ -42,6 +42,20 @@ const REPLIT_WRAPPER_BEGIN = '# >>> myshell-tools replit bashrc wrapper >>>';
 const REPLIT_WRAPPER_END = '# <<< myshell-tools replit bashrc wrapper <<<';
 const REPLIT_ORIGINAL_PREFIX = '# myshell-tools-replit-original-bashrc: ';
 
+/**
+ * The Nix store prefix that a Replit `~/.bashrc` symlink resolves into.
+ *
+ * On a real Replit container this is always the literal `/nix/store/`. It is
+ * read from an env override only so that hermetic tests can point it at a temp
+ * directory (a sandbox cannot create files under the real `/nix/store/`). In
+ * production the env var is unset, so behavior is byte-for-byte identical to a
+ * hard-coded `'/nix/store/'` check.
+ */
+function nixStoreRoot(): string {
+  const override = process.env['MYSHELL_NIX_STORE_ROOT'];
+  return override !== undefined && override.length > 0 ? override : '/nix/store/';
+}
+
 interface ReplitShellHookResult {
   readonly ok: boolean;
   readonly changed: boolean;
@@ -564,7 +578,7 @@ export async function ensureReplitShellHook(
 
     if (st?.isSymbolicLink() === true) {
       const originalTarget = await realpath(rcPath);
-      if (!originalTarget.startsWith('/nix/store/')) {
+      if (!originalTarget.startsWith(nixStoreRoot())) {
         return {
           ok: true,
           changed: false,

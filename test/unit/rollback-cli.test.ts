@@ -34,6 +34,15 @@ describe('myshell-tools rollback CLI', () => {
     const env = { ...process.env, HOME: homeDir };
     delete env['REPL_ID'];
     delete env['REPLIT_DEV_DOMAIN'];
+    // Isolate the state layout from the host's XDG dirs. On POSIX,
+    // resolveStateLayout honors XDG_CONFIG_HOME/XDG_STATE_HOME/XDG_CACHE_HOME, so
+    // an inherited XDG_CONFIG_HOME would send saveConfig to <xdg>/myshell-tools
+    // while readPersisted() reads <homeDir>/.myshell-tools — a false mismatch.
+    // Clearing them pins the layout to the legacy ~/.myshell-tools this test asserts.
+    delete env['XDG_CONFIG_HOME'];
+    delete env['XDG_STATE_HOME'];
+    delete env['XDG_CACHE_HOME'];
+    delete env['XDG_DATA_HOME'];
     if (rollbackEnv === undefined) delete env['MYSHELL_ROLLBACK'];
     else env['MYSHELL_ROLLBACK'] = rollbackEnv;
     const { stdout, stderr } = await execFileAsync(
