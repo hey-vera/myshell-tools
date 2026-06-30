@@ -23,6 +23,7 @@ import type { OutputSink } from '../stream-filter.js';
 import type { LineReader, KeyInputStream } from '../menu-readline.js';
 import type { CoreEvent } from '../../core/types.js';
 import type { ProviderId } from '../../providers/port.js';
+import type { AppConfig } from '../../infra/config.js';
 import { App, createInkAppBridge, type InkAppBridge, type InputBoxInfo } from './App.js';
 import {
   reduce,
@@ -33,6 +34,8 @@ import {
   type UiState,
   type Verbosity,
 } from './index.js';
+import { goalsPanelEnabled } from './goals-panel-flag.js';
+import { controlPanelEnabled } from './control-panel-flag.js';
 
 // ---------------------------------------------------------------------------
 // 1. Width-backfill bootstrap
@@ -100,6 +103,39 @@ export function createInkStore(bridge: InkAppBridge): InkStore {
       bridge.pushState(state);
     },
   };
+}
+
+/**
+ * Configure the goals-panel feature in the persistent store at mount time.
+ * Calls `goalsPanelEnabled(env, config)` to resolve the flag, dispatches EXACTLY
+ * one `goals-panel/configure` action, and returns the computed boolean. Does NOT
+ * mutate bridge or React state directly — this is a pure Node-side dispatch.
+ */
+export function configureGoalsPanelStore(
+  store: InkStore,
+  env: NodeJS.ProcessEnv | undefined,
+  config: Pick<AppConfig, 'experimentalGoalsPanel' | 'experimentalControlPanel'> | undefined,
+): boolean {
+  const enabled = goalsPanelEnabled(env, config);
+  store.dispatch({ type: 'goals-panel/configure', enabled });
+  return enabled;
+}
+
+/**
+ * Configure the control-panel feature in the persistent store at mount time.
+ * Calls `controlPanelEnabled(env, config)` to resolve the flag, dispatches
+ * EXACTLY one `control-panel/configure` action, and returns the computed boolean.
+ * Does NOT mutate bridge or React state directly — this is a pure Node-side
+ * dispatch. Mirrors {@link configureGoalsPanelStore}.
+ */
+export function configureControlPanelStore(
+  store: InkStore,
+  env: NodeJS.ProcessEnv | undefined,
+  config: Pick<AppConfig, 'experimentalGoalsPanel' | 'experimentalControlPanel'> | undefined,
+): boolean {
+  const enabled = controlPanelEnabled(env, config);
+  store.dispatch({ type: 'control-panel/configure', enabled });
+  return enabled;
 }
 
 // ---------------------------------------------------------------------------
@@ -540,6 +576,11 @@ export interface InkMountOptions {
    * in Step 2.
    */
   readonly stdin?: KeyInputStream;
+  /** Environment variables for feature flag resolution (goals panel, etc.).
+   *  Absent → empty env (all features default-off in tests / library callers). */
+  readonly env?: NodeJS.ProcessEnv;
+  /** Sliced AppConfig for feature flag resolution. Absent → all absent (off). */
+  readonly config?: Pick<AppConfig, 'experimentalGoalsPanel' | 'experimentalControlPanel'>;
 }
 
 /**
@@ -555,6 +596,24 @@ export function mountInk(opts: InkMountOptions): InkMountHandle {
   // OutputSink chrome and the streaming turn driver BOTH fold into it, so there is
   // ONE growing committed[] transcript feeding <Static> (append-only across turns).
   const store = createInkStore(bridge);
+  // Configure feature flags in the persistent store immediately so the reducer
+  // state is settled before any consumer (OutputSink, LineReader, TurnDriver,
+  // React) reads it. The returned booleans arm the bridge routes for Slice 13 so
+  // Ctrl+G can toggle the active fullscreen surface.
+  //
+  // Precedence: Control Panel supersedes standalone Goals Panel. When both flags
+  // are on, only the Control Panel route is armed; the Goals bridge is explicitly
+  // cleared so goals-panel actions become no-ops (the mount invariant ensures at
+  // most one route is armed).
+  const goalsPanelOn = configureGoalsPanelStore(store, opts.env, opts.config);
+  const controlPanelOn = configureControlPanelStore(store, opts.env, opts.config);
+  if (controlPanelOn) {
+    bridge.onControlPanelAction((a) => store.dispatch(a));
+    bridge.onGoalsPanelAction(null);
+  } else {
+    bridge.onControlPanelAction(null);
+    bridge.onGoalsPanelAction(goalsPanelOn ? (a) => store.dispatch(a) : null);
+  }
   const out = createInkOutputSink(store, { color: opts.color, isTty: opts.isTty });
   const reader = createInkLineReader(bridge);
   const renderTurn = createTurnDriver(store, { color: opts.color, isTty: opts.isTty });

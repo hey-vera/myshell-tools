@@ -774,5 +774,168 @@ export function reduce(state: UiState, action: Action): UiState {
       }
       return next;
     }
+
+    // -- goals-panel/configure: enable/disable the fullscreen panel feature.
+    //    When disabled, force the panel closed and clear any highlighted goal
+    //    so no stale highlight lingers when the feature is re-enabled later.
+    //    When the Control Panel is enabled, keep open=false to honour
+    //    precedence.
+    case 'goals-panel/configure': {
+      const cpSupersedes = state.controlPanel.enabled;
+      const keepHighlight =
+        action.enabled && state.goalsPanel.highlightedGoalId !== undefined;
+      return {
+        ...state,
+        goalsPanel: {
+          enabled: action.enabled,
+          open: (action.enabled && !cpSupersedes) ? state.goalsPanel.open : false,
+          ...(keepHighlight ? { highlightedGoalId: state.goalsPanel.highlightedGoalId } : {}),
+        },
+      };
+    }
+
+    // -- goals-panel/open: open the fullscreen panel. No-op when the feature is
+    //    disabled (a defensive guard — the view should never call this when
+    //    disabled, but the reducer is the choke point). Also guarded when the
+    //    Control Panel is enabled (it supersedes the standalone panel).
+    case 'goals-panel/open': {
+      if (!state.goalsPanel.enabled || state.controlPanel.enabled) return state;
+      const h =
+        action.highlightedGoalId ?? state.goalsPanel.highlightedGoalId;
+      return {
+        ...state,
+        goalsPanel: {
+          ...state.goalsPanel,
+          open: true,
+          ...(h !== undefined ? { highlightedGoalId: h } : {}),
+        },
+      };
+    }
+
+    // -- goals-panel/close: close the panel without changing enabled or highlight.
+    case 'goals-panel/close': {
+      return {
+        ...state,
+        goalsPanel: { ...state.goalsPanel, open: false },
+      };
+    }
+
+    // -- goals-panel/toggle: flip open/closed. No-op when disabled or when the
+    //    Control Panel is enabled (it supersedes the standalone panel).
+    case 'goals-panel/toggle': {
+      if (!state.goalsPanel.enabled || state.controlPanel.enabled) return state;
+      return {
+        ...state,
+        goalsPanel: { ...state.goalsPanel, open: !state.goalsPanel.open },
+      };
+    }
+
+    // -- goals-panel/highlight: set the highlighted goal id. No-op when the
+    //    panel is disabled or not currently open (highlight is a visual-only
+    //    affordance for an open panel).
+    case 'goals-panel/highlight': {
+      if (!state.goalsPanel.enabled || !state.goalsPanel.open) return state;
+      return {
+        ...state,
+        goalsPanel: { ...state.goalsPanel, highlightedGoalId: action.goalId },
+      };
+    }
+
+    // -- control-panel/configure: enable/disable the sectioned Control Panel.
+    //    Disabling closes/resets to defaults. Enabling preserves existing
+    //    open/activeSection and force-closes the standalone Goals Panel.
+    case 'control-panel/configure': {
+      if (!action.enabled) {
+        return {
+          ...state,
+          controlPanel: { enabled: false, open: false, activeSection: 'goals' },
+        };
+      }
+      const gpHighlight = state.goalsPanel.highlightedGoalId;
+      return {
+        ...state,
+        controlPanel: {
+          enabled: true,
+          open: state.controlPanel.open,
+          activeSection: state.controlPanel.activeSection,
+        },
+        goalsPanel: {
+          enabled: state.goalsPanel.enabled,
+          open: false,
+          ...(gpHighlight !== undefined ? { highlightedGoalId: gpHighlight } : {}),
+        },
+      };
+    }
+
+    // -- control-panel/open: open the panel, optionally to a specific section.
+    //    No-op when disabled. Defaults to the Goals section.
+    case 'control-panel/open': {
+      if (!state.controlPanel.enabled) return state;
+      return {
+        ...state,
+        controlPanel: {
+          ...state.controlPanel,
+          open: true,
+          activeSection: action.section ?? 'goals',
+        },
+      };
+    }
+
+    // -- control-panel/close: close the panel. No-op when disabled or already
+    //    closed. Preserves activeSection and the shared goal highlight.
+    case 'control-panel/close': {
+      if (!state.controlPanel.enabled || !state.controlPanel.open) return state;
+      return {
+        ...state,
+        controlPanel: { ...state.controlPanel, open: false },
+      };
+    }
+
+    // -- control-panel/toggle: flip open/closed. No-op when disabled. Opening
+    //    lands on Goals regardless of the previously selected section.
+    case 'control-panel/toggle': {
+      if (!state.controlPanel.enabled) return state;
+      if (state.controlPanel.open) {
+        return {
+          ...state,
+          controlPanel: { ...state.controlPanel, open: false },
+        };
+      }
+      return {
+        ...state,
+        controlPanel: {
+          ...state.controlPanel,
+          open: true,
+          activeSection: 'goals',
+        },
+      };
+    }
+
+    // -- control-panel/set-section: switch the active tab. No-op unless the
+    //    Control Panel is enabled and open.
+    case 'control-panel/set-section': {
+      if (!state.controlPanel.enabled || !state.controlPanel.open) return state;
+      return {
+        ...state,
+        controlPanel: { ...state.controlPanel, activeSection: action.section },
+      };
+    }
+
+    // -- control-panel/highlight-goal: update the shared goals highlight.
+    //    No-op unless the Control Panel is enabled, open, and on the Goals
+    //    section. Uses conditional spread for exact-optional safety.
+    case 'control-panel/highlight-goal': {
+      if (
+        !state.controlPanel.enabled ||
+        !state.controlPanel.open ||
+        state.controlPanel.activeSection !== 'goals'
+      ) {
+        return state;
+      }
+      return {
+        ...state,
+        goalsPanel: { ...state.goalsPanel, highlightedGoalId: action.goalId },
+      };
+    }
   }
 }

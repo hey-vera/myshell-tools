@@ -6516,7 +6516,7 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
   let startupReadKey = ctx.startupInput?.handoff();
   if (ctx.readLine === undefined && out.isTty === true && inkRawInput !== null && inkEnabled(process.env, ctx.config)) {
     const { mountInk } = await import('./ui/mount.js');
-    inkHandle = mountInk({ color: out.color, isTty: out.isTty, stdin: inkRawInput });
+    inkHandle = mountInk({ color: out.color, isTty: out.isTty, stdin: inkRawInput, env: process.env, config: ctx.config });
     // Render the menu/chat OUTPUT and read INPUT through the Ink adapters by
     // reassigning the seam bindings the shared loop below already uses.
     out = inkHandle.out;

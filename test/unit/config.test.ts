@@ -180,6 +180,21 @@ describe('saveConfig + loadConfig — round-trip', () => {
     assert.notEqual(loaded.memory, false);
   });
 
+  it('round-trips experimentalControlPanel:true and absent default has no own key', async () => {
+    const cfg: AppConfig = { onboarded: true, setAsDefault: false, experimentalControlPanel: true };
+    await saveConfig(cfg, homeDir);
+    const loaded = await loadConfig(homeDir);
+    // Explicit true survives the round-trip.
+    assert.equal(loaded.experimentalControlPanel, true);
+  });
+
+  it('absent default config object has NO own experimentalControlPanel key', async () => {
+    const cfg: AppConfig = { onboarded: true, setAsDefault: false };
+    await saveConfig(cfg, homeDir);
+    const loaded = await loadConfig(homeDir);
+    assert.equal('experimentalControlPanel' in loaded, false);
+  });
+
   it('preserves autoGoal across a Settings-style config rebuild', () => {
     const config: AppConfig = {
       onboarded: true,

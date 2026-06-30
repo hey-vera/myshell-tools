@@ -49,6 +49,26 @@ function collectTs(dir: string): string[] {
   return results;
 }
 
+/**
+ * Recursively collect all .ts AND .tsx files under a directory. Used to build the
+ * import graph's EDGES: a .ts module is reachable if any .ts or .tsx source imports
+ * it. (collectTs alone misses .tsx importers, which would falsely orphan any .ts
+ * file imported only by an Ink/React .tsx component.)
+ */
+function collectSource(dir: string): string[] {
+  if (!fs.existsSync(dir)) return [];
+  const results: string[] = [];
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      results.push(...collectSource(full));
+    } else if (entry.isFile() && (entry.name.endsWith(".ts") || entry.name.endsWith(".tsx"))) {
+      results.push(full);
+    }
+  }
+  return results;
+}
+
 /** Read a file and return its text content. */
 function read(filePath: string): string {
   return fs.readFileSync(filePath, "utf8");
@@ -248,7 +268,10 @@ describe("No-orphan guard — every src/ .ts file must participate in the import
   // We key by the file's basename (without .ts extension) to keep it simple.
   const importedBasenames = new Set<string>();
 
-  for (const file of ALL_SRC) {
+  // Scan BOTH .ts and .tsx files for import edges — a .ts module imported only by
+  // a .tsx component (e.g. a feature flag consumed by an Ink mount module) is still
+  // reachable and must not be flagged as an orphan.
+  for (const file of collectSource(SRC)) {
     const src = read(file);
     // Match import/export from './foo', '../bar/baz', etc.
     const importRe = /from\s+['"`](\.{1,2}\/[^'"`]+)['"`]/g;

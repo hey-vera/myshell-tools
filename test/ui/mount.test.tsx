@@ -12,6 +12,8 @@ import {
   createInkLineReader,
   createInkStore,
   createTurnDriver,
+  configureGoalsPanelStore,
+  configureControlPanelStore,
 } from '../../src/interface/ui/mount.js';
 import { createInkAppBridge } from '../../src/interface/ui/App.js';
 import type { CoreEvent } from '../../src/core/types.js';
@@ -437,4 +439,226 @@ test('persistent store: ≥3 consecutive turns keep committed[] monotonic, accum
       `turn ${j + 1} prose did not survive to the end`,
     );
   }
+});
+
+// ---------------------------------------------------------------------------
+// Slice 3 — configureGoalsPanelStore table tests
+// ---------------------------------------------------------------------------
+
+test('configureGoalsPanelStore: {} env + absent config → false, store {enabled:false,open:false}', () => {
+  const bridge = createInkAppBridge();
+  bridge._setUiState = () => {};
+  const store = createInkStore(bridge);
+  const enabled = configureGoalsPanelStore(store, {}, undefined);
+  assert.equal(enabled, false);
+  assert.deepEqual(store.getState().goalsPanel, { enabled: false, open: false });
+});
+
+test('configureGoalsPanelStore: explicit off env values → false', () => {
+  const bridge = createInkAppBridge();
+  bridge._setUiState = () => {};
+  const store = createInkStore(bridge);
+  const enabled = configureGoalsPanelStore(store, { MYSHELL_GOALS_PANEL: '0' }, undefined);
+  assert.equal(enabled, false);
+  assert.deepEqual(store.getState().goalsPanel, { enabled: false, open: false });
+});
+
+test('configureGoalsPanelStore: MYSHELL_GOALS_PANEL=1 → true, store enabled:true', () => {
+  const bridge = createInkAppBridge();
+  bridge._setUiState = () => {};
+  const store = createInkStore(bridge);
+  const enabled = configureGoalsPanelStore(store, { MYSHELL_GOALS_PANEL: '1' }, undefined);
+  assert.equal(enabled, true);
+  assert.deepEqual(store.getState().goalsPanel, { enabled: true, open: false });
+});
+
+test('configureGoalsPanelStore: {experimentalGoalsPanel:true} → true, store enabled:true', () => {
+  const bridge = createInkAppBridge();
+  bridge._setUiState = () => {};
+  const store = createInkStore(bridge);
+  const enabled = configureGoalsPanelStore(store, undefined, { experimentalGoalsPanel: true });
+  assert.equal(enabled, true);
+  assert.deepEqual(store.getState().goalsPanel, { enabled: true, open: false });
+});
+
+test('configureGoalsPanelStore: configuring false after enabled+open+highlighted closes and clears highlight', () => {
+  const bridge = createInkAppBridge();
+  bridge._setUiState = () => {};
+  const store = createInkStore(bridge);
+  // First enable the panel, open it, and set a highlight.
+  const enabled = configureGoalsPanelStore(store, { MYSHELL_GOALS_PANEL: '1' }, undefined);
+  assert.equal(enabled, true);
+  store.dispatch({ type: 'goals-panel/open', highlightedGoalId: 'goal-1' });
+  assert.deepEqual(store.getState().goalsPanel, { enabled: true, open: true, highlightedGoalId: 'goal-1' });
+  // Now configure false — should close and clear the highlight.
+  const disabled = configureGoalsPanelStore(store, { MYSHELL_GOALS_PANEL: '0' }, undefined);
+  assert.equal(disabled, false);
+  assert.deepEqual(store.getState().goalsPanel, { enabled: false, open: false });
+});
+
+// ---------------------------------------------------------------------------
+// Slice 4 — bridge routeGoalsPanelAction routing
+// ---------------------------------------------------------------------------
+
+test('routeGoalsPanelAction returns false when flag off (no handler armed)', () => {
+  const bridge = createInkAppBridge();
+  const result = bridge.routeGoalsPanelAction({ type: 'goals-panel/toggle' });
+  assert.equal(result, false);
+});
+
+test('routeGoalsPanelAction returns false + state stays closed when Slice 3 computed false', () => {
+  const bridge = createInkAppBridge();
+  bridge._setUiState = () => {};
+  const store = createInkStore(bridge);
+  // Feature off → handler is null.
+  bridge.onGoalsPanelAction(null);
+  const result = bridge.routeGoalsPanelAction({ type: 'goals-panel/toggle' });
+  assert.equal(result, false);
+  assert.deepEqual(store.getState().goalsPanel, { enabled: false, open: false });
+});
+
+test('routeGoalsPanelAction dispatches toggle + returns true when flag on, one transition per invocation', () => {
+  const bridge = createInkAppBridge();
+  bridge._setUiState = () => {};
+  const store = createInkStore(bridge);
+  // Enable via Slice 3 helper.
+  configureGoalsPanelStore(store, { MYSHELL_GOALS_PANEL: '1' }, undefined);
+  bridge.onGoalsPanelAction((action) => store.dispatch(action));
+
+  // Initially closed.
+  assert.deepEqual(store.getState().goalsPanel, { enabled: true, open: false });
+
+  // Route toggle: should dispatch and open.
+  const result = bridge.routeGoalsPanelAction({ type: 'goals-panel/toggle' });
+  assert.equal(result, true);
+  assert.deepEqual(store.getState().goalsPanel, { enabled: true, open: true });
+
+  // Route toggle again: should close.
+  const result2 = bridge.routeGoalsPanelAction({ type: 'goals-panel/toggle' });
+  assert.equal(result2, true);
+  assert.deepEqual(store.getState().goalsPanel, { enabled: true, open: false });
+
+  // Route close (already closed → no-op for open, but state stays same).
+  const result3 = bridge.routeGoalsPanelAction({ type: 'goals-panel/close' });
+  assert.equal(result3, true);
+  assert.deepEqual(store.getState().goalsPanel, { enabled: true, open: false });
+
+  // Route highlight (closed panel → no-op per reducer guard, but action dispatches).
+  const result4 = bridge.routeGoalsPanelAction({ type: 'goals-panel/highlight', goalId: 'g1' });
+  assert.equal(result4, true);
+  assert.deepEqual(store.getState().goalsPanel, { enabled: true, open: false });
+});
+
+// ---------------------------------------------------------------------------
+// Slice 13 — configureControlPanelStore table tests + CP route tests
+// ---------------------------------------------------------------------------
+
+test('configureControlPanelStore: {} env + absent config → false, store {enabled:false,open:false,activeSection:goals}', () => {
+  const bridge = createInkAppBridge();
+  bridge._setUiState = () => {};
+  const store = createInkStore(bridge);
+  const enabled = configureControlPanelStore(store, {}, undefined);
+  assert.equal(enabled, false);
+  assert.deepEqual(store.getState().controlPanel, { enabled: false, open: false, activeSection: 'goals' });
+});
+
+test('configureControlPanelStore: explicit off env values → false', () => {
+  const bridge = createInkAppBridge();
+  bridge._setUiState = () => {};
+  const store = createInkStore(bridge);
+  const enabled = configureControlPanelStore(store, { MYSHELL_CONTROL_PANEL: '0' }, undefined);
+  assert.equal(enabled, false);
+  assert.deepEqual(store.getState().controlPanel, { enabled: false, open: false, activeSection: 'goals' });
+});
+
+test('configureControlPanelStore: MYSHELL_CONTROL_PANEL=1 → true, store enabled:true', () => {
+  const bridge = createInkAppBridge();
+  bridge._setUiState = () => {};
+  const store = createInkStore(bridge);
+  const enabled = configureControlPanelStore(store, { MYSHELL_CONTROL_PANEL: '1' }, undefined);
+  assert.equal(enabled, true);
+  assert.deepEqual(store.getState().controlPanel, { enabled: true, open: false, activeSection: 'goals' });
+});
+
+test('configureControlPanelStore: {experimentalControlPanel:true} → true, store enabled:true', () => {
+  const bridge = createInkAppBridge();
+  bridge._setUiState = () => {};
+  const store = createInkStore(bridge);
+  const enabled = configureControlPanelStore(store, undefined, { experimentalControlPanel: true });
+  assert.equal(enabled, true);
+  assert.deepEqual(store.getState().controlPanel, { enabled: true, open: false, activeSection: 'goals' });
+});
+
+test('configureControlPanelStore: configuring false after enabled+open closes and resets section', () => {
+  const bridge = createInkAppBridge();
+  bridge._setUiState = () => {};
+  const store = createInkStore(bridge);
+  const enabled = configureControlPanelStore(store, { MYSHELL_CONTROL_PANEL: '1' }, undefined);
+  assert.equal(enabled, true);
+  store.dispatch({ type: 'control-panel/open' });
+  store.dispatch({ type: 'control-panel/set-section', section: 'settings' });
+  assert.deepEqual(store.getState().controlPanel, { enabled: true, open: true, activeSection: 'settings' });
+  const disabled = configureControlPanelStore(store, { MYSHELL_CONTROL_PANEL: '0' }, undefined);
+  assert.equal(disabled, false);
+  assert.deepEqual(store.getState().controlPanel, { enabled: false, open: false, activeSection: 'goals' });
+});
+
+test('routeControlPanelAction returns false when flag off (no handler armed)', () => {
+  const bridge = createInkAppBridge();
+  const result = bridge.routeControlPanelAction({ type: 'control-panel/toggle' });
+  assert.equal(result, false);
+});
+
+test('routeControlPanelAction returns false + state stays closed when configured false', () => {
+  const bridge = createInkAppBridge();
+  bridge._setUiState = () => {};
+  const store = createInkStore(bridge);
+  bridge.onControlPanelAction(null);
+  const result = bridge.routeControlPanelAction({ type: 'control-panel/toggle' });
+  assert.equal(result, false);
+  assert.deepEqual(store.getState().controlPanel, { enabled: false, open: false, activeSection: 'goals' });
+});
+
+test('routeControlPanelAction dispatches toggle + returns true when flag on, one transition per invocation', () => {
+  const bridge = createInkAppBridge();
+  bridge._setUiState = () => {};
+  const store = createInkStore(bridge);
+  configureControlPanelStore(store, { MYSHELL_CONTROL_PANEL: '1' }, undefined);
+  bridge.onControlPanelAction((action) => store.dispatch(action));
+
+  assert.deepEqual(store.getState().controlPanel, { enabled: true, open: false, activeSection: 'goals' });
+
+  const result = bridge.routeControlPanelAction({ type: 'control-panel/toggle' });
+  assert.equal(result, true);
+  assert.deepEqual(store.getState().controlPanel, { enabled: true, open: true, activeSection: 'goals' });
+
+  const result2 = bridge.routeControlPanelAction({ type: 'control-panel/toggle' });
+  assert.equal(result2, true);
+  assert.deepEqual(store.getState().controlPanel, { enabled: true, open: false, activeSection: 'goals' });
+
+  const result3 = bridge.routeControlPanelAction({ type: 'control-panel/close' });
+  assert.equal(result3, true);
+  assert.deepEqual(store.getState().controlPanel, { enabled: true, open: false, activeSection: 'goals' });
+});
+
+test('both flags on → only CP armed; goals route returns false', () => {
+  const bridge = createInkAppBridge();
+  bridge._setUiState = () => {};
+  const store = createInkStore(bridge);
+
+  // Simulate the mount arming order: CP on superseeds Goals.
+  configureGoalsPanelStore(store, { MYSHELL_GOALS_PANEL: '1' }, undefined);
+  configureControlPanelStore(store, { MYSHELL_CONTROL_PANEL: '1' }, undefined);
+  bridge.onControlPanelAction((a) => store.dispatch(a));
+  bridge.onGoalsPanelAction(null);
+
+  // CP route should work.
+  const cpResult = bridge.routeControlPanelAction({ type: 'control-panel/toggle' });
+  assert.equal(cpResult, true);
+  assert.deepEqual(store.getState().controlPanel, { enabled: true, open: true, activeSection: 'goals' });
+
+  // Goals route should return false (handler is null).
+  const goalsResult = bridge.routeGoalsPanelAction({ type: 'goals-panel/toggle' });
+  assert.equal(goalsResult, false);
+  assert.deepEqual(store.getState().goalsPanel, { enabled: true, open: false });
 });
