@@ -12,6 +12,7 @@ import {
   createInkLineReader,
   createInkStore,
   createTurnDriver,
+  configureGoalsPanelStore,
 } from '../../src/interface/ui/mount.js';
 import { createInkAppBridge } from '../../src/interface/ui/App.js';
 import type { CoreEvent } from '../../src/core/types.js';
@@ -437,4 +438,59 @@ test('persistent store: ≥3 consecutive turns keep committed[] monotonic, accum
       `turn ${j + 1} prose did not survive to the end`,
     );
   }
+});
+
+// ---------------------------------------------------------------------------
+// Slice 3 — configureGoalsPanelStore table tests
+// ---------------------------------------------------------------------------
+
+test('configureGoalsPanelStore: {} env + absent config → false, store {enabled:false,open:false}', () => {
+  const bridge = createInkAppBridge();
+  bridge._setUiState = () => {};
+  const store = createInkStore(bridge);
+  const enabled = configureGoalsPanelStore(store, {}, undefined);
+  assert.equal(enabled, false);
+  assert.deepEqual(store.getState().goalsPanel, { enabled: false, open: false });
+});
+
+test('configureGoalsPanelStore: explicit off env values → false', () => {
+  const bridge = createInkAppBridge();
+  bridge._setUiState = () => {};
+  const store = createInkStore(bridge);
+  const enabled = configureGoalsPanelStore(store, { MYSHELL_GOALS_PANEL: '0' }, undefined);
+  assert.equal(enabled, false);
+  assert.deepEqual(store.getState().goalsPanel, { enabled: false, open: false });
+});
+
+test('configureGoalsPanelStore: MYSHELL_GOALS_PANEL=1 → true, store enabled:true', () => {
+  const bridge = createInkAppBridge();
+  bridge._setUiState = () => {};
+  const store = createInkStore(bridge);
+  const enabled = configureGoalsPanelStore(store, { MYSHELL_GOALS_PANEL: '1' }, undefined);
+  assert.equal(enabled, true);
+  assert.deepEqual(store.getState().goalsPanel, { enabled: true, open: false });
+});
+
+test('configureGoalsPanelStore: {experimentalGoalsPanel:true} → true, store enabled:true', () => {
+  const bridge = createInkAppBridge();
+  bridge._setUiState = () => {};
+  const store = createInkStore(bridge);
+  const enabled = configureGoalsPanelStore(store, undefined, { experimentalGoalsPanel: true });
+  assert.equal(enabled, true);
+  assert.deepEqual(store.getState().goalsPanel, { enabled: true, open: false });
+});
+
+test('configureGoalsPanelStore: configuring false after enabled+open+highlighted closes and clears highlight', () => {
+  const bridge = createInkAppBridge();
+  bridge._setUiState = () => {};
+  const store = createInkStore(bridge);
+  // First enable the panel, open it, and set a highlight.
+  const enabled = configureGoalsPanelStore(store, { MYSHELL_GOALS_PANEL: '1' }, undefined);
+  assert.equal(enabled, true);
+  store.dispatch({ type: 'goals-panel/open', highlightedGoalId: 'goal-1' });
+  assert.deepEqual(store.getState().goalsPanel, { enabled: true, open: true, highlightedGoalId: 'goal-1' });
+  // Now configure false — should close and clear the highlight.
+  const disabled = configureGoalsPanelStore(store, { MYSHELL_GOALS_PANEL: '0' }, undefined);
+  assert.equal(disabled, false);
+  assert.deepEqual(store.getState().goalsPanel, { enabled: false, open: false });
 });
