@@ -178,12 +178,13 @@ export interface InputBoxProps {
   readonly onEscape?: (() => boolean) | undefined;
   /**
    * Empty-buffer Ctrl+G handler. When the flag is on, the bridge routes
-   * `goals-panel/toggle` through it; returns true when consumed. When absent or
-   * returning false, the key falls through to the existing handler chain (menu
-   * single-key capture when the feature is off). Only fires on a truly empty
-   * editor; a non-empty buffer sends Ctrl+G through to editing as before.
+   * the fullscreen panel toggle through it; returns true when consumed. When
+   * absent or returning false, the key falls through to the existing handler
+   * chain (menu single-key capture when the feature is off). Only fires on a
+   * truly empty editor; a non-empty buffer sends Ctrl+G through to editing as
+   * before.
    */
-  readonly onToggleGoalsPanel?: (() => boolean) | undefined;
+  readonly onToggleFullscreenPanel?: (() => boolean) | undefined;
   /**
    * Returns `true` while a single-key menu/confirm read is pending (the App's
    * `readKey()`). The editor's single input handler routes that event to the menu
@@ -313,7 +314,7 @@ export function InputBox({
   active = true,
   onStdinControl,
   onEscape,
-  onToggleGoalsPanel,
+  onToggleFullscreenPanel,
   readPending,
   onReadKey,
   rows,
@@ -421,12 +422,12 @@ export function InputBox({
   // state and callbacks.
   const inputHandlerRef = useRef<Parameters<typeof useInput>[0]>(() => undefined);
   inputHandlerRef.current = (input, key): void => {
-    // --- Empty-buffer Ctrl+G → toggle goals panel ------------------------------
+    // --- Empty-buffer Ctrl+G → toggle fullscreen panel -------------------------
     // The one narrow bridge route from React events back to the reducer. Matches
     // only a truly empty editor with Ctrl+G; non-empty or absent callback falls
     // through to the existing handler chain (menu single-key capture when flag off).
     if (value === '' && key.ctrl && input === 'g') {
-      if (onToggleGoalsPanel?.() === true) return;
+      if (onToggleFullscreenPanel?.() === true) return;
     }
 
     // --- Pending menu/confirm read -------------------------------------------

@@ -14,6 +14,7 @@ import { InputBox, createInputBoxBridge, type InputBoxBridge } from './InputBox.
 import { Stream, CommittedLine } from './Stream.js';
 import { StatusBlock } from './StatusBlock.js';
 import { GoalsPanel } from './GoalsPanel.js';
+import { ControlPanel } from './ControlPanel.js';
 import { layoutForHeight, streamWrappedRows, tailStreamToRows, INPUT_ROWS } from './layout.js';
 import { backfillTerminalSize } from './mount.js';
 import type { Action, TranscriptLine, UiState } from './state.js';
@@ -36,6 +37,16 @@ export type GoalsPanelBridgeAction =
   | Extract<Action, { type: 'goals-panel/toggle' }>
   | Extract<Action, { type: 'goals-panel/close' }>
   | Extract<Action, { type: 'goals-panel/highlight' }>;
+
+/**
+ * The subset of {@link Action} the renderer may route through the bridge for
+ * the Control Panel. Excludes configure (Node-owned) and open (only toggle opens).
+ */
+export type ControlPanelBridgeAction =
+  | Extract<Action, { type: 'control-panel/toggle' }>
+  | Extract<Action, { type: 'control-panel/close' }>
+  | Extract<Action, { type: 'control-panel/set-section' }>
+  | Extract<Action, { type: 'control-panel/highlight-goal' }>;
 
 /**
  * The Ink-side control surface the LineReader's `suspend()`/`resume()` need to
@@ -158,6 +169,20 @@ export interface InkAppBridge {
    */
   routeGoalsPanelAction(action: GoalsPanelBridgeAction): boolean;
   /**
+   * Register (or clear with `null`) the Node-side handler for control-panel
+   * actions. When a handler is set, `routeControlPanelAction` forwards the action
+   * there; when null, routing returns false (off path). Called by the mount
+   * once at init; never changed afterward.
+   */
+  onControlPanelAction(handler: ((action: ControlPanelBridgeAction) => void) | null): void;
+  /**
+   * Route a control-panel action through the bridge from the React tree (InputBox
+   * Ctrl+G). Returns `false` when no handler is armed (feature off — the caller
+   * falls through to the existing key handler). When a handler is set, invokes it
+   * once and returns `true`.
+   */
+  routeControlPanelAction(action: ControlPanelBridgeAction): boolean;
+  /**
    * Register the Ink-side stdin control (raw-mode toggle + stream pause/resume).
    * The `<InputBox>` calls this from inside `useStdin()` on mount; the LineReader
    * reads it in `suspend()`/`resume()`. `null` after unmount.
@@ -183,6 +208,10 @@ export interface InkAppBridge {
    *  onGoalsPanelAction(); read by routeGoalsPanelAction(). `null` when the
    *  feature flag is off. */
   _goalsPanelAction?: ((action: GoalsPanelBridgeAction) => void) | null;
+  /** @internal the installed control-panel action handler, set by
+   *  onControlPanelAction(); read by routeControlPanelAction(). `null` when the
+   *  feature flag is off. */
+  _controlPanelAction?: ((action: ControlPanelBridgeAction) => void) | null;
   /** @internal the attached Ink stdin control */ _stdinControl?: InkStdinControl | null;
   /**
    * Enable or disable the main-menu key-capture window. While active, a printable
@@ -213,6 +242,7 @@ export function createInkAppBridge(): InkAppBridge {
     _keyResolver: null,
     _interrupt: null,
     _goalsPanelAction: null,
+    _controlPanelAction: null,
     _menuKeyQueue: [],
     _menuCaptureActive: false,
     commit(line: string): void {
@@ -266,6 +296,15 @@ export function createInkAppBridge(): InkAppBridge {
     },
     routeGoalsPanelAction(action: GoalsPanelBridgeAction): boolean {
       const handler = bridge._goalsPanelAction;
+      if (handler == null) return false;
+      handler(action);
+      return true;
+    },
+    onControlPanelAction(handler: ((action: ControlPanelBridgeAction) => void) | null): void {
+      bridge._controlPanelAction = handler;
+    },
+    routeControlPanelAction(action: ControlPanelBridgeAction): boolean {
+      const handler = bridge._controlPanelAction;
       if (handler == null) return false;
       handler(action);
       return true;
@@ -510,7 +549,10 @@ function AppBody({
   const inputInfoText = formatInputBoxInfo(inputInfo);
   const liveColumns = columns ?? stdout.columns ?? process.stdout.columns ?? 80;
   const liveRows = rows ?? stdout.rows ?? process.stdout.rows ?? 24;
-  const panelOpen = uiState?.goalsPanel.enabled === true && uiState.goalsPanel.open === true;
+  const controlPanelOpen = uiState?.controlPanel.enabled === true && uiState.controlPanel.open === true;
+  const goalsPanelOpen = uiState?.controlPanel.enabled !== true &&
+    uiState?.goalsPanel.enabled === true && uiState.goalsPanel.open === true;
+  const fullscreenPanelOpen = controlPanelOpen || goalsPanelOpen;
 
   // Wire the bridge to this component's state on mount so the Node-side
   // OutputSink can push committed lines in and the LineReader can toggle suspend.
@@ -636,7 +678,17 @@ function AppBody({
     return (
       <Box flexDirection="column">
         <CommittedTranscript lines={uiState.committed} color={color} />
-        {panelOpen ? (
+        {controlPanelOpen ? (
+          <Box height={Math.max(1, liveRows - 1)} overflowY="hidden">
+            <ControlPanel
+              state={uiState}
+              onSetSection={(section) => { bridge.routeControlPanelAction({ type: 'control-panel/set-section', section }); }}
+              onHighlightGoal={(goalId) => { bridge.routeControlPanelAction({ type: 'control-panel/highlight-goal', goalId }); }}
+              onClose={() => { bridge.routeControlPanelAction({ type: 'control-panel/close' }); }}
+              active={!suspended}
+            />
+          </Box>
+        ) : goalsPanelOpen ? (
           <Box height={Math.max(1, liveRows - 1)} overflowY="hidden">
             <GoalsPanel
               board={uiState.board}
@@ -680,14 +732,14 @@ function AppBody({
           rows={liveRows}
           onMeasureRows={setInputBoxRows}
           info={inputInfoText}
-          visible={panelOpen ? false : chatActive}
+          visible={fullscreenPanelOpen ? false : chatActive}
           suspended={suspended}
-          active={!panelOpen}
+          active={!fullscreenPanelOpen}
           pressure={uiState?.pressure ?? 0}
           dynamicWorldItems={uiState?.dynamicWorldItems ?? []}
           onStdinControl={bridge.attachStdinControl}
           onEscape={() => bridge.interrupt()}
-          onToggleGoalsPanel={() => bridge.routeGoalsPanelAction({ type: 'goals-panel/toggle' })}
+          onToggleFullscreenPanel={() => bridge.routeControlPanelAction({ type: 'control-panel/toggle' }) || bridge.routeGoalsPanelAction({ type: 'goals-panel/toggle' })}
           readPending={() => bridge._keyResolver != null || bridge._menuCaptureActive}
           onReadKey={(input, key) => {
             const normalized = normalizeInkKey(input, key);
@@ -718,7 +770,7 @@ function AppBody({
         suspended={suspended}
         onStdinControl={bridge.attachStdinControl}
         onEscape={() => bridge.interrupt()}
-        onToggleGoalsPanel={() => bridge.routeGoalsPanelAction({ type: 'goals-panel/toggle' })}
+        onToggleFullscreenPanel={() => bridge.routeControlPanelAction({ type: 'control-panel/toggle' }) || bridge.routeGoalsPanelAction({ type: 'goals-panel/toggle' })}
         readPending={() => bridge._keyResolver != null || bridge._menuCaptureActive}
         onReadKey={(input, key) => {
           const normalized = normalizeInkKey(input, key);

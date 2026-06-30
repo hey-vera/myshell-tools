@@ -338,6 +338,7 @@ function structuredControlState(): UiState {
     pressure: 0,
     dynamicWorldItems: [],
     goalsPanel: { enabled: false, open: false },
+    controlPanel: { enabled: false, open: false, activeSection: 'goals' },
   };
 }
 
@@ -435,4 +436,53 @@ test('structured flag-off: Left Arrow then no-op key do not change the frame', a
     original,
     'ordinary no-op key must not change the structured flag-off frame',
   );
+});
+
+// ---------------------------------------------------------------------------
+// Phase 1 fallback: CP off → goals panel still works exactly as before
+// ---------------------------------------------------------------------------
+
+test('Phase 1 fallback: CP disabled + Goals enabled → goals panel opens and works', async () => {
+  const bridge = createInkAppBridge();
+  const store = createInkStore(bridge);
+  // Explicitly disable CP, enable Goals.
+  store.dispatch({ type: 'control-panel/configure', enabled: false });
+  configureGoalsPanelStore(store, { MYSHELL_GOALS_PANEL: '1' }, undefined);
+  bridge.onGoalsPanelAction((action) => store.dispatch(action));
+  bridge.onControlPanelAction(null);
+
+  store.dispatch({
+    type: 'board/sync',
+    rows: [
+      boardRow({ id: 'g1', title: 'Ship it', state: 'running', done: 1, total: 5, agents: 1 }),
+    ],
+    enabled: true,
+  });
+  const { lastFrame, stdin } = render(
+    <App bridge={bridge} color={false} isTty={false} rows={24} clock={() => 0} />,
+  );
+  bridge.pushState(store.getState());
+  await tick();
+
+  // Before: sees compact board, not Goals.
+  {
+    const frame = plain(lastFrame());
+    assert.match(frame, /BOARD/);
+    assert.doesNotMatch(frame, /CONTROL PANEL/);
+  }
+
+  // Empty-buffer Ctrl+G → opens standalone Goals Panel (not Control Panel).
+  await act(async () => {
+    stdin.write('\x07');
+    await tick();
+  });
+  {
+    const frame = plain(lastFrame());
+    assert.match(frame, /Goals · To-dos/);
+    assert.doesNotMatch(frame, /CONTROL PANEL/);
+    assert.doesNotMatch(frame, /BOARD/);
+  }
+
+  assert.equal(store.getState().goalsPanel.open, true);
+  assert.equal(store.getState().controlPanel.open, false);
 });

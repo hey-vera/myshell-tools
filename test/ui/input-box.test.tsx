@@ -627,7 +627,7 @@ test('NO_COLOR InputBox falls back to plain caret without chip or ANSI', () => {
 
 const CTRL_G = '\x07';
 
-test('Ctrl+G on empty editor invokes onToggleGoalsPanel once, does NOT submit or edit', async () => {
+test('Ctrl+G on empty editor invokes onToggleFullscreenPanel once, does NOT submit or edit', async () => {
   const bridge = createInputBoxBridge();
   const submitted: string[] = [];
   bridge.onSubmit((l) => submitted.push(l));
@@ -638,12 +638,12 @@ test('Ctrl+G on empty editor invokes onToggleGoalsPanel once, does NOT submit or
       color={true}
       isTty={true}
       columns={60}
-      onToggleGoalsPanel={() => { toggleCalls += 1; return true; }}
+      onToggleFullscreenPanel={() => { toggleCalls += 1; return true; }}
     />,
   );
   stdin.write(CTRL_G);
   await tick();
-  assert.equal(toggleCalls, 1, 'onToggleGoalsPanel should be invoked exactly once');
+  assert.equal(toggleCalls, 1, 'onToggleFullscreenPanel should be invoked exactly once');
   assert.deepEqual(submitted, [], 'Ctrl+G must not submit');
   assert.equal(bridge.currentLine(), '', 'Ctrl+G must not insert text');
 });
@@ -657,18 +657,18 @@ test('Ctrl+G with non-empty buffer does NOT invoke callback, buffer preserved', 
       color={true}
       isTty={true}
       columns={60}
-      onToggleGoalsPanel={() => { toggleCalls += 1; return true; }}
+      onToggleFullscreenPanel={() => { toggleCalls += 1; return true; }}
     />,
   );
   stdin.write('hello');
   await tick();
   stdin.write(CTRL_G);
   await tick();
-  assert.equal(toggleCalls, 0, 'onToggleGoalsPanel must not fire on non-empty buffer');
+  assert.equal(toggleCalls, 0, 'onToggleFullscreenPanel must not fire on non-empty buffer');
   assert.equal(bridge.currentLine(), 'hello', 'buffer must be preserved');
 });
 
-test('onToggleGoalsPanel returns false → Ctrl+G falls through to readPending/onReadKey', async () => {
+test('onToggleFullscreenPanel returns false → Ctrl+G falls through to readPending/onReadKey', async () => {
   const bridge = createInputBoxBridge();
   let toggleCalls = 0;
   const readKeys: string[] = [];
@@ -678,7 +678,7 @@ test('onToggleGoalsPanel returns false → Ctrl+G falls through to readPending/o
       color={true}
       isTty={true}
       columns={60}
-      onToggleGoalsPanel={() => { toggleCalls += 1; return false; }}
+      onToggleFullscreenPanel={() => { toggleCalls += 1; return false; }}
       readPending={() => true}
       onReadKey={(input) => { readKeys.push(input); }}
     />,
@@ -690,7 +690,7 @@ test('onToggleGoalsPanel returns false → Ctrl+G falls through to readPending/o
   assert.equal(bridge.currentLine(), '', 'buffer must stay empty');
 });
 
-test('onToggleGoalsPanel present → Left Arrow still moves cursor, never invokes callback', async () => {
+test('onToggleFullscreenPanel present → Left Arrow still moves cursor, never invokes callback', async () => {
   const bridge = createInputBoxBridge();
   let toggleCalls = 0;
   const { stdin } = render(
@@ -699,7 +699,7 @@ test('onToggleGoalsPanel present → Left Arrow still moves cursor, never invoke
       color={true}
       isTty={true}
       columns={60}
-      onToggleGoalsPanel={() => { toggleCalls += 1; return true; }}
+      onToggleFullscreenPanel={() => { toggleCalls += 1; return true; }}
     />,
   );
   // Type 'ab', move left between 'a' and 'b', insert 'X' → 'aXb'
@@ -709,6 +709,6 @@ test('onToggleGoalsPanel present → Left Arrow still moves cursor, never invoke
   await tick();
   stdin.write('X');
   await tick();
-  assert.equal(toggleCalls, 0, 'Left Arrow must not invoke onToggleGoalsPanel');
+  assert.equal(toggleCalls, 0, 'Left Arrow must not invoke onToggleFullscreenPanel');
   assert.equal(bridge.currentLine(), 'aXb', 'Left Arrow must move cursor, insertion at correct position');
 });
