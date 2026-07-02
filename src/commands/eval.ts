@@ -22,6 +22,9 @@
  * does NOT call process.exit — it returns an exit code to cli.ts (single-entry).
  */
 
+import { writeFile, mkdir } from 'node:fs/promises';
+import { dirname } from 'node:path';
+import os from 'node:os';
 import type { OutputSink } from '../interface/render.js';
 import type { Provider, ProviderId, SandboxLevel } from '../providers/port.js';
 import type { OrchestrateDeps, Policy } from '../core/types.js';
@@ -31,6 +34,18 @@ import { makeAnswerPort } from '../core/eval/answer-runner.js';
 import { makeJudgePort } from '../core/eval/judge-runner.js';
 import { formatScorecard, compareRuns, formatComparison } from '../core/eval/scorecard.js';
 import { appendEvalRun, readEvalRuns } from '../infra/eval-store.js';
+import {
+  SEMANTIC_PREFLIGHT_SUITE,
+  SEMANTIC_PREFLIGHT_SUITE_SUMMARY,
+  type SemanticPreflightEvalCase,
+} from '../core/eval/semantic-preflight-suite.js';
+import {
+  scoreSemanticPreflightRun,
+  type SemanticPreflightCaseOutcome,
+  type SemanticPreflightHarnessOptions,
+} from '../core/eval/semantic-preflight-harness.js';
+
+export type SemanticPreflightEvalEngine = 'legacy-intent' | 'semantic-v1';
 
 /** Everything the command needs, injected by cli.ts so this file stays testable. */
 export interface EvalCommandDeps {
@@ -47,6 +62,8 @@ export interface EvalCommandDeps {
   readonly sandbox?: SandboxLevel;
   /** Authenticated providers (cross-vendor judge prefers a different signed-in vendor). */
   readonly authenticatedProviders: readonly ProviderId[];
+  /** Source revision for machine-readable eval artifacts. */
+  readonly commit?: string;
   /** Advertised model lists per provider (so routing prefers a model the CLI has). */
   readonly availableModels?: Partial<Record<ProviderId, readonly string[]>>;
   /**
@@ -55,6 +72,11 @@ export interface EvalCommandDeps {
    * reused — identical to the `run` subcommand's answer path.
    */
   readonly makeDeps: (promptId: string) => OrchestrateDeps;
+  /** Optional injectable extractor for --semantic-preflight eval mode (so tests can fake it). */
+  readonly semanticPreflightExtractor?: (
+    task: string,
+    signal: AbortSignal,
+  ) => Promise<Omit<SemanticPreflightCaseOutcome, 'caseId'>>;
 }
 
 /** Parsed flags for the eval command. */
@@ -63,13 +85,34 @@ export interface EvalOptions {
   readonly compare?: boolean;
   /** Confirm the model spend and actually run (without it, only the cost is printed). */
   readonly yes?: boolean;
+  /** Run the frozen 200-case semantic-preflight eval suite. */
+  readonly semanticPreflight?: boolean;
+  /** Extract engine for semantic-preflight: legacy-intent uses the baseline intent extractor, semantic-v1 uses the new semantic preflight. */
+  readonly engine?: SemanticPreflightEvalEngine;
+  readonly invalidEngine?: string;
+  /** Write the artifact to this path instead of the default .tmp/ location. */
+  readonly output?: string;
 }
 
 /** Parse eval argv flags. Pure, total. */
 export function parseEvalArgs(args: readonly string[]): EvalOptions {
+  const engineArg = args.find((a) => a.startsWith('--engine='));
+  const outputArg = args.find((a) => a.startsWith('--output='));
+  const engineValue = engineArg ? engineArg.slice('--engine='.length) : undefined;
+  const engine =
+    engineValue === 'legacy-intent' || engineValue === 'semantic-v1'
+      ? engineValue
+      : undefined;
+  const invalidEngine =
+    engineValue !== undefined && engine === undefined ? engineValue : undefined;
+  const output = outputArg ? outputArg.slice('--output='.length) : undefined;
   return {
     compare: args.includes('--compare'),
     yes: args.includes('--yes') || args.includes('-y'),
+    semanticPreflight: args.includes('--semantic-preflight'),
+    ...(engine !== undefined ? { engine } : {}),
+    ...(invalidEngine !== undefined ? { invalidEngine } : {}),
+    ...(output !== undefined ? { output } : {}),
   };
 }
 
@@ -93,6 +136,119 @@ export async function runEvalCommand(
   signal: AbortSignal,
 ): Promise<number> {
   const opts = parseEvalArgs(args);
+
+  // ---- Semantic Preflight Eval (P1-08d) ----------------------------------
+  if (opts.semanticPreflight === true) {
+    if (opts.invalidEngine !== undefined) {
+      out.write(
+        `Invalid --engine=${opts.invalidEngine}. Expected legacy-intent or semantic-v1.\n`,
+      );
+      return 1;
+    }
+    const engine = opts.engine ?? 'semantic-v1';
+    const totalCases = SEMANTIC_PREFLIGHT_SUITE_SUMMARY.totalCount;
+
+    // Dry-run without --yes: print the exact maximum call count and exit 0
+    // with ZERO provider runs.
+    if (opts.yes !== true) {
+      out.write('myshell eval --semantic-preflight\n\n');
+      out.write(`This runs the frozen semantic preflight suite of ${totalCases} prompts.\n`);
+      out.write(`Engine: ${engine}\n`);
+      out.write(`COST: up to ${totalCases} model calls on your own subscription.\n\n`);
+      out.write('Re-run with --yes to spend the quota:\n');
+      out.write(`  myshell eval --semantic-preflight --engine=${engine} --yes\n`);
+      return 0;
+    }
+
+    // Real run with --yes
+    const extractor = deps.semanticPreflightExtractor;
+    if (extractor === undefined) {
+      out.write('No semantic preflight extractor configured.\n');
+      return 1;
+    }
+
+    const outputPath = opts.output ??
+      `${deps.cwd}/.tmp/semantic-preflight-${engine}-${deps.nowIso().replace(/[:.]/g, '-')}.json`;
+
+    out.write(`Running semantic preflight eval (engine=${engine})...\n`);
+    out.write(`${totalCases} prompts. Writing to ${outputPath}\n\n`);
+
+    const startedAt = deps.nowIso();
+    const outcomes: SemanticPreflightCaseOutcome[] = [];
+    let runAborted = false;
+    let runThrew = false;
+
+    try {
+      for (let i = 0; i < SEMANTIC_PREFLIGHT_SUITE.length; i++) {
+        if (signal.aborted) {
+          runAborted = true;
+          break;
+        }
+        const tc = SEMANTIC_PREFLIGHT_SUITE[i] as SemanticPreflightEvalCase;
+        try {
+          const o = await extractor(tc.task, signal);
+          outcomes.push({ ...o, caseId: tc.id });
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          outcomes.push({
+            caseId: tc.id,
+            disposition: tc.goldDisposition,
+            semantic: null,
+            ms: 0,
+            receipt: undefined,
+            error: msg,
+          });
+          runThrew = true;
+          break;
+        }
+        if ((i + 1) % 10 === 0 || i === SEMANTIC_PREFLIGHT_SUITE.length - 1) {
+          out.write(`  [${i + 1}/${SEMANTIC_PREFLIGHT_SUITE.length}]\n`);
+        }
+      }
+    } catch {
+      runThrew = true;
+    }
+
+    const completedAt = runAborted || runThrew ? null : deps.nowIso();
+
+    const harnessOpts: SemanticPreflightHarnessOptions = {
+      commit: deps.commit ?? '',
+      node: process.version,
+      os: os.platform(),
+      cpu: os.arch(),
+      provider: engine,
+      model: engine,
+      effort: '',
+      timeoutMs: deps.timeoutMs,
+      warmups: 5,
+      startedAt,
+      ...(completedAt !== null ? { completedAt } : {}),
+      runAborted,
+      runThrew,
+    };
+
+    const artifact = scoreSemanticPreflightRun(
+      SEMANTIC_PREFLIGHT_SUITE as unknown as readonly SemanticPreflightEvalCase[],
+      outcomes,
+      harnessOpts,
+    );
+
+    try {
+      await mkdir(dirname(outputPath), { recursive: true });
+      await writeFile(outputPath, JSON.stringify(artifact, null, 2), 'utf-8');
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      out.write(`[warn] could not write artifact: ${msg}\n`);
+      return 2;
+    }
+
+    out.write(`\nArtifact written to ${outputPath}\n`);
+    out.write(`Status: ${artifact.status}\n`);
+
+    if (artifact.status === 'incomplete') return 2;
+    if (artifact.status === 'fail') return 1;
+    return 0;
+  }
 
   // ---- --compare : read-only, no model calls ------------------------------
   if (opts.compare === true) {
