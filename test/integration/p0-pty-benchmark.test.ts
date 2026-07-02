@@ -289,7 +289,8 @@ function handlePtyBenchResult(
     /* best-effort detail extraction */
   }
 
-  const isFlake = FLAKE_MARKERS.some((m) => detail.includes(m));
+  const text = detail + String(res.stderr ?? '') + String(res.stdout ?? '');
+  const isFlake = FLAKE_MARKERS.some((m) => text.includes(m));
 
   if (isFlake) {
     console.warn(
