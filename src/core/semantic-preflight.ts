@@ -1,6 +1,6 @@
 import type { Classification, Risk, RouteDecision, Tier } from './types.js';
 import type { ReasoningEffort } from './model-capabilities.js';
-import type { IntentFork, IntentFrame } from './intent.js';
+import type { IntentFork, IntentFrame, IntentUsage } from './intent.js';
 import type { GoalPlanTodo } from './goal-plan.js';
 import { isTrivial } from './engagement.js';
 
@@ -79,6 +79,15 @@ export interface ResolvedSemanticPreflight {
   readonly classification: Classification;
   readonly routePlan: boolean;
 }
+
+export type SemanticPreflightExtraction =
+  | { readonly result: SemanticPreflightV1; readonly usage?: IntentUsage }
+  | null;
+
+export type SemanticPreflightExtractor = (
+  task: string,
+  signal: AbortSignal,
+) => Promise<SemanticPreflightExtraction>;
 
 export type SemanticPreflightDisposition =
   | 'bypass-trivial'
@@ -432,7 +441,10 @@ export function parseSemanticPreflight(text: string | undefined): SemanticPrefli
   const exec = execRaw as Record<string, unknown>;
   const providerRaw = exec['provider'];
   const validProviderIds: ReadonlySet<string> = new Set<ProviderId | 'auto'>(['claude', 'codex', 'opencode', 'grok', 'auto']);
-  if (typeof providerRaw !== 'string' || !validProviderIds.has(providerRaw)) return null;
+  if (typeof providerRaw !== 'string') return null;
+  const proposedProvider = validProviderIds.has(providerRaw)
+    ? (providerRaw as ProviderId | 'auto')
+    : 'auto';
   const effortRaw = exec['effort'];
   if (typeof effortRaw !== 'string' || !VALID_EFFORTS.has(effortRaw)) return null;
   const execRationale = capText(exec['rationale'], RATIONALE_LIMIT);
@@ -460,7 +472,7 @@ export function parseSemanticPreflight(text: string | undefined): SemanticPrefli
     doneCondition,
     planSteps,
     proposedExecution: {
-      provider: providerRaw as ProviderId | 'auto',
+      provider: proposedProvider,
       effort: effortRaw as ReasoningEffort,
       rationale: execRationale,
     },
