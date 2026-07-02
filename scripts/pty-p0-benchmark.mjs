@@ -20,9 +20,10 @@ import { createRequire } from 'node:module';
 import { tmpdir, cpus, platform, arch } from 'node:os';
 import { join } from 'node:path';
 import { randomBytes } from 'node:crypto';
+import { fileURLToPath } from 'node:url';
 
 const require = createRequire(import.meta.url);
-const CLI = new URL('../dist/cli.js', import.meta.url).pathname;
+const CLI = fileURLToPath(new URL('../dist/cli.js', import.meta.url));
 
 const COLS = 80;
 const ROWS = 24;
@@ -217,17 +218,19 @@ async function runPtySample() {
   }, TIMEOUT_MS + 30000);
 
   try {
+    // ── Phase 1: wait for root menu with positive markers ──────────────────
     const menuStart = Date.now();
+    const MENU_TIMEOUT = TIMEOUT_MS + 20000;
     let lastScreen = null;
     let stableCount = 0;
     let menuReady = false;
 
-    const menuTimeout = TIMEOUT_MS + 20000;
     while (!menuReady) {
       await new Promise((r) => setTimeout(r, 150));
       const screen = await getScreen();
+      const hasMarkers = screen.includes('Library') && screen.includes('Quit');
       const hadContent = screen.length > 0 && screen.split('\n').length >= 3;
-      if (lastScreen !== null && screen === lastScreen && hadContent) {
+      if (lastScreen !== null && screen === lastScreen && hadContent && hasMarkers) {
         stableCount += 1;
       } else {
         stableCount = 0;
@@ -236,13 +239,42 @@ async function runPtySample() {
       if (stableCount >= 2) {
         menuReady = true;
       }
-      if (Date.now() - menuStart >= menuTimeout) {
-        const err = new Error('Root menu never stabilized');
+      if (Date.now() - menuStart >= MENU_TIMEOUT) {
+        const err = new Error('Root menu never rendered with expected markers (Library + Quit)');
         err.screen = screen;
         throw err;
       }
     }
 
+    // ── Phase 2: non-measured readiness probe (Enter no-op) ────────────────
+    write('\r');
+    const PROBE_TIMEOUT = 10000;
+    const probeStart = Date.now();
+    let probeLastScreen = null;
+    let probeStableCount = 0;
+    let probeReady = false;
+
+    while (!probeReady) {
+      await new Promise((r) => setTimeout(r, 150));
+      const screen = await getScreen();
+      const stillOnRoot = screen.includes('Library');
+      if (probeLastScreen !== null && screen === probeLastScreen && stillOnRoot) {
+        probeStableCount += 1;
+      } else {
+        probeStableCount = 0;
+      }
+      probeLastScreen = screen;
+      if (probeStableCount >= 2) {
+        probeReady = true;
+      }
+      if (Date.now() - probeStart >= PROBE_TIMEOUT) {
+        const err = new Error('Readiness probe failed: root menu did not re-stabilize after Enter');
+        err.screen = screen;
+        throw err;
+      }
+    }
+
+    // ── Phase 3: measured latency ──────────────────────────────────────────
     const latencyStart = process.hrtime.bigint();
     write('e');
 
@@ -366,7 +398,24 @@ async function main() {
     latencyEnd: 'first-xterm-frame-containing-destination-marker',
   };
 
-  // ── Capability guard ──────────────────────────────────────────────────────
+  // ── Load component JSON ───────────────────────────────────────────────────
+  let componentSuite;
+  try {
+    componentSuite = await loadComponentSuite();
+  } catch (err) {
+    console.error(`Failed to load component suite: ${err instanceof Error ? err.message : String(err)}`);
+    process.exit(1);
+  }
+
+  const componentIds = (componentSuite.cases ?? []).map((c) => c.id);
+  for (const expectedId of EXPECTED_COMPONENT_IDS) {
+    if (!componentIds.includes(expectedId)) {
+      console.error(`Missing component case: "${expectedId}" — aggregate refused`);
+      process.exit(1);
+    }
+  }
+
+  // ── Capability guard (PTY-specific) ───────────────────────────────────────
   const missing = [];
   if (!hasCli()) missing.push('dist/cli.js not built');
   if (!hasXterm()) missing.push('@xterm/headless not installed');
@@ -375,7 +424,7 @@ async function main() {
   if (missing.length > 0) {
     const output = buildOutput({
       status: 'unsupported',
-      componentSuite: null,
+      componentSuite,
       ptyCase: {
         id: 'pty-root-to-library',
         status: 'unsupported',
@@ -403,23 +452,6 @@ async function main() {
     process.exit(2);
   }
 
-  // ── Load component JSON ───────────────────────────────────────────────────
-  let componentSuite;
-  try {
-    componentSuite = await loadComponentSuite();
-  } catch (err) {
-    console.error(`Failed to load component suite: ${err instanceof Error ? err.message : String(err)}`);
-    process.exit(1);
-  }
-
-  const componentIds = (componentSuite.cases ?? []).map((c) => c.id);
-  for (const expectedId of EXPECTED_COMPONENT_IDS) {
-    if (!componentIds.includes(expectedId)) {
-      console.error(`Missing component case: "${expectedId}" — aggregate refused`);
-      process.exit(1);
-    }
-  }
-
   // ── PTY benchmark samples ─────────────────────────────────────────────────
   const rawMs = [];
   let ptyStatus = 'pass';
@@ -435,7 +467,8 @@ async function main() {
       }
     } catch (err) {
       ptyStatus = 'failed';
-      ptyDetail = err instanceof Error ? err.message : String(err);
+      const msg = err instanceof Error ? err.message : String(err);
+      ptyDetail = err?.screen ? `${msg}\n--- last screen tail ---\n${err.screen}` : msg;
       break;
     }
   }
