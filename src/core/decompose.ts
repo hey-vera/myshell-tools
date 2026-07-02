@@ -34,8 +34,10 @@
 
 import type { Policy, Tier } from './types.js';
 import type { Provider, ProviderId, ProviderRequest, SandboxLevel } from '../providers/port.js';
+import type { TurnCallBudget } from './turn-call-budget.js';
 import type { GoalSpec } from './scheduler.js';
 import { route } from './route.js';
+import { runBudgetedProvider } from './budgeted-provider.js';
 import { lastJsonObjectWithKey } from './json-envelope.js';
 
 // ---------------------------------------------------------------------------
@@ -72,6 +74,7 @@ export interface DecomposeDeps {
   readonly sandbox?: SandboxLevel;
   readonly availableModels?: Partial<Record<ProviderId, readonly string[]>>;
   readonly authenticatedProviders?: readonly ProviderId[];
+  readonly turnCallBudget?: TurnCallBudget;
 }
 
 /** Optional grounding context woven into the decomposition prompt (all best-effort). */
@@ -317,7 +320,12 @@ export async function decompose(
 
   let finalText: string | undefined;
   try {
-    for await (const ev of provider.run(req, signal)) {
+    for await (const ev of runBudgetedProvider(provider, req, signal, {
+      ...(deps.turnCallBudget ? { budget: deps.turnCallBudget } : {}),
+      purpose: 'goal-decompose',
+      bucket: 'discretionary',
+      provider: provider.id,
+    })) {
       if (ev.type === 'done') finalText = ev.text;
       else if (ev.type === 'error') return fallback;
     }

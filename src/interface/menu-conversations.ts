@@ -9,8 +9,7 @@
 import type { AppConfig } from '../infra/config.js';
 import type { ConversationMeta, ConversationMode } from '../infra/conversation-store.js';
 import type { EnvironmentStatus } from '../providers/detect.js';
-import type { LoginMethod } from '../commands/login.js';
-import type { CommandGatePort } from '../core/command-gate.js';
+import type { LoginRunner } from '../commands/login.js';
 import { listRecentNativeSessions, importNativeSession } from '../providers/native-sessions.js';
 import { replitPersistentEnv } from '../infra/credentials.js';
 import { separator } from '../ui/tui.js';
@@ -302,17 +301,7 @@ export async function runImportNative(
   mutableCtx: { config: AppConfig; env: EnvironmentStatus },
   out: OutputSink,
   readLine: () => Promise<string | null>,
-  loginFn: (
-    out: OutputSink,
-    providerArg?: string,
-    opts?: {
-      method?: LoginMethod;
-      readLine?: () => Promise<string | null>;
-      suspendStdin?: () => () => void;
-      confirm?: Confirm;
-      commandGate?: CommandGatePort;
-    },
-  ) => Promise<number>,
+  loginFn: LoginRunner,
   detectEnvironmentFn: () => Promise<EnvironmentStatus>,
   confirm: Confirm,
   suspendStdin?: () => () => void,

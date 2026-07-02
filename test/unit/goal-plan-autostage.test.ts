@@ -4,11 +4,15 @@
  * GoalStore with the SAME staging logic the menu post-turn slot applies to a judged
  * GoalPlan, plus a board-sync spy, so it locks in:
  *   - judgment 'stage'   → parked goals created in the store (born parked,
- *                          roadmap = todos), then the board is synced.
+ *                          roadmap = todos, source = auto-staged),
+ *                          then the board is synced. NEVER auto-executed.
  *   - judgment 'none'    → nothing created, board not synced.
  *   - judgment 'clarify' → nothing created (the question is surfaced elsewhere).
  *   - the planner-gate truth: flag-off / trivial / max-pressure ⇒ planner NOT
  *     invoked (no model call).
+ *
+ * PARKED-ONLY EXECUTION INVARIANT: goals are never transitioned to 'running'
+ * or executed — the owner promotes from the board or via /goal when ready.
  *
  * Hermetic: temp homeDir + injected Clock, mirroring goal-store.test.ts.
  */
@@ -45,7 +49,9 @@ function makeFakeClock(startIso = '2026-06-05T00:00:00.000Z'): Clock {
 /**
  * The EXACT staging logic the menu post-turn slot applies to a judged plan
  * (mirrors resolveAutoStage's stage branch): born-parked create per goal with the
- * todos as the roadmap, then a board sync. Returns the count actually staged.
+ * todos as the roadmap, then a board sync. Source is always 'auto-staged', state
+ * is always 'parked' (parked-only execution policy — NEVER auto-executed).
+ * Returns the count actually staged.
  */
 async function applyStage(
   store: GoalStore,
@@ -127,6 +133,14 @@ describe('post-turn auto-stage', () => {
     const modelUsers = signup?.roadmap.find((it) => it.text === 'Model users');
     assert.deepEqual(endpoint?.dependsOn, [modelUsers?.id], 'index→id dependency wired');
     assert.equal(modelUsers?.dependsOn, undefined, 'a todo with no deps has no dependsOn field');
+    // INVARIANT: re-reading each created goal confirms it stays parked (never
+    // transitioned to 'running' or auto-executed).
+    for (const g of goals) {
+      const reRead = await store.get(g.id);
+      assert.ok(reRead !== null, `goal ${g.title} persists`);
+      assert.equal(reRead!.state, 'parked', `goal ${g.title} remains parked`);
+      assert.equal(reRead!.source, 'auto-staged', `goal ${g.title} source is auto-staged`);
+    }
   });
 
   it("judgment 'none' creates nothing and never syncs the board", async () => {

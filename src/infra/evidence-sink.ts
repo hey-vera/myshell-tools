@@ -4,46 +4,44 @@ import { isAbsolute, resolve } from 'node:path';
 
 import {
   buildSnapshotFromVerify,
-  type EvidenceSnapshot,
+  type EvidenceFileWriteV2,
+  type EvidenceSnapshotV2,
 } from '../core/evidence.js';
 import type { OrchestrateDeps } from '../core/types.js';
 import type { VerifyOutcome } from '../core/verify.js';
-import type { ProviderId } from '../providers/port.js';
-import { appendEvidence } from './evidence-store.js';
+import { appendEvidenceV2 } from './evidence-store.js';
 
 function hashBytes(bytes: Buffer): string {
   return `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
 }
 
-async function hashFileAfter(cwd: string, filePath: string): Promise<string> {
+async function hashFileAfter(cwd: string, filePath: string): Promise<string | undefined> {
   try {
     const absolute = isAbsolute(filePath) ? filePath : resolve(cwd, filePath);
     const root = resolve(cwd);
-    if (absolute !== root && !absolute.startsWith(`${root}/`)) return '';
+    if (absolute !== root && !absolute.startsWith(`${root}/`)) return undefined;
     return hashBytes(await readFile(absolute));
   } catch {
-    return '';
+    return undefined;
   }
 }
 
 async function filesWrittenFromOutcome(
   cwd: string,
   outcome: VerifyOutcome,
-): Promise<EvidenceSnapshot['filesWritten']> {
+): Promise<readonly EvidenceFileWriteV2[]> {
   const paths = outcome.changedPaths ?? [];
   const files = await Promise.all(
-    paths.map(async (path) => ({
-      path,
-      // No pre-turn hash is captured yet. Keep the placeholder explicit rather
-      // than inventing a before-state.
-      hashBefore: '',
-      hashAfter: await hashFileAfter(cwd, path),
-    })),
+    paths.map(async (path): Promise<EvidenceFileWriteV2> => {
+      const hashAfter = await hashFileAfter(cwd, path);
+      if (hashAfter !== undefined) return { path, hashAfter };
+      return { path };
+    }),
   );
   return files;
 }
 
-function commandsRunFromOutcome(outcome: VerifyOutcome): EvidenceSnapshot['commandsRun'] {
+function commandsRunFromOutcome(outcome: VerifyOutcome): EvidenceSnapshotV2['commandsRun'] {
   if (outcome.testCommand === undefined || outcome.testRun === undefined) return [];
   return [{
     command: outcome.testCommand,
@@ -53,19 +51,11 @@ function commandsRunFromOutcome(outcome: VerifyOutcome): EvidenceSnapshot['comma
   }];
 }
 
-function providerModeFromAvailable(
-  availableProviders: readonly ProviderId[],
-): EvidenceSnapshot['providerMode'] {
-  if (availableProviders.length === 0) return 'zero';
-  if (availableProviders.length === 1) return 'solo';
-  return 'multi';
-}
-
 export function createEvidenceSink(options: {
   readonly cwd: string;
 }): NonNullable<OrchestrateDeps['evidenceSink']> {
   return async (snapshot) => {
-    await appendEvidence(options.cwd, snapshot);
+    await appendEvidenceV2(options.cwd, snapshot);
   };
 }
 
@@ -74,13 +64,6 @@ export function createEvidenceSnapshotBuilder(options: {
   readonly now: () => number;
 }): NonNullable<OrchestrateDeps['evidenceSnapshotBuilder']> {
   return async (input) => {
-    const providerSet = new Set<string>(input.availableProviders);
-    providerSet.add(input.provider);
-    if (input.verifyOutcome.critic?.vendor !== undefined) {
-      providerSet.add(input.verifyOutcome.critic.vendor);
-    }
-
-    const providersAttempted = [...providerSet];
     const providersSucceeded = [
       input.provider,
       ...(input.verifyOutcome.critic?.vendor !== undefined
@@ -92,13 +75,7 @@ export function createEvidenceSnapshotBuilder(options: {
       taskId: input.taskId,
       turnNumber: input.turnNumber,
       verifyOutcome: input.verifyOutcome,
-      providerMode: providerModeFromAvailable(input.availableProviders),
-      providersAttempted,
       providersSucceeded,
-      providersFailed: [],
-      // Future improvement: capture pre-turn read/file hashes from the command
-      // audit stream. For now, only post-verify changed-file hashes are grounded.
-      filesReadPre: [],
       filesWritten: await filesWrittenFromOutcome(options.cwd, input.verifyOutcome),
       commandsRun: commandsRunFromOutcome(input.verifyOutcome),
       conclusionsReached: input.conclusionsReached,

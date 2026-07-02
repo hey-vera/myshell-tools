@@ -35,11 +35,13 @@
 import type { Policy, Tier } from './types.js';
 import type { LedgerWriter, Clock } from './types.js';
 import type { Provider, ProviderId, ProviderRequest, SandboxLevel, Usage } from '../providers/port.js';
+import type { TurnCallBudget } from './turn-call-budget.js';
 import { route } from './route.js';
 import { buildUnderstandingPrompt, parseSystemModel, type SystemModel } from './understanding.js';
 import { recordAuxLedger } from './aux-ledger.js';
 import { findCapability, DECLARATIVE_MODEL_CAPABILITIES } from './model-capabilities.js';
 import { vendorNeutralRouterEnabled } from './route-types.js';
+import { runBudgetedProvider } from './budgeted-provider.js';
 
 /** Everything the understanding pass needs to pick and run the manager-tier model. */
 export interface UnderstandingGeneratorDeps {
@@ -66,6 +68,7 @@ export interface UnderstandingGeneratorDeps {
   readonly clock?: Clock;
   readonly sessionId?: string;
   readonly cacheAccountingV2?: boolean;
+  readonly turnCallBudget?: TurnCallBudget;
 }
 
 /**
@@ -177,7 +180,12 @@ export function makeUnderstandingPass(
     let startMs: number | undefined;
     try {
       startMs = deps.clock?.now();
-      for await (const ev of provider.run(req, signal)) {
+      for await (const ev of runBudgetedProvider(provider, req, signal, {
+        purpose: 'understanding',
+        bucket: 'discretionary',
+        provider: providerId,
+        ...(deps.turnCallBudget ? { budget: deps.turnCallBudget } : {}),
+      })) {
         if (ev.type === 'done') {
           finalText = ev.text;
           usage = ev.usage;

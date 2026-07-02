@@ -546,4 +546,59 @@ describe('Candidate Quality Gate', () => {
     assert.equal(final?.type, 'final');
     assert.ok(final?.type === 'final' && final.receipt !== undefined, 'final should have receipt when flag is on');
   });
+
+  // --- P0-02b evidence tests ---
+
+  it('fallback evidence omits unknown provenance and empty hashes', async () => {
+    const seen: unknown[] = [];
+    const localDeps: OrchestrateDeps & { entries: SessionEntry[] } = {
+      ...deps(),
+      evidenceTaskId: 'task_1',
+      evidenceTurnNumber: 1,
+      evidenceSink: (snapshot) => { seen.push(snapshot); },
+    };
+
+    await collect(runCandidateQualityGate({
+      deps: localDeps,
+      candidate: candidate(undefined, { availableProviders: ['claude'] }),
+      goalTurn: false,
+      verify: async () => outcome('passing', {
+        changedPaths: ['src/a.ts'],
+      }),
+      receiptEvents,
+    }));
+
+    assert.equal(seen.length, 1);
+    const snapshot = seen[0] as Record<string, unknown>;
+    assert.equal(snapshot?.version, 2);
+    assert.equal('providersAttempted' in (snapshot ?? {}), false);
+    assert.equal('providersFailed' in (snapshot ?? {}), false);
+    assert.equal('filesReadPre' in (snapshot ?? {}), false);
+    const filesWritten = snapshot?.filesWritten as Array<Record<string, unknown>>;
+    assert.equal(filesWritten.length, 1);
+    assert.equal(filesWritten[0]?.path, 'src/a.ts');
+    assert.equal('hashBefore' in (filesWritten[0] ?? {}), false);
+    assert.equal('hashAfter' in (filesWritten[0] ?? {}), false);
+  });
+
+  it('evidence builder throw remains fail-soft', async () => {
+    const localDeps: OrchestrateDeps & { entries: SessionEntry[] } = {
+      ...deps(),
+      evidenceTaskId: 'task_1',
+      evidenceTurnNumber: 1,
+      evidenceSnapshotBuilder: () => { throw new Error('boom'); },
+      evidenceSink: () => {},
+    };
+
+    const events = await collect(runCandidateQualityGate({
+      deps: localDeps,
+      candidate: candidate(),
+      goalTurn: false,
+      verify: async () => outcome('passing'),
+      receiptEvents,
+    }));
+
+    assert.equal(localDeps.entries.length, 1);
+    assert.equal(events.at(-1)?.type === 'final' && events.at(-1)?.success, true);
+  });
 });

@@ -23,6 +23,8 @@ import { route } from './route.js';
 import { buildRouterPrompt, parseModelRoute } from './router.js';
 import type { ModelClassifier, ModelRouteSuggestion } from './router.js';
 import { recordAuxLedger } from './aux-ledger.js';
+import { runBudgetedProvider } from './budgeted-provider.js';
+import type { TurnCallBudget } from './turn-call-budget.js';
 
 /** Everything the classifier needs to pick and run the cheapest model. */
 export interface RouteClassifierDeps {
@@ -39,6 +41,7 @@ export interface RouteClassifierDeps {
   readonly clock?: Clock;
   readonly sessionId?: string;
   readonly cacheAccountingV2?: boolean;
+  readonly turnCallBudget?: TurnCallBudget;
 }
 
 /** Classification always runs at the cheapest tier — it only buckets a turn. */
@@ -92,7 +95,12 @@ export function makeRouteClassifier(deps: RouteClassifierDeps): ModelClassifier 
     let startMs: number | undefined;
     try {
       startMs = deps.clock?.now();
-      for await (const ev of provider.run(req, signal)) {
+      for await (const ev of runBudgetedProvider(provider, req, signal, {
+        ...(deps.turnCallBudget !== undefined ? { budget: deps.turnCallBudget } : {}),
+        purpose: 'route',
+        bucket: 'discretionary',
+        provider: provider.id,
+      })) {
         if (ev.type === 'done') {
           finalText = ev.text;
           usage = ev.usage;

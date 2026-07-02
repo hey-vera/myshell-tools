@@ -39,6 +39,8 @@ import type {
 } from '../../src/core/types.ts';
 import type { IntentFrame, IntentExtraction } from '../../src/core/intent.ts';
 import type { Provider, ProviderRequest, ProviderEvent, Usage } from '../../src/providers/port.ts';
+import type { TurnCallBudgetSpec } from '../../src/core/turn-call-budget.ts';
+import { createTurnCallBudget } from '../../src/core/turn-call-budget.ts';
 
 function makeFakeClock(): Clock {
   const now = 1_000_000;
@@ -285,5 +287,42 @@ describe('orchestrate unified preflight — route decision flows from the frame 
     assert.equal(classified.classification.risk, det.risk, 'fail-soft: risk = deterministic floor');
     assert.equal(router.calls(), 0, 'fail-soft does NOT add a router retry (forbidden)');
     assert.equal(extractorCalls, 1, 'the single preflight extraction was attempted once');
+  });
+
+  it('semantic hint cannot lower deterministic risk under ledger', async () => {
+    const budget = createTurnCallBudget({
+      turnId: 'turn-semantic-risk',
+      mode: 'observe',
+      totalUnits: 10,
+      reserved: { work: 1, failover: 0, verification: 0 },
+    } satisfies TurnCallBudgetSpec);
+
+    const router = countingClassifier();
+    const det = classify(AMBIGUOUS_SUBSTANTIAL);
+    const lowRiskFrame = hintedFrame({
+      routeTier: 'worker',
+      operationRisk: 'low',
+    } as Partial<IntentFrame>);
+
+    const extractor = countingExtractor(lowRiskFrame);
+    const events = await collect(
+      orchestrate(
+        AMBIGUOUS_SUBSTANTIAL,
+        baseDeps({
+          routeClassifier: router.fn,
+          intentExtractor: extractor.fn,
+          unifyPreflight: true,
+          turnCallBudget: budget,
+          riskSignals: false,
+        }),
+        new AbortController().signal,
+      ),
+    );
+
+    const classified = events.find((e) => e.type === 'classified');
+    assert.ok(classified !== undefined && classified.type === 'classified');
+    assert.equal(classified.classification.risk, det.risk,
+      'semantic hint cannot lower deterministic risk under ledger (riskSignals off)');
+    assert.equal(router.calls(), 0, 'router still suppressed under unified path');
   });
 });

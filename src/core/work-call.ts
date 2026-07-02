@@ -43,6 +43,8 @@
 
 import type { CoreEvent, OrchestrateDeps, Tier, Classification, Assessment, Policy } from './types.js';
 import type { CliError, Usage, ProviderRequest, Provider, ProviderId } from '../providers/port.js';
+import type { TurnCallBudget } from './turn-call-budget.js';
+import { runBudgetedProvider, type BudgetedProviderCall } from './budgeted-provider.js';
 import { route, clampTier, type CapabilityRouteContext, type CapabilityTaskSignals } from './route.js';
 import type { Mode } from './policy.js';
 import { shouldReview, effortForDecision } from './orchestrate-signals.js';
@@ -228,6 +230,7 @@ async function* streamProvider(
   req: ProviderRequest,
   tier: Tier,
   signal: AbortSignal,
+  call: BudgetedProviderCall,
 ): AsyncGenerator<CoreEvent, StreamOutcome> {
   let finalText: string | undefined;
   let errored: CliError | undefined;
@@ -241,7 +244,7 @@ async function* streamProvider(
     return { finalText, errored, usage, providerCostUsd, sessionId, canceled: true, canceledBeforeStream: true };
   }
 
-  for await (const ev of provider.run(req, signal)) {
+  for await (const ev of runBudgetedProvider(provider, req, signal, call)) {
     yield { type: 'provider-event', tier, event: ev };
 
     if (ev.type === 'done') {
@@ -290,6 +293,7 @@ async function collectProviderRun(
   provider: Provider,
   req: ProviderRequest,
   signal: AbortSignal,
+  call: BudgetedProviderCall,
 ): Promise<StreamOutcome> {
   let finalText: string | undefined;
   let errored: CliError | undefined;
@@ -301,7 +305,7 @@ async function collectProviderRun(
     return { finalText, errored, usage, providerCostUsd, sessionId, canceled: true, canceledBeforeStream: true };
   }
 
-  for await (const ev of provider.run(req, signal)) {
+  for await (const ev of runBudgetedProvider(provider, req, signal, call)) {
     if (ev.type === 'done') {
       finalText = ev.text;
       // done.usage is the authoritative accumulated total.
@@ -562,6 +566,12 @@ export interface WorkCallInput {
   readonly autoBrainEscalation?: boolean;
   /** Hard provider-invocation cap for this turn. Absent means unbounded by Governor. */
   readonly turnCallBudget?: number;
+  /**
+   * NEW call-budget LEDGER (P1-09d) — observe-only admission/accounting for every
+   * provider stream opened during this work-call stage.  DISTINCT from the
+   * numeric `turnCallBudget` counter above, which remains authoritative.
+   */
+  readonly turnCallLedger?: TurnCallBudget;
   /** Governor investigation-round allowance, threaded for executor authority. */
   readonly roundBudget?: number;
   /**
@@ -670,6 +680,7 @@ export async function* runWorkCall(input: WorkCallInput): AsyncGenerator<CoreEve
     startTier,
     autoBrainEscalation,
     turnCallBudget,
+    turnCallLedger,
     verifyLevel,
     trustEnabled,
     brainConfidence,
@@ -744,6 +755,14 @@ export async function* runWorkCall(input: WorkCallInput): AsyncGenerator<CoreEve
    * undefined on the common path → byte-identical output.
    */
   let salvagedDraft: string | undefined;
+
+  /**
+   * P1-09d: the callId of the most recently begun budget call, captured from the
+   * turnCallLedger snapshot after each streamProvider/collectProviderRun.  Used as
+   * parentCallId on the next failover continuation so the chain A→B→C records
+   * correct ancestry.
+   */
+  let lastBudgetCallId: string | undefined;
 
   /**
    * Track which attempt indices have already been reviewed so that re-runs
@@ -863,7 +882,22 @@ export async function* runWorkCall(input: WorkCallInput): AsyncGenerator<CoreEve
         const reviewStart = deps.clock.now();
         if (!callBudgetAvailable()) return { ran: false };
         providerCalls++;
-        const reviewOutcome = await collectProviderRun(reviewerProvider, reviewReq, signal);
+        const criticCallMeta: BudgetedProviderCall = {
+          purpose: 'verify-critic',
+          bucket: 'verification',
+          provider: input.reviewer,
+          ...(turnCallLedger !== undefined ? { budget: turnCallLedger } : {}),
+        };
+        const reviewOutcome = await collectProviderRun(reviewerProvider, reviewReq, signal, criticCallMeta);
+        // P1-09d: capture the budget callId.
+        if (turnCallLedger !== undefined) {
+          const snap = turnCallLedger.snapshot();
+          const callEvents = snap.events.filter((e) => e.type === 'call-begun');
+          const last = callEvents[callEvents.length - 1];
+          if (last !== undefined && 'callId' in last) {
+            lastBudgetCallId = last.callId;
+          }
+        }
         const reviewDurationMs = deps.clock.now() - reviewStart;
         if (reviewOutcome.canceled || reviewOutcome.errored != null) {
           return { ran: false };
@@ -1029,7 +1063,22 @@ export async function* runWorkCall(input: WorkCallInput): AsyncGenerator<CoreEve
         : {}),
     };
     const start = deps.clock.now();
-    const outcome = yield* streamProvider(provider, req, candidate.tier, signal);
+    const repairCallMeta: BudgetedProviderCall = {
+      purpose: 'work-repair',
+      bucket: 'discretionary',
+      provider: candidate.provider,
+      ...(turnCallLedger !== undefined ? { budget: turnCallLedger } : {}),
+    };
+    const outcome = yield* streamProvider(provider, req, candidate.tier, signal, repairCallMeta);
+    // P1-09d: capture the budget callId.
+    if (turnCallLedger !== undefined) {
+      const snap = turnCallLedger.snapshot();
+      const callEvents = snap.events.filter((e) => e.type === 'call-begun');
+      const last = callEvents[callEvents.length - 1];
+      if (last !== undefined && 'callId' in last) {
+        lastBudgetCallId = last.callId;
+      }
+    }
     const durationMs = deps.clock.now() - start;
     const finalText = outcome.finalText ?? '';
     const success =
@@ -1202,6 +1251,7 @@ export async function* runWorkCall(input: WorkCallInput): AsyncGenerator<CoreEve
     failoverPool !== null ||
     (attempts < deps.policy.maxAttempts && callBudgetAvailable())
   ) {
+    const isFailoverIteration = failoverPool !== null;
     attempts++;
 
     // --- Route for current tier ---
@@ -1467,13 +1517,30 @@ export async function* runWorkCall(input: WorkCallInput): AsyncGenerator<CoreEve
 
     // --- Stream provider events ---
     providerCalls++;
+    // P1-09d: build call metadata for the budget ledger.
+    const workCallMeta: BudgetedProviderCall = {
+      purpose: isFailoverIteration ? 'failover' : 'work',
+      bucket: isFailoverIteration ? 'failover' : 'work',
+      provider: decision.provider,
+      ...(isFailoverIteration && lastBudgetCallId !== undefined ? { parentCallId: lastBudgetCallId } : {}),
+      ...(turnCallLedger !== undefined ? { budget: turnCallLedger } : {}),
+    };
     if (subscriptionAccount !== null && deps.onAccountUsed !== undefined) {
       const cb = deps.onAccountUsed;
       void (async () => {
         try { await cb(subscriptionAccount.id, deps.clock.isoNow()); } catch { /* best-effort */ }
       })();
     }
-    const outcome = yield* streamProvider(provider, req, decision.tier, signal);
+    const outcome = yield* streamProvider(provider, req, decision.tier, signal, workCallMeta);
+    // P1-09d: capture the budget callId for failover ancestry.
+    if (turnCallLedger !== undefined) {
+      const snap = turnCallLedger.snapshot();
+      const callEvents = snap.events.filter((e) => e.type === 'call-begun');
+      const last = callEvents[callEvents.length - 1];
+      if (last !== undefined && 'callId' in last) {
+        lastBudgetCallId = last.callId;
+      }
+    }
 
     if (outcome.canceled) {
       yield { type: 'notice', level: 'warn', message: 'cancelled' };
@@ -2185,7 +2252,22 @@ export async function* runWorkCall(input: WorkCallInput): AsyncGenerator<CoreEve
 
         // --- Consume reviewer events without surfacing internal prose ---
         providerCalls++;
-        const reviewOutcome = await collectProviderRun(reviewerProvider, reviewReq, signal);
+        const reviewCallMeta: BudgetedProviderCall = {
+          purpose: 'review',
+          bucket: 'verification',
+          provider: reviewerId,
+          ...(turnCallLedger !== undefined ? { budget: turnCallLedger } : {}),
+        };
+        const reviewOutcome = await collectProviderRun(reviewerProvider, reviewReq, signal, reviewCallMeta);
+        // P1-09d: capture the budget callId.
+        if (turnCallLedger !== undefined) {
+          const snap = turnCallLedger.snapshot();
+          const callEvents = snap.events.filter((e) => e.type === 'call-begun');
+          const last = callEvents[callEvents.length - 1];
+          if (last !== undefined && 'callId' in last) {
+            lastBudgetCallId = last.callId;
+          }
+        }
 
         if (reviewOutcome.canceled) {
           yield { type: 'notice', level: 'warn', message: 'cancelled' };

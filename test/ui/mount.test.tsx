@@ -641,6 +641,111 @@ test('routeControlPanelAction dispatches toggle + returns true when flag on, one
   assert.deepEqual(store.getState().controlPanel, { enabled: true, open: false, activeSection: 'goals' });
 });
 
+// ---------------------------------------------------------------------------
+// P0-06a — InkStore observer seam
+// ---------------------------------------------------------------------------
+
+test('observer sees one record per dispatch after push', () => {
+  const bridge = createInkAppBridge();
+  let lastPushed: UiState | null = null;
+  bridge._setUiState = (s) => { lastPushed = s; };
+  const observations: Array<{
+    action: { type: string };
+    before: UiState | null;
+    after: UiState | null;
+    stateChanged: boolean;
+    pushed: true;
+  }> = [];
+  const store = createInkStore(bridge, (obs) => {
+    // Observer fires AFTER bridge.pushState — the bridge's own last snapshot
+    // (`lastPushed`) must already reflect the new state at observer time.
+    observations.push({
+      action: obs.action,
+      before: lastPushed === obs.after ? obs.before : null,
+      after: obs.after,
+      stateChanged: obs.stateChanged,
+      pushed: obs.pushed,
+    });
+  });
+
+  // Initial seed is NOT observed.
+  assert.equal(observations.length, 0);
+
+  store.dispatch({ type: 'commit/raw', text: 'line 1' });
+  assert.equal(observations.length, 1);
+  assert.equal(observations[0]!.action.type, 'commit/raw');
+  assert.equal(observations[0]!.stateChanged, true);
+  assert.ok(observations[0]!.before !== null);
+
+  store.dispatch({ type: 'commit/raw', text: 'line 2' });
+  assert.equal(observations.length, 2);
+  assert.equal(observations[1]!.action.type, 'commit/raw');
+
+  // Observer fired AFTER push: the bridge's last snapshot equals the observer's
+  // `after` at observer invocation time.
+  assert.strictEqual(lastPushed!, observations[1]!.after);
+});
+
+test('observer distinguishes referential no-op', () => {
+  const bridge = createInkAppBridge();
+  bridge._setUiState = () => {};
+  const obsFlags: boolean[] = [];
+  const store = createInkStore(bridge, (obs) => {
+    obsFlags.push(obs.stateChanged);
+  });
+
+  // A state-changing dispatch.
+  store.dispatch({ type: 'commit/raw', text: 'x' });
+  assert.equal(obsFlags.length, 1);
+  assert.equal(obsFlags[0], true, 'commit/raw should change state');
+
+  // chrome/clear on already-empty chrome → reduce returns the same reference.
+  store.dispatch({ type: 'chrome/clear' });
+  assert.equal(obsFlags.length, 2);
+  assert.equal(obsFlags[1], false, 'chrome/clear on empty chrome is referential no-op');
+});
+
+test('observer throw cannot stop dispatch', () => {
+  const bridge = createInkAppBridge();
+  let last: UiState | null = null;
+  bridge._setUiState = (s) => { last = s; };
+  let observerCalls = 0;
+  const store = createInkStore(bridge, () => {
+    observerCalls += 1;
+    throw new Error('boom');
+  });
+
+  // Dispatch still completes and state is updated despite the observer throwing.
+  const committedBefore = last?.committed.length ?? 0;
+  store.dispatch({ type: 'commit/raw', text: 'data' });
+  assert.equal(observerCalls, 1);
+  assert.equal(last?.committed.length, committedBefore + 1);
+  assert.ok(
+    last?.committed.some((l) => l.kind === 'raw' && l.text === 'data'),
+    'dispatch should commit line despite observer throw',
+  );
+});
+
+test('1000 chrome replacements report 1000 dispatches and zero committed delta', () => {
+  const bridge = createInkAppBridge();
+  let last: UiState | null = null;
+  bridge._setUiState = (s) => { last = s; };
+  let dispatchCount = 0;
+  const store = createInkStore(bridge, () => {
+    dispatchCount += 1;
+  });
+
+  const committedBefore = last?.committed.length ?? 0;
+
+  for (let i = 0; i < 1000; i++) {
+    store.dispatch({ type: 'chrome/replace', lines: [`line-${i}`] });
+  }
+
+  assert.equal(dispatchCount, 1000);
+  // chrome/replace does not touch committed[]
+  assert.equal(last?.committed.length, committedBefore);
+});
+
 test('both flags on → only CP armed; goals route returns false', () => {
   const bridge = createInkAppBridge();
   bridge._setUiState = () => {};

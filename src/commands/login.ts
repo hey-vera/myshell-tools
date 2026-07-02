@@ -53,6 +53,63 @@ import { clearClaudeToken, loginPersistentEnv } from '../infra/credentials.js';
 /** Which sign-in flow to run. See module docstring. */
 export type LoginMethod = 'browser' | 'code';
 
+export type LoginVerification = 'authenticated' | 'not-authenticated' | 'probe-error';
+
+export type LoginAttemptOutcome = {
+  readonly method: LoginMethod;
+  readonly status: 'authenticated' | 'cancelled' | 'failed';
+  readonly childExitCode: number | null;
+  readonly verification: LoginVerification;
+};
+
+export type LoginProviderOutcome =
+  | {
+      readonly provider: ProviderId;
+      readonly status: 'authenticated';
+      readonly method: LoginMethod;
+      readonly attempts: readonly LoginAttemptOutcome[];
+      readonly fallbackUsed: boolean;
+    }
+  | {
+      readonly provider: ProviderId;
+      readonly status: 'cancelled' | 'failed' | 'skipped-not-installed';
+      readonly method: null;
+      readonly attempts: readonly LoginAttemptOutcome[];
+      readonly fallbackUsed: boolean;
+    };
+
+export type LoginResult = {
+  readonly status: 'success' | 'partial' | 'cancelled' | 'failed' | 'no-targets' | 'invalid-provider';
+  readonly outcomes: readonly LoginProviderOutcome[];
+  readonly invalidProvider?: string;
+};
+
+export type LoginOptions = {
+  method?: LoginMethod;
+  readLine?: () => Promise<string | null>;
+  suspendStdin?: () => () => void;
+  confirm?: (defaultYes: boolean, opts?: { requireExplicit?: boolean }) => Promise<boolean>;
+  commandGate?: CommandGatePort;
+  accountEnv?: Readonly<Partial<NodeJS.ProcessEnv>>;
+};
+
+export type LoginRunner = (out: OutputSink, providerArg?: string, opts?: LoginOptions) => Promise<LoginResult>;
+
+export type LoginVerifyResult =
+  | { kind: 'authenticated' }
+  | { kind: 'not-authenticated' }
+  | { kind: 'probe-error'; readonly error: unknown };
+
+export type LoginRunnerDeps = {
+  readonly detect: typeof detectProvider;
+  readonly spawn: typeof runInteractiveChild;
+  readonly verify: (id: ProviderId, childEnv: NodeJS.ProcessEnv, cwd: string) => Promise<LoginVerifyResult>;
+  readonly clearToken: () => Promise<void>;
+  readonly env: NodeJS.ProcessEnv;
+  readonly platform: NodeJS.Platform;
+  readonly cwd: () => string;
+};
+
 /** Each provider's default (browser/localhost) sign-in command. */
 const LOGIN_COMMAND: Record<ProviderId, { readonly bin: string; readonly args: readonly string[] }> = {
   claude: { bin: 'claude', args: ['/login'] },
@@ -202,234 +259,260 @@ export function shouldRetryWithCode(answer: string | null): boolean {
   return parseYesNo(answer, true);
 }
 
-/**
- * Run the code sign-in method for a single provider.
- *
- * Factored out so both the initial `--code` path and the browser-fail retry
- * path can invoke it without duplicating the spawn + paste-capture logic.
- * Never throws.
- */
-async function runCodeMethodForProvider(
+async function runSingleAttempt(
   out: OutputSink,
   id: ProviderId,
-  suspendStdin?: () => () => void,
-  commandGate?: CommandGatePort,
-  accountEnv?: Readonly<Partial<NodeJS.ProcessEnv>>,
-): Promise<void> {
-  const { bin, args, guidance } = LOGIN_CODE_COMMAND[id];
-  const cwd = process.cwd();
-  const childEnv = {
-    ...process.env,
-    ...loginPersistentEnv(process.env, cwd, [id]),
-    ...(accountEnv ?? {}),
-  };
-  out.write(bold(`\nSigning in to ${id} — no localhost needed.\n`, out.color));
-  out.write(dim(guidance + '\n', out.color));
-  // Release our readline's grip on stdin so the provider CLI is the SOLE reader
-  // of the terminal during its interactive sign-in (claude auth login prints a
-  // "Paste code here" prompt for its OOB code flow; codex --device-auth waits on
-  // the same TTY). Without this, our readline and the child race for the same
-  // bytes and a pasted value lands split/garbled.
-  const resumeStdin = suspendStdin?.();
+  method: LoginMethod,
+  childEnv: NodeJS.ProcessEnv,
+  cwd: string,
+  opts: LoginOptions | undefined,
+  deps: LoginRunnerDeps,
+): Promise<LoginAttemptOutcome> {
+  const { bin, args } = getLoginCommand(id, method);
+
+  const resumeStdin = opts?.suspendStdin?.();
+  let childExitCode: number | null;
   try {
-    // Run the vendor sign-in interactively. We intentionally ignore the exit code
-    // (it's unreliable — see below) and verify via a real credential probe instead.
-    // runInteractiveChild hands the child /dev/tty as stdin in a pipe-stdin shell.
-    await runInteractiveChild(bin, args, { env: childEnv, ...(commandGate !== undefined ? { commandGate } : {}) }).done;
+    childExitCode = await deps.spawn(bin, args, {
+      env: childEnv,
+      ...(opts?.commandGate !== undefined ? { commandGate: opts.commandGate } : {}),
+    }).done;
   } finally {
     resumeStdin?.();
   }
 
-  if (await verifyPostLogin(out, id, childEnv, cwd)) return;
+  const verifyResult = await deps.verify(id, childEnv, cwd);
 
-  // Not authenticated. Be specific for claude's OOB "Invalid code" failure and
-  // point at the guaranteed fallback (a direct `claude /login` that myshell then
-  // picks up via the persistent credentials dir).
-  out.write(red(`✗ ${id} is still not signed in.\n`, out.color));
+  if (verifyResult.kind === 'authenticated') {
+    if (id === 'claude') {
+      try {
+        await deps.clearToken();
+      } catch {
+        /* never downgrade authentication */
+      }
+      out.write(green('✓ Claude sign-in complete — claude is ready.\n', out.color));
+    } else {
+      out.write(green(`✓ ${id} sign-in complete.\n`, out.color));
+    }
+    return { method, status: 'authenticated', childExitCode, verification: 'authenticated' };
+  }
+
+  if (verifyResult.kind === 'probe-error') {
+    out.write(red(`✗ ${id} sign-in did not complete (exit ${childExitCode ?? 'unknown'}).\n`, out.color));
+    return { method, status: 'failed', childExitCode, verification: 'probe-error' };
+  }
+
+  const status: 'cancelled' | 'failed' =
+    childExitCode === 130 || childExitCode === 143 ? 'cancelled' : 'failed';
+
+  if (childExitCode === 0) {
+    out.write(red(`✗ ${id} exited successfully, but is still not signed in.\n`, out.color));
+  } else {
+    out.write(red(`✗ ${id} sign-in did not complete (exit ${childExitCode ?? 'unknown'}).\n`, out.color));
+  }
+
+  return { method, status, childExitCode, verification: 'not-authenticated' };
+}
+
+export async function runProviderLogin(
+  out: OutputSink,
+  id: ProviderId,
+  method: LoginMethod,
+  opts: LoginOptions | undefined,
+  deps: LoginRunnerDeps,
+): Promise<LoginProviderOutcome> {
+  let detectResult;
+  try {
+    detectResult = await deps.detect(id);
+  } catch {
+    return { provider: id, status: 'failed', method: null, attempts: [], fallbackUsed: false };
+  }
+
+  if (!detectResult.installed) {
+    out.write(dim(`${id}: not installed — skipping. Install with: ${getInstallCommand(id)}\n`, out.color));
+    return { provider: id, status: 'skipped-not-installed', method: null, attempts: [], fallbackUsed: false };
+  }
+
+  const cwd = deps.cwd();
+  const childEnv = {
+    ...deps.env,
+    ...loginPersistentEnv(deps.env, cwd, [id]),
+    ...(opts?.accountEnv ?? {}),
+  };
+
+  if (method === 'code') {
+    out.write(bold(`\nSigning in to ${id} — no localhost needed.\n`, out.color));
+    out.write(dim(LOGIN_CODE_COMMAND[id].guidance + '\n', out.color));
+
+    const attempt = await runSingleAttempt(out, id, 'code', childEnv, cwd, opts, deps);
+
+    if (attempt.status === 'authenticated') {
+      return { provider: id, status: 'authenticated', method: 'code', attempts: [attempt], fallbackUsed: false };
+    }
+    if (attempt.status === 'cancelled') {
+      return { provider: id, status: 'cancelled', method: null, attempts: [attempt], fallbackUsed: false };
+    }
+    return { provider: id, status: 'failed', method: null, attempts: [attempt], fallbackUsed: false };
+  }
+
+  out.write(bold(`\nSigning in to ${id} — a browser window may open…\n`, out.color));
   if (id === 'claude') {
     out.write(
       dim(
-        '  If claude said "Invalid code": that code is single-use and short-lived —\n' +
-          '  re-run this and authorize + paste promptly (press only y at the prompt,\n' +
-          '  no extra Enter). Or sign in directly with `claude /login`; myshell reads\n' +
-          '  that sign-in automatically.\n',
+        "  If, after you click Authorize, the page shows a localhost / \"can't be\n" +
+          '  reached" error, copy the full URL from your browser\'s address bar (it has\n' +
+          '  a `code=…` part) and paste it back here — claude will finish the sign-in.\n',
         out.color,
       ),
     );
-  } else {
-    out.write(dim(`  Re-run \`myshell-tools login ${id}\` to try again.\n`, out.color));
   }
-}
 
-/**
- * Verify with a REAL credential probe rather than trusting the vendor exit code:
- * some login CLIs can exit 0 after a cancelled prompt, failed paste, or first-run
- * trust dialog. This keeps menu/onboarding state aligned with actual credentials.
- */
-async function verifyPostLogin(
-  out: OutputSink,
-  id: ProviderId,
-  childEnv: NodeJS.ProcessEnv,
-  cwd: string,
-): Promise<boolean> {
-  const status = await detectProvider(id, {
-    env: childEnv,
-    cwd,
-    credentialFileFallback: false,
-    storedCredentialInjection: false,
-  }).catch(() => null);
-  if (status?.authenticated === true) {
-    if (id === 'claude') await finishClaudeSignIn(out);
-    else out.write(green(`✓ ${id} sign-in complete.\n`, out.color));
-    return true;
+  const browserAttempt = await runSingleAttempt(out, id, 'browser', childEnv, cwd, opts, deps);
+  const attempts: LoginAttemptOutcome[] = [browserAttempt];
+  let fallbackUsed = false;
+
+  if (browserAttempt.status === 'authenticated') {
+    return { provider: id, status: 'authenticated', method: 'browser', attempts, fallbackUsed: false };
   }
-  return false;
+
+  const interactive = opts?.readLine !== undefined || opts?.confirm !== undefined;
+  const browserFailed = browserAttempt.childExitCode !== 0;
+
+  if (browserFailed && interactive) {
+    out.write(`Browser sign-in failed. Try the no-localhost code method now? ${yesNoHint('yes', out.color)} `);
+
+    const retry: boolean = await (async () => {
+      if (opts?.confirm !== undefined) return opts.confirm(true);
+      if (opts?.readLine !== undefined) return shouldRetryWithCode(await opts.readLine());
+      return false;
+    })();
+
+    if (retry) {
+      out.write(bold(`\nSigning in to ${id} — no localhost needed.\n`, out.color));
+      out.write(dim(LOGIN_CODE_COMMAND[id].guidance + '\n', out.color));
+
+      const codeAttempt = await runSingleAttempt(out, id, 'code', childEnv, cwd, opts, deps);
+      attempts.push(codeAttempt);
+      fallbackUsed = true;
+
+      if (codeAttempt.status === 'authenticated') {
+        return { provider: id, status: 'authenticated', method: 'code', attempts, fallbackUsed: true };
+      }
+
+      if (codeAttempt.status === 'cancelled') {
+        return { provider: id, status: 'cancelled', method: null, attempts, fallbackUsed: true };
+      }
+      return { provider: id, status: 'failed', method: null, attempts, fallbackUsed: true };
+    }
+
+    out.write(
+      dim(
+        `If the browser/localhost step failed, try the code method instead:\n` +
+          `  myshell-tools login ${id} --code\n`,
+        out.color,
+      ),
+    );
+  } else if (browserFailed && !interactive) {
+    out.write(
+      dim(
+        `If the browser/localhost step failed, try the code method instead:\n` +
+          `  myshell-tools login ${id} --code\n`,
+        out.color,
+      ),
+    );
+  }
+
+  if (browserAttempt.status === 'cancelled') {
+    return { provider: id, status: 'cancelled', method: null, attempts, fallbackUsed };
+  }
+  return { provider: id, status: 'failed', method: null, attempts, fallbackUsed };
 }
 
-/**
- * Finalise a successful `claude auth login`. Claude has already persisted its
- * own credential (Keychain / ~/.claude/.credentials.json), so there is nothing
- * for us to capture. We only clear any token a PREVIOUS `setup-token` flow left
- * in our store: a stale `CLAUDE_CODE_OAUTH_TOKEN` takes precedence over the
- * fresh subscription login and would silently shadow it once it expires.
- * Never throws.
- */
-async function finishClaudeSignIn(out: OutputSink): Promise<void> {
-  await clearClaudeToken();
-  out.write(green('✓ Claude sign-in complete — claude is ready.\n', out.color));
+export function createLoginRunner(deps: LoginRunnerDeps): LoginRunner {
+  return async (out, providerArg, opts) => {
+    if (providerArg !== undefined && !isProviderId(providerArg)) {
+      out.write(red(`Unknown provider "${providerArg}". Use: claude, codex, opencode, or grok.\n`, out.color));
+      return aggregateLoginOutcomes([], providerArg);
+    }
+
+    const targets: ProviderId[] =
+      providerArg !== undefined ? [providerArg] : ['claude', 'codex', 'opencode', 'grok'];
+    const method = resolveLoginMethod(opts?.method, deps.env, deps.platform);
+
+    const outcomes: LoginProviderOutcome[] = [];
+    for (const id of targets) {
+      const outcome = await runProviderLogin(out, id, method, opts, deps);
+      outcomes.push(outcome);
+    }
+
+    return aggregateLoginOutcomes(outcomes);
+  };
 }
 
-/**
- * Run the interactive sign-in flow for one provider (or all installed providers
- * when no argument is given). Returns 0 on success, 1 only for an invalid
- * argument — individual sign-in failures are reported but do not fail the command.
- *
- * @param opts.method   - Force 'browser' or 'code'. When omitted, the method is
- *   auto-detected from the environment via {@link resolveLoginMethod}.
- * @param opts.readLine - Injected line-reader the menu shares so the
- *   browser-failed "retry with code?" prompt reuses the single readline interface.
- * @param opts.suspendStdin - Releases our readline's grip on stdin while the
- *   vendor CLI owns the terminal, then restores it (prevents a paste byte-race).
- * @param opts.accountEnv - Environment overrides merged last into the child
- *   process env (e.g. CLAUDE_CONFIG_DIR for account-scoped login).
- */
+export const defaultLoginRunner: LoginRunner = createLoginRunner({
+  detect: detectProvider,
+  spawn: runInteractiveChild,
+  verify: async (id, childEnv, cwd) => {
+    try {
+      const status = await detectProvider(id, {
+        env: childEnv,
+        cwd,
+        credentialFileFallback: false,
+        storedCredentialInjection: false,
+      });
+      if (status?.authenticated === true) {
+        return { kind: 'authenticated' };
+      }
+      return { kind: 'not-authenticated' };
+    } catch (error) {
+      return { kind: 'probe-error', error };
+    }
+  },
+  clearToken: clearClaudeToken,
+  env: process.env,
+  platform: process.platform,
+  cwd: () => process.cwd(),
+});
+
 export async function runLogin(
   out: OutputSink,
   providerArg?: string,
-  opts?: {
-    method?: LoginMethod;
-    readLine?: () => Promise<string | null>;
-    suspendStdin?: () => () => void;
-    confirm?: (defaultYes: boolean, opts?: { requireExplicit?: boolean }) => Promise<boolean>;
-    commandGate?: CommandGatePort;
-    accountEnv?: Readonly<Partial<NodeJS.ProcessEnv>>;
-  },
+  opts?: LoginOptions,
 ): Promise<number> {
-  let targets: ProviderId[];
-  if (providerArg !== undefined) {
-    if (!isProviderId(providerArg)) {
-      out.write(red(`Unknown provider "${providerArg}". Use: claude, codex, opencode, or grok.\n`, out.color));
-      return 1;
-    }
-    targets = [providerArg];
-  } else {
-    targets = ['claude', 'codex', 'opencode', 'grok'];
+  return loginExitCode(await defaultLoginRunner(out, providerArg, opts));
+}
+
+export function aggregateLoginOutcomes(
+  outcomes: readonly LoginProviderOutcome[],
+  invalidProvider?: string,
+): LoginResult {
+  if (invalidProvider !== undefined) {
+    return { status: 'invalid-provider', outcomes: [], invalidProvider };
   }
 
-  const method = resolveLoginMethod(opts?.method, process.env, process.platform);
-
-  for (const id of targets) {
-    const status = await detectProvider(id);
-    if (!status.installed) {
-      out.write(
-        dim(`${id}: not installed — skipping. Install with: ${getInstallCommand(id)}\n`, out.color),
-      );
-      continue;
-    }
-
-    if (method === 'code') {
-      // stdio:'inherit' hands the terminal to the provider CLI so its OAuth /
-      // device / paste flow runs in place.
-      await runCodeMethodForProvider(out, id, opts?.suspendStdin, opts?.commandGate, opts?.accountEnv);
-    } else {
-      // Browser method
-      const { bin, args } = getLoginCommand(id, 'browser');
-      const cwd = process.cwd();
-      const childEnv = {
-        ...process.env,
-        ...loginPersistentEnv(process.env, cwd, [id]),
-        ...(opts?.accountEnv ?? {}),
-      };
-      out.write(bold(`\nSigning in to ${id} — a browser window may open…\n`, out.color));
-      // Prime the user for the classic localhost trap BEFORE it happens, so a
-      // "can't be reached" redirect error reads as a known step, not a failure.
-      // claude itself accepts the pasted address-bar URL (which carries the code).
-      if (id === 'claude') {
-        out.write(
-          dim(
-            "  If, after you click Authorize, the page shows a localhost / \"can't be\n" +
-              '  reached" error, copy the full URL from your browser\'s address bar (it has\n' +
-              '  a `code=…` part) and paste it back here — claude will finish the sign-in.\n',
-            out.color,
-          ),
-        );
-      }
-      const resumeStdin = opts?.suspendStdin?.();
-      let exitCode: number | null;
-      try {
-        exitCode = await runInteractiveChild(
-          bin,
-          args,
-          { env: childEnv, ...(opts?.commandGate !== undefined ? { commandGate: opts.commandGate } : {}) },
-        ).done;
-      } finally {
-        resumeStdin?.();
-      }
-
-      if (exitCode === 0) {
-        const authenticated = await verifyPostLogin(out, id, childEnv, cwd);
-        if (!authenticated) {
-          out.write(red(`✗ ${id} exited successfully, but is still not signed in.\n`, out.color));
-        }
-      } else {
-        out.write(
-          red(`✗ ${id} sign-in did not complete (exit ${exitCode ?? 'unknown'}).\n`, out.color),
-        );
-        // The classic container failure mode is a dead localhost callback.
-        // When an interactive readline is available, offer to immediately retry
-        // using the no-localhost code method. Otherwise print the manual hint.
-        if (opts?.readLine !== undefined) {
-          out.write(
-            `Browser sign-in failed. Try the no-localhost code method now? ${yesNoHint('yes', out.color)} `,
-          );
-          const retryWithCode =
-            opts.confirm !== undefined
-              ? await opts.confirm(true)
-              : shouldRetryWithCode(await opts.readLine());
-          if (retryWithCode) {
-            await runCodeMethodForProvider(out, id, opts.suspendStdin, opts.commandGate, opts.accountEnv);
-          } else {
-            out.write(
-              dim(
-                `If the browser/localhost step failed, try the code method instead:\n` +
-                  `  myshell-tools login ${id} --code\n`,
-                out.color,
-              ),
-            );
-          }
-        } else {
-          // Non-interactive path: print the hint as before.
-          out.write(
-            dim(
-              `If the browser/localhost step failed, try the code method instead:\n` +
-                `  myshell-tools login ${id} --code\n`,
-              out.color,
-            ),
-          );
-        }
-      }
-    }
+  if (outcomes.length === 0 || outcomes.every((o) => o.status === 'skipped-not-installed')) {
+    return { status: 'no-targets', outcomes };
   }
 
-  return 0;
+  const nonSkipped = outcomes.filter((o) => o.status !== 'skipped-not-installed');
+  const anyAuthenticated = outcomes.some((o) => o.status === 'authenticated');
+
+  if (anyAuthenticated) {
+    if (nonSkipped.every((o) => o.status === 'authenticated')) {
+      return { status: 'success', outcomes };
+    }
+    return { status: 'partial', outcomes };
+  }
+
+  if (outcomes.some((o) => o.status === 'failed')) {
+    return { status: 'failed', outcomes };
+  }
+  if (outcomes.some((o) => o.status === 'cancelled')) {
+    return { status: 'cancelled', outcomes };
+  }
+  return { status: 'no-targets', outcomes };
+}
+
+export function loginExitCode(result: LoginResult): 0 | 1 {
+  return result.status === 'success' ? 0 : 1;
 }

@@ -1,10 +1,8 @@
 import type { OrchestrateDeps, SessionEntry, Tier } from '../core/types.js';
 import type { RoadmapItem } from '../core/work-contract.js';
 import {
-  assessGoalConfidence,
   chooseInitialPlanningDepth,
   choosePlannerTier,
-  decideGoalActivation,
   needStrongPlanner,
   planningDepthCap,
   planningSelectionEntitlement,
@@ -32,6 +30,7 @@ import { helperSandbox } from '../infra/sandbox.js';
 import type { AppConfig } from '../infra/config.js';
 import type { EnvironmentStatus } from '../providers/detect.js';
 import type { ProviderId } from '../providers/port.js';
+import type { TurnCallBudget } from '../core/turn-call-budget.js';
 import { dim } from '../ui/theme.js';
 import type { OutputSink } from './render.js';
 import type { MenuContext } from './menu.js';
@@ -107,7 +106,6 @@ export interface AutoStageEngineDeps {
   readonly convId: string;
   readonly goalStore: GoalStore;
   readonly syncBoard: () => Promise<void>;
-  readonly spawnBackgroundGoal: (goalId: string, work: string, title: string) => void;
   readonly currentPressure: () => QuotaPressure;
   readonly resolveProjectKeyOnce: () => Promise<string | null>;
   readonly resolveCacheKey: () => Promise<string>;
@@ -116,12 +114,14 @@ export interface AutoStageEngineDeps {
   readonly repoFingerprint: () => RepoFingerprint | undefined;
   readonly verificationAvailableForCwd: (cwd: string) => Promise<boolean>;
   readonly todosToRoadmap: (todos: readonly GoalPlanTodo[]) => RoadmapItem[];
-  readonly buildGoalPlanner: (systemModel?: SystemModel, tasteContext?: string) => GoalPlanner | null;
+  readonly buildGoalPlanner: (systemModel?: SystemModel, tasteContext?: string, turnCallBudget?: TurnCallBudget) => GoalPlanner | null;
   readonly buildGoalPlannerAttempt: (
     tier: Extract<Tier, 'ic' | 'manager'>,
     systemModel?: SystemModel,
     tasteContext?: string,
   ) => GoalPlannerAttemptRunner | null;
+  readonly getBudgetForTurn?: (turnId: string) => TurnCallBudget | undefined;
+  readonly getCurrentTurnId?: () => string | undefined;
   readonly buildUnderstandingPass: (
     repoContext: string,
     highStakes: boolean,
@@ -132,6 +132,7 @@ export interface AutoStageEngineDeps {
     memoryContext?: string,
     environmentContext?: string,
     taste?: TasteContext,
+    turnCallBudget?: TurnCallBudget,
     sink?: OutputSink,
   ) => OrchestrateDeps;
   /** Resolve the distilled taste-playbook prompt block for a planning pass, or
@@ -504,6 +505,12 @@ export function createAutoStageEngine(deps: AutoStageEngineDeps): AutoStageEngin
     // honest, in-process pressure signal the rest of the loop already reads.)
     if (deps.currentPressure() >= 3) return;
     deps.autoCtx.autoStageTurns += 1;
+
+    // Capture the IMMUTABLE originating turn ID BEFORE any await — so the
+    // fire-and-forget post-turn planner cannot drift into the next turn's budget.
+    const originTurnId = deps.getCurrentTurnId?.();
+    const originBudget = originTurnId !== undefined ? deps.getBudgetForTurn?.(originTurnId) : undefined;
+
     // WHOLE-PICTURE UNDERSTANDING (Part 2) — CACHE-AHEAD, never blocking. When the
     // flag is on, the planner is grounded from a WARM per-project SystemModel if
     // one is fresh; otherwise it runs UNGROUNDED this turn (exactly as when
@@ -524,7 +531,7 @@ export function createAutoStageEngine(deps: AutoStageEngineDeps): AutoStageEngin
       }
     }
     const tasteCtx = await deps.resolvePlannerTasteContext();
-    const planner = deps.buildGoalPlanner(systemModel, tasteCtx);
+    const planner = deps.buildGoalPlanner(systemModel, tasteCtx, originBudget);
     if (planner === null) return;
     let plan: GoalPlan | null = null;
     try {
@@ -546,7 +553,8 @@ export function createAutoStageEngine(deps: AutoStageEngineDeps): AutoStageEngin
       return;
     }
 
-    // judgment === 'stage' → born-parked goals (non-destructive), then board sync.
+    // judgment === 'stage' → born-parked goals (non-destructive, parked-only
+    // execution policy — the planner never auto-executes work), then board sync.
     const projectKey = await deps.resolveProjectKeyOnce();
     // SMART DEDUP (not a dumb cap): an elite partner recognizes "we already have
     // a goal for that" instead of stamping out near-duplicate parked goals when
@@ -580,7 +588,7 @@ export function createAutoStageEngine(deps: AutoStageEngineDeps): AutoStageEngin
       if (isDuplicateGoalTitle(title, seenTitles)) continue;
       seenTitles.push(title);
       try {
-        const created = await deps.goalStore.create({
+        await deps.goalStore.create({
           title,
           roadmap: deps.todosToRoadmap(g.todos),
           scope: projectKey !== null ? 'project' : 'global',
@@ -595,39 +603,8 @@ export function createAutoStageEngine(deps: AutoStageEngineDeps): AutoStageEngin
             ? { intentVersionId: opts.intentVersionId }
             : {}),
         });
-        // Decide activation (mirror prepareAcknowledgedGoal). Confident + auto-run →
-        // activate now and run in the BACKGROUND; else leave parked (today's behaviour).
-        try {
-          const verificationAvailable = await deps.verificationAvailableForCwd(deps.ctx.cwd);
-          const confidence = assessGoalConfidence({
-            hasWorkIntent: true,
-            plannerStaged: true,
-            goal: title,
-            hasGenuineFork: false,
-            hasDoneWhen: false,
-            verificationAvailable,
-          });
-          if (confidence.kind === 'confident') {
-            const risk = classify(line).risk;
-            const highStakes = risk === 'high' || risk === 'critical';
-            const substantial = (plan.goals.length > 1) || (g.todos.length >= 3);
-            const shape: 'quick' | 'risky' | 'decide' | 'investigate' | 'build' | 'explain' =
-              highStakes ? 'risky' : substantial ? 'decide' : 'build';
-            const conversationMeta = (await deps.ctx.store.list()).find((m) => m.id === deps.convId);
-            const activation = decideGoalActivation({
-              confident: true, shape, substantial, highStakes,
-              hasGenuineFork: false,
-              override: conversationMeta?.activation ?? 'adaptive',
-            });
-            if (activation.kind === 'auto-run') {
-              await deps.goalStore.setState(created.id, 'running');
-              deps.spawnBackgroundGoal(created.id, title, title);
-              if (deps.conversationLive()) {
-                deps.out.write('\n' + dim(`※ Starting "${title}" in the background — keep chatting.`, deps.out.color) + '\n');
-              }
-            }
-          }
-        } catch { /* activation decision is best-effort; parked is the safe fallback */ }
+        // Parked-only: goals created by auto-stage are NEVER auto-executed.
+        // The owner promotes from the board or via /goal when ready.
         staged += 1;
         stagedTitles.push(title);
         stagedTodos += g.todos.length;

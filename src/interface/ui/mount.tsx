@@ -89,18 +89,37 @@ export interface InkStore {
   dispatch(action: Action): void;
 }
 
+export interface InkDispatchObservation {
+  readonly action: Action;
+  readonly before: UiState;
+  readonly after: UiState;
+  readonly stateChanged: boolean;
+  readonly pushed: true;
+}
+
+export type InkStoreObserver = (observation: InkDispatchObservation) => void;
+
 /** Build the persistent store, seeding the App with the initial snapshot so the
  *  structured (committed[]-backed) branch is the single `<Static>` source from
  *  mount — never the pre-first-state string fallback once a turn or chrome
  *  arrives. */
-export function createInkStore(bridge: InkAppBridge): InkStore {
+export function createInkStore(bridge: InkAppBridge, observer?: InkStoreObserver): InkStore {
   let state: UiState = initialState;
   bridge.pushState(state);
   return {
     getState: () => state,
     dispatch(action: Action): void {
+      const before = state;
       state = reduce(state, action);
-      bridge.pushState(state);
+      const after = state;
+      bridge.pushState(after);
+      if (observer) {
+        try {
+          observer({ action, before, after, stateChanged: after !== before, pushed: true });
+        } catch {
+          /* swallow observer errors so instrumentation can never break the UI */
+        }
+      }
     },
   };
 }

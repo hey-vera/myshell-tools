@@ -23,7 +23,9 @@
 
 import type { Policy, Tier } from './types.js';
 import type { Provider, ProviderId, ProviderRequest, SandboxLevel } from '../providers/port.js';
+import type { TurnCallBudget } from './turn-call-budget.js';
 import { route } from './route.js';
+import { runBudgetedProvider } from './budgeted-provider.js';
 import { buildReplanPrompt, parseReplanEdits, type RoadmapEdit } from './goal-replan.js';
 import type { Goal } from './goal-todo.js';
 import type { SystemModel } from './understanding.js';
@@ -50,6 +52,7 @@ export interface GoalReplanGeneratorDeps {
    * respect the hard constraints). ABSENT → the prompt is the ungrounded form.
    */
   readonly systemModel?: SystemModel;
+  readonly turnCallBudget?: TurnCallBudget;
 }
 
 /**
@@ -110,7 +113,12 @@ export function makeReplanner(
 
     let finalText: string | undefined;
     try {
-      for await (const ev of provider.run(req, signal)) {
+      for await (const ev of runBudgetedProvider(provider, req, signal, {
+        ...(deps.turnCallBudget ? { budget: deps.turnCallBudget } : {}),
+        purpose: 'goal-replan',
+        bucket: 'discretionary',
+        provider: provider.id,
+      })) {
         if (ev.type === 'done') finalText = ev.text;
         else if (ev.type === 'error') return null;
       }

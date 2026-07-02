@@ -63,6 +63,8 @@ import {
 import { verifyStage, type CriticRunInput, type CriticRunOutput } from './work-call.js';
 import { parseReviewVerdict } from './review.js';
 import { buildPrompt } from './prompt.js';
+import { runBudgetedProvider, type BudgetedProviderCall } from './budgeted-provider.js';
+import type { TurnCallPurpose, TurnCallBucket } from './turn-call-budget.js';
 import type { IntentFrame } from './intent.js';
 import type { AllocationPlan } from './governor.js';
 import { parseFinalLineChoiceEnvelope, tallyChoiceEnvelopes } from './judgment-shared.js';
@@ -869,6 +871,7 @@ async function* streamProvider(
   req: import('../providers/port.js').ProviderRequest,
   tier: Tier,
   signal: AbortSignal,
+  call: BudgetedProviderCall,
 ): AsyncGenerator<
   CoreEvent,
   {
@@ -889,7 +892,9 @@ async function* streamProvider(
     return { finalText, errored, usage, providerCostUsd, canceled: signal.aborted };
   }
 
-  for await (const ev of provider.run(req, signal)) {
+  const stream = runBudgetedProvider(provider, req, signal, call);
+
+  for await (const ev of stream) {
     yield { type: 'provider-event', tier, event: ev };
     if (ev.type === 'done') {
       finalText = ev.text;
@@ -959,6 +964,8 @@ export interface CandidateOutcome {
 export interface CandidateOverrides {
   readonly prompt?: string;
   readonly taskKind?: TaskKind;
+  readonly callPurpose?: TurnCallPurpose;
+  readonly callBucket?: TurnCallBucket;
 }
 
 export async function* runCandidate(
@@ -1080,7 +1087,15 @@ export async function* runCandidate(
   };
 
   try {
-    for await (const ev of provider.run(req, signal)) {
+    const budgetCall: BudgetedProviderCall = {
+      purpose: overrides.callPurpose ?? 'panel-candidate' as TurnCallPurpose,
+      bucket: overrides.callBucket ?? 'work' as TurnCallBucket,
+      provider: candidate,
+      ...(deps.turnCallBudget !== undefined ? { budget: deps.turnCallBudget } : {}),
+    };
+    const stream = runBudgetedProvider(provider, req, signal, budgetCall);
+
+    for await (const ev of stream) {
       // Forward only NON-prose events as panel liveness — reasoning/tool/usage/
       // error keep the "Waiting on N models" line visibly working without ever
       // being mistaken for the user-facing answer. The candidate's prose `text`
@@ -1605,7 +1620,16 @@ export async function* runPanel(
 
   const outcomes = yield* mergeCandidates(
     plan.candidates.map((candidate) =>
-      runCandidate(task, deps, plan, candidate, signal, historyContext, capability),
+      runCandidate(
+        task,
+        deps,
+        plan,
+        candidate,
+        signal,
+        historyContext,
+        capability,
+        { callPurpose: 'panel-candidate', callBucket: 'work' },
+      ),
     ),
     recordCandidate,
   );
@@ -1883,12 +1907,19 @@ export async function* runPanel(
       : {}),
   };
   const synthStart = deps.clock.now();
+  const synthBudgetCall: BudgetedProviderCall = {
+    purpose: 'panel-synthesis',
+    bucket: 'work',
+    provider: plan.synthesizer,
+    ...(deps.turnCallBudget !== undefined ? { budget: deps.turnCallBudget } : {}),
+  };
   const synthOutcome = yield* streamProvider(
     deps,
     plan.synthesizer,
     synthReq,
     synthDecision.tier,
     signal,
+    synthBudgetCall,
   );
   const synthDurationMs = deps.clock.now() - synthStart;
 
@@ -2066,7 +2097,19 @@ export async function* runPanel(
         let reviewCanceled = false;
         if (signal.aborted) return { ran: false };
         if (capability.turnCallBudget !== undefined) attempts++;
-        for await (const ev of reviewerProvider.run(reviewReq, signal)) {
+        const ensembleReviewBudgetCall: BudgetedProviderCall = {
+          purpose: 'review' as TurnCallPurpose,
+          bucket: 'verification' as TurnCallBucket,
+          provider: input.reviewer,
+          ...(deps.turnCallBudget !== undefined ? { budget: deps.turnCallBudget } : {}),
+        };
+        const ensembleReviewStream = runBudgetedProvider(
+          reviewerProvider,
+          reviewReq,
+          signal,
+          ensembleReviewBudgetCall,
+        );
+        for await (const ev of ensembleReviewStream) {
           if (ev.type === 'done') {
             reviewText = ev.text;
             if (ev.usage !== undefined) reviewUsage = ev.usage;
@@ -2194,12 +2237,19 @@ export async function* runPanel(
         : {}),
     };
     const repairStart = deps.clock.now();
+    const repairBudgetCall: BudgetedProviderCall = {
+      purpose: 'panel-repair',
+      bucket: 'discretionary',
+      provider: plan.synthesizer,
+      ...(deps.turnCallBudget !== undefined ? { budget: deps.turnCallBudget } : {}),
+    };
     const repairOutcome = yield* streamProvider(
       deps,
       plan.synthesizer,
       repairReq,
       synthDecision.tier,
       signal,
+      repairBudgetCall,
     );
     const repairDurationMs = deps.clock.now() - repairStart;
     const repairText = repairOutcome.finalText ?? '';

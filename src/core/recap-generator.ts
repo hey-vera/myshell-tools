@@ -24,9 +24,11 @@
 import type { Policy, SessionEntry, Tier } from './types.js';
 import type { LedgerWriter, Clock } from './types.js';
 import type { Provider, ProviderId, ProviderRequest, SandboxLevel, Usage } from '../providers/port.js';
+import type { TurnCallBudget } from './turn-call-budget.js';
 import { route } from './route.js';
 import { buildRecapPrompt, parseRecapResult, type RecapResult } from './recap.js';
 import { recordAuxLedger } from './aux-ledger.js';
+import { runBudgetedProvider } from './budgeted-provider.js';
 
 /** Everything the generator needs to pick and run the cheapest model. */
 export interface RecapGeneratorDeps {
@@ -43,6 +45,7 @@ export interface RecapGeneratorDeps {
   readonly clock?: Clock;
   readonly sessionId?: string;
   readonly cacheAccountingV2?: boolean;
+  readonly turnCallBudget?: TurnCallBudget;
 }
 
 /**
@@ -113,7 +116,12 @@ export function makeRecapGenerator(
     let startMs: number | undefined;
     try {
       startMs = deps.clock?.now();
-      for await (const ev of provider.run(req, signal)) {
+      for await (const ev of runBudgetedProvider(provider, req, signal, {
+        purpose: 'recap',
+        bucket: 'discretionary',
+        provider: provider.id,
+        ...(deps.turnCallBudget ? { budget: deps.turnCallBudget } : {}),
+      })) {
         if (ev.type === 'done') {
           finalText = ev.text;
           usage = ev.usage;

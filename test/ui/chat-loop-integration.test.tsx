@@ -41,6 +41,7 @@ import type { ConversationMeta, ConversationStore } from '../../src/infra/conver
 import type { Provider, ProviderRequest, ProviderEvent, Usage } from '../../src/providers/port.js';
 import type { EnvironmentStatus } from '../../src/providers/detect.js';
 import type { AppConfig } from '../../src/infra/config.js';
+import type { LoginResult } from '../../src/commands/login.js';
 
 // ---------------------------------------------------------------------------
 // Minimal hermetic fakes (mirrors test/unit/menu-flow.test.ts, compacted)
@@ -111,6 +112,11 @@ function makeStore(clock: Clock): ConversationStore {
   };
 }
 
+const FAKE_LOGIN_RESULT: LoginResult = {
+  status: 'success',
+  outcomes: [{ provider: 'claude' as const, status: 'authenticated' as const, method: 'code' as const, attempts: [], fallbackUsed: false }],
+};
+
 const FAKE_ENV: EnvironmentStatus = {
   claude: { id: 'claude', installed: true, version: '1.0.0', authenticated: true, plan: null, binaryPath: null, availableModels: ['model-a'] },
   codex: { id: 'codex', installed: false, version: null, authenticated: false, plan: null, binaryPath: null, availableModels: [] },
@@ -156,7 +162,7 @@ function makeCtx(store: ConversationStore, clock: Clock, answer: string): MenuCo
     sandbox: 'workspace-write',
     timeoutMs: 5_000,
     installProvider: async () => true,
-    login: async () => 0,
+    login: async () => FAKE_LOGIN_RESULT,
   };
 }
 
@@ -318,7 +324,7 @@ test('BUG 2: resume enables the chat composer BEFORE the recap model call resolv
     env: FAKE_ENV, store,
     config: { onboarded: true, setAsDefault: false, smartRoute: false } as AppConfig,
     cwd: join(tmpdir(), `ink-resume-${randomUUID()}`), sandbox: 'workspace-write', timeoutMs: 5_000,
-    installProvider: async () => true, login: async () => 0,
+    installProvider: async () => true, login: async () => ({ status: 'success' as const, outcomes: [{ provider: 'claude' as const, status: 'authenticated' as const, method: 'code' as const, attempts: [], fallbackUsed: false }] }),
   };
   const mutableCtx = { config: ctx.config, env: ctx.env };
 

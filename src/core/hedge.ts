@@ -70,6 +70,8 @@ import {
 } from './opencode-account-routing.js';
 import { accountEnvFor } from '../infra/subscriptions.js';
 import type { SubscriptionProvider } from '../infra/subscriptions.js';
+import { runBudgetedProvider, type BudgetedProviderCall } from './budgeted-provider.js';
+import type { TurnCallPurpose, TurnCallBucket } from './turn-call-budget.js';
 
 // ---------------------------------------------------------------------------
 // Plan
@@ -498,7 +500,15 @@ async function runAttempt(
 
   let canceled = false;
   try {
-    for await (const ev of provider.run(req, signal)) {
+    const budgetCall: BudgetedProviderCall = {
+      purpose: role.role === 'primary' ? 'hedge-primary' as TurnCallPurpose : 'hedge-secondary' as TurnCallPurpose,
+      bucket: 'work' as TurnCallBucket,
+      provider: decision.provider,
+      ...(deps.turnCallBudget !== undefined ? { budget: deps.turnCallBudget } : {}),
+    };
+    const stream = runBudgetedProvider(provider, req, signal, budgetCall);
+
+    for await (const ev of stream) {
       events.push({ type: 'provider-event', tier: decision.tier, event: ev });
       if (ev.type === 'done') {
         finalText = ev.text;
@@ -850,7 +860,15 @@ export async function* runHedged(
           attempts >= authority.turnCallBudget
         ) return { ran: false };
         if (authority.turnCallBudget !== undefined) attempts++;
-        for await (const ev of provider.run(reviewReq, signal)) {
+        const reviewBudgetCall: BudgetedProviderCall = {
+          purpose: 'hedge-review' as TurnCallPurpose,
+          bucket: 'verification' as TurnCallBucket,
+          provider: input.reviewer,
+          ...(deps.turnCallBudget !== undefined ? { budget: deps.turnCallBudget } : {}),
+        };
+        const reviewStream = runBudgetedProvider(provider, reviewReq, signal, reviewBudgetCall);
+
+        for await (const ev of reviewStream) {
           if (ev.type === 'done') {
             reviewText = ev.text;
             if (ev.usage !== undefined) reviewUsage = ev.usage;
@@ -994,7 +1012,15 @@ export async function* runHedged(
     let repairProviderCostUsd: number | undefined;
     let repairCanceled = false;
     try {
-      for await (const ev of provider.run(repairReq, signal)) {
+      const repairBudgetCall: BudgetedProviderCall = {
+        purpose: 'hedge-repair' as TurnCallPurpose,
+        bucket: 'discretionary' as TurnCallBucket,
+        provider: winnerRun.provider,
+        ...(deps.turnCallBudget !== undefined ? { budget: deps.turnCallBudget } : {}),
+      };
+      const repairStream = runBudgetedProvider(provider, repairReq, signal, repairBudgetCall);
+
+      for await (const ev of repairStream) {
         yield { type: 'provider-event', tier: winnerRun.tier, event: ev };
         if (ev.type === 'done') {
           repairText = ev.text;

@@ -11,8 +11,7 @@ import { saveConfig } from '../infra/config.js';
 import type { EnvironmentStatus } from '../providers/detect.js';
 import { installCommandFor } from '../providers/install.js';
 import type { ProviderId } from '../providers/port.js';
-import type { LoginMethod } from '../commands/login.js';
-import type { CommandGatePort } from '../core/command-gate.js';
+import type { LoginRunner } from '../commands/login.js';
 import { runInstall, isHookInstalled } from '../commands/install.js';
 import { levelLabel, LEVEL_DESC, ALL_LEVELS } from '../core/mode-levels.js';
 import { box } from '../ui/tui.js';
@@ -32,17 +31,7 @@ export async function runWelcome(
   suspendStdin: (() => () => void) | undefined,
   mutableConfig: AppConfig,
   installProviderFn: (id: ProviderId, out: OutputSink) => Promise<boolean>,
-  loginFn: (
-    out: OutputSink,
-    providerArg?: string,
-    opts?: {
-      method?: LoginMethod;
-      readLine?: () => Promise<string | null>;
-      suspendStdin?: () => () => void;
-      confirm?: Confirm;
-      commandGate?: CommandGatePort;
-    },
-  ) => Promise<number>,
+  loginFn: LoginRunner,
   detectEnvironmentFn: () => Promise<EnvironmentStatus>,
   // Single-key reader for the Ink path. When provided, the mode-select keypress
   // resolves on a SINGLE key through Ink's own input pipeline (the legacy raw

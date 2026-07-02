@@ -79,7 +79,7 @@ import { runDoctor } from './commands/doctor.js';
 import { runCost } from './commands/cost.js';
 import { runEvalCommand } from './commands/eval.js';
 import { runMemoryCli } from './commands/memory.js';
-import { runLogin } from './commands/login.js';
+import { defaultLoginRunner, loginExitCode } from './commands/login.js';
 import { runInstall, isHookInstalled, ensureReplitShellHook } from './commands/install.js';
 import { isReplit } from './infra/state-dir.js';
 import { banner } from './ui/banner.js';
@@ -96,6 +96,7 @@ import { intentStoreV1Enabled } from './interface/ui/intent-store-flag.js';
 import { blockedStateV1Enabled } from './interface/ui/blocked-state-flag.js';
 import { evidenceReceiptV2Enabled } from './interface/ui/evidence-receipt-flag.js';
 import { nativeSessionsPromoteEnabled } from './interface/ui/native-sessions-promote-flag.js';
+import { createTurnCallBudget } from './core/turn-call-budget.js';
 import { createIntentStore } from './infra/intent-store.js';
 const require = createRequire(import.meta.url);
 const pkg = require('../package.json');
@@ -507,7 +508,8 @@ async function main(): Promise<void> {
           ? ('browser' as const)
           : undefined;
     const provider = rest.find((a) => !a.startsWith('-'));
-    process.exit(await runLogin(out, provider, { ...(method !== undefined ? { method } : {}), commandGate }));
+    const result = await defaultLoginRunner(out, provider, { ...(method !== undefined ? { method } : {}), commandGate });
+    process.exit(loginExitCode(result));
   }
 
   // Health check — surfaced automatically in the control panel, so this is no
@@ -733,6 +735,25 @@ async function main(): Promise<void> {
       toolStateContext,
       capability?.registry,
     );
+    // P1-09j-b: mint ONE observing budget for the one-shot run.
+    const runAuthCount = [
+      env.claude,
+      env.codex,
+      env.opencode,
+      env.grok,
+    ].filter((p) => p.authenticated).length;
+    const runVerifyActive = verifyEnabled(process.env, config);
+    const runTurnId = systemClock.uuid();
+    const runBudget = createTurnCallBudget({
+      turnId: runTurnId,
+      mode: 'observe',
+      totalUnits: 64,
+      reserved: {
+        work: 1,
+        failover: runAuthCount >= 2 ? 1 : 0,
+        verification: runVerifyActive ? 1 : 0,
+      },
+    });
     const preflightDeps = buildPreflightDeps({
       providers: deps.providers,
       policy: deps.policy,
@@ -758,8 +779,9 @@ async function main(): Promise<void> {
             ...(deps.cacheAccountingV2 === true ? { cacheAccountingV2: true } : {}),
           }
         : {}),
+      ...(runBudget !== undefined ? { turnCallBudget: runBudget } : {}),
     });
-    const depsWithPreflight: OrchestrateDeps = { ...deps, ...preflightDeps };
+    const depsWithPreflight: OrchestrateDeps = { ...deps, ...preflightDeps, ...(runBudget !== undefined ? { turnCallBudget: runBudget } : {}) };
     // STABLE FEATURE RESOLUTION (v9 Phase 7c): trust resolves via the same stable
     // default-on resolver used at the interactive entry point.
     // VERIFY stays CONSERVATIVE here: the scriptable one-shot `run` path keeps verify
@@ -770,7 +792,6 @@ async function main(): Promise<void> {
     // JUDGMENT is NOT wired here: non-interactive one-shot runs lack question-handling
     // infrastructure; judgment's push_back move expects an interactive loop to present
     // the challenge and record accept/reject. Documented limitation, not broken behavior.
-    const verifyActive = verifyEnabled(process.env, config);
     const trustActive = experimentalEnabledByDefault(
       process.env,
       config,
@@ -779,7 +800,7 @@ async function main(): Promise<void> {
       trustEnabled,
     );
     const depsWithVerify: OrchestrateDeps =
-      verifyActive
+      runVerifyActive
         ? {
             ...depsWithPreflight,
             verifyPort: {
@@ -814,6 +835,17 @@ async function main(): Promise<void> {
         ? { ...depsWithVerify, attachments: imageAttachments }
         : depsWithVerify;
     const result = await runTask(task, depsWithAttachments, out, new AbortController().signal);
+    // P1-09j-b: foreground settlement — invoke receipt callback if present.
+    if (runBudget !== undefined) {
+      const receipt = runBudget.snapshot();
+      if (depsWithAttachments.onTurnCallBudgetReceipt !== undefined) {
+        try {
+          await depsWithAttachments.onTurnCallBudgetReceipt(receipt);
+        } catch {
+          // diagnostic only — never block
+        }
+      }
+    }
     // Notify-only update nudge for the scripted / one-shot path. The interactive
     // menu auto-updates, but `run` must NEVER swap the binary mid-task. Written
     // to stderr and TTY-guarded so it can't corrupt piped stdout or spam CI logs.

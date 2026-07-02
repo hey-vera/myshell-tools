@@ -470,7 +470,7 @@ describe('runDoctor --fix — missing provider answered y calls installProvider'
     };
     const loginFn = async (_out: OutputSink, id?: string) => {
       loginCalls.push(id ?? 'all');
-      return 0;
+      return { status: 'success' as const, outcomes: [] };
     };
 
     const { out } = makeFakeOut();
@@ -503,7 +503,7 @@ describe('runDoctor --fix — missing provider answered n does not call installP
       fix: true,
       readLine,
       installProvider: async (id, _out) => { installCalls.push(id); return false; },
-      login: async () => 0,
+      login: async () => ({ status: 'success' as const, outcomes: [] }),
       detectEnvironment: async () => env,
     });
 
@@ -534,7 +534,7 @@ describe('runDoctor --fix — installed+unauthenticated provider answered y call
       fix: true,
       readLine,
       installProvider: async (_id, _out) => false,
-      login: async (_out, id) => { loginCalls.push(id ?? 'all'); return 0; },
+      login: async (_out, id) => { loginCalls.push(id ?? 'all'); return { status: 'success' as const, outcomes: [] }; },
       detectEnvironment: async () => env,
     });
 
@@ -571,7 +571,7 @@ describe('runDoctor --fix — installed+unauthenticated provider answered y call
         assert.ok(await loginOpts?.confirm?.(true), 'login should receive a confirm seam backed by readLine');
         const resume = loginOpts?.suspendStdin?.();
         resume?.();
-        return 0;
+        return { status: 'success' as const, outcomes: [] };
       },
       detectEnvironment: async () => env,
     });
@@ -602,7 +602,7 @@ describe('runDoctor --fix — installed+unauthenticated provider answered n skip
       fix: true,
       readLine,
       installProvider: async (_id, _out) => false,
-      login: async (_out, id) => { loginCalls.push(id ?? 'all'); return 0; },
+      login: async (_out, id) => { loginCalls.push(id ?? 'all'); return { status: 'success' as const, outcomes: [] }; },
       detectEnvironment: async () => env,
     });
 
@@ -670,7 +670,7 @@ describe('runDoctor --fix — opencode installed-but-unconfigured: sign-in offer
       fix: true,
       readLine,
       installProvider: async (id, _out) => { installCalls.push(id); return true; },
-      login: async (_out, id) => { loginCalls.push(id ?? 'all'); return 0; },
+      login: async (_out, id) => { loginCalls.push(id ?? 'all'); return { status: 'success' as const, outcomes: [] }; },
       detectEnvironment: detectFn,
     });
 
@@ -696,7 +696,7 @@ describe('runDoctor without fix — identical to original behavior', () => {
       // fix is absent — default mode
       readLine,
       installProvider: async (id, _out) => { installCalls.push(id); return false; },
-      login: async (_out, id) => { loginCalls.push(id ?? 'all'); return 0; },
+      login: async (_out, id) => { loginCalls.push(id ?? 'all'); return { status: 'success' as const, outcomes: [] }; },
       detectEnvironment: async () => env,
     });
 
@@ -743,7 +743,7 @@ describe('runDoctor --fix — prints a final status summary after fix pass', () 
       fix: true,
       readLine,
       installProvider: async (_id, _out) => false,
-      login: async () => 0,
+      login: async () => ({ status: 'success' as const, outcomes: [] }),
       detectEnvironment: async () => env,
     });
 
@@ -877,7 +877,7 @@ describe('runDoctor --fix — offers Claude token refresh when expiring', () => 
       fix: true,
       readLine: async () => 'y', // accept the refresh prompt
       installProvider: async () => false,
-      login: async (_out, id) => { loginCalls.push(id ?? 'all'); return 0; },
+      login: async (_out, id) => { loginCalls.push(id ?? 'all'); return { status: 'success' as const, outcomes: [] }; },
       detectEnvironment: async () => env,
       loadClaudeTokenCapturedAt: async () => capturedAt,
       now: () => FIXED_NOW,
@@ -901,7 +901,7 @@ describe('runDoctor --fix — offers Claude token refresh when expiring', () => 
       fix: true,
       readLine: async () => 'n',
       installProvider: async () => false,
-      login: async (_out, id) => { loginCalls.push(id ?? 'all'); return 0; },
+      login: async (_out, id) => { loginCalls.push(id ?? 'all'); return { status: 'success' as const, outcomes: [] }; },
       detectEnvironment: async () => env,
       loadClaudeTokenCapturedAt: async () => capturedAt,
       now: () => FIXED_NOW,
@@ -923,7 +923,7 @@ describe('runDoctor --fix — offers Claude token refresh when expiring', () => 
       fix: true,
       readLine: async () => 'n',
       installProvider: async () => false,
-      login: async (_out, id) => { loginCalls.push(id ?? 'all'); return 0; },
+      login: async (_out, id) => { loginCalls.push(id ?? 'all'); return { status: 'success' as const, outcomes: [] }; },
       detectEnvironment: async () => env,
       loadClaudeTokenCapturedAt: async () => undefined,
       now: () => FIXED_NOW,
@@ -932,5 +932,167 @@ describe('runDoctor --fix — offers Claude token refresh when expiring', () => 
     const output = lines.join('');
     assert.ok(!/Refresh it now/.test(output), 'unknown capture date must not trigger a prompt');
     assert.deepEqual(loginCalls, [], 'no re-login when lifetime is unknown');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// P0-03c — typed LoginResult in doctor fix flow
+// ---------------------------------------------------------------------------
+
+describe('runDoctor --fix — doctor continues after typed failed login', () => {
+  it('continues to next provider after a failed login result', async () => {
+    const loginCalls: string[] = [];
+    const env = makeFullEnv({
+      claude: { installed: true, authenticated: false, version: '1.0.0', binaryPath: 'claude' },
+      codex: { installed: true, authenticated: false, version: '1.0.0', binaryPath: 'codex' },
+    });
+
+    // Install prompts: n (opencode); sign-in: y (claude), y (codex)
+    const answers = ['n', 'y', 'y'];
+    let idx = 0;
+    const readLine = async () => answers[idx++] ?? 'n';
+
+    const { out } = makeFakeOut();
+    await runDoctor(out, {
+      fix: true,
+      readLine,
+      installProvider: async () => false,
+      login: async (_out, _id) => {
+        loginCalls.push(_id ?? 'all');
+        return { status: 'failed' as const, outcomes: [] };
+      },
+      detectEnvironment: async () => env,
+    });
+
+    assert.deepEqual(loginCalls, ['claude', 'codex'], 'doctor must continue to codex after claude failed');
+  });
+});
+
+describe('runDoctor --fix — doctor continues after typed cancelled login', () => {
+  it('continues to next provider after a cancelled login result', async () => {
+    const loginCalls: string[] = [];
+    const env = makeFullEnv({
+      claude: { installed: true, authenticated: false, version: '1.0.0', binaryPath: 'claude' },
+      codex: { installed: true, authenticated: false, version: '1.0.0', binaryPath: 'codex' },
+    });
+
+    // Install prompts: n (opencode); sign-in: y (claude), y (codex)
+    const answers = ['n', 'y', 'y'];
+    let idx = 0;
+    const readLine = async () => answers[idx++] ?? 'n';
+
+    const { out } = makeFakeOut();
+    await runDoctor(out, {
+      fix: true,
+      readLine,
+      installProvider: async () => false,
+      login: async (_out, _id) => {
+        loginCalls.push(_id ?? 'all');
+        return { status: 'cancelled' as const, outcomes: [] };
+      },
+      detectEnvironment: async () => env,
+    });
+
+    assert.deepEqual(loginCalls, ['claude', 'codex'], 'doctor must continue to codex after claude cancelled');
+  });
+});
+
+describe('runDoctor --fix — doctor final status comes from re-detection not aggregate', () => {
+  it('returns 0 only when final detectEnvironment has an authenticated provider', async () => {
+    // claude installed+unauthenticated; user accepts sign-in.
+    // Login returns success, but re-detection shows still unauthenticated.
+    const initialEnv = makeFullEnv({
+      claude: { installed: true, authenticated: false, version: '1.0.0', binaryPath: 'claude' },
+    });
+    const finalEnv = makeFullEnv({
+      claude: { installed: true, authenticated: true, version: '1.0.0', binaryPath: 'claude' },
+    });
+
+    // Install: n (codex), n (opencode); sign-in: y (claude)
+    const answers = ['n', 'n', 'y'];
+    let idx = 0;
+    const readLine = async () => answers[idx++] ?? 'n';
+
+    let detectCallCount = 0;
+    const detectFn = async () => {
+      detectCallCount++;
+      // Final re-detection (call 3+) → claude is now authenticated
+      return detectCallCount >= 3 ? finalEnv : initialEnv;
+    };
+
+    const { out } = makeFakeOut();
+    const code = await runDoctor(out, {
+      fix: true,
+      readLine,
+      installProvider: async () => false,
+      login: async (_out, _id) => ({ status: 'success' as const, outcomes: [] }),
+      detectEnvironment: detectFn,
+    });
+
+    assert.equal(code, 0, 'return 0 because final re-detection shows claude authenticated');
+  });
+
+  it('returns 1 when final detectEnvironment still has no authenticated provider', async () => {
+    const env = makeFullEnv({
+      claude: { installed: true, authenticated: false, version: '1.0.0', binaryPath: 'claude' },
+    });
+
+    // Install: n (codex), n (opencode); sign-in: y (claude)
+    const answers = ['n', 'n', 'y'];
+    let idx = 0;
+    const readLine = async () => answers[idx++] ?? 'n';
+
+    const { out } = makeFakeOut();
+    const code = await runDoctor(out, {
+      fix: true,
+      readLine,
+      installProvider: async () => false,
+      login: async (_out, _id) => ({ status: 'success' as const, outcomes: [] }),
+      detectEnvironment: async () => env,
+    });
+
+    assert.equal(code, 1, 'return 1 because final re-detection has no authenticated provider');
+  });
+});
+
+describe('runDoctor --fix — doctor passes shared readLine confirm and suspend seams', () => {
+  it('passes readLine, confirm, and suspendStdin into the typed login call', async () => {
+    const loginCalls: string[] = [];
+    const suspendEvents: string[] = [];
+
+    const env = makeFullEnv({
+      claude: { installed: true, authenticated: false, version: '1.0.0', binaryPath: 'claude' },
+    });
+
+    // Install: n (codex), n (opencode); sign-in: y (claude); inside login: y (confirm)
+    const answers = ['n', 'n', 'y', 'y'];
+    let idx = 0;
+    const readLine = async () => answers[idx++] ?? 'n';
+    const suspendStdin = () => {
+      suspendEvents.push('suspend');
+      return () => suspendEvents.push('resume');
+    };
+
+    const { out } = makeFakeOut();
+    await runDoctor(out, {
+      fix: true,
+      readLine,
+      suspendStdin,
+      installProvider: async () => false,
+      login: async (_out, _id, loginOpts) => {
+        loginCalls.push(_id ?? 'all');
+        assert.strictEqual(loginOpts?.readLine, readLine, 'login should receive doctor readLine seam');
+        assert.strictEqual(loginOpts?.suspendStdin, suspendStdin, 'login should receive doctor suspend seam');
+        const confirmed = await loginOpts?.confirm?.(true);
+        assert.equal(confirmed, true, 'login should receive a confirm seam backed by readLine');
+        const resume = loginOpts?.suspendStdin?.();
+        resume?.();
+        return { status: 'success' as const, outcomes: [] };
+      },
+      detectEnvironment: async () => env,
+    });
+
+    assert.deepEqual(loginCalls, ['claude'], 'login must be called for claude');
+    assert.deepEqual(suspendEvents, ['suspend', 'resume'], 'stdin should be suspended once by login');
   });
 });

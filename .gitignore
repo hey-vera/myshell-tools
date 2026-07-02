@@ -18,6 +18,7 @@ coverage
 
 # scratch design/planning docs
 .tmp-*
+.tmp/
 
 # transient run logs under docs/
 docs/*.log

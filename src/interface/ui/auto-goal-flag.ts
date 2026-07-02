@@ -4,18 +4,20 @@
  *
  * When ON, the partner JUDGES each substantial owner turn post-reply and — when
  * confident there is real work — AUTO-STAGES professional goals (each with its
- * to-do list) as PARKED goals (non-destructive), or surfaces ONE sharp clarifying
- * question when the turn is genuinely ambiguous. When OFF, the planner never runs,
+ * to-do list) as PARKED goals (non-destructive, parked-only execution policy),
+ * or surfaces ONE sharp clarifying question when the turn is genuinely ambiguous. When OFF, the planner never runs,
  * so the post-turn slot is byte-for-byte identical to today.
  *
  * Pure (no Ink/React, no JSX, no I/O) so it is exercised by the REGULAR `npm test`
- * suite under strip-types. DEFAULT ON — auto-staging is the shipped experience and
+ * suite under strip-types. DEFAULT ON — default-on planner, parked-only execution
+ * policy. Auto-staging is the shipped experience and
  * the caller opts OUT with `MYSHELL_AUTO_GOAL` ∈ {'0','false','off','no'} (case-
  * insensitive, trimmed) or `config.experimentalAutoGoal === false`.
  *
  * THE OFF-GUARANTEE (the neutrality contract): when this returns false, menu.ts
  * never builds or invokes the planner, never calls goalStore.create from the
  * planning path, and prints no staging note — the turn settles exactly as today.
+ * Even when ON, goals are always parked-only (never auto-executed).
  */
 
 /** Env values treated as an explicit opt-IN (case-insensitive). */

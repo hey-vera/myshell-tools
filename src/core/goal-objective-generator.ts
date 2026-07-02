@@ -23,7 +23,9 @@
 
 import type { Policy, Tier } from './types.js';
 import type { Provider, ProviderId, ProviderRequest, SandboxLevel } from '../providers/port.js';
+import type { TurnCallBudget } from './turn-call-budget.js';
 import { route } from './route.js';
+import { runBudgetedProvider } from './budgeted-provider.js';
 import { buildGoalObjectivePrompt, parseGoalObjective } from './goal-objective.js';
 
 /** Everything the former needs to pick and run the manager-tier model. */
@@ -36,6 +38,7 @@ export interface GoalObjectiveGeneratorDeps {
   readonly sandbox?: SandboxLevel;
   readonly availableModels?: Partial<Record<ProviderId, readonly string[]>>;
   readonly authenticatedProviders?: readonly ProviderId[];
+  readonly turnCallBudget?: TurnCallBudget;
 }
 
 /**
@@ -98,7 +101,12 @@ export function makeGoalObjectiveGenerator(
 
     let finalText: string | undefined;
     try {
-      for await (const ev of provider.run(req, signal)) {
+      for await (const ev of runBudgetedProvider(provider, req, signal, {
+        ...(deps.turnCallBudget ? { budget: deps.turnCallBudget } : {}),
+        purpose: 'goal-objective',
+        bucket: 'discretionary',
+        provider: provider.id,
+      })) {
         if (ev.type === 'done') finalText = ev.text;
         else if (ev.type === 'error') return null;
       }

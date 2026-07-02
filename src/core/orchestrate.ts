@@ -2100,6 +2100,12 @@ export async function* orchestrate(
           roundBudget: governorPlan.roundBudget,
         }
       : {}),
+    // P1-09j-b observing call ledger: when the interface layer provisioned a budget,
+    // thread it into the work-call stage so every provider stream opened there records
+    // its attempt on the ledger. Observe-only; admission stays unchanged.
+    ...(depsWithIntent.turnCallBudget !== undefined
+      ? { turnCallLedger: depsWithIntent.turnCallBudget }
+      : {}),
     // HONESTY CONTRACT: seed the work-call loop's cost counter with any prior metered
     // cross-vendor spend (poll/tribunal) so the terminal final.totalCostUsd is the
     // true sum across every metered run this turn. Optional + defaults to 0 in the

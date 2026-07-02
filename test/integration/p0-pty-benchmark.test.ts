@@ -1,0 +1,314 @@
+/**
+ * test/integration/p0-pty-benchmark.test.ts — PTY benchmark integration tests
+ *
+ * Validates the P0-06c PTY timing gate and aggregate bench:p0 receipt:
+ *   - Unsupported capability detection (exit 2 + JSON)
+ *   - Warmup exclusion and nearest-rank percentile math
+ *   - Missing component branch refusal
+ *   - Real PTY run behaviour, config isolation, and host metadata
+ */
+
+import { beforeAll, describe, it } from 'vitest';
+import assert from 'node:assert/strict';
+import { spawn, execSync } from 'node:child_process';
+import { existsSync, readFileSync, writeFileSync, rmSync, readdirSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { fileURLToPath } from 'node:url';
+import { dirname } from 'node:path';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const REPO_ROOT = join(__dirname, '..', '..');
+const BENCH_SCRIPT = join(REPO_ROOT, 'scripts', 'pty-p0-benchmark.mjs');
+const CLI_PATH = join(REPO_ROOT, 'dist', 'cli.js');
+
+function uniquePath() {
+  return join(
+    tmpdir(),
+    `p0-pty-test-${Math.random().toString(36).slice(2, 10)}-${Date.now()}.json`,
+  );
+}
+
+interface BenchResult {
+  code: number | null;
+  signal: string | null;
+  stdout: string;
+  stderr: string;
+}
+
+function runBench(
+  extraArgs: string[],
+  envOverrides: Record<string, string> = {},
+  timeoutMs = 60_000,
+): Promise<BenchResult> {
+  return new Promise((resolve) => {
+    const outputFile = uniquePath();
+    const args = [BENCH_SCRIPT, '--output', outputFile, ...extraArgs];
+    const child = spawn(process.execPath, args, {
+      cwd: REPO_ROOT,
+      env: { ...process.env, ...envOverrides },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+
+    let stdout = '';
+    let stderr = '';
+    child.stdout.setEncoding('utf8');
+    child.stderr.setEncoding('utf8');
+    child.stdout.on('data', (c: string) => { stdout += c; });
+    child.stderr.on('data', (c: string) => { stderr += c; });
+
+    const timer = setTimeout(() => {
+      child.kill('SIGKILL');
+    }, timeoutMs);
+
+    child.on('close', (code, signal) => {
+      clearTimeout(timer);
+      let fileJson: unknown = undefined;
+      try {
+        if (existsSync(outputFile)) {
+          fileJson = JSON.parse(readFileSync(outputFile, 'utf8'));
+        }
+      } catch {
+        /* best-effort */
+      }
+      try { rmSync(outputFile, { force: true }); } catch { /* best-effort */ }
+      resolve({
+        code,
+        signal: signal ?? null,
+        stdout: stdout.trim(),
+        stderr: stderr.trim(),
+        _fileJson: fileJson,
+      } as BenchResult & { _fileJson?: unknown });
+    });
+  });
+}
+
+function runBenchWithFile(
+  extraArgs: string[],
+  envOverrides: Record<string, string> = {},
+  timeoutMs = 120_000,
+): Promise<BenchResult & { fileJson: unknown }> {
+  return runBench(extraArgs, envOverrides, timeoutMs) as Promise<BenchResult & { fileJson: unknown }>;
+}
+
+function jsonFromStdout(res: BenchResult): Record<string, unknown> {
+  const lastLine = res.stdout.split('\n').pop() ?? '';
+  return JSON.parse(lastLine);
+}
+
+function jsonFromFile(res: BenchResult & { _fileJson?: unknown }): Record<string, unknown> {
+  return (res._fileJson ?? {}) as Record<string, unknown>;
+}
+
+// nearest-rank: ceil(p*n) - 1 (0-indexed), for test validation
+function nr(sorted: number[], p: number): number | null {
+  if (sorted.length === 0) return null;
+  const idx = Math.ceil(p * sorted.length) - 1;
+  return sorted[Math.max(0, Math.min(idx, sorted.length - 1))]!;
+}
+
+function makeComponentJson(cases: Array<{ id: string; status: string }>) {
+  return {
+    version: 1,
+    suite: 'component',
+    status: 'pass',
+    metadata: { node: 'test', platform: 'linux', arch: 'x64', commit: 'test' },
+    cases: cases.map((c) => ({
+      id: c.id,
+      status: c.status,
+      actions: 0,
+      dispatches: 0,
+      pushes: 0,
+      committedDelta: 0,
+      editorRemainder: '',
+      listenerDelta: 0,
+      observation: '',
+    })),
+  };
+}
+
+const CAPABILITIES_PRESENT =
+  process.env['MYSHELL_BENCH_SIMULATE_MISSING_CLI'] !== '1' &&
+  process.env['MYSHELL_BENCH_SIMULATE_MISSING_SCRIPT'] !== '1' &&
+  process.env['MYSHELL_BENCH_SIMULATE_MISSING_XTERM'] !== '1';
+
+describe('PTY benchmark — unsupported detection', () => {
+  it('forced missing script reports unsupported JSON and exit 2', async () => {
+    const res = await runBench([], { MYSHELL_BENCH_SIMULATE_MISSING_SCRIPT: '1' });
+    assert.notEqual(res.code, null, 'must exit with a code');
+    assert.equal(res.code, 2, 'must exit 2 for unsupported');
+    const json = jsonFromStdout(res);
+    assert.equal(json.status, 'unsupported', `expected unsupported, got ${json.status}`);
+    const detail = String(json.detail ?? '');
+    assert.ok(detail.toLowerCase().includes('script'), `detail must mention script: ${detail}`);
+
+    const file = jsonFromFile(res);
+    assert.equal(file.status, 'unsupported');
+  });
+
+  it('forced missing xterm reports unsupported JSON and exit 2', async () => {
+    const res = await runBench([], { MYSHELL_BENCH_SIMULATE_MISSING_XTERM: '1' });
+    assert.notEqual(res.code, null);
+    assert.equal(res.code, 2, 'must exit 2 for unsupported');
+    const json = jsonFromStdout(res);
+    assert.equal(json.status, 'unsupported');
+    const detail = String(json.detail ?? '');
+    assert.ok(detail.toLowerCase().includes('xterm'), `detail must mention xterm: ${detail}`);
+  });
+
+  it('missing compiled CLI reports unsupported JSON and exit 2', async () => {
+    const res = await runBench([], { MYSHELL_BENCH_SIMULATE_MISSING_CLI: '1' });
+    assert.notEqual(res.code, null);
+    assert.equal(res.code, 2, 'must exit 2 for unsupported');
+    const json = jsonFromStdout(res);
+    assert.equal(json.status, 'unsupported');
+    const detail = String(json.detail ?? '');
+    assert.ok(detail.toLowerCase().includes('cli'), `detail must mention cli: ${detail}`);
+  });
+});
+
+describe('PTY benchmark — warmup and percentile math', () => {
+  it('nearest-rank percentiles match raw samples', () => {
+    const raw = [5, 10, 20, 30, 100];
+    const sorted = [...raw].sort((a, b) => a - b);
+    const p50 = nr(sorted, 0.5);
+    const p95 = nr(sorted, 0.95);
+    assert.equal(p50, 20, `p50 of [5,10,20,30,100] should be 20, got ${p50}`);
+    assert.equal(p95, 100, `p95 should be 100, got ${p95}`);
+
+    const single = [7];
+    const sP50 = nr(single, 0.5);
+    const sP95 = nr(single, 0.95);
+    assert.equal(sP50, 7);
+    assert.equal(sP95, 7);
+
+    const two = [1, 2];
+    assert.equal(nr(two, 0.5), 1, 'p50 of [1,2] should be 1 (ceil(0.5*2)-1 = 0)');
+    assert.equal(nr(two, 0.95), 2, 'p95 of [1,2] should be 2 (ceil(0.95*2)-1 = 1)');
+
+    assert.equal(nr([], 0.5), null, 'empty array returns null');
+  });
+});
+
+describe('PTY benchmark — component branch validation', () => {
+  it('missing component branch fails aggregate', async () => {
+    const incomplete = makeComponentJson([
+      { id: 'manage-early-key', status: 'observed' },
+      { id: 'surface-replace-1000', status: 'observed' },
+      { id: 'legacy-buffer-mm', status: 'observed' },
+      { id: 'ctrl-c-contexts', status: 'observed' },
+      { id: 'login-child-handoff', status: 'observed' },
+      { id: 'dirty-worktree-verify', status: 'observed' },
+      // auto-stage-success intentionally omitted
+    ]);
+
+    const compFile = join(tmpdir(), `p0-ptytest-comp-${Date.now()}.json`);
+    writeFileSync(compFile, JSON.stringify(incomplete), 'utf8');
+
+    try {
+      const res = await runBench(['--samples', '1', '--warmup', '0'], {
+        MYSHELL_BENCH_COMPONENT_JSON: compFile,
+      });
+      assert.notEqual(res.code, 0, 'must fail when a component branch is missing');
+      assert.equal(res.code, 1, 'must exit 1 for missing component ID');
+    } finally {
+      try { rmSync(compFile, { force: true }); } catch { /* best-effort */ }
+    }
+  });
+});
+
+describe('PTY benchmark — real PTY run', () => {
+  beforeAll(() => {
+    if (!CAPABILITIES_PRESENT) return;
+    if (!existsSync(CLI_PATH)) {
+      execSync('npm run build', { cwd: REPO_ROOT, stdio: 'inherit' });
+    }
+    assert.ok(existsSync(CLI_PATH), `built CLI must exist at ${CLI_PATH}`);
+  }, 60_000);
+
+  it('supported one-sample real PTY run reaches Library with one action and empty editor', async () => {
+    if (!CAPABILITIES_PRESENT) {
+      return;
+    }
+
+    const res = await runBenchWithFile(['--warmup', '0', '--samples', '1'], {}, 120_000);
+    assert.equal(res.code, 0, `must exit 0, got ${res.code} stderr: ${res.stderr}`);
+    const json = jsonFromFile(res);
+    assert.equal(json.status, 'pass', `expected pass, got ${json.status}`);
+    const ptyCase = ((json as Record<string, unknown>).cases as Array<Record<string, unknown>>)
+      .find((c) => c.id === 'pty-root-to-library');
+    assert.ok(ptyCase, 'pty-root-to-library case must exist');
+    assert.equal(ptyCase.status, 'pass', `pty case status must be pass, got ${ptyCase.status}`);
+    assert.equal(ptyCase.actions, 1);
+    assert.equal(ptyCase.editorRemainder, '');
+    assert.ok(ptyCase.rawMs && (ptyCase.rawMs as number[]).length === 1, 'must have exactly 1 raw sample');
+    assert.ok(typeof ptyCase.p50Ms === 'number' && ptyCase.p50Ms > 0, 'p50Ms must be positive number');
+    assert.ok(typeof ptyCase.p95Ms === 'number' && ptyCase.p95Ms > 0, 'p95Ms must be positive number');
+    assert.ok(typeof ptyCase.maxMs === 'number' && ptyCase.maxMs > 0, 'maxMs must be positive number');
+  }, 150_000);
+
+  it('one warmup is excluded from raw samples', async () => {
+    if (!CAPABILITIES_PRESENT) {
+      return;
+    }
+
+    const res = await runBenchWithFile(['--warmup', '1', '--samples', '1'], {}, 120_000);
+    assert.notEqual(res.code, null);
+    assert.equal(res.code, 0, `must exit 0, got ${res.code} stderr: ${res.stderr}`);
+    const json = jsonFromFile(res);
+    const ptyCase = ((json as Record<string, unknown>).cases as Array<Record<string, unknown>>)
+      .find((c) => c.id === 'pty-root-to-library');
+    assert.ok(ptyCase, 'pty-root-to-library case must exist');
+    const rawMs = ptyCase.rawMs as number[];
+    assert.equal(rawMs.length, 1, `expected 1 sample (warmup excluded), got ${rawMs.length}`);
+    assert.equal(ptyCase.samples, 1);
+  }, 150_000);
+
+  it('temporary config bypasses onboarding and temp HOME is removed', async () => {
+    if (!CAPABILITIES_PRESENT) {
+      return;
+    }
+
+    // Ensure no lingering temp dirs from prior runs (best-effort)
+    // The benchmark cleans up after each sample, so after completion all temp dirs
+    // with the myshell-pty-bench prefix should be gone.
+
+    const res = await runBenchWithFile(['--warmup', '0', '--samples', '1'], {}, 120_000);
+    assert.equal(res.code, 0, `must exit 0, got ${res.code} stderr: ${res.stderr}`);
+    const json = jsonFromFile(res);
+    const ptyCase = ((json as Record<string, unknown>).cases as Array<Record<string, unknown>>)
+      .find((c) => c.id === 'pty-root-to-library');
+    assert.ok(ptyCase, 'pty-root-to-library case must exist');
+    assert.equal(ptyCase.status, 'pass', `pty case status must be pass, got ${ptyCase.status}`);
+    assert.equal(ptyCase.editorRemainder, '', 'editorRemainder must be empty (no accidental key echo)');
+
+    // The benchmark creates temp dirs under os.tmpdir() with prefix 'myshell-pty-bench-'.
+    // After each sample, `rm(tempHome, { recursive: true, force: true })` cleans up.
+    // After the full run, no such dirs should remain.
+    const tmpRoot = tmpdir();
+    const items = readdirSync(tmpRoot);
+    const leaked = items.filter((name) => name.startsWith('myshell-pty-bench-'));
+    assert.equal(
+      leaked.length,
+      0,
+      `temp HOME dirs leaked: ${leaked.join(', ')}`,
+    );
+  }, 150_000);
+
+  it('output contains Node and host metadata', async () => {
+    if (!CAPABILITIES_PRESENT) {
+      return;
+    }
+
+    const res = await runBenchWithFile(['--warmup', '0', '--samples', '1'], {}, 120_000);
+    assert.equal(res.code, 0, `must exit 0, got ${res.code} stderr: ${res.stderr}`);
+    const json = jsonFromFile(res);
+    const host = json.host as Record<string, unknown> | undefined;
+    assert.ok(host, 'JSON must contain host metadata');
+    assert.ok(typeof host.node === 'string' && host.node.length > 0, 'host.node must be present');
+    assert.ok(typeof host.platform === 'string' && host.platform.length > 0, 'host.platform must be present');
+    assert.ok(typeof host.arch === 'string' && host.arch.length > 0, 'host.arch must be present');
+    assert.ok(typeof host.cpuModel === 'string' && host.cpuModel.length > 0, 'host.cpuModel must be present');
+    assert.ok(typeof host.cpuCount === 'number' && host.cpuCount > 0, 'host.cpuCount must be positive');
+  }, 150_000);
+});
