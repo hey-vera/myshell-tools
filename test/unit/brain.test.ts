@@ -172,6 +172,18 @@ describe('brain.confidenceTooLowToAct', () => {
     const s = signals({ frame: medium });
     assert.equal(confidenceTooLowToAct(assessConfidence(medium, s), medium, s), false);
   });
+
+  it('legacy confidenceTooLowToAct remains low-only outside semantic policy', () => {
+    const low = frame({ confidence: 'low', source: 'model' });
+    const medium = frame({ confidence: 'medium', source: 'model' });
+    const high = frame({ confidence: 'high', source: 'model' });
+    const lowSignals = signals({ frame: low });
+    const mediumSignals = signals({ frame: medium });
+    const highSignals = signals({ frame: high });
+    assert.equal(confidenceTooLowToAct(assessConfidence(low, lowSignals), low, lowSignals), true);
+    assert.equal(confidenceTooLowToAct(assessConfidence(medium, mediumSignals), medium, mediumSignals), false);
+    assert.equal(confidenceTooLowToAct(assessConfidence(high, highSignals), high, highSignals), false);
+  });
 });
 
 // ---------------------------------------------------------------------------
