@@ -566,6 +566,62 @@ describe('validateTurnOutput — require_grounded_recommendation', () => {
   });
 });
 
+describe('validateTurnOutput — require_observed_grounding', () => {
+  const receipt = {
+    version: 1,
+    needId: 'LOCAL1',
+    kind: 'local-code',
+    status: 'obtained',
+    query: 'auth',
+    pathsLocated: ['src/auth.ts'],
+    pathsRead: ['src/auth.ts'],
+    renderedContext: 'auth',
+  } as const;
+
+  const d: TurnDirective = {
+    version: 1,
+    requiredBeforeAnswer: [],
+    outputValidators: [{ kind: 'require_observed_grounding' }],
+    historyPolicy: { replayMode: 'normal', reasons: [] },
+    repoOriented: true,
+    substantial: false,
+    evidenceReceipts: [receipt],
+  };
+
+  it('accepts an observed read path and rejects an invented plausible path', () => {
+    assert.equal(validateTurnOutput('The behavior is in src/auth.ts.', d), null);
+    const f = validateTurnOutput('The behavior is in src/session.ts.', d);
+    assert.ok(f !== null);
+    assert.equal(f.kind, 'unobserved_grounding');
+  });
+
+  it('accepts an explicit Unverified sentence as the honest fallback', () => {
+    assert.equal(validateTurnOutput('Unverified: src/session.ts may contain the behavior.', d), null);
+  });
+
+  it('carries evidence obligations and receipts from compileTurnDirective', () => {
+    const s = signals({ task: 'analyze auth' });
+    const obligation = {
+      id: 'TEST1',
+      kind: 'test-result',
+      phase: 'before-completion',
+      query: 'run tests',
+      required: true,
+    } as const;
+    const compiled = compileTurnDirective({
+      frame: undefined,
+      plan: planEngagement(s),
+      signals: s,
+      semanticTaskKind: 'analysis',
+      evidenceObligations: [obligation],
+      evidenceReceipts: [receipt],
+    });
+    assert.deepEqual(compiled.evidenceObligations, [obligation]);
+    assert.deepEqual(compiled.evidenceReceipts, [receipt]);
+    assert.ok(compiled.outputValidators.some((v) => v.kind === 'require_observed_grounding'));
+  });
+});
+
 describe('shouldAppendGroundedFallback — truthful only', () => {
   const substantialDirective = (): TurnDirective => {
     const s = signals({ task: 'should we keep this in TypeScript or move the core to Rust?' });
