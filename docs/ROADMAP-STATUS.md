@@ -41,11 +41,11 @@ CI Test job steps: typecheck → lint → knip → unit → contract → build �
 |-------|-----------|-------|
 | knip dead-code | 2 unused evidence exports | FIXED #43 |
 | 7 unit tests | **real source regression**: dark evidence-enforcement (56cb9b7) hard-blocked `cannot-ground`, killing normal turns; + 2 fragile `/fake/cwd` tests | FIXED #43 (frontier-adjudicated `docs/adjudication-cannot-ground.md`: proceed-but-Unverified) |
-| 2 Windows-unit | evidence-sink hashAfter undefined; menu-accounts ENOENT (Windows-only) | IN PROGRESS (worker) |
-| 5 Linux PTY integration | benchmark readiness too weak (`scripts/pty-p0-benchmark.mjs`) — pre-existing, confirmed on origin/main | TRACKED DEBT: diagnosis `docs/pty-integration-diagnosis-5.6.md`; blind fix #49 (WIP, NOT merged) did not green Linux; needs informed re-diagnosis using captured screen-tail |
+| 2 Windows-unit | **real product bug** evidence-sink hashAfter always undefined on Windows (startsWith containment vs backslash paths) + menu-accounts hardcoded Linux path | FIXED #52 (evidence-sink now uses path.relative) |
+| PTY integration (ALL OS) | `scripts/pty-p0-benchmark.mjs`: Linux/macOS fail on weak readiness (exit 1); Windows fails because util-linux `script` genuinely absent (exit 2). Pre-existing (origin/main). It is a perf-benchmark harness, NOT product function. | SOLE REMAINING RED. Diagnosis `docs/pty-integration-diagnosis-5.6.md`. Blind fix #49 (WIP, NOT merged) correctly makes Windows skip-with-reason but did NOT green Linux readiness. NEXT = USER PRIORITY CALL: (a) informed Linux fix via CI screen-tail (#49 captures it) — blind-iterate; (b) gate/skip benchmark on capability-with-reason; (c) accept as tracked debt and move on. |
 
 ## Immediate queue
-1. Finish CI green: 2 Windows-unit failures (worker, locally verifiable on Windows), then the PTY integration layer (#49 WIP — needs Linux-informed fix; treat as tracked debt if it keeps resisting).
+1. CI: all steps green on all OS EXCEPT the PTY benchmark (see table — sole remaining red, needs a user priority call). Everything else (knip/lint/unit/contract/build) green.
 2. Item 8k default-on flip — NOW UNBLOCKED (the cannot-ground fix was its prerequisite: evidence enforcement would have silently broken normal turns if flipped on). GATED user decision: eval green + rollback + receipt naming what it does NOT prove.
 3. Implementation phase: user picks which contract to build first; opencode-go executes slices, Claude gates merges.
 
