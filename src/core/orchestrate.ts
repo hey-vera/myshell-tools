@@ -53,6 +53,7 @@ import {
   fallbackSemanticPreflight,
   resolveSemanticPreflight,
   semanticToIntentFrame,
+  type EvidenceNeed,
   type SemanticPreflightV1,
 } from './semantic-preflight.js';
 import { capGoalLabel } from './goal.js';
@@ -87,6 +88,13 @@ import { autoModeForPlanInfos, type PlanInfo } from './policy.js';
 import { pressureFromSignals, preflightAdmits } from './capability-budget.js';
 import { ENVIRONMENT_BLOCK_CHAR_CAP } from './repo-map.js';
 import { buildRetrievalContext, buildWebContext } from './research.js';
+import { collectLocalEvidence, collectWebEvidence } from './research.js';
+import {
+  decideEvidenceInvestigation,
+  type EvidenceDecision,
+  type EvidenceObservation,
+  type EvidenceReceiptV1,
+} from './evidence-investigation.js';
 import { buildInitialExecutorContextBlockOptions } from './context-block-options.js';
 import {
   compileTurnDirective,
@@ -107,6 +115,80 @@ function turnClassOf(tier: Tier, risk: Risk): TurnClass {
   if (tier === 'worker' && risk === 'low') return 'trivial';
   if (tier === 'manager' || risk === 'high' || risk === 'critical') return 'substantial';
   return 'normal';
+}
+
+const DET_LOCAL_EVIDENCE_NEED: EvidenceNeed = {
+  id: 'DET_LOCAL',
+  kind: 'local-code',
+  phase: 'before-execution',
+  query: 'Read the relevant local code before making or claiming existing-code facts.',
+  required: true,
+};
+
+const DET_WEB_EVIDENCE_NEED: EvidenceNeed = {
+  id: 'DET_WEB',
+  kind: 'external-source',
+  phase: 'before-answer',
+  query: 'Look up the requested current external facts before answering.',
+  required: true,
+};
+
+function firstSemanticNeed(
+  semantic: SemanticPreflightV1,
+  kind: 'local-code' | 'external-source',
+): EvidenceNeed {
+  return semantic.evidenceNeeded.find(
+    (need) =>
+      need.required &&
+      need.kind === kind &&
+      (need.phase === 'before-answer' || need.phase === 'before-execution'),
+  ) ?? (kind === 'local-code' ? DET_LOCAL_EVIDENCE_NEED : DET_WEB_EVIDENCE_NEED);
+}
+
+function renderEvidenceObligations(needs: readonly EvidenceNeed[]): string {
+  if (needs.length === 0) return '';
+  const lines = [
+    'EVIDENCE OBLIGATIONS (pending; do not claim completion from these alone):',
+    ...needs.map((need) => `- ${need.id} [${need.kind}/${need.phase}]: ${need.query}`),
+  ];
+  return lines.join('\n');
+}
+
+function renderSemanticEvidenceContext(
+  receipts: readonly EvidenceReceiptV1[],
+  obligations: readonly EvidenceNeed[],
+): string {
+  const parts: string[] = [];
+  for (const receipt of receipts) {
+    if (receipt.renderedContext.length === 0) continue;
+    const label = receipt.kind === 'local-code' ? 'OBSERVED LOCAL EVIDENCE' : 'OBSERVED WEB EVIDENCE';
+    parts.push(`--- ${label} (${receipt.needId}, status: ${receipt.status}) ---\n${receipt.renderedContext}`);
+  }
+  const obligationBlock = renderEvidenceObligations(obligations);
+  if (obligationBlock.length > 0) {
+    parts.push(`--- SEMANTIC EVIDENCE OBLIGATIONS ---\n${obligationBlock}`);
+  }
+  return parts.join('\n\n');
+}
+
+function evidenceObservationsForDecision(receipts: readonly EvidenceReceiptV1[]): readonly EvidenceObservation[] {
+  const observations: EvidenceObservation[] = [...receipts];
+  if (receipts.some((receipt) => receipt.kind === 'local-code' && receipt.status === 'obtained')) {
+    observations.push({ needId: DET_LOCAL_EVIDENCE_NEED.id, kind: 'local-code', status: 'obtained' });
+  }
+  if (receipts.some((receipt) => receipt.kind === 'external-source' && receipt.status === 'obtained')) {
+    observations.push({ needId: DET_WEB_EVIDENCE_NEED.id, kind: 'external-source', status: 'obtained' });
+  }
+  return observations;
+}
+
+function unverifiedEvidenceOutput(decision: EvidenceDecision, receipts: readonly EvidenceReceiptV1[]): string {
+  const reason = decision.reasons[0] ?? 'Required evidence could not be obtained before work starts.';
+  const receiptLine =
+    receipts.length > 0
+      ? ` Receipt status: ${receipts.map((r) => `${r.needId}:${r.status}`).join(', ')}.`
+      : '';
+  return `Unverified: ${reason}${receiptLine}`;
 }
 
 // Pure decision/signal helpers (shouldReview, deriveTaskKind, estimateInputTokens,
@@ -328,6 +410,7 @@ export async function* orchestrate(
     rationale: det.rationale,
   };
   let semanticPreflightForPersistence: SemanticPreflightV1 | undefined;
+  let semanticPreflightForEvidence: SemanticPreflightV1 | undefined;
   const unifiedRunIntent =
     depsArg.goalTurn !== true &&
     shouldExtractIntent({
@@ -383,6 +466,7 @@ export async function* orchestrate(
     const resolved = resolveSemanticPreflight(detClassification, semantic);
     if (disposition === 'run') {
       semanticPreflightForPersistence = resolved.semantic;
+      semanticPreflightForEvidence = resolved.semantic;
     }
     classification = resolved.classification;
     turnClass = turnClassOf(classification.tier, classification.risk);
@@ -1080,6 +1164,108 @@ export async function* orchestrate(
       trigger: 'review',
     }).allowed;
 
+  let semanticEvidenceReceipts: EvidenceReceiptV1[] = [];
+  let semanticEvidenceObligations: readonly EvidenceNeed[] = [];
+  if (semanticPreflightOn && semanticPreflightForEvidence !== undefined) {
+    const semantic = semanticPreflightForEvidence;
+    const evidenceCapabilities = {
+      repoPresent: depsArg.environmentContext !== undefined && depsArg.environmentContext.length > 0,
+      localReadAvailable: depsArg.researchPort !== undefined,
+      webSearchAvailable:
+        depsArg.researchPort !== undefined && typeof depsArg.researchPort.webSearch === 'function',
+    };
+    let evidenceDecision = decideEvidenceInvestigation(
+      task,
+      semantic,
+      evidenceCapabilities,
+      evidenceObservationsForDecision(semanticEvidenceReceipts),
+    );
+
+    if (evidenceDecision.beforeWork === 'local' && depsArg.researchPort !== undefined) {
+      const need = firstSemanticNeed(semantic, 'local-code');
+      try {
+        semanticEvidenceReceipts = [
+          await collectLocalEvidence({
+            port: depsArg.researchPort,
+            cwd: depsArg.cwd,
+            needId: need.id,
+            query: need.query,
+            signal,
+          }),
+        ];
+      } catch {
+        semanticEvidenceReceipts = [{
+          version: 1,
+          needId: need.id,
+          kind: 'local-code',
+          status: signal.aborted ? 'cancelled' : 'failed',
+          query: need.query,
+          pathsLocated: [],
+          pathsRead: [],
+          renderedContext: '',
+        }];
+      }
+    } else if (evidenceDecision.beforeWork === 'web' && depsArg.researchPort !== undefined) {
+      const need = firstSemanticNeed(semantic, 'external-source');
+      try {
+        semanticEvidenceReceipts = [
+          await collectWebEvidence({
+            port: depsArg.researchPort,
+            needId: need.id,
+            query: need.query,
+            signal,
+          }),
+        ];
+      } catch {
+        semanticEvidenceReceipts = [{
+          version: 1,
+          needId: need.id,
+          kind: 'external-source',
+          status: signal.aborted ? 'cancelled' : 'failed',
+          query: need.query,
+          sourceText: '',
+          renderedContext: '',
+        }];
+      }
+    }
+
+    if (signal.aborted || semanticEvidenceReceipts.some((receipt) => receipt.status === 'cancelled')) {
+      yield { type: 'notice', level: 'warn', message: 'Cancelled.' };
+      yield {
+        type: 'final',
+        success: false,
+        output: 'Task was cancelled.',
+        tier: classification.tier,
+        totalCostUsd: 0,
+        sessionId: depsArg.session.id,
+        attempts: 0,
+        canceled: true,
+      };
+      return;
+    }
+
+    evidenceDecision = decideEvidenceInvestigation(
+      task,
+      semantic,
+      evidenceCapabilities,
+      evidenceObservationsForDecision(semanticEvidenceReceipts),
+    );
+    semanticEvidenceObligations = evidenceDecision.beforeCompletion;
+
+    if (!evidenceDecision.mayStartWork) {
+      yield {
+        type: 'final',
+        success: true,
+        output: unverifiedEvidenceOutput(evidenceDecision, semanticEvidenceReceipts),
+        tier: classification.tier,
+        totalCostUsd: 0,
+        sessionId: depsArg.session.id,
+        attempts: 0,
+      };
+      return;
+    }
+  }
+
   const directive = compileTurnDirective({
     frame: intentFrame,
     plan: engagementPlan,
@@ -1089,6 +1275,11 @@ export async function* orchestrate(
     ...(priorAssistant !== undefined ? { priorAssistant } : {}),
     ...(workState !== undefined ? { workState } : {}),
     ...(requiredInvestigationOn ? { requiredInvestigationEnabled: true } : {}),
+    ...(semanticEvidenceObligations.length > 0 ? { evidenceObligations: semanticEvidenceObligations } : {}),
+    ...(semanticEvidenceReceipts.length > 0 ? { evidenceReceipts: semanticEvidenceReceipts } : {}),
+    ...(semanticPreflightForEvidence !== undefined
+      ? { semanticTaskKind: semanticPreflightForEvidence.taskShape.kind }
+      : {}),
   });
 
   // -------------------------------------------------------------------------
@@ -1100,7 +1291,11 @@ export async function* orchestrate(
   // abort all degrade cleanly. OFF (or 'none'/already-grounded) →
   // `investigationContext` stays '' and the deps copy is byte-identical to today.
   // -------------------------------------------------------------------------
-  let investigationContext = '';
+  const semanticEvidenceContext = renderSemanticEvidenceContext(
+    semanticEvidenceReceipts,
+    semanticEvidenceObligations,
+  );
+  let investigationContext = semanticEvidenceContext;
   if (
     requiredInvestigationOn &&
     directive.requiredInvestigation === 'local' &&
