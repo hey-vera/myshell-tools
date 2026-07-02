@@ -457,7 +457,7 @@ export function validateTurnOutput(
       if (failure !== null) return failure;
     }
     if (validator.kind === 'require_observed_grounding') {
-      const failure = checkObservedGrounding(text, directive.evidenceReceipts ?? []);
+      const failure = checkObservedGrounding(text, directive.evidenceReceipts ?? [], directive.evidenceObligations ?? []);
       if (failure !== null) return failure;
     }
   }
@@ -509,9 +509,19 @@ function sourceTextObserved(text: string, receipts: readonly EvidenceReceiptV1[]
   return false;
 }
 
+function unmetEvidenceKind(obligations: readonly EvidenceNeed[]): Set<'local-code' | 'external-source'> {
+  const out = new Set<'local-code' | 'external-source'>();
+  for (const o of obligations) {
+    if (o.kind === 'local-code') out.add('local-code');
+    if (o.kind === 'external-source') out.add('external-source');
+  }
+  return out;
+}
+
 function checkObservedGrounding(
   text: string,
   receipts: readonly EvidenceReceiptV1[],
+  obligations: readonly EvidenceNeed[] = [],
 ): ValidationFailure | null {
   if (typeof text !== 'string' || text.trim().length === 0) return null;
   if (hasUnverifiedSentence(text)) return null;
@@ -561,6 +571,30 @@ function checkObservedGrounding(
         'The answer made a current external claim without citing text or a reference from the obtained web receipt. ' +
         'Cite observed source text or label the claim with "Unverified:".',
     };
+  }
+
+  // When evidence was expected (obligations > 0) but no receipts collected,
+  // any codebase or external factual claim MUST be labelled Unverified:
+  if (receipts.length === 0 && obligations.length > 0) {
+    const unmet = unmetEvidenceKind(obligations);
+    if (unmet.has('local-code') && (paths.length > 0 || codebaseClaim)) {
+      return {
+        kind: 'unobserved_grounding',
+        severity: 'repair',
+        reason:
+          'The answer made a codebase factual claim without observed evidence. ' +
+          'Label the claim with "Unverified:" or obtain a local read receipt before answering.',
+      };
+    }
+    if (unmet.has('external-source') && externalClaim) {
+      return {
+        kind: 'unobserved_grounding',
+        severity: 'repair',
+        reason:
+          'The answer made a current external claim without observed evidence. ' +
+          'Label the claim with "Unverified:" or obtain a web search receipt before answering.',
+      };
+    }
   }
 
   return null;

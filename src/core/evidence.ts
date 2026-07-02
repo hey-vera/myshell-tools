@@ -34,8 +34,6 @@ export interface EvidenceSnapshotV1 {
   readonly timestamp: number;
 }
 
-export type EvidenceSnapshot = EvidenceSnapshotV1;
-
 export interface EvidenceFileWriteV2 {
   readonly path: string;
   readonly hashBefore?: string;
@@ -435,10 +433,3 @@ export function normalizeEvidenceSnapshotV2(raw: unknown): EvidenceSnapshotV2 | 
   return snapshot;
 }
 
-export function normalizeEvidenceSnapshot(raw: unknown): EvidenceRecord | null {
-  if (!isRecord(raw)) return null;
-  if (raw['version'] === 2) {
-    return normalizeEvidenceSnapshotV2(raw);
-  }
-  return normalizeEvidenceSnapshotV1(raw);
-}
