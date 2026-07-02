@@ -25,7 +25,9 @@ import type {
   SubscriptionsFileV1,
   SubscriptionAccount,
 } from '../../src/infra/subscriptions.js';
-import { writeSubscriptions } from '../../src/infra/subscriptions.js';
+import {
+  writeSubscriptions,
+} from '../../src/infra/subscriptions.js';
 import { defaultStateLayout } from '../../src/infra/state-layout.js';
 import type { EnvironmentStatus } from '../../src/providers/detect.ts';
 import type { AppConfig } from '../../src/infra/config.ts';
@@ -701,7 +703,7 @@ describe('startMenu — Accounts live-snapshot refresh', () => {
         await writeTestSubs(dir, [makeAccount({ provider: 'claude', label: 'c1', enabled: true, status: 'active' })]);
 
         const sink = makeSink();
-        const subsPath = join(dir, '.myshell-tools', 'subscriptions.json');
+        const subsPath = defaultStateLayout().paths.subscriptionsFile;
 
         let phase = 0;
         const customReader = async (): Promise<string | null> => {
