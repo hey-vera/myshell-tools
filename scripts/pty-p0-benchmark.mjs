@@ -152,7 +152,7 @@ async function runPtySample() {
   const tempHome = join(tmpdir(), `myshell-pty-bench-${randomBytes(6).toString('hex')}`);
   const configDir = join(tempHome, '.myshell-tools');
   await mkdir(configDir, { recursive: true });
-  await writeFile(join(configDir, 'config.json'), JSON.stringify({ onboarded: true, setAsDefault: false }));
+  await writeFile(join(configDir, 'config.json'), JSON.stringify({ onboarded: true, setAsDefault: false, defaultShellOptOut: true }));
 
   const env = {
     ...process.env,
