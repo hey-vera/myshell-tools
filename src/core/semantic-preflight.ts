@@ -2,6 +2,7 @@ import type { Classification, Risk, RouteDecision, Tier } from './types.js';
 import type { ReasoningEffort } from './model-capabilities.js';
 import type { IntentFork, IntentFrame } from './intent.js';
 import type { GoalPlanTodo } from './goal-plan.js';
+import { isTrivial } from './engagement.js';
 
 type ProviderId = RouteDecision['provider'];
 
@@ -79,6 +80,12 @@ export interface ResolvedSemanticPreflight {
   readonly routePlan: boolean;
 }
 
+export type SemanticPreflightDisposition =
+  | 'bypass-trivial'
+  | 'bypass-goal-contract'
+  | 'run'
+  | 'unavailable';
+
 const OBJECTIVE_LIMIT = 80;
 const RATIONALE_LIMIT = 120;
 const REASON_LIMIT = 160;
@@ -143,6 +150,42 @@ const VALID_TIERS: ReadonlySet<string> = new Set<Tier>(['worker', 'ic', 'manager
 const VALID_RISKS: ReadonlySet<string> = new Set<Risk>(['low', 'medium', 'high', 'critical']);
 
 const EVIDENCE_ID_RE = /^[A-Z][A-Z0-9_-]{0,31}$/;
+const PURE_SOCIAL_RE = /^\s*(?:hi|hello|hey|thanks|thank\s+you|ok|okay)[\s.!?,;:]*$/i;
+
+function isSemanticPreflightTrivial(
+  task: string,
+  deterministic: Classification,
+): boolean {
+  if (PURE_SOCIAL_RE.test(task)) return true;
+  const skippedFrame: IntentFrame = {
+    version: 1,
+    goal: '',
+    confidence: 'high',
+    source: 'skipped',
+  };
+  return isTrivial({
+    frame: skippedFrame,
+    classification: deterministic,
+    routePlan: false,
+    engagementBias: 0,
+    task,
+  });
+}
+
+export function decideSemanticPreflightDisposition(input: {
+  readonly task: string;
+  readonly deterministic: Classification;
+  readonly goalTurn: boolean;
+  readonly goalTurnHasObjectiveAndDone: boolean;
+  readonly hasSemanticExtractor: boolean;
+}): SemanticPreflightDisposition {
+  if (input.task.trim().length === 0) return 'unavailable';
+  if (input.goalTurn && input.goalTurnHasObjectiveAndDone) return 'bypass-goal-contract';
+  if (!input.hasSemanticExtractor) return 'unavailable';
+  return isSemanticPreflightTrivial(input.task, input.deterministic)
+    ? 'bypass-trivial'
+    : 'run';
+}
 
 function safeString(value: unknown): string {
   if (typeof value === 'string') return value;
@@ -577,3 +620,23 @@ export function semanticToIntentFrame(semantic: SemanticPreflightV1): IntentFram
 
   return frame as IntentFrame;
 }
+
+// ---------------------------------------------------------------------------
+// P1-08b — Trivial-bypass population
+// ---------------------------------------------------------------------------
+
+/**
+ * Decide whether a turn should bypass the semantic preflight model call.
+ * Pure — no I/O, no model, no side effects.
+ *
+ * Returns `bypass-trivial` for greetings/acknowledgements and turns that the
+ * existing `isTrivial` predicate classifies as trivial.
+ *
+ * Returns `bypass-goal-contract` for goal turns that already have both an
+ * objective and done condition.
+ *
+ * Returns `unavailable` when the task is empty or the semantic extractor is
+ * missing.
+ *
+ * Otherwise returns `run`.
+ */
