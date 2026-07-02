@@ -7,6 +7,7 @@ import { describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 
 import { isIntentVersion } from '../../src/infra/jsonl-guards.ts';
+import type { SemanticPreflightV1 } from '../../src/core/semantic-preflight.ts';
 
 function validBase() {
   return {
@@ -18,6 +19,30 @@ function validBase() {
     intent: {
       objective: 'do the thing',
     },
+  };
+}
+
+function validSemantic(): SemanticPreflightV1 {
+  return {
+    version: 1,
+    objective: 'inspect login test',
+    taskShape: { kind: 'change', scope: 'single-step', mutatesWorkspace: true },
+    route: { tier: 'ic', plan: false, rationale: 'small code change' },
+    risk: { level: 'medium', reasons: ['touches tests'] },
+    uncertainty: { level: 'low', reasons: [], forks: [] },
+    evidenceNeeded: [
+      {
+        id: 'E1',
+        kind: 'local-code',
+        phase: 'before-execution',
+        query: 'read login test',
+        required: true,
+      },
+    ],
+    doneCondition: { status: 'specified', text: 'test passes' },
+    planSteps: [{ text: 'Inspect test' }],
+    proposedExecution: { provider: 'auto', effort: 'none', rationale: 'defer routing' },
+    source: 'model',
   };
 }
 
@@ -39,6 +64,41 @@ describe('isIntentVersion', () => {
         },
       }),
       true,
+    );
+  });
+
+  it('legacy row without semantic field still passes guard and reads unchanged', () => {
+    const row = validBase();
+
+    assert.equal(isIntentVersion(row), true);
+    assert.deepEqual(row.intent, { objective: 'do the thing' });
+    assert.equal('semanticPreflight' in row, false);
+  });
+
+  it('old-reader projection ignores additive semantic field', () => {
+    const row = {
+      ...validBase(),
+      semanticPreflight: validSemantic(),
+    };
+
+    assert.equal(isIntentVersion(row), true);
+    assert.deepEqual(row.intent, validBase().intent);
+  });
+
+  it('malformed optional semantic payload fails new guard', () => {
+    assert.equal(
+      isIntentVersion({
+        ...validBase(),
+        semanticPreflight: { ...validSemantic(), doneCondition: { status: 'specified', text: '' } },
+      }),
+      false,
+    );
+    assert.equal(
+      isIntentVersion({
+        ...validBase(),
+        semanticPreflight: { ...validSemantic(), evidenceNeeded: [{ id: 'bad id' }] },
+      }),
+      false,
     );
   });
 

@@ -9,6 +9,7 @@
 
 import type { Risk } from './types.js';
 import type { IntentConfidence, IntentFrame } from './intent.js';
+import type { SemanticPreflightV1 } from './semantic-preflight.js';
 
 export interface IntentVersion {
   readonly version: 1;
@@ -17,6 +18,7 @@ export interface IntentVersion {
   readonly sessionId: string;
   readonly createdAt: string;
   readonly rawUserTurnText: string;
+  readonly semanticPreflight?: SemanticPreflightV1;
   readonly intent: {
     readonly objective: string;
     readonly assumptions?: readonly string[];
@@ -47,6 +49,7 @@ export interface BuildIntentVersionInput {
   readonly rawUserTurnText: string;
   readonly frame: IntentFrame;
   readonly risk?: Risk;
+  readonly semanticPreflight?: SemanticPreflightV1;
 }
 
 /**
@@ -61,7 +64,7 @@ export interface BuildIntentVersionInput {
 export function buildIntentVersion(
   input: BuildIntentVersionInput,
 ): IntentVersion | null {
-  const { id, parentId, sessionId, createdAt, rawUserTurnText, frame, risk } = input;
+  const { id, parentId, sessionId, createdAt, rawUserTurnText, frame, risk, semanticPreflight } = input;
 
   if (
     typeof id !== 'string' ||
@@ -103,7 +106,7 @@ export function buildIntentVersion(
 
   const doneCriteria = frame.doneWhen?.trim();
   const resolvedRisk: Risk | undefined =
-    frame.operationRisk ?? frame.blastRadius ?? risk;
+    risk ?? frame.operationRisk ?? frame.blastRadius;
 
   const version: IntentVersion = {
     version: 1,
@@ -130,6 +133,7 @@ export function buildIntentVersion(
         ? { parentId }
         : { parentId: null }
       : {}),
+    ...(semanticPreflight !== undefined ? { semanticPreflight } : {}),
   };
 
   return version;

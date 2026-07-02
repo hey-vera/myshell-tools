@@ -11,6 +11,7 @@ import { tmpdir } from 'node:os';
 
 import { createIntentStore, readIntentVersions, readIntentVersionById } from '../../src/infra/intent-store.ts';
 import type { IntentVersion } from '../../src/core/intent-version.ts';
+import type { SemanticPreflightV1 } from '../../src/core/semantic-preflight.ts';
 import { withStateHome } from '../with-state-home.ts';
 
 function makeVersion(id: string): IntentVersion {
@@ -26,6 +27,30 @@ function makeVersion(id: string): IntentVersion {
       confidence: 'high',
       source: 'model',
     },
+  };
+}
+
+function makeSemantic(): SemanticPreflightV1 {
+  return {
+    version: 1,
+    objective: 'ship the feature',
+    taskShape: { kind: 'change', scope: 'single-step', mutatesWorkspace: true },
+    route: { tier: 'ic', plan: false, rationale: 'small implementation' },
+    risk: { level: 'medium', reasons: ['changes code'] },
+    uncertainty: { level: 'low', reasons: [], forks: [] },
+    evidenceNeeded: [
+      {
+        id: 'E1',
+        kind: 'local-code',
+        phase: 'before-execution',
+        query: 'inspect target files',
+        required: true,
+      },
+    ],
+    doneCondition: { status: 'specified', text: 'feature is shipped' },
+    planSteps: [{ text: 'Inspect code' }],
+    proposedExecution: { provider: 'auto', effort: 'none', rationale: 'advisory only' },
+    source: 'model',
   };
 }
 
@@ -60,6 +85,18 @@ describe('intent-store', () => {
     await withStateHome(cwd, async () => {
     const entries = await readIntentVersions('/nonexistent/path/should/fail');
     assert.deepEqual(entries, []);
+    });
+  });
+
+  it('old-reader projection ignores additive semantic field', async () => {
+    await withStateHome(cwd, async () => {
+    const store = createIntentStore({ cwd });
+    await store.append({ ...makeVersion('id-semantic'), semanticPreflight: makeSemantic() });
+
+    const entries = await readIntentVersions(cwd);
+    assert.equal(entries.length, 1);
+    assert.equal(entries[0].semanticPreflight?.taskShape.kind, 'change');
+    assert.deepEqual(entries[0].intent, makeVersion('id-semantic').intent);
     });
   });
 

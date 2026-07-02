@@ -181,4 +181,19 @@ describe('orchestrate intent store', () => {
 
     assert.equal(intentVersions.length, 1, 'expected exactly one intent version even after extraction');
   });
+
+  it('trivial semantic bypass keeps intent row lightweight', async () => {
+    const deps = buildDeps({ intentStore: true });
+    deps.semanticPreflightV1 = true;
+    deps.semanticPreflightExtractor = async () => {
+      throw new Error('trivial turn must not run semantic preflight');
+    };
+    deps.policy = { ...DEFAULT_POLICY, escalateBelowConfidence: { low: 0, medium: 0, high: 0, critical: 0 } };
+
+    await drain(orchestrate('thanks', deps, new AbortController().signal));
+
+    assert.equal(intentVersions.length, 1);
+    assert.equal(intentVersions[0].semanticPreflight, undefined);
+    assert.equal(intentVersions[0].intent.objective, 'thanks');
+  });
 });
