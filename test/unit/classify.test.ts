@@ -13,7 +13,9 @@
 
 import { describe, it } from 'vitest';
 import assert from 'node:assert/strict';
-import { classify, hasWorkIntent } from '../../src/core/classify.ts';
+import { classify, hasTierEvidence, hasWorkIntent } from '../../src/core/classify.ts';
+import { maxRisk } from '../../src/core/semantic-preflight.ts';
+import type { Risk } from '../../src/core/types.ts';
 
 // ---------------------------------------------------------------------------
 // Table-driven baseline tests
@@ -1090,5 +1092,41 @@ describe('classify — manager corroboration rule', () => {
   it('"audit the authentication architecture across the codebase" → manager', () => {
     const result = classify('audit the authentication architecture across the codebase');
     assert.equal(result.tier, 'manager', `rationale: ${result.rationale}`);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Item 8 (semantic-preflight) classify integration tests
+// ---------------------------------------------------------------------------
+
+
+describe('classify — semantic-preflight tier evidence', () => {
+  it('lone review and plan lack tier evidence while fix has tier evidence', () => {
+    assert.equal(hasTierEvidence('review this'), false, 'lone "review" is a soft manager signal that needs corroboration');
+    assert.equal(hasTierEvidence('plan this'), false, 'lone "plan" is a soft manager signal that needs corroboration');
+    assert.equal(hasTierEvidence('fix this'), true, '"fix" is an IC signal that provides tier evidence');
+  });
+});
+
+describe('classify — semantic-preflight risk guard', () => {
+  it('risk false-negative guard: euphemistic destructive task raised by semantic result cannot resolve below gold high', () => {
+    const euphemistic = 'clean up and reorganize the production database and remove stale records';
+
+    const deterministicResult = classify(euphemistic);
+    const deterministicRisk = deterministicResult.risk;
+
+    const semanticRisk: Risk = 'critical';
+    const resolved = maxRisk(deterministicRisk, semanticRisk);
+
+    const euphemisticHigh = 'adjust and tidy the user credential store';
+    const detHigh = classify(euphemisticHigh);
+
+    assert.ok(
+      resolved === 'critical' || resolved === 'high',
+      `resolved risk ${resolved} must not drop below gold high when semantic says critical`,
+    );
+
+    const resolvedHigh = maxRisk(detHigh.risk, 'critical');
+    assert.equal(resolvedHigh, 'critical', 'euphemistic destructive task with semantic critical must resolve critical');
   });
 });
