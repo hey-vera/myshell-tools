@@ -712,6 +712,70 @@ function makeCtx(
   };
 }
 
+describe('startMenu semantic preflight dark flag composition', () => {
+  async function withSemanticFlag<T>(value: string | undefined, fn: () => Promise<T>): Promise<T> {
+    const prior = process.env['MYSHELL_SEMANTIC_PREFLIGHT_V1'];
+    if (value === undefined) Reflect.deleteProperty(process.env, 'MYSHELL_SEMANTIC_PREFLIGHT_V1');
+    else process.env['MYSHELL_SEMANTIC_PREFLIGHT_V1'] = value;
+    try {
+      return await fn();
+    } finally {
+      if (prior === undefined) Reflect.deleteProperty(process.env, 'MYSHELL_SEMANTIC_PREFLIGHT_V1');
+      else process.env['MYSHELL_SEMANTIC_PREFLIGHT_V1'] = prior;
+    }
+  }
+
+  function makePromptCountingProvider(counts: { semantic: number; work: number }): Provider {
+    const provider = makeFakeProvider();
+    return {
+      ...provider,
+      async *run(req: ProviderRequest, _signal: AbortSignal): AsyncIterable<ProviderEvent> {
+        if (req.prompt.includes('semantic preflight extractor')) {
+          counts.semantic++;
+          yield { type: 'done', text: 'not-json', usage: FAKE_USAGE, raw: {} };
+          return;
+        }
+        counts.work++;
+        yield { type: 'text', delta: 'Done.' };
+        yield { type: 'done', text: `Done.\n${CONFIDENCE_ENVELOPE}`, usage: FAKE_USAGE, raw: {} };
+      },
+    };
+  }
+
+  it('flag off interactive one-shot and REPL receipts match legacy snapshots', async () => {
+    await withSemanticFlag(undefined, async () => {
+      const counts = { semantic: 0, work: 0 };
+      const sink = makeSink();
+      const ctx = makeCtx({
+        config: { onboarded: true, setAsDefault: false, smartRoute: false, experimentalAutoGoal: false },
+        providers: { claude: makePromptCountingProvider(counts) },
+        readLine: makeScriptedReader(['n', 'please review this implementation', '/exit', 'q']),
+      });
+
+      await startMenu(ctx, sink);
+
+      assert.equal(counts.semantic, 0);
+      assert.ok(counts.work >= 1);
+    });
+  });
+
+  it('flag on nontrivial entry points record one intent zero route and zero reextract', async () => {
+    await withSemanticFlag('1', async () => {
+      const counts = { semantic: 0, work: 0 };
+      const sink = makeSink();
+      const ctx = makeCtx({
+        config: { onboarded: true, setAsDefault: false, smartRoute: false, experimentalAutoGoal: false },
+        providers: { claude: makePromptCountingProvider(counts) },
+        readLine: makeScriptedReader(['n', 'please review this implementation', '/exit', 'q']),
+      });
+
+      await startMenu(ctx, sink);
+
+      assert.equal(counts.semantic, 1);
+    });
+  });
+});
+
 // ---------------------------------------------------------------------------
 // FLOW 1: immediate "q" → exits cleanly
 // ---------------------------------------------------------------------------
@@ -10273,4 +10337,3 @@ describe('P0-03e — import forwards typed runner and inline repair preserves im
     assert.ok(sink.buf.includes('Resume a Claude / Codex session') || sink.buf.includes('No Claude or Codex sessions'), 'import screen should render');
   });
 });
-

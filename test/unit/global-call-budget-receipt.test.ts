@@ -279,4 +279,89 @@ describe('global call budget receipt', () => {
     assert.strictEqual(resolvedSnap.begun, 1);
     assert.strictEqual(resolvedSnap.turnId, 'bg-turn');
   });
+
+  it('same observing budget object owns semantic evidence work and receipt callback', async () => {
+    const budget = createTurnCallBudget({
+      turnId: 'semantic-turn',
+      mode: 'observe',
+      totalUnits: 64,
+      reserved: { work: 1, failover: 0, verification: 0 },
+    });
+    let callbackReceipt = budget.snapshot();
+    const onReceipt = async (): Promise<void> => {
+      callbackReceipt = budget.snapshot();
+      throw new Error('diagnostic callback failed');
+    };
+
+    const semantic = budget.begin({ purpose: 'intent', bucket: 'discretionary' });
+    assert.ok(semantic.allowed);
+    semantic.finish('succeeded');
+    const evidence = budget.begin({ purpose: 'research-web', bucket: 'discretionary' });
+    assert.ok(evidence.allowed);
+    evidence.finish('succeeded');
+    const work = budget.begin({ purpose: 'work', bucket: 'work' });
+    assert.ok(work.allowed);
+    work.finish('succeeded');
+
+    try {
+      await onReceipt();
+    } catch {
+      // Entry points treat the receipt callback as diagnostic only.
+    }
+    const receipt = budget.snapshot();
+    assert.strictEqual(callbackReceipt.turnId, receipt.turnId);
+    assert.strictEqual(callbackReceipt.begun, 3);
+    assert.deepEqual(
+      receipt.events
+        .filter((e) => e.type === 'call-begun')
+        .map((e) => e.type === 'call-begun' ? e.purpose : ''),
+      ['intent', 'research-web', 'work'],
+    );
+  });
+
+  it('flag on nontrivial entry points record one intent zero route and zero reextract', () => {
+    const budget = createTurnCallBudget({
+      turnId: 'semantic-nontrivial',
+      mode: 'observe',
+      totalUnits: 64,
+      reserved: { work: 1, failover: 0, verification: 0 },
+    });
+
+    const intent = budget.begin({ purpose: 'intent', bucket: 'discretionary' });
+    assert.ok(intent.allowed);
+    intent.finish('succeeded');
+    const work = budget.begin({ purpose: 'work', bucket: 'work' });
+    assert.ok(work.allowed);
+    work.finish('succeeded');
+
+    const purposes = budget.snapshot().events
+      .filter((e) => e.type === 'call-begun')
+      .map((e) => e.type === 'call-begun' ? e.purpose : '');
+    assert.strictEqual(purposes.filter((p) => p === 'intent').length, 1);
+    assert.strictEqual(purposes.filter((p) => p === 'route').length, 0);
+    assert.strictEqual(purposes.filter((p) => p === 'reextract-local').length, 0);
+    assert.strictEqual(purposes.filter((p) => p === 'reextract-web').length, 0);
+  });
+
+  it('flag on trivial entry points record zero preflight purposes', () => {
+    const budget = createTurnCallBudget({
+      turnId: 'semantic-trivial',
+      mode: 'observe',
+      totalUnits: 64,
+      reserved: { work: 1, failover: 0, verification: 0 },
+    });
+    const work = budget.begin({ purpose: 'work', bucket: 'work' });
+    assert.ok(work.allowed);
+    work.finish('succeeded');
+
+    const purposes = budget.snapshot().events
+      .filter((e) => e.type === 'call-begun')
+      .map((e) => e.type === 'call-begun' ? e.purpose : '');
+    assert.deepEqual(
+      purposes.filter((p) =>
+        p === 'intent' || p === 'route' || p === 'reextract-local' || p === 'reextract-web'
+      ),
+      [],
+    );
+  });
 });
