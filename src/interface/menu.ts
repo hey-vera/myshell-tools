@@ -217,6 +217,7 @@ import {
   resolveRawKeyInput,
 } from './menu-readline.js';
 import { inkEnabled } from './ui/flag.js';
+import { semanticPreflightV1Enabled } from './ui/semantic-preflight-flag.js';
 import type { StartupInputBuffer } from './startup-input.js';
 import { STARTUP_INPUT_CARRIER_ENV } from './startup-input.js';
 import { schedulerEnabled, schedulerExplicitlyOff } from './ui/scheduler-flag.js';
@@ -3976,7 +3977,9 @@ Output ONLY valid JSON (no prose, no markdown).`;
       // is never set → orchestrate runs today's verbatim decideRoute + intent block
       // (the OFF-GUARANTEE). When on, the preflight collapses the route-classifier call
       // into the single intent extraction on the affected turn class (pure consolidation).
-      const unifyPreflightOn = preflightUnifyEnabled(process.env, mutableCtx.config);
+      const semanticPreflightOn = semanticPreflightV1Enabled(process.env, mutableCtx.config);
+      const unifyPreflightOn =
+        !semanticPreflightOn && preflightUnifyEnabled(process.env, mutableCtx.config);
       // RISK SIGNALS flag (rank-8; core/router.ts `preflightRiskSignalsEnabled`).
       // DEFAULT OFF (opt-in): enabled only by an explicit MYSHELL_RISK_SIGNALS ∈
       // {1,true,on,yes} OR config.experimentalRiskSignals. When off, deps.riskSignals
@@ -3984,7 +3987,8 @@ Output ONLY valid JSON (no prose, no markdown).`;
       // runs today's verbatim risk + web-research determination (the OFF-GUARANTEE).
       // When on, the model's operationRisk/blastRadius may RAISE (never lower) the
       // deterministic risk floor and externalFreshness feeds web research additively.
-      const riskSignalsOn = preflightRiskSignalsEnabled(process.env, mutableCtx.config);
+      const riskSignalsOn =
+        !semanticPreflightOn && preflightRiskSignalsEnabled(process.env, mutableCtx.config);
       // REQUIRED INVESTIGATION flag (rank-9; core/router.ts
       // `preflightRequiredInvestigationEnabled`). DEFAULT OFF (opt-in): enabled only
       // by an explicit MYSHELL_REQUIRED_INVESTIGATION ∈ {1,true,on,yes} OR
@@ -3994,10 +3998,12 @@ Output ONLY valid JSON (no prose, no markdown).`;
       // an INVESTIGATE_CONTEXT turn that the brain did NOT already ground runs ONE
       // bounded read-only retrieval before the work call and carries its findings
       // into execution.
-      const requiredInvestigationOn = preflightRequiredInvestigationEnabled(
-        process.env,
-        mutableCtx.config,
-      );
+      const requiredInvestigationOn =
+        !semanticPreflightOn &&
+        preflightRequiredInvestigationEnabled(
+          process.env,
+          mutableCtx.config,
+        );
       // AGGREGATE PREFLIGHT-OVERHEAD GUARD flag (rank-10; core/router.ts
       // `preflightOverheadGuardEnabled`). DEFAULT OFF (opt-in): enabled only by an
       // explicit MYSHELL_PREFLIGHT_GUARD ∈ {1,true,on,yes} OR
@@ -4006,7 +4012,8 @@ Output ONLY valid JSON (no prose, no markdown).`;
       // every path is byte-identical to today (the OFF-GUARANTEE). When on, orchestrate
       // counts blocking pre-answer model calls and sheds the next avoidable optional
       // one when the count would exceed the turn-class budget.
-      const preflightGuardOn = preflightOverheadGuardEnabled(process.env, mutableCtx.config);
+      const preflightGuardOn =
+        !semanticPreflightOn && preflightOverheadGuardEnabled(process.env, mutableCtx.config);
       // The injected READ-ONLY retrieval port (grep/readFile + a native web search).
       // The web-search callback routes the cheapest authed provider with webSearch:true
       // (the subscription tool — no api key); both Claude (after the 3c allow-list) and

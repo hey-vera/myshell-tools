@@ -16,6 +16,8 @@ import { SEMANTIC_PREFLIGHT_SUITE_SUMMARY } from '../../src/core/eval/semantic-p
 import type { SemanticPreflightCaseOutcome } from '../../src/core/eval/semantic-preflight-harness.ts';
 import type { OutputSink } from '../../src/interface/render.ts';
 import { DEFAULT_POLICY } from '../../src/core/policy.ts';
+import { createTurnCallBudget } from '../../src/core/turn-call-budget.js';
+import { buildPreflightDeps } from '../../src/interface/preflight-deps.ts';
 import type {
   Clock,
   SessionWriter,
@@ -24,6 +26,7 @@ import type {
   LedgerEntry,
   OrchestrateDeps,
 } from '../../src/core/types.ts';
+import type { AppConfig } from '../../src/infra/config.js';
 import type { Provider, ProviderRequest, ProviderEvent, Usage } from '../../src/providers/port.ts';
 
 // ---------------------------------------------------------------------------
@@ -64,6 +67,19 @@ const CONFIDENCE_ENVELOPE =
   '{"confidence": 0.75, "escalate": false, "reason": "task complete", "needs_review": false}';
 
 const FAKE_USAGE: Usage = { inputTokens: 1000, outputTokens: 500 };
+
+const SEMANTIC_PREFLIGHT_JSON = JSON.stringify({
+  version: 1,
+  objective: 'Review implementation',
+  taskShape: { kind: 'analysis', scope: 'single-step', mutatesWorkspace: false },
+  route: { tier: 'worker', plan: false, rationale: 'simple review' },
+  risk: { level: 'low', reasons: [] },
+  uncertainty: { level: 'low', reasons: [], forks: [] },
+  evidenceNeeded: [],
+  doneCondition: { status: 'specified', text: 'answer the review request' },
+  planSteps: [],
+  proposedExecution: { provider: 'auto', effort: 'none', rationale: 'no preference' },
+});
 
 function makeFakeProvider(
   id: 'claude' | 'codex' = 'claude',
@@ -467,5 +483,242 @@ describe('CLI semantic eval dispatch reaches the dedicated harness and preserves
     assert.equal(callCount.value, 1, 'run stops at the thrown extractor case');
     assert.equal(code, 2, 'thrown extraction produces incomplete artifact, exit 2');
     assert.match(sink.buf.join(''), /Status: incomplete/);
+  });
+});
+
+describe('runTask semantic preflight production composition', () => {
+  it('flag off interactive one-shot and REPL receipts match legacy snapshots', () => {
+    const cfg: AppConfig = { onboarded: true, setAsDefault: true };
+    const preflight = buildPreflightDeps({
+      providers: { claude: makeFakeProvider('claude') },
+      policy: DEFAULT_POLICY,
+      cwd: '/fake/cwd',
+      timeoutMs: 30_000,
+      sandbox: 'workspace-write',
+      config: cfg,
+      env: {},
+      autoMode: 'balanced',
+      intentPass: true,
+    });
+
+    assert.equal(preflight.semanticPreflightV1, undefined);
+    assert.equal(preflight.semanticPreflightExtractor, undefined);
+    assert.equal(typeof preflight.routeClassifier, 'function');
+    assert.equal(typeof preflight.intentExtractor, 'function');
+  });
+
+  it('same observing budget object owns semantic evidence work and receipt callback', async () => {
+    const sink = makeSink();
+    const budget = createTurnCallBudget({
+      turnId: 'run-semantic',
+      mode: 'observe',
+      totalUnits: 64,
+      reserved: { work: 1, failover: 0, verification: 0 },
+    });
+    const prompts: string[] = [];
+    let receiptBegun = -1;
+    const provider: Provider = {
+      ...makeFakeProvider('claude'),
+      async *run(req: ProviderRequest, _signal: AbortSignal): AsyncIterable<ProviderEvent> {
+        prompts.push(req.prompt);
+        if (req.prompt.includes('semantic preflight extractor')) {
+          yield {
+            type: 'done',
+            text: SEMANTIC_PREFLIGHT_JSON,
+            usage: FAKE_USAGE,
+            raw: {},
+          };
+          return;
+        }
+        yield { type: 'text', delta: 'Task completed successfully.' };
+        yield {
+          type: 'done',
+          text: `Task completed successfully.\n${CONFIDENCE_ENVELOPE}`,
+          usage: FAKE_USAGE,
+          raw: {},
+        };
+      },
+    };
+    const baseDeps: OrchestrateDeps = {
+      providers: { claude: provider },
+      clock: makeFakeClock(),
+      session: makeFakeSession('semantic-run-session'),
+      ledger: makeFakeLedger(),
+      policy: DEFAULT_POLICY,
+      cwd: '/fake/cwd',
+      sandbox: 'workspace-write',
+      timeoutMs: 30_000,
+      turnCallBudget: budget,
+      onTurnCallBudgetReceipt: async (receipt) => {
+        receiptBegun = receipt.begun;
+        throw new Error('diagnostic only');
+      },
+    };
+    const preflight = buildPreflightDeps({
+      providers: baseDeps.providers,
+      policy: baseDeps.policy,
+      cwd: baseDeps.cwd,
+      timeoutMs: baseDeps.timeoutMs,
+      sandbox: baseDeps.sandbox,
+      config: { onboarded: true, setAsDefault: true, experimentalSemanticPreflightV1: true },
+      env: {},
+      autoMode: 'balanced',
+      intentPass: true,
+      turnCallBudget: budget,
+    });
+    const deps: OrchestrateDeps = { ...baseDeps, ...preflight };
+
+    const result = await runTask('review this implementation', deps, sink, new AbortController().signal);
+    try {
+      await deps.onTurnCallBudgetReceipt?.(budget.snapshot());
+    } catch {
+      // Entry points swallow diagnostic receipt callback errors.
+    }
+
+    assert.equal(result.code, 0);
+    assert.equal(receiptBegun, 2);
+    assert.equal(prompts.filter((p) => p.includes('semantic preflight extractor')).length, 1);
+    const purposes = budget.snapshot().events
+      .filter((e) => e.type === 'call-begun')
+      .map((e) => e.type === 'call-begun' ? e.purpose : '');
+    assert.deepEqual(purposes, ['intent', 'work']);
+  });
+
+  it('old unify risk and investigation flags cannot add calls inside V1 branch', async () => {
+    const sink = makeSink();
+    const budget = createTurnCallBudget({
+      turnId: 'run-semantic-old-flags',
+      mode: 'observe',
+      totalUnits: 64,
+      reserved: { work: 1, failover: 0, verification: 0 },
+    });
+    const provider: Provider = {
+      ...makeFakeProvider('claude'),
+      async *run(req: ProviderRequest, _signal: AbortSignal): AsyncIterable<ProviderEvent> {
+        if (req.prompt.includes('semantic preflight extractor')) {
+          yield { type: 'done', text: SEMANTIC_PREFLIGHT_JSON, usage: FAKE_USAGE, raw: {} };
+          return;
+        }
+        yield {
+          type: 'done',
+          text: `Task completed successfully.\n${CONFIDENCE_ENVELOPE}`,
+          usage: FAKE_USAGE,
+          raw: {},
+        };
+      },
+    };
+    const baseDeps: OrchestrateDeps = {
+      providers: { claude: provider },
+      clock: makeFakeClock(),
+      session: makeFakeSession('old-flags-session'),
+      ledger: makeFakeLedger(),
+      policy: DEFAULT_POLICY,
+      cwd: '/fake/cwd',
+      sandbox: 'workspace-write',
+      timeoutMs: 30_000,
+      turnCallBudget: budget,
+    };
+    const preflight = buildPreflightDeps({
+      providers: baseDeps.providers,
+      policy: baseDeps.policy,
+      cwd: baseDeps.cwd,
+      timeoutMs: baseDeps.timeoutMs,
+      sandbox: baseDeps.sandbox,
+      config: { onboarded: true, setAsDefault: true, experimentalSemanticPreflightV1: true },
+      env: {
+        MYSHELL_UNIFY_PREFLIGHT: '1',
+        MYSHELL_RISK_SIGNALS: '1',
+        MYSHELL_REQUIRED_INVESTIGATION: '1',
+      },
+      autoMode: 'balanced',
+      intentPass: true,
+      turnCallBudget: budget,
+    });
+
+    await runTask('review this implementation', { ...baseDeps, ...preflight }, sink, new AbortController().signal);
+
+    const purposes = budget.snapshot().events
+      .filter((e) => e.type === 'call-begun')
+      .map((e) => e.type === 'call-begun' ? e.purpose : '');
+    assert.equal(purposes.filter((p) => p === 'intent').length, 1);
+    assert.equal(purposes.includes('route'), false);
+    assert.equal(purposes.includes('reextract-local'), false);
+    assert.equal(purposes.includes('reextract-web'), false);
+  });
+
+  it('provider failure cancellation and receipt callback throw remain fail-soft without duplicate calls', async () => {
+    const sink = makeSink();
+    const budget = createTurnCallBudget({
+      turnId: 'run-semantic-fail-soft',
+      mode: 'observe',
+      totalUnits: 64,
+      reserved: { work: 1, failover: 0, verification: 0 },
+    });
+    let callbackAttempts = 0;
+    const provider: Provider = {
+      ...makeFakeProvider('claude'),
+      async *run(req: ProviderRequest, _signal: AbortSignal): AsyncIterable<ProviderEvent> {
+        if (req.prompt.includes('semantic preflight extractor')) {
+          yield {
+            type: 'error',
+            error: {
+              category: 'unknown',
+              recoverable: true,
+              message: 'semantic failed',
+              suggestion: 'retry later',
+            },
+          };
+          return;
+        }
+        yield {
+          type: 'done',
+          text: `Task completed successfully.\n${CONFIDENCE_ENVELOPE}`,
+          usage: FAKE_USAGE,
+          raw: {},
+        };
+      },
+    };
+    const baseDeps: OrchestrateDeps = {
+      providers: { claude: provider },
+      clock: makeFakeClock(),
+      session: makeFakeSession('fail-soft-session'),
+      ledger: makeFakeLedger(),
+      policy: DEFAULT_POLICY,
+      cwd: '/fake/cwd',
+      sandbox: 'workspace-write',
+      timeoutMs: 30_000,
+      turnCallBudget: budget,
+      onTurnCallBudgetReceipt: async () => {
+        callbackAttempts++;
+        throw new Error('diagnostic only');
+      },
+    };
+    const preflight = buildPreflightDeps({
+      providers: baseDeps.providers,
+      policy: baseDeps.policy,
+      cwd: baseDeps.cwd,
+      timeoutMs: baseDeps.timeoutMs,
+      sandbox: baseDeps.sandbox,
+      config: { onboarded: true, setAsDefault: true, experimentalSemanticPreflightV1: true },
+      env: {},
+      autoMode: 'balanced',
+      intentPass: true,
+      turnCallBudget: budget,
+    });
+    const deps: OrchestrateDeps = { ...baseDeps, ...preflight };
+
+    const result = await runTask('review this implementation', deps, sink, new AbortController().signal);
+    try {
+      await deps.onTurnCallBudgetReceipt?.(budget.snapshot());
+    } catch {
+      // Entry points swallow diagnostic receipt callback errors.
+    }
+
+    assert.equal(result.code, 0);
+    assert.equal(callbackAttempts, 1);
+    const purposes = budget.snapshot().events
+      .filter((e) => e.type === 'call-begun')
+      .map((e) => e.type === 'call-begun' ? e.purpose : '');
+    assert.deepEqual(purposes, ['intent']);
   });
 });

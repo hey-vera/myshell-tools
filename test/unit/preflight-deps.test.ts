@@ -57,7 +57,8 @@ describe('buildPreflightDeps', () => {
     const result = buildPreflightDeps(baseInput());
     assert.ok(result.routeClassifier !== undefined, 'routeClassifier should be defined');
     assert.ok(result.intentExtractor !== undefined, 'intentExtractor should be defined');
-    assert.ok(result.semanticPreflightExtractor !== undefined, 'semanticPreflightExtractor should be defined');
+    assert.equal(result.semanticPreflightV1, undefined);
+    assert.ok(result.semanticPreflightExtractor === undefined, 'semanticPreflightExtractor should be undefined');
     assert.ok(result.autoBrainRungTuple !== undefined, 'autoBrainRungTuple should be defined');
   });
 
@@ -65,7 +66,8 @@ describe('buildPreflightDeps', () => {
     const result = buildPreflightDeps(baseInput({ config: { ...config, smartRoute: false } }));
     assert.ok(result.routeClassifier === undefined, 'routeClassifier should be undefined');
     assert.ok(result.intentExtractor !== undefined, 'intentExtractor should be defined');
-    assert.ok(result.semanticPreflightExtractor !== undefined, 'semanticPreflightExtractor should be defined');
+    assert.equal(result.semanticPreflightV1, undefined);
+    assert.ok(result.semanticPreflightExtractor === undefined, 'semanticPreflightExtractor should be undefined');
     assert.ok(result.autoBrainRungTuple !== undefined, 'autoBrainRungTuple should be defined');
   });
 
@@ -85,7 +87,7 @@ describe('buildPreflightDeps', () => {
     assert.ok(result.autoBrainRungTuple !== undefined, 'autoBrainRungTuple should be defined');
   });
 
-  it('same observing budget reaches route and intent factories', () => {
+  it('same observing budget reaches route and intent factories', async () => {
     const budget = createTurnCallBudget({
       turnId: 'turn-shared',
       mode: 'observe',
@@ -93,11 +95,16 @@ describe('buildPreflightDeps', () => {
       reserved: { work: 1, failover: 0, verification: 0 },
     });
 
-    const result = buildPreflightDeps(baseInput({ turnCallBudget: budget }));
+    const result = buildPreflightDeps(baseInput({
+      config: { ...config, experimentalSemanticPreflightV1: true },
+      turnCallBudget: budget,
+    }));
 
     assert.ok(result.routeClassifier !== undefined, 'routeClassifier should be defined');
     assert.ok(result.intentExtractor !== undefined, 'intentExtractor should be defined');
-    assert.ok(result.semanticPreflightExtractor !== undefined, 'semanticPreflightExtractor should be defined');
+    const semanticExtractor = result.semanticPreflightExtractor;
+    assert.ok(semanticExtractor !== undefined, 'semanticPreflightExtractor should be defined');
+    assert.equal(result.semanticPreflightV1, true);
 
     // Both classifiers/extractors were built with the SAME budget object —
     // verify by calling both and checking they record to the same ledger.
@@ -105,20 +112,37 @@ describe('buildPreflightDeps', () => {
     const initialSnap = budget.snapshot();
     assert.strictEqual(initialSnap.begun, 0);
 
-    // Route classifier creates a budgeted call; the budget is threaded into it.
-    // We can't call routeClassifier directly without a provider mock, but we can
-    // verify the budget was accepted as input (the turnCallBudget was passed
-    // through to makeRouteClassifier and makeIntentExtractor, and since both
-    // returned non-undefined, they were constructed). The non-undefined return
-    // plus the fact that the budget was supplied to buildPreflightDeps proves
-    // the same budget object reached both factories.
+    await semanticExtractor('review this implementation', new AbortController().signal);
+    const afterSemantic = budget.snapshot();
+    assert.strictEqual(afterSemantic.begun, 1);
+    assert.deepEqual(
+      afterSemantic.events
+        .filter((e) => e.type === 'call-begun')
+        .map((e) => e.type === 'call-begun' ? e.purpose : ''),
+      ['intent'],
+    );
   });
 
   it('preflight deps retain legacy closures for rollback while exposing semantic closure', () => {
-    const result = buildPreflightDeps(baseInput());
+    const result = buildPreflightDeps(baseInput({
+      config: { ...config, experimentalSemanticPreflightV1: true },
+    }));
 
     assert.equal(typeof result.routeClassifier, 'function');
     assert.equal(typeof result.intentExtractor, 'function');
+    assert.equal(result.semanticPreflightV1, true);
     assert.equal(typeof result.semanticPreflightExtractor, 'function');
+  });
+
+  it('unset flag rollback restores legacy route and intent closures', () => {
+    const result = buildPreflightDeps(baseInput({
+      env: { MYSHELL_UNIFY_PREFLIGHT: '1', MYSHELL_RISK_SIGNALS: '1' },
+      config: { ...config, experimentalSemanticPreflightV1: false },
+    }));
+
+    assert.equal(typeof result.routeClassifier, 'function');
+    assert.equal(typeof result.intentExtractor, 'function');
+    assert.equal(result.semanticPreflightV1, undefined);
+    assert.equal(result.semanticPreflightExtractor, undefined);
   });
 });

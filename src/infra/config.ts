@@ -374,6 +374,14 @@ export interface AppConfig {
    */
   experimentalPreflightGuard?: boolean;
   /**
+   * DARK SEMANTIC PREFLIGHT V1 (default off). When true (or with
+   * `MYSHELL_SEMANTIC_PREFLIGHT_V1` in {1,true,on,yes}), entry points compose the
+   * complete Item-8 semantic/evidence path and set OrchestrateDeps
+   * semanticPreflightV1 for that turn. Absent/false preserves the legacy
+   * route/intent preflight path exactly.
+   */
+  experimentalSemanticPreflightV1?: boolean;
+  /**
    * EXPERIMENTAL RIVAL TRIBUNAL (default off; master-plan PHASE 9). When true (or with
    * `MYSHELL_TRIBUNAL` truthy in the environment), a genuine load-bearing IMPLEMENTATION
    * fork with ≥2 distinct authed vendors may be settled by a build-off: each vendor

@@ -17,6 +17,7 @@ import { helperSandbox } from '../infra/sandbox.js';
 import { experimentalEnabledByDefault } from './ui/experimental-default.js';
 import { byproductFallbackEnabled } from './ui/byproduct-fallback-flag.js';
 import { autoBrainEnabled } from './ui/auto-brain-flag.js';
+import { semanticPreflightV1Enabled } from './ui/semantic-preflight-flag.js';
 import type { Mode } from '../core/policy.js';
 
 export interface BuildPreflightDepsInput {
@@ -42,7 +43,10 @@ export interface BuildPreflightDepsInput {
 
 export function buildPreflightDeps(
   input: BuildPreflightDepsInput,
-): Pick<OrchestrateDeps, 'routeClassifier' | 'intentExtractor' | 'semanticPreflightExtractor' | 'autoBrainRungTuple'> {
+): Pick<
+  OrchestrateDeps,
+  'routeClassifier' | 'intentExtractor' | 'semanticPreflightV1' | 'semanticPreflightExtractor' | 'autoBrainRungTuple'
+> {
   const { providers, policy, cwd, timeoutMs, sandbox, availableModels, authenticatedProviders } = input;
   const { config, env, autoMode, intentPass } = input;
   const { accountAux, ledger, clock, sessionId, cacheAccountingV2 } = input;
@@ -110,31 +114,45 @@ export function buildPreflightDeps(
   // Semantic preflight extractor — dark Item-8 path. This is exposed alongside
   // the legacy closures for rollback; orchestrate reads it only when its
   // semanticPreflightV1 test seam is explicitly true.
+  const semanticPreflightOn = semanticPreflightV1Enabled(env, config);
+  const semanticPreflightBaseDeps = {
+    providers,
+    policy,
+    cwd,
+    timeoutMs: Math.min(timeoutMs, INTENT_TIMEOUT_MS),
+    sandbox: helperSandbox(sandbox),
+    ...(availableModels !== undefined && Object.keys(availableModels).length > 0
+      ? { availableModels }
+      : {}),
+    ...(authenticatedProviders !== undefined && authenticatedProviders.length > 0
+      ? { authenticatedProviders }
+      : {}),
+    ...(accountAux
+      ? {
+          accountAux: true,
+          ledger,
+          clock,
+          sessionId,
+          ...(cacheAccountingV2 ? { cacheAccountingV2: true } : {}),
+        }
+      : {}),
+  } as const;
   const semanticPreflightExtractor =
-    config.intentEngine !== false && intentPass !== false
-      ? makeSemanticPreflightExtractor({
-          providers,
-          policy,
-          cwd,
-          timeoutMs: Math.min(timeoutMs, INTENT_TIMEOUT_MS),
-          sandbox: helperSandbox(sandbox),
-          ...(availableModels !== undefined && Object.keys(availableModels).length > 0
-            ? { availableModels }
-            : {}),
-          ...(authenticatedProviders !== undefined && authenticatedProviders.length > 0
-            ? { authenticatedProviders }
-            : {}),
-          ...(accountAux
-            ? {
-                accountAux: true,
-                ledger,
-                clock,
-                sessionId,
-                ...(cacheAccountingV2 ? { cacheAccountingV2: true } : {}),
-              }
-            : {}),
-          ...(turnCallBudget !== undefined ? { turnCallBudget } : {}),
-        })
+    semanticPreflightOn
+      ? function semanticPreflightExtractor(
+          this: Pick<OrchestrateDeps, 'turnCallBudget'> | undefined,
+          task: string,
+          signal: AbortSignal,
+        ) {
+          return makeSemanticPreflightExtractor({
+            ...semanticPreflightBaseDeps,
+            ...(this?.turnCallBudget !== undefined
+              ? { turnCallBudget: this.turnCallBudget }
+              : turnCallBudget !== undefined
+                ? { turnCallBudget }
+                : {}),
+          })(task, signal);
+        }
       : undefined;
 
   // Auto brain — rung-fusion from intent byproduct + classify + memory bias.
@@ -156,6 +174,7 @@ export function buildPreflightDeps(
   return {
     ...(routeClassifier !== undefined ? { routeClassifier } : {}),
     ...(intentExtractor !== undefined ? { intentExtractor } : {}),
+    ...(semanticPreflightOn ? { semanticPreflightV1: true } : {}),
     ...(semanticPreflightExtractor !== undefined ? { semanticPreflightExtractor } : {}),
     ...(autoBrainRungTuple !== undefined ? { autoBrainRungTuple } : {}),
   };
