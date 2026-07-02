@@ -38,7 +38,9 @@ import {
   type DimensionDelta,
 } from '../../src/core/eval/scorecard.ts';
 import type { EvalClass } from '../../src/core/eval/suite.ts';
-import { parseEvalArgs } from '../../src/commands/eval.ts';
+import { parseEvalArgs, runEvalCommand } from '../../src/commands/eval.ts';
+import { SEMANTIC_PREFLIGHT_SUITE_SUMMARY } from '../../src/core/eval/semantic-preflight-suite.ts';
+import type { SemanticPreflightCaseOutcome } from '../../src/core/eval/semantic-preflight-harness.ts';
 import type { CoreEvent } from '../../src/core/types.ts';
 import type { Provider, ProviderEvent, ProviderRequest } from '../../src/providers/port.ts';
 
@@ -636,9 +638,105 @@ describe('eval Baseline-A runner — deterministic Phase 6 run with golden trans
 
 describe('eval command — arg parsing + opt-in gate', () => {
   it('parses --compare, --yes, and -y', () => {
-    assert.deepEqual(parseEvalArgs(['--compare']), { compare: true, yes: false });
-    assert.deepEqual(parseEvalArgs(['--yes']), { compare: false, yes: true });
-    assert.deepEqual(parseEvalArgs(['-y']), { compare: false, yes: true });
-    assert.deepEqual(parseEvalArgs([]), { compare: false, yes: false });
+    assert.deepEqual(parseEvalArgs(['--compare']), { compare: true, yes: false, semanticPreflight: false });
+    assert.deepEqual(parseEvalArgs(['--yes']), { compare: false, yes: true, semanticPreflight: false });
+    assert.deepEqual(parseEvalArgs(['-y']), { compare: false, yes: true, semanticPreflight: false });
+    assert.deepEqual(parseEvalArgs([]), { compare: false, yes: false, semanticPreflight: false });
+  });
+
+  it('parses --semantic-preflight, --engine, and --output', () => {
+    assert.deepEqual(parseEvalArgs(['--semantic-preflight']), { compare: false, yes: false, semanticPreflight: true });
+    assert.deepEqual(parseEvalArgs(['--semantic-preflight', '--engine=semantic-v1']), { compare: false, yes: false, semanticPreflight: true, engine: 'semantic-v1' });
+    assert.deepEqual(parseEvalArgs(['--semantic-preflight', '--engine=legacy-intent']), { compare: false, yes: false, semanticPreflight: true, engine: 'legacy-intent' });
+    assert.deepEqual(parseEvalArgs(['--semantic-preflight', '--engine=bogus']), { compare: false, yes: false, semanticPreflight: true, invalidEngine: 'bogus' });
+    assert.deepEqual(parseEvalArgs(['--semantic-preflight', '--output=.tmp/out.json']), { compare: false, yes: false, semanticPreflight: true, output: '.tmp/out.json' });
+    assert.deepEqual(parseEvalArgs(['--semantic-preflight', '--engine=semantic-v1', '--output=.tmp/out.json', '--yes']), { compare: false, yes: true, semanticPreflight: true, engine: 'semantic-v1', output: '.tmp/out.json' });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Semantic-preflight eval command tests (P1-08d)
+// ---------------------------------------------------------------------------
+
+function makeSink(): { buf: string[]; write(s: string): void; color: false; isTty: false } {
+  const buf: string[] = [];
+  return { buf, write: (s: string) => { buf.push(s); }, color: false, isTty: false };
+}
+
+function makeFakeSemanticExtractor(
+  callCount: { value: number },
+): (task: string, signal: AbortSignal) => Promise<Omit<SemanticPreflightCaseOutcome, 'caseId'>> {
+  return async (_task, _signal) => {
+    callCount.value++;
+    return {
+      disposition: 'run' as const,
+      semantic: null,
+      ms: 10,
+      receipt: undefined,
+      error: undefined,
+    };
+  };
+}
+
+describe('eval command — semantic-preflight dry-run', () => {
+  it('command without yes opens zero provider streams', async () => {
+    const sink = makeSink();
+    const callCount = { value: 0 };
+    const fakeExtractor = makeFakeSemanticExtractor(callCount);
+
+    const code = await runEvalCommand(
+      ['--semantic-preflight', '--engine=semantic-v1'],
+      {
+        cwd: '/fake',
+        version: '0.0.0',
+        nowIso: () => '2026-07-02T00:00:00.000Z',
+        providers: {},
+        policy: undefined as never,
+        timeoutMs: 1000,
+        authenticatedProviders: [],
+        makeDeps: () => {
+          throw new Error('should not be called');
+        },
+        semanticPreflightExtractor: fakeExtractor,
+      },
+      sink,
+      new AbortController().signal,
+    );
+
+    assert.equal(code, 0, 'dry-run should exit 0');
+    assert.equal(callCount.value, 0, 'dry-run must open zero provider streams');
+    const output = sink.buf.join('');
+    const total = SEMANTIC_PREFLIGHT_SUITE_SUMMARY.totalCount;
+    assert.ok(output.includes(String(total)), `output must include max call count ${total}`);
+    assert.ok(output.includes('--yes'), 'output must mention --yes');
+  });
+
+  it('invalid semantic-preflight engine exits before opening provider streams', async () => {
+    const sink = makeSink();
+    const callCount = { value: 0 };
+    const fakeExtractor = makeFakeSemanticExtractor(callCount);
+
+    const code = await runEvalCommand(
+      ['--semantic-preflight', '--engine=bogus', '--yes'],
+      {
+        cwd: '/fake',
+        version: '0.0.0',
+        nowIso: () => '2026-07-02T00:00:00.000Z',
+        providers: {},
+        policy: undefined as never,
+        timeoutMs: 1000,
+        authenticatedProviders: [],
+        makeDeps: () => {
+          throw new Error('should not be called');
+        },
+        semanticPreflightExtractor: fakeExtractor,
+      },
+      sink,
+      new AbortController().signal,
+    );
+
+    assert.equal(code, 1);
+    assert.equal(callCount.value, 0);
+    assert.match(sink.buf.join(''), /Invalid --engine=bogus/);
   });
 });

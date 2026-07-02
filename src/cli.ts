@@ -78,6 +78,12 @@ import { isPricingStale } from './infra/pricing.js';
 import { runDoctor } from './commands/doctor.js';
 import { runCost } from './commands/cost.js';
 import { runEvalCommand } from './commands/eval.js';
+import type { SemanticPreflightCaseOutcome } from './core/eval/semantic-preflight-harness.js';
+import { classify } from './core/classify.js';
+import { makeIntentExtractor } from './core/intent-extractor.js';
+import { maxRisk, fallbackSemanticPreflight } from './core/semantic-preflight.js';
+import { normalizeExtraction } from './core/intent.js';
+import { makeSemanticPreflightExtractor } from './core/semantic-preflight-extractor.js';
 import { runMemoryCli } from './commands/memory.js';
 import { defaultLoginRunner, loginExitCode } from './commands/login.js';
 import { runInstall, isHookInstalled, ensureReplitShellHook } from './commands/install.js';
@@ -190,6 +196,22 @@ function createCliCommandGate(cwd: string, out: OutputSink, interactive: boolean
       : {}),
     record: (event) => audit.record(event),
   };
+}
+
+async function resolveEvalCommit(cwd: string): Promise<string> {
+  const envCommit = process.env['GITHUB_SHA'] ?? process.env['MYSHELL_COMMIT'];
+  if (envCommit !== undefined && envCommit.trim().length > 0) return envCommit.trim();
+  try {
+    const result = await execa('git', ['rev-parse', 'HEAD'], {
+      cwd,
+      reject: false,
+    });
+    const commit = result.stdout.trim();
+    if (result.exitCode === 0 && commit.length > 0) return commit;
+  } catch {
+    // Artifact metadata is diagnostic; eval should remain fail-soft if git is absent.
+  }
+  return 'unknown';
 }
 
 const HELP = `\
@@ -554,6 +576,32 @@ async function main(): Promise<void> {
         ),
       );
     }
+    // `--semantic-preflight` without `--yes` is a dry-run — zero provider calls.
+    if (
+      evalArgs.includes('--semantic-preflight') &&
+      !evalArgs.includes('--yes') &&
+      !evalArgs.includes('-y')
+    ) {
+      process.exit(
+        await runEvalCommand(
+          evalArgs,
+          {
+            cwd,
+            version,
+            nowIso: () => systemClock.isoNow(),
+            providers: {},
+            policy: DEFAULT_POLICY,
+            timeoutMs: DEFAULT_TIMEOUT_MS,
+            authenticatedProviders: [],
+            makeDeps: () => {
+              throw new Error('semantic-preflight dry-run does not run prompts');
+            },
+          },
+          out,
+          new AbortController().signal,
+        ),
+      );
+    }
     const [env, config] = await Promise.all([detectEnvironment(), loadConfig()]);
     const resolvedMode = config.mode ?? autoModeForPlans(
       [env.claude, env.codex, env.opencode, env.grok]
@@ -572,6 +620,165 @@ async function main(): Promise<void> {
     if (env.codex.installed && env.codex.availableModels.length > 0) availableModels['codex'] = env.codex.availableModels;
     if (env.opencode.installed && env.opencode.availableModels.length > 0) availableModels['opencode'] = env.opencode.availableModels;
     if (env.grok.installed && env.grok.availableModels.length > 0) availableModels['grok'] = env.grok.availableModels;
+
+    // --semantic-preflight with --yes: construct the real extractor and wire it
+    let semanticPreflightEvalExtractor:
+      | ((task: string, signal: AbortSignal) => Promise<Omit<SemanticPreflightCaseOutcome, 'caseId'>>)
+      | undefined;
+    if (evalArgs.includes('--semantic-preflight')) {
+      const engineArg = evalArgs.find((a) => a.startsWith('--engine='));
+      const semanticEvalEngine = engineArg?.slice('--engine='.length) ?? 'semantic-v1';
+      const evalTimeoutMs = resolveTimeoutMs(config);
+      const baseDeps = buildDeps(cwd, env, policy, evalTimeoutMs);
+
+      semanticPreflightEvalExtractor = async (task, signal) => {
+        const started = Date.now();
+        const evalAuthCount = [
+          env.claude,
+          env.codex,
+          env.opencode,
+          env.grok,
+        ].filter((p) => p.authenticated).length;
+        const evalBudget = createTurnCallBudget({
+          turnId: systemClock.uuid(),
+          mode: 'observe',
+          totalUnits: 64,
+          reserved: {
+            work: 1,
+            failover: evalAuthCount >= 2 ? 1 : 0,
+            verification: 0,
+          },
+        });
+        try {
+          if (semanticEvalEngine === 'legacy-intent') {
+            const legacyExtractor = makeIntentExtractor({
+              providers: baseDeps.providers,
+              policy: baseDeps.policy,
+              cwd: baseDeps.cwd,
+              timeoutMs: evalTimeoutMs,
+              sandbox: baseDeps.sandbox,
+              ...(baseDeps.availableModels !== undefined
+                ? { availableModels: baseDeps.availableModels }
+                : {}),
+              ...(baseDeps.authenticatedProviders !== undefined
+                ? { authenticatedProviders: baseDeps.authenticatedProviders }
+                : {}),
+              ...(baseDeps.accountAux === true
+                ? {
+                    accountAux: true,
+                    ledger: baseDeps.ledger,
+                    clock: baseDeps.clock,
+                    sessionId: baseDeps.session.id,
+                    ...(baseDeps.cacheAccountingV2 === true ? { cacheAccountingV2: true } : {}),
+                  }
+                : {}),
+              turnCallBudget: evalBudget,
+            });
+            const extraction = normalizeExtraction(await legacyExtractor(task, signal));
+            const ms = Date.now() - started;
+            const deterministic = classify(task);
+            const fallback = fallbackSemanticPreflight(task, deterministic);
+            if (extraction.frame === null) {
+              return {
+                disposition: 'run' as const,
+                semantic: null,
+                ms,
+                receipt: evalBudget.snapshot(),
+                error: 'legacy intent extraction returned null',
+              };
+            }
+            const frame = extraction.frame;
+            return {
+              disposition: 'run' as const,
+              semantic: {
+                ...fallback,
+                objective: frame.goal,
+                route: {
+                  ...fallback.route,
+                  tier: frame.routeTier ?? fallback.route.tier,
+                  plan: frame.routePlan ?? false,
+                  rationale: 'legacy intent baseline projection',
+                },
+                risk: {
+                  level: maxRisk(
+                    deterministic.risk,
+                    maxRisk(frame.operationRisk ?? 'low', frame.blastRadius ?? 'low'),
+                  ),
+                  reasons: [],
+                },
+                uncertainty: {
+                  level: frame.confidence === 'high' ? 'low' : frame.confidence,
+                  reasons: [],
+                  forks: frame.forks ?? [],
+                },
+                doneCondition:
+                  frame.doneWhen !== undefined && frame.doneWhen.trim().length > 0
+                    ? { status: 'specified' as const, text: frame.doneWhen }
+                    : fallback.doneCondition,
+                source: frame.source === 'model' ? 'model' as const : 'rules-fallback' as const,
+              },
+              ms,
+              receipt: evalBudget.snapshot(),
+              error: undefined,
+            };
+          }
+
+          const realExtractor = makeSemanticPreflightExtractor({
+            providers: baseDeps.providers,
+            policy: baseDeps.policy,
+            cwd: baseDeps.cwd,
+            timeoutMs: evalTimeoutMs,
+            sandbox: baseDeps.sandbox,
+            ...(baseDeps.availableModels !== undefined
+              ? { availableModels: baseDeps.availableModels }
+              : {}),
+            ...(baseDeps.authenticatedProviders !== undefined
+              ? { authenticatedProviders: baseDeps.authenticatedProviders }
+              : {}),
+            ...(baseDeps.accountAux === true
+              ? {
+                  accountAux: true,
+                  ledger: baseDeps.ledger,
+                  clock: baseDeps.clock,
+                  sessionId: baseDeps.session.id,
+                  ...(baseDeps.cacheAccountingV2 === true ? { cacheAccountingV2: true } : {}),
+                }
+              : {}),
+            turnCallBudget: evalBudget,
+          });
+          const extraction = await realExtractor(task, signal);
+          const ms = Date.now() - started;
+          if (extraction === null) {
+            return {
+              disposition: 'run' as const,
+              semantic: null,
+              ms,
+              receipt: evalBudget.snapshot(),
+              error: 'extraction returned null',
+            };
+          }
+          return {
+            disposition: 'run' as const,
+            semantic: extraction.result,
+            ms,
+            receipt: evalBudget.snapshot(),
+            error: undefined,
+          };
+        } catch (err) {
+          const ms = Date.now() - started;
+          const msg = err instanceof Error ? err.message : String(err);
+          return {
+            disposition: 'run' as const,
+            semantic: null,
+            ms,
+            receipt: evalBudget.snapshot(),
+            error: msg,
+          };
+        }
+      };
+    }
+
+    const evalCommit = await resolveEvalCommit(cwd);
     const code = await runEvalCommand(
       evalArgs,
       {
@@ -583,9 +790,13 @@ async function main(): Promise<void> {
         timeoutMs: resolveTimeoutMs(config),
         sandbox: helperSandbox(sandboxForEnvironment('workspace-write')),
         authenticatedProviders,
+        commit: evalCommit,
         ...(Object.keys(availableModels).length > 0 ? { availableModels } : {}),
         // Fresh deps per prompt — same real answer path the `run` subcommand uses.
         makeDeps: () => buildDeps(cwd, env, policy, resolveTimeoutMs(config)),
+        ...(semanticPreflightEvalExtractor !== undefined
+          ? { semanticPreflightExtractor: semanticPreflightEvalExtractor }
+          : {}),
       },
       out,
       new AbortController().signal,
