@@ -5,6 +5,7 @@ import {
   decideEvidenceInvestigation,
   type EvidenceCapabilities,
   type EvidenceObservation,
+  type EvidenceReceiptV1,
 } from '../../src/core/evidence-investigation.ts';
 import type { EvidenceNeed, SemanticPreflightV1 } from '../../src/core/semantic-preflight.ts';
 
@@ -175,6 +176,42 @@ describe('decideEvidenceInvestigation', () => {
     );
     assert.equal(decision.beforeWork, 'web');
     assert.equal(decision.mayStartWork, false);
+  });
+
+  it('structured receipts remain separate observation data', () => {
+    const local = need({ id: 'L1', kind: 'local-code', phase: 'before-execution' });
+    const failedReceipt: EvidenceReceiptV1 = {
+      version: 1,
+      needId: 'L1',
+      kind: 'local-code',
+      status: 'failed',
+      query: 'inspect auth',
+      pathsLocated: ['auth.ts'],
+      pathsRead: ['auth.ts'],
+      renderedContext: 'partial context',
+    };
+    const obtainedReceipt: EvidenceReceiptV1 = {
+      ...failedReceipt,
+      status: 'obtained',
+    };
+
+    const blocked = decideEvidenceInvestigation(
+      'inspect the auth module',
+      semantic({ evidenceNeeded: [local] }),
+      ALL_CAPS,
+      [failedReceipt],
+    );
+    assert.equal(blocked.beforeWork, 'local');
+    assert.equal(blocked.mayStartWork, false);
+
+    const allowed = decideEvidenceInvestigation(
+      'inspect the auth module',
+      semantic({ evidenceNeeded: [local] }),
+      ALL_CAPS,
+      [obtainedReceipt],
+    );
+    assert.equal(allowed.beforeWork, 'none');
+    assert.equal(allowed.mayStartWork, true);
   });
 
   it('obtained matching observation clears only its required pre-work need', () => {
