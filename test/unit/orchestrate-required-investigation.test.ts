@@ -176,6 +176,19 @@ describe('rank-9 S5 — OFF path is byte-identical', () => {
     );
     assert.equal(port.grepCalls + port.readCalls, 0, 'OFF: no retrieval call');
   });
+
+  it('legacy required-investigation and grounded-recommendation suites remain unchanged off', async () => {
+    const port = findingsPort('auth module uses tokens');
+    const deps = baseDeps({
+      intentExtractor: extractorReturning(modelFrame()),
+      researchPort: port,
+      requiredInvestigation: true,
+      semanticPreflightV1: false,
+    });
+    await collect(orchestrate(INVESTIGATE_TASK, deps, new AbortController().signal));
+    assert.equal(port.readCalls, 1, 'legacy required-investigation still runs with semantic gate off');
+    assert.match(workPrompt(deps), /LOCAL INVESTIGATION/);
+  });
 });
 
 // ── ON + LOCAL + NOT GROUNDED ────────────────────────────────────────────────

@@ -29,6 +29,8 @@ import type { IntentFrame } from './intent.js';
 import type { EngagementPlan, EngagementSignals } from './engagement.js';
 import { deriveAskFromForks, hasGenuineFork, isTrivial } from './engagement.js';
 import type { WorkStateSnapshot } from './work-state.js';
+import type { EvidenceNeed, SemanticTaskKind } from './semantic-preflight.js';
+import type { EvidenceReceiptV1 } from './evidence-investigation.js';
 import { isLegacyEngineEntry } from './engine-version.js';
 import {
   triageVision,
@@ -56,7 +58,8 @@ import {
  */
 type OutputValidator =
   | { readonly kind: 'reject_generic_open_menu' }
-  | { readonly kind: 'require_grounded_recommendation' };
+  | { readonly kind: 'require_grounded_recommendation' }
+  | { readonly kind: 'require_observed_grounding' };
 
 /**
  * The kinds of grounding that make a recommendation honest (§2.6 E). A substantial
@@ -160,6 +163,8 @@ export interface TurnDirective {
    * slice; `'none'` means no enforced retrieval this turn.
    */
   readonly requiredInvestigation?: 'local' | 'web' | 'none';
+  readonly evidenceObligations?: readonly EvidenceNeed[];
+  readonly evidenceReceipts?: readonly EvidenceReceiptV1[];
 }
 
 /** Inputs to {@link compileTurnDirective}. PURE — no model call, no I/O. */
@@ -212,6 +217,9 @@ export interface CompileDirectiveInput {
    * byte-identical to today.
    */
   readonly requiredInvestigationEnabled?: boolean;
+  readonly evidenceObligations?: readonly EvidenceNeed[];
+  readonly evidenceReceipts?: readonly EvidenceReceiptV1[];
+  readonly semanticTaskKind?: SemanticTaskKind;
 }
 
 // ---------------------------------------------------------------------------
@@ -405,7 +413,11 @@ export function detectGrounding(text: string): RecommendationGrounding | null {
 // ---------------------------------------------------------------------------
 
 export interface ValidationFailure {
-  readonly kind: 'generic_open_menu' | 'ungrounded_recommendation' | 'missing_required_question';
+  readonly kind:
+    | 'generic_open_menu'
+    | 'ungrounded_recommendation'
+    | 'missing_required_question'
+    | 'unobserved_grounding';
   readonly severity: 'repair' | 'retry' | 'fail';
   readonly reason: string;
 }
@@ -444,6 +456,10 @@ export function validateTurnOutput(
       const failure = checkGroundedRecommendation(text);
       if (failure !== null) return failure;
     }
+    if (validator.kind === 'require_observed_grounding') {
+      const failure = checkObservedGrounding(text, directive.evidenceReceipts ?? []);
+      if (failure !== null) return failure;
+    }
   }
   return null;
 }
@@ -458,6 +474,98 @@ export function validateTurnOutput(
  * valid grounding (detectGrounding returns `not_enough_context`), so such an
  * answer PASSES. Returns the failure, or `null` when the answer is acceptable.
  */
+function hasUnverifiedSentence(text: string): boolean {
+  return /(?:^|[.!?]\s+)Unverified:/m.test(text.trim());
+}
+
+function normalizePath(path: string): string {
+  return path.replace(/\\/g, '/').replace(/:\d+$/, '').toLowerCase();
+}
+
+function observedLocalPaths(receipts: readonly EvidenceReceiptV1[]): ReadonlySet<string> {
+  const out = new Set<string>();
+  for (const receipt of receipts) {
+    if (receipt.kind !== 'local-code' || receipt.status !== 'obtained') continue;
+    for (const path of receipt.pathsRead) out.add(normalizePath(path));
+  }
+  return out;
+}
+
+function sourceTextObserved(text: string, receipts: readonly EvidenceReceiptV1[]): boolean {
+  const lower = text.toLowerCase();
+  for (const receipt of receipts) {
+    if (receipt.kind !== 'external-source' || receipt.status !== 'obtained') continue;
+    const source = receipt.sourceText.trim();
+    if (source.length === 0) continue;
+    const urls = source.match(/https?:\/\/\S+/gi) ?? [];
+    if (urls.some((url) => lower.includes(url.toLowerCase()))) return true;
+    const phrases = source
+      .split(/[.;\n]/)
+      .map((s) => s.trim())
+      .filter((s) => s.length >= 16)
+      .slice(0, 8);
+    if (phrases.some((phrase) => lower.includes(phrase.toLowerCase()))) return true;
+  }
+  return false;
+}
+
+function checkObservedGrounding(
+  text: string,
+  receipts: readonly EvidenceReceiptV1[],
+): ValidationFailure | null {
+  if (typeof text !== 'string' || text.trim().length === 0) return null;
+  if (hasUnverifiedSentence(text)) return null;
+
+  const paths = (text.match(FILE_PATH_RE) ?? []).filter(
+    (path): path is string =>
+      typeof path === 'string' &&
+      (path.includes('/') || /\.[a-z]{1,5}(?::\d+)?$/i.test(path)),
+  );
+  if (paths.length > 0) {
+    const observed = observedLocalPaths(receipts);
+    const invented = paths.find((path) => !observed.has(normalizePath(path)));
+    if (invented !== undefined) {
+      return {
+        kind: 'unobserved_grounding',
+        severity: 'repair',
+        reason:
+          `The answer referenced ${invented}, but that path was not present in the observed read receipt. ` +
+          'Use only observed evidence or label the claim with "Unverified:".',
+      };
+    }
+  }
+
+  const codebaseClaim =
+    REPO_FACT_RE.test(text) ||
+    /\b(i (read|inspected|checked|opened|found)|the (repo|repository|codebase|project|code) (uses|has|contains|defines|imports|depends))\b/i.test(text);
+  if (codebaseClaim && paths.length === 0 && receipts.some((r) => r.kind === 'local-code')) {
+    return {
+      kind: 'unobserved_grounding',
+      severity: 'repair',
+      reason:
+        'The answer made a codebase factual claim without naming a path from the observed read receipt. ' +
+        'Reference an observed path or label the claim with "Unverified:".',
+    };
+  }
+
+  const externalClaim = EXTERNAL_SOURCE_RE.test(text) || /\b(current|latest|today|as of|now available)\b/i.test(text);
+  if (
+    externalClaim &&
+    receipts.some((r) => r.kind === 'external-source') &&
+    !sourceTextObserved(text, receipts)
+  ) {
+    return {
+      kind: 'unobserved_grounding',
+      severity: 'repair',
+      reason:
+        'The answer made a current external claim without citing text or a reference from the obtained web receipt. ' +
+        'Cite observed source text or label the claim with "Unverified:".',
+    };
+  }
+
+  return null;
+}
+
 function checkGroundedRecommendation(text: string): ValidationFailure | null {
   const grounding = detectGrounding(text);
   // An honest no-context answer is fully acceptable on its own (it states the
@@ -808,6 +916,13 @@ export function compileTurnDirective(input: CompileDirectiveInput): TurnDirectiv
   const outputValidators: readonly OutputValidator[] = substantial
     ? [{ kind: 'reject_generic_open_menu' }, { kind: 'require_grounded_recommendation' }]
     : [{ kind: 'reject_generic_open_menu' }];
+  const requiresObservedGrounding =
+    input.semanticTaskKind === 'lookup' ||
+    input.semanticTaskKind === 'analysis' ||
+    input.semanticTaskKind === 'decision';
+  const outputValidatorsWithObserved: readonly OutputValidator[] = requiresObservedGrounding
+    ? [...outputValidators, { kind: 'require_observed_grounding' }]
+    : outputValidators;
 
   const requiredBeforeAnswer: readonly RequiredPreAnswerAction[] = carriesTriage
     ? [
@@ -826,7 +941,7 @@ export function compileTurnDirective(input: CompileDirectiveInput): TurnDirectiv
   const base: TurnDirective = {
     version: 1,
     requiredBeforeAnswer,
-    outputValidators,
+    outputValidators: outputValidatorsWithObserved,
     historyPolicy,
     repoOriented,
     substantial,
@@ -834,6 +949,8 @@ export function compileTurnDirective(input: CompileDirectiveInput): TurnDirectiv
     ...(input.requiredInvestigationEnabled === true
       ? { requiredInvestigation: deriveRequiredInvestigation(plan, input.repoPresent === true) }
       : {}),
+    ...(input.evidenceObligations !== undefined ? { evidenceObligations: input.evidenceObligations } : {}),
+    ...(input.evidenceReceipts !== undefined ? { evidenceReceipts: input.evidenceReceipts } : {}),
   };
 
   if (plan === undefined || plan === null || !Array.isArray(plan.actions)) {
