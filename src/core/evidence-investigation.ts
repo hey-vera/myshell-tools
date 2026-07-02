@@ -23,6 +23,23 @@ export interface EvidenceObservation {
   readonly status: 'obtained' | 'missing' | 'failed' | 'cancelled';
 }
 
+export type EvidenceReceiptV1 =
+  | (EvidenceObservation & {
+      readonly version: 1;
+      readonly kind: 'local-code';
+      readonly query: string;
+      readonly pathsLocated: readonly string[];
+      readonly pathsRead: readonly string[];
+      readonly renderedContext: string;
+    })
+  | (EvidenceObservation & {
+      readonly version: 1;
+      readonly kind: 'external-source';
+      readonly query: string;
+      readonly sourceText: string;
+      readonly renderedContext: string;
+    });
+
 export interface EvidenceDecision {
   readonly beforeWork: 'none' | 'local' | 'web' | 'user-input' | 'cannot-ground';
   readonly beforeCompletion: readonly EvidenceNeed[];
