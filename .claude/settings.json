@@ -5,5 +5,19 @@
       "Bash(opencode run:*)",
       "Bash(opencode auth list:*)"
     ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PROJECT_DIR/.claude/hooks/block-main-thread-code-edits.mjs\"",
+            "statusMessage": "Checking orchestrator bright line"
+          }
+        ]
+      }
+    ]
   }
 }
