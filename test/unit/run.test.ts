@@ -10,6 +10,9 @@
 
 import { beforeEach, describe, it } from 'vitest';
 import assert from 'node:assert/strict';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { runTask } from '../../src/interface/run.ts';
 import { parseEvalArgs, runEvalCommand } from '../../src/commands/eval.ts';
 import { SEMANTIC_PREFLIGHT_SUITE_SUMMARY } from '../../src/core/eval/semantic-preflight-suite.ts';
@@ -423,66 +426,74 @@ describe('CLI semantic eval dispatch reaches the dedicated harness and preserves
     const sink = makeEvalSink();
     const callCount = { value: 0 };
     const fakeExtractor = makeFakeEvalExtractor(callCount);
-
-    const code = await runEvalCommand(
-      ['--semantic-preflight', '--engine=semantic-v1', '--yes'],
-      {
-        cwd: '/fake/cwd',
-        version: '0.0.0',
-        nowIso: () => '2026-07-02T00:00:00.000Z',
-        providers: {},
-        policy: undefined as never,
-        timeoutMs: 1000,
-        authenticatedProviders: [],
-        makeDeps: () => {
-          throw new Error('not used');
+    const tmpDir = await mkdtemp(join(tmpdir(), 'eval-test-'));
+    try {
+      const code = await runEvalCommand(
+        ['--semantic-preflight', '--engine=semantic-v1', '--yes'],
+        {
+          cwd: tmpDir,
+          version: '0.0.0',
+          nowIso: () => '2026-07-02T00:00:00.000Z',
+          providers: {},
+          policy: undefined as never,
+          timeoutMs: 1000,
+          authenticatedProviders: [],
+          makeDeps: () => {
+            throw new Error('not used');
+          },
+          semanticPreflightExtractor: fakeExtractor,
         },
-        semanticPreflightExtractor: fakeExtractor,
-      },
-      sink,
-      new AbortController().signal,
-    );
+        sink,
+        new AbortController().signal,
+      );
 
-    // The extractor should be called for all 200 cases
-    const total = SEMANTIC_PREFLIGHT_SUITE_SUMMARY.totalCount;
-    assert.equal(callCount.value, total, `extractor should be called ${total} times`);
+      // The extractor should be called for all 200 cases
+      const total = SEMANTIC_PREFLIGHT_SUITE_SUMMARY.totalCount;
+      assert.equal(callCount.value, total, `extractor should be called ${total} times`);
 
-    const output = sink.buf.join('');
-    assert.ok(output.includes('Artifact written'), 'output should mention artifact');
-    assert.ok(output.includes('Status:'), 'output should include status');
-    // With null semantics, harness reports 'fail' -> exit 1 (schema/fixture failure)
-    assert.equal(code, 1, 'null outcomes produce fail artifact, exit 1');
+      const output = sink.buf.join('');
+      assert.ok(output.includes('Artifact written'), 'output should mention artifact');
+      assert.ok(output.includes('Status:'), 'output should include status');
+      // With null semantics, harness reports 'fail' -> exit 1 (schema/fixture failure)
+      assert.equal(code, 1, 'null outcomes produce fail artifact, exit 1');
+    } finally {
+      await rm(tmpDir, { recursive: true, force: true });
+    }
   });
 
   it('semantic-preflight extractor throw exits 2 with incomplete artifact status', async () => {
     const sink = makeEvalSink();
     const callCount = { value: 0 };
-
-    const code = await runEvalCommand(
-      ['--semantic-preflight', '--engine=semantic-v1', '--yes'],
-      {
-        cwd: '/fake/cwd',
-        version: '0.0.0',
-        nowIso: () => '2026-07-02T00:00:00.000Z',
-        providers: {},
-        policy: undefined as never,
-        timeoutMs: 1000,
-        authenticatedProviders: [],
-        makeDeps: () => {
-          throw new Error('not used');
+    const tmpDir = await mkdtemp(join(tmpdir(), 'eval-test-'));
+    try {
+      const code = await runEvalCommand(
+        ['--semantic-preflight', '--engine=semantic-v1', '--yes'],
+        {
+          cwd: tmpDir,
+          version: '0.0.0',
+          nowIso: () => '2026-07-02T00:00:00.000Z',
+          providers: {},
+          policy: undefined as never,
+          timeoutMs: 1000,
+          authenticatedProviders: [],
+          makeDeps: () => {
+            throw new Error('not used');
+          },
+          semanticPreflightExtractor: async () => {
+            callCount.value++;
+            throw new Error('extractor crashed');
+          },
         },
-        semanticPreflightExtractor: async () => {
-          callCount.value++;
-          throw new Error('extractor crashed');
-        },
-      },
-      sink,
-      new AbortController().signal,
-    );
+        sink,
+        new AbortController().signal,
+      );
 
-    assert.equal(callCount.value, 1, 'run stops at the thrown extractor case');
-    assert.equal(code, 2, 'thrown extraction produces incomplete artifact, exit 2');
-    assert.match(sink.buf.join(''), /Status: incomplete/);
+      assert.equal(callCount.value, 1, 'run stops at the thrown extractor case');
+      assert.equal(code, 2, 'thrown extraction produces incomplete artifact, exit 2');
+      assert.match(sink.buf.join(''), /Status: incomplete/);
+    } finally {
+      await rm(tmpDir, { recursive: true, force: true });
+    }
   });
 });
 
