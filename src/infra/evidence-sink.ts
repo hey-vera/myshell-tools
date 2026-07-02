@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
-import { isAbsolute, resolve } from 'node:path';
+import { isAbsolute, relative, resolve } from 'node:path';
 
 import {
   buildSnapshotFromVerify,
@@ -19,7 +19,9 @@ async function hashFileAfter(cwd: string, filePath: string): Promise<string | un
   try {
     const absolute = isAbsolute(filePath) ? filePath : resolve(cwd, filePath);
     const root = resolve(cwd);
-    if (absolute !== root && !absolute.startsWith(`${root}/`)) return undefined;
+    if (absolute === root) return undefined;
+    const rel = relative(root, absolute);
+    if (rel.startsWith('..') || isAbsolute(rel)) return undefined;
     return hashBytes(await readFile(absolute));
   } catch {
     return undefined;
