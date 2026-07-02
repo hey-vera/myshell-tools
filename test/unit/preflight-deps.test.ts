@@ -57,6 +57,7 @@ describe('buildPreflightDeps', () => {
     const result = buildPreflightDeps(baseInput());
     assert.ok(result.routeClassifier !== undefined, 'routeClassifier should be defined');
     assert.ok(result.intentExtractor !== undefined, 'intentExtractor should be defined');
+    assert.ok(result.semanticPreflightExtractor !== undefined, 'semanticPreflightExtractor should be defined');
     assert.ok(result.autoBrainRungTuple !== undefined, 'autoBrainRungTuple should be defined');
   });
 
@@ -64,6 +65,7 @@ describe('buildPreflightDeps', () => {
     const result = buildPreflightDeps(baseInput({ config: { ...config, smartRoute: false } }));
     assert.ok(result.routeClassifier === undefined, 'routeClassifier should be undefined');
     assert.ok(result.intentExtractor !== undefined, 'intentExtractor should be defined');
+    assert.ok(result.semanticPreflightExtractor !== undefined, 'semanticPreflightExtractor should be defined');
     assert.ok(result.autoBrainRungTuple !== undefined, 'autoBrainRungTuple should be defined');
   });
 
@@ -71,6 +73,7 @@ describe('buildPreflightDeps', () => {
     const result = buildPreflightDeps(baseInput({ config: { ...config, intentEngine: false } }));
     assert.ok(result.routeClassifier !== undefined, 'routeClassifier should be defined');
     assert.ok(result.intentExtractor === undefined, 'intentExtractor should be undefined');
+    assert.ok(result.semanticPreflightExtractor === undefined, 'semanticPreflightExtractor should be undefined');
     assert.ok(result.autoBrainRungTuple !== undefined, 'autoBrainRungTuple should be defined');
   });
 
@@ -78,6 +81,7 @@ describe('buildPreflightDeps', () => {
     const result = buildPreflightDeps(baseInput({ intentPass: false }));
     assert.ok(result.routeClassifier !== undefined, 'routeClassifier should be defined');
     assert.ok(result.intentExtractor === undefined, 'intentExtractor should be undefined');
+    assert.ok(result.semanticPreflightExtractor === undefined, 'semanticPreflightExtractor should be undefined');
     assert.ok(result.autoBrainRungTuple !== undefined, 'autoBrainRungTuple should be defined');
   });
 
@@ -93,6 +97,7 @@ describe('buildPreflightDeps', () => {
 
     assert.ok(result.routeClassifier !== undefined, 'routeClassifier should be defined');
     assert.ok(result.intentExtractor !== undefined, 'intentExtractor should be defined');
+    assert.ok(result.semanticPreflightExtractor !== undefined, 'semanticPreflightExtractor should be defined');
 
     // Both classifiers/extractors were built with the SAME budget object —
     // verify by calling both and checking they record to the same ledger.
@@ -107,5 +112,13 @@ describe('buildPreflightDeps', () => {
     // returned non-undefined, they were constructed). The non-undefined return
     // plus the fact that the budget was supplied to buildPreflightDeps proves
     // the same budget object reached both factories.
+  });
+
+  it('preflight deps retain legacy closures for rollback while exposing semantic closure', () => {
+    const result = buildPreflightDeps(baseInput());
+
+    assert.equal(typeof result.routeClassifier, 'function');
+    assert.equal(typeof result.intentExtractor, 'function');
+    assert.equal(typeof result.semanticPreflightExtractor, 'function');
   });
 });

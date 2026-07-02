@@ -11,6 +11,7 @@ import type { TurnCallBudget } from '../core/turn-call-budget.js';
 import type { Provider, ProviderId, SandboxLevel } from '../providers/port.js';
 import { makeRouteClassifier } from '../core/route-classifier.js';
 import { makeIntentExtractor } from '../core/intent-extractor.js';
+import { makeSemanticPreflightExtractor } from '../core/semantic-preflight-extractor.js';
 import { fuseRung, type FuseRungResult } from '../core/auto-brain.js';
 import { helperSandbox } from '../infra/sandbox.js';
 import { experimentalEnabledByDefault } from './ui/experimental-default.js';
@@ -41,7 +42,7 @@ export interface BuildPreflightDepsInput {
 
 export function buildPreflightDeps(
   input: BuildPreflightDepsInput,
-): Pick<OrchestrateDeps, 'routeClassifier' | 'intentExtractor' | 'autoBrainRungTuple'> {
+): Pick<OrchestrateDeps, 'routeClassifier' | 'intentExtractor' | 'semanticPreflightExtractor' | 'autoBrainRungTuple'> {
   const { providers, policy, cwd, timeoutMs, sandbox, availableModels, authenticatedProviders } = input;
   const { config, env, autoMode, intentPass } = input;
   const { accountAux, ledger, clock, sessionId, cacheAccountingV2 } = input;
@@ -106,6 +107,36 @@ export function buildPreflightDeps(
         })
       : undefined;
 
+  // Semantic preflight extractor — dark Item-8 path. This is exposed alongside
+  // the legacy closures for rollback; orchestrate reads it only when its
+  // semanticPreflightV1 test seam is explicitly true.
+  const semanticPreflightExtractor =
+    config.intentEngine !== false && intentPass !== false
+      ? makeSemanticPreflightExtractor({
+          providers,
+          policy,
+          cwd,
+          timeoutMs: Math.min(timeoutMs, INTENT_TIMEOUT_MS),
+          sandbox: helperSandbox(sandbox),
+          ...(availableModels !== undefined && Object.keys(availableModels).length > 0
+            ? { availableModels }
+            : {}),
+          ...(authenticatedProviders !== undefined && authenticatedProviders.length > 0
+            ? { authenticatedProviders }
+            : {}),
+          ...(accountAux
+            ? {
+                accountAux: true,
+                ledger,
+                clock,
+                sessionId,
+                ...(cacheAccountingV2 ? { cacheAccountingV2: true } : {}),
+              }
+            : {}),
+          ...(turnCallBudget !== undefined ? { turnCallBudget } : {}),
+        })
+      : undefined;
+
   // Auto brain — rung-fusion from intent byproduct + classify + memory bias.
   const autoBrainRungTuple: FuseRungResult | undefined =
     experimentalEnabledByDefault(
@@ -125,6 +156,7 @@ export function buildPreflightDeps(
   return {
     ...(routeClassifier !== undefined ? { routeClassifier } : {}),
     ...(intentExtractor !== undefined ? { intentExtractor } : {}),
+    ...(semanticPreflightExtractor !== undefined ? { semanticPreflightExtractor } : {}),
     ...(autoBrainRungTuple !== undefined ? { autoBrainRungTuple } : {}),
   };
 }

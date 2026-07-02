@@ -10,6 +10,7 @@ import assert from 'node:assert/strict';
 
 import { makeRouteClassifier } from '../../src/core/route-classifier.ts';
 import { makeIntentExtractor } from '../../src/core/intent-extractor.ts';
+import { makeSemanticPreflightExtractor } from '../../src/core/semantic-preflight-extractor.ts';
 import { DEFAULT_POLICY } from '../../src/core/policy.ts';
 import type { Provider, ProviderEvent, ProviderRequest, Usage } from '../../src/providers/port.ts';
 import type { TurnCallBudgetMode, TurnCallBudgetSpec } from '../../src/core/turn-call-budget.ts';
@@ -18,6 +19,17 @@ import { createTurnCallBudget } from '../../src/core/turn-call-budget.ts';
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 const SIGNAL = new AbortController().signal;
+const SEMANTIC_JSON = JSON.stringify({
+  objective: 'ship it',
+  taskShape: { kind: 'change', scope: 'single-step', mutatesWorkspace: true },
+  route: { tier: 'ic', plan: false, rationale: 'route' },
+  risk: { level: 'low', reasons: [] },
+  uncertainty: { level: 'low', reasons: [], forks: [] },
+  evidenceNeeded: [],
+  doneCondition: { status: 'specified', text: 'done' },
+  planSteps: [],
+  proposedExecution: { provider: 'auto', effort: 'none', rationale: 'auto' },
+});
 
 function budgetSpec(
   overrides: Partial<{
@@ -116,6 +128,28 @@ describe('turn-call-budget preflight', () => {
 
     const routeCalls = receipt.events.filter((e) => e.type === 'call-begun' && e.purpose === 'route');
     assert.equal(routeCalls.length, 0, 'zero route calls on the unified extractor path');
+  });
+
+  it('semantic preflight receipt has one intent and zero route or reextract calls', async () => {
+    const provider = countingProvider('claude', SEMANTIC_JSON);
+    const budget = createTurnCallBudget(budgetSpec({ turnId: 'turn-semantic' }));
+    const extractor = makeSemanticPreflightExtractor({
+      providers: { claude: provider },
+      policy: DEFAULT_POLICY,
+      cwd: '/tmp/project',
+      timeoutMs: 8_000,
+      turnCallBudget: budget,
+    });
+
+    const result = await extractor('ship the feature', SIGNAL);
+    assert.ok(result !== null, 'semantic result parses');
+
+    const receipt = budget.snapshot();
+    const purposes = receipt.events.filter((e) => e.type === 'call-begun').map((e) => e.purpose);
+    assert.deepEqual(purposes, ['intent'], 'semantic preflight uses shipped intent purpose only');
+    assert.equal(purposes.includes('route'), false);
+    assert.equal(purposes.includes('reextract-local'), false);
+    assert.equal(purposes.includes('reextract-web'), false);
   });
 
   it('legacy ambiguous path records route then intent', async () => {
