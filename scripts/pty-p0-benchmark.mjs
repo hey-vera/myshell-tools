@@ -435,7 +435,10 @@ async function main() {
       }
     } catch (err) {
       ptyStatus = 'failed';
-      ptyDetail = err instanceof Error ? err.message : String(err);
+      ptyDetail =
+        err instanceof Error
+          ? `${err.message}${err.screen ? `\n--- screen tail ---\n${err.screen}` : ''}`
+          : String(err);
       break;
     }
   }
@@ -474,7 +477,12 @@ async function main() {
   writeFileSync(outputPath, json, 'utf8');
   console.log(json);
 
-  if (ptyStatus !== 'pass') process.exit(1);
+  if (ptyStatus !== 'pass') {
+    // Surface the failure detail (incl. captured screen tail) to stderr so CI logs
+    // reveal WHY the PTY run failed without a second diagnostic round.
+    console.error(`[pty-benchmark] FAILED status=${ptyStatus}: ${ptyDetail ?? 'unknown'}`);
+    process.exit(1);
+  }
   process.exit(0);
 }
 
