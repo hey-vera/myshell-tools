@@ -155,18 +155,40 @@ describe('semantic evidence enforcement wiring', () => {
     assert.match(p.prompts[0] ?? '', /pending; do not claim completion/);
   });
 
-  it('missing local capability stops before work and labels claim unverified', async () => {
-    const p = provider([`Should not run.\n${ENVELOPE}`]);
+  it('missing local capability proceeds with work and carries UNVERIFIED EVIDENCE GAP into prompt and final output', async () => {
+    const p = provider([`Unverified: I could not read the local repository evidence required for this claim because no local read capability is available. Based on the prompt alone, the auth module appears to use tokens.\n${ENVELOPE}`]);
     const events = await collect(orchestrate('explain auth module', deps({
       providers: { claude: p },
       researchPort: undefined,
       semanticPreflightExtractor: async () => ({ result: semantic() }),
     }, p), new AbortController().signal));
 
-    assert.equal(p.calls, 0);
+    // R1: work called exactly once
+    assert.equal(p.calls, 1);
+
+    // R2: prompt contains gap reason / evidence obligation block
+    assert.match(p.prompts[0] ?? '', /UNVERIFIED EVIDENCE GAP/);
+    assert.match(p.prompts[0] ?? '', /cannot ground/);
+
+    // R3: final output contains explicit Unverified: label
     const final = events.find((e): e is Extract<CoreEvent, { type: 'final' }> => e.type === 'final');
     assert.ok(final !== undefined);
-    assert.match(final.output, /^Unverified:/);
+    assert.equal(final.success, true);
+    assert.match(final.output, /Unverified:/);
+
+    // R4: no fabricated observed receipt
+    const receiptNotices = events.filter(
+      (e) => e.type === 'notice' && (e.message.includes('OBSERVED') || e.message.includes('obtained')),
+    );
+    assert.equal(receiptNotices.length, 0);
+
+    // R5: completion/verdict is unverified — no passing/reviewed/done fabrication
+    const passingNotices = events.filter(
+      (e) => e.type === 'notice' && (e.message.includes('tests passing') || e.message.includes('reviewed by')),
+    );
+    assert.equal(passingNotices.length, 0);
+    // Also verify no fabricated terminal done/reviewed receipt
+    assert.ok(!('receipt' in final) || final.receipt === undefined || final.receipt === null, 'no fabricated receipt');
   });
 
   it('fresh external claim obtains one web receipt and cites it', async () => {

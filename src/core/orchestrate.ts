@@ -1251,8 +1251,18 @@ export async function* orchestrate(
       evidenceObservationsForDecision(semanticEvidenceReceipts),
     );
     semanticEvidenceObligations = evidenceDecision.beforeCompletion;
+    if (evidenceDecision.beforeWork === 'cannot-ground') {
+      const unmetPreWork: EvidenceNeed[] = [];
+      if (evidenceCapabilities.repoPresent && !evidenceCapabilities.localReadAvailable) {
+        unmetPreWork.push(DET_LOCAL_EVIDENCE_NEED);
+      }
+      if (!evidenceCapabilities.webSearchAvailable) {
+        unmetPreWork.push(DET_WEB_EVIDENCE_NEED);
+      }
+      semanticEvidenceObligations = [...evidenceDecision.beforeCompletion, ...unmetPreWork];
+    }
 
-    if (!evidenceDecision.mayStartWork) {
+    if (evidenceDecision.beforeWork !== 'cannot-ground' && !evidenceDecision.mayStartWork) {
       yield {
         type: 'final',
         success: true,
@@ -1296,6 +1306,14 @@ export async function* orchestrate(
     semanticEvidenceObligations,
   );
   let investigationContext = semanticEvidenceContext;
+  if (
+    semanticEvidenceReceipts.length === 0 &&
+    semanticEvidenceObligations.length > 0
+  ) {
+    const gapHeader = '--- UNVERIFIED EVIDENCE GAP (cannot ground) ---\nThe required evidence needs could not be satisfied in this runtime. No evidence collection ran.';
+    investigationContext =
+      gapHeader + (investigationContext.length > 0 ? '\n\n' + investigationContext : '');
+  }
   if (
     requiredInvestigationOn &&
     directive.requiredInvestigation === 'local' &&

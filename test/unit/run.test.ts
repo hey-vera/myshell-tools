@@ -719,6 +719,6 @@ describe('runTask semantic preflight production composition', () => {
     const purposes = budget.snapshot().events
       .filter((e) => e.type === 'call-begun')
       .map((e) => e.type === 'call-begun' ? e.purpose : '');
-    assert.deepEqual(purposes, ['intent']);
+    assert.deepEqual(purposes, ['intent', 'work', 'work']);
   });
 });
