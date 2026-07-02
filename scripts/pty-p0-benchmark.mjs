@@ -18,11 +18,13 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { tmpdir, cpus, platform, arch } from 'node:os';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
 import { randomBytes } from 'node:crypto';
+import { fileURLToPath } from 'node:url';
 
 const require = createRequire(import.meta.url);
-const CLI = new URL('../dist/cli.js', import.meta.url).pathname;
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const CLI = join(__dirname, '..', 'dist', 'cli.js');
 
 const COLS = 80;
 const ROWS = 24;
@@ -61,6 +63,7 @@ function resolveCommit() {
 }
 
 function hasScript() {
+  if (process.env['MYSHELL_BENCH_SIMULATE_SCRIPT_PRESENT'] === '1') return true;
   if (process.env['MYSHELL_BENCH_SIMULATE_MISSING_SCRIPT'] === '1') return false;
   if (process.platform === 'win32') return false;
   const result = spawnSync('script', ['--version'], { stdio: 'ignore' });
@@ -68,6 +71,7 @@ function hasScript() {
 }
 
 function hasXterm() {
+  if (process.env['MYSHELL_BENCH_SIMULATE_XTERM_PRESENT'] === '1') return true;
   if (process.env['MYSHELL_BENCH_SIMULATE_MISSING_XTERM'] === '1') return false;
   try {
     require.resolve('@xterm/headless');
@@ -78,6 +82,7 @@ function hasXterm() {
 }
 
 function hasCli() {
+  if (process.env['MYSHELL_BENCH_SIMULATE_CLI_PRESENT'] === '1') return true;
   if (process.env['MYSHELL_BENCH_SIMULATE_MISSING_CLI'] === '1') return false;
   return existsSync(CLI);
 }
@@ -163,7 +168,6 @@ async function runPtySample() {
     COLUMNS: String(COLS),
     LINES: String(ROWS),
     FORCE_COLOR: '1',
-    NO_COLOR: '1',
   };
   delete env['REPL_ID'];
   delete env['REPLIT_DEV_DOMAIN'];
@@ -222,17 +226,21 @@ async function runPtySample() {
     let stableCount = 0;
     let menuReady = false;
 
+    const MENU_MARKERS = ['Library', 'Quit'];
     const menuTimeout = TIMEOUT_MS + 20000;
     while (!menuReady) {
       await new Promise((r) => setTimeout(r, 150));
       const screen = await getScreen();
-      const hadContent = screen.length > 0 && screen.split('\n').length >= 3;
-      if (lastScreen !== null && screen === lastScreen && hadContent) {
+      const hasMarkers = MENU_MARKERS.every((m) => screen.includes(m));
+      if (!hasMarkers) {
+        stableCount = 0;
+        lastScreen = screen;
+      } else if (lastScreen !== null && screen === lastScreen) {
         stableCount += 1;
       } else {
         stableCount = 0;
+        lastScreen = screen;
       }
-      lastScreen = screen;
       if (stableCount >= 2) {
         menuReady = true;
       }

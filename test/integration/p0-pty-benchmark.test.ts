@@ -10,12 +10,15 @@
 
 import { beforeAll, describe, it } from 'vitest';
 import assert from 'node:assert/strict';
-import { spawn, execSync } from 'node:child_process';
+import { spawn, spawnSync, execSync } from 'node:child_process';
 import { existsSync, readFileSync, writeFileSync, rmSync, readdirSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { dirname } from 'node:path';
+
+const require = createRequire(import.meta.url);
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(__dirname, '..', '..');
@@ -127,10 +130,40 @@ function makeComponentJson(cases: Array<{ id: string; status: string }>) {
   };
 }
 
-const CAPABILITIES_PRESENT =
-  process.env['MYSHELL_BENCH_SIMULATE_MISSING_CLI'] !== '1' &&
-  process.env['MYSHELL_BENCH_SIMULATE_MISSING_SCRIPT'] !== '1' &&
-  process.env['MYSHELL_BENCH_SIMULATE_MISSING_XTERM'] !== '1';
+function probeCapabilities(): { capable: boolean; reasons: string[] } {
+  const reasons: string[] = [];
+  if (!existsSync(CLI_PATH)) reasons.push('dist/cli.js not built');
+  if (process.platform === 'win32') {
+    reasons.push("Windows lacks util-linux 'script'");
+  } else {
+    try {
+      const r = spawnSync('script', ['--version'], { stdio: 'ignore', timeout: 5000 });
+      if (r.status !== 0 && r.status !== 1) reasons.push("util-linux 'script' missing or broken");
+    } catch {
+      reasons.push("util-linux 'script' not found");
+    }
+  }
+  try {
+    require.resolve('@xterm/headless');
+  } catch {
+    reasons.push('@xterm/headless not installed');
+  }
+  return { capable: reasons.length === 0, reasons };
+}
+
+const SIMULATE_SKIP =
+  process.env['MYSHELL_BENCH_SIMULATE_MISSING_SCRIPT'] === '1' ||
+  process.env['MYSHELL_BENCH_SIMULATE_MISSING_XTERM'] === '1' ||
+  process.env['MYSHELL_BENCH_SIMULATE_MISSING_CLI'] === '1';
+
+const REAL_CAPABILITIES = probeCapabilities();
+const REAL_PTY_CAPABLE = !SIMULATE_SKIP && REAL_CAPABILITIES.capable;
+
+if (SIMULATE_SKIP) {
+  console.warn('[p0-pty-benchmark] Skipping real-PTY tests: simulate env var set');
+} else if (!REAL_CAPABILITIES.capable) {
+  console.warn(`[p0-pty-benchmark] Skipping real-PTY tests: ${REAL_CAPABILITIES.reasons.join('; ')}`);
+}
 
 describe('PTY benchmark — unsupported detection', () => {
   it('forced missing script reports unsupported JSON and exit 2', async () => {
@@ -208,6 +241,7 @@ describe('PTY benchmark — component branch validation', () => {
     try {
       const res = await runBench(['--samples', '1', '--warmup', '0'], {
         MYSHELL_BENCH_COMPONENT_JSON: compFile,
+        ...(process.platform === 'win32' ? { MYSHELL_BENCH_SIMULATE_SCRIPT_PRESENT: '1' } : {}),
       });
       assert.notEqual(res.code, 0, 'must fail when a component branch is missing');
       assert.equal(res.code, 1, 'must exit 1 for missing component ID');
@@ -219,18 +253,14 @@ describe('PTY benchmark — component branch validation', () => {
 
 describe('PTY benchmark — real PTY run', () => {
   beforeAll(() => {
-    if (!CAPABILITIES_PRESENT) return;
+    if (!REAL_PTY_CAPABLE) return;
     if (!existsSync(CLI_PATH)) {
       execSync('npm run build', { cwd: REPO_ROOT, stdio: 'inherit' });
     }
     assert.ok(existsSync(CLI_PATH), `built CLI must exist at ${CLI_PATH}`);
   }, 60_000);
 
-  it('supported one-sample real PTY run reaches Library with one action and empty editor', async () => {
-    if (!CAPABILITIES_PRESENT) {
-      return;
-    }
-
+  it.skipIf(!REAL_PTY_CAPABLE)('supported one-sample real PTY run reaches Library with one action and empty editor', async () => {
     const res = await runBenchWithFile(['--warmup', '0', '--samples', '1'], {}, 120_000);
     assert.equal(res.code, 0, `must exit 0, got ${res.code} stderr: ${res.stderr}`);
     const json = jsonFromFile(res);
@@ -247,11 +277,7 @@ describe('PTY benchmark — real PTY run', () => {
     assert.ok(typeof ptyCase.maxMs === 'number' && ptyCase.maxMs > 0, 'maxMs must be positive number');
   }, 150_000);
 
-  it('one warmup is excluded from raw samples', async () => {
-    if (!CAPABILITIES_PRESENT) {
-      return;
-    }
-
+  it.skipIf(!REAL_PTY_CAPABLE)('one warmup is excluded from raw samples', async () => {
     const res = await runBenchWithFile(['--warmup', '1', '--samples', '1'], {}, 120_000);
     assert.notEqual(res.code, null);
     assert.equal(res.code, 0, `must exit 0, got ${res.code} stderr: ${res.stderr}`);
@@ -264,11 +290,7 @@ describe('PTY benchmark — real PTY run', () => {
     assert.equal(ptyCase.samples, 1);
   }, 150_000);
 
-  it('temporary config bypasses onboarding and temp HOME is removed', async () => {
-    if (!CAPABILITIES_PRESENT) {
-      return;
-    }
-
+  it.skipIf(!REAL_PTY_CAPABLE)('temporary config bypasses onboarding and temp HOME is removed', async () => {
     // Ensure no lingering temp dirs from prior runs (best-effort)
     // The benchmark cleans up after each sample, so after completion all temp dirs
     // with the myshell-pty-bench prefix should be gone.
@@ -295,11 +317,7 @@ describe('PTY benchmark — real PTY run', () => {
     );
   }, 150_000);
 
-  it('output contains Node and host metadata', async () => {
-    if (!CAPABILITIES_PRESENT) {
-      return;
-    }
-
+  it.skipIf(!REAL_PTY_CAPABLE)('output contains Node and host metadata', async () => {
     const res = await runBenchWithFile(['--warmup', '0', '--samples', '1'], {}, 120_000);
     assert.equal(res.code, 0, `must exit 0, got ${res.code} stderr: ${res.stderr}`);
     const json = jsonFromFile(res);
