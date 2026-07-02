@@ -32,6 +32,7 @@ import {
   type EngagementAction,
   type EngagementSignals,
 } from '../../src/core/engagement.ts';
+import { decideSemanticPreflightDisposition } from '../../src/core/semantic-preflight.ts';
 import type { IntentFrame, IntentConfidence, IntentFork } from '../../src/core/intent.ts';
 import type { Classification } from '../../src/core/types.ts';
 
@@ -612,6 +613,23 @@ describe('pure heuristics', () => {
         }),
       ),
     );
+  });
+
+  it('semantic preflight trivial bypass remains aligned with isTrivial', () => {
+    for (const task of ['what is 2+2', 'respond exactly "fixed"', 'lookup the value']) {
+      const classification = CLS('worker', 'low');
+      assert.equal(isTrivial(signals({ classification, task, frame: frame({ source: 'skipped' }) })), true);
+      assert.equal(
+        decideSemanticPreflightDisposition({
+          task,
+          deterministic: classification,
+          goalTurn: false,
+          goalTurnHasObjectiveAndDone: false,
+          hasSemanticExtractor: true,
+        }),
+        'bypass-trivial',
+      );
+    }
   });
 
   it('hasVisionPhrase detects vision lexicon hits', () => {
