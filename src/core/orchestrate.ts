@@ -48,6 +48,13 @@ import { capContract, shouldMaterializeContract, isCleanObjectiveTask, stampCont
 import type { WorkContract } from './work-contract.js';
 import type { IntentFrame } from './intent.js';
 import { shouldExtractIntent, rulesIntentFrame, renderIntentBlock, normalizeExtraction } from './intent.js';
+import {
+  decideSemanticPreflightDisposition,
+  fallbackSemanticPreflight,
+  resolveSemanticPreflight,
+  semanticToIntentFrame,
+  type SemanticPreflightV1,
+} from './semantic-preflight.js';
 import { capGoalLabel } from './goal.js';
 import { planEngagement, seedFromIntentAndPlan, renderEngagementBlock, deriveAskFromForks, isTrivial, hasGenuineFork } from './engagement.js';
 import type { EngagementSignals } from './engagement.js';
@@ -257,12 +264,16 @@ export async function* orchestrate(
   // byte-identical to 3.134.0 on BOTH axes (risk + web-research) — see the two
   // helpers below and the OFF-strip in `frameForDownstream`.
   const riskSignalsOn = depsArg.riskSignals === true;
+  // Item 8 semantic preflight V1 is a dark, explicitly injected test seam in this
+  // slice. When on, it owns route/intent/risk preflight and suppresses the legacy
+  // preflight branches and re-extraction loop.
+  const semanticPreflightOn = depsArg.semanticPreflightV1 === true;
   // rank-9 (default-OFF). When the requiredInvestigation flag is ON, an
   // INVESTIGATE_CONTEXT turn that the confidence brain did NOT already ground runs
   // ONE bounded `buildRetrievalContext` read-only retrieval before the work call.
   // OFF (absent/false) → the directive input is omitted, the preflight is dead, and
   // every path is byte-identical to today.
-  const requiredInvestigationOn = depsArg.requiredInvestigation === true;
+  const requiredInvestigationOn = depsArg.requiredInvestigation === true && !semanticPreflightOn;
   // rank-10 (default-OFF). When the preflightGuard flag is ON, orchestrate counts
   // the blocking pre-answer model calls actually taken this turn and SHEDS the next
   // avoidable optional one when the count would exceed the turn-class budget. OFF
@@ -316,6 +327,7 @@ export async function* orchestrate(
     risk: det.risk,
     rationale: det.rationale,
   };
+  let _semanticPreflight: SemanticPreflightV1 | undefined;
   const unifiedRunIntent =
     depsArg.goalTurn !== true &&
     shouldExtractIntent({
@@ -326,7 +338,56 @@ export async function* orchestrate(
       hasExtractor: depsArg.intentExtractor !== undefined,
     });
 
-  if (
+  if (semanticPreflightOn) {
+    const goalTurnHasObjectiveAndDone =
+      depsArg.workContract !== undefined &&
+      depsArg.workContract.objective.trim().length > 0 &&
+      depsArg.workContract.roadmap !== undefined &&
+      depsArg.workContract.roadmap.some(
+        (item) => item.acceptanceCriterion !== undefined && item.acceptanceCriterion.trim().length > 0,
+      );
+    const disposition = decideSemanticPreflightDisposition({
+      task,
+      deterministic: detClassification,
+      goalTurn: depsArg.goalTurn === true,
+      goalTurnHasObjectiveAndDone,
+      hasSemanticExtractor: depsArg.semanticPreflightExtractor !== undefined,
+    });
+    let semantic = fallbackSemanticPreflight(task, detClassification);
+    runIntent = false;
+    if (disposition === 'run' && depsArg.semanticPreflightExtractor !== undefined) {
+      runIntent = true;
+      try {
+        const extracted = await depsArg.semanticPreflightExtractor(task, signal);
+        if (extracted !== null) {
+          semantic = extracted.result;
+        }
+      } catch {
+        semantic = fallbackSemanticPreflight(task, detClassification);
+      }
+      if (signal.aborted) {
+        yield { type: 'notice', level: 'warn', message: 'Cancelled.' };
+        yield {
+          type: 'final',
+          success: false,
+          output: '',
+          tier: detClassification.tier,
+          totalCostUsd: 0,
+          sessionId: depsArg.session.id,
+          attempts: 0,
+          canceled: true,
+        };
+        return;
+      }
+    }
+    const resolved = resolveSemanticPreflight(detClassification, semantic);
+    _semanticPreflight = resolved.semantic;
+    classification = resolved.classification;
+    turnClass = turnClassOf(classification.tier, classification.risk);
+    routePlan = resolved.routePlan;
+    yield { type: 'classified', classification };
+    intentFrame = semanticToIntentFrame(_semanticPreflight);
+  } else if (
     unifiedPreflightApplies({
       gateOn: depsArg.unifyPreflight === true,
       runIntentScheduled: unifiedRunIntent,
@@ -521,7 +582,7 @@ export async function* orchestrate(
   {
     const repoPresentForScrape =
       depsArg.environmentContext !== undefined && depsArg.environmentContext.length > 0;
-    const reExtractor = runIntent ? depsArg.intentExtractor : undefined;
+    const reExtractor = semanticPreflightOn ? undefined : runIntent ? depsArg.intentExtractor : undefined;
     const canReExtract = reExtractor !== undefined;
     const optedOutOfDeepDive = depsArg.partnerStyle === 'direct';
     const maxRounds = maxRoundsFor(depsArg.partnerStyle);

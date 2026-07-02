@@ -184,6 +184,30 @@ describe('orchestrate unified preflight — call-count parity (rank-7 S4)', () =
     assert.equal(extractor.calls(), 1, 'gate on: the ONE preflight extraction still runs (consolidation, not addition)');
   });
 
+  it('semantic extractor wired but gate OFF does not change unified ONE-call path', async () => {
+    const router = countingClassifier();
+    const extractor = countingExtractor(hintedFrame());
+    let semanticCalls = 0;
+    await collect(
+      orchestrate(
+        AMBIGUOUS_SUBSTANTIAL,
+        baseDeps({
+          routeClassifier: router.fn,
+          intentExtractor: extractor.fn,
+          semanticPreflightExtractor: async () => {
+            semanticCalls++;
+            return null;
+          },
+          unifyPreflight: true,
+        }),
+        new AbortController().signal,
+      ),
+    );
+    assert.equal(router.calls(), 0, 'unified path still suppresses route-classifier');
+    assert.equal(extractor.calls(), 1, 'legacy intent extractor remains the one unified preflight call');
+    assert.equal(semanticCalls, 0, 'semantic extractor is dark until semanticPreflightV1 is true');
+  });
+
   it('AFFECTED CLASS: gate ON makes STRICTLY FEWER model calls than gate OFF', async () => {
     const offRouter = countingClassifier();
     const offExtractor = countingExtractor(hintedFrame());

@@ -722,6 +722,15 @@ export interface OrchestrateDeps {
     opts?: { readonly stage?: LedgerStage; readonly intentVersionId?: string },
   ) => Promise<import('./intent.js').IntentExtraction>;
   /**
+   * DARK SEMANTIC PREFLIGHT V1 (Item 8). When semanticPreflightV1 is true and a
+   * semantic extractor is wired, orchestrate runs the semantic branch before the
+   * legacy route/unified preflight shapes. DEFAULT absent/false keeps the exact
+   * legacy preflight path. Production composition does not set this gate in this
+   * slice; tests inject it directly.
+   */
+  readonly semanticPreflightV1?: boolean;
+  readonly semanticPreflightExtractor?: import('./semantic-preflight.js').SemanticPreflightExtractor;
+  /**
    * Optional model-brained route classifier. When wired, orchestrate consults it
    * ONLY on turns the deterministic keyword classifier couldn't route (no tier
    * evidence — see core/router.ts), and falls back to the rules on any failure or
