@@ -8,6 +8,7 @@
 import type { LedgerEntry, SessionEntry, Tier, Risk } from '../core/types.js';
 import type { ProviderId } from '../providers/port.js';
 import type { IntentVersion } from '../core/intent-version.js';
+import { parseSemanticPreflight } from '../core/semantic-preflight.js';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -236,6 +237,60 @@ function isRisk(value: unknown): value is Risk {
   return value === 'low' || value === 'medium' || value === 'high' || value === 'critical';
 }
 
+function normalizeForCompare(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map((item) => normalizeForCompare(item));
+  if (!isRecord(value)) return value;
+  const out: Record<string, unknown> = {};
+  for (const key of Object.keys(value).sort()) {
+    out[key] = normalizeForCompare(value[key]);
+  }
+  return out;
+}
+
+function isSemanticPreflightPayload(value: unknown): boolean {
+  let encoded: string;
+  try {
+    encoded = JSON.stringify(value);
+  } catch {
+    return false;
+  }
+  if (encoded === undefined) return false;
+
+  let candidate: unknown;
+  try {
+    candidate = JSON.parse(encoded);
+  } catch {
+    return false;
+  }
+  if (!isRecord(candidate)) return false;
+  const source = candidate['source'];
+  if (source !== 'model' && source !== 'rules-fallback') return false;
+
+  const parseCandidate = JSON.parse(encoded) as Record<string, unknown>;
+  const proposedExecution = parseCandidate['proposedExecution'];
+  const originalExecution = candidate['proposedExecution'];
+  const fallbackHasEmptyExecutionRationale =
+    source === 'rules-fallback' &&
+    isRecord(originalExecution) &&
+    originalExecution['rationale'] === '';
+  if (fallbackHasEmptyExecutionRationale && isRecord(proposedExecution)) {
+    proposedExecution['rationale'] = 'rules fallback';
+  }
+
+  const parsed = parseSemanticPreflight(JSON.stringify(parseCandidate));
+  if (parsed === null) return false;
+  const expected = {
+    ...parsed,
+    source,
+    proposedExecution: {
+      ...parsed.proposedExecution,
+      ...(fallbackHasEmptyExecutionRationale ? { rationale: '' } : {}),
+    },
+  };
+
+  return JSON.stringify(normalizeForCompare(expected)) === JSON.stringify(normalizeForCompare(value));
+}
+
 export function isIntentVersion(value: unknown): value is IntentVersion {
   if (!isRecord(value)) return false;
   if (value['version'] !== 1) return false;
@@ -264,6 +319,10 @@ export function isIntentVersion(value: unknown): value is IntentVersion {
   if (intent['risk'] !== undefined && !isRisk(intent['risk'])) return false;
   if (intent['confidence'] !== undefined && !isIntentConfidence(intent['confidence'])) return false;
   if (intent['source'] !== undefined && !isIntentSource(intent['source'])) return false;
+  if (
+    value['semanticPreflight'] !== undefined &&
+    !isSemanticPreflightPayload(value['semanticPreflight'])
+  ) return false;
 
   return true;
 }

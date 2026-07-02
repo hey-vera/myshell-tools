@@ -327,7 +327,7 @@ export async function* orchestrate(
     risk: det.risk,
     rationale: det.rationale,
   };
-  let _semanticPreflight: SemanticPreflightV1 | undefined;
+  let semanticPreflightForPersistence: SemanticPreflightV1 | undefined;
   const unifiedRunIntent =
     depsArg.goalTurn !== true &&
     shouldExtractIntent({
@@ -381,12 +381,14 @@ export async function* orchestrate(
       }
     }
     const resolved = resolveSemanticPreflight(detClassification, semantic);
-    _semanticPreflight = resolved.semantic;
+    if (disposition === 'run') {
+      semanticPreflightForPersistence = resolved.semantic;
+    }
     classification = resolved.classification;
     turnClass = turnClassOf(classification.tier, classification.risk);
     routePlan = resolved.routePlan;
     yield { type: 'classified', classification };
-    intentFrame = semanticToIntentFrame(_semanticPreflight);
+    intentFrame = semanticToIntentFrame(resolved.semantic);
   } else if (
     unifiedPreflightApplies({
       gateOn: depsArg.unifyPreflight === true,
@@ -1164,7 +1166,12 @@ export async function* orchestrate(
   // After final intentFrame stabilisation (including re-extraction updates) and
   // before render-optional events so a crash mid-write never orphans a stored
   // version with a different id than the one surfaced.
-  if (depsArg.intentStore !== undefined && turnIntentVersionId !== undefined && intentFrame !== undefined) {
+  if (
+    depsArg.intentStore !== undefined &&
+    turnIntentVersionId !== undefined &&
+    intentFrame !== undefined &&
+    !signal.aborted
+  ) {
     // CORRECTION FORK (MYSHELL_CORRECTION_FORK_V1) — guarded by depsArg.correctionFork.
     // OFF → parentId = null, no invalidation (byte-identical to today).
     let parentIdForWrite: string | null = null;
@@ -1211,6 +1218,9 @@ export async function* orchestrate(
       rawUserTurnText: task,
       frame: intentFrame,
       risk: classification.risk,
+      ...(semanticPreflightForPersistence !== undefined
+        ? { semanticPreflight: semanticPreflightForPersistence }
+        : {}),
     });
     if (version !== null) {
       await depsArg.intentStore.append(version).catch(() => undefined);
