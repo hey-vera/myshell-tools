@@ -7,6 +7,7 @@
 
 import type { AppConfig } from '../infra/config.js';
 import type { Policy, OrchestrateDeps, LedgerWriter, Clock } from '../core/types.js';
+import type { TurnCallBudget } from '../core/turn-call-budget.js';
 import type { Provider, ProviderId, SandboxLevel } from '../providers/port.js';
 import { makeRouteClassifier } from '../core/route-classifier.js';
 import { makeIntentExtractor } from '../core/intent-extractor.js';
@@ -35,6 +36,7 @@ export interface BuildPreflightDepsInput {
   readonly sessionId?: string;
   readonly cacheAccountingV2?: boolean;
   readonly memoryBias?: -1 | 0 | 1;
+  readonly turnCallBudget?: TurnCallBudget;
 }
 
 export function buildPreflightDeps(
@@ -43,7 +45,7 @@ export function buildPreflightDeps(
   const { providers, policy, cwd, timeoutMs, sandbox, availableModels, authenticatedProviders } = input;
   const { config, env, autoMode, intentPass } = input;
   const { accountAux, ledger, clock, sessionId, cacheAccountingV2 } = input;
-  const { memoryBias } = input;
+  const { memoryBias, turnCallBudget } = input;
 
   // Route classifier — smart routing, worker-tier model call to disambiguate tier.
   const ROUTER_TIMEOUT_MS = 20_000;
@@ -70,6 +72,7 @@ export function buildPreflightDeps(
                 ...(cacheAccountingV2 ? { cacheAccountingV2: true } : {}),
               }
             : {}),
+          ...(turnCallBudget !== undefined ? { turnCallBudget } : {}),
         })
       : undefined;
 
@@ -99,6 +102,7 @@ export function buildPreflightDeps(
                 ...(cacheAccountingV2 ? { cacheAccountingV2: true } : {}),
               }
             : {}),
+          ...(turnCallBudget !== undefined ? { turnCallBudget } : {}),
         })
       : undefined;
 

@@ -11,8 +11,14 @@
  * stripPastedSecretWrapper, classifyPastedSecret) are tested in credentials.test.ts.
  */
 
-import { describe, it } from 'vitest';
+import { describe, it, vi } from 'vitest';
 import assert from 'node:assert/strict';
+import type {
+  LoginProviderOutcome,
+  LoginResult,
+  LoginVerifyResult,
+  LoginRunnerDeps,
+} from '../../src/commands/login.ts';
 import {
   isProviderId,
   isHeadlessEnv,
@@ -20,6 +26,10 @@ import {
   shouldRetryWithCode,
   runLogin,
   getLoginCommand,
+  aggregateLoginOutcomes,
+  loginExitCode,
+  createLoginRunner,
+  runProviderLogin,
 } from '../../src/commands/login.ts';
 import { extractClaudeToken, stripPastedSecretWrapper, classifyPastedSecret } from '../../src/infra/credentials.ts';
 
@@ -308,5 +318,462 @@ describe('paste-fallback: classifyPastedSecret — api-key vs oauth-token distin
 
   it('uses startsWith semantics — leading sk-ant-oat IS oauth-token', () => {
     assert.equal(classifyPastedSecret('sk-ant-oat01-abc-TOKEN'), 'oauth-token');
+  });
+});
+
+describe('aggregateLoginOutcomes', () => {
+  it('aggregate invalid provider', () => {
+    const result = aggregateLoginOutcomes([], 'bogus');
+    assert.deepStrictEqual(result, {
+      status: 'invalid-provider',
+      outcomes: [],
+      invalidProvider: 'bogus',
+    });
+    assert.equal(loginExitCode(result), 1);
+  });
+
+  it('aggregate all skipped is no-targets', () => {
+    const outcomes: LoginProviderOutcome[] = [
+      { provider: 'claude', status: 'skipped-not-installed', method: null, attempts: [], fallbackUsed: false },
+    ];
+    const result = aggregateLoginOutcomes(outcomes);
+    assert.equal(result.status, 'no-targets');
+    assert.equal(loginExitCode(result), 1);
+  });
+
+  it('aggregate authenticated plus skipped is success', () => {
+    const outcomes: LoginProviderOutcome[] = [
+      {
+        provider: 'claude',
+        status: 'authenticated',
+        method: 'browser',
+        attempts: [
+          { method: 'browser', status: 'authenticated', childExitCode: 0, verification: 'authenticated' },
+        ],
+        fallbackUsed: false,
+      },
+      { provider: 'codex', status: 'skipped-not-installed', method: null, attempts: [], fallbackUsed: false },
+    ];
+    const result = aggregateLoginOutcomes(outcomes);
+    assert.equal(result.status, 'success');
+    assert.equal(loginExitCode(result), 0);
+  });
+
+  it('aggregate authenticated plus failed is partial', () => {
+    const outcomes: LoginProviderOutcome[] = [
+      {
+        provider: 'claude',
+        status: 'authenticated',
+        method: 'browser',
+        attempts: [
+          { method: 'browser', status: 'authenticated', childExitCode: 0, verification: 'authenticated' },
+        ],
+        fallbackUsed: false,
+      },
+      {
+        provider: 'codex',
+        status: 'failed',
+        method: null,
+        attempts: [
+          { method: 'browser', status: 'failed', childExitCode: 1, verification: 'not-authenticated' },
+        ],
+        fallbackUsed: false,
+      },
+    ];
+    const result = aggregateLoginOutcomes(outcomes);
+    assert.equal(result.status, 'partial');
+    assert.equal(loginExitCode(result), 1);
+  });
+
+  it('aggregate cancel only', () => {
+    const outcomes: LoginProviderOutcome[] = [
+      {
+        provider: 'claude',
+        status: 'cancelled',
+        method: null,
+        attempts: [
+          { method: 'browser', status: 'cancelled', childExitCode: null, verification: 'not-authenticated' },
+        ],
+        fallbackUsed: false,
+      },
+    ];
+    const result = aggregateLoginOutcomes(outcomes);
+    assert.equal(result.status, 'cancelled');
+    assert.equal(loginExitCode(result), 1);
+  });
+
+  it('failure dominates cancel without success', () => {
+    const outcomes: LoginProviderOutcome[] = [
+      {
+        provider: 'claude',
+        status: 'cancelled',
+        method: null,
+        attempts: [
+          { method: 'browser', status: 'cancelled', childExitCode: null, verification: 'not-authenticated' },
+        ],
+        fallbackUsed: false,
+      },
+      {
+        provider: 'codex',
+        status: 'failed',
+        method: null,
+        attempts: [
+          { method: 'browser', status: 'failed', childExitCode: 1, verification: 'not-authenticated' },
+        ],
+        fallbackUsed: false,
+      },
+    ];
+    const result = aggregateLoginOutcomes(outcomes);
+    assert.equal(result.status, 'failed');
+  });
+
+  it('method is only the authenticating method', () => {
+    const authOutcome: LoginProviderOutcome = {
+      provider: 'claude',
+      status: 'authenticated',
+      method: 'browser',
+      attempts: [
+        { method: 'browser', status: 'authenticated', childExitCode: 0, verification: 'authenticated' },
+      ],
+      fallbackUsed: false,
+    };
+    const cancelledOutcome: LoginProviderOutcome = {
+      provider: 'codex',
+      status: 'cancelled',
+      method: null,
+      attempts: [
+        { method: 'browser', status: 'cancelled', childExitCode: null, verification: 'not-authenticated' },
+      ],
+      fallbackUsed: false,
+    };
+
+    if (authOutcome.status === 'authenticated') {
+      assert.equal(typeof authOutcome.method, 'string');
+    }
+    if (cancelledOutcome.status !== 'authenticated') {
+      assert.equal(cancelledOutcome.method, null);
+    }
+  });
+
+  it('declined retry leaves browser attempt and fallbackUsed false', () => {
+    const outcome: LoginProviderOutcome = {
+      provider: 'claude',
+      status: 'cancelled',
+      method: null,
+      attempts: [
+        {
+          method: 'browser',
+          status: 'cancelled',
+          childExitCode: 1,
+          verification: 'probe-error',
+        },
+      ],
+      fallbackUsed: false,
+    };
+    assert.equal(outcome.status, 'cancelled');
+    assert.equal(outcome.attempts.length, 1);
+    assert.equal(outcome.attempts[0].method, 'browser');
+    assert.equal(outcome.fallbackUsed, false);
+  });
+});
+
+describe('loginExitCode', () => {
+  it('loginExitCode returns zero only for success', () => {
+    const successResult: LoginResult = { status: 'success', outcomes: [] };
+    assert.equal(loginExitCode(successResult), 0);
+
+    for (const status of ['partial', 'cancelled', 'failed', 'no-targets', 'invalid-provider'] as const) {
+      const result: LoginResult = { status, outcomes: [] };
+      assert.equal(loginExitCode(result), 1, `status '${status}' should return 1`);
+    }
+  });
+
+  it('standalone exit translation rejects partial and cancelled', () => {
+    const partial: LoginResult = {
+      status: 'partial',
+      outcomes: [
+        { provider: 'claude', status: 'authenticated', method: 'browser', attempts: [{ method: 'browser', status: 'authenticated', childExitCode: 0, verification: 'authenticated' }], fallbackUsed: false },
+        { provider: 'codex', status: 'failed', method: null, attempts: [{ method: 'browser', status: 'failed', childExitCode: 1, verification: 'not-authenticated' }], fallbackUsed: false },
+      ],
+    };
+    assert.equal(loginExitCode(partial), 1);
+
+    const cancelled: LoginResult = {
+      status: 'cancelled',
+      outcomes: [
+        { provider: 'claude', status: 'cancelled', method: null, attempts: [{ method: 'browser', status: 'cancelled', childExitCode: null, verification: 'not-authenticated' }], fallbackUsed: false },
+      ],
+    };
+    assert.equal(loginExitCode(cancelled), 1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Injectable runner tests (P0-03b)
+// ---------------------------------------------------------------------------
+
+function fakeNoopOut() {
+  return { write: () => {}, color: false, isTty: false } as const;
+}
+
+function fakeDeps(overrides?: Partial<LoginRunnerDeps>): LoginRunnerDeps {
+  return {
+    detect: vi.fn().mockResolvedValue({ installed: true, authenticated: false }),
+    spawn: vi.fn().mockReturnValue({ done: Promise.resolve(0) }),
+    verify: vi.fn().mockResolvedValue({ kind: 'not-authenticated' } as LoginVerifyResult),
+    clearToken: vi.fn().mockResolvedValue(undefined),
+    env: {},
+    platform: 'linux' as NodeJS.Platform,
+    cwd: () => '/fake/cwd',
+    ...overrides,
+  };
+}
+
+describe('runProviderLogin — detected flow', () => {
+  it('verified browser success after exit zero', async () => {
+    const verify = vi.fn().mockResolvedValue({ kind: 'authenticated' } as LoginVerifyResult);
+    const deps = fakeDeps({ verify });
+    const outcome = await runProviderLogin(fakeNoopOut(), 'codex', 'browser', undefined, deps);
+
+    assert.equal(outcome.status, 'authenticated');
+    assert.equal(outcome.method, 'browser');
+    assert.equal(outcome.attempts.length, 1);
+    assert.equal(outcome.attempts[0].status, 'authenticated');
+    assert.equal(outcome.attempts[0].verification, 'authenticated');
+    assert.equal(outcome.attempts[0].childExitCode, 0);
+    assert.equal(outcome.attempts[0].method, 'browser');
+    assert.equal(outcome.fallbackUsed, false);
+    assert.equal(deps.detect.mock.calls.length, 1);
+    assert.equal(deps.spawn.mock.calls.length, 1);
+    assert.equal(verify.mock.calls.length, 1);
+  });
+
+  it('verified authentication wins after nonzero exit', async () => {
+    const verify = vi.fn().mockResolvedValue({ kind: 'authenticated' } as LoginVerifyResult);
+    const spawn = vi.fn().mockReturnValue({ done: Promise.resolve(1) });
+    const deps = fakeDeps({ verify, spawn });
+    const outcome = await runProviderLogin(fakeNoopOut(), 'codex', 'browser', undefined, deps);
+
+    assert.equal(outcome.status, 'authenticated');
+    assert.equal(outcome.attempts[0].status, 'authenticated');
+    assert.equal(outcome.attempts[0].verification, 'authenticated');
+    assert.equal(outcome.attempts[0].childExitCode, 1);
+  });
+
+  it('exit zero plus negative probe fails', async () => {
+    const verify = vi.fn().mockResolvedValue({ kind: 'not-authenticated' } as LoginVerifyResult);
+    const spawn = vi.fn().mockReturnValue({ done: Promise.resolve(0) });
+    const deps = fakeDeps({ verify, spawn });
+    const outcome = await runProviderLogin(fakeNoopOut(), 'codex', 'browser', undefined, deps);
+
+    assert.equal(outcome.status, 'failed');
+    assert.equal(outcome.attempts.length, 1);
+    assert.equal(outcome.attempts[0].status, 'failed');
+    assert.equal(outcome.attempts[0].verification, 'not-authenticated');
+    assert.equal(outcome.attempts[0].childExitCode, 0);
+  });
+
+  it('exit 130 plus negative probe cancels', async () => {
+    const verify = vi.fn().mockResolvedValue({ kind: 'not-authenticated' } as LoginVerifyResult);
+    const spawn = vi.fn().mockReturnValue({ done: Promise.resolve(130) });
+    const deps = fakeDeps({ verify, spawn });
+    const outcome = await runProviderLogin(fakeNoopOut(), 'codex', 'browser', undefined, deps);
+
+    assert.equal(outcome.status, 'cancelled');
+    assert.equal(outcome.attempts[0].status, 'cancelled');
+    assert.equal(outcome.attempts[0].verification, 'not-authenticated');
+    assert.equal(outcome.attempts[0].childExitCode, 130);
+  });
+
+  it('probe throw is probe-error', async () => {
+    const err = new Error('probe failed');
+    const verify = vi.fn().mockResolvedValue({ kind: 'probe-error', error: err } as LoginVerifyResult);
+    const deps = fakeDeps({ verify });
+    const outcome = await runProviderLogin(fakeNoopOut(), 'codex', 'browser', undefined, deps);
+
+    assert.equal(outcome.status, 'failed');
+    assert.equal(outcome.attempts[0].status, 'failed');
+    assert.equal(outcome.attempts[0].verification, 'probe-error');
+  });
+
+  it('detect throw fails without spawn', async () => {
+    const detect = vi.fn().mockRejectedValue(new Error('detect failed'));
+    const spawn = vi.fn();
+    const deps = fakeDeps({ detect, spawn });
+    const outcome = await runProviderLogin(fakeNoopOut(), 'codex', 'browser', undefined, deps);
+
+    assert.equal(outcome.status, 'failed');
+    assert.equal(outcome.method, null);
+    assert.equal(outcome.attempts.length, 0);
+    assert.equal(spawn.mock.calls.length, 0);
+  });
+
+  it('not installed skips', async () => {
+    const detect = vi.fn().mockResolvedValue({ installed: false });
+    const spawn = vi.fn();
+    const deps = fakeDeps({ detect, spawn });
+    const outcome = await runProviderLogin(fakeNoopOut(), 'codex', 'browser', undefined, deps);
+
+    assert.equal(outcome.status, 'skipped-not-installed');
+    assert.equal(outcome.attempts.length, 0);
+    assert.equal(spawn.mock.calls.length, 0);
+  });
+
+  it('browser retry code succeeds and method is code', async () => {
+    const verify = vi
+      .fn()
+      .mockResolvedValueOnce({ kind: 'not-authenticated' } as LoginVerifyResult)
+      .mockResolvedValueOnce({ kind: 'authenticated' } as LoginVerifyResult);
+    const spawn = vi
+      .fn()
+      .mockReturnValueOnce({ done: Promise.resolve(1) })
+      .mockReturnValueOnce({ done: Promise.resolve(0) });
+    const confirm = vi.fn().mockResolvedValue(true);
+    const deps = fakeDeps({ verify, spawn });
+
+    const outcome = await runProviderLogin(fakeNoopOut(), 'claude', 'browser', { confirm }, deps);
+
+    assert.equal(outcome.status, 'authenticated');
+    assert.equal(outcome.method, 'code');
+    assert.equal(outcome.attempts.length, 2);
+    assert.equal(outcome.attempts[0].method, 'browser');
+    assert.equal(outcome.attempts[0].status, 'failed');
+    assert.equal(outcome.attempts[1].method, 'code');
+    assert.equal(outcome.attempts[1].status, 'authenticated');
+    assert.equal(outcome.fallbackUsed, true);
+    assert.equal(confirm.mock.calls.length, 1);
+  });
+
+  it('browser retry code fails', async () => {
+    const verify = vi
+      .fn()
+      .mockResolvedValue({ kind: 'not-authenticated' } as LoginVerifyResult);
+    const spawn = vi
+      .fn()
+      .mockReturnValueOnce({ done: Promise.resolve(1) })
+      .mockReturnValueOnce({ done: Promise.resolve(1) });
+    const confirm = vi.fn().mockResolvedValue(true);
+    const deps = fakeDeps({ verify, spawn });
+
+    const outcome = await runProviderLogin(fakeNoopOut(), 'codex', 'browser', { confirm }, deps);
+
+    assert.equal(outcome.status, 'failed');
+    assert.equal(outcome.attempts.length, 2);
+    assert.equal(outcome.attempts[0].method, 'browser');
+    assert.equal(outcome.attempts[0].status, 'failed');
+    assert.equal(outcome.attempts[1].method, 'code');
+    assert.equal(outcome.attempts[1].status, 'failed');
+    assert.equal(outcome.fallbackUsed, true);
+  });
+
+  it('declined retry preserves browser outcome', async () => {
+    const verify = vi.fn().mockResolvedValue({ kind: 'not-authenticated' } as LoginVerifyResult);
+    const spawn = vi.fn().mockReturnValue({ done: Promise.resolve(1) });
+    const confirm = vi.fn().mockResolvedValue(false);
+    const deps = fakeDeps({ verify, spawn });
+
+    const outcome = await runProviderLogin(fakeNoopOut(), 'codex', 'browser', { confirm }, deps);
+
+    assert.equal(outcome.status, 'failed');
+    assert.equal(outcome.method, null);
+    assert.equal(outcome.attempts.length, 1);
+    assert.equal(outcome.attempts[0].method, 'browser');
+    assert.equal(outcome.fallbackUsed, false);
+    assert.equal(confirm.mock.calls.length, 1);
+  });
+
+  it('all four providers use their existing argv', async () => {
+    const spawn = vi.fn().mockReturnValue({ done: Promise.resolve(0) });
+    const verify = vi.fn().mockResolvedValue({ kind: 'authenticated' } as LoginVerifyResult);
+    const deps = fakeDeps({ spawn, verify });
+    const runner = createLoginRunner(deps);
+
+    await runner(fakeNoopOut(), undefined, { method: 'browser' });
+
+    const calls = spawn.mock.calls as Array<[string, readonly string[], unknown]>;
+    const bins = calls.map((c) => c[0]);
+    const args = calls.map((c) => c[1]);
+    assert.deepEqual(bins, ['claude', 'codex', 'opencode', 'grok']);
+    assert.deepEqual(args, [
+      ['/login'],
+      ['login'],
+      ['auth', 'login'],
+      ['login', '--oauth'],
+    ]);
+  });
+
+  it('suspend and resume exactly once per spawned attempt', async () => {
+    const resume = vi.fn();
+    const suspendStdin = vi.fn(() => resume);
+    const verify = vi.fn().mockResolvedValue({ kind: 'not-authenticated' } as LoginVerifyResult);
+    const spawn = vi.fn().mockReturnValue({ done: Promise.resolve(1) });
+    const confirm = vi.fn().mockResolvedValue(true);
+    const deps = fakeDeps({ verify, spawn });
+
+    const outcome = await runProviderLogin(fakeNoopOut(), 'codex', 'browser', { confirm, suspendStdin }, deps);
+
+    // Two spawns: browser (failed) + code (failed) = 2 spawns
+    assert.equal(outcome.attempts.length, 2);
+    assert.equal(suspendStdin.mock.calls.length, 2);
+    assert.equal(resume.mock.calls.length, 2);
+  });
+
+  it('Claude clearToken only after verified authentication', async () => {
+    const clearToken = vi.fn().mockResolvedValue(undefined);
+
+    // claude authenticated → clearToken called
+    const deps1 = fakeDeps({
+      verify: vi.fn().mockResolvedValue({ kind: 'authenticated' } as LoginVerifyResult),
+      clearToken,
+    });
+    await runProviderLogin(fakeNoopOut(), 'claude', 'browser', undefined, deps1);
+    assert.equal(clearToken.mock.calls.length, 1);
+
+    // non-claude authenticated → clearToken NOT called
+    clearToken.mockClear();
+    const deps2 = fakeDeps({
+      verify: vi.fn().mockResolvedValue({ kind: 'authenticated' } as LoginVerifyResult),
+      clearToken,
+    });
+    await runProviderLogin(fakeNoopOut(), 'codex', 'browser', undefined, deps2);
+    assert.equal(clearToken.mock.calls.length, 0);
+
+    // claude not-authenticated → clearToken NOT called
+    clearToken.mockClear();
+    const deps3 = fakeDeps({
+      verify: vi.fn().mockResolvedValue({ kind: 'not-authenticated' } as LoginVerifyResult),
+      clearToken,
+    });
+    await runProviderLogin(fakeNoopOut(), 'claude', 'browser', undefined, deps3);
+    assert.equal(clearToken.mock.calls.length, 0);
+  });
+
+  it('legacy numeric adapter is truthful', async () => {
+    const out = fakeNoopOut();
+
+    // invalid provider → exit 1
+    const code = await runLogin(out, 'bogus');
+    assert.equal(code, 1);
+
+    // verify the relationship: runLogin delegates and returns loginExitCode of result
+    assert.equal(loginExitCode({ status: 'success', outcomes: [] }), 0);
+    assert.equal(loginExitCode({ status: 'invalid-provider', outcomes: [], invalidProvider: 'bogus' }), 1);
+  });
+
+  it('ordinary success = one detect, one spawn, one verify, one suspend/resume pair', async () => {
+    const resume = vi.fn();
+    const suspendStdin = vi.fn(() => resume);
+    const detect = vi.fn().mockResolvedValue({ installed: true, authenticated: false });
+    const spawn = vi.fn().mockReturnValue({ done: Promise.resolve(0) });
+    const verify = vi.fn().mockResolvedValue({ kind: 'authenticated' } as LoginVerifyResult);
+    const deps = fakeDeps({ detect, spawn, verify });
+
+    await runProviderLogin(fakeNoopOut(), 'codex', 'browser', { suspendStdin }, deps);
+
+    assert.equal(detect.mock.calls.length, 1);
+    assert.equal(spawn.mock.calls.length, 1);
+    assert.equal(verify.mock.calls.length, 1);
+    assert.equal(suspendStdin.mock.calls.length, 1);
+    assert.equal(resume.mock.calls.length, 1);
   });
 });

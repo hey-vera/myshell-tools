@@ -25,7 +25,9 @@ import type { Policy, Tier } from './types.js';
 import type { LedgerWriter, Clock } from './types.js';
 import type { Provider, ProviderId, ProviderRequest, SandboxLevel, Usage } from '../providers/port.js';
 import type { ReasoningEffort } from './model-capabilities.js';
+import type { TurnCallBudget } from './turn-call-budget.js';
 import { route } from './route.js';
+import { runBudgetedProvider } from './budgeted-provider.js';
 import { buildGoalPlanPrompt, parseGoalPlan, type GoalPlan } from './goal-plan.js';
 import type { SystemModel } from './understanding.js';
 import { recordAuxLedger } from './aux-ledger.js';
@@ -60,6 +62,7 @@ export interface GoalPlanGeneratorDeps {
   readonly clock?: Clock;
   readonly sessionId?: string;
   readonly cacheAccountingV2?: boolean;
+  readonly turnCallBudget?: TurnCallBudget;
 }
 
 /**
@@ -172,7 +175,12 @@ export function makeGoalPlannerAttempt(
     let startMs: number | undefined;
     try {
       startMs = deps.clock?.now();
-      for await (const ev of provider.run(req, signal)) {
+      for await (const ev of runBudgetedProvider(provider, req, signal, {
+        ...(deps.turnCallBudget ? { budget: deps.turnCallBudget } : {}),
+        purpose: 'goal-plan',
+        bucket: 'discretionary',
+        provider: provider.id,
+      })) {
         if (ev.type === 'done') {
           finalText = ev.text;
           usage = ev.usage;

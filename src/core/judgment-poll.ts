@@ -555,7 +555,7 @@ export async function* runJudgmentPoll(
         signal,
         historyContext,
         capability,
-        { prompt: decisionPrompt, taskKind: 'judgment' },
+        { prompt: decisionPrompt, taskKind: 'judgment', callPurpose: 'judgment', callBucket: 'discretionary' },
       ),
     ),
     recordCandidate,

@@ -14,6 +14,7 @@
 
 import readline from 'node:readline';
 import type { OrchestrateDeps } from '../core/types.js';
+import { createTurnCallBudget } from '../core/turn-call-budget.js';
 import type { OutputSink } from './render.js';
 import { runTask } from './run.js';
 import { completeChat } from './menu-completion.js';
@@ -100,6 +101,19 @@ export async function startRepl(deps: OrchestrateDeps, out: OutputSink): Promise
       const ac = new AbortController();
       currentAc = ac;
 
+      // P1-09j-b: mint a distinct budget per REPL turn.
+      const turnId = deps.clock.uuid();
+      const turnBudget = createTurnCallBudget({
+        turnId: turnId,
+        mode: 'observe',
+        totalUnits: 64,
+        reserved: {
+          work: 1,
+          failover: 0,
+          verification: 0,
+        },
+      });
+
       // Image attachments (audit #4, image scope): resolve per-turn the SAME way the
       // chat menu does — the IMPURE existence check lives here in the interface layer
       // (fs allowed), reusing the shared resolveImageAttachments helper (no
@@ -108,10 +122,23 @@ export async function startRepl(deps: OrchestrateDeps, out: OutputSink): Promise
       // provider. No real image → empty → field omitted → behaviour unchanged.
       const turnAttachments = resolveImageAttachments(line, { cwd: deps.cwd });
       const turnDeps: OrchestrateDeps =
-        turnAttachments.length > 0 ? { ...deps, attachments: turnAttachments } : deps;
+        turnAttachments.length > 0
+          ? { ...deps, attachments: turnAttachments, turnCallBudget: turnBudget }
+          : { ...deps, turnCallBudget: turnBudget };
 
       runTask(line, turnDeps, out, ac.signal).then(() => {
         currentAc = null;
+        // P1-09j-b: snap and invoke receipt callback if present.
+        const receiptCb = turnDeps.onTurnCallBudgetReceipt;
+        if (receiptCb !== undefined) {
+          void (async () => {
+            try {
+              await receiptCb(turnBudget.snapshot());
+            } catch {
+              // diagnostic only — never block
+            }
+          })();
+        }
         rl.resume();
         rl.prompt();
       }).catch((err: unknown) => {

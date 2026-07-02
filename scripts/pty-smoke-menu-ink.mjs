@@ -8,6 +8,9 @@
  *   4. assert the buffered key opens the composer with NO second menu byte,
  *   5. `/exit` back to the menu, then one `q` exits cleanly.
  */
+
+/* global process, console, URL, setTimeout, clearTimeout */
+
 import { spawn, spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { createRequire } from 'node:module';
@@ -36,6 +39,7 @@ function hasXterm() {
 }
 
 function stripAnsi(text) {
+  // eslint-disable-next-line no-control-regex
   return text.replace(/\x1b\[[0-?]*[ -/]*[@-~]/gu, '').replace(/\r/g, '');
 }
 
@@ -97,16 +101,16 @@ async function waitFor(label, timeoutMs, getText, predicate) {
 }
 
 if (!existsSync(CLI)) {
-  console.log('SKIP: dist/cli.js not built (run npx tsc)');
-  process.exit(0);
+  console.log('UNSUPPORTED: dist/cli.js not built (run npx tsc)');
+  process.exit(2);
 }
 if (!hasXterm()) {
-  console.log('SKIP: @xterm/headless not installed (run npm install) — screen reconstruction unavailable');
-  process.exit(0);
+  console.log('UNSUPPORTED: @xterm/headless not installed (run npm install) — screen reconstruction unavailable');
+  process.exit(2);
 }
 if (!hasScript()) {
-  console.log('SKIP: no PTY (`script` unavailable) — early-keypress Ink menu not verifiable here');
-  process.exit(0);
+  console.log('UNSUPPORTED: no PTY (`script` unavailable) — early-keypress Ink menu not verifiable here');
+  process.exit(2);
 }
 
 const { Terminal } = require('@xterm/headless');

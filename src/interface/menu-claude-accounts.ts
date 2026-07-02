@@ -3,8 +3,7 @@ import type { Confirm } from './menu-key-confirm.js';
 import { readMenuKey } from './menu-key-confirm.js';
 import { bold, yellow, green } from '../ui/theme.js';
 import type { Clock } from '../core/types.js';
-import type { LoginMethod } from '../commands/login.js';
-import type { CommandGatePort } from '../core/command-gate.js';
+import type { LoginRunner } from '../commands/login.js';
 import {
   type ClaudeSubscriptionAccount,
   type SubscriptionAccount,
@@ -18,19 +17,6 @@ import {
 } from '../infra/subscriptions.js';
 import { detectSubscriptionAccount } from '../infra/subscription-detect.js';
 import { mkdir } from 'node:fs/promises';
-
-type LoginFn = (
-  out: OutputSink,
-  providerArg?: string,
-  opts?: {
-    method?: LoginMethod;
-    readLine?: () => Promise<string | null>;
-    suspendStdin?: () => () => void;
-    confirm?: (defaultYes: boolean, opts?: { requireExplicit?: boolean }) => Promise<boolean>;
-    commandGate?: CommandGatePort;
-    accountEnv?: Readonly<Partial<NodeJS.ProcessEnv>>;
-  },
-) => Promise<number>;
 
 function isClaudeAccount(a: SubscriptionAccount): a is ClaudeSubscriptionAccount {
   return a.provider === 'claude' && subscriptionAccountKind(a) === 'oauth-sub';
@@ -55,7 +41,7 @@ async function createClaudeAccountFlow(
   readLine: () => Promise<string | null>,
   confirm: Confirm,
   clock: Clock,
-  login: LoginFn,
+  login: LoginRunner,
   suspendStdin?: (() => () => void) | undefined,
   inkReadKey?: (() => Promise<string>) | undefined,
   platform: NodeJS.Platform = process.platform,
@@ -180,7 +166,7 @@ async function editAccountFlow(
   readLine: () => Promise<string | null>,
   confirm: Confirm,
   accounts: readonly SubscriptionAccount[],
-  login: LoginFn,
+  login: LoginRunner,
   suspendStdin?: (() => () => void) | undefined,
   inkReadKey?: (() => Promise<string>) | undefined,
 ): Promise<void> {
@@ -211,7 +197,7 @@ async function editAccountScreen(
   readLine: () => Promise<string | null>,
   confirm: Confirm,
   account: SubscriptionAccount,
-  login: LoginFn,
+  login: LoginRunner,
   suspendStdin?: (() => () => void) | undefined,
   inkReadKey?: (() => Promise<string>) | undefined,
 ): Promise<void> {
@@ -453,7 +439,7 @@ export async function runClaudeAccountsMenu(
   confirm: Confirm,
   clock: Clock,
   deps: {
-    login: LoginFn;
+    login: LoginRunner;
     suspendStdin?: (() => () => void) | undefined;
     inkReadKey?: (() => Promise<string>) | undefined;
     cwd?: string | undefined;

@@ -668,7 +668,7 @@ export async function* runTribunal(
           signal,
           historyContext,
           capability,
-          { prompt, taskKind: 'implementation' },
+          { prompt, taskKind: 'implementation', callPurpose: 'tribunal-build', callBucket: 'work' },
         );
       }),
       recordCandidate,
@@ -763,7 +763,7 @@ export async function* runTribunal(
               signal,
               historyContext,
               capability,
-              { prompt: reviewPrompt, taskKind: 'review' },
+              { prompt: reviewPrompt, taskKind: 'review', callPurpose: 'tribunal-review', callBucket: 'verification' },
             ),
           ],
           recordCandidate,

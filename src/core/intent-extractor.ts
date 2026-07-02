@@ -26,6 +26,8 @@ import { buildIntentPrompt, parseIntentFrame } from './intent.js';
 import type { IntentExtractor, IntentExtraction } from './intent.js';
 import { parseFallbackIntentFrame } from './byproduct-parse.js';
 import { recordAuxLedger } from './aux-ledger.js';
+import { runBudgetedProvider } from './budgeted-provider.js';
+import type { TurnCallBudget, TurnCallPurpose } from './turn-call-budget.js';
 
 /** Everything the extractor needs to pick and run the cheapest model. */
 export interface IntentExtractorDeps {
@@ -52,6 +54,7 @@ export interface IntentExtractorDeps {
   readonly clock?: Clock;
   readonly sessionId?: string;
   readonly cacheAccountingV2?: boolean;
+  readonly turnCallBudget?: TurnCallBudget;
 }
 
 /** Extraction always runs at the cheapest tier — it only buckets understanding. */
@@ -104,9 +107,20 @@ export function makeIntentExtractor(deps: IntentExtractorDeps): IntentExtractor 
     let usage: Usage | undefined;
     let providerCostUsd: number | undefined;
     let startMs: number | undefined;
+    const purpose: TurnCallPurpose = (() => {
+      const stage = opts?.stage;
+      if (stage === 'reextract-local') return 'reextract-local';
+      if (stage === 'reextract-web') return 'reextract-web';
+      return 'intent';
+    })();
     try {
       startMs = deps.clock?.now();
-      for await (const ev of provider.run(req, signal)) {
+      for await (const ev of runBudgetedProvider(provider, req, signal, {
+        ...(deps.turnCallBudget !== undefined ? { budget: deps.turnCallBudget } : {}),
+        purpose,
+        bucket: 'discretionary',
+        provider: provider.id,
+      })) {
         if (ev.type === 'done') {
           finalText = ev.text;
           usage = ev.usage;

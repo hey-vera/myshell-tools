@@ -282,25 +282,43 @@ export async function runOversightSelect(
 }
 
 /**
- * Toggle the "set as default shell" preference and actually install/uninstall
- * the shell startup hook to match. The config flag is only flipped when the
- * hook write succeeds, so the stored value never lies about the real state.
+ * Pure helper: given the install/uninstall result code, produce the next
+ * AppConfig. Returns the input reference unchanged on failure (code !== 0).
+ *
+ * Successful enable  → setAsDefault:true,  defaultShellOptOut:false.
+ * Successful disable → setAsDefault:false, defaultShellOptOut:true.
  */
-async function toggleDefaultShell(
+export function applyDefaultShellResult(
+  config: AppConfig,
+  enable: boolean,
+  code: number,
+): AppConfig {
+  if (code !== 0) return config;
+  return { ...config, setAsDefault: enable, defaultShellOptOut: !enable };
+}
+
+/**
+ * Toggle the "set as default shell" preference and actually install/uninstall
+ * the shell startup hook to match. The config is only mutated when the hook
+ * write succeeds, so the stored values never lie about the real state.
+ *
+ * Accepts an optional deps bag ({runInstall, saveConfig}) so tests can inject
+ * spies and assert the zero-save invariant on failure.
+ */
+export async function toggleDefaultShell(
   config: AppConfig,
   out: OutputSink,
+  deps: {
+    runInstall: (out: OutputSink, opts?: { uninstall?: boolean }) => Promise<number>;
+    saveConfig: (config: AppConfig) => Promise<void>;
+  } = { runInstall, saveConfig },
 ): Promise<AppConfig> {
   const enable = !config.setAsDefault;
-  // runInstall reports exactly what it wrote (or removed) and how to reverse.
-  const code = await runInstall(out, enable ? undefined : { uninstall: true });
-
-  // Only adopt the new state if the hook write succeeded; otherwise keep the old.
-  const setAsDefault = code === 0 ? enable : config.setAsDefault;
-
-  // Persist defaultShellOptOut so future loadConfig migrations can distinguish
-  // a deliberate toggle-off from an old inherited false.
-  const updated: AppConfig = { ...config, setAsDefault, defaultShellOptOut: !enable };
-  await saveConfig(updated);
+  const code = await deps.runInstall(out, enable ? undefined : { uninstall: true });
+  const updated = applyDefaultShellResult(config, enable, code);
+  if (updated !== config) {
+    await deps.saveConfig(updated);
+  }
   return updated;
 }
 

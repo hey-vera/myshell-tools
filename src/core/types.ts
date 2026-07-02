@@ -13,6 +13,7 @@
 
 import type { Provider, ProviderId, SandboxLevel } from '../providers/port.js';
 import type { NativeSessionPlan } from './native-session.js';
+import type { TurnCallBudget } from './turn-call-budget.js';
 
 // ---------------------------------------------------------------------------
 // Classification
@@ -791,6 +792,23 @@ export interface OrchestrateDeps {
    */
   readonly observedBlockingCalls?: number;
   /**
+   * P1-09c PREFLIGHT-CALL-LEDGER — global turn-call budget ledger. When present,
+   * every preflight provider call (route classifier, intent extractor, local/web
+   * re-extraction) records its attempt on this ledger via `runBudgetedProvider`.
+   * ABSENT → every provider call is byte-for-byte identical to today (the
+   * transparent delegate path). Observe-only: the budget does NOT change admission
+   * in this slice. Set only by the interface layer when a budget is provisioned.
+   */
+  readonly turnCallBudget?: TurnCallBudget;
+  /**
+   * P1-09j-b observing ledger callback: when set, the interface layer invokes it
+   * at turn settlement with the snapshot receipt. Diagnostic/machine-facing;
+   * no human "Auto" copy or completion claim changes. observe-only.
+   */
+  readonly onTurnCallBudgetReceipt?: (
+    receipt: import('./turn-call-budget.js').TurnCallBudgetReceipt,
+  ) => void | Promise<void>;
+  /**
    * Observed plan classification per provider (from classifyPlan), supplied by
    * the conversation layer as an immutable snapshot. Consulted by the adaptive
    * flagship-admission gate (core/flagship.ts) to veto auto-opening the flagship
@@ -943,7 +961,7 @@ export interface OrchestrateDeps {
    * the verifyPort injection pattern.
    */
   readonly evidenceSink?: (
-    snapshot: import('./evidence.js').EvidenceSnapshot,
+    snapshot: import('./evidence.js').EvidenceSnapshotV2,
   ) => Promise<void> | void;
   readonly evidenceSnapshotBuilder?: (input: {
     readonly taskId: string;
@@ -952,8 +970,8 @@ export interface OrchestrateDeps {
     readonly provider: import('../providers/port.js').ProviderId;
     readonly availableProviders: readonly import('../providers/port.js').ProviderId[];
     readonly conclusionsReached: readonly string[];
-  }) => Promise<import('./evidence.js').EvidenceSnapshot | undefined> |
-    import('./evidence.js').EvidenceSnapshot |
+  }) => Promise<import('./evidence.js').EvidenceSnapshotV2 | undefined> |
+    import('./evidence.js').EvidenceSnapshotV2 |
     undefined;
   readonly evidenceTaskId?: string;
   readonly evidenceTurnNumber?: number;
