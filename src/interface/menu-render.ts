@@ -20,7 +20,6 @@ import type { OutputSink } from './render.js';
 import type { MenuContext } from './menu.js';
 import type { Goal } from '../core/goal-todo.js';
 import { autoModeReason } from './menu-auto-mode.js';
-import { autoSmartEnabled } from './ui/auto-smart-flag.js';
 import {
   versionStatusLabel,
   renderHeaderLines,
@@ -93,7 +92,7 @@ export async function renderMainScreen(
     const isAuto = mutableCtx.config.mode === undefined;
     const label = isAuto ? 'Auto (smart)' : levelLabel(migrateMode(mutableCtx.config.mode ?? 'balanced'));
     const autoSuffix = isAuto
-      ? `  |  ${autoModeReason(mutableCtx.env, autoSmartEnabled(process.env, mutableCtx.config))}`
+      ? `  |  ${autoModeReason(mutableCtx.env, true)}`
       : '';
     out.write(
       '  ' +
