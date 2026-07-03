@@ -66,6 +66,15 @@ Before creating or updating memory, verify: category fit, 30-day durability, non
 
 After memory edits, verify `MEMORY.md` links resolve. A broken memory index is a rules failure.
 
+## Quality Gate & Merge Authorization
+
+**Definition of Done (every task, non-negotiable).** Work is mergeable only when all three hold:
+1. **Green** — all CI lanes pass on the PR, not just a local run.
+2. **Receipt-verified** — verified independently with command evidence (typecheck/test tails, exact-tree diff), never "looks good"/"probably".
+3. **Vision-aligned** — passes a north-star check: it moves toward the intended product ("one chat to rule them all"), stays within the approved spec/plan, and does not silently drift the architecture. Green tests alone are not alignment.
+
+**Scoped auto-merge authorization (user-granted 2026-07-03).** Claude MAY auto-merge its own PRs without asking when ALL hold: the PR is within an already-approved spec/plan; all CI lanes are green; it is receipt-verified and vision-aligned; and it does NOT change user-facing default behavior beyond the spec, touch release/publishing, or alter schema/migrations. Anything outside that scope → ask the user. Full terms + revocation: memory `merge-authorization-scoped`.
+
 ## CLI Invocation
 
 `codex exec` and `opencode run` must be invoked with stdin closed (`</dev/null`) through the Bash tool with `dangerouslyDisableSandbox: true`. If a run hangs after saying it is reading stdin, fix invocation; do not re-debug auth. Use indexed memory `opencode-codex-cli-stdin-hang` for the current command templates and environment caveats (Windows dev box vs Linux container; codex's own sandbox is broken in the Linux container — use `--dangerously-bypass-approvals-and-sandbox`).
@@ -74,4 +83,4 @@ After memory edits, verify `MEMORY.md` links resolve. A broken memory index is a
 
 Current project state lives in repo docs, receipts, git, and CI. Durable operating policy lives in this file plus indexed memory. If `CLAUDE.md`, memory, handoff docs, and repo docs conflict, stop and surface the conflict instead of choosing silently.
 
-No standing self-merge authorization is active unless an indexed authorization memory exists or the user grants current-turn approval. (The former `merge-authorization-dedrift` memory was removed; the handoff reference to it is stale.)
+Self-merge authorization is SCOPED, not blanket — see §Quality Gate & Merge Authorization and memory `merge-authorization-scoped`. Outside that scope, get current-turn approval.
