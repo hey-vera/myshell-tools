@@ -394,16 +394,6 @@ export interface AppConfig {
    */
   experimentalGoalSteward?: boolean;
   /**
-   * EXPERIMENTAL Auto Smart Default (default off).
-   * When true, and/or MYSHELL_AUTO_SMART is truthy, the absent config.mode
-   * (Auto) becomes a standalone smart default instead of resolving to a fixed
-   * preset via plan detection. Auto uses a neutral base policy (balanced) and
-   * lets the per-turn governor + capacity allocator decide effort per turn,
-   * with subscription/account inventory as capacity/headroom — not as a mode
-   * alias. Flag OFF → byte-identical to today (Auto resolves via plan detection).
-   */
-  experimentalAutoSmart?: boolean;
-  /**
    * Per-user "first-touch explainer shown" flags (whole-tool-finish-5.5.md §0.1).
    * Absent → nothing shown yet (each surface explains itself once on first
    * encounter). Each key flips to true the first time that surface is met.

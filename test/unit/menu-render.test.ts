@@ -176,25 +176,36 @@ function envWithClaudePlan(plan: string | null): EnvironmentStatus {
   };
 }
 
-describe('renderMainScreen — tier-adaptive auto posture label', () => {
-  it('Max plan → the auto line reads "→ full"', async () => {
+describe('renderMainScreen — auto-smart per-turn-effort label (promoted)', () => {
+  it('Max plan → the auto line shows the per-turn-effort suffix (not "→ full")', async () => {
     const out = await render(envWithClaudePlan('claude max 20x'));
     assert.ok(out.includes('Auto (smart)'), 'mode line shows Auto (smart) when unset');
-    assert.ok(out.includes('→ full'), `Max plan must read "→ full"; got:\n${out}`);
+    assert.ok(
+      out.includes('per-turn effort from task + risk + provider headroom'),
+      `Max plan must show per-turn-effort suffix; got:\n${out}`,
+    );
+    assert.ok(!out.includes('→ full'), 'promoted auto-smart must not show "→ full" posture');
+    assert.ok(out.includes('auto ·'), 'plan info prefix still shows');
   });
 
-  it('Free plan → the auto line reads "→ conservative" (frugal, said plainly)', async () => {
+  it('Free plan → the auto line shows per-turn-effort suffix (not "→ conservative")', async () => {
     const out = await render(envWithClaudePlan('claude free'));
-    assert.ok(out.includes('→ conservative'), `Free plan must read "→ conservative"; got:\n${out}`);
+    assert.ok(
+      out.includes('per-turn effort from task + risk + provider headroom'),
+      `Free plan must show per-turn-effort suffix; got:\n${out}`,
+    );
+    assert.ok(!out.includes('→ conservative'), 'promoted auto-smart must not show plan posture');
     assert.ok(!out.includes('→ full'), 'a Free plan never reads as the Max "full"');
   });
 
-  it('undetected plan → "→ balanced" (the SAFE middle), NEVER "→ full"', async () => {
-    // Claude authed but the CLI reported no plan (plan: null) → balanced posture.
+  it('undetected plan → per-turn-effort suffix (not "→ balanced")', async () => {
     const out = await render(envWithClaudePlan(null));
-    assert.ok(out.includes('→ balanced'), `undetected plan must read "→ balanced"; got:\n${out}`);
+    assert.ok(
+      out.includes('per-turn effort from task + risk + provider headroom'),
+      `undetected plan must show per-turn-effort suffix; got:\n${out}`,
+    );
+    assert.ok(!out.includes('→ balanced'), 'promoted auto-smart must not show "→ balanced"');
     assert.ok(!out.includes('→ full'), 'an undetected plan must never assume the Max "full"');
-    // And it must not nag the compact line with "no plan reported".
     assert.ok(!out.includes('no plan reported'), 'compact line never nags about a missing plan');
   });
 });

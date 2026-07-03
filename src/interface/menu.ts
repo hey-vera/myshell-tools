@@ -219,7 +219,7 @@ import type { StartupInputBuffer } from './startup-input.js';
 import { STARTUP_INPUT_CARRIER_ENV } from './startup-input.js';
 
 import { itemParkingEnabled } from './ui/item-park-flag.js';
-import { autoSmartEnabled } from './ui/auto-smart-flag.js';
+
 import { tribunalEnabled } from './ui/tribunal-flag.js';
 
 
@@ -688,17 +688,15 @@ export async function runChatLoop(
   // mode (set on the conversation record) overrides the global default
   // (config.mode), which itself overrides the plan-derived Auto detection.
   // Existing conversations without a mode field default to 'auto' (inherit).
-  // Auto Smart Default (experimentalAutoSmart flag ON): absent config.mode
-  // uses a neutral balanced base policy (per-turn governor scaling) instead of
-  // collapsing to a plan-derived preset (often quality-first/Max).
+  // Auto Smart Default: absent config.mode uses a neutral balanced base policy
+  // (per-turn governor scaling) instead of collapsing to a plan-derived preset
+  // (often quality-first/Max).
   const allMetas = await ctx.store.list();
   const convMeta = allMetas.find((m) => m.id === convId);
   const convExplicitMode = convMeta?.mode !== undefined && convMeta.mode !== 'auto';
-  const autoSmartOn = autoSmartEnabled(process.env, mutableCtx.config);
   const effectiveMode: Mode = convExplicitMode
     ? (levelToMode(convMeta.mode) ?? resolveAutoMode(mutableCtx.env))
-    : (mutableCtx.config.mode ??
-       (autoSmartOn ? 'balanced' : resolveAutoMode(mutableCtx.env)));
+    : (mutableCtx.config.mode ?? 'balanced');
 
   // -------------------------------------------------------------------------
   // RECAP (Phase 7, docs/recap-feature-5.5.md) — a ※ orientation line on resume
@@ -2512,7 +2510,7 @@ export async function runChatLoop(
           // consult falls back to the honest zero either way), so it never
           // changes a no-pressure turn.
           governorPressure: currentPressure(),
-          ...(autoSmartOn && mutableCtx.config.mode === undefined
+          ...(mutableCtx.config.mode === undefined
             ? { governorBudgetCeiling: planBudgetCeiling(mutableCtx.env) }
             : {}),
           // VERIFICATION CENTERPIECE (master-plan PHASE 3) — unconditional
