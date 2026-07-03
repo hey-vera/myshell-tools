@@ -929,7 +929,7 @@ export interface OrchestrateDeps {
    * Auto Smart Default). When set, the governor raises its base budget to this
    * ceiling for substantial turns — the plan raises what Auto CAN afford without
    * changing what Auto IS. Absent → the mode's base budget is the ceiling.
-   * Only ever set when Auto+experimentalAutoSmart is active.
+   * Only ever set when the Auto Smart Default is active.
    */
   readonly governorBudgetCeiling?: number;
   /**
