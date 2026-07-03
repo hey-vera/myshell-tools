@@ -24,7 +24,6 @@ import type { OutputSink } from '../interface/render.js';
 import { readLedger, summarizeLedger } from '../infra/ledger.js';
 import { formatTokens } from '../infra/insights.js';
 import { getCheapestForTier, calculateCost, calculateEffectiveCost, getModelPricing } from '../infra/pricing.js';
-import { cacheAccountingV2Enabled } from '../interface/ui/cache-accounting-flag.js';
 import { bold, dim, cyan, divider, label } from '../ui/theme.js';
 
 // ---------------------------------------------------------------------------
@@ -173,7 +172,7 @@ export async function runCost(cwd: string, out: OutputSink): Promise<number> {
     out.write('Could not read the usage ledger right now — try again later.\n');
     return 0;
   }
-  const lines = formatCostReport(entries, out.color, { cacheAccountingV2: cacheAccountingV2Enabled(process.env) });
+  const lines = formatCostReport(entries, out.color, { cacheAccountingV2: true });
   for (const line of lines) {
     out.write(line + '\n');
   }

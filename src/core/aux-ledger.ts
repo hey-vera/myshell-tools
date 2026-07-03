@@ -2,12 +2,12 @@
  * src/core/aux-ledger.ts — record auxiliary model calls in the ledger.
  *
  * One pure helper shared by route-classifier, intent-extractor, recap-generator,
- * understanding-generator, and goal-plan-generator. When MYSHELL_ACCOUNT_AUX is
- * OFF, it returns immediately (no I/O, no cost). When ON, it stamps a ledger
- * entry with the auxiliary `stage` and optional `intentVersionId`.
+ * understanding-generator, and goal-plan-generator. Account aux is always on;
+ * it stamps a ledger entry with the auxiliary `stage` and optional
+ * `intentVersionId`.
  *
- * Cost discipline: uses `calculateEffectiveCost` only when `cacheAccountingV2`
- * is true; otherwise `calculateCost`. Falls back to a local price-lookup
+ * Cost discipline: uses `calculateEffectiveCost` with cacheAccountingV2
+ * always active; otherwise `calculateCost`. Falls back to a local price-lookup
  * estimate when `providerCostUsd` is absent.
  */
 
