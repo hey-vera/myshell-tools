@@ -25,7 +25,6 @@ import {
   TASTE_SUBJECT_MAX,
   type TasteEvent,
 } from '../../src/core/taste.ts';
-import { tasteEnabled } from '../../src/core/taste-flag.ts';
 
 const NOW = '2026-06-09T00:00:00.000Z';
 
@@ -271,31 +270,6 @@ describe('renderTastePlaybook', () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// tasteEnabled — DEFAULT ON (max intelligence, preference layer; opt-out only)
-// ---------------------------------------------------------------------------
+// tasteEnabled promoted to unconditional in batches 4-6 dedrift.
+// Taste is always ON (fail-soft, no tokens, no cost).
 
-describe('tasteEnabled (flag, default ON)', () => {
-  it('is ON with no env and no config', () => {
-    assert.equal(tasteEnabled(undefined, undefined), true);
-    assert.equal(tasteEnabled({}, {}), true);
-  });
-
-  it('is ON with explicit env opt-in or config (already default)', () => {
-    for (const v of ['1', 'true', 'on', 'yes', 'TRUE', ' On ']) {
-      assert.equal(tasteEnabled({ MYSHELL_TASTE: v }, undefined), true);
-    }
-    assert.equal(tasteEnabled({ experimentalTaste: undefined } as never, { experimentalTaste: true }), true);
-  });
-
-  it('is OFF only for explicit opt-out (falsy env or config false)', () => {
-    for (const v of ['0', 'false', '', 'off', 'no']) {
-      assert.equal(tasteEnabled({ MYSHELL_TASTE: v }, undefined), false);
-    }
-    assert.equal(tasteEnabled(undefined, { experimentalTaste: false }), false);
-  });
-
-  it('never throws on hostile input (default-ON safe)', () => {
-    assert.doesNotThrow(() => tasteEnabled({ MYSHELL_TASTE: 42 as unknown as string }, { experimentalTaste: 'weird' as unknown as boolean | undefined }));
-  });
-});

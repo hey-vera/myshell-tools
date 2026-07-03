@@ -93,11 +93,6 @@ import { commandHelpText } from './ui/help.js';
 import { createSpinner } from './ui/spinner.js';
 import { dim } from './ui/theme.js';
 import { inkEnabled } from './interface/ui/flag.js';
-import { verifyEnabled } from './interface/ui/verify-flag.js';
-import { trustEnabled } from './interface/ui/trust-flag.js';
-import { experimentalEnabledByDefault } from './interface/ui/experimental-default.js';
-
-import { nativeSessionsPromoteEnabled } from './interface/ui/native-sessions-promote-flag.js';
 import { createTurnCallBudget } from './core/turn-call-budget.js';
 import { createIntentStore } from './infra/intent-store.js';
 const require = createRequire(import.meta.url);
@@ -314,7 +309,6 @@ function buildDeps(
   const ledger = createLedger({ cwd });
   const session = createSessionWriter({ cwd, id: systemClock.uuid() });
   const intentStore = createIntentStore({ cwd });
-  const nativeSessionsPromoteOn = nativeSessionsPromoteEnabled(process.env);
   const intentVersionId = systemClock.uuid();
 
   // Per-turn receipt ledger wrapper: always captures entries for the receipt.
@@ -354,7 +348,7 @@ function buildDeps(
     blockedStateV1: true,
     evidenceReceiptV2: true,
     receiptLedgerSnapshot: () => receiptLedgerEntries,
-    ...(nativeSessionsPromoteOn ? { nativeSessionsPromote: true } : {}),
+    nativeSessionsPromote: true,
   };
 }
 
@@ -927,7 +921,7 @@ async function main(): Promise<void> {
       env.opencode,
       env.grok,
     ].filter((p) => p.authenticated).length;
-    const runVerifyActive = verifyEnabled(process.env, config);
+    const runVerifyActive = !rollbackEngaged(process.env, config);
     const runTurnId = systemClock.uuid();
     const runBudget = createTurnCallBudget({
       turnId: runTurnId,
@@ -967,23 +961,7 @@ async function main(): Promise<void> {
       ...(runBudget !== undefined ? { turnCallBudget: runBudget } : {}),
     });
     const depsWithPreflight: OrchestrateDeps = { ...deps, ...preflightDeps, ...(runBudget !== undefined ? { turnCallBudget: runBudget } : {}) };
-    // STABLE FEATURE RESOLUTION (v9 Phase 7c): trust resolves via the same stable
-    // default-on resolver used at the interactive entry point.
-    // VERIFY stays CONSERVATIVE here: the scriptable one-shot `run` path keeps verify
-    // OPT-IN (default-off) until real-project canary evidence justifies auto-running
-    // detected test commands in non-interactive/CI contexts. Interactive chat already
-    // resolves verify default-on; resolving the surface inconsistency toward default-on
-    // for `run` is deferred deliberately (operational risk on automation surfaces).
-    // JUDGMENT is NOT wired here: non-interactive one-shot runs lack question-handling
-    // infrastructure; judgment's push_back move expects an interactive loop to present
-    // the challenge and record accept/reject. Documented limitation, not broken behavior.
-    const trustActive = experimentalEnabledByDefault(
-      process.env,
-      config,
-      'MYSHELL_TRUST',
-      config.experimentalTrust,
-      trustEnabled,
-    );
+    const trustActive = !rollbackEngaged(process.env, config);
     const depsWithVerify: OrchestrateDeps =
       runVerifyActive
         ? {

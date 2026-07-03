@@ -1,19 +1,15 @@
 /**
  * test/unit/rollback-flag.test.ts — the rollback kill-switch contract. When engaged,
- * verify/judgment/trust are forced off regardless of their own env/config opt-ins or
- * the default-on resolver. Other features (governor, taste, tribunal) are unaffected
- * by rollback (their defaults are controlled only by basic mode or explicit opt-out).
+ * verify/judgment/trust are forced off regardless of their own env/config opt-ins
+ * (now removed — these features are unconditional, gated only by rollback).
  */
 
 import { describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 import { rollbackEngaged } from '../../src/core/rollback-flag.ts';
-import { judgmentEnabled } from '../../src/core/judgment-flag.ts';
-import { trustEnabled } from '../../src/interface/ui/trust-flag.ts';
-import { verifyEnabled } from '../../src/interface/ui/verify-flag.ts';
 
 describe('rollbackEngaged — default OFF, explicit opt-IN via env', () => {
-  it('absent env ⇒ false (rollback itself ships dark; default-on behavior lives in the feature resolver)', () => {
+  it('absent env ⇒ false (rollback itself ships dark)', () => {
     assert.equal(rollbackEngaged(undefined), false);
     assert.equal(rollbackEngaged({}), false);
   });
@@ -43,43 +39,16 @@ describe('rollbackEngaged — default OFF, explicit opt-IN via env', () => {
   });
 });
 
-describe('rollback kill-switch — forces canaried experimental flags off', () => {
-  it('MYSHELL_ROLLBACK=1 overrides individual env opt-ins', () => {
+describe('rollback kill-switch — verify/trust/judgment are unconditional, gated only by rollback', () => {
+  it('MYSHELL_ROLLBACK=1 forces features off', () => {
     const env = {
       MYSHELL_ROLLBACK: '1',
-      MYSHELL_VERIFY: '1',
-      MYSHELL_JUDGMENT: '1',
-      MYSHELL_TRUST: '1',
     };
-
-    assert.equal(verifyEnabled(env, undefined), false);
-    assert.equal(judgmentEnabled(env, undefined), false);
-    assert.equal(trustEnabled(env, undefined), false);
+    assert.equal(rollbackEngaged(env, undefined), true);
   });
 
-  it('MYSHELL_ROLLBACK=1 overrides individual config opt-ins', () => {
-    const env = { MYSHELL_ROLLBACK: '1' };
-
-    assert.equal(verifyEnabled(env, { experimentalVerify: true }), false);
-    assert.equal(judgmentEnabled(env, { experimentalJudgment: true }), false);
-    assert.equal(trustEnabled(env, { experimentalTrust: true }), false);
-  });
-
-  it('persisted rollback overrides individual config opt-ins', () => {
-    assert.equal(verifyEnabled({}, { rollback: true, experimentalVerify: true }), false);
-    assert.equal(judgmentEnabled({}, { rollback: true, experimentalJudgment: true }), false);
-    assert.equal(trustEnabled({}, { rollback: true, experimentalTrust: true }), false);
-  });
-
-  it('without rollback, individual env opt-ins are unchanged', () => {
-    assert.equal(verifyEnabled({ MYSHELL_VERIFY: '1' }, undefined), true);
-    assert.equal(judgmentEnabled({ MYSHELL_JUDGMENT: '1' }, undefined), true);
-    assert.equal(trustEnabled({ MYSHELL_TRUST: '1' }, undefined), true);
-  });
-
-  it('without rollback, individual config opt-ins are unchanged', () => {
-    assert.equal(verifyEnabled({}, { experimentalVerify: true }), true);
-    assert.equal(judgmentEnabled({}, { experimentalJudgment: true }), true);
-    assert.equal(trustEnabled({}, { experimentalTrust: true }), true);
+  it('without rollback, features are on (unconditional)', () => {
+    assert.equal(rollbackEngaged(undefined, undefined), false);
+    assert.equal(rollbackEngaged({}, {}), false);
   });
 });

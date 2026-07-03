@@ -66,13 +66,6 @@ export interface AppConfig {
    */
   nativeSessions?: boolean;
   /**
-   * EXPERIMENTAL Vendor-Neutral Router (default ON). When absent/true, live chat
-   * routing uses the vendor-neutral router instead of the legacy static-provider-
-   * order path. Set to false (or `MYSHELL_VENDOR_NEUTRAL_ROUTER` ∈ {0,false,off,no}
-   * in the environment) to restore the legacy path byte-for-byte.
-   */
-  experimentalVendorNeutralRouter?: boolean;
-  /**
    * EXPERIMENTAL Parallel Subscription Panel (default off). When true, hard
    * (high/critical-risk) turns run as a CONCURRENT panel of the user's signed-in
    * providers — each answers independently — then a cross-vendor synthesizer
@@ -250,77 +243,7 @@ export interface AppConfig {
    * root. See src/interface/ui/experimental-default.ts.
    */
   experimentalBasic?: boolean;
-  /**
-   * EXPERIMENTAL PERFORMANCE GOVERNOR (default off). When true (or with
-   * `MYSHELL_GOVERNOR` truthy in the environment), orchestrate consults the pure
-   * Performance Governor (src/core/governor.ts) ONCE per turn at the admission
-   * seam: it classifies the task shape and returns an AllocationPlan (a hard
-   * tier-adaptive per-turn call budget + which existing levers — model tier, depth,
-   * verbosity — to spend on by quality-per-token). In Phase 2 the governor
-   * COORDINATES the existing Oracle tier request through the SAME
-   * authorizeTier/admitManager gates — it never bypasses them. The admission path
-   * is BYTE-FOR-BYTE unchanged when this is absent/false. See
-   * src/interface/ui/governor-flag.ts.
-   */
-  experimentalGovernor?: boolean;
-  /**
-   * VERIFICATION CENTERPIECE — stable, default on (promoted v9 Phase 7c).
-   * @deprecated alias — this key is kept for backward compatibility with existing
-   * config files. Do not add new code that sets it; use MYSHELL_VERIFY=0 or the
-   * global MYSHELL_BASIC escape hatch to opt out. When false, opts out of
-   * verification for this project regardless of the default-on interactive resolver.
-   * When true (or with `MYSHELL_VERIFY` ∈ {1,true,on,yes} in env), a code-changing
-   * turn runs a graduated, honest verify stage at the accept point: capture the diff →
-   * tests-first (FREE local exec, command-gated via verify-port.ts) → ONE diff-scoped
-   * cross-vendor critic when the Governor's `verify` lever selects it → an honest
-   * four-state `verified` result {unverified|reviewed|passing|failing} + a concise
-   * receipt. The accept path is BYTE-FOR-BYTE unchanged when the resolved value is
-   * false. See src/interface/ui/verify-flag.ts.
-   */
-  experimentalVerify?: boolean;
-  /**
-   * TRUST SURFACE — stable, default on (promoted v9 Phase 7c).
-   * @deprecated alias — this key is kept for backward compatibility with existing
-   * config files. Do not add new code that sets it; use MYSHELL_TRUST=0 or the
-   * global MYSHELL_BASIC escape hatch to opt out. When false, opts out of the trust
-   * surface for this project. When true (or with `MYSHELL_TRUST` ∈ {1,true,on,yes}
-   * in env), the accept-point receipt is UPGRADED from the bare verify line into the
-   * consolidated, AUDITABLE trust receipt — an auditable confidence line, the
-   * four-state `verified` line, and an honest SELF-AUDIT of what the turn did NOT do.
-   * Composed PURELY from real signals (no new model call); absent signal ⇒ absent
-   * line — never fabricated. The accept path is BYTE-FOR-BYTE unchanged when the
-   * resolved value is false. See src/interface/ui/trust-flag.ts / trust-receipt.ts.
-   */
-  experimentalTrust?: boolean;
-  /**
-   * LEARNED-TASTE / PREFERENCE LEDGER (default on for max intelligence; the
-   * Phase-7 free judgment layer). Records *only* observed user decisions (fork
-   * choices, immediate edits/rephrases, push-back accept/reject, accept-unchanged)
-   * into append-only JSONL (taste-ledger.ts). Recalls distilled playbook (lines
-   * like "<subject>: <the call user keeps making>") + memoryBias (±1 ask-vs-proceed
-   * dial) for prompt injection and engagement. Pure observed, project-scoped,
-   * fail-soft, no fabrication, zero cost. Explicit opt-out via MYSHELL_TASTE=0 or
-   * experimentalTaste:false for compat. We do *not* synthesize quota numbers
-   * (unreliable for flat-rate subs; see user feedback). Preference + observed
-   * outcomes (this + routing-memory + real plan-tier capacity) is the honest path.
-   * See taste-flag.ts / taste.ts.
-   */
-  experimentalTaste?: boolean;
-  /**
-   * FREE JUDGMENT LAYER — stable, default on (promoted v9 Phase 7c).
-   * @deprecated alias — this key is kept for backward compatibility with existing
-   * config files. Do not add new code that sets it; use MYSHELL_JUDGMENT=0 or the
-   * global MYSHELL_BASIC escape hatch to opt out. When false, opts out of the
-   * judgment layer for this project. When true (or with `MYSHELL_JUDGMENT` ∈
-   * {1,true,on,yes} in env), the adaptive brain may emit a NARROWLY-gated `push_back`
-   * move — a single, grounded, falsifiable challenge fired ONLY when there is a real,
-   * nameable reason (a correctness/irreversibility RED FLAG, or a LEARNED-TASTE
-   * VIOLATION); with no grounded reason it stays silent. No new model call: pure
-   * decision logic + recording into the taste ledger. `decideNextMove` returns
-   * BYTE-FOR-BYTE today's moves when the resolved value is false. See
-   * src/core/judgment-flag.ts / src/core/brain.ts.
-   */
-  experimentalJudgment?: boolean;
+  // --- Governor, Verify, Trust, Taste, Judgment config fields removed (promoted to unconditional). ---
   /**
    * EXPERIMENTAL UNIFIED PREFLIGHT (default off; rank-7). When true (or with
    * `MYSHELL_UNIFY_PREFLIGHT` truthy in the environment), on the affected turn class
@@ -403,19 +326,6 @@ export interface AppConfig {
    */
   experimentalResearch?: boolean;
 
-  /**
-   * Opt-in for the WHOLE-PICTURE UNDERSTANDING PASS (Elite-partner architecture
-   * Part 2). Absent/false → the planning brain runs exactly as today: no system
-   * investigation precedes staging and the planner prompt is byte-for-byte
-   * unchanged. When true (or `MYSHELL_UNDERSTANDING` ∈ {1,true,on,yes}) a manager-
-   * tier, READ-ONLY investigation maps the real system (modules + interconnections,
-   * conventions, hard constraints, genuinely-open questions; web-researched best
-   * practice for high-stakes work) into a SystemModel that GROUNDS the planner so
-   * staged goals reflect whole-picture depth. Fail-soft: a failed/empty pass → the
-   * planner runs ungrounded, never blocked. See src/interface/ui/understanding-flag.ts
-   * / src/core/understanding.ts.
-   */
-  experimentalUnderstanding?: boolean;
   /** Internal default-off rollout gate for effort-governed preflight planning depth. */
   experimentalPlanningDepth?: boolean;
   /**
@@ -427,23 +337,6 @@ export interface AppConfig {
    * src/interface/ui/item-park-flag.ts.
    */
   experimentalItemParking?: boolean;
-  /**
-   * Opt-in for the VERIFIED-DONE goal-completion GATE (Elite-partner architecture
-   * Part 3, the anti-fabrication backbone). Absent/false → a goal is marked `done`
-   * exactly as today: when the goal loop reaches the model's GOAL_COMPLETE signal
-   * (byte-for-byte identical). When true (or `MYSHELL_TRULY_COMPLETE` ∈
-   * {1,true,on,yes}) the model's GOAL_COMPLETE is DEMOTED to a "request to verify":
-   * before the goal is set `done`, a REAL verification runs over the goal's
-   * cumulative changes (the verify.ts engine — git-diff change-capture + the
-   * project's own test command → the honest four-state passing|failing|reviewed|
-   * unverified). The goal is set `done` ONLY when the verdict is passing/reviewed;
-   * a failing/unverified verdict (including an empty diff) leaves the goal open with
-   * an honest receipt — never fake green. The verdict is persisted as evidence via
-   * the store's single setGoalVerdict write path. Fail-soft: a verification that
-   * errors/times out → unverified → not-done, never crashes the goal loop.
-   * See src/interface/ui/truly-complete-flag.ts / src/core/verify.ts.
-   */
-  experimentalTrulyComplete?: boolean;
   /**
    * EXPERIMENTAL PER-GOAL MANAGER CYCLE (default off). When true (or with
    * `MYSHELL_MANAGER` truthy in the environment) AND an activated goal has a real,
@@ -461,22 +354,6 @@ export interface AppConfig {
   experimentalManager?: boolean;
 
   /**
-   * AUTO BRAIN — per-turn rung-fusion + objective-evidence escalation (redesign
-   * Auto brain; default-on via experimentalEnabledByDefault). When true (or with
-   * `MYSHELL_AUTO_BRAIN` ∈ {1,true,on,yes} in the environment) the per-turn
-   * policy layer resolves the RungTuple for the turn from: the IntentFrame
-   * byproduct route hint (structural read — no new model call) ⊔ the
-   * deterministic classify() floor ⊔ the per-project taste memory bias, then
-   * clamps to the user's capacity ceiling. On byproduct-flagged HARD/BIG turns
-   * Auto skips any cheap probe and commits straight to the right rung
-   * (predict-and-commit). Escalation fires ONLY on objective signals
-   * (test/typecheck/lint failures, scope growth, explicit pushback, stall) —
-   * self-confidence is BANNED from the trigger. A one-line legible receipt is
-   * written per turn. Absent config no longer means production-off because
-   * `experimentalEnabledByDefault` supplies the default-on value. See
-   * src/interface/ui/auto-brain-flag.ts and src/core/auto-brain.ts.
-   */
-  experimentalAutoBrain?: boolean;  /**
    * EXPERIMENTAL CAPABILITY PARSE-FROM-TEXT FALLBACK (redesign Phase 0,
    * capability-normalization slice; default off). When true (or with
    * `MYSHELL_BYPRODUCT_FALLBACK` ∈ {1,true,on,yes} in the environment), when the
@@ -570,7 +447,6 @@ const DEFAULTS: AppConfig = {
   // Leaving them off avoids a quota spike; per-turn Auto governance is future work.
   learnRouting: true,
   intentEngine: true,
-  experimentalVendorNeutralRouter: true,
 };
 
 // ---------------------------------------------------------------------------

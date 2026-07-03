@@ -28,7 +28,6 @@ import { createFileGoalStore, type GoalStore } from '../../src/infra/goal-store.
 import type { Clock } from '../../src/core/types.ts';
 import type { GoalPlan } from '../../src/core/goal-plan.ts';
 import { planTodosToRoadmap } from '../../src/core/goal-plan.ts';
-import { understandingEnabled } from '../../src/interface/ui/understanding-flag.ts';
 import { classify, hasTierEvidence } from '../../src/core/classify.ts';
 import type { SystemModel } from '../../src/core/understanding.ts';
 
@@ -264,7 +263,7 @@ describe('understanding pass — the menu grounding wiring (Part 2)', () => {
       const r = classify(line).risk;
       return r === 'high' || r === 'critical';
     })();
-    if (understandingEnabled(env, config) && pass !== null) {
+    if (pass !== null) {
       understandingRan = true;
       try {
         modelToPlanner = (await pass(line)) ?? undefined;
@@ -275,11 +274,13 @@ describe('understanding pass — the menu grounding wiring (Part 2)', () => {
     return { understandingRan, highStakes, modelToPlanner };
   }
 
-  it('understanding OFF (explicit opt-out) ⇒ pass never runs, planner gets NO model (ungrounded)', async () => {
+  it('understanding is unconditional — pass runs even with legacy opt-out env set', async () => {
+    // Understanding is now unconditional (promoted in batches 4-6 dedrift).
+    // The MYSHELL_UNDERSTANDING env var no longer gates the pass.
     const pass = async (): Promise<SystemModel | null> => MODEL;
     const r = await simulate({ MYSHELL_UNDERSTANDING: '0' }, {}, 'build the whole auth system', pass);
-    assert.equal(r.understandingRan, false);
-    assert.equal(r.modelToPlanner, undefined, 'planner ungrounded when understanding opted out');
+    assert.equal(r.understandingRan, true, 'understanding runs unconditionally');
+    assert.equal(r.modelToPlanner, MODEL, 'planner grounded unconditionally');
   });
 
   it('understanding ON by default ⇒ pass runs, planner grounded', async () => {

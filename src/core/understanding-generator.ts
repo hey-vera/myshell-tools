@@ -40,7 +40,6 @@ import { route } from './route.js';
 import { buildUnderstandingPrompt, parseSystemModel, type SystemModel } from './understanding.js';
 import { recordAuxLedger } from './aux-ledger.js';
 import { findCapability, DECLARATIVE_MODEL_CAPABILITIES } from './model-capabilities.js';
-import { vendorNeutralRouterEnabled } from './route-types.js';
 import { runBudgetedProvider } from './budgeted-provider.js';
 
 /** Everything the understanding pass needs to pick and run the manager-tier model. */
@@ -162,8 +161,7 @@ export function makeUnderstandingPass(
     // honour the native web-search tool. Flag-gated: when the vendor-neutral
     // router is ON, this is capability-driven via the registry's searchMode;
     // when OFF it is byte-identical (Codex only).
-    const flagOn = vendorNeutralRouterEnabled(process.env, undefined);
-    const wantsWebSearch = deps.highStakes === true && providerHonoursWebSearch(providerId, model, flagOn);
+    const wantsWebSearch = deps.highStakes === true && providerHonoursWebSearch(providerId, model, true);
 
     const req: ProviderRequest = {
       model,

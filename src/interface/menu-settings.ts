@@ -33,7 +33,6 @@ import type { OutputSink } from './render.js';
 import type { MenuContext } from './menu.js';
 import { resolveAutoMode, renderAutoDetected } from './menu-auto-mode.js';
 import { readMenuKey } from './menu-key-confirm.js';
-import { tasteEnabled } from '../core/taste-flag.js';
 
 /**
  * Set an OPTIONAL config field while preserving every other key.
@@ -351,7 +350,7 @@ async function runPrivacyMemory(
   const lines = [
     '',
     `  [1] Memory: ${config.memory !== false ? 'on' : 'off'}`,
-    `  [2] Learned preferences: ${tasteEnabled(process.env, config) ? 'on' : 'off'}`,
+    `  [2] Learned preferences: on`,
     `  [3] Codebase awareness: ${config.codebaseAwareness !== false ? 'on' : 'off'}`,
     '',
     '  [Enter] Back',
@@ -365,7 +364,10 @@ async function runPrivacyMemory(
   if (key === null || key.length === 0) return config;
 
   if (key === '1') return toggleMemory(config, out);
-  if (key === '2') return toggleLearnedTaste(config, out);
+  if (key === '2') {
+    out.write(`Learned preferences: always on (shipped-on feature).\n`);
+    return config;
+  }
   if (key === '3') return toggleCodebaseAwareness(config, out);
 
   return config;
@@ -463,23 +465,6 @@ export async function toggleMemory(config: AppConfig, out: OutputSink): Promise<
   const updated: AppConfig = withOptional(config, 'memory', enable ? undefined : false);
   await saveConfig(updated);
   out.write(`Memory: ${enable ? 'on' : 'off'}\n`);
-  return updated;
-}
-
-/**
- * Toggle the LEARNED-TASTE / PREFERENCE ledger (free observed layer).
- * Default ON (max intelligence). Records only real user signals (edits, rephrases,
- * fork choices, push-back outcomes). Distills to playbook + ask-vs-proceed bias
- * for prompts/engagement. No quota fiction — pure preference + observed outcomes.
- * Opt-out via explicit false (for compat with experimentalTaste).
- */
-export async function toggleLearnedTaste(config: AppConfig, out: OutputSink): Promise<AppConfig> {
-  const currently = tasteEnabled(process.env, config);
-  const enable = !currently;
-  // Persist explicit false only when off (absent or true = on). Spread full config.
-  const updated: AppConfig = withOptional(config, 'experimentalTaste', enable ? undefined : false);
-  await saveConfig(updated);
-  out.write(`Learned taste / prefs (free layer): ${enable ? 'on' : 'off'}\n`);
   return updated;
 }
 

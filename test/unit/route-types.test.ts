@@ -7,7 +7,6 @@ import { describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 
 import {
-  vendorNeutralRouterEnabled,
   poolForModelId,
   opencodeTierRank,
   sessionTokenLoadByPool,
@@ -21,92 +20,9 @@ import type {
 import type { LedgerEntry } from '../../src/core/types.ts';
 import type { ProviderId } from '../../src/providers/port.ts';
 
-// ---------------------------------------------------------------------------
-// vendorNeutralRouterEnabled (§2 — DEFAULT ON / explicit opt-OUT)
-// ---------------------------------------------------------------------------
+// vendorNeutralRouterEnabled promoted to unconditional in batches 4-6 dedrift.
+// The vendor-neutral router is always the shipped routing engine.
 
-describe('vendorNeutralRouterEnabled', () => {
-  it('returns true with no env and no config (default-on — shipped default)', () => {
-    assert.equal(vendorNeutralRouterEnabled(undefined, undefined), true);
-  });
-
-  it('returns true with empty env and no config', () => {
-    assert.equal(vendorNeutralRouterEnabled({}, undefined), true);
-  });
-
-  it('returns true with garbage env value (unrecognised → default on)', () => {
-    assert.equal(
-      vendorNeutralRouterEnabled({ MYSHELL_VENDOR_NEUTRAL_ROUTER: 'maybe' }, undefined),
-      true,
-    );
-  });
-
-  it('returns false with explicit opt-out env values (case-insensitive, trimmed)', () => {
-    for (const v of ['0', 'false', 'off', 'no', ' FALSE ', 'Off']) {
-      assert.equal(
-        vendorNeutralRouterEnabled({ MYSHELL_VENDOR_NEUTRAL_ROUTER: v }, undefined),
-        false,
-      );
-    }
-  });
-
-  it('returns true with env "1"', () => {
-    assert.equal(
-      vendorNeutralRouterEnabled({ MYSHELL_VENDOR_NEUTRAL_ROUTER: '1' }, undefined),
-      true,
-    );
-  });
-
-  it('returns true with env "true" (case-insensitive)', () => {
-    assert.equal(
-      vendorNeutralRouterEnabled({ MYSHELL_VENDOR_NEUTRAL_ROUTER: 'TRUE' }, undefined),
-      true,
-    );
-  });
-
-  it('returns true with env "on"', () => {
-    assert.equal(
-      vendorNeutralRouterEnabled({ MYSHELL_VENDOR_NEUTRAL_ROUTER: 'on' }, undefined),
-      true,
-    );
-  });
-
-  it('returns true with config.experimentalVendorNeutralRouter === true', () => {
-    assert.equal(
-      vendorNeutralRouterEnabled(undefined, { experimentalVendorNeutralRouter: true }),
-      true,
-    );
-  });
-
-  it('config opt-OUT (experimentalVendorNeutralRouter === false) ⇒ false', () => {
-    assert.equal(
-      vendorNeutralRouterEnabled(undefined, { experimentalVendorNeutralRouter: false }),
-      false,
-    );
-  });
-
-  it('explicit env opt-OUT overrides config true ⇒ false', () => {
-    // env '0' is opt-OUT — processed first → returns false regardless of config
-    assert.equal(
-      vendorNeutralRouterEnabled({ MYSHELL_VENDOR_NEUTRAL_ROUTER: '0' }, { experimentalVendorNeutralRouter: true }),
-      false,
-    );
-  });
-
-  it('explicit env opt-IN overrides config false ⇒ true', () => {
-    assert.equal(
-      vendorNeutralRouterEnabled({ MYSHELL_VENDOR_NEUTRAL_ROUTER: 'yes' }, { experimentalVendorNeutralRouter: false }),
-      true,
-    );
-  });
-
-  it('never throws on a hostile env bag (defaults ON)', () => {
-    const hostile = new Proxy({} as NodeJS.ProcessEnv, {
-      get() { throw new Error('hostile'); },
-    });
-    assert.equal(vendorNeutralRouterEnabled(hostile, undefined), true);
-  });
-});
 
 // ---------------------------------------------------------------------------
 // poolForModelId (§3 — prefix-derived pools)
