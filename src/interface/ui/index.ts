@@ -39,6 +39,8 @@ export {
   coalescedQueuedLine,
   streamWrappedRows,
   tailStreamToRows,
+  selectGoalQuickRows,
+  goalStripPlannedRows,
   INPUT_ROWS,
   LEGEND_ROWS,
   STATUS_LINE_ROWS,
@@ -46,7 +48,10 @@ export {
   PANEL_BORDER_ROWS,
   SAFETY_MARGIN_ROWS,
   BOARD_CHROME_ROWS,
+  GOAL_STRIP_HEADER_ROWS,
+  GOAL_STRIP_MAX_GOALS,
 } from './layout.js';
+export { type GoalQuickRow } from './layout.js';
 export {
   initialState,
   initialStreamView,
