@@ -30,6 +30,7 @@ import {
   renderStreamInk,
   type Action,
   type GoalBoardRow,
+  type UiCapacityState,
   type UiState,
   type Verbosity,
 } from './index.js';
@@ -189,6 +190,12 @@ export function createInkOutputSink(
     // when the flag is off. Pure replace into the same persistent store.
     syncBoard(rows: readonly GoalBoardRow[]): void {
       store.dispatch({ type: 'board/sync', rows, enabled: true });
+    },
+    // Phase 4C: replace the capacity snapshot with a fresh observation built from
+    // real menu-loop signals. The menu calls this whenever real signals change
+    // (chat entry, rate-limit updates, account/config changes).
+    syncCapacity(capacity: UiCapacityState): void {
+      store.dispatch({ type: 'capacity/sync', capacity });
     },
     // Commit any buffered partial line (a prompt written WITHOUT a trailing
     // newline) as its own committed `<Static>` item so it becomes visible before

@@ -66,6 +66,9 @@ export {
   type StreamView,
   type TokenView,
   type TranscriptLine,
+  type UiAccountCapacityRow,
+  type UiCapacityState,
+  type UiProviderCapacityRow,
   type UiState,
   type Verbosity,
 } from './state.js';
@@ -74,6 +77,7 @@ export {
   nextControlPanelSection,
   CONTROL_PANEL_SECTIONS,
   type ControlPanelModel,
+  type ControlPanelStatusRow,
   type ControlPanelProviderStatus,
   type ControlPanelSettingRow,
   type ControlPanelGoalRow,

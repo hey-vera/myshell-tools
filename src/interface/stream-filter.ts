@@ -17,6 +17,7 @@
 import { lastJsonObjectBoundsWithKey, isTrailingNoise } from '../core/json-envelope.js';
 import { GOAL_MARKER_TOKENS, stripTrailingGoalMarker } from '../core/goal.js';
 import type { GoalBoardRow } from './ui/state.js';
+import type { UiCapacityState } from './ui/state.js';
 
 // ---------------------------------------------------------------------------
 // OutputSink
@@ -64,6 +65,14 @@ export interface OutputSink {
    * the action never fires and `UiState.boardEnabled` stays false.
    */
   syncBoard?(rows: readonly GoalBoardRow[]): void;
+  /**
+   * OPTIONAL (Phase 4C): REPLACE the capacity snapshot with a fresh observation
+   * built from real menu-loop signals (provider env, cooldowns, session
+   * consumption, subscriptions, pressure, shed plan). Only the Ink sink
+   * implements it — it dispatches a `capacity/sync` action into the reducer store.
+   * The menu invokes it as `out.syncCapacity?.(snapshot)` when real signals update.
+   */
+  syncCapacity?(capacity: UiCapacityState): void;
 }
 
 // ---------------------------------------------------------------------------

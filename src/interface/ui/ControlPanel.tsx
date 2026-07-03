@@ -17,13 +17,6 @@ import type {
 // helpers
 // ---------------------------------------------------------------------------
 
-function providerSummary(model: ControlPanelModel): string {
-  if (model.providers.length === 0) return 'none';
-  return model.providers
-    .map((p) => `${p.provider}:${p.state}`)
-    .join(', ');
-}
-
 function sectionLabel(section: ControlPanelSection): string {
   switch (section) {
     case 'status':
@@ -271,7 +264,7 @@ export function ControlPanel(props: ControlPanelProps): React.ReactElement {
       {showSummary ? (
         <Box>
           <Text dimColor>
-            {model.activeGoalCount} active goals · mode: execution/{model.executionPhase} · providers: {providerSummary(model)} · quota: {model.quotaLabel}
+            {model.summaryLine}
           </Text>
         </Box>
       ) : null}
@@ -446,22 +439,19 @@ function ControlPanelStatus(
   { model, scroll, availableRows }:
   { readonly model: ControlPanelModel; readonly scroll: number; readonly availableRows: number },
 ): React.ReactElement {
+  // Phase 4C: build display lines from structured status rows
   const lines: string[] = [];
-  lines.push('Active goals (running): ' + model.activeGoalCount);
-  lines.push(
-    'Mode: execution/' +
-      model.executionPhase +
-      (model.turnActive ? ' (turn active)' : ''),
-  );
-  lines.push('Provider health (observed)');
-  if (model.providers.length === 0) {
-    lines.push('  No provider observations');
-  } else {
-    for (const p of model.providers) {
-      lines.push(`  ${p.provider}: ${p.state}`);
+  let lastHeading = '';
+  for (const row of model.statusRows) {
+    if (row.kind === 'heading') {
+      if (row.text !== lastHeading) {
+        lines.push(row.text);
+        lastHeading = row.text;
+      }
+    } else {
+      lines.push(row.text);
     }
   }
-  lines.push('Quota: ' + model.quotaLabel);
 
   const total = lines.length;
   let start = Math.min(scroll, Math.max(0, total - availableRows));
