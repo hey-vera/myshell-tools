@@ -868,3 +868,94 @@ test('Ctrl/Meta+Right on empty buffer does NOT call onEmptyRight (falls through)
   assert.equal(rightCalled, 0, 'onEmptyRight must not be called for non-bare Right');
   assert.equal(bridge.currentLine(), '', 'buffer must stay empty');
 });
+
+// ---------------------------------------------------------------------------
+// Phase 5: insertText — imperative text insertion into the composer
+// ---------------------------------------------------------------------------
+
+test('insertText on empty buffer sets the text', async () => {
+  const bridge = createInputBoxBridge();
+  render(
+    <InputBox bridge={bridge} color={true} isTty={true} columns={60} />,
+  );
+  await tick();
+  bridge.insertText('@goal:g1 ');
+  await tick();
+  assert.equal(bridge.currentLine(), '@goal:g1 ');
+});
+
+test('insertText preserves existing draft and appends with a space', async () => {
+  const bridge = createInputBoxBridge();
+  const { stdin } = render(
+    <InputBox bridge={bridge} color={true} isTty={true} columns={60} />,
+  );
+  stdin.write('hello');
+  await tick();
+  assert.equal(bridge.currentLine(), 'hello');
+  bridge.insertText('@goal:g1 ');
+  await tick();
+  assert.equal(bridge.currentLine(), 'hello @goal:g1 ');
+});
+
+test('insertText on buffer ending with space appends without doubling', async () => {
+  const bridge = createInputBoxBridge();
+  const { stdin } = render(
+    <InputBox bridge={bridge} color={true} isTty={true} columns={60} />,
+  );
+  stdin.write('hello ');
+  await tick();
+  bridge.insertText('@goal:g1 ');
+  await tick();
+  assert.equal(bridge.currentLine(), 'hello @goal:g1 ');
+});
+
+test('insertText inserts at cursor position', async () => {
+  const bridge = createInputBoxBridge();
+  const { stdin } = render(
+    <InputBox bridge={bridge} color={true} isTty={true} columns={60} />,
+  );
+  stdin.write('ab');
+  await tick();
+  // Move cursor between 'a' and 'b'
+  stdin.write(LEFT);
+  await tick();
+  bridge.insertText('x');
+  await tick();
+  assert.equal(bridge.currentLine(), 'axb');
+});
+
+test('insertText inserted text submits fine as literal text', async () => {
+  const bridge = createInputBoxBridge();
+  const submitted: string[] = [];
+  bridge.onSubmit((l) => submitted.push(l));
+  const { stdin } = render(
+    <InputBox bridge={bridge} color={true} isTty={true} columns={60} />,
+  );
+  bridge.insertText('@goal:g1 ');
+  await tick();
+  assert.equal(bridge.currentLine(), '@goal:g1 ');
+  stdin.write(ENTER);
+  await tick();
+  assert.deepEqual(submitted, ['@goal:g1 ']);
+  assert.equal(bridge.currentLine(), '');
+});
+
+test('insertText clears suggestions when candidate row is shown', async () => {
+  const bridge = createInputBoxBridge();
+  bridge.onSubmit(() => {});
+  const { lastFrame, stdin } = render(
+    <InputBox bridge={bridge} color={true} isTty={true} columns={60} />,
+  );
+  stdin.write('/go');
+  await tick();
+  stdin.write(TAB);
+  await tick();
+  assert.ok(plain(lastFrame()).includes('/goals'), 'precondition: candidates shown');
+  bridge.insertText('hello');
+  await tick();
+  const frame = plain(lastFrame());
+  const rows = frame.split('\n');
+  const ruleRow = rows.findIndex((r) => r.includes('─ chat '));
+  const aboveRule = rows.slice(0, ruleRow).join('\n');
+  assert.ok(!aboveRule.includes('/goals'), 'insertText must clear the candidate row');
+});

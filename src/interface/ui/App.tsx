@@ -701,6 +701,10 @@ function AppBody({
                 onClose={() => { bridge.routeControlPanelAction({ type: 'control-panel/close' }); }}
                 onSettingAction={(intent) => { bridge.routeControlPanelSettingAction(intent); }}
                 onSettingsSelect={(index) => { bridge.routeControlPanelAction({ type: 'control-panel/settings-select', index }); }}
+                onComposeGoal={(goalId) => {
+                  bridge.routeControlPanelAction({ type: 'control-panel/close' });
+                  bridge.input.insertText('@goal:' + goalId + ' ');
+                }}
                 active={!suspended}
               />
           </Box>
