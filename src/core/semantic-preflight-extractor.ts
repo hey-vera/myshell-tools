@@ -24,7 +24,6 @@ export interface SemanticPreflightExtractorDeps {
   readonly sandbox?: SandboxLevel;
   readonly availableModels?: Partial<Record<ProviderId, readonly string[]>>;
   readonly authenticatedProviders?: readonly ProviderId[];
-  readonly byproductFallback?: boolean;
   readonly accountAux?: boolean;
   readonly ledger?: LedgerWriter;
   readonly clock?: Clock;

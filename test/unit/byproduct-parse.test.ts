@@ -384,7 +384,7 @@ describe('additive contract — fallback must never be called on primary success
     assert.ok(primary !== null, 'primary parse should succeed');
     // In normal use: the caller checks primary !== null and skips fallback.
     // This test documents that invariant: there is nothing for the fallback to do.
-    // (The caller in intent-extractor.ts checks `frame === null && deps.byproductFallback`.)
+    // (intent-extractor.ts now unconditionally calls the fallback when primary returns null.)
     const fallbackCalledOnSuccess = primary !== null
       ? 'would NOT call fallback (correct)'
       : 'would call fallback (wrong)';

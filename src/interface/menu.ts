@@ -225,8 +225,6 @@ import { tribunalEnabled } from './ui/tribunal-flag.js';
 
 
 
-import { byproductFallbackEnabled } from './ui/byproduct-fallback-flag.js';
-
 import { experimentalEnabledByDefault } from './ui/experimental-default.js';
 import { subscriptionsEnabled } from './ui/subscriptions-flag.js';
 import { accountParallelismEnabled } from './ui/account-parallelism-flag.js';
@@ -2395,17 +2393,7 @@ export async function runChatLoop(
           vendorNeutralEnabled: true,
 
 
-          // CAPABILITY PARSE-FROM-TEXT FALLBACK (redesign Phase 0) — DEFAULT OFF
-          // (src/interface/ui/byproduct-fallback-flag.ts). When the flag is ON,
-          // set `byproductFallback: true` so the intent extractor knows it may
-          // attempt the text-fallback chain on a primary-parse failure. PURELY
-          // ADDITIVE: `orchestrate` does NOT consume this field; it exists so the
-          // fallback substrate wires through the src import graph and so the next
-          // slice (live consumption) has a seam. When OFF the field is absent →
-          // byte-for-byte today's behavior (the OFF-GUARANTEE).
-          ...(byproductFallbackEnabled(process.env, mutableCtx.config)
-            ? { byproductFallback: true }
-            : {}),
+
           draftGoals: true,
           ...(nativeSession.length > 0 ? { nativeSession } : {}),
           // Evidence receipt: always passes the captured per-turn ledger snapshot
