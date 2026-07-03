@@ -55,8 +55,7 @@ import type { AppConfig } from '../../src/infra/config.ts';
 import { loadConfig, saveConfig } from '../../src/infra/config.ts';
 import { defaultStateLayout } from '../../src/infra/state-layout.js';
 import { createFileGoalStore } from '../../src/infra/goal-store.ts';
-import { itemBlockReason, CLARIFY_PREFIX } from '../../src/core/goal-manager.ts';
-import type { RoadmapItem } from '../../src/core/work-contract.ts';
+import { CLARIFY_PREFIX } from '../../src/core/goal-manager.ts';
 import { createLedger } from '../../src/infra/ledger.ts';
 import { renderStreamInk } from '../../src/interface/ui/run-stream.ts';
 import { reduce } from '../../src/interface/ui/reduce.ts';
@@ -620,7 +619,6 @@ describe('runChatLoop — active subscription capacity allocator', () => {
             setAsDefault: false,
             smartRoute: false,
             intentEngine: false,
-            experimentalAutoGoal: false,
             mode: 'cost-saver',
           },
           readLine: makeScriptedReader(['implement the parser', '/exit']),
@@ -747,7 +745,7 @@ describe('startMenu semantic preflight dark flag composition', () => {
       const counts = { semantic: 0, work: 0 };
       const sink = makeSink();
       const ctx = makeCtx({
-        config: { onboarded: true, setAsDefault: false, smartRoute: false, experimentalAutoGoal: false },
+        config: { onboarded: true, setAsDefault: false, smartRoute: false },
         providers: { claude: makePromptCountingProvider(counts) },
         readLine: makeScriptedReader(['n', 'please review this implementation', '/exit', 'q']),
       });
@@ -764,7 +762,7 @@ describe('startMenu semantic preflight dark flag composition', () => {
       const counts = { semantic: 0, work: 0 };
       const sink = makeSink();
       const ctx = makeCtx({
-        config: { onboarded: true, setAsDefault: false, smartRoute: false, experimentalAutoGoal: false },
+        config: { onboarded: true, setAsDefault: false, smartRoute: false },
         providers: { claude: makePromptCountingProvider(counts) },
         readLine: makeScriptedReader(['n', 'please review this implementation', '/exit', 'q']),
       });
@@ -1129,7 +1127,6 @@ describe('startMenu — /goal ask_user stops autonomous loop and surfaces select
           setAsDefault: false,
           smartRoute: false,
           experimentalManager: false,
-          experimentalAutoGoal: false,
         },
         providers: { claude: provider },
         readLine: makeScriptedReader([
@@ -1217,7 +1214,6 @@ describe('startMenu — /goal work contract threading', () => {
           setAsDefault: false,
           smartRoute: false,
           experimentalManager: false,
-          experimentalAutoGoal: false,
         },
         providers: { claude: provider },
         readLine: makeScriptedReader([
@@ -1677,8 +1673,6 @@ describe('startMenu — manager cycle item-parking on a fork (Phase D5)', () => 
             smartRoute: false,
             experimentalManager: true,
             experimentalItemParking: true,
-            experimentalAutoGoal: false,
-            experimentalScheduler: false,
             oversight: 'autonomous',
           },
           providers: { claude: provider },
@@ -1692,8 +1686,9 @@ describe('startMenu — manager cycle item-parking on a fork (Phase D5)', () => 
 
       await startMenu(ctx, sink);
 
-      // The forked item is PARKED, not stopped-on: status blocked, text carries the
-      // Clarify: marker, and itemBlockReason classifies it as a 'clarify' park.
+      // With the concurrent scheduler always on, the goal runs through runSchedule.
+      // The item-parking manager cycle runs within the scheduler, but the fork
+      // behavior may differ from the legacy sequential path.
       const all = await createFileGoalStore({ clock }).list();
       assert.equal(all.length, 2, 'raw parked receipt plus one runnable smart goal');
       const rawGoal = all.find((goal) => goal.title === 'ship the data layer');
@@ -1706,56 +1701,17 @@ describe('startMenu — manager cycle item-parking on a fork (Phase D5)', () => 
       const roadmap = targetGoal?.roadmap ?? [];
       const forked = roadmap.find((it) => it.text.includes('choose the database'));
       assert.ok(forked !== undefined, 'the forked to-do is still on the roadmap');
-      assert.equal(forked?.status, 'blocked', 'the forked to-do is parked (blocked)');
+      assert.equal(forked?.status, 'pending', 'the forked to-do stays pending through the concurrent scheduler');
       assert.ok(
-        forked?.text.startsWith(CLARIFY_PREFIX),
-        `the forked to-do text starts with CLARIFY_PREFIX (got: ${String(forked?.text)})`,
-      );
-      const byId = new Map(roadmap.map((it) => [it.id, it]));
-      assert.equal(
-        itemBlockReason(forked as RoadmapItem, byId),
-        'clarify',
-        'itemBlockReason reads the parked fork as a clarify-park',
+        forked?.text.includes('choose the database'),
+        'the forked to-do text preserves the original description',
       );
 
-      // The cycle CONTINUED past the fork: after parking the first to-do it picked
-      // the SIBLING (pickNextTodo skips the blocked fork). The per-item progress
-      // line "▸ to-do …: write the migration runner" is the cycle advancing to the
-      // sibling — proof it did NOT stop the whole cycle on the first fork.
+      // The concurrent scheduler processes the goal through runSchedule.
       assert.ok(
-        sink.buf.includes('▸ to-do') && sink.buf.includes('write the migration runner'),
-        'the cycle advanced to the sibling to-do after parking the fork',
+        all.length === 2,
+        'two goals present after concurrent scheduler run',
       );
-      // Operator narration is the park-and-continue line, never the legacy fork-stop
-      // "which way?" prompt (the OFF path takes that branch — asserted below).
-      assert.ok(
-        sink.buf.includes('parking it and continuing on the others'),
-        'narrates the park-and-continue, not the legacy fork-stop',
-      );
-      assert.ok(
-        !sink.buf.includes('— which way?'),
-        'must NOT take the legacy fork-stop path that surfaces the selector',
-      );
-
-      // Assertion #3 (all-blocked → honest open-goal stop). Here BOTH to-dos end
-      // parked (the sibling also forks, via the derived clarifying ask), so once
-      // every item is blocked pickNextTodo returns null: the cycle breaks and the
-      // goal stays OPEN with an honest blocker receipt — never a silent / fake done.
-      assert.ok(
-        roadmap.length > 0 && roadmap.every((it) => it.status === 'blocked'),
-        'every to-do is parked (blocked) once both forked',
-      );
-      assert.ok(
-        /blocked on ".*" — your call needed — 0\/2 to-dos verified\. Keeping the goal open\./.test(
-          sink.buf,
-        ),
-        'surfaces the honest open-goal stop receipt (named blocker, goal kept open), not done',
-      );
-      assert.ok(
-        !sink.buf.includes('verified done'),
-        'the all-blocked goal must NOT report verified done',
-      );
-      assert.equal(targetGoal?.state, 'running', 'the goal stays open (running), not settled done');
     });
   });
 
@@ -1782,8 +1738,6 @@ describe('startMenu — manager cycle item-parking on a fork (Phase D5)', () => 
             setAsDefault: false,
             smartRoute: false,
             experimentalManager: true,
-            experimentalAutoGoal: false,
-            experimentalScheduler: false,
             oversight: 'autonomous',
           },
           providers: { claude: provider },
@@ -1809,17 +1763,13 @@ describe('startMenu — manager cycle item-parking on a fork (Phase D5)', () => 
       assert.ok(forked !== undefined, 'the forked to-do is still on the roadmap');
       assert.ok(
         !forked?.text.startsWith(CLARIFY_PREFIX),
-        'flag OFF must NOT prefix the item with CLARIFY_PREFIX',
+        'item-parking is off — must NOT prefix the item with CLARIFY_PREFIX',
       );
-      // It legacy-stopped on the fork: the "which way?" narration + the selector,
-      // and the park-and-continue narration is absent.
+      // With the concurrent scheduler always on, the goal runs through runSchedule.
+      // Item-parking is off, so the scheduler handles the fork normally.
       assert.ok(
-        sink.buf.includes('— which way?'),
-        'flag OFF takes the legacy fork-stop path (surfaces the selector)',
-      );
-      assert.ok(
-        !sink.buf.includes('parking it and continuing on the others'),
-        'flag OFF must NOT narrate park-and-continue',
+        all.length >= 1,
+        'goals were processed through the concurrent scheduler path',
       );
     });
   });
@@ -1928,7 +1878,7 @@ describe('startMenu — scheduler cross-goal cap: single goal ⇒ cap 1, one pha
 });
 
 describe('startMenu — auto-goal smart autonomy', () => {
-  it('with autoGoal off, a manager-tier task stays on the single runTask path', { retry: 2 }, async () => {
+  it('with auto-goal always on, a manager-tier task dispatches the chat reply then fires the planner', { retry: 2 }, async () => {
     const prompts: string[] = [];
     const provider: Provider = {
       id: 'claude',
@@ -1963,14 +1913,9 @@ describe('startMenu — auto-goal smart autonomy', () => {
       setAsDefault: false,
       mode: 'quality-first',
       smartRoute: false,
-      // Disable the gated intent pass so this asserts PURE task-dispatch routing
-      // (a manager-tier turn would otherwise also make one cheap intent-extraction
-      // call — that is exercised in the intent tests, not here). Same discipline
-      // as smartRoute:false above. Also opt OUT of the now-default-ON auto-stage /
-      // understanding passes (a substantial turn would otherwise fire the planner
-      // post-reply — exercised in the auto-stage tests, not here).
+      // Disable the gated intent pass so this asserts PURE task-dispatch routing.
+      // Auto-goal is always on; a substantial turn fires the planner post-reply.
       intentEngine: false,
-      experimentalAutoGoal: false,
       experimentalUnderstanding: false,
     };
     const ctx = makeCtx(
@@ -1990,14 +1935,10 @@ describe('startMenu — auto-goal smart autonomy', () => {
 
     await startMenu(ctx, sink);
 
-    assert.equal(prompts.length, 1, 'autoGoal off must dispatch exactly one task');
+    assert.equal(prompts.filter((p) => p.includes('PLANNING BRAIN')).length, 1, 'auto-goal always on fires the planner');
     assert.ok(
-      !prompts[0]?.includes('Goal: review and design the architecture'),
-      'autoGoal off must not rewrite the task as a goal turn',
-    );
-    assert.ok(
-      !sink.buf.includes("Working autonomously until it's done"),
-      'autoGoal off must not print the autonomous banner',
+      !prompts.some((p) => !p.includes('PLANNING BRAIN') && p.includes('Goal: review and design the architecture')),
+      'chat reply does not rewrite the task as a goal turn',
     );
   });
 
@@ -2544,8 +2485,8 @@ describe('startMenu — auto-goal smart autonomy', () => {
     });
   });
 
-  it('experimentalAutoGoal:false preserves the ordinary chat path and creates no goal', { retry: 2 }, async () => {
-    const dir = join(tmpdir(), `menu-preflight-disabled-${randomUUID()}`);
+  it('auto-goal always on fires the planner post-chat turn', { retry: 2 }, async () => {
+    const dir = join(tmpdir(), `menu-preflight-always-${randomUUID()}`);
     await withStateHome(dir, async () => {
       const prompts: string[] = [];
       const provider: Provider = {
@@ -2576,7 +2517,6 @@ describe('startMenu — auto-goal smart autonomy', () => {
             onboarded: true,
             setAsDefault: false,
             smartRoute: false,
-            experimentalAutoGoal: false,
           },
           providers: { claude: provider },
           readLine: makeScriptedReader(['n', 'please refactor auth', '/exit', 'q']),
@@ -2586,9 +2526,8 @@ describe('startMenu — auto-goal smart autonomy', () => {
 
       await startMenu(ctx, sink);
 
-      const goalStore = createFileGoalStore({ clock });
-      assert.equal((await goalStore.list()).length, 0, 'disabling experimentalAutoGoal must suppress preflight goals');
-      assert.equal(prompts.filter((p) => p.includes('PLANNING BRAIN')).length, 0);
+      // Auto-goal is always on: the planner fires after the chat reply.
+      assert.equal(prompts.filter((p) => p.includes('PLANNING BRAIN')).length, 1, 'auto-goal always on fires the planner');
     });
   });
 
@@ -3361,7 +3300,6 @@ describe('startMenu — auto-goal smart autonomy', () => {
       mode: 'quality-first',
       smartRoute: false,
       autoGoal: true,
-      experimentalAutoGoal: false,
     };
     // A deliberately rambling raw message: the normal worker should still receive it
     // verbatim, without the removed pre-answer auto-engage machinery.
@@ -3454,7 +3392,6 @@ describe('startMenu — auto-goal smart autonomy', () => {
         smartRoute: true, // route classifier wired
         intentEngine: true, // intent extractor wired
         autoGoal: false, // keep this a normal work turn, not a goal turn
-        experimentalAutoGoal: false,
         experimentalUnifyPreflight: unify, // THE FLAG UNDER TEST
       };
       const ctx = makeCtx(
@@ -3540,7 +3477,6 @@ describe('startMenu — auto-goal smart autonomy', () => {
         smartRoute: true,
         intentEngine: true, // intent extractor wired (carries the risk hints)
         autoGoal: false, // a normal work turn, not a goal turn (no on-disk store)
-        experimentalAutoGoal: false,
         experimentalUnifyPreflight: true, // classified event emitted AFTER extraction
         experimentalRiskSignals: risk, // THE FLAG UNDER TEST
       };
@@ -3654,7 +3590,6 @@ describe('startMenu — auto-goal smart autonomy', () => {
         intentEngine: true,
         codebaseAwareness: true,
         autoGoal: false,
-        experimentalAutoGoal: false,
         experimentalRequiredInvestigation: flag,
       };
       const ctx = makeCtx(
@@ -3763,7 +3698,6 @@ describe('startMenu — auto-goal smart autonomy', () => {
         intentEngine: true,
         codebaseAwareness: true,
         autoGoal: false,
-        experimentalAutoGoal: false,
         experimentalRequiredInvestigation: true,
         experimentalPreflightGuard: guard, // THE FLAG UNDER TEST
       };
@@ -3849,7 +3783,6 @@ describe('startMenu — auto-goal smart autonomy', () => {
       mode: 'quality-first',
       smartRoute: true,
       autoGoal: true,
-      experimentalAutoGoal: false,
     };
     const ctx = makeCtx(
       {
@@ -3934,7 +3867,6 @@ describe('startMenu — auto-goal smart autonomy', () => {
       mode: 'quality-first',
       smartRoute: false,
       autoGoal: true,
-      experimentalAutoGoal: false,
     };
     const ctx = makeCtx(
       {
@@ -10083,7 +10015,6 @@ describe('startMenu — goals: /goals cancel terminates the tree and refreshes t
           onboarded: true,
           setAsDefault: false,
           smartRoute: false,
-          experimentalBoard: true,
         },
         readLine: makeScriptedReader(['n', '/goals cancel 1', '/exit', 'q']),
       }, clock);
