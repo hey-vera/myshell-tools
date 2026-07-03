@@ -1,18 +1,6 @@
-/**
- * src/interface/ui/GoalsPanel.tsx — fullscreen Ink component for the Goals · To-dos
- * panel (Slice 6). Renders the persistent goal board as a keyboard-navigable list
- * with highlighted-goal todo expansion. PURE: reads props, builds a model, paints.
- * Keyboard: ↑↓/jk navigate goals, esc/ctrl-g close.
- */
-
 import React from 'react';
-import { Box, Text, useInput } from 'ink';
-import {
-  buildGoalsPanelModel,
-  nextGoalId,
-  type GoalsPanelModel,
-} from './goals-panel-model.js';
-import type { UiState } from './state.js';
+import { Box, Text } from 'ink';
+import { type GoalsPanelModel } from './goals-panel-model.js';
 
 export interface GoalsPanelBodyProps {
   readonly model: GoalsPanelModel;
@@ -48,50 +36,3 @@ export function GoalsPanelBody(props: GoalsPanelBodyProps): React.ReactElement {
   );
 }
 
-export interface GoalsPanelProps {
-  readonly board: UiState['board'];
-  readonly highlightedGoalId?: string;
-  readonly onHighlightGoal: (goalId: string) => void;
-  readonly onClose: () => void;
-  readonly active?: boolean;
-}
-
-export function GoalsPanel(props: GoalsPanelProps) {
-  const { board, highlightedGoalId, onHighlightGoal, onClose, active } = props;
-
-  const model = buildGoalsPanelModel({
-    board,
-    ...(highlightedGoalId !== undefined ? { highlightedGoalId } : {}),
-  });
-
-  useInput(
-    (input, key) => {
-      if (key.escape || (key.ctrl && input === 'g')) {
-        onClose();
-        return;
-      }
-      if (key.upArrow || input === 'k') {
-        const id = nextGoalId({
-          goalIds: model.goalIds,
-          currentGoalId: model.highlightedGoalId,
-          direction: 'up',
-        });
-        if (id !== undefined) onHighlightGoal(id);
-        return;
-      }
-      if (key.downArrow || input === 'j') {
-        const id = nextGoalId({
-          goalIds: model.goalIds,
-          currentGoalId: model.highlightedGoalId,
-          direction: 'down',
-        });
-        if (id !== undefined) onHighlightGoal(id);
-        return;
-      }
-      // leftArrow / rightArrow → ignore
-    },
-    { isActive: active !== false },
-  );
-
-  return <GoalsPanelBody model={model} />;
-}

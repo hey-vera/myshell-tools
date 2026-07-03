@@ -13,7 +13,6 @@ import { Box, Static, Text, useStdout } from 'ink';
 import { InputBox, createInputBoxBridge, type InputBoxBridge } from './InputBox.js';
 import { Stream, CommittedLine } from './Stream.js';
 import { StatusBlock } from './StatusBlock.js';
-import { GoalsPanel } from './GoalsPanel.js';
 import { ControlPanel } from './ControlPanel.js';
 import { BottomLegend } from './BottomLegend.js';
 import { GoalQuickStrip } from './GoalQuickStrip.js';
@@ -30,15 +29,6 @@ function formatInputBoxInfo(info: InputBoxInfo | null): string | undefined {
   if (info === null) return undefined;
   return `Mode: ${info.mode} · ${info.hints.join(' · ')}`;
 }
-
-/**
- * The subset of {@link Action} the renderer may route through the bridge for
- * the goals panel. Excludes configure (Node-owned) and open (only toggle opens).
- */
-export type GoalsPanelBridgeAction =
-  | Extract<Action, { type: 'goals-panel/toggle' }>
-  | Extract<Action, { type: 'goals-panel/close' }>
-  | Extract<Action, { type: 'goals-panel/highlight' }>;
 
 /**
  * The subset of {@link Action} the renderer may route through the bridge for
@@ -158,20 +148,6 @@ export interface InkAppBridge {
    */
   interrupt(): boolean;
   /**
-   * Register (or clear with `null`) the Node-side handler for goals-panel
-   * actions. When a handler is set, `routeGoalsPanelAction` forwards the action
-   * there; when null, routing returns false (off path). Called by the mount
-   * once at init; never changed afterward.
-   */
-  onGoalsPanelAction(handler: ((action: GoalsPanelBridgeAction) => void) | null): void;
-  /**
-   * Route a goals-panel action through the bridge from the React tree (InputBox
-   * Ctrl+G). Returns `false` when no handler is armed (feature off — the caller
-   * falls through to the existing key handler). When a handler is set, invokes it
-   * once and returns `true`.
-   */
-  routeGoalsPanelAction(action: GoalsPanelBridgeAction): boolean;
-  /**
    * Register (or clear with `null`) the Node-side handler for control-panel
    * actions. When a handler is set, `routeControlPanelAction` forwards the action
    * there; when null, routing returns false (off path). Called by the mount
@@ -207,10 +183,6 @@ export interface InkAppBridge {
   /** @internal the installed turn-interrupt handler, set by setInterrupt(); read
    *  by the InputBox's bare-ESC branch. `null`/undefined when idle. */
   _interrupt?: (() => void) | null;
-  /** @internal the installed goals-panel action handler, set by
-   *  onGoalsPanelAction(); read by routeGoalsPanelAction(). `null` when the
-   *  feature flag is off. */
-  _goalsPanelAction?: ((action: GoalsPanelBridgeAction) => void) | null;
   /** @internal the installed control-panel action handler, set by
    *  onControlPanelAction(); read by routeControlPanelAction(). `null` when the
    *  feature flag is off. */
@@ -244,7 +216,6 @@ export function createInkAppBridge(): InkAppBridge {
     _stdinControl: null,
     _keyResolver: null,
     _interrupt: null,
-    _goalsPanelAction: null,
     _controlPanelAction: null,
     _menuKeyQueue: [],
     _menuCaptureActive: false,
@@ -292,15 +263,6 @@ export function createInkAppBridge(): InkAppBridge {
       const handler = bridge._interrupt;
       if (handler == null) return false;
       handler();
-      return true;
-    },
-    onGoalsPanelAction(handler: ((action: GoalsPanelBridgeAction) => void) | null): void {
-      bridge._goalsPanelAction = handler;
-    },
-    routeGoalsPanelAction(action: GoalsPanelBridgeAction): boolean {
-      const handler = bridge._goalsPanelAction;
-      if (handler == null) return false;
-      handler(action);
       return true;
     },
     onControlPanelAction(handler: ((action: ControlPanelBridgeAction) => void) | null): void {
@@ -552,10 +514,8 @@ function AppBody({
   const inputInfoText = formatInputBoxInfo(inputInfo);
   const liveColumns = columns ?? stdout.columns ?? process.stdout.columns ?? 80;
   const liveRows = rows ?? stdout.rows ?? process.stdout.rows ?? 24;
-  const controlPanelOpen = uiState?.controlPanel.enabled === true && uiState.controlPanel.open === true;
-  const goalsPanelOpen = uiState?.controlPanel.enabled !== true &&
-    uiState?.goalsPanel.enabled === true && uiState.goalsPanel.open === true;
-  const fullscreenPanelOpen = controlPanelOpen || goalsPanelOpen;
+  const controlPanelOpen = uiState?.controlPanel.open === true;
+  const fullscreenPanelOpen = controlPanelOpen;
 
   // Wire the bridge to this component's state on mount so the Node-side
   // OutputSink can push committed lines in and the LineReader can toggle suspend.
@@ -695,16 +655,6 @@ function AppBody({
               active={!suspended}
             />
           </Box>
-        ) : goalsPanelOpen ? (
-          <Box height={Math.max(1, liveRows - 1)} overflowY="hidden">
-            <GoalsPanel
-              board={uiState.board}
-              {...(uiState.goalsPanel.highlightedGoalId !== undefined ? { highlightedGoalId: uiState.goalsPanel.highlightedGoalId } : {})}
-              onHighlightGoal={(goalId) => bridge.routeGoalsPanelAction({ type: 'goals-panel/highlight', goalId })}
-              onClose={() => { bridge.routeGoalsPanelAction({ type: 'goals-panel/close' }); }}
-              active={!suspended}
-            />
-          </Box>
         ) : (
           <>
             {uiState.chrome.length > 0 ? (
@@ -749,7 +699,7 @@ function AppBody({
           dynamicWorldItems={uiState?.dynamicWorldItems ?? []}
           onStdinControl={bridge.attachStdinControl}
           onEscape={() => bridge.interrupt()}
-          onToggleFullscreenPanel={() => bridge.routeControlPanelAction({ type: 'control-panel/toggle' }) || bridge.routeGoalsPanelAction({ type: 'goals-panel/toggle' })}
+          onToggleFullscreenPanel={() => bridge.routeControlPanelAction({ type: 'control-panel/toggle' })}
           onEmptyLeft={() => { bridge.input._submit?.('/back'); }}
           onEmptyRight={() => { bridge.routeControlPanelAction({ type: 'control-panel/open' }); }}
           readPending={() => bridge._keyResolver != null || bridge._menuCaptureActive}
@@ -785,7 +735,7 @@ function AppBody({
         suspended={suspended}
         onStdinControl={bridge.attachStdinControl}
         onEscape={() => bridge.interrupt()}
-        onToggleFullscreenPanel={() => bridge.routeControlPanelAction({ type: 'control-panel/toggle' }) || bridge.routeGoalsPanelAction({ type: 'goals-panel/toggle' })}
+        onToggleFullscreenPanel={() => bridge.routeControlPanelAction({ type: 'control-panel/toggle' })}
         onEmptyLeft={() => { bridge.input._submit?.('/back'); }}
         onEmptyRight={() => { bridge.routeControlPanelAction({ type: 'control-panel/open' }); }}
         readPending={() => bridge._keyResolver != null || bridge._menuCaptureActive}

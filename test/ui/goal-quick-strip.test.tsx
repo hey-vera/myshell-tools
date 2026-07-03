@@ -225,7 +225,7 @@ test('GoalQuickStrip hidden when Control Panel is open', async () => {
     ...initialState,
     board: [boardRow({ id: 'a', title: 'Ship it', state: 'running', done: 2, total: 5, glyph: '\u25CF' })],
     boardEnabled: true,
-    controlPanel: { enabled: true, open: true, activeSection: 'goals' },
+    controlPanel: { open: true, activeSection: 'goals' },
   };
   bridge.pushState(state);
   await tick();
@@ -239,16 +239,17 @@ test('GoalQuickStrip hidden when Control Panel is open', async () => {
   assert.match(plain, /CONTROL PANEL/);
 });
 
-test('GoalQuickStrip hidden when Goals Panel is open', async () => {
+test('GoalQuickStrip hidden when Control Panel is open', async () => {
   const bridge = createInkAppBridge();
   const { lastFrame } = render(<App bridge={bridge} color={false} isTty={false} columns={80} rows={30} />);
   bridge.setChatActive(true);
 
   const state: UiState = {
     ...initialState,
+    controlPanel: { open: true, activeSection: 'goals' },
     board: [boardRow({ id: 'a', title: 'Ship it', state: 'running', done: 2, total: 5, glyph: '\u25CF' })],
     boardEnabled: true,
-    goalsPanel: { enabled: true, open: true },
+    goalsPanel: {},
   };
   bridge.pushState(state);
   await tick();
@@ -256,10 +257,8 @@ test('GoalQuickStrip hidden when Goals Panel is open', async () => {
   const frame = lastFrame() ?? '';
   const plain = frame.replace(/\x1b\[[0-9;]*m/g, '');
 
-  // The goal title appears in the Goals Panel itself, but the
-  // GoalQuickStrip header "goals N total" must NOT appear.
   assert.doesNotMatch(plain, /goals.*[0-9]+ total/);
-  assert.match(plain, /Goals · To-dos/);
+  assert.match(plain, /CONTROL PANEL/);
 });
 
 test('GoalQuickStrip updates live when board changes', async () => {

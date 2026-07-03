@@ -241,16 +241,14 @@ export interface TokenView {
  * `goals-panel/configure` action. Neutrality is mandatory: no feature is
  * auto-enabled, and the panel never renders unless enabled===true.
  */
+/** Shared highlighted-goal ID (used by the Control Panel Goals tab). */
 export interface GoalsPanelUiState {
-  readonly enabled: boolean;
-  readonly open: boolean;
   readonly highlightedGoalId?: string;
 }
 
 export type ControlPanelSection = 'status' | 'goals' | 'settings';
 
 export interface ControlPanelUiState {
-  readonly enabled: boolean;
   readonly open: boolean;
   readonly activeSection: ControlPanelSection;
 }
@@ -345,8 +343,8 @@ export const initialState: UiState = {
   boardEnabled: false,
   pressure: 0,
   dynamicWorldItems: [],
-  goalsPanel: { enabled: false, open: false },
-  controlPanel: { enabled: false, open: false, activeSection: 'goals' },
+  goalsPanel: {},
+  controlPanel: { open: false, activeSection: 'goals' },
 };
 
 // ---------------------------------------------------------------------------
@@ -561,20 +559,7 @@ export type Action =
        *  a failing final, committed as an `error` line before the Failed line. */
       readonly actionableError?: string;
     }
-  // --- goals-panel/configure: enable/disable the fullscreen panel feature.
-  //     When disabled, the panel is closed and the highlighted goal is cleared.
-  | { readonly type: 'goals-panel/configure'; readonly enabled: boolean }
-  // --- goals-panel/open: open the panel (no-op when disabled).
-  //     Optionally set the highlighted goal on open.
-  | { readonly type: 'goals-panel/open'; readonly highlightedGoalId?: string }
-  // --- goals-panel/close: close the panel (keeps enabled state, keeps highlight).
-  | { readonly type: 'goals-panel/close' }
-  // --- goals-panel/toggle: flip open/closed (no-op when disabled).
-  | { readonly type: 'goals-panel/toggle' }
-  // --- goals-panel/highlight: set the highlighted goal (no-op when disabled or closed).
-  | { readonly type: 'goals-panel/highlight'; readonly goalId: string }
-  // --- control-panel/configure: enable/disable the sectioned Control Panel.
-  | { readonly type: 'control-panel/configure'; readonly enabled: boolean }
+
   // --- control-panel/open: open the panel, optionally to a specific section.
   | { readonly type: 'control-panel/open'; readonly section?: ControlPanelSection }
   // --- control-panel/close: close the panel (keeps enabled + activeSection + shared highlight).

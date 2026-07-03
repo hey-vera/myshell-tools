@@ -13,7 +13,6 @@ import { render } from 'ink-testing-library';
 import { createInkAppBridge } from '../../src/interface/ui/App.js';
 import {
   createInkStore,
-  configureGoalsPanelStore,
 } from '../../src/interface/ui/mount.js';
 import { App } from '../../src/interface/ui/App.js';
 import type { GoalBoardRow } from '../../src/interface/ui/index.js';
@@ -23,7 +22,7 @@ const tick = (ms = 50): Promise<void> => new Promise((r) => setTimeout(r, ms));
 // Goldens captured from inside vitest (frame width comes from ink-testing-library,
 // not the columns prop). Both panels ship dark, so the off frame IS the baseline.
 const GOLDEN_BOTH_OFF = Buffer.from('e295ade29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e295ae0ae2948220424f4152442020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020e294820ae2948220676f616c20526564657369676e206665656420e2809420696e6163746976652020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020e294820ae2948220676f616c20466978206175746820e2809420696e61637469766520202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020e294820ae295b0e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e29480e295af0a', 'hex').toString('utf-8');
-const GOLDEN_GOALS_ONLY_OPEN = Buffer.from('476f616c7320c2b720546f2d646f730ae28691e28693206e6176696761746520c2b72065736320636c6f73650a526564657369676e206665656420207061726b65642020332f3820746f2d646f730a466978206175746820207061726b65642020302f3220746f2d646f730a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a', 'hex').toString('utf-8');
+
 const GOLDEN_PRE_FIRST_STATE = '';
 
 function boardRow(over: Partial<GoalBoardRow> = {}): GoalBoardRow {
@@ -55,8 +54,6 @@ const BOARD = [
 test('both flags off: compact-board frame is byte-for-byte the baseline golden', async () => {
   const bridge = createInkAppBridge();
   const store = createInkStore(bridge);
-  store.dispatch({ type: 'goals-panel/configure', enabled: false });
-  store.dispatch({ type: 'control-panel/configure', enabled: false });
   store.dispatch({ type: 'board/sync', rows: BOARD, enabled: true });
   const { lastFrame } = render(
     <App bridge={bridge} color={false} isTty={false} rows={24} columns={80} clock={() => 0} />,
@@ -68,34 +65,6 @@ test('both flags off: compact-board frame is byte-for-byte the baseline golden',
   assert.doesNotMatch(frame, /Goals · To-dos/, 'both-off frame must not contain Goals header');
   assert.doesNotMatch(frame, /CONTROL PANEL/i, 'both-off frame must not contain Control Panel');
   assert.equal(frame, GOLDEN_BOTH_OFF, 'both-off frame must equal the frozen golden');
-});
-
-test('Goals-only open: frame is byte-for-byte the frozen golden', async () => {
-  const bridge = createInkAppBridge();
-  const store = createInkStore(bridge);
-  store.dispatch({ type: 'control-panel/configure', enabled: false });
-  configureGoalsPanelStore(store, { MYSHELL_GOALS_PANEL: '1' }, undefined);
-  bridge.onControlPanelAction(null);
-  bridge.onGoalsPanelAction((action) => store.dispatch(action));
-  store.dispatch({
-    type: 'board/sync',
-    rows: [
-      boardRow({ id: 'g1', title: 'Redesign feed', state: 'parked', done: 3, total: 8, todos: [{ id: 't1', text: 'Polish routing layer', status: 'queued' }] }),
-      boardRow({ id: 'g2', title: 'Fix auth', state: 'parked', done: 0, total: 2 }),
-    ],
-    enabled: true,
-  });
-  const { lastFrame, stdin } = render(
-    <App bridge={bridge} color={false} isTty={false} rows={24} columns={80} clock={() => 0} />,
-  );
-  bridge.pushState(store.getState());
-  await tick();
-  await act(async () => { stdin.write('\x07'); await tick(); });
-  await act(async () => { stdin.write('\x1b[B'); await tick(); });
-  const frame = lastFrame() ?? '';
-  assert.match(frame, /Goals · To-dos/, 'goals-only open frame must contain Goals header');
-  assert.doesNotMatch(frame, /CONTROL PANEL/i, 'goals-only open frame must not contain Control Panel');
-  assert.equal(frame, GOLDEN_GOALS_ONLY_OPEN, 'goals-only open frame must equal the frozen golden');
 });
 
 test('pre-first-state frame is the empty golden', async () => {
@@ -114,8 +83,6 @@ test('pre-first-state frame is the empty golden', async () => {
 async function renderBothOff() {
   const bridge = createInkAppBridge();
   const store = createInkStore(bridge);
-  store.dispatch({ type: 'goals-panel/configure', enabled: false });
-  store.dispatch({ type: 'control-panel/configure', enabled: false });
   store.dispatch({ type: 'board/sync', rows: BOARD, enabled: true });
   const r = render(
     <App bridge={bridge} color={false} isTty={false} rows={24} columns={80} clock={() => 0} />,
@@ -140,7 +107,6 @@ test('both off: unarmed Ctrl+G, Escape, and Left Arrow preserve the baseline fra
 test('Control Panel open then close returns to the exact normal board frame', async () => {
   const bridge = createInkAppBridge();
   const store = createInkStore(bridge);
-  store.dispatch({ type: 'control-panel/configure', enabled: true });
   bridge.onControlPanelAction((action) => store.dispatch(action));
   store.dispatch({ type: 'board/sync', rows: BOARD, enabled: true });
   const { lastFrame, stdin } = render(
@@ -166,11 +132,7 @@ test('Control Panel open then close returns to the exact normal board frame', as
 test('both flags on: opening renders the Control Panel (not a standalone Goals surface); one key = one transition', async () => {
   const bridge = createInkAppBridge();
   const store = createInkStore(bridge);
-  store.dispatch({ type: 'goals-panel/configure', enabled: true });
-  store.dispatch({ type: 'control-panel/configure', enabled: true });
-  // Mount invariant: only the Control Panel route is armed when both are on.
   bridge.onControlPanelAction((action) => store.dispatch(action));
-  bridge.onGoalsPanelAction(null);
   store.dispatch({ type: 'board/sync', rows: BOARD, enabled: true });
   const { lastFrame, stdin } = render(
     <App bridge={bridge} color={false} isTty={false} rows={24} columns={80} clock={() => 0} />,
@@ -179,7 +141,6 @@ test('both flags on: opening renders the Control Panel (not a standalone Goals s
   await tick();
   await act(async () => { stdin.write('\x07'); await tick(); });
   assert.equal(store.getState().controlPanel.open, true, 'Ctrl+G opens the Control Panel');
-  assert.equal(store.getState().goalsPanel.open, false, 'standalone Goals Panel is not opened when CP wins');
   const frame = lastFrame() ?? '';
   // Control Panel surface present; reused Goals body header may appear inside it,
   // but the section/tabs marker proves it is the Control Panel, not the standalone panel.

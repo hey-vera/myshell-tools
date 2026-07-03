@@ -22,7 +22,7 @@ export interface ControlPanelProviderStatus {
 }
 
 export interface ControlPanelSettingRow {
-  readonly id: 'board' | 'goals-panel' | 'control-panel';
+  readonly id: 'board';
   readonly label: string;
   readonly enabled: boolean;
   readonly note?: string;
@@ -119,19 +119,6 @@ export function buildControlPanelModel(state: UiState): ControlPanelModel {
   // settings rows in fixed order
   const settings: ControlPanelSettingRow[] = [
     { id: 'board', label: 'Persistent board', enabled: state.boardEnabled },
-    {
-      id: 'goals-panel',
-      label: 'Standalone Goals Panel',
-      enabled: state.goalsPanel.enabled,
-      ...(state.goalsPanel.enabled && state.controlPanel.enabled
-        ? { note: 'superseded' as const }
-        : {}),
-    },
-    {
-      id: 'control-panel',
-      label: 'Control Panel',
-      enabled: state.controlPanel.enabled,
-    },
   ];
 
   const goals = buildGoalsPanelModel({
