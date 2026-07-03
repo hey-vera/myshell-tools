@@ -96,7 +96,7 @@ import type { Goal, GoalState } from '../core/goal-todo.js';
 import { boardEnabled } from './ui/board-flag.js';
 import { autoStageEnabled } from './ui/auto-goal-flag.js';
 import type { GoalBoardRow } from './ui/state.js';
-import type { UiCapacityState } from './ui/state.js';
+import type { UiCapacityState, UiSettingsSnapshot } from './ui/state.js';
 import {
   runGoalsList,
   runTodoCreate,
@@ -196,7 +196,7 @@ import {
   resolveIntensity,
   planBudgetCeiling,
 } from './menu-auto-mode.js';
-import { levelToMode, migrateMode } from '../core/mode-levels.js';
+import { levelToMode, migrateMode, levelLabel } from '../core/mode-levels.js';
 import { decidePostTurn } from './menu-post-turn.js';
 import { planRetryTruncation, recentUserMessages } from './menu-message-redo.js';
 import { completeChat } from './menu-completion.js';
@@ -280,6 +280,8 @@ import {
   runStyleSelect,
   runOversightSelect,
   runSettings,
+  withOptional,
+  toggleDefaultShell,
 } from './menu-settings.js';
 import { runOpencodeAccountsMenu } from './menu-opencode-accounts.js';
 import { runClaudeAccountsMenu } from './menu-claude-accounts.js';
@@ -2946,6 +2948,7 @@ export async function runChatLoop(
       // boardSummary), and push rows to the live board when enabled. The snapshot
       // is computed even when the board display is OFF so the DecisionEngine and
       // resume note always see the real state.
+      // -----------------------------------------------------------
       const syncBoard = async (): Promise<void> => {
         try {
           const projectKey = await resolveProjectKeyOnce();
@@ -6887,6 +6890,95 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
     return envRefreshInFlight;
   }
 
+  // Phase 4D: build and push a settings snapshot from the live mutableCtx.config.
+  // Called after initial load and after every successful settings mutation so the
+  // Control Panel Settings tab stays in sync with the persisted config.
+  const syncSettings = (): void => {
+    if (typeof out.syncSettings !== 'function') return;
+    try {
+      const cfg = mutableCtx.config;
+      const settings: UiSettingsSnapshot = {
+        mode: cfg.mode === undefined ? 'auto' : levelLabel(migrateMode(cfg.mode)).toLowerCase(),
+        oversight: resolveOversight(cfg),
+        verbosity: cfg.verbosity ?? 'normal',
+        colorTheme: cfg.colorTheme ?? 'dark',
+        memory: cfg.memory !== false,
+        learnedTaste: tasteEnabled(process.env, cfg),
+        codebaseAwareness: cfg.codebaseAwareness !== false,
+        setAsDefault: cfg.setAsDefault === true,
+      };
+      out.syncSettings(settings);
+    } catch {
+      /* settings snapshot is best-effort chrome */
+    }
+  };
+
+  // Phase 4D: settings intent handler — called by the bridge when the Control
+  // Panel emits a setting mutation. Calls the tested menu-settings helpers
+  // and re-syncs the settings snapshot into UiState afterward.
+  const handleSettingIntent = async (
+    intent: { readonly key: string; readonly value?: string | boolean },
+  ): Promise<void> => {
+    try {
+      switch (intent.key) {
+        case 'mode': {
+          mutableCtx.config = withOptional(mutableCtx.config, 'mode', intent.value as AppConfig['mode']);
+          await saveConfig(mutableCtx.config);
+          break;
+        }
+        case 'oversight': {
+          mutableCtx.config = withOptional(mutableCtx.config, 'oversight', intent.value as NonNullable<AppConfig['oversight']>);
+          await saveConfig(mutableCtx.config);
+          break;
+        }
+        case 'verbosity': {
+          mutableCtx.config = withOptional(mutableCtx.config, 'verbosity', intent.value as AppConfig['verbosity']);
+          await saveConfig(mutableCtx.config);
+          break;
+        }
+        case 'color-theme': {
+          const wantLight = intent.value === true;
+          mutableCtx.config = withOptional(mutableCtx.config, 'colorTheme', wantLight ? 'light' : undefined);
+          await saveConfig(mutableCtx.config);
+          break;
+        }
+        case 'memory': {
+          const wantEnabled = intent.value !== false;
+          mutableCtx.config = withOptional(mutableCtx.config, 'memory', wantEnabled ? undefined : false);
+          await saveConfig(mutableCtx.config);
+          break;
+        }
+        case 'learned-taste': {
+          const wantEnabled = intent.value !== false;
+          mutableCtx.config = withOptional(mutableCtx.config, 'experimentalTaste', wantEnabled ? undefined : false);
+          await saveConfig(mutableCtx.config);
+          break;
+        }
+        case 'codebase-awareness': {
+          const wantEnabled = intent.value !== false;
+          mutableCtx.config = withOptional(mutableCtx.config, 'codebaseAwareness', wantEnabled ? undefined : false);
+          await saveConfig(mutableCtx.config);
+          break;
+        }
+        case 'default-shell': {
+          mutableCtx.config = await toggleDefaultShell(mutableCtx.config, out);
+          break;
+        }
+      }
+      syncSettings();
+    } catch {
+      /* settings mutation is best-effort */
+    }
+  };
+
+  // Register the handler on the bridge so the Control Panel can emit
+  // setting intents without calling saveConfig directly.
+  if (inkHandle !== null) {
+    inkHandle.onControlPanelSettingAction((intent) => {
+      handleSettingIntent(intent).catch(() => { /* best-effort */ });
+    });
+  }
+
   try {
     // ---- Update check FIRST (before onboarding) -----------------------------
     // The very first thing each launch is "are you on the latest?" — the explicit
@@ -7696,12 +7788,14 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
       if (key === 'm') {
         const autoMode = resolveAutoMode(mutableCtx.env);
         mutableCtx.config = await runModeSelect(mutableCtx.config, out, readLine, autoMode, mutableCtx.env, inkReadKey);
+        syncSettings();
         continue;
       }
 
       // ---- [s] Settings -------------------------------------------------------
       if (key === 's') {
         await runSettings(ctx, mutableCtx, out, readLine, inkReadKey);
+        syncSettings();
         continue;
       }
 

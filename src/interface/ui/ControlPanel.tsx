@@ -11,6 +11,7 @@ import type {
   ControlPanelGoalRow,
   ControlPanelGoalsModel,
   ControlPanelModel,
+  ControlPanelSettingRow,
 } from './control-panel-model.js';
 
 // ---------------------------------------------------------------------------
@@ -31,6 +32,24 @@ function sectionLabel(section: ControlPanelSection): string {
 function truncate(str: string, max: number): string {
   if (str.length <= max) return str;
   return str.slice(0, max - 1) + '\u2026';
+}
+
+function getSelectedSettingRow(
+  rows: readonly ControlPanelSettingRow[],
+  index: number,
+): ControlPanelSettingRow | undefined {
+  const interactive = rows.filter((r) => r.kind !== 'readonly');
+  if (index < 0 || index >= interactive.length) return undefined;
+  return interactive[index];
+}
+
+function nextSegmentedValue(
+  row: { readonly kind: 'segmented'; readonly options: readonly { readonly value: string; readonly active: boolean }[] },
+): string | undefined {
+  const idx = row.options.findIndex((o) => o.active);
+  if (idx < 0) return row.options[0]?.value;
+  const next = (idx + 1) % row.options.length;
+  return row.options[next]?.value;
 }
 
 // ---------------------------------------------------------------------------
@@ -162,6 +181,11 @@ function windowDetail(
 // props
 // ---------------------------------------------------------------------------
 
+export interface ControlPanelSettingIntent {
+  readonly key: string;
+  readonly value?: string | boolean;
+}
+
 export interface ControlPanelProps {
   readonly state: UiState;
   readonly rows?: number;
@@ -170,6 +194,8 @@ export interface ControlPanelProps {
   readonly onHighlightGoal: (goalId: string) => void;
   readonly onScroll: (section: ControlPanelSection, target: 'list' | 'detail' | undefined, delta: number) => void;
   readonly onClose: () => void;
+  readonly onSettingAction?: (intent: ControlPanelSettingIntent) => void;
+  readonly onSettingsSelect?: (index: number) => void;
   readonly active?: boolean;
 }
 
@@ -186,6 +212,8 @@ export function ControlPanel(props: ControlPanelProps): React.ReactElement {
     onHighlightGoal,
     onScroll,
     onClose,
+    onSettingAction,
+    onSettingsSelect,
     active,
   } = props;
 
@@ -239,6 +267,41 @@ export function ControlPanel(props: ControlPanelProps): React.ReactElement {
         }
         if (key.pageDown || input === 'd') {
           onScroll('goals', 'list', pageDelta);
+          return;
+        }
+      }
+      if (model.activeSection === 'settings' && onSettingAction !== undefined) {
+        const interactiveCount = model.settings.filter((r) => r.kind !== 'readonly').length;
+        if (key.upArrow || input === 'k') {
+          if (interactiveCount > 0) {
+            const cur = state.controlPanel.settingsSelectedIndex;
+            const next = cur <= 0 ? interactiveCount - 1 : cur - 1;
+            onSettingsSelect?.(next);
+          }
+          return;
+        }
+        if (key.downArrow || input === 'j') {
+          if (interactiveCount > 0) {
+            const cur = state.controlPanel.settingsSelectedIndex;
+            const next = cur >= interactiveCount - 1 ? 0 : cur + 1;
+            onSettingsSelect?.(next);
+          }
+          return;
+        }
+        if (key.return) {
+          const row = getSelectedSettingRow(model.settings, state.controlPanel.settingsSelectedIndex);
+          if (row !== undefined) {
+            if (row.kind === 'segmented') {
+              const nextOpt = nextSegmentedValue(row);
+              if (nextOpt !== undefined) {
+                onSettingAction({ key: row.id, value: nextOpt });
+              }
+            } else if (row.kind === 'toggle') {
+              onSettingAction({ key: row.id, value: !row.value });
+            } else if (row.kind === 'action') {
+              onSettingAction({ key: row.id, value: !row.value });
+            }
+          }
           return;
         }
       }
@@ -302,6 +365,7 @@ export function ControlPanel(props: ControlPanelProps): React.ReactElement {
           model={model}
           scroll={state.controlPanel.settingsScroll}
           availableRows={contentRows}
+          selectedIndex={state.controlPanel.settingsSelectedIndex}
         />
       )}
 
@@ -485,16 +549,27 @@ function ControlPanelStatus(
 
 function ControlPanelSettings(
   { model, scroll, availableRows }:
-  { readonly model: ControlPanelModel; readonly scroll: number; readonly availableRows: number },
+  { readonly model: ControlPanelModel; readonly scroll: number; readonly availableRows: number; readonly selectedIndex: number },
 ): React.ReactElement {
   const lines: string[] = [];
+
   for (const row of model.settings) {
-    lines.push(
-      `${row.label}: ${row.enabled ? 'enabled' : 'disabled'}` +
-        (row.note !== undefined ? ` (${row.note})` : ''),
-    );
+    if (row.kind === 'segmented') {
+      const options = row.options.map((o) => o.active ? `[${o.label}]` : ` ${o.label} `).join('');
+      const marker = row.selected ? '\u25B8 ' : '  ';
+      lines.push(`${marker}${row.label}: ${options}`);
+      if (row.note !== undefined) {
+        lines.push(`  (${row.note})`);
+      }
+    } else if (row.kind === 'toggle' || row.kind === 'action') {
+      const marker = row.selected ? '\u25B8 ' : '  ';
+      const note = row.note !== undefined ? ` (${row.note})` : '';
+      lines.push(`${marker}${row.label}: ${row.value ? 'on' : 'off'}${note}`);
+    } else {
+      // readonly
+      lines.push(`  ${row.label}: ${row.value}`);
+    }
   }
-  lines.push('Settings are read-only in this release');
 
   const total = lines.length;
   let start = Math.min(scroll, Math.max(0, total - availableRows));

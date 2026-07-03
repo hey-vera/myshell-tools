@@ -51,7 +51,7 @@ import { tasteEnabled } from '../core/taste-flag.js';
  * prior config's entries MINUS this key, yielding an object where the key is
  * genuinely omitted (no `delete`, no `key: undefined`).
  */
-function withOptional<K extends keyof AppConfig>(
+export function withOptional<K extends keyof AppConfig>(
   config: AppConfig,
   key: K,
   value: AppConfig[K] | undefined,
@@ -146,7 +146,7 @@ export async function runModeSelect(
  * Default is 'normal' (undefined counts as normal). Preserves all other config
  * fields via conditional spread so changing detail doesn't reset other prefs.
  */
-async function runVerbositySelect(
+export async function runVerbositySelect(
   config: AppConfig,
   out: OutputSink,
   readLine: () => Promise<string | null>,
@@ -330,7 +330,7 @@ export async function toggleDefaultShell(
  * when on writes `codebaseAwareness:false`; toggling when off removes the flag
  * (restores default-on). Preserves all other keys.
  */
-async function toggleCodebaseAwareness(config: AppConfig, out: OutputSink): Promise<AppConfig> {
+export async function toggleCodebaseAwareness(config: AppConfig, out: OutputSink): Promise<AppConfig> {
   const currentlyEnabled = config.codebaseAwareness !== false;
   const enable = !currentlyEnabled;
   const updated: AppConfig = withOptional(config, 'codebaseAwareness', enable ? undefined : false);
@@ -455,7 +455,7 @@ export async function runSettings(
  * injection, no proposals); toggling when off removes the flag (restores
  * default-on). The advanced memory keys are config-file-only and preserved.
  */
-async function toggleMemory(config: AppConfig, out: OutputSink): Promise<AppConfig> {
+export async function toggleMemory(config: AppConfig, out: OutputSink): Promise<AppConfig> {
   const currentlyEnabled = config.memory !== false;
   const enable = !currentlyEnabled;
   // Persist only the explicit-OFF; absent means default-on. Spreading the full
@@ -473,7 +473,7 @@ async function toggleMemory(config: AppConfig, out: OutputSink): Promise<AppConf
  * for prompts/engagement. No quota fiction — pure preference + observed outcomes.
  * Opt-out via explicit false (for compat with experimentalTaste).
  */
-async function toggleLearnedTaste(config: AppConfig, out: OutputSink): Promise<AppConfig> {
+export async function toggleLearnedTaste(config: AppConfig, out: OutputSink): Promise<AppConfig> {
   const currently = tasteEnabled(process.env, config);
   const enable = !currently;
   // Persist explicit false only when off (absent or true = on). Spread full config.
@@ -493,7 +493,7 @@ async function toggleLearnedTaste(config: AppConfig, out: OutputSink): Promise<A
  * startup). Toggling writes the explicit value; toggling back to 'dark' removes
  * the key (restores default).
  */
-async function toggleColorTheme(config: AppConfig, out: OutputSink): Promise<AppConfig> {
+export async function toggleColorTheme(config: AppConfig, out: OutputSink): Promise<AppConfig> {
   const currentlyLight = config.colorTheme === 'light';
   const newTheme: 'dark' | 'light' | undefined = currentlyLight ? undefined : 'light';
   const updated: AppConfig = withOptional(config, 'colorTheme', newTheme);

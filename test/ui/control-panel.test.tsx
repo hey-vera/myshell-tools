@@ -141,7 +141,8 @@ test('Settings shows one read-only board row, no toggle', () => {
   const frame = lastFrame() ?? '';
   assert.match(frame, /Settings/);
   assert.match(frame, /Persistent board: enabled/);
-  assert.match(frame, /read-only in this release/);
+  // Phase 4D: Settings tab is interactive (no longer "read-only in this release")
+  assert.match(frame, /Settings snapshot/);
 });
 
 test('Tab calls onSetSection forward; Shift+Tab calls backward', async () => {
