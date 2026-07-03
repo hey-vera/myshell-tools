@@ -16,7 +16,8 @@ import { StatusBlock } from './StatusBlock.js';
 import { GoalsPanel } from './GoalsPanel.js';
 import { ControlPanel } from './ControlPanel.js';
 import { BottomLegend } from './BottomLegend.js';
-import { layoutForHeight, streamWrappedRows, tailStreamToRows, INPUT_ROWS, LEGEND_ROWS } from './layout.js';
+import { GoalQuickStrip } from './GoalQuickStrip.js';
+import { selectGoalQuickRows, goalStripPlannedRows, layoutForHeight, streamWrappedRows, tailStreamToRows, INPUT_ROWS, LEGEND_ROWS } from './layout.js';
 import { backfillTerminalSize } from './mount.js';
 import type { Action, TranscriptLine, UiState } from './state.js';
 
@@ -622,9 +623,13 @@ function AppBody({
     // past the viewport. The planner shrinks the stream/status region to fit; the
     // InputBox itself caps its own visible physical rows to the viewport (keeping
     // the caret/tail row) for an extreme paste, so the total is ALWAYS <= viewport.
-    const plan = layoutForHeight(uiState, budgetRows, streamLines, inputBoxRows + LEGEND_ROWS);
+    // Reserve rows for the GoalQuickStrip + legend so status/stream/strip/input/legend
+    // never overflow the viewport (Phase 2).
+    const stripRows = goalStripPlannedRows(uiState.board.length);
+    const plan = layoutForHeight(uiState, budgetRows, streamLines, inputBoxRows + LEGEND_ROWS + stripRows);
     const cappedStreamBuffer = tailStreamToRows(uiState.stream.buffer, liveColumns, plan.streamCap);
-    return { streamLines, plan, cappedStreamBuffer };
+    const quickRows = selectGoalQuickRows(uiState);
+    return { streamLines, plan, cappedStreamBuffer, quickRows };
     // The keys are EXACTLY the inputs layoutForHeight / streamWrappedRows /
     // tailStreamToRows read: the live buffer, the geometry, and the reducer fields
     // the planner consults (turnActive gates visibility; goals drive the panel
@@ -676,7 +681,7 @@ function AppBody({
     // wrapped/pasted composer can never push the dynamic region past the viewport;
     // the SAME plan flows into StatusBlock so its panel plan and this stream cap
     // agree (see layout.ts).
-    const { streamLines, plan, cappedStreamBuffer } = liveLayout;
+    const { streamLines, plan, cappedStreamBuffer, quickRows } = liveLayout;
     return (
       <Box flexDirection="column">
         <CommittedTranscript lines={uiState.committed} color={color} />
@@ -725,6 +730,9 @@ function AppBody({
             />
             <Stream buffer={cappedStreamBuffer} color={color} />
           </>
+        )}
+        {!fullscreenPanelOpen && chatActive && (
+          <GoalQuickStrip rows={quickRows} color={color} columns={liveColumns} />
         )}
         <InputBox
           bridge={bridge.input}

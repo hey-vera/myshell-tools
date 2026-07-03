@@ -224,6 +224,15 @@ export const SAFETY_MARGIN_ROWS = 1;
  * budget and the StatusBlock board renderer agree on the same constant.
  */
 export const BOARD_CHROME_ROWS = 3;
+/**
+ * The GoalQuickStrip's compact header line ("goals  N total · M active").
+ * Reserved as 1 row when there is at least one goal on the board; 0 otherwise.
+ */
+export const GOAL_STRIP_HEADER_ROWS = 1;
+/** Maximum visible goal rows in the inline strip before the overflow "+\d+ more"
+ *  line caps it. Keeps the strip bounded so a 20-goal board can never blow the
+ *  viewport. */
+export const GOAL_STRIP_MAX_GOALS = 5;
 
 // ---------------------------------------------------------------------------
 // Composer hint-line shaping
@@ -620,6 +629,72 @@ export function planBoard(board: readonly GoalBoardRow[], budget: number): Board
   }
   if (shown.length < 1) return null;
   return { shown, overflow: board.length - shown.length };
+}
+
+// ---------------------------------------------------------------------------
+// GoalQuickStrip — inline goals strip (Phase 2)
+// ---------------------------------------------------------------------------
+
+/** One compact goal row for the GoalQuickStrip inline glance. */
+export interface GoalQuickRow {
+  readonly id: string;
+  readonly glyph: string;
+  readonly title: string;
+  readonly state: GoalBoardRow['state'];
+  readonly done: number;
+  readonly total: number;
+  readonly agents: number;
+}
+
+/**
+ * Pure selector: merge the persistent board snapshot with live goal overlays into
+ * compact strip rows. Reuses existing board projection — no new data plumbing.
+ * Sorts active work first (running, queued), then parked, then terminal states.
+ *
+ * If the needed fields are not on the board rows, we use what IS there and note
+ * the gap: toolCount from live `UiState.goals` is NOT on GoalBoardRow, so the
+ * strip omits it (the Control Panel shows it in Phase 4).
+ */
+export function selectGoalQuickRows(state: UiState): readonly GoalQuickRow[] {
+  if (state.board.length === 0) return [];
+
+  // Live agent counts are already patched into board rows by the reducer's
+  // board/sync handler (reducing from state.goals by goalId). We trust those.
+  // We DO merge live runner flags from state.goals for active detection.
+  const liveGoalIds = new Set(state.goals.map((g) => g.id));
+
+  // State-rank ordering: active first, then parked, then terminal.
+  const rank: Record<GoalBoardRow['state'], number> = {
+    running: 0, queued: 1, parked: 2, done: 3, failed: 4, blocked: 4, superseded: 4,
+  };
+
+  const rows = state.board
+    .map((row) => ({
+      id: row.id,
+      glyph: row.glyph,
+      title: row.title,
+      state: row.state,
+      done: row.done,
+      total: row.total,
+      // The board row's agents count is the truth from the reducer;
+      // fall back to live goal's agent count as a cross-check.
+      agents: row.agents > 0 ? row.agents : (liveGoalIds.has(row.id) ? (state.goals.find((g) => g.id === row.id)?.agents.length ?? 0) : 0),
+    } satisfies GoalQuickRow))
+    .sort((a, b) => (rank[a.state] ?? 9) - (rank[b.state] ?? 9));
+
+  return rows;
+}
+
+/**
+ * Compute how many terminal rows the GoalQuickStrip needs at `columns` width,
+ * bounded by {@link GOAL_STRIP_MAX_GOALS} + overflow line. Returns 0 when the
+ * board is empty so the layout budget doesn't reserve phantom rows.
+ */
+export function goalStripPlannedRows(boardLength: number): number {
+  if (boardLength === 0) return 0;
+  const goalRows = Math.min(boardLength, GOAL_STRIP_MAX_GOALS);
+  const overflowRow = boardLength > GOAL_STRIP_MAX_GOALS ? 1 : 0;
+  return GOAL_STRIP_HEADER_ROWS + goalRows + overflowRow;
 }
 
 // ---------------------------------------------------------------------------
