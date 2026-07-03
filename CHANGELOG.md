@@ -4,6 +4,28 @@ All notable changes to **myshell-tools** are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.162.0] - 2026-07-03 — de-drift: promote planning-depth, auto-smart, and byproduct-fallback to unconditional
+
+### Changed
+- **`MYSHELL_AUTO_SMART` promoted to unconditional** (#69). Auto mode as a
+  standalone smart default is now always on; the per-turn governor always chooses
+  effort from task shape, risk, and provider headroom rather than resolving to a
+  fixed preset.
+- **`MYSHELL_PLANNING_DEPTH` promoted to unconditional** (#72). Planning-depth
+  heuristics are now always active, no longer gated behind a feature flag.
+- **`MYSHELL_BYPRODUCT_FALLBACK` promoted to unconditional** (#68). Text fallback
+  when structured intent/byproduct parsing returns nothing is now always active.
+
+### Fixed
+- **Flaky planning-depth birdhouse test** (#70). Fixed a real race condition in the
+  planning-depth birdhouse test and removed stale understanding configs that could
+  cause intermittent failures.
+
+### Docs
+- **Env-aware codex/opencode invocation rules** (#71). Updated `CLAUDE.md` to
+  document invocation differences between Windows and Linux containers, including
+  the mandatory `</dev/null` stdin-close and codex sandbox workarounds.
+
 ## [3.160.0] - 2026-06-29 — chat/menu bug fixes + control-panel redesign + goal steward
 
 ### Fixed
