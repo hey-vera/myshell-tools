@@ -51,10 +51,7 @@ import { createCapabilityRefreshPort } from '../infra/model-capability-port.js';
 import { nodeRepoScanPort } from '../infra/repo-scan.js';
 import { createFileUserMemoryStore, resolveProjectKey } from '../infra/user-memory-store.js';
 import { createFileTasteLedger } from '../infra/taste-ledger.js';
-import { tasteEnabled } from '../core/taste-flag.js';
-import { judgmentEnabled } from '../core/judgment-flag.js';
 import { researchEnabled } from '../core/research-flag.js';
-import { vendorNeutralRouterEnabled } from '../core/route-types.js';
 import {
   preflightUnifyEnabled,
   preflightRiskSignalsEnabled,
@@ -173,9 +170,7 @@ import { makeReplanner, applyReplanEditsViaStore } from '../core/goal-replan-gen
 import type { RoadmapEdit } from '../core/goal-replan.js';
 import { makeUnderstandingPass } from '../core/understanding-generator.js';
 import type { SystemModel } from '../core/understanding.js';
-import { understandingEnabled } from './ui/understanding-flag.js';
 import { planningDepthEnabled } from './ui/planning-depth-flag.js';
-import { verifiedDoneEnabled } from './ui/truly-complete-flag.js';
 import { verifyStage } from '../core/work-call.js';
 import { isRecapStale, recapEligible, type RecapResult } from '../core/recap.js';
 import { buildPreflightDeps } from './preflight-deps.js';
@@ -224,10 +219,7 @@ import type { StartupInputBuffer } from './startup-input.js';
 import { STARTUP_INPUT_CARRIER_ENV } from './startup-input.js';
 
 import { itemParkingEnabled } from './ui/item-park-flag.js';
-import { governorEnabled } from './ui/governor-flag.js';
 import { autoSmartEnabled } from './ui/auto-smart-flag.js';
-import { verifyEnabled } from './ui/verify-flag.js';
-import { trustEnabled } from './ui/trust-flag.js';
 import { tribunalEnabled } from './ui/tribunal-flag.js';
 
 
@@ -242,7 +234,7 @@ import { readSubscriptions, type SubscriptionAccount, type SubscriptionProvider,
 
 
 
-import { nativeSessionsPromoteEnabled, nativeSessionsEffectiveEnabled } from './ui/native-sessions-promote-flag.js';
+import { rollbackEngaged } from '../core/rollback-flag.js';
 import { createIntentStore } from '../infra/intent-store.js';
 import { nodeVerifyPort } from '../infra/verify-port.js';
 import { createEvidenceSink, createEvidenceSnapshotBuilder } from '../infra/evidence-sink.js';
@@ -1353,7 +1345,6 @@ export async function runChatLoop(
     },
   };
   const intentStore = createIntentStore({ cwd: ctx.cwd });
-  const nativeSessionsPromoteOn = nativeSessionsPromoteEnabled(process.env);
       void (async () => {
 
     try {
@@ -2266,12 +2257,7 @@ export async function runChatLoop(
             })),
         );
         const nativeSession = planNativeSession({
-          enabled: nativeSessionsEffectiveEnabled({
-            ...(mutableCtx.config.nativeSessions !== undefined
-              ? { configNativeSessions: mutableCtx.config.nativeSessions }
-              : {}),
-            promoted: nativeSessionsPromoteOn,
-          }),
+          enabled: mutableCtx.config.nativeSessions !== false,
           conversationId: convId,
           history: hist,
           historyPolicy: nativeHistoryPolicy,
@@ -2337,13 +2323,7 @@ export async function runChatLoop(
             dynamicOrder[tier] = live;
           }
         }
-        const verifyActive = experimentalEnabledByDefault(
-          process.env,
-          mutableCtx.config,
-          'MYSHELL_VERIFY',
-          mutableCtx.config.experimentalVerify,
-          verifyEnabled,
-        );
+        const verifyActive = !rollbackEngaged(process.env, mutableCtx.config);
         const evidenceTurnNumber = hist.filter((entry) => entry.role === 'user').length + 1;
 
         const intentVersionId = ctx.clock.uuid();
@@ -2412,9 +2392,7 @@ export async function runChatLoop(
           // REUSED here so orchestrate's route()/selectReasoningEffort can use it.
           // Absent → no capability context, no effort flag (unchanged routing).
           ...(caps.registry !== undefined ? { capabilityRegistry: caps.registry } : {}),
-          ...(vendorNeutralRouterEnabled(process.env, mutableCtx.config)
-            ? { vendorNeutralEnabled: true }
-            : {}),
+          vendorNeutralEnabled: true,
 
 
           // CAPABILITY PARSE-FROM-TEXT FALLBACK (redesign Phase 0) — DEFAULT OFF
@@ -2439,7 +2417,7 @@ export async function runChatLoop(
           // Native session promotion: pass the flag so work-call can emit telemetry.
           // Existing config.nativeSessions===true continues unchanged (effective-
           // enabled helper already combined them above for planNativeSession).
-          ...(nativeSessionsPromoteOn ? { nativeSessionsPromote: true } : {}),
+          nativeSessionsPromote: true,
           ...(turnCallBudget !== undefined ? { turnCallBudget } : {}),
           ...preflightDeps,
           // UNIFIED PREFLIGHT (rank-7). Set ONLY when the unify flag is ON; absent
@@ -2532,38 +2510,22 @@ export async function runChatLoop(
           // TOOL-STATE / ABOUT block (tool self-awareness) — present only when the
           // pure renderer produced a non-empty block (it always does given a version).
           ...(toolStateContext.length > 0 ? { toolStateContext } : {}),
-          // PERFORMANCE GOVERNOR (Phase 2 skeleton) — DEFAULT ON at the entry point
-          // (frictionless). Resolved by the composition-root default-on resolver;
-          // disabled only by an explicit opt-out (MYSHELL_GOVERNOR ∈ {0,false,off,no}
-          // OR config.experimentalGovernor===false) or global basic mode. When off,
-          // orchestrate short-circuits before consulting the governor so the
-          // admission path is byte-for-byte unchanged. Present only when true (so the
-          // off state keeps the field off entirely).
-          ...(experimentalEnabledByDefault(
-            process.env,
-            mutableCtx.config,
-            'MYSHELL_GOVERNOR',
-            mutableCtx.config.experimentalGovernor,
-            governorEnabled,
-          )
-            ? {
-                governorEnabled: true,
-                // REAL live pressure (master-plan PHASE 4 — closing the Phase-2
-                // honest-zero gap). The governor's per-turn budget shrinks under
-                // genuine 429 pressure. The ONE real, observable dimension on
-                // subscription CLIs: how many providers are in rate-limit cooldown
-                // right now (the SAME `currentPressure` signal `decideShed` reads).
-                // There is NO token-budget readout on subscription auth, so that
-                // dimension stays an honest 0 inside `pressureFromSignals` — never
-                // fabricated. Only set when the Governor flag is ON, so the off path
-                // is byte-for-byte unchanged. A 0 here is the same as absent (the
-                // consult falls back to the honest zero either way), so it never
-                // changes a no-pressure turn.
-                governorPressure: currentPressure(),
-                ...(autoSmartOn && mutableCtx.config.mode === undefined
-                  ? { governorBudgetCeiling: planBudgetCeiling(mutableCtx.env) }
-                  : {}),
-              }
+          // PERFORMANCE GOVERNOR — unconditional (shipped-on admission/budget coordination).
+          // pressure/budget checks remain the real safety controls.
+          governorEnabled: true,
+          // REAL live pressure (master-plan PHASE 4 — closing the Phase-2
+          // honest-zero gap). The governor's per-turn budget shrinks under
+          // genuine 429 pressure. The ONE real, observable dimension on
+          // subscription CLIs: how many providers are in rate-limit cooldown
+          // right now (the SAME `currentPressure` signal `decideShed` reads).
+          // There is NO token-budget readout on subscription auth, so that
+          // dimension stays an honest 0 inside `pressureFromSignals` — never
+          // fabricated. A 0 here is the same as absent (the
+          // consult falls back to the honest zero either way), so it never
+          // changes a no-pressure turn.
+          governorPressure: currentPressure(),
+          ...(autoSmartOn && mutableCtx.config.mode === undefined
+            ? { governorBudgetCeiling: planBudgetCeiling(mutableCtx.env) }
             : {}),
           // VERIFICATION CENTERPIECE (master-plan PHASE 3) — DEFAULT ON at the entry
           // point (frictionless). Resolved by the composition-root default-on resolver;
@@ -2592,26 +2554,10 @@ export async function runChatLoop(
                 evidenceTurnNumber,
               }
             : {}),
-          // THE TRUST SURFACE (master-plan PHASE 8) — DEFAULT ON at the entry point
-          // (frictionless). Resolved by the composition-root default-on resolver;
-          // disabled only by an explicit opt-out (MYSHELL_TRUST ∈ {0,false,off,no} OR
-          // config.experimentalTrust===false) or global basic mode. When ON, the
-          // accept-point receipt is UPGRADED from the bare verify line into the
-          // consolidated, auditable trust receipt (auditable confidence + verify + an
-          // honest self-audit), composed PURELY from the real signals already on the
-          // turn (no new model call). When OFF the accept path emits EXACTLY today's
-          // single verify line — byte-for-byte neutrality. The underlying signals are
-          // themselves resolved the same way, so in global basic mode the surface is
-          // doubly dark.
-          ...(experimentalEnabledByDefault(
-            process.env,
-            mutableCtx.config,
-            'MYSHELL_TRUST',
-            mutableCtx.config.experimentalTrust,
-            trustEnabled,
-          )
-            ? { trustEnabled: true }
-            : {}),
+          // THE TRUST SURFACE — unconditional (shipped-on). Disabled only by
+          // MYSHELL_ROLLBACK emergency kill-switch. Composed PURELY from real
+          // signals (no new model call); absent signal ⇒ absent line.
+          ...(rollbackEngaged(process.env, mutableCtx.config) ? {} : { trustEnabled: true }),
           // THE RIVAL TRIBUNAL (master-plan PHASE 9) — DEFAULT ON at the entry point
           // (frictionless). Resolved by the composition-root default-on resolver;
           // disabled only by an explicit opt-out (MYSHELL_TRIBUNAL ∈ {0,false,off,no}
@@ -3092,7 +3038,7 @@ export async function runChatLoop(
       // `done` ONLY when the verdict is passing/reviewed; failing/unverified (incl.
       // an empty diff) keeps it open with an honest receipt — never fake green. The
       // verdict is the SOLE source of `lastGoalCompleted` when this is on.
-      const verifiedDoneOn = verifiedDoneEnabled(process.env, mutableCtx.config);
+      const verifiedDoneOn = true;
       // Run a REAL verification for the goal-completion gate and map it to a
       // GoalVerdict, reusing verifyStage (the same change-capture + tests-first +
       // honest four-state engine the work-call accept point uses). Tests-only
@@ -3194,7 +3140,7 @@ export async function runChatLoop(
       // its SystemModel grounds the planner so the staged goals reflect whole-picture
       // depth. OFF → never invoked, SystemModel stays undefined → the planner prompt
       // is byte-for-byte today's.
-      const understandingOn = understandingEnabled(process.env, mutableCtx.config);
+      const understandingOn = true;
       const planningDepthOn = planningDepthEnabled(process.env, mutableCtx.config);
       // Mint sequential roadmap ids (r1, r2, …) for a freshly-staged goal's todos
       // and translate each todo's 1-based dependsOn indices into the corresponding
@@ -3946,34 +3892,13 @@ Output ONLY valid JSON (no prose, no markdown).`;
         return resolved.block;
       };
 
-      // ---- LEARNED-TASTE LEDGER (Phase-7 free layer, judgment doc Part 4) ------
-      // Append-only JSONL of OBSERVED decisions (fork choices, push-back outcomes,
-      // accept-unchanged vs. immediate-edit/rephrase). FLAG-GATED OFF by default
-      // (core/taste-flag.ts): when off, recall returns the EMPTY playbook (no
-      // tasteContext block, memoryBias 0 → byte-identical path) AND recording is
-      // skipped before it ever touches disk. Fully fail-soft: a corrupt/missing
-      // ledger degrades to no-bias, never breaks a turn. No model call, no
-      // embeddings, no metered service — subscription-clean.
-      const tasteOn = experimentalEnabledByDefault(
-        process.env,
-        mutableCtx.config,
-        'MYSHELL_TASTE',
-        mutableCtx.config.experimentalTaste,
-        tasteEnabled,
-      );
-      // THE FREE JUDGMENT LAYER flag (master-plan PHASE 5; core/judgment-flag.ts).
-      // DEFAULT ON at the entry point (frictionless): resolved by the composition-root
-      // default-on resolver. Disabled only by explicit opt-out (MYSHELL_JUDGMENT ∈
-      // {0,false,off,no} OR config.experimentalJudgment===false) or global basic mode.
-      // When off, deps.judgmentEnabled is never set → the brain's `decideNextMove`
-      // returns BYTE-FOR-BYTE today's moves (no push_back).
-      const judgmentOn = experimentalEnabledByDefault(
-        process.env,
-        mutableCtx.config,
-        'MYSHELL_JUDGMENT',
-        mutableCtx.config.experimentalJudgment,
-        judgmentEnabled,
-      );
+      // LEARNED-TASTE LEDGER — unconditional (shipped-on, fail-soft, no tokens, no cost).
+      // Recording/recall always attempted; internal gates keep it safe.
+      const tasteOn = true;
+      // THE FREE JUDGMENT LAYER — unconditional (shipped-on). DISABLED ONLY by
+      // MYSHELL_ROLLBACK emergency kill-switch. The internal grounded-reason
+      // gate keeps push_back rare.
+      const judgmentOn = !rollbackEngaged(process.env, mutableCtx.config);
       // RESEARCH-UNTIL-CONFIDENT flag (master-plan Phase 3b; core/research-flag.ts).
       // DEFAULT OFF (opt-in; this is the newest, darkest lever). Enabled only by an
       // explicit MYSHELL_RESEARCH ∈ {1,true,on,yes} OR config.experimentalResearch.
@@ -6059,13 +5984,7 @@ Output ONLY valid JSON (no prose, no markdown).`;
         mutableCtx.env.opencode,
         mutableCtx.env.grok,
       ].filter((p) => p.authenticated).length;
-      const verifyOn = experimentalEnabledByDefault(
-        process.env,
-        mutableCtx.config,
-        'MYSHELL_VERIFY',
-        mutableCtx.config.experimentalVerify,
-        verifyEnabled,
-      );
+      const verifyOn = !rollbackEngaged(process.env, mutableCtx.config);
       const turnId = ctx.clock.uuid();
       currentTurnId = turnId;
       const budget = createTurnCallBudget({
@@ -6810,7 +6729,7 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
         verbosity: cfg.verbosity ?? 'normal',
         colorTheme: cfg.colorTheme ?? 'dark',
         memory: cfg.memory !== false,
-        learnedTaste: tasteEnabled(process.env, cfg),
+        learnedTaste: true,
         codebaseAwareness: cfg.codebaseAwareness !== false,
         setAsDefault: cfg.setAsDefault === true,
       };
@@ -6852,12 +6771,6 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
         case 'memory': {
           const wantEnabled = intent.value !== false;
           mutableCtx.config = withOptional(mutableCtx.config, 'memory', wantEnabled ? undefined : false);
-          await saveConfig(mutableCtx.config);
-          break;
-        }
-        case 'learned-taste': {
-          const wantEnabled = intent.value !== false;
-          mutableCtx.config = withOptional(mutableCtx.config, 'experimentalTaste', wantEnabled ? undefined : false);
           await saveConfig(mutableCtx.config);
           break;
         }

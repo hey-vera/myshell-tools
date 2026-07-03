@@ -25,7 +25,6 @@ import {
   type BrainLoopState,
   type PollSurface,
 } from '../../src/core/brain.ts';
-import { judgmentEnabled } from '../../src/core/judgment-flag.ts';
 import { planEngagement } from '../../src/core/engagement.ts';
 import type { EngagementSignals } from '../../src/core/engagement.ts';
 import type { IntentFrame } from '../../src/core/intent.ts';
@@ -77,29 +76,9 @@ function substantialSignals(over: Partial<EngagementSignals> = {}): EngagementSi
   });
 }
 
-// ===========================================================================
-// THE FLAG — off-guarantee
-// ===========================================================================
+// judgment-flag promoted to unconditional in batches 4-6 dedrift.
+// Judgment is ON by default; gated only by MYSHELL_ROLLBACK.
 
-describe('judgment-flag (opt-IN helper — stable feature, default-on at entry points via experimentalEnabledByDefault)', () => {
-  it('absent env + absent config ⇒ false from this opt-IN helper (default-on is handled by the resolver)', () => {
-    assert.equal(judgmentEnabled({}, undefined), false);
-    assert.equal(judgmentEnabled({}, {}), false);
-  });
-  it('ON via MYSHELL_JUDGMENT truthy (case-insensitive)', () => {
-    for (const v of ['1', 'true', 'on', 'yes', 'TRUE', ' On ']) {
-      assert.equal(judgmentEnabled({ MYSHELL_JUDGMENT: v }, undefined), true, `value ${v}`);
-    }
-  });
-  it('ON via config.experimentalJudgment', () => {
-    assert.equal(judgmentEnabled({}, { experimentalJudgment: true }), true);
-  });
-  it('OFF for falsy/garbage values', () => {
-    for (const v of ['0', 'false', '', 'off', 'maybe']) {
-      assert.equal(judgmentEnabled({ MYSHELL_JUDGMENT: v }, undefined), false, `value ${v}`);
-    }
-  });
-});
 
 // ===========================================================================
 // FLAG-OFF NEUTRALITY — decideNextMove byte-for-byte unchanged

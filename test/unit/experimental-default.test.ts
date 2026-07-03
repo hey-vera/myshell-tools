@@ -2,8 +2,10 @@
  * test/unit/experimental-default.test.ts — the composition-root default-ON resolver.
  *
  * Proves the full truth table for `experimentalEnabledByDefault`, which COMPOSES a
- * subsystem's own pure opt-IN helper (governorEnabled/verifyEnabled/…) with the global
- * basic-mode switch:
+ * subsystem's own pure opt-IN helper with rollback and the global basic-mode switch.
+ *
+ * After batches 4-6 dedrift: governor/verify/trust/judgment/taste/auto-brain flags
+ * are now unconditional. The resolver remains in use for tribunal (bucket D).
  *
  *   1. nothing set (absent)                         ⇒ ON  (frictionless default)
  *   2. explicit per-feature opt-IN                  ⇒ ON  — even when basic mode is set
@@ -13,12 +15,6 @@
  *   4. global basic mode set, X not opted-in        ⇒ OFF
  *
  * Never throws (default-on → true on hostile input).
- *
- * The resolver CONSUMES the real per-feature helpers (no fake), so the helpers stay
- * genuinely production-used and the no-orphan arch guard holds without any exemption.
- * Those helpers keep their own opt-IN semantics, exercised by their dedicated unit
- * tests + the flag-off neutrality suites; this module flips only the boolean SOURCE
- * used at the menu wiring.
  */
 import { describe, it } from 'vitest';
 import assert from 'node:assert/strict';
@@ -26,30 +22,20 @@ import {
   experimentalEnabledByDefault,
   basicModeEnabled,
 } from '../../src/interface/ui/experimental-default.ts';
-import { governorEnabled } from '../../src/interface/ui/governor-flag.ts';
-import { verifyEnabled } from '../../src/interface/ui/verify-flag.ts';
-import { trustEnabled } from '../../src/interface/ui/trust-flag.ts';
 import { tribunalEnabled } from '../../src/interface/ui/tribunal-flag.ts';
-// tasteEnabled excluded from this composition test (direct default-ON handling)
-import { judgmentEnabled } from '../../src/core/judgment-flag.ts';
 
 type OptIn = (
   env: NodeJS.ProcessEnv | undefined,
   config: Record<string, boolean | undefined> | undefined,
 ) => boolean;
 
-// Each subsystem: its env key, its config key, and its REAL pure opt-in helper. The
-// resolver is exercised against the genuine helpers (the production wiring), not a stub.
+// After batches 4-6 dedrift, only tribunal still uses the resolver. The other
+// flags (governor, verify, trust, judgment, taste, auto-brain) are now unconditional.
 const SUBSYSTEMS: ReadonlyArray<{
   readonly envKey: string;
   readonly configKey: string;
   readonly optIn: OptIn;
 }> = [
-  { envKey: 'MYSHELL_GOVERNOR', configKey: 'experimentalGovernor', optIn: governorEnabled },
-  { envKey: 'MYSHELL_VERIFY', configKey: 'experimentalVerify', optIn: verifyEnabled },
-  // taste handled by direct tasteEnabled (default ON for max intel); not mixed in this experimental-default composition test
-  { envKey: 'MYSHELL_JUDGMENT', configKey: 'experimentalJudgment', optIn: judgmentEnabled },
-  { envKey: 'MYSHELL_TRUST', configKey: 'experimentalTrust', optIn: trustEnabled },
   { envKey: 'MYSHELL_TRIBUNAL', configKey: 'experimentalTribunal', optIn: tribunalEnabled },
 ];
 
@@ -74,43 +60,6 @@ describe('experimentalEnabledByDefault — DEFAULT ON, composing the real opt-in
       assert.equal(
         experimentalEnabledByDefault({}, { [configKey]: true } as Record<string, boolean>, envKey, true, optIn),
         true,
-        envKey,
-      );
-    }
-  });
-
-  it('rollback disables verify/judgment/trust in the production resolver path', () => {
-    for (const { envKey, configKey, optIn } of SUBSYSTEMS.filter(({ envKey }) =>
-      ['MYSHELL_VERIFY', 'MYSHELL_JUDGMENT', 'MYSHELL_TRUST'].includes(envKey),
-    )) {
-      assert.equal(
-        experimentalEnabledByDefault(
-          { MYSHELL_ROLLBACK: '1', [envKey]: '1' },
-          { [configKey]: true } as Record<string, boolean>,
-          envKey,
-          true,
-          optIn,
-        ),
-        false,
-        envKey,
-      );
-    }
-  });
-
-  it('persisted rollback wins over opt-in without widening rollback scope', () => {
-    for (const { envKey, configKey, optIn } of SUBSYSTEMS) {
-      const expected = ['MYSHELL_VERIFY', 'MYSHELL_JUDGMENT', 'MYSHELL_TRUST'].includes(envKey)
-        ? false
-        : true;
-      assert.equal(
-        experimentalEnabledByDefault(
-          { [envKey]: '1' },
-          { rollback: true, [configKey]: true } as Record<string, boolean>,
-          envKey,
-          true,
-          optIn,
-        ),
-        expected,
         envKey,
       );
     }
@@ -192,7 +141,7 @@ describe('experimentalEnabledByDefault — DEFAULT ON, composing the real opt-in
       assert.equal(experimentalEnabledByDefault({ [envKey]: undefined }, undefined, envKey, undefined, optIn), true, envKey);
     }
     // A helper that throws is swallowed → default ON.
-    assert.equal(experimentalEnabledByDefault({}, undefined, 'MYSHELL_GOVERNOR', undefined, throwingHelper), true);
+    assert.equal(experimentalEnabledByDefault({}, undefined, 'MYSHELL_TRIBUNAL', undefined, throwingHelper), true);
   });
 });
 

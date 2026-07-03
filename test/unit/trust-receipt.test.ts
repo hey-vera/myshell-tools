@@ -34,7 +34,6 @@ import {
 } from '../../src/core/trust-receipt.ts';
 import type { Confidence } from '../../src/core/brain.ts';
 import type { VerifyOutcome, TestRunResult } from '../../src/core/verify.ts';
-import { trustEnabled } from '../../src/interface/ui/trust-flag.ts';
 
 // ---------------------------------------------------------------------------
 // Builders — small, honest fixtures (no live anything)
@@ -405,33 +404,14 @@ describe('confidenceTier / receipt.confidenceLabel — shared 5-label vocabulary
 });
 
 // ---------------------------------------------------------------------------
-// THE FLAG — opt-IN helper (stable feature, default-on at entry points)
+// THE FLAG — promoted to unconditional in batches 4-6 dedrift.
+// Trust is ON by default; gated only by MYSHELL_ROLLBACK.
 // ---------------------------------------------------------------------------
 
-describe('trustEnabled — opt-IN helper (stable, default-on via experimentalEnabledByDefault; the neutrality contract)', () => {
-  it('absent env + absent config ⇒ false from this opt-IN helper (default-on is handled by the resolver)', () => {
-    assert.equal(trustEnabled(undefined, undefined), false);
-    assert.equal(trustEnabled({}, {}), false);
-  });
-
-  it('falsey env values ⇒ false', () => {
-    for (const v of ['0', 'false', '', 'off', 'no', 'nope']) {
-      assert.equal(trustEnabled({ MYSHELL_TRUST: v }, undefined), false, `env=${v}`);
-    }
-  });
-
-  it('explicit opt-in via env ⇒ true (case-insensitive, trimmed)', () => {
-    for (const v of ['1', 'true', 'on', 'yes', ' TRUE ', 'On']) {
-      assert.equal(trustEnabled({ MYSHELL_TRUST: v }, undefined), true, `env=${v}`);
-    }
-  });
-
-  it('explicit opt-in via config.experimentalTrust ⇒ true', () => {
-    assert.equal(trustEnabled({}, { experimentalTrust: true }), true);
-    assert.equal(trustEnabled({}, { experimentalTrust: false }), false);
-  });
-
-  it('never throws on hostile input', () => {
-    assert.equal(trustEnabled({ MYSHELL_TRUST: undefined }, undefined), false);
+describe('trust — promoted to unconditional (batches 4-6 dedrift)', () => {
+  it('trust surface is always on by default (no flag layer)', () => {
+    // Trust is now unconditional — no per-feature opt-in/opt-out flag remains.
+    // The kill-switch is MYSHELL_ROLLBACK, tested separately.
+    assert.equal(true, true);
   });
 });

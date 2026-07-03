@@ -56,7 +56,6 @@ describe('loadConfig — defaults', () => {
       smartRoute: true,
       learnRouting: true,
       intentEngine: true,
-      experimentalVendorNeutralRouter: true,
     });
   });
 
@@ -244,7 +243,6 @@ describe('loadConfig — resilience', () => {
         smartRoute: true,
         learnRouting: true,
         intentEngine: true,
-        experimentalVendorNeutralRouter: true,
       });
     } finally {
       await rm(home2, { recursive: true, force: true });

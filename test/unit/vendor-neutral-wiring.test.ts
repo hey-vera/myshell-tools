@@ -11,7 +11,6 @@ import { runWorkCall, type WorkCallInput } from '../../src/core/work-call.ts';
 import { runHedged, type HedgePlan } from '../../src/core/hedge.ts';
 import { DEFAULT_POLICY } from '../../src/core/policy.ts';
 import { DECLARATIVE_MODEL_CAPABILITIES } from '../../src/core/model-capabilities.ts';
-import { vendorNeutralRouterEnabled } from '../../src/core/route-types.ts';
 import type {
   Classification,
   Clock,
@@ -326,35 +325,8 @@ describe('hedge flag-ON (vendor-neutral routing)', () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// vendorNeutralRouterEnabled resolver
-// ---------------------------------------------------------------------------
-
-describe('vendorNeutralRouterEnabled resolver', () => {
-  it('returns true by default (env undefined, config undefined)', () => {
-    assert.equal(vendorNeutralRouterEnabled(undefined, undefined), true);
-  });
-
-  it('returns true with empty env', () => {
-    assert.equal(vendorNeutralRouterEnabled({}, undefined), true);
-  });
-
-  it('returns false when MYSHELL_VENDOR_NEUTRAL_ROUTER=0', () => {
-    assert.equal(vendorNeutralRouterEnabled({ MYSHELL_VENDOR_NEUTRAL_ROUTER: '0' }, undefined), false);
-  });
-
-  it('returns false when MYSHELL_VENDOR_NEUTRAL_ROUTER=false', () => {
-    assert.equal(vendorNeutralRouterEnabled({ MYSHELL_VENDOR_NEUTRAL_ROUTER: 'false' }, undefined), false);
-  });
-
-  it('returns false when config.experimentalVendorNeutralRouter is false', () => {
-    assert.equal(vendorNeutralRouterEnabled(undefined, { experimentalVendorNeutralRouter: false }), false);
-  });
-
-  it('returns true when config.experimentalVendorNeutralRouter is true', () => {
-    assert.equal(vendorNeutralRouterEnabled(undefined, { experimentalVendorNeutralRouter: true }), true);
-  });
-});
+// vendorNeutralRouterEnabled promoted to unconditional (batches 4-6 dedrift).
+// The vendor-neutral router is always the shipped routing engine.
 
 // ---------------------------------------------------------------------------
 // Default-ON wiring: vendorNeutralEnabled=true (resolved default) + registry

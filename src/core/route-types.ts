@@ -70,38 +70,8 @@ export type RouteResult =
   | { readonly ok: false; readonly error: NoCapableProvider; readonly trace: RouteTrace };
 
 // ---------------------------------------------------------------------------
-// §2 — Flag resolver (DEFAULT-ON / explicit opt-OUT)
+// §2 — Vendor-neutral router (DEFAULT-ON / shipped product path)
 // ---------------------------------------------------------------------------
-
-/** Env values treated as an explicit opt-IN (case-insensitive). */
-const ON = new Set(['1', 'true', 'on', 'yes']);
-/** Env values treated as an explicit opt-OUT (case-insensitive) — restores legacy. */
-const OFF = new Set(['0', 'false', 'off', 'no']);
-
-/**
- * Returns true by DEFAULT — the vendor-neutral router IS the shipped routing
- * engine. Returns false ONLY on an explicit opt-OUT: `MYSHELL_VENDOR_NEUTRAL_ROUTER`
- * ∈ {'0','false','off','no'} (trimmed, case-insensitive) OR
- * `config.experimentalVendorNeutralRouter === false`, which restores the
- * byte-identical legacy static-provider-order path. Never throws.
- */
-export function vendorNeutralRouterEnabled(
-  env: NodeJS.ProcessEnv | undefined,
-  config: { experimentalVendorNeutralRouter?: boolean } | undefined,
-): boolean {
-  try {
-    const raw = env?.['MYSHELL_VENDOR_NEUTRAL_ROUTER'];
-    if (typeof raw === 'string') {
-      const v = raw.trim().toLowerCase();
-      if (OFF.has(v)) return false;
-      if (ON.has(v)) return true;
-    }
-    if (config?.experimentalVendorNeutralRouter === false) return false;
-    return true;
-  } catch {
-    return true;
-  }
-}
 
 // ---------------------------------------------------------------------------
 // §3 — OpenCode tier ranking (pure, deterministic)

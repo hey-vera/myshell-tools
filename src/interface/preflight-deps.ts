@@ -14,9 +14,7 @@ import { makeIntentExtractor } from '../core/intent-extractor.js';
 import { makeSemanticPreflightExtractor } from '../core/semantic-preflight-extractor.js';
 import { fuseRung, type FuseRungResult } from '../core/auto-brain.js';
 import { helperSandbox } from '../infra/sandbox.js';
-import { experimentalEnabledByDefault } from './ui/experimental-default.js';
 import { byproductFallbackEnabled } from './ui/byproduct-fallback-flag.js';
-import { autoBrainEnabled } from './ui/auto-brain-flag.js';
 import { semanticPreflightV1Enabled } from './ui/semantic-preflight-flag.js';
 import type { Mode } from '../core/policy.js';
 
@@ -156,26 +154,18 @@ export function buildPreflightDeps(
       : undefined;
 
   // Auto brain — rung-fusion from intent byproduct + classify + memory bias.
-  const autoBrainRungTuple: FuseRungResult | undefined =
-    experimentalEnabledByDefault(
-      env,
-      config,
-      'MYSHELL_AUTO_BRAIN',
-      config.experimentalAutoBrain,
-      autoBrainEnabled,
-    )
-      ? fuseRung({
+  const autoBrainRungTuple: FuseRungResult =
+      fuseRung({
           ...(config.mode !== undefined ? { persistedMode: config.mode } : {}),
           autoMode,
           ...(memoryBias !== undefined && memoryBias !== 0 ? { memoryBias } : {}),
-        })
-      : undefined;
+        });
 
   return {
     ...(routeClassifier !== undefined ? { routeClassifier } : {}),
     ...(intentExtractor !== undefined ? { intentExtractor } : {}),
     ...(semanticPreflightOn ? { semanticPreflightV1: true } : {}),
     ...(semanticPreflightExtractor !== undefined ? { semanticPreflightExtractor } : {}),
-    ...(autoBrainRungTuple !== undefined ? { autoBrainRungTuple } : {}),
+    autoBrainRungTuple,
   };
 }

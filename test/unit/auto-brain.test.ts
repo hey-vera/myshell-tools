@@ -33,7 +33,6 @@ import {
 } from '../../src/core/auto-brain.ts';
 
 import type { IntentFrame } from '../../src/core/intent.ts';
-import { autoBrainEnabled } from '../../src/interface/ui/auto-brain-flag.ts';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -619,86 +618,6 @@ describe('hysteresis — escalation requires clearing the margin', () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// 11. Default-off flag — autoBrainEnabled
-// ---------------------------------------------------------------------------
+// auto-brain promoted to unconditional in batches 4-6 dedrift.
+// Auto-brain rung-fusion + escalation is always ON by default.
 
-describe('autoBrainEnabled — default OFF', () => {
-  it('is OFF with no env / no config', () => {
-    assert.equal(autoBrainEnabled(undefined, undefined), false);
-  });
-
-  it('is OFF with empty env and no config', () => {
-    assert.equal(autoBrainEnabled({}, {}), false);
-  });
-
-  it('is OFF when config key is absent', () => {
-    assert.equal(autoBrainEnabled({}, { experimentalAutoBrain: undefined }), false);
-  });
-
-  it('is ON via MYSHELL_AUTO_BRAIN=1', () => {
-    assert.equal(autoBrainEnabled({ MYSHELL_AUTO_BRAIN: '1' }, {}), true);
-  });
-
-  it('is ON via MYSHELL_AUTO_BRAIN=true', () => {
-    assert.equal(autoBrainEnabled({ MYSHELL_AUTO_BRAIN: 'true' }, {}), true);
-  });
-
-  it('is ON via MYSHELL_AUTO_BRAIN=on', () => {
-    assert.equal(autoBrainEnabled({ MYSHELL_AUTO_BRAIN: 'ON' }, {}), true);
-  });
-
-  it('is ON via config.experimentalAutoBrain=true', () => {
-    assert.equal(autoBrainEnabled({}, { experimentalAutoBrain: true }), true);
-  });
-
-  it('is OFF via config.experimentalAutoBrain=false', () => {
-    assert.equal(autoBrainEnabled({}, { experimentalAutoBrain: false }), false);
-  });
-
-  it('rollback forces OFF even when env opt-in is present', () => {
-    assert.equal(
-      autoBrainEnabled({ MYSHELL_AUTO_BRAIN: '1', MYSHELL_ROLLBACK: '1' }, {}),
-      false,
-    );
-  });
-
-  it('rollback via config forces OFF', () => {
-    assert.equal(
-      autoBrainEnabled({ MYSHELL_AUTO_BRAIN: '1' }, { rollback: true }),
-      false,
-    );
-  });
-
-  it('unknown env value → OFF', () => {
-    assert.equal(autoBrainEnabled({ MYSHELL_AUTO_BRAIN: 'maybe' }, {}), false);
-    assert.equal(autoBrainEnabled({ MYSHELL_AUTO_BRAIN: '0' }, {}), false);
-    assert.equal(autoBrainEnabled({ MYSHELL_AUTO_BRAIN: 'false' }, {}), false);
-  });
-
-  it('never throws on null-ish inputs', () => {
-    assert.doesNotThrow(() => autoBrainEnabled(undefined, undefined));
-  });
-});
-
-// ---------------------------------------------------------------------------
-// 12. Byte-identity when flag is OFF (the OFF-GUARANTEE)
-// ---------------------------------------------------------------------------
-
-describe('OFF-GUARANTEE — flag off → no autoBrainRungTuple field injected', () => {
-  /**
-   * This test validates the OFF-GUARANTEE structurally: when `autoBrainEnabled`
-   * returns false, the wiring in menu.ts returns `{}` (empty spread), so the
-   * `autoBrainRungTuple` field is NEVER set on `OrchestrateDeps`. We verify this
-   * by confirming the flag function returns false by default (the runtime path
-   * is covered by the flag tests above).
-   */
-  it('default-off → autoBrainEnabled returns false → seam field absent', () => {
-    // With no env and no config, the flag is off.
-    const flagOff = !autoBrainEnabled(undefined, undefined);
-    assert.equal(flagOff, true, 'flag must be off by default');
-    // When flag is off, menu.ts returns {} from the auto-brain IIFE,
-    // so autoBrainRungTuple is never set on deps. The routing path is
-    // byte-for-byte today's (no reads of fuseRung output happen).
-  });
-});
