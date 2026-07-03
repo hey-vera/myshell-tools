@@ -576,9 +576,7 @@ export function mountInk(opts: InkMountOptions): InkMountHandle {
   // OutputSink chrome and the streaming turn driver BOTH fold into it, so there is
   // ONE growing committed[] transcript feeding <Static> (append-only across turns).
   const store = createInkStore(bridge);
-  // Control Panel is always armed (unconditionally on — Phase 3). The Goals
-  // Panel bridge is cleared because the standalone fullscreen Goals Panel
-  // route is removed; the GoalsPanelBody is reused inside the Control Panel.
+  // Control Panel is always armed (unconditionally on — Phase 3).
   bridge.onControlPanelAction((a) => store.dispatch(a));
   const out = createInkOutputSink(store, { color: opts.color, isTty: opts.isTty });
   const reader = createInkLineReader(bridge);

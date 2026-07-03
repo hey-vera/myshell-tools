@@ -3,8 +3,6 @@ import assert from 'node:assert/strict';
 import React, { act } from 'react';
 import { render } from 'ink-testing-library';
 import { ControlPanel } from '../../src/interface/ui/ControlPanel.js';
-import { GoalsPanelBody } from '../../src/interface/ui/GoalsPanel.js';
-import { buildGoalsPanelModel } from '../../src/interface/ui/goals-panel-model.js';
 import type {
   GoalBoardRow,
   GoalView,
@@ -56,7 +54,14 @@ function baseState(over: Partial<UiState> = {}): UiState {
     board: [],
     boardEnabled: false,
     goalsPanel: {},
-    controlPanel: { open: true, activeSection: 'goals' },
+    controlPanel: {
+      open: true,
+      activeSection: 'goals',
+      statusScroll: 0,
+      goalsListScroll: 0,
+      goalsDetailScroll: 0,
+      settingsScroll: 0,
+    },
     ...over,
   };
 }
@@ -70,6 +75,7 @@ test('renders status band, ordered tabs, and Goals body by default', () => {
       state={state}
       onSetSection={() => {}}
       onHighlightGoal={() => {}}
+      onScroll={() => {}}
       onClose={() => {}}
     />,
   );
@@ -78,13 +84,12 @@ test('renders status band, ordered tabs, and Goals body by default', () => {
   assert.match(frame, /0 active goals/);
   assert.match(frame, /mode: execution\/idle/);
   assert.match(frame, /quota: unavailable/);
-  assert.match(frame, /Goals · To-dos/);
   assert.match(frame, /Ship it/);
 });
 
 test('Status section shows active count, execution phase, provider states, quota', () => {
   const state = baseState({
-    controlPanel: { open: true, activeSection: 'status' },
+    controlPanel: { open: true, activeSection: 'status', statusScroll: 0, goalsListScroll: 0, goalsDetailScroll: 0, settingsScroll: 0 },
     board: [br('a', 'Alpha', { state: 'running' })],
     goals: [
       goalView('b', 'running'),
@@ -94,7 +99,7 @@ test('Status section shows active count, execution phase, provider states, quota
       ...initialStreamView,
       phase: 'thinking',
       panelists: [
-        { provider: 'claude' as const, state: 'running' as const },
+        { provider: 'claude' as const, state: 'running' as const, model: '', tokens: 0, attempt: 0 },
       ],
     },
     turnActive: true,
@@ -104,6 +109,7 @@ test('Status section shows active count, execution phase, provider states, quota
       state={state}
       onSetSection={() => {}}
       onHighlightGoal={() => {}}
+      onScroll={() => {}}
       onClose={() => {}}
     />,
   );
@@ -118,7 +124,7 @@ test('Status section shows active count, execution phase, provider states, quota
 
 test('Settings shows one read-only board row, no toggle', () => {
   const state = baseState({
-    controlPanel: { open: true, activeSection: 'settings' },
+    controlPanel: { open: true, activeSection: 'settings', statusScroll: 0, goalsListScroll: 0, goalsDetailScroll: 0, settingsScroll: 0 },
     boardEnabled: true,
     goalsPanel: {},
   });
@@ -127,6 +133,7 @@ test('Settings shows one read-only board row, no toggle', () => {
       state={state}
       onSetSection={() => {}}
       onHighlightGoal={() => {}}
+      onScroll={() => {}}
       onClose={() => {}}
     />,
   );
@@ -144,6 +151,7 @@ test('Tab calls onSetSection forward; Shift+Tab calls backward', async () => {
       state={state}
       onSetSection={onSetSection}
       onHighlightGoal={() => {}}
+      onScroll={() => {}}
       onClose={() => {}}
     />,
   );
@@ -173,6 +181,7 @@ test('Left/Right arrows do nothing', async () => {
       state={state}
       onSetSection={onSetSection}
       onHighlightGoal={onHighlightGoal}
+      onScroll={() => {}}
       onClose={onClose}
     />,
   );
@@ -190,13 +199,14 @@ test('Arrows/j/k navigate only on Goals section', async () => {
   const onHighlightGoal = vi.fn();
   const goalsState = baseState({
     board: [br('a', 'Alpha'), br('b', 'Bravo')],
-    controlPanel: { open: true, activeSection: 'goals' },
+    controlPanel: { open: true, activeSection: 'goals', statusScroll: 0, goalsListScroll: 0, goalsDetailScroll: 0, settingsScroll: 0 },
   });
   const { stdin } = render(
     <ControlPanel
       state={goalsState}
       onSetSection={() => {}}
       onHighlightGoal={onHighlightGoal}
+      onScroll={() => {}}
       onClose={() => {}}
     />,
   );
@@ -211,13 +221,14 @@ test('Arrows/j/k navigate only on Goals section', async () => {
 
   const statusState = baseState({
     board: [br('a', 'Alpha'), br('b', 'Bravo')],
-    controlPanel: { open: true, activeSection: 'status' },
+    controlPanel: { open: true, activeSection: 'status', statusScroll: 0, goalsListScroll: 0, goalsDetailScroll: 0, settingsScroll: 0 },
   });
   const { stdin: stdin2 } = render(
     <ControlPanel
       state={statusState}
       onSetSection={() => {}}
       onHighlightGoal={onHighlightGoal}
+      onScroll={() => {}}
       onClose={() => {}}
     />,
   );
@@ -239,6 +250,7 @@ test('Escape and Ctrl+G call onClose once each', async () => {
       state={state}
       onSetSection={() => {}}
       onHighlightGoal={() => {}}
+      onScroll={() => {}}
       onClose={onClose}
     />,
   );
@@ -268,6 +280,7 @@ test('active={false} makes all keys inert', async () => {
       state={state}
       onSetSection={onSetSection}
       onHighlightGoal={onHighlightGoal}
+      onScroll={() => {}}
       onClose={onClose}
       active={false}
     />,
@@ -290,13 +303,14 @@ test('active={false} makes all keys inert', async () => {
 
 test('Status section with no providers shows empty provider line', () => {
   const state = baseState({
-    controlPanel: { open: true, activeSection: 'status' },
+    controlPanel: { open: true, activeSection: 'status', statusScroll: 0, goalsListScroll: 0, goalsDetailScroll: 0, settingsScroll: 0 },
   });
   const { lastFrame } = render(
     <ControlPanel
       state={state}
       onSetSection={() => {}}
       onHighlightGoal={() => {}}
+      onScroll={() => {}}
       onClose={() => {}}
     />,
   );
@@ -304,12 +318,184 @@ test('Status section with no providers shows empty provider line', () => {
   assert.match(frame, /No provider observations/);
 });
 
-test('GoalsPanelBody renders from a prebuilt model', () => {
-  const model = buildGoalsPanelModel({
-    board: [br('a', 'Ship it')],
+// ---------------------------------------------------------------------------
+// Phase 4B: GoalsTab rendering (viewport-safe)
+// ---------------------------------------------------------------------------
+
+test('GoalsTab shows highlighted goal detail with todos', () => {
+  const state = baseState({
+    board: [
+      br('a', 'Active Goal', {
+        state: 'running',
+        done: 1,
+        total: 3,
+        todos: [
+          { id: 't1', text: 'wire up API', status: 'done' },
+          { id: 't2', text: 'write docs', status: 'pending' },
+        ],
+      }),
+    ],
   });
-  const { lastFrame } = render(<GoalsPanelBody model={model} />);
+  const { lastFrame } = render(
+    <ControlPanel
+      state={state}
+      onSetSection={() => {}}
+      onHighlightGoal={() => {}}
+      onScroll={() => {}}
+      onClose={() => {}}
+    />,
+  );
   const frame = lastFrame() ?? '';
-  assert.match(frame, /Goals · To-dos/);
-  assert.match(frame, /Ship it/);
+  assert.match(frame, /Active Goal/);
+  assert.match(frame, /wire up API/);
+  assert.match(frame, /write docs/);
 });
+
+test('GoalsTab shows inactive goal todos', () => {
+  const state = baseState({
+    board: [
+      br('a', 'Parked Goal', {
+        state: 'parked',
+        done: 0,
+        total: 2,
+        todos: [
+          { id: 't1', text: 'research', status: 'pending' },
+          { id: 't2', text: 'plan', status: 'pending' },
+        ],
+      }),
+    ],
+  });
+  const { lastFrame } = render(
+    <ControlPanel
+      state={state}
+      onSetSection={() => {}}
+      onHighlightGoal={() => {}}
+      onScroll={() => {}}
+      onClose={() => {}}
+    />,
+  );
+  const frame = lastFrame() ?? '';
+  assert.match(frame, /Parked Goal/);
+  assert.match(frame, /research/);
+  assert.match(frame, /plan/);
+});
+
+test('GoalsTab shows todo overflow indicator', () => {
+  const state = baseState({
+    board: [
+      br('a', 'Overflow Goal', {
+        state: 'running',
+        done: 2,
+        total: 14,
+        todos: [
+          { id: 't1', text: 'a', status: 'done' },
+          { id: 't2', text: 'b', status: 'done' },
+          { id: 't3', text: 'c', status: 'pending' },
+        ],
+        todoOverflow: 11,
+      }),
+    ],
+  });
+  const { lastFrame } = render(
+    <ControlPanel
+      state={state}
+      onSetSection={() => {}}
+      onHighlightGoal={() => {}}
+      onScroll={() => {}}
+      onClose={() => {}}
+    />,
+  );
+  const frame = lastFrame() ?? '';
+  assert.match(frame, /11 more to-dos not synced/);
+});
+
+test('GoalsTab narrow layout stacks list and detail', () => {
+  const state = baseState({
+    board: [
+      br('a', 'Stacked Goal', {
+        state: 'running',
+        done: 1,
+        total: 3,
+        todos: [
+          { id: 't1', text: 'task one', status: 'pending' },
+        ],
+      }),
+    ],
+  });
+  const { lastFrame } = render(
+    <ControlPanel
+      state={state}
+      onSetSection={() => {}}
+      onHighlightGoal={() => {}}
+      onScroll={() => {}}
+      onClose={() => {}}
+      columns={60}
+    />,
+  );
+  const frame = lastFrame() ?? '';
+  // Narrow layout (< 96 cols) should still show the goal and its todo
+  assert.match(frame, /Stacked Goal/);
+  assert.match(frame, /task one/);
+});
+
+test('GoalsTab with many goals shows overflow indicators', () => {
+  const goals: GoalBoardRow[] = [];
+  for (let i = 0; i < 15; i += 1) {
+    goals.push(
+      br(`g${i}`, `Goal ${i}`, { state: 'parked' as const }),
+    );
+  }
+  const state = baseState({ board: goals });
+  const { lastFrame } = render(
+    <ControlPanel
+      state={state}
+      onSetSection={() => {}}
+      onHighlightGoal={() => {}}
+      onScroll={() => {}}
+      onClose={() => {}}
+      rows={10}
+    />,
+  );
+  const frame = lastFrame() ?? '';
+  // With 10 total rows and 3 fixed chrome rows in small height,
+  // 15 goals should show an overflow indicator.
+  assert.match(frame, /more/);
+});
+
+test('GoalsTab with short viewport renders bounded content', () => {
+  const state = baseState({
+    board: [
+      br('a', 'Only Goal', {
+        state: 'running',
+        done: 0,
+        total: 5,
+        todos: Array.from({ length: 20 }, (_, i) => ({
+          id: `t${i}`,
+          text: `task ${i}`,
+          status: 'pending' as const,
+        })),
+        todoOverflow: 0,
+      }),
+    ],
+  });
+  const { lastFrame } = render(
+    <ControlPanel
+      state={state}
+      onSetSection={() => {}}
+      onHighlightGoal={() => {}}
+      onScroll={() => {}}
+      onClose={() => {}}
+      rows={10}
+    />,
+  );
+  const frame = lastFrame() ?? '';
+  // 10 total rows, 3 fixed chrome (tiny height: title+tabs+footer),
+  // 7 content rows. 20 todos in detail → must show overflow or scroll.
+  // The detail should NOT render all 20 items — it should be bounded.
+  const lines = frame.split('\n');
+  // Footer should always be present
+  assert.match(frame, /PgUp\/PgDn scroll/);
+  // Should not have 20+ detail lines
+  assert.ok(lines.length < 25);
+});
+
