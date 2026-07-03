@@ -456,7 +456,8 @@ test('routeControlPanelAction returns false + state stays closed when handler no
   bridge.onControlPanelAction(null);
   const result = bridge.routeControlPanelAction({ type: 'control-panel/toggle' });
   assert.equal(result, false);
-  assert.deepEqual(store.getState().controlPanel, { open: false, activeSection: 'goals' });
+  assert.deepEqual(store.getState().controlPanel.open, false);
+  assert.deepEqual(store.getState().controlPanel.activeSection, 'goals');
 });
 
 test('routeControlPanelAction dispatches toggle + returns true, one transition per invocation', () => {
@@ -465,19 +466,23 @@ test('routeControlPanelAction dispatches toggle + returns true, one transition p
   const store = createInkStore(bridge);
   bridge.onControlPanelAction((action) => store.dispatch(action));
 
-  assert.deepEqual(store.getState().controlPanel, { open: false, activeSection: 'goals' });
+  assert.deepEqual(store.getState().controlPanel.open, false);
+  assert.deepEqual(store.getState().controlPanel.activeSection, 'goals');
 
   const result = bridge.routeControlPanelAction({ type: 'control-panel/toggle' });
   assert.equal(result, true);
-  assert.deepEqual(store.getState().controlPanel, { open: true, activeSection: 'goals' });
+  assert.deepEqual(store.getState().controlPanel.open, true);
+  assert.deepEqual(store.getState().controlPanel.activeSection, 'goals');
 
   const result2 = bridge.routeControlPanelAction({ type: 'control-panel/toggle' });
   assert.equal(result2, true);
-  assert.deepEqual(store.getState().controlPanel, { open: false, activeSection: 'goals' });
+  assert.deepEqual(store.getState().controlPanel.open, false);
+  assert.deepEqual(store.getState().controlPanel.activeSection, 'goals');
 
   const result3 = bridge.routeControlPanelAction({ type: 'control-panel/close' });
   assert.equal(result3, true);
-  assert.deepEqual(store.getState().controlPanel, { open: false, activeSection: 'goals' });
+  assert.deepEqual(store.getState().controlPanel.open, false);
+  assert.deepEqual(store.getState().controlPanel.activeSection, 'goals');
 });
 
 // ---------------------------------------------------------------------------

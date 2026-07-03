@@ -75,7 +75,14 @@ function baseState(over: Partial<UiState> = {}): UiState {
     board: [],
     boardEnabled: false,
     goalsPanel: {},
-    controlPanel: { open: false, activeSection: 'goals' },
+    controlPanel: {
+      open: false,
+      activeSection: 'goals',
+      statusScroll: 0,
+      goalsListScroll: 0,
+      goalsDetailScroll: 0,
+      settingsScroll: 0,
+    },
     ...over,
   };
 }
@@ -439,54 +446,170 @@ describe('buildControlPanelModel settings', () => {
 });
 
 // ---------------------------------------------------------------------------
-// buildControlPanelModel — goals composition
+// buildControlPanelModel — controlGoals (Phase 4)
 // ---------------------------------------------------------------------------
 
-describe('buildControlPanelModel goals', () => {
-  it('reuses buildGoalsPanelModel with board', () => {
+describe('buildControlPanelModel controlGoals', () => {
+  it('projects goal rows from the board', () => {
     const s = baseState({
-      board: [br('g1', 'Ship')],
+      board: [br('g1', 'Alpha', { state: 'parked' })],
     });
     const m = buildControlPanelModel(s);
-    assert.strictEqual(m.goals.rows.length, 1);
-    assert.strictEqual(m.goals.rows[0].id, 'g1');
+    assert.strictEqual(m.controlGoals.rows.length, 1);
+    assert.strictEqual(m.controlGoals.rows[0].id, 'g1');
+    assert.strictEqual(m.controlGoals.rows[0].state, 'parked');
+    assert.strictEqual(m.controlGoals.rows[0].selected, true);
+    assert.strictEqual(m.controlGoals.goalIds.length, 1);
+    assert.strictEqual(m.controlGoals.highlightedGoalId, 'g1');
   });
 
-  it('passes shared highlight from goalsPanel', () => {
+  it('first goal is highlighted by default', () => {
+    const s = baseState({
+      board: [
+        br('a', 'First'),
+        br('b', 'Second'),
+      ],
+    });
+    const m = buildControlPanelModel(s);
+    assert.strictEqual(m.controlGoals.highlightedGoalId, 'a');
+    assert.strictEqual(m.controlGoals.rows[0].selected, true);
+    assert.strictEqual(m.controlGoals.rows[1].selected, false);
+  });
+
+  it('respects explicit highlightedGoalId from goalsPanel', () => {
+    const s = baseState({
+      board: [
+        br('a', 'First'),
+        br('b', 'Second'),
+      ],
+      goalsPanel: { highlightedGoalId: 'b' },
+    });
+    const m = buildControlPanelModel(s);
+    assert.strictEqual(m.controlGoals.highlightedGoalId, 'b');
+    assert.strictEqual(m.controlGoals.rows[0].selected, false);
+    assert.strictEqual(m.controlGoals.rows[1].selected, true);
+  });
+
+  it('builds detail for the highlighted goal', () => {
     const s = baseState({
       board: [
         br('g1', 'Alpha', {
-          todos: [{ id: 't1', text: 'task', status: 'done' }],
-        }),
-        br('g2', 'Beta', {
-          todos: [{ id: 't2', text: 'other', status: 'pending' }],
+          state: 'running',
+          done: 1,
+          total: 3,
+          todos: [
+            { id: 't1', text: 'task one', status: 'done' },
+            { id: 't2', text: 'task two', status: 'pending' },
+          ],
         }),
       ],
-      goalsPanel: { highlightedGoalId: 'g1' },
     });
     const m = buildControlPanelModel(s);
-    assert.strictEqual(m.goals.highlightedGoalId, 'g1');
-    // g1 todos expanded
-    assert.strictEqual(m.goals.rows.length, 3);
+    assert.ok(m.controlGoals.detail !== undefined);
+    assert.strictEqual(m.controlGoals.detail!.id, 'g1');
+    assert.strictEqual(m.controlGoals.detail!.todos.length, 2);
+    assert.strictEqual(m.controlGoals.detail!.todos[0].text, 'task one');
+    assert.strictEqual(m.controlGoals.detail!.todoOverflow, 0);
   });
 
-  it('empty board => empty goals model with undefined highlight', () => {
+  it('inactive goal detail includes todos', () => {
+    const s = baseState({
+      board: [
+        br('g1', 'Parked', {
+          state: 'parked',
+          done: 0,
+          total: 4,
+          todos: [
+            { id: 't1', text: 'wire API', status: 'pending' },
+            { id: 't2', text: 'write docs', status: 'pending' },
+            { id: 't3', text: 'add tests', status: 'pending' },
+            { id: 't4', text: 'deploy', status: 'pending' },
+          ],
+        }),
+      ],
+    });
+    const m = buildControlPanelModel(s);
+    assert.ok(m.controlGoals.detail !== undefined);
+    assert.strictEqual(m.controlGoals.detail!.state, 'parked');
+    assert.strictEqual(m.controlGoals.detail!.todos.length, 4);
+    assert.strictEqual(m.controlGoals.detail!.todoOverflow, 0);
+  });
+
+  it('todoOverflow is surfaced from board rows', () => {
+    const s = baseState({
+      board: [
+        br('g1', 'Big Plan', {
+          state: 'running',
+          done: 2,
+          total: 12,
+          todos: [
+            { id: 't1', text: 'a', status: 'done' },
+            { id: 't2', text: 'b', status: 'done' },
+            { id: 't3', text: 'c', status: 'pending' },
+          ],
+          todoOverflow: 9,
+        }),
+      ],
+    });
+    const m = buildControlPanelModel(s);
+    assert.ok(m.controlGoals.detail !== undefined);
+    assert.strictEqual(m.controlGoals.detail!.todoOverflow, 9);
+    assert.strictEqual(m.controlGoals.detail!.total, 12);
+    assert.strictEqual(m.controlGoals.detail!.done, 2);
+  });
+
+  it('verdict is carried to detail when present', () => {
+    const s = baseState({
+      board: [
+        br('g1', 'Verified', {
+          state: 'done',
+          todos: [{ id: 't1', text: 'x', status: 'done' }],
+          verdict: '\u2713 verified',
+        }),
+      ],
+    });
+    const m = buildControlPanelModel(s);
+    assert.ok(m.controlGoals.detail !== undefined);
+    assert.strictEqual(m.controlGoals.detail!.verdict, '\u2713 verified');
+  });
+
+  it('approach is carried to detail when present', () => {
+    const s = baseState({
+      board: [
+        br('g1', 'With Approach', {
+          state: 'running',
+          todos: [{ id: 't1', text: 'x', status: 'pending' }],
+          approach: { chosen: 'monorepo', rationale: 'keeps things together' },
+        }),
+      ],
+    });
+    const m = buildControlPanelModel(s);
+    assert.ok(m.controlGoals.detail !== undefined);
+    assert.strictEqual(m.controlGoals.detail!.approach?.chosen, 'monorepo');
+    assert.strictEqual(m.controlGoals.detail!.approach?.rationale, 'keeps things together');
+  });
+
+  it('unknown highlightedGoalId falls back to first goal', () => {
+    const s = baseState({
+      board: [
+        br('a', 'First', { todos: [{ id: 't1', text: 'x', status: 'pending' }] }),
+        br('b', 'Second'),
+      ],
+      goalsPanel: { highlightedGoalId: 'unknown' },
+    });
+    const m = buildControlPanelModel(s);
+    assert.strictEqual(m.controlGoals.highlightedGoalId, 'a');
+    // g1 has todos in detail
+    assert.ok(m.controlGoals.detail !== undefined);
+    assert.strictEqual(m.controlGoals.detail!.todos.length, 1);
+  });
+
+  it('empty board => empty controlGoals', () => {
     const s = baseState();
     const m = buildControlPanelModel(s);
-    assert.strictEqual(m.goals.rows.length, 0);
-    assert.strictEqual(m.goals.highlightedGoalId, undefined);
-  });
-
-  it('activeSection reflects controlPanel.activeSection', () => {
-    const s = baseState({
-      controlPanel: {
-        open: true,
-        activeSection: 'settings',
-      },
-    });
-    assert.strictEqual(
-      buildControlPanelModel(s).activeSection,
-      'settings',
-    );
+    assert.strictEqual(m.controlGoals.rows.length, 0);
+    assert.strictEqual(m.controlGoals.goalIds.length, 0);
+    assert.strictEqual(m.controlGoals.highlightedGoalId, undefined);
+    assert.strictEqual(m.controlGoals.detail, undefined);
   });
 });

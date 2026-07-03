@@ -782,13 +782,9 @@ export function reduce(state: UiState, action: Action): UiState {
 
 
 
-
-
-
-
-
     // -- control-panel/open: open the panel, optionally to a specific section.
-    //    No-op when disabled. Defaults to the Goals section.
+    //    No-op when disabled. Defaults to the Goals section. Resets all scroll
+    //    offsets to 0 on open.
     case 'control-panel/open': {
       return {
         ...state,
@@ -796,12 +792,16 @@ export function reduce(state: UiState, action: Action): UiState {
           ...state.controlPanel,
           open: true,
           activeSection: action.section ?? 'goals',
+          statusScroll: 0,
+          goalsListScroll: 0,
+          goalsDetailScroll: 0,
+          settingsScroll: 0,
         },
       };
     }
 
     // -- control-panel/close: close the panel. No-op when disabled or already
-    //    closed. Preserves activeSection and the shared goal highlight.
+    //    closed. Preserves activeSection, shared goal highlight, and scroll offsets.
     case 'control-panel/close': {
       if (!state.controlPanel.open) return state;
       return {
@@ -811,7 +811,8 @@ export function reduce(state: UiState, action: Action): UiState {
     }
 
     // -- control-panel/toggle: flip open/closed. No-op when disabled. Opening
-    //    lands on Goals regardless of the previously selected section.
+    //    lands on Goals with fresh scroll offsets regardless of previously selected
+    //    section.
     case 'control-panel/toggle': {
       if (state.controlPanel.open) {
         return {
@@ -825,12 +826,17 @@ export function reduce(state: UiState, action: Action): UiState {
           ...state.controlPanel,
           open: true,
           activeSection: 'goals',
+          statusScroll: 0,
+          goalsListScroll: 0,
+          goalsDetailScroll: 0,
+          settingsScroll: 0,
         },
       };
     }
 
     // -- control-panel/set-section: switch the active tab. No-op unless the
-    //    Control Panel is enabled and open.
+    //    Control Panel is enabled and open. Each section keeps its own scroll
+    //    offset.
     case 'control-panel/set-section': {
       if (!state.controlPanel.open) return state;
       return {
@@ -841,7 +847,8 @@ export function reduce(state: UiState, action: Action): UiState {
 
     // -- control-panel/highlight-goal: update the shared goals highlight.
     //    No-op unless the Control Panel is enabled, open, and on the Goals
-    //    section. Uses conditional spread for exact-optional safety.
+    //    section. Resets goalsDetailScroll to 0 so the detail pane starts at
+    //    the top for each newly highlighted goal.
     case 'control-panel/highlight-goal': {
       if (
         !state.controlPanel.open ||
@@ -852,7 +859,40 @@ export function reduce(state: UiState, action: Action): UiState {
       return {
         ...state,
         goalsPanel: { ...state.goalsPanel, highlightedGoalId: action.goalId },
+        controlPanel: { ...state.controlPanel, goalsDetailScroll: 0 },
       };
+    }
+
+    // -- control-panel/scroll: scroll the active tab's content by a delta.
+    //    Stores non-negative offsets; the view/model clamps to the real maximum
+    //    after it knows the viewport height. No-op unless the Control Panel is
+    //    open and the section matches.
+    case 'control-panel/scroll': {
+      if (!state.controlPanel.open || state.controlPanel.activeSection !== action.section) {
+        return state;
+      }
+      const cp = state.controlPanel;
+      const clamp = (v: number): number => Math.max(0, v);
+      if (action.target === 'detail' && action.section === 'goals') {
+        return {
+          ...state,
+          controlPanel: { ...cp, goalsDetailScroll: clamp(cp.goalsDetailScroll + action.delta) },
+        };
+      }
+      if (action.target === 'list' && action.section === 'goals') {
+        return {
+          ...state,
+          controlPanel: { ...cp, goalsListScroll: clamp(cp.goalsListScroll + action.delta) },
+        };
+      }
+      switch (action.section) {
+        case 'status':
+          return { ...state, controlPanel: { ...cp, statusScroll: clamp(cp.statusScroll + action.delta) } };
+        case 'settings':
+          return { ...state, controlPanel: { ...cp, settingsScroll: clamp(cp.settingsScroll + action.delta) } };
+        default:
+          return state;
+      }
     }
   }
 }

@@ -2899,20 +2899,29 @@ export async function runChatLoop(
       // the projection reuses the same vocabulary as the /goals menu rows. `agents`
       // is seeded 0 here; the reducer re-derives the LIVE running-agent count from
       // its own attach-by-goalId truth, so a running goal shows its real agent count.
+      // Board projection cap: bounds every sync so the payload size does not grow
+      // with future roadmap-limit increases. Currently @ 8, matching ROADMAP_LIMIT.
+      const BOARD_TODO_SYNC_LIMIT = 8;
+
       const toBoardRow = (g: Goal, allGoals: readonly Goal[]): GoalBoardRow => {
         const prog = roadmapProgress(g.roadmap);
         // The honest verdict tag (Elite-partner Part 3) rides on the row ONLY when the
         // goal has a REAL recorded verdict (goalVerdictTag returns undefined otherwise)
         // — completion honesty made visible, never a fabricated tag.
         const verdict = goalVerdictTag(g);
-        const todos =
-          g.state === 'running'
-            ? g.roadmap.slice(0, ROADMAP_LIMIT).map((item) => ({
-                id: item.id,
-                text: item.text,
-                status: item.status,
-              }))
-            : undefined;
+        // Project bounded todos for EVERY in-scope goal (active AND inactive), capped
+        // at min(ROADMAP_LIMIT, BOARD_TODO_SYNC_LIMIT). This keeps the Goals tab detail
+        // useful for parked/done/failed goals without bloating every board/sync.
+        const todoLimit = Math.min(ROADMAP_LIMIT, BOARD_TODO_SYNC_LIMIT);
+        const todoItems = g.roadmap.slice(0, todoLimit);
+        const todos = todoItems.length > 0
+          ? todoItems.map((item) => ({
+              id: item.id,
+              text: item.text,
+              status: item.status,
+            }))
+          : undefined;
+        const todoOverflow = Math.max(0, g.roadmap.length - todoItems.length);
         const depth = goalDepth(allGoals, g.id);
         return {
           id: g.id,
@@ -2925,6 +2934,7 @@ export async function runChatLoop(
           agents: 0,
           ...(depth > 0 ? { depth } : {}),
           ...(todos !== undefined ? { todos } : {}),
+          ...(todoOverflow > 0 ? { todoOverflow } : {}),
           ...(verdict !== undefined ? { verdict } : {}),
           ...(g.approach !== undefined ? { approach: g.approach } : {}),
         };

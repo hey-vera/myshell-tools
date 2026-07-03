@@ -140,8 +140,12 @@ export interface GoalBoardRow {
    * the flat board byte-identical; when present, StatusBlock indents the row.
    */
   readonly depth?: number;
-  /** Bounded running-goal checklist rows for the expanded persistent board view. */
+  /** Bounded persistent to-do rows for every in-scope goal (active and inactive),
+   *  projected at sync time and capped by BOARD_TODO_SYNC_LIMIT. */
   readonly todos?: readonly GoalBoardTodoRow[];
+  /** Number of roadmap items truncated by the board projection cap. Present only
+   *  when greater than 0, keeping payloads small for goals within the limit. */
+  readonly todoOverflow?: number;
   /**
    * The goal's honest evidence-backed verdict tag (Elite-partner Part 3) — e.g.
    * `✓verified` / `~reviewed` / `✗failing` / `⚠unverified`, pre-shaped by the pure
@@ -251,6 +255,10 @@ export type ControlPanelSection = 'status' | 'goals' | 'settings';
 export interface ControlPanelUiState {
   readonly open: boolean;
   readonly activeSection: ControlPanelSection;
+  readonly statusScroll: number;
+  readonly goalsListScroll: number;
+  readonly goalsDetailScroll: number;
+  readonly settingsScroll: number;
 }
 
 /**
@@ -344,7 +352,14 @@ export const initialState: UiState = {
   pressure: 0,
   dynamicWorldItems: [],
   goalsPanel: {},
-  controlPanel: { open: false, activeSection: 'goals' },
+  controlPanel: {
+    open: false,
+    activeSection: 'goals',
+    statusScroll: 0,
+    goalsListScroll: 0,
+    goalsDetailScroll: 0,
+    settingsScroll: 0,
+  },
 };
 
 // ---------------------------------------------------------------------------
@@ -570,4 +585,12 @@ export type Action =
   | { readonly type: 'control-panel/set-section'; readonly section: ControlPanelSection }
   // --- control-panel/highlight-goal: update shared goals highlight (no-op unless enabled+open+goals).
   | { readonly type: 'control-panel/highlight-goal'; readonly goalId: string }
+  // --- control-panel/scroll: scroll the active tab by a delta (e.g. -1/+1 for
+  //     line scroll; -pageSize/+pageSize for page scroll). No-op unless open.
+  | {
+      readonly type: 'control-panel/scroll';
+      readonly section: ControlPanelSection;
+      readonly target?: 'list' | 'detail';
+      readonly delta: number;
+    }
   ;

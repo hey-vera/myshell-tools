@@ -76,4 +76,7 @@ export {
   type ControlPanelModel,
   type ControlPanelProviderStatus,
   type ControlPanelSettingRow,
+  type ControlPanelGoalRow,
+  type ControlPanelGoalDetail,
+  type ControlPanelGoalsModel,
 } from './control-panel-model.js';

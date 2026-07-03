@@ -1,6 +1,5 @@
-import type { AgentRunState, ControlPanelSection, StreamPhase, UiState } from './state.js';
+import type { AgentRunState, ControlPanelSection, GoalBoardRow, GoalBoardTodoRow, StreamPhase, UiState } from './state.js';
 import type { ProviderId } from '../../providers/port.js';
-import { buildGoalsPanelModel, type GoalsPanelModel } from './goals-panel-model.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -28,6 +27,41 @@ export interface ControlPanelSettingRow {
   readonly note?: string;
 }
 
+export interface ControlPanelGoalRow {
+  readonly id: string;
+  readonly title: string;
+  readonly state: GoalBoardRow['state'];
+  readonly glyph: string;
+  readonly done: number;
+  readonly total: number;
+  readonly agents: number;
+  readonly scope: GoalBoardRow['scope'];
+  readonly depth: number;
+  readonly selected: boolean;
+  readonly verdict?: string;
+}
+
+export interface ControlPanelGoalDetail {
+  readonly id: string;
+  readonly title: string;
+  readonly state: GoalBoardRow['state'];
+  readonly done: number;
+  readonly total: number;
+  readonly agents: number;
+  readonly scope: GoalBoardRow['scope'];
+  readonly verdict?: string;
+  readonly approach?: GoalBoardRow['approach'];
+  readonly todos: readonly GoalBoardTodoRow[];
+  readonly todoOverflow: number;
+}
+
+export interface ControlPanelGoalsModel {
+  readonly goalIds: readonly string[];
+  readonly highlightedGoalId?: string;
+  readonly rows: readonly ControlPanelGoalRow[];
+  readonly detail?: ControlPanelGoalDetail;
+}
+
 export interface ControlPanelModel {
   readonly activeSection: ControlPanelSection;
   readonly activeGoalCount: number;
@@ -36,7 +70,7 @@ export interface ControlPanelModel {
   readonly providers: readonly ControlPanelProviderStatus[];
   readonly quotaLabel: 'unavailable in UI state';
   readonly settings: readonly ControlPanelSettingRow[];
-  readonly goals: GoalsPanelModel;
+  readonly controlGoals: ControlPanelGoalsModel;
 }
 
 // ---------------------------------------------------------------------------
@@ -121,12 +155,58 @@ export function buildControlPanelModel(state: UiState): ControlPanelModel {
     { id: 'board', label: 'Persistent board', enabled: state.boardEnabled },
   ];
 
-  const goals = buildGoalsPanelModel({
-    board: state.board,
-    ...(state.goalsPanel.highlightedGoalId !== undefined
-      ? { highlightedGoalId: state.goalsPanel.highlightedGoalId }
-      : {}),
-  });
+  // Build the native Control Panel goals model from the board snapshot.
+  const goalIds: readonly string[] = state.board.map((r) => r.id);
+  let effectiveHighlight: string | undefined;
+  if (
+    state.goalsPanel.highlightedGoalId !== undefined &&
+    goalIds.includes(state.goalsPanel.highlightedGoalId)
+  ) {
+    effectiveHighlight = state.goalsPanel.highlightedGoalId;
+  } else if (goalIds.length > 0) {
+    effectiveHighlight = goalIds[0];
+  }
+
+  const rows: ControlPanelGoalRow[] = [];
+  let detail: ControlPanelGoalDetail | undefined;
+  for (const row of state.board) {
+    const selected = row.id === effectiveHighlight;
+    rows.push({
+      id: row.id,
+      title: row.title,
+      state: row.state,
+      glyph: row.glyph,
+      done: row.done,
+      total: row.total,
+      agents: row.agents,
+      scope: row.scope,
+      depth: row.depth ?? 0,
+      selected,
+      ...(row.verdict !== undefined ? { verdict: row.verdict } : {}),
+    });
+    if (selected) {
+      detail = {
+        id: row.id,
+        title: row.title,
+        state: row.state,
+        done: row.done,
+        total: row.total,
+        agents: row.agents,
+        scope: row.scope,
+        ...(row.verdict !== undefined ? { verdict: row.verdict } : {}),
+        ...(row.approach !== undefined ? { approach: row.approach } : {}),
+        todos: row.todos ?? [],
+        todoOverflow: row.todoOverflow ?? 0,
+      };
+    }
+  }
+
+  const controlGoals: ControlPanelGoalsModel = {
+    goalIds,
+    ...(effectiveHighlight !== undefined ? { highlightedGoalId: effectiveHighlight } : {}),
+    rows,
+    ...(detail !== undefined ? { detail } : {}),
+  };
 
   return {
     activeSection: state.controlPanel.activeSection,
@@ -136,6 +216,6 @@ export function buildControlPanelModel(state: UiState): ControlPanelModel {
     providers,
     quotaLabel: 'unavailable in UI state',
     settings,
-    goals,
+    controlGoals,
   };
 }

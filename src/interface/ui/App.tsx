@@ -39,7 +39,8 @@ export type ControlPanelBridgeAction =
   | Extract<Action, { type: 'control-panel/open' }>
   | Extract<Action, { type: 'control-panel/close' }>
   | Extract<Action, { type: 'control-panel/set-section' }>
-  | Extract<Action, { type: 'control-panel/highlight-goal' }>;
+  | Extract<Action, { type: 'control-panel/highlight-goal' }>
+  | Extract<Action, { type: 'control-panel/scroll' }>;
 
 /**
  * The Ink-side control surface the LineReader's `suspend()`/`resume()` need to
@@ -649,8 +650,18 @@ function AppBody({
           <Box height={Math.max(1, liveRows - 1)} overflowY="hidden">
             <ControlPanel
               state={uiState}
+              rows={liveRows}
+              columns={liveColumns}
               onSetSection={(section) => { bridge.routeControlPanelAction({ type: 'control-panel/set-section', section }); }}
               onHighlightGoal={(goalId) => { bridge.routeControlPanelAction({ type: 'control-panel/highlight-goal', goalId }); }}
+              onScroll={(section, target, delta) => {
+                bridge.routeControlPanelAction({
+                  type: 'control-panel/scroll',
+                  section,
+                  ...(target !== undefined ? { target } : {}),
+                  delta,
+                });
+              }}
               onClose={() => { bridge.routeControlPanelAction({ type: 'control-panel/close' }); }}
               active={!suspended}
             />

@@ -251,3 +251,227 @@ describe('unrelated actions', () => {
     assert.strictEqual(st.controlPanel.activeSection, 'goals');
   });
 });
+
+// ---------------------------------------------------------------------------
+// control-panel/scroll
+// ---------------------------------------------------------------------------
+
+describe('control-panel/scroll', () => {
+  it('is a no-op when closed', () => {
+    const st = reduce(initialState, {
+      type: 'control-panel/scroll',
+      section: 'goals',
+      delta: 5,
+    });
+    assert.strictEqual(st.controlPanel.goalsDetailScroll, 0);
+  });
+
+  it('is a no-op when the section does not match active', () => {
+    let st = reduce(initialState, { type: 'control-panel/open' });
+    st = reduce(st, {
+      type: 'control-panel/scroll',
+      section: 'status',
+      delta: 5,
+    });
+    assert.strictEqual(st.controlPanel.statusScroll, 0);
+  });
+
+  it('scrolls goalsDetailScroll when target=detail on goals section', () => {
+    let st = reduce(initialState, { type: 'control-panel/open' });
+    st = reduce(st, {
+      type: 'control-panel/scroll',
+      section: 'goals',
+      target: 'detail',
+      delta: 3,
+    });
+    assert.strictEqual(st.controlPanel.goalsDetailScroll, 3);
+    st = reduce(st, {
+      type: 'control-panel/scroll',
+      section: 'goals',
+      target: 'detail',
+      delta: 2,
+    });
+    assert.strictEqual(st.controlPanel.goalsDetailScroll, 5);
+  });
+
+  it('scrolls goalsListScroll when target=list on goals section', () => {
+    let st = reduce(initialState, { type: 'control-panel/open' });
+    st = reduce(st, {
+      type: 'control-panel/scroll',
+      section: 'goals',
+      target: 'list',
+      delta: 4,
+    });
+    assert.strictEqual(st.controlPanel.goalsListScroll, 4);
+  });
+
+  it('scrolls statusScroll on status section without target', () => {
+    let st = reduce(initialState, { type: 'control-panel/open', section: 'status' } as Action);
+    st = reduce(st, {
+      type: 'control-panel/scroll',
+      section: 'status',
+      delta: 10,
+    });
+    assert.strictEqual(st.controlPanel.statusScroll, 10);
+  });
+
+  it('scrolls settingsScroll on settings section', () => {
+    let st = reduce(initialState, { type: 'control-panel/open', section: 'settings' } as Action);
+    st = reduce(st, {
+      type: 'control-panel/scroll',
+      section: 'settings',
+      delta: 7,
+    });
+    assert.strictEqual(st.controlPanel.settingsScroll, 7);
+  });
+
+  it('clamps scroll offsets to non-negative', () => {
+    let st = reduce(initialState, { type: 'control-panel/open' });
+    st = reduce(st, {
+      type: 'control-panel/scroll',
+      section: 'goals',
+      target: 'detail',
+      delta: 5,
+    });
+    assert.strictEqual(st.controlPanel.goalsDetailScroll, 5);
+    st = reduce(st, {
+      type: 'control-panel/scroll',
+      section: 'goals',
+      target: 'detail',
+      delta: -10,
+    });
+    assert.strictEqual(st.controlPanel.goalsDetailScroll, 0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// control-panel/highlight-goal resets detail scroll
+// ---------------------------------------------------------------------------
+
+describe('control-panel/highlight-goal scroll reset', () => {
+  it('resets goalsDetailScroll to 0 on highlight change', () => {
+    let st = reduce(initialState, { type: 'control-panel/open' });
+    st = reduce(st, {
+      type: 'control-panel/scroll',
+      section: 'goals',
+      target: 'detail',
+      delta: 12,
+    } as Action);
+    assert.strictEqual(st.controlPanel.goalsDetailScroll, 12);
+    st = reduce(st, {
+      type: 'control-panel/highlight-goal',
+      goalId: 'g2',
+    });
+    assert.strictEqual(st.controlPanel.goalsDetailScroll, 0);
+    assert.strictEqual(st.goalsPanel.highlightedGoalId, 'g2');
+  });
+
+  it('does not affect list scroll when highlight changes', () => {
+    let st = reduce(initialState, { type: 'control-panel/open' });
+    st = reduce(st, {
+      type: 'control-panel/scroll',
+      section: 'goals',
+      target: 'list',
+      delta: 5,
+    } as Action);
+    assert.strictEqual(st.controlPanel.goalsListScroll, 5);
+    st = reduce(st, { type: 'control-panel/highlight-goal', goalId: 'g2' });
+    assert.strictEqual(st.controlPanel.goalsDetailScroll, 0);
+    assert.strictEqual(st.controlPanel.goalsListScroll, 5);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// scroll offsets initialized to 0 on panel open/toggle
+// ---------------------------------------------------------------------------
+
+describe('scroll offsets initialization', () => {
+  it('control-panel/open resets all scrolls to 0', () => {
+    let st = reduce(initialState, { type: 'control-panel/open', section: 'status' } as Action);
+    st = reduce(st, {
+      type: 'control-panel/scroll',
+      section: 'status',
+      delta: 15,
+    } as Action);
+    assert.strictEqual(st.controlPanel.statusScroll, 15);
+    st = reduce(st, { type: 'control-panel/close' });
+    st = reduce(st, { type: 'control-panel/open' });
+    assert.strictEqual(st.controlPanel.statusScroll, 0);
+    assert.strictEqual(st.controlPanel.goalsDetailScroll, 0);
+  });
+
+  it('control-panel/toggle resets scrolls on open', () => {
+    let st = reduce(initialState, { type: 'control-panel/open' });
+    st = reduce(st, {
+      type: 'control-panel/scroll',
+      section: 'goals',
+      target: 'detail',
+      delta: 8,
+    } as Action);
+    st = reduce(st, { type: 'control-panel/close' });
+    st = reduce(st, { type: 'control-panel/toggle' });
+    assert.strictEqual(st.controlPanel.open, true);
+    assert.strictEqual(st.controlPanel.goalsDetailScroll, 0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// board/sync preserves todoOverflow (Phase 4A)
+// ---------------------------------------------------------------------------
+
+describe('board/sync todoOverflow preservation', () => {
+  it('preserves todoOverflow on rows through sync', () => {
+    let st = reduce(initialState, { type: 'board/sync', rows: [], enabled: true });
+    st = reduce(st, {
+      type: 'board/sync',
+      rows: [
+        {
+          id: 'g1',
+          title: 'Big',
+          state: 'running' as const,
+          done: 2,
+          total: 12,
+          glyph: '\u25B6',
+          scope: 'global' as const,
+          agents: 0,
+          todos: [{ id: 't1', text: 'x', status: 'pending' as const }],
+          todoOverflow: 7,
+        },
+      ],
+      enabled: true,
+    });
+    const row = st.board[0];
+    assert.ok(row !== undefined);
+    assert.strictEqual(row.todoOverflow, 7);
+    assert.ok(row.todos !== undefined);
+    assert.strictEqual(row.todos!.length, 1);
+  });
+
+  it('board/sync for inactive goal preserves todos', () => {
+    const st = reduce(initialState, {
+      type: 'board/sync',
+      rows: [
+        {
+          id: 'g1',
+          title: 'Parked',
+          state: 'parked' as const,
+          done: 0,
+          total: 4,
+          glyph: '\u25CB',
+          scope: 'global' as const,
+          agents: 0,
+          todos: [
+            { id: 't1', text: 'step 1', status: 'pending' as const },
+            { id: 't2', text: 'step 2', status: 'pending' as const },
+          ],
+        },
+      ],
+      enabled: true,
+    });
+    const row = st.board[0];
+    assert.ok(row !== undefined);
+    assert.strictEqual(row.state, 'parked');
+    assert.ok(row.todos !== undefined);
+    assert.strictEqual(row.todos!.length, 2);
+  });
+});
