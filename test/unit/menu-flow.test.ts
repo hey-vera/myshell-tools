@@ -1841,12 +1841,11 @@ describe('startMenu — scheduler cross-goal cap: single goal ⇒ cap 1, one pha
       const sink = makeSink();
       const ctx = makeCtx(
         {
-          // Scheduler ON via config; oversight autonomous so the run is unattended.
+          // oversight autonomous so the run is unattended.
           config: {
             onboarded: true,
             setAsDefault: false,
             smartRoute: false,
-            experimentalScheduler: true,
             oversight: 'autonomous',
           },
           providers: { claude: provider },
@@ -1916,7 +1915,6 @@ describe('startMenu — auto-goal smart autonomy', () => {
       // Disable the gated intent pass so this asserts PURE task-dispatch routing.
       // Auto-goal is always on; a substantial turn fires the planner post-reply.
       intentEngine: false,
-      experimentalUnderstanding: false,
     };
     const ctx = makeCtx(
       {
@@ -2531,7 +2529,7 @@ describe('startMenu — auto-goal smart autonomy', () => {
     });
   });
 
-  it('planning-depth gate off preserves the single ungrounded preflight planner call', { retry: 2 }, async () => {
+  it('planning-depth gate off preserves the single ungrounded preflight planner call', async () => {
     const dir = join(tmpdir(), `menu-planning-depth-off-${randomUUID()}`);
     await withStateHome(dir, async () => {
       const plannerPrompts: string[] = [];
@@ -2552,7 +2550,7 @@ describe('startMenu — auto-goal smart autonomy', () => {
       const ctx = makeCtx({
         config: {
           onboarded: true, setAsDefault: false, smartRoute: false,
-          mode: 'quality-first', intensity: 5, experimentalUnderstanding: false,
+          mode: 'quality-first', intensity: 5,
         },
         providers: { claude: provider },
         readLine: makeScriptedReader(['n', 'review and design the architecture', '/exit', 'q']),
@@ -2560,6 +2558,8 @@ describe('startMenu — auto-goal smart autonomy', () => {
 
       await startMenu(ctx, sink);
 
+      const deadline = Date.now() + 5_000;
+      while (plannerPrompts.length < 1 && Date.now() < deadline) await delay(10);
       assert.equal(plannerPrompts.length, 1);
       assert.ok(plannerPrompts[0]?.includes('review and design the architecture'));
       assert.ok(!plannerPrompts[0]?.includes('WHOLE-PICTURE UNDERSTANDING OF THE REAL SYSTEM'));
@@ -2567,7 +2567,7 @@ describe('startMenu — auto-goal smart autonomy', () => {
     });
   });
 
-  it('planning-depth gate on keeps a low-risk birdhouse at one silent planner call', { retry: 2 }, async () => {
+  it('planning-depth gate on keeps a low-risk birdhouse at one silent planner call', async () => {
     const dir = join(tmpdir(), `menu-planning-depth-birdhouse-${randomUUID()}`);
     await withStateHome(dir, async () => {
       let plannerCalls = 0;
@@ -2620,7 +2620,6 @@ describe('startMenu — auto-goal smart autonomy', () => {
         config: {
           onboarded: true, setAsDefault: false, smartRoute: false,
           mode: 'quality-first', intensity: 5, experimentalPlanningDepth: true,
-          experimentalUnderstanding: false,
         },
         providers: { claude: provider, codex },
         env: twoProviderEnv,
@@ -2629,6 +2628,8 @@ describe('startMenu — auto-goal smart autonomy', () => {
 
       await startMenu(ctx, sink);
 
+      const deadline = Date.now() + 5_000;
+      while (plannerCalls < 1 && Date.now() < deadline) await delay(10);
       assert.equal(plannerCalls, 1);
       assert.equal(secondPlanningBrainCalls, 0);
       assert.ok(!sink.buf.includes('Planning deeper'));
@@ -2772,7 +2773,6 @@ describe('startMenu — auto-goal smart autonomy', () => {
         config: {
           onboarded: true, setAsDefault: false, smartRoute: false,
           mode: 'quality-first', intensity: 5, experimentalPlanningDepth: true,
-          experimentalUnderstanding: false,
         },
         readLine: makeScriptedReader([
           'n',
@@ -2912,7 +2912,6 @@ describe('startMenu — auto-goal smart autonomy', () => {
         config: {
           onboarded: true, setAsDefault: false, smartRoute: false,
           mode: 'cost-saver', intensity: 5, experimentalPlanningDepth: true,
-          experimentalUnderstanding: false,
         },
         readLine: makeScriptedReader([
           'n',
@@ -2931,7 +2930,7 @@ describe('startMenu — auto-goal smart autonomy', () => {
     });
   });
 
-  it('cold hard post-turn planning answers first, then grounds the single planner call', { retry: 2 }, async () => {
+  it('cold hard post-turn planning answers first, then grounds the single planner call', async () => {
     const dir = join(tmpdir(), `menu-planning-depth-cold-${randomUUID()}`);
     await withStateHome(dir, async () => {
       const sequence: string[] = [];
@@ -2985,7 +2984,7 @@ describe('startMenu — auto-goal smart autonomy', () => {
     });
   });
 
-  it('a warm SystemModel is reused by the next post-turn planner without another understanding pass', { retry: 2 }, async () => {
+  it('a warm SystemModel is reused by the next post-turn planner without another understanding pass', async () => {
     const dir = join(tmpdir(), `menu-planning-depth-warm-${randomUUID()}`);
     await withStateHome(dir, async () => {
       const sequence: string[] = [];
@@ -3041,7 +3040,7 @@ describe('startMenu — auto-goal smart autonomy', () => {
     });
   });
 
-  it('understanding failure in post-turn planning falls through to one ungrounded planner call', { retry: 2 }, async () => {
+  it('understanding failure in post-turn planning falls through to one ungrounded planner call', async () => {
     const dir = join(tmpdir(), `menu-planning-depth-failsoft-${randomUUID()}`);
     await withStateHome(dir, async () => {
       const sequence: string[] = [];
@@ -3090,7 +3089,7 @@ describe('startMenu — auto-goal smart autonomy', () => {
     });
   });
 
-  it('cost-saver call budget caps a hard turn at L1 without awaiting its background warm', { retry: 2 }, async () => {
+  it('cost-saver call budget caps a hard turn at L1 without awaiting its background warm', async () => {
     const dir = join(tmpdir(), `menu-planning-depth-cost-saver-${randomUUID()}`);
     await withStateHome(dir, async () => {
       const sequence: string[] = [];
@@ -7884,19 +7883,16 @@ describe('startMenu — update notifier: banner, [u], auto-update', () => {
 
   // The HIGH-severity silent-data-loss regression: a setter that rebuilt config
   // from an allow-list erased every key it didn't list — including the
-  // codebaseAwareness PRIVACY kill-switch (silently flipping it back ON), the
-  // `seen` first-touch flags, and the config-set experimental* flags. Toggle a
-  // representative setting (mode) through saveConfig→loadConfig and assert ALL of
-  // them survive unchanged.
-  it('[s] → [1] mode change PRESERVES codebaseAwareness, seen, and experimental* flags', async () => {
+  // codebaseAwareness PRIVACY kill-switch (silently flipping it back ON) and the
+  // `seen` first-touch flags. Toggle a representative setting (mode) through
+  // saveConfig→loadConfig and assert they survive unchanged.
+  it('[s] → [1] mode change PRESERVES codebaseAwareness and seen', async () => {
     const sink = makeSink();
     const dir = join(tmpdir(), `menu-preserve-privacy-${randomUUID()}`);
     const config: AppConfig = {
       onboarded: true,
       setAsDefault: false,
       codebaseAwareness: false, // the privacy kill-switch — must NOT silently re-enable
-      experimentalTaste: true, // a config-set experimental flag
-      experimentalJudgment: true,
       seen: { memorySave: true, recap: true }, // dismissed first-touch hints
     };
     const ctx = makeCtx({
@@ -7915,12 +7911,6 @@ describe('startMenu — update notifier: banner, [u], auto-update', () => {
       persisted.codebaseAwareness,
       false,
       'changing mode must NOT silently re-enable the codebaseAwareness privacy kill-switch',
-    );
-    assert.equal(persisted.experimentalTaste, true, 'experimentalTaste must survive a mode change');
-    assert.equal(
-      persisted.experimentalJudgment,
-      true,
-      'experimentalJudgment must survive a mode change',
     );
     assert.deepEqual(
       persisted.seen,
