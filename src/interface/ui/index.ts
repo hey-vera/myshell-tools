@@ -69,6 +69,7 @@ export {
   type UiAccountCapacityRow,
   type UiCapacityState,
   type UiProviderCapacityRow,
+  type UiSettingsSnapshot,
   type UiState,
   type Verbosity,
 } from './state.js';
@@ -80,6 +81,10 @@ export {
   type ControlPanelStatusRow,
   type ControlPanelProviderStatus,
   type ControlPanelSettingRow,
+  type ControlPanelSegmentedSettingRow,
+  type ControlPanelToggleSettingRow,
+  type ControlPanelActionSettingRow,
+  type ControlPanelReadonlySettingRow,
   type ControlPanelGoalRow,
   type ControlPanelGoalDetail,
   type ControlPanelGoalsModel,

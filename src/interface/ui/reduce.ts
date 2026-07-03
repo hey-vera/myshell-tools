@@ -796,6 +796,7 @@ export function reduce(state: UiState, action: Action): UiState {
           goalsListScroll: 0,
           goalsDetailScroll: 0,
           settingsScroll: 0,
+          settingsSelectedIndex: -1,
         },
       };
     }
@@ -830,6 +831,7 @@ export function reduce(state: UiState, action: Action): UiState {
           goalsListScroll: 0,
           goalsDetailScroll: 0,
           settingsScroll: 0,
+          settingsSelectedIndex: -1,
         },
       };
     }
@@ -841,7 +843,11 @@ export function reduce(state: UiState, action: Action): UiState {
       if (!state.controlPanel.open) return state;
       return {
         ...state,
-        controlPanel: { ...state.controlPanel, activeSection: action.section },
+        controlPanel: {
+          ...state.controlPanel,
+          activeSection: action.section,
+          settingsSelectedIndex: -1,
+        },
       };
     }
 
@@ -895,10 +901,34 @@ export function reduce(state: UiState, action: Action): UiState {
       }
     }
 
+    // -- control-panel/settings-select: set the selected setting row index.
+    //    No-op unless the Control Panel is open and on the Settings section.
+    case 'control-panel/settings-select': {
+      if (
+        !state.controlPanel.open ||
+        state.controlPanel.activeSection !== 'settings'
+      ) {
+        return state;
+      }
+      return {
+        ...state,
+        controlPanel: {
+          ...state.controlPanel,
+          settingsSelectedIndex: Math.max(-1, action.index),
+        },
+      };
+    }
+
     // -- capacity/sync: REPLACE the capacity snapshot with a fresh observation
     //    built from real menu-loop signals. Also mirrors `pressure` onto the
     //    existing top-level field for InputBox placeholder behaviour. (Phase 4C)
     case 'capacity/sync':
       return { ...state, capacity: action.capacity, pressure: action.capacity.pressure };
+
+    // -- settings/sync: REPLACE the settings snapshot with a fresh projection of
+    //    AppConfig, pushed by the menu loop after initial load and every
+    //    successful settings mutation. (Phase 4D)
+    case 'settings/sync':
+      return { ...state, settings: action.settings };
   }
 }

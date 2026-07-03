@@ -583,20 +583,60 @@ describe('buildControlPanelModel statusRows (with capacity snapshot)', () => {
 // ---------------------------------------------------------------------------
 
 describe('buildControlPanelModel settings', () => {
-  it('fixed order: board only', () => {
+  it('when no snapshot: shows fallback rows with board diagnostic', () => {
     const m = buildControlPanelModel(baseState());
-    assert.strictEqual(m.settings.length, 1);
-    assert.strictEqual(m.settings[0].id, 'board');
+    assert.strictEqual(m.settings.length, 2);
+    assert.strictEqual(m.settings[0].id, 'settings-unknown');
+    assert.strictEqual(m.settings[0].kind, 'readonly');
+    assert.strictEqual(m.settings[1].id, 'board');
+    assert.strictEqual(m.settings[1].kind, 'readonly');
   });
 
-  it('board row has label "Persistent board" and real enabled value', () => {
+  it('board diagnostic row reflects boardEnabled', () => {
     const off = buildControlPanelModel(baseState({ boardEnabled: false }));
-    assert.strictEqual(off.settings[0].label, 'Persistent board');
-    assert.strictEqual(off.settings[0].enabled, false);
+    const boardRow = off.settings[off.settings.length - 1];
+    assert.strictEqual(boardRow.id, 'board');
+    assert.strictEqual(boardRow.kind, 'readonly');
+    assert.strictEqual(boardRow.value, 'disabled');
 
     const on = buildControlPanelModel(baseState({ boardEnabled: true }));
-    assert.strictEqual(on.settings[0].label, 'Persistent board');
-    assert.strictEqual(on.settings[0].enabled, true);
+    const boardRow2 = on.settings[on.settings.length - 1];
+    assert.strictEqual(boardRow2.id, 'board');
+    assert.strictEqual(boardRow2.value, 'enabled');
+  });
+
+  it('interactive rows built from settings snapshot', () => {
+    const snapshot = {
+      mode: 'auto',
+      oversight: 'checkpoint',
+      verbosity: 'normal',
+      colorTheme: 'dark' as const,
+      memory: true,
+      learnedTaste: true,
+      codebaseAwareness: true,
+      setAsDefault: false,
+    };
+    const m = buildControlPanelModel(baseState({ settings: snapshot }));
+    // 8 interactive rows + 1 board read-only = 9
+    assert.strictEqual(m.settings.length, 9);
+    // First row: mode (segmented)
+    const mode = m.settings[0];
+    assert.strictEqual(mode.id, 'mode');
+    assert.strictEqual(mode.kind, 'segmented');
+    assert.strictEqual(mode.value, 'auto');
+    // Second row: oversight
+    const oversight = m.settings[1];
+    assert.strictEqual(oversight.id, 'oversight');
+    assert.strictEqual(oversight.kind, 'segmented');
+    // Fourth row: color-theme (toggle) with note
+    const theme = m.settings[3];
+    assert.strictEqual(theme.id, 'color-theme');
+    assert.strictEqual(theme.kind, 'toggle');
+    assert.strictEqual(theme.note, 'takes effect next launch');
+    // Last row: board diagnostic
+    const boardRow = m.settings[m.settings.length - 1];
+    assert.strictEqual(boardRow.id, 'board');
+    assert.strictEqual(boardRow.kind, 'readonly');
   });
 
 

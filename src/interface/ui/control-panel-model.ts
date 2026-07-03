@@ -1,4 +1,4 @@
-import type { AgentRunState, ControlPanelSection, GoalBoardRow, GoalBoardTodoRow, StreamPhase, UiCapacityState, UiState } from './state.js';
+import type { AgentRunState, ControlPanelSection, GoalBoardRow, GoalBoardTodoRow, StreamPhase, UiCapacityState, UiSettingsSnapshot, UiState } from './state.js';
 import type { ProviderId } from '../../providers/port.js';
 
 // ---------------------------------------------------------------------------
@@ -20,12 +20,39 @@ export interface ControlPanelProviderStatus {
   readonly state: AgentRunState;
 }
 
-export interface ControlPanelSettingRow {
-  readonly id: 'board';
+export interface ControlPanelSettingRowBase {
+  readonly id: string;
   readonly label: string;
-  readonly enabled: boolean;
+  readonly selected: boolean;
   readonly note?: string;
 }
+
+export interface ControlPanelSegmentedSettingRow extends ControlPanelSettingRowBase {
+  readonly kind: 'segmented';
+  readonly value: string;
+  readonly options: readonly { readonly value: string; readonly label: string; readonly active: boolean }[];
+}
+
+export interface ControlPanelToggleSettingRow extends ControlPanelSettingRowBase {
+  readonly kind: 'toggle';
+  readonly value: boolean;
+}
+
+export interface ControlPanelActionSettingRow extends ControlPanelSettingRowBase {
+  readonly kind: 'action';
+  readonly value: boolean;
+}
+
+export interface ControlPanelReadonlySettingRow extends ControlPanelSettingRowBase {
+  readonly kind: 'readonly';
+  readonly value: string;
+}
+
+export type ControlPanelSettingRow =
+  | ControlPanelSegmentedSettingRow
+  | ControlPanelToggleSettingRow
+  | ControlPanelActionSettingRow
+  | ControlPanelReadonlySettingRow;
 
 export interface ControlPanelGoalRow {
   readonly id: string;
@@ -135,6 +162,139 @@ function foldProviderStatus(
 }
 
 // ---------------------------------------------------------------------------
+// Settings row builder (Phase 4D)
+// ---------------------------------------------------------------------------
+
+function buildSettingsRows(
+  snapshot: UiSettingsSnapshot | undefined,
+  boardEnabled: boolean,
+  selectedIndex: number,
+): readonly ControlPanelSettingRow[] {
+  const rows: ControlPanelSettingRow[] = [];
+
+  if (snapshot === undefined) {
+    rows.push({
+      id: 'settings-unknown',
+      label: 'Settings snapshot',
+      kind: 'readonly',
+      value: 'unknown',
+      selected: false,
+    });
+    rows.push({
+      id: 'board',
+      label: 'Persistent board',
+      kind: 'readonly',
+      value: boardEnabled ? 'enabled' : 'disabled',
+      selected: false,
+    });
+    return rows;
+  }
+
+  let idx = 0;
+
+  rows.push({
+    id: 'mode',
+    label: 'New conversation mode',
+    kind: 'segmented',
+    value: snapshot.mode,
+    selected: idx === selectedIndex,
+    options: [
+      { value: 'auto', label: 'Auto', active: snapshot.mode === 'auto' },
+      { value: 'budget', label: 'Budget', active: snapshot.mode === 'budget' },
+      { value: 'balanced', label: 'Balanced', active: snapshot.mode === 'balanced' },
+      { value: 'high', label: 'High', active: snapshot.mode === 'high' },
+      { value: 'max', label: 'Max', active: snapshot.mode === 'max' },
+    ],
+  });
+  idx += 1;
+
+  rows.push({
+    id: 'oversight',
+    label: 'Oversight',
+    kind: 'segmented',
+    value: snapshot.oversight,
+    selected: idx === selectedIndex,
+    options: [
+      { value: 'review-all', label: 'review-all', active: snapshot.oversight === 'review-all' },
+      { value: 'checkpoint', label: 'checkpoint', active: snapshot.oversight === 'checkpoint' },
+      { value: 'autonomous', label: 'autonomous', active: snapshot.oversight === 'autonomous' },
+    ],
+  });
+  idx += 1;
+
+  rows.push({
+    id: 'verbosity',
+    label: 'Output detail',
+    kind: 'segmented',
+    value: snapshot.verbosity,
+    selected: idx === selectedIndex,
+    options: [
+      { value: 'quiet', label: 'quiet', active: snapshot.verbosity === 'quiet' },
+      { value: 'normal', label: 'normal', active: snapshot.verbosity === 'normal' },
+      { value: 'verbose', label: 'verbose', active: snapshot.verbosity === 'verbose' },
+    ],
+  });
+  idx += 1;
+
+  rows.push({
+    id: 'color-theme',
+    label: 'Appearance theme',
+    kind: 'toggle',
+    value: snapshot.colorTheme === 'light',
+    selected: idx === selectedIndex,
+    note: 'takes effect next launch',
+  });
+  idx += 1;
+
+  rows.push({
+    id: 'memory',
+    label: 'Memory',
+    kind: 'toggle',
+    value: snapshot.memory,
+    selected: idx === selectedIndex,
+  });
+  idx += 1;
+
+  rows.push({
+    id: 'learned-taste',
+    label: 'Learned preferences',
+    kind: 'toggle',
+    value: snapshot.learnedTaste,
+    selected: idx === selectedIndex,
+  });
+  idx += 1;
+
+  rows.push({
+    id: 'codebase-awareness',
+    label: 'Codebase awareness',
+    kind: 'toggle',
+    value: snapshot.codebaseAwareness,
+    selected: idx === selectedIndex,
+  });
+  idx += 1;
+
+  rows.push({
+    id: 'default-shell',
+    label: 'Set as default shell',
+    kind: 'action',
+    value: snapshot.setAsDefault,
+    selected: idx === selectedIndex,
+  });
+  idx += 1;
+
+  // Diagnostic: persistent board (always read-only after Phase 1-3 promotion)
+  rows.push({
+    id: 'board',
+    label: 'Persistent board',
+    kind: 'readonly',
+    value: boardEnabled ? 'enabled' : 'disabled',
+    selected: false,
+  });
+
+  return rows;
+}
+
+// ---------------------------------------------------------------------------
 // Core builder
 // ---------------------------------------------------------------------------
 
@@ -159,10 +319,9 @@ export function buildControlPanelModel(state: UiState): ControlPanelModel {
   }
   const providers = foldProviderStatus(allAgents);
 
-  // settings rows in fixed order
-  const settings: ControlPanelSettingRow[] = [
-    { id: 'board', label: 'Persistent board', enabled: state.boardEnabled },
-  ];
+  // settings rows in fixed order: interactive rows from the snapshot,
+  // plus the board diagnostic row (always read-only).
+  const settings = buildSettingsRows(state.settings, state.boardEnabled, state.controlPanel.settingsSelectedIndex);
 
   // Build the native Control Panel goals model from the board snapshot.
   const goalIds: readonly string[] = state.board.map((r) => r.id);

@@ -31,6 +31,7 @@ import {
   type Action,
   type GoalBoardRow,
   type UiCapacityState,
+  type UiSettingsSnapshot,
   type UiState,
   type Verbosity,
 } from './index.js';
@@ -196,6 +197,12 @@ export function createInkOutputSink(
     // (chat entry, rate-limit updates, account/config changes).
     syncCapacity(capacity: UiCapacityState): void {
       store.dispatch({ type: 'capacity/sync', capacity });
+    },
+    // Phase 4D: replace the settings snapshot with a fresh projection of
+    // AppConfig, pushed by the menu loop after initial load and every
+    // successful settings mutation.
+    syncSettings(settings: UiSettingsSnapshot): void {
+      store.dispatch({ type: 'settings/sync', settings });
     },
     // Commit any buffered partial line (a prompt written WITHOUT a trailing
     // newline) as its own committed `<Static>` item so it becomes visible before
@@ -534,6 +541,14 @@ export interface InkMountHandle {
    */
   setMenuCaptureActive(active: boolean): void;
   /**
+   * Register (or clear with `null`) the handler for Control Panel settings
+   * intents. The menu loop registers this once at startup so the bridge can route
+   * settings mutations into the menu-settings helpers. (Phase 4D)
+   */
+  onControlPanelSettingAction(
+    handler: ((action: { readonly key: string; readonly value?: string | boolean }) => void) | null,
+  ): void;
+  /**
    * Drive one model turn's CoreEvent stream into the reducer-backed transcript
    * (the STEP-3b streaming path). Same return shape as render.ts `renderStream`.
    */
@@ -644,6 +659,7 @@ export function mountInk(opts: InkMountOptions): InkMountHandle {
     setInputInfo: (info) => bridge.setInputInfo(info),
     setChatActive: (active) => bridge.setChatActive(active),
     setMenuCaptureActive: (active) => bridge.setMenuCaptureActive(active),
+    onControlPanelSettingAction: (handler) => bridge.onControlPanelSettingAction(handler),
     beginTurn,
     resetTurn,
     renderTurn,

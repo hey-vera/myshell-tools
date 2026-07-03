@@ -7,7 +7,7 @@
 import { describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 import { reduce } from '../../src/interface/ui/reduce.ts';
-import { initialState, type Action, type UiCapacityState } from '../../src/interface/ui/state.ts';
+import { initialState, type Action, type UiCapacityState, type UiSettingsSnapshot } from '../../src/interface/ui/state.ts';
 
 // ---------------------------------------------------------------------------
 // initial state
@@ -571,5 +571,90 @@ describe('capacity/sync', () => {
 
   it('initial state has no capacity', () => {
     assert.strictEqual(initialState.capacity, undefined);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// control-panel/settings-select (Phase 4D)
+// ---------------------------------------------------------------------------
+
+describe('control-panel/settings-select', () => {
+  it('no-op when closed', () => {
+    const st = reduce(initialState, { type: 'control-panel/settings-select', index: 2 });
+    assert.strictEqual(st.controlPanel.settingsSelectedIndex, -1);
+  });
+
+  it('no-op when on a non-settings section', () => {
+    let st = reduce(initialState, { type: 'control-panel/open' });
+    st = reduce(st, { type: 'control-panel/settings-select', index: 2 });
+    assert.strictEqual(st.controlPanel.settingsSelectedIndex, -1);
+    assert.strictEqual(st.controlPanel.activeSection, 'goals');
+  });
+
+  it('updates selected index when open on settings', () => {
+    let st = reduce(initialState, { type: 'control-panel/open', section: 'settings' });
+    st = reduce(st, { type: 'control-panel/settings-select', index: 3 });
+    assert.strictEqual(st.controlPanel.settingsSelectedIndex, 3);
+  });
+
+  it('clamps below 0 to -1', () => {
+    let st = reduce(initialState, { type: 'control-panel/open', section: 'settings' });
+    st = reduce(st, { type: 'control-panel/settings-select', index: -5 });
+    assert.strictEqual(st.controlPanel.settingsSelectedIndex, -1);
+  });
+
+  it('resets to -1 on set-section', () => {
+    let st = reduce(initialState, { type: 'control-panel/open', section: 'settings' });
+    st = reduce(st, { type: 'control-panel/settings-select', index: 2 });
+    st = reduce(st, { type: 'control-panel/set-section', section: 'goals' });
+    assert.strictEqual(st.controlPanel.settingsSelectedIndex, -1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// settings/sync (Phase 4D)
+// ---------------------------------------------------------------------------
+
+describe('settings/sync', () => {
+  it('initial state has no settings', () => {
+    assert.strictEqual(initialState.settings, undefined);
+  });
+
+  it('replaces the settings snapshot', () => {
+    const snapshot: UiSettingsSnapshot = {
+      mode: 'balanced',
+      oversight: 'checkpoint',
+      verbosity: 'normal',
+      colorTheme: 'dark',
+      memory: true,
+      learnedTaste: false,
+      codebaseAwareness: true,
+      setAsDefault: false,
+    };
+    const st = reduce(initialState, { type: 'settings/sync', settings: snapshot });
+    assert.ok(st.settings !== undefined);
+    assert.strictEqual(st.settings!.mode, 'balanced');
+    assert.strictEqual(st.settings!.oversight, 'checkpoint');
+    assert.strictEqual(st.settings!.memory, true);
+    assert.strictEqual(st.settings!.learnedTaste, false);
+  });
+
+  it('overwrites a previous snapshot', () => {
+    const s1: UiSettingsSnapshot = {
+      mode: 'auto', oversight: 'autonomous', verbosity: 'verbose',
+      colorTheme: 'light', memory: false, learnedTaste: true,
+      codebaseAwareness: false, setAsDefault: true,
+    };
+    const s2: UiSettingsSnapshot = {
+      mode: 'max', oversight: 'review-all', verbosity: 'quiet',
+      colorTheme: 'dark', memory: true, learnedTaste: false,
+      codebaseAwareness: true, setAsDefault: false,
+    };
+    const st = reduce(
+      reduce(initialState, { type: 'settings/sync', settings: s1 }),
+      { type: 'settings/sync', settings: s2 },
+    );
+    assert.strictEqual(st.settings!.mode, 'max');
+    assert.strictEqual(st.settings!.colorTheme, 'dark');
   });
 });

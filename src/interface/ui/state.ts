@@ -260,6 +260,8 @@ export interface ControlPanelUiState {
   readonly goalsListScroll: number;
   readonly goalsDetailScroll: number;
   readonly settingsScroll: number;
+  /** Selected index into the interactive settings rows (0-based; -1 when no row is selected). */
+  readonly settingsSelectedIndex: number;
 }
 
 /**
@@ -307,6 +309,32 @@ export interface UiCapacityState {
     readonly coreAnswer: true;
   };
   readonly accountParallelismDisabledProviders: readonly SubscriptionProvider[];
+}
+
+/**
+ * PHASE 4D — settings snapshot projected from AppConfig into the Control Panel
+ * Settings tab. Contains only the displayable rows; experimental rollout flags,
+ * provider auth, quota/cooldowns, and advanced panel/hedge/native-session config
+ * are deliberately omitted. Every field mirrors a real, tested mutation path in
+ * src/interface/menu-settings.ts.
+ */
+export interface UiSettingsSnapshot {
+  /** Mode label for display ('auto' | 'budget' | 'balanced' | 'high' | 'max'). */
+  readonly mode: string;
+  /** Oversight level ('review-all' | 'checkpoint' | 'autonomous'). */
+  readonly oversight: string;
+  /** Output detail / verbosity ('quiet' | 'normal' | 'verbose'). */
+  readonly verbosity: string;
+  /** Appearance theme ('dark' | 'light'). */
+  readonly colorTheme: 'dark' | 'light';
+  /** User memory master switch (true = on, false = off). */
+  readonly memory: boolean;
+  /** Learned preference ledger (true = on, false = off). */
+  readonly learnedTaste: boolean;
+  /** Codebase awareness kill-switch (true = on, false = off). */
+  readonly codebaseAwareness: boolean;
+  /** Whether the shell startup hook is currently installed (set as default). */
+  readonly setAsDefault: boolean;
 }
 
 /**
@@ -359,6 +387,8 @@ export interface UiState {
   readonly controlPanel: ControlPanelUiState;
   /** Phase 4C: real capacity snapshot from observed signals (absent until first sync). */
   readonly capacity?: UiCapacityState;
+  /** Phase 4D: settings snapshot from AppConfig (absent until first sync). */
+  readonly settings?: UiSettingsSnapshot;
 }
 
 // ---------------------------------------------------------------------------
@@ -409,6 +439,7 @@ export const initialState: UiState = {
     goalsListScroll: 0,
     goalsDetailScroll: 0,
     settingsScroll: 0,
+    settingsSelectedIndex: -1,
   },
 };
 
@@ -643,6 +674,11 @@ export type Action =
       readonly target?: 'list' | 'detail';
       readonly delta: number;
     }
+  // --- control-panel/settings-select: set the selected setting row index.
+  | {
+      readonly type: 'control-panel/settings-select';
+      readonly index: number;
+    }
   // --- capacity/sync: REPLACE the capacity snapshot with a fresh observation built
   //     from real menu-loop signals (provider env, cooldowns, session consumption,
   //     subscriptions, pressure, shed plan). Absent capacity signals render as
@@ -650,5 +686,11 @@ export type Action =
   | {
       readonly type: 'capacity/sync';
       readonly capacity: UiCapacityState;
+    }
+  // --- settings/sync: replace the settings snapshot with a fresh projection of
+  //     AppConfig. The menu calls this after any successful settings mutation.
+  | {
+      readonly type: 'settings/sync';
+      readonly settings: UiSettingsSnapshot;
     }
   ;

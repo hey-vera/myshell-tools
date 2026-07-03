@@ -40,7 +40,18 @@ export type ControlPanelBridgeAction =
   | Extract<Action, { type: 'control-panel/close' }>
   | Extract<Action, { type: 'control-panel/set-section' }>
   | Extract<Action, { type: 'control-panel/highlight-goal' }>
-  | Extract<Action, { type: 'control-panel/scroll' }>;
+  | Extract<Action, { type: 'control-panel/scroll' }>
+  | Extract<Action, { type: 'control-panel/settings-select' }>;
+
+/**
+ * An intent emitted from the Control Panel Settings tab when the user activates
+ * an interactive setting row. The bridge routes this to the menu layer for I/O
+ * (the component never calls saveConfig directly). Phase 4D.
+ */
+export interface ControlPanelSettingAction {
+  readonly key: string;
+  readonly value?: string | boolean;
+}
 
 /**
  * The Ink-side control surface the LineReader's `suspend()`/`resume()` need to
@@ -156,6 +167,17 @@ export interface InkAppBridge {
    */
   onControlPanelAction(handler: ((action: ControlPanelBridgeAction) => void) | null): void;
   /**
+   * Route a control-panel setting action through the bridge. Returns `false`
+   * when no handler is armed; otherwise invokes the handler and returns `true`.
+   * The handler lives in the menu layer so it can call menu-settings helpers
+   * and re-sync the settings snapshot after each successful mutation.
+   */
+  onControlPanelSettingAction(handler: ((action: ControlPanelSettingAction) => void) | null): void;
+  /**
+   * Route a settings intent from the Control Panel to the menu-layer handler.
+   */
+  routeControlPanelSettingAction(action: ControlPanelSettingAction): boolean;
+  /**
    * Route a control-panel action through the bridge from the React tree (InputBox
    * Ctrl+G). Returns `false` when no handler is armed (feature off — the caller
    * falls through to the existing key handler). When a handler is set, invokes it
@@ -188,6 +210,10 @@ export interface InkAppBridge {
    *  onControlPanelAction(); read by routeControlPanelAction(). `null` when the
    *  feature flag is off. */
   _controlPanelAction?: ((action: ControlPanelBridgeAction) => void) | null;
+  /** @internal the installed control-panel setting action handler, set by
+   *  onControlPanelSettingAction(); read by routeControlPanelSettingAction().
+   *  `null` when no handler is armed (menu loop not started). */
+  _controlPanelSettingAction?: ((action: ControlPanelSettingAction) => void) | null;
   /** @internal the attached Ink stdin control */ _stdinControl?: InkStdinControl | null;
   /**
    * Enable or disable the main-menu key-capture window. While active, a printable
@@ -218,6 +244,7 @@ export function createInkAppBridge(): InkAppBridge {
     _keyResolver: null,
     _interrupt: null,
     _controlPanelAction: null,
+    _controlPanelSettingAction: null,
     _menuKeyQueue: [],
     _menuCaptureActive: false,
     commit(line: string): void {
@@ -269,8 +296,17 @@ export function createInkAppBridge(): InkAppBridge {
     onControlPanelAction(handler: ((action: ControlPanelBridgeAction) => void) | null): void {
       bridge._controlPanelAction = handler;
     },
+    onControlPanelSettingAction(handler: ((action: ControlPanelSettingAction) => void) | null): void {
+      bridge._controlPanelSettingAction = handler;
+    },
     routeControlPanelAction(action: ControlPanelBridgeAction): boolean {
       const handler = bridge._controlPanelAction;
+      if (handler == null) return false;
+      handler(action);
+      return true;
+    },
+    routeControlPanelSettingAction(action: ControlPanelSettingAction): boolean {
+      const handler = bridge._controlPanelSettingAction;
       if (handler == null) return false;
       handler(action);
       return true;
@@ -648,23 +684,25 @@ function AppBody({
         <CommittedTranscript lines={uiState.committed} color={color} />
         {controlPanelOpen ? (
           <Box height={Math.max(1, liveRows - 1)} overflowY="hidden">
-            <ControlPanel
-              state={uiState}
-              rows={liveRows}
-              columns={liveColumns}
-              onSetSection={(section) => { bridge.routeControlPanelAction({ type: 'control-panel/set-section', section }); }}
-              onHighlightGoal={(goalId) => { bridge.routeControlPanelAction({ type: 'control-panel/highlight-goal', goalId }); }}
-              onScroll={(section, target, delta) => {
-                bridge.routeControlPanelAction({
-                  type: 'control-panel/scroll',
-                  section,
-                  ...(target !== undefined ? { target } : {}),
-                  delta,
-                });
-              }}
-              onClose={() => { bridge.routeControlPanelAction({ type: 'control-panel/close' }); }}
-              active={!suspended}
-            />
+              <ControlPanel
+                state={uiState}
+                rows={liveRows}
+                columns={liveColumns}
+                onSetSection={(section) => { bridge.routeControlPanelAction({ type: 'control-panel/set-section', section }); }}
+                onHighlightGoal={(goalId) => { bridge.routeControlPanelAction({ type: 'control-panel/highlight-goal', goalId }); }}
+                onScroll={(section, target, delta) => {
+                  bridge.routeControlPanelAction({
+                    type: 'control-panel/scroll',
+                    section,
+                    ...(target !== undefined ? { target } : {}),
+                    delta,
+                  });
+                }}
+                onClose={() => { bridge.routeControlPanelAction({ type: 'control-panel/close' }); }}
+                onSettingAction={(intent) => { bridge.routeControlPanelSettingAction(intent); }}
+                onSettingsSelect={(index) => { bridge.routeControlPanelAction({ type: 'control-panel/settings-select', index }); }}
+                active={!suspended}
+              />
           </Box>
         ) : (
           <>

@@ -16,8 +16,7 @@
 
 import { lastJsonObjectBoundsWithKey, isTrailingNoise } from '../core/json-envelope.js';
 import { GOAL_MARKER_TOKENS, stripTrailingGoalMarker } from '../core/goal.js';
-import type { GoalBoardRow } from './ui/state.js';
-import type { UiCapacityState } from './ui/state.js';
+import type { GoalBoardRow, UiCapacityState, UiSettingsSnapshot } from './ui/state.js';
 
 // ---------------------------------------------------------------------------
 // OutputSink
@@ -73,6 +72,13 @@ export interface OutputSink {
    * The menu invokes it as `out.syncCapacity?.(snapshot)` when real signals update.
    */
   syncCapacity?(capacity: UiCapacityState): void;
+  /**
+   * OPTIONAL (Phase 4D): REPLACE the settings snapshot with a fresh projection
+   * of AppConfig, pushed by the menu loop after initial load and every
+   * successful settings mutation. Only the Ink sink implements it — it
+   * dispatches a `settings/sync` action into the reducer store.
+   */
+  syncSettings?(settings: UiSettingsSnapshot): void;
 }
 
 // ---------------------------------------------------------------------------
