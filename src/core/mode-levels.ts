@@ -39,10 +39,8 @@
  * `Intensity`, `Tier`, and `ReasoningEffort` as the SAME types the rest of core
  * uses, and builds policies by extending the shipped `POLICY_PRESETS`.
  *
- * SCAFFOLDING ONLY (slice 2): these functions sit behind the default-OFF
- * `levelDialEnabled` flag (src/interface/ui/level-flag.ts). When the flag is OFF the
- * live path reads `config.mode` exactly as today — ZERO behavior change. See
- * docs/one-chat-redesign-plan.md "Phase 0 — Implementation Spec (slice 2)".
+ * PURE firepower-profile helpers — consumed by auto-brain, the menu, and the
+ * orchestrator to resolve the effective `Level` / `RungTuple` from mode + config.
  */
 
 import type { Policy, Tier } from './types.js';

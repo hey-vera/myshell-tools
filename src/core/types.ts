@@ -1048,33 +1048,6 @@ export interface OrchestrateDeps {
    */
   readonly researchPort?: import('./research.js').ResearchPort;
   /**
-   * EXPERIMENTAL LOGICAL ROLE MAPPING (redesign Phase 0, slice 1) — a purely-additive,
-   * currently NEVER-READ seam, mirroring the multi-goal `goalId` seams. When the
-   * default-OFF `roleMappingEnabled` flag (src/interface/ui/role-flag.ts) is on, the
-   * interface layer MAY attach the resolved chat/ghost/execution → (provider, model,
-   * effort) map here (computed by src/core/roles.ts `resolveAllRoles`). `orchestrate`
-   * does NOT consume it in this slice, so its presence or absence changes nothing — it
-   * exists so the role substrate participates in the src import graph and so the next
-   * slice (live consumption) has a single landing pad. DEFAULT ABSENT → byte-for-byte
-   * today's behavior. Type-only import to keep types.ts a leaf module.
-   */
-  readonly roleMapping?: Partial<
-    Record<import('./roles.js').Role, import('./roles.js').RoleResolution>
-  >;
-  /**
-   * EXPERIMENTAL 5-LEVEL FIREPOWER DIAL (redesign Phase 0, slice 2) — a
-   * purely-additive, currently NEVER-READ seam, mirroring the `roleMapping` seam
-   * above. When the default-OFF `levelDialEnabled` flag (src/interface/ui/level-flag.ts)
-   * is on, the interface layer MAY attach the per-turn resolved firepower profile
-   * here (computed by src/core/mode-levels.ts `resolveLevel` + `profileForLevel`).
-   * `orchestrate` does NOT consume it in this slice — the live path keeps reading
-   * `config.mode` exactly as today — so its presence or absence changes nothing. It
-   * exists so the level substrate participates in the src import graph and so the
-   * next slice (live consumption) has a single landing pad. DEFAULT ABSENT →
-   * byte-for-byte today's behavior. Type-only import to keep types.ts a leaf module.
-   */
-  readonly levelProfile?: import('./mode-levels.js').LevelProfile;
-  /**
    * AUTO BRAIN per-turn rung-fusion result (redesign Auto brain). When the
    * `autoBrainEnabled` flag (src/interface/ui/auto-brain-flag.ts) is on (default
    * in production via `experimentalEnabledByDefault`), the interface layer
@@ -1087,7 +1060,7 @@ export interface OrchestrateDeps {
   readonly autoBrainRungTuple?: import('./auto-brain.js').FuseRungResult;  /**
    * EXPERIMENTAL CAPABILITY PARSE-FROM-TEXT FALLBACK (redesign Phase 0,
    * capability-normalization slice) — a purely-additive, currently NEVER-READ seam,
-   * mirroring the `roleMapping` / `levelProfile` seams. When the default-OFF
+   * mirroring the other purely-additive never-read seams. When the default-OFF
    * `byproductFallbackEnabled` flag (src/interface/ui/byproduct-fallback-flag.ts)
    * is on, the interface layer sets this true; intent-extractor.ts uses it as a
    * signal to attempt the text-fallback chain (src/core/byproduct-parse.ts) when

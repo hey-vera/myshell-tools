@@ -53,7 +53,7 @@ export function schedulerExplicitlyOff(
   env: NodeJS.ProcessEnv | undefined,
   config: { experimentalScheduler?: boolean } | undefined,
 ): boolean {
-  const raw = env?.['MYSHELL_SCHEDULER'] || env?.['MYSHELL_PARALLEL'];
+  const raw = env?.['MYSHELL_SCHEDULER'];
   if (typeof raw === 'string' && OFF.has(raw.trim().toLowerCase())) return true;
   if (config?.experimentalScheduler === false) return true;
   return false;
