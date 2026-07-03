@@ -4,7 +4,6 @@
  * Coverage:
  *  - PURE planSchedule: activeLimit math, pressure lowering, partition, clamps.
  *  - PURE requeueBackoffMs: exponential growth + cap.
- *  - schedulerEnabled flag: smart auto default ON (for /goal), explicit OFF supported.
  *  - runSchedule (fake per-goal generators, no real model calls):
  *      · 3 goals, activeLimit=2 → exactly 2 concurrent, 3rd queued then pulled in.
  *      · every event correctly goalId-tagged; goal-enqueue + goal-phase emitted.
@@ -28,7 +27,6 @@ import {
   type GoalSpec,
   type ScheduleDeps,
 } from '../../src/core/scheduler.ts';
-import { schedulerEnabled } from '../../src/interface/ui/scheduler-flag.ts';
 import { RATE_LIMIT_COOLDOWN_MS } from '../../src/core/cooldown.ts';
 import { initialState, type UiState } from '../../src/interface/ui/state.ts';
 import { reduce } from '../../src/interface/ui/reduce.ts';
@@ -185,31 +183,6 @@ describe('requeueBackoffMs — exponential growth + cap', () => {
   it('is total on garbage input', () => {
     assert.equal(requeueBackoffMs(-5), BASE_BACKOFF_MS);
     assert.equal(requeueBackoffMs(NaN), BASE_BACKOFF_MS);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Flag
-// ---------------------------------------------------------------------------
-
-describe('schedulerEnabled — smart auto default (ON), explicit off supported', () => {
-  it('defaults ON (smart auto) with no env and no config', () => {
-    assert.equal(schedulerEnabled({}, {}), true);
-    assert.equal(schedulerEnabled(undefined, undefined), true);
-  });
-  it('ON for explicit opt-in env values', () => {
-    for (const v of ['1', 'true', 'TRUE', 'on', 'yes', ' On ']) {
-      assert.equal(schedulerEnabled({ MYSHELL_SCHEDULER: v }, {}), true, `expected ${v} → true`);
-    }
-  });
-  it('OFF only for explicit opt-out values (forces sequential)', () => {
-    for (const v of ['0', 'false', 'off', 'no', ' Off ']) {
-      assert.equal(schedulerEnabled({ MYSHELL_SCHEDULER: v }, {}), false, `expected ${v} → false`);
-    }
-  });
-  it('ON when config.experimentalScheduler === true, OFF when false', () => {
-    assert.equal(schedulerEnabled({}, { experimentalScheduler: true }), true);
-    assert.equal(schedulerEnabled({}, { experimentalScheduler: false }), false);
   });
 });
 

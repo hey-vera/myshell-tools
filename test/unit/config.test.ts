@@ -406,14 +406,19 @@ describe('loadConfig — resilience', () => {
         onboarded: true,
         setAsDefault: false,
         defaultShellOptOut: true,
+        experimentalBoard: true,
         experimentalAutoGoal: true,
+        experimentalDraftGoals: true,
         experimentalLevelDial: true,
       });
       await writeFile(join(dir, 'config.json'), oldConfig, 'utf8');
 
       const config = await loadConfig(home);
+      const raw = config as unknown as Record<string, unknown>;
       assert.equal(config.onboarded, true);
-      assert.equal(config.experimentalAutoGoal, true);
+      assert.equal(raw.experimentalBoard, true);
+      assert.equal(raw.experimentalAutoGoal, true);
+      assert.equal(raw.experimentalDraftGoals, true);
       assert.equal(config.experimentalLevelDial, true);
     } finally {
       await rm(home, { recursive: true, force: true });

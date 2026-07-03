@@ -232,6 +232,12 @@ export interface AppConfig {
    */
   experimentalInk?: boolean;
   /**
+   * Global intelligence features are always on. The per-feature opt-out flags
+   * (MYSHELL_BOARD, MYSHELL_AUTO_GOAL, MYSHELL_DRAFT_GOALS, MYSHELL_SCHEDULER,
+   * MYSHELL_INTENT_STORE_V1, MYSHELL_BLOCKED_STATE_V1, MYSHELL_CORRECTION_FORK_V1)
+   * have been promoted to unconditional. Old config files with these keys still
+   * load safely (unknown keys tolerated).
+   *
    * GLOBAL BASIC-MODE escape hatch (default off → full intelligence ON). The six
    * intelligence subsystems (governor, verify, taste, judgment, trust, tribunal) are
    * ON BY DEFAULT at the CLI entry point so the tool is automatic and frictionless.
@@ -244,17 +250,6 @@ export interface AppConfig {
    * root. See src/interface/ui/experimental-default.ts.
    */
   experimentalBasic?: boolean;
-  /**
-   * Bounded concurrent multi-goal SCHEDULER (smart auto default ON for /goal). 
-   * /goal always decomposes (cost-honest fallback to 1 spec for sequential/single-piece work)
-   * then optionally runs via `runSchedule` (DAG deps, pressure-aware caps, per-goal contracts + brain re-val).
-   * Explicit OFF via MYSHELL_SCHEDULER=0/false/off/no (or config).
-   * Parallel work only when genuinely independent + sufficient providers/pressure headroom.
-   * it exercises the merge/cancel seam ahead of real >1-goal decomposition. The
-   * legacy path is unchanged when this is absent/false. See
-   * src/interface/ui/scheduler-flag.ts.
-   */
-  experimentalScheduler?: boolean;
   /**
    * EXPERIMENTAL PERFORMANCE GOVERNOR (default off). When true (or with
    * `MYSHELL_GOVERNOR` truthy in the environment), orchestrate consults the pure
@@ -407,28 +402,7 @@ export interface AppConfig {
    * researchPort), not by this flag.
    */
   experimentalResearch?: boolean;
-  /**
-   * Opt-in for the REAL PERSISTENT GOAL BOARD (Elite-partner Phase 1). Absent/false
-   * → the live status region is byte-for-byte today's, INCLUDING the per-turn
-   * "GOALS ▸ <message>" card. When true (or `MYSHELL_BOARD` ∈ {1,true,on,yes}) the
-   * UI suppresses that fake card, reheads the live region "WORKING", and paints the
-   * persistent board (a projection of the GoalStore) across turns. Purely a UI/menu
-   * concern — no core/orchestrate behaviour changes. See
-   * src/interface/ui/board-flag.ts.
-   */
-  experimentalBoard?: boolean;
-  /**
-   * Opt-in for the PLANNING BRAIN / AUTO-STAGE pass (Elite-partner Phase 6).
-   * Absent/false → the post-turn slot is byte-for-byte today's: the partner never
-   * judges a turn for staging and creates no goals automatically. When true (or
-   * `MYSHELL_AUTO_GOAL` ∈ {1,true,on,yes}) the partner judges each substantial
-   * owner turn AFTER the reply settles and — when confident there is real work —
-   * stages professional goals (each with its to-do list) as PARKED (non-
-   * destructive) goals, or surfaces ONE sharp clarifying question when the turn is
-   * genuinely ambiguous. Parked-only; activation stays the judged/explicit gate.
-   * See src/interface/ui/auto-goal-flag.ts / src/core/goal-plan.ts.
-   */
-  experimentalAutoGoal?: boolean;
+
   /**
    * Opt-in for the WHOLE-PICTURE UNDERSTANDING PASS (Elite-partner architecture
    * Part 2). Absent/false → the planning brain runs exactly as today: no system
@@ -485,19 +459,7 @@ export interface AppConfig {
    * src/interface/ui/manager-flag.ts / src/core/goal-manager.ts.
    */
   experimentalManager?: boolean;
-  /**
-   * DRAFT GOALS — "chat → draft goal" (redesign Phase 1 spine; default-on via
-   * experimentalEnabledByDefault). When true (or with `MYSHELL_DRAFT_GOALS` ∈
-   * {1,true,on,yes} in env), a BUILD-INTENT turn causes the byproduct IntentFrame
-   * to carry an optional `draftGoalSkeleton` (title + high-level outline), which
-   * is materialised as an INACTIVE (parked) goal in the GoalStore
-   * (`source: 'byproduct-draft'`, `state: 'parked'`) — NEVER queued or executed
-   * without explicit user confirmation. Non-build turns produce NO goal. Absent
-   * config no longer means production-off because `experimentalEnabledByDefault`
-   * supplies the default-on value. See src/interface/ui/draft-goals-flag.ts and
-   * docs/one-chat-redesign-plan.md Phase 1.
-   */
-  experimentalDraftGoals?: boolean;
+
   /**
    * AUTO BRAIN — per-turn rung-fusion + objective-evidence escalation (redesign
    * Auto brain; default-on via experimentalEnabledByDefault). When true (or with

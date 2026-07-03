@@ -96,8 +96,7 @@ import { inkEnabled } from './interface/ui/flag.js';
 import { verifyEnabled } from './interface/ui/verify-flag.js';
 import { trustEnabled } from './interface/ui/trust-flag.js';
 import { experimentalEnabledByDefault } from './interface/ui/experimental-default.js';
-import { intentStoreV1Enabled } from './interface/ui/intent-store-flag.js';
-import { blockedStateV1Enabled } from './interface/ui/blocked-state-flag.js';
+
 import { nativeSessionsPromoteEnabled } from './interface/ui/native-sessions-promote-flag.js';
 import { createTurnCallBudget } from './core/turn-call-budget.js';
 import { createIntentStore } from './infra/intent-store.js';
@@ -314,9 +313,7 @@ function buildDeps(
 
   const ledger = createLedger({ cwd });
   const session = createSessionWriter({ cwd, id: systemClock.uuid() });
-  const intentStoreOn = intentStoreV1Enabled(process.env);
-  const intentStore = intentStoreOn ? createIntentStore({ cwd }) : undefined;
-  const blockedStateOn = blockedStateV1Enabled(process.env);
+  const intentStore = createIntentStore({ cwd });
   const nativeSessionsPromoteOn = nativeSessionsPromoteEnabled(process.env);
   const intentVersionId = systemClock.uuid();
 
@@ -336,7 +333,7 @@ function buildDeps(
     cacheAccountingV2: true,
     accountAux: true,
     intentVersionId,
-    ...(intentStore !== undefined ? { intentStore } : {}),
+    intentStore,
     policy,
     providers,
     cwd,
@@ -354,7 +351,7 @@ function buildDeps(
     ...(toolStateContext !== undefined && toolStateContext.length > 0
       ? { toolStateContext }
       : {}),
-    ...(blockedStateOn ? { blockedStateV1: true } : {}),
+    blockedStateV1: true,
     evidenceReceiptV2: true,
     receiptLedgerSnapshot: () => receiptLedgerEntries,
     ...(nativeSessionsPromoteOn ? { nativeSessionsPromote: true } : {}),

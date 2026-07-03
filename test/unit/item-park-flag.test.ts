@@ -1,8 +1,6 @@
 import { describe, it } from 'vitest';
 import assert from 'node:assert/strict';
-// Imported through scheduler-flag.ts (which re-exports it) so the re-export that
-// satisfies the no-orphan arch guard is also a consumed binding (knip-clean).
-import { itemParkingEnabled } from '../../src/interface/ui/scheduler-flag.ts';
+import { itemParkingEnabled } from '../../src/interface/ui/item-park-flag.ts';
 
 describe('itemParkingEnabled', () => {
   it('defaults off', () => {

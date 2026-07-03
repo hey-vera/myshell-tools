@@ -28,7 +28,6 @@ import { createFileGoalStore, type GoalStore } from '../../src/infra/goal-store.
 import type { Clock } from '../../src/core/types.ts';
 import type { GoalPlan } from '../../src/core/goal-plan.ts';
 import { planTodosToRoadmap } from '../../src/core/goal-plan.ts';
-import { autoStageEnabled } from '../../src/interface/ui/auto-goal-flag.ts';
 import { understandingEnabled } from '../../src/interface/ui/understanding-flag.ts';
 import { classify, hasTierEvidence } from '../../src/core/classify.ts';
 import type { SystemModel } from '../../src/core/understanding.ts';
@@ -217,39 +216,23 @@ describe('post-turn auto-stage', () => {
 });
 
 describe('planner gate — the menu invocation conditions', () => {
-  // The menu only invokes the planner when: flag ON, a NON-TRIVIAL turn
-  // (hasTierEvidence), and pressure below the ceiling. This locks the pure pieces
-  // of that gate; flag-off OR a trivial turn ⇒ planner never runs.
-  function shouldInvoke(env: NodeJS.ProcessEnv, config: { experimentalAutoGoal?: boolean }, line: string, pressure: number): boolean {
-    return autoStageEnabled(env, config) && hasTierEvidence(line) && pressure < 3;
+  // The menu always invokes the planner for a NON-TRIVIAL turn (hasTierEvidence)
+  // below the pressure ceiling. Auto-stage is always on.
+  function shouldInvoke(line: string, pressure: number): boolean {
+    return hasTierEvidence(line) && pressure < 3;
   }
 
-  it('flag OFF (explicit opt-out) ⇒ planner not invoked (byte-identical post-turn)', () => {
-    assert.equal(shouldInvoke({ MYSHELL_AUTO_GOAL: '0' }, {}, 'build the whole billing system end to end', 0), false);
-    assert.equal(shouldInvoke({}, { experimentalAutoGoal: false }, 'build the whole billing system end to end', 0), false);
+  it('trivial turn ⇒ planner not invoked (always on, gated by evidence)', () => {
+    assert.equal(shouldInvoke('sounds good?', 0), false);
+    assert.equal(shouldInvoke('thanks!', 0), false);
   });
 
-  it('default ON (no flag) + substantial turn ⇒ planner invoked', () => {
-    assert.equal(shouldInvoke({}, {}, 'build and ship the whole auth system with token refresh', 0), true);
+  it('substantial turn + pressure below ceiling ⇒ planner invoked', () => {
+    assert.equal(shouldInvoke('build and ship the whole auth system with token refresh', 0), true);
   });
 
-  it('flag ON + trivial turn ⇒ planner not invoked', () => {
-    assert.equal(shouldInvoke({ MYSHELL_AUTO_GOAL: '1' }, {}, 'sounds good?', 0), false);
-    assert.equal(shouldInvoke({ MYSHELL_AUTO_GOAL: '1' }, {}, 'thanks!', 0), false);
-  });
-
-  it('flag ON + substantial turn + pressure below ceiling ⇒ planner invoked', () => {
-    assert.equal(
-      shouldInvoke({ MYSHELL_AUTO_GOAL: '1' }, {}, 'build and ship the whole auth system with token refresh', 0),
-      true,
-    );
-  });
-
-  it('flag ON + substantial turn but pressure at the ceiling ⇒ planner not invoked', () => {
-    assert.equal(
-      shouldInvoke({ MYSHELL_AUTO_GOAL: '1' }, {}, 'build and ship the whole auth system with token refresh', 3),
-      false,
-    );
+  it('substantial turn but pressure at the ceiling ⇒ planner not invoked', () => {
+    assert.equal(shouldInvoke('build and ship the whole auth system with token refresh', 3), false);
   });
 });
 

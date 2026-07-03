@@ -93,8 +93,8 @@ import {
 import { goalGlyph, roadmapProgress, goalVerdictTag, goalVerdictFromOutcome, isGoalVerifiedDone, isDuplicateGoalTitle, formatGoalsForContext, ROADMAP_LIMIT, goalDepth } from '../core/goal-todo.js';
 import { buildVerifyReceipt } from '../core/verify.js';
 import type { Goal, GoalState } from '../core/goal-todo.js';
-import { boardEnabled } from './ui/board-flag.js';
-import { autoStageEnabled } from './ui/auto-goal-flag.js';
+
+
 import type { GoalBoardRow } from './ui/state.js';
 import type { UiCapacityState, UiSettingsSnapshot } from './ui/state.js';
 import {
@@ -222,7 +222,7 @@ import { inkEnabled } from './ui/flag.js';
 import { semanticPreflightV1Enabled } from './ui/semantic-preflight-flag.js';
 import type { StartupInputBuffer } from './startup-input.js';
 import { STARTUP_INPUT_CARRIER_ENV } from './startup-input.js';
-import { schedulerEnabled, schedulerExplicitlyOff } from './ui/scheduler-flag.js';
+
 import { itemParkingEnabled } from './ui/item-park-flag.js';
 import { governorEnabled } from './ui/governor-flag.js';
 import { autoSmartEnabled } from './ui/auto-smart-flag.js';
@@ -234,14 +234,14 @@ import { tribunalEnabled } from './ui/tribunal-flag.js';
 
 
 import { byproductFallbackEnabled } from './ui/byproduct-fallback-flag.js';
-import { draftGoalsEnabled } from './ui/draft-goals-flag.js';
+
 import { experimentalEnabledByDefault } from './ui/experimental-default.js';
 import { subscriptionsEnabled } from './ui/subscriptions-flag.js';
 import { accountParallelismEnabled } from './ui/account-parallelism-flag.js';
 import { readSubscriptions, type SubscriptionAccount, type SubscriptionProvider, type SubscriptionsFileV1 } from '../infra/subscriptions.js';
-import { intentStoreV1Enabled } from './ui/intent-store-flag.js';
-import { correctionForkV1Enabled } from './ui/correction-fork-flag.js';
-import { blockedStateV1Enabled } from './ui/blocked-state-flag.js';
+
+
+
 import { nativeSessionsPromoteEnabled, nativeSessionsEffectiveEnabled } from './ui/native-sessions-promote-flag.js';
 import { createIntentStore } from '../infra/intent-store.js';
 import { nodeVerifyPort } from '../infra/verify-port.js';
@@ -1352,11 +1352,7 @@ export async function runChatLoop(
       }
     },
   };
-  const intentStoreOn = intentStoreV1Enabled(process.env);
-  const intentStore = intentStoreOn ? createIntentStore({ cwd: ctx.cwd }) : undefined;
-  const correctionForkOn =
-    correctionForkV1Enabled(process.env) && intentStoreOn;
-  const blockedStateOn = blockedStateV1Enabled(process.env);
+  const intentStore = createIntentStore({ cwd: ctx.cwd });
   const nativeSessionsPromoteOn = nativeSessionsPromoteEnabled(process.env);
       void (async () => {
 
@@ -1835,8 +1831,7 @@ export async function runChatLoop(
         '\n' +
         dim('  About what you\'ll see:\n', out.color) +
         dim('    ※                      a recap of where we left off (on resume)\n', out.color) +
-        dim('    ※ Staged N goals        I plan real work (with approach + rationale) into goals; for /goal I also write PLAN.md for review;\n', out.color) +
-        dim('                            turn it off with MYSHELL_AUTO_GOAL=0 (board: MYSHELL_BOARD=0)\n', out.color) +
+        dim('    ※ Staged N goals        I plan real work (with approach + rationale) into goals; for /goal I also write PLAN.md for review\n', out.color) +
         dim('    "what I understood…"    I restate the task before big work — correct me anytime\n', out.color) +
         dim('    "Waiting on N models"   models running in parallel — no dollar charge on a\n', out.color) +
         dim('                            subscription, but each run draws on your plan\'s rate\n', out.color) +
@@ -2433,19 +2428,8 @@ export async function runChatLoop(
           ...(byproductFallbackEnabled(process.env, mutableCtx.config)
             ? { byproductFallback: true }
             : {}),
-          // DRAFT GOALS (redesign Phase 1 spine) — default-on via experimentalEnabledByDefault
-          // (src/interface/ui/draft-goals-flag.ts). When on, set `draftGoals: true` so the
-          // post-turn slot reads the captured intent frame and creates a PARKED goal.
-          // Explicit off/basic-mode restores field absence → byte-for-byte today's.
-          ...(experimentalEnabledByDefault(
-            process.env,
-            mutableCtx.config,
-            'MYSHELL_DRAFT_GOALS',
-            mutableCtx.config.experimentalDraftGoals,
-            draftGoalsEnabled,
-          )
-            ? { draftGoals: true }
-            : {}),          ...(nativeSession.length > 0 ? { nativeSession } : {}),
+          draftGoals: true,
+          ...(nativeSession.length > 0 ? { nativeSession } : {}),
           // Evidence receipt: always passes the captured per-turn ledger snapshot
           // so accept-stage / work-call can assemble the proof-of-done receipt.
           evidenceReceiptV2: true,
@@ -2674,12 +2658,11 @@ export async function runChatLoop(
           })(),
           // BLOCKED STATE (MYSHELL_BLOCKED_STATE_V1) — DEFAULT ON (opt-out). When on,
           // the orchestrator may emit blocked finals instead of failed ones.
-          ...(blockedStateOn ? { blockedStateV1: true } : {}),
-          // CORRECTION FORK (MYSHELL_CORRECTION_FORK_V1) — DEFAULT ON (opt-out). When on,
-          // correction detection runs against prior intent versions; a detected
-          // correction creates a child IntentVersion and supersedes invalid
-          // descendants. Requires intentStore + goalStore to both exist.
-          ...(correctionForkOn && mutableGoalStore !== null && intentStore !== undefined
+          blockedStateV1: true,
+          // CORRECTION FORK (always on) — correction detection runs against
+          // prior intent versions; a detected correction creates a child
+          // IntentVersion and supersedes invalid descendants.
+          ...(mutableGoalStore !== null
             ? (
                 (goalStore) => ({
                   correctionFork: {
@@ -2847,14 +2830,13 @@ export async function runChatLoop(
       const rulesStore = createFileRulesStore({ clock: ctx.clock });
 
       // ---- Persistent goal BOARD (Elite-partner Phase 1) ----------------------
-      // DEFAULT OFF. When the board flag is ON (MYSHELL_BOARD or
-      // config.experimentalBoard), the live UI suppresses the fake per-turn
+      // Always ON. The live UI suppresses the fake per-turn
       // "GOALS ▸ <message>" card and paints a REAL persistent board projected from
       // this store. The board is purely a UI/menu concern: we snapshot the store and
       // push it into the reducer via `out.syncBoard?.()` (a no-op on legacy/test
       // sinks, so the flag-off path stays byte-identical). Cheap: a local store read,
       // no model call. Fully fail-soft (a board read never blocks/breaks a turn).
-      const boardOn = boardEnabled(process.env, mutableCtx.config);
+      const boardOn = true;
 
       // Full picture tracking for strong meta model calls (conscious layer)
       let lastProposedPlan: Record<string, unknown> | null = null;
@@ -3206,7 +3188,7 @@ export async function runChatLoop(
       // sharp clarifying question when the turn is genuinely ambiguous. A trivial /
       // conversational turn ("sounds good?") stages NOTHING. Parked-only: activation
       // stays the judged/explicit gate (never run/executed here).
-      const autoStageOn = autoStageEnabled(process.env, mutableCtx.config);
+      const autoStageOn = true;
       // WHOLE-PICTURE UNDERSTANDING PASS (Elite-partner Part 2). DEFAULT OFF. When
       // ON, a manager-tier READ-ONLY investigation maps the REAL system FIRST and
       // its SystemModel grounds the planner so the staged goals reflect whole-picture
@@ -4269,24 +4251,9 @@ Output ONLY valid JSON (no prose, no markdown).`;
       // (Ctrl+C → menu/exit). Closes over the per-turn buildDeps + the shared
       // currentAc/control.exit/control.menu/control.result flags.
       //
-      // NEXT PHASE: the BOUNDED CONCURRENT MULTI-GOAL SCHEDULER wires in HERE.
-      // When `schedulerEnabled(process.env, mutableCtx.config)` is true (see
-      // src/interface/ui/scheduler-flag.ts) AND a confirmed plan has been
-      // decomposed into >1 brain-validated GoalSpec, this single-goal sequential
-      // loop is replaced by a call to `runSchedule(goalSpecs, deps, signal)`
-      // (src/core/scheduler.ts): build `deps.runGoal = (spec, sig) =>
-      // orchestrate(buildGoalTask(spec.title, 0, contract), buildDeps(...), sig)`,
-      // pass `deps.authedProviders` from the env, `deps.sleep`/`deps.now` from
-      // ctx.clock, and thread `currentAc.signal` for ESC fan-out. The merged
-      // goalId-tagged CoreEvent stream is fed to the SAME renderStreamInk path
-      // this loop already uses, so the multi-goal StatusBlock renders it.
-      //
-      // HARD CONSTRAINT (owner): goals promoted from a PARKED state MUST be
-      // re-validated by the brain BEFORE being assembled into goalSpecs here —
-      // the scheduler runs specs verbatim and has no path that auto-executes a
-      // stale parked roadmap. The decomposition/validation step (a separate next
-      // phase) owns that gate. Until that lands, the flag is dark and this
-      // sequential loop is the only goal runner.
+      // The bounded concurrent multi-goal scheduler is always active: /goal
+      // decomposes into GoalSpecs, then runs via runSchedule (DAG deps,
+      // pressure-aware caps, per-goal contracts + brain re-val).
       // Set true when the most recent runGoalLoop reached GOAL_COMPLETE (the model
       // verified the goal is done). Used by the PROMOTE path to mark a promoted
       // parked goal `done` ONLY on real completion evidence — never inferred from a
@@ -4510,15 +4477,10 @@ Output ONLY valid JSON (no prose, no markdown).`;
           await ctx.store.rename(convId, goalLabel.length <= 80 ? goalLabel : goalLabel.slice(0, 80));
         }
 
-        // ---- SMART AUTO CONCURRENT SCHEDULER (golden: auto, plug-and-play) ---
+        // ---- CONCURRENT SCHEDULER (always on for /goal) ---
         // Always-decompose for /goal (richer fan when genuinely parallel).
         // decompose() is cost-honest: returns exactly 1 spec for sequential plans.
-        // Then decide useConcurrentScheduler:
-        //   - explicit OFF (MYSHELL_SCHEDULER=0/false) forces sequential
-        //   - schedulerEnabled (now smart-default) OR multi-goal OR low pressure (<2)
-        //     → use runSchedule (bounded DAG concurrent)
-        //   - otherwise fall through to classic sequential runGoalLoop
-        // This gives "pretty much auto" without overkill: 1-goal plans stay ~identical
+        // Concurrent unless opt?.background is true. 1-goal plans stay ~identical
         // to sequential (scheduler with 1 root behaves the same).
 
         const schedAc = new AbortController();
@@ -4555,16 +4517,9 @@ Output ONLY valid JSON (no prose, no markdown).`;
           goalSpecs = [{ id: 'g0', title: goalText }];
         }
 
-        const explicitOff = schedulerExplicitlyOff(process.env, mutableCtx.config);
         const authedCount = [mutableCtx.env.claude?.authenticated, mutableCtx.env.codex?.authenticated, mutableCtx.env.opencode?.authenticated, mutableCtx.env.grok?.authenticated].filter(Boolean).length;
         const genuineParallel = goalSpecs.filter((s) => (s.dependsOn ?? []).length === 0).length;
-        // Smarter trigger (final pass): use concurrent if not off, and (default-enabled or real parallel work or low-p)
-        // But if only 1 provider, don't force parallel (quota protection) — scheduler will still cap sensibly.
-        const useConcurrentScheduler = opts?.background !== true && (!explicitOff && (
-          schedulerEnabled(process.env, mutableCtx.config) ||
-          (genuineParallel > 1 && authedCount >= 2) ||
-          currentPressure() < 2
-        ));
+        const useConcurrentScheduler = opts?.background !== true;
 
         if (useConcurrentScheduler) {
           const authedProviders: ProviderId[] = [];
@@ -6152,19 +6107,10 @@ Output ONLY valid JSON (no prose, no markdown).`;
       const ac = new AbortController();
       currentAc = ac;
       const oversight = resolveOversight(mutableCtx.config, process.env);
-      // DRAFT GOALS (Phase 1): reset the captured frame for this turn. The
-      // post-turn slot reads the captured intent frame and creates PARKED
-      // draft goals. When the flag is off/basic-mode, pass undefined (the
-      // default single-orchestrate path) — byte-for-byte today's behavior.
+      // DRAFT GOALS (Phase 1): always on. The post-turn slot reads the captured
+      // intent frame and creates PARKED draft goals.
       lastDraftGoalFrame = null;
-      const draftGoalsOn = experimentalEnabledByDefault(
-        process.env,
-        mutableCtx.config,
-        'MYSHELL_DRAFT_GOALS',
-        mutableCtx.config.experimentalDraftGoals,
-        draftGoalsEnabled,
-      );
-      const captureIntentEvents = draftGoalsOn && deps !== null
+      const captureIntentEvents = deps !== null
         ? (async function* (): AsyncIterable<CoreEvent> {
             for await (const event of orchestrate(line, deps as OrchestrateDeps, ac.signal)) {
               if (event.type === 'intent') {
@@ -6473,7 +6419,7 @@ Output ONLY valid JSON (no prose, no markdown).`;
       ) {
         void resolveAutoStage(line, {
           ...(deps.intentVersionId !== undefined ? { intentVersionId: deps.intentVersionId } : {}),
-          ...(intentStoreOn ? { linkIntentVersion: true } : {}),
+          linkIntentVersion: true,
         });
       }
 
@@ -6486,7 +6432,6 @@ Output ONLY valid JSON (no prose, no markdown).`;
       // on a clean successful normal-chat turn (not a /goal command, not
       // interrupted, not a question, not already staged by auto-stage).
       if (
-        draftGoalsOn &&
         acknowledgedGoal === 'normal-chat' &&
         result.final?.success === true &&
         result.final.questions === undefined &&
@@ -6512,7 +6457,7 @@ Output ONLY valid JSON (no prose, no markdown).`;
               projectKey,
               conversationId: convId,
               source: 'byproduct-draft',
-              ...(intentStoreOn && deps.intentVersionId !== undefined
+              ...(deps.intentVersionId !== undefined
                 ? { intentVersionId: deps.intentVersionId }
                 : {}),
             });
