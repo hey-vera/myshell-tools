@@ -23,6 +23,7 @@ import type { RoadmapStatus } from '../../core/work-contract.js';
 import type { ProviderId } from '../../providers/port.js';
 import type { ErrorCategory } from '../../providers/errors.js';
 import type { BlockedRecord } from '../../core/blocked.js';
+import type { AccountPriority, AccountStatus, SubscriptionProvider } from '../../infra/subscriptions.js';
 
 // ---------------------------------------------------------------------------
 // View sub-shapes
@@ -262,6 +263,53 @@ export interface ControlPanelUiState {
 }
 
 /**
+ * PHASE 4C — real capacity snapshot built from observed signals already present
+ * in the menu loop (provider env, cooldown maps, session consumption,
+ * subscription accounts, pressure, shed plan). Every field is either a real
+ * observed value or explicitly absent/unknown — never fabricated (honesty rule).
+ */
+export interface UiProviderCapacityRow {
+  readonly provider: ProviderId;
+  readonly installed: boolean;
+  readonly authenticated: boolean;
+  readonly planRaw: string | null;
+  readonly planLabel: string;
+  readonly planConfidence: 'observed' | 'inferred' | 'none';
+  readonly availableModelCount: number;
+  readonly cooldownUntil?: number;
+  readonly sessionTokens?: number;
+}
+
+export interface UiAccountCapacityRow {
+  readonly id: string;
+  readonly provider: SubscriptionProvider;
+  readonly label: string;
+  readonly enabled: boolean;
+  readonly status: AccountStatus;
+  readonly planRaw: string | null;
+  readonly planLabel: string;
+  readonly priority: AccountPriority;
+  readonly lastUsedAt?: string;
+  readonly expiresAt?: string;
+  readonly cooldownUntil?: number;
+  readonly sessionTokens?: number;
+}
+
+export interface UiCapacityState {
+  readonly observedAtMs: number;
+  readonly providers: readonly UiProviderCapacityRow[];
+  readonly accounts: readonly UiAccountCapacityRow[];
+  readonly pressure: 0 | 1 | 2 | 3;
+  readonly shedPlan?: {
+    readonly recapRefresh: boolean;
+    readonly memoryWidth: 'full' | 'identity-only';
+    readonly intentPass: boolean;
+    readonly coreAnswer: true;
+  };
+  readonly accountParallelismDisabledProviders: readonly SubscriptionProvider[];
+}
+
+/**
  * The whole immutable UI model. `committed` is the append-only transcript
  * (everything `renderStream` has written as a finished line); `stream` is the
  * live status region; `goals` is the structured work view; `turnActive` is true
@@ -309,6 +357,8 @@ export interface UiState {
   readonly goalsPanel: GoalsPanelUiState;
   /** The sectioned Control Panel UI state (default-off; see ControlPanelUiState). */
   readonly controlPanel: ControlPanelUiState;
+  /** Phase 4C: real capacity snapshot from observed signals (absent until first sync). */
+  readonly capacity?: UiCapacityState;
 }
 
 // ---------------------------------------------------------------------------
@@ -592,5 +642,13 @@ export type Action =
       readonly section: ControlPanelSection;
       readonly target?: 'list' | 'detail';
       readonly delta: number;
+    }
+  // --- capacity/sync: REPLACE the capacity snapshot with a fresh observation built
+  //     from real menu-loop signals (provider env, cooldowns, session consumption,
+  //     subscriptions, pressure, shed plan). Absent capacity signals render as
+  //     explicit `unknown` — never fabricated (Phase 4C honesty rule).
+  | {
+      readonly type: 'capacity/sync';
+      readonly capacity: UiCapacityState;
     }
   ;

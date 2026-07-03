@@ -1,4 +1,4 @@
-import type { AgentRunState, ControlPanelSection, GoalBoardRow, GoalBoardTodoRow, StreamPhase, UiState } from './state.js';
+import type { AgentRunState, ControlPanelSection, GoalBoardRow, GoalBoardTodoRow, StreamPhase, UiCapacityState, UiState } from './state.js';
 import type { ProviderId } from '../../providers/port.js';
 
 // ---------------------------------------------------------------------------
@@ -62,13 +62,22 @@ export interface ControlPanelGoalsModel {
   readonly detail?: ControlPanelGoalDetail;
 }
 
+export interface ControlPanelStatusRow {
+  readonly kind: 'heading' | 'item' | 'unknown' | 'cooldown' | 'tokens';
+  readonly text: string;
+  readonly provider?: ProviderId;
+}
+
 export interface ControlPanelModel {
   readonly activeSection: ControlPanelSection;
   readonly activeGoalCount: number;
   readonly executionPhase: StreamPhase;
   readonly turnActive: boolean;
   readonly providers: readonly ControlPanelProviderStatus[];
-  readonly quotaLabel: 'unavailable in UI state';
+  /** Phase 4C: structured status rows built from real capacity signals or explicit unknowns. */
+  readonly statusRows: readonly ControlPanelStatusRow[];
+  /** Short summary line for the header (e.g. "2 active goals | pressure 1/3 | quota remaining unknown"). */
+  readonly summaryLine: string;
   readonly settings: readonly ControlPanelSettingRow[];
   readonly controlGoals: ControlPanelGoalsModel;
 }
@@ -208,14 +217,182 @@ export function buildControlPanelModel(state: UiState): ControlPanelModel {
     ...(detail !== undefined ? { detail } : {}),
   };
 
+  // Phase 4C: build structured status rows from real capacity signals
+  const statusRows = buildStatusRows(state.capacity, providers);
+  const summaryLine = buildSummaryLine(runningIds.size, state.stream.phase, state.turnActive, state.capacity);
+
   return {
     activeSection: state.controlPanel.activeSection,
     activeGoalCount: runningIds.size,
     executionPhase: state.stream.phase,
     turnActive: state.turnActive,
     providers,
-    quotaLabel: 'unavailable in UI state',
+    statusRows,
+    summaryLine,
     settings,
     controlGoals,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Phase 4C: status row builder
+// ---------------------------------------------------------------------------
+
+function buildStatusRows(
+  capacity: UiCapacityState | undefined,
+  providerFolds: readonly ControlPanelProviderStatus[],
+): readonly ControlPanelStatusRow[] {
+  const rows: ControlPanelStatusRow[] = [];
+
+  if (capacity === undefined) {
+    rows.push({ kind: 'unknown', text: 'Capacity snapshot: unknown' });
+    rows.push({ kind: 'unknown', text: 'Quota remaining: unknown' });
+    rows.push({ kind: 'unknown', text: 'Cooldowns: unknown' });
+    rows.push({ kind: 'unknown', text: 'Plans: unknown' });
+    rows.push({ kind: 'unknown', text: 'Session tokens: unknown' });
+    return rows;
+  }
+
+  // --- Execution (from running providers) ---
+  rows.push({ kind: 'heading', text: 'Running providers' });
+  if (providerFolds.length === 0) {
+    rows.push({ kind: 'item', text: '  No provider observations' });
+  } else {
+    for (const p of providerFolds) {
+      rows.push({ kind: 'item', text: `  ${p.provider}: ${p.state}`, provider: p.provider });
+    }
+  }
+
+  // --- Provider plans (from capacity snapshot) ---
+  rows.push({ kind: 'heading', text: 'Provider plans' });
+  const authenticProv = capacity.providers.filter((p) => p.authenticated);
+  if (authenticProv.length === 0) {
+    rows.push({ kind: 'item', text: '  No authenticated providers' });
+  } else {
+    for (const p of authenticProv) {
+      const conf = p.planConfidence === 'observed' ? '' : ` (${p.planConfidence})`;
+      rows.push({ kind: 'item', text: `  ${p.provider}: ${p.planLabel}${conf}`, provider: p.provider });
+    }
+  }
+
+  // --- Accounts (from capacity snapshot) ---
+  rows.push({ kind: 'heading', text: 'Subscription accounts' });
+  if (capacity.accounts.length === 0) {
+    rows.push({ kind: 'item', text: '  No subscription accounts' });
+  } else {
+    for (const a of capacity.accounts) {
+      const parts = [`  [${a.provider}] ${a.label}`];
+      parts.push(`${a.status}`);
+      if (a.planLabel !== 'unknown') parts.push(a.planLabel);
+      rows.push({ kind: 'item', text: parts.join(' · ') });
+    }
+  }
+
+  // --- Cooldowns + pressure ---
+  rows.push({ kind: 'heading', text: 'Cooldowns' });
+  const nowMs = capacity.observedAtMs;
+  const providerCooldowns = capacity.providers.filter(
+    (p) => p.cooldownUntil !== undefined && p.cooldownUntil > nowMs,
+  );
+  const accountCooldowns = capacity.accounts.filter(
+    (a) => a.cooldownUntil !== undefined && a.cooldownUntil > nowMs,
+  );
+  if (providerCooldowns.length === 0 && accountCooldowns.length === 0) {
+    rows.push({ kind: 'item', text: '  None active' });
+  } else {
+    for (const p of providerCooldowns) {
+      const secs = Math.ceil(((p.cooldownUntil ?? nowMs) - nowMs) / 1000);
+      rows.push({
+        kind: 'cooldown',
+        text: `  ${p.provider} cooldown: ${secs}s remaining`,
+        provider: p.provider,
+      });
+    }
+    for (const a of accountCooldowns) {
+      const secs = Math.ceil(((a.cooldownUntil ?? nowMs) - nowMs) / 1000);
+      rows.push({
+        kind: 'cooldown',
+        text: `  ${a.provider}/${a.label} cooldown: ${secs}s remaining`,
+      });
+    }
+  }
+  rows.push({ kind: 'item', text: `  Pressure: ${capacity.pressure}/3${capacity.pressure > 0 ? ` (${providerCooldowns.length} provider(s) cooling)` : ''}` });
+
+  // --- Session tokens (only when ledger entries exist) ---
+  const tokensFromProviders = capacity.providers.filter(
+    (p) => p.sessionTokens !== undefined && p.sessionTokens > 0,
+  );
+  const tokensFromAccounts = capacity.accounts.filter(
+    (a) => a.sessionTokens !== undefined && a.sessionTokens > 0,
+  );
+  if (tokensFromProviders.length > 0 || tokensFromAccounts.length > 0) {
+    rows.push({ kind: 'heading', text: 'Observed session tokens' });
+    for (const p of tokensFromProviders) {
+      rows.push({
+        kind: 'tokens',
+        text: `  ${p.provider}: ~${formatCapacityTokens(p.sessionTokens ?? 0)}`,
+        provider: p.provider,
+      });
+    }
+    for (const a of tokensFromAccounts) {
+      rows.push({
+        kind: 'tokens',
+        text: `  ${a.provider}/${a.label}: ~${formatCapacityTokens(a.sessionTokens ?? 0)}`,
+      });
+    }
+  }
+
+  // --- Explicit unknowns (honesty rule) ---
+  rows.push({ kind: 'heading', text: 'Unknowns' });
+  rows.push({ kind: 'unknown', text: '  Quota remaining: unknown (not exposed by provider CLIs)' });
+  rows.push({ kind: 'unknown', text: '  Reset time: unknown' });
+  rows.push({ kind: 'unknown', text: '  Message allowance: unknown' });
+
+  // --- Shed plan (when active) ---
+  if (capacity.shedPlan !== undefined && !capacity.shedPlan.recapRefresh) {
+    rows.push({ kind: 'heading', text: 'Quota shedding active' });
+    const shedRows: string[] = [];
+    if (!capacity.shedPlan.recapRefresh) shedRows.push('recap refresh off');
+    if (capacity.shedPlan.memoryWidth === 'identity-only') shedRows.push('memory narrowed');
+    if (!capacity.shedPlan.intentPass) shedRows.push('intent skipped');
+    for (const r of shedRows) {
+      rows.push({ kind: 'item', text: `  ${r}` });
+    }
+  }
+
+  // --- Account fanout disabled ---
+  if (capacity.accountParallelismDisabledProviders.length > 0) {
+    rows.push({ kind: 'heading', text: 'Account fanout disabled' });
+    for (const p of capacity.accountParallelismDisabledProviders) {
+      rows.push({ kind: 'item', text: `  ${p}: suspected shared vendor limit` });
+    }
+  }
+
+  return rows;
+}
+
+/** Format a token count for the capacity display (e.g. ~1.2k). */
+function formatCapacityTokens(tokens: number): string {
+  if (tokens < 1000) return String(Math.round(tokens));
+  return (tokens / 1000).toFixed(1) + 'k';
+}
+
+function buildSummaryLine(
+  activeGoalCount: number,
+  phase: StreamPhase,
+  turnActive: boolean,
+  capacity: UiCapacityState | undefined,
+): string {
+  const parts: string[] = [];
+  parts.push(`${activeGoalCount} active goals`);
+  if (capacity !== undefined) {
+    parts.push(`pressure ${capacity.pressure}/3`);
+  }
+  parts.push('quota remaining unknown');
+  // append provider count
+  if (capacity !== undefined) {
+    const running = capacity.providers.filter((p) => p.cooldownUntil !== undefined).length;
+    if (running > 0) parts.push(`${running} providers cooling`);
+  }
+  return parts.join(' · ');
 }

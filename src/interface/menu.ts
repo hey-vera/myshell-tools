@@ -96,6 +96,7 @@ import type { Goal, GoalState } from '../core/goal-todo.js';
 import { boardEnabled } from './ui/board-flag.js';
 import { autoStageEnabled } from './ui/auto-goal-flag.js';
 import type { GoalBoardRow } from './ui/state.js';
+import type { UiCapacityState } from './ui/state.js';
 import {
   runGoalsList,
   runTodoCreate,
@@ -130,6 +131,7 @@ import {
   POLICY_PRESETS,
   modeLabel,
   classifyPlan,
+  planDisplayLabel,
   tunePolicyForMaxSubTier,
 } from '../core/policy.js';
 import type { PlanInfo } from '../core/policy.js';
@@ -449,6 +451,7 @@ function makeQuietSink(base: OutputSink): OutputSink {
     ...(base.endFrame ? { endFrame: base.endFrame.bind(base) } : {}),
     ...(base.promoteFrame ? { promoteFrame: base.promoteFrame.bind(base) } : {}),
     ...(base.syncBoard ? { syncBoard: base.syncBoard.bind(base) } : {}),
+    ...(base.syncCapacity ? { syncCapacity: base.syncCapacity.bind(base) } : {}),
   };
 }
 
@@ -2979,6 +2982,98 @@ export async function runChatLoop(
           /* board is best-effort chrome — never block or break a turn */
         }
       };
+      // Phase 4C: build and push a REAL capacity snapshot from the signals already
+      // present in the menu loop. Never probes providers — only reads what the
+      // conversation already observed (env, cooldowns, subscriptions, consumption).
+      const syncCapacity = async (): Promise<void> => {
+        if (typeof out.syncCapacity !== 'function') return;
+        try {
+          const nowMs = ctx.clock.now();
+          // --- Providers (from mutableCtx.env — already detected, zero-cost) ------
+          const planInfos = [mutableCtx.env.claude, mutableCtx.env.codex, mutableCtx.env.opencode, mutableCtx.env.grok];
+          const providers: import('./ui/state.js').UiProviderCapacityRow[] = [];
+
+          for (const p of planInfos) {
+            const info = classifyPlan(p.plan);
+            const row: Record<string, unknown> = {
+              provider: p.id,
+              installed: p.installed,
+              authenticated: p.authenticated,
+              planRaw: p.plan,
+              planLabel: p.authenticated ? planDisplayLabel(info) : 'unknown',
+              planConfidence: info.confidence,
+              availableModelCount: p.availableModels.length,
+            };
+            if (providerCooldownUntil.has(p.id)) {
+              const cd = providerCooldownUntil.get(p.id);
+              if (cd !== undefined && cd > nowMs) row.cooldownUntil = cd;
+            }
+            if (typeof sessionConsumption[p.id] === 'number') {
+              row.sessionTokens = sessionConsumption[p.id] as number;
+            }
+            providers.push(row as unknown as import('./ui/state.js').UiProviderCapacityRow);
+          }
+
+          // --- Accounts (from subscription store) ---------------------------------
+          const accounts: import('./ui/state.js').UiAccountCapacityRow[] = [];
+          try {
+            const subs = await readSubscriptions();
+            for (const a of subs.accounts) {
+              const planInfo = classifyPlan(a.plan ?? null);
+              const row: Record<string, unknown> = {
+                id: a.id,
+                provider: a.provider,
+                label: a.label,
+                enabled: a.enabled,
+                status: a.status ?? 'unknown',
+                planRaw: a.plan ?? null,
+                planLabel: a.plan !== undefined && a.plan !== null ? planDisplayLabel(planInfo) : 'unknown',
+                priority: a.priority,
+              };
+              if (a.lastUsedAt !== undefined) row.lastUsedAt = a.lastUsedAt;
+              if (a.expiresAt !== undefined) row.expiresAt = a.expiresAt;
+              if (accountCooldownUntil.has(a.id)) {
+                const cd = accountCooldownUntil.get(a.id);
+                if (cd !== undefined && cd > nowMs) row.cooldownUntil = cd;
+              }
+              if (typeof sessionTokensByAccount[a.id] === 'number' && (sessionTokensByAccount[a.id] as number) > 0) {
+                row.sessionTokens = sessionTokensByAccount[a.id] as number;
+              }
+              accounts.push(row as unknown as import('./ui/state.js').UiAccountCapacityRow);
+            }
+          } catch {
+            /* best-effort */
+          }
+
+          // --- Pressure + shed plan (from live cooldown count) --------------------
+          const pressure = currentPressure();
+          const shedResult = currentShedPlan();
+
+          // --- Account parallelism disabled providers (correlated-429 safety) ------
+          const disabledProviders = [...accountParallelismDisabledProviders];
+
+          const snapshot: UiCapacityState = {
+            observedAtMs: nowMs,
+            providers,
+            accounts,
+            pressure,
+            ...(shedResult !== undefined
+              ? {
+                  shedPlan: {
+                    recapRefresh: shedResult.recapRefresh,
+                    memoryWidth: shedResult.memoryWidth,
+                    intentPass: shedResult.intentPass,
+                    coreAnswer: shedResult.coreAnswer as true,
+                  },
+                }
+              : {}),
+            accountParallelismDisabledProviders: disabledProviders,
+          };
+          out.syncCapacity(snapshot);
+        } catch {
+          /* capacity is best-effort chrome — never block or break a turn */
+        }
+      };
       // Refresh the CURRENT GOALS / PLAN snapshot (the partner's OWN plan) from the
       // real store, scoped to the current project + globals — the SAME filter the
       // board uses, so the prompt and the board agree on what's in scope. Renders the
@@ -3026,6 +3121,7 @@ export async function runChatLoop(
       // the flag is off → byte-identical; the plan refresh is goal-gated (empty store
       // → empty snapshot → byte-identical prompt).
       await syncBoard();
+      await syncCapacity();
       await refreshGoalContext();
       await refreshRulesContext();
 
@@ -4723,6 +4819,7 @@ Output ONLY valid JSON (no prose, no markdown).`;
                   );
               if (isForegroundGoalRun()) currentAc = null;
               noteRateLimit(result, goalOut);
+              syncCapacity(); // fire-and-forget — must not block the goal loop
               return result;
             };
 
@@ -5140,6 +5237,7 @@ Output ONLY valid JSON (no prose, no markdown).`;
           );
           if (isForegroundGoalRun()) currentAc = null;
           noteRateLimit(turn, goalOut);
+          syncCapacity(); // fire-and-forget — must not block the goal loop
           completed = i + 1;
           if (control.exit) { control.result = 'exit'; return true; }
           if (control.menu) { control.result = 'menu'; return true; }
@@ -6121,6 +6219,7 @@ Output ONLY valid JSON (no prose, no markdown).`;
       );
       currentAc = null;
       noteRateLimit(result);
+      await syncCapacity();
 
       // P1-09j-b: foreground settlement — snapshot and invoke receipt callback.
       // Do NOT destroy the budget while owned background calls remain.

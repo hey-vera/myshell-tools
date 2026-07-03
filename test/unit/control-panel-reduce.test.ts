@@ -7,7 +7,7 @@
 import { describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 import { reduce } from '../../src/interface/ui/reduce.ts';
-import { initialState, type Action } from '../../src/interface/ui/state.ts';
+import { initialState, type Action, type UiCapacityState } from '../../src/interface/ui/state.ts';
 
 // ---------------------------------------------------------------------------
 // initial state
@@ -473,5 +473,103 @@ describe('board/sync todoOverflow preservation', () => {
     assert.strictEqual(row.state, 'parked');
     assert.ok(row.todos !== undefined);
     assert.strictEqual(row.todos!.length, 2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// capacity/sync
+// ---------------------------------------------------------------------------
+
+describe('capacity/sync', () => {
+  function capacitySnapshot(over?: Partial<UiCapacityState>): UiCapacityState {
+    return {
+      observedAtMs: 5000,
+      providers: [],
+      accounts: [],
+      pressure: 0 as const,
+      accountParallelismDisabledProviders: [],
+      ...over,
+    };
+  }
+
+  it('replaces the capacity slice', () => {
+    const c1 = capacitySnapshot({ pressure: 0 });
+    const st1 = reduce(initialState, { type: 'capacity/sync', capacity: c1 });
+    assert.ok(st1.capacity !== undefined);
+    assert.strictEqual(st1.capacity!.pressure, 0);
+
+    const c2 = capacitySnapshot({ pressure: 2 });
+    const st2 = reduce(st1, { type: 'capacity/sync', capacity: c2 });
+    assert.ok(st2.capacity !== undefined);
+    assert.strictEqual(st2.capacity!.pressure, 2);
+  });
+
+  it('syncs pressure to the top-level pressure field', () => {
+    const c = capacitySnapshot({ pressure: 3 });
+    const st = reduce(initialState, { type: 'capacity/sync', capacity: c });
+    assert.strictEqual(st.pressure, 3);
+  });
+
+  it('carries provider data through', () => {
+    const c = capacitySnapshot({
+      providers: [
+        {
+          provider: 'claude',
+          installed: true,
+          authenticated: true,
+          planRaw: 'pro',
+          planLabel: 'Pro',
+          planConfidence: 'observed',
+          availableModelCount: 5,
+          sessionTokens: 1000,
+        },
+      ],
+    });
+    const st = reduce(initialState, { type: 'capacity/sync', capacity: c });
+    assert.ok(st.capacity !== undefined);
+    assert.strictEqual(st.capacity!.providers.length, 1);
+    assert.strictEqual(st.capacity!.providers[0]!.planLabel, 'Pro');
+  });
+
+  it('carries account data through', () => {
+    const c = capacitySnapshot({
+      accounts: [
+        {
+          id: 'acct-1',
+          provider: 'claude',
+          label: 'work',
+          enabled: true,
+          status: 'active',
+          planRaw: 'max_20x',
+          planLabel: 'Max 20x',
+          priority: 'high',
+        },
+      ],
+    });
+    const st = reduce(initialState, { type: 'capacity/sync', capacity: c });
+    assert.ok(st.capacity !== undefined);
+    assert.strictEqual(st.capacity!.accounts.length, 1);
+    assert.strictEqual(st.capacity!.accounts[0]!.label, 'work');
+  });
+
+  it('carries shed plan when present', () => {
+    const c = capacitySnapshot({
+      shedPlan: {
+        recapRefresh: false,
+        memoryWidth: 'identity-only',
+        intentPass: false,
+        coreAnswer: true,
+      },
+    });
+    const st = reduce(initialState, { type: 'capacity/sync', capacity: c });
+    assert.ok(st.capacity !== undefined);
+    assert.ok(st.capacity!.shedPlan !== undefined);
+    assert.strictEqual(st.capacity!.shedPlan!.recapRefresh, false);
+    assert.strictEqual(st.capacity!.shedPlan!.memoryWidth, 'identity-only');
+    assert.strictEqual(st.capacity!.shedPlan!.coreAnswer, true);
+  });
+
+  it('initial state has no capacity', () => {
+    assert.strictEqual(initialState.capacity, undefined);
   });
 });

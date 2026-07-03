@@ -404,18 +404,177 @@ describe('buildControlPanelModel execution phase and turnActive', () => {
 // buildControlPanelModel — quota
 // ---------------------------------------------------------------------------
 
-describe('buildControlPanelModel quotaLabel', () => {
-  it('always returns "unavailable in UI state"', () => {
-    assert.strictEqual(
-      buildControlPanelModel(baseState()).quotaLabel,
-      'unavailable in UI state',
-    );
-    assert.strictEqual(
-      buildControlPanelModel(
-        baseState({ stream: { ...initialStreamView, phase: 'streaming' } }),
-      ).quotaLabel,
-      'unavailable in UI state',
-    );
+describe('buildControlPanelModel statusRows (no capacity snapshot)', () => {
+  it('returns unknowns when capacity is absent', () => {
+    const m = buildControlPanelModel(baseState());
+    assert.strictEqual(m.statusRows.length > 0, true);
+    const unknownRows = m.statusRows.filter(r => r.kind === 'unknown');
+    assert.strictEqual(unknownRows.length >= 3, true);
+    assert.strictEqual(unknownRows.some(r => r.text.includes('Capacity snapshot: unknown')), true);
+    assert.strictEqual(unknownRows.some(r => r.text.includes('Quota remaining: unknown')), true);
+    assert.strictEqual(unknownRows.some(r => r.text.includes('Cooldowns: unknown')), true);
+  });
+
+  it('summary line notes quota remaining unknown', () => {
+    const m = buildControlPanelModel(baseState());
+    assert.strictEqual(m.summaryLine.includes('quota remaining unknown'), true);
+  });
+});
+
+describe('buildControlPanelModel statusRows (with capacity snapshot)', () => {
+  it('with authenticated providers, shows observed plan labels', () => {
+    const capacity = {
+      observedAtMs: 1000,
+      providers: [
+        { provider: 'claude' as const, installed: true, authenticated: true, planRaw: 'max_20x', planLabel: 'Max 20x', planConfidence: 'observed' as const, availableModelCount: 5 },
+        { provider: 'codex' as const, installed: true, authenticated: true, planRaw: 'pro', planLabel: 'Pro', planConfidence: 'observed' as const, availableModelCount: 3 },
+      ],
+      accounts: [],
+      pressure: 0 as const,
+      accountParallelismDisabledProviders: [] as readonly [],
+    };
+    const state = baseState({
+      capacity,
+      boardEnabled: true,
+    });
+    const m = buildControlPanelModel(state);
+    const planRows = m.statusRows.filter(r => r.kind === 'item' && (r.text.includes('Max 20x') || r.text.includes('Pro')));
+    assert.strictEqual(planRows.length, 2);
+  });
+
+  it('after a rate-limit, shows provider cooldown and pressure', () => {
+    const nowMs = 5000;
+    const capacity = {
+      observedAtMs: nowMs,
+      providers: [
+        { provider: 'claude' as const, installed: true, authenticated: true, planRaw: 'pro', planLabel: 'Pro', planConfidence: 'observed' as const, availableModelCount: 3, cooldownUntil: nowMs + 300_000 },
+        { provider: 'codex' as const, installed: true, authenticated: true, planRaw: null, planLabel: 'Unknown', planConfidence: 'none' as const, availableModelCount: 0 },
+      ],
+      accounts: [],
+      pressure: 1 as const,
+      accountParallelismDisabledProviders: [] as readonly [],
+    };
+    const state = baseState({
+      capacity,
+      boardEnabled: true,
+    });
+    const m = buildControlPanelModel(state);
+    const cooldownRows = m.statusRows.filter(r => r.kind === 'cooldown');
+    assert.strictEqual(cooldownRows.length, 1);
+    assert.strictEqual(cooldownRows[0].text.includes('claude'), true);
+    assert.strictEqual(cooldownRows[0].text.includes('cooldown'), true);
+    const pressureRows = m.statusRows.filter(r => r.text.includes('Pressure: 1/3'));
+    assert.strictEqual(pressureRows.length, 1);
+    assert.strictEqual(pressureRows[0].text.includes('1 provider(s) cooling'), true);
+  });
+
+  it('session token rows appear only when tokens > 0', () => {
+    const capacity = {
+      observedAtMs: 5000,
+      providers: [
+        { provider: 'claude' as const, installed: true, authenticated: true, planRaw: 'pro', planLabel: 'Pro', planConfidence: 'observed' as const, availableModelCount: 3, sessionTokens: 1234567 },
+        { provider: 'codex' as const, installed: true, authenticated: true, planRaw: null, planLabel: 'Unknown', planConfidence: 'none' as const, availableModelCount: 0, sessionTokens: 0 },
+      ],
+      accounts: [],
+      pressure: 0 as const,
+      accountParallelismDisabledProviders: [] as readonly [],
+    };
+    const state = baseState({ capacity, boardEnabled: true });
+    const m = buildControlPanelModel(state);
+    const tokenRows = m.statusRows.filter(r => r.kind === 'tokens');
+    assert.strictEqual(tokenRows.length, 1);
+    assert.strictEqual(tokenRows[0].text.includes('claude'), true);
+    assert.strictEqual(tokenRows[0].text.includes('1234.6k'), true); // ~1.2M
+  });
+
+  it('session token rows absent when no tokens exist', () => {
+    const capacity = {
+      observedAtMs: 5000,
+      providers: [
+        { provider: 'claude' as const, installed: true, authenticated: true, planRaw: 'pro', planLabel: 'Pro', planConfidence: 'observed' as const, availableModelCount: 3 },
+      ],
+      accounts: [],
+      pressure: 0 as const,
+      accountParallelismDisabledProviders: [] as readonly [],
+    };
+    const state = baseState({ capacity, boardEnabled: true });
+    const m = buildControlPanelModel(state);
+    const tokenRows = m.statusRows.filter(r => r.kind === 'tokens');
+    assert.strictEqual(tokenRows.length, 0);
+  });
+
+  it('no fake percentages appear anywhere', () => {
+    const capacity = {
+      observedAtMs: 5000,
+      providers: [
+        { provider: 'claude' as const, installed: true, authenticated: true, planRaw: 'pro', planLabel: 'Pro', planConfidence: 'observed' as const, availableModelCount: 3, sessionTokens: 1000 },
+      ],
+      accounts: [],
+      pressure: 1 as const,
+      accountParallelismDisabledProviders: [] as readonly [],
+    };
+    const state = baseState({ capacity, boardEnabled: true });
+    const m = buildControlPanelModel(state);
+    for (const row of m.statusRows) {
+      assert.strictEqual(/%/.test(row.text), false);
+    }
+    assert.strictEqual(/%/.test(m.summaryLine), false);
+  });
+
+  it('shows account cooldowns when present', () => {
+    const nowMs = 5000;
+    const capacity = {
+      observedAtMs: nowMs,
+      providers: [],
+      accounts: [
+        { id: 'acct-1', provider: 'claude' as const, label: 'work', enabled: true, status: 'active' as const, planRaw: 'pro', planLabel: 'Pro', priority: 'high' as const, cooldownUntil: nowMs + 300_000 },
+      ],
+      pressure: 1 as const,
+      accountParallelismDisabledProviders: [] as readonly [],
+    };
+    const state = baseState({ capacity, boardEnabled: true });
+    const m = buildControlPanelModel(state);
+    const cooldownRows = m.statusRows.filter(r => r.kind === 'cooldown');
+    assert.strictEqual(cooldownRows.length, 1);
+    assert.strictEqual(cooldownRows[0].text.includes('work'), true);
+  });
+
+  it('explicit unknown rows for quota remaining, reset time, message allowance', () => {
+    const capacity = {
+      observedAtMs: 5000,
+      providers: [{ provider: 'claude' as const, installed: true, authenticated: true, planRaw: 'pro', planLabel: 'Pro', planConfidence: 'observed' as const, availableModelCount: 3 }],
+      accounts: [],
+      pressure: 0 as const,
+      accountParallelismDisabledProviders: [] as readonly [],
+    };
+    const state = baseState({ capacity, boardEnabled: true });
+    const m = buildControlPanelModel(state);
+    const unknownRows = m.statusRows.filter(r => r.kind === 'unknown');
+    assert.strictEqual(unknownRows.some(r => r.text.includes('Quota remaining: unknown')), true);
+    assert.strictEqual(unknownRows.some(r => r.text.includes('Reset time: unknown')), true);
+    assert.strictEqual(unknownRows.some(r => r.text.includes('Message allowance: unknown')), true);
+  });
+
+  it('subscription account rows present when accounts exist', () => {
+    const capacity = {
+      observedAtMs: 5000,
+      providers: [],
+      accounts: [
+        { id: 'acct-1', provider: 'claude' as const, label: 'work', enabled: true, status: 'active' as const, planRaw: 'max_20x', planLabel: 'Max 20x', priority: 'high' as const },
+        { id: 'acct-2', provider: 'opencode' as const, label: 'personal', enabled: true, status: 'active' as const, planRaw: null, planLabel: 'unknown', priority: 'medium' as const },
+      ],
+      pressure: 0 as const,
+      accountParallelismDisabledProviders: [] as readonly [],
+    };
+    const state = baseState({ capacity, boardEnabled: true });
+    const m = buildControlPanelModel(state);
+    const acctRows = m.statusRows.filter(r => r.text.includes('[claude]') || r.text.includes('[opencode]'));
+    assert.strictEqual(acctRows.length, 2);
+    assert.strictEqual(acctRows.some(r => r.text.includes('Max 20x')), true);
+    // planLabel 'unknown' is intentionally omitted from the display row
+    const opencodeRow = acctRows.find(r => r.text.includes('[opencode]'));
+    assert.ok(opencodeRow !== undefined);
+    assert.strictEqual(opencodeRow.text.includes('unknown'), false);
   });
 });
 

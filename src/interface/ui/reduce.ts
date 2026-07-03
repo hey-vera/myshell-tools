@@ -894,5 +894,11 @@ export function reduce(state: UiState, action: Action): UiState {
           return state;
       }
     }
+
+    // -- capacity/sync: REPLACE the capacity snapshot with a fresh observation
+    //    built from real menu-loop signals. Also mirrors `pressure` onto the
+    //    existing top-level field for InputBox placeholder behaviour. (Phase 4C)
+    case 'capacity/sync':
+      return { ...state, capacity: action.capacity, pressure: action.capacity.pressure };
   }
 }

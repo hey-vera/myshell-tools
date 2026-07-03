@@ -82,8 +82,7 @@ test('renders status band, ordered tabs, and Goals body by default', () => {
   const frame = lastFrame() ?? '';
   assert.match(frame, /CONTROL PANEL/);
   assert.match(frame, /0 active goals/);
-  assert.match(frame, /mode: execution\/idle/);
-  assert.match(frame, /quota: unavailable/);
+  assert.match(frame, /quota remaining unknown/);
   assert.match(frame, /Ship it/);
 });
 
@@ -103,6 +102,7 @@ test('Status section shows active count, execution phase, provider states, quota
       ],
     },
     turnActive: true,
+    // No capacity snapshot → shows unknowns in Status tab
   });
   const { lastFrame } = render(
     <ControlPanel
@@ -114,12 +114,13 @@ test('Status section shows active count, execution phase, provider states, quota
     />,
   );
   const frame = lastFrame() ?? '';
-  assert.match(frame, /Active goals \(running\): 2/);
-  assert.match(frame, /Mode: execution\/thinking/);
-  assert.match(frame, /turn active/);
-  assert.match(frame, /Provider health \(observed\)/);
-  assert.match(frame, /claude: running/);
-  assert.match(frame, /Quota: unavailable in UI state/);
+  // Summary line shows quota remaining unknown
+  assert.match(frame, /2 active goals/);
+  assert.match(frame, /quota remaining unknown/);
+  // Status tab shows unknown capacity snapshot info
+  assert.match(frame, /Capacity snapshot: unknown/);
+  assert.match(frame, /Quota remaining: unknown/);
+  assert.match(frame, /Cooldowns: unknown/);
 });
 
 test('Settings shows one read-only board row, no toggle', () => {
@@ -301,7 +302,7 @@ test('active={false} makes all keys inert', async () => {
   assert.equal(onClose.mock.calls.length, 0, 'active=false: Escape should not call onClose');
 });
 
-test('Status section with no providers shows empty provider line', () => {
+test('Status section with no providers shows unknown capacity snapshot', () => {
   const state = baseState({
     controlPanel: { open: true, activeSection: 'status', statusScroll: 0, goalsListScroll: 0, goalsDetailScroll: 0, settingsScroll: 0 },
   });
@@ -315,7 +316,9 @@ test('Status section with no providers shows empty provider line', () => {
     />,
   );
   const frame = lastFrame() ?? '';
-  assert.match(frame, /No provider observations/);
+  assert.match(frame, /Capacity snapshot: unknown/);
+  assert.match(frame, /Quota remaining: unknown/);
+  assert.match(frame, /Cooldowns: unknown/);
 });
 
 // ---------------------------------------------------------------------------
