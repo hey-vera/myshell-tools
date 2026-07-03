@@ -196,6 +196,8 @@ export interface ControlPanelProps {
   readonly onClose: () => void;
   readonly onSettingAction?: (intent: ControlPanelSettingIntent) => void;
   readonly onSettingsSelect?: (index: number) => void;
+  /** Close the panel and insert \@goal:&lt;id&gt; into the chat composer. */
+  readonly onComposeGoal?: (goalId: string) => void;
   readonly active?: boolean;
 }
 
@@ -214,6 +216,7 @@ export function ControlPanel(props: ControlPanelProps): React.ReactElement {
     onClose,
     onSettingAction,
     onSettingsSelect,
+    onComposeGoal,
     active,
   } = props;
 
@@ -267,6 +270,11 @@ export function ControlPanel(props: ControlPanelProps): React.ReactElement {
         }
         if (key.pageDown || input === 'd') {
           onScroll('goals', 'list', pageDelta);
+          return;
+        }
+        if ((key.return || input === 'c') && onComposeGoal !== undefined) {
+          const id = model.controlGoals.highlightedGoalId;
+          if (id !== undefined) onComposeGoal(id);
           return;
         }
       }
@@ -370,7 +378,7 @@ export function ControlPanel(props: ControlPanelProps): React.ReactElement {
       )}
 
       <Text dimColor>
-        Tab/Shift+Tab navigate sections · ↑↓/jk select goal · PgUp/PgDn scroll · Esc close
+        Tab/Shift+Tab navigate sections · ↑↓/jk select goal · Enter/c chat about goal · PgUp/PgDn scroll · Esc close
       </Text>
     </Box>
   );

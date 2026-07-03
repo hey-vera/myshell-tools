@@ -609,3 +609,161 @@ test('non-empty Ctrl+G does NOT open CP; after clearing, open works', async () =
   assert.equal(store.getState().controlPanel.open, true);
   assert.match(plain(lastFrame()), /CONTROL PANEL/);
 });
+
+// ---------------------------------------------------------------------------
+// Phase 5: Chat-About-Goal — Enter/c on highlighted goal closes CP + inserts
+// ---------------------------------------------------------------------------
+
+test('Enter on highlighted goal in Goals tab closes panel and inserts @goal:<id>', async () => {
+  const { bridge, store } = setupCPBridgeAndStore();
+  store.dispatch({
+    type: 'board/sync',
+    rows: [
+      boardRow({ id: 'goal_a', title: 'Alpha', state: 'running', done: 1, total: 5, agents: 1 }),
+      boardRow({ id: 'goal_b', title: 'Beta', state: 'parked', done: 0, total: 3, agents: 0 }),
+    ],
+    enabled: true,
+  });
+  const { stdin } = render(
+    <App bridge={bridge} color={false} isTty={false} rows={24} clock={() => 0} />,
+  );
+  bridge.pushState(store.getState());
+  bridge.setChatActive(true);
+  await tick();
+
+  // Open CP on Goals.
+  await act(async () => {
+    stdin.write('\x07');
+    await tick();
+  });
+  assert.equal(store.getState().controlPanel.open, true);
+  assert.equal(store.getState().controlPanel.activeSection, 'goals');
+
+  // Enter on first highlighted goal (goal_a).
+  await act(async () => {
+    stdin.write('\r');
+    await tick();
+  });
+
+  // Panel must be closed.
+  assert.equal(store.getState().controlPanel.open, false);
+  // Composer must have the inserted token.
+  assert.equal(bridge.input.currentLine(), '@goal:goal_a ');
+  // Composer is active — typing works.
+  await act(async () => {
+    stdin.write('x');
+    await tick();
+  });
+  assert.equal(bridge.input.currentLine(), '@goal:goal_a x');
+});
+
+test("'c' on highlighted goal in Goals tab closes panel and inserts @goal:<id>", async () => {
+  const { bridge, store } = setupCPBridgeAndStore();
+  store.dispatch({
+    type: 'board/sync',
+    rows: [
+      boardRow({ id: 'goal_a', title: 'Alpha', state: 'running', done: 1, total: 5, agents: 1 }),
+    ],
+    enabled: true,
+  });
+  const { stdin } = render(
+    <App bridge={bridge} color={false} isTty={false} rows={24} clock={() => 0} />,
+  );
+  bridge.pushState(store.getState());
+  bridge.setChatActive(true);
+  await tick();
+
+  await act(async () => {
+    stdin.write('\x07');
+    await tick();
+  });
+  assert.equal(store.getState().controlPanel.open, true);
+
+  // Press 'c' on highlighted goal.
+  await act(async () => {
+    stdin.write('c');
+    await tick();
+  });
+
+  assert.equal(store.getState().controlPanel.open, false);
+  assert.equal(bridge.input.currentLine(), '@goal:goal_a ');
+});
+
+test('Enter on Status tab does NOT close panel (Enter is only compose in Goals)', async () => {
+  const { bridge, store } = setupCPBridgeAndStore();
+  store.dispatch({
+    type: 'board/sync',
+    rows: [
+      boardRow({ id: 'goal_a', title: 'Alpha', state: 'running', done: 1, total: 5, agents: 1 }),
+    ],
+    enabled: true,
+  });
+  const { stdin } = render(
+    <App bridge={bridge} color={false} isTty={false} rows={24} clock={() => 0} />,
+  );
+  bridge.pushState(store.getState());
+  bridge.setChatActive(true);
+  await tick();
+
+  // Open CP on Goals, then switch to Status.
+  await act(async () => {
+    stdin.write('\x07');
+    await tick();
+  });
+  assert.equal(store.getState().controlPanel.activeSection, 'goals');
+  // Tab to settings, Tab to status (goals → settings → status).
+  await act(async () => {
+    stdin.write('\t'); // → settings
+    await tick();
+  });
+  await act(async () => {
+    stdin.write('\t'); // → status
+    await tick();
+  });
+  assert.equal(store.getState().controlPanel.activeSection, 'status');
+
+  // Enter on Status section — must NOT close the panel.
+  await act(async () => {
+    stdin.write('\r');
+    await tick();
+  });
+  assert.equal(store.getState().controlPanel.open, true, 'Enter on Status must not close panel');
+  assert.equal(bridge.input.currentLine(), '', 'buffer must remain empty');
+});
+
+test('no double-input-owner: after compose goal, typing goes to InputBox not panel', async () => {
+  const { bridge, store } = setupCPBridgeAndStore();
+  store.dispatch({
+    type: 'board/sync',
+    rows: [
+      boardRow({ id: 'goal_a', title: 'Alpha', state: 'running', done: 1, total: 5, agents: 1 }),
+    ],
+    enabled: true,
+  });
+  const { stdin } = render(
+    <App bridge={bridge} color={false} isTty={false} rows={24} clock={() => 0} />,
+  );
+  bridge.pushState(store.getState());
+  bridge.setChatActive(true);
+  await tick();
+
+  // Open CP, press Enter on goal → close + insert.
+  await act(async () => {
+    stdin.write('\x07');
+    await tick();
+  });
+  await act(async () => {
+    stdin.write('c');
+    await tick();
+  });
+  assert.equal(store.getState().controlPanel.open, false);
+  assert.equal(bridge.input.currentLine(), '@goal:goal_a ');
+
+  // Type more — must land in InputBox, not re-open the panel.
+  await act(async () => {
+    stdin.write('more text');
+    await tick();
+  });
+  assert.equal(bridge.input.currentLine(), '@goal:goal_a more text');
+  assert.equal(store.getState().controlPanel.open, false, 'panel must stay closed');
+});

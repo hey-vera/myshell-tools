@@ -95,11 +95,20 @@ export interface InputBoxBridge {
   attach(api: InputBoxApi | null): void;
   /** Read the box's current in-progress line (empty string before mount). */
   currentLine(): string;
+  /**
+   * Imperatively insert text into the composer's current draft at the cursor
+   * position WITHOUT clobbering existing text. Appends with a sensible space
+   * separator when the buffer is non-empty. Used by Control Panel "chat about
+   * goal" to insert \@goal:&lt;id&gt; tokens.
+   */
+  insertText(text: string): void;
   // --- wired internally ---
   /** @internal set by onSubmit() */ _submit?: ((line: string) => void) | undefined;
   /** @internal set by onQueued() */ _onQueued?: ((n: number) => void) | undefined;
   /** @internal initial history seed, consumed by the box on mount */ _history: string[];
   /** @internal the attached box API */ _api?: InputBoxApi | null;
+  /** @internal set by the InputBox mount effect; invoked by insertText() */
+  _insertText?: ((text: string) => void) | undefined;
 }
 
 /** Build an {@link InputBoxBridge} with empty wiring. */
@@ -123,6 +132,9 @@ export function createInputBoxBridge(): InputBoxBridge {
     },
     currentLine(): string {
       return bridge._api?.currentLine() ?? '';
+    },
+    insertText(text): void {
+      bridge._insertText?.(text);
     },
   };
   return bridge;
@@ -366,7 +378,25 @@ export function InputBox({
   // Register the imperative API + queued subscriber; consume the history seed.
   useEffect(() => {
     bridge.attach({ currentLine: () => valueRef.current });
-    return () => bridge.attach(null);
+    bridge._insertText = (text: string): void => {
+      const current = valueRef.current;
+      const cur = cursorRef.current;
+      const head = current.slice(0, cur);
+      const tail = current.slice(cur);
+      const atEnd = cur === current.length;
+      const needsSpace = atEnd && head !== '' && !head.endsWith(' ') && !head.endsWith('\n');
+      const prefix = needsSpace ? ' ' : '';
+      const next = head + prefix + text + tail;
+      setValue(next);
+      setCursor((head + prefix + text).length);
+      setSuggestions([]);
+      setSuggIndex(0);
+      setHistIndex(null);
+    };
+    return () => {
+      bridge.attach(null);
+      bridge._insertText = undefined;
+    };
   }, [bridge]);
   useEffect(() => {
     bridge.onQueued((n) => setQueued(n));
