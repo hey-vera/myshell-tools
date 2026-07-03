@@ -2628,7 +2628,8 @@ describe('startMenu — auto-goal smart autonomy', () => {
 
       await startMenu(ctx, sink);
 
-      await waitForGoalCount(ctx.clock, 1);
+      const deadline = Date.now() + 5_000;
+      while (plannerCalls < 1 && Date.now() < deadline) await delay(10);
       assert.equal(plannerCalls, 1);
       assert.equal(secondPlanningBrainCalls, 0);
       assert.ok(!sink.buf.includes('Planning deeper'));
