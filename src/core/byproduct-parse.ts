@@ -15,9 +15,8 @@
  *   - PURELY ADDITIVE: the fallback only ever activates after the primary
  *     parse has already returned null.  A clean parse path is byte-identical
  *     to today — this module is never called on a success path.
- *   - DEFAULT OFF: gated behind `byproductFallbackEnabled` (see
- *     src/interface/ui/byproduct-fallback-flag.ts).  When the flag is off the
- *     caller skips the fallback entirely.
+ *   - PROMOTED to unconditional: the caller always invokes the fallback after
+ *     the primary `parseIntentFrame` returns null.
  *   - PURE: no I/O, no time, no randomness (the `test/arch/guards.test.ts`
  *     purity guard).  All functions are pure over string / data inputs.
  *   - NEVER FABRICATES: on any ambiguity or partial signal the field is omitted

@@ -14,7 +14,6 @@ import { makeIntentExtractor } from '../core/intent-extractor.js';
 import { makeSemanticPreflightExtractor } from '../core/semantic-preflight-extractor.js';
 import { fuseRung, type FuseRungResult } from '../core/auto-brain.js';
 import { helperSandbox } from '../infra/sandbox.js';
-import { byproductFallbackEnabled } from './ui/byproduct-fallback-flag.js';
 import { semanticPreflightV1Enabled } from './ui/semantic-preflight-flag.js';
 import type { Mode } from '../core/policy.js';
 
@@ -95,7 +94,7 @@ export function buildPreflightDeps(
           ...(authenticatedProviders !== undefined && authenticatedProviders.length > 0
             ? { authenticatedProviders }
             : {}),
-          ...(byproductFallbackEnabled(env, config) ? { byproductFallback: true } : {}),
+
           ...(accountAux
             ? {
                 accountAux: true,

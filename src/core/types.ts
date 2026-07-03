@@ -1056,21 +1056,7 @@ export interface OrchestrateDeps {
    * ABSENT when flag off/basic-mode → byte-for-byte today's behavior. Type-only
    * import to keep types.ts a leaf.
    */
-  readonly autoBrainRungTuple?: import('./auto-brain.js').FuseRungResult;  /**
-   * EXPERIMENTAL CAPABILITY PARSE-FROM-TEXT FALLBACK (redesign Phase 0,
-   * capability-normalization slice) — a purely-additive, currently NEVER-READ seam,
-   * mirroring the other purely-additive never-read seams. When the default-OFF
-   * `byproductFallbackEnabled` flag (src/interface/ui/byproduct-fallback-flag.ts)
-   * is on, the interface layer sets this true; intent-extractor.ts uses it as a
-   * signal to attempt the text-fallback chain (src/core/byproduct-parse.ts) when
-   * the primary `parseIntentFrame` returns null. `orchestrate` does NOT read this
-   * field directly — the flag is read by the extractor shim. DEFAULT ABSENT →
-   * byte-for-byte today's behavior (the fallback is never called). This field
-   * exists so the fallback substrate wires through the src import graph (no-orphan)
-   * and so the next slice has a landing pad. Type-only import to keep types.ts a
-   * leaf module.
-   */
-  readonly byproductFallback?: boolean;
+  readonly autoBrainRungTuple?: import('./auto-brain.js').FuseRungResult;
   /**
    * DRAFT GOALS (redesign Phase 1 spine — "chat → draft goal"). The
    * interface layer always sets this `true` (unconditional); the post-turn
