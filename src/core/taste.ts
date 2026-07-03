@@ -367,7 +367,7 @@ const TASTE_FOOTER =
 /**
  * Render a playbook into the tagged, overridable taste context block injected at
  * prompt assembly. Returns '' when there are no lines (so the block never appears
- * empty / when the flag is off and recall returned EMPTY_PLAYBOOK). Pure; never
+ * empty / when recall returned EMPTY_PLAYBOOK). Pure; never
  * throws. The footer enforces explicit > learned (judgment doc §4.4).
  */
 export function renderTastePlaybook(playbook: TastePlaybook): string {

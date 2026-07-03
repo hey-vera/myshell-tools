@@ -392,9 +392,9 @@ export interface OrchestrateDeps {
    */
   readonly sessionTokensForReceipt?: Readonly<Partial<Record<ProviderId, number>>>;
   /**
-   * Whether MYSHELL_NATIVE_SESSIONS_PROMOTE is on. When on, native provider
-   * sessions that are already wired become the default for interactive
-   * conversations, with telemetry emitted. Default off.
+   * MYSHELL_NATIVE_SESSIONS_PROMOTE (unconditional). Native provider sessions
+   * that are already wired become the default for interactive conversations,
+   * with telemetry emitted.
    */
   readonly nativeSessionsPromote?: boolean;
   readonly intentStore?: import('./intent-version.js').IntentStoreWriter;
@@ -1072,27 +1072,22 @@ export interface OrchestrateDeps {
    */
   readonly byproductFallback?: boolean;
   /**
-   * DRAFT GOALS (redesign Phase 1 spine — "chat → draft goal"). When the
-   * `draftGoalsEnabled` flag (`src/interface/ui/draft-goals-flag.ts`) is on
-   * (default in production via `experimentalEnabledByDefault`), the interface
-   * layer sets this `true`; the post-turn slot in menu.ts then reads the
-   * captured intent frame and materialises a PARKED goal in the GoalStore —
-   * NEVER queued or executed without user confirmation. DEFAULT ABSENT when
-   * flag off/basic-mode → byte-for-byte today's behavior. This field exists
-   * so the draft-goals substrate wires through the src import graph.
+   * DRAFT GOALS (redesign Phase 1 spine — "chat → draft goal"). The
+   * interface layer always sets this `true` (unconditional); the post-turn
+   * slot in menu.ts then reads the captured intent frame and materialises a
+   * PARKED goal in the GoalStore — NEVER queued or executed without user
+   * confirmation.
    */
   readonly draftGoals?: boolean;
   /**
-   * Blocked-state terminal flag (MYSHELL_BLOCKED_STATE_V1). When true, the
-   * orchestrator may emit blocked finals instead of failed ones.
-   * DEFAULT ABSENT → byte-identical to today.
+   * Blocked-state terminal flag (MYSHELL_BLOCKED_STATE_V1 — unconditional).
+   * The orchestrator may emit blocked finals instead of failed ones.
    */
   readonly blockedStateV1?: boolean;
   /**
-   * Correction-fork deps (MYSHELL_CORRECTION_FORK_V1). Present only when the
-   * flag is ON and the intent store is ON. Provides the reader + goal-store
-   * methods for correction detection and supersession.
-   * DEFAULT ABSENT → byte-identical to today (no correction detection, no fork).
+   * Correction-fork deps (MYSHELL_CORRECTION_FORK_V1 — unconditional).
+   * Provides the reader + goal-store methods for correction detection and
+   * supersession.
    */
   readonly correctionFork?: {
     readonly enabled: true;
@@ -1226,8 +1221,8 @@ export type CoreEvent =
       readonly outputTokens: number;
       readonly durationMs: number;
       /**
-       * Native session telemetry emitted only when MYSHELL_NATIVE_SESSIONS_PROMOTE
-       * is on. Records the estimated token savings from skipping history replay.
+       * Native session telemetry (MYSHELL_NATIVE_SESSIONS_PROMOTE — unconditional).
+       * Records the estimated token savings from skipping history replay.
        */
       readonly nativeSessionTelemetry?: import('./native-session-telemetry.js').NativeSessionTelemetry;
     }

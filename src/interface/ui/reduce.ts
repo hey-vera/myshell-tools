@@ -416,8 +416,8 @@ export function reduce(state: UiState, action: Action): UiState {
 
     // -- board/sync: REPLACE the persistent goal board with the menu's fresh
     //    GoalStore snapshot (Elite-partner Phase 1). Pure replace, mirroring the
-    //    chrome/replace pattern. `enabled` flips boardEnabled (the menu only sends
-    //    this action when the board flag is on). For each synced row we re-derive
+    //    chrome/replace pattern. `enabled` flips boardEnabled (the board is
+    //    unconditional; the menu always sends this action). For each synced row we re-derive
     //    the LIVE agent count from `state.goals` — the reducer-owned, REAL
     //    attach-by-goalId truth (reduce.ts tier-start branch) — so a running goal's
     //    "N agents" is the actual number of attached agents this turn, never the

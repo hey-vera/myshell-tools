@@ -968,7 +968,7 @@ export async function runChatLoop(
 
   // ---- WHOLE-PICTURE UNDERSTANDING PASS (Elite-partner Part 2) -------------
   // Build a manager-tier, READ-ONLY investigation of the REAL system that runs
-  // FIRST (before the planner) when MYSHELL_UNDERSTANDING is on — mapping the
+  // FIRST (before the planner) — unconditional — mapping the
   // relevant modules + interconnections, conventions, hard constraints, and the
   // genuinely-open questions into a SystemModel that grounds the planner. Mirrors
   // buildGoalPlanner exactly (same authed-pool / policy / tight-timeout shape).
@@ -1815,7 +1815,7 @@ export async function runChatLoop(
         '  /help         — show this help\n' +
         '\n' +
         dim('  Feature posture (stable, default-on in interactive chat):\n', out.color) +
-        dim('    verify/judgment/trust on · MYSHELL_VERIFY=0/JUDGMENT=0/TRUST=0 to disable · MYSHELL_BASIC=1 for all-off\n', out.color) +
+        dim('    verify/judgment/trust on · myshell-tools rollback to disable · MYSHELL_BASIC=1 for all-off\n', out.color) +
         dim('    myshell-tools rollback        — persistently disable verify, judgment, and trust (feature rollback only)\n', out.color) +
         dim('    myshell-tools rollback off    — restore defaults\n', out.color) +
         dim('    MYSHELL_ROLLBACK=1            — emergency no-write form (always takes precedence)\n', out.color) +
@@ -2235,9 +2235,9 @@ export async function runChatLoop(
           if (p.authenticated) planInfos[p.id] = classifyPlan(p.plan);
         }
 
-        // EXPERIMENTAL native session plan (opt-in via config.nativeSessions).
-        // Pure decision; null when disabled. When present, orchestrate uses the
-        // provider's native session for matching tiers instead of replaying history.
+        // Native session plan — unconditional (shipped-on). Pure decision
+        // (never null). Orchestrate uses the provider's native session for
+        // matching tiers instead of replaying history.
         //
         // STALE-HISTORY HARDENING (AP2-F / Stage 6, §3): decide the history policy
         // ONCE here (over the prior assistant turns + their engine-behavior version
@@ -2478,11 +2478,11 @@ export async function runChatLoop(
           ...(taste?.memoryBias !== undefined && taste.memoryBias !== 0
             ? { memoryBias: taste.memoryBias }
             : {}),
-          // THE FREE JUDGMENT LAYER (master-plan PHASE 5). Enable the brain's
-          // `push_back` capability ONLY when the judgment flag is ON; pass the
-          // structured taste lines so the taste-violation source can name the
-          // specific recorded call. Both absent when the flag is off → the brain's
-          // decideNextMove is byte-for-byte today's path (the OFF-GUARANTEE).
+          // THE FREE JUDGMENT LAYER (master-plan PHASE 5) — unconditional
+          // (shipped-on). Always on unless MYSHELL_ROLLBACK is engaged. Provides
+          // the brain's `push_back` capability and passes the structured taste
+          // lines so the taste-violation source can name the specific recorded
+          // call. Absent only when rollback is engaged.
           ...(judgmentOn ? { judgmentEnabled: true } : {}),
           ...(taste?.tastePlaybookLines !== undefined && taste.tastePlaybookLines.length > 0
             ? { tastePlaybookLines: taste.tastePlaybookLines }
@@ -2527,17 +2527,14 @@ export async function runChatLoop(
           ...(autoSmartOn && mutableCtx.config.mode === undefined
             ? { governorBudgetCeiling: planBudgetCeiling(mutableCtx.env) }
             : {}),
-          // VERIFICATION CENTERPIECE (master-plan PHASE 3) — DEFAULT ON at the entry
-          // point (frictionless). Resolved by the composition-root default-on resolver;
-          // disabled only by an explicit opt-out (MYSHELL_VERIFY ∈ {0,false,off,no} OR
-          // config.experimentalVerify===false) or global basic mode. When ON, inject the
+          // VERIFICATION CENTERPIECE (master-plan PHASE 3) — unconditional
+          // (shipped-on). Always on unless MYSHELL_ROLLBACK is engaged. Injects the
           // impure VerifyPort (git-diff + bounded test-runner) + the conservative
           // built-in floor level ('tests' — tests-first, the free signal). The verify
           // stage runs at the turn's accept point and surfaces an honest four-state
-          // receipt. When OFF the port is absent → verifyStage returns
-          // undefined → the accept path is byte-for-byte unchanged (the
-          // characterization + oracle suites prove that neutrality). The Governor's
-          // `verify` lever, when its flag is also on, refines the level per turn.
+          // receipt. When rollback is engaged the port is absent → verifyStage returns
+          // undefined → the accept path is byte-for-byte unchanged. The Governor's
+          // `verify` lever, also unconditional, refines the level per turn.
           ...(verifyActive
             ? {
                 verifyPort: ctx.verifyPort ?? nodeVerifyPort,
@@ -2602,8 +2599,8 @@ export async function runChatLoop(
             const block = currentUnderstandingContext();
             return block.length > 0 ? { understandingContext: block } : {};
           })(),
-          // BLOCKED STATE (MYSHELL_BLOCKED_STATE_V1) — DEFAULT ON (opt-out). When on,
-          // the orchestrator may emit blocked finals instead of failed ones.
+          // BLOCKED STATE (MYSHELL_BLOCKED_STATE_V1) — unconditional. The
+          // orchestrator may emit blocked finals instead of failed ones.
           blockedStateV1: true,
           // CORRECTION FORK (always on) — correction detection runs against
           // prior intent versions; a detected correction creates a child
@@ -3029,15 +3026,15 @@ export async function runChatLoop(
       }
 
       // ---- VERIFIED-DONE goal-completion GATE (Elite-partner Part 3) -----------
-      // DEFAULT OFF. When the truly-complete flag is ON, a goal can NO LONGER be
-      // marked `done` just because the model SAID GOAL_COMPLETE — the model's claim
-      // is DEMOTED to a "request to verify". Before a goal settles `done`, a REAL
-      // verification runs over the goal's cumulative changes via the existing
-      // verify.ts engine (git-diff change-capture + the project's own test command →
-      // the honest four-state passing|failing|reviewed|unverified). The goal is
-      // `done` ONLY when the verdict is passing/reviewed; failing/unverified (incl.
-      // an empty diff) keeps it open with an honest receipt — never fake green. The
-      // verdict is the SOLE source of `lastGoalCompleted` when this is on.
+      // UNCONDITIONAL. A goal can NO LONGER be marked `done` just because the
+      // model SAID GOAL_COMPLETE — the model's claim is DEMOTED to a "request to
+      // verify". Before a goal settles `done`, a REAL verification runs over the
+      // goal's cumulative changes via the existing verify.ts engine (git-diff
+      // change-capture + the project's own test command → the honest four-state
+      // passing|failing|reviewed|unverified). The goal is `done` ONLY when the
+      // verdict is passing/reviewed; failing/unverified (incl. an empty diff)
+      // keeps it open with an honest receipt — never fake green. The verdict is
+      // the SOLE source of `lastGoalCompleted`.
       const verifiedDoneOn = true;
       // Run a REAL verification for the goal-completion gate and map it to a
       // GoalVerdict, reusing verifyStage (the same change-capture + tests-first +
@@ -3127,19 +3124,18 @@ export async function runChatLoop(
       };
 
       // ---- Planning brain / AUTO-STAGE (Elite-partner Phase 6) -----------------
-      // DEFAULT OFF. When the auto-goal flag is ON, the partner JUDGES a SUBSTANTIAL
-      // owner turn AFTER the reply settles (post-turn, non-blocking, fail-soft) and
-      // — when confident there is real work — auto-stages professional goals (each
-      // with its to-do list) as PARKED goals (non-destructive), or surfaces ONE
-      // sharp clarifying question when the turn is genuinely ambiguous. A trivial /
-      // conversational turn ("sounds good?") stages NOTHING. Parked-only: activation
-      // stays the judged/explicit gate (never run/executed here).
+      // UNCONDITIONAL. The partner JUDGES a SUBSTANTIAL owner turn AFTER the
+      // reply settles (post-turn, non-blocking, fail-soft) and — when confident
+      // there is real work — auto-stages professional goals (each with its to-do
+      // list) as PARKED goals (non-destructive), or surfaces ONE sharp clarifying
+      // question when the turn is genuinely ambiguous. A trivial / conversational
+      // turn ("sounds good?") stages NOTHING. Parked-only: activation stays the
+      // judged/explicit gate (never run/executed here).
       const autoStageOn = true;
-      // WHOLE-PICTURE UNDERSTANDING PASS (Elite-partner Part 2). DEFAULT OFF. When
-      // ON, a manager-tier READ-ONLY investigation maps the REAL system FIRST and
-      // its SystemModel grounds the planner so the staged goals reflect whole-picture
-      // depth. OFF → never invoked, SystemModel stays undefined → the planner prompt
-      // is byte-for-byte today's.
+      // WHOLE-PICTURE UNDERSTANDING PASS (Elite-partner Part 2). UNCONDITIONAL.
+      // A manager-tier READ-ONLY investigation maps the REAL system FIRST and
+      // its SystemModel grounds the planner so the staged goals reflect
+      // whole-picture depth.
       const understandingOn = true;
       const planningDepthOn = planningDepthEnabled(process.env, mutableCtx.config);
       // Mint sequential roadmap ids (r1, r2, …) for a freshly-staged goal's todos
@@ -5932,7 +5928,7 @@ Output ONLY valid JSON (no prose, no markdown).`;
       // OBSERVED immediate-rephrase (Phase-7 free layer): if a fork was just
       // surfaced and this turn re-states that decision differently, the partner
       // misread it — a strong miss signal (judgment §4.2). Conservative,
-      // deterministic overlap test (core/taste.ts); flag-gated + fail-soft. We
+      // deterministic overlap test (core/taste.ts); unconditional + fail-soft. We
       // consume the pending subject once, whatever the outcome, so it never leaks.
       if (lastDecisionSubject !== undefined) {
         const priorDecision = lastDecisionSubject;

@@ -591,7 +591,7 @@ export type Action =
   //     GoalStore (Elite-partner Phase 1). The menu dispatches this — built from
   //     `goalStore.list()` via pure goal-todo.ts shapers — at chat-loop start and
   //     after any /todo,/goals mutation. `enabled` flips `UiState.boardEnabled`
-  //     (the menu only ever sends this action when the board flag is on), which is
+  //     (the board is unconditional; the menu always sends this action), which is
   //     what suppresses the fake per-turn card and turns on board rendering. The
   //     reducer re-derives each row's LIVE agent count from `state.goals` (the
   //     reducer-owned, real attach-by-goalId truth) — the snapshot's own `agents`

@@ -364,10 +364,10 @@ export async function* orchestrate(
   const preflightGuardOn = depsArg.preflightGuard === true;
   let blockingCallsSoFar = depsArg.observedBlockingCalls ?? 0;
 
-  // Account aux intent-version correlation seam (always on).
+  // Account aux intent-version correlation seam (unconditional).
   // Every aux and work ledger entry written this turn
-  // shares the same intentVersionId for correlation. When intentStore is present
-  // (MYSHELL_INTENT_STORE_V1), the id is also used for the persisted intent version.
+  // shares the same intentVersionId for correlation. The same id is also used
+  // for the persisted intent version (MYSHELL_INTENT_STORE_V1 — unconditional).
   // Pre-minted or generated here as a fallback.
   const wantsIntentVersionId = depsArg.accountAux === true || depsArg.intentStore !== undefined;
   const turnIntentVersionId =
@@ -1375,18 +1375,17 @@ export async function* orchestrate(
       ? depsArg.workStateContext
       : renderWorkStateBlock(workState);
 
-  // INTENT STORE WRITE (MYSHELL_INTENT_STORE_V1) — the single persistence point.
-  // After final intentFrame stabilisation (including re-extraction updates) and
-  // before render-optional events so a crash mid-write never orphans a stored
-  // version with a different id than the one surfaced.
+  // INTENT STORE WRITE (MYSHELL_INTENT_STORE_V1) — the single persistence point
+  // — unconditional. After final intentFrame stabilisation (including
+  // re-extraction updates) and before render-optional events so a crash mid-write
+  // never orphans a stored version with a different id than the one surfaced.
   if (
     depsArg.intentStore !== undefined &&
     turnIntentVersionId !== undefined &&
     intentFrame !== undefined &&
     !signal.aborted
   ) {
-    // CORRECTION FORK (MYSHELL_CORRECTION_FORK_V1) — guarded by depsArg.correctionFork.
-    // OFF → parentId = null, no invalidation (byte-identical to today).
+    // CORRECTION FORK (MYSHELL_CORRECTION_FORK_V1) — unconditional.
     let parentIdForWrite: string | null = null;
     let invalidationPlan: {
       supersedeGoalIds: readonly string[];
@@ -1477,11 +1476,9 @@ export async function* orchestrate(
   if (engagementBlock.length > 0) {
     yield { type: 'engagement', plan: engagementPlan };
   }
-  // AUTO BRAIN RECEIPT — always-on one-line receipt when the flag is on.
-  // Emitted as a compact `notice:info` AFTER the intent+engagement events so it is
-  // the first routing-decision line the user sees before any tier-start. When
-  // `autoBrainResult` is undefined (flag off) this entire block is dead —
-  // BYTE-FOR-BYTE today's event stream (the OFF-GUARANTEE).
+  // AUTO BRAIN RECEIPT — unconditional (shipped-on). Emitted as a compact
+  // `notice:info` AFTER the intent+engagement events so it is the first
+  // routing-decision line the user sees before any tier-start.
   if (autoBrainResult !== undefined) {
     const receipt = buildAutoBrainReceipt(autoBrainResult);
     yield { type: 'notice', level: 'info', message: receipt };

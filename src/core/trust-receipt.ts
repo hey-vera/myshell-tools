@@ -58,8 +58,8 @@ export interface TrustSignals {
   readonly confidence?: Confidence;
   /**
    * The four-state verification outcome from the verify stage. ABSENT ⇒ no verify
-   * line and the self-audit honestly notes verification did not run. Its presence is
-   * already flag-gated (the verify port is injected only when MYSHELL_VERIFY is on).
+   * line and the self-audit honestly notes verification did not run. Verification is
+   * unconditional; the port is absent only when MYSHELL_ROLLBACK is engaged.
    */
   readonly verify?: VerifyOutcome;
   /**
