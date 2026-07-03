@@ -202,7 +202,7 @@ function makeEngine(
     autoCtx,
     autoStageOn: true,
     understandingOn: true,
-    planningDepthOn: false,
+    planningDepthOn: true,
     tasteOn: false,
     ROADMAP_LIMIT: 8,
     UNDERSTANDING_REFRESH_TURNS: 3,
@@ -323,11 +323,11 @@ describe('createAutoStageEngine judgeGoal planner mapping', () => {
 
   async function judgeWithPlan(goalText: string, plan: GoalPlan | null) {
     const { deps, autoCtx } = makeEngine({
-      buildGoalPlanner: (systemModel) => {
+      buildGoalPlannerAttempt: (_tier, systemModel) => {
         assert.equal(systemModel, MODEL);
         return async (task) => {
           assert.equal(task, goalText);
-          return plan;
+          return plan === null ? null : { plan, provider: 'claude', model: 'model-a', raw: JSON.stringify(plan) };
         };
       },
     });
