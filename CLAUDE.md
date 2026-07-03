@@ -1,36 +1,77 @@
 # myshell-tools — operating rules
 
-## ORCHESTRATOR DISCIPLINE (read first — violating this bloats the main context)
-The main Claude Code conversation is an **orchestrator only**. It must NOT do the deep work itself.
-- **NEVER do inline in the main thread:** reading many files to understand a subsystem, writing/refining a plan or design doc, implementing code, doing the audit/research. All of this belongs in a spawned agent whose own context absorbs the bloat and returns only a short conclusion + a doc path.
-- **The orchestrator MAY do directly:** dispatch agents, edit rules/memory/CLAUDE.md, run verification (`tsc --noEmit`, tests, name-diff), git ops, and report results. A *quick* (≤~2 files) spot-check to ground a dispatch is fine; anything more = delegate.
-- **Planning/design/audit ⇒ a FRONTIER agent** (gpt-5.5 via codex, or a Claude Opus agent when challenging/diversity is wanted). **Execution ⇒ opencode-go workers.** The orchestrator never writes the plan doc itself.
-- **Design before doing:** get the plan right the first time via an adversarial round (one frontier model challenges another's plan, with online research) rather than shipping a weak plan and patching it. A superior plan doc is cheaper than rework.
-- Agents must write full output to a repo doc and return only a short executive summary + the path, to keep the orchestrator lean.
-- Resuming a frontier session is allowed: `codex exec resume <session-id> "..." </dev/null` continues the same gpt-5.5 context (cheaper than a cold agent for a follow-up round).
+_Governance rationale + full audit trail: `docs/rules-quota-audit-round1.md`, `-round2.md`, `-round3.md` (research-backed, 2026-07-03). Dated model facts: `docs/model-routing.md`._
 
-## Frontier / worker model split (this project's standing policy)
-- **Frontier (think / audit / plan):** `codex exec -m gpt-5.5 -c model_reasoning_effort=high` (ChatGPT-authed). Use for audits, architecture, root-causing, "what does 10/10 look like." Output = a plan/findings doc.
-- **Workers (execute the plan):** `opencode run -m opencode-go/<model>` on the OpenCode **Go** sub. Cheapest capable: `deepseek-v4-flash`, `glm-5.1`. Strongest worker reasoner: `deepseek-v4-pro`, `glm-5.2`.
-- **Claude `Agent` subagents:** last resort only, and only with the user's explicit permission.
-- Full model catalog + the Zen-unfunded gotcha: see memory `opencode-provider-access`.
+## Orchestrator Role
 
-## CRITICAL: how to invoke codex / opencode from the Claude Code harness
-Both `codex exec` and `opencode run` **HANG FOREVER** if stdin is left open — the harness pipes stdin (no TTY) and both block reading it even when the prompt is passed as an argument. (codex's tell: `Reading additional input from stdin...`.)
+The main Claude Code conversation is the orchestrator. It dispatches, gates, verifies, runs git, edits control-plane docs when explicitly asked, and reports receipts. It does not absorb subsystem context, implement production code, or paste large agent output into chat.
 
-**Always invoke via the Bash tool with stdin closed and the sandbox disabled (network):**
-```bash
-# Frontier audit / plan (codex's OWN sandbox is broken in the Linux cloud container — see below):
-codex exec --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check \
-  -C <repo-root> -m gpt-5.5 -c model_reasoning_effort=high "<prompt>" </dev/null
+Run the always-on orchestrator on the cheapest capable Sonnet-class model available. Use Sonnet 5 if available; if this project is constrained to Sonnet 4.6 versus Opus 4.8, use Sonnet 4.6 as the default brain. Opus is not the control plane for routine routing, file reads, shell commands, receipt synthesis, or status updates.
 
-# Worker execution:
-opencode run -m opencode-go/deepseek-v4-pro "<prompt>" </dev/null
-```
-- `</dev/null` is mandatory. `dangerouslyDisableSandbox: true` on the Bash call (for network).
-- **ENV-AWARE:** `<repo-root>` = the actual repo dir for wherever you're running — in the Linux cloud container that's `/home/runner/workspace`; on the Windows dev box (verified 2026-07-03) both CLIs are installed (`codex`/`opencode` in `AppData\Roaming\npm`) and you invoke them through the **Bash tool** (git-bash) so the mandatory `</dev/null` still closes stdin. The bwrap-sandbox breakage below is Linux-container-only; it does not apply on Windows.
-- **CODEX'S `-s` SANDBOX MODES DO NOT WORK IN THIS CONTAINER (verified 2026-06-30).** `-s read-only` / `-s workspace-write` invoke codex's internal bwrap sandbox, which fails before running anything: `bwrap: Unexpected capabilities but not setuid, old file caps config?` — it can neither read files nor write its output doc. The ONLY working invocation here is `--dangerously-bypass-approvals-and-sandbox` (codex then uses the host shell; the Bash tool is itself the security boundary). This contradicts the earlier "use `-s read-only`" guidance — reality wins. (Pass `-C <trusted-dir>` so it can write plan docs.)
-- Do NOT run `Get-Process node | Stop-Process` while a codex/opencode run is in flight — it kills your own run.
-- Auth is fine (codex=ChatGPT, opencode=Zen+Go). If a run hangs, it's stdin, not auth — don't re-debug auth.
+## Main-Thread Budget
 
-Details + verification log: memory `opencode-codex-cli-stdin-hang`.
+- Read user-named governing artifacts needed for the current request.
+- After named artifacts, exploratory content reading is capped at 3 files or 600 additional lines before delegation.
+- If no artifacts are named, read at most 3 files or 600 total lines before delegation.
+- `rg`, file lists, `git status`, and line/word counts do not count as content reads.
+- Direct main-thread edits are allowed for `CLAUDE.md`, docs, memory, hooks, and other control-plane files when the user explicitly requested this main thread to do that work. Do not edit `src/` or `test/` in the main thread unless the user explicitly overrides the orchestrator rule.
+
+Delegate to a frontier planner/auditor for architecture, audits, root cause, policy, multi-source research, durable plans, or decisions with cross-module/security/default/release risk. Delegate implementation, tests, and mechanical edits to opencode-go workers once the objective is bounded.
+
+## Grounding Delegation
+
+The orchestrator may delegate its own grounding reads to a cheap reader when the needed inspection exceeds the main-thread reading budget or roughly 1,500 lines / 15k tokens, and the orchestrator only needs a routing conclusion. The reader must return: Status, Receipts/Refs, Conclusion ≤120 words, and Uncertainty ≤1 sentence.
+
+Use this for large audit docs, long logs, generated receipts, or multi-source research. Do not use it for short files, exact rule wording the orchestrator must edit or quote, broad judgment, or any uncited summary. If the reader cannot provide file/line refs or source URLs, it is not grounding.
+
+## Agent Returns
+
+Agents write full findings, logs, diffs, and research notes to repo docs/receipts. Their final chat return must be concise and receipt-first:
+
+    Status: DONE | BLOCKED | NEEDS_GATE | REJECTED
+    Receipts: <paths, commit/PR, commands>
+    Summary: <180 words max; 80 preferred for routine worker receipts>
+    Next: <one sentence if action is needed>
+
+## Frontier, Workers, and Opus
+
+- Frontier planning/audit/root-cause/policy/research: use codex gpt-5.5 high reasoning by default.
+- Worker execution: use opencode-go by default.
+- Use one frontier planner/auditor for high-stakes work. Add an adversarial frontier challenge only for irreversible/security-sensitive decisions, cross-module architecture/default behavior, explicit user request, material uncertainty, or a directly relevant prior drift/rework incident.
+- No third internal planning/challenge round without a concrete blocker or user approval.
+- Claude Opus is an escalation specialist, not the always-on brain. Use it only when a named trigger applies: security/privacy/credential/destructive/release/default-behavior risk; conflicting governance that affects authorization or policy; cross-module architecture with broad rework risk; conceptual `BLOCKED`/`NEEDS_GATE`; material disagreement between competent passes; two failed bounded fixes with a non-mechanical remaining issue; subtle adversarial/legal/financial/security-like judgment; explicit user request; or the Sonnet orchestrator cannot state a crisp dispatch contract after bounded grounding. The gate must say the trigger, cheaper routes tried or rejected, expected input docs, max return size, and what decision Opus will change.
+- Workers never become planners because frontier quota is low. If planning is blocked by quota, say so and ask/wait.
+
+## Resume vs Cold Start
+
+Resume a frontier session only for the same goal, governing artifact, branch/worktree, and still-valid assumptions. Include changed facts in the resume prompt. Cold-start when the governing artifact changed, repo state moved materially, assumptions are stale, plans conflict, or the follow-up is a different decision.
+
+## Anti-Drift Reference Rule
+
+When the user provides a reference design, artifact, workflow, layout, API shape, or example output, treat it as governing. Extract its skeleton, name the explicit user diffs, and implement `reference skeleton + explicit diffs`. Do not modernize, re-synthesize, embellish, split, merge, or improve structure unless asked. If the requested diff conflicts with the reference, stop and surface the conflict.
+
+## Auto Parallel Orchestration
+
+Parallelize only when slices are independent by files and conflict domain. For concurrent workers or any code/test/config edit, each worker needs: objective, allowed files/modules, forbidden files/modules, verification command, and conflict domain. Serialize when one slice defines an API/schema/state/UX flow another consumes, when shared fixtures/state/defaults are involved, or when combined verification is the first meaningful test. If opencode is unavailable, ask before spending frontier or Claude/Opus quota on execution.
+
+## Model Routing
+
+Do not trust stale model catalogs from memory. Verify concrete opencode model availability with `opencode models </dev/null` and, for important work, a smoke run. Root policy is class-based: Sonnet-class for the always-on orchestrator; frontier for planning/audit/root-cause/policy; opencode-go for bounded execution; Opus only behind the escalation trigger list unless explicitly requested. Dated capability notes belong in `docs/model-routing.md` or receipts, not always-loaded memory.
+
+## Memory Admission
+
+Memory is for durable operating rules, durable user preferences, durable authorizations, and durable tool/environment references. Project status, plans, findings, current bugs, audit results, progress, and "what I just did" go in repo docs, never memory.
+
+Before creating or updating memory, verify: category fit, 30-day durability, non-derivable from code/git/docs/root rules, concrete failure prevented, no secrets or volatile credential/model/funding details, explicit user approval for the content and scope, and well-formed/indexed links. Memory files should stay under 400 words after frontmatter unless the user approves a durable runbook. Authorization memory also needs exact scope, allowed actions, forbidden actions, approval date, review point, and revocation source.
+
+After memory edits, verify `MEMORY.md` links resolve. A broken memory index is a rules failure.
+
+## CLI Invocation
+
+`codex exec` and `opencode run` must be invoked with stdin closed (`</dev/null`) through the Bash tool with `dangerouslyDisableSandbox: true`. If a run hangs after saying it is reading stdin, fix invocation; do not re-debug auth. Use indexed memory `opencode-codex-cli-stdin-hang` for the current command templates and environment caveats (Windows dev box vs Linux container; codex's own sandbox is broken in the Linux container — use `--dangerously-bypass-approvals-and-sandbox`).
+
+## Source of Truth
+
+Current project state lives in repo docs, receipts, git, and CI. Durable operating policy lives in this file plus indexed memory. If `CLAUDE.md`, memory, handoff docs, and repo docs conflict, stop and surface the conflict instead of choosing silently.
+
+No standing self-merge authorization is active unless an indexed authorization memory exists or the user grants current-turn approval. (The former `merge-authorization-dedrift` memory was removed; the handoff reference to it is stale.)
