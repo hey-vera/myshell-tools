@@ -1916,7 +1916,6 @@ describe('startMenu — auto-goal smart autonomy', () => {
       // Disable the gated intent pass so this asserts PURE task-dispatch routing.
       // Auto-goal is always on; a substantial turn fires the planner post-reply.
       intentEngine: false,
-      experimentalUnderstanding: false,
     };
     const ctx = makeCtx(
       {
@@ -2531,7 +2530,7 @@ describe('startMenu — auto-goal smart autonomy', () => {
     });
   });
 
-  it('planning-depth gate off preserves the single ungrounded preflight planner call', { retry: 2 }, async () => {
+  it('planning-depth gate off preserves the single ungrounded preflight planner call', async () => {
     const dir = join(tmpdir(), `menu-planning-depth-off-${randomUUID()}`);
     await withStateHome(dir, async () => {
       const plannerPrompts: string[] = [];
@@ -2552,7 +2551,7 @@ describe('startMenu — auto-goal smart autonomy', () => {
       const ctx = makeCtx({
         config: {
           onboarded: true, setAsDefault: false, smartRoute: false,
-          mode: 'quality-first', intensity: 5, experimentalUnderstanding: false,
+          mode: 'quality-first', intensity: 5,
         },
         providers: { claude: provider },
         readLine: makeScriptedReader(['n', 'review and design the architecture', '/exit', 'q']),
@@ -2560,6 +2559,7 @@ describe('startMenu — auto-goal smart autonomy', () => {
 
       await startMenu(ctx, sink);
 
+      await waitForGoalCount(ctx.clock, 1);
       assert.equal(plannerPrompts.length, 1);
       assert.ok(plannerPrompts[0]?.includes('review and design the architecture'));
       assert.ok(!plannerPrompts[0]?.includes('WHOLE-PICTURE UNDERSTANDING OF THE REAL SYSTEM'));
@@ -2567,7 +2567,7 @@ describe('startMenu — auto-goal smart autonomy', () => {
     });
   });
 
-  it('planning-depth gate on keeps a low-risk birdhouse at one silent planner call', { retry: 2 }, async () => {
+  it('planning-depth gate on keeps a low-risk birdhouse at one silent planner call', async () => {
     const dir = join(tmpdir(), `menu-planning-depth-birdhouse-${randomUUID()}`);
     await withStateHome(dir, async () => {
       let plannerCalls = 0;
@@ -2620,7 +2620,6 @@ describe('startMenu — auto-goal smart autonomy', () => {
         config: {
           onboarded: true, setAsDefault: false, smartRoute: false,
           mode: 'quality-first', intensity: 5, experimentalPlanningDepth: true,
-          experimentalUnderstanding: false,
         },
         providers: { claude: provider, codex },
         env: twoProviderEnv,
@@ -2629,6 +2628,7 @@ describe('startMenu — auto-goal smart autonomy', () => {
 
       await startMenu(ctx, sink);
 
+      await waitForGoalCount(ctx.clock, 1);
       assert.equal(plannerCalls, 1);
       assert.equal(secondPlanningBrainCalls, 0);
       assert.ok(!sink.buf.includes('Planning deeper'));
@@ -2772,7 +2772,6 @@ describe('startMenu — auto-goal smart autonomy', () => {
         config: {
           onboarded: true, setAsDefault: false, smartRoute: false,
           mode: 'quality-first', intensity: 5, experimentalPlanningDepth: true,
-          experimentalUnderstanding: false,
         },
         readLine: makeScriptedReader([
           'n',
@@ -2912,7 +2911,6 @@ describe('startMenu — auto-goal smart autonomy', () => {
         config: {
           onboarded: true, setAsDefault: false, smartRoute: false,
           mode: 'cost-saver', intensity: 5, experimentalPlanningDepth: true,
-          experimentalUnderstanding: false,
         },
         readLine: makeScriptedReader([
           'n',
