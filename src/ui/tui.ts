@@ -157,6 +157,91 @@ export function box(
 }
 
 // ---------------------------------------------------------------------------
+// sectionBox
+// ---------------------------------------------------------------------------
+
+/**
+ * Renders a rounded-corner multi-section box. Sections are divided by
+ * ├───┤ divider lines. Uses the same row-alignment pattern as box() so all
+ * rendered rows have equal {@link visibleLength}.
+ *
+ * @param sections - Array of sections, each an array of content lines.
+ * @param opts     - Optional: `width` (default 56), `color` (default false).
+ */
+export function sectionBox(
+  sections: string[][],
+  opts?: { width?: number; color?: boolean },
+): string {
+  if (sections.length === 0) return '';
+  const color = opts?.color ?? false;
+  const minInner = opts?.width ?? 56;
+  const allLines = sections.flat();
+  const contentMax = Math.max(0, ...allLines.map((l) => visibleLength(l)));
+  const inner = Math.max(minInner, contentMax);
+  const total = inner + 2;
+
+  const fit = (text: string): string =>
+    pad('  ' + truncateToWidth(text, inner), total);
+
+  const rows: string[] = [];
+
+  rows.push(ansiDim(ROUNDED.tl + ROUNDED.h.repeat(total) + ROUNDED.tr, color));
+
+  for (let i = 0; i < sections.length; i++) {
+    const section = sections[i]!;
+    for (const line of section) {
+      rows.push(ansiDim(ROUNDED.v, color) + fit(line) + ansiDim(ROUNDED.v, color));
+    }
+    if (i < sections.length - 1) {
+      rows.push(ansiDim(ROUNDED.ml + ROUNDED.h.repeat(total) + ROUNDED.mr, color));
+    }
+  }
+
+  rows.push(ansiDim(ROUNDED.bl + ROUNDED.h.repeat(total) + ROUNDED.br, color));
+
+  return rows.join('\n');
+}
+
+// ---------------------------------------------------------------------------
+// titleBox
+// ---------------------------------------------------------------------------
+
+/**
+ * Renders a compact rounded-corner box sized to fit the title text (not
+ * full-width). The title is centered inside the box.
+ *
+ * @param title - Title text displayed centered in the box.
+ * @param opts  - Optional: `padding` spaces on each side (default 2),
+ *                `color` (default false).
+ */
+export function titleBox(
+  title: string,
+  opts?: { padding?: number; color?: boolean },
+): string {
+  const color = opts?.color ?? false;
+  const padding = opts?.padding ?? 2;
+  const titleWidth = visibleLength(title);
+  const contentWidth = titleWidth + padding * 2;
+
+  const top = ansiDim(
+    ROUNDED.tl + ROUNDED.h.repeat(contentWidth) + ROUNDED.tr,
+    color,
+  );
+
+  const titleRow =
+    ansiDim(ROUNDED.v, color) +
+    pad(' '.repeat(padding) + title + ' '.repeat(padding), contentWidth) +
+    ansiDim(ROUNDED.v, color);
+
+  const bottom = ansiDim(
+    ROUNDED.bl + ROUNDED.h.repeat(contentWidth) + ROUNDED.br,
+    color,
+  );
+
+  return [top, titleRow, bottom].join('\n');
+}
+
+// ---------------------------------------------------------------------------
 // bar
 // ---------------------------------------------------------------------------
 

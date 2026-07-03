@@ -25,6 +25,8 @@ import {
   truncateToWidth,
   pad,
   box,
+  sectionBox,
+  titleBox,
   bar,
   badge,
   separator,
@@ -235,6 +237,152 @@ describe('box', () => {
         `Row ${i} has visibleLength ${String(lengths[i])}, expected ${String(first)} — emoji variation selector may be double-counted`,
       );
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// sectionBox
+// ---------------------------------------------------------------------------
+
+describe('sectionBox', () => {
+  const twoSections = [['Section One'], ['Section Two']];
+
+  it('contains rounded box-drawing characters', () => {
+    const out = sectionBox(twoSections);
+    assert.ok(out.includes('╭'), 'must include top-left corner ╭');
+    assert.ok(out.includes('╮'), 'must include top-right corner ╮');
+    assert.ok(out.includes('╰'), 'must include bottom-left corner ╰');
+    assert.ok(out.includes('╯'), 'must include bottom-right corner ╯');
+  });
+
+  it('all rendered rows have equal visibleLength', () => {
+    const out = sectionBox([['line one'], ['a longer line that should pad']]);
+    const rows = out.split('\n');
+    const lengths = rows.map((r) => visibleLength(r));
+    const first = lengths[0];
+    assert.ok(first !== undefined, 'sectionBox must have at least one row');
+    for (let i = 1; i < lengths.length; i++) {
+      assert.strictEqual(
+        lengths[i],
+        first,
+        `Row ${i} has visibleLength ${String(lengths[i])}, expected ${String(first)}`,
+      );
+    }
+  });
+
+  it('contains section divider (├ and ┤) between sections', () => {
+    const out = sectionBox([['section A'], ['section B']]);
+    assert.ok(out.includes('├'), 'must include left divider tee ├');
+    assert.ok(out.includes('┤'), 'must include right divider tee ┤');
+  });
+
+  it('includes content from each section', () => {
+    const out = sectionBox([['alpha content'], ['beta content']]);
+    assert.ok(out.includes('alpha content'), 'must include first section content');
+    assert.ok(out.includes('beta content'), 'must include second section content');
+  });
+
+  it('renders a single-section box without a divider', () => {
+    const out = sectionBox([['only section']]);
+    assert.ok(out.includes('only section'), 'must include content');
+    assert.ok(!out.includes('├'), 'single-section box must not have a divider');
+    assert.ok(!out.includes('┤'), 'single-section box must not have a divider');
+  });
+
+  it('returns empty string for zero sections', () => {
+    assert.strictEqual(sectionBox([]), '');
+  });
+
+  it('color=false emits no ANSI codes', () => {
+    const out = sectionBox(twoSections, { color: false });
+    assertNoAnsi(out, 'sectionBox(color=false)');
+  });
+
+  it('content truncation does not break border (all rows stay equal)', () => {
+    const longLine = 'x'.repeat(200);
+    const out = sectionBox([['short'], [longLine]]);
+    const lengths = out.split('\n').map((r) => visibleLength(r));
+    const first = lengths[0];
+    for (let i = 1; i < lengths.length; i++) {
+      assert.strictEqual(
+        lengths[i],
+        first,
+        `Row ${i} width ${String(lengths[i])} != ${String(first)} — truncation failed`,
+      );
+    }
+  });
+
+  it('no forbidden substrings', () => {
+    assertNoForbidden(sectionBox([['hello']]), 'sectionBox');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// titleBox
+// ---------------------------------------------------------------------------
+
+describe('titleBox', () => {
+  it('contains rounded box-drawing characters', () => {
+    const out = titleBox('Test');
+    assert.ok(out.includes('╭'), 'must include top-left corner ╭');
+    assert.ok(out.includes('╮'), 'must include top-right corner ╮');
+    assert.ok(out.includes('╰'), 'must include bottom-left corner ╰');
+    assert.ok(out.includes('╯'), 'must include bottom-right corner ╯');
+  });
+
+  it('contains the title text', () => {
+    const out = titleBox('Session Manager');
+    assert.ok(out.includes('Session Manager'), 'must include the title');
+  });
+
+  it('all rows have equal visibleLength', () => {
+    const out = titleBox('Centered Title');
+    const rows = out.split('\n');
+    const lengths = rows.map((r) => visibleLength(r));
+    const first = lengths[0];
+    assert.ok(first !== undefined, 'titleBox must have at least one row');
+    for (let i = 1; i < lengths.length; i++) {
+      assert.strictEqual(
+        lengths[i],
+        first,
+        `Row ${i} has visibleLength ${String(lengths[i])}, expected ${String(first)}`,
+      );
+    }
+  });
+
+  it('title is centered (leading and trailing space match)', () => {
+    const out = titleBox('Hi', { padding: 3 });
+    const titleRow = out.split('\n')[1] ?? '';
+    // Strip the border chars and count leading vs trailing spaces
+    const inner = titleRow.slice(1, -1); // remove │ chars
+    const leading = inner.length - inner.trimStart().length;
+    const trailing = inner.length - inner.trimEnd().length;
+    assert.strictEqual(leading, trailing, `title should be centered: leading=${leading}, trailing=${trailing}`);
+  });
+
+  it('box width is sized to the title (narrow for short title)', () => {
+    const short = titleBox('X', { padding: 1 });
+    const longer = titleBox('A Much Longer Title', { padding: 1 });
+    const shortWidth = visibleLength(short.split('\n')[0] ?? '');
+    const longWidth = visibleLength(longer.split('\n')[0] ?? '');
+    assert.ok(longWidth > shortWidth, 'longer title must produce a wider box');
+  });
+
+  it('color=false emits no ANSI codes', () => {
+    const out = titleBox('My Title', { color: false });
+    assertNoAnsi(out, 'titleBox(color=false)');
+  });
+
+  it('honors the padding option', () => {
+    const tight = titleBox('X', { padding: 1 });
+    const loose = titleBox('X', { padding: 5 });
+    const tightWidth = visibleLength(tight.split('\n')[0] ?? '');
+    const looseWidth = visibleLength(loose.split('\n')[0] ?? '');
+    assert.ok(looseWidth > tightWidth, 'more padding must produce a wider box');
+  });
+
+  it('no forbidden substrings', () => {
+    assertNoForbidden(titleBox('Safe Title'), 'titleBox');
   });
 });
 
