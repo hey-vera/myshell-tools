@@ -325,8 +325,7 @@ export interface AppConfig {
    */
   experimentalResearch?: boolean;
 
-  /** Internal default-off rollout gate for effort-governed preflight planning depth. */
-  experimentalPlanningDepth?: boolean;
+  // experimentalPlanningDepth promoted to unconditional (2026-07-03).
   /**
    * Internal default-off rollout gate for PER-ITEM BLOCK/CONTINUE PARKING (Phase
    * D). When absent/false the manager-cycle fork branch behaves exactly as today

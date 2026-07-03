@@ -170,7 +170,7 @@ import { makeReplanner, applyReplanEditsViaStore } from '../core/goal-replan-gen
 import type { RoadmapEdit } from '../core/goal-replan.js';
 import { makeUnderstandingPass } from '../core/understanding-generator.js';
 import type { SystemModel } from '../core/understanding.js';
-import { planningDepthEnabled } from './ui/planning-depth-flag.js';
+
 import { verifyStage } from '../core/work-call.js';
 import { isRecapStale, recapEligible, type RecapResult } from '../core/recap.js';
 import { buildPreflightDeps } from './preflight-deps.js';
@@ -3125,7 +3125,7 @@ export async function runChatLoop(
       // its SystemModel grounds the planner so the staged goals reflect
       // whole-picture depth.
       const understandingOn = true;
-      const planningDepthOn = planningDepthEnabled(process.env, mutableCtx.config);
+      const planningDepthOn = true;
       // Mint sequential roadmap ids (r1, r2, …) for a freshly-staged goal's todos
       // and translate each todo's 1-based dependsOn indices into the corresponding
       // sibling ids (planTodosToRoadmap — the PURE, table-tested translation). The

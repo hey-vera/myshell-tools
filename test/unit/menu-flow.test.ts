@@ -2619,7 +2619,7 @@ describe('startMenu — auto-goal smart autonomy', () => {
       const ctx = makeCtx({
         config: {
           onboarded: true, setAsDefault: false, smartRoute: false,
-          mode: 'quality-first', intensity: 5, experimentalPlanningDepth: true,
+          mode: 'quality-first', intensity: 5, 
         },
         providers: { claude: provider, codex },
         env: twoProviderEnv,
@@ -2712,7 +2712,7 @@ describe('startMenu — auto-goal smart autonomy', () => {
         providers: { claude: providerFor('claude'), codex: providerFor('codex') },
         config: {
           onboarded: true, setAsDefault: false, smartRoute: false,
-          mode: 'quality-first', intensity: 5, experimentalPlanningDepth: true,
+          mode: 'quality-first', intensity: 5, 
         },
         readLine: makeScriptedReader([
           'n',
@@ -2772,7 +2772,7 @@ describe('startMenu — auto-goal smart autonomy', () => {
         providers: { claude: provider },
         config: {
           onboarded: true, setAsDefault: false, smartRoute: false,
-          mode: 'quality-first', intensity: 5, experimentalPlanningDepth: true,
+          mode: 'quality-first', intensity: 5, 
         },
         readLine: makeScriptedReader([
           'n',
@@ -2846,7 +2846,7 @@ describe('startMenu — auto-goal smart autonomy', () => {
         providers: { claude, codex },
         config: {
           onboarded: true, setAsDefault: false, smartRoute: false,
-          mode: 'quality-first', intensity: 5, experimentalPlanningDepth: true,
+          mode: 'quality-first', intensity: 5, 
         },
         readLine: makeScriptedReader([
           'n',
@@ -2911,7 +2911,7 @@ describe('startMenu — auto-goal smart autonomy', () => {
         providers: { claude, codex },
         config: {
           onboarded: true, setAsDefault: false, smartRoute: false,
-          mode: 'cost-saver', intensity: 5, experimentalPlanningDepth: true,
+          mode: 'cost-saver', intensity: 5, 
         },
         readLine: makeScriptedReader([
           'n',
@@ -2964,7 +2964,7 @@ describe('startMenu — auto-goal smart autonomy', () => {
       const ctx = makeCtx({
         config: {
           onboarded: true, setAsDefault: false, smartRoute: false,
-          mode: 'quality-first', intensity: 5, experimentalPlanningDepth: true,
+          mode: 'quality-first', intensity: 5, 
         },
         providers: { claude: provider },
         readLine: makeScriptedReader([
@@ -3020,7 +3020,7 @@ describe('startMenu — auto-goal smart autonomy', () => {
       const ctx = makeCtx({
         config: {
           onboarded: true, setAsDefault: false, smartRoute: false,
-          mode: 'quality-first', intensity: 5, experimentalPlanningDepth: true,
+          mode: 'quality-first', intensity: 5, 
         },
         providers: { claude: provider },
         readLine: makeScriptedReader([
@@ -3069,7 +3069,7 @@ describe('startMenu — auto-goal smart autonomy', () => {
       const ctx = makeCtx({
         config: {
           onboarded: true, setAsDefault: false, smartRoute: false,
-          mode: 'quality-first', intensity: 5, experimentalPlanningDepth: true,
+          mode: 'quality-first', intensity: 5, 
         },
         providers: { claude: provider },
         readLine: makeScriptedReader([
@@ -3121,7 +3121,7 @@ describe('startMenu — auto-goal smart autonomy', () => {
       const ctx = makeCtx({
         config: {
           onboarded: true, setAsDefault: false, smartRoute: false,
-          mode: 'cost-saver', intensity: 5, experimentalPlanningDepth: true,
+          mode: 'cost-saver', intensity: 5, 
         },
         providers: { claude: provider },
         readLine: makeScriptedReader([
@@ -3890,6 +3890,118 @@ describe('startMenu — auto-goal smart autonomy', () => {
       sink.buf.includes('Task cancelled. (Ctrl+C again'),
       'existing Ctrl+C cancellation message should be used',
     );
+  });
+
+  it('old explicit-off inputs ignored: MYSHELL_PLANNING_DEPTH=0 does not disable the default product path', async () => {
+    const dir = join(tmpdir(), `menu-planning-depth-offenv-${randomUUID()}`);
+    await withStateHome(dir, async () => {
+      let plannerCalls = 0;
+      const provider: Provider = {
+        id: 'claude',
+        async detect() { return FAKE_ENV.claude; },
+        async *run(req: ProviderRequest): AsyncIterable<ProviderEvent> {
+          if (req.prompt.includes('PLANNING BRAIN')) {
+            plannerCalls += 1;
+            const reply = ['JUDGMENT: stage', 'GOAL: Build the birdhouse', 'TODO: build it'].join('\n');
+            yield { type: 'done', text: reply, usage: FAKE_USAGE, raw: {} };
+            return;
+          }
+          yield { type: 'done', text: `Done.\n${CONFIDENCE_ENVELOPE}`, usage: FAKE_USAGE, raw: {} };
+        },
+      };
+      const prev = process.env['MYSHELL_PLANNING_DEPTH'];
+      process.env['MYSHELL_PLANNING_DEPTH'] = '0';
+      try {
+        const sink = makeSink();
+        const ctx = makeCtx({
+          config: { onboarded: true, setAsDefault: false, smartRoute: false },
+          providers: { claude: provider },
+          readLine: makeScriptedReader(['n', 'build a birdhouse', { value: '/exit', delayMs: 75 }, 'q']),
+        }, undefined, undefined, undefined, dir);
+        await startMenu(ctx, sink);
+        await waitForGoalCount(ctx.clock, 1);
+        assert.equal(plannerCalls, 1);
+        assert.ok(!sink.buf.includes('Planning deeper'));
+      } finally {
+        if (prev === undefined) Reflect.deleteProperty(process.env, 'MYSHELL_PLANNING_DEPTH');
+        else process.env['MYSHELL_PLANNING_DEPTH'] = prev;
+      }
+    });
+  });
+
+  it('old explicit-off inputs ignored: experimentalPlanningDepth:false does not disable the default product path', async () => {
+    const dir = join(tmpdir(), `menu-planning-depth-offcfg-${randomUUID()}`);
+    await withStateHome(dir, async () => {
+      let plannerCalls = 0;
+      const provider: Provider = {
+        id: 'claude',
+        async detect() { return FAKE_ENV.claude; },
+        async *run(req: ProviderRequest): AsyncIterable<ProviderEvent> {
+          if (req.prompt.includes('PLANNING BRAIN')) {
+            plannerCalls += 1;
+            const reply = ['JUDGMENT: stage', 'GOAL: Build the birdhouse', 'TODO: build it'].join('\n');
+            yield { type: 'done', text: reply, usage: FAKE_USAGE, raw: {} };
+            return;
+          }
+          yield { type: 'done', text: `Done.\n${CONFIDENCE_ENVELOPE}`, usage: FAKE_USAGE, raw: {} };
+        },
+      };
+      const sink = makeSink();
+      const ctx = makeCtx({
+        config: { onboarded: true, setAsDefault: false, smartRoute: false },
+        providers: { claude: provider },
+        readLine: makeScriptedReader(['n', 'build a birdhouse', { value: '/exit', delayMs: 75 }, 'q']),
+      }, undefined, undefined, undefined, dir);
+      await startMenu(ctx, sink);
+      await waitForGoalCount(ctx.clock, 1);
+      assert.equal(plannerCalls, 1);
+      assert.ok(!sink.buf.includes('Planning deeper'));
+    });
+  });
+
+  it('L2 grounding timeout stays capped at 8s: cold hard post-turn planning answers first, then one understanding pass', async () => {
+    const dir = join(tmpdir(), `menu-planning-depth-timeout-${randomUUID()}`);
+    await withStateHome(dir, async () => {
+      const sequence: string[] = [];
+      const timeoutMs: number[] = [];
+      const provider: Provider = {
+        id: 'claude',
+        async detect() { return FAKE_ENV.claude; },
+        async *run(req: ProviderRequest): AsyncIterable<ProviderEvent> {
+          if (req.prompt.includes('WHOLE-PICTURE UNDERSTANDING')) {
+            sequence.push('understanding');
+            timeoutMs.push(req.timeoutMs);
+            const reply = ['SUMMARY: Billing auth spans the router.', 'MODULE: router selects providers.'].join('\n');
+            yield { type: 'done', text: reply, usage: FAKE_USAGE, raw: {} };
+            return;
+          }
+          if (req.prompt.includes('PLANNING BRAIN')) {
+            sequence.push(req.prompt.includes('WHOLE-PICTURE UNDERSTANDING OF THE REAL SYSTEM') ? 'planner-grounded' : 'planner-ungrounded');
+            const reply = ['JUDGMENT: stage', 'GOAL: Migrate billing auth', 'TODO: map the auth path'].join('\n');
+            yield { type: 'done', text: reply, usage: FAKE_USAGE, raw: {} };
+            return;
+          }
+          sequence.push('worker');
+          yield { type: 'done', text: `Done.\n${CONFIDENCE_ENVELOPE}`, usage: FAKE_USAGE, raw: {} };
+        },
+      };
+      await fs.promises.mkdir(dir, { recursive: true });
+      await fs.promises.writeFile(join(dir, 'package.json'), JSON.stringify({ name: 'fixture' }), 'utf8');
+      const sink = makeSink();
+      const ctx = makeCtx({
+        config: { onboarded: true, setAsDefault: false, smartRoute: false, mode: 'quality-first', intensity: 5 },
+        providers: { claude: provider },
+        readLine: makeScriptedReader(['n', 'review and design billing authentication architecture', { value: '/exit', delayMs: 75 }, 'q']),
+      }, undefined, undefined, undefined, dir);
+      await startMenu(ctx, sink);
+      await waitForGoalCount(ctx.clock, 1);
+      assert.equal(sequence[0], 'worker', 'the normal answer path runs before planning');
+      assert.ok(sequence.includes('understanding'), 'understanding pass runs for cold grounding');
+      assert.ok(timeoutMs.length >= 1, 'understanding pass receives a timeout');
+      for (const t of timeoutMs) {
+        assert.ok(t <= 8_000, `understanding timeout ${t} must be capped at 8000`);
+      }
+    });
   });
 });
 
