@@ -20,14 +20,15 @@ Both `codex exec` and `opencode run` **HANG FOREVER** if stdin is left open — 
 
 **Always invoke via the Bash tool with stdin closed and the sandbox disabled (network):**
 ```bash
-# Frontier audit / plan (codex's OWN sandbox is broken in THIS container — see below):
+# Frontier audit / plan (codex's OWN sandbox is broken in the Linux cloud container — see below):
 codex exec --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check \
-  -C /home/runner/workspace -m gpt-5.5 -c model_reasoning_effort=high "<prompt>" </dev/null
+  -C <repo-root> -m gpt-5.5 -c model_reasoning_effort=high "<prompt>" </dev/null
 
 # Worker execution:
 opencode run -m opencode-go/deepseek-v4-pro "<prompt>" </dev/null
 ```
 - `</dev/null` is mandatory. `dangerouslyDisableSandbox: true` on the Bash call (for network).
+- **ENV-AWARE:** `<repo-root>` = the actual repo dir for wherever you're running — in the Linux cloud container that's `/home/runner/workspace`; on the Windows dev box (verified 2026-07-03) both CLIs are installed (`codex`/`opencode` in `AppData\Roaming\npm`) and you invoke them through the **Bash tool** (git-bash) so the mandatory `</dev/null` still closes stdin. The bwrap-sandbox breakage below is Linux-container-only; it does not apply on Windows.
 - **CODEX'S `-s` SANDBOX MODES DO NOT WORK IN THIS CONTAINER (verified 2026-06-30).** `-s read-only` / `-s workspace-write` invoke codex's internal bwrap sandbox, which fails before running anything: `bwrap: Unexpected capabilities but not setuid, old file caps config?` — it can neither read files nor write its output doc. The ONLY working invocation here is `--dangerously-bypass-approvals-and-sandbox` (codex then uses the host shell; the Bash tool is itself the security boundary). This contradicts the earlier "use `-s read-only`" guidance — reality wins. (Pass `-C <trusted-dir>` so it can write plan docs.)
 - Do NOT run `Get-Process node | Stop-Process` while a codex/opencode run is in flight — it kills your own run.
 - Auth is fine (codex=ChatGPT, opencode=Zen+Go). If a run hangs, it's stdin, not auth — don't re-debug auth.
