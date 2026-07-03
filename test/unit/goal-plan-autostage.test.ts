@@ -253,7 +253,6 @@ describe('understanding pass — the menu grounding wiring (Part 2)', () => {
 
   async function simulate(
     env: NodeJS.ProcessEnv,
-    config: { experimentalUnderstanding?: boolean },
     line: string,
     pass: ((task: string) => Promise<SystemModel | null>) | null,
   ): Promise<{ understandingRan: boolean; highStakes: boolean; modelToPlanner: SystemModel | undefined }> {
@@ -278,21 +277,21 @@ describe('understanding pass — the menu grounding wiring (Part 2)', () => {
     // Understanding is now unconditional (promoted in batches 4-6 dedrift).
     // The MYSHELL_UNDERSTANDING env var no longer gates the pass.
     const pass = async (): Promise<SystemModel | null> => MODEL;
-    const r = await simulate({ MYSHELL_UNDERSTANDING: '0' }, {}, 'build the whole auth system', pass);
+    const r = await simulate({ MYSHELL_UNDERSTANDING: '0' }, 'build the whole auth system', pass);
     assert.equal(r.understandingRan, true, 'understanding runs unconditionally');
     assert.equal(r.modelToPlanner, MODEL, 'planner grounded unconditionally');
   });
 
   it('understanding ON by default ⇒ pass runs, planner grounded', async () => {
     const pass = async (): Promise<SystemModel | null> => MODEL;
-    const r = await simulate({}, {}, 'build the whole auth system', pass);
+    const r = await simulate({}, 'build the whole auth system', pass);
     assert.equal(r.understandingRan, true);
     assert.equal(r.modelToPlanner, MODEL, 'planner grounded by default (cache-ahead in the live menu)');
   });
 
   it('understanding ON + substantial ⇒ pass runs, planner gets the SystemModel', async () => {
     const pass = async (): Promise<SystemModel | null> => MODEL;
-    const r = await simulate({ MYSHELL_UNDERSTANDING: '1' }, {}, 'migrate the oauth token refresh', pass);
+    const r = await simulate({ MYSHELL_UNDERSTANDING: '1' }, 'migrate the oauth token refresh', pass);
     assert.equal(r.understandingRan, true);
     assert.deepEqual(r.modelToPlanner, MODEL, 'planner grounded in the system model');
   });
@@ -301,21 +300,21 @@ describe('understanding pass — the menu grounding wiring (Part 2)', () => {
     const failing = async (): Promise<SystemModel | null> => {
       throw new Error('investigation timed out');
     };
-    const r = await simulate({ MYSHELL_UNDERSTANDING: '1' }, {}, 'migrate the oauth token refresh', failing);
+    const r = await simulate({ MYSHELL_UNDERSTANDING: '1' }, 'migrate the oauth token refresh', failing);
     assert.equal(r.understandingRan, true);
     assert.equal(r.modelToPlanner, undefined, 'a failed pass degrades to ungrounded, never blocks');
   });
 
   it('understanding ON but the pass returns null ⇒ planner ungrounded', async () => {
     const nullPass = async (): Promise<SystemModel | null> => null;
-    const r = await simulate({ MYSHELL_UNDERSTANDING: '1' }, {}, 'migrate the oauth token refresh', nullPass);
+    const r = await simulate({ MYSHELL_UNDERSTANDING: '1' }, 'migrate the oauth token refresh', nullPass);
     assert.equal(r.modelToPlanner, undefined);
   });
 
   it('highStakes rides classify().risk: auth/security ⇒ true; a plain feature ⇒ false', async () => {
-    const auth = await simulate({ MYSHELL_UNDERSTANDING: '1' }, {}, 'rotate the oauth tokens and secrets', async () => MODEL);
+    const auth = await simulate({ MYSHELL_UNDERSTANDING: '1' }, 'rotate the oauth tokens and secrets', async () => MODEL);
     assert.equal(auth.highStakes, true, 'auth/secrets is high-stakes (web research eligible)');
-    const plain = await simulate({ MYSHELL_UNDERSTANDING: '1' }, {}, 'add a dark mode toggle to the settings page', async () => MODEL);
+    const plain = await simulate({ MYSHELL_UNDERSTANDING: '1' }, 'add a dark mode toggle to the settings page', async () => MODEL);
     assert.equal(plain.highStakes, false, 'a plain UI feature is not high-stakes');
   });
 });
