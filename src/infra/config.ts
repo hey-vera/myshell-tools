@@ -248,7 +248,7 @@ export interface AppConfig {
    * Bounded concurrent multi-goal SCHEDULER (smart auto default ON for /goal). 
    * /goal always decomposes (cost-honest fallback to 1 spec for sequential/single-piece work)
    * then optionally runs via `runSchedule` (DAG deps, pressure-aware caps, per-goal contracts + brain re-val).
-   * Explicit OFF via MYSHELL_SCHEDULER=0/false/off/no (or config). MYSHELL_PARALLEL alias supported.
+   * Explicit OFF via MYSHELL_SCHEDULER=0/false/off/no (or config).
    * Parallel work only when genuinely independent + sufficient providers/pressure headroom.
    * it exercises the merge/cancel seam ahead of real >1-goal decomposition. The
    * legacy path is unchanged when this is absent/false. See
@@ -503,30 +503,6 @@ export interface AppConfig {
    * src/interface/ui/manager-flag.ts / src/core/goal-manager.ts.
    */
   experimentalManager?: boolean;
-  /**
-   * EXPERIMENTAL LOGICAL ROLE ABSTRACTION (redesign Phase 0, slice 1; default off).
-   * When true (or with `MYSHELL_ROLES` ∈ {1,true,on,yes} in the environment) the
-   * provider-agnostic role layer (src/core/roles.ts — chat / ghost / execution
-   * resolution + the mode→rung/effort mapping) is permitted to participate. This is
-   * SCAFFOLDING ONLY: the role functions are pure and NOT yet consumed by the live
-   * orchestrate/route path, so this flag changes ZERO behavior today regardless of
-   * its value — `orchestrate` never reads role data and the `OrchestrateDeps.roleMapping`
-   * seam is a purely-additive, never-read field. Absent/false → byte-for-byte today's
-   * behavior. See src/interface/ui/role-flag.ts and docs/one-chat-redesign-plan.md.
-   */
-  experimentalRoles?: boolean;
-  /**
-   * EXPERIMENTAL 5-LEVEL FIREPOWER DIAL (redesign Phase 0, slice 2; default off).
-   * When true (or with `MYSHELL_LEVEL_DIAL` ∈ {1,true,on,yes} in the environment)
-   * the 5-level dial (src/core/mode-levels.ts — Budget / Balanced / High / Max /
-   * Auto) is permitted to participate. This is SCAFFOLDING ONLY: the level mapping
-   * functions are pure and NOT yet consumed by the live orchestrate/route path, so
-   * this flag changes ZERO behavior today regardless of its value — `orchestrate`
-   * never reads a level and the live path keeps reading `config.mode` exactly as
-   * today. Absent/false → byte-for-byte today's behavior. See
-   * src/interface/ui/level-flag.ts and docs/one-chat-redesign-plan.md.
-   */
-  experimentalLevelDial?: boolean;
   /**
    * DRAFT GOALS — "chat → draft goal" (redesign Phase 1 spine; default-on via
    * experimentalEnabledByDefault). When true (or with `MYSHELL_DRAFT_GOALS` ∈
