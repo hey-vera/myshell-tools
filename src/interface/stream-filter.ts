@@ -59,9 +59,8 @@ export interface OutputSink {
    * GoalStore snapshot, flipping the board ON (`enabled`). Only the Ink sink
    * implements it — it dispatches a `board/sync` action into the reducer store so
    * the board renders across turns; legacy stdout / test sinks have no live region
-   * and leave it undefined (byte-for-byte unchanged). The menu invokes it as
-   * `out.syncBoard?.(rows)` ONLY when the board flag is on, so when the flag is off
-   * the action never fires and `UiState.boardEnabled` stays false.
+   * and leave it undefined (byte-for-byte unchanged). The board is unconditional
+   * (shipped-on); this method is the delivery seam for the Ink UI path.
    */
   syncBoard?(rows: readonly GoalBoardRow[]): void;
   /**

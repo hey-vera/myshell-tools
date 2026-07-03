@@ -560,8 +560,7 @@ export interface WorkCallInput {
    * LAYER B (auto-brain escalation): when true, a candidate that FAILS its
    * objective check after the bounded repair escalates the tier and RETRIES
    * instead of finalizing — the live within-turn self-correction loop. Set by
-   * orchestrate when the auto-brain flag is on. DEFAULT (absent/false) → the loop
-   * finalizes on objective failure exactly as before (byte-for-byte neutrality).
+   * orchestrate when the auto-brain layer is active (unconditional).
    */
   readonly autoBrainEscalation?: boolean;
   /** Hard provider-invocation cap for this turn. Absent means unbounded by Governor. */
@@ -1183,7 +1182,7 @@ export async function* runWorkCall(input: WorkCallInput): AsyncGenerator<CoreEve
     return candidate;
   }
 
-  // LAYER B (auto-brain escalation) — live only when the auto-brain flag is on.
+  // LAYER B (auto-brain escalation) — unconditional.
   const layerBOn = autoBrainEscalation === true;
 
   const gateAcceptedRun = async function* (
@@ -1656,8 +1655,7 @@ export async function* runWorkCall(input: WorkCallInput): AsyncGenerator<CoreEve
     });
 
     // --- Yield tier-done ---
-    // Native session telemetry: emitted only when MYSHELL_NATIVE_SESSIONS_PROMOTE
-    // is on. Records the estimated token savings from skipping history replay.
+    // Native session telemetry (MYSHELL_NATIVE_SESSIONS_PROMOTE — unconditional).
     let nativeTelemetry: import('./native-session-telemetry.js').NativeSessionTelemetry | undefined;
     if (deps.nativeSessionsPromote === true) {
       nativeTelemetry = buildNativeSessionTelemetry({

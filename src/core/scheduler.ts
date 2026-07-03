@@ -248,9 +248,8 @@ export interface ScheduleDeps {
     */
   readonly maxActive?: number;
   /**
-   * Blocked-state terminal flag (MYSHELL_BLOCKED_STATE_V1). When true, dependency
-   * skip finals include a blocked record with dependency_blocked code.
-   * DEFAULT ABSENT → byte-identical to today.
+   * Blocked-state terminal flag (MYSHELL_BLOCKED_STATE_V1 — unconditional).
+   * Dependency skip finals include a blocked record with dependency_blocked code.
    */
   readonly blockedStateV1?: boolean;
 }
