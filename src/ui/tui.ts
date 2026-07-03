@@ -187,8 +187,7 @@ export function sectionBox(
 
   rows.push(ansiDim(ROUNDED.tl + ROUNDED.h.repeat(total) + ROUNDED.tr, color));
 
-  for (let i = 0; i < sections.length; i++) {
-    const section = sections[i]!;
+  for (const [i, section] of sections.entries()) {
     for (const line of section) {
       rows.push(ansiDim(ROUNDED.v, color) + fit(line) + ansiDim(ROUNDED.v, color));
     }
