@@ -96,11 +96,8 @@ import { inkEnabled } from './interface/ui/flag.js';
 import { verifyEnabled } from './interface/ui/verify-flag.js';
 import { trustEnabled } from './interface/ui/trust-flag.js';
 import { experimentalEnabledByDefault } from './interface/ui/experimental-default.js';
-import { cacheAccountingV2Enabled } from './interface/ui/cache-accounting-flag.js';
-import { accountAuxEnabled } from './interface/ui/account-aux-flag.js';
 import { intentStoreV1Enabled } from './interface/ui/intent-store-flag.js';
 import { blockedStateV1Enabled } from './interface/ui/blocked-state-flag.js';
-import { evidenceReceiptV2Enabled } from './interface/ui/evidence-receipt-flag.js';
 import { nativeSessionsPromoteEnabled } from './interface/ui/native-sessions-promote-flag.js';
 import { createTurnCallBudget } from './core/turn-call-budget.js';
 import { createIntentStore } from './infra/intent-store.js';
@@ -317,37 +314,29 @@ function buildDeps(
 
   const ledger = createLedger({ cwd });
   const session = createSessionWriter({ cwd, id: systemClock.uuid() });
-  const accountAuxOn = accountAuxEnabled(process.env);
   const intentStoreOn = intentStoreV1Enabled(process.env);
   const intentStore = intentStoreOn ? createIntentStore({ cwd }) : undefined;
   const blockedStateOn = blockedStateV1Enabled(process.env);
-  const evidenceReceiptOn = evidenceReceiptV2Enabled(process.env);
   const nativeSessionsPromoteOn = nativeSessionsPromoteEnabled(process.env);
-  const intentVersionId = accountAuxOn || intentStoreOn ? systemClock.uuid() : undefined;
+  const intentVersionId = systemClock.uuid();
 
-  // Per-run receipt ledger wrapper: capture entries for the receipt.
+  // Per-turn receipt ledger wrapper: always captures entries for the receipt.
   const receiptLedgerEntries: LedgerEntry[] = [];
-  const turnLedger: LedgerWriter = evidenceReceiptOn
-    ? {
-        async record(entry: LedgerEntry): Promise<void> {
-          receiptLedgerEntries.push(entry);
-          await ledger.record(entry);
-        },
-      }
-    : ledger;
+  const turnLedger: LedgerWriter = {
+    async record(entry: LedgerEntry): Promise<void> {
+      receiptLedgerEntries.push(entry);
+      await ledger.record(entry);
+    },
+  };
 
   return {
     clock: systemClock,
     session,
     ledger: turnLedger,
-    ...(cacheAccountingV2Enabled(process.env) ? { cacheAccountingV2: true } : {}),
-    ...(accountAuxOn && intentVersionId !== undefined
-      ? { accountAux: true, intentVersionId }
-      : {}),
+    cacheAccountingV2: true,
+    accountAux: true,
+    intentVersionId,
     ...(intentStore !== undefined ? { intentStore } : {}),
-    ...(!accountAuxOn && intentVersionId !== undefined
-      ? { intentVersionId }
-      : {}),
     policy,
     providers,
     cwd,
@@ -366,12 +355,8 @@ function buildDeps(
       ? { toolStateContext }
       : {}),
     ...(blockedStateOn ? { blockedStateV1: true } : {}),
-    ...(evidenceReceiptOn
-      ? {
-          evidenceReceiptV2: true,
-          receiptLedgerSnapshot: () => receiptLedgerEntries,
-        }
-      : {}),
+    evidenceReceiptV2: true,
+    receiptLedgerSnapshot: () => receiptLedgerEntries,
     ...(nativeSessionsPromoteOn ? { nativeSessionsPromote: true } : {}),
   };
 }
@@ -663,15 +648,11 @@ async function main(): Promise<void> {
               ...(baseDeps.authenticatedProviders !== undefined
                 ? { authenticatedProviders: baseDeps.authenticatedProviders }
                 : {}),
-              ...(baseDeps.accountAux === true
-                ? {
-                    accountAux: true,
-                    ledger: baseDeps.ledger,
-                    clock: baseDeps.clock,
-                    sessionId: baseDeps.session.id,
-                    ...(baseDeps.cacheAccountingV2 === true ? { cacheAccountingV2: true } : {}),
-                  }
-                : {}),
+              accountAux: true,
+              ledger: baseDeps.ledger,
+              clock: baseDeps.clock,
+              sessionId: baseDeps.session.id,
+              cacheAccountingV2: true,
               turnCallBudget: evalBudget,
             });
             const extraction = normalizeExtraction(await legacyExtractor(task, signal));
@@ -735,15 +716,11 @@ async function main(): Promise<void> {
             ...(baseDeps.authenticatedProviders !== undefined
               ? { authenticatedProviders: baseDeps.authenticatedProviders }
               : {}),
-            ...(baseDeps.accountAux === true
-              ? {
-                  accountAux: true,
-                  ledger: baseDeps.ledger,
-                  clock: baseDeps.clock,
-                  sessionId: baseDeps.session.id,
-                  ...(baseDeps.cacheAccountingV2 === true ? { cacheAccountingV2: true } : {}),
-                }
-              : {}),
+            accountAux: true,
+            ledger: baseDeps.ledger,
+            clock: baseDeps.clock,
+            sessionId: baseDeps.session.id,
+            cacheAccountingV2: true,
             turnCallBudget: evalBudget,
           });
           const extraction = await realExtractor(task, signal);
@@ -987,7 +964,7 @@ async function main(): Promise<void> {
             ledger: deps.ledger,
             clock: deps.clock,
             sessionId: deps.session.id,
-            ...(deps.cacheAccountingV2 === true ? { cacheAccountingV2: true } : {}),
+            cacheAccountingV2: true,
           }
         : {}),
       ...(runBudget !== undefined ? { turnCallBudget: runBudget } : {}),
@@ -1314,7 +1291,7 @@ async function main(): Promise<void> {
             ledger: baseDeps.ledger,
             clock: baseDeps.clock,
             sessionId: baseDeps.session.id,
-            ...(baseDeps.cacheAccountingV2 === true ? { cacheAccountingV2: true } : {}),
+            cacheAccountingV2: true,
           }
         : {}),
     });

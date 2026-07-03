@@ -360,33 +360,32 @@ export interface OrchestrateDeps {
   readonly session: SessionWriter;
   readonly ledger: LedgerWriter;
   /**
-   * Whether cache-aware effective cost accounting is enabled
-   * (MYSHELL_CACHE_ACCOUNTING_V2 flag). Absent/false means no ledger
-   * cache-write field and old cost math.
+   * Whether cache-aware effective cost accounting is enabled.
+   * Always true — cache-write field and effective cost math are unconditional.
    */
   readonly cacheAccountingV2?: boolean;
   readonly accountAux?: boolean;
   readonly intentVersionId?: string;
   /**
-   * Whether MYSHELL_EVIDENCE_RECEIPT_V2 is on. When on, a proof-of-done
-   * receipt is attached to terminal finals. Default off.
+   * Whether evidence receipt is on. When on, a proof-of-done
+   * receipt is attached to terminal finals. Now always active.
    */
   readonly evidenceReceiptV2?: boolean;
   /**
-   * When evidenceReceiptV2 is on, captures this turn's ledger entries so the
+   * Captures this turn's ledger entries so the
    * receipt can report cache-adjusted cost and aux-call breakdown without
    * reading files or racing concurrent sessions.
    */
   readonly receiptLedgerSnapshot?: () => readonly LedgerEntry[];
   /**
-   * When evidenceReceiptV2 is on, the providers currently in rate-limit cooldown
+   * The providers currently in rate-limit cooldown
    * and their expiry epoch-ms. The receipt builder uses deps.clock to compute
    * the remaining time so the receipt can show honest cooldown status without
    * fabricating headroom. Absent → receipt omits cooldown lines gracefully.
    */
   readonly cooldownUntil?: ReadonlyMap<ProviderId, number>;
   /**
-   * When evidenceReceiptV2 is on, the per-provider session token consumption
+   * The per-provider session token consumption
    * total so far. Tracked by the conversation layer (the same
    * sessionConsumption map that deriveLiveProviderOrder uses). Absent →
    * receipt shows this-turn tokens only; still fully honest.
@@ -1300,9 +1299,8 @@ export type CoreEvent =
        */
       readonly blocked?: import('./blocked.js').BlockedRecord;
       /**
-       * Evidence receipt (MYSHELL_EVIDENCE_RECEIPT_V2). Attached only when the
-       * flag is on. Reports the proof-of-done verdict, changed files, commands,
-       * tests, cost, and ledger breakdown.
+       * Evidence receipt. Reports the proof-of-done verdict, changed files,
+       * commands, tests, cost, and ledger breakdown.
        */
       readonly receipt?: import('./evidence-receipt.js').EvidenceReceiptV2;
       /**

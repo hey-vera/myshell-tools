@@ -49,7 +49,7 @@ export function buildPreflightDeps(
 > {
   const { providers, policy, cwd, timeoutMs, sandbox, availableModels, authenticatedProviders } = input;
   const { config, env, autoMode, intentPass } = input;
-  const { accountAux, ledger, clock, sessionId, cacheAccountingV2 } = input;
+  const { accountAux, ledger, clock, sessionId } = input;
   const { memoryBias, turnCallBudget } = input;
 
   // Route classifier — smart routing, worker-tier model call to disambiguate tier.
@@ -74,7 +74,7 @@ export function buildPreflightDeps(
                 ledger,
                 clock,
                 sessionId,
-                ...(cacheAccountingV2 ? { cacheAccountingV2: true } : {}),
+                cacheAccountingV2: true,
               }
             : {}),
           ...(turnCallBudget !== undefined ? { turnCallBudget } : {}),
@@ -104,7 +104,7 @@ export function buildPreflightDeps(
                 ledger,
                 clock,
                 sessionId,
-                ...(cacheAccountingV2 ? { cacheAccountingV2: true } : {}),
+                cacheAccountingV2: true,
               }
             : {}),
           ...(turnCallBudget !== undefined ? { turnCallBudget } : {}),
@@ -133,7 +133,7 @@ export function buildPreflightDeps(
           ledger,
           clock,
           sessionId,
-          ...(cacheAccountingV2 ? { cacheAccountingV2: true } : {}),
+          cacheAccountingV2: true,
         }
       : {}),
   } as const;

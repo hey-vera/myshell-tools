@@ -421,8 +421,8 @@ describe('Candidate Quality Gate', () => {
     };
   }
 
-  it('evidenceReceiptV2 off leaves final without receipt', async () => {
-    const localDeps = deps();
+  it('evidenceReceiptV2 always on attaches receipt to final', async () => {
+    const localDeps = depsWithReceipt();
     const events = await collect(runCandidateQualityGate({
       deps: localDeps,
       candidate: candidate(),
@@ -432,7 +432,7 @@ describe('Candidate Quality Gate', () => {
     }));
     const final = events.at(-1);
     assert.equal(final?.type, 'final');
-    assert.equal(final?.type === 'final' && final.receipt === undefined, true);
+    assert.equal(final?.type === 'final' && final.receipt !== undefined, true);
   });
 
   it('evidenceReceiptV2 on attaches verified receipt after passing verification', async () => {

@@ -121,14 +121,18 @@ describe('makeRouteClassifier', () => {
       clock = makeFakeClock();
     });
 
-    it('MYSHELL_ACCOUNT_AUX off records no route ledger entry', async () => {
+    it('MYSHELL_ACCOUNT_AUX always on records route ledger entry', async () => {
       const provider = fakeProvider([{ type: 'done', text: '{"tier":"worker","plan":false,"reason":"ok"}', raw: {} }]);
       const classify = makeRouteClassifier({
         ...baseDeps(provider),
+        accountAux: true,
+        ledger: fakeLedger,
+        clock,
+        sessionId: 'sess-test',
       });
       const s = await classify('hello', SIGNAL);
       assert.notEqual(s, null);
-      assert.equal(ledger.length, 0, 'no ledger entry when aux is off');
+      assert.equal(ledger.length, 1, 'always records ledger entry');
     });
 
     it('MYSHELL_ACCOUNT_AUX on records route stage usage cost and intentVersionId', async () => {

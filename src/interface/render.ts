@@ -909,7 +909,7 @@ export async function renderStream(
         // completion/error line so the conversation reads in order.
         prose.flush();
 
-        // Render evidence receipt when present (MYSHELL_EVIDENCE_RECEIPT_V2).
+        // Render evidence receipt when present.
         // Append after any advisory notice and before the terminal completion line.
         function renderReceipt(): void {
           const finalEv = ev as Extract<CoreEvent, { type: 'final' }>;

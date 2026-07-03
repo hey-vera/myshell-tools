@@ -364,8 +364,8 @@ export async function* orchestrate(
   const preflightGuardOn = depsArg.preflightGuard === true;
   let blockingCallsSoFar = depsArg.observedBlockingCalls ?? 0;
 
-  // MYSHELL_ACCOUNT_AUX intent-version correlation seam.
-  // When accountAux is ON, every aux and work ledger entry written this turn
+  // Account aux intent-version correlation seam (always on).
+  // Every aux and work ledger entry written this turn
   // shares the same intentVersionId for correlation. When intentStore is present
   // (MYSHELL_INTENT_STORE_V1), the id is also used for the persisted intent version.
   // Pre-minted or generated here as a fallback.

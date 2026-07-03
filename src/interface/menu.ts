@@ -236,15 +236,12 @@ import { tribunalEnabled } from './ui/tribunal-flag.js';
 import { byproductFallbackEnabled } from './ui/byproduct-fallback-flag.js';
 import { draftGoalsEnabled } from './ui/draft-goals-flag.js';
 import { experimentalEnabledByDefault } from './ui/experimental-default.js';
-import { cacheAccountingV2Enabled } from './ui/cache-accounting-flag.js';
-import { accountAuxEnabled } from './ui/account-aux-flag.js';
 import { subscriptionsEnabled } from './ui/subscriptions-flag.js';
 import { accountParallelismEnabled } from './ui/account-parallelism-flag.js';
 import { readSubscriptions, type SubscriptionAccount, type SubscriptionProvider, type SubscriptionsFileV1 } from '../infra/subscriptions.js';
 import { intentStoreV1Enabled } from './ui/intent-store-flag.js';
 import { correctionForkV1Enabled } from './ui/correction-fork-flag.js';
 import { blockedStateV1Enabled } from './ui/blocked-state-flag.js';
-import { evidenceReceiptV2Enabled } from './ui/evidence-receipt-flag.js';
 import { nativeSessionsPromoteEnabled, nativeSessionsEffectiveEnabled } from './ui/native-sessions-promote-flag.js';
 import { createIntentStore } from '../infra/intent-store.js';
 import { nodeVerifyPort } from '../infra/verify-port.js';
@@ -761,15 +758,11 @@ export async function runChatLoop(
       sandbox: helperSandbox(ctx.sandbox),
       ...(Object.keys(availableModels).length > 0 ? { availableModels } : {}),
       ...(authenticatedProviders.length > 0 ? { authenticatedProviders } : {}),
-      ...(accountAuxOn
-        ? {
-            accountAux: true,
-            ledger: accountingLedger,
-            clock: ctx.clock,
-            sessionId: convId,
-            ...(cacheAccountingOn ? { cacheAccountingV2: true } : {}),
-          }
-        : {}),
+      accountAux: true,
+      ledger: accountingLedger,
+      clock: ctx.clock,
+      sessionId: convId,
+      cacheAccountingV2: true,
     });
   };
 
@@ -875,15 +868,11 @@ export async function runChatLoop(
       ...(systemModel !== undefined ? { systemModel } : {}),
       ...(tasteContext ? { tasteContext } : {}),
       ...(turnCallBudgetParam !== undefined ? { turnCallBudget: turnCallBudgetParam } : {}),
-      ...(accountAuxOn
-        ? {
-            accountAux: true,
-            ledger: accountingLedger,
-            clock: ctx.clock,
-            sessionId: convId,
-            ...(cacheAccountingOn ? { cacheAccountingV2: true } : {}),
-          }
-        : {}),
+      accountAux: true,
+      ledger: accountingLedger,
+      clock: ctx.clock,
+      sessionId: convId,
+      cacheAccountingV2: true,
     });
   };
 
@@ -924,15 +913,11 @@ export async function runChatLoop(
       ...(authenticatedProviders.length > 0 ? { authenticatedProviders } : {}),
       ...(systemModel !== undefined ? { systemModel } : {}),
       ...(tasteContext ? { tasteContext } : {}),
-      ...(accountAuxOn
-        ? {
-            accountAux: true,
-            ledger: accountingLedger,
-            clock: ctx.clock,
-            sessionId: convId,
-            ...(cacheAccountingOn ? { cacheAccountingV2: true } : {}),
-          }
-        : {}),
+      accountAux: true,
+      ledger: accountingLedger,
+      clock: ctx.clock,
+      sessionId: convId,
+      cacheAccountingV2: true,
     });
   };
 
@@ -1041,15 +1026,11 @@ export async function runChatLoop(
       ...(authenticatedProviders.length > 0 ? { authenticatedProviders } : {}),
       ...(repoContext.trim().length > 0 ? { repoContext } : {}),
       ...(highStakes ? { highStakes: true } : {}),
-      ...(accountAuxOn
-        ? {
-            accountAux: true,
-            ledger: accountingLedger,
-            clock: ctx.clock,
-            sessionId: convId,
-            ...(cacheAccountingOn ? { cacheAccountingV2: true } : {}),
-          }
-        : {}),
+      accountAux: true,
+      ledger: accountingLedger,
+      clock: ctx.clock,
+      sessionId: convId,
+      cacheAccountingV2: true,
     });
   };
 
@@ -1371,14 +1352,11 @@ export async function runChatLoop(
       }
     },
   };
-  const accountAuxOn = accountAuxEnabled(process.env);
   const intentStoreOn = intentStoreV1Enabled(process.env);
   const intentStore = intentStoreOn ? createIntentStore({ cwd: ctx.cwd }) : undefined;
-  const cacheAccountingOn = cacheAccountingV2Enabled(process.env);
   const correctionForkOn =
     correctionForkV1Enabled(process.env) && intentStoreOn;
   const blockedStateOn = blockedStateV1Enabled(process.env);
-  const evidenceReceiptOn = evidenceReceiptV2Enabled(process.env);
   const nativeSessionsPromoteOn = nativeSessionsPromoteEnabled(process.env);
       void (async () => {
 
@@ -2198,18 +2176,15 @@ export async function runChatLoop(
         const observedBlockingCalls = autoCtx.upstreamBlockingCalls;
         autoCtx.upstreamBlockingCalls = 0;
 
-        // Per-turn receipt ledger wrapper: when MYSHELL_EVIDENCE_RECEIPT_V2 is on,
-        // capture each ledger entry into a local array while still delegating to the
-        // real ledger. Off path passes the original ledger object unchanged.
+        // Per-turn receipt ledger wrapper: always captures each ledger entry into a
+        // local array while still delegating to the real ledger.
         const receiptLedgerEntries: LedgerEntry[] = [];
-        const turnLedger: LedgerWriter = evidenceReceiptOn
-          ? {
-              async record(entry: LedgerEntry): Promise<void> {
-                receiptLedgerEntries.push(entry);
-                await accountingLedger.record(entry);
-              },
-            }
-          : accountingLedger;
+        const turnLedger: LedgerWriter = {
+          async record(entry: LedgerEntry): Promise<void> {
+            receiptLedgerEntries.push(entry);
+            await accountingLedger.record(entry);
+          },
+        };
 
         // CURRENT GOALS / PLAN block (the partner's OWN plan). `goalStore` is created
         // AFTER buildDeps is defined, so we read it through the lazy
@@ -2376,7 +2351,7 @@ export async function runChatLoop(
         );
         const evidenceTurnNumber = hist.filter((entry) => entry.role === 'user').length + 1;
 
-        const intentVersionId = accountAuxOn || intentStoreOn ? ctx.clock.uuid() : undefined;
+        const intentVersionId = ctx.clock.uuid();
 
         const preflightDeps = buildPreflightDeps({
           providers: ctx.providers,
@@ -2390,15 +2365,11 @@ export async function runChatLoop(
           env: process.env,
           autoMode: effectiveMode,
           intentPass: shedPlan.intentPass,
-          ...(accountAuxOn
-            ? {
-                accountAux: true,
-                ledger: turnLedger,
-                clock: ctx.clock,
-                sessionId: convId,
-                ...(cacheAccountingOn ? { cacheAccountingV2: true } : {}),
-              }
-            : {}),
+          accountAux: true,
+          ledger: turnLedger,
+          clock: ctx.clock,
+          sessionId: convId,
+          cacheAccountingV2: true,
           ...(taste?.memoryBias !== undefined && taste.memoryBias !== 0
             ? { memoryBias: taste.memoryBias }
             : {}),
@@ -2409,14 +2380,10 @@ export async function runChatLoop(
           clock: ctx.clock,
           session: ctx.store.writer(convId),
           ledger: turnLedger,
-          ...(cacheAccountingOn ? { cacheAccountingV2: true } : {}),
-          ...(accountAuxOn && intentVersionId !== undefined
-            ? { accountAux: true, intentVersionId }
-            : {}),
+          cacheAccountingV2: true,
+          accountAux: true,
+          intentVersionId,
           ...(intentStore !== undefined ? { intentStore } : {}),
-          ...(!accountAuxOn && intentVersionId !== undefined
-            ? { intentVersionId }
-            : {}),
           policy,
           providers: ctx.providers,
           cwd: ctx.cwd,
@@ -2479,17 +2446,12 @@ export async function runChatLoop(
           )
             ? { draftGoals: true }
             : {}),          ...(nativeSession.length > 0 ? { nativeSession } : {}),
-          // Evidence receipt: when the flag is on, pass the flag + the captured
-          // per-turn ledger snapshot so accept-stage / work-call can assemble the
-          // proof-of-done receipt from EXISTING data. Off → absent → byte-identical.
-          ...(evidenceReceiptOn
-            ? {
-                evidenceReceiptV2: true,
-                receiptLedgerSnapshot: () => receiptLedgerEntries,
-                ...(providerCooldownUntil.size > 0 ? { cooldownUntil: providerCooldownUntil } : {}),
-                ...(Object.keys(sessionConsumption).length > 0 ? { sessionTokensForReceipt: sessionConsumption } : {}),
-              }
-            : {}),
+          // Evidence receipt: always passes the captured per-turn ledger snapshot
+          // so accept-stage / work-call can assemble the proof-of-done receipt.
+          evidenceReceiptV2: true,
+          receiptLedgerSnapshot: () => receiptLedgerEntries,
+          ...(providerCooldownUntil.size > 0 ? { cooldownUntil: providerCooldownUntil } : {}),
+          ...(Object.keys(sessionConsumption).length > 0 ? { sessionTokensForReceipt: sessionConsumption } : {}),
           // Native session promotion: pass the flag so work-call can emit telemetry.
           // Existing config.nativeSessions===true continues unchanged (effective-
           // enabled helper already combined them above for planNativeSession).
