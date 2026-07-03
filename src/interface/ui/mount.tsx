@@ -624,15 +624,12 @@ export function mountInk(opts: InkMountOptions): InkMountHandle {
   // are on, only the Control Panel route is armed; the Goals bridge is explicitly
   // cleared so goals-panel actions become no-ops (the mount invariant ensures at
   // most one route is armed).
-  const goalsPanelOn = configureGoalsPanelStore(store, opts.env, opts.config);
-  const controlPanelOn = configureControlPanelStore(store, opts.env, opts.config);
-  if (controlPanelOn) {
-    bridge.onControlPanelAction((a) => store.dispatch(a));
-    bridge.onGoalsPanelAction(null);
-  } else {
-    bridge.onControlPanelAction(null);
-    bridge.onGoalsPanelAction(goalsPanelOn ? (a) => store.dispatch(a) : null);
-  }
+  // Phase 1: Control Panel always reachable (temporary unconditional arm —
+  // Phase 3 deletes the flag). Always dispatch enabled:true and arm the
+  // Control Panel bridge regardless of the env/config flag value.
+  store.dispatch({ type: 'control-panel/configure', enabled: true });
+  bridge.onControlPanelAction((a) => store.dispatch(a));
+  bridge.onGoalsPanelAction(null);
   const out = createInkOutputSink(store, { color: opts.color, isTty: opts.isTty });
   const reader = createInkLineReader(bridge);
   const renderTurn = createTurnDriver(store, { color: opts.color, isTty: opts.isTty });
