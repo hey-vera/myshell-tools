@@ -98,6 +98,9 @@ export function tailStreamToRows(buffer: string, columns: number, cap: number): 
 /** Rows the pinned <InputBox> occupies at rest: top border + caret row + bottom
  *  border. The single-line default; a multiline/pasted composer is taller. */
 export const INPUT_ROWS = 3;
+/** The single-row BottomLegend pinned under the chat composer. Reserved from the
+ *  viewport budget so the stream never overlaps it. */
+export const LEGEND_ROWS = 1;
 /**
  * The composer body's MAX_VISIBLE_ROWS cap (InputBox.tsx clamps a huge paste to
  * its last N *logical* rows). Kept here so the layout budget and the editor agree

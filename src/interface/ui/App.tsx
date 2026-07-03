@@ -15,7 +15,8 @@ import { Stream, CommittedLine } from './Stream.js';
 import { StatusBlock } from './StatusBlock.js';
 import { GoalsPanel } from './GoalsPanel.js';
 import { ControlPanel } from './ControlPanel.js';
-import { layoutForHeight, streamWrappedRows, tailStreamToRows, INPUT_ROWS } from './layout.js';
+import { BottomLegend } from './BottomLegend.js';
+import { layoutForHeight, streamWrappedRows, tailStreamToRows, INPUT_ROWS, LEGEND_ROWS } from './layout.js';
 import { backfillTerminalSize } from './mount.js';
 import type { Action, TranscriptLine, UiState } from './state.js';
 
@@ -44,6 +45,7 @@ export type GoalsPanelBridgeAction =
  */
 export type ControlPanelBridgeAction =
   | Extract<Action, { type: 'control-panel/toggle' }>
+  | Extract<Action, { type: 'control-panel/open' }>
   | Extract<Action, { type: 'control-panel/close' }>
   | Extract<Action, { type: 'control-panel/set-section' }>
   | Extract<Action, { type: 'control-panel/highlight-goal' }>;
@@ -620,7 +622,7 @@ function AppBody({
     // past the viewport. The planner shrinks the stream/status region to fit; the
     // InputBox itself caps its own visible physical rows to the viewport (keeping
     // the caret/tail row) for an extreme paste, so the total is ALWAYS <= viewport.
-    const plan = layoutForHeight(uiState, budgetRows, streamLines, inputBoxRows);
+    const plan = layoutForHeight(uiState, budgetRows, streamLines, inputBoxRows + LEGEND_ROWS);
     const cappedStreamBuffer = tailStreamToRows(uiState.stream.buffer, liveColumns, plan.streamCap);
     return { streamLines, plan, cappedStreamBuffer };
     // The keys are EXACTLY the inputs layoutForHeight / streamWrappedRows /
@@ -740,6 +742,8 @@ function AppBody({
           onStdinControl={bridge.attachStdinControl}
           onEscape={() => bridge.interrupt()}
           onToggleFullscreenPanel={() => bridge.routeControlPanelAction({ type: 'control-panel/toggle' }) || bridge.routeGoalsPanelAction({ type: 'goals-panel/toggle' })}
+          onEmptyLeft={() => { bridge.input._submit?.('/back'); }}
+          onEmptyRight={() => { bridge.routeControlPanelAction({ type: 'control-panel/open' }); }}
           readPending={() => bridge._keyResolver != null || bridge._menuCaptureActive}
           onReadKey={(input, key) => {
             const normalized = normalizeInkKey(input, key);
@@ -752,6 +756,9 @@ function AppBody({
             }
           }}
         />
+        {!fullscreenPanelOpen && chatActive && (
+          <BottomLegend color={color} columns={liveColumns} />
+        )}
       </Box>
     );
   }
@@ -771,6 +778,8 @@ function AppBody({
         onStdinControl={bridge.attachStdinControl}
         onEscape={() => bridge.interrupt()}
         onToggleFullscreenPanel={() => bridge.routeControlPanelAction({ type: 'control-panel/toggle' }) || bridge.routeGoalsPanelAction({ type: 'goals-panel/toggle' })}
+        onEmptyLeft={() => { bridge.input._submit?.('/back'); }}
+        onEmptyRight={() => { bridge.routeControlPanelAction({ type: 'control-panel/open' }); }}
         readPending={() => bridge._keyResolver != null || bridge._menuCaptureActive}
         onReadKey={(input, key) => {
           const normalized = normalizeInkKey(input, key);
@@ -785,6 +794,9 @@ function AppBody({
         pressure={0}
         dynamicWorldItems={[]}
       />
+      {chatActive && (
+        <BottomLegend color={color} columns={liveColumns} />
+      )}
     </Box>
   );
 }

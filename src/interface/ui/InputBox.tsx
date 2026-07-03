@@ -193,6 +193,20 @@ export interface InputBoxProps {
    */
   readonly readPending?: (() => boolean) | undefined;
   /**
+   * Empty-buffer Left arrow handler. When the edit buffer is empty and a bare
+   * Left arrow is pressed, the editor calls this INSTEAD of cursor movement to
+   * signal "return to main menu". Non-empty buffer keeps moving the cursor as
+   * before. Word-movement (Ctrl/Meta+Left) is unchanged. Optional.
+   */
+  readonly onEmptyLeft?: (() => void) | undefined;
+  /**
+   * Empty-buffer Right arrow handler. When the edit buffer is empty and a bare
+   * Right arrow is pressed, the editor calls this INSTEAD of cursor movement to
+   * open the Control Panel. Non-empty buffer keeps moving the cursor as before.
+   * Word-movement (Ctrl/Meta+Right) is unchanged. Optional.
+   */
+  readonly onEmptyRight?: (() => void) | undefined;
+  /**
    * Resolve a pending single-key read with a key delivered to the editor's stable
    * `useInput` consumer. The editor itself never mutates for such a key. Only called
    * while `readPending()` is true. Optional. See App.readKey().
@@ -321,6 +335,8 @@ export function InputBox({
   onMeasureRows,
   pressure = 0,
   dynamicWorldItems,
+  onEmptyLeft,
+  onEmptyRight,
 }: InputBoxProps): React.ReactElement {
   const { setRawMode, isRawModeSupported } = useStdin();
   const [value, setValue] = useState('');
@@ -485,6 +501,22 @@ export function InputBox({
       // match the legacy single-line feel, treat bare delete as backspace.
       if (cursor > 0) replace(value.slice(0, cursor - 1) + value.slice(cursor), cursor - 1);
       return;
+    }
+
+    // --- Empty-buffer arrow nav -------------------------------------------------
+    // When the edit buffer is EMPTY, bare Left returns to menu and bare Right
+    // opens the Control Panel. Word-movement chords (Ctrl/Meta+arrow) pass through
+    // to the existing handler (a no-op on empty). When the buffer is NON-EMPTY,
+    // Left/Right keep moving the cursor exactly as before (handled below).
+    if (value === '' && !key.meta && !key.ctrl) {
+      if (key.leftArrow) {
+        onEmptyLeft?.();
+        return;
+      }
+      if (key.rightArrow) {
+        onEmptyRight?.();
+        return;
+      }
     }
 
     // --- Cursor movement -----------------------------------------------------

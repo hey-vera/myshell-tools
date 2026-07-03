@@ -140,3 +140,49 @@ test('App body throw: boundary restores cooked mode, resolves pending readKey wi
   assert.equal(cooked, true, 'cooked mode must be restored on teardown');
   assert.ok(fatal !== null, 'onFatalError (reader.close + unmount delegate) must run');
 });
+
+// ---------------------------------------------------------------------------
+// BottomLegend rendering (Phase 1 — PANEL-NAV-SPEC)
+// ---------------------------------------------------------------------------
+
+test('BottomLegend renders with chatActive=true and no fullscreen panel', async () => {
+  const bridge = createInkAppBridge();
+  bridge._setUiState = () => {};
+  const { lastFrame } = render(<App bridge={bridge} color={false} isTty={false} columns={80} />);
+  // Chat active, no fullscreen panel → legend should appear.
+  bridge.setChatActive(true);
+  bridge.pushState(initialState);
+  await new Promise((r) => setTimeout(r, 50));
+  const frame = lastFrame() ?? '';
+  // Strip ANSI for plain-text matching.
+  const plainFrame = frame.replace(/\x1b\[[0-9;]*m/g, '');
+  assert.ok(plainFrame.includes('back to menu'), `legend must show "back to menu", got:\n${plainFrame}`);
+  assert.ok(plainFrame.includes('control panel'), `legend must show "control panel", got:\n${plainFrame}`);
+  assert.ok(plainFrame.includes('\u2192'), `legend must show right arrow glyph, got:\n${plainFrame}`);
+});
+
+test('BottomLegend hidden when chatActive=false (menu)', async () => {
+  const bridge = createInkAppBridge();
+  const { lastFrame } = render(<App bridge={bridge} color={false} isTty={false} columns={80} />);
+  bridge.pushState(initialState);
+  await new Promise((r) => setTimeout(r, 50));
+  const frame = lastFrame() ?? '';
+  const plainFrame = frame.replace(/\x1b\[[0-9;]*m/g, '');
+  assert.ok(!plainFrame.includes('back to menu'), `legend must NOT show at menu, got:\n${plainFrame}`);
+  assert.ok(!plainFrame.includes('control panel'), `legend must NOT show at menu, got:\n${plainFrame}`);
+});
+
+test('BottomLegend hidden while Control Panel is open', async () => {
+  const bridge = createInkAppBridge();
+  bridge._setUiState = () => {};
+  const { lastFrame } = render(<App bridge={bridge} color={false} isTty={false} columns={80} />);
+  bridge.setChatActive(true);
+  const state = { ...initialState, controlPanel: { enabled: true, open: true, activeSection: 'goals' as const } };
+  bridge.pushState(state);
+  await new Promise((r) => setTimeout(r, 50));
+  const frame = lastFrame() ?? '';
+  const plainFrame = frame.replace(/\x1b\[[0-9;]*m/g, '');
+  assert.ok(!plainFrame.includes('back to menu'), `legend must NOT show when CP is open, got:\n${plainFrame}`);
+  assert.ok(!plainFrame.includes('control panel'), `legend must NOT show when CP is open, got:\n${plainFrame}`);
+  assert.ok(plainFrame.includes('CONTROL PANEL'), `CP must render, got:\n${plainFrame}`);
+});

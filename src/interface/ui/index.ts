@@ -40,6 +40,7 @@ export {
   streamWrappedRows,
   tailStreamToRows,
   INPUT_ROWS,
+  LEGEND_ROWS,
   STATUS_LINE_ROWS,
   SUMMARY_LINE_ROWS,
   PANEL_BORDER_ROWS,
