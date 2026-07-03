@@ -74,8 +74,8 @@ function baseState(over: Partial<UiState> = {}): UiState {
     tokens: { turn: 0, session: 0 },
     board: [],
     boardEnabled: false,
-    goalsPanel: { enabled: false, open: false },
-    controlPanel: { enabled: false, open: false, activeSection: 'goals' },
+    goalsPanel: {},
+    controlPanel: { open: false, activeSection: 'goals' },
     ...over,
   };
 }
@@ -417,12 +417,10 @@ describe('buildControlPanelModel quotaLabel', () => {
 // ---------------------------------------------------------------------------
 
 describe('buildControlPanelModel settings', () => {
-  it('fixed order: board, standalone Goals Panel, Control Panel', () => {
+  it('fixed order: board only', () => {
     const m = buildControlPanelModel(baseState());
-    assert.strictEqual(m.settings.length, 3);
+    assert.strictEqual(m.settings.length, 1);
     assert.strictEqual(m.settings[0].id, 'board');
-    assert.strictEqual(m.settings[1].id, 'goals-panel');
-    assert.strictEqual(m.settings[2].id, 'control-panel');
   });
 
   it('board row has label "Persistent board" and real enabled value', () => {
@@ -435,72 +433,7 @@ describe('buildControlPanelModel settings', () => {
     assert.strictEqual(on.settings[0].enabled, true);
   });
 
-  it('Goals Panel row has label "Standalone Goals Panel" and real enabled value', () => {
-    const off = buildControlPanelModel(
-      baseState({ goalsPanel: { enabled: false, open: false } }),
-    );
-    assert.strictEqual(off.settings[1].label, 'Standalone Goals Panel');
-    assert.strictEqual(off.settings[1].enabled, false);
 
-    const on = buildControlPanelModel(
-      baseState({ goalsPanel: { enabled: true, open: false } }),
-    );
-    assert.strictEqual(on.settings[1].label, 'Standalone Goals Panel');
-    assert.strictEqual(on.settings[1].enabled, true);
-  });
-
-  it('Control Panel row has label "Control Panel" and real enabled value', () => {
-    const off = buildControlPanelModel(
-      baseState({
-        controlPanel: { enabled: false, open: false, activeSection: 'goals' },
-      }),
-    );
-    assert.strictEqual(off.settings[2].label, 'Control Panel');
-    assert.strictEqual(off.settings[2].enabled, false);
-
-    const on = buildControlPanelModel(
-      baseState({
-        controlPanel: { enabled: true, open: false, activeSection: 'goals' },
-      }),
-    );
-    assert.strictEqual(on.settings[2].label, 'Control Panel');
-    assert.strictEqual(on.settings[2].enabled, true);
-  });
-
-  it('note is omitted when standalone Goals is not superseded', () => {
-    const m = buildControlPanelModel(
-      baseState({
-        goalsPanel: { enabled: true, open: false },
-        controlPanel: { enabled: false, open: false, activeSection: 'goals' },
-      }),
-    );
-    assert.strictEqual('note' in m.settings[1], false);
-  });
-
-  it('note is omitted when only Control Panel is enabled', () => {
-    const m = buildControlPanelModel(
-      baseState({
-        goalsPanel: { enabled: false, open: false },
-        controlPanel: { enabled: true, open: false, activeSection: 'goals' },
-      }),
-    );
-    assert.strictEqual('note' in m.settings[1], false);
-  });
-
-  it('note is omitted when both are disabled', () => {
-    const m = buildControlPanelModel(baseState());
-    assert.strictEqual('note' in m.settings[1], false);
-  });
-
-  it('note = "superseded" when both goalsPanel.enabled and controlPanel.enabled are true', () => {
-    const m = buildControlPanelModel(
-      baseState({
-        goalsPanel: { enabled: true, open: false },
-        controlPanel: { enabled: true, open: false, activeSection: 'goals' },
-      }),
-    );
-    assert.strictEqual(m.settings[1].note, 'superseded');
-  });
 
 
 });
@@ -529,7 +462,7 @@ describe('buildControlPanelModel goals', () => {
           todos: [{ id: 't2', text: 'other', status: 'pending' }],
         }),
       ],
-      goalsPanel: { enabled: true, open: true, highlightedGoalId: 'g1' },
+      goalsPanel: { highlightedGoalId: 'g1' },
     });
     const m = buildControlPanelModel(s);
     assert.strictEqual(m.goals.highlightedGoalId, 'g1');
@@ -547,7 +480,6 @@ describe('buildControlPanelModel goals', () => {
   it('activeSection reflects controlPanel.activeSection', () => {
     const s = baseState({
       controlPanel: {
-        enabled: true,
         open: true,
         activeSection: 'settings',
       },

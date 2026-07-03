@@ -1,7 +1,7 @@
 /**
  * test/ui/control-panel-wiring.test.tsx — integration tests for the ControlPanel
  * wiring in the real App + store + bridge route (Slice 13). Uses ink-testing-library
- * and the actual createInkAppBridge/createInkStore/configureControlPanelStore path.
+ * and the actual createInkAppBridge/createInkStore path.
  */
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
@@ -10,8 +10,6 @@ import { render } from 'ink-testing-library';
 import { createInkAppBridge } from '../../src/interface/ui/App.js';
 import {
   createInkStore,
-  configureGoalsPanelStore,
-  configureControlPanelStore,
 } from '../../src/interface/ui/mount.js';
 import { App } from '../../src/interface/ui/App.js';
 import type { GoalBoardRow } from '../../src/interface/ui/index.js';
@@ -41,19 +39,7 @@ function boardRow(over: Partial<GoalBoardRow> = {}): GoalBoardRow {
 function setupCPBridgeAndStore() {
   const bridge = createInkAppBridge();
   const store = createInkStore(bridge);
-  configureControlPanelStore(store, { MYSHELL_CONTROL_PANEL: '1' }, undefined);
   bridge.onControlPanelAction((action) => store.dispatch(action));
-  bridge.onGoalsPanelAction(null);
-  return { bridge, store };
-}
-
-function setupBothFlagsBridgeAndStore() {
-  const bridge = createInkAppBridge();
-  const store = createInkStore(bridge);
-  configureGoalsPanelStore(store, { MYSHELL_GOALS_PANEL: '1' }, undefined);
-  configureControlPanelStore(store, { MYSHELL_CONTROL_PANEL: '1' }, undefined);
-  bridge.onControlPanelAction((action) => store.dispatch(action));
-  bridge.onGoalsPanelAction(null);
   return { bridge, store };
 }
 
@@ -112,77 +98,6 @@ test('CP-only: empty-buffer Ctrl+G → opens Control Panel on Goals, removes boa
   }
   assert.equal(store.getState().controlPanel.open, true);
   assert.equal(store.getState().controlPanel.activeSection, 'goals');
-});
-
-// ---------------------------------------------------------------------------
-// Both flags on → Control Panel supersedes Goals Panel
-// ---------------------------------------------------------------------------
-
-test('both flags on: Ctrl+G → opens Control Panel, NOT standalone Goals Panel', async () => {
-  const { bridge, store } = setupBothFlagsBridgeAndStore();
-  store.dispatch({
-    type: 'board/sync',
-    rows: [
-      boardRow({ id: 'g1', title: 'Ship it', state: 'running', done: 1, total: 5, agents: 1 }),
-    ],
-    enabled: true,
-  });
-  const { lastFrame, stdin } = render(
-    <App bridge={bridge} color={false} isTty={false} rows={24} clock={() => 0} />,
-  );
-  bridge.pushState(store.getState());
-  await tick();
-
-  await act(async () => {
-    stdin.write('\x07');
-    await tick();
-  });
-  {
-    const frame = plain(lastFrame());
-    assert.match(frame, /CONTROL PANEL/);
-    assert.doesNotMatch(frame, /BOARD/);
-  }
-  assert.equal(store.getState().controlPanel.open, true);
-  assert.equal(store.getState().goalsPanel.open, false);
-});
-
-// ---------------------------------------------------------------------------
-// Goals-only → opens standalone panel (Phase 1 fallback)
-// ---------------------------------------------------------------------------
-
-test('Goals-only (CP off): Ctrl+G → opens standalone Goals Panel, NOT Control Panel', async () => {
-  const bridge = createInkAppBridge();
-  const store = createInkStore(bridge);
-  store.dispatch({ type: 'control-panel/configure', enabled: false });
-  configureGoalsPanelStore(store, { MYSHELL_GOALS_PANEL: '1' }, undefined);
-  bridge.onControlPanelAction(null);
-  bridge.onGoalsPanelAction((action) => store.dispatch(action));
-
-  store.dispatch({
-    type: 'board/sync',
-    rows: [
-      boardRow({ id: 'g1', title: 'Ship it', state: 'running', done: 1, total: 5, agents: 1 }),
-    ],
-    enabled: true,
-  });
-  const { lastFrame, stdin } = render(
-    <App bridge={bridge} color={false} isTty={false} rows={24} clock={() => 0} />,
-  );
-  bridge.pushState(store.getState());
-  await tick();
-
-  await act(async () => {
-    stdin.write('\x07');
-    await tick();
-  });
-  {
-    const frame = plain(lastFrame());
-    assert.match(frame, /Goals · To-dos/);
-    assert.doesNotMatch(frame, /CONTROL PANEL/);
-    assert.doesNotMatch(frame, /BOARD/);
-  }
-  assert.equal(store.getState().goalsPanel.open, true);
-  assert.equal(store.getState().controlPanel.open, false);
 });
 
 // ---------------------------------------------------------------------------

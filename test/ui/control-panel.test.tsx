@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import React, { act } from 'react';
 import { render } from 'ink-testing-library';
 import { ControlPanel } from '../../src/interface/ui/ControlPanel.js';
+import { GoalsPanelBody } from '../../src/interface/ui/GoalsPanel.js';
+import { buildGoalsPanelModel } from '../../src/interface/ui/goals-panel-model.js';
 import type {
   GoalBoardRow,
   GoalView,
@@ -53,8 +55,8 @@ function baseState(over: Partial<UiState> = {}): UiState {
     tokens: { turn: 0, session: 0 },
     board: [],
     boardEnabled: false,
-    goalsPanel: { enabled: false, open: false },
-    controlPanel: { enabled: true, open: true, activeSection: 'goals' },
+    goalsPanel: {},
+    controlPanel: { open: true, activeSection: 'goals' },
     ...over,
   };
 }
@@ -82,7 +84,7 @@ test('renders status band, ordered tabs, and Goals body by default', () => {
 
 test('Status section shows active count, execution phase, provider states, quota', () => {
   const state = baseState({
-    controlPanel: { enabled: true, open: true, activeSection: 'status' },
+    controlPanel: { open: true, activeSection: 'status' },
     board: [br('a', 'Alpha', { state: 'running' })],
     goals: [
       goalView('b', 'running'),
@@ -114,12 +116,11 @@ test('Status section shows active count, execution phase, provider states, quota
   assert.match(frame, /Quota: unavailable in UI state/);
 });
 
-test('Settings shows three read-only rows, values, superseded annotation, no toggle', () => {
+test('Settings shows one read-only board row, no toggle', () => {
   const state = baseState({
-    controlPanel: { enabled: true, open: true, activeSection: 'settings' },
+    controlPanel: { open: true, activeSection: 'settings' },
     boardEnabled: true,
-    goalsPanel: { enabled: true, open: false },
-    controlPanel: { enabled: true, open: true, activeSection: 'settings' },
+    goalsPanel: {},
   });
   const { lastFrame } = render(
     <ControlPanel
@@ -132,8 +133,6 @@ test('Settings shows three read-only rows, values, superseded annotation, no tog
   const frame = lastFrame() ?? '';
   assert.match(frame, /Settings/);
   assert.match(frame, /Persistent board: enabled/);
-  assert.match(frame, /Standalone Goals Panel: enabled \(superseded\)/);
-  assert.match(frame, /Control Panel: enabled/);
   assert.match(frame, /read-only in this release/);
 });
 
@@ -191,7 +190,7 @@ test('Arrows/j/k navigate only on Goals section', async () => {
   const onHighlightGoal = vi.fn();
   const goalsState = baseState({
     board: [br('a', 'Alpha'), br('b', 'Bravo')],
-    controlPanel: { enabled: true, open: true, activeSection: 'goals' },
+    controlPanel: { open: true, activeSection: 'goals' },
   });
   const { stdin } = render(
     <ControlPanel
@@ -212,7 +211,7 @@ test('Arrows/j/k navigate only on Goals section', async () => {
 
   const statusState = baseState({
     board: [br('a', 'Alpha'), br('b', 'Bravo')],
-    controlPanel: { enabled: true, open: true, activeSection: 'status' },
+    controlPanel: { open: true, activeSection: 'status' },
   });
   const { stdin: stdin2 } = render(
     <ControlPanel
@@ -291,7 +290,7 @@ test('active={false} makes all keys inert', async () => {
 
 test('Status section with no providers shows empty provider line', () => {
   const state = baseState({
-    controlPanel: { enabled: true, open: true, activeSection: 'status' },
+    controlPanel: { open: true, activeSection: 'status' },
   });
   const { lastFrame } = render(
     <ControlPanel
@@ -303,4 +302,14 @@ test('Status section with no providers shows empty provider line', () => {
   );
   const frame = lastFrame() ?? '';
   assert.match(frame, /No provider observations/);
+});
+
+test('GoalsPanelBody renders from a prebuilt model', () => {
+  const model = buildGoalsPanelModel({
+    board: [br('a', 'Ship it')],
+  });
+  const { lastFrame } = render(<GoalsPanelBody model={model} />);
+  const frame = lastFrame() ?? '';
+  assert.match(frame, /Goals · To-dos/);
+  assert.match(frame, /Ship it/);
 });
