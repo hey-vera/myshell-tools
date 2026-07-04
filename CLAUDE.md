@@ -54,6 +54,16 @@ When the user provides a reference design, artifact, workflow, layout, API shape
 
 Parallelize only when slices are independent by files and conflict domain. For concurrent workers or any code/test/config edit, each worker needs: objective, allowed files/modules, forbidden files/modules, verification command, and conflict domain. Serialize when one slice defines an API/schema/state/UX flow another consumes, when shared fixtures/state/defaults are involved, or when combined verification is the first meaningful test. If opencode is unavailable, ask before spending frontier or Claude/Opus quota on execution.
 
+## Worker Liveness (never wait blind)
+
+Dispatched workers (opencode-go, codex) can hang silently — a live process with zero new output. "I'll be notified on completion" is a trap when completion never comes.
+
+- **Never passively wait on a background worker.** Actively check liveness on an interval (ScheduleWakeup / Monitor / a periodic check), do not assume it is progressing.
+- **Liveness = output freshness AND CPU growth**, not "process still alive." No new output for ~5–10 min with near-flat CPU = **HUNG, not slow** — act, don't keep waiting.
+- **Give every worker a max wall-clock budget** sized to the task. On stall or budget-exceeded: **stop it via the harness** (not a raw kill that could hit your own run), inspect the working-tree diff, then **resume-from-diff or retry — do not redo completed work.**
+- **Prefer small, checkpointable worker units for high-blast-radius slices** over one long background run. A slice that rewrites renders/tests should be split or checkpointed so a hang loses minutes, not an hour.
+- **Bound worker scope in the dispatch contract:** allowed files only; deleting exported symbols or touching files outside scope = `BLOCKED`, ask — not a worker judgment call.
+
 ## Model Routing
 
 Do not trust stale model catalogs from memory. Verify concrete opencode model availability with `opencode models </dev/null` and, for important work, a smoke run. Root policy is class-based: Sonnet-class for the always-on orchestrator; frontier for planning/audit/root-cause/policy; opencode-go for bounded execution; Opus only behind the escalation trigger list unless explicitly requested. Dated capability notes belong in `docs/model-routing.md` or receipts, not always-loaded memory.
