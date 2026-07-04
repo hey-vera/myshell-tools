@@ -20,6 +20,23 @@ _Last verified: 2026-07-04. This doc holds VOLATILE, dated model facts so they n
 - **Fallback:** use codex `gpt-5.4-mini` for cheap/mechanical work, codex `gpt-5.4` for heavier bounded work, and Claude sonnet-class `Agent` workers when CLI paths are unavailable, permissions/subagent integration helps, or quota balancing is needed. `codex exec -m <model>` runs on ChatGPT billing, independent of opencode balance.
 - Claude `Agent` workers may edit `src/`/`test/` (they are separate subagents, not the orchestrator main thread — the bright line applies only to the main thread).
 
+## Task → model routing table (task-calibrated, not provider-class-only)
+
+Pick the **cheapest candidate that clears the task's first-time-right bar after pricing rework** (see `docs/orchestrator-protocol.md` for the objective function + quality bars). Do NOT default to `glm-5.2` for everything — it's a strong long-horizon coder, wasteful on mechanical work.
+
+| Task | First route | Escalate when |
+| --- | --- | --- |
+| Mechanical edits, formatting, receipt summaries | `opencode-go/deepseek-v4-flash` (low/no effort); fallback codex `gpt-5.4-mini` | fails verification once · touches unexpected files · needs semantic judgment |
+| Large read-only scan / extraction | `deepseek-v4-flash` / `mimo-v2.5` / `minimax-m3` / `qwen3.7-plus` (by live cost/context) | needs architecture judgment or conflicting evidence |
+| Narrow implementation, strong tests | `deepseek-v4-flash` if coupling ≤2 & tests strong; else `deepseek-v4-pro` / `kimi-k2.7-code` | one failed attempt · weak tests · cross-module contract |
+| Coding-heavy bounded implementation | `kimi-k2.7-code` / `deepseek-v4-pro` / `glm-5.2` (by registry + prior pass rate) | shared defaults/schema/release behavior · broad UI state |
+| Long-context agentic refactor | `glm-5.2` / `qwen3.7-max` / `mimo-v2.5-pro` / codex `gpt-5.4` high | if expected rework exceeds the stronger-model delta, pick `gpt-5.4` first |
+| UI/test-loop where harness integration matters | Claude sonnet-class `Agent` high | if Anthropic quota is pressured, use codex `gpt-5.4` high |
+| Architecture / audit / root-cause / policy | codex `gpt-5.5` high (planner/auditor, NOT worker) | Opus only on named safety/default/release/conflict triggers |
+| Security / privacy / destructive / default / release | strong implementer **+ independent** `gpt-5.5` or Opus reviewer | never a cheap open worker alone |
+
+**Rework > cost-delta principle:** if a cheap worker is likely to fail and retry, the stronger model that succeeds once is *cheaper in total quota*. Price the rework, not just the per-call cost.
+
 ## Pricing (Anthropic, per MTok, verified 2026-07-03)
 
 - **Opus 4.8** — $5 input / $25 output. Defaults to high effort. Reserve for escalation.
