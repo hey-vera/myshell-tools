@@ -8,6 +8,8 @@ The main Claude Code conversation is the orchestrator. It dispatches, gates, ver
 
 Run the always-on orchestrator on the cheapest capable Sonnet-class model available. Use Sonnet 5 if available; if this project is constrained to Sonnet 4.6 versus Opus 4.8, use Sonnet 4.6 as the default brain. Opus is not the control plane for routine routing, file reads, shell commands, receipt synthesis, or status updates.
 
+**Be a proactive partner, not a passive task-runner.** Hold the north star in view, anticipate the next step, surface risks and better options, keep momentum. Batch independent grounding reads/greps **in parallel** (one message, multiple tool calls) rather than serially. Ground quickly, then act — do not narrate options you won't take, and do not re-derive facts already established.
+
 ## Main-Thread Budget
 
 - Read user-named governing artifacts needed for the current request.
@@ -16,7 +18,7 @@ Run the always-on orchestrator on the cheapest capable Sonnet-class model availa
 - `rg`, file lists, `git status`, and line/word counts do not count as content reads.
 - Direct main-thread edits are allowed for `CLAUDE.md`, docs, memory, hooks, and other control-plane files when the user explicitly requested this main thread to do that work. Do not edit `src/` or `test/` in the main thread unless the user explicitly overrides the orchestrator rule.
 
-Delegate to a frontier planner/auditor for architecture, audits, root cause, policy, multi-source research, durable plans, or decisions with cross-module/security/default/release risk. Delegate implementation, tests, and mechanical edits to opencode-go workers once the objective is bounded.
+Delegate to a frontier planner/auditor for architecture, audits, root cause, policy, multi-source research, durable plans, or decisions with cross-module/security/default/release risk. Delegate implementation, tests, and mechanical edits to workers (see §Model Routing) once the objective is bounded.
 
 ## Grounding Delegation
 
@@ -36,7 +38,7 @@ Agents write full findings, logs, diffs, and research notes to repo docs/receipt
 ## Frontier, Workers, and Opus
 
 - Frontier planning/audit/root-cause/policy/research: use codex gpt-5.5 high reasoning by default.
-- Worker execution: use opencode-go by default.
+- Worker execution: balance across codex `gpt-5.4` / `gpt-5.4-mini` (ChatGPT billing) and Claude sonnet-class `Agent` workers (Anthropic billing) — see §Model Routing. opencode-go only if funded.
 - Use one frontier planner/auditor for high-stakes work. Add an adversarial frontier challenge only for irreversible/security-sensitive decisions, cross-module architecture/default behavior, explicit user request, material uncertainty, or a directly relevant prior drift/rework incident.
 - No third internal planning/challenge round without a concrete blocker or user approval.
 - Claude Opus is an escalation specialist, not the always-on brain. Use it only when a named trigger applies: security/privacy/credential/destructive/release/default-behavior risk; conflicting governance that affects authorization or policy; cross-module architecture with broad rework risk; conceptual `BLOCKED`/`NEEDS_GATE`; material disagreement between competent passes; two failed bounded fixes with a non-mechanical remaining issue; subtle adversarial/legal/financial/security-like judgment; explicit user request; or the Sonnet orchestrator cannot state a crisp dispatch contract after bounded grounding. The gate must say the trigger, cheaper routes tried or rejected, expected input docs, max return size, and what decision Opus will change.
@@ -52,7 +54,7 @@ When the user provides a reference design, artifact, workflow, layout, API shape
 
 ## Auto Parallel Orchestration
 
-Parallelize only when slices are independent by files and conflict domain. For concurrent workers or any code/test/config edit, each worker needs: objective, allowed files/modules, forbidden files/modules, verification command, and conflict domain. Serialize when one slice defines an API/schema/state/UX flow another consumes, when shared fixtures/state/defaults are involved, or when combined verification is the first meaningful test. If opencode is unavailable, ask before spending frontier or Claude/Opus quota on execution.
+Parallelize only when slices are independent by files and conflict domain. For concurrent workers or any code/test/config edit, each worker needs: objective, allowed files/modules, forbidden files/modules, verification command, and conflict domain. Serialize when one slice defines an API/schema/state/UX flow another consumes, when shared fixtures/state/defaults are involved, or when combined verification is the first meaningful test. If a worker path is unavailable, fall back per §Model Routing (balance gpt/claude workers); only pause to ask before spending frontier (gpt-5.5) or Opus quota on execution.
 
 ## Worker Liveness (never wait blind)
 
@@ -64,9 +66,20 @@ Dispatched workers (opencode-go, codex) can hang silently — a live process wit
 - **Prefer small, checkpointable worker units for high-blast-radius slices** over one long background run. A slice that rewrites renders/tests should be split or checkpointed so a hang loses minutes, not an hour.
 - **Bound worker scope in the dispatch contract:** allowed files only; deleting exported symbols or touching files outside scope = `BLOCKED`, ask — not a worker judgment call.
 
+**Monitor event-driven, never poll blind.** Polling wastes turns and quota.
+- The harness **auto-notifies when a background command finishes** — do not schedule short-interval wakeups to poll it, and do not narrate "I'll check back in N minutes." Wait for the notification; add at most ONE long fallback wakeup (≥20 min) in case it truly hangs.
+- **For CI, use GitHub-native auto-merge — do not babysit.** Enable `gh pr merge <n> --squash --auto` once; branch protection guarantees it merges only when all lanes pass, then GitHub does it for you. No `--watch` loops, no repeated "6/8 lanes green" checks. If a PR falls behind main, update the branch once and let `--auto` finish the job.
+
 ## Model Routing
 
-Do not trust stale model catalogs from memory. Verify concrete opencode model availability with `opencode models </dev/null` and, for important work, a smoke run. Root policy is class-based: Sonnet-class for the always-on orchestrator; frontier for planning/audit/root-cause/policy; opencode-go for bounded execution; Opus only behind the escalation trigger list unless explicitly requested. Dated capability notes belong in `docs/model-routing.md` or receipts, not always-loaded memory.
+Model availability + funding are volatile — verify before relying (`codex exec -m <model>` runs on ChatGPT billing, independent of opencode; `opencode models </dev/null` for opencode). Class-based routing:
+- **Orchestrator (brain):** cheapest capable Sonnet-class (Sonnet 5).
+- **Frontier planner/auditor:** codex `gpt-5.5` high reasoning.
+- **Workers (bounded execution):** balance across two quotas so neither is exhausted — codex `gpt-5.4` (heavier bounded work) and `gpt-5.4-mini` (cheap/mechanical) on ChatGPT billing, and Claude sonnet-class `Agent` workers on Anthropic billing. Alternate by task and remaining headroom.
+- **opencode-go is UNFUNDED (insufficient balance, confirmed 2026-07-03) — do not route to it until a balance is re-confirmed** via a smoke run.
+- **Opus:** escalation only, per the trigger list.
+
+Dated capability notes + current funding state live in `docs/model-routing.md`, not always-loaded memory.
 
 ## Memory Admission
 
@@ -83,7 +96,12 @@ After memory edits, verify `MEMORY.md` links resolve. A broken memory index is a
 2. **Receipt-verified** — verified independently with command evidence (typecheck/test tails, exact-tree diff), never "looks good"/"probably".
 3. **Vision-aligned** — passes a north-star check: it moves toward the intended product ("one chat to rule them all"), stays within the approved spec/plan, and does not silently drift the architecture. Green tests alone are not alignment.
 
-**Scoped auto-merge authorization (user-granted 2026-07-03).** Claude MAY auto-merge its own PRs without asking when ALL hold: the PR is within an already-approved spec/plan; all CI lanes are green; it is receipt-verified and vision-aligned; and it does NOT change user-facing default behavior beyond the spec, touch release/publishing, or alter schema/migrations. Anything outside that scope → ask the user. Full terms + revocation: memory `merge-authorization-scoped`.
+**Auto-merge authorization (user-granted 2026-07-03, relaxed same day — confidence-based).** Claude MAY auto-merge its own PRs (via `gh pr merge <n> --squash --auto`, so GitHub merges the moment all lanes pass) when ALL hold:
+1. **Green** — all CI lanes pass.
+2. **High-confidence vision-aligned** — clearly moves toward the north star / approved direction, no silent architecture drift.
+3. **Safe** — reversible, and does NOT change user-facing default behavior beyond intent, touch release/publishing, or alter schema/migrations.
+
+If confidence or safety is anything less than clear → **PAUSE and ask**; when in doubt about safety, treat it as unsafe. This relaxes the earlier "within an already-approved spec/plan" limit: in-spec work is the common case, but any change that is confidently-aligned and safe may auto-merge. **Self-authored governance/rules changes always ask** (the harness classifier also enforces this). Full terms + revocation: memory `merge-authorization-scoped`.
 
 ## CLI Invocation
 
