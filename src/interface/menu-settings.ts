@@ -1,7 +1,7 @@
 /**
  * src/interface/menu-settings.ts — Extracted from menu.ts — behavior-preserving.
  *
- * The simplified Settings screen: mode, oversight, verbosity, appearance, and a
+ * The simplified Settings screen: Effort Mode, oversight, verbosity, appearance, and a
  * Privacy & memory subpage (Memory, Learned preferences, Codebase awareness).
  * Internal implementation toggles (routing, panel, hedge, intent engine, etc.)
  * are now automated default-on and hidden from the user-facing UI. Auto-goal and
@@ -85,8 +85,8 @@ export async function runModeSelect(
   // Build the display lines with the redesigned labels.
   const lines = [
     '',
-    bold('New conversation mode — default for future conversations', out.color),
-    dim('This is the default new conversations start with. Existing conversations keep their own mode.', out.color),
+    bold('New conversation Effort Mode — default for future conversations', out.color),
+    dim('This is the default new conversations start with. Existing conversations keep their own Effort Mode.', out.color),
     '',
   ];
 
@@ -209,7 +209,7 @@ export async function runStyleSelect(
     `  [1] direct${resolved === 'direct' ? ' (active)' : ''} — prefer a sensible default and proceed`,
     `  [2] balanced${resolved === 'balanced' ? ' (active)' : ''} — reflect briefly, ask at genuine forks`,
     `  [3] collaborative${resolved === 'collaborative' ? ' (active)' : ''} — align on the approach first`,
-    `  [4] auto${isAuto ? ' (active)' : ''} — follow the mode (${resolved})`,
+    `  [4] auto${isAuto ? ' (active)' : ''} — follow the Effort Mode (${resolved})`,
     '',
   ];
   out.write('\n' + box('Settings', settingsLines) + '\n\n');
@@ -415,7 +415,7 @@ export async function runSettings(
   const autoMode = resolveAutoMode(mutableCtx.env);
   const settingsLines = [
     '',
-    `  [1] New conversation mode: ${cfg.mode === undefined ? 'Auto (smart)' : levelLabel(migrateMode(cfg.mode))}`,
+    `  [1] New conversation Effort Mode: ${cfg.mode === undefined ? 'Auto (smart)' : levelLabel(migrateMode(cfg.mode))}`,
     `  [2] Oversight: ${resolveOversight(cfg)}`,
     `  [3] Output detail: ${cfg.verbosity ?? 'normal'}`,
     `  [4] Appearance: ${cfg.colorTheme ?? 'dark'}`,
@@ -486,4 +486,3 @@ export async function toggleColorTheme(config: AppConfig, out: OutputSink): Prom
   out.write(`Theme: ${newTheme ?? 'dark'}${newTheme === undefined ? ' (default)' : ''} — takes effect on next launch\n`);
   return updated;
 }
-

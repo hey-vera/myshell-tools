@@ -7681,7 +7681,7 @@ describe('startMenu — update notifier: banner, [u], auto-update', () => {
 
     assert.ok(
       sink.buf.includes('[1]') && sink.buf.toLowerCase().includes('mode'),
-      'settings must show [1] New conversation mode',
+      'settings must show [1] New conversation Effort Mode',
     );
     assert.ok(
       sink.buf.includes('[2]') && sink.buf.toLowerCase().includes('oversight'),
@@ -9334,15 +9334,15 @@ describe('startMenu — first-run: hook already installed → skips set-default 
 });
 
 // ---------------------------------------------------------------------------
-// FLOW: Auto mode — settings [1] Auto selection and display
+// FLOW: Auto Effort Mode — settings [1] Auto selection and display
 // ---------------------------------------------------------------------------
 
-describe('startMenu — mode settings [1] Auto', () => {
+describe('startMenu — Effort Mode settings [1] Auto', () => {
   /**
    * Build a MenuContext with a pinned mode and drive through s → 1 → 1 → q.
    * After the run the output buffer should confirm mode was reset to auto.
    */
-  it('selecting [1] Auto in mode settings resets mode to auto (output says "(auto)")', async () => {
+  it('selecting [1] Auto in Effort Mode settings resets mode to auto (output says "(auto)")', async () => {
     const clock = makeFakeClock();
     const store = makeStore(clock);
     const sink = makeSink();
@@ -9367,7 +9367,7 @@ describe('startMenu — mode settings [1] Auto', () => {
 
     await assert.doesNotReject(
       () => startMenu(ctx, sink),
-      'selecting [1] Auto in mode settings should not throw',
+      'selecting [1] Auto in Effort Mode settings should not throw',
     );
 
     // After pressing 1, runModeSelect writes "New conversation default: Auto (smart)" to confirm.
@@ -9377,7 +9377,7 @@ describe('startMenu — mode settings [1] Auto', () => {
     );
   });
 
-  it('[1] Auto option appears in the mode settings screen', async () => {
+  it('[1] Auto option appears in the Effort Mode settings screen', async () => {
     const clock = makeFakeClock();
     const store = makeStore(clock);
     const sink = makeSink();
