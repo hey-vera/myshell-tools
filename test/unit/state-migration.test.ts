@@ -525,6 +525,81 @@ describe('runStateMigration — manifest', () => {
   });
 });
 
+describe('runStateMigration — archive-only conflict → complete-with-archive', () => {
+  it('classifies an archive-only conflict as complete-with-archive (non-alarming)', async () => {
+    const layout = testLayout(join(baseDir, 'archive-conflict'));
+    const homeDir = join(baseDir, 'archive-conflict-home');
+    await mkdir(homeDir, { recursive: true });
+
+    const oldRoot = join(homeDir, '.myshell-tools');
+    await mkdir(join(oldRoot, '.session-archive'), { recursive: true });
+    await writeFile(join(oldRoot, '.session-archive', 'old.jsonl'), 'archived-source');
+
+    // Live dest already has the archive file with different bytes → conflict,
+    // but it is archive-only so it must NOT be flagged as a user decision.
+    await mkdir(layout.paths.conversationArchiveDir, { recursive: true });
+    await writeFile(
+      join(layout.paths.conversationArchiveDir, 'old.jsonl'),
+      'archived-dest',
+    );
+
+    const ctx = testCtx(homeDir, join(baseDir, 'archive-conflict-cwd'));
+    const plan = await planStateMigration(layout, ctx);
+    const report = await runStateMigration(plan);
+
+    assert.equal(report.conflicts.length, 1);
+    assert.ok(report.conflicts.includes('.session-archive/old.jsonl'));
+    assert.equal(report.status, 'complete-with-archive');
+  });
+
+  it('keeps a live-state conflict as conflicts (not downgraded)', async () => {
+    const layout = testLayout(join(baseDir, 'archive-conflict-live'));
+    const homeDir = join(baseDir, 'archive-conflict-live-home');
+    await mkdir(homeDir, { recursive: true });
+
+    const oldRoot = join(homeDir, '.myshell-tools');
+    await mkdir(oldRoot, { recursive: true });
+    await writeFile(join(oldRoot, 'config.json'), 'newer');
+
+    await mkdir(layout.configRoot, { recursive: true });
+    await writeFile(layout.paths.configFile, 'older');
+
+    const ctx = testCtx(homeDir, join(baseDir, 'archive-conflict-live-cwd'));
+    const plan = await planStateMigration(layout, ctx);
+    const report = await runStateMigration(plan);
+
+    assert.equal(report.conflicts.length, 1);
+    assert.ok(report.conflicts.includes('config.json'));
+    assert.equal(report.status, 'conflicts');
+  });
+
+  it('mixed archive + live conflicts classify as conflicts (user decision needed)', async () => {
+    const layout = testLayout(join(baseDir, 'archive-conflict-mixed'));
+    const homeDir = join(baseDir, 'archive-conflict-mixed-home');
+    await mkdir(homeDir, { recursive: true });
+
+    const oldRoot = join(homeDir, '.myshell-tools');
+    await mkdir(join(oldRoot, '.session-archive'), { recursive: true });
+    await writeFile(join(oldRoot, '.session-archive', 'old.jsonl'), 'archived-source');
+    await writeFile(join(oldRoot, 'config.json'), 'newer');
+
+    await mkdir(layout.paths.conversationArchiveDir, { recursive: true });
+    await writeFile(
+      join(layout.paths.conversationArchiveDir, 'old.jsonl'),
+      'archived-dest',
+    );
+    await mkdir(layout.configRoot, { recursive: true });
+    await writeFile(layout.paths.configFile, 'older');
+
+    const ctx = testCtx(homeDir, join(baseDir, 'archive-conflict-mixed-cwd'));
+    const plan = await planStateMigration(layout, ctx);
+    const report = await runStateMigration(plan);
+
+    assert.equal(report.conflicts.length, 2);
+    assert.equal(report.status, 'conflicts');
+  });
+});
+
 describe('runStateMigration — errors reported, never throws', () => {
   it('returns report with errors when a file operation fails', async () => {
     const layout = testLayout(join(baseDir, 'error-handling'));

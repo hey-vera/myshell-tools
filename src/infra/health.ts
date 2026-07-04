@@ -133,7 +133,11 @@ export function evaluateHealth(inputs: HealthInputs): HealthIssue[] {
     });
   }
 
-  // Migration status — surface when something wasn't cleanly migrated.
+  // Migration status — surface ONLY the unavoidable user decisions. Archive-
+  // only conflicts are self-healed (the source is preserved in the migration
+  // `conflicts/` dir and the live dest is untouched), so `complete-with-archive`
+  // is silent (silence == healthy). Live-state conflicts and real errors still
+  // surface because the user must act on them.
   if (inputs.migrationReport !== undefined) {
     const { status, manifestPath, conflicts, errors } = inputs.migrationReport;
     if (status === 'conflicts') {
@@ -153,6 +157,7 @@ export function evaluateHealth(inputs: HealthInputs): HealthIssue[] {
           `Some files may not have been migrated — see ${manifestPath || 'the migration manifest'} for details.`,
       });
     }
+    // 'complete' and 'complete-with-archive' → silent.
   }
 
   // Gitignore guard — surface when secrets could leak into git.
