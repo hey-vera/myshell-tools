@@ -21,7 +21,6 @@ import { mkdir, open, unlink, access } from 'node:fs/promises';
 import { join } from 'node:path';
 import { getStateDir } from './paths.js';
 import { defaultStateHome } from './state-dir.js';
-import type { MigrationReport } from './state-migration.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -52,8 +51,6 @@ export interface HealthInputs {
   readonly pricingStale: boolean;
   /** Minimum supported Node major version (defaults to 20). */
   readonly minNodeMajor?: number;
-  /** Optional migration report from a startup auto-migration run. */
-  readonly migrationReport?: MigrationReport;
   /** Optional result from the .gitignore guard run at startup. */
   readonly gitignoreStatus?: { readonly ok: boolean; readonly reason?: string };
 }
@@ -131,28 +128,6 @@ export function evaluateHealth(inputs: HealthInputs): HealthIssue[] {
       message:
         'Cost estimates may be out of date — update to refresh them: npm install -g myshell-tools@latest',
     });
-  }
-
-  // Migration status — surface when something wasn't cleanly migrated.
-  if (inputs.migrationReport !== undefined) {
-    const { status, manifestPath, conflicts, errors } = inputs.migrationReport;
-    if (status === 'conflicts') {
-      issues.push({
-        id: 'migration-conflicts',
-        severity: 'warn',
-        message:
-          `State migration had ${conflicts.length} conflict(s). ` +
-          `Old files were preserved — see ${manifestPath || 'the migration manifest'} for details.`,
-      });
-    } else if (status === 'partial') {
-      issues.push({
-        id: 'migration-partial',
-        severity: 'warn',
-        message:
-          `State migration completed with ${errors.length} error(s). ` +
-          `Some files may not have been migrated — see ${manifestPath || 'the migration manifest'} for details.`,
-      });
-    }
   }
 
   // Gitignore guard — surface when secrets could leak into git.

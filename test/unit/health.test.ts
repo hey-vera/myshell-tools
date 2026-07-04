@@ -17,7 +17,6 @@ import { join } from 'node:path';
 
 import { evaluateHealth, nodeMajor, probeStateWritable } from '../../src/infra/health.ts';
 import type { HealthInputs } from '../../src/infra/health.ts';
-import type { MigrationReport } from '../../src/infra/state-migration.ts';
 
 const HEALTHY: HealthInputs = {
   nodeVersion: 'v22.19.0',
@@ -99,60 +98,13 @@ describe('evaluateHealth', () => {
     }
   });
 
-  // ── Migration / gitignore surface ──────────────────────────────────────
+  // ── Migration archive does NOT surface health issues ──────────────────
 
-  it('surfaces a warning when migration status is conflicts', () => {
-    const report: MigrationReport = {
-      status: 'conflicts',
-      copied: [],
-      alreadyPresent: [],
-      conflicts: ['credentials.json'],
-      merged: [],
-      errors: [],
-      manifestPath: '/tmp/manifest.json',
-    };
-    const issues = evaluateHealth({ ...HEALTHY, migrationReport: report });
-    const found = issues.find((i) => i.id === 'migration-conflicts');
-    assert.ok(found !== undefined, 'should surface migration-conflicts warning');
-    assert.equal(found?.severity, 'warn');
-    assert.ok(found?.message.includes('conflict'), 'should mention conflicts');
-    assert.ok(found?.message.includes('/tmp/manifest.json'), 'should include manifest path');
-  });
-
-  it('surfaces a warning when migration status is partial', () => {
-    const report: MigrationReport = {
-      status: 'partial',
-      copied: [],
-      alreadyPresent: [],
-      conflicts: [],
-      merged: [],
-      errors: ['read error'],
-      manifestPath: '/tmp/manifest.json',
-    };
-    const issues = evaluateHealth({ ...HEALTHY, migrationReport: report });
-    const found = issues.find((i) => i.id === 'migration-partial');
-    assert.ok(found !== undefined, 'should surface migration-partial warning');
-    assert.equal(found?.severity, 'warn');
-  });
-
-  it('does NOT surface migration for complete status (silence == healthy)', () => {
-    const report: MigrationReport = {
-      status: 'complete',
-      copied: ['config.json'],
-      alreadyPresent: [],
-      conflicts: [],
-      merged: [],
-      errors: [],
-      manifestPath: '/tmp/manifest.json',
-    };
-    const issues = evaluateHealth({ ...HEALTHY, migrationReport: report });
-    const found = issues.find((i) => i.id === 'migration-conflicts' || i.id === 'migration-partial');
-    assert.equal(found, undefined, 'complete migration should not surface');
-  });
-
-  it('does NOT change output when migration/gitignore inputs are absent', () => {
+  it('does NOT surface health issues for migration archive (complete-with-archive)', () => {
+    // Migration is a background, best-effort operation; the user never needs
+    // to act on it. Archived conflicts are a safe fallback, not an alarm.
     const issues = evaluateHealth(HEALTHY);
-    assert.deepEqual(issues, [], 'absent inputs change nothing');
+    assert.deepEqual(issues, []);
   });
 
   it('surfaces an error when gitignore guard failed (secret-leak risk)', () => {

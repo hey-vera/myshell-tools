@@ -68,13 +68,9 @@ import { replitPersistentEnv } from './infra/credentials.js';
 import { helperSandbox, sandboxForEnvironment } from './infra/sandbox.js';
 import { buildPreflightDeps } from './interface/preflight-deps.js';
 import { dim as dimText } from './ui/theme.js';
-import { defaultStateDir, evaluateHealth, probeLedgerWritable, probeStateWritable } from './infra/health.js';
 import { planStateMigration, runStateMigration } from './infra/state-migration.js';
-import type { MigrationReport } from './infra/state-migration.js';
 import { ensureStateGitignored } from './infra/state-gitignore.js';
 import { defaultStateLayout, defaultStateContext } from './infra/state-layout.js';
-import { getStateDir } from './infra/paths.js';
-import { isPricingStale } from './infra/pricing.js';
 import { runDoctor } from './commands/doctor.js';
 import { runCost } from './commands/cost.js';
 import { runEvalCommand } from './commands/eval.js';
@@ -412,17 +408,15 @@ async function main(): Promise<void> {
   // delay (let alone hang) an interactive launch — e.g. an unexpectedly large
   // legacy state tree. If it exceeds the deadline, startup proceeds and the
   // copy-only, idempotent migration simply finishes (or retries) on a later run.
-  let lastMigrationReport: MigrationReport | undefined;
-  let lastGitignoreResult: { ok: boolean; reason?: string } | undefined;
   try {
     const layout = defaultStateLayout();
     const ctx = defaultStateContext();
     const migrate = (async () => {
       const plan = await planStateMigration(layout, ctx);
       if (plan.actions.length > 0) {
-        lastMigrationReport = await runStateMigration(plan);
+        await runStateMigration(plan);
       }
-      lastGitignoreResult = await ensureStateGitignored(layout, ctx);
+      await ensureStateGitignored(layout, ctx);
     })();
     migrate.catch(() => {}); // an abandoned (post-deadline) migration must not reject unhandled
     const deadline = new Promise<void>((resolve) => {
@@ -1029,11 +1023,9 @@ async function main(): Promise<void> {
   if (args.length === 0) {
     const spinner = createSpinner(out);
     spinner.start('Detecting providers…');
-    const [env, config, stateWritable, ledgerWritable] = await Promise.all([
+    const [env, config] = await Promise.all([
       detectEnvironment(),
       startupConfigPromise ?? loadConfig(),
-      probeStateWritable(cwd),
-      probeLedgerWritable(cwd),
     ]);
     const providers = buildAuthenticatedProviders(cwd, env, process.env, config);
     spinner.stop();
@@ -1060,19 +1052,6 @@ async function main(): Promise<void> {
       }
     }
 
-    // Evaluate non-provider environment health once at startup. Surfaced in the
-    // menu only when a problem exists — the user never runs a health command.
-    const healthIssues = evaluateHealth({
-      nodeVersion: process.version,
-      stateWritable,
-      stateDir: defaultStateDir(),
-      ledgerWritable,
-      ledgerDir: getStateDir(cwd),
-      pricingStale: isPricingStale(),
-      ...(lastMigrationReport !== undefined ? { migrationReport: lastMigrationReport } : {}),
-      ...(lastGitignoreResult !== undefined ? { gitignoreStatus: lastGitignoreResult } : {}),
-    });
-
     const store = createFileConversationStore({
       clock: systemClock,
       onWarning: (message) => {
@@ -1092,7 +1071,6 @@ async function main(): Promise<void> {
       cwd,
       sandbox: sandboxForEnvironment('workspace-write'),
       timeoutMs: resolveTimeoutMs(config),
-      healthIssues,
       checkForUpdate: () => checkForUpdate({ currentVersion: version, now: Date.now() }),
       updateSelf: async (updateOut) => {
         // Build the npm args, targeting the prefix that owns the *running*

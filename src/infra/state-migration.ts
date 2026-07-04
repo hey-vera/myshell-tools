@@ -48,7 +48,7 @@ export interface MigrationPlan {
   readonly actions: readonly MigrationAction[];
 }
 
-export type MigrationStatus = 'complete' | 'partial' | 'conflicts';
+export type MigrationStatus = 'complete' | 'partial' | 'conflicts' | 'complete-with-archive';
 
 export interface MigrationReport {
   status: MigrationStatus;
@@ -647,7 +647,7 @@ export async function runStateMigration(
   // Determine final status
   if (report.errors.length > 0 || report.conflicts.length > 0) {
     if (report.errors.length > 0) report.status = 'partial';
-    if (report.conflicts.length > 0) report.status = 'conflicts';
+    else if (report.conflicts.length > 0) report.status = 'complete-with-archive';
   }
 
   // Write manifest

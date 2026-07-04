@@ -25,7 +25,6 @@ import type { SpendSummary } from '../infra/insights.js';
 import type { EnvironmentStatus } from '../providers/detect.js';
 import type { UpdateCheckResult } from '../infra/update-check.js';
 import type { ClaudeTokenStatus } from '../infra/credentials.js';
-import type { HealthIssue } from '../infra/health.js';
 import { sectionBox, titleBox } from '../ui/tui.js';
 import type { OutputSink } from './render.js';
 import type { MenuContext } from './menu.js';
@@ -158,7 +157,6 @@ export async function renderMainScreen(
   _updateInfo?: UpdateCheckResult,
   _claudeTokenInfo?: ClaudeTokenStatus | null,
   _runningUnderNpx = false,
-  _healthIssues: readonly HealthIssue[] = [],
   _allGoals: readonly Goal[] = [],
   _accountStates?: Record<string, ProviderAccountSummary>,
   _spendLoading = false,

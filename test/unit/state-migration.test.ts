@@ -212,7 +212,7 @@ describe('runStateMigration — conflict', () => {
     const conflictContent = await readFile(join(conflictsDir, entries[0]!), 'utf8');
     assert.equal(conflictContent, 'newer');
 
-    assert.equal(report.status, 'conflicts');
+    assert.equal(report.status, 'complete-with-archive');
   });
 });
 
@@ -517,11 +517,11 @@ describe('runStateMigration — manifest', () => {
     const plan = await planStateMigration(layout, ctx);
     const report = await runStateMigration(plan);
 
-    assert.equal(report.status, 'conflicts');
+    assert.equal(report.status, 'complete-with-archive');
 
     const manifestRaw = await readFile(report.manifestPath, 'utf8');
     const manifest = JSON.parse(manifestRaw) as { status: string };
-    assert.equal(manifest.status, 'conflicts');
+    assert.equal(manifest.status, 'complete-with-archive');
   });
 });
 
@@ -553,6 +553,6 @@ describe('runStateMigration — errors reported, never throws', () => {
     const report = await runStateMigration(plan);
 
     assert.ok(report.errors.length > 0);
-    assert.ok(report.status === 'partial' || report.status === 'conflicts');
+    assert.ok(report.status === 'partial' || report.status === 'complete-with-archive');
   });
 });

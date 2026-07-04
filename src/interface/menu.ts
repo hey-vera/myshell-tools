@@ -154,7 +154,6 @@ import { resolveImageAttachments } from '../infra/attachments.js';
 import { runTask } from './run.js';
 import { defaultLoginRunner, type LoginRunner } from '../commands/login.js';
 import { resolveMenuLoginDestination, type MenuLoginOrigin, type MenuLoginDestination } from './menu-login-navigation.js';
-import { runDoctor } from '../commands/doctor.js';
 import { runCost } from '../commands/cost.js';
 import { dim, bold, formatRecapLine } from '../ui/theme.js';
 import { makeRecapGenerator } from '../core/recap-generator.js';
@@ -182,7 +181,6 @@ import { decideShed, pressureFromSignals, type QuotaPressure } from '../core/cap
 import type { UpdateCheckResult } from '../infra/update-check.js';
 import type { ClaudeTokenStatus } from '../infra/credentials.js';
 import { loadClaudeTokenCapturedAt, claudeTokenStatus } from '../infra/credentials.js';
-import type { HealthIssue } from '../infra/health.js';
 import {
   PROVIDER_LABEL,
   resolveAutoMode,
@@ -403,14 +401,6 @@ export interface MenuContext {
    * real npx cache path. Omit (undefined) to trigger the real detection.
    */
   readonly runningUnderNpx?: boolean;
-  /**
-   * Pre-computed environment health issues (Node version, state-dir writable,
-   * pricing staleness) surfaced automatically below the header — only when a
-   * problem exists. Computed once at startup by cli.ts (the diagnostics don't
-   * change in-session) so the user never has to run a separate health command.
-   * Omit/empty → nothing is shown.
-   */
-  readonly healthIssues?: readonly HealthIssue[];
   /**
    * Optional injected hook-presence check for testing. When provided, `startMenu`
    * uses this instead of the real `isHookInstalled` from commands/install.ts,
@@ -7004,7 +6994,7 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
       }
       await renderMainScreen(
         ctx, mutableCtx, metas, spend, out, updateInfo, claudeTokenInfo,
-        runningUnderNpx, ctx.healthIssues ?? [], allGoals, accountStates,
+        runningUnderNpx, allGoals, accountStates,
         spendLoading, listsLoading,
       );
       out.endFrame?.();
@@ -7599,14 +7589,6 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
       if (key === 's') {
         await runSettings(ctx, mutableCtx, out, readLine, inkReadKey);
         syncSettings();
-        continue;
-      }
-
-      // ---- [d] Doctor ---------------------------------------------------------
-      if (key === 'd') {
-        await runDoctor(out);
-        out.write(dim('\nPress any key to return to the menu.\n', out.color));
-        await readMenuKey(out, readLine, undefined, false, inkReadKey);
         continue;
       }
 
