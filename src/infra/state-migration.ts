@@ -48,7 +48,11 @@ export interface MigrationPlan {
   readonly actions: readonly MigrationAction[];
 }
 
-export type MigrationStatus = 'complete' | 'partial' | 'conflicts';
+export type MigrationStatus =
+  | 'complete'
+  | 'partial'
+  | 'conflicts'
+  | 'complete-with-archive';
 
 export interface MigrationReport {
   status: MigrationStatus;
@@ -191,6 +195,17 @@ function isPrivate(relPath: string): boolean {
 
 function isJSONLMerge(relPath: string): boolean {
   return JSONL_MERGE_PATHS.has(relPath.replace(/\\/g, '/'));
+}
+
+/**
+ * True when a conflict's relative path lives under the grow-only session
+ * archive (`.session-archive/`). Archive-only conflicts are self-healed — the
+ * live dest is untouched and the source is preserved in the migration
+ * `conflicts/` dir — so they are classified as non-alarming
+ * (`complete-with-archive`) rather than flagged as a user decision.
+ */
+function isArchiveConflict(relPath: string): boolean {
+  return relPath.replace(/\\/g, '/').startsWith('.session-archive/');
 }
 
 /** Check that the top-level component of `relPath` is a known myshell entry. */
@@ -646,8 +661,18 @@ export async function runStateMigration(
 
   // Determine final status
   if (report.errors.length > 0 || report.conflicts.length > 0) {
-    if (report.errors.length > 0) report.status = 'partial';
-    if (report.conflicts.length > 0) report.status = 'conflicts';
+    if (report.errors.length > 0) {
+      report.status = 'partial';
+    } else if (report.conflicts.length > 0) {
+      // Conflicts: archive-only conflicts are self-healed (the source is copied
+      // into the migration `conflicts/` dir; the live dest is untouched). Such
+      // runs are non-alarming and must NOT surface as a user warning — classify
+      // them separately from real (live-state) conflicts that need a decision.
+      const nonArchiveCount = report.conflicts.filter(
+        (p) => !isArchiveConflict(p),
+      ).length;
+      report.status = nonArchiveCount === 0 ? 'complete-with-archive' : 'conflicts';
+    }
   }
 
   // Write manifest

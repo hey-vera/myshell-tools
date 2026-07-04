@@ -150,6 +150,38 @@ describe('evaluateHealth', () => {
     assert.equal(found, undefined, 'complete migration should not surface');
   });
 
+  it('does NOT surface complete-with-archive (archive conflicts self-healed silently)', () => {
+    const report: MigrationReport = {
+      status: 'complete-with-archive',
+      copied: [],
+      alreadyPresent: [],
+      conflicts: ['.session-archive/old.jsonl'],
+      merged: [],
+      errors: [],
+      manifestPath: '/tmp/manifest.json',
+    };
+    const issues = evaluateHealth({ ...HEALTHY, migrationReport: report });
+    const found = issues.find((i) => i.id === 'migration-conflicts' || i.id === 'migration-partial');
+    assert.equal(found, undefined, 'complete-with-archive should not surface');
+  });
+
+  it('still surfaces non-archive conflicts as a user decision', () => {
+    const report: MigrationReport = {
+      status: 'conflicts',
+      copied: [],
+      alreadyPresent: [],
+      conflicts: ['config.json'],
+      merged: [],
+      errors: [],
+      manifestPath: '/tmp/manifest.json',
+    };
+    const issues = evaluateHealth({ ...HEALTHY, migrationReport: report });
+    const found = issues.find((i) => i.id === 'migration-conflicts');
+    assert.ok(found !== undefined, 'non-archive conflict should surface');
+    assert.equal(found?.severity, 'warn');
+    assert.ok(found?.message.includes('/tmp/manifest.json'), 'should include manifest path');
+  });
+
   it('does NOT change output when migration/gitignore inputs are absent', () => {
     const issues = evaluateHealth(HEALTHY);
     assert.deepEqual(issues, [], 'absent inputs change nothing');

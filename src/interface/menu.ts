@@ -154,7 +154,6 @@ import { resolveImageAttachments } from '../infra/attachments.js';
 import { runTask } from './run.js';
 import { defaultLoginRunner, type LoginRunner } from '../commands/login.js';
 import { resolveMenuLoginDestination, type MenuLoginOrigin, type MenuLoginDestination } from './menu-login-navigation.js';
-import { runDoctor } from '../commands/doctor.js';
 import { runCost } from '../commands/cost.js';
 import { dim, bold, formatRecapLine } from '../ui/theme.js';
 import { makeRecapGenerator } from '../core/recap-generator.js';
@@ -7599,14 +7598,6 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
       if (key === 's') {
         await runSettings(ctx, mutableCtx, out, readLine, inkReadKey);
         syncSettings();
-        continue;
-      }
-
-      // ---- [d] Doctor ---------------------------------------------------------
-      if (key === 'd') {
-        await runDoctor(out);
-        out.write(dim('\nPress any key to return to the menu.\n', out.color));
-        await readMenuKey(out, readLine, undefined, false, inkReadKey);
         continue;
       }
 
