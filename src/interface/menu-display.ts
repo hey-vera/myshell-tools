@@ -16,8 +16,6 @@ import { formatTokens } from '../infra/insights.js';
 import type { ConversationMeta, ConversationMode } from '../infra/conversation-store.js';
 import { dim } from '../ui/theme.js';
 import { claudeTokenStatus } from '../infra/credentials.js';
-import type { Goal } from '../core/goal-todo.js';
-import { isStale } from '../core/goal-todo.js';
 
 /**
  * Decide whether auto-update is enabled for this launch.
@@ -280,43 +278,7 @@ export function conversationModeLabel(mode: ConversationMode | undefined): strin
   return mode;
 }
 
-/**
- * Compute a map of conversationId → goal badge kind from the full goal list.
- *
- * - `'active'`  — at least one linked goal is running, queued, or parked and NOT stale.
- * - `'review'`  — at least one linked goal is stale, blocked, or inactive (none active).
- * - absent       — no linked live goals exist.
- */
-export function computeGoalBadges(
-  goals: readonly Goal[],
-  nowIso: string,
-): Map<string, 'active' | 'review'> {
-  const result = new Map<string, 'active' | 'review'>();
-  const byConv = new Map<string, Goal[]>();
-  for (const g of goals) {
-    const cid = g.conversationId;
-    if (cid === null || cid === undefined) continue;
-    const bucket = byConv.get(cid);
-    if (bucket !== undefined) {
-      bucket.push(g);
-    } else {
-      byConv.set(cid, [g]);
-    }
-  }
-  for (const [cid, gs] of byConv) {
-    const live = gs.filter((g) =>
-      g.state === 'running' || g.state === 'queued' || g.state === 'parked',
-    );
-    if (live.length === 0) continue;
-    const hasActive = live.some((g) => !isStale(g, nowIso) && g.state !== 'blocked');
-    if (hasActive) {
-      result.set(cid, 'active');
-    } else {
-      result.set(cid, 'review');
-    }
-  }
-  return result;
-}
+
 
 /**
  * Build the conversation list lines from real ConversationMeta[].
