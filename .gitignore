@@ -23,3 +23,6 @@ coverage
 # transient run logs under docs/
 docs/*.log
 .eslintcache
+
+# dev orchestration status/run files (not product code)
+.orchestrator/

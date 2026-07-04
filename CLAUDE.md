@@ -58,12 +58,15 @@ When the user provides a reference design, artifact, workflow, layout, API shape
 
 For every concurrent worker or any code/test/config edit, provide: objective, base branch/commit, worktree path, allowed files/modules, forbidden files/modules, conflict domain, dependency assumptions, verification command, receipt path, and max wall-clock. Use a fanout cap of ~2–4 active workers (machine + provider-quota bound). Pipeline: launch all independent roots at once; when a predecessor lands, stack its dependent on that branch while reviewing/merging; keep one integration worktree for combined gates. If a worker path is unavailable, fall back per §Model Routing; only pause to ask before spending frontier (gpt-5.5) or Opus quota on execution.
 
+**Never wait for nothing.** The orchestrator doesn't idle — each active turn it advances state: ingest notifications + read `.orchestrator/events.jsonl`, review completed diffs, merge/gate ready branches, dispatch ready DAG roots, and prepare next dependents' contracts/worktrees. Only when NO useful queue work remains, `ScheduleWakeup` to the nearest worker deadline and stop (zero model turns until an event fires). Full controller loop: `docs/orchestrator-protocol.md`.
+
 ## Worker Dispatch and Liveness
 
 Foreground is the default when the orchestrator needs the worker result before the next decision, when the task is short, when permission prompts are likely, or when failure must be surfaced immediately. Background is for independent, long-running, checkpointable work where the orchestrator can do useful work meanwhile.
 
 - **Never detach inside a worker shell command.** Do not use nested `&`, `nohup`, `disown`, `Start-Process`, or a wrapper that exits while the real worker continues. The harness must track the real `opencode run` / `codex exec` process, not a short-lived launcher.
 - **Reliable background launch pattern:** start the actual worker as the harness background task; keep stdout/stderr attached to the harness output file; close stdin (`</dev/null`); record task ID, PID if exposed, start time, max wall-clock, allowed files, verification command, and receipt path.
+- **Progress via a status file, not polling.** Instruct workers to append one JSON line per milestone (`STARTED`/`FIRST_EDIT`/`TEST_PASSED`/`RECEIPT_WRITTEN`/`BLOCKED`…) to `.orchestrator/events.jsonl` (gitignored, dev-only). When already active, read that file once to see ALL workers' states — one cheap read, never a poll loop. Schema + protocol: `docs/orchestrator-protocol.md`.
 - **Monitor event-driven, NOT by polling.** Rely on the harness completion notification for terminal state. After launching a healthy background worker, spend **zero** turns asking for status. Schedule at most **one** fallback wakeup for hang detection, at the slice's max wall-clock **plus grace** — used only if no completion notification arrived. No 60–90s check, no 2–3 min watchdog loop, no "status?" turns to healthy workers, no repeated CI-watch loops (use `--auto`).
 - **Liveness = output freshness plus process activity**, not "process still exists." No new output for ~5-10 minutes with near-flat CPU, or a wall-clock budget breach, is `HUNG`.
 - **On the single fallback wakeup:** inspect output freshness + process activity. If output is fresh or CPU is active, extend once with an explicit new deadline and wait for the notification again. If stalled or budget exceeded, stop it through the harness/supervisor, inspect the working-tree diff and receipt/output, then resume-from-diff or retry the same provider per §Model Routing. Don't restart from scratch if useful work landed.
@@ -74,12 +77,13 @@ Foreground is the default when the orchestrator needs the worker result before t
 
 ## Model Routing
 
-Model availability + funding are volatile — verify before relying (`codex exec -m <model>` runs on ChatGPT billing, independent of opencode; `opencode models </dev/null` for opencode). Class-based routing:
+**Routing is task-calibrated, not provider-class-only.** Objective (lexicographic): perfect-first-time (no overkill) → minimum TOTAL quota incl. rework → speed. For each task, pick the **smallest model+effort whose expected first-time-right probability clears the task's quality bar**, then minimize expected total quota (a too-cheap model that fails and retries costs MORE than the right-sized one once), then latency. The full procedure, quality bars, dispatch-contract template, status-events + never-idle protocol live in **`docs/orchestrator-protocol.md`**; the concrete task→model table lives in **`docs/model-routing.md`**.
+
 - **Orchestrator (brain):** cheapest capable Sonnet-class (Sonnet 5).
 - **Frontier planner/auditor:** codex `gpt-5.5` high reasoning.
-- **Workers (bounded execution):** primary = funded opencode-go via `opencode run -m opencode-go/<model>` because it is the cheapest capable worker. Retry transient opencode-go failures with capped exponential backoff, then fall back to codex `gpt-5.4` (heavier bounded work), `gpt-5.4-mini` (cheap/mechanical), or Claude sonnet-class `Agent` workers only on real unavailability, quota/auth failure, repeated transient failure, or poor task fit.
-- **opencode-go is FUNDED and WORKING (smoke run returned `GO_OK`, confirmed 2026-07-04).** Earlier notes calling it unfunded are stale. Re-verify only before important work or if a dispatch fails with auth/quota/provider errors.
-- **Opus:** escalation only, per the trigger list.
+- **Workers (bounded execution):** consult the task→model table in `docs/model-routing.md` — mechanical/low-risk → `deepseek-v4-flash`-class; bounded coding → stronger opencode-go coder (`deepseek-v4-pro`/`kimi-k2.7-code`/`glm-5.2`) or codex `gpt-5.4`; UI/harness-native → Claude sonnet-class `Agent`. Do NOT default to one model for everything. Retry transient opencode-go failures with capped backoff before falling back.
+- **Override rule:** to pick a *larger* model than the table, name the concrete risk it missed; to pick a *smaller* one, name the verification oracle (strong tests) that makes first-pass safe. Else follow the table.
+- **opencode-go is FUNDED and WORKING (`GO_OK` smoke, 2026-07-04).** Re-verify only before important work or on auth/quota/provider errors. **Opus:** escalation only.
 
 Dated capability notes + current funding state live in `docs/model-routing.md`, not always-loaded memory.
 
