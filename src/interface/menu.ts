@@ -7007,7 +7007,6 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
         runningUnderNpx, ctx.healthIssues ?? [], allGoals, accountStates,
         spendLoading, listsLoading,
       );
-      out.write('> ');
       out.endFrame?.();
     };
 
@@ -7253,7 +7252,9 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
           const hasAccounts = Object.values(acctStates).some((s) => s.total > 0);
           if (subsOn && hasAccounts) {
             // Provider selection submenu for Accounts management.
+            const activeTotal = Object.values(acctStates).reduce((sum, s) => sum + s.active, 0);
             out.write('\n  Accounts\n');
+            out.write(`    ${activeTotal} active\n`);
             for (const provider of ['claude', 'codex', 'opencode', 'grok'] as const) {
               const s = acctStates[provider];
               if (s === undefined) continue;

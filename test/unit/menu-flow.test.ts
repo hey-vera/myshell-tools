@@ -664,6 +664,16 @@ function makeSink(): OutputSink & { buf: string } {
   };
 }
 
+function assertLockedHomeSkeleton(buf: string): void {
+  assert.ok(buf.includes('Effort Mode:'), 'home should render the Effort Mode box');
+  assert.ok(buf.includes('Session Manager'), 'home should render the Session Manager title box');
+  assert.ok(buf.includes('Choice:'), 'home should render the Choice prompt');
+  assert.ok(buf.includes('ESC to exit'), 'home should render the ESC footer');
+  assert.ok(!buf.includes('No runs yet'), 'home must not render the legacy "No runs yet" copy');
+  assert.ok(!buf.includes('Health:'), 'home must not render the legacy health line');
+  assert.ok(!buf.includes('doctor'), 'home must not render doctor copy');
+}
+
 // ---------------------------------------------------------------------------
 // Build a MenuContext from parts
 // ---------------------------------------------------------------------------
@@ -794,7 +804,7 @@ describe('startMenu — immediate q → exits cleanly', () => {
     const ctx = makeCtx({ readLine: makeScriptedReader(['q']) });
 
     await startMenu(ctx, sink);
-    assert.ok(sink.buf.includes('myshell-tools'), 'main screen should be rendered');
+    assertLockedHomeSkeleton(sink.buf);
   });
 
   it('dispatches a line-mode j with carriage return to Claude login', async () => {
@@ -849,7 +859,7 @@ describe('startMenu — immediate q → exits cleanly', () => {
 
     assert.deepEqual(loginCalls, ['claude'], 'completed login must not loop back into auth');
     assert.equal(detectCalls, 1, 'menu must refresh provider state exactly once after login');
-    assert.ok(sink.buf.includes('signed in'), 'home screen after login must render authenticated status');
+    assertLockedHomeSkeleton(sink.buf);
   });
 
   it('startMenu resolves (not hangs)', async () => {
@@ -939,7 +949,7 @@ describe('startMenu — immediate q → exits cleanly', () => {
     // showing stale subscription info after external plan changes; see renderHeaderLines).
     // Snapshot retention still matters for other live env-derived UI (provider status,
     // auto-mode, etc.). Check for stable rendered provider info from the prior snapshot.
-    assert.ok(sink.buf.includes('claude: signed in'), 'prior provider status from the env snapshot should remain rendered after a failed refresh');
+    assertLockedHomeSkeleton(sink.buf);
   });
 
   it('explicit login forces an environment refresh even within the TTL', async () => {
@@ -981,8 +991,7 @@ describe('startMenu — EOF / null from readLine → exits cleanly (FIX 1)', () 
     const ctx = makeCtx({ readLine: makeScriptedReader([null]) });
 
     await startMenu(ctx, sink);
-    // The main screen is rendered before the first readLine() call
-    assert.ok(sink.buf.includes('myshell-tools'), 'main screen rendered before EOF');
+    assertLockedHomeSkeleton(sink.buf);
   });
 
   it('EOF mid-session also exits cleanly (multiple screens then EOF)', async () => {
@@ -1048,9 +1057,9 @@ describe('startMenu — n → first-message → /exit → q', () => {
 
   it('/exit returns to main menu (outputs main screen again)', async () => {
     await run(['n', 'My first task', '/exit', 'q']);
-    // The main screen is rendered at least twice: once before 'n', once after /exit returns
-    const occurrences = sink.buf.split('myshell-tools').length - 1;
+    const occurrences = sink.buf.split('Session Manager').length - 1;
     assert.ok(occurrences >= 2, `main screen rendered at least twice (got ${occurrences})`);
+    assertLockedHomeSkeleton(sink.buf);
   });
 
   it('EOF inside chat loop exits gracefully without throw', async () => {
@@ -5253,10 +5262,7 @@ describe('startMenu — first-run welcome: install prompt for missing provider',
       'should reach the main menu after welcome',
     );
 
-    assert.ok(
-      sink.buf.includes('myshell-tools'),
-      'main menu should be rendered after welcome completes',
-    );
+    assertLockedHomeSkeleton(sink.buf);
   });
 
   it('EOF during install prompt → skips install and continues', async () => {
@@ -5427,10 +5433,7 @@ describe('startMenu — first-run welcome: install prompt for missing provider',
     );
 
     // Flow must reach the main menu (mode was accepted)
-    assert.ok(
-      sink.buf.includes('myshell-tools'),
-      'main menu must be rendered after mode selection',
-    );
+    assertLockedHomeSkeleton(sink.buf);
   });
 
   it('answering 3 to mode prompt sets quality-first mode', async () => {
@@ -5443,10 +5446,7 @@ describe('startMenu — first-run welcome: install prompt for missing provider',
       'answering 3 to mode prompt should not throw',
     );
 
-    assert.ok(
-      sink.buf.includes('myshell-tools'),
-      'main menu must be rendered after quality-first mode selection',
-    );
+    assertLockedHomeSkeleton(sink.buf);
   });
 
   it('Enter (empty) on mode prompt keeps balanced default and proceeds', async () => {
@@ -5459,10 +5459,7 @@ describe('startMenu — first-run welcome: install prompt for missing provider',
       'Enter on mode prompt should not throw',
     );
 
-    assert.ok(
-      sink.buf.includes('myshell-tools'),
-      'main menu must be rendered after Enter on mode prompt',
-    );
+    assertLockedHomeSkeleton(sink.buf);
   });
 });
 
@@ -7060,7 +7057,7 @@ describe('startMenu — update notifier: banner, [u], auto-update', () => {
 
   // ---- Update banner visibility --------------------------------------------
 
-  it('banner appears when update is available', async () => {
+  it('root home stays on the locked skeleton when an update is available', async () => {
     const sink = makeSink();
     const ctx = makeUpdateCtx(
       { readLine: makeScriptedReader(['q']) },
@@ -7070,18 +7067,9 @@ describe('startMenu — update notifier: banner, [u], auto-update', () => {
 
     await startMenu(ctx, sink);
 
-    assert.ok(
-      sink.buf.includes('▲ Update available'),
-      'update banner must appear when updateAvailable is true',
-    );
-    assert.ok(
-      sink.buf.includes('2.0.0') && sink.buf.includes('3.0.0'),
-      'banner must show current → latest versions',
-    );
-    assert.ok(
-      sink.buf.includes('press u'),
-      'banner must include "(press u)" hint',
-    );
+    assertLockedHomeSkeleton(sink.buf);
+    assert.ok(!sink.buf.includes('▲ Update available'), 'locked home should not show the old update banner');
+    assert.ok(!sink.buf.includes('press u'), 'locked home should not show the old update hint');
   });
 
   it('banner does NOT appear when no update is available', async () => {
@@ -7102,7 +7090,7 @@ describe('startMenu — update notifier: banner, [u], auto-update', () => {
 
   // ---- [u] entry visibility -----------------------------------------------
 
-  it('[u] Update now entry is shown when update is available', async () => {
+  it('[u] Update now entry is hidden on the locked home even when an update is available', async () => {
     const sink = makeSink();
     const ctx = makeUpdateCtx(
       { readLine: makeScriptedReader(['q']) },
@@ -7112,14 +7100,8 @@ describe('startMenu — update notifier: banner, [u], auto-update', () => {
 
     await startMenu(ctx, sink);
 
-    assert.ok(
-      sink.buf.includes('[u]'),
-      '[u] entry must appear in menu when update is available',
-    );
-    assert.ok(
-      sink.buf.toLowerCase().includes('update now') || sink.buf.toLowerCase().includes('update'),
-      'menu must show an update option label',
-    );
+    assertLockedHomeSkeleton(sink.buf);
+    assert.ok(!sink.buf.includes('[u]'), 'locked home should not show the old [u] update entry');
   });
 
   it('[u] Update now entry is NOT shown when no update is available', async () => {
@@ -7543,11 +7525,8 @@ describe('startMenu — update notifier: banner, [u], auto-update', () => {
     await startMenu(ctx, sink);
 
     assert.equal(updateSelfCalled, false, 'updateSelf must NOT be called when autoUpdate is false');
-    // Banner should still appear
-    assert.ok(
-      sink.buf.includes('▲ Update available'),
-      'update banner must still appear even when autoUpdate is off',
-    );
+    assertLockedHomeSkeleton(sink.buf);
+    assert.ok(!sink.buf.includes('▲ Update available'), 'locked home should not show the old update banner');
   });
 
   // Default behaviour (autoUpdate ABSENT): ASK at launch, don't silently install.
@@ -7636,11 +7615,8 @@ describe('startMenu — update notifier: banner, [u], auto-update', () => {
       await startMenu(ctx, sink);
 
       assert.equal(updateSelfCalled, false, 'updateSelf must NOT be called when MYSHELL_NO_UPDATE is set');
-      // Banner should still appear (notify-only mode)
-      assert.ok(
-        sink.buf.includes('▲ Update available'),
-        'update banner must still appear when auto-update is disabled via env',
-      );
+      assertLockedHomeSkeleton(sink.buf);
+      assert.ok(!sink.buf.includes('▲ Update available'), 'locked home should not show the old update banner');
     } finally {
       if (origVal !== undefined) {
         process.env['MYSHELL_NO_UPDATE'] = origVal;
@@ -9444,7 +9420,7 @@ describe('startMenu — mode settings [1] Auto', () => {
     );
   });
 
-  it('when mode is unset (auto), main screen shows "(auto)" in mode line', async () => {
+  it('when mode is unset (auto), home still renders the locked skeleton', async () => {
     const clock = makeFakeClock();
     const store = makeStore(clock);
     const sink = makeSink();
@@ -9463,21 +9439,11 @@ describe('startMenu — mode settings [1] Auto', () => {
 
     await assert.doesNotReject(() => startMenu(ctx, sink));
 
-    // The main screen mode line must show the Auto (smart) indicator. With no provider
-    // reporting a plan (FAKE_ENV claude plan=null), the compact main line stays
-    // clean — just "Auto (smart)", NOT a nagging "no plan reported" (that detail lives
-    // on the mode screen's breakdown, not the always-visible status line).
-    assert.ok(
-      sink.buf.includes('Auto (smart)'),
-      'main screen mode line must show "Auto (smart)" when mode is unset',
-    );
-    assert.ok(
-      !sink.buf.includes('(auto · no plan reported)'),
-      'compact main-line reason must not nag "no plan reported" when there is no signal',
-    );
+    assertLockedHomeSkeleton(sink.buf);
+    assert.ok(sink.buf.includes('Auto (smart)'), 'locked effort copy should include Auto (smart)');
   });
 
-  it('when mode is pinned, main screen does NOT show "(auto)"', async () => {
+  it('when mode is pinned, home still renders the locked skeleton copy', async () => {
     const clock = makeFakeClock();
     const store = makeStore(clock);
     const sink = makeSink();
@@ -9496,14 +9462,11 @@ describe('startMenu — mode settings [1] Auto', () => {
 
     await assert.doesNotReject(() => startMenu(ctx, sink));
 
-    // "Auto (smart)" should NOT appear when mode is explicitly pinned
-    assert.ok(
-      !sink.buf.includes('Auto (smart)'),
-      'main screen must NOT show "Auto (smart)" when mode is explicitly pinned',
-    );
+    assertLockedHomeSkeleton(sink.buf);
+    assert.ok(sink.buf.includes('Auto (smart)'), 'Slice 1 home copy stays locked to Auto (smart)');
   });
 
-  it('when claude plan is max, auto-resolved mode is shown as Max in main screen', async () => {
+  it('when claude plan is max, home still renders the locked Slice 1 skeleton', async () => {
     const clock = makeFakeClock();
     const store = makeStore(clock);
     const sink = makeSink();
@@ -9540,15 +9503,8 @@ describe('startMenu — mode settings [1] Auto', () => {
 
     await startMenu(ctx, sink);
 
-    // Mode line should show Max (auto · Claude claude max) or just Max (auto)
-    assert.ok(
-      sink.buf.includes('Max'),
-      'main screen must show Max when claude plan is max and mode is auto',
-    );
-    assert.ok(
-      sink.buf.includes('Auto (smart)'),
-      'main screen must include the auto indicator when mode is unset',
-    );
+    assertLockedHomeSkeleton(sink.buf);
+    assert.ok(sink.buf.includes('Auto (smart)'), 'Slice 1 home copy stays locked to Auto (smart)');
   });
 });
 
@@ -9618,7 +9574,13 @@ describe('startMenu — ※ recap on resume + /recap', () => {
     });
     const sink = makeSink();
     // Resume conversation 1, then exit chat + menu.
-    const ctx = makeCtx({ readLine: makeScriptedReader(['1', '/exit', 'q']) }, clock, store);
+    const ctx = makeCtx({
+      readLine: makeScriptedReader([
+        '1',
+        { value: '/exit', untilSinkContains: 'Migrating auth to JWT; next: expiry tests.', sink: () => sink.buf },
+        'q',
+      ]),
+    }, clock, store);
     await startMenu(ctx, sink);
 
     assert.ok(sink.buf.includes('※'), 'resume shows the ※ orientation marker');
@@ -9661,7 +9623,11 @@ describe('startMenu — ※ recap on resume + /recap', () => {
     const sink = makeSink();
     const ctx = makeCtx(
       {
-        readLine: makeScriptedReader(['1', '/exit', 'q']),
+        readLine: makeScriptedReader([
+          '1',
+          { value: '/exit', untilSinkContains: 'Resumed: auth JWT work; next: expiry tests.', sink: () => sink.buf },
+          'q',
+        ]),
         providers: { claude: recapFakeProvider('Resumed: auth JWT work; next: expiry tests.') },
       },
       clock,
@@ -10022,9 +9988,7 @@ describe('startMenu — goals: /todo parks + Parked section renders', () => {
       const sink = makeSink();
       const ctx = makeCtx({ readLine: makeScriptedReader(['q']) });
       await startMenu(ctx, sink);
-      // The home screen no longer renders a Parked section at all; just
-      // verify it renders cleanly and the main menu appears.
-      assert.ok(sink.buf.includes('myshell-tools'), 'main menu renders');
+      assertLockedHomeSkeleton(sink.buf);
     });
   });
 });
