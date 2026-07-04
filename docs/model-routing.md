@@ -23,6 +23,42 @@ _Last verified: 2026-07-03. This doc holds VOLATILE, dated model facts so they n
 - **Sonnet 5** — $3 input / $15 output. Faster; covers a wider cost-performance range than Sonnet 4.6 and matches Opus 4.8 on some tasks at higher effort. Preferred cheap brain where available.
 - Sources: [Anthropic Models Overview](https://platform.claude.com/docs/en/about-claude/models/overview), [Introducing Claude Opus 4.8](https://www.anthropic.com/news/claude-opus-4-8).
 
+## Claude model + effort-tier matrix (authoritative — from the built-in `claude-api` reference, verified 2026-07-03)
+
+The orchestrator picks both a **model** and an **effort level**. Effort is the primary intelligence↔latency↔cost dial.
+
+| Model | ID | Context / max out | $/MTok in·out | Effort levels | Best for |
+| --- | --- | --- | --- | --- | --- |
+| **Opus 4.8** | `claude-opus-4-8` | 1M / 128K | $5 · $25 | low/medium/high/**xhigh**/max | Escalation only: hardest reasoning, long-horizon agentic, subtle judgment |
+| **Sonnet 5** | `claude-sonnet-5` | 1M / 128K | $3 · $15 ($2·$10 intro→2026-08-31) | low/medium/high/**xhigh**/max | The orchestrator brain; near-Opus coding/agentic at Sonnet cost |
+| **Sonnet 4.6** | `claude-sonnet-4-6` | 1M / 128K | $3 · $15 | low/medium/high/max (**no xhigh**) | Fallback brain if Sonnet 5 unavailable |
+| **Haiku 4.5** | `claude-haiku-4-5` | 200K / 64K | $1 · $5 | **none** (effort/max error) | Fast/cheap simple tasks; not for effort-sensitive work |
+
+**Effort levels (what each buys):**
+- `low` — subagents, simple/scoped tasks, latency-sensitive; strict scoping (risk of under-thinking on hard tasks).
+- `medium` — balanced cost/quality; Sonnet 5 @medium ≈ Sonnet 4.6 @high.
+- `high` — **default**; the floor for most intelligence-sensitive work.
+- `xhigh` — best for coding/agentic (Opus 4.8, Sonnet 5 only); Claude Code's default.
+- `max` — correctness over cost; can overthink — reserve for the hardest, latency-insensitive cases.
+
+Routing implication: the orchestrator runs on **Sonnet 5 at medium/high**; escalates to **Opus 4.8 at high/xhigh** only when a `CLAUDE.md` trigger fires. Don't reflexively pick `xhigh`/`max` — higher effort up front often *reduces* total tokens on agentic work, but on routine work it burns for no gain.
+
+## Empirical smoke tests (2026-07-03 — do NOT re-run routinely; smoke-tests cost real quota)
+
+One identical bounded coding task (a `slugify` function + assertions), run once per funded worker:
+
+| Worker | Result | First-try | Tokens | Quota |
+| --- | --- | --- | ---: | --- |
+| codex `gpt-5.4` | ✅ correct | yes | ~11.0k | ChatGPT |
+| codex `gpt-5.4-mini` | ✅ correct | yes | ~11.0k | ChatGPT |
+| sonnet-class `Agent` (Sonnet 5) | ✅ correct | yes (1 attempt) | ~26.7k | Anthropic |
+
+Read: all three funded workers are viable for bounded execution. `gpt-5.4-mini` matched `gpt-5.4` on a mechanical task → default mini for mechanical, reserve full 5.4 for heavier logic. Sonnet Agent costs more tokens but on a *separate* quota — the reason to balance. (One small task; harder slices discriminate more — but **profile via research + this doc, not by burning smoke-test quota every time**. Smoke only as a rare pre-flight for a genuinely unknown worker before a big task.)
+
+## Fuller capability profiles + routing guide
+
+Frontier research pass (gpt-5.5, online, 2026-07-03) with per-model profiles (gpt-5.4/5.5, opencode-go roster) and a task-type→model decision guide: **`docs/model-capability-research.md`**. Treat its non-Claude figures as dated/verify-at-use; the Claude matrix above is authoritative.
+
 ## opencode-go worker catalog snapshot (⚠️ UNFUNDED as of 2026-07-03 — insufficient balance; kept for when refunded)
 
 Listed by `opencode models </dev/null` on 2026-07-03:
