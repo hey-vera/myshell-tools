@@ -1,11 +1,22 @@
 # myshell-tools — Session Handoff / Gameplan
 
-_Last updated: 2026-07-03. This doc lets a fresh session continue without re-reading a long chat. Read it, then continue from "Active initiative."_
+_Last updated: 2026-07-03 (evening). This doc lets a fresh session continue without re-reading a long chat. Read it, then continue from "NEXT: Slice 1."_
+
+## START HERE (you are the orchestrator, Sonnet 5)
+- **Read first, in order:** `CLAUDE.md` (operating rules — how you work), this file (state + what's next), `docs/menu-build-spec-final.md` (the 12-slice build plan you're executing).
+- **Your role:** orchestrator only. You dispatch, gate, and report — you do NOT implement. Frontier planning/audit → `codex -m gpt-5.5`; execution → `opencode-go` workers; Opus 4.8 only on the escalation triggers in CLAUDE.md. Bright line: never Edit/Write `src/` or `test/` yourself.
+- **Definition of Done (enforced):** every PR must be green on all 8 CI lanes (now branch-protected on main), receipt-verified, and vision-aligned. You may auto-merge your own in-spec, all-green PRs (memory `merge-authorization-scoped`); behavior/release/schema changes ask the user.
+- **The goal (north star):** "one chat to rule them all" — myshell-tools as a single, provider-agnostic terminal chat/agent surface. The active build makes the home menu + per-conversation workspaces real (see below).
 
 ## Shipped state (done, do not redo)
-- **Published: `myshell-tools@3.162.0` is LIVE on npm** (`latest`). Main is green across all 8 CI lanes.
-- Merged this cycle: #68 BYPRODUCT_FALLBACK, #69 AUTO_SMART, #70 planning-depth flake-class fix, #71 env-aware rules, #72 PLANNING_DEPTH, #73 release 3.162.0.
+- **Published: `myshell-tools@3.162.0` is LIVE on npm** (`latest`). Main is green across all 8 CI lanes and now **branch-protected** (all lanes required before merge).
+- **Operating rules hardened + installed (2026-07-03, #74/#76):** lean quota/bloat-gated `CLAUDE.md` (Sonnet-class orchestrator; Opus as escalation specialist; grounding-delegation; receipt-first returns; anti-drift; auto-parallel; 7-check memory gate; scoped auto-merge). Audit trail: `docs/rules-quota-audit-round1..3.md`. Dated model facts: `docs/model-routing.md`.
+- **Menu build — Slice 0 DONE (#75 + lint hotfix #77):** `sectionBox()` + `titleBox()` rounded-box primitives in `src/ui/tui.ts` (+ tests). These are the building blocks for the home skeleton.
+- Merged prior cycle: #68 BYPRODUCT_FALLBACK, #69 AUTO_SMART, #70 planning-depth flake fix, #71 env-aware rules, #72 PLANNING_DEPTH, #73 release 3.162.0.
 - De-drift flags still **gated (need live validation, DO NOT promote blind):** SEMANTIC_PREFLIGHT_V1, SUBSCRIPTIONS, GOAL_STEWARD. Plus remove-dead flags behind SEMANTIC_PREFLIGHT, and MYSHELL_BASIC last.
+
+## NEXT: Slice 1 — Home Render Skeleton
+Execute `docs/menu-build-spec-final.md` → "Slice 1 - Home Render Skeleton, No Workspace Claims" via an opencode-go worker. It renders the locked layout (Effort Mode top box via `sectionBox`, one `Recent (...)` list, centered `Session Manager` `titleBox`, flat controls, `Choice: ▌`, `ESC to exit`) and updates the golden/PTY tests. Higher blast radius (render-string assertions) — gate on full CI-green before merge. Then continue slices in the spec's recommended order (2 → 3 → 4 → 5 → 6 → 7 → 9 → 8 → 10 → 11).
 
 ## Active initiative: Home-menu redesign + workspace-per-conversation + chat UX
 Design docs (canonical): `docs/menu-home-redesign-audit.md`, `docs/menu-workspace-design-v3.md`. This handoff supersedes any conflicting mockups in those docs — the **locked layout is below**.
@@ -62,7 +73,9 @@ Design docs (canonical): `docs/menu-home-redesign-audit.md`, `docs/menu-workspac
 1. **Jump-to-bottom:** on scroll-up, show a `↓ for bottom` hint; down-arrow jumps to latest. Only works in the **Ink full-screen TUI** path, not plain stdout streaming — confirm which path chat uses by default first.
 2. **Response folding:** keep freshest ~3 responses expanded; older ones collapse to a 1-line title (start with first-line + `(N lines · HH:MM)`; AI titles later) + timestamp; expandable. Keyboard-primary (select `j/k`, `Enter` expand); mouse as a bonus where the terminal supports it. Ink-path only. This is a real multi-day feature (transcript folding/virtualization).
 
-## Meta workstream: CLAUDE.md rules + memory governance to 10/10
+## Meta workstream: CLAUDE.md rules + memory governance to 10/10 — ✅ DONE (2026-07-03, #74/#76)
+_Completed: 3-round research-backed adversarial audit → lean gated CLAUDE.md installed; memory trimmed/governed; scoped auto-merge + quality gate live; branch protection on. Details below are historical context only — do not redo. Switch the orchestrator to Sonnet 5 (`/model`) to realize the quota savings._
+
 User wants the operating rules + auto-memory tuned for: quota efficiency, planning/execution efficiency, always-enforced memory-creation rules, and an anti-drift rule. Treat rule changes as SENSITIVE (they affect all future sessions) — research + propose, get user buy-in before rewriting. Research already done → `docs/rules-memory-10of10-plan.md` (top-5 changes incl. anti-drift rule, delegate-vs-inline + resume-vs-cold quota thresholds, mandatory memory schema/pre-write gate, capped adversarial rounds, trimming volatile provider/model/credential detail from always-loaded memory).
 
 ### Already DONE this session (memory governance)
