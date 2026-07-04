@@ -1,6 +1,6 @@
 # Model Routing — dated capability notes
 
-_Last verified: 2026-07-03. This doc holds VOLATILE, dated model facts so they never live in always-loaded memory or bloat `CLAUDE.md`. Re-verify before relying on any specific model: `opencode models </dev/null`, plus a smoke run for important work. Review this doc monthly._
+_Last verified: 2026-07-04. This doc holds VOLATILE, dated model facts so they never live in always-loaded memory or bloat `CLAUDE.md`. Re-verify before relying on any specific model: `opencode models </dev/null`, plus a smoke run for important work. Review this doc monthly._
 
 ## Roles (class-based routing)
 
@@ -8,13 +8,16 @@ _Last verified: 2026-07-03. This doc holds VOLATILE, dated model facts so they n
 | --- | --- | --- | --- |
 | Always-on orchestrator (brain) | Sonnet-class | Sonnet 5 (else Sonnet 4.6) | Dispatch, gating, verification, git, receipt synthesis, bounded control-plane edits |
 | Frontier planner / auditor | frontier | `codex exec -m gpt-5.5 -c model_reasoning_effort=high` | Architecture, audits, root cause, policy, multi-source research, durable plans |
-| Worker (execution) — gpt side | codex | `codex exec -m gpt-5.4` (heavier), `gpt-5.4-mini` (cheap/mechanical) | Bounded implementation/tests/mechanical edits; ChatGPT billing |
-| Worker (execution) — claude side | Claude `Agent` | sonnet-class Agent subagent | Same, on Anthropic billing — **balance with gpt workers so neither quota is exhausted** |
+| Worker (execution) — primary | opencode-go | `opencode run -m opencode-go/<model>` | Cheapest capable funded worker for bounded implementation/tests/mechanical edits |
+| Worker fallback — gpt side | codex | `codex exec -m gpt-5.4` (heavier), `gpt-5.4-mini` (cheap/mechanical) | Use after opencode-go unavailability/retry exhaustion or poor task fit; ChatGPT billing |
+| Worker fallback — claude side | Claude `Agent` | sonnet-class Agent subagent | Same, on Anthropic billing; useful when CLI worker path fails or separate quota is needed |
 | Escalation specialist | Opus 4.8 | — | Only when a `CLAUDE.md` Opus trigger fires; never the control plane |
 
-### Worker routing notes (2026-07-03)
-- **opencode-go is UNFUNDED** — `insufficient balance` account-wide (all models), confirmed 2026-07-03. Do **not** route to it until a balance is re-confirmed via a smoke run. It was the previous default worker path; it is now offline.
-- **Fallback in effect (user-directed):** balance execution across codex `gpt-5.4` / `gpt-5.4-mini` and Claude sonnet-class `Agent` workers. `codex exec -m <model>` runs on ChatGPT billing, independent of opencode balance. Alternate by task weight (mini for mechanical) and by remaining quota headroom on each side.
+### Worker routing notes (2026-07-04)
+- **opencode-go is FUNDED and WORKING** — live smoke run returned `GO_OK`, confirmed 2026-07-04. Earlier 2026-07-03 offline-status notes are stale.
+- **Primary path:** use opencode-go first for bounded worker execution because it is the cheapest capable funded provider. Pick the cheapest capable opencode-go model for the slice; use stronger opencode-go models only when task complexity requires it.
+- **Retry before fallback:** retry transient opencode-go failures with capped exponential backoff and jitter: attempt 1 immediately, attempt 2 after ~10-20s, attempt 3 after ~30-60s. Stop retrying on auth/quota/provider-disabled errors, deterministic command errors, or repeated identical failure.
+- **Fallback:** use codex `gpt-5.4-mini` for cheap/mechanical work, codex `gpt-5.4` for heavier bounded work, and Claude sonnet-class `Agent` workers when CLI paths are unavailable, permissions/subagent integration helps, or quota balancing is needed. `codex exec -m <model>` runs on ChatGPT billing, independent of opencode balance.
 - Claude `Agent` workers may edit `src/`/`test/` (they are separate subagents, not the orchestrator main thread — the bright line applies only to the main thread).
 
 ## Pricing (Anthropic, per MTok, verified 2026-07-03)
@@ -49,24 +52,25 @@ One identical bounded coding task (a `slugify` function + assertions), run once 
 
 | Worker | Result | First-try | Tokens | Quota |
 | --- | --- | --- | ---: | --- |
+| opencode-go | ✅ `GO_OK` smoke | yes | not recorded | opencode-go |
 | codex `gpt-5.4` | ✅ correct | yes | ~11.0k | ChatGPT |
 | codex `gpt-5.4-mini` | ✅ correct | yes | ~11.0k | ChatGPT |
 | sonnet-class `Agent` (Sonnet 5) | ✅ correct | yes (1 attempt) | ~26.7k | Anthropic |
 
-Read: all three funded workers are viable for bounded execution. `gpt-5.4-mini` matched `gpt-5.4` on a mechanical task → default mini for mechanical, reserve full 5.4 for heavier logic. Sonnet Agent costs more tokens but on a *separate* quota — the reason to balance. (One small task; harder slices discriminate more — but **profile via research + this doc, not by burning smoke-test quota every time**. Smoke only as a rare pre-flight for a genuinely unknown worker before a big task.)
+Read: opencode-go is currently funded and should be the primary bounded worker. The codex and Claude workers remain viable fallbacks. `gpt-5.4-mini` matched `gpt-5.4` on a mechanical task → default mini for mechanical codex fallback, reserve full 5.4 for heavier logic. Sonnet Agent costs more tokens but on a *separate* quota — the reason to keep it as a fallback. (Small smoke tasks do not prove harder-slice quality — **profile via research + this doc, not by burning smoke-test quota every time**. Smoke only as a rare pre-flight for a genuinely unknown worker before a big task.)
 
 ## Fuller capability profiles + routing guide
 
 Frontier research pass (gpt-5.5, online, 2026-07-03) with per-model profiles (gpt-5.4/5.5, opencode-go roster) and a task-type→model decision guide: **`docs/model-capability-research.md`**. Treat its non-Claude figures as dated/verify-at-use; the Claude matrix above is authoritative.
 
-## opencode-go worker catalog snapshot (⚠️ UNFUNDED as of 2026-07-03 — insufficient balance; kept for when refunded)
+## opencode-go worker catalog snapshot (funded as of 2026-07-04)
 
 Listed by `opencode models </dev/null` on 2026-07-03:
 `deepseek-v4-flash`, `deepseek-v4-pro`, `glm-5.1`, `glm-5.2`, `kimi-k2.6`, `kimi-k2.7-code`, `mimo-v2.5`, `mimo-v2.5-pro`, `minimax-m2.7`, `minimax-m3`, `qwen3.6-plus`, `qwen3.7-max`, `qwen3.7-plus`.
 
 - Cheap mechanical worker: `deepseek-v4-flash` (or current cheapest capable, smoke-verified).
 - Stronger bounded implementation: `deepseek-v4-pro`, `glm-5.2` (or current strongest, smoke-verified).
-- Existence in the catalog ≠ funded access. Confirm with a smoke run.
+- Existence in the catalog ≠ funded access forever. It is funded as of 2026-07-04; re-confirm with a smoke run before important work or after provider/auth/quota errors.
 
 ## Why a Sonnet-class brain (research basis, 2026-07-03)
 
