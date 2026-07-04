@@ -262,6 +262,11 @@ describe("No-orphan guard — every src/ .ts file must participate in the import
     // Post-graduation (slices 19-20): routing-memory retained for diagnostics/reporting
     // only (cost/insights), no longer wired as a routing input.
     path.join('src', 'core', 'routing-memory.ts'),
+    // Slice 7 (menu-build-spec-final.md): workspace resolver + candidate model,
+    // built ahead of its runtime wiring. Slice 8 (new-conversation flow/picker,
+    // a separate branch) imports resolveWorkspaceRoot/rankWorkspaceCandidates/
+    // filterWorkspaceCandidates into the menu -- remove this entry once that lands.
+    path.join('src', 'interface', 'workspace.ts'),
   ]);
 
   // Build a quick index: for each file, gather which other src basenames it imports.
