@@ -244,7 +244,7 @@ describe('renderMainScreen — Slice 1 empty, not signed in', () => {
 // ---------------------------------------------------------------------------
 
 describe('renderMainScreen — Slice 1 forbidden substrings', () => {
-  const FORBIDDEN = ['No runs yet', 'Health:', 'doctor'];
+  const FORBIDDEN = ['No runs yet', 'Health:', 'doctor', 'New conversation default'];
 
   for (const env of [ENV_CLAUDE_AUTHED, ENV_NONE_AUTHED]) {
     for (const metas of [[], [makeMeta()]] as ConversationMeta[][]) {
