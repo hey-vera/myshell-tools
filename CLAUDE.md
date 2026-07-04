@@ -38,7 +38,7 @@ Agents write full findings, logs, diffs, and research notes to repo docs/receipt
 ## Frontier, Workers, and Opus
 
 - Frontier planning/audit/root-cause/policy/research: use codex gpt-5.5 high reasoning by default.
-- Worker execution: balance across codex `gpt-5.4` / `gpt-5.4-mini` (ChatGPT billing) and Claude sonnet-class `Agent` workers (Anthropic billing) — see §Model Routing. opencode-go only if funded.
+- Worker execution: use funded opencode-go first (cheapest capable worker), with bounded retries. Fall back to codex `gpt-5.4` / `gpt-5.4-mini` (ChatGPT billing) and Claude sonnet-class `Agent` workers (Anthropic billing) only after real opencode-go unavailability or task-fit failure — see §Model Routing.
 - Use one frontier planner/auditor for high-stakes work. Add an adversarial frontier challenge only for irreversible/security-sensitive decisions, cross-module architecture/default behavior, explicit user request, material uncertainty, or a directly relevant prior drift/rework incident.
 - No third internal planning/challenge round without a concrete blocker or user approval.
 - Claude Opus is an escalation specialist, not the always-on brain. Use it only when a named trigger applies: security/privacy/credential/destructive/release/default-behavior risk; conflicting governance that affects authorization or policy; cross-module architecture with broad rework risk; conceptual `BLOCKED`/`NEEDS_GATE`; material disagreement between competent passes; two failed bounded fixes with a non-mechanical remaining issue; subtle adversarial/legal/financial/security-like judgment; explicit user request; or the Sonnet orchestrator cannot state a crisp dispatch contract after bounded grounding. The gate must say the trigger, cheaper routes tried or rejected, expected input docs, max return size, and what decision Opus will change.
@@ -56,27 +56,27 @@ When the user provides a reference design, artifact, workflow, layout, API shape
 
 Parallelize only when slices are independent by files and conflict domain. For concurrent workers or any code/test/config edit, each worker needs: objective, allowed files/modules, forbidden files/modules, verification command, and conflict domain. Serialize when one slice defines an API/schema/state/UX flow another consumes, when shared fixtures/state/defaults are involved, or when combined verification is the first meaningful test. If a worker path is unavailable, fall back per §Model Routing (balance gpt/claude workers); only pause to ask before spending frontier (gpt-5.5) or Opus quota on execution.
 
-## Worker Liveness (never wait blind)
+## Worker Dispatch and Liveness
 
-Dispatched workers (opencode-go, codex) can hang silently — a live process with zero new output. "I'll be notified on completion" is a trap when completion never comes.
+Foreground is the default when the orchestrator needs the worker result before the next decision, when the task is short, when permission prompts are likely, or when failure must be surfaced immediately. Background is for independent, long-running, checkpointable work where the orchestrator can do useful work meanwhile.
 
-- **Never passively wait on a background worker.** Actively check liveness on an interval (ScheduleWakeup / Monitor / a periodic check), do not assume it is progressing.
-- **Liveness = output freshness AND CPU growth**, not "process still alive." No new output for ~5–10 min with near-flat CPU = **HUNG, not slow** — act, don't keep waiting.
-- **Give every worker a max wall-clock budget** sized to the task. On stall or budget-exceeded: **stop it via the harness** (not a raw kill that could hit your own run), inspect the working-tree diff, then **resume-from-diff or retry — do not redo completed work.**
+- **Never detach inside a worker shell command.** Do not use nested `&`, `nohup`, `disown`, `Start-Process`, or a wrapper that exits while the real worker continues. The harness must track the real `opencode run` / `codex exec` process, not a short-lived launcher.
+- **Reliable background launch pattern:** start the actual worker as the harness background task; keep stdout/stderr attached to the harness output file; close stdin (`</dev/null`); record task ID, PID if exposed, start time, max wall-clock, allowed files, verification command, and receipt path.
+- **Monitor event-driven plus watchdog.** Rely on harness completion notifications for terminal state, and use Monitor/ScheduleWakeup only as a stall watchdog: first check at 60-90 seconds, then every 2-3 minutes while active. No 20-minute blind check-ins.
+- **Liveness = output freshness plus process activity**, not "process still exists." No new output for ~5-10 minutes with near-flat CPU, or a wall-clock budget breach, is `HUNG`.
+- **On stall or budget exceeded:** stop it through the harness/supervisor, inspect the working-tree diff and receipt/output, then resume-from-diff or retry the same provider per §Model Routing. Do not restart from scratch if useful work landed.
 - **Prefer small, checkpointable worker units for high-blast-radius slices** over one long background run. A slice that rewrites renders/tests should be split or checkpointed so a hang loses minutes, not an hour.
 - **Bound worker scope in the dispatch contract:** allowed files only; deleting exported symbols or touching files outside scope = `BLOCKED`, ask — not a worker judgment call.
 
-**Monitor event-driven, never poll blind.** Polling wastes turns and quota.
-- The harness **auto-notifies when a background command finishes** — do not schedule short-interval wakeups to poll it, and do not narrate "I'll check back in N minutes." Wait for the notification; add at most ONE long fallback wakeup (≥20 min) in case it truly hangs.
-- **For CI, use GitHub-native auto-merge — do not babysit.** Enable `gh pr merge <n> --squash --auto` once; branch protection guarantees it merges only when all lanes pass, then GitHub does it for you. No `--watch` loops, no repeated "6/8 lanes green" checks. If a PR falls behind main, update the branch once and let `--auto` finish the job.
+**For CI, use GitHub-native auto-merge — do not babysit.** Enable `gh pr merge <n> --squash --auto` once; branch protection guarantees it merges only when all lanes pass, then GitHub does it for you. No `--watch` loops, no repeated "6/8 lanes green" checks. If a PR falls behind main, update the branch once and let `--auto` finish the job.
 
 ## Model Routing
 
 Model availability + funding are volatile — verify before relying (`codex exec -m <model>` runs on ChatGPT billing, independent of opencode; `opencode models </dev/null` for opencode). Class-based routing:
 - **Orchestrator (brain):** cheapest capable Sonnet-class (Sonnet 5).
 - **Frontier planner/auditor:** codex `gpt-5.5` high reasoning.
-- **Workers (bounded execution):** balance across two quotas so neither is exhausted — codex `gpt-5.4` (heavier bounded work) and `gpt-5.4-mini` (cheap/mechanical) on ChatGPT billing, and Claude sonnet-class `Agent` workers on Anthropic billing. Alternate by task and remaining headroom.
-- **opencode-go is UNFUNDED (insufficient balance, confirmed 2026-07-03) — do not route to it until a balance is re-confirmed** via a smoke run.
+- **Workers (bounded execution):** primary = funded opencode-go via `opencode run -m opencode-go/<model>` because it is the cheapest capable worker. Retry transient opencode-go failures with capped exponential backoff, then fall back to codex `gpt-5.4` (heavier bounded work), `gpt-5.4-mini` (cheap/mechanical), or Claude sonnet-class `Agent` workers only on real unavailability, quota/auth failure, repeated transient failure, or poor task fit.
+- **opencode-go is FUNDED and WORKING (smoke run returned `GO_OK`, confirmed 2026-07-04).** Earlier notes calling it unfunded are stale. Re-verify only before important work or if a dispatch fails with auth/quota/provider errors.
 - **Opus:** escalation only, per the trigger list.
 
 Dated capability notes + current funding state live in `docs/model-routing.md`, not always-loaded memory.
