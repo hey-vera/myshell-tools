@@ -266,6 +266,11 @@ import { runRawProviderSession } from './menu-raw-session.js';
 import { runManage, runImportNative, runManageGoals } from './menu-conversations.js';
 import { runWelcome } from './menu-welcome.js';
 import {
+  createNodeShellRunner,
+  runShellPassthrough,
+  type ShellRunnerPort,
+} from './shell-passthrough.js';
+import {
   runModeSelect,
   runStyleSelect,
   runOversightSelect,
@@ -389,6 +394,8 @@ export interface MenuContext {
   readonly relaunch?: (env?: NodeJS.ProcessEnv) => Promise<number>;
   readonly verifyPort?: VerifyPort;
   readonly worktreePort?: WorktreePort;
+  readonly commandGate?: CommandGatePort;
+  readonly shellRunner?: ShellRunnerPort;
   readonly startupInput?: StartupInputBuffer;
   /**
    * Optional pre-computed Claude token lifetime status for testing. When provided,
@@ -1796,6 +1803,31 @@ export async function runChatLoop(
   // it closes over the loop's mutable state (currentAc, control.exit/menu, queue).
   // -------------------------------------------------------------------------
   async function runOneChatInput(line: string): Promise<'continue' | 'menu' | 'exit'> {
+    if (line[0] === '!') {
+      const command = line.slice(1).trim();
+      if (command === '') {
+        out.write(
+          dim('  Usage: !<command> — run a shell command (e.g. !ls, !git status)\n', out.color),
+        );
+        return 'continue';
+      }
+      const commandGate = ctx.commandGate ?? {
+        gate: gateCommand,
+        confirm: async (message: string): Promise<boolean> => {
+          out.write(`\n${message}\nRun this command? ${yesNoHint('no', out.color)} `);
+          return confirm(false, { requireExplicit: true });
+        },
+      };
+      await runShellPassthrough(
+        command,
+        ctx.cwd,
+        out,
+        commandGate,
+        ctx.shellRunner ?? createNodeShellRunner(),
+      );
+      return 'continue';
+    }
+
     if (line === '/exit' || line === '/back') {
       return 'menu';
     }
@@ -6667,7 +6699,7 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
     execInWorktree: (wt, command, args, timeoutMs) =>
       nodeWorktreePort.execInWorktree(wt, command, args, timeoutMs, commandGate),
   };
-  ctx = { ...ctx, verifyPort: gatedVerifyPort, worktreePort: gatedWorktreePort };
+  ctx = { ...ctx, verifyPort: gatedVerifyPort, worktreePort: gatedWorktreePort, commandGate };
   // Lets the login flow release stdin while an inherited-stdio child (e.g.
   // `claude auth login`) owns the terminal, then take it back. Returns the
   // resume callback. Only wired for the real reader — the injected/test path
