@@ -16,7 +16,7 @@ import { separator } from '../ui/tui.js';
 import type { OutputSink } from './render.js';
 import type { MenuContext } from './menu.js';
 import { runChatLoop } from './menu.js';
-import { type Confirm, readMenuKey } from './menu-key-confirm.js';
+import { type Confirm, readMenuKey, NAV_ESC, NAV_LEFT, getMenuStack } from './menu-key-confirm.js';
 import { type LineReader } from './menu-readline.js';
 import { relativeTime, renderConversationList } from './menu-display.js';
 import { yesNoHint } from './menu-questions.js';
@@ -43,6 +43,8 @@ export async function runManage(
   // with the Ink reader upstream). Absent → legacy path is byte-identical.
   inkReadKey?: () => Promise<string>,
 ): Promise<void> {
+  getMenuStack().push();
+
   // Inner helper to re-fetch and re-render the conversation list.
   async function renderList(): Promise<ConversationMeta[]> {
     const latest = await ctx.store.list();
@@ -52,7 +54,7 @@ export async function runManage(
     for (const line of lines) {
       out.write(`  ${line}\n`);
     }
-    out.write('\n  [p] Pin/unpin  [t] Set category  [r] Rename  [m] Change mode  [x] Delete  [Enter] Back\n\n');
+    out.write('\n  [p] Pin/unpin  [t] Set category  [r] Rename  [m] Change mode  [x] Delete  [Enter] Back  (← back · ESC to exit)\n\n');
     return latest;
   }
 
@@ -60,6 +62,7 @@ export async function runManage(
 
   if (metas.length === 0) {
     out.write('No conversations yet.\n');
+    getMenuStack().pop();
     return;
   }
 
@@ -68,9 +71,13 @@ export async function runManage(
   out.write('> ');
   const key = await readMenuKey(out, readLine, undefined, false, inkReadKey);
 
+  // ESC → exit the app
+  if (key === NAV_ESC) { getMenuStack().requestExit(); getMenuStack().pop(); return; }
+  // Left arrow → back to parent
+  if (key === NAV_LEFT) { getMenuStack().pop(); return; }
   // EOF → treat as back
-  if (key === null) return;
-  if (key.length === 0) return;
+  if (key === null) { getMenuStack().pop(); return; }
+  if (key.length === 0) { getMenuStack().pop(); return; }
 
   if (key === 'p') {
     out.write('Pin/unpin conversation number: ');
@@ -144,6 +151,7 @@ export async function runManage(
 
         out.write('[1-5 or 0 to change, Enter to keep] ');
         const modeKey = await readMenuKey(out, readLine, undefined, false, inkReadKey);
+        if (modeKey === NAV_ESC) { getMenuStack().requestExit(); }
         let newMode: ConversationMode | undefined;
         if (modeKey === '1') newMode = 'auto';
         else if (modeKey === '2') newMode = 'budget';
@@ -181,6 +189,7 @@ export async function runManage(
     }
   }
   // else: back
+  getMenuStack().pop();
 }
 
 // ---------------------------------------------------------------------------
@@ -226,6 +235,7 @@ export async function runManageGoals(
 
   out.write('> ');
   const key = await readMenuKey(out, readLine, undefined, false, inkReadKey);
+  if (key === NAV_ESC) { getMenuStack().requestExit(); }
   if (key === null || key.length === 0) return;
 
   if (key === 's') {
