@@ -32,7 +32,7 @@ import { dim, bold } from '../ui/theme.js';
 import type { OutputSink } from './render.js';
 import type { MenuContext } from './menu.js';
 import { resolveAutoMode, renderAutoDetected } from './menu-auto-mode.js';
-import { readMenuKey } from './menu-key-confirm.js';
+import { readMenuKey, NAV_ESC, getMenuStack } from './menu-key-confirm.js';
 
 /**
  * Set an OPTIONAL config field while preserving every other key.
@@ -117,6 +117,7 @@ export async function runModeSelect(
 
   out.write('[1-5 to change, Enter to keep] ');
   const key = await readMenuKey(out, readLine, undefined, false, inkReadKey);
+  if (key === NAV_ESC) { getMenuStack().requestExit(); }
 
   // Map keypress to the legacy config.mode value (or clear for Auto).
   // High aliases Max (quality-first) until a separate High preset exists.
@@ -165,6 +166,7 @@ export async function runVerbositySelect(
 
   out.write('[1/2/3 to change, Enter to keep] ');
   const key = await readMenuKey(out, readLine, undefined, false, inkReadKey);
+  if (key === NAV_ESC) { getMenuStack().requestExit(); }
 
   // EOF / Enter → keep current
   let newVerbosity = config.verbosity;
@@ -216,6 +218,7 @@ export async function runStyleSelect(
 
   out.write('[1/2/3/4 to change, Enter to keep] ');
   const key = await readMenuKey(out, readLine, undefined, false, inkReadKey);
+  if (key === NAV_ESC) { getMenuStack().requestExit(); }
 
   // EOF / Enter → keep current.
   let newStyle: PartnerStyle | undefined = config.partnerStyle;
@@ -266,6 +269,7 @@ export async function runOversightSelect(
 
   out.write('[1/2/3 to change, Enter to keep] ');
   const key = await readMenuKey(out, readLine, undefined, false, inkReadKey);
+  if (key === NAV_ESC) { getMenuStack().requestExit(); }
 
   // EOF / Enter → keep current.
   let newLevel: Oversight = current;
@@ -360,6 +364,7 @@ async function runPrivacyMemory(
 
   out.write('> ');
   const key = await readMenuKey(out, readLine, undefined, false, inkReadKey);
+  if (key === NAV_ESC) { getMenuStack().requestExit(); }
 
   if (key === null || key.length === 0) return config;
 
@@ -393,6 +398,7 @@ async function runSetup(
 
   out.write('> ');
   const key = await readMenuKey(out, readLine, undefined, false, inkReadKey);
+  if (key === NAV_ESC) { getMenuStack().requestExit(); }
 
   if (key === null || key.length === 0) return config;
 
@@ -422,13 +428,14 @@ export async function runSettings(
     `  [5] Privacy & memory`,
     `  [6] Setup`,
     '',
-    '  [Enter] Back',
+    '  [Enter] Back · ESC to exit',
     '',
   ];
   out.write('\n' + box('Settings', settingsLines) + '\n\n');
 
   out.write('> ');
   const key = await readMenuKey(out, readLine, undefined, false, inkReadKey);
+  if (key === NAV_ESC) { getMenuStack().requestExit(); }
 
   // EOF or Enter → back, no change
   if (key === null || key.length === 0) return;

@@ -27,6 +27,65 @@ export type Confirm = (
   opts?: { requireExplicit?: boolean },
 ) => Promise<boolean>;
 
+// ---------------------------------------------------------------------------
+// Menu navigation stack (Slice 4): ESC exits the app from any menu/subflow;
+// Left arrow pops one stack level from any non-root depth. Root only shows
+// `ESC to exit`. The stack is a simple depth counter + sticky exit flag — no
+// history list, no screen-id registry. depth starts at 1 (root).
+// ---------------------------------------------------------------------------
+
+/** Bare ESC — sentinel returned by {@link readMenuKey} signalling exit intent. */
+export const NAV_ESC = '\x1b';
+/** Left-arrow sequence — sentinel returned by {@link readMenuKey} signalling
+ *  "pop one nav level" intent (a no-op at the root depth). */
+export const NAV_LEFT = '\x1b[D';
+
+export interface MenuStack {
+  readonly depth: number;
+  push(): void;
+  pop(): void;
+  requestExit(): void;
+  readonly exitRequested: boolean;
+}
+
+export function createMenuStack(): MenuStack {
+  let depth = 1;
+  let exitRequested = false;
+  return {
+    get depth(): number { return depth; },
+    push(): void { depth += 1; },
+    pop(): void { if (depth > 1) depth -= 1; },
+    requestExit(): void { exitRequested = true; },
+    get exitRequested(): boolean { return exitRequested; },
+  };
+}
+
+let menuStack: MenuStack = createMenuStack();
+
+export function getMenuStack(): MenuStack { return menuStack; }
+export function resetMenuStack(): void { menuStack = createMenuStack(); }
+
+/**
+ * Pure classification of one raw keypress (the legacy `readSingleKey`-shaped
+ * string) into a menu-nav decision. The single source of truth shared by both
+ * the Ink and legacy branches of {@link readMenuKey} so menu nav feels identical.
+ *
+ *   - `'\x03'` / `'\x04'`        → `null`  (Ctrl-C / Ctrl-D / EOF → exit)
+ *   - `'\x1b'`   (bare ESC)      → {@link NAV_ESC}  (exit intent)
+ *   - `'\x1b[D'` (left arrow)    → {@link NAV_LEFT} (pop one level)
+ *   - `'\r'` / `'\n'` (Enter)    → `''`    (no-op re-render)
+ *   - single printable char      → that char, lower-cased (the menu choice)
+ *   - anything else (up/right/down arrows, Tab, escape blobs) → `''` (no-op)
+ */
+export function classifyMenuKey(raw: string): string | null {
+  if (raw === '\x03' || raw === '\x04') return null;
+  if (raw === NAV_ESC) return NAV_ESC;
+  if (raw === NAV_LEFT) return NAV_LEFT;
+  if (raw === '\r' || raw === '\n') return '';
+  if (raw.length === 1 && raw >= ' ') return raw.toLowerCase();
+  return '';
+}
+
 
 
 /**
@@ -182,7 +241,9 @@ export async function confirmViaKey(
  *
  * Returns:
  *   - the chosen key (a single lower-cased char) to act on,
- *   - `''` for Enter / arrow keys / other no-ops (caller just re-renders),
+ *   - {@link NAV_ESC} for a bare ESC (caller exits the app / cascades),
+ *   - {@link NAV_LEFT} for the left-arrow (caller pops one nav level),
+ *   - `''` for Enter / up-right-down arrows / other no-ops (caller re-renders),
  *   - `null` for Ctrl-C / Ctrl-D / EOF (caller exits).
  *
  * `stdin` is injectable for testing.
@@ -208,14 +269,11 @@ export async function readMenuKey(
   if (inkReadKey !== undefined) {
     try {
       const raw = await inkReadKey();
-      if (raw === '\x03' || raw === '\x04') return null; // Ctrl-C / Ctrl-D → exit
-      if (raw === '\r' || raw === '\n') return ''; // bare Enter → no-op (re-render)
-      if (raw.length === 1 && raw >= ' ') {
-        const choice = raw.toLowerCase();
-        out.write(choice + '\n'); // echo (Ink's editor was inactive for this read)
-        return choice;
+      const verdict = classifyMenuKey(raw);
+      if (verdict !== null && verdict !== '' && verdict !== NAV_ESC && verdict !== NAV_LEFT) {
+        out.write(verdict + '\n'); // echo (Ink's editor was inactive for this read)
       }
-      return ''; // arrows / escape / other non-printables → no-op
+      return verdict;
     } catch {
       // Any Ink read hiccup falls back to a full line read (type the letter + Enter).
       return normalizeMenuKey(await readLine());
@@ -227,16 +285,11 @@ export async function readMenuKey(
   for (const input of inputs) {
     try {
       const raw = await readSingleKey(input);
-      if (raw === '\x03' || raw === '\x04') return null; // Ctrl-C / Ctrl-D → exit
-      if (raw === '\r' || raw === '\n') return ''; // bare Enter → no-op (re-render)
-      // Only a single printable char is a menu choice; ignore escape sequences
-      // (arrow keys arrive as multi-byte '\x1b[A' and must not echo or match).
-      if (raw.length === 1 && raw >= ' ') {
-        const choice = raw.toLowerCase();
-        out.write(choice + '\n'); // echo — raw mode suppressed the terminal's echo
-        return choice;
+      const verdict = classifyMenuKey(raw);
+      if (verdict !== null && verdict !== '' && verdict !== NAV_ESC && verdict !== NAV_LEFT) {
+        out.write(verdict + '\n'); // echo — raw mode suppressed the terminal's echo
       }
-      return '';
+      return verdict;
     } catch {
       // Try the next raw-capable stream, then fall back to a normalized line.
     }
