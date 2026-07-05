@@ -31,9 +31,12 @@
  */
 import { spawn, spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 
-const INNER = new URL('./pty-handoff-inner.mts', import.meta.url).pathname;
-const TSX = new URL('../node_modules/.bin/tsx', import.meta.url).pathname;
+const INNER = fileURLToPath(new URL('./pty-handoff-inner.mts', import.meta.url));
+const TSX = process.platform === 'win32'
+  ? fileURLToPath(new URL('../node_modules/.bin/tsx.cmd', import.meta.url))
+  : fileURLToPath(new URL('../node_modules/.bin/tsx', import.meta.url));
 const CHILD_LINE = 'handed-off-code-42';
 const INK_LINE = 'first-after-resume-99';
 
@@ -58,12 +61,12 @@ function hasScript() {
   return r.status === 0 || r.status === 1;
 }
 
-if (!existsSync(TSX)) {
-  console.log('SKIP: tsx not installed (run npm install)');
-  process.exit(0);
-}
 if (!hasScript()) {
   console.log('SKIP: no PTY (`script` unavailable) — handoff not verifiable here');
+  process.exit(0);
+}
+if (!existsSync(TSX)) {
+  console.log('SKIP: tsx not installed (run npm install)');
   process.exit(0);
 }
 

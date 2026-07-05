@@ -6,7 +6,7 @@
  *   2. send EXACTLY ONE menu key IMMEDIATELY (before any banner/menu output),
  *   3. assert that key is NOT echoed as a standalone cooked-mode line,
  *   4. assert the buffered key opens the composer with NO second menu byte,
- *   5. `/exit` back to the menu, then one `q` exits cleanly.
+ *   5. `/exit` back to the locked home menu, then one `q` exits cleanly.
  */
 
 /* global process, console, URL, setTimeout, clearTimeout */
@@ -14,14 +14,22 @@
 import { spawn, spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { createRequire } from 'node:module';
+import { fileURLToPath } from 'node:url';
 
 const require = createRequire(import.meta.url);
-const CLI = new URL('../dist/cli.js', import.meta.url).pathname;
+const CLI = fileURLToPath(new URL('../dist/cli.js', import.meta.url));
 const COLS = 80;
 const ROWS = 24;
 const EARLY_KEY = 'n';
-const MENU_MARKER = '[n] New';
-const QUIT_MARKER = '[q] Quit';
+const HOME_MARKERS = [
+  'Effort Mode:',
+  'Session Manager',
+  'Choice:',
+  'ESC to exit',
+  '[n] New conversation',
+  '[q] Quit',
+];
+const FORBIDDEN_HOME = ['No runs yet', 'Health:', 'doctor', 'Ctrl+C x2'];
 
 function hasScript() {
   if (process.platform === 'win32') return false;
@@ -60,14 +68,14 @@ function hasComposer(text) {
   return tail.some((line) => /^❯(?: |$)/u.test(line));
 }
 
-function latestNonEmptyLine(text) {
-  const lines = text.split('\n').map((line) => line.trimEnd()).filter((line) => line.trim().length > 0);
-  return lines[lines.length - 1] ?? '';
-}
-
 function hasStandaloneEcho(raw, key) {
   const clean = stripAnsi(raw);
   return clean.split('\n').some((line) => line.trim() === key);
+}
+
+function hasLockedHome(text) {
+  return HOME_MARKERS.every((marker) => text.includes(marker)) &&
+    FORBIDDEN_HOME.every((marker) => !text.includes(marker));
 }
 
 async function reconstructScreen(bytes, Terminal) {
@@ -100,17 +108,17 @@ async function waitFor(label, timeoutMs, getText, predicate) {
   }
 }
 
+if (!hasScript()) {
+  console.log('SKIP: no PTY (`script` unavailable) — early-keypress Ink menu not verifiable here');
+  process.exit(0);
+}
 if (!existsSync(CLI)) {
-  console.log('UNSUPPORTED: dist/cli.js not built (run npx tsc)');
-  process.exit(2);
+  console.log('SKIP: dist/cli.js not built (run npm run build)');
+  process.exit(0);
 }
 if (!hasXterm()) {
-  console.log('UNSUPPORTED: @xterm/headless not installed (run npm install) — screen reconstruction unavailable');
-  process.exit(2);
-}
-if (!hasScript()) {
-  console.log('UNSUPPORTED: no PTY (`script` unavailable) — early-keypress Ink menu not verifiable here');
-  process.exit(2);
+  console.log('SKIP: @xterm/headless not installed (run npm install) — screen reconstruction unavailable');
+  process.exit(0);
 }
 
 const { Terminal } = require('@xterm/headless');
@@ -177,7 +185,7 @@ try {
     'menu after /exit',
     8000,
     getScreen,
-    (text) => text.includes(MENU_MARKER) && text.includes(QUIT_MARKER) && latestNonEmptyLine(text) === '>',
+    (text) => hasLockedHome(text),
   );
   await new Promise((resolve) => setTimeout(resolve, 200));
 

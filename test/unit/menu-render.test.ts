@@ -132,11 +132,98 @@ function makeMeta(overrides: Partial<ConversationMeta> = {}): ConversationMeta {
   };
 }
 
+const EXPECTED_HOME_POPULATED = [
+  '',
+  '╭──────────────────────────────────────────────────╮',
+  '│  Effort Mode:  Auto (smart)                      │',
+  '│  Picks the right effort each turn from task,     │',
+  '│  risk, and provider headroom.                    │',
+  '├──────────────────────────────────────────────────┤',
+  '│  m = switch modes                Auto recommended│',
+  '╰──────────────────────────────────────────────────╯',
+  '',
+  'Recent (myshell-tools):',
+  '  [1] 1h  Test conversation  · budget',
+  '',
+  '╭───────────────────────────╮',
+  '│      Session Manager      │',
+  '╰───────────────────────────╯',
+  '',
+  '[c] Continue last',
+  '    └─ Test conversation · 1h',
+  '[1-9] Open numbered above',
+  '[n] New conversation',
+  '[e] Library / all conversations',
+  '[a] Accounts',
+  '[q] Quit',
+  '',
+  'Choice: ▌',
+  'ESC to exit',
+  '',
+].join('\n');
+
+const EXPECTED_HOME_EMPTY_SIGNED_IN = [
+  '',
+  '╭──────────────────────────────────────────────────╮',
+  '│  Effort Mode:  Auto (smart)                      │',
+  '│  Picks the right effort each turn from task,     │',
+  '│  risk, and provider headroom.                    │',
+  '├──────────────────────────────────────────────────┤',
+  '│  m = switch modes                Auto recommended│',
+  '╰──────────────────────────────────────────────────╯',
+  '',
+  'Recent (myshell-tools):',
+  'No conversations yet.',
+  '',
+  '╭───────────────────────────╮',
+  '│      Session Manager      │',
+  '╰───────────────────────────╯',
+  '',
+  '[n] New conversation',
+  '[e] Library / all conversations',
+  '[a] Accounts',
+  '[q] Quit',
+  '',
+  'Choice: ▌',
+  'ESC to exit',
+  '',
+].join('\n');
+
+const EXPECTED_HOME_EMPTY_NOT_SIGNED_IN = [
+  '',
+  '╭──────────────────────────────────────────────────╮',
+  '│  Effort Mode:  Auto (smart)                      │',
+  '│  Picks the right effort each turn from task,     │',
+  '│  risk, and provider headroom.                    │',
+  '├──────────────────────────────────────────────────┤',
+  '│  m = switch modes                Auto recommended│',
+  '╰──────────────────────────────────────────────────╯',
+  '',
+  'Recent (myshell-tools):',
+  'Sign in to start conversations.',
+  '',
+  '╭───────────────────────────╮',
+  '│      Session Manager      │',
+  '╰───────────────────────────╯',
+  '',
+  '[a] Accounts / Sign in',
+  '[q] Quit',
+  '',
+  'Choice: ▌',
+  'ESC to exit',
+  '',
+].join('\n');
+
 // ---------------------------------------------------------------------------
 // Slice 1 — locked skeleton landmarks (populated)
 // ---------------------------------------------------------------------------
 
 describe('renderMainScreen — Slice 1 locked home skeleton (populated)', () => {
+  it('matches the locked populated home render exactly', async () => {
+    const out = await render(ENV_CLAUDE_AUTHED, [makeMeta()]);
+    assert.equal(out, EXPECTED_HOME_POPULATED);
+  });
+
   it('contains the Effort Mode box landmark', async () => {
     const out = await render(ENV_CLAUDE_AUTHED, [makeMeta()]);
     assert.ok(out.includes('Effort Mode:'), `expected "Effort Mode:" in:\n${out}`);
@@ -204,6 +291,11 @@ describe('renderMainScreen — Slice 1 locked home skeleton (populated)', () => 
 // ---------------------------------------------------------------------------
 
 describe('renderMainScreen — Slice 1 empty, signed in', () => {
+  it('matches the locked empty signed-in home render exactly', async () => {
+    const out = await render(ENV_CLAUDE_AUTHED, []);
+    assert.equal(out, EXPECTED_HOME_EMPTY_SIGNED_IN);
+  });
+
   it('renders the locked empty copy "No conversations yet."', async () => {
     const out = await render(ENV_CLAUDE_AUTHED, []);
     assert.ok(out.includes('No conversations yet.'), `expected empty copy in:\n${out}`);
@@ -232,6 +324,11 @@ describe('renderMainScreen — Slice 1 empty, signed in', () => {
 // ---------------------------------------------------------------------------
 
 describe('renderMainScreen — Slice 1 empty, not signed in', () => {
+  it('matches the locked empty not-signed-in home render exactly', async () => {
+    const out = await render(ENV_NONE_AUTHED, []);
+    assert.equal(out, EXPECTED_HOME_EMPTY_NOT_SIGNED_IN);
+  });
+
   it('renders the locked empty copy "Sign in to start conversations."', async () => {
     const out = await render(ENV_NONE_AUTHED, []);
     assert.ok(out.includes('Sign in to start conversations.'), `expected empty-not-signed-in copy in:\n${out}`);

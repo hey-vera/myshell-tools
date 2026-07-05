@@ -280,6 +280,16 @@ Completes the multi-subscription system across all providers. Everything is behi
 - Brutal audit passed with fixes applied (see plan + commit history).
 
 ## [Unreleased]
+- Home menu redesign shipped: locked Effort Mode card, a single Recent list,
+  compact Session Manager controls, `Choice:` prompt, and `ESC to exit` footer.
+- Doctor/Health was removed from the interactive home surface.
+- ESC exits and left-arrow/back navigation are now consistent across root menu,
+  Library, new-conversation flow, and resumed conversations.
+- `!<command>` shell passthrough is available from chat, gated before execution,
+  and does not send a model turn.
+- Per-conversation workspace binding landed end to end: schema/storage,
+  resolver/picker flow, workspace-root-threaded execution, and workspace-aware
+  Recent rows that label non-current conversations inline.
 - Menu refactor started (extracted scheduler decision + goal loop wiring patterns; god-file reduced toward maintainability).
 - Full DAG/tree viz + deps flow: GoalSpec -> enqueue events -> GoalView.dependsOn -> StatusBlock badges/tree notes + layout. Review support enhanced.
 - Live @ full wiring: menu now computes/passes dynamicWorldItems (goals + todos + board + mem + rules) from real stores for Ink + legacy completers (beyond internal auto-load).
