@@ -249,6 +249,10 @@ import {
   attachChatTurnKeyListener,
   readMenuKey,
   makeConfirm,
+  NAV_ESC,
+  NAV_LEFT,
+  getMenuStack,
+  resetMenuStack,
 } from './menu-key-confirm.js';
 import { renderMainScreen } from './menu-render.js';
 import {
@@ -1438,10 +1442,8 @@ export async function runChatLoop(
     const detachEsc =
       turnKeyStdin !== undefined
         ? attachChatTurnKeyListener(out, turnKeyStdin, () => {
-            // ESC: interrupt THIS turn and stay at the chat prompt. It never
-            // touches the Ctrl+C window and never returns to the menu.
-            interruptedByEsc = true;
-            currentAc?.abort();
+            // ESC now cancels the turn AND exits the app (Slice 4).
+            chatEscHandler();
           }, () => {
             if (lineReader !== undefined && lineReader !== null) {
               turnInput?.setValue(lineReader.currentLine());
@@ -1449,15 +1451,13 @@ export async function runChatLoop(
           })
         : (): void => {};
     // Ink-path interrupt: install a handler the InputBox routes a bare ESC to. It
-    // mirrors the legacy ESC semantics exactly — mark the turn interrupted-by-ESC
-    // (so decidePostTurn discards the typed-ahead queue) and abort THIS turn's
-    // AbortController, staying at the chat prompt (never the Ctrl+C window, never
-    // back to the menu). Cleared in `finally` so an idle-prompt ESC is a no-op.
+    // now delegates to chatEscHandler which cancels the turn AND exits the app
+    // (Slice 4 — not just "stay at the chat prompt" like pre-Slice-4).
+    // Cleared in `finally` so an idle-prompt ESC is a no-op.
     // No-op off the Ink path (inkSetInterrupt undefined).
     if (inkSetInterrupt !== undefined) {
       inkSetInterrupt(() => {
-        interruptedByEsc = true;
-        currentAc?.abort();
+        chatEscHandler();
       });
     }
     try {
@@ -1573,9 +1573,10 @@ export async function runChatLoop(
     if (action === 'cancel-task') {
       currentAc?.abort();
       currentAc = null;
-      out.write('\n[warn] Task cancelled. (Ctrl+C again → menu, ×3 → exit)\n');
+      out.write('\n[warn] Task cancelled.\n');
     } else if (action === 'hint') {
-      out.write('\n[info] Ctrl+C again → back to menu, ×3 → exit to shell.\n');
+      // No user-facing hint — we no longer teach the Ctrl+C multi-press model.
+      // The internal press-count logic in interpretInterrupt is unchanged.
     } else if (action === 'to-menu') {
       // Abort any running task, then tell the main loop to break back to menu.
       if (currentAc !== null) {
@@ -1601,6 +1602,21 @@ export async function runChatLoop(
   // loopBreaker lets the SIGINT handler resolve the loop-level promise so the
   // `while (true)` can break immediately even when awaiting readLine().
   let loopBreaker: ((result: 'menu' | 'exit') => void) | null = null;
+
+  // Slice 4 — ESC exits the app from the chat subflow (idle AND mid-turn). One
+  // persistent handler installed for the whole chat-loop lifetime (Ink path) and
+  // reused by the legacy bare-ESC listener mid-turn. It marks the nav stack,
+  // mirrors the SIGINT exit-app branch (control.exit + loopBreaker('exit')), and
+  // aborts any in-flight turn. On a mid-turn ESC the outer loop sees control.exit
+  // in the post-turn slot and returns 'exit'; on an idle ESC loopBreaker('exit')
+  // resolves the readLine race directly.
+  const chatEscHandler = (): void => {
+    interruptedByEsc = true;
+    getMenuStack().requestExit();
+    control.exit = true;
+    currentAc?.abort();
+    loopBreaker?.('exit');
+  };
 
   // Record rate-limit cooldowns from a completed turn. Cools down EVERY provider
   // that hit a 429 during the run (result.rateLimitedProviders) — including one
@@ -4356,7 +4372,7 @@ Output ONLY valid JSON (no prose, no markdown).`;
         // would only fail. Returns false (don't break the chat loop) after a notice.
         if (!hasAuthenticatedProvider(mutableCtx.env)) {
           goalOut.write(
-            '\n[info] No signed-in provider yet — type /back or press Ctrl+C twice to return, then [j] Claude / [k] Codex / [o] opencode to sign in.\n',
+            '\n[info] No signed-in provider yet — press ESC or type /back to return, then [j] Claude / [k] Codex / [o] opencode to sign in.\n',
           );
           return false;
         }
@@ -5946,7 +5962,7 @@ Output ONLY valid JSON (no prose, no markdown).`;
       // without a provider; only the model-needing chat turn is gated.
       if (!hasAuthenticatedProvider(mutableCtx.env)) {
         out.write(
-          '\n[info] No signed-in provider yet — type /back or press Ctrl+C twice to return, then [j] Claude / [k] Codex / [o] opencode to sign in.\n',
+          '\n[info] No signed-in provider yet — press ESC or type /back to return, then [j] Claude / [k] Codex / [o] opencode to sign in.\n',
         );
         return 'continue';
       }
@@ -6925,6 +6941,9 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
       envDetectedAt = ctx.clock.now();
     }
 
+    // Reset the nav-stack depth to 1 for this menu session (Slice 4).
+    resetMenuStack();
+
     // ---- B. Main screen loop -------------------------------------------------
     // PAINT FIRST, FILL ASYNC. The first frame used to block behind three serial
     // disk reads — the Claude token capture date, the UNBOUNDED ledger.jsonl sum
@@ -7026,6 +7045,10 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
     };
 
     while (true) {
+      // Exit propagation: if any submenu requested an app exit via ESC,
+      // surface it here so the loop returns (Slice 4).
+      if (getMenuStack().exitRequested) break;
+
       // We're sitting on the menu again — late async fills may repaint here.
       inMainMenu = true;
 
@@ -7113,6 +7136,16 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
       // The live frame stays as-is; the next iteration's beginFrame/endFrame
       // REPLACES it in place — zero <Static> growth across no-op keypresses.
       if (key === '') {
+        continue;
+      }
+
+      // Slice 4 — root: ESC exits the app; left-arrow is a no-op at root (no back).
+      if (key === NAV_ESC) {
+        getMenuStack().requestExit();
+        break;
+      }
+      if (key === NAV_LEFT) {
+        getMenuStack().pop(); // no-op at root depth (depth === 1)
         continue;
       }
 
@@ -7212,15 +7245,27 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
       if (key === 'e') {
         // Library submenu: Manage conversations, Import native session, Raw session.
         // inMainMenu is already false from the dispatch preamble.
+        getMenuStack().push();
         let keepRunning = true;
         while (keepRunning) {
           out.write('\n  Library\n');
           out.write('    [m] Manage conversations\n');
           out.write('    [i] Import a Claude/Codex session\n');
           out.write('    [r] Raw provider session\n');
-          out.write('    [b] Back\n\n> ');
+          out.write('    [b] Back  (← back · ESC to exit)\n\n> ');
           const libKey = await readMenuKey(out, readLine, undefined, false, inkReadKey);
+          if (libKey === NAV_ESC) {
+            getMenuStack().requestExit();
+            keepRunning = false;
+            continue;
+          }
+          if (libKey === NAV_LEFT) {
+            getMenuStack().pop();
+            keepRunning = false;
+            continue;
+          }
           if (libKey === 'b' || libKey === null) {
+            getMenuStack().pop();
             keepRunning = false;
             continue;
           }
@@ -7236,6 +7281,7 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
             await runRawProviderSession(out, readLine, mutableCtx.env, suspendStdin, inkReadKey, commandGate);
           }
         }
+        if (getMenuStack().exitRequested) break;
         continue;
       }
 
@@ -7244,6 +7290,7 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
         // Unified while loop: re-reads subscriptions at the TOP of every
         // iteration so that child mutations (add/delete/disable/re-auth) are
         // visible in the next repaint without re-entering the submenu.
+        getMenuStack().push();
         let keepRunning = true;
         while (keepRunning) {
           const acctStates = await loadProviderAccountStates();
@@ -7263,9 +7310,20 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
                 : 'no accounts';
               out.write(`    [${provKey}] ${provider}  ${statusLine}\n`);
             }
-            out.write('    [b] Back\n\n> ');
+            out.write('    [b] Back  (← back · ESC to exit)\n\n> ');
             const accKey = await readMenuKey(out, readLine, undefined, false, inkReadKey);
+            if (accKey === NAV_ESC) {
+              getMenuStack().requestExit();
+              keepRunning = false;
+              continue;
+            }
+            if (accKey === NAV_LEFT) {
+              getMenuStack().pop();
+              keepRunning = false;
+              continue;
+            }
             if (accKey === 'b' || accKey === null) {
+              getMenuStack().pop();
               keepRunning = false;
               continue;
             }
@@ -7274,19 +7332,23 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
                 login: loginFn, suspendStdin, inkReadKey, cwd: ctx.cwd,
               });
               await refreshEnvironmentIfStale(true);
+              if (getMenuStack().exitRequested) { keepRunning = false; continue; }
             } else if (accKey === 'k') {
               await runCodexAccountsMenu(out, readLine, confirm, ctx.clock, {
                 login: loginFn, suspendStdin, inkReadKey, cwd: ctx.cwd,
               });
               await refreshEnvironmentIfStale(true);
+              if (getMenuStack().exitRequested) { keepRunning = false; continue; }
             } else if (accKey === 'o') {
               await runOpencodeAccountsMenu(out, readLine, readlineEcho, confirm, ctx.clock, inkReadKey);
               await refreshEnvironmentIfStale(true);
+              if (getMenuStack().exitRequested) { keepRunning = false; continue; }
             } else if (accKey === 'p') {
               await runGrokAccountsMenu(out, readLine, confirm, ctx.clock, {
                 login: loginFn, suspendStdin, inkReadKey, cwd: ctx.cwd,
               });
               await refreshEnvironmentIfStale(true);
+              if (getMenuStack().exitRequested) { keepRunning = false; continue; }
             }
           } else {
             // Subscriptions off or no accounts: provider sign-in submenu.
@@ -7295,9 +7357,20 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
             out.write('    [k] Codex\n');
             out.write('    [o] OpenCode\n');
             out.write('    [p] Grok\n');
-            out.write('    [b] Back\n\n> ');
+            out.write('    [b] Back  (← back · ESC to exit)\n\n> ');
             const accKey = await readMenuKey(out, readLine, undefined, false, inkReadKey);
+            if (accKey === NAV_ESC) {
+              getMenuStack().requestExit();
+              keepRunning = false;
+              continue;
+            }
+            if (accKey === NAV_LEFT) {
+              getMenuStack().pop();
+              keepRunning = false;
+              continue;
+            }
             if (accKey === 'b' || accKey === null) {
+              getMenuStack().pop();
               keepRunning = false;
               continue;
             }
@@ -7384,6 +7457,7 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
             }
           }
         }
+        if (getMenuStack().exitRequested) break;
         listDirty = true;
         acctsDirty = true;
         continue;

@@ -3896,8 +3896,8 @@ describe('startMenu — auto-goal smart autonomy', () => {
     assert.equal(callCount, 1, 'auto-goal should have started one provider run');
     assert.equal(sawAbort, true, 'Ctrl+C must abort the active goal AbortController');
     assert.ok(
-      sink.buf.includes('Task cancelled. (Ctrl+C again'),
-      'existing Ctrl+C cancellation message should be used',
+      sink.buf.includes('Task cancelled.'),
+      'Ctrl+C cancellation message should be shown (Slice 4: no multi-press teaching copy)',
     );
   });
 
@@ -4179,6 +4179,57 @@ describe('startMenu — unknown key → re-renders, does not crash', () => {
       !sink.buf.includes('Unknown option:'),
       'empty key must not trigger "Unknown option" message',
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// startMenu — ESC and left-arrow nav (Slice 4)
+// ---------------------------------------------------------------------------
+
+describe('startMenu — ESC exits app from root menu', () => {
+  it('bare ESC at root exits the app cleanly', async () => {
+    const sink = makeSink();
+    const ctx = makeCtx({ readLine: makeScriptedReader(['\x1b']) });
+    await assert.doesNotReject(() => startMenu(ctx, sink));
+  });
+
+  it('ESC at root renders the main screen before exiting', async () => {
+    const sink = makeSink();
+    const ctx = makeCtx({ readLine: makeScriptedReader(['\x1b']) });
+    await startMenu(ctx, sink);
+    assertLockedHomeSkeleton(sink.buf);
+  });
+});
+
+describe('startMenu — left-arrow at root is a no-op', () => {
+  it('LEFT at root does not crash and stays in the menu', async () => {
+    const sink = makeSink();
+    const ctx = makeCtx({ readLine: makeScriptedReader(['\x1b[D', 'q']) });
+    await assert.doesNotReject(() => startMenu(ctx, sink));
+    assertLockedHomeSkeleton(sink.buf);
+  });
+});
+
+describe('startMenu — ESC and back from Library submenu (Slice 4)', () => {
+  it('ESC from Library submenu exits the whole app', async () => {
+    const sink = makeSink();
+    const ctx = makeCtx({ readLine: makeScriptedReader(['e', '\x1b']) });
+    await assert.doesNotReject(() => startMenu(ctx, sink));
+  });
+
+  it('"b" from Library returns to root menu (not exit)', async () => {
+    const sink = makeSink();
+    const ctx = makeCtx({ readLine: makeScriptedReader(['e', 'b', 'q']) });
+    await assert.doesNotReject(() => startMenu(ctx, sink));
+    assertLockedHomeSkeleton(sink.buf);
+  });
+
+  it('renders Library with back/ESC hint in the footer', async () => {
+    const sink = makeSink();
+    const ctx = makeCtx({ readLine: makeScriptedReader(['e', '\x1b']) });
+    await startMenu(ctx, sink);
+    assert.ok(sink.buf.includes('← back'), 'Library should show left-arrow hint');
+    assert.ok(sink.buf.includes('ESC to exit'), 'Library should show ESC hint');
   });
 });
 
