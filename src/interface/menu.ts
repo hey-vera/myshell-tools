@@ -2208,6 +2208,7 @@ export async function runChatLoop(
       // but called AFTER; this mutable variable lets correctionFork deps access
       // listGoals() and markGoalsSuperseded() at call time.
       let mutableGoalStore: ReturnType<typeof createFileGoalStore> | null = null;
+      let completedTurnProvider: ProviderId | undefined;
 
       const buildDeps = (
         hist: readonly SessionEntry[],
@@ -2418,7 +2419,18 @@ export async function runChatLoop(
 
         return {
           clock: ctx.clock,
-          session: ctx.store.writer(convId),
+          session: (() => {
+            const base = ctx.store.writer(convId);
+            return {
+              id: base.id,
+              async append(entry: SessionEntry): Promise<void> {
+                if (entry.role === 'assistant' && entry.provider !== undefined) {
+                  completedTurnProvider = entry.provider;
+                }
+                await base.append(entry);
+              },
+            };
+          })(),
           ledger: turnLedger,
           cacheAccountingV2: true,
           accountAux: true,
@@ -2676,6 +2688,17 @@ export async function runChatLoop(
               )(mutableGoalStore)
             : {}),
         };
+      };
+
+      const persistCompletedTurnProvider = async (
+        finalEvent: Extract<CoreEvent, { type: 'final' }> | undefined,
+      ): Promise<void> => {
+        if (finalEvent?.success !== true || completedTurnProvider === undefined) return;
+        try {
+          await ctx.store.setLastProvider(convId, completedTurnProvider);
+        } catch {
+          // Additive metadata only — a bookkeeping miss must not break the turn.
+        }
       };
 
       // Account-aware deps enrichment — adds account fields when subscriptions
@@ -6108,6 +6131,7 @@ Output ONLY valid JSON (no prose, no markdown).`;
       currentAc = null;
       noteRateLimit(result);
       await syncCapacity();
+      await persistCompletedTurnProvider(result.final);
 
       // P1-09j-b: foreground settlement — snapshot and invoke receipt callback.
       // Do NOT destroy the budget while owned background calls remain.
@@ -6198,6 +6222,7 @@ Output ONLY valid JSON (no prose, no markdown).`;
           currentAc = retryAc;
           const retryResult = await runTaskWithInputHooks(line, retryDeps, retryAc.signal, mutableCtx.config.verbosity ?? 'normal');
           currentAc = null;
+          await persistCompletedTurnProvider(retryResult.final);
           if (interruptedByEsc) {
             if (queuedTurns.length > 0) {
               renderDiscardedQueue(out, queuedTurns.length, 'interrupt');

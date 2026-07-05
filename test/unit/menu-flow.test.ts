@@ -58,7 +58,7 @@ import type {
   SessionEntry,
   SessionWriter,
 } from '../../src/core/types.ts';
-import type { Provider, ProviderRequest, ProviderEvent, Usage } from '../../src/providers/port.ts';
+import type { Provider, ProviderRequest, ProviderEvent, ProviderId, Usage } from '../../src/providers/port.ts';
 import type { EnvironmentStatus } from '../../src/providers/detect.ts';
 import type { LoginResult } from '../../src/commands/login.js';
 import type { AppConfig } from '../../src/infra/config.ts';
@@ -283,15 +283,18 @@ function makeFakeSessionWriter(
 interface FakeConversationStore extends ConversationStore {
   readonly _metas: ConversationMeta[];
   readonly _writers: Map<string, SessionWriter & { entries: SessionEntry[] }>;
+  readonly _lastProviderCalls: Array<{ id: string; provider: ProviderId }>;
 }
 
 function makeStore(clock: Clock, initialMetas?: ConversationMeta[]): FakeConversationStore {
   const metas: ConversationMeta[] = initialMetas ? [...initialMetas] : [];
   const writers = new Map<string, SessionWriter & { entries: SessionEntry[] }>();
+  const lastProviderCalls: Array<{ id: string; provider: ProviderId }> = [];
 
   return {
     _metas: metas,
     _writers: writers,
+    _lastProviderCalls: lastProviderCalls,
 
     async list(): Promise<ConversationMeta[]> {
       // Pinned first, then most-recently-updated first (mirrors real impl)
@@ -425,6 +428,17 @@ function makeStore(clock: Clock, initialMetas?: ConversationMeta[]): FakeConvers
       }
     },
 
+    async setLastProvider(id: string, provider: ProviderId): Promise<void> {
+      const idx = metas.findIndex((m) => m.id === id);
+      if (idx >= 0) {
+        const m = metas[idx];
+        if (m !== undefined) {
+          metas[idx] = { ...m, lastProvider: provider };
+          lastProviderCalls.push({ id, provider });
+        }
+      }
+    },
+
     async truncateAfter(id: string, keepCount: number): Promise<number> {
       const w = writers.get(id);
       if (w === undefined) return 0;
@@ -550,6 +564,51 @@ const FAKE_ENV: EnvironmentStatus = {
   hasAnyProvider: true,
   platform: 'linux',
 };
+
+describe('runChatLoop — lastProvider persistence', () => {
+  it('records the provider from a completed successful turn', async () => {
+    const clock = makeFakeClock();
+    const store = makeStore(clock);
+    const sink = makeSink();
+    const meta = await store.create('Track provider');
+    const env: EnvironmentStatus = {
+      ...FAKE_ENV,
+      claude: { ...FAKE_ENV.claude, authenticated: false },
+      codex: {
+        id: 'codex',
+        installed: true,
+        version: '1.0.0',
+        authenticated: true,
+        plan: null,
+        binaryPath: null,
+        availableModels: ['model-a'],
+      },
+    };
+    const ctx = makeCtx(
+      {
+        env,
+        providers: { codex: makeFakeProvider('codex') },
+        readLine: makeScriptedReader(['ship it', '/exit']),
+      },
+      clock,
+      store,
+    );
+
+    await runChatLoop(
+      ctx,
+      { config: ctx.config, env: ctx.env },
+      meta.id,
+      sink,
+      makeScriptedReader(['ship it', '/exit']),
+      async () => FAKE_LOGIN_RESULT,
+      async () => ctx.env,
+      async () => false,
+    );
+
+    assert.deepEqual(store._lastProviderCalls, [{ id: meta.id, provider: 'codex' }]);
+    assert.equal(store._metas.find((m) => m.id === meta.id)?.lastProvider, 'codex');
+  });
+});
 
 describe('runChatLoop — active subscription capacity allocator', () => {
   const capacityEnv: EnvironmentStatus = {
