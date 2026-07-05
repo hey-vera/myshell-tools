@@ -11252,3 +11252,91 @@ describe('Slice 9 — CWD threading through chat execution', () => {
     });
   });
 });
+
+// ---------------------------------------------------------------------------
+// Slice 10 — workspace-aware Recent list: visible render order == numeric
+// dispatch order. The critical regression: `[1]` must open the FIRST RENDERED
+// row (current-workspace-first), NOT the first raw store row, when store order
+// and render order diverge.
+// ---------------------------------------------------------------------------
+
+describe('Slice 10 — workspace-aware Recent list (numeric dispatch == render order)', () => {
+  it('[1] opens the FIRST RENDERED row, not the first raw store row', async () => {
+    const home = join(tmpdir(), `slice10-dispatch-${randomUUID()}`);
+    const repoRoot = join(home, 'repo-root');        // current workspace
+    const otherRoot = join(home, 'other-workspace'); // a different workspace
+    const launchCwd = repoRoot;                       // launch cwd inside current workspace
+    await fs.promises.mkdir(launchCwd, { recursive: true });
+    await fs.promises.mkdir(otherRoot, { recursive: true });
+
+    const clock = makeFakeClock();
+    // Store order (newest first):
+    //   [0] newerOther  (non-current,   updatedAt newer)
+    //   [1] olderCurrent (current,       updatedAt older)
+    //
+    // Render order (current-first):
+    //   [1] olderCurrent
+    //   [2] newerOther
+    //
+    // So pressing `1` must open `olderCurrent`. If the dispatcher still used
+    // the raw store order (`metas[digit - 1]`), `1` would open `newerOther` —
+    // the regression this test guards against.
+    const initialMetas: ConversationMeta[] = [
+      {
+        id: 'newer-other',
+        title: 'Newer other',
+        createdAt: '2023-11-14T20:00:00.000Z',
+        updatedAt: '2023-11-14T22:00:00.000Z', // newer
+        messageCount: 0,
+        pinned: false,
+        category: null,
+        workspaceRoot: otherRoot,
+      },
+      {
+        id: 'older-current',
+        title: 'Older current',
+        createdAt: '2023-11-14T18:00:00.000Z',
+        updatedAt: '2023-11-14T20:00:00.000Z', // older
+        messageCount: 0,
+        pinned: false,
+        category: null,
+        workspaceRoot: repoRoot,
+      },
+    ];
+    const store = makeStore(clock, initialMetas);
+    const sink = makeSink();
+    const ctx = makeCtx(
+      {
+        readLine: makeScriptedReader(['1', 'a real task', '/exit', 'q']),
+        repoScanPort: {
+          // currentWorkspaceRoot resolves to repoRoot for launchCwd.
+          gitToplevel: async (cwd: string) => (cwd === launchCwd ? repoRoot : null),
+        },
+      },
+      clock,
+      store,
+      undefined,
+      launchCwd,
+    );
+
+    await startMenu(ctx, sink);
+
+    // The chat loop was entered for the conversation that renders as [1]
+    // (olderCurrent), so its SessionWriter received the user task. The
+    // raw-store-first conversation (newerOther) was never opened.
+    const openedWriter = store._writers.get('older-current');
+    const otherWriter = store._writers.get('newer-other');
+    assert.ok(openedWriter !== undefined, 'older-current (the rendered [1]) should have a writer');
+    assert.ok(otherWriter === undefined, 'newer-other (the raw store-first) must NOT be opened');
+    const userEntry = openedWriter.entries.find((e) => e.role === 'user');
+    assert.ok(userEntry !== undefined, 'the opened conversation should have a user entry');
+    assert.equal(userEntry.content, 'a real task', 'the user task landed in the rendered [1] conversation');
+
+    // Sanity: the rendered Recent list shows older-current as [1] (current
+    // workspace sorts first) and newer-other as [2] (with the other workspace's
+    // label as a location prefix).
+    assert.ok(sink.buf.includes('[1]'), 'rendered a numbered [1] row');
+    assert.ok(sink.buf.includes('Older current'), 'rendered the older current row');
+    assert.ok(sink.buf.includes('other-workspace · Newer other'), 'non-current row shows the location prefix');
+  });
+});

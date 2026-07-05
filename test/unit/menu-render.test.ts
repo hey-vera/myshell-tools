@@ -96,6 +96,7 @@ function makeSink(): { sink: OutputSink; text: () => string } {
 async function render(
   env: EnvironmentStatus,
   metas: ConversationMeta[] = [],
+  currentWorkspaceRoot?: string,
 ): Promise<string> {
   const { sink, text } = makeSink();
   await renderMainScreen(
@@ -104,6 +105,15 @@ async function render(
     metas,
     EMPTY_SPEND,
     sink,
+    undefined,
+    undefined,
+    false,
+    [],
+    [],
+    undefined,
+    false,
+    false,
+    currentWorkspaceRoot,
   );
   return text();
 }
@@ -257,4 +267,121 @@ describe('renderMainScreen — Slice 1 forbidden substrings', () => {
       });
     }
   }
+});
+
+// ---------------------------------------------------------------------------
+// Slice 10 — workspace-aware Recent list (current-workspace-first, location
+// column on non-current rows, render order == numeric dispatch order).
+// ---------------------------------------------------------------------------
+
+describe('renderMainScreen — Slice 10 workspace-aware Recent list', () => {
+  const CURRENT_ROOT = '/home/josh/dev/myshell-tools';
+  const OTHER_ROOT = '/home/josh/dev/replit-tools';
+  const NOW = 1_700_000_000_000; // matches makeCtx's clock
+
+  // Two conversations, passed to render in STORE order (newest first — mirroring
+  // what `ConversationStore.list()` returns): a NEWER non-current row followed
+  // by an OLDER current-workspace row. The store order and the render order
+  // therefore DIFFER — exactly the case the Slice 10 invariant must handle.
+  const olderCurrent: ConversationMeta = makeMeta({
+    id: 'older-current',
+    title: 'Older current',
+    workspaceRoot: CURRENT_ROOT,
+    updatedAt: '2023-11-14T20:13:20.000Z', // 2h before NOW
+    mode: 'auto',
+  });
+  const newerOther: ConversationMeta = makeMeta({
+    id: 'newer-other',
+    title: 'Newer other',
+    workspaceRoot: OTHER_ROOT,
+    updatedAt: '2023-11-14T21:13:20.000Z', // 1h before NOW (newer)
+    mode: 'max',
+  });
+  // Store order: newer first → [newerOther, olderCurrent].
+  const storeOrderedMetas: ConversationMeta[] = [newerOther, olderCurrent];
+
+  function row(out: string, idx: number): string {
+    // Match the `  [n] ...` indented rendered row.
+    const re = new RegExp(`^\\s*\\[${idx}\\] (.*)$`, 'm');
+    const m = re.exec(out);
+    assert.ok(m !== null, `expected a [${idx}] row in:\n${out}`);
+    return m[1] ?? '';
+  }
+
+  it('renders the Recent title with the current workspace label', async () => {
+    const out = await render(ENV_CLAUDE_AUTHED, storeOrderedMetas, CURRENT_ROOT);
+    assert.ok(
+      out.includes('Recent (myshell-tools):'),
+      `expected "Recent (myshell-tools):" header in:\n${out}`,
+    );
+  });
+
+  it('sorts current-workspace rows ahead of newer non-current rows', async () => {
+    const out = await render(ENV_CLAUDE_AUTHED, storeOrderedMetas, CURRENT_ROOT);
+    // [1] must be the OLDER CURRENT row, not the newer non-current one — store
+    // order and render order diverge here, which is the whole point.
+    const r1 = row(out, 1);
+    assert.ok(r1.includes('Older current'), `[1] should be the current row:\n${out}`);
+    assert.ok(!r1.includes('replit-tools'), `[1] must not carry a location prefix:\n${out}`);
+    // [2] is the newer NON-current row.
+    const r2 = row(out, 2);
+    assert.ok(r2.includes('Newer other'), `[2] should be the non-current row:\n${out}`);
+  });
+
+  it('prefixes non-current rows with "<location> · <title>" inline', async () => {
+    const out = await render(ENV_CLAUDE_AUTHED, storeOrderedMetas, CURRENT_ROOT);
+    const r2 = row(out, 2);
+    assert.ok(
+      r2.includes('replit-tools · Newer other'),
+      `expected "replit-tools · Newer other" in [2] row, got:\n${r2}`,
+    );
+    // The location is the OTHER workspace's label, never the current one.
+    assert.ok(
+      !r2.includes('myshell-tools · '),
+      `[2] must NOT show the current workspace as a location prefix:\n${r2}`,
+    );
+  });
+
+  it('omits the location prefix on current-workspace rows (redundant with the header)', async () => {
+    const out = await render(ENV_CLAUDE_AUTHED, storeOrderedMetas, CURRENT_ROOT);
+    const r1 = row(out, 1);
+    // The current row shows just the title, no "myshell-tools · " prefix.
+    assert.ok(
+      !r1.includes('myshell-tools · '),
+      `current row must not carry a redundant location prefix:\n${r1}`,
+    );
+  });
+
+  it('renders a global/unknown (no workspaceRoot) row title-only in the non-current tier', async () => {
+    // A legacy/global conversation (workspaceRoot absent) sorts in the
+    // non-current tier but renders with NO fabricated location prefix.
+    const global: ConversationMeta = makeMeta({
+      id: 'global',
+      title: 'Global chat',
+      updatedAt: '2023-11-14T19:13:20.000Z', // older than both → last
+    });
+    const metas: ConversationMeta[] = [newerOther, olderCurrent, global];
+    const out = await render(ENV_CLAUDE_AUTHED, metas, CURRENT_ROOT);
+    // Store order (recency): newerOther, olderCurrent, global.
+    // Render order (current-first): olderCurrent, newerOther, global.
+    const r3 = row(out, 3);
+    assert.ok(r3.includes('Global chat'), `[3] should be the global row:\n${out}`);
+    // No location prefix before the title: the row is `3h  Global chat  · <effort>`,
+    // NOT `3h  <something> · Global chat  · <effort>`.
+    assert.ok(!r3.includes('· Global chat'), `[3] must not fabricate a location prefix:\n${r3}`);
+  });
+
+  it('[c] Continue-last sub-line names the FIRST RENDERED row (matches [1])', async () => {
+    const out = await render(ENV_CLAUDE_AUTHED, storeOrderedMetas, CURRENT_ROOT);
+    // The [c] sub-line (`    └─ <title> · <age>`) must reference the OLDER
+    // current row (the rendered [1]), NOT the store's first (newerOther).
+    assert.ok(
+      out.includes('└─ Older current ·'),
+      `expected [c] sub-line to name the first rendered row "Older current":\n${out}`,
+    );
+    assert.ok(
+      !out.includes('└─ Newer other ·'),
+      `[c] sub-line must NOT name the raw store-first row "Newer other":\n${out}`,
+    );
+  });
 });

@@ -254,7 +254,8 @@ import {
   getMenuStack,
   resetMenuStack,
 } from './menu-key-confirm.js';
-import { renderMainScreen } from './menu-render.js';
+import { renderMainScreen, orderRecentForRender } from './menu-render.js';
+import { resolveWorkspaceRoot } from './workspace.js';
 import {
   parseYesNo,
   yesNoHint,
@@ -7033,6 +7034,16 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
     let listsLoading = true;
     let accountStates: Record<string, ProviderAccountSummary> | undefined;
 
+    // Slice 10 — the current workspace root (git toplevel else cwd, resolved via
+    // Slice 7's `resolveWorkspaceRoot`) drives both the `Recent (<label>):`
+    // header and the current-workspace-first row ordering. Resolved ONCE before
+    // the first paint (fail-soft; `resolveWorkspaceRoot` never throws) so the
+    // title does not flicker from the cwd-basename fallback to the git-root
+    // basename on a later repaint, and so the renderer (`renderMainScreen`) and
+    // the numeric-open dispatcher (`[1]`-`[9]`) share the SAME root → the
+    // rendered `[n]` index and the conversation `[n]` opens always agree.
+    let currentWorkspaceRoot: string = ctx.cwd;
+
     // Tests (and any caller) may inject the token status to skip the disk read.
     if (ctx.claudeTokenInfo !== undefined) {
       claudeTokenInfo = ctx.claudeTokenInfo;
@@ -7063,6 +7074,14 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
       await Promise.all([fillToken(), fillSpend(), fillLists()]);
     }
 
+    // Slice 10 — resolve the current workspace root once, before the first paint
+    // (both paths), so the `Recent (<label>):` header does not flip from the cwd
+    // basename to the git-root basename on a later repaint. `resolveWorkspaceRoot`
+    // is fail-soft (git failures degrade to the normalized cwd). The same value
+    // is passed to `renderMainScreen` (title + row ordering) AND used by the
+    // numeric-open dispatcher below, so visible render order == dispatch order.
+    currentWorkspaceRoot = await resolveWorkspaceRoot(ctx.cwd, ctx.repoScanPort ?? nodeRepoScanPort);
+
     // `inMainMenu` gates async-fill repaints: a fill that lands while we're inside a
     // sub-flow (chat, settings, …) must NOT paint the menu over it. Toggled around
     // every sub-flow below.
@@ -7083,7 +7102,7 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
       await renderMainScreen(
         ctx, mutableCtx, metas, spend, out, updateInfo, claudeTokenInfo,
         runningUnderNpx, ctx.healthIssues ?? [], allGoals, accountStates,
-        spendLoading, listsLoading,
+        spendLoading, listsLoading, currentWorkspaceRoot,
       );
       out.endFrame?.();
     };
@@ -7260,7 +7279,11 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
       // ---- [c] Continue most-recent conversation ------------------------------
       if (key === 'c') {
         const all = await ctx.store.list();
-        const latest = all[0];
+        // Slice 10 — continue the FIRST RENDERED row (current-workspace-first
+        // order), matching the `[1]` row the user sees and the `[c]` sub-line
+        // printed by `renderControls`. Reusing `orderRecentForRender` (the SAME
+        // function the renderer uses) keeps visible order == dispatch order.
+        const latest = orderRecentForRender(all, currentWorkspaceRoot)[0];
         if (latest !== undefined) {
           const continueOrigin: MenuLoginOrigin = { kind: 'chat-entry', conversationId: latest.id, provider: 'claude' };
           const continueDest = await promptForAuthBeforeChat(out, readLine, mutableCtx, loginFn, detectEnvironmentFn, continueOrigin, confirm, suspendStdin, inkReadKey);
@@ -7285,7 +7308,15 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
       // ---- [1-9] Resume numbered conversation ---------------------------------
       const digit = parseInt(key, 10);
       if (!Number.isNaN(digit) && digit >= 1 && digit <= 9) {
-        const target = metas[digit - 1];
+        // Slice 10 — `[n]` opens the n-th RENDERED row, not the n-th raw store
+        // row. The renderer reorders the list current-workspace-first (via
+        // `orderRecentForRender`), so the raw store order and the visible order
+        // diverge whenever an older current-workspace conversation sorts above a
+        // newer non-current one. Resolve the target through the SAME
+        // `orderRecentForRender` the renderer uses → `[1]` always opens the row
+        // the user sees as `[1]`. This is the slice's highest-risk fix.
+        const ordered = orderRecentForRender(metas, currentWorkspaceRoot);
+        const target = ordered[digit - 1];
         if (target !== undefined) {
           const numberedOrigin: MenuLoginOrigin = { kind: 'chat-entry', conversationId: target.id, provider: 'claude' };
           const numberedDest = await promptForAuthBeforeChat(out, readLine, mutableCtx, loginFn, detectEnvironmentFn, numberedOrigin, confirm, suspendStdin, inkReadKey);
