@@ -13,10 +13,10 @@ _Last verified: 2026-07-04. This doc holds VOLATILE, dated model facts so they n
 | Worker fallback — claude side | Claude `Agent` | sonnet-class Agent subagent | Same, on Anthropic billing; useful when CLI worker path fails or separate quota is needed |
 | Escalation specialist | Opus 4.8 | — | Only when a `CLAUDE.md` Opus trigger fires; never the control plane |
 
-### Worker routing notes (2026-07-04)
-- **opencode-go is FUNDED and WORKING** — live smoke run returned `GO_OK`, confirmed 2026-07-04. Earlier 2026-07-03 offline-status notes are stale.
-- **Primary path:** use opencode-go first for bounded worker execution because it is the cheapest capable funded provider. Pick the cheapest capable opencode-go model for the slice; use stronger opencode-go models only when task complexity requires it.
-- **Retry before fallback:** retry transient opencode-go failures with capped exponential backoff and jitter: attempt 1 immediately, attempt 2 after ~10-20s, attempt 3 after ~30-60s. Stop retrying on auth/quota/provider-disabled errors, deterministic command errors, or repeated identical failure.
+### Worker routing notes (updated 2026-07-05)
+- **opencode-go funding is VOLATILE** — funded 2026-07-04 (`GO_OK` smoke), then **out of quota 2026-07-05** (dispatch failed with exit `127` after the banner). Do not assume availability; smoke-verify (`opencode run -m opencode-go/deepseek-v4-flash "GO_OK" </dev/null`) before relying on it.
+- **Path:** opencode-go is cheapest *when funded* — try it for bounded work, but treat codex `gpt-5.4-mini` (mechanical) / `gpt-5.4` (heavier) as the **reliable practical default** given how often opencode is exhausted. On a quota / `127` / auth error, switch to codex **immediately**; do NOT retry opencode.
+- **Retry only TRANSIENT failures** (network blips) with capped backoff (immediate → ~10-20s → ~30-60s). A quota / auth / `127` / provider-disabled error is NOT transient — fall back to codex at once.
 - **Fallback:** use codex `gpt-5.4-mini` for cheap/mechanical work, codex `gpt-5.4` for heavier bounded work, and Claude sonnet-class `Agent` workers when CLI paths are unavailable, permissions/subagent integration helps, or quota balancing is needed. `codex exec -m <model>` runs on ChatGPT billing, independent of opencode balance.
 - Claude `Agent` workers may edit `src/`/`test/` (they are separate subagents, not the orchestrator main thread — the bright line applies only to the main thread).
 
