@@ -10692,3 +10692,310 @@ describe('P0-03e — import forwards typed runner and inline repair preserves im
     assert.ok(sink.buf.includes('Resume a Claude / Codex session') || sink.buf.includes('No Claude or Codex sessions'), 'import screen should render');
   });
 });
+
+// ---------------------------------------------------------------------------
+// Slice 9 — CWD threading through chat execution
+//
+// `runChatLoop` derives `activeCwd = convMeta?.workspaceRoot ?? ctx.cwd` and
+// threads it through every conversation-scoped operation (repo-map, preflight/
+// orchestrate deps, attachments, command audit, shell passthrough, ledger,
+// evidence sink/store, verify, memory/taste/rules projectKey, goals projectKey,
+// PLAN.md writes). These tests prove the derivation at three representative
+// seams (shell passthrough cwd, command-audit recorder cwd + ledger file
+// location, and the orchestrate deps cwd that becomes the provider req.cwd)
+// plus the most-important backward-compat guarantee: a legacy conversation
+// without a workspaceRoot falls back to the launch ctx.cwd exactly as before.
+//
+// Fixtures use temp dirs + injected ports (no real global git state) per the
+// spec's non-flaky test rules.
+// ---------------------------------------------------------------------------
+
+describe('Slice 9 — CWD threading through chat execution', () => {
+  /**
+   * Stamp `workspaceRoot` onto a stored conversation meta. Mirrors how the real
+   * store persists a workspaceRoot chosen at conversation-creation/picker time.
+   */
+  function stampWorkspaceRoot(store: FakeConversationStore, id: string, workspaceRoot: string | null): void {
+    const idx = store._metas.findIndex((m) => m.id === id);
+    if (idx < 0) throw new Error(`stampWorkspaceRoot: meta ${id} not found`);
+    const m = store._metas[idx];
+    if (m !== undefined) store._metas[idx] = { ...m, workspaceRoot };
+  }
+
+  const allowGate: CommandGatePort = {
+    gate: () => ({
+      commandTier: 'read-only',
+      allowed: true,
+      requireConfirmation: false,
+      forbidBackground: false,
+      mustRecord: false,
+      rationale: 'ok',
+    }),
+  };
+
+  async function readAuditEvents(file: string): Promise<CommandAuditEvent[]> {
+    const raw = await fs.promises.readFile(file, 'utf8');
+    return raw
+      .trim()
+      .split(/\r?\n/)
+      .filter((line) => line.trim().length > 0)
+      .map((line) => JSON.parse(line) as CommandAuditEvent);
+  }
+
+  it('legacy conversation without workspaceRoot runs shell passthrough AND records command audit against the launch cwd (backward-compat)', async () => {
+    const home = join(tmpdir(), `menu-flow-home-${randomUUID()}`);
+    await withStateHome(home, async () => {
+      const clock = makeFakeClock();
+      const store = makeStore(clock);
+      const sink = makeSink();
+      const launchCwd = join(home, 'launch-repo');
+      await fs.promises.mkdir(launchCwd, { recursive: true });
+      const meta = await store.create('legacy');
+      // No workspaceRoot stamped → legacy conversation, must fall back to launch cwd.
+
+      let shellCwd: string | null = null;
+      const ctx = makeCtx(
+        {
+          shellRunner: {
+            async run(_command, runCwd, out) {
+              shellCwd = runCwd;
+              out.write('shell ok\n');
+              return { exitCode: 0 };
+            },
+          },
+          readLine: makeScriptedReader(['!rm -rf build', '/exit']),
+        },
+        clock,
+        store,
+        undefined,
+        launchCwd,
+      );
+
+      await runChatLoop(
+        ctx,
+        { config: ctx.config, env: ctx.env },
+        meta.id,
+        sink,
+        makeScriptedReader(['!rm -rf build', '/exit']),
+        async () => FAKE_LOGIN_RESULT,
+        async () => ctx.env,
+        async () => true,
+      );
+
+      assert.equal(shellCwd, launchCwd, 'shell must run in launch cwd for legacy meta');
+      const auditFile = projectStateDirs(defaultStateLayout(), launchCwd).commandAuditFile;
+      const events = await readAuditEvents(auditFile);
+      assert.equal(events.length, 1, 'one command-audit event recorded');
+      assert.equal(events[0]?.command, 'rm -rf build');
+      assert.equal(events[0]?.outcome, 'ran');
+      assert.equal(events[0]?.cwd, launchCwd, 'audit event cwd must be launch cwd for legacy meta');
+    });
+  });
+
+  it('conversation WITH workspaceRoot threads shell passthrough to workspaceRoot, not the launch cwd', async () => {
+    const home = join(tmpdir(), `menu-flow-home-${randomUUID()}`);
+    await withStateHome(home, async () => {
+      const clock = makeFakeClock();
+      const store = makeStore(clock);
+      const sink = makeSink();
+      const launchCwd = join(home, 'launch-repo');
+      const workspaceCwd = join(home, 'workspace-repo');
+      await fs.promises.mkdir(launchCwd, { recursive: true });
+      await fs.promises.mkdir(workspaceCwd, { recursive: true });
+      const meta = await store.create('ws');
+      stampWorkspaceRoot(store, meta.id, workspaceCwd);
+
+      let shellCwd: string | null = null;
+      const ctx = makeCtx(
+        {
+          commandGate: allowGate,
+          shellRunner: {
+            async run(_command, runCwd, out) {
+              shellCwd = runCwd;
+              out.write('shell ok\n');
+              return { exitCode: 0 };
+            },
+          },
+          readLine: makeScriptedReader(['!echo hi', '/exit']),
+        },
+        clock,
+        store,
+        undefined,
+        launchCwd,
+      );
+
+      await runChatLoop(
+        ctx,
+        { config: ctx.config, env: ctx.env },
+        meta.id,
+        sink,
+        makeScriptedReader(['!echo hi', '/exit']),
+        async () => FAKE_LOGIN_RESULT,
+        async () => ctx.env,
+        async () => false,
+      );
+
+      assert.notEqual(shellCwd, null, 'shell runner must be called');
+      assert.equal(shellCwd, workspaceCwd, 'shell must run in workspaceRoot, not launch cwd');
+      assert.notEqual(shellCwd, launchCwd, 'shell must NOT run in launch cwd when workspaceRoot is set');
+    });
+  });
+
+  it('conversation WITH workspaceRoot threads command-audit recorder to workspaceRoot (audit file + event cwd)', async () => {
+    const home = join(tmpdir(), `menu-flow-home-${randomUUID()}`);
+    await withStateHome(home, async () => {
+      const clock = makeFakeClock();
+      const store = makeStore(clock);
+      const sink = makeSink();
+      const launchCwd = join(home, 'launch-repo');
+      const workspaceCwd = join(home, 'workspace-repo');
+      await fs.promises.mkdir(launchCwd, { recursive: true });
+      await fs.promises.mkdir(workspaceCwd, { recursive: true });
+      const meta = await store.create('ws-audit');
+      stampWorkspaceRoot(store, meta.id, workspaceCwd);
+
+      let shellCwd: string | null = null;
+      const ctx = makeCtx(
+        {
+          shellRunner: {
+            async run(_command, runCwd, out) {
+              shellCwd = runCwd;
+              out.write('shell ok\n');
+              return { exitCode: 0 };
+            },
+          },
+          readLine: makeScriptedReader(['!rm -rf build', '/exit']),
+        },
+        clock,
+        store,
+        undefined,
+        launchCwd,
+      );
+
+      await runChatLoop(
+        ctx,
+        { config: ctx.config, env: ctx.env },
+        meta.id,
+        sink,
+        makeScriptedReader(['!rm -rf build', '/exit']),
+        async () => FAKE_LOGIN_RESULT,
+        async () => ctx.env,
+        async () => true,
+      );
+
+      assert.equal(shellCwd, workspaceCwd, 'shell must run in workspaceRoot');
+      const wsAuditFile = projectStateDirs(defaultStateLayout(), workspaceCwd).commandAuditFile;
+      const launchAuditFile = projectStateDirs(defaultStateLayout(), launchCwd).commandAuditFile;
+      assert.notEqual(wsAuditFile, launchAuditFile, 'sanity: workspace and launch audit files must differ');
+      const events = await readAuditEvents(wsAuditFile);
+      assert.equal(events.length, 1, 'audit event must land in the workspace state dir');
+      assert.equal(events[0]?.command, 'rm -rf build');
+      assert.equal(events[0]?.outcome, 'ran');
+      assert.equal(events[0]?.cwd, workspaceCwd, 'audit event cwd must be workspaceRoot');
+      await assert.rejects(
+        fs.promises.readFile(launchAuditFile, 'utf8'),
+        'no audit file must be created under the launch cwd',
+      );
+    });
+  });
+
+  it('conversation WITH workspaceRoot threads orchestrate deps cwd (provider req.cwd) to workspaceRoot for a chat turn', async () => {
+    const home = join(tmpdir(), `menu-flow-home-${randomUUID()}`);
+    await withStateHome(home, async () => {
+      const clock = makeFakeClock();
+      const store = makeStore(clock);
+      const sink = makeSink();
+      const launchCwd = join(home, 'launch-repo');
+      const workspaceCwd = join(home, 'workspace-repo');
+      await fs.promises.mkdir(launchCwd, { recursive: true });
+      await fs.promises.mkdir(workspaceCwd, { recursive: true });
+      const meta = await store.create('ws-chat');
+      stampWorkspaceRoot(store, meta.id, workspaceCwd);
+
+      const reqCwds: string[] = [];
+      const provider: Provider = {
+        ...makeFakeProvider(),
+        async *run(req: ProviderRequest, signal: AbortSignal): AsyncIterable<ProviderEvent> {
+          reqCwds.push(req.cwd);
+          yield* makeFakeProvider().run(req, signal);
+        },
+      };
+
+      const ctx = makeCtx(
+        {
+          providers: { claude: provider },
+          readLine: makeScriptedReader(['hello world', '/exit']),
+        },
+        clock,
+        store,
+        undefined,
+        launchCwd,
+      );
+
+      await runChatLoop(
+        ctx,
+        { config: ctx.config, env: ctx.env },
+        meta.id,
+        sink,
+        makeScriptedReader(['hello world', '/exit']),
+        async () => FAKE_LOGIN_RESULT,
+        async () => ctx.env,
+        async () => false,
+      );
+
+      assert.ok(reqCwds.length >= 1, 'the main chat turn must reach the provider');
+      for (const c of reqCwds) {
+        assert.equal(c, workspaceCwd, 'every provider req.cwd must be the workspaceRoot');
+      }
+    });
+  });
+
+  it('legacy conversation without workspaceRoot uses launch cwd for orchestrate deps (provider req.cwd backward-compat)', async () => {
+    const home = join(tmpdir(), `menu-flow-home-${randomUUID()}`);
+    await withStateHome(home, async () => {
+      const clock = makeFakeClock();
+      const store = makeStore(clock);
+      const sink = makeSink();
+      const launchCwd = join(home, 'launch-repo');
+      await fs.promises.mkdir(launchCwd, { recursive: true });
+      const meta = await store.create('legacy-chat');
+      // No workspaceRoot stamped → legacy conversation.
+
+      const reqCwds: string[] = [];
+      const provider: Provider = {
+        ...makeFakeProvider(),
+        async *run(req: ProviderRequest, signal: AbortSignal): AsyncIterable<ProviderEvent> {
+          reqCwds.push(req.cwd);
+          yield* makeFakeProvider().run(req, signal);
+        },
+      };
+
+      const ctx = makeCtx(
+        {
+          providers: { claude: provider },
+          readLine: makeScriptedReader(['hello world', '/exit']),
+        },
+        clock,
+        store,
+        undefined,
+        launchCwd,
+      );
+
+      await runChatLoop(
+        ctx,
+        { config: ctx.config, env: ctx.env },
+        meta.id,
+        sink,
+        makeScriptedReader(['hello world', '/exit']),
+        async () => FAKE_LOGIN_RESULT,
+        async () => ctx.env,
+        async () => false,
+      );
+
+      assert.ok(reqCwds.length >= 1, 'the main chat turn must reach the provider');
+      for (const c of reqCwds) {
+        assert.equal(c, launchCwd, 'every provider req.cwd must be the launch cwd for legacy meta');
+      }
+    });
+  });
+});
