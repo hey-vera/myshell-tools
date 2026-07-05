@@ -38,7 +38,7 @@ import { isKeepGoingOffer } from '../core/questions.js';
 import { assessGoalConfidence, decideGoalActivation, detectActivationOverride } from '../core/autonomy.js';
 import { classify, hasWorkIntent } from '../core/classify.js';
 import { resolveMemoryContextDetailed } from '../core/memory-injection.js';
-import { buildEnvironmentContext } from '../core/repo-map.js';
+import { buildEnvironmentContext, type RepoScanPort } from '../core/repo-map.js';
 import { repoCacheKey, type RepoFingerprint } from '../core/repo-identity.js';
 import {
   buildToolStateContext,
@@ -264,6 +264,7 @@ import { runQuestionSelector } from './menu-question-flow.js';
 import { renderDecisionPrompt } from './decision-prompt.js';
 import { runRawProviderSession } from './menu-raw-session.js';
 import { runManage, runImportNative, runManageGoals } from './menu-conversations.js';
+import { runNewConversationScreen } from './menu-new-conversation.js';
 import { runWelcome } from './menu-welcome.js';
 import {
   createNodeShellRunner,
@@ -430,6 +431,16 @@ export interface MenuContext {
    * Defaults to the real check: `() => isHookInstalled(process.env, process.platform)`.
    */
   readonly isHookInstalled?: () => Promise<boolean>;
+  /**
+   * Optional injected repo-scan port (`gitToplevel`) for deterministic
+   * workspace-root resolution in the New Conversation / workspace picker flow
+   * (Slice 8). When absent, the real {@link nodeRepoScanPort} is used. Only
+   * `gitToplevel` is consumed (via {@link resolveWorkspaceRoot}); other
+   * repo-scan call sites in `startMenu` keep using `nodeRepoScanPort` directly.
+   * Tests inject a fake so git-root-vs-cwd behavior is hermetic (no real git
+   * binary, no filesystem-dependent flakiness).
+   */
+  readonly repoScanPort?: Pick<RepoScanPort, 'gitToplevel'>;
 }
 
 /** Timeout continuation obeys the same oversight level as an explicit /goal. */
@@ -7223,12 +7234,18 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
           if (newDest.kind === 'return') out.write('No provider is signed in yet. Returning to menu.\n');
           continue;
         }
-        // No up-front "name your chat" prompt — a real chat shell just opens and
-        // lets you type. The title is derived silently from the first user message
-        // (conversations.ts append()), so create an untitled conversation and drop
-        // straight into it.
+        // Slice 8 — New Conversation screen: pick a workspace root (current
+        // resolved root, or via the fuzzy picker) before creating. The screen
+        // handles its own nav (← back to home, ESC exit, m Effort Mode switch)
+        // and returns the chosen root; creation + goal review + chat entry stay
+        // here so the [n]/[c]/[1-9] auth-gate sequencing stays shared.
+        const newConvResult = await runNewConversationScreen(ctx, mutableCtx, out, readLine, inkReadKey, syncSettings);
+        if (newConvResult.kind === 'exit') break;
+        if (newConvResult.kind === 'back') continue;
+        // newConvResult.kind === 'create' — compute the mode AFTER any `m`
+        // switch the user did inside the screen.
         const convMode = migrateMode(mutableCtx.config.mode);
-        const meta = await ctx.store.create('', convMode);
+        const meta = await ctx.store.create('', { mode: convMode, workspaceRoot: newConvResult.workspaceRoot });
         if (!(await reviewConversationGoals(
           { goalStore: menuGoalStore, clock: ctx.clock, out, readLine, readMenuKey, inkReadKey, env: process.env, config: mutableCtx.config },
           meta.id,
