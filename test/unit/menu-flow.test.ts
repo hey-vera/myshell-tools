@@ -15,7 +15,7 @@
  * no digit-% literals.
  */
 
-import { describe, it } from 'vitest';
+import { beforeEach, describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -30,9 +30,18 @@ import {
   startMenu,
   runChatLoop,
 } from '../../src/interface/menu.ts';
+import { runNewConversationScreen } from '../../src/interface/menu-new-conversation.ts';
 import { parseYesNo, interpretYesNoKey, yesNoHint } from '../../src/interface/menu-questions.ts';
 import { readSingleKey, createLineReader, normalizeMenuKey, resolveRawKeyInput, __resetControllingTtyRawInputForTest } from '../../src/interface/menu-readline.ts';
-import { readMenuKey, confirmViaKey, attachChatTurnKeyListener } from '../../src/interface/menu-key-confirm.ts';
+import {
+  NAV_ESC,
+  NAV_LEFT,
+  attachChatTurnKeyListener,
+  confirmViaKey,
+  getMenuStack,
+  readMenuKey,
+  resetMenuStack,
+} from '../../src/interface/menu-key-confirm.ts';
 import { defaultAliasHint, autoUpdateEnabled } from '../../src/interface/menu-display.ts';
 import { completeSlash, CHAT_SLASH_COMMANDS, classifyCompletion, completeSlashArg, fuzzyRank, expandPathToken, matchPathEntries, completeChat, CHAT_SLASH_ARG_MAP } from '../../src/interface/menu-completion.ts';
 import type { KeypressEvent } from '../../src/interface/menu-key-confirm.ts';
@@ -40,7 +49,7 @@ import type { KeyInputStream, LineReader } from '../../src/interface/menu-readli
 import type { MenuContext } from '../../src/interface/menu.ts';
 import type { UpdateCheckResult } from '../../src/infra/update-check.ts';
 import type { OutputSink } from '../../src/interface/render.ts';
-import type { ConversationMeta, ConversationStore } from '../../src/infra/conversation-store.ts';
+import type { ConversationMeta, ConversationStore, ConversationMode, CreateConversationOptions } from '../../src/infra/conversation-store.ts';
 import type { CommandAuditEvent, CommandGatePort } from '../../src/core/command-gate.ts';
 import type {
   Clock,
@@ -292,9 +301,20 @@ function makeStore(clock: Clock, initialMetas?: ConversationMeta[]): FakeConvers
       });
     },
 
-    async create(title: string): Promise<ConversationMeta> {
+    async create(
+      title: string,
+      modeOrOptions?: ConversationMode | CreateConversationOptions,
+    ): Promise<ConversationMeta> {
       const id = clock.uuid();
       const iso = clock.isoNow();
+      // Slice 6's options overload carries `workspaceRoot` (and `mode`); the
+      // legacy string form passes a ConversationMode. Only the workspaceRoot is
+      // recorded here (mode is intentionally NOT stamped, to keep the existing
+      // render assertions that see `m.mode === undefined` → 'Auto' unchanged).
+      const workspaceRoot =
+        typeof modeOrOptions === 'object' && modeOrOptions !== null
+          ? modeOrOptions.workspaceRoot
+          : undefined;
       const meta: ConversationMeta = {
         id,
         title,
@@ -303,6 +323,9 @@ function makeStore(clock: Clock, initialMetas?: ConversationMeta[]): FakeConvers
         messageCount: 0,
         pinned: false,
         category: null,
+        ...(typeof workspaceRoot === 'string' && workspaceRoot.length > 0
+          ? { workspaceRoot }
+          : {}),
       };
       metas.push(meta);
       return meta;
@@ -665,6 +688,10 @@ function makeSink(): OutputSink & { buf: string } {
   };
 }
 
+function normalizeTestPath(p: string): string {
+  return p.replace(/\\/g, '/');
+}
+
 function assertLockedHomeSkeleton(buf: string): void {
   assert.ok(buf.includes('Effort Mode:'), 'home should render the Effort Mode box');
   assert.ok(buf.includes('Session Manager'), 'home should render the Session Manager title box');
@@ -783,7 +810,7 @@ describe('startMenu semantic preflight dark flag composition', () => {
       const ctx = makeCtx({
         config: { onboarded: true, setAsDefault: false, smartRoute: false },
         providers: { claude: makePromptCountingProvider(counts) },
-        readLine: makeScriptedReader(['n', 'please review this implementation', '/exit', 'q']),
+        readLine: makeScriptedReader(['n', '', 'please review this implementation', '/exit', 'q']),
       });
 
       await startMenu(ctx, sink);
@@ -800,7 +827,7 @@ describe('startMenu semantic preflight dark flag composition', () => {
       const ctx = makeCtx({
         config: { onboarded: true, setAsDefault: false, smartRoute: false },
         providers: { claude: makePromptCountingProvider(counts) },
-        readLine: makeScriptedReader(['n', 'please review this implementation', '/exit', 'q']),
+        readLine: makeScriptedReader(['n', '', 'please review this implementation', '/exit', 'q']),
       });
 
       await startMenu(ctx, sink);
@@ -1053,12 +1080,12 @@ describe('startMenu — n → first-message → /exit → q', () => {
 
   it('resolves cleanly', async () => {
     await assert.doesNotReject(() =>
-      run(['n', 'My first task', '/exit', 'q']),
+      run(['n', '', 'My first task', '/exit', 'q']),
     );
   });
 
   it('creates a conversation in the store', async () => {
-    await run(['n', 'My first task', '/exit', 'q']);
+    await run(['n', '', 'My first task', '/exit', 'q']);
     const metas = await store.list();
     assert.equal(metas.length, 1, 'one conversation should be created');
     assert.equal(metas[0]?.title, 'My first task');
@@ -1068,7 +1095,7 @@ describe('startMenu — n → first-message → /exit → q', () => {
     // No up-front title prompt anymore: 'n' opens the chat directly and the FIRST
     // line is the task sent to orchestrate. Inputs: 'n' (new conv) →
     //   'do this task' (the task) → '/exit' → 'q'.
-    await run(['n', 'do this task', '/exit', 'q']);
+    await run(['n', '', 'do this task', '/exit', 'q']);
     const metas = await store.list();
     const id = metas[0]?.id;
     assert.ok(id !== undefined, 'conversation id exists');
@@ -1082,7 +1109,7 @@ describe('startMenu — n → first-message → /exit → q', () => {
   });
 
   it('/exit returns to main menu (outputs main screen again)', async () => {
-    await run(['n', 'My first task', '/exit', 'q']);
+    await run(['n', '', 'My first task', '/exit', 'q']);
     const occurrences = sink.buf.split('Session Manager').length - 1;
     assert.ok(occurrences >= 2, `main screen rendered at least twice (got ${occurrences})`);
     assertLockedHomeSkeleton(sink.buf);
@@ -1090,11 +1117,201 @@ describe('startMenu — n → first-message → /exit → q', () => {
 
   it('EOF inside chat loop exits gracefully without throw', async () => {
     await assert.doesNotReject(() =>
-      run(['n', 'My task', null]),
+      run(['n', '', 'My task', null]),
       'EOF inside chat loop should resolve cleanly (no ERR_USE_AFTER_CLOSE)',
     );
   });
 
+});
+
+describe('Slice 8 — New Conversation flow', () => {
+  beforeEach(() => {
+    resetMenuStack();
+  });
+
+  it('[n] then Enter creates with the current resolved workspace root', async () => {
+    const home = join(tmpdir(), `slice8-current-${randomUUID()}`);
+    const repoRoot = join(home, 'repo-root');
+    const launchCwd = join(repoRoot, 'packages', 'app');
+    await fs.promises.mkdir(launchCwd, { recursive: true });
+
+    const clock = makeFakeClock();
+    const store = makeStore(clock);
+    const sink = makeSink();
+    const ctx = makeCtx(
+      {
+        readLine: makeScriptedReader(['n', '', '/exit', 'q']),
+        repoScanPort: {
+          gitToplevel: async (cwd) => cwd === launchCwd ? repoRoot : null,
+        },
+      },
+      clock,
+      store,
+      undefined,
+      launchCwd,
+    );
+
+    await startMenu(ctx, sink);
+
+    const metas = await store.list();
+    assert.equal(metas.length, 1, 'one conversation should be created');
+    assert.equal(metas[0]?.workspaceRoot, normalizeTestPath(repoRoot), 'Enter should create with the current resolved root');
+    assert.ok(sink.buf.includes('New Conversation'), 'new conversation screen should render before chat');
+  });
+
+  it('[n] then 2 opens the picker and selection creates with the chosen workspace root', async () => {
+    const home = join(tmpdir(), `slice8-picker-${randomUUID()}`);
+    const repoRoot = join(home, 'repo-root');
+    const launchCwd = join(repoRoot, 'packages', 'app');
+    const pickedRoot = join(home, 'picked-workspace');
+    const otherRoot = join(home, 'other-workspace');
+    await fs.promises.mkdir(launchCwd, { recursive: true });
+    await fs.promises.mkdir(pickedRoot, { recursive: true });
+    await fs.promises.mkdir(otherRoot, { recursive: true });
+
+    const clock = makeFakeClock();
+    const initialMetas: ConversationMeta[] = [
+      {
+        id: 'older',
+        title: 'older',
+        createdAt: '2024-01-01T00:00:00.000Z',
+        updatedAt: '2024-01-01T00:00:00.000Z',
+        messageCount: 1,
+        pinned: false,
+        category: null,
+        workspaceRoot: otherRoot,
+      },
+      {
+        id: 'recent',
+        title: 'recent',
+        createdAt: '2024-01-02T00:00:00.000Z',
+        updatedAt: '2024-01-02T00:00:00.000Z',
+        messageCount: 1,
+        pinned: false,
+        category: null,
+        workspaceRoot: pickedRoot,
+      },
+    ];
+    const store = makeStore(clock, initialMetas);
+    const sink = makeSink();
+    const ctx = makeCtx(
+      {
+        readLine: makeScriptedReader(['n', '2', '2', '/exit', 'q']),
+        repoScanPort: {
+          gitToplevel: async (cwd) => cwd === launchCwd ? repoRoot : null,
+        },
+      },
+      clock,
+      store,
+      undefined,
+      launchCwd,
+    );
+
+    await startMenu(ctx, sink);
+
+    const created = (await store.list()).find((meta) => meta.id === 'fake-1');
+    assert.ok(created !== undefined, 'the new conversation should be created');
+    assert.equal(created?.workspaceRoot, normalizeTestPath(pickedRoot), 'picker selection should stamp the chosen workspace root');
+    assert.ok(sink.buf.includes('Pick Workspace'), 'workspace picker should render from the new conversation screen');
+  });
+
+  it('left-arrow from the New Conversation screen returns home without requesting exit', async () => {
+    const home = join(tmpdir(), `slice8-back-${randomUUID()}`);
+    const repoRoot = join(home, 'repo-root');
+    const launchCwd = join(repoRoot, 'packages', 'app');
+    await fs.promises.mkdir(launchCwd, { recursive: true });
+
+    const clock = makeFakeClock();
+    const store = makeStore(clock);
+    const sink = makeSink();
+    const ctx = makeCtx(
+      {
+        readLine: makeScriptedReader([]),
+        repoScanPort: {
+          gitToplevel: async (cwd) => cwd === launchCwd ? repoRoot : null,
+        },
+      },
+      clock,
+      store,
+      undefined,
+      launchCwd,
+    );
+
+    const result = await runNewConversationScreen(
+      ctx,
+      { config: ctx.config, env: ctx.env },
+      sink,
+      makeScriptedReader([]),
+      async () => NAV_LEFT,
+      () => {},
+    );
+
+    assert.deepEqual(result, { kind: 'back' });
+    assert.equal(getMenuStack().depth, 1, 'back should pop back to the root menu depth');
+    assert.equal(getMenuStack().exitRequested, false, 'back should not request app exit');
+  });
+
+  it('[n] then ESC exits without creating a conversation', async () => {
+    const home = join(tmpdir(), `slice8-esc-${randomUUID()}`);
+    const repoRoot = join(home, 'repo-root');
+    const launchCwd = join(repoRoot, 'packages', 'app');
+    await fs.promises.mkdir(launchCwd, { recursive: true });
+
+    const clock = makeFakeClock();
+    const store = makeStore(clock);
+    const sink = makeSink();
+    const ctx = makeCtx(
+      {
+        readLine: makeScriptedReader(['n', '\x1b']),
+        repoScanPort: {
+          gitToplevel: async (cwd) => cwd === launchCwd ? repoRoot : null,
+        },
+      },
+      clock,
+      store,
+      undefined,
+      launchCwd,
+    );
+
+    await startMenu(ctx, sink);
+
+    assert.equal((await store.list()).length, 0, 'ESC should exit before a conversation is created');
+    assert.ok(sink.buf.includes('New Conversation'), 'new conversation screen should render before exit');
+  });
+
+  it('ESC from the New Conversation screen requests app exit', async () => {
+    const home = join(tmpdir(), `slice8-direct-esc-${randomUUID()}`);
+    const repoRoot = join(home, 'repo-root');
+    const launchCwd = join(repoRoot, 'packages', 'app');
+    await fs.promises.mkdir(launchCwd, { recursive: true });
+
+    const clock = makeFakeClock();
+    const store = makeStore(clock);
+    const ctx = makeCtx(
+      {
+        readLine: makeScriptedReader([]),
+        repoScanPort: {
+          gitToplevel: async (cwd) => cwd === launchCwd ? repoRoot : null,
+        },
+      },
+      clock,
+      store,
+      undefined,
+      launchCwd,
+    );
+
+    const result = await runNewConversationScreen(
+      ctx,
+      { config: ctx.config, env: ctx.env },
+      makeSink(),
+      makeScriptedReader([]),
+      async () => NAV_ESC,
+      () => {},
+    );
+
+    assert.deepEqual(result, { kind: 'exit' });
+    assert.equal(getMenuStack().exitRequested, true, 'ESC should request app exit');
+  });
 });
 
 describe('startMenu — /goal ask_user stops autonomous loop and surfaces selector', () => {
@@ -1166,6 +1383,7 @@ describe('startMenu — /goal ask_user stops autonomous loop and surfaces select
         providers: { claude: provider },
         readLine: makeScriptedReader([
           'n',
+          '',
           '/goal choose the database',
           '1',
           '/exit',
@@ -1253,6 +1471,7 @@ describe('startMenu — /goal work contract threading', () => {
         providers: { claude: provider },
         readLine: makeScriptedReader([
           'n',
+          '',
           '/goal ship the widget',
           '/exit',
           'q',
@@ -1343,6 +1562,7 @@ describe('startMenu — /goal PROPOSES the plan before running it (manager cycle
         providers: { claude: provider },
         readLine: makeScriptedReader([
           'n',
+          '',
           '/goal ship the auth system',
           '3', // the one-tap confirm: "Edit / not yet" → park, do not run
           '/exit',
@@ -1418,7 +1638,7 @@ describe('startMenu — /goal PROPOSES the plan before running it (manager cycle
       {
         config: { onboarded: true, setAsDefault: false, smartRoute: false, experimentalManager: true },
         providers: { claude: provider },
-        readLine: makeScriptedReader(['n', '/plan build a hello web app', '/exit', 'q']),
+        readLine: makeScriptedReader(['n', '', '/plan build a hello web app', '/exit', 'q']),
         cwd: dir,
       },
       clock,
@@ -1509,6 +1729,7 @@ describe('startMenu — /goal PROPOSES the plan before running it (manager cycle
         // No confirm keypress in the script — autonomous never asks for one.
         readLine: makeScriptedReader([
           'n',
+          '',
           '/goal ship the auth system',
           '/exit',
           'q',
@@ -1597,6 +1818,7 @@ describe('startMenu — /goal PROPOSES the plan before running it (manager cycle
         providers: { claude: provider },
         readLine: makeScriptedReader([
           'n',
+          '',
           '/goal ship the auth system',
           '1', // the one-tap confirm: "Start all" → run the WHOLE plan
           '/exit',
@@ -1711,7 +1933,7 @@ describe('startMenu — manager cycle item-parking on a fork (Phase D5)', () => 
             oversight: 'autonomous',
           },
           providers: { claude: provider },
-          readLine: makeScriptedReader(['n', '/goal ship the data layer', '/exit', 'q']),
+          readLine: makeScriptedReader(['n', '', '/goal ship the data layer', '/exit', 'q']),
         },
         clock,
         store,
@@ -1776,7 +1998,7 @@ describe('startMenu — manager cycle item-parking on a fork (Phase D5)', () => 
             oversight: 'autonomous',
           },
           providers: { claude: provider },
-          readLine: makeScriptedReader(['n', '/goal ship the data layer', '1', '/exit', 'q']),
+          readLine: makeScriptedReader(['n', '', '/goal ship the data layer', '1', '/exit', 'q']),
         },
         clock,
         store,
@@ -1884,7 +2106,7 @@ describe('startMenu — scheduler cross-goal cap: single goal ⇒ cap 1, one pha
             oversight: 'autonomous',
           },
           providers: { claude: provider },
-          readLine: makeScriptedReader(['n', '/goal ship the whole thing', '/exit', 'q']),
+          readLine: makeScriptedReader(['n', '', '/goal ship the whole thing', '/exit', 'q']),
         },
         clock,
         store,
@@ -1957,6 +2179,7 @@ describe('startMenu — auto-goal smart autonomy', () => {
         providers: { claude: provider },
         readLine: makeScriptedReader([
           'n',
+          '',
           'review and design the architecture',
           '/exit',
           'q',
@@ -2037,6 +2260,7 @@ describe('startMenu — auto-goal smart autonomy', () => {
           providers: { claude: provider },
           readLine: makeScriptedReader([
             'n',
+            '',
             'implement the new formatter module',
             { value: '/exit', untilSinkContains: '※ Staged 1 goal on the board', sink: () => sink.buf },
             'q',
@@ -2117,6 +2341,7 @@ describe('startMenu — auto-goal smart autonomy', () => {
           providers: { claude: provider },
           readLine: makeScriptedReader([
             'n',
+            '',
             'implement the settings module in three steps',
             { value: '/exit', untilSinkContains: '※ Staged 1 goal on the board', sink: () => sink.buf },
             'q',
@@ -2189,6 +2414,7 @@ describe('startMenu — auto-goal smart autonomy', () => {
           providers: { claude: provider },
           readLine: makeScriptedReader([
             'n',
+            '',
             "from now on just go when you're confident, and implement the settings module in three steps",
             { value: '/exit', untilSinkContains: '※ Staged 1 goal on the board', sink: () => sink.buf },
             'q',
@@ -2255,6 +2481,7 @@ describe('startMenu — auto-goal smart autonomy', () => {
           providers: { claude: provider },
           readLine: makeScriptedReader([
             'n',
+            '',
             'always relay the plan first, and implement the parser module',
             { value: '/exit', untilSinkContains: '※ Staged 1 goal on the board', sink: () => sink.buf },
             'q',
@@ -2322,6 +2549,7 @@ describe('startMenu — auto-goal smart autonomy', () => {
           providers: { claude: provider },
           readLine: makeScriptedReader([
             'n',
+            '',
             'implement the settings module',
             { value: '/exit', untilSinkContains: '※ Staged 1 goal on the board', sink: () => sink.buf },
             'q',
@@ -2389,7 +2617,7 @@ describe('startMenu — auto-goal smart autonomy', () => {
       const ctx = makeCtx(
         {
           providers: { claude: provider },
-          readLine: makeScriptedReader(['n', 'review and design the migration plan', '/exit', 'q']),
+          readLine: makeScriptedReader(['n', '', 'review and design the migration plan', '/exit', 'q']),
         },
         clock,
       );
@@ -2429,7 +2657,7 @@ describe('startMenu — auto-goal smart autonomy', () => {
       const ctx = makeCtx(
         {
           providers: { claude: provider },
-          readLine: makeScriptedReader(['n', 'how does the router work?', '/exit', 'q']),
+          readLine: makeScriptedReader(['n', '', 'how does the router work?', '/exit', 'q']),
         },
         clock,
       );
@@ -2499,6 +2727,7 @@ describe('startMenu — auto-goal smart autonomy', () => {
           providers: { claude: provider },
           readLine: makeScriptedReader([
             'n',
+            '',
             'implement and wire auth',
             { value: '/exit', delayMs: 50 },
             'q',
@@ -2552,7 +2781,7 @@ describe('startMenu — auto-goal smart autonomy', () => {
             smartRoute: false,
           },
           providers: { claude: provider },
-          readLine: makeScriptedReader(['n', 'please refactor auth', '/exit', 'q']),
+          readLine: makeScriptedReader(['n', '', 'please refactor auth', '/exit', 'q']),
         },
         clock,
       );
@@ -2588,7 +2817,7 @@ describe('startMenu — auto-goal smart autonomy', () => {
           mode: 'quality-first', intensity: 5,
         },
         providers: { claude: provider },
-        readLine: makeScriptedReader(['n', 'review and design the architecture', '/exit', 'q']),
+        readLine: makeScriptedReader(['n', '', 'review and design the architecture', '/exit', 'q']),
       }, undefined, undefined, undefined, dir);
 
       await startMenu(ctx, sink);
@@ -2658,7 +2887,7 @@ describe('startMenu — auto-goal smart autonomy', () => {
         },
         providers: { claude: provider, codex },
         env: twoProviderEnv,
-        readLine: makeScriptedReader(['n', 'build a birdhouse', '/exit', 'q']),
+        readLine: makeScriptedReader(['n', '', 'build a birdhouse', '/exit', 'q']),
       }, undefined, undefined, undefined, dir);
 
       await startMenu(ctx, sink);
@@ -2751,6 +2980,7 @@ describe('startMenu — auto-goal smart autonomy', () => {
         },
         readLine: makeScriptedReader([
           'n',
+          '',
           'review and design production billing authentication architecture without data loss',
           { value: '/exit', delayMs: 100 },
           'q',
@@ -2811,6 +3041,7 @@ describe('startMenu — auto-goal smart autonomy', () => {
         },
         readLine: makeScriptedReader([
           'n',
+          '',
           'review and design production billing authentication architecture without data loss',
           { value: '/exit', delayMs: 75 },
           'q',
@@ -2885,6 +3116,7 @@ describe('startMenu — auto-goal smart autonomy', () => {
         },
         readLine: makeScriptedReader([
           'n',
+          '',
           'review and design production billing authentication architecture without data loss',
           { value: '/exit', delayMs: 75 },
           'q',
@@ -2950,6 +3182,7 @@ describe('startMenu — auto-goal smart autonomy', () => {
         },
         readLine: makeScriptedReader([
           'n',
+          '',
           'review and design production billing authentication architecture without data loss',
           { value: '/exit', delayMs: 75 },
           'q',
@@ -3004,6 +3237,7 @@ describe('startMenu — auto-goal smart autonomy', () => {
         providers: { claude: provider },
         readLine: makeScriptedReader([
           'n',
+          '',
           'review and design billing authentication architecture',
           { value: '/exit', delayMs: 75 },
           'q',
@@ -3060,6 +3294,7 @@ describe('startMenu — auto-goal smart autonomy', () => {
         providers: { claude: provider },
         readLine: makeScriptedReader([
           'n',
+          '',
           'review and design the architecture',
           { value: 'review and design the second architecture slice', delayMs: 75 },
           { value: '/exit', delayMs: 75 },
@@ -3109,6 +3344,7 @@ describe('startMenu — auto-goal smart autonomy', () => {
         providers: { claude: provider },
         readLine: makeScriptedReader([
           'n',
+          '',
           'review and design billing authentication architecture',
           { value: '/exit', delayMs: 75 },
           'q',
@@ -3161,6 +3397,7 @@ describe('startMenu — auto-goal smart autonomy', () => {
         providers: { claude: provider },
         readLine: makeScriptedReader([
           'n',
+          '',
           'review and design billing authentication architecture',
           { value: '/exit', delayMs: 75 },
           'q',
@@ -3345,6 +3582,7 @@ describe('startMenu — auto-goal smart autonomy', () => {
         providers: { claude: provider },
         readLine: makeScriptedReader([
           'n',
+          '',
           rambling,
           '/exit',
           'q',
@@ -3436,6 +3674,7 @@ describe('startMenu — auto-goal smart autonomy', () => {
           // preflight passes are eligible off-path.
           readLine: makeScriptedReader([
             'n',
+            '',
             'the dashboard feels off, and the numbers do not line up, then it stalls',
             '/exit',
             'q',
@@ -3522,6 +3761,7 @@ describe('startMenu — auto-goal smart autonomy', () => {
           // fires and its frame's risk hints are eligible for combineRisk.
           readLine: makeScriptedReader([
             'n',
+            '',
             'add a logging line to the helper, and also tidy up the surrounding comments and naming a bit',
             '/exit',
             'q',
@@ -3633,6 +3873,7 @@ describe('startMenu — auto-goal smart autonomy', () => {
           cwd,
           readLine: makeScriptedReader([
             'n',
+            '',
             'investigate how the build scripts in package.json work',
             '/exit',
             'q',
@@ -3742,6 +3983,7 @@ describe('startMenu — auto-goal smart autonomy', () => {
           cwd,
           readLine: makeScriptedReader([
             'n',
+            '',
             'investigate how the build scripts in package.json work',
             '/exit',
             'q',
@@ -3824,6 +4066,7 @@ describe('startMenu — auto-goal smart autonomy', () => {
         providers: { claude: provider },
         readLine: makeScriptedReader([
           'n',
+          '',
           'frobnicate the wotsit',
           '/exit',
           'q',
@@ -3908,6 +4151,7 @@ describe('startMenu — auto-goal smart autonomy', () => {
         providers: { claude: provider },
         readLine: makeScriptedReader([
           'n',
+          '',
           'review and design the architecture',
           '/exit',
           'q',
@@ -3951,7 +4195,7 @@ describe('startMenu — auto-goal smart autonomy', () => {
         const ctx = makeCtx({
           config: { onboarded: true, setAsDefault: false, smartRoute: false },
           providers: { claude: provider },
-          readLine: makeScriptedReader(['n', 'build a birdhouse', { value: '/exit', delayMs: 75 }, 'q']),
+          readLine: makeScriptedReader(['n', '', 'build a birdhouse', { value: '/exit', delayMs: 75 }, 'q']),
         }, undefined, undefined, undefined, dir);
         await startMenu(ctx, sink);
         await waitForGoalCount(ctx.clock, 1);
@@ -3985,7 +4229,7 @@ describe('startMenu — auto-goal smart autonomy', () => {
       const ctx = makeCtx({
         config: { onboarded: true, setAsDefault: false, smartRoute: false },
         providers: { claude: provider },
-        readLine: makeScriptedReader(['n', 'build a birdhouse', { value: '/exit', delayMs: 75 }, 'q']),
+        readLine: makeScriptedReader(['n', '', 'build a birdhouse', { value: '/exit', delayMs: 75 }, 'q']),
       }, undefined, undefined, undefined, dir);
       await startMenu(ctx, sink);
       await waitForGoalCount(ctx.clock, 1);
@@ -4026,7 +4270,7 @@ describe('startMenu — auto-goal smart autonomy', () => {
       const ctx = makeCtx({
         config: { onboarded: true, setAsDefault: false, smartRoute: false, mode: 'quality-first', intensity: 5 },
         providers: { claude: provider },
-        readLine: makeScriptedReader(['n', 'review and design billing authentication architecture', { value: '/exit', delayMs: 75 }, 'q']),
+        readLine: makeScriptedReader(['n', '', 'review and design billing authentication architecture', { value: '/exit', delayMs: 75 }, 'q']),
       }, undefined, undefined, undefined, dir);
       await startMenu(ctx, sink);
       await waitForGoalCount(ctx.clock, 1);
@@ -8220,7 +8464,8 @@ describe('startMenu — chat loop inline re-login on auth failure', () => {
       {
         providers: { claude: authFailProvider },
         readLine: makeScriptedReader([
-          'n',          // new conversation → opens chat directly
+          'n',          // new conversation
+          '',           // Enter = [1] Current
           'do work',    // first message = task → auth fails
           'n',          // no to re-login prompt (auth fail on retry too, so just skip)
           '/exit',      // exit chat
@@ -8258,7 +8503,7 @@ describe('startMenu — chat loop inline re-login on auth failure', () => {
       {
         providers: { claude: authFailProvider },
         readLine: makeScriptedReader([
-          'n', 'do work', 'y', '/exit', 'q',
+          'n', '', 'do work', 'y', '/exit', 'q',
         ]),
         login: async (_out, providerArg) => {
           loginCalls.push(providerArg ?? 'unknown');
@@ -8304,7 +8549,7 @@ describe('startMenu — chat loop inline re-login on auth failure', () => {
       {
         providers: { claude: switchingProvider },
         readLine: makeScriptedReader([
-          'n', 'do work', 'y', '/exit', 'q',
+          'n', '', 'do work', 'y', '/exit', 'q',
         ]),
         login: async () => FAKE_LOGIN_RESULT,
         detectEnvironment: async () => FAKE_ENV,
@@ -8336,7 +8581,7 @@ describe('startMenu — chat loop inline re-login on auth failure', () => {
       {
         providers: { claude: authFailProvider },
         readLine: makeScriptedReader([
-          'n', 'do work', 'n', '/exit', 'q',
+          'n', '', 'do work', 'n', '/exit', 'q',
         ]),
         login: async () => {
           loginCallCount++;
@@ -8364,7 +8609,7 @@ describe('startMenu — chat loop inline re-login on auth failure', () => {
       {
         providers: { claude: authFailProvider },
         readLine: makeScriptedReader([
-          'n', 'do work', 'n', '/exit', 'q',
+          'n', '', 'do work', 'n', '/exit', 'q',
         ]),
         login: async () => FAKE_LOGIN_RESULT,
         detectEnvironment: async () => FAKE_ENV,
@@ -8400,7 +8645,7 @@ describe('startMenu — chat loop inline re-login on auth failure', () => {
     const ctx = makeCtx(
       {
         providers: { claude: authFailProvider },
-        readLine: makeScriptedReader(['n', 'do work', 'y', '/exit', 'q']),
+        readLine: makeScriptedReader(['n', '', 'do work', 'y', '/exit', 'q']),
         login: async () => {
           loginSeamCalled = true;
           return FAKE_LOGIN_RESULT;
@@ -8520,7 +8765,8 @@ describe('startMenu — chat loop prompt is a clean caret', () => {
     const ctx = makeCtx(
       {
         readLine: makeScriptedReader([
-          'n',       // new conversation → opens chat directly
+          'n',       // new conversation
+          '',        // Enter = [1] Current
           'My task', // first message (also derives the title)
           '/exit',   // exit chat loop
           'q',       // quit menu
@@ -8643,6 +8889,7 @@ describe('startMenu — no-provider gate in chat loop', () => {
         providers: { claude: makeFakeProvider() },
         readLine: makeScriptedReader([
           'n',        // new conversation → auth prompt first
+          '',         // Enter = [1] Current
           'do work',  // proceeds into chat after re-detect
           '/exit',    // exit chat
           'q',        // quit
@@ -8684,6 +8931,7 @@ describe('startMenu — no-provider gate in chat loop', () => {
         providers: {},
         readLine: makeScriptedReader([
           'n',
+          '',
           'q',
         ]),
       },
@@ -8709,7 +8957,8 @@ describe('startMenu — no-provider gate in chat loop', () => {
     const ctx = makeCtx(
       {
         readLine: makeScriptedReader([
-          'n',           // new conversation → opens chat directly
+          'n',           // new conversation
+          '',            // Enter = [1] Current
           'do work',     // first message = task — should be dispatched (claude is authed)
           '/exit',       // exit chat
           'q',           // quit
@@ -8828,6 +9077,7 @@ describe('startMenu — no-provider gate in chat loop', () => {
         providers: {},
         readLine: makeScriptedReader([
           'n',
+          '',
           'do work',
           '/exit',
           'q',
@@ -8909,7 +9159,8 @@ describe('startMenu — inline re-login uses refreshed auth (stale-deps fix)', (
       {
         providers: { claude: makeAuthThenOkProvider('claude') },
         readLine: makeScriptedReader([
-          'n',        // new conversation → opens chat directly
+          'n',        // new conversation
+          '',         // Enter = [1] Current
           'do work',  // first message = task → auth fail → re-login prompt → y
           'y',        // yes to re-login
           '/exit',    // exit
@@ -8946,7 +9197,7 @@ describe('startMenu — inline re-login uses refreshed auth (stale-deps fix)', (
       {
         providers: { claude: makeAuthThenOkProvider('claude') },
         readLine: makeScriptedReader([
-          'n', 'do work', 'n', '/exit', 'q',
+          'n', '', 'do work', 'n', '/exit', 'q',
         ]),
         login: async () => FAKE_LOGIN_RESULT,
         detectEnvironment: async () => FAKE_ENV,
@@ -10034,6 +10285,7 @@ describe('startMenu — goals: /todo parks + Parked section renders', () => {
         {
           readLine: makeScriptedReader([
             'n',
+            '',
             '/todo redesign the activity feed',
             '/exit',
             'q', // back at the menu, the Parked section now renders
@@ -10102,6 +10354,7 @@ describe('startMenu — goals: /goals go promotes THROUGH runGoalLoop (the brain
           providers: { claude: provider },
           readLine: makeScriptedReader([
             'n',
+            '',
             '/todo ship the login page',
             '/goals go 1', // PROMOTE → runGoalLoop → orchestrate → provider
             '/exit',
@@ -10159,7 +10412,7 @@ describe('startMenu — goals: /goals cancel terminates the tree and refreshes t
           setAsDefault: false,
           smartRoute: false,
         },
-        readLine: makeScriptedReader(['n', '/goals cancel 1', '/exit', 'q']),
+        readLine: makeScriptedReader(['n', '', '/goals cancel 1', '/exit', 'q']),
       }, clock);
 
       await startMenu(ctx, sink);
@@ -10570,7 +10823,7 @@ describe('P0-03e — New login success plus fresh auth enters chat', () => {
     const ctx = makeCtx(
       {
         env: unauthedEnv,
-        readLine: makeScriptedReader(['n', '/exit', 'q']),
+        readLine: makeScriptedReader(['n', '', '/exit', 'q']),
         login: async () => FAKE_LOGIN_RESULT,
         detectEnvironment: async () => {
           detectCalls++;
@@ -10597,7 +10850,7 @@ describe('P0-03e — New typed success plus stale refresh returns root', () => {
     const ctx = makeCtx(
       {
         env: staleEnv,
-        readLine: makeScriptedReader(['n', 'q']),
+        readLine: makeScriptedReader(['n', '', 'q']),
         login: async () => FAKE_LOGIN_RESULT,
         detectEnvironment: async () => staleEnv,
       },
@@ -10627,7 +10880,7 @@ describe('P0-03e — inline re-login failed refresh does not retry', () => {
       {
         env: FAKE_ENV,
         providers: { claude: authFailP },
-        readLine: makeScriptedReader(['n', 'fix auth bug', '/exit', 'q']),
+        readLine: makeScriptedReader(['n', '', 'fix auth bug', '/exit', 'q']),
         login: async () => FAKE_LOGIN_RESULT,
         detectEnvironment: async () => ({ ...FAKE_ENV, claude: { ...FAKE_ENV.claude, authenticated: false } }),
       },
@@ -10656,7 +10909,7 @@ describe('P0-03e — inline re-login authenticated result plus fresh refresh ret
       {
         env: FAKE_ENV,
         providers: { claude: authFailP },
-        readLine: makeScriptedReader(['n', 'fix auth bug', 'y', '/exit', 'q']),
+        readLine: makeScriptedReader(['n', '', 'fix auth bug', 'y', '/exit', 'q']),
         login: async (_out, providerArg) => {
           loginCalls.push(providerArg ?? 'unknown');
           return FAKE_LOGIN_RESULT;
