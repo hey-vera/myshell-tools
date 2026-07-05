@@ -117,6 +117,48 @@ describe('shell passthrough helper', () => {
     assert.ok(sink.buf.includes('Shell command not run.'));
   });
 
+  it('denies trailing background syntax when the gate requires foreground execution', async () => {
+    const sink = makeSink();
+    const audit: CommandAuditEvent[] = [];
+    const gateCalls: Array<{ command: string; requestedBackground: boolean }> = [];
+    let confirmCalls = 0;
+    let runnerCalls = 0;
+    const gate: CommandGatePort = {
+      gate(command, opts) {
+        gateCalls.push({ command, requestedBackground: opts?.requestedBackground === true });
+        return destructiveDecision;
+      },
+      async confirm() {
+        confirmCalls += 1;
+        return true;
+      },
+      record(event) {
+        audit.push(event);
+      },
+    };
+
+    await runShellPassthrough(
+      'rm -rf build &',
+      '/repo',
+      sink,
+      gate,
+      {
+        async run() {
+          runnerCalls += 1;
+          return { exitCode: 0 };
+        },
+      },
+    );
+
+    assert.deepEqual(gateCalls, [{ command: 'rm -rf build &', requestedBackground: true }]);
+    assert.equal(confirmCalls, 0);
+    assert.equal(runnerCalls, 0);
+    assert.equal(audit.length, 1);
+    assert.equal(audit[0]?.outcome, 'denied');
+    assert.equal(audit[0]?.confirmed, null);
+    assert.ok(sink.buf.includes('Background execution is not allowed for this command.'));
+  });
+
   it('streams interleaved output chunks and returns the exit code', async () => {
     const sink = makeSink();
     const all = new EventEmitter();

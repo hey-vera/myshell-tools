@@ -145,3 +145,49 @@ Result: only the allowed Slice 5 files plus this receipt are present in the work
 - Streaming model: the production runner uses captured output forwarded through `OutputSink` chunk-by-chunk via `execaCommand(..., { shell: true, all: true })` instead of `stdio: 'inherit'`, so the chat surface keeps ownership of the terminal exactly as the spec required.
 - Persistence: `!` commands and their output are intentionally not appended to the conversation/session log. The branch only writes directly to `out`.
 - Verification environment: the full `test/unit` + `test/arch` run is not clean in this sandbox because multiple existing tests rely on child-process spawning from inside Node (`spawn`, `spawnSync`, `execFileSync('git', ...)`), which fails here with `EPERM`. The new slice-specific tests pass under the same redirected-home Vitest invocation.
+
+## Follow-up: menu-s5-security-fixes
+
+### Finding 1 — fallback `CommandGatePort` audit drops
+
+- `src/interface/menu.ts`: `runChatLoop()` now builds a real fallback `CommandGatePort` once per chat loop when `ctx.commandGate` is absent, using the same `createCommandAuditRecorder({ cwd: ctx.cwd })` JSONL recorder that `startMenu()` already wires into production.
+- Why: high-risk commands such as `!rm -rf build` still go through the fallback path for non-`startMenu()` callers, so `mustRecord: true` can no longer silently no-op.
+- Regression coverage: `test/unit/menu-flow.test.ts` now verifies a destructive fallback-path command is confirmed, runs, and writes a real audit event with `commandTier: "destructive-filesystem"` and `outcome: "ran"`.
+
+### Finding 2 — `forbidBackground` enforcement
+
+- `src/interface/shell-passthrough.ts`: `runShellPassthrough()` now detects a trailing unquoted `&`, passes `requestedBackground` into `commandGate.gate(...)`, and refuses execution when the gate decision also sets `forbidBackground: true`.
+- Why: destructive commands can no longer detach from the foreground lifecycle with `shell: true`; the command is denied before confirmation/runner execution and a denied audit event is recorded.
+- Regression coverage: `test/unit/shell-passthrough.test.ts` now verifies `rm -rf build &` is denied, never reaches the runner, skips confirmation, and records a denied audit row.
+
+### Verification tails
+
+- `npm run typecheck`: pass.
+
+```text
+> myshell-tools@3.162.0 typecheck
+> tsc --noEmit
+```
+
+- `npm run lint`: pass with the repo's existing warning-only baseline (`0 errors, 3 warnings` in `test/integration/p0-pty-benchmark.test.ts`).
+
+```text
+> myshell-tools@3.162.0 lint
+> eslint src test
+
+✖ 3 problems (0 errors, 3 warnings)
+```
+
+- Targeted regressions: pass (`2 files, 11 passed, 368 skipped`).
+
+```text
+Test Files  2 passed (2)
+     Tests  11 passed | 368 skipped (379)
+```
+
+- Full `test/unit` + `test/arch`: not clean in this sandbox; the redirected-home run finished at `8240 passed, 22 failed, 14 skipped` with the same pre-existing spawn/git-sensitive failures already seen on this branch (`spawn EPERM`, `spawnSync git EPERM`, plus adapter/repo-scan/worktree failures).
+
+```text
+Test Files  8 failed | 248 passed | 1 skipped (257)
+     Tests  22 failed | 8240 passed | 14 skipped (8276)
+```

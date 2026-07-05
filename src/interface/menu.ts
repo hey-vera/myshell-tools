@@ -707,6 +707,17 @@ export async function runChatLoop(
   const effectiveMode: Mode = convExplicitMode
     ? (levelToMode(convMeta.mode) ?? resolveAutoMode(mutableCtx.env))
     : (mutableCtx.config.mode ?? 'balanced');
+  const shellCommandGate: CommandGatePort = ctx.commandGate ?? (() => {
+    const commandAudit = createCommandAuditRecorder({ cwd: ctx.cwd });
+    return {
+      gate: gateCommand,
+      confirm: async (message: string): Promise<boolean> => {
+        out.write(`\n${message}\nRun this command? ${yesNoHint('no', out.color)} `);
+        return confirm(false, { requireExplicit: true });
+      },
+      record: (event) => commandAudit.record(event),
+    };
+  })();
 
   // -------------------------------------------------------------------------
   // RECAP (Phase 7, docs/recap-feature-5.5.md) — a ※ orientation line on resume
@@ -1811,18 +1822,11 @@ export async function runChatLoop(
         );
         return 'continue';
       }
-      const commandGate = ctx.commandGate ?? {
-        gate: gateCommand,
-        confirm: async (message: string): Promise<boolean> => {
-          out.write(`\n${message}\nRun this command? ${yesNoHint('no', out.color)} `);
-          return confirm(false, { requireExplicit: true });
-        },
-      };
       await runShellPassthrough(
         command,
         ctx.cwd,
         out,
-        commandGate,
+        shellCommandGate,
         ctx.shellRunner ?? createNodeShellRunner(),
       );
       return 'continue';

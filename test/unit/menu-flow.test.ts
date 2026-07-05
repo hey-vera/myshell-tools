@@ -41,7 +41,7 @@ import type { MenuContext } from '../../src/interface/menu.ts';
 import type { UpdateCheckResult } from '../../src/infra/update-check.ts';
 import type { OutputSink } from '../../src/interface/render.ts';
 import type { ConversationMeta, ConversationStore } from '../../src/infra/conversation-store.ts';
-import type { CommandGatePort } from '../../src/core/command-gate.ts';
+import type { CommandAuditEvent, CommandGatePort } from '../../src/core/command-gate.ts';
 import type {
   Clock,
   LedgerWriter,
@@ -54,7 +54,7 @@ import type { EnvironmentStatus } from '../../src/providers/detect.ts';
 import type { LoginResult } from '../../src/commands/login.js';
 import type { AppConfig } from '../../src/infra/config.ts';
 import { loadConfig, saveConfig } from '../../src/infra/config.ts';
-import { defaultStateLayout } from '../../src/infra/state-layout.js';
+import { defaultStateLayout, projectStateDirs } from '../../src/infra/state-layout.js';
 import { createFileGoalStore } from '../../src/infra/goal-store.ts';
 import { CLARIFY_PREFIX } from '../../src/core/goal-manager.ts';
 import { createLedger } from '../../src/infra/ledger.ts';
@@ -10280,6 +10280,58 @@ describe('runChatLoop — ! shell passthrough', () => {
     assert.deepEqual(shellCalls, [{ command: 'echo hi', cwd: ctx.cwd }]);
     assert.ok(sink.buf.includes('shell ok'));
     assert.deepEqual(await store.load(meta.id), [], 'shell passthrough is not persisted to the chat log');
+  });
+
+  it('records high-risk commands on the fallback gate path when no commandGate is injected', async () => {
+    const home = join(tmpdir(), `menu-flow-home-${randomUUID()}`);
+    await withStateHome(home, async () => {
+      const clock = makeFakeClock();
+      const store = makeStore(clock);
+      const sink = makeSink();
+      const cwd = join(home, 'repo');
+      await fs.promises.mkdir(cwd, { recursive: true });
+      const meta = await store.create('fallback-audit');
+      let shellRuns = 0;
+      const ctx = makeCtx({
+        shellRunner: {
+          async run(command, runCwd, out) {
+            shellRuns += 1;
+            assert.equal(command, 'rm -rf build');
+            assert.equal(runCwd, cwd);
+            out.write('shell ok\n');
+            return { exitCode: 0 };
+          },
+        },
+        readLine: makeScriptedReader(['!rm -rf build', '/exit']),
+      }, clock, store, undefined, cwd);
+
+      await runChatLoop(
+        ctx,
+        { config: ctx.config, env: ctx.env },
+        meta.id,
+        sink,
+        makeScriptedReader(['!rm -rf build', '/exit']),
+        async () => FAKE_LOGIN_RESULT,
+        async () => ctx.env,
+        async () => true,
+      );
+
+      assert.equal(shellRuns, 1);
+      const auditFile = projectStateDirs(defaultStateLayout(), cwd).commandAuditFile;
+      const raw = await fs.promises.readFile(auditFile, 'utf8');
+      const events = raw
+        .trim()
+        .split(/\r?\n/)
+        .filter((line) => line.trim().length > 0)
+        .map((line) => JSON.parse(line) as CommandAuditEvent);
+
+      assert.equal(events.length, 1);
+      assert.equal(events[0]?.command, 'rm -rf build');
+      assert.equal(events[0]?.commandTier, 'destructive-filesystem');
+      assert.equal(events[0]?.confirmed, true);
+      assert.equal(events[0]?.outcome, 'ran');
+      assert.equal(events[0]?.cwd, cwd);
+    });
   });
 
   it('does not execute when the command gate denies the command', async () => {

@@ -58,6 +58,51 @@ export function createNodeShellRunner(
   };
 }
 
+function previousNonWhitespaceChar(command: string, start: number): string | null {
+  for (let index = start; index >= 0; index -= 1) {
+    const char = command[index];
+    if (char !== undefined && /\S/.test(char)) return char;
+  }
+  return null;
+}
+
+function requestsTrailingBackground(command: string): boolean {
+  const trimmedEnd = command.search(/\s*$/);
+  const lastIndex = trimmedEnd > 0 ? trimmedEnd - 1 : command.length - 1;
+  if (lastIndex < 0 || command[lastIndex] !== '&') return false;
+
+  let inSingle = false;
+  let inDouble = false;
+  let escaped = false;
+  for (let index = 0; index <= lastIndex; index += 1) {
+    const char = command[index];
+    if (char === undefined) break;
+    if (escaped) {
+      if (index === lastIndex) return false;
+      escaped = false;
+      continue;
+    }
+    if (char === '\\' && !inSingle) {
+      escaped = true;
+      continue;
+    }
+    if (char === '\'' && !inDouble) {
+      inSingle = !inSingle;
+      continue;
+    }
+    if (char === '"' && !inSingle) {
+      inDouble = !inDouble;
+      continue;
+    }
+    if (index === lastIndex) {
+      if (inSingle || inDouble) return false;
+      return previousNonWhitespaceChar(command, lastIndex - 1) !== '&';
+    }
+  }
+
+  return false;
+}
+
 /**
  * Gate + run a `!`-prefixed shell command. Denied commands print a short notice
  * and never execute.
@@ -69,7 +114,14 @@ export async function runShellPassthrough(
   commandGate: CommandGatePort,
   runner: ShellRunnerPort,
 ): Promise<void> {
-  const gate = commandGate.gate(command);
+  const requestedBackground = requestsTrailingBackground(command);
+  const gate = commandGate.gate(command, { requestedBackground });
+  if (requestedBackground && gate.forbidBackground) {
+    out.write(dim('  Background execution is not allowed for this command.\n', out.color));
+    await recordGate(commandGate, cwd, command, gate, null, 'denied');
+    return;
+  }
+
   const confirmed = await confirmGate(commandGate, gate);
   if (!gate.allowed || confirmed === false) {
     out.write(dim('  Shell command not run.\n', out.color));
