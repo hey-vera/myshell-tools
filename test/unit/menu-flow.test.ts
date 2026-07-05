@@ -36,11 +36,12 @@ import { readMenuKey, confirmViaKey, attachChatTurnKeyListener } from '../../src
 import { defaultAliasHint, autoUpdateEnabled } from '../../src/interface/menu-display.ts';
 import { completeSlash, CHAT_SLASH_COMMANDS, classifyCompletion, completeSlashArg, fuzzyRank, expandPathToken, matchPathEntries, completeChat, CHAT_SLASH_ARG_MAP } from '../../src/interface/menu-completion.ts';
 import type { KeypressEvent } from '../../src/interface/menu-key-confirm.ts';
-import type { KeyInputStream } from '../../src/interface/menu-readline.ts';
+import type { KeyInputStream, LineReader } from '../../src/interface/menu-readline.ts';
 import type { MenuContext } from '../../src/interface/menu.ts';
 import type { UpdateCheckResult } from '../../src/infra/update-check.ts';
 import type { OutputSink } from '../../src/interface/render.ts';
 import type { ConversationMeta, ConversationStore } from '../../src/infra/conversation-store.ts';
+import type { CommandAuditEvent, CommandGatePort } from '../../src/core/command-gate.ts';
 import type {
   Clock,
   LedgerWriter,
@@ -53,7 +54,7 @@ import type { EnvironmentStatus } from '../../src/providers/detect.ts';
 import type { LoginResult } from '../../src/commands/login.js';
 import type { AppConfig } from '../../src/infra/config.ts';
 import { loadConfig, saveConfig } from '../../src/infra/config.ts';
-import { defaultStateLayout } from '../../src/infra/state-layout.js';
+import { defaultStateLayout, projectStateDirs } from '../../src/infra/state-layout.js';
 import { createFileGoalStore } from '../../src/infra/goal-store.ts';
 import { CLARIFY_PREFIX } from '../../src/core/goal-manager.ts';
 import { createLedger } from '../../src/infra/ledger.ts';
@@ -717,6 +718,31 @@ function makeCtx(
       updateAvailable: false,
     }),
     ...overrides,
+  };
+}
+
+function makeCapturedLineReader(lines: ReadonlyArray<string>, delayMs = 5): LineReader {
+  let emitted = false;
+  let timers: Array<ReturnType<typeof setTimeout>> = [];
+  return {
+    nextLine: async () => null,
+    suspend() {},
+    resume() {},
+    close() {},
+    beginCapture(onLine: (line: string) => void): () => void {
+      if (!emitted) {
+        emitted = true;
+        timers = lines.map((line, index) => setTimeout(() => onLine(line), index * delayMs));
+      }
+      return () => {
+        for (const timer of timers) clearTimeout(timer);
+        timers = [];
+      };
+    },
+    currentLine: () => '',
+    drainBuffered: () => [],
+    clearBuffered() {},
+    cancelPending() {},
   };
 }
 
@@ -10197,6 +10223,287 @@ describe('runChatLoop — local-only slash commands bypass the no-provider gate 
   it('a model-needing chat turn STILL gates when unauthed', async () => {
     const buf = await driveChat(['please refactor the auth module', '/exit']);
     assert.ok(buf.includes('No signed-in provider'), 'a real chat turn must still hit the gate');
+  });
+});
+
+describe('runChatLoop — ! shell passthrough', () => {
+  const allowGate: CommandGatePort = {
+    gate: () => ({
+      commandTier: 'read-only',
+      allowed: true,
+      requireConfirmation: false,
+      forbidBackground: false,
+      mustRecord: false,
+      rationale: 'ok',
+    }),
+  };
+
+  it('runs the injected shell runner and never calls the model or appends chat entries', async () => {
+    const clock = makeFakeClock();
+    const store = makeStore(clock);
+    const sink = makeSink();
+    const meta = await store.create('shell');
+    const providerCalls: string[] = [];
+    const shellCalls: Array<{ command: string; cwd: string }> = [];
+    const provider: Provider = {
+      ...makeFakeProvider(),
+      async *run(req: ProviderRequest, signal: AbortSignal): AsyncIterable<ProviderEvent> {
+        providerCalls.push(req.prompt);
+        yield* makeFakeProvider().run(req, signal);
+      },
+    };
+    const ctx = makeCtx({
+      providers: { claude: provider },
+      shellRunner: {
+        async run(command, cwd, out) {
+          shellCalls.push({ command, cwd });
+          out.write('shell ok\n');
+          return { exitCode: 0 };
+        },
+      },
+      commandGate: allowGate,
+      readLine: makeScriptedReader(['!echo hi', '/exit']),
+    }, clock, store);
+
+    await runChatLoop(
+      ctx,
+      { config: ctx.config, env: ctx.env },
+      meta.id,
+      sink,
+      makeScriptedReader(['!echo hi', '/exit']),
+      async () => FAKE_LOGIN_RESULT,
+      async () => ctx.env,
+      async () => false,
+    );
+
+    assert.equal(providerCalls.length, 0, 'shell passthrough must not call the model');
+    assert.deepEqual(shellCalls, [{ command: 'echo hi', cwd: ctx.cwd }]);
+    assert.ok(sink.buf.includes('shell ok'));
+    assert.deepEqual(await store.load(meta.id), [], 'shell passthrough is not persisted to the chat log');
+  });
+
+  it('records high-risk commands on the fallback gate path when no commandGate is injected', async () => {
+    const home = join(tmpdir(), `menu-flow-home-${randomUUID()}`);
+    await withStateHome(home, async () => {
+      const clock = makeFakeClock();
+      const store = makeStore(clock);
+      const sink = makeSink();
+      const cwd = join(home, 'repo');
+      await fs.promises.mkdir(cwd, { recursive: true });
+      const meta = await store.create('fallback-audit');
+      let shellRuns = 0;
+      const ctx = makeCtx({
+        shellRunner: {
+          async run(command, runCwd, out) {
+            shellRuns += 1;
+            assert.equal(command, 'rm -rf build');
+            assert.equal(runCwd, cwd);
+            out.write('shell ok\n');
+            return { exitCode: 0 };
+          },
+        },
+        readLine: makeScriptedReader(['!rm -rf build', '/exit']),
+      }, clock, store, undefined, cwd);
+
+      await runChatLoop(
+        ctx,
+        { config: ctx.config, env: ctx.env },
+        meta.id,
+        sink,
+        makeScriptedReader(['!rm -rf build', '/exit']),
+        async () => FAKE_LOGIN_RESULT,
+        async () => ctx.env,
+        async () => true,
+      );
+
+      assert.equal(shellRuns, 1);
+      const auditFile = projectStateDirs(defaultStateLayout(), cwd).commandAuditFile;
+      const raw = await fs.promises.readFile(auditFile, 'utf8');
+      const events = raw
+        .trim()
+        .split(/\r?\n/)
+        .filter((line) => line.trim().length > 0)
+        .map((line) => JSON.parse(line) as CommandAuditEvent);
+
+      assert.equal(events.length, 1);
+      assert.equal(events[0]?.command, 'rm -rf build');
+      assert.equal(events[0]?.commandTier, 'destructive-filesystem');
+      assert.equal(events[0]?.confirmed, true);
+      assert.equal(events[0]?.outcome, 'ran');
+      assert.equal(events[0]?.cwd, cwd);
+    });
+  });
+
+  it('does not execute when the command gate denies the command', async () => {
+    const clock = makeFakeClock();
+    const store = makeStore(clock);
+    const sink = makeSink();
+    const meta = await store.create('denied');
+    let shellRuns = 0;
+    const ctx = makeCtx({
+      shellRunner: {
+        async run() {
+          shellRuns += 1;
+          return { exitCode: 0 };
+        },
+      },
+      commandGate: {
+        gate: () => ({
+          commandTier: 'destructive-filesystem',
+          allowed: false,
+          requireConfirmation: false,
+          forbidBackground: true,
+          mustRecord: true,
+          rationale: 'blocked',
+        }),
+      },
+      readLine: makeScriptedReader(['!rm -rf build', '/exit']),
+    }, clock, store);
+
+    await runChatLoop(
+      ctx,
+      { config: ctx.config, env: ctx.env },
+      meta.id,
+      sink,
+      makeScriptedReader(['!rm -rf build', '/exit']),
+      async () => FAKE_LOGIN_RESULT,
+      async () => ctx.env,
+      async () => false,
+    );
+
+    assert.equal(shellRuns, 0, 'denied commands never reach the shell runner');
+    assert.ok(sink.buf.includes('Shell command not run.'));
+  });
+
+  it('treats a non-leading bang as normal chat input', async () => {
+    const clock = makeFakeClock();
+    const store = makeStore(clock);
+    const sink = makeSink();
+    const meta = await store.create('normal');
+    let shellRuns = 0;
+    let providerRuns = 0;
+    const provider: Provider = {
+      ...makeFakeProvider(),
+      async *run(req: ProviderRequest, signal: AbortSignal): AsyncIterable<ProviderEvent> {
+        providerRuns += 1;
+        yield* makeFakeProvider().run(req, signal);
+      },
+    };
+    const ctx = makeCtx({
+      providers: { claude: provider },
+      shellRunner: {
+        async run() {
+          shellRuns += 1;
+          return { exitCode: 0 };
+        },
+      },
+      commandGate: allowGate,
+      readLine: makeScriptedReader(['hello !cmd', '/exit']),
+    }, clock, store);
+
+    await runChatLoop(
+      ctx,
+      { config: ctx.config, env: ctx.env },
+      meta.id,
+      sink,
+      makeScriptedReader(['hello !cmd', '/exit']),
+      async () => FAKE_LOGIN_RESULT,
+      async () => ctx.env,
+      async () => false,
+    );
+
+    const entries = await store.load(meta.id);
+    const userBodies = entries.filter((entry) => entry.role === 'user').map((entry) => entry.content);
+    assert.equal(shellRuns, 0, 'non-leading bang must not hit the shell path');
+    assert.equal(providerRuns, 1, 'normal chat still reaches the model');
+    assert.deepEqual(userBodies, ['hello !cmd']);
+  });
+
+  it('prints usage for bare bang input and does not execute', async () => {
+    const clock = makeFakeClock();
+    const store = makeStore(clock);
+    const sink = makeSink();
+    const meta = await store.create('usage');
+    let shellRuns = 0;
+    const ctx = makeCtx({
+      shellRunner: {
+        async run() {
+          shellRuns += 1;
+          return { exitCode: 0 };
+        },
+      },
+      commandGate: allowGate,
+      readLine: makeScriptedReader(['!', '!   ', '/exit']),
+    }, clock, store);
+
+    await runChatLoop(
+      ctx,
+      { config: ctx.config, env: ctx.env },
+      meta.id,
+      sink,
+      makeScriptedReader(['!', '!   ', '/exit']),
+      async () => FAKE_LOGIN_RESULT,
+      async () => ctx.env,
+      async () => false,
+    );
+
+    assert.equal(shellRuns, 0);
+    assert.match(sink.buf, /Usage: !<command>/);
+  });
+
+  it('executes only genuinely !-prefixed queued lines during drain', async () => {
+    const clock = makeFakeClock();
+    const store = makeStore(clock);
+    const sink = makeSink();
+    const meta = await store.create('queued');
+    const providerPrompts: string[] = [];
+    const shellCalls: string[] = [];
+    const provider: Provider = {
+      ...makeFakeProvider(),
+      async *run(req: ProviderRequest): AsyncIterable<ProviderEvent> {
+        providerPrompts.push(req.prompt);
+        await delay(25);
+        yield { type: 'text', delta: 'Done.' };
+        yield {
+          type: 'done',
+          text: `Done.\n${CONFIDENCE_ENVELOPE}`,
+          usage: FAKE_USAGE,
+          raw: {},
+        };
+      },
+    };
+    const ctx = makeCtx({
+      providers: { claude: provider },
+      shellRunner: {
+        async run(command, _cwd, out) {
+          shellCalls.push(command);
+          out.write(`shell:${command}\n`);
+          return { exitCode: 0 };
+        },
+      },
+      commandGate: allowGate,
+      readLine: makeScriptedReader(['first question', '/exit']),
+    }, clock, store);
+
+    await runChatLoop(
+      ctx,
+      { config: ctx.config, env: ctx.env },
+      meta.id,
+      sink,
+      makeScriptedReader(['first question', '/exit']),
+      async () => FAKE_LOGIN_RESULT,
+      async () => ctx.env,
+      async () => false,
+      undefined,
+      makeCapturedLineReader(['!echo queued', 'hello !cmd']),
+    );
+
+    const entries = await store.load(meta.id);
+    const userBodies = entries.filter((entry) => entry.role === 'user').map((entry) => entry.content);
+    assert.deepEqual(shellCalls, ['echo queued']);
+    assert.equal(providerPrompts.length, 2, 'initial + normal queued chat turn reach the model');
+    assert.deepEqual(userBodies, ['first question', 'hello !cmd']);
+    assert.ok(sink.buf.includes('shell:echo queued'));
   });
 });
 
