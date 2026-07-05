@@ -83,7 +83,7 @@ Foreground is the default when the orchestrator needs the worker result before t
 - **Frontier planner/auditor:** codex `gpt-5.5` high reasoning.
 - **Workers (bounded execution):** consult the task→model table in `docs/model-routing.md` — mechanical/low-risk → `deepseek-v4-flash`-class; bounded coding → stronger opencode-go coder (`deepseek-v4-pro`/`kimi-k2.7-code`/`glm-5.2`) or codex `gpt-5.4`; UI/harness-native → Claude sonnet-class `Agent`. Do NOT default to one model for everything. Retry transient opencode-go failures with capped backoff before falling back.
 - **Override rule:** to pick a *larger* model than the table, name the concrete risk it missed; to pick a *smaller* one, name the verification oracle (strong tests) that makes first-pass safe. Else follow the table.
-- **opencode-go is FUNDED and WORKING (`GO_OK` smoke, 2026-07-04).** Re-verify only before important work or on auth/quota/provider errors. **Opus:** escalation only.
+- **opencode-go funding is VOLATILE (funded 2026-07-04, out of quota 2026-07-05).** Cheapest *when funded*, but frequently exhausted — smoke-verify before relying, and on any quota / `127` / auth error fall back **immediately** to codex `gpt-5.4-mini` (mechanical) / `gpt-5.4` (heavier). Do NOT retry opencode on a quota error. **Opus:** escalation only.
 
 Dated capability notes + current funding state live in `docs/model-routing.md`, not always-loaded memory.
 
