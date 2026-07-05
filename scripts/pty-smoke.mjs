@@ -18,8 +18,9 @@
  */
 import { spawn, spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 
-const CLI = new URL('../dist/cli.js', import.meta.url).pathname;
+const CLI = fileURLToPath(new URL('../dist/cli.js', import.meta.url));
 const PASTE = 'the quick brown fox jumps over the lazy dog';
 
 function hasScript() {
@@ -59,6 +60,8 @@ await sleep(400);
 
 const clean = cleanText(out);
 const lines = clean.split('\n').map((l) => l.trim());
+const homeMarkers = ['Effort Mode:', 'Session Manager', 'Choice:', 'ESC to exit'];
+const forbiddenHome = ['No runs yet', 'Health:', 'doctor', 'Ctrl+C x2'];
 // The committed input line carries the `❯` caret; the menu's Recent-list entry
 // (after /exit) also contains the text but is NOT an input echo. Count ONLY the
 // caret-prefixed input rows — a doubled paste would show two of them (or a `>`-row).
@@ -68,18 +71,23 @@ const sawCaret = inputRows.length >= 1;
 const noDup = inputRows.length === 1 && strayEcho.length === 0;
 const menuPhase = cleanText(menuBeforeN);
 const chatPhase = cleanText(afterSingleN);
-const menuMarker = 'myshell-tools v';
+const homeLooksLocked =
+  homeMarkers.every((marker) => menuPhase.includes(marker)) &&
+  forbiddenHome.every((marker) => !menuPhase.includes(marker));
+const menuMarker = 'Effort Mode:';
 const chatMarker = 'Type a message and press Enter';
 const menuIdx = menuPhase.indexOf(menuMarker);
 const chatIdx = chatPhase.indexOf(chatMarker);
 const menuKeyWorked = menuIdx !== -1 && chatIdx !== -1 && chatIdx > menuIdx;
 
-console.log(`PTY smoke results:`);
-console.log(`  input caret rows with paste : ${inputRows.length} ${inputRows.map((l)=>JSON.stringify(l)).join(' ')}`);
+console.log('PTY smoke results:');
+console.log(`  locked home markers present : ${homeLooksLocked}`);
+console.log(`  input caret rows with paste : ${inputRows.length} ${inputRows.map((l) => JSON.stringify(l)).join(' ')}`);
 console.log(`  stray '>' echo rows         : ${strayEcho.length}`);
 console.log(`  single-keypress nav worked  : ${menuKeyWorked} (menu rendered via 'n'/'q'/'/exit')`);
 console.log(`  caret rendered (❯)          : ${sawCaret}`);
-console.log(`  [1] DOUBLED-PASTE FIX       : ${noDup ? 'PASS (committed once)' : 'FAIL'}`);
-console.log(`  [2] SINGLE-KEYPRESS MENU    : ${menuKeyWorked ? 'PASS' : 'FAIL'}`);
-if (!noDup || !menuKeyWorked) process.exit(1);
+console.log(`  [1] LOCKED HOME SKELETON    : ${homeLooksLocked ? 'PASS' : 'FAIL'}`);
+console.log(`  [2] DOUBLED-PASTE FIX       : ${noDup ? 'PASS (committed once)' : 'FAIL'}`);
+console.log(`  [3] SINGLE-KEYPRESS MENU    : ${menuKeyWorked ? 'PASS' : 'FAIL'}`);
+if (!homeLooksLocked || !noDup || !menuKeyWorked) process.exit(1);
 console.log('PTY SMOKE: PASS');

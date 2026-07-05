@@ -113,10 +113,10 @@ export function orderRecentForRender(
 
 /**
  * Build the Recent list body lines (one row per conversation). Row format:
- *   `[n] <age>  <title-column>  · <effort>`
- * The locked `engine · effort` column is reduced to `· effort` for Slice 1
- * because ConversationMeta carries no provider/engine field and fabricating one
- * would violate the "no fabricated data" rule.
+ *   `[n] <age>  <title-column>  <provider> · <effort>`
+ * Legacy / never-run conversations keep the effort-only fallback (`· <effort>`)
+ * because provider labels are shown only when a real completed turn recorded
+ * `lastProvider`; they are never inferred or fabricated.
  *
  * Slice 10 — workspace-aware rows. The list is ordered by
  * {@link orderRecentForRender} (current-workspace rows first). The title column
@@ -146,6 +146,10 @@ function renderRecentRows(
     const age = compactAge(thenMs, nowMs);
     const idx = i + 1;
     const effort = conversationModeLabel(m.mode as ConversationMode | undefined);
+    const providerEffort =
+      m.lastProvider !== undefined
+        ? `${m.lastProvider} · ${effort}`
+        : `· ${effort}`;
     const isCurrent =
       normCurrent.length > 0 &&
       typeof m.workspaceRoot === 'string' &&
@@ -156,7 +160,7 @@ function renderRecentRows(
     const titleColumn = !isCurrent && hasLocation
       ? `${workspaceLabel(m.workspaceRoot as string)} · ${m.title}`
       : m.title;
-    return `[${idx}] ${age}  ${titleColumn}  · ${effort}`;
+    return `[${idx}] ${age}  ${titleColumn}  ${providerEffort}`;
   });
 }
 
@@ -181,10 +185,13 @@ function renderControls(
     const latest = ordered[0];
     if (latest !== undefined) {
       lines.push('[c] Continue last');
-      // Sub-line: locked `└─ engine · title · age`; engine column omitted for
-      // Slice 1 (no provider data on ConversationMeta — judgment call).
       const thenMs = new Date(latest.updatedAt).getTime();
-      lines.push(`    └─ ${latest.title} · ${compactAge(thenMs, nowMs)}`);
+      const age = compactAge(thenMs, nowMs);
+      lines.push(
+        latest.lastProvider !== undefined
+          ? `    └─ ${latest.lastProvider} · ${latest.title} · ${age}`
+          : `    └─ ${latest.title} · ${age}`,
+      );
       lines.push('[1-9] Open numbered above');
     }
     lines.push('[n] New conversation');

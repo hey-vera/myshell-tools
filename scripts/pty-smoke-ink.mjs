@@ -30,10 +30,13 @@
 import { spawn, spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { createRequire } from 'node:module';
+import { fileURLToPath } from 'node:url';
 
 const require = createRequire(import.meta.url);
-const INNER = new URL('./pty-ink-inner.mts', import.meta.url).pathname;
-const TSX = new URL('../node_modules/.bin/tsx', import.meta.url).pathname;
+const INNER = fileURLToPath(new URL('./pty-ink-inner.mts', import.meta.url));
+const TSX = process.platform === 'win32'
+  ? fileURLToPath(new URL('../node_modules/.bin/tsx.cmd', import.meta.url))
+  : fileURLToPath(new URL('../node_modules/.bin/tsx', import.meta.url));
 const COLS = 80;
 const ROWS = 30;
 
@@ -52,16 +55,16 @@ function hasXterm() {
   }
 }
 
+if (!hasScript()) {
+  console.log('SKIP: no PTY (`script` unavailable) — live render not verifiable here');
+  process.exit(0);
+}
 if (!existsSync(TSX)) {
   console.log('SKIP: tsx not installed (run npm install)');
   process.exit(0);
 }
 if (!hasXterm()) {
   console.log('SKIP: @xterm/headless not installed (run npm install) — screen reconstruction unavailable');
-  process.exit(0);
-}
-if (!hasScript()) {
-  console.log('SKIP: no PTY (`script` unavailable) — live render not verifiable here');
   process.exit(0);
 }
 

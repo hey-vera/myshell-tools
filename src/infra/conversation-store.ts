@@ -14,6 +14,7 @@
 import type { SessionEntry, SessionWriter } from '../core/types.js';
 import type { Intensity } from '../core/capacity-allocator.js';
 import type { GoalActivationOverride } from '../core/autonomy.js';
+import type { ProviderId } from '../providers/port.js';
 
 /** Per-conversation mode — the user-facing firepower level for this conversation's turns. */
 export type ConversationMode = 'auto' | 'budget' | 'balanced' | 'high' | 'max';
@@ -58,6 +59,13 @@ export interface ConversationMeta {
    * happens to be running now.
    */
   readonly workspaceRoot?: string | null;
+  /**
+   * The provider that handled the most recent completed turn in this
+   * conversation. Absent for legacy conversations and threads that have never
+   * completed a provider-backed turn. NEVER inferred or guessed on read —
+   * only set from a real completed turn's actual provider.
+   */
+  readonly lastProvider?: ProviderId;
 }
 
 /** Options accepted by {@link ConversationStore.create}'s object-options overload. */
@@ -127,4 +135,6 @@ export interface ConversationStore {
    * missing. Pass `'auto'` or `undefined` to clear the override (inherit global).
    */
   setMode(id: string, mode: ConversationMode | undefined): Promise<void>;
+  /** Record the provider that handled the latest completed turn. No-op if id missing. */
+  setLastProvider(id: string, provider: ProviderId): Promise<void>;
 }
