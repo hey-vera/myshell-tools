@@ -88,3 +88,58 @@ Test Files  257 passed | 1 skipped (258)
 `../myshell-tools/node_modules` (identical `package.json`, confirmed via
 `diff` before linking) rather than a fresh `npm install` — faster, and
 `node_modules` is gitignored so it does not appear in the diff.
+
+## POSIX CI follow-up fix (fixup on top of the above)
+
+**Bug:** PR #89 was green on `windows-latest` but failed on `ubuntu-latest`
+and `macos-latest` (all Node versions) in `test/unit/workspace.test.ts`
+(assertions around lines 39/44/49/54/59/73/90/108/123/144 depending on
+runner). Root cause: `normalizeWorkspacePath` (and the `dirname`/`basename`
+calls it feeds into `workspaceLabel`/`parentWorkspaceDirs`) imported plain
+`dirname`/`basename`/`resolve` from `node:path` — the HOST-native path
+module, which is `path.win32` on Windows and `path.posix` on Linux/macOS.
+The test fixtures use Windows-style absolute paths like `'C:/Users/dev/repo'`
+(matching the tool's real Windows-only usage pattern). On a POSIX runner,
+`path.posix.resolve` does not recognize `'C:/Users/dev/repo'` as absolute
+(it doesn't start with `/`), so it prefixed it with the runner's actual cwd,
+e.g. `/home/runner/work/myshell-tools/myshell-tools/C:/Users/dev/repo`,
+failing every assertion that expected the literal Windows-style path back.
+
+**Fix (`src/interface/workspace.ts` only, no test-fixture changes needed):**
+Added `looksLikeWindowsPath()` + `pathModuleFor()`, which pick
+`node:path`'s `win32` or `posix` **submodule** based on the *shape of the
+input string* (drive letter or backslash present -> `win32`; else ->
+`posix`) rather than `process.platform`. `path.posix` and `path.win32` are
+pure, host-independent parsers (unlike bare `node:path`, which is whichever
+of the two matches the host OS) — confirmed via a standalone Node script
+exercising `win32.resolve`, `win32.dirname`, `win32.basename` for every
+fixture shape used in the test file (drive-root, trailing slash, backslash
+input, relative-against-Windows-cwd), all matching expectations
+independent of host. `normalizeWorkspacePath`, `workspaceLabel`, and
+`parentWorkspaceDirs` now call `pathModuleFor(...).resolve/dirname/basename`
+instead of the host-native functions.
+
+This is a correctness fix, not a workaround: a `workspaceRoot` persisted in
+conversation history can be read back on a different OS than the one that
+wrote it (e.g. WSL/POSIX dev box opening a project whose saved root was a
+Windows path, or vice versa), so path parsing needs to key off the string's
+own shape, not the current host. This also means the fix isn't test-only —
+real production behavior is now more correct on top of fixing CI.
+
+**Verification:**
+- `npm run typecheck` — PASS, zero errors.
+- `npm run lint` — PASS (3 pre-existing unrelated `no-console` warnings in
+  `test/integration/p0-pty-benchmark.test.ts`, 0 errors).
+- `npx vitest run test/unit/workspace.test.ts test/unit/workspace-picker.test.ts`
+  — PASS, 27/27.
+- `npx vitest run test/unit test/arch` (full regression) — PASS, 257 test
+  files / 8271 tests passed, 1 file / 14 tests skipped (pre-existing skips),
+  0 failures.
+- Simulated the POSIX failure mode directly: ran `normalizeWorkspacePath`'s
+  new logic in a standalone script with `cwd` forced to a fake Linux-runner
+  path (`/home/runner/work/myshell-tools/myshell-tools`) instead of the real
+  (Windows) `process.cwd()`, and confirmed `'C:/Users/dev/repo'`,
+  `'C:/Users/dev/repo/'`, and the relative-`'sub'`-against-a-Windows-cwd case
+  all still resolve to the correct literal Windows-style output — i.e. the
+  exact bug scenario from the CI logs, reproduced and shown fixed without
+  needing an actual POSIX machine.

@@ -25,7 +25,7 @@
  * without touching each other's files.
  */
 
-import { dirname, basename, resolve } from 'node:path';
+import { posix as posixPath, win32 as win32Path } from 'node:path';
 import type { RepoScanPort } from '../core/repo-map.js';
 import { fuzzyRank } from './menu-completion.js';
 
@@ -35,12 +35,38 @@ function isCaseInsensitiveFs(platform: NodeJS.Platform = process.platform): bool
 }
 
 /**
+ * True if any of `inputs` look like a Windows-style path (a drive letter
+ * like 'C:' or a backslash separator). Workspace roots are persisted
+ * strings (in conversation history / saved state) that may have been
+ * produced on a different host OS than the one running right now -- e.g. a
+ * `workspaceRoot` saved on a Windows machine, read back on a POSIX CI
+ * runner or a POSIX dev box. Using the HOST's native `path` module (which
+ * is `path.posix` on POSIX, `path.win32` on Windows) to parse such a
+ * string is wrong: a Windows-style absolute path like `'C:/Users/dev/repo'`
+ * does not start with `/`, so POSIX `path.resolve` treats it as RELATIVE
+ * and prefixes it with the runner's actual cwd. Selecting the path module
+ * by the INPUT'S shape rather than the host platform makes path handling
+ * for a given string identical on every OS: `path.posix`/`path.win32` are
+ * pure, host-independent implementations (unlike bare `node:path`, which is
+ * whichever of the two matches `process.platform`).
+ */
+function looksLikeWindowsPath(...inputs: readonly string[]): boolean {
+  return inputs.some((s) => /^[A-Za-z]:/.test(s) || s.includes('\\'));
+}
+
+/** Pick `path.win32` or `path.posix` based on the shape of `inputs`, not the host OS. */
+function pathModuleFor(...inputs: readonly string[]): typeof posixPath {
+  return looksLikeWindowsPath(...inputs) ? win32Path : posixPath;
+}
+
+/**
  * Normalize a path for cross-platform comparison/display: resolved to an
  * absolute path, forward-slash separators, no trailing slash (except a bare
  * root like `/` or `C:/`). PURE given `cwd`.
  */
 export function normalizeWorkspacePath(p: string, cwd: string = process.cwd()): string {
-  const abs = resolve(cwd, p);
+  const pm = pathModuleFor(p, cwd);
+  const abs = pm.resolve(cwd, p);
   let norm = abs.split('\\').join('/');
   // Strip a trailing slash EXCEPT on a bare root: POSIX '/' (length 1, already
   // excluded below) or a Windows drive root like 'C:/'. Stripping the latter
@@ -76,7 +102,7 @@ export async function resolveWorkspaceRoot(
 /** Short display label for a workspace root: its last path segment. PURE. */
 export function workspaceLabel(root: string): string {
   const norm = normalizeWorkspacePath(root);
-  const base = basename(norm);
+  const base = pathModuleFor(norm).basename(norm);
   return base.length > 0 ? base : norm;
 }
 
@@ -89,7 +115,7 @@ export function parentWorkspaceDirs(root: string, maxDepth = 5): string[] {
   const out: string[] = [];
   let current = norm;
   for (let i = 0; i < maxDepth; i++) {
-    const parent = normalizeWorkspacePath(dirname(current));
+    const parent = normalizeWorkspacePath(pathModuleFor(current).dirname(current));
     if (parent === current) break;
     out.push(parent);
     current = parent;
