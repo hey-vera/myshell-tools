@@ -703,12 +703,18 @@ export async function runChatLoop(
   // (often quality-first/Max).
   const allMetas = await ctx.store.list();
   const convMeta = allMetas.find((m) => m.id === convId);
+  // Slice 9: every conversation-scoped operation runs against the conversation's
+  // own `workspaceRoot` (Slice 6) when set, falling back to the launch `ctx.cwd`
+  // for legacy conversations that never stamped one — byte-identical to before.
+  // App/global operations (menu nav, account menus, capability refresh) stay on
+  // `ctx.cwd`; only `ctx.cwd` references *inside* runChatLoop are converted below.
+  const activeCwd = convMeta?.workspaceRoot ?? ctx.cwd;
   const convExplicitMode = convMeta?.mode !== undefined && convMeta.mode !== 'auto';
   const effectiveMode: Mode = convExplicitMode
     ? (levelToMode(convMeta.mode) ?? resolveAutoMode(mutableCtx.env))
     : (mutableCtx.config.mode ?? 'balanced');
   const shellCommandGate: CommandGatePort = ctx.commandGate ?? (() => {
-    const commandAudit = createCommandAuditRecorder({ cwd: ctx.cwd });
+    const commandAudit = createCommandAuditRecorder({ cwd: activeCwd });
     return {
       gate: gateCommand,
       confirm: async (message: string): Promise<boolean> => {
@@ -762,7 +768,7 @@ export async function runChatLoop(
     return makeRecapGenerator({
       providers: ctx.providers,
       policy,
-      cwd: ctx.cwd,
+      cwd: activeCwd,
       timeoutMs: Math.min(ctx.timeoutMs, RECAP_TIMEOUT_MS),
       sandbox: helperSandbox(ctx.sandbox),
       ...(Object.keys(availableModels).length > 0 ? { availableModels } : {}),
@@ -815,7 +821,7 @@ export async function runChatLoop(
     return makeGoalObjectiveGenerator({
       providers: ctx.providers,
       policy,
-      cwd: ctx.cwd,
+      cwd: activeCwd,
       timeoutMs: Math.min(ctx.timeoutMs, GOAL_OBJECTIVE_TIMEOUT_MS),
       sandbox: helperSandbox(ctx.sandbox),
       ...(Object.keys(availableModels).length > 0 ? { availableModels } : {}),
@@ -867,7 +873,7 @@ export async function runChatLoop(
     return makeGoalPlanner({
       providers: ctx.providers,
       policy,
-      cwd: ctx.cwd,
+      cwd: activeCwd,
       timeoutMs: Math.min(ctx.timeoutMs, GOAL_PLAN_TIMEOUT_MS),
       sandbox: helperSandbox(ctx.sandbox),
       ...(Object.keys(availableModels).length > 0 ? { availableModels } : {}),
@@ -914,7 +920,7 @@ export async function runChatLoop(
     return makeGoalPlannerAttempt({
       providers: ctx.providers,
       policy,
-      cwd: ctx.cwd,
+      cwd: activeCwd,
       timeoutMs: Math.min(ctx.timeoutMs, 8_000),
       sandbox: helperSandbox(ctx.sandbox),
       tier,
@@ -972,7 +978,7 @@ export async function runChatLoop(
     return makeReplanner({
       providers: ctx.providers,
       policy,
-      cwd: ctx.cwd,
+      cwd: activeCwd,
       timeoutMs: Math.min(ctx.timeoutMs, GOAL_REPLAN_TIMEOUT_MS),
       sandbox: helperSandbox(ctx.sandbox),
       ...(Object.keys(availableModels).length > 0 ? { availableModels } : {}),
@@ -1028,7 +1034,7 @@ export async function runChatLoop(
     return makeUnderstandingPass({
       providers: ctx.providers,
       policy,
-      cwd: ctx.cwd,
+      cwd: activeCwd,
       timeoutMs: Math.min(ctx.timeoutMs, UNDERSTANDING_TIMEOUT_MS),
       sandbox: helperSandbox(ctx.sandbox),
       ...(Object.keys(availableModels).length > 0 ? { availableModels } : {}),
@@ -1361,11 +1367,11 @@ export async function runChatLoop(
       }
     },
   };
-  const intentStore = createIntentStore({ cwd: ctx.cwd });
+  const intentStore = createIntentStore({ cwd: activeCwd });
       void (async () => {
 
     try {
-      const allEntries = await readLedger(ctx.cwd);
+      const allEntries = await readLedger(activeCwd);
       const initial = summarizeSessionProviderTokens(allEntries, convId);
       for (const [k, v] of Object.entries(initial)) {
         if (typeof v === 'number') sessionConsumption[k as ProviderId] = v;
@@ -1824,7 +1830,7 @@ export async function runChatLoop(
       }
       await runShellPassthrough(
         command,
-        ctx.cwd,
+        activeCwd,
         out,
         shellCommandGate,
         ctx.shellRunner ?? createNodeShellRunner(),
@@ -1936,7 +1942,7 @@ export async function runChatLoop(
       } catch {
         meta = undefined;
       }
-      const exportDir = join(resolveStateHome(process.env, ctx.cwd), '.myshell-tools', 'exports');
+      const exportDir = join(resolveStateHome(process.env, activeCwd), '.myshell-tools', 'exports');
       const exportPath = join(exportDir, `myshell-${exportFileSlug(meta?.title)}-${convId}.md`);
       const writeFile = async (p: string, data: string): Promise<void> => {
         await fs.promises.mkdir(exportDir, { recursive: true });
@@ -2378,7 +2384,7 @@ export async function runChatLoop(
         const preflightDeps = buildPreflightDeps({
           providers: ctx.providers,
           policy,
-          cwd: ctx.cwd,
+          cwd: activeCwd,
           timeoutMs: ctx.timeoutMs,
           sandbox: ctx.sandbox,
           ...(Object.keys(availableModels).length > 0 ? { availableModels } : {}),
@@ -2408,7 +2414,7 @@ export async function runChatLoop(
           ...(intentStore !== undefined ? { intentStore } : {}),
           policy,
           providers: ctx.providers,
-          cwd: ctx.cwd,
+          cwd: activeCwd,
           sandbox: ctx.sandbox,
           timeoutMs: ctx.timeoutMs,
           ...(hist.length > 0 ? { history: hist } : {}),
@@ -2578,10 +2584,10 @@ export async function runChatLoop(
                 verifyLevel: 'tests' as const,
                 verifyTestTimeoutMs: Math.min(ctx.timeoutMs, 120_000),
                 evidenceSink: createEvidenceSink({
-                  cwd: ctx.cwd,
+                  cwd: activeCwd,
                 }),
                 evidenceSnapshotBuilder: createEvidenceSnapshotBuilder({
-                  cwd: ctx.cwd,
+                  cwd: activeCwd,
                   now: ctx.clock.now,
                 }),
                 evidenceTaskId: convId,
@@ -2766,7 +2772,7 @@ export async function runChatLoop(
       const loadedThisSession: UserMemoryFact[] = [];
       const resolveProjectKeyOnce = async (): Promise<string | null> => {
         if (memoryProjectKey === undefined) {
-          memoryProjectKey = await resolveProjectKey(ctx.cwd).catch(() => null);
+          memoryProjectKey = await resolveProjectKey(activeCwd).catch(() => null);
         }
         return memoryProjectKey;
       };
@@ -2783,7 +2789,7 @@ export async function runChatLoop(
       const resolveRepoFingerprintOnce = async (): Promise<RepoFingerprint> => {
         if (repoFingerprint === undefined) {
           repoFingerprint = await nodeRepoScanPort
-            .readRepoFingerprint(ctx.cwd)
+            .readRepoFingerprint(activeCwd)
             .catch(() => ({ headSha: '', treeHash: '' }));
         }
         return repoFingerprint;
@@ -3114,7 +3120,7 @@ export async function runChatLoop(
             tier: 'worker',
             port: ctx.verifyPort ?? nodeVerifyPort,
             level: 'tests', // tests-first only — the honest free signal (no critic call)
-            cwd: ctx.cwd,
+            cwd: activeCwd,
             testTimeoutMs: VERIFY_TEST_TIMEOUT_MS, // bound the test runner itself
             ...(acceptance !== undefined && acceptance.length > 0 ? { task: acceptance } : {}),
             available: authed,
@@ -3285,7 +3291,7 @@ Output ONLY valid JSON (no prose, no markdown).`;
         const req: ProviderRequest = {
           model: pick.model,
           prompt: metaPrompt,
-          cwd: ctx.cwd,
+          cwd: activeCwd,
           sandbox: 'workspace-write',
           timeoutMs: 45000,
           reasoningEffort: pick.effort,  // Proper high effort launch via the chosen CLI (claude --effort, codex model_reasoning_effort, opencode --variant)
@@ -3457,7 +3463,7 @@ Output ONLY valid JSON (no prose, no markdown).`;
       // Persistent decision-audit ledger. Lean JSONL in the state dir. The log is
       // read back into buildFullContext so the model sees its own recent decisions
       // (meta-awareness, avoids repetitive mistakes) and failures are surfaced.
-      const decisionAuditPath = (): string => join(getStateDir(ctx.cwd), 'decisions.jsonl');
+      const decisionAuditPath = (): string => join(getStateDir(activeCwd), 'decisions.jsonl');
       const auditDecision = async (
         decision: MetaDecision | null,
         error?: string,
@@ -3505,7 +3511,7 @@ Output ONLY valid JSON (no prose, no markdown).`;
       };
       const updatePlanMdAfterAdjust = async (goal: Goal, note?: string): Promise<void> => {
         try {
-          const pth = join(ctx.cwd, 'PLAN.md');
+          const pth = join(activeCwd, 'PLAN.md');
           const existing = await fs.promises.readFile(pth, 'utf8').catch(() => null);
           const stamp = ctx.clock.isoNow().slice(0, 10);
           const block =
@@ -3726,7 +3732,7 @@ Output ONLY valid JSON (no prose, no markdown).`;
 
           const doneWhen = plan.plan?.goals[0]?.doneWhen;
           const hasDoneWhen = typeof doneWhen === 'string' && doneWhen.trim().length > 0;
-          const verificationAvailable = await verificationAvailableForCwd(ctx.cwd);
+          const verificationAvailable = await verificationAvailableForCwd(activeCwd);
           const confidence = assessGoalConfidence({
             hasWorkIntent: true,
             plannerStaged: true,
@@ -4010,7 +4016,7 @@ Output ONLY valid JSON (no prose, no markdown).`;
             model: decision.model,
             prompt:
               `Search the web for current, authoritative information on the following and reply with a SHORT plain-text summary of what you found, with sources. Do not restate the question.\n\n${query}`,
-            cwd: ctx.cwd,
+            cwd: activeCwd,
             sandbox: helperSandbox(ctx.sandbox),
             timeoutMs: Math.min(ctx.timeoutMs, 90_000),
             webSearch: true,
@@ -4106,7 +4112,7 @@ Output ONLY valid JSON (no prose, no markdown).`;
           environmentContext = '';
           return environmentContext;
         }
-        environmentContext = await buildEnvironmentContext(ctx.cwd, nodeRepoScanPort).catch(
+        environmentContext = await buildEnvironmentContext(activeCwd, nodeRepoScanPort).catch(
           () => '',
         );
         return environmentContext;
@@ -4281,7 +4287,14 @@ Output ONLY valid JSON (no prose, no markdown).`;
         tasteOn,
         ROADMAP_LIMIT,
         UNDERSTANDING_REFRESH_TURNS,
-        ctx,
+        // Slice 9: auto-stage is conversation-scoped (runs only during a goal turn
+        // inside runChatLoop), and auto-stage.ts probes verifiability via
+        // `deps.verificationAvailableForCwd(deps.ctx.cwd)`. Override `cwd` on the
+        // context handed to the engine so that probe — and any future `deps.ctx.cwd`
+        // read in auto-stage.ts — runs against `activeCwd`, not the launch cwd. The
+        // engine file itself is out of this slice's allowed file set, so this is the
+        // surgical fix-point. All other MenuContext fields are passed through intact.
+        ctx: { ...ctx, cwd: activeCwd },
         mutableCtx,
         out,
         convId,
@@ -5047,11 +5060,11 @@ Output ONLY valid JSON (no prose, no markdown).`;
         // token total before this run, so each turn can show REAL turn/elapsed/
         // tokens-this-goal (never an estimate).
         const goalStartMs = ctx.clock.now();
-        const baseTokens = summarizeSpend(await readLedger(ctx.cwd), ctx.clock.isoNow()).totalTokens;
+        const baseTokens = summarizeSpend(await readLedger(activeCwd), ctx.clock.isoNow()).totalTokens;
         let completed = 0;
         for (let i = 0; i < ceilings.maxIterations; i++) {
           const tokensThisRun =
-            summarizeSpend(await readLedger(ctx.cwd), ctx.clock.isoNow()).totalTokens - baseTokens;
+            summarizeSpend(await readLedger(activeCwd), ctx.clock.isoNow()).totalTokens - baseTokens;
           goalOut.write(
             dim(
               `  ▸ ${formatGoalProgress({
@@ -5239,7 +5252,7 @@ Output ONLY valid JSON (no prose, no markdown).`;
         } else if (arg === 'loaded') {
           runMemoryLoaded({ out, loaded: loadedThisSession });
         } else if (arg === 'export') {
-          const exportPath = join(ctx.cwd, 'myshell-memory.md');
+          const exportPath = join(activeCwd, 'myshell-memory.md');
           out.write(
             `${await runMemoryExport({
               store: memoryStore,
@@ -5279,7 +5292,7 @@ Output ONLY valid JSON (no prose, no markdown).`;
           return 'continue';
         }
         try {
-          const pk = await resolveProjectKey(ctx.cwd).catch(() => null);
+          const pk = await resolveProjectKey(activeCwd).catch(() => null);
           const tl = createFileTasteLedger({ clock: ctx.clock });
           const pb = await tl.recall(pk);
           out.write('\n  Learned taste / prefs (observed only):\n');
@@ -5309,7 +5322,7 @@ Output ONLY valid JSON (no prose, no markdown).`;
         if (!hasAuthenticatedProvider(mutableCtx.env)) return 'continue';
         out.write(dim('  Pure planning...\n', out.color));
         try {
-          const pk = await resolveProjectKey(ctx.cwd).catch(() => null);
+          const pk = await resolveProjectKey(activeCwd).catch(() => null);
           const plan = await judgeGoal(planText);
           if (plan.judgment !== 'stage' || !plan.plan || !(plan.plan.goals || []).length) {
             out.write(dim('  No plan.\n', out.color));
@@ -5363,7 +5376,7 @@ Output ONLY valid JSON (no prose, no markdown).`;
               }
             }
             try {
-              const pth = join(ctx.cwd, 'PLAN.md');
+              const pth = join(activeCwd, 'PLAN.md');
               const planDoc =
                 `# Proposed Plan - ${new Date().toISOString().slice(0, 10)}\n\n` +
                 proposal +
@@ -5574,7 +5587,7 @@ Output ONLY valid JSON (no prose, no markdown).`;
               // share it, or diff it — exactly like Claude/GPT/Replit "make a plan doc".
               // Best-effort (never blocks the flow or approval selector).
               try {
-                const planPath = join(ctx.cwd, 'PLAN.md');
+                const planPath = join(activeCwd, 'PLAN.md');
                 const planDoc =
                   `# Proposed Plan — ${new Date().toISOString().slice(0, 10)}\n\n` +
                   proposal +
@@ -6045,7 +6058,7 @@ Output ONLY valid JSON (no prose, no markdown).`;
       // thread them onto deps so orchestrate sets needsVision + routes the turn to a
       // vision-capable provider (codex `-i` / opencode `-f`). No real image → empty
       // → field omitted → behaviour byte-for-byte unchanged.
-      turnAttachments = resolveImageAttachments(line, { cwd: ctx.cwd });
+      turnAttachments = resolveImageAttachments(line, { cwd: activeCwd });
       deps =
         turnAttachments.length > 0 ? { ...depsBase, attachments: turnAttachments } : depsBase;
       if (deps === null) {
