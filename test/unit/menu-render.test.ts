@@ -277,7 +277,6 @@ describe('renderMainScreen — Slice 1 forbidden substrings', () => {
 describe('renderMainScreen — Slice 10 workspace-aware Recent list', () => {
   const CURRENT_ROOT = '/home/josh/dev/myshell-tools';
   const OTHER_ROOT = '/home/josh/dev/replit-tools';
-  const NOW = 1_700_000_000_000; // matches makeCtx's clock
 
   // Two conversations, passed to render in STORE order (newest first — mirroring
   // what `ConversationStore.list()` returns): a NEWER non-current row followed
