@@ -1846,7 +1846,7 @@ export async function runChatLoop(
   // -------------------------------------------------------------------------
   async function runOneChatInput(line: string): Promise<'continue' | 'menu' | 'exit'> {
     // Slice 5 foundation: `!` prefix detection (menu-build-spec-final.md:382; kern-spec.md:45) — safe guard in input path; no exec/chat behavior touched here.
-    if (line[0] === '!') {
+    if (line.length > 0 && line[0] === '!') {
       const command = line.slice(1).trim();
       if (command === '') {
         out.write(
