@@ -1,9 +1,0 @@
-import assert from 'node:assert/strict';  
-import {rankRepoFiles, extractTopLevelSymbols} from './src/core/repo-map.ts';  
-console.log('VERIFY START');  
-const s = extractTopLevelSymbols('export function foo(){} const bar=1; class C{} export {z};');  
-const r1 = rankRepoFiles([{path:'p.ts'}]);  
-assert.ok(!('symbols' in r1[0]));  
-const r2 = rankRepoFiles([{path:'p.ts', symbols:['f']}]);  
-assert.deepEqual(r2[0].symbols, ['f']);  
-console.log('ALL PASS');  
