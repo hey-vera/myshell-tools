@@ -363,8 +363,7 @@ function welcome(deps: OrchestrateDeps, color: boolean): string {
     );
   }
   return dim(
-    'No providers detected.  Install Claude Code or Codex, then run: myshell-tools login  ' +
-      '(diagnose: myshell-tools status --fix)',
+    'No providers detected.  Install Claude Code or Codex, then run: myshell-tools login',
     color,
   );
 }
