@@ -1,7 +1,7 @@
 # 10/10 Vision & Implementation Plan for myshell-tools (Refined with Strong Model Input)
 
 **Date:** 2026-06-21
-**Refinement Source:** Direct brainstorming sessions with opencode-go/qwen3.7-max (strong model via user's provided key sk-pSr5ysBSvkx8iCCk5xcCjfMmsjfHBu40Ow2LZRRFiRmymqHCQYcTcqeI7nWV2bon and export OPENCODE_API_KEY). Used --pure flag for clean, high-intelligence responses. Models accessed via opencode-go: kimi-k2.6/2.7-code, qwen3.6/3.7 variants, glm-5.1/5.2, deepseek, etc. (strong reasoning/coding models).
+**Refinement Source:** Direct brainstorming sessions with opencode-go/qwen3.7-max (strong model via user's provided key [REDACTED; please rotate the key that was previously referenced here] and export OPENCODE_API_KEY). Used --pure flag for clean, high-intelligence responses. Models accessed via opencode-go: kimi-k2.6/2.7-code, qwen3.6/3.7 variants, glm-5.1/5.2, deepseek, etc. (strong reasoning/coding models).
 
 **Core User Directive (from query):** Avoid any dumb/low-effort/low-quality solutions. Go fully into max intelligence. Do NOT make a system that "replaces the thinking of the models" (that would be making up wisdom and hoping it works). Distinguish "conscious thinker" (sees full picture, incredible intelligence/performance/accuracy/precision/honesty) vs "dumb wiring" (even with super strong base models like groq/gpt/claude, if the orchestration is dumb, the whole is dumb). Use stronger models (via opencode go subscription/provider, claude/gpt/kimi equivalents) to our advantage in the conversation to ask the right questions and achieve true 10/10. Permission granted to use the key.
 
