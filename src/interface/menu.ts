@@ -740,7 +740,8 @@ export async function runChatLoop(
   // -------------------------------------------------------------------------
   // RECAP (Phase 7, docs/recap-feature-5.5.md) — a ※ orientation line on resume
   // and on /recap, replacing the old raw-tail-echo. The recap is conversation-
-  // scoped orientation (DISTINCT from durable user memory), cached on the meta,
+  // scoped orientation (DISTINCT from durable user memory, using CompletionResultV1 + ReconstructedContext from durable map for one-chat), cached on the meta,
+  // uses durable-context and completion for NL intent, board, adjustments (10/10 phases)
   // and regenerated only when stale. Generation is a single gated, cheap, read-
   // only worker-tier pass behind the injected generator port; fail-soft so a
   // missing/failed/timed-out recap NEVER blocks resume.

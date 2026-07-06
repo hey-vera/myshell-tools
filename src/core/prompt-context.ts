@@ -274,7 +274,7 @@ export function assembleContextBlocksDetailed(
   };
 
   // ENVIRONMENT goes FIRST — orientation precedes memory/intent/engagement so the
-  // later reasoning already knows where it is and what the project is (E1 §1.2).
+  // later reasoning already knows where it is and what the project is (E1 §1.2; now with seam+symbols in render).
   const environment = opts.environmentContext?.trim();
   if (environment !== undefined && environment.length > 0) {
     pushBlock('environment', environment, 'shed-first', 'untrusted-data', 'repo-file', 1);

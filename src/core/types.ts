@@ -14,6 +14,9 @@
 import type { Provider, ProviderId, SandboxLevel } from '../providers/port.js';
 import type { NativeSessionPlan } from './native-session.js';
 import type { TurnCallBudget } from './turn-call-budget.js';
+import type { VerifyOutcome } from './verify.js';
+import type { EvidenceReceiptV2 } from './evidence-receipt.js';
+import type { RankedRepoFile } from './repo-map.js';
 
 // ---------------------------------------------------------------------------
 // Classification
@@ -371,6 +374,13 @@ export interface OrchestrateDeps {
    * receipt is attached to terminal finals. Now always active.
    */
   readonly evidenceReceiptV2?: boolean;
+  /**
+   * MYSHELL_COMPLETION_RESULT_V1 (dark, default false). When true, accept-stage
+   * constructs exactly one CompletionResultV1 per terminal foreground turn and
+   * attaches it (additive) to CoreEvent.final. Flag-off behavior byte-identical.
+   * Used for P1-17a + durable map binding. Solo/panel cross-provider identical.
+   */
+  readonly completionResultV1?: boolean;
   /**
    * Captures this turn's ledger entries so the
    * receipt can report cache-adjusted cost and aux-call breakdown without
@@ -1295,6 +1305,13 @@ export type CoreEvent =
        *  phase finished when several run concurrently. Absent on today's single-
        *  goal path. Purely additive. */
       readonly goalId?: string;
+      /**
+       * Single terminal truth (additive, dark under completionResultV1 flag).
+       * Exactly one per terminal foreground turn when flag on. Binds CompletionResultV1
+       * (with Phase1 map orientation in worktree) + durable completion.result.
+       * Flag-off: absent (byte-identical). Solo and panel use identical binding.
+       */
+      readonly completionResult?: CompletionResultV1;
     }
   | {
       /**
@@ -1323,3 +1340,181 @@ export type CoreEvent =
       readonly current: number;
       readonly total: number;
     };
+
+// ---------------------------------------------------------------------------
+// CompletionResultV1 (P1-17a COMPLETION-DOMAIN + durable 11 map binding)
+// Exact from r7-item17-contract §3. Single terminal truth (additive under flag).
+// Worktree augmented with orientation ref from Phase1 Ranked+symbols.
+// Pure construction; flag-off unchanged. Cross-provider (solo/panel) parity.
+// ---------------------------------------------------------------------------
+
+export type CompletionResultVersion = 1;
+
+export type CompletionTerminal =
+  | 'done'
+  | 'answered'
+  | 'needs-user'
+  | 'blocked'
+  | 'failed'
+  | 'cancelled';
+
+export type CompletionEvidenceStatus =
+  | 'verified'
+  | 'reviewed'
+  | 'unverified'
+  | 'failing'
+  | 'not-applicable';
+
+export type CompletionScope =
+  | 'code-change'
+  | 'repo-analysis'
+  | 'external-factual'
+  | 'conversation'
+  | 'goal-work'
+  | 'mixed';
+
+export type CompletionRuleCode =
+  | 'tests-passing'
+  | 'critic-reviewed-no-tests'
+  | 'no-test-repo'
+  | 'tests-failing'
+  | 'tests-timeout-or-error'
+  | 'no-diff'
+  | 'dirty-baseline-excluded'
+  | 'user-edit-conflict'
+  | 'repair-exhausted'
+  | 'factual-claims-grounded'
+  | 'factual-claims-unverified'
+  | 'delivery-quality-failed'
+  | 'cancelled'
+  | 'not-applicable';
+
+export type WorktreeBaselineState =
+  | 'clean'
+  | 'dirty-known'
+  | 'dirty-overlap'
+  | 'unknown';
+
+export interface WorktreeBaselineEntry {
+  readonly path: string;
+  readonly status: 'modified' | 'added' | 'deleted' | 'renamed' | 'untracked' | 'unknown';
+  readonly owner: 'pre-existing' | 'assistant' | 'concurrent-user' | 'unknown';
+}
+
+export interface CompletionWorktreeState {
+  readonly baseline: WorktreeBaselineState;
+  readonly baselineEntries: readonly WorktreeBaselineEntry[];
+  readonly changedByAssistant: readonly string[];
+  readonly excludedPreExisting: readonly string[];
+  readonly concurrentUserEdits: readonly string[];
+  readonly conflictPaths: readonly string[];
+  /** Phase 1 map binding: orientation substrate (ranked+symbols) captured at settlement for durable/ReconstructedContext. */
+  readonly orientationRef?: {
+    readonly ranked?: readonly RankedRepoFile[];
+    readonly symbolSummary?: readonly string[];
+  };
+}
+
+export interface CompletionTestEvidence {
+  readonly status:
+    | 'not-needed'
+    | 'detected-not-run'
+    | 'no-test-repo'
+    | 'green'
+    | 'red'
+    | 'timeout'
+    | 'errored';
+  readonly command?: string;
+  readonly durationMs?: number;
+  readonly outputExcerpt?: string;
+}
+
+export interface CompletionRepairEvidence {
+  readonly attempted: boolean;
+  readonly attempts: number;
+  readonly maxAttempts: number;
+  readonly retestedAfterLastRepair: boolean;
+  readonly finalAttemptChangedPaths: readonly string[];
+}
+
+export interface CompletionFactualClaimEvidence {
+  readonly claimId: string;
+  readonly kind: 'local-code' | 'external-source' | 'command-output' | 'test-result' | 'user-provided';
+  readonly status: 'grounded' | 'explicitly-unverified' | 'missing' | 'not-required';
+  readonly references: readonly string[];
+}
+
+export interface CompletionVerification {
+  readonly status: CompletionEvidenceStatus;
+  readonly verifyOutcome?: VerifyOutcome;
+  readonly testEvidence: CompletionTestEvidence;
+  readonly repair: CompletionRepairEvidence;
+  readonly factualClaims: readonly CompletionFactualClaimEvidence[];
+  readonly obligationsSatisfied: readonly string[];
+  readonly obligationsUnmet: readonly string[];
+  readonly ruleCodes: readonly CompletionRuleCode[];
+}
+
+export type DeliveryQualityStatus = 'passed' | 'failed' | 'skipped';
+
+export interface DeliveryQualityIssue {
+  readonly code:
+    | 'missing-user-answer'
+    | 'scope-mismatch'
+    | 'overclaim'
+    | 'missing-evidence-summary'
+    | 'missing-next-action'
+    | 'unsafe-or-confusing'
+    | 'format-broken';
+  readonly message: string;
+}
+
+export interface DeliveryQualityResult {
+  readonly status: DeliveryQualityStatus;
+  readonly checked: boolean;
+  readonly issues: readonly DeliveryQualityIssue[];
+  readonly nextActionNamed: boolean;
+  readonly userVisibleSummary: string;
+}
+
+export interface CompletionGoalSettlement {
+  readonly allowed: boolean;
+  readonly state: 'done' | 'blocked' | 'active' | 'needs-user' | 'none';
+  readonly reason: string;
+}
+
+export interface CompletionReplayPolicy {
+  readonly replay: 'forbidden-already-settled' | 'allowed-idempotent' | 'repair-only' | 'needs-user' | 'unknown';
+  readonly reason: string;
+}
+
+export interface CompletionResultV1 {
+  readonly version: 1;
+  readonly id: string;
+  readonly turnId: string;
+  readonly sessionId: string;
+  readonly createdAt: string;
+  readonly scope: CompletionScope;
+  readonly terminal: CompletionTerminal;
+  readonly objective: string;
+  readonly doneCondition: string | null;
+  readonly output: string;
+  readonly success: boolean;
+  readonly bestEffort: boolean;
+  readonly verification: CompletionVerification;
+  readonly deliveryQuality: DeliveryQualityResult;
+  readonly worktree: CompletionWorktreeState;
+  readonly goalSettlement: CompletionGoalSettlement;
+  readonly replayPolicy: CompletionReplayPolicy;
+  readonly receipt: {
+    readonly lines: readonly string[];
+    readonly evidenceReceiptV2?: EvidenceReceiptV2;
+  };
+  readonly upstream: {
+    readonly intentVersionId?: string;
+    readonly semanticPreflightVersion?: 1;
+    readonly turnPlanId?: string;
+  };
+}
+
+// Augment final (additive) for single terminal truth binding under flag.
