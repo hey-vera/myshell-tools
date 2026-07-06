@@ -1850,7 +1850,7 @@ export async function runChatLoop(
       const command = line.slice(1).trim();
       if (command === '' || command.trim().length === 0) {
         out.write(
-          dim('  Usage: !<command> — run a shell command (e.g. !ls, !git status)\n', out.color),
+          dim('  Usage: !<command> — run a shell command (e.g. !ls, !git status). ! alone shows this.\n', out.color),
         );
         return 'continue';
       }
