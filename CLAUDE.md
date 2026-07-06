@@ -60,25 +60,32 @@ For every concurrent worker or any code/test/config edit, provide: objective, ba
 
 **Never wait for nothing.** The orchestrator doesn't idle — each active turn it advances state: ingest notifications + read `.orchestrator/events.jsonl`, review completed diffs, merge/gate ready branches, dispatch ready DAG roots, and prepare next dependents' contracts/worktrees. Only when NO useful queue work remains, `ScheduleWakeup` to the nearest worker deadline and stop (zero model turns until an event fires). Full controller loop: `docs/orchestrator-protocol.md`.
 
+## Multi-Agent Coordination
+
+When more than one AI agent may work this repo (e.g. Claude/Sonnet + Grok + others):
+- ALL merges to `main` go through the VERIFIED gate � independent runtime verification, not just green CI; green CI with mocked tests does NOT prove runtime behavior (this gap produced PR #99, which passed CI but was largely non-functional theater).
+- No agent self-merges core-vision or `src/` changes to `main` without an independent-verification receipt (real tests exercising the real path + diff review).
+- Before building on `main`, scan for unexpected branches/PRs/commits from other agents; if found, STOP and surface to the user.
+- Use clearly-owned feature branches; do not reuse another agent branch.
+
 ## Worker Dispatch and Liveness
 
 Foreground is the default when the orchestrator needs the worker result before the next decision, when the task is short, when permission prompts are likely, or when failure must be surfaced immediately. Background is for independent, long-running, checkpointable work where the orchestrator can do useful work meanwhile.
 
 - **Never detach inside a worker shell command.** Do not use nested `&`, `nohup`, `disown`, `Start-Process`, or a wrapper that exits while the real worker continues. The harness must track the real `opencode run` / `codex exec` process, not a short-lived launcher.
 - **Reliable background launch pattern:** start the actual worker as the harness background task; keep stdout/stderr attached to the harness output file; close stdin (`</dev/null`); record task ID, PID if exposed, start time, max wall-clock, allowed files, verification command, and receipt path.
-- **Progress via a status file, not polling.** Instruct workers to append one JSON line per milestone (`STARTED`/`FIRST_EDIT`/`TEST_PASSED`/`RECEIPT_WRITTEN`/`BLOCKED`…) to `.orchestrator/events.jsonl` (gitignored, dev-only). When already active, read that file once to see ALL workers' states — one cheap read, never a poll loop. Schema + protocol: `docs/orchestrator-protocol.md`.
-- **Monitor event-driven, NOT by polling.** Rely on the harness completion notification for terminal state. After launching a healthy background worker, spend **zero** turns asking for status. Schedule at most **one** fallback wakeup for hang detection, at the slice's max wall-clock **plus grace** — used only if no completion notification arrived. No 60–90s check, no 2–3 min watchdog loop, no "status?" turns to healthy workers, no repeated CI-watch loops (use `--auto`).
-- **Liveness = output freshness plus process activity**, not "process still exists." No new output for ~5-10 minutes with near-flat CPU, or a wall-clock budget breach, is `HUNG`.
-- **On the single fallback wakeup:** inspect output freshness + process activity. If output is fresh or CPU is active, extend once with an explicit new deadline and wait for the notification again. If stalled or budget exceeded, stop it through the harness/supervisor, inspect the working-tree diff and receipt/output, then resume-from-diff or retry the same provider per §Model Routing. Don't restart from scratch if useful work landed.
+- **Progress via a status file, not polling.** Instruct workers to append one JSON line per milestone (`STARTED`/`FIRST_EDIT`/`TEST_PASSED`/`RECEIPT_WRITTEN`/`BLOCKED`...) to `.orchestrator/events.jsonl` (gitignored, dev-only). When already active, read that file once to see ALL workers' states � one cheap read, never a poll loop. Schema + protocol: `docs/orchestrator-protocol.md`.
+- **Monitor event-driven, NOT by polling.** Rely on the harness completion notification for terminal state. After launching a healthy background worker, spend **zero** turns asking for status. Schedule at most **one** fallback wakeup for hang detection, at the slice's max wall-clock **plus grace** � used only if no completion notification arrived. No 60-90s check, no 2-3 min watchdog loop, no "status?" turns to healthy workers, no repeated CI-watch loops (use `--auto`).
+- **Liveness = status-file progress, output freshness, and process activity**, not "process still exists." Hang thresholds scale to the task expected runtime: if comparable tasks finished in ~T minutes, treat flat output + flat CPU for the greater of `1.5x T` or 10 minutes as `HUNG`.
+- **Harness wrapper-death is not proof of worker death.** If the tracked background wrapper is killed, verify via `.orchestrator/events.jsonl`, process liveness (`tasklist`), and file mtimes before concluding the real worker died. A status-file `RECEIPT_WRITTEN` or a pushed commit is stronger evidence than a wrapper-kill notification.
+- **On the single fallback wakeup:** inspect the status file, output freshness, and process activity. If output is fresh or CPU is active, extend once with an explicit new deadline and wait for the notification again. If stalled or budget exceeded, stop it through the harness/supervisor, inspect the working-tree diff and receipt/output, then resume-from-diff or retry the same provider per �Model Routing. Extend AT MOST ONCE, then stop-and-salvage. Don't restart from scratch if useful work landed.
 - **Prefer small, checkpointable worker units for high-blast-radius slices** over one long background run. A slice that rewrites renders/tests should be split or checkpointed so a hang loses minutes, not an hour.
-- **Bound worker scope in the dispatch contract:** allowed files only; deleting exported symbols or touching files outside scope = `BLOCKED`, ask — not a worker judgment call.
+- **Bound worker scope in the dispatch contract:** allowed files only; deleting exported symbols or touching files outside scope = `BLOCKED`, ask � not a worker judgment call.
 
-**For CI, use GitHub-native auto-merge — do not babysit.** Enable `gh pr merge <n> --squash --auto` once; branch protection guarantees it merges only when all lanes pass, then GitHub does it for you. No `--watch` loops, no repeated "6/8 lanes green" checks. If a PR falls behind main, update the branch once and let `--auto` finish the job.
-
+**For CI, use GitHub-native auto-merge � do not babysit.** Enable `gh pr merge <n> --squash --auto` once; branch protection guarantees it merges only when all lanes pass, then GitHub does it for you. No `--watch` loops, no repeated "6/8 lanes green" checks. If a PR falls behind main, update the branch once and let `--auto` finish the job.
 ## Model Routing
 
-**Routing is task-calibrated, not provider-class-only.** Objective (lexicographic): perfect-first-time (no overkill) → minimum TOTAL quota incl. rework → speed. For each task, pick the **smallest model+effort whose expected first-time-right probability clears the task's quality bar**, then minimize expected total quota (a too-cheap model that fails and retries costs MORE than the right-sized one once), then latency. The full procedure, quality bars, dispatch-contract template, status-events + never-idle protocol live in **`docs/orchestrator-protocol.md`**; the concrete task→model table lives in **`docs/model-routing.md`**.
-
+**Routing is task-calibrated, not provider-class-only.** Latency is a first-class factor, not a tie-break. Prefer the FASTEST worker that clears the quality bar � a model finishing in minutes beats a cheaper one taking 30-45 min; wall-clock is a real cost. Objective (lexicographic): perfect-first-time (no overkill) -> minimize total quota including rework plus a latency penalty -> remaining tie-breaks. The full procedure, quality bars, dispatch-contract template, status-events + never-idle protocol live in **`docs/orchestrator-protocol.md`**; the concrete task->model table lives in **`docs/model-routing.md`**.
 - **Orchestrator (brain):** cheapest capable Sonnet-class (Sonnet 5).
 - **Frontier planner/auditor:** codex `gpt-5.5` high reasoning.
 - **Workers (bounded execution):** consult the task→model table in `docs/model-routing.md` — mechanical/low-risk → `deepseek-v4-flash`-class; bounded coding → stronger opencode-go coder (`deepseek-v4-pro`/`kimi-k2.7-code`/`glm-5.2`) or codex `gpt-5.4`; UI/harness-native → Claude sonnet-class `Agent`. Do NOT default to one model for everything. Retry transient opencode-go failures with capped backoff before falling back.
@@ -118,3 +125,8 @@ If confidence or safety is anything less than clear → **PAUSE and ask**; when 
 Current project state lives in repo docs, receipts, git, and CI. Durable operating policy lives in this file plus indexed memory. If `CLAUDE.md`, memory, handoff docs, and repo docs conflict, stop and surface the conflict instead of choosing silently.
 
 Self-merge authorization is SCOPED, not blanket — see §Quality Gate & Merge Authorization and memory `merge-authorization-scoped`. Outside that scope, get current-turn approval.
+
+
+
+
+
