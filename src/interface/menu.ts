@@ -1874,6 +1874,7 @@ export async function runChatLoop(
       // one place (memory, recap, intent reflection, the parallel-models panel).
       out.write(
         dim('  Just type to chat — I pick the right model for each message.\n', out.color) +
+        '  !<command>    — run a shell command directly (e.g. !ls, !git status); ! alone shows usage\n' +
         '  /retry        — regenerate my last answer\n' +
         '  /edit         — edit one of your recent messages and re-run from there\n' +
         '  /goal <text>  — build + show a detailed plan (with approach/rationale + todos), write PLAN.md, then get your approval before autonomous execution (Ctrl+C to stop)\n' +
