@@ -4,6 +4,37 @@ All notable changes to **myshell-tools** are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.163.0] - 2026-07-06 — home menu + per-conversation workspaces
+
+### Added
+- **Workspace-per-conversation.** Each conversation binds to a workspace root
+  (git root or cwd), captured at creation. A new-conversation flow with
+  `[1] Current` / `[2] Pick workspace…` (a fuzzy workspace picker ranked by
+  current root → prior conversation workspaces → parent dirs), and a
+  workspace-aware Recent list. Conversation turns now execute in their own
+  workspace (cwd threaded through repo-map, preflight, execution, verify,
+  evidence, ledger, memory, and goals).
+- **`!` shell passthrough** inside a conversation: input starting with `!` runs
+  as a shell command (gated by the command policy, with confirmation for
+  destructive commands) instead of going to the model.
+- **Provider label on Recent rows** (engine · effort), from a real persisted
+  `lastProvider` field.
+
+### Changed
+- **Home menu redesign** — Effort Mode top box, a single Recent list, a centered
+  Session Manager box, and a `Choice:` prompt, cloned from the data-tools skeleton.
+- **Navigation:** `ESC` exits from any depth; left-arrow pops one level (a real
+  back button); root shows only `ESC to exit`. Dropped the Ctrl+C ×2/×3 UI copy.
+- **Self-healing startup** — the user-facing Doctor/Health surface is removed;
+  startup self-heals migrations silently (archive-only migration conflicts no
+  longer surface as health issues). A hidden `doctor --fix` entry point remains
+  for CI/support.
+
+### Fixed
+- Removed dead/misleading completion scaffolding: a stray committed file, help
+  text advertising an unshipped capability, and a fire-and-forget code path that
+  could commit to git as a side effect of turn completion.
+
 ## [3.162.0] - 2026-07-03 — de-drift: promote planning-depth, auto-smart, and byproduct-fallback to unconditional
 
 ### Changed
