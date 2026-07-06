@@ -536,6 +536,12 @@ export interface WatchdogOptions {
   readonly isTty: boolean;
   readonly onUnresponsive: (snapshot: WatchdogSnapshot) => void;
   readonly now: () => number;
+  /**
+   * When `true`, the watchdog will not arm until both the normal
+   * `armCooldownMs` has elapsed AND at least one successful UI commit has
+   * been recorded via `recordUiCommit()`. This prevents immediate recovery
+   * loops when the recovered conversation is still rendering.
+   */
   readonly recoveryRelaunch: boolean;
 }
 
@@ -571,6 +577,7 @@ export function createWatchdog(opts: WatchdogOptions): WatchdogHeartbeat {
   let suspended = false;
   let consecutiveBadSamples = 0;
   let fired = false;
+  let hasUiCommit = false;
 
   const armedAtMs = now() + opts.armCooldownMs;
   let expectedNextSampleMs = now() + opts.samplerIntervalMs;
@@ -611,6 +618,7 @@ export function createWatchdog(opts: WatchdogOptions): WatchdogHeartbeat {
     }
 
     if (sampleMs < armedAtMs) return;
+    if (opts.recoveryRelaunch && !hasUiCommit) return;
     if (suspended) return;
 
     const watchedActive =
@@ -660,6 +668,7 @@ export function createWatchdog(opts: WatchdogOptions): WatchdogHeartbeat {
 
   return {
     recordUiCommit(): void {
+      hasUiCommit = true;
       lastUiCommitMs = now();
     },
     recordInput(): void {

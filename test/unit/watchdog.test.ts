@@ -177,4 +177,57 @@ describe('createWatchdog', () => {
     heartbeat.stop();
     assert.equal(opts.snapshots.length, countAfterFirst);
   });
+
+  it('recoveryRelaunch: does not fire when cooldown elapsed but no UI commit', () => {
+    let nowMs = 1_000;
+    const opts = makeOpts({
+      armCooldownMs: 0,
+      recoveryRelaunch: true,
+      now: () => nowMs,
+    });
+    const heartbeat = createWatchdog(opts);
+    heartbeat.setChatActive(true);
+    heartbeat.recordInput();
+
+    for (let i = 0; i < 2; i++) {
+      nowMs += 500;
+      vi.advanceTimersByTime(500);
+    }
+
+    nowMs += 12_000;
+    vi.advanceTimersByTime(500);
+
+    for (let i = 0; i < 10; i++) {
+      nowMs += 500;
+      vi.advanceTimersByTime(500);
+    }
+
+    heartbeat.stop();
+    assert.equal(opts.snapshots.length, 0);
+  });
+
+  it('recoveryRelaunch: can fire when cooldown elapsed AND UI commit recorded', () => {
+    let nowMs = 1_000;
+    const opts = makeOpts({
+      armCooldownMs: 0,
+      recoveryRelaunch: true,
+      now: () => nowMs,
+    });
+    const heartbeat = createWatchdog(opts);
+    heartbeat.setChatActive(true);
+    heartbeat.recordInput();
+    heartbeat.recordUiCommit();
+
+    for (let i = 0; i < 2; i++) {
+      nowMs += 500;
+      vi.advanceTimersByTime(500);
+    }
+
+    nowMs += 12_000;
+    vi.advanceTimersByTime(500);
+
+    heartbeat.stop();
+    assert.ok(opts.snapshots.length >= 1, `expected at least 1 snapshot, got ${opts.snapshots.length}`);
+    assert.equal(opts.snapshots[0]!.reason, 'hard-stall');
+  });
 });
