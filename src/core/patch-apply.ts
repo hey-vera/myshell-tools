@@ -40,7 +40,7 @@ function normalizePath(value: string): string | null {
 }
 
 function extractFilesFromText(text: string): string[] {
-  const matches = text.match(/(?:[A-Za-z]:[\\/]|\.{1,2}[\\/]|\/)?[^\s,;:(){}\[\]<>]+/g) ?? [];
+  const matches = text.match(/(?:[A-Za-z]:[\\/]|\.{1,2}[\\/]|\/)?[^\s,;:(){}[\]<>]+/g) ?? [];
   const out: string[] = [];
   for (const match of matches) {
     const normalized = normalizePath(match);

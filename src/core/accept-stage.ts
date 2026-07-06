@@ -473,13 +473,16 @@ function buildCompletionRepairEvidence(): CompletionRepairEvidence {
 
 export function finalizeAcceptTurn(params: {
   deps: OrchestrateDeps;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   final: any;
   candidate: CandidateResult;
   verifyOutcome?: VerifyOutcome;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
 }): { final: any; patchWork?: any } {
   const { deps, final, candidate, verifyOutcome } = params;
   if (deps.completionResultV1 === true) {
     const cr = buildCompletionResultV1({ deps, candidate, ...(verifyOutcome !== undefined ? { verifyOutcome } : {}) });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const patchWork = { cwd: (deps as any).cwd || process.cwd() || '.', edited: (candidate as any).changedPaths || [] };
     return { final: { ...final, completionResult: cr }, patchWork };
   }
@@ -518,6 +521,7 @@ export function buildCompletionResultV1(params: {
 
   const worktree = buildWorktreeFromVerify(verifyOutcome, { ranked: [], symbolSummary: [] });
 
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const goalSettlement = { allowed: terminal === 'done' && verification.status === 'verified', state: (terminal === 'done' ? 'done' : terminal === 'blocked' ? 'blocked' : 'active') as any, reason: terminal === 'done' ? 'verified' : 'skeleton' };
 
   const replayPolicy = { replay: terminal === 'done' ? 'forbidden-already-settled' : 'repair-only', reason: 'skeleton from 17a' } as const;
@@ -554,6 +558,7 @@ export function attachCompletionIfFlag(
   candidate: CandidateResult,
   verifyOutcome?: VerifyOutcome,
 ): Extract<CoreEvent, { readonly type: 'final' }> {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const res = finalizeAcceptTurn({ deps, final: f, candidate, verifyOutcome } as any);
   if (deps.completionResultV1 === true && res.patchWork) {
     // fire for now; strategy recommends await in caller (cli handler)

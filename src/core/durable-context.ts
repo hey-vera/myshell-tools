@@ -330,8 +330,10 @@ export function renderEnvironmentBlock(ranked: readonly RankedRepoFile[]): strin
   return ranked
     .slice(0, 20)
     .map((r) => {
-      const symPart = (r as any).symbols && Array.isArray((r as any).symbols) && (r as any).symbols.length > 0
-        ? ` — ${(r as any).symbols.slice(0, 3).join(',')}`
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const syms = (r as any).symbols;
+      const symPart = syms && Array.isArray(syms) && syms.length > 0
+        ? ` — ${syms.slice(0, 3).join(',')}`
         : '';
       return `${r.path}${symPart}`;
     })
@@ -407,7 +409,9 @@ export function reconstructContextV1(args: ReconstructArgs): ReconstructedContex
   if (envSnap) {
     const st = envSnap.state as EnvironmentSnapshotState | undefined;
     const ranked = st?.rankedFiles ?? [];
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const text = (st as any)?.rendered ?? renderEnvironmentBlock(ranked as any);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const symCount = ranked.reduce((n: number, r: any) => n + (r.symbols?.length || 0), 0);
     promptBlocks.push({
       id: `env-${envSnap.snapshotId}`,
@@ -440,6 +444,7 @@ export function reconstructContextV1(args: ReconstructArgs): ReconstructedContex
     conversationId,
     baseSnapshotId: base?.snapshotId ?? null,
     replayedEvents: replayed,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     promptBlocks: promptBlocks as any,
     openLoops: [],
     tokenEstimate: Math.min(totalTokens, RECONSTRUCTED_HARD_MAX_TOKENS),
@@ -477,13 +482,14 @@ export function verifyEventChainFull(events: readonly CanonicalEventV1[]): { ok:
   const chainRes = validateEventChain(events);
   if (!chainRes.ok) return chainRes;
   for (let i = 1; i < events.length; i++) {
-    const v = verifyAppend(events[i - 1]!, events[i]!);
+    const v = verifyAppend(events[i - 1] as CanonicalEventV1, events[i] as CanonicalEventV1);
     if (!v.ok) return v;
   }
   return { ok: true };
 }
 
 // Stub for orchestrate hook (completion binding); real event construction via accept-stage + durable append in full impl.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function makeCompletionResultEvent(_params: any): any {
   return { type: 'event', kind: 'completion.result' };
 }

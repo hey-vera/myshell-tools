@@ -17,10 +17,13 @@ import {
   verifyAppend,
   verifyEventChainFull,
   makeCompletionResultPayload,
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   computeStableHash,
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   EVENT_PAYLOAD_MAX_BYTES,
   SNAPSHOT_STATE_MAX_BYTES,
   type CanonicalEventV1,
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   type ContextSnapshotV1,
   type RankedRepoFile,
 } from '../../src/core/durable-context.js';
@@ -90,6 +93,7 @@ describe('durable-context (P1-11a)', () => {
   });
 
   it('unsupported version fails closed', () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const bad = { ...createCanonicalEventV1({ logId, eventId: 'e0', sequence: 0, priorEventId: null, createdAt: now, conversationId: convId, kind: 'turn.user', payload: {} }), version: 2 } as any;
     const res = validateEventChain([bad]);
     expect(res.ok).toBe(false);
@@ -111,6 +115,7 @@ describe('durable-context (P1-11a)', () => {
   it('environment snapshot + reconstruct assembles bounded environment block (no live fs)', () => {
     const ranked: RankedRepoFile[] = [
       { path: 'src/core/orchestrate.ts', score: 120 },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       { path: 'src/core/types.ts', score: 80, symbols: ['SessionEntry', 'OrchestrateDeps'] } as any,
     ];
     const snap = createEnvironmentSnapshot(logId, makeRef(5, 'e5'), ranked, now);
@@ -133,6 +138,7 @@ describe('durable-context (P1-11a)', () => {
   it('renderEnvironmentBlock carries symbols and preserves E1 paths-only parity', () => {
     const pathsOnly: RankedRepoFile[] = [{ path: 'a/b.ts', score: 10 }, { path: 'c.ts', score: 5 }];
     const withSyms: RankedRepoFile[] = [
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       { path: 'a/b.ts', score: 10, symbols: ['foo', 'bar'] } as any,
       { path: 'c.ts', score: 5 },
     ];
@@ -152,14 +158,17 @@ describe('durable-context (P1-11a)', () => {
     expect(recon.version).toBe(1);
     expect(recon.promptBlocks.some((b) => b.kind === 'recent-turns')).toBe(true);
     // no provider field forced
-    expect(e.provider).toBeUndefined();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect((e as any).provider).toBeUndefined();
   });
 
   it('map snapshot facts + symbols carried into durable snapshot (solo/panel equivalence)', () => {
     const ranked: (RankedRepoFile & { symbols?: readonly string[] })[] = [{ path: 'pkg.json', score: 99, symbols: ['name', 'scripts'] }];
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const snap = createEnvironmentSnapshot(logId, makeRef(1), ranked as any, now);
     const st = snap.state as { rankedFiles: RankedRepoFile[] };
     expect(st.rankedFiles[0].path).toBe('pkg.json');
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     expect((st.rankedFiles[0] as any).symbols).toContain('name');
     // reconstruct uses snapshot, no re-derive
     const recon = reconstructContextV1({ logId, conversationId: convId, snapshots: [snap], tailEvents: [] });

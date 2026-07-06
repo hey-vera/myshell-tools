@@ -16,6 +16,7 @@ describe('durable-prompt-seam', () => {
       stateHash: '',
       invalidatedBy: null,
       tokenEstimate: 10,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any;
     const text = buildEnvironmentContextFromRecon(snap, []);
     expect(text.length).toBeGreaterThan(0);

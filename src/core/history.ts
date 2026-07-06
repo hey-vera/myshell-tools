@@ -282,12 +282,15 @@ export function historyTruncationInfo(
 
 /** Reconstruction hook using Phase1 map (ranked+symbols) snapshot for ReconstructedContextV1. Delegates to durable recon. */
 export function reconstructUsingCompletionMapSnapshot(
-  snapshot: { ranked?: readonly any[]; env?: string } | null,
-  priorHistory?: readonly SessionEntry[],
+  snapshot: { ranked?: readonly unknown[]; env?: string } | null,
+  _priorHistory?: readonly SessionEntry[],
 ): ReconstructedContextV1 {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   if (!snapshot || !(snapshot as any).ranked) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     return { version: 1, logId: 'hist-compat', conversationId: 'current', baseSnapshotId: null, replayedEvents: [], promptBlocks: [], openLoops: [], tokenEstimate: 0 } as any;
   }
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const envSnap = { version: 1, snapshotId: 's', logId: 'l', kind: 'environment' as const, coversThrough: { logId: 'l', eventId: 'e', sequence: 0 }, createdAt: '', sourceEventIds: [], state: { rankedFiles: (snapshot as any).ranked }, stateHash: '', invalidatedBy: null, tokenEstimate: 10 } as any;
   const recon = reconstructContextV1({ logId: 'l', conversationId: 'current', snapshots: [envSnap], tailEvents: [] });
   return recon;

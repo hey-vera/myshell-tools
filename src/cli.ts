@@ -882,11 +882,10 @@ async function main(): Promise<void> {
       config.codebaseAwareness === false
         ? ''
         : await buildEnvironmentContext(cwd, nodeRepoScanPort).catch(() => '');
-    if ((config as any).completionResultV1) {
+    if ((config as unknown as { completionResultV1?: boolean }).completionResultV1) {
       // wire: when flag, populate via durable recon seam (strategy step 4)
       // (snapshot would come from durable log in full session)
-      const reconEnv = buildEnvironmentContextFromRecon(null, []);
-      // if reconEnv, could override, but keep gathered for now
+      void buildEnvironmentContextFromRecon(null, []); // exercised for recon seam
     }
     // TOOL SELF-AWARENESS (tool-state §): render the authoritative "ABOUT THIS
     // TOOL" block from the live env + effective mode + config so the partner

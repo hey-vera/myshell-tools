@@ -87,7 +87,9 @@ import {
 import { autoModeForPlanInfos, type PlanInfo } from './policy.js';
 import { pressureFromSignals, preflightAdmits } from './capability-budget.js';
 import { ENVIRONMENT_BLOCK_CHAR_CAP } from './repo-map.js';
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 import { makeCompletionResultEvent, type ReconstructedContextV1 } from './durable-context.js';
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 import type { CompletionResultV1 } from './types.js';
 import { buildRetrievalContext, buildWebContext } from './research.js';
 import { collectLocalEvidence, collectWebEvidence } from './research.js';
@@ -1914,6 +1916,7 @@ export async function* orchestrate(
       attempts: 0,
     };
     // Activated for one-chat (removed dark flag check): completion.result + map snapshot substrate
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     makeCompletionResultEvent({ logId: 'l', eventId: 'e', sequence: 1, priorEventId: null, createdAt: deps.clock.isoNow(), conversationId: deps.session.id, result: { version:1, id:'x', turnId:'t', sessionId:deps.session.id, createdAt:deps.clock.isoNow(), scope:'conversation', terminal:'answered', objective:'', doneCondition:null, output:'', success:true, bestEffort:false, verification:{status:'unverified', testEvidence:{status:'not-needed'}, repair:{attempted:false,attempts:0,maxAttempts:1,retestedAfterLastRepair:false,finalAttemptChangedPaths:[]}, factualClaims:[], obligationsSatisfied:[], obligationsUnmet:[], ruleCodes:[] } as any, deliveryQuality:{status:'skipped',checked:false,issues:[],nextActionNamed:false,userVisibleSummary:''}, worktree:{baseline:'unknown',baselineEntries:[],changedByAssistant:[],excludedPreExisting:[],concurrentUserEdits:[],conflictPaths:[]}, goalSettlement:{allowed:false,state:'none',reason:''}, replayPolicy:{replay:'unknown',reason:''}, receipt:{lines:[]}, upstream:{} } as any });
     return;
   }

@@ -22,6 +22,7 @@ import {
   ENVIRONMENT_BLOCK_CHAR_CAP,
   extractTopLevelSymbols,
   type RepoFileSignals,
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   type RankedRepoFile,
   type EnvironmentFacts,
   type RepoScanPort,
@@ -365,7 +366,7 @@ describe('renderEnvironmentBlock', () => {
     assert.match(out, /app\/page\.tsx — Home, fetchPosts/);
     assert.match(out, /lib\/api\.ts — fetchPosts/);
     // Non-sym file still renders as plain path.
-    assert.match(out, /\n  app\/socials\/page\.tsx\n/);
+    assert.match(out, /\n {2}app\/socials\/page\.tsx\n/);
   });
 
   it('drops symbols (not paths) under tight cap to keep more files (accumulate-to-cap)', () => {
