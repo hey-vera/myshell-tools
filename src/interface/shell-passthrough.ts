@@ -114,6 +114,7 @@ export async function runShellPassthrough(
   commandGate: CommandGatePort,
   runner: ShellRunnerPort,
 ): Promise<void> {
+  if (command.trim().length === 0) return; // Slice 5 defensive guard in passthrough path (menu-build-spec-final.md:382; kern-spec.md:45) — caller in menu.ts already handles; zero regression
   const requestedBackground = requestsTrailingBackground(command);
   const gate = commandGate.gate(command, { requestedBackground });
   if (requestedBackground && gate.forbidBackground) {
