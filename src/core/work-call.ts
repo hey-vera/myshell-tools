@@ -42,7 +42,7 @@
  */
 
 import type { CoreEvent, OrchestrateDeps, Tier, Classification, Assessment, Policy } from './types.js';
-import type { CliError, Usage, ProviderRequest, Provider, ProviderId } from '../providers/port.js';
+import type { CliError, Usage, ProviderRequest, Provider, ProviderEvent, ProviderId } from '../providers/port.js';
 import type { TurnCallBudget } from './turn-call-budget.js';
 import { runBudgetedProvider, type BudgetedProviderCall } from './budgeted-provider.js';
 import { route, clampTier, type CapabilityRouteContext, type CapabilityTaskSignals } from './route.js';
@@ -213,6 +213,8 @@ interface StreamOutcome {
   providerCostUsd: number | undefined;
   /** Provider-assigned session/thread id captured from the `done` event, if any. */
   sessionId: string | undefined;
+  /** Tool events observed during the run, for patch capture on accept. */
+  toolEvents: readonly ProviderEvent[];
   canceled: boolean;
   /** True only when the signal was already aborted before streaming started. */
   canceledBeforeStream: boolean;
@@ -238,14 +240,16 @@ async function* streamProvider(
   let providerCostUsd: number | undefined;
   let sessionId: string | undefined;
   let hadDoneWithText = false;
+  const toolEvents: ProviderEvent[] = [];
 
   // Pre-stream abort check
   if (signal.aborted) {
-    return { finalText, errored, usage, providerCostUsd, sessionId, canceled: true, canceledBeforeStream: true };
+    return { finalText, errored, usage, providerCostUsd, sessionId, toolEvents, canceled: true, canceledBeforeStream: true };
   }
 
   for await (const ev of runBudgetedProvider(provider, req, signal, call)) {
     yield { type: 'provider-event', tier, event: ev };
+    if (ev.type === 'tool') toolEvents.push(ev);
 
     if (ev.type === 'done') {
       finalText = ev.text;
@@ -278,11 +282,11 @@ async function* streamProvider(
     }
 
     if (signal.aborted) {
-      return { finalText, errored, usage, providerCostUsd, sessionId, canceled: true, canceledBeforeStream: false };
+      return { finalText, errored, usage, providerCostUsd, sessionId, toolEvents, canceled: true, canceledBeforeStream: false };
     }
   }
 
-  return { finalText, errored, usage, providerCostUsd, sessionId, canceled: false, canceledBeforeStream: false };
+  return { finalText, errored, usage, providerCostUsd, sessionId, toolEvents, canceled: false, canceledBeforeStream: false };
 }
 
 /**
@@ -300,9 +304,10 @@ async function collectProviderRun(
   let usage: Usage | undefined;
   let providerCostUsd: number | undefined;
   let sessionId: string | undefined;
+  const toolEvents: ProviderEvent[] = [];
 
   if (signal.aborted) {
-    return { finalText, errored, usage, providerCostUsd, sessionId, canceled: true, canceledBeforeStream: true };
+    return { finalText, errored, usage, providerCostUsd, sessionId, toolEvents, canceled: true, canceledBeforeStream: true };
   }
 
   for await (const ev of runBudgetedProvider(provider, req, signal, call)) {
@@ -325,11 +330,11 @@ async function collectProviderRun(
     }
 
     if (signal.aborted) {
-      return { finalText, errored, usage, providerCostUsd, sessionId, canceled: true, canceledBeforeStream: false };
+      return { finalText, errored, usage, providerCostUsd, sessionId, toolEvents, canceled: true, canceledBeforeStream: false };
     }
   }
 
-  return { finalText, errored, usage, providerCostUsd, sessionId, canceled: false, canceledBeforeStream: false };
+  return { finalText, errored, usage, providerCostUsd, sessionId, toolEvents, canceled: false, canceledBeforeStream: false };
 }
 
 // ---------------------------------------------------------------------------
@@ -1153,6 +1158,7 @@ export async function* runWorkCall(input: WorkCallInput): AsyncGenerator<CoreEve
           ? { sessionId: candidate.sessionId }
           : {}),
       ...(candidate.workTrace !== undefined ? { workTrace: candidate.workTrace } : {}),
+      ...(outcome.toolEvents.length > 0 ? { toolEvents: outcome.toolEvents } : {}),
     };
     acceptedRun = repairedRun;
     return makeCandidate(repairedRun, candidate.disposition);
@@ -1699,6 +1705,7 @@ export async function* runWorkCall(input: WorkCallInput): AsyncGenerator<CoreEve
         durationMs,
         ...(outcome.sessionId !== undefined ? { sessionId: outcome.sessionId } : {}),
         ...(workTrace !== undefined ? { workTrace } : {}),
+        ...(outcome.toolEvents.length > 0 ? { toolEvents: outcome.toolEvents } : {}),
         ...(subscriptionAccount !== null ? { accountId: subscriptionAccount.id } : {}),
       };
     }

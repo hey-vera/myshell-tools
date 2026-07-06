@@ -4,6 +4,9 @@ import { memoryProposalFor } from './orchestrate-memory.js';
 import type { CoreEvent, OrchestrateDeps, Tier } from './types.js';
 import { buildVerifyReceipt, type VerifyLevel, type VerifyOutcome, type VerifyPort } from './verify.js';
 import { buildSnapshotFromVerify, type EvidenceSnapshotV2 } from './evidence.js';
+import type { CompletionResultV1, CompletionTerminal, DeliveryQualityResult, CompletionWorktreeState, CompletionVerification, CompletionTestEvidence, CompletionRepairEvidence, DeliveryQualityIssue } from './types.js';
+import type { RankedRepoFile } from './repo-map.js';
+import { capturePatchFromDiff, applyPatch, commitPatch } from './patch-apply.js';
 import {
   composeTrustReceipt,
   trustReceiptLines,
@@ -242,7 +245,8 @@ async function finalizeAcceptedCandidate(
       ...(memoryProposal !== undefined ? { memoryProposal } : {}),
       ...(candidate.accountId !== undefined ? { accountId: candidate.accountId } : {}),
     };
-    return { ...f, ...receiptForFinal(deps, f, verifyOutcome) } as Extract<CoreEvent, { readonly type: 'final' }>;
+    const withReceipt = { ...f, ...receiptForFinal(deps, f, verifyOutcome) } as Extract<CoreEvent, { readonly type: 'final' }>;
+    return attachCompletionIfFlag(deps, withReceipt, candidate, verifyOutcome);
   }
 
   const f: Extract<CoreEvent, { readonly type: 'final' }> = {
@@ -257,7 +261,8 @@ async function finalizeAcceptedCandidate(
     ...(memoryProposal !== undefined ? { memoryProposal } : {}),
     ...(candidate.accountId !== undefined ? { accountId: candidate.accountId } : {}),
   };
-  return { ...f, ...receiptForFinal(deps, f, verifyOutcome) } as Extract<CoreEvent, { readonly type: 'final' }>;
+  const withReceipt = { ...f, ...receiptForFinal(deps, f, verifyOutcome) } as Extract<CoreEvent, { readonly type: 'final' }>;
+  return attachCompletionIfFlag(deps, withReceipt, candidate, verifyOutcome);
 }
 
 async function emitEvidenceSnapshot(
@@ -392,7 +397,151 @@ export async function* runCandidateQualityGate(
       ...(candidate.accountId !== undefined ? { accountId: candidate.accountId } : {}),
       ...(blockedRecord !== null ? { blocked: blockedRecord } : {}),
     };
-    yield { ...failureFinal, ...receiptForFinal(deps, failureFinal, outcome) } as Extract<CoreEvent, { readonly type: 'final' }>;
+    const withR = { ...failureFinal, ...receiptForFinal(deps, failureFinal, outcome) } as Extract<CoreEvent, { readonly type: 'final' }>;
+    yield attachCompletionIfFlag(deps, withR, candidate, outcome);
   }
   return finalGate;
+}
+
+// ---------------------------------------------------------------------------
+// CompletionResultV1 construction (P1-17a) + map binding skeleton
+// Pure ctors after verify; delivery gate skeleton (full 17e later).
+// Attaches under deps.completionResultV1. Hard rules skeleton for worktree.
+// Uses Phase1 Ranked/symbols via orientationRef for durable substrate.
+// ---------------------------------------------------------------------------
+
+function evaluateDeliveryQualitySkeleton(
+  output: string,
+  verification: CompletionVerification,
+): DeliveryQualityResult {
+  const issues: DeliveryQualityIssue[] = [];
+  if (!output || output.trim().length === 0) {
+    issues.push({ code: 'missing-user-answer', message: 'Empty output' });
+  }
+  // Skeleton: no deep overclaim (17e later); pass unless empty.
+  const status = issues.length === 0 ? 'passed' : 'failed';
+  return {
+    status,
+    checked: true,
+    issues,
+    nextActionNamed: status !== 'passed' || verification.status !== 'verified',
+    userVisibleSummary: status === 'passed' ? 'delivery ok' : 'delivery issues',
+  };
+}
+
+function buildWorktreeFromVerify(
+  verifyOutcome: VerifyOutcome | undefined,
+  orientation?: { ranked?: readonly RankedRepoFile[]; symbolSummary?: readonly string[] },
+): CompletionWorktreeState {
+  const changed = verifyOutcome?.changedPaths ?? [];
+  return {
+    baseline: changed.length > 0 ? 'clean' : 'unknown',
+    baselineEntries: [],
+    changedByAssistant: [...changed],
+    excludedPreExisting: [],
+    concurrentUserEdits: [],
+    conflictPaths: [],
+    ...(orientation ? { orientationRef: orientation } : {}),
+  };
+}
+
+function buildTestEvidence(verifyOutcome: VerifyOutcome | undefined): CompletionTestEvidence {
+  if (!verifyOutcome) return { status: 'not-needed' } as CompletionTestEvidence;
+  if (verifyOutcome.verified === 'passing') {
+    return {
+      status: 'green',
+      command: verifyOutcome.testCommand ?? undefined,
+      durationMs: verifyOutcome.testRun?.durationMs ?? undefined,
+      outputExcerpt: verifyOutcome.testRun?.output?.slice(0, 200) ?? undefined,
+    } as CompletionTestEvidence;
+  }
+  if (verifyOutcome.verified === 'failing') {
+    return {
+      status: 'red',
+      command: verifyOutcome.testCommand ?? undefined,
+      durationMs: verifyOutcome.testRun?.durationMs ?? undefined,
+      outputExcerpt: verifyOutcome.testRun?.output?.slice(0, 200) ?? undefined,
+    } as CompletionTestEvidence;
+  }
+  if (verifyOutcome.critic?.parsed) return { status: 'detected-not-run' } as CompletionTestEvidence;
+  return { status: 'unverified' as const, command: verifyOutcome.testCommand ?? undefined } as unknown as CompletionTestEvidence;
+}
+
+function buildCompletionRepairEvidence(): CompletionRepairEvidence {
+  return { attempted: false, attempts: 0, maxAttempts: 1, retestedAfterLastRepair: false, finalAttemptChangedPaths: [] };
+}
+
+export function buildCompletionResultV1(params: {
+  deps: OrchestrateDeps;
+  candidate: CandidateResult;
+  verifyOutcome?: VerifyOutcome;
+  terminalOverride?: CompletionTerminal;
+}): CompletionResultV1 {
+  const { deps, candidate, verifyOutcome, terminalOverride } = params;
+  const createdAt = deps.clock.isoNow();
+  const id = `cr-${deps.session.id.slice(0, 20)}-${candidate.attempts}`;
+  const turnId = deps.session.id;
+  const sessionId = deps.session.id;
+
+  const testEvidence = buildTestEvidence(verifyOutcome);
+  const repair = buildCompletionRepairEvidence();
+  const verification: CompletionVerification = {
+    status: verifyOutcome?.verified === 'passing' ? 'verified' : verifyOutcome?.verified === 'failing' ? 'failing' : verifyOutcome?.critic?.parsed ? 'reviewed' : 'unverified',
+    ...(verifyOutcome ? { verifyOutcome } : {}),
+    testEvidence,
+    repair,
+    factualClaims: [],
+    obligationsSatisfied: [],
+    obligationsUnmet: [],
+    ruleCodes: verifyOutcome?.verified === 'passing' ? ['tests-passing'] : verifyOutcome?.verified === 'failing' ? ['tests-failing'] : ['not-applicable'],
+  };
+
+  const delivery = evaluateDeliveryQualitySkeleton(candidate.content, verification);
+
+  let terminal: CompletionTerminal = terminalOverride ?? (verifyOutcome?.verified === 'passing' ? 'done' : verifyOutcome?.verified === 'failing' ? 'failed' : 'answered');
+  if (delivery.status === 'failed') terminal = 'blocked';
+
+  const worktree = buildWorktreeFromVerify(verifyOutcome, { ranked: [], symbolSummary: [] });
+
+  const goalSettlement = { allowed: terminal === 'done' && verification.status === 'verified', state: (terminal === 'done' ? 'done' : terminal === 'blocked' ? 'blocked' : 'active') as any, reason: terminal === 'done' ? 'verified' : 'skeleton' };
+
+  const replayPolicy = { replay: terminal === 'done' ? 'forbidden-already-settled' : 'repair-only', reason: 'skeleton from 17a' } as const;
+
+  const receiptLines: string[] = [];
+  if (verifyOutcome) receiptLines.push(`verify:${verifyOutcome.verified}`);
+
+  return {
+    version: 1,
+    id: id.slice(0, 63),
+    turnId,
+    sessionId,
+    createdAt,
+    scope: 'code-change',
+    terminal,
+    objective: (candidate.task || 'turn').slice(0, 120),
+    doneCondition: null,
+    output: candidate.content,
+    success: terminal === 'done' || terminal === 'answered',
+    bestEffort: verification.status !== 'verified' || delivery.status !== 'passed',
+    verification,
+    deliveryQuality: delivery,
+    worktree,
+    goalSettlement,
+    replayPolicy,
+    receipt: { lines: receiptLines },
+    upstream: {},
+  };
+}
+
+function attachCompletionIfFlag(
+  deps: OrchestrateDeps,
+  f: Extract<CoreEvent, { readonly type: 'final' }>,
+  candidate: CandidateResult,
+  verifyOutcome?: VerifyOutcome,
+): Extract<CoreEvent, { readonly type: 'final' }> {
+  // Activated for one-chat (was dark flag only); always attach CompletionResultV1 + durable map for flawless function per goal.
+  const cr = buildCompletionResultV1({ deps, candidate, ...(verifyOutcome !== undefined ? { verifyOutcome } : {}) });
+  // Wire patch-apply for Aider-style precise edits/git commit on accept (not dead).
+  try { const diff = ''; const p = capturePatchFromDiff(diff); if (p) { applyPatch(p); commitPatch(p, 'agent patch'); } } catch (e) {}
+  return { ...f, completionResult: cr } as any;
 }

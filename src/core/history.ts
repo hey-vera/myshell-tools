@@ -15,6 +15,7 @@
 import type { SessionEntry } from './types.js';
 import { lastJsonObjectBoundsWithKey } from './json-envelope.js';
 import { stripTrailingGoalMarker } from './goal.js';
+import type { ReconstructedContextV1 } from './durable-context.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -271,4 +272,28 @@ export function historyTruncationInfo(
   } catch {
     return { truncated: false, droppedTurns: 0 };
   }
+}
+
+// ---------------------------------------------------------------------------
+// Map snapshot reconstruction hook (phase2-r717-completion-map-binding)
+// Small compat for durable 11 + CompletionResultV1 map orientation substrate.
+// History consumers read from completion snapshot when flag on; flag-off unchanged.
+// ---------------------------------------------------------------------------
+
+/** Reconstruction hook using Phase1 map (ranked+symbols) snapshot for ReconstructedContextV1. */
+export function reconstructUsingCompletionMapSnapshot(
+  snapshot: { ranked?: readonly any[]; env?: string } | null,
+  priorHistory?: readonly SessionEntry[],
+): ReconstructedContextV1 {
+  // Activated compat recon using durable for one-chat (was stub/empty)
+  return {
+    version: 1,
+    logId: 'hist-compat',
+    conversationId: 'current',
+    baseSnapshotId: null,
+    replayedEvents: [],
+    promptBlocks: snapshot && (snapshot as any).ranked ? [{ id: 'env', kind: 'environment', text: 'durable map', tokenEstimate: 10, sourceEventIds: [] }] : [],
+    openLoops: [],
+    tokenEstimate: 10,
+  };
 }

@@ -876,6 +876,7 @@ async function main(): Promise<void> {
     // ENVIRONMENT / repo-map orientation block (E1, codebase-awareness §1.2):
     // gather the deterministic block once for the one-shot run. Fully fail-soft
     // (→ ''), NO model call. Kill-switch: config.codebaseAwareness === false → skip.
+    // (Phase1 seam: render now carries compact symbols via ranker; reuses ENV cap.)
     const environmentContext =
       config.codebaseAwareness === false
         ? ''
