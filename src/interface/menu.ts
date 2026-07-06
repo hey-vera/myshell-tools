@@ -121,7 +121,7 @@ import { readLedger } from '../infra/ledger.js';
 import { summarizeSessionProviderTokens, summarizeSpend } from '../infra/insights.js';
 import type { EnvironmentStatus } from '../providers/detect.js';
 import { detectEnvironment } from '../providers/detect.js';
-import { installProvider, installCommandFor } from '../providers/install.js';
+import { installProvider } from '../providers/install.js';
 import type { Provider, ProviderId, ProviderRequest, SandboxLevel } from '../providers/port.js';
 import { route } from '../core/route.js';
 import {
@@ -225,7 +225,7 @@ import { tribunalEnabled } from './ui/tribunal-flag.js';
 
 
 import { experimentalEnabledByDefault } from './ui/experimental-default.js';
-import { subscriptionsEnabled } from './ui/subscriptions-flag.js';
+
 import { accountParallelismEnabled } from './ui/account-parallelism-flag.js';
 import { readSubscriptions, type SubscriptionAccount, type SubscriptionProvider, type SubscriptionsFileV1 } from '../infra/subscriptions.js';
 
@@ -257,7 +257,6 @@ import {
 import { renderMainScreen, orderRecentForRender } from './menu-render.js';
 import { resolveWorkspaceRoot } from './workspace.js';
 import {
-  parseYesNo,
   yesNoHint,
 } from './menu-questions.js';
 import { reviewConversationGoals } from './menu-goal-review-wiring.js';
@@ -2709,7 +2708,6 @@ export async function runChatLoop(
       const enrichDepsWithAccounts = async (
         base: OrchestrateDeps,
       ): Promise<OrchestrateDeps> => {
-        if (!subscriptionsEnabled(process.env, mutableCtx.config)) return base;
         try {
           const subs = await readSubscriptions();
           const allAccounts = subs.accounts;
@@ -7417,167 +7415,58 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
         let keepRunning = true;
         while (keepRunning) {
           const acctStates = await loadProviderAccountStates();
-          const subsOn = subscriptionsEnabled(process.env, mutableCtx.config);
-          const hasAccounts = Object.values(acctStates).some((s) => s.total > 0);
-          if (subsOn && hasAccounts) {
-            // Provider selection submenu for Accounts management.
-            const activeTotal = Object.values(acctStates).reduce((sum, s) => sum + s.active, 0);
-            out.write('\n  Accounts\n');
-            out.write(`    ${activeTotal} active\n`);
-            for (const provider of ['claude', 'codex', 'opencode', 'grok'] as const) {
-              const s = acctStates[provider];
-              if (s === undefined) continue;
-              const provKey = provider === 'claude' ? 'j' : provider === 'codex' ? 'k' : provider === 'opencode' ? 'o' : 'p';
-              const statusLine = s.total > 0
-                ? `${s.active} active${s.total !== s.active ? `, ${s.total - s.active} disabled` : ''}`
-                : 'no accounts';
-              out.write(`    [${provKey}] ${provider}  ${statusLine}\n`);
-            }
-            out.write('    [b] Back  (← back · ESC to exit)\n\n> ');
-            const accKey = await readMenuKey(out, readLine, undefined, false, inkReadKey);
-            if (accKey === NAV_ESC) {
-              getMenuStack().requestExit();
-              keepRunning = false;
-              continue;
-            }
-            if (accKey === NAV_LEFT) {
-              getMenuStack().pop();
-              keepRunning = false;
-              continue;
-            }
-            if (accKey === 'b' || accKey === null) {
-              getMenuStack().pop();
-              keepRunning = false;
-              continue;
-            }
-            if (accKey === 'j') {
-              await runClaudeAccountsMenu(out, readLine, confirm, ctx.clock, {
-                login: loginFn, suspendStdin, inkReadKey, cwd: ctx.cwd,
-              });
-              await refreshEnvironmentIfStale(true);
-              if (getMenuStack().exitRequested) { keepRunning = false; continue; }
-            } else if (accKey === 'k') {
-              await runCodexAccountsMenu(out, readLine, confirm, ctx.clock, {
-                login: loginFn, suspendStdin, inkReadKey, cwd: ctx.cwd,
-              });
-              await refreshEnvironmentIfStale(true);
-              if (getMenuStack().exitRequested) { keepRunning = false; continue; }
-            } else if (accKey === 'o') {
-              await runOpencodeAccountsMenu(out, readLine, readlineEcho, confirm, ctx.clock, inkReadKey);
-              await refreshEnvironmentIfStale(true);
-              if (getMenuStack().exitRequested) { keepRunning = false; continue; }
-            } else if (accKey === 'p') {
-              await runGrokAccountsMenu(out, readLine, confirm, ctx.clock, {
-                login: loginFn, suspendStdin, inkReadKey, cwd: ctx.cwd,
-              });
-              await refreshEnvironmentIfStale(true);
-              if (getMenuStack().exitRequested) { keepRunning = false; continue; }
-            }
-          } else {
-            // Subscriptions off or no accounts: provider sign-in submenu.
-            out.write('\n  Accounts / Sign in\n');
-            out.write('    [j] Claude\n');
-            out.write('    [k] Codex\n');
-            out.write('    [o] OpenCode\n');
-            out.write('    [p] Grok\n');
-            out.write('    [b] Back  (← back · ESC to exit)\n\n> ');
-            const accKey = await readMenuKey(out, readLine, undefined, false, inkReadKey);
-            if (accKey === NAV_ESC) {
-              getMenuStack().requestExit();
-              keepRunning = false;
-              continue;
-            }
-            if (accKey === NAV_LEFT) {
-              getMenuStack().pop();
-              keepRunning = false;
-              continue;
-            }
-            if (accKey === 'b' || accKey === null) {
-              getMenuStack().pop();
-              keepRunning = false;
-              continue;
-            }
-            if (accKey === 'j') {
-              const claudeRootResult = await loginFn(out, 'claude', {
-                readLine, confirm,
-                ...(suspendStdin !== undefined ? { suspendStdin } : {}),
-              });
-              await refreshEnvironmentIfStale(true);
-              resolveMenuLoginDestination({ kind: 'root' }, claudeRootResult, mutableCtx.env.claude.authenticated);
-            } else if (accKey === 'k') {
-              const codexRootResult = await loginFn(out, 'codex', {
-                readLine, confirm,
-                ...(suspendStdin !== undefined ? { suspendStdin } : {}),
-              });
-              await refreshEnvironmentIfStale(true);
-              resolveMenuLoginDestination({ kind: 'root' }, codexRootResult, mutableCtx.env.codex.authenticated);
-            } else if (accKey === 'o') {
-              if (!mutableCtx.env.opencode.installed) {
-                out.write(`Install opencode (${installCommandFor('opencode').replace('npm install -g ', '')})? ${yesNoHint('yes', out.color)} `);
-                const canRawConfirm =
-                  out.isTty &&
-                  process.stdin.isTTY === true &&
-                  typeof process.stdin.setRawMode === 'function';
-                const shouldInstall = canRawConfirm
-                  ? await confirm(true)
-                  : (() => readLine().then((ans) => ans !== null && parseYesNo(ans, true)))();
-                if (!(await shouldInstall)) {
-                  out.write(`\x1b[2mSkipped. You can install it later: ${installCommandFor('opencode')}\x1b[0m\n`);
-                  continue;
-                }
-                const resumeStdin = suspendStdin?.();
-                let ok = false;
-                try {
-                  ok = await installProviderFn('opencode', out);
-                } finally {
-                  resumeStdin?.();
-                }
-                await refreshEnvironmentIfStale(true);
-                if (!ok || !mutableCtx.env.opencode.installed) {
-                  out.write(`Install failed. Run it yourself: ${installCommandFor('opencode')}\n`);
-                  continue;
-                }
-              }
-              const opencodeRootResult = await loginFn(out, 'opencode', {
-                readLine, confirm,
-                ...(suspendStdin !== undefined ? { suspendStdin } : {}),
-              });
-              await refreshEnvironmentIfStale(true);
-              resolveMenuLoginDestination({ kind: 'root' }, opencodeRootResult, mutableCtx.env.opencode.authenticated);
-            } else if (accKey === 'p') {
-              if (!mutableCtx.env.grok.installed) {
-                out.write(`Install grok (${installCommandFor('grok').replace('npm install -g ', '')})? ${yesNoHint('yes', out.color)} `);
-                const canRawConfirm =
-                  out.isTty &&
-                  process.stdin.isTTY === true &&
-                  typeof process.stdin.setRawMode === 'function';
-                const shouldInstall = canRawConfirm
-                  ? await confirm(true)
-                  : (() => readLine().then((ans) => ans !== null && parseYesNo(ans, true)))();
-                if (!(await shouldInstall)) {
-                  out.write(`\x1b[2mSkipped. You can install it later: ${installCommandFor('grok')}\x1b[0m\n`);
-                  continue;
-                }
-                const resumeStdin = suspendStdin?.();
-                let ok = false;
-                try {
-                  ok = await installProviderFn('grok', out);
-                } finally {
-                  resumeStdin?.();
-                }
-                await refreshEnvironmentIfStale(true);
-                if (!ok || !mutableCtx.env.grok.installed) {
-                  out.write(`Install failed. Run it yourself: ${installCommandFor('grok')}\n`);
-                  continue;
-                }
-              }
-              const grokRootResult = await loginFn(out, 'grok', {
-                readLine, confirm,
-                ...(suspendStdin !== undefined ? { suspendStdin } : {}),
-              });
-              await refreshEnvironmentIfStale(true);
-              resolveMenuLoginDestination({ kind: 'root' }, grokRootResult, mutableCtx.env.grok.authenticated);
-            }
+          // Provider selection submenu for Accounts management.
+          const activeTotal = Object.values(acctStates).reduce((sum, s) => sum + s.active, 0);
+          out.write('\n  Accounts\n');
+          out.write(`    ${activeTotal} active\n`);
+          for (const provider of ['claude', 'codex', 'opencode', 'grok'] as const) {
+            const s = acctStates[provider];
+            if (s === undefined) continue;
+            const provKey = provider === 'claude' ? 'j' : provider === 'codex' ? 'k' : provider === 'opencode' ? 'o' : 'p';
+            const statusLine = s.total > 0
+              ? `${s.active} active${s.total !== s.active ? `, ${s.total - s.active} disabled` : ''}`
+              : 'no accounts';
+            out.write(`    [${provKey}] ${provider}  ${statusLine}\n`);
+          }
+          out.write('    [b] Back  (← back · ESC to exit)\n\n> ');
+          const accKey = await readMenuKey(out, readLine, undefined, false, inkReadKey);
+          if (accKey === NAV_ESC) {
+            getMenuStack().requestExit();
+            keepRunning = false;
+            continue;
+          }
+          if (accKey === NAV_LEFT) {
+            getMenuStack().pop();
+            keepRunning = false;
+            continue;
+          }
+          if (accKey === 'b' || accKey === null) {
+            getMenuStack().pop();
+            keepRunning = false;
+            continue;
+          }
+          if (accKey === 'j') {
+            await runClaudeAccountsMenu(out, readLine, confirm, ctx.clock, {
+              login: loginFn, suspendStdin, inkReadKey, cwd: ctx.cwd,
+            });
+            await refreshEnvironmentIfStale(true);
+            if (getMenuStack().exitRequested) { keepRunning = false; continue; }
+          } else if (accKey === 'k') {
+            await runCodexAccountsMenu(out, readLine, confirm, ctx.clock, {
+              login: loginFn, suspendStdin, inkReadKey, cwd: ctx.cwd,
+            });
+            await refreshEnvironmentIfStale(true);
+            if (getMenuStack().exitRequested) { keepRunning = false; continue; }
+          } else if (accKey === 'o') {
+            await runOpencodeAccountsMenu(out, readLine, readlineEcho, confirm, ctx.clock, inkReadKey);
+            await refreshEnvironmentIfStale(true);
+            if (getMenuStack().exitRequested) { keepRunning = false; continue; }
+          } else if (accKey === 'p') {
+            await runGrokAccountsMenu(out, readLine, confirm, ctx.clock, {
+              login: loginFn, suspendStdin, inkReadKey, cwd: ctx.cwd,
+            });
+            await refreshEnvironmentIfStale(true);
+            if (getMenuStack().exitRequested) { keepRunning = false; continue; }
           }
         }
         if (getMenuStack().exitRequested) break;
@@ -7610,155 +7499,46 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
         continue;
       }
 
-      // ---- [j] Claude Accounts / Login Claude --------------------------------
-      // When the experimental subscriptions flag is on, opens the Claude
-      // Accounts management screen. When off, runs the existing single-login flow.
+      // ---- [j] Claude Accounts -----------------------------------------------
       if (key === 'j') {
-        if (subscriptionsEnabled(process.env, mutableCtx.config)) {
-          await runClaudeAccountsMenu(out, readLine, confirm, ctx.clock, {
-            login: loginFn,
-            suspendStdin,
-            inkReadKey,
-            cwd: ctx.cwd,
-          });
-          await refreshEnvironmentIfStale(true);
-          acctsDirty = true;
-          continue;
-        }
-        await loginFn(out, 'claude', {
-          readLine,
-          confirm,
-          ...(suspendStdin !== undefined ? { suspendStdin } : {}),
+        await runClaudeAccountsMenu(out, readLine, confirm, ctx.clock, {
+          login: loginFn,
+          suspendStdin,
+          inkReadKey,
+          cwd: ctx.cwd,
         });
         await refreshEnvironmentIfStale(true);
         acctsDirty = true;
         continue;
       }
 
-      // ---- [k] Codex Accounts / Login Codex ----------------------------------
-      // When the experimental subscriptions flag is on, opens the Codex
-      // Accounts management screen. When off, runs the existing single-login flow.
+      // ---- [k] Codex Accounts ------------------------------------------------
       if (key === 'k') {
-        if (subscriptionsEnabled(process.env, mutableCtx.config)) {
-          await runCodexAccountsMenu(out, readLine, confirm, ctx.clock, {
-            login: loginFn,
-            suspendStdin,
-            inkReadKey,
-            cwd: ctx.cwd,
-          });
-          await refreshEnvironmentIfStale(true);
-          acctsDirty = true;
-          continue;
-        }
-        await loginFn(out, 'codex', {
-          readLine,
-          confirm,
-          ...(suspendStdin !== undefined ? { suspendStdin } : {}),
+        await runCodexAccountsMenu(out, readLine, confirm, ctx.clock, {
+          login: loginFn,
+          suspendStdin,
+          inkReadKey,
+          cwd: ctx.cwd,
         });
         await refreshEnvironmentIfStale(true);
         acctsDirty = true;
         continue;
       }
 
-      // ---- [o] Connect / Login opencode ---------------------------------------
-      // Always handles the key. When the experimental subscriptions flag is on,
-      // opens the OpenCode Accounts management screen. When off, runs the existing
-      // single-login flow: if opencode is not yet installed, asks for consent then
-      // installs it; if install succeeds, proceeds to sign in.
+      // ---- [o] OpenCode Accounts ---------------------------------------------
       if (key === 'o') {
-        if (subscriptionsEnabled(process.env, mutableCtx.config)) {
-          await runOpencodeAccountsMenu(out, readLine, readlineEcho, confirm, ctx.clock, inkReadKey);
-          acctsDirty = true;
-          continue;
-        }
-        if (!mutableCtx.env.opencode.installed) {
-          out.write(`Install opencode (${installCommandFor('opencode').replace('npm install -g ', '')})? ${yesNoHint('yes', out.color)} `);
-          // Preserve the install-safety rule from the line-mode path: EOF means
-          // there is no interactive user, so never auto-install on a closed pipe.
-          const canRawConfirm =
-            out.isTty &&
-            process.stdin.isTTY === true &&
-            typeof process.stdin.setRawMode === 'function';
-          const shouldInstall = canRawConfirm
-            ? await confirm(true)
-            : (() => readLine().then((ans) => ans !== null && parseYesNo(ans, true)))();
-          if (!(await shouldInstall)) {
-            out.write(`[2mSkipped. You can install it later: ${installCommandFor('opencode')}[0m\n`);
-            continue;
-          }
-          const resumeStdin = suspendStdin?.();
-          let ok = false;
-          try {
-            ok = await installProviderFn('opencode', out);
-          } finally {
-            resumeStdin?.();
-          }
-          await refreshEnvironmentIfStale(true);
-          if (!ok || !mutableCtx.env.opencode.installed) {
-            out.write(`Install failed. Run it yourself: ${installCommandFor('opencode')}\n`);
-            continue;
-          }
-        }
-        // opencode is (now) installed — proceed to sign in
-        await loginFn(out, 'opencode', {
-          readLine,
-          confirm,
-          ...(suspendStdin !== undefined ? { suspendStdin } : {}),
-        });
-        await refreshEnvironmentIfStale(true);
+        await runOpencodeAccountsMenu(out, readLine, readlineEcho, confirm, ctx.clock, inkReadKey);
         acctsDirty = true;
         continue;
       }
 
-      // ---- [p] Grok Accounts / Login grok ------------------------------------
-      // When the experimental subscriptions flag is on, opens the Grok
-      // Accounts management screen. When off, runs the existing single-login flow
-      // (including install-if-needed).
+      // ---- [p] Grok Accounts -------------------------------------------------
       if (key === 'p') {
-        if (subscriptionsEnabled(process.env, mutableCtx.config)) {
-          await runGrokAccountsMenu(out, readLine, confirm, ctx.clock, {
-            login: loginFn,
-            suspendStdin,
-            inkReadKey,
-            cwd: ctx.cwd,
-          });
-          await refreshEnvironmentIfStale(true);
-          acctsDirty = true;
-          continue;
-        }
-        if (!mutableCtx.env.grok.installed) {
-          out.write(`Install grok (${installCommandFor('grok').replace('npm install -g ', '')})? ${yesNoHint('yes', out.color)} `);
-          // Preserve the install-safety rule from the line-mode path: EOF means
-          // there is no interactive user, so never auto-install on a closed pipe.
-          const canRawConfirm =
-            out.isTty &&
-            process.stdin.isTTY === true &&
-            typeof process.stdin.setRawMode === 'function';
-          const shouldInstall = canRawConfirm
-            ? await confirm(true)
-            : (() => readLine().then((ans) => ans !== null && parseYesNo(ans, true)))();
-          if (!(await shouldInstall)) {
-            out.write(`\x1b[2mSkipped. You can install it later: ${installCommandFor('grok')}\x1b[0m\n`);
-            continue;
-          }
-          const resumeStdin = suspendStdin?.();
-          let ok = false;
-          try {
-            ok = await installProviderFn('grok', out);
-          } finally {
-            resumeStdin?.();
-          }
-          await refreshEnvironmentIfStale(true);
-          if (!ok || !mutableCtx.env.grok.installed) {
-            out.write(`Install failed. Run it yourself: ${installCommandFor('grok')}\n`);
-            continue;
-          }
-        }
-        // grok is (now) installed — proceed to sign in
-        await loginFn(out, 'grok', {
-          readLine,
-          confirm,
-          ...(suspendStdin !== undefined ? { suspendStdin } : {}),
+        await runGrokAccountsMenu(out, readLine, confirm, ctx.clock, {
+          login: loginFn,
+          suspendStdin,
+          inkReadKey,
+          cwd: ctx.cwd,
         });
         await refreshEnvironmentIfStale(true);
         acctsDirty = true;
