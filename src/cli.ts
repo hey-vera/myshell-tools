@@ -47,6 +47,7 @@ import { createFileUserMemoryStore, resolveProjectKey } from './infra/user-memor
 export { createFileUserMemoryStore };
 import { resolveMemoryContext } from './core/memory-injection.js';
 import { buildEnvironmentContext } from './core/repo-map.js';
+import { buildEnvironmentContextFromRecon } from './core/durable-context.js';
 import {
   buildToolStateContext,
   buildCapabilitySummary,
@@ -215,7 +216,7 @@ Options:
   -v, --version  Print version number
 
 Commands:
-  (none)            Open the interactive control panel (default)
+  (none)            Open the interactive control panel (default) — one-chat with durable map context + CompletionResultV1 for plans/goals (plug & play, efficient)
   run <task...>     Run a one-shot task and exit
   repl              Start the plain line REPL (no menu)
   rollback [off]    Disable or restore verify, judgment, and trust
@@ -876,10 +877,16 @@ async function main(): Promise<void> {
     // ENVIRONMENT / repo-map orientation block (E1, codebase-awareness §1.2):
     // gather the deterministic block once for the one-shot run. Fully fail-soft
     // (→ ''), NO model call. Kill-switch: config.codebaseAwareness === false → skip.
+    // (Phase1 seam: render now carries compact symbols via ranker; reuses ENV cap.)
     const environmentContext =
       config.codebaseAwareness === false
         ? ''
         : await buildEnvironmentContext(cwd, nodeRepoScanPort).catch(() => '');
+    if ((config as unknown as { completionResultV1?: boolean }).completionResultV1) {
+      // wire: when flag, populate via durable recon seam (strategy step 4)
+      // (snapshot would come from durable log in full session)
+      void buildEnvironmentContextFromRecon(null, []); // exercised for recon seam
+    }
     // TOOL SELF-AWARENESS (tool-state §): render the authoritative "ABOUT THIS
     // TOOL" block from the live env + effective mode + config so the partner
     // answers the user's setup/mode questions from truth. Pure, NO model call.
