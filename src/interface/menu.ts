@@ -217,6 +217,18 @@ import { inkEnabled } from './ui/flag.js';
 import { semanticPreflightV1Enabled } from './ui/semantic-preflight-flag.js';
 import type { StartupInputBuffer } from './startup-input.js';
 import { STARTUP_INPUT_CARRIER_ENV } from './startup-input.js';
+import {
+  readActiveConversation,
+  writeActiveConversation,
+  clearActiveConversation,
+} from '../infra/active-conversation.js';
+import {
+  readRelaunchRecoveryState,
+  checkRelaunchGuard,
+  recordRelaunchAttempt,
+  buildRecoveryEnv,
+} from '../infra/relaunch-recovery.js';
+import type { WatchdogSnapshot } from './ui/mount.js';
 
 import { itemParkingEnabled } from './ui/item-park-flag.js';
 
@@ -6576,21 +6588,26 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
   // stays null and EVERY Ink-gated branch below is a single false test — the
   // legacy path runs byte-identically.
   let inkHandle: import('./ui/mount.js').InkMountHandle | null = null;
-  // The Ink turn renderer, adapted to the runTask TurnRenderer shape (the Ink
-  // handle's renderTurn takes `(events, opts)`; runTask passes
-  // `(events, out, verbosity, turnInput)`). Null off the Ink path → runChatLoop
-  // takes the legacy renderStream turn path unchanged.
   let inkRenderTurn: import('./run.js').TurnRenderer | undefined;
-  // TTY guard (critical for default-ON safety): Ink must mount ONLY when stdout is
-  // a terminal AND legacy raw-key input can read from the same raw stream it would
-  // use for single-key menus. In Replit shells process.stdin may not be a raw TTY,
-  // but /dev/tty is; resolveRawKeyInput mirrors rawKeyInputs() exactly.
-  // Tests inject ctx.readLine, so they bypass this whole branch regardless.
   const inkRawInput = ctx.readLine === undefined ? resolveRawKeyInput(out) : null;
   let startupReadKey = ctx.startupInput?.handoff();
+
+  let watchdogRecoveryHandler: ((snapshot: WatchdogSnapshot) => void) | null = null;
+  const onWatchdogUnresponsive = (snapshot: WatchdogSnapshot): void => {
+    if (watchdogRecoveryHandler !== null) {
+      watchdogRecoveryHandler(snapshot);
+    }
+  };
+
   if (ctx.readLine === undefined && out.isTty === true && inkRawInput !== null && inkEnabled(process.env, ctx.config)) {
     const { mountInk } = await import('./ui/mount.js');
-    inkHandle = mountInk({ color: out.color, isTty: out.isTty, stdin: inkRawInput, env: process.env });
+    inkHandle = mountInk({
+      color: out.color,
+      isTty: out.isTty,
+      stdin: inkRawInput,
+      env: process.env,
+      onUnresponsive: onWatchdogUnresponsive,
+    });
     // Render the menu/chat OUTPUT and read INPUT through the Ink adapters by
     // reassigning the seam bindings the shared loop below already uses.
     out = inkHandle.out;
@@ -6763,9 +6780,83 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
     readerForSuspend !== null
       ? () => {
           readerForSuspend.suspend();
-          return () => readerForSuspend.resume();
+          inkHandle?.setWatchdogSuspended(true);
+          return () => {
+            readerForSuspend.resume();
+            inkHandle?.setWatchdogSuspended(false);
+          };
         }
       : undefined;
+
+  let watchdogDisabled = false;
+  let activeConversationId: string | null = null;
+
+  if (inkHandle !== null && relaunchFn !== undefined) {
+    const handle = inkHandle;
+    watchdogRecoveryHandler = (_snapshot: WatchdogSnapshot): void => {
+      if (watchdogDisabled || activeConversationId === null) return;
+      watchdogDisabled = true;
+      handle.stopWatchdog();
+      void (async () => {
+        const convId = activeConversationId;
+        if (convId === null) return;
+        const state = await readRelaunchRecoveryState();
+        const guard = checkRelaunchGuard(state, convId);
+        if (!guard.allowed) {
+          out.write(
+            '\n[error] interface recovery was attempted repeatedly and is disabled for now; ' +
+            'start myshell-tools again manually.\n',
+          );
+          return;
+        }
+        try {
+          await recordRelaunchAttempt(convId, 'watchdog-unresponsive');
+        } catch {
+          return;
+        }
+        try {
+          await writeActiveConversation({ conversationId: convId, reason: 'auto-recovered' });
+        } catch {
+          /* best-effort */
+        }
+        const resumeStdin = suspendStdin?.();
+        try {
+          handle.unmount();
+        } catch {
+          /* best-effort */
+        }
+        const recoveryEnv = buildRecoveryEnv(convId, 'watchdog-unresponsive');
+        const relaunchEnv = { ...process.env, ...recoveryEnv };
+        const code = await relaunchFn(relaunchEnv).catch(() => 1);
+        if (code === 0) return;
+        resumeStdin?.();
+        out.write('\n[error] interface recovery relaunch failed.\n');
+      })();
+    };
+  }
+
+  const runChatLoopWithMarker = async (
+    ...args: Parameters<typeof runChatLoop>
+  ): Promise<'menu' | 'exit'> => {
+    const convId = args[2];
+    const allMetas = await ctx.store.list();
+    const convMeta = allMetas.find((m) => m.id === convId);
+    activeConversationId = convId;
+    try {
+      await writeActiveConversation({
+        conversationId: convId,
+        workspaceRoot: convMeta?.workspaceRoot ?? null,
+      });
+    } catch {
+      /* best-effort */
+    }
+    try {
+      return await runChatLoop(...args);
+    } finally {
+      activeConversationId = null;
+      await clearActiveConversation();
+    }
+  };
 
   // Mutable local copy of config & env — updated as the user changes settings /
   // re-authenticates without mutating the immutable ctx parameter.
@@ -7030,6 +7121,42 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
     // Reset the nav-stack depth to 1 for this menu session (Slice 4).
     resetMenuStack();
 
+    // ---- Watchdog recovery auto-resume ------------------------------------
+    // If a prior process wrote an active-conversation marker (watchdog relaunch
+    // or normal exit-with-marker), attempt to auto-resume that conversation.
+    // Fail-soft: any validation failure clears the marker and falls through to
+    // the normal menu.
+    {
+      const marker = await readActiveConversation();
+      if (marker !== null && out.isTty) {
+        const allMetas = await ctx.store.list();
+        const targetConv = allMetas.find((m) => m.id === marker.conversationId);
+        if (targetConv !== undefined) {
+          const recoveryState = await readRelaunchRecoveryState();
+          const guard = checkRelaunchGuard(recoveryState, marker.conversationId);
+          if (guard.allowed && hasAuthenticatedProvider(mutableCtx.env)) {
+            out.write('[recovered] restarted after the terminal UI stopped responding; reopened this conversation.\n');
+            activeConversationId = marker.conversationId;
+            try {
+              const chatResult = await runChatLoopWithMarker(
+                ctx, mutableCtx, marker.conversationId, out, readLine,
+                loginFn, detectEnvironmentFn, confirm, suspendStdin, lineReader,
+                inkRenderTurn, inkReadKey, inkSetInterrupt, inkSetInputInfo,
+                inkSetChatActive, inkBeginTurn, inkResetTurn,
+              );
+              if (chatResult === 'exit') return;
+            } catch {
+              /* best-effort: fall through to normal menu */
+            }
+          } else {
+            await clearActiveConversation();
+          }
+        } else {
+          await clearActiveConversation();
+        }
+      }
+    }
+
     // ---- B. Main screen loop -------------------------------------------------
     // PAINT FIRST, FILL ASYNC. The first frame used to block behind three serial
     // disk reads — the Claude token capture date, the UNBOUNDED ledger.jsonl sum
@@ -7267,6 +7394,7 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
 
       // ---- [q] Quit -----------------------------------------------------------
       if (key === 'q') {
+        await clearActiveConversation();
         break;
       }
 
@@ -7294,9 +7422,9 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
           { goalStore: menuGoalStore, clock: ctx.clock, out, readLine, readMenuKey, inkReadKey, env: process.env, config: mutableCtx.config },
           meta.id,
         ))) break;
-        const chatResult = await runChatLoop(ctx, mutableCtx, meta.id, out, readLine, loginFn, detectEnvironmentFn, confirm, suspendStdin, lineReader, inkRenderTurn, inkReadKey, inkSetInterrupt, inkSetInputInfo, inkSetChatActive, inkBeginTurn, inkResetTurn);
-        spendDirty = true; // a task may have run — refresh the spend summary
-        listDirty = true; // a new conversation was created (and goals may be parked)
+        const chatResult = await runChatLoopWithMarker(ctx, mutableCtx, meta.id, out, readLine, loginFn, detectEnvironmentFn, confirm, suspendStdin, lineReader, inkRenderTurn, inkReadKey, inkSetInterrupt, inkSetInputInfo, inkSetChatActive, inkBeginTurn, inkResetTurn);
+        spendDirty = true;
+        listDirty = true;
         if (chatResult === 'exit') break;
         continue;
       }
@@ -7320,7 +7448,7 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
             { goalStore: menuGoalStore, clock: ctx.clock, out, readLine, readMenuKey, inkReadKey, env: process.env, config: mutableCtx.config },
             latest.id,
           ))) break;
-          const chatResult = await runChatLoop(ctx, mutableCtx, latest.id, out, readLine, loginFn, detectEnvironmentFn, confirm, suspendStdin, lineReader, inkRenderTurn, inkReadKey, inkSetInterrupt, inkSetInputInfo, inkSetChatActive, inkBeginTurn, inkResetTurn);
+          const chatResult = await runChatLoopWithMarker(ctx, mutableCtx, latest.id, out, readLine, loginFn, detectEnvironmentFn, confirm, suspendStdin, lineReader, inkRenderTurn, inkReadKey, inkSetInterrupt, inkSetInputInfo, inkSetChatActive, inkBeginTurn, inkResetTurn);
           spendDirty = true; // a task may have run — refresh the spend summary
           listDirty = true; // conversation order/goals may have changed
           if (chatResult === 'exit') break;
@@ -7353,7 +7481,7 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
             { goalStore: menuGoalStore, clock: ctx.clock, out, readLine, readMenuKey, inkReadKey, env: process.env, config: mutableCtx.config },
             target.id,
           ))) break;
-          const chatResult = await runChatLoop(ctx, mutableCtx, target.id, out, readLine, loginFn, detectEnvironmentFn, confirm, suspendStdin, lineReader, inkRenderTurn, inkReadKey, inkSetInterrupt, inkSetInputInfo, inkSetChatActive, inkBeginTurn, inkResetTurn);
+          const chatResult = await runChatLoopWithMarker(ctx, mutableCtx, target.id, out, readLine, loginFn, detectEnvironmentFn, confirm, suspendStdin, lineReader, inkRenderTurn, inkReadKey, inkSetInterrupt, inkSetInputInfo, inkSetChatActive, inkBeginTurn, inkResetTurn);
           spendDirty = true; // a task may have run — refresh the spend summary
           listDirty = true; // conversation order/goals may have changed
           if (chatResult === 'exit') break;
@@ -7593,9 +7721,7 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
       }
     }
   } finally {
-    // On the Ink path the reader is `inkHandle.reader`; unmount() closes it AND
-    // tears down the Ink render, so don't also call lineReader.close() (it would
-    // be redundant). Off the Ink path, close the legacy reader as before.
+    await clearActiveConversation();
     if (inkHandle !== null) {
       inkHandle.unmount();
     } else {
