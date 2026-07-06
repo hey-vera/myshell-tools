@@ -68,6 +68,8 @@ export interface AppStateLayout {
     readonly providerHomesDir: string;
     readonly updateCacheFile: string;
     readonly migrationDir: string;
+    readonly activeConversationFile: string;
+    readonly relaunchRecoveryFile: string;
   };
 }
 
@@ -183,6 +185,8 @@ function buildPaths(
     providerHomesDir: posix.join(stateRoot, 'provider-homes'),
     updateCacheFile: posix.join(cacheRoot, 'update-check.json'),
     migrationDir: posix.join(stateRoot, 'migration'),
+    activeConversationFile: posix.join(stateRoot, 'active-conversation.json'),
+    relaunchRecoveryFile: posix.join(stateRoot, 'relaunch-recovery.json'),
   };
 }
 
@@ -202,6 +206,8 @@ function finalizePaths(
     providerHomesDir: toPlatform(raw.providerHomesDir, platform),
     updateCacheFile: toPlatform(raw.updateCacheFile, platform),
     migrationDir: toPlatform(raw.migrationDir, platform),
+    activeConversationFile: toPlatform(raw.activeConversationFile, platform),
+    relaunchRecoveryFile: toPlatform(raw.relaunchRecoveryFile, platform),
   };
 }
 

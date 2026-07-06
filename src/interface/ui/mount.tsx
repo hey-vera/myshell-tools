@@ -19,6 +19,7 @@
 
 import React from 'react';
 import { render } from 'ink';
+import { monitorEventLoopDelay, type IntervalHistogram } from 'node:perf_hooks';
 import type { OutputSink } from '../stream-filter.js';
 import type { LineReader, KeyInputStream } from '../menu-readline.js';
 import type { CoreEvent } from '../../core/types.js';
@@ -499,6 +500,207 @@ export function createTurnDriver(
 }
 
 // ---------------------------------------------------------------------------
+// 5. Watchdog heartbeat sampler
+// ---------------------------------------------------------------------------
+
+export type WatchdogReason = 'hard-stall' | 'active-stale';
+
+export interface WatchdogSnapshot {
+  readonly reason: WatchdogReason;
+  readonly consecutiveBadSamples: number;
+  readonly msSinceLastUiCommit: number;
+  readonly msSinceLastInput: number;
+  readonly msSinceLastTurnActivity: number;
+  readonly lastSampleDriftMs: number;
+  readonly lastHistogramMaxMs: number;
+  readonly lastHistogramP99Ms: number;
+}
+
+export interface WatchdogHeartbeat {
+  recordUiCommit(): void;
+  recordInput(): void;
+  recordTurnActivity(): void;
+  setChatActive(active: boolean): void;
+  setSuspended(suspended: boolean): void;
+  stop(): void;
+}
+
+export interface WatchdogOptions {
+  readonly samplerIntervalMs: number;
+  readonly badSampleThresholdMs: number;
+  readonly badSampleP99ThresholdMs: number;
+  readonly consecutiveBadSamplesRequired: number;
+  readonly staleWindowMs: number;
+  readonly hardStallThresholdMs: number;
+  readonly armCooldownMs: number;
+  readonly isTty: boolean;
+  readonly onUnresponsive: (snapshot: WatchdogSnapshot) => void;
+  readonly now: () => number;
+  /**
+   * When `true`, the watchdog will not arm until both the normal
+   * `armCooldownMs` has elapsed AND at least one successful UI commit has
+   * been recorded via `recordUiCommit()`. This prevents immediate recovery
+   * loops when the recovered conversation is still rendering.
+   */
+  readonly recoveryRelaunch: boolean;
+}
+
+const DEFAULT_WATCHDOG: Omit<WatchdogOptions, 'onUnresponsive' | 'isTty'> = {
+  samplerIntervalMs: 500,
+  badSampleThresholdMs: 2_000,
+  badSampleP99ThresholdMs: 750,
+  consecutiveBadSamplesRequired: 3,
+  staleWindowMs: 8_000,
+  hardStallThresholdMs: 10_000,
+  armCooldownMs: 15_000,
+  now: () => Date.now(),
+  recoveryRelaunch: false,
+};
+
+export function createWatchdog(opts: WatchdogOptions): WatchdogHeartbeat {
+  if (!opts.isTty) {
+    return {
+      recordUiCommit() {},
+      recordInput() {},
+      recordTurnActivity() {},
+      setChatActive() {},
+      setSuspended() {},
+      stop() {},
+    };
+  }
+
+  const now = opts.now;
+  let lastUiCommitMs = now();
+  let lastInputMs = 0;
+  let lastTurnActivityMs = 0;
+  let chatActive = false;
+  let suspended = false;
+  let consecutiveBadSamples = 0;
+  let fired = false;
+  let hasUiCommit = false;
+
+  const armedAtMs = now() + opts.armCooldownMs;
+  let expectedNextSampleMs = now() + opts.samplerIntervalMs;
+
+  let histogram: IntervalHistogram | null = null;
+  try {
+    histogram = monitorEventLoopDelay({ resolution: 20 });
+    histogram.enable();
+  } catch {
+    histogram = null;
+  }
+
+  let stopped = false;
+  const timer = setInterval(() => {
+    if (stopped || fired) return;
+
+    const sampleMs = now();
+    const drift = sampleMs - expectedNextSampleMs;
+    expectedNextSampleMs = sampleMs + opts.samplerIntervalMs;
+
+    let histMax = 0;
+    let histP99 = 0;
+    if (histogram !== null) {
+      // monitorEventLoopDelay reports nanoseconds. The watchdog contract and
+      // snapshots are expressed in milliseconds, so normalize before applying
+      // thresholds (otherwise an ordinary 20 ms sample looks like 20,000,000 ms).
+      histMax = histogram.max / 1_000_000;
+      histP99 = histogram.percentile(99) / 1_000_000;
+      histogram.reset();
+    }
+
+    const isBadSample =
+      drift >= opts.badSampleThresholdMs ||
+      histMax >= opts.badSampleThresholdMs ||
+      histP99 >= opts.badSampleP99ThresholdMs;
+
+    if (isBadSample) {
+      consecutiveBadSamples++;
+    } else {
+      consecutiveBadSamples = 0;
+    }
+
+    if (sampleMs < armedAtMs) return;
+    if (opts.recoveryRelaunch && !hasUiCommit) return;
+    if (suspended) return;
+
+    const watchedActive =
+      chatActive &&
+      (lastInputMs > 0 || lastTurnActivityMs > 0) &&
+      (sampleMs - Math.max(lastInputMs, lastTurnActivityMs) < 60_000);
+
+    if (!watchedActive) return;
+
+    if (drift >= opts.hardStallThresholdMs) {
+      fired = true;
+      opts.onUnresponsive({
+        reason: 'hard-stall',
+        consecutiveBadSamples,
+        msSinceLastUiCommit: sampleMs - lastUiCommitMs,
+        msSinceLastInput: lastInputMs > 0 ? sampleMs - lastInputMs : -1,
+        msSinceLastTurnActivity: lastTurnActivityMs > 0 ? sampleMs - lastTurnActivityMs : -1,
+        lastSampleDriftMs: drift,
+        lastHistogramMaxMs: histMax,
+        lastHistogramP99Ms: histP99,
+      });
+      return;
+    }
+
+    if (
+      consecutiveBadSamples >= opts.consecutiveBadSamplesRequired &&
+      sampleMs - lastUiCommitMs >= opts.staleWindowMs
+    ) {
+      const lastActivity = Math.max(lastInputMs, lastTurnActivityMs);
+      if (lastActivity > 0 && sampleMs - lastActivity >= opts.staleWindowMs) {
+        fired = true;
+        opts.onUnresponsive({
+          reason: 'active-stale',
+          consecutiveBadSamples,
+          msSinceLastUiCommit: sampleMs - lastUiCommitMs,
+          msSinceLastInput: lastInputMs > 0 ? sampleMs - lastInputMs : -1,
+          msSinceLastTurnActivity: lastTurnActivityMs > 0 ? sampleMs - lastTurnActivityMs : -1,
+          lastSampleDriftMs: drift,
+          lastHistogramMaxMs: histMax,
+          lastHistogramP99Ms: histP99,
+        });
+      }
+    }
+  }, opts.samplerIntervalMs);
+
+  timer.unref?.();
+
+  return {
+    recordUiCommit(): void {
+      hasUiCommit = true;
+      lastUiCommitMs = now();
+    },
+    recordInput(): void {
+      lastInputMs = now();
+    },
+    recordTurnActivity(): void {
+      lastTurnActivityMs = now();
+    },
+    setChatActive(active: boolean): void {
+      chatActive = active;
+    },
+    setSuspended(s: boolean): void {
+      suspended = s;
+    },
+    stop(): void {
+      stopped = true;
+      clearInterval(timer);
+      if (histogram !== null) {
+        try {
+          histogram.disable();
+        } catch {
+          /* best-effort */
+        }
+      }
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Mount entry point
 // ---------------------------------------------------------------------------
 
@@ -569,20 +771,18 @@ export interface InkMountHandle {
   waitUntilExit(): Promise<void>;
   /** Tear down the Ink render and the LineReader. */
   unmount(): void;
+  /** Stop the watchdog sampler. Called on unmount; exposed for explicit early stop. */
+  stopWatchdog(): void;
+  /** Disable/enable watchdog detection (e.g. while an inherited-stdio child owns the TTY). */
+  setWatchdogSuspended(suspended: boolean): void;
 }
 
 export interface InkMountOptions {
   readonly color: boolean;
   readonly isTty: boolean;
-  /**
-   * Custom raw-input stream for Ink's `render(node, { stdin })`. Used for the
-   * `/dev/tty` fallback when process.stdin isn't a usable raw TTY (see
-   * menu-readline.ts `controllingTtyRawInput`). Optional in Step 1; fully wired
-   * in Step 2.
-   */
   readonly stdin?: KeyInputStream;
-  /** Environment variables for test seams. Absent → empty env. */
   readonly env?: NodeJS.ProcessEnv;
+  readonly onUnresponsive?: (snapshot: WatchdogSnapshot) => void;
 }
 
 /**
@@ -594,21 +794,35 @@ export function mountInk(opts: InkMountOptions): InkMountHandle {
   backfillTerminalSize();
 
   const bridge = createInkAppBridge();
-  // The SINGLE persistent reducer store (one UiState across every turn). The
-  // OutputSink chrome and the streaming turn driver BOTH fold into it, so there is
-  // ONE growing committed[] transcript feeding <Static> (append-only across turns).
-  const store = createInkStore(bridge);
-  // Control Panel is always armed (unconditionally on — Phase 3).
+  const env = opts.env ?? process.env;
+  const recoveryRelaunch = env['MYSHELL_RECOVERY_RELAUNCH'] === '1';
+
+  let watchdog: WatchdogHeartbeat | null = null;
+
+  const store = createInkStore(bridge, (obs) => {
+    if (obs.stateChanged && watchdog !== null) {
+      watchdog.recordUiCommit();
+    }
+  });
   bridge.onControlPanelAction((a) => store.dispatch(a));
   const out = createInkOutputSink(store, { color: opts.color, isTty: opts.isTty });
   const reader = createInkLineReader(bridge);
   const renderTurn = createTurnDriver(store, { color: opts.color, isTty: opts.isTty });
   const beginTurn = (): void => {
     if (!store.getState().turnActive) store.dispatch({ type: 'turn/start' });
+    watchdog?.recordTurnActivity();
   };
   const resetTurn = (): void => {
     if (store.getState().turnActive) store.dispatch({ type: 'turn/reset' });
   };
+
+  const noopUnresponsive = (_snapshot: WatchdogSnapshot): void => {};
+  watchdog = createWatchdog({
+    ...DEFAULT_WATCHDOG,
+    isTty: opts.isTty,
+    onUnresponsive: opts.onUnresponsive ?? noopUnresponsive,
+    recoveryRelaunch,
+  });
 
   // The ErrorBoundary's teardown needs reader.close() + instance.unmount(), but the
   // Ink instance doesn't exist until render() returns. A forward-declared holder
@@ -654,10 +868,16 @@ export function mountInk(opts: InkMountOptions): InkMountHandle {
   return {
     out,
     reader,
-    readKey: () => bridge.readKey(),
+    readKey: () => {
+      watchdog?.recordInput();
+      return bridge.readKey();
+    },
     setInterrupt: (handler) => bridge.setInterrupt(handler),
     setInputInfo: (info) => bridge.setInputInfo(info),
-    setChatActive: (active) => bridge.setChatActive(active),
+    setChatActive: (active) => {
+      bridge.setChatActive(active);
+      watchdog?.setChatActive(active);
+    },
     setMenuCaptureActive: (active) => bridge.setMenuCaptureActive(active),
     onControlPanelSettingAction: (handler) => bridge.onControlPanelSettingAction(handler),
     beginTurn,
@@ -666,13 +886,19 @@ export function mountInk(opts: InkMountOptions): InkMountHandle {
     waitUntilExit: async () => {
       await instance.waitUntilExit();
     },
+    stopWatchdog(): void {
+      watchdog?.stop();
+    },
+    setWatchdogSuspended: (suspended) => {
+      watchdog?.setSuspended(suspended);
+    },
     unmount(): void {
+      watchdog?.stop();
       const pendingKey = bridge._keyResolver;
       bridge._keyResolver = null;
       bridge._menuKeyQueue.length = 0;
       bridge._menuCaptureActive = false;
       if (pendingKey != null) pendingKey('\x03');
-      // reader.close() resolves every pending/future nextLine() waiter with null.
       reader.close();
       instance.unmount();
     },
