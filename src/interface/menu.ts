@@ -156,6 +156,7 @@ import { defaultLoginRunner, type LoginRunner } from '../commands/login.js';
 import { resolveMenuLoginDestination, type MenuLoginOrigin, type MenuLoginDestination } from './menu-login-navigation.js';
 import { runCost } from '../commands/cost.js';
 import { dim, bold, formatRecapLine } from '../ui/theme.js';
+import { navFooterText } from './ui/nav-footer.js';
 import { makeRecapGenerator } from '../core/recap-generator.js';
 import { makeGoalObjectiveGenerator } from '../core/goal-objective-generator.js';
 import { makeGoalPlanner, makeGoalPlannerAttempt } from '../core/goal-plan-generator.js';
@@ -7373,7 +7374,7 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
           out.write('    [m] Manage conversations\n');
           out.write('    [i] Import a Claude/Codex session\n');
           out.write('    [r] Raw provider session\n');
-          out.write('    [b] Back  (← back · ESC to exit)\n\n> ');
+          out.write(`    [b] Back  (${navFooterText('back-and-exit', out.color)})\n\n> `);
           const libKey = await readMenuKey(out, readLine, undefined, false, inkReadKey);
           if (libKey === NAV_ESC) {
             getMenuStack().requestExit();
@@ -7428,7 +7429,7 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
               : 'no accounts';
             out.write(`    [${provKey}] ${provider}  ${statusLine}\n`);
           }
-          out.write('    [b] Back  (← back · ESC to exit)\n\n> ');
+          out.write(`    [b] Back  (${navFooterText('back-and-exit', out.color)})\n\n> `);
           const accKey = await readMenuKey(out, readLine, undefined, false, inkReadKey);
           if (accKey === NAV_ESC) {
             getMenuStack().requestExit();

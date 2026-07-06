@@ -35,6 +35,7 @@ import type { MenuContext } from './menu.js';
 import type { OutputSink } from './render.js';
 import { readMenuKey, NAV_ESC, NAV_LEFT, getMenuStack } from './menu-key-confirm.js';
 import { titleBox } from '../ui/tui.js';
+import { navFooterText } from './ui/nav-footer.js';
 import {
   rankWorkspaceCandidates,
   filterWorkspaceCandidates,
@@ -168,7 +169,7 @@ export async function runWorkspacePicker(
       out.write(titleBox('Pick Workspace', { padding: 6, color: out.color }) + '\n\n');
       out.write(`Filter: ${query}\n\n`);
       renderCandidateRows(filtered, out);
-      out.write('\n← back · ESC to exit\n\n');
+      out.write('\n' + navFooterText('back-and-exit', out.color) + '\n\n');
       out.write('> ');
 
       const key = await readMenuKey(out, readLine, undefined, false, inkReadKey);

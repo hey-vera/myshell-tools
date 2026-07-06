@@ -29,6 +29,7 @@ import type { EnvironmentStatus } from '../providers/detect.js';
 import { runInstall } from '../commands/install.js';
 import { box } from '../ui/tui.js';
 import { dim, bold } from '../ui/theme.js';
+import { navFooterText } from './ui/nav-footer.js';
 import type { OutputSink } from './render.js';
 import type { MenuContext } from './menu.js';
 import { resolveAutoMode, renderAutoDetected } from './menu-auto-mode.js';
@@ -428,7 +429,7 @@ export async function runSettings(
     `  [5] Privacy & memory`,
     `  [6] Setup`,
     '',
-    '  [Enter] Back · ESC to exit',
+    '  [Enter] Back · ' + navFooterText('exit-only', out.color),
     '',
   ];
   out.write('\n' + box('Settings', settingsLines) + '\n\n');
