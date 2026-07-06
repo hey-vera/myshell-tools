@@ -17,6 +17,8 @@
  * Slice 2 — Slice 1 ships the locked skeleton copy as-is.
  */
 
+// See docs/menu-build-spec-final.md (locked slices + Slice 3 doctor de-advertise) + kern-spec.md
+
 import type { AppConfig } from '../infra/config.js';
 import type { ConversationMeta, ConversationMode } from '../infra/conversation-store.js';
 import type { SpendSummary } from '../infra/insights.js';
