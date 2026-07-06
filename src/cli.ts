@@ -513,7 +513,7 @@ async function main(): Promise<void> {
   // Health check — surfaced automatically in the control panel, so this is no
   // longer an advertised command. Kept as a hidden, scriptable entry point for
   // support/CI; `status` and `check` are friendlier aliases for the old
-  // `doctor` name (which still works for muscle-memory / existing scripts).
+  // `doctor` name (legacy/hidden; still accepted for muscle-memory and existing scripts/CI).
   if (args[0] === 'doctor' || args[0] === 'status' || args[0] === 'check') {
     const fix = args.includes('--fix');
     process.exit(await runDoctor(out, fix ? { fix: true } : undefined));
