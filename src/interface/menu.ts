@@ -1845,6 +1845,7 @@ export async function runChatLoop(
   // it closes over the loop's mutable state (currentAc, control.exit/menu, queue).
   // -------------------------------------------------------------------------
   async function runOneChatInput(line: string): Promise<'continue' | 'menu' | 'exit'> {
+    // Slice 5 foundation: `!` prefix detection (menu-build-spec-final.md:382; kern-spec.md:45) — safe guard in input path; no exec/chat behavior touched here.
     if (line[0] === '!') {
       const command = line.slice(1).trim();
       if (command === '') {
