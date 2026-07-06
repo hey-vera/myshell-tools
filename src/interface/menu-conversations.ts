@@ -24,6 +24,7 @@ import type { GoalStore } from '../infra/goal-store.js';
 import { renderGoalExpanded } from '../commands/goals.js';
 import { formatGoalRow } from '../core/goal-todo.js';
 import { dim, bold } from '../ui/theme.js';
+import { navFooterText } from './ui/nav-footer.js';
 import { ALL_LEVELS, levelLabel, LEVEL_DESC, migrateMode } from '../core/mode-levels.js';
 
 // ---------------------------------------------------------------------------
@@ -54,7 +55,7 @@ export async function runManage(
     for (const line of lines) {
       out.write(`  ${line}\n`);
     }
-    out.write('\n  [p] Pin/unpin  [t] Set category  [r] Rename  [m] Change mode  [x] Delete  [Enter] Back  (← back · ESC to exit)\n\n');
+    out.write(`\n  [p] Pin/unpin  [t] Set category  [r] Rename  [m] Change mode  [x] Delete  [Enter] Back  (${navFooterText('back-and-exit', out.color)})\n\n`);
     return latest;
   }
 

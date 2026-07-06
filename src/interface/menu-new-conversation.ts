@@ -3,10 +3,10 @@
  *
  * The subflow reached from `[n] New conversation` on the home menu. Renders the
  * locked "New Conversation" skeleton from docs/menu-build-spec-final.md (the
- * Effort Mode box — which stays visible so `m` is still advertised — followed by
- * the small "New Conversation" title box, the `[1] Current` choice with the
+ * Effort Mode box — which stays visible so `m` is still advertised — followed
+ * by the small "New Conversation" title box, the `[1] Current` choice with the
  * resolved workspace root, `[2] Pick workspace...`, `Choice: ▌`, and the
- * `← back · ESC to exit` footer) and dispatches:
+ * shared nav footer) and dispatches:
  *
  *   - Enter / `[1]` → create the conversation bound to the CURRENT workspace
  *     root, resolved by Slice 7's {@link resolveWorkspaceRoot} (git toplevel
@@ -42,6 +42,7 @@ import { resolveWorkspaceRoot } from './workspace.js';
 import { runWorkspacePicker } from './workspace-picker.js';
 import { runModeSelect } from './menu-settings.js';
 import { resolveAutoMode } from './menu-auto-mode.js';
+import { navFooterText } from './ui/nav-footer.js';
 
 /** The screen's outcome handed back to the `[n]` handler in menu.ts. */
 export type NewConversationOutcome =
@@ -113,7 +114,7 @@ export async function runNewConversationScreen(
       out.write(`             ${currentRoot}\n\n`);
       out.write('[2] Pick workspace...\n\n');
       out.write('Choice: ▌\n');
-      out.write('← back · ESC to exit\n');
+      out.write(navFooterText('back-and-exit', out.color) + '\n');
 
       const key = await readMenuKey(out, readLine, undefined, false, inkReadKey);
 
