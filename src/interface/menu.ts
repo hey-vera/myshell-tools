@@ -6372,6 +6372,7 @@ Output ONLY valid JSON (no prose, no markdown).`;
           while (queuedTurns.length > 0 && !control.exit && !control.menu) {
             const next = queuedTurns.shift();
             if (next === undefined) break;
+            // Slice 5: queued drain re-uses runOneChatInput for ! passthrough (menu-build-spec-final.md:416 "Queued-turn drain does not accidentally run..."; kern-spec.md:45)
             const drainSignal = await runOneChatInput(next);
             if (drainSignal === 'menu') { control.menu = true; control.result = 'menu'; break; }
             if (drainSignal === 'exit') { control.exit = true; control.result = 'exit'; break; }
