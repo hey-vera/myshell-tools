@@ -45,7 +45,10 @@ Core pieces:
 - `!cmd` shell passthrough inside conversations (non-model).
 - Doctor/Health removal from user surface (self-heal only).
 
-**Current status (post-cleanup):** Primitives + watchdog recovery landed on main. Home skeleton render (Slice 1+) not yet implemented in the locked form.
+**Current status (post-cleanup):** 
+- Primitives (`sectionBox`, `titleBox`) landed (`src/ui/tui.ts`).
+- Watchdog/relaunch infrastructure partially landed (heartbeat/sampler in `mount.tsx`, relaunch in `cli.ts`, `active-conversation` marker + state-layout support, usage in `menu.ts`).
+- Home render skeleton (Slice 1 locked): `src/interface/menu-render.ts` implements the core locked structure (Effort Mode sectionBox, single Recent list, centered `Session Manager` titleBox, `Choice: ▌`, `ESC to exit`). Full controls, state-dependent variants, and integration with remaining slices are in progress per `menu-build-spec-final.md`.
 
 ### 2.2 Execution & Orchestration Kern
 - `runChatLoop` / `orchestrate` (core/ orchestrate.ts and interface/menu.ts).
@@ -67,6 +70,8 @@ All contracts are currently **dark/default-off**. They are fully authored with e
 - Active-conversation marker + relaunch handoff (new from phase6 watchdog).
 
 **Key rule:** workspaceRoot is explicit and preserved. Legacy entries without it are treated as "global/unknown".
+
+**Aider-style foundations internalized here:** The efficient deterministic repo map (symbols + ranking + budget accumulation, see `src/core/repo-map.ts`) and related orientation/context assembly are native Kern responsibilities. These evolved from historical "Aider-style" techniques but are now first-class, provider-agnostic capabilities owned by the Kern (no external Aider process required). Patch/apply layers (when hardened) follow the same pattern.
 
 ### 2.4 Reliability Kern (Watchdog + Relaunch)
 See `docs/design-lag-watchdog-relaunch.md` (landed in merge b587030).
@@ -97,7 +102,10 @@ From menu-build-spec-final + contracts + recent merges:
 - Watchdog re-uses proven relaunch path; does not invent new spawn logic.
 - PTY benchmark flakes are advisory (real product gates stay hard).
 
-## 4. Current State (2026-07-06, main @ b587030)
+## 4. Current State (2026-07-06, main @ fff6042)
+
+- Repo clean: single primary checkout after consolidation. Phase 6 watchdog + kern spec landed.
+- "Aider" in the product: purely historical inspiration (see archive receipts and `repo-map.ts` comments). No `aider` binary or external tool integration exists at runtime. The Kern is the native evolution/replacement.
 
 - Repo cleaned: only primary `myshell-tools/` checkout remains. All phase/safety/historical WIP branches pushed for preservation.
 - Recent landing: Phase 6 lag-watchdog-build (recovery timing, active-conversation marker, relaunch + resume, new tests + design doc).
