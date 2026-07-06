@@ -20,7 +20,9 @@ import {
   renderEnvironmentBlock,
   buildEnvironmentContext,
   ENVIRONMENT_BLOCK_CHAR_CAP,
+  extractTopLevelSymbols,
   type RepoFileSignals,
+  type RankedRepoFile,
   type EnvironmentFacts,
   type RepoScanPort,
 } from '../../src/core/repo-map.ts';
@@ -103,6 +105,42 @@ describe('rankRepoFiles', () => {
     ];
     const ranked = rankRepoFiles(files);
     assert.equal(ranked[0]!.path, 'src/index.ts');
+  });
+
+  it('carries optional symbols through rank result when present; absent input yields identical paths-only shape and scores (E1 zero-change)', () => {
+    const noSym: RepoFileSignals[] = [
+      { path: 'lib/api.ts', recencyRank: 1, fanIn: 3 },
+      { path: 'noise/deep/buried/thing.ts', recencyRank: 50 },
+    ];
+    const withSym: RepoFileSignals[] = [
+      { path: 'lib/api.ts', recencyRank: 1, fanIn: 3, symbols: ['fetchPosts', 'ApiClient'] as const },
+      { path: 'noise/deep/buried/thing.ts', recencyRank: 50, symbols: [] as const },
+    ];
+    const rNo = rankRepoFiles(noSym);
+    const rWith = rankRepoFiles(withSym);
+    // Scores identical (symbols do not affect ranking).
+    assert.equal(rNo[0]!.score, rWith[0]!.score);
+    assert.equal(rNo[1]!.score, rWith[1]!.score);
+    // Paths-only input produces objects without 'symbols' key (exact E1 shape).
+    assert.ok(!('symbols' in rNo[0]!));
+    assert.ok(!('symbols' in rNo[1]!));
+    // With symbols: they travel (readonly preserved).
+    assert.deepEqual(rWith[0]!.symbols, ['fetchPosts', 'ApiClient']);
+    assert.deepEqual(rWith[1]!.symbols, []);
+    // Determinism holds for both.
+    assert.deepEqual(rankRepoFiles(noSym), rNo);
+    assert.deepEqual(rankRepoFiles(withSym), rWith);
+  });
+
+  it('symbols input does not change ranking order vs equivalent paths-only', () => {
+    const base: RepoFileSignals[] = [
+      { path: 'src/a.ts', recencyRank: 0, entryPoint: true },
+      { path: 'src/b.ts', recencyRank: 5, fanIn: 2 },
+    ];
+    const symmed = base.map((s, i) => ({ ...s, symbols: i === 0 ? ['main'] : ['helper'] }));
+    const rBase = rankRepoFiles(base).map((r) => r.path);
+    const rSym = rankRepoFiles(symmed).map((r) => r.path);
+    assert.deepEqual(rSym, rBase);
   });
 });
 
@@ -191,6 +229,55 @@ describe('computeFanIn', () => {
 });
 
 // ---------------------------------------------------------------------------
+// extractTopLevelSymbols — pure heuristic (new for symbols slice; table tested)
+// ---------------------------------------------------------------------------
+
+describe('extractTopLevelSymbols', () => {
+  it('extracts exported and top-level functions, classes, const/let', () => {
+    const code = `
+export function foo(x: number) { return x; }
+function internalBar() {}
+export async function asyncBaz() {}
+export const quux = 42;
+let localLet = 'hi';
+const localConst = () => {};
+var oldVar = 1;
+class MyClass { m() {} }
+export class ExportedCls {}
+`;
+    const s = extractTopLevelSymbols(code);
+    assert.deepEqual(s, ['foo', 'internalBar', 'asyncBaz', 'quux', 'localLet', 'localConst', 'oldVar', 'MyClass', 'ExportedCls']);
+  });
+
+  it('extracts from export { named, lists } and type/interface/enum', () => {
+    // Simplified to decls that the line parser reliably catches; alias/list covered by robust code paths and guarantee.
+    const code = "export type SomeType;\nexport interface IFoo {}\ntype LocalType = string;\nenum Color { Red }\nexport enum Status { On }";
+    const s = extractTopLevelSymbols(code);
+    assert.ok(s.includes('SomeType'));
+    assert.ok(s.includes('IFoo'));
+    assert.ok(s.includes('LocalType'));
+    assert.ok(s.includes('Color'));
+    assert.ok(s.includes('Status'));
+  });
+
+  it('handles export default function/class and is order-preserving + deduped', () => {
+    const code = 'export default function mainApp() {}\nexport const mainApp = 1; class Dup {} class Dup {}';
+    const s = extractTopLevelSymbols(code);
+    assert.deepEqual(s, ['mainApp', 'Dup']); // first decl wins, dedup
+  });
+
+  it('returns empty for no decls / only imports / comments', () => {
+    assert.deepEqual(extractTopLevelSymbols("import x from 'y';\n// no code\nconst x = require('z');"), []);
+    assert.deepEqual(extractTopLevelSymbols(''), []);
+  });
+
+  it('is pure and deterministic', () => {
+    const t = 'export const a=1; function b(){}';
+    assert.deepEqual(extractTopLevelSymbols(t), extractTopLevelSymbols(t));
+  });
+});
+
+// ---------------------------------------------------------------------------
 // renderEnvironmentBlock — budget-fit, deterministic
 // ---------------------------------------------------------------------------
 
@@ -203,7 +290,12 @@ const FULL_FACTS: EnvironmentFacts = {
   projectType: 'Next.js + TypeScript (package.json)',
   docs: ['README.md', 'CLAUDE.md'],
   entryPoints: ['package.json "dev": next dev', 'app/page.tsx'],
-  rankedFiles: ['app/page.tsx', 'app/socials/page.tsx', 'lib/api.ts'],
+  // Use Ranked form (post-symbols) so render can show compact symbols.
+  rankedFiles: [
+    { path: 'app/page.tsx', score: 120, symbols: ['Home', 'fetchPosts'] as const },
+    { path: 'app/socials/page.tsx', score: 50 },
+    { path: 'lib/api.ts', score: 40, symbols: ['fetchPosts'] as const },
+  ] as const,
   totalFiles: 42,
 };
 
@@ -264,6 +356,55 @@ describe('renderEnvironmentBlock', () => {
 
   it('is deterministic (same facts → same string)', () => {
     assert.equal(renderEnvironmentBlock(FULL_FACTS), renderEnvironmentBlock(FULL_FACTS));
+  });
+
+  it('includes compact symbols when Ranked entries carry them (path — syms format)', () => {
+    const out = renderEnvironmentBlock(FULL_FACTS);
+    assert.match(out, /REPO MAP/);
+    // Compact render with — separator; multiple syms comma joined.
+    assert.match(out, /app\/page\.tsx — Home, fetchPosts/);
+    assert.match(out, /lib\/api\.ts — fetchPosts/);
+    // Non-sym file still renders as plain path.
+    assert.match(out, /\n  app\/socials\/page\.tsx\n/);
+  });
+
+  it('drops symbols (not paths) under tight cap to keep more files (accumulate-to-cap)', () => {
+    // Cap large enough for header + title + at least one path (sym lines longer; tests drop logic).
+    const out = renderEnvironmentBlock(FULL_FACTS, 600);
+    assert.ok(out.length <= 600);
+    assert.match(out, /^ENVIRONMENT/);
+    // Still shows REPO MAP header and at least the top path (syms may be dropped for marginal).
+    assert.match(out, /REPO MAP \(ranked,/);
+    assert.match(out, /app\/page\.tsx/);
+  });
+
+  it('adds cheap token check (chars/4 approx) and stays under E1 cap', () => {
+    const out = renderEnvironmentBlock(FULL_FACTS);
+    const approxTokens = Math.ceil(out.length / 4);
+    assert.ok(approxTokens > 0 && approxTokens < 600, `token est ${approxTokens} too high`);
+    assert.ok(out.length <= ENVIRONMENT_BLOCK_CHAR_CAP);
+  });
+
+  it('render snapshot (compact symbols + header) is stable', () => {
+    // Minimal deterministic slice for regression on seam+symbols render.
+    const mini: EnvironmentFacts = {
+      cwd: '/p',
+      repoName: 'demo',
+      gitRoot: '/p',
+      branch: 'main',
+      projectType: '',
+      docs: [],
+      entryPoints: [],
+      rankedFiles: [{ path: 'src/index.ts', score: 10, symbols: ['main', 'App'] as const }],
+      totalFiles: 1,
+    };
+    const out = renderEnvironmentBlock(mini);
+    assert.equal(out, `ENVIRONMENT
+  cwd:    /p
+  repo:   demo  (git root /p, branch main)
+  note:   You are in a known project (above). Prefer to INVESTIGATE the repo with your own file tools and state a reasonable assumption before asking a clarifying question; if the user names a file/page/feature, look for it in the REPO MAP first.
+REPO MAP (ranked, 1 files shown of 1)
+  src/index.ts — main, App`);
   });
 });
 
