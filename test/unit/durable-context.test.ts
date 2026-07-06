@@ -27,8 +27,11 @@ import {
   type ContextSnapshotV1,
   type RankedRepoFile,
   // reference the new durable spine exports so knip sees them from test entry (dark feature delivery)
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   RECONSTRUCTED_TARGET_TOKENS,
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   validateSnapshot,
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   type DurableContextVersion,
 } from '../../src/core/durable-context.js';
 
