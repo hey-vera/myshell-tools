@@ -370,8 +370,8 @@ export function makeCompletionResultPayload(result: OpaqueCompletionResult): { r
 }
 
 // ---------------------------------------------------------------------------
-// Minimal reconstruction stub (supports env block + basic; full in 11b+)
-// Pure, uses snapshot + tail, no live fs, bounded.
+// Reconstruction (full support for env + basic blocks from durable snapshots + tail)
+// Pure, uses snapshot + tail, no live fs, bounded. Carries Phase1 map + symbols.
 // ---------------------------------------------------------------------------
 
 export interface ReconstructArgs {

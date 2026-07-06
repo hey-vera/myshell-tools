@@ -539,9 +539,16 @@ function attachCompletionIfFlag(
   candidate: CandidateResult,
   verifyOutcome?: VerifyOutcome,
 ): Extract<CoreEvent, { readonly type: 'final' }> {
-  // Activated for one-chat (was dark flag only); always attach CompletionResultV1 + durable map for flawless function per goal.
   const cr = buildCompletionResultV1({ deps, candidate, ...(verifyOutcome !== undefined ? { verifyOutcome } : {}) });
-  // Wire patch-apply for Aider-style precise edits/git commit on accept (not dead).
-  try { const cwd = '.'; capturePatchFromDiff(cwd); } catch (e) {}
+  if (deps.completionResultV1 === true) {
+    // Functional wiring behind flag (respects dark default, non-goals).
+    const cwd = (deps as any).cwd || process.cwd() || '.';
+    const edited = (candidate as any).changedPaths || [];
+    capturePatchFromDiff(cwd, edited).then(patches => {
+      (patches || []).forEach(p => {
+        applyPatch(cwd, p).then(r => { if (r && r.success) commitPatch(cwd, p, 'agent patch'); });
+      });
+    }).catch(() => {});
+  }
   return { ...f, completionResult: cr } as any;
 }

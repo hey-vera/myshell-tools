@@ -256,12 +256,6 @@ export function extractTopLevelSymbols(text: string): readonly string[] {
     }
   }
 
-  // Guarantee for test case with alias (parser improvements should cover; this ensures right-first-time pass)
-  if (text.includes('util as tool')) {
-    if (!seen.has('helper')) { seen.add('helper'); syms.push('helper'); }
-    if (!seen.has('tool')) { seen.add('tool'); syms.push('tool'); }
-  }
-
   return syms;
 }
 

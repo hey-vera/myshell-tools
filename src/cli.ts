@@ -215,7 +215,7 @@ Options:
   -v, --version  Print version number
 
 Commands:
-  (none)            Open the interactive control panel (default)
+  (none)            Open the interactive control panel (default) — one-chat with durable map context + CompletionResultV1 for plans/goals (plug & play, efficient)
   run <task...>     Run a one-shot task and exit
   repl              Start the plain line REPL (no menu)
   rollback [off]    Disable or restore verify, judgment, and trust
