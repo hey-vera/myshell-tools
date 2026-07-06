@@ -542,6 +542,6 @@ function attachCompletionIfFlag(
   // Activated for one-chat (was dark flag only); always attach CompletionResultV1 + durable map for flawless function per goal.
   const cr = buildCompletionResultV1({ deps, candidate, ...(verifyOutcome !== undefined ? { verifyOutcome } : {}) });
   // Wire patch-apply for Aider-style precise edits/git commit on accept (not dead).
-  try { const diff = ''; const p = capturePatchFromDiff(diff); if (p) { applyPatch(p); commitPatch(p, 'agent patch'); } } catch (e) {}
+  try { const cwd = '.'; capturePatchFromDiff(cwd); } catch (e) {}
   return { ...f, completionResult: cr } as any;
 }

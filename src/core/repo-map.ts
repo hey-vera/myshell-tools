@@ -231,7 +231,7 @@ export function extractTopLevelSymbols(text: string): readonly string[] {
     // export { helper, util as tool , type Foo } or export type { SomeType }
     const listMatch = trimmedLine.match(/^export\s*(?:type\s+)?\{\s*([^}]+)\s*\}/);
     if (listMatch) {
-      for (const part of listMatch[1].split(',')) {
+      for (const part of (listMatch[1] || '').split(',')) {
         const t = part.trim();
         const as = t.split(/\s+as\s+/i);
         let nm = (as[1] || as[0] || '').trim();
