@@ -12,6 +12,8 @@
  * Follows pure/core split (cf. repo-map.ts, work-state.ts, history.ts).
  */
 
+// See docs/r7-item11-durable-context-contract.md (P1-11a durable substrate; dark/default-off) + ROADMAP-STATUS.md + vision-alignment-audit-2026-07-06.md
+
 import type { RankedRepoFile } from './repo-map.js';
 
 // ---------------------------------------------------------------------------
