@@ -28,12 +28,12 @@ describe('accept-finalize (pure contract per strategy)', () => {
     expect('completionResult' in result).toBe(true);
   });
 
-  it('patch work only considered when flag on and changedPaths', () => {
+  it('attachCompletionIfFlag stays synchronous even when finalizeAcceptTurn yields patchWork', () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const deps = { completionResultV1: true, clock: { isoNow: () => new Date().toISOString() }, session: { id: 's1' } } as any as OrchestrateDeps;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const cand = { ...baseCandidate, changedPaths: ['x.ts'] } as any;
-    // call; async fire inside, but sync no crash for this test
+    // attachCompletionIfFlag should only attach completion metadata here.
     attachCompletionIfFlag(deps, baseFinal, cand);
   });
 
