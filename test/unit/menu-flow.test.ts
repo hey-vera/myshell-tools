@@ -9556,7 +9556,7 @@ describe('startMenu — Effort Mode settings [1] Auto', () => {
       'selecting [1] Auto in Effort Mode settings should not throw',
     );
 
-    // After pressing 1, runModeSelect writes "New conversation default: Auto (smart)" to confirm.
+    // After pressing 1, runModeSelect writes "Effort Mode: Auto (smart)" to confirm.
     assert.ok(
       sink.buf.toLowerCase().includes('auto (smart)'),
       'output must contain "Auto (smart)" after selecting [1] Auto',

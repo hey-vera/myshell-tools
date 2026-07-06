@@ -133,7 +133,7 @@ export async function runModeSelect(
   const updated: AppConfig = withOptional(config, 'mode', newMode);
   await saveConfig(updated);
   const displayLabel = newMode === undefined ? 'Auto (smart)' : levelLabel(migrateMode(newMode));
-  out.write(`New conversation default: ${displayLabel}\n`);
+  out.write(`Effort Mode: ${displayLabel}\n`);
   return updated;
 }
 
