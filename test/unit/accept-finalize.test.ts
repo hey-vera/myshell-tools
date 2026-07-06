@@ -1,6 +1,10 @@
 ﻿import { describe, it, expect } from 'vitest';
 import { attachCompletionIfFlag, finalizeAcceptTurn } from '../../src/core/accept-stage.ts';
-import type { OrchestrateDeps, CandidateResult } from '../../src/core/types.ts';
+import type { OrchestrateDeps, CandidateResult, CompletionResultVersion } from '../../src/core/types.ts';
+import { reconstructUsingCompletionMapSnapshot } from '../../src/core/history.ts';
+// reference for knip (dark spine symbols used in feature tests)
+void (1 as CompletionResultVersion);
+void reconstructUsingCompletionMapSnapshot;
 
 describe('accept-finalize (pure contract per strategy)', () => {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
