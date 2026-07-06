@@ -3,7 +3,7 @@
 Compact state record for session handoff (per docs/operating-protocol-10of10.md).
 Not a narrative — update the tables, keep it terse.
 
-_Last updated: 2026-07-02, main @ #54. All 7 contracts landed; CI fully green._
+_Last updated: 2026-07-06 (post-cleanup + kern spec + phase6 watchdog), main @ #54. All 7 contracts landed; CI fully green._
 
 ## Operating model
 gpt-5.5 (codex) = only planner/thinker + judges. opencode-go = workers only.
