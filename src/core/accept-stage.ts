@@ -471,6 +471,21 @@ function buildCompletionRepairEvidence(): CompletionRepairEvidence {
   return { attempted: false, attempts: 0, maxAttempts: 1, retestedAfterLastRepair: false, finalAttemptChangedPaths: [] };
 }
 
+export function finalizeAcceptTurn(params: {
+  deps: OrchestrateDeps;
+  final: any;
+  candidate: CandidateResult;
+  verifyOutcome?: VerifyOutcome;
+}): { final: any; patchWork?: any } {
+  const { deps, final, candidate, verifyOutcome } = params;
+  if (deps.completionResultV1 === true) {
+    const cr = buildCompletionResultV1({ deps, candidate, ...(verifyOutcome !== undefined ? { verifyOutcome } : {}) });
+    const patchWork = { cwd: (deps as any).cwd || process.cwd() || '.', edited: (candidate as any).changedPaths || [] };
+    return { final: { ...final, completionResult: cr }, patchWork };
+  }
+  return { final };
+}
+
 export function buildCompletionResultV1(params: {
   deps: OrchestrateDeps;
   candidate: CandidateResult;
@@ -533,22 +548,21 @@ export function buildCompletionResultV1(params: {
   };
 }
 
-function attachCompletionIfFlag(
+export function attachCompletionIfFlag(
   deps: OrchestrateDeps,
   f: Extract<CoreEvent, { readonly type: 'final' }>,
   candidate: CandidateResult,
   verifyOutcome?: VerifyOutcome,
 ): Extract<CoreEvent, { readonly type: 'final' }> {
-  const cr = buildCompletionResultV1({ deps, candidate, ...(verifyOutcome !== undefined ? { verifyOutcome } : {}) });
-  if (deps.completionResultV1 === true) {
-    // Functional wiring behind flag (respects dark default, non-goals).
-    const cwd = (deps as any).cwd || process.cwd() || '.';
-    const edited = (candidate as any).changedPaths || [];
+  const res = finalizeAcceptTurn({ deps, final: f, candidate, verifyOutcome } as any);
+  if (deps.completionResultV1 === true && res.patchWork) {
+    // fire for now; strategy recommends await in caller (cli handler)
+    const { cwd, edited } = res.patchWork;
     capturePatchFromDiff(cwd, edited).then(patches => {
       (patches || []).forEach(p => {
         applyPatch(cwd, p).then(r => { if (r && r.success) commitPatch(cwd, p, 'agent patch'); });
       });
     }).catch(() => {});
   }
-  return { ...f, completionResult: cr } as any;
+  return res.final;
 }

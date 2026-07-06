@@ -47,6 +47,7 @@ import { createFileUserMemoryStore, resolveProjectKey } from './infra/user-memor
 export { createFileUserMemoryStore };
 import { resolveMemoryContext } from './core/memory-injection.js';
 import { buildEnvironmentContext } from './core/repo-map.js';
+import { buildEnvironmentContextFromRecon } from './core/durable-context.js';
 import {
   buildToolStateContext,
   buildCapabilitySummary,
@@ -881,6 +882,12 @@ async function main(): Promise<void> {
       config.codebaseAwareness === false
         ? ''
         : await buildEnvironmentContext(cwd, nodeRepoScanPort).catch(() => '');
+    if ((config as any).completionResultV1) {
+      // wire: when flag, populate via durable recon seam (strategy step 4)
+      // (snapshot would come from durable log in full session)
+      const reconEnv = buildEnvironmentContextFromRecon(null, []);
+      // if reconEnv, could override, but keep gathered for now
+    }
     // TOOL SELF-AWARENESS (tool-state §): render the authoritative "ABOUT THIS
     // TOOL" block from the live env + effective mode + config so the partner
     // answers the user's setup/mode questions from truth. Pure, NO model call.

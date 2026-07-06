@@ -446,6 +446,29 @@ export function reconstructContextV1(args: ReconstructArgs): ReconstructedContex
   };
 }
 
+/**
+ * Pure builder to unify durable recon into the environmentContext seam used by assembleContextBlocks.
+ * Calls reconstructContextV1 and extracts/ renders the env block text.
+ */
+export function buildEnvironmentContextFromRecon(
+  snapshot: ContextSnapshotV1 | null,
+  events: readonly CanonicalEventV1[] = [],
+): string {
+  if (!snapshot) return '';
+  try {
+    const recon = reconstructContextV1({
+      logId: snapshot.logId,
+      conversationId: 'current',
+      snapshots: [snapshot],
+      tailEvents: events,
+    });
+    const envBlock = recon.promptBlocks.find(b => b.kind === 'environment');
+    return envBlock ? envBlock.text : '';
+  } catch {
+    return '';
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Chain verify helper (for tests + future append)
 // ---------------------------------------------------------------------------

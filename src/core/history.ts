@@ -15,7 +15,7 @@
 import type { SessionEntry } from './types.js';
 import { lastJsonObjectBoundsWithKey } from './json-envelope.js';
 import { stripTrailingGoalMarker } from './goal.js';
-import type { ReconstructedContextV1 } from './durable-context.js';
+import { ReconstructedContextV1, reconstructContextV1 } from './durable-context.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -280,20 +280,15 @@ export function historyTruncationInfo(
 // History consumers read from completion snapshot when flag on; flag-off unchanged.
 // ---------------------------------------------------------------------------
 
-/** Reconstruction hook using Phase1 map (ranked+symbols) snapshot for ReconstructedContextV1. */
+/** Reconstruction hook using Phase1 map (ranked+symbols) snapshot for ReconstructedContextV1. Delegates to durable recon. */
 export function reconstructUsingCompletionMapSnapshot(
   snapshot: { ranked?: readonly any[]; env?: string } | null,
   priorHistory?: readonly SessionEntry[],
 ): ReconstructedContextV1 {
-  // Activated compat recon using durable for one-chat (was stub/empty)
-  return {
-    version: 1,
-    logId: 'hist-compat',
-    conversationId: 'current',
-    baseSnapshotId: null,
-    replayedEvents: [],
-    promptBlocks: snapshot && (snapshot as any).ranked ? [{ id: 'env', kind: 'environment', text: 'durable map', tokenEstimate: 10, sourceEventIds: [] }] : [],
-    openLoops: [],
-    tokenEstimate: 10,
-  };
+  if (!snapshot || !(snapshot as any).ranked) {
+    return { version: 1, logId: 'hist-compat', conversationId: 'current', baseSnapshotId: null, replayedEvents: [], promptBlocks: [], openLoops: [], tokenEstimate: 0 } as any;
+  }
+  const envSnap = { version: 1, snapshotId: 's', logId: 'l', kind: 'environment' as const, coversThrough: { logId: 'l', eventId: 'e', sequence: 0 }, createdAt: '', sourceEventIds: [], state: { rankedFiles: (snapshot as any).ranked }, stateHash: '', invalidatedBy: null, tokenEstimate: 10 } as any;
+  const recon = reconstructContextV1({ logId: 'l', conversationId: 'current', snapshots: [envSnap], tailEvents: [] });
+  return recon;
 }
