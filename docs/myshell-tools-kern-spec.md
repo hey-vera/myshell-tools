@@ -73,6 +73,8 @@ All contracts are currently **dark/default-off**. They are fully authored with e
 
 **Aider-style foundations internalized here:** The efficient deterministic repo map (symbols + ranking + budget accumulation, see `src/core/repo-map.ts`) and related orientation/context assembly are native Kern responsibilities. These evolved from historical "Aider-style" techniques but are now first-class, provider-agnostic capabilities owned by the Kern (no external Aider process required). Patch/apply layers (when hardened) follow the same pattern.
 
+**Subscription CLI vendors (core invariant):** myshell-tools is subscription-only for primary vendors. All provider adapters (claude, codex, grok, opencode) use CLI OAuth/subscription login flows exclusively. No raw `sk-` or metered API keys in core kern paths, env scoping, or adapters for these. Detection, account selection, and execution are per logged-in subscription account (account-scoped HOME/CONFIG). The Kern (registry, preflight, orchestrate, context) must preserve this — provider-agnostic at the CLI surface only. Confirmed in src/providers/*.ts and detect.ts.
+
 ### 2.4 Reliability Kern (Watchdog + Relaunch)
 See `docs/design-lag-watchdog-relaunch.md` (landed in merge b587030).
 
