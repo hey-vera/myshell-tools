@@ -6,7 +6,6 @@ import { buildVerifyReceipt, type VerifyLevel, type VerifyOutcome, type VerifyPo
 import { buildSnapshotFromVerify, type EvidenceSnapshotV2 } from './evidence.js';
 import type { CompletionResultV1, CompletionTerminal, DeliveryQualityResult, CompletionWorktreeState, CompletionVerification, CompletionTestEvidence, CompletionRepairEvidence, DeliveryQualityIssue } from './types.js';
 import type { RankedRepoFile } from './repo-map.js';
-import { capturePatchFromDiff, applyPatch, commitPatch } from './patch-apply.js';
 import {
   composeTrustReceipt,
   trustReceiptLines,
@@ -560,14 +559,5 @@ export function attachCompletionIfFlag(
 ): Extract<CoreEvent, { readonly type: 'final' }> {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const res = finalizeAcceptTurn({ deps, final: f, candidate, verifyOutcome } as any);
-  if (deps.completionResultV1 === true && res.patchWork) {
-    // fire for now; strategy recommends await in caller (cli handler)
-    const { cwd, edited } = res.patchWork;
-    capturePatchFromDiff(cwd, edited).then(patches => {
-      (patches || []).forEach(p => {
-        applyPatch(cwd, p).then(r => { if (r && r.success) commitPatch(cwd, p, 'agent patch'); });
-      });
-    }).catch(() => {});
-  }
   return res.final;
 }
