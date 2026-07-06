@@ -417,7 +417,6 @@ describe('startMenu — Accounts live-snapshot refresh', () => {
     const dir = join(tmpdir(), `accts-refresh-init-${randomUUID()}`);
     try {
       await withStateHome(dir, async () => {
-        process.env['MYSHELL_SUBSCRIPTIONS'] = '1';
         await writeTestSubs(dir, [makeAccount({ provider: 'claude', label: 'c1', enabled: true, status: 'active' })]);
 
         const sink = makeSink();
@@ -439,7 +438,6 @@ describe('startMenu — Accounts live-snapshot refresh', () => {
     const dir = join(tmpdir(), `accts-refresh-iter-${randomUUID()}`);
     try {
       await withStateHome(dir, async () => {
-        process.env['MYSHELL_SUBSCRIPTIONS'] = '1';
         await writeTestSubs(dir, [makeAccount({ provider: 'claude', label: 'c1', enabled: true, status: 'active' })]);
 
         const sink = makeSink();
@@ -490,7 +488,6 @@ describe('startMenu — Accounts live-snapshot refresh', () => {
     const dir = join(tmpdir(), `accts-refresh-del-${randomUUID()}`);
     try {
       await withStateHome(dir, async () => {
-        process.env['MYSHELL_SUBSCRIPTIONS'] = '1';
         await writeTestSubs(dir, [
           makeAccount({ provider: 'claude', label: 'c1', enabled: true, status: 'active' }),
           makeAccount({ provider: 'claude', label: 'c2', enabled: true, status: 'active' }),
@@ -543,7 +540,6 @@ describe('startMenu — Accounts live-snapshot refresh', () => {
     const dir = join(tmpdir(), `accts-refresh-dis-${randomUUID()}`);
     try {
       await withStateHome(dir, async () => {
-        process.env['MYSHELL_SUBSCRIPTIONS'] = '1';
         await writeTestSubs(dir, [
           makeAccount({ provider: 'claude', label: 'c1', enabled: true, status: 'active' }),
           makeAccount({ provider: 'claude', label: 'c2', enabled: true, status: 'active' }),
@@ -597,7 +593,6 @@ describe('startMenu — Accounts live-snapshot refresh', () => {
     const dir = join(tmpdir(), `accts-refresh-auth-${randomUUID()}`);
     try {
       await withStateHome(dir, async () => {
-        process.env['MYSHELL_SUBSCRIPTIONS'] = '1';
         await writeTestSubs(dir, [
           makeAccount({ provider: 'claude', label: 'c1', enabled: true, status: 'auth-failed' }),
         ]);
@@ -645,61 +640,12 @@ describe('startMenu — Accounts live-snapshot refresh', () => {
     }
   });
 
-  it('sign-in branch also re-reads subs each iteration (transition to management after accounts appear)', async () => {
-    const dir = join(tmpdir(), `accts-refresh-signin-${randomUUID()}`);
-    try {
-      await withStateHome(dir, async () => {
-        process.env['MYSHELL_SUBSCRIPTIONS'] = '1';
-        await writeTestSubs(dir, []);
 
-        const sink = makeSink();
-
-        let phase = 0;
-        const customReader = async (): Promise<string | null> => {
-          if (phase === 0) {
-            phase = 1;
-            return 'a';
-          }
-          if (phase === 1) {
-            const deadline = Date.now() + 10_000;
-            while (Date.now() < deadline && !sink.buf.includes('Accounts / Sign in')) {
-              await delay(5);
-            }
-            await writeTestSubs(dir, [
-              makeAccount({ provider: 'claude', label: 'c1', enabled: true, status: 'active' }),
-            ]);
-            phase = 2;
-            return 'x';
-          }
-          if (phase === 2) {
-            phase = 3;
-            return 'b';
-          }
-          return 'q';
-        };
-
-        const ctx = makeCtx({
-          readLine: customReader,
-          detectEnvironment: async () => FAKE_ENV,
-        }, undefined, undefined, undefined, dir);
-
-        await startMenu(ctx, sink);
-
-        const signInIdx = sink.buf.indexOf('Accounts / Sign in');
-        const mgmtIdx = sink.buf.indexOf('1 active');
-        assert.ok(signInIdx >= 0, `initial frame must show sign-in branch. Sink:\n${sink.buf.slice(0, 3000)}`);
-        assert.ok(mgmtIdx > signInIdx, `management branch must appear after sign-in branch. Sink:\n${sink.buf.slice(0, 3000)}`);
-      });
-    } finally {
-      fs.rmSync(dir, { recursive: true, force: true });
-    }
-  });
 
   it('read-failure-then-recovery: retains last good snapshot and continues', async () => {
     const dir = join(tmpdir(), `accts-refresh-recover-${randomUUID()}`);
     try {
       await withStateHome(dir, async () => {
-        process.env['MYSHELL_SUBSCRIPTIONS'] = '1';
         await writeTestSubs(dir, [makeAccount({ provider: 'claude', label: 'c1', enabled: true, status: 'active' })]);
 
         const sink = makeSink();
@@ -762,7 +708,6 @@ describe('startMenu — Accounts live-snapshot refresh', () => {
     const dir = join(tmpdir(), `accts-refresh-empty-${randomUUID()}`);
     try {
       await withStateHome(dir, async () => {
-        process.env['MYSHELL_SUBSCRIPTIONS'] = '1';
         await writeTestSubs(dir, []);
 
         const sink = makeSink();
@@ -773,7 +718,7 @@ describe('startMenu — Accounts live-snapshot refresh', () => {
 
         await startMenu(ctx, sink);
 
-        assert.ok(sink.buf.includes('Accounts / Sign in'), 'empty accounts must show sign-in branch');
+        assert.ok(sink.buf.includes('Accounts') && sink.buf.includes('no accounts'), 'empty accounts must show Accounts menu with no accounts status');
       });
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
@@ -784,7 +729,6 @@ describe('startMenu — Accounts live-snapshot refresh', () => {
     const dir = join(tmpdir(), `accts-refresh-typed-${randomUUID()}`);
     try {
       await withStateHome(dir, async () => {
-        process.env['MYSHELL_SUBSCRIPTIONS'] = '1';
         await writeTestSubs(dir, [makeAccount({ provider: 'claude', label: 'c1', enabled: true, status: 'active' })]);
 
         const sink = makeSink();

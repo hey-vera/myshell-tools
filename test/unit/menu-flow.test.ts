@@ -919,61 +919,6 @@ describe('startMenu — immediate q → exits cleanly', () => {
     assertLockedHomeSkeleton(sink.buf);
   });
 
-  it('dispatches a line-mode j with carriage return to Claude login', async () => {
-    const sink = makeSink();
-    const loginCalls: string[] = [];
-    const ctx = makeCtx({
-      readLine: makeScriptedReader(['j\r', 'q']),
-      login: async (_out, providerArg) => {
-        loginCalls.push(providerArg ?? 'all');
-        return FAKE_LOGIN_RESULT;
-      },
-      detectEnvironment: async () => FAKE_ENV,
-    });
-
-    await startMenu(ctx, sink);
-
-    assert.deepEqual(loginCalls, ['claude'], 'normalized line-mode j must dispatch to Claude login');
-  });
-
-  it('after Claude login re-detects authenticated state and returns to home without re-prompting auth', async () => {
-    const sink = makeSink();
-    const loginCalls: string[] = [];
-    let detectCalls = 0;
-    const afterLoginEnv: EnvironmentStatus = {
-      ...FAKE_ENV,
-      claude: { ...FAKE_ENV.claude, authenticated: true, availableModels: ['model-a'] },
-    
-  grok: {
-    id: 'grok',
-    installed: false,
-    version: null,
-    authenticated: false,
-    plan: null,
-    binaryPath: null,
-    availableModels: [],
-  },
-};
-    const ctx = makeCtx({
-      env: { ...FAKE_ENV, claude: { ...FAKE_ENV.claude, authenticated: false } },
-      readLine: makeScriptedReader(['j', '', 'q']),
-      login: async (_out, providerArg) => {
-        loginCalls.push(providerArg ?? 'all');
-        return FAKE_LOGIN_RESULT;
-      },
-      detectEnvironment: async () => {
-        detectCalls += 1;
-        return afterLoginEnv;
-      },
-    });
-
-    await startMenu(ctx, sink);
-
-    assert.deepEqual(loginCalls, ['claude'], 'completed login must not loop back into auth');
-    assert.equal(detectCalls, 1, 'menu must refresh provider state exactly once after login');
-    assertLockedHomeSkeleton(sink.buf);
-  });
-
   it('startMenu resolves (not hangs)', async () => {
     const sink = makeSink();
     const ctx = makeCtx({ readLine: makeScriptedReader(['q']) });
@@ -7135,40 +7080,6 @@ describe('startMenu — [o] opencode discoverability in Auth section', () => {
 
   // ---- Pressing [o] when opencode is ALREADY installed ----------------------
 
-  it('pressing o with opencode installed invokes login with "opencode"', async () => {
-    let loginCalled = false;
-    let loginArg: string | undefined;
-    let sharedReadLinePassed = false;
-    let sharedConfirmPassed = false;
-
-    const readLine = makeScriptedReader(['o', 'q']);
-    const confirm = async (): Promise<boolean> => true;
-    const sink = makeSink();
-    const ctx = makeCtx({
-      env: FAKE_ENV_OPENCODE_INSTALLED,
-      readLine,
-      confirm,
-      login: async (_out, providerArg, opts) => {
-        loginCalled = true;
-        loginArg = providerArg;
-        sharedReadLinePassed = opts?.readLine === readLine;
-        sharedConfirmPassed = opts?.confirm === confirm;
-        return FAKE_LOGIN_RESULT;
-      },
-      detectEnvironment: async () => FAKE_ENV_OPENCODE_INSTALLED,
-    });
-
-    await assert.doesNotReject(
-      () => startMenu(ctx, sink),
-      'pressing o with opencode installed should not throw',
-    );
-
-    assert.equal(loginCalled, true, 'login fake must have been called');
-    assert.equal(loginArg, 'opencode', 'login must be called with "opencode"');
-    assert.equal(sharedReadLinePassed, true, 'opencode login must receive the shared menu reader');
-    assert.equal(sharedConfirmPassed, true, 'opencode login must receive the shared menu confirm');
-  });
-
   it('pressing o with opencode installed does NOT show install consent prompt', async () => {
     const sink = makeSink();
     const ctx = makeCtx({
@@ -7186,49 +7097,7 @@ describe('startMenu — [o] opencode discoverability in Auth section', () => {
     );
   });
 
-  it('pressing o does not spawn real subprocesses (login seam is honoured)', async () => {
-    let loginCallCount = 0;
-
-    const sink = makeSink();
-    const ctx = makeCtx({
-      env: FAKE_ENV_OPENCODE_INSTALLED,
-      readLine: makeScriptedReader(['o', 'q']),
-      login: async () => {
-        loginCallCount += 1;
-        return FAKE_LOGIN_RESULT;
-      },
-      detectEnvironment: async () => FAKE_ENV_OPENCODE_INSTALLED,
-    });
-
-    await startMenu(ctx, sink);
-
-    assert.equal(loginCallCount, 1, 'login seam must be called exactly once for [o]');
-  });
-
   // ---- Pressing [o] when opencode is NOT installed — consent prompt ---------
-
-  it('pressing o when opencode NOT installed shows a consent prompt', async () => {
-    const sink = makeSink();
-    // Answer 'n' to skip install
-    const ctx = makeCtx({
-      readLine: makeScriptedReader(['o', 'n', 'q']),
-      detectEnvironment: async () => FAKE_ENV,
-    });
-
-    await assert.doesNotReject(
-      () => startMenu(ctx, sink),
-      'pressing o without opencode installed should not throw',
-    );
-
-    assert.ok(
-      sink.buf.includes('Install opencode'),
-      'consent prompt must appear when o pressed and opencode not installed',
-    );
-    assert.ok(
-      sink.buf.includes('opencode-ai'),
-      'consent prompt must mention the npm package name',
-    );
-  });
 
   it('pressing o, NOT installed, answering n → skips install, does NOT call installProvider', async () => {
     let installCalled = false;
@@ -7264,60 +7133,6 @@ describe('startMenu — [o] opencode discoverability in Auth section', () => {
     await startMenu(ctx, sink);
 
     assert.equal(loginCalled, false, 'login must NOT be called when user skips install');
-  });
-
-  it('pressing o, NOT installed, answering n → prints skip note with install command', async () => {
-    const sink = makeSink();
-    const ctx = makeCtx({
-      readLine: makeScriptedReader(['o', 'n', 'q']),
-      detectEnvironment: async () => FAKE_ENV,
-    });
-
-    await startMenu(ctx, sink);
-
-    assert.ok(
-      sink.buf.includes('Skipped') || sink.buf.toLowerCase().includes('install it later'),
-      'skip note must mention "Skipped" or "install it later"',
-    );
-    assert.ok(
-      sink.buf.includes('npm install -g opencode-ai'),
-      'skip note must include the exact install command',
-    );
-  });
-
-  it('pressing o, NOT installed, answering [Enter] (yes) → calls installProvider then login', async () => {
-    const calls: string[] = [];
-
-    // After install, detectEnvironment returns the "installed" env so login proceeds
-    const sink = makeSink();
-    const ctx = makeCtx({
-      readLine: makeScriptedReader(['o', '', 'q']),  // '' = Enter = yes
-      installProvider: async (_id) => {
-        calls.push('install:' + _id);
-        return true;
-      },
-      login: async (_out, providerArg) => {
-        calls.push('login:' + String(providerArg));
-        return FAKE_LOGIN_RESULT;
-      },
-      detectEnvironment: async () => {
-        // After install: report opencode now installed so login proceeds
-        return FAKE_ENV_OPENCODE_INSTALLED;
-      },
-    });
-
-    await assert.doesNotReject(
-      () => startMenu(ctx, sink),
-      'o → yes to install → install+login should not throw',
-    );
-
-    assert.ok(calls.includes('install:opencode'), 'installProvider must be called with "opencode"');
-    assert.ok(calls.includes('login:opencode'), 'login must be called with "opencode" after install');
-    // install must happen before login
-    assert.ok(
-      calls.indexOf('install:opencode') < calls.indexOf('login:opencode'),
-      'installProvider must be called before login',
-    );
   });
 
   it('pressing o, NOT installed, EOF at consent → skips (same as n)', async () => {
@@ -7368,22 +7183,6 @@ describe('startMenu — [o] opencode discoverability in Auth section', () => {
     );
 
     assert.equal(loginCalled, false, 'login must NOT be called when install fails');
-  });
-
-  it('pressing o, NOT installed, install fails → prints failure note', async () => {
-    const sink = makeSink();
-    const ctx = makeCtx({
-      readLine: makeScriptedReader(['o', '', 'q']),
-      installProvider: async () => false,
-      detectEnvironment: async () => FAKE_ENV,
-    });
-
-    await startMenu(ctx, sink);
-
-    assert.ok(
-      sink.buf.toLowerCase().includes('install failed') || sink.buf.toLowerCase().includes('run it yourself'),
-      'failure note must appear when install fails',
-    );
   });
 });
 

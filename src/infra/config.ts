@@ -370,19 +370,10 @@ export interface AppConfig {
    */
   experimentalProviderEffort?: boolean;
   /**
-   * EXPERIMENTAL OpenCode account subscriptions (default off).
-   * When true, and/or MYSHELL_SUBSCRIPTIONS is truthy, myshell may read
-   * subscriptions.json, show the OpenCode Accounts menu, and route OpenCode
-   * model calls through account-scoped XDG_DATA_HOME.
-   */
-  experimentalSubscriptions?: boolean;
-  /**
    * EXPERIMENTAL Account-Aware Parallelism for hedged escalation (default off).
-   * When true, and/or MYSHELL_ACCOUNT_PARALLELISM is truthy (AND the base
-   * experimentalSubscriptions / MYSHELL_SUBSCRIPTIONS flag is also on), the hedge
-   * path may use a distinct same-provider subscription account for its speculative
-   * sibling arm in quality-first mode. Gated behind the base subscriptions flag;
-   * default OFF. Absent means off.
+   * When true, and/or MYSHELL_ACCOUNT_PARALLELISM is truthy, the hedge path may
+   * use a distinct same-provider subscription account for its speculative sibling
+   * arm in quality-first mode. Default OFF. Absent means off.
    */
   experimentalAccountParallelism?: boolean;
   /**
