@@ -1861,6 +1861,7 @@ export async function runChatLoop(
         shellCommandGate,
         ctx.shellRunner ?? createNodeShellRunner(),
       );
+      // ! passthrough early-return path: does NOT send to model, does NOT persist to conversation log (initially) (menu-build-spec-final.md:719 " ! shell passthrough: - first-char only - no model call - ... Do not persist to conversation log initially."; Slice 5 menu-build-spec-final.md:382; kern-spec.md:45)
       return 'continue';
     }
 
