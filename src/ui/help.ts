@@ -83,6 +83,7 @@ export function commandHelpText(command: string): string | null {
     case 'status':
     case 'check':
     case 'doctor':
+      // Slice 3: doctor kept for support/CI only (no user-facing menu/home advertising); self-heal in control panel (menu-build-spec-final.md:23,301,320-334 "Delete user-facing Doctor/Health" "Keep hidden `doctor/status/check`"; kern-spec.md)
       return [
         `myshell-tools ${command}`,
         '',
