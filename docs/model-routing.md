@@ -4,15 +4,16 @@ _Last verified: 2026-07-04. This doc holds VOLATILE, dated model facts so they n
 
 ## Roles (class-based routing)
 
+Latency is a first-class factor, not a tie-break. Prefer the FASTEST worker that clears the quality bar � a model finishing in minutes beats a cheaper one taking 30-45 min; wall-clock is a real cost, and the menu build took ~18h largely due to slow `glm-5.2` workers. Objective: perfect-first-time (no overkill) -> minimize (total quota incl. rework + a latency penalty) -> remaining tie-breaks.
+
 | Role | Model class | Default | When |
 | --- | --- | --- | --- |
 | Always-on orchestrator (brain) | Sonnet-class | Sonnet 5 (else Sonnet 4.6) | Dispatch, gating, verification, git, receipt synthesis, bounded control-plane edits |
 | Frontier planner / auditor | frontier | `codex exec -m gpt-5.5 -c model_reasoning_effort=high` | Architecture, audits, root cause, policy, multi-source research, durable plans |
-| Worker (execution) — primary | opencode-go | `opencode run -m opencode-go/<model>` | Cheapest capable funded worker for bounded implementation/tests/mechanical edits |
-| Worker fallback — gpt side | codex | `codex exec -m gpt-5.4` (heavier), `gpt-5.4-mini` (cheap/mechanical) | Use after opencode-go unavailability/retry exhaustion or poor task fit; ChatGPT billing |
-| Worker fallback — claude side | Claude `Agent` | sonnet-class Agent subagent | Same, on Anthropic billing; useful when CLI worker path fails or separate quota is needed |
-| Escalation specialist | Opus 4.8 | — | Only when a `CLAUDE.md` Opus trigger fires; never the control plane |
-
+| Worker (execution) � primary | opencode-go | `opencode run -m opencode-go/<model>` | Cheapest capable funded worker for bounded implementation/tests/mechanical edits |
+| Worker fallback � gpt side | codex | `codex exec -m gpt-5.4` (heavier), `gpt-5.4-mini` (cheap/mechanical) | Use after opencode-go unavailability/retry exhaustion or poor task fit; ChatGPT billing |
+| Worker fallback � claude side | Claude `Agent` | sonnet-class Agent subagent | Same, on Anthropic billing; useful when CLI worker path fails or separate quota is needed |
+| Escalation specialist | Opus 4.8 | � | Only when a `CLAUDE.md` Opus trigger fires; never the control plane |
 ### Worker routing notes (updated 2026-07-05)
 - **opencode-go funding is VOLATILE** — funded 2026-07-04 (`GO_OK` smoke), then **out of quota 2026-07-05** (dispatch failed with exit `127` after the banner). Do not assume availability; smoke-verify (`opencode run -m opencode-go/deepseek-v4-flash "GO_OK" </dev/null`) before relying on it. **Later same day: it also silently HANGS instead of failing fast** — a re-smoke sat at 0 output for 4+ min while spawning multiple stacked `opencode.exe` processes (up to 5 concurrent, one at 598MB RSS) that had to be `taskkill`'d. Treat any opencode-go call with no output after ~2 min as hung, not slow — kill it, don't wait longer.
 - **codex (ChatGPT billing) ALSO hit its usage limit on 2026-07-05**, mid-session, across both `gpt-5.4-mini` and `gpt-5.4` — error: `You've hit your usage limit ... try again at Jul 7th, 2026`. One in-flight `gpt-5.4` dispatch produced a genuinely incomplete diff (imports/scaffolding written, wiring not finished) with no commit/push before stalling (0 output growth, 0% CPU for 10+ min) — treat a codex worker that goes silent after this date as quota-exhausted, not transiently stuck; stop it and resume-from-diff rather than waiting. It also recovered mid-session (a later smoke call succeeded) — quota resets aren't always exactly on the stated retry time, so re-smoke before assuming it's still down.
@@ -26,23 +27,22 @@ _Last verified: 2026-07-04. This doc holds VOLATILE, dated model facts so they n
 - **Fallback:** use codex `gpt-5.4-mini` for cheap/mechanical work, codex `gpt-5.4` for heavier bounded work, and Claude sonnet-class `Agent` workers when CLI paths are unavailable, permissions/subagent integration helps, or quota balancing is needed. `codex exec -m <model>` runs on ChatGPT billing, independent of opencode balance.
 - Claude `Agent` workers may edit `src/`/`test/` (they are separate subagents, not the orchestrator main thread — the bright line applies only to the main thread).
 
-## Task → model routing table (task-calibrated, not provider-class-only)
+## Task ? model routing table (task-calibrated, not provider-class-only)
 
-Pick the **cheapest candidate that clears the task's first-time-right bar after pricing rework** (see `docs/orchestrator-protocol.md` for the objective function + quality bars). Do NOT default to `glm-5.2` for everything — it's a strong long-horizon coder, wasteful on mechanical work.
+Pick the **fastest candidate that clears the task's first-time-right bar after pricing rework and latency together** (see `docs/orchestrator-protocol.md` for the objective function + quality bars). Do NOT default to `glm-5.2` for everything � it's a strong long-horizon coder, but often wasteful when a faster worker clears the same bar.
 
 | Task | First route | Escalate when |
 | --- | --- | --- |
-| Mechanical edits, formatting, receipt summaries | `opencode-go/deepseek-v4-flash` (low/no effort); fallback codex `gpt-5.4-mini` | fails verification once · touches unexpected files · needs semantic judgment |
+| Mechanical edits, formatting, receipt summaries | `opencode-go/deepseek-v4-flash` (low/no effort); fallback codex `gpt-5.4-mini` | fails verification once � touches unexpected files � needs semantic judgment |
 | Large read-only scan / extraction | `deepseek-v4-flash` / `mimo-v2.5` / `minimax-m3` / `qwen3.7-plus` (by live cost/context) | needs architecture judgment or conflicting evidence |
-| Narrow implementation, strong tests | `deepseek-v4-flash` if coupling ≤2 & tests strong; else `deepseek-v4-pro` / `kimi-k2.7-code` | one failed attempt · weak tests · cross-module contract |
-| Coding-heavy bounded implementation | `kimi-k2.7-code` / `deepseek-v4-pro` / `glm-5.2` (by registry + prior pass rate) | shared defaults/schema/release behavior · broad UI state |
-| Long-context agentic refactor | `glm-5.2` / `qwen3.7-max` / `mimo-v2.5-pro` / codex `gpt-5.4` high | if expected rework exceeds the stronger-model delta, pick `gpt-5.4` first |
+| Narrow implementation, strong tests | `deepseek-v4-flash` if coupling =2 & tests strong; else `deepseek-v4-pro` / `kimi-k2.7-code` | one failed attempt � weak tests � cross-module contract |
+| Coding-heavy bounded implementation | `kimi-k2.7-code` / `deepseek-v4-pro` / `glm-5.2` (by registry + prior pass rate) | shared defaults/schema/release behavior � broad UI state |
+| Long-context agentic refactor | `qwen3.7-max` / `mimo-v2.5-pro` / codex `gpt-5.4` high / fastest strong fit | prefer a faster model or Claude Agent over `glm-5.2` when it clears the same bar; if expected rework exceeds the stronger-model delta, pick `gpt-5.4` first |
 | UI/test-loop where harness integration matters | Claude sonnet-class `Agent` high | if Anthropic quota is pressured, use codex `gpt-5.4` high |
 | Architecture / audit / root-cause / policy | codex `gpt-5.5` high (planner/auditor, NOT worker) | Opus only on named safety/default/release/conflict triggers |
 | Security / privacy / destructive / default / release | strong implementer **+ independent** `gpt-5.5` or Opus reviewer | never a cheap open worker alone |
 
-**Rework > cost-delta principle:** if a cheap worker is likely to fail and retry, the stronger model that succeeds once is *cheaper in total quota*. Price the rework, not just the per-call cost.
-
+**Rework + latency > sticker-price principle:** if a cheap worker is likely to fail and retry, or simply take far longer, the stronger/faster model that succeeds once is cheaper in real total cost. Price the rework and the wall-clock, not just the per-call cost.
 ## Pricing (Anthropic, per MTok, verified 2026-07-03)
 
 - **Opus 4.8** — $5 input / $25 output. Defaults to high effort. Reserve for escalation.
@@ -102,3 +102,7 @@ Listed by `opencode models </dev/null` on 2026-07-03:
 - **Supervisor topologies flatten token growth but risk translation loss** — mitigate with receipts, citations, line refs. [LangChain benchmarks](https://www.langchain.com/blog/benchmarking-multi-agent-architectures).
 - **Cheap-router/expensive-worker works only with a competent, rule-governed router.** [RouteLLM](https://www.lmsys.org/blog/2024-07-01-routellm/) · [RouterEval](https://aclanthology.org/2025.findings-emnlp.208.pdf).
 - **Two routing failure modes to guard against:** *routing collapse* (over-escalation to the expensive model) and *under-escalation* (cheap model keeps hard work, returns confident-but-wrong). Fix = a fixed escalation trigger list + verification, not free judgment. [Routing Collapse](https://arxiv.org/html/2602.03478v1) · [Cluster, Route, Escalate](https://arxiv.org/html/2606.27457v1).
+
+
+
+
