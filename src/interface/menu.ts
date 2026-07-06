@@ -6791,6 +6791,7 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
   let watchdogDisabled = false;
   let activeConversationId: string | null = null;
 
+  let recoveryHandoffInProgress = false;
   if (inkHandle !== null && relaunchFn !== undefined) {
     const handle = inkHandle;
     watchdogRecoveryHandler = (_snapshot: WatchdogSnapshot): void => {
@@ -6812,13 +6813,18 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
         try {
           await recordRelaunchAttempt(convId, 'watchdog-unresponsive');
         } catch {
+          out.write('\n[error] interface recovery could not safely record its relaunch attempt.\n');
           return;
         }
         try {
           await writeActiveConversation({ conversationId: convId, reason: 'auto-recovered' });
         } catch {
-          /* best-effort */
+          out.write('\n[error] interface recovery could not preserve the active conversation.\n');
+          return;
         }
+        // Unmounting resolves the chat's pending read. Preserve the marker while
+        // the parent chat unwinds so the relaunched child can consume it.
+        recoveryHandoffInProgress = true;
         const resumeStdin = suspendStdin?.();
         try {
           handle.unmount();
@@ -6829,6 +6835,8 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
         const relaunchEnv = { ...process.env, ...recoveryEnv };
         const code = await relaunchFn(relaunchEnv).catch(() => 1);
         if (code === 0) return;
+        recoveryHandoffInProgress = false;
+        await clearActiveConversation();
         resumeStdin?.();
         out.write('\n[error] interface recovery relaunch failed.\n');
       })();
@@ -6854,7 +6862,9 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
       return await runChatLoop(...args);
     } finally {
       activeConversationId = null;
-      await clearActiveConversation();
+      if (!recoveryHandoffInProgress) {
+        await clearActiveConversation();
+      }
     }
   };
 
@@ -7132,9 +7142,9 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
         const allMetas = await ctx.store.list();
         const targetConv = allMetas.find((m) => m.id === marker.conversationId);
         if (targetConv !== undefined) {
-          const recoveryState = await readRelaunchRecoveryState();
-          const guard = checkRelaunchGuard(recoveryState, marker.conversationId);
-          if (guard.allowed && hasAuthenticatedProvider(mutableCtx.env)) {
+          // The parent already checked and recorded the attempt before launch.
+          // Rechecking here would reject the second permitted attempt.
+          if (hasAuthenticatedProvider(mutableCtx.env)) {
             out.write('[recovered] restarted after the terminal UI stopped responding; reopened this conversation.\n');
             activeConversationId = marker.conversationId;
             try {

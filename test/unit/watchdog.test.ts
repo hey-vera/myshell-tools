@@ -4,13 +4,15 @@ import assert from 'node:assert/strict';
 import { createWatchdog } from '../../src/interface/ui/mount.tsx';
 import type { WatchdogSnapshot, WatchdogOptions } from '../../src/interface/ui/mount.tsx';
 
+const histogramSample = vi.hoisted(() => ({ maxNs: 0, p99Ns: 0 }));
+
 vi.mock('node:perf_hooks', () => ({
   monitorEventLoopDelay: () => ({
     enable: () => {},
     disable: () => {},
     reset: () => {},
-    max: 0,
-    percentile: () => 0,
+    get max() { return histogramSample.maxNs; },
+    percentile: () => histogramSample.p99Ns,
   }),
 }));
 
@@ -36,6 +38,8 @@ function makeOpts(overrides: Partial<WatchdogOptions> = {}): WatchdogOptions & {
 describe('createWatchdog', () => {
   beforeEach(() => {
     vi.useFakeTimers();
+    histogramSample.maxNs = 0;
+    histogramSample.p99Ns = 0;
   });
 
   afterEach(() => {
@@ -145,6 +149,43 @@ describe('createWatchdog', () => {
     }
 
     assert.equal(opts.snapshots.length, 0);
+  });
+
+  it('normalizes event-loop histogram nanoseconds before applying millisecond thresholds', () => {
+    let nowMs = 1_000;
+    const opts = makeOpts({ now: () => nowMs });
+    const heartbeat = createWatchdog(opts);
+    heartbeat.setChatActive(true);
+    heartbeat.recordInput();
+    histogramSample.maxNs = 20_000_000; // 20 ms, a normal sample
+    histogramSample.p99Ns = 20_000_000;
+
+    for (let i = 0; i < 20; i++) {
+      nowMs += 500;
+      vi.advanceTimersByTime(500);
+    }
+
+    heartbeat.stop();
+    assert.equal(opts.snapshots.length, 0);
+  });
+
+  it('treats a histogram p99 above the millisecond threshold as a bad sample', () => {
+    let nowMs = 1_000;
+    const opts = makeOpts({ now: () => nowMs });
+    const heartbeat = createWatchdog(opts);
+    heartbeat.setChatActive(true);
+    heartbeat.recordInput();
+    histogramSample.p99Ns = 800_000_000; // 800 ms
+
+    for (let i = 0; i < 16; i++) {
+      nowMs += 500;
+      vi.advanceTimersByTime(500);
+    }
+
+    heartbeat.stop();
+    assert.equal(opts.snapshots.length, 1);
+    assert.equal(opts.snapshots[0]!.reason, 'active-stale');
+    assert.equal(opts.snapshots[0]!.lastHistogramP99Ms, 800);
   });
 
   it('fires only once (single-shot)', () => {

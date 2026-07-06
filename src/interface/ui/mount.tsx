@@ -601,8 +601,11 @@ export function createWatchdog(opts: WatchdogOptions): WatchdogHeartbeat {
     let histMax = 0;
     let histP99 = 0;
     if (histogram !== null) {
-      histMax = histogram.max;
-      histP99 = histogram.percentile(99);
+      // monitorEventLoopDelay reports nanoseconds. The watchdog contract and
+      // snapshots are expressed in milliseconds, so normalize before applying
+      // thresholds (otherwise an ordinary 20 ms sample looks like 20,000,000 ms).
+      histMax = histogram.max / 1_000_000;
+      histP99 = histogram.percentile(99) / 1_000_000;
       histogram.reset();
     }
 
