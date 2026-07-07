@@ -560,13 +560,19 @@ export function buildTerminalCompletionResultV1(params: {
 }): CompletionResultV1 {
   const { deps, final, task, terminal } = params;
   const createdAt = deps.clock.isoNow();
+  const needsUser = terminal === 'cancelled' || terminal === 'needs-user';
+  const terminalSuccess = terminal === 'done' || terminal === 'answered' ? final.success : false;
   const verification: CompletionVerification = {
     status: terminal === 'failed' || terminal === 'blocked' ? 'failing' : 'not-applicable',
     testEvidence: { status: 'not-needed' },
     repair: buildCompletionRepairEvidence(),
     factualClaims: [],
-    obligationsSatisfied: [],
-    obligationsUnmet: terminal === 'failed' || terminal === 'blocked' ? ['turn did not reach a provider'] : [],
+    obligationsSatisfied: needsUser ? ['assistant paused before execution'] : [],
+    obligationsUnmet: terminal === 'needs-user'
+      ? ['waiting for user answer']
+      : terminal === 'failed' || terminal === 'blocked'
+        ? ['turn did not reach a provider']
+        : [],
     ruleCodes: terminal === 'cancelled' ? ['cancelled'] : ['not-applicable'],
   };
   const delivery = evaluateDeliveryQualitySkeleton(final.output, verification);
@@ -581,8 +587,8 @@ export function buildTerminalCompletionResultV1(params: {
     objective: task.slice(0, 120),
     doneCondition: null,
     output: final.output,
-    success: final.success,
-    bestEffort: final.success !== true || verification.status !== 'verified' || delivery.status !== 'passed',
+    success: terminalSuccess,
+    bestEffort: terminalSuccess !== true || verification.status !== 'verified' || delivery.status !== 'passed',
     verification,
     deliveryQuality: delivery,
     worktree: {
@@ -593,10 +599,14 @@ export function buildTerminalCompletionResultV1(params: {
       concurrentUserEdits: [],
       conflictPaths: [],
     },
-    goalSettlement: { allowed: false, state: terminal === 'cancelled' ? 'needs-user' : 'none', reason: terminal },
+    goalSettlement: { allowed: false, state: needsUser ? 'needs-user' : 'none', reason: terminal },
     replayPolicy: {
-      replay: terminal === 'cancelled' ? 'needs-user' : 'unknown',
-      reason: terminal === 'cancelled' ? 'user cancelled before settlement' : 'terminal path did not reach provider execution',
+      replay: needsUser ? 'needs-user' : 'unknown',
+      reason: terminal === 'cancelled'
+        ? 'user cancelled before settlement'
+        : terminal === 'needs-user'
+          ? 'waiting for user answer before execution'
+          : 'terminal path did not reach provider execution',
     },
     receipt: { lines: [] },
     upstream: {},

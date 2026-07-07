@@ -1,5 +1,5 @@
-﻿import { describe, it, expect } from 'vitest';
-import { attachCompletionIfFlag, finalizeAcceptTurn } from '../../src/core/accept-stage.ts';
+import { describe, it, expect } from 'vitest';
+import { attachCompletionIfFlag, attachTerminalCompletionIfFlag, finalizeAcceptTurn } from '../../src/core/accept-stage.ts';
 import type { OrchestrateDeps, CandidateResult, CompletionResultVersion } from '../../src/core/types.ts';
 import { reconstructUsingCompletionMapSnapshot } from '../../src/core/history.ts';
 // reference for knip (dark spine symbols used in feature tests)
@@ -37,6 +37,25 @@ describe('accept-finalize (pure contract per strategy)', () => {
     attachCompletionIfFlag(deps, baseFinal, cand);
   });
 
+
+  it('terminal needs-user CompletionResult preserves legacy final while marking goal unsettled', () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const deps = { completionResultV1: true, clock: { isoNow: () => '2026-07-06T00:00:00.000Z' }, session: { id: 's1' } } as any as OrchestrateDeps;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const legacyQuestionFinal = { type: 'final', success: true, output: '', attempts: 0 } as any;
+    const result = attachTerminalCompletionIfFlag({
+      deps,
+      final: legacyQuestionFinal,
+      task: 'pick a strategy',
+      terminal: 'needs-user',
+    });
+    expect(result.success).toBe(true);
+    expect(result.completionResult?.terminal).toBe('needs-user');
+    expect(result.completionResult?.success).toBe(false);
+    expect(result.completionResult?.goalSettlement.state).toBe('needs-user');
+    expect(result.completionResult?.replayPolicy.replay).toBe('needs-user');
+    expect(result.completionResult?.verification.obligationsUnmet).toEqual(['waiting for user answer']);
+  });
   it('finalizeAcceptTurn pure: flag false returns unchanged final', () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const deps = { completionResultV1: false } as any as OrchestrateDeps;

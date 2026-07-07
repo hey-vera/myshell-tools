@@ -1825,7 +1825,7 @@ export async function* orchestrate(
       // quarantine this terminal-ask turn on the version axis (AP2-F §3).
       engineBehaviorVersion: ENGINE_BEHAVIOR_VERSION,
     });
-    yield {
+    const needsUserFinal: Extract<CoreEvent, { readonly type: 'final' }> = {
       type: 'final',
       success: true,
       output: '',
@@ -1838,6 +1838,12 @@ export async function* orchestrate(
       attempts: 0,
       questions: terminalQuestion,
     };
+    yield attachTerminalCompletionIfFlag({
+      deps,
+      final: needsUserFinal,
+      task,
+      terminal: 'needs-user',
+    });
     return;
   }
 

@@ -223,6 +223,7 @@ describe('orchestrate ask_user derived from forks', () => {
         baseDeps({
           intentExtractor: async () => frame,
           partnerStyle: 'collaborative', // raises the fork budget to 1
+          completionResultV1: true,
         }),
         new AbortController().signal,
       ),
@@ -232,6 +233,10 @@ describe('orchestrate ask_user derived from forks', () => {
     assert.ok(final.questions !== undefined, 'a derived ask_user QuestionSet is surfaced');
     assert.equal(final.questions.questions[0]?.id, 'F1');
     assert.equal(final.questions.questions[0]?.prompt, 'which datastore?');
+    assert.equal(final.completionResult?.terminal, 'needs-user');
+    assert.equal(final.completionResult?.success, false);
+    assert.equal(final.completionResult?.goalSettlement.state, 'needs-user');
+    assert.equal(final.completionResult?.replayPolicy.replay, 'needs-user');
   });
 });
 
