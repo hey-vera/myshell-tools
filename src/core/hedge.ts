@@ -41,6 +41,7 @@ import type {
   Risk,
   Classification,
   Policy,
+  CompletionTerminal,
 } from './types.js';
 import type { ProviderId } from '../providers/port.js';
 import { route, type CapabilityRouteContext, type CapabilityTaskSignals } from './route.js';
@@ -57,6 +58,7 @@ import { capContract, isCleanObjectiveTask, shouldMaterializeContract, stampCont
 import {
   runCandidateQualityGate,
   buildVerifyReceiptEvents,
+  attachTerminalCompletionIfFlag,
   type AcceptedRunSessionData,
   type CandidateResult,
 } from './accept-stage.js';
@@ -710,6 +712,11 @@ export async function* runHedged(
 
   let totalCostUsd = 0;
   let attempts = 0;
+  const terminalFinal = (
+    final: Extract<CoreEvent, { readonly type: 'final' }>,
+    terminal: CompletionTerminal,
+  ): Extract<CoreEvent, { readonly type: 'final' }> =>
+    attachTerminalCompletionIfFlag({ deps, final, task, terminal });
   const classification = adequacyClassification(plan);
   const incomingWorkContract =
     deps.workContract !== undefined
@@ -738,7 +745,7 @@ export async function* runHedged(
   // Early abort: nothing ran yet.
   if (signal.aborted) {
     yield { type: 'notice', level: 'warn', message: 'cancelled' };
-    yield {
+    yield terminalFinal({
       type: 'final',
       success: false,
       output: 'Task was cancelled before it started.',
@@ -747,7 +754,7 @@ export async function* runHedged(
       sessionId: deps.session.id,
       attempts,
       ...(signal.aborted ? { canceled: true } : {}),
-    };
+    }, 'cancelled');
     return;
   }
 
@@ -1172,7 +1179,7 @@ export async function* runHedged(
       yield* acceptWinner(run);
       return;
     }
-    yield* finalAndAppend(run, totalCostUsd, deps, attempts, workTrace);
+    yield* finalAndAppend(run, totalCostUsd, deps, attempts, workTrace, task);
   };
 
   try {
@@ -1258,7 +1265,7 @@ export async function* runHedged(
       // Caller aborted while the primary ran → honest cancel.
       if (signal.aborted) {
         yield { type: 'notice', level: 'warn', message: 'cancelled' };
-        yield {
+        yield terminalFinal({
           type: 'final',
           success: false,
           output: 'Task was cancelled.',
@@ -1267,7 +1274,7 @@ export async function* runHedged(
           sessionId: deps.session.id,
           attempts,
           ...(signal.aborted ? { canceled: true } : {}),
-        };
+        }, 'cancelled');
         return;
       }
 
@@ -1315,7 +1322,7 @@ export async function* runHedged(
 
       if (signal.aborted) {
         yield { type: 'notice', level: 'warn', message: 'cancelled' };
-        yield {
+        yield terminalFinal({
           type: 'final',
           success: false,
           output: 'Task was cancelled.',
@@ -1324,7 +1331,7 @@ export async function* runHedged(
           sessionId: deps.session.id,
           attempts,
           ...(signal.aborted ? { canceled: true } : {}),
-        };
+        }, 'cancelled');
         return;
       }
 
@@ -1389,7 +1396,7 @@ export async function* runHedged(
 
     if (signal.aborted) {
       yield { type: 'notice', level: 'warn', message: 'cancelled' };
-      yield {
+      yield terminalFinal({
         type: 'final',
         success: false,
         output: 'Task was cancelled.',
@@ -1398,7 +1405,7 @@ export async function* runHedged(
         sessionId: deps.session.id,
         attempts,
         ...(signal.aborted ? { canceled: true } : {}),
-      };
+      }, 'cancelled');
       return;
     }
 
@@ -1516,9 +1523,10 @@ async function* finalAndAppend(
   deps: OrchestrateDeps,
   attempts: number,
   _workTrace: WorkContract | undefined,
+  task: string,
 ): AsyncGenerator<CoreEvent> {
   const output = run.finalText ?? (run.errored?.message ?? '');
-  yield {
+  const failedFinal: Extract<CoreEvent, { readonly type: 'final' }> = {
     type: 'final',
     success: false,
     output,
@@ -1530,4 +1538,10 @@ async function* finalAndAppend(
     ...(run.errored !== undefined ? { errorCategory: run.errored.category } : {}),
     provider: run.provider,
   };
+  yield attachTerminalCompletionIfFlag({
+    deps,
+    final: failedFinal,
+    task,
+    terminal: run.canceled ? 'cancelled' : 'failed',
+  });
 }

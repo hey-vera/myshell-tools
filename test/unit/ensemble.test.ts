@@ -1209,11 +1209,14 @@ describe('runPanel — all candidates fail', () => {
       claude: makeProvider('claude', '', { error: true }),
       codex: makeProvider('codex', '', { error: true }),
     });
+    deps.completionResultV1 = true;
     const events = await collect(runPanel('hard task', deps, PLAN, new AbortController().signal));
     const final = events.find((e) => e.type === 'final');
     assert.ok(final !== undefined && final.type === 'final');
     if (final.type === 'final') {
       assert.equal(final.success, false);
+      assert.equal(final.completionResult?.terminal, 'failed');
+      assert.equal(final.completionResult?.success, false);
     }
     // No synthesizer run when all candidates failed → only 2 candidate ledger entries.
     assert.equal(ledger.entries.length, 2);
@@ -1246,6 +1249,7 @@ describe('runPanel — abort', () => {
       claude: makeProvider('claude', 'A'),
       codex: makeProvider('codex', 'B'),
     });
+    deps.completionResultV1 = true;
     const events = await collect(runPanel('hard task', deps, PLAN, ac.signal));
     const notice = events.find((e) => e.type === 'notice' && e.level === 'warn');
     assert.ok(notice !== undefined && /cancel/i.test(notice.message));
@@ -1253,6 +1257,8 @@ describe('runPanel — abort', () => {
     assert.ok(final !== undefined && final.type === 'final' && final.success === false);
     if (final.type === 'final') {
       assert.equal(final.canceled, true);
+      assert.equal(final.completionResult?.terminal, 'cancelled');
+      assert.equal(final.completionResult?.replayPolicy.replay, 'needs-user');
     }
   });
 });
