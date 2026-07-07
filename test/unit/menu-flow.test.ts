@@ -781,7 +781,18 @@ function makeCtx(
   // (not a real router), so disable it here to keep the per-turn provider-call
   // sequence deterministic. Smart routing is covered by router.test.ts +
   // route-classifier.test.ts and verified live.
-  const config: AppConfig = { onboarded: true, setAsDefault: false, smartRoute: false };
+  const config: AppConfig = {
+    onboarded: true,
+    setAsDefault: false,
+    smartRoute: false,
+    // Most menu-flow tests characterize legacy prompt counts with fake providers.
+    // Production defaults these Kern surfaces ON; this test harness opts out unless
+    // a test explicitly opts in via env/config.
+    experimentalSemanticPreflightV1: false,
+    experimentalCompletionResultV1: false,
+    ...overrides.config,
+  };
+  const { config: _ignoredConfig, ...restOverrides } = overrides;
 
   return {
     version: '2.0.0',
@@ -803,7 +814,7 @@ function makeCtx(
       latest: null,
       updateAvailable: false,
     }),
-    ...overrides,
+    ...restOverrides,
   };
 }
 
@@ -3411,9 +3422,12 @@ describe('startMenu — auto-goal smart autonomy', () => {
       await startMenu(ctx, sink);
 
       await waitForGoalCount(ctx.clock, 1);
-      // planner or understanding-start (bg warm is fire-and-forget; taste file await
-      // or scheduling can let understanding's provider call race first). The key
-      // contract for cost-saver L1 is no "Planning deeper" print.
+      // Planner or understanding-start can arrive slightly after the goal row is
+      // persisted because post-turn planning is fire-and-forget. Poll the call
+      // sequence rather than racing the async provider open. The key contract for
+      // cost-saver L1 is no "Planning deeper" print.
+      const deadline = Date.now() + 5_000;
+      while (Date.now() < deadline && sequence.length === 0) await delay(10);
       assert.ok(sequence[0] === 'planner' || sequence[0] === 'understanding-start');
       assert.ok(!sink.buf.includes('Planning deeper'));
     });

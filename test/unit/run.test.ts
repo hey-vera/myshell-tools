@@ -499,7 +499,7 @@ describe('CLI semantic eval dispatch reaches the dedicated harness and preserves
 
 describe('runTask semantic preflight production composition', () => {
   it('flag off interactive one-shot and REPL receipts match legacy snapshots', () => {
-    const cfg: AppConfig = { onboarded: true, setAsDefault: true };
+    const cfg: AppConfig = { onboarded: true, setAsDefault: true, experimentalSemanticPreflightV1: false, experimentalCompletionResultV1: false };
     const preflight = buildPreflightDeps({
       providers: { claude: makeFakeProvider('claude') },
       policy: DEFAULT_POLICY,

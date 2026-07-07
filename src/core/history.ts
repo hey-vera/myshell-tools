@@ -277,7 +277,8 @@ export function historyTruncationInfo(
 // ---------------------------------------------------------------------------
 // Map snapshot reconstruction hook (phase2-r717-completion-map-binding)
 // Small compat for durable 11 + CompletionResultV1 map orientation substrate.
-// History consumers read from completion snapshot when flag on; flag-off unchanged.
+// History consumers read from completion snapshot when the entrypoint-composed
+// CompletionResultV1 dependency is on; explicit opt-out preserves old readers.
 // ---------------------------------------------------------------------------
 
 /** Reconstruction hook using Phase1 map (ranked+symbols) snapshot for ReconstructedContextV1. Delegates to durable recon. */

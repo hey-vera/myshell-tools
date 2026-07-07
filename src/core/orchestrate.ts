@@ -347,9 +347,11 @@ export async function* orchestrate(
   // byte-identical to 3.134.0 on BOTH axes (risk + web-research) — see the two
   // helpers below and the OFF-strip in `frameForDownstream`.
   const riskSignalsOn = depsArg.riskSignals === true;
-  // Item 8 semantic preflight V1 is a dark, explicitly injected test seam in this
-  // slice. When on, it owns route/intent/risk preflight and suppresses the legacy
-  // preflight branches and re-extraction loop.
+  // Item 8 semantic preflight V1 is owned by the composition layer. Product
+  // entrypoints default it ON unless explicitly disabled; this core remains
+  // dependency-injected so direct tests and rollback paths can omit it. When on,
+  // it owns route/intent/risk preflight and suppresses the legacy preflight
+  // branches and re-extraction loop.
   const semanticPreflightOn = depsArg.semanticPreflightV1 === true;
   // rank-9 (default-OFF). When the requiredInvestigation flag is ON, an
   // INVESTIGATE_CONTEXT turn that the confidence brain did NOT already ground runs

@@ -375,9 +375,9 @@ export interface OrchestrateDeps {
    */
   readonly evidenceReceiptV2?: boolean;
   /**
-   * MYSHELL_COMPLETION_RESULT_V1 (dark, default false). When true, accept-stage
+   * MYSHELL_COMPLETION_RESULT_V1 (default on unless explicitly disabled). When true, accept-stage
    * constructs exactly one CompletionResultV1 per terminal foreground turn and
-   * attaches it (additive) to CoreEvent.final. Flag-off behavior byte-identical.
+   * attaches it (additive) to CoreEvent.final. Explicit opt-out omits it.
    * Used for P1-17a + durable map binding. Solo/panel cross-provider identical.
    */
   readonly completionResultV1?: boolean;
@@ -1306,10 +1306,10 @@ export type CoreEvent =
        *  goal path. Purely additive. */
       readonly goalId?: string;
       /**
-       * Single terminal truth (additive, dark under completionResultV1 flag).
-       * Exactly one per terminal foreground turn when flag on. Binds CompletionResultV1
+       * Single terminal truth (additive under the entrypoint-composed completionResultV1 dependency).
+       * Exactly one per terminal foreground turn when composed on. Binds CompletionResultV1
        * (with Phase1 map orientation in worktree) + durable completion.result.
-       * Flag-off: absent (byte-identical). Solo and panel use identical binding.
+       * Explicit opt-out/direct omission: absent. Solo and panel use identical binding.
        */
       readonly completionResult?: CompletionResultV1;
     }

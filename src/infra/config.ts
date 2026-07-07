@@ -291,18 +291,18 @@ export interface AppConfig {
    */
   experimentalPreflightGuard?: boolean;
   /**
-   * DARK SEMANTIC PREFLIGHT V1 (default off). When true (or with
-   * `MYSHELL_SEMANTIC_PREFLIGHT_V1` in {1,true,on,yes}), entry points compose the
-   * complete Item-8 semantic/evidence path and set OrchestrateDeps
-   * semanticPreflightV1 for that turn. Absent/false preserves the legacy
-   * route/intent preflight path exactly.
+   * SEMANTIC PREFLIGHT V1 (default on). Entry points compose the complete Item-8
+   * semantic/evidence path and set OrchestrateDeps.semanticPreflightV1 for that
+   * turn unless explicitly disabled with config false or MYSHELL_SEMANTIC_PREFLIGHT_V1
+   * in {0,false,off,no}. Explicit true/on values remain accepted for compatibility.
    */
   experimentalSemanticPreflightV1?: boolean;
   /**
-   * DARK CompletionResultV1 terminal-truth wiring (default off). When true (or
-   * with `MYSHELL_COMPLETION_RESULT_V1` in {1,true,on,yes}), entry points set
-   * OrchestrateDeps.completionResultV1 so accept-stage attaches the additive
-   * CompletionResultV1 payload. Absent/false preserves the legacy final shape.
+   * CompletionResultV1 terminal-truth wiring (default on). Entry points set
+   * OrchestrateDeps.completionResultV1 so terminal finals receive the additive
+   * CompletionResultV1 payload unless explicitly disabled with config false or
+   * MYSHELL_COMPLETION_RESULT_V1 in {0,false,off,no}. Explicit true/on values
+   * remain accepted for compatibility.
    */
   experimentalCompletionResultV1?: boolean;
   /**
