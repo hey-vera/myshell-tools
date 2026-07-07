@@ -371,9 +371,40 @@ describe('orchestrate — no providers path', () => {
       assert.equal(finalEv.success, false);
       assert.equal(finalEv.totalCostUsd, 0);
       assert.equal(finalEv.attempts, 0);
+      assert.equal(finalEv.completionResult, undefined);
     }
   });
 
+  it('attaches CompletionResultV1 on no-provider final when explicitly enabled', async () => {
+    const clock = makeFakeClock();
+    const session = makeFakeSession();
+    const ledger = makeFakeLedger();
+    const deps: OrchestrateDeps = {
+      providers: {},
+      clock,
+      session,
+      ledger,
+      policy: DEFAULT_POLICY,
+      cwd: '/fake/cwd',
+      sandbox: 'workspace-write',
+      timeoutMs: 30_000,
+      completionResultV1: true,
+    };
+
+    const events = await collectEvents(
+      orchestrate('refactor X', deps, new AbortController().signal),
+    );
+
+    const finalEv = events.find((e) => e.type === 'final');
+    assert.ok(finalEv !== undefined);
+    if (finalEv.type === 'final') {
+      assert.equal(finalEv.success, false);
+      assert.ok(finalEv.completionResult !== undefined);
+      assert.equal(finalEv.completionResult.terminal, 'failed');
+      assert.equal(finalEv.completionResult.output, 'No providers available.');
+      assert.equal(finalEv.completionResult.replayPolicy.replay, 'unknown');
+    }
+  });
   it('does not write to ledger when no providers', async () => {
     const clock = makeFakeClock();
     const session = makeFakeSession();

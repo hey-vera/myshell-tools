@@ -489,9 +489,3 @@ export function verifyEventChainFull(events: readonly CanonicalEventV1[]): { ok:
   }
   return { ok: true };
 }
-
-// Stub for orchestrate hook (completion binding); real event construction via accept-stage + durable append in full impl.
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-export function makeCompletionResultEvent(_params: any): any {
-  return { type: 'event', kind: 'completion.result' };
-}

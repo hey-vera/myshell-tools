@@ -551,6 +551,68 @@ export function buildCompletionResultV1(params: {
   };
 }
 
+
+export function buildTerminalCompletionResultV1(params: {
+  deps: OrchestrateDeps;
+  final: Extract<CoreEvent, { readonly type: 'final' }>;
+  task: string;
+  terminal: CompletionTerminal;
+}): CompletionResultV1 {
+  const { deps, final, task, terminal } = params;
+  const createdAt = deps.clock.isoNow();
+  const verification: CompletionVerification = {
+    status: terminal === 'failed' || terminal === 'blocked' ? 'failing' : 'not-applicable',
+    testEvidence: { status: 'not-needed' },
+    repair: buildCompletionRepairEvidence(),
+    factualClaims: [],
+    obligationsSatisfied: [],
+    obligationsUnmet: terminal === 'failed' || terminal === 'blocked' ? ['turn did not reach a provider'] : [],
+    ruleCodes: terminal === 'cancelled' ? ['cancelled'] : ['not-applicable'],
+  };
+  const delivery = evaluateDeliveryQualitySkeleton(final.output, verification);
+  return {
+    version: 1,
+    id: `cr-${deps.session.id.slice(0, 20)}-terminal-${final.attempts}`.slice(0, 63),
+    turnId: deps.session.id,
+    sessionId: deps.session.id,
+    createdAt,
+    scope: 'conversation',
+    terminal,
+    objective: task.slice(0, 120),
+    doneCondition: null,
+    output: final.output,
+    success: final.success,
+    bestEffort: final.success !== true || verification.status !== 'verified' || delivery.status !== 'passed',
+    verification,
+    deliveryQuality: delivery,
+    worktree: {
+      baseline: 'unknown',
+      baselineEntries: [],
+      changedByAssistant: [],
+      excludedPreExisting: [],
+      concurrentUserEdits: [],
+      conflictPaths: [],
+    },
+    goalSettlement: { allowed: false, state: terminal === 'cancelled' ? 'needs-user' : 'none', reason: terminal },
+    replayPolicy: {
+      replay: terminal === 'cancelled' ? 'needs-user' : 'unknown',
+      reason: terminal === 'cancelled' ? 'user cancelled before settlement' : 'terminal path did not reach provider execution',
+    },
+    receipt: { lines: [] },
+    upstream: {},
+  };
+}
+
+export function attachTerminalCompletionIfFlag(params: {
+  deps: OrchestrateDeps;
+  final: Extract<CoreEvent, { readonly type: 'final' }>;
+  task: string;
+  terminal: CompletionTerminal;
+}): Extract<CoreEvent, { readonly type: 'final' }> {
+  const { deps, final } = params;
+  if (deps.completionResultV1 !== true) return final;
+  return { ...final, completionResult: buildTerminalCompletionResultV1(params) };
+}
 export function attachCompletionIfFlag(
   deps: OrchestrateDeps,
   f: Extract<CoreEvent, { readonly type: 'final' }>,

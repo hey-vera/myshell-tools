@@ -87,6 +87,7 @@ import {
 import { autoModeForPlanInfos, type PlanInfo } from './policy.js';
 import { pressureFromSignals, preflightAdmits } from './capability-budget.js';
 import { ENVIRONMENT_BLOCK_CHAR_CAP } from './repo-map.js';
+import { attachTerminalCompletionIfFlag } from './accept-stage.js';
 import { buildRetrievalContext, buildWebContext } from './research.js';
 import { collectLocalEvidence, collectWebEvidence } from './research.js';
 import {
@@ -1902,7 +1903,7 @@ export async function* orchestrate(
         'No providers are available. Install and authenticate at least one provider ' +
         '(claude, codex, opencode, or grok) and try again.',
     };
-    yield {
+    const noProviderFinal: Extract<CoreEvent, { readonly type: 'final' }> = {
       type: 'final',
       success: false,
       output: 'No providers available.',
@@ -1911,6 +1912,12 @@ export async function* orchestrate(
       sessionId: deps.session.id,
       attempts: 0,
     };
+    yield attachTerminalCompletionIfFlag({
+      deps,
+      final: noProviderFinal,
+      task,
+      terminal: 'failed',
+    });
     return;
   }
 
