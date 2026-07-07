@@ -15,6 +15,7 @@ import { makeSemanticPreflightExtractor } from '../core/semantic-preflight-extra
 import { fuseRung, type FuseRungResult } from '../core/auto-brain.js';
 import { helperSandbox } from '../infra/sandbox.js';
 import { semanticPreflightV1Enabled } from './ui/semantic-preflight-flag.js';
+import { completionResultV1Enabled } from './ui/completion-result-flag.js';
 import type { Mode } from '../core/policy.js';
 
 export interface BuildPreflightDepsInput {
@@ -42,7 +43,7 @@ export function buildPreflightDeps(
   input: BuildPreflightDepsInput,
 ): Pick<
   OrchestrateDeps,
-  'routeClassifier' | 'intentExtractor' | 'semanticPreflightV1' | 'semanticPreflightExtractor' | 'autoBrainRungTuple'
+  'routeClassifier' | 'intentExtractor' | 'semanticPreflightV1' | 'semanticPreflightExtractor' | 'completionResultV1' | 'autoBrainRungTuple'
 > {
   const { providers, policy, cwd, timeoutMs, sandbox, availableModels, authenticatedProviders } = input;
   const { config, env, autoMode, intentPass } = input;
@@ -112,6 +113,7 @@ export function buildPreflightDeps(
   // the legacy closures for rollback; orchestrate reads it only when its
   // semanticPreflightV1 test seam is explicitly true.
   const semanticPreflightOn = semanticPreflightV1Enabled(env, config);
+  const completionResultOn = completionResultV1Enabled(env, config);
   const semanticPreflightBaseDeps = {
     providers,
     policy,
@@ -165,6 +167,7 @@ export function buildPreflightDeps(
     ...(intentExtractor !== undefined ? { intentExtractor } : {}),
     ...(semanticPreflightOn ? { semanticPreflightV1: true } : {}),
     ...(semanticPreflightExtractor !== undefined ? { semanticPreflightExtractor } : {}),
+    ...(completionResultOn ? { completionResultV1: true } : {}),
     autoBrainRungTuple,
   };
 }

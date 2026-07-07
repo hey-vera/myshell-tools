@@ -58,6 +58,7 @@ describe('buildPreflightDeps', () => {
     assert.ok(result.routeClassifier !== undefined, 'routeClassifier should be defined');
     assert.ok(result.intentExtractor !== undefined, 'intentExtractor should be defined');
     assert.equal(result.semanticPreflightV1, undefined);
+    assert.equal(result.completionResultV1, undefined);
     assert.ok(result.semanticPreflightExtractor === undefined, 'semanticPreflightExtractor should be undefined');
     assert.ok(result.autoBrainRungTuple !== undefined, 'autoBrainRungTuple should be defined');
   });
@@ -134,6 +135,25 @@ describe('buildPreflightDeps', () => {
     assert.equal(typeof result.semanticPreflightExtractor, 'function');
   });
 
+  it('completion result flag is dark by default and explicitly wires deps when enabled', () => {
+    const off = buildPreflightDeps(baseInput({
+      env: { MYSHELL_COMPLETION_RESULT_V1: 'garbage' },
+      config: { ...config, experimentalCompletionResultV1: false },
+    }));
+    assert.equal(off.completionResultV1, undefined);
+
+    const envOn = buildPreflightDeps(baseInput({
+      env: { MYSHELL_COMPLETION_RESULT_V1: '1' },
+      config: { ...config, experimentalCompletionResultV1: false },
+    }));
+    assert.equal(envOn.completionResultV1, true);
+
+    const configOn = buildPreflightDeps(baseInput({
+      env: {},
+      config: { ...config, experimentalCompletionResultV1: true },
+    }));
+    assert.equal(configOn.completionResultV1, true);
+  });
   it('unset flag rollback restores legacy route and intent closures', () => {
     const result = buildPreflightDeps(baseInput({
       env: { MYSHELL_UNIFY_PREFLIGHT: '1', MYSHELL_RISK_SIGNALS: '1' },

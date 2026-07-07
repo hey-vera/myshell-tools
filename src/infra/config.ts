@@ -299,6 +299,13 @@ export interface AppConfig {
    */
   experimentalSemanticPreflightV1?: boolean;
   /**
+   * DARK CompletionResultV1 terminal-truth wiring (default off). When true (or
+   * with `MYSHELL_COMPLETION_RESULT_V1` in {1,true,on,yes}), entry points set
+   * OrchestrateDeps.completionResultV1 so accept-stage attaches the additive
+   * CompletionResultV1 payload. Absent/false preserves the legacy final shape.
+   */
+  experimentalCompletionResultV1?: boolean;
+  /**
    * EXPERIMENTAL RIVAL TRIBUNAL (default off; master-plan PHASE 9). When true (or with
    * `MYSHELL_TRIBUNAL` truthy in the environment), a genuine load-bearing IMPLEMENTATION
    * fork with ≥2 distinct authed vendors may be settled by a build-off: each vendor
