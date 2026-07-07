@@ -376,6 +376,25 @@ export async function* orchestrate(
   // Reuse the SAME QuotaPressure signal the caller already computes from live
   // cooldown state (menu.ts governorPressure / decideShed). NO new probe.
   const pressure = depsArg.governorPressure ?? pressureFromSignals({});
+  const cancelledFinal = (
+    tier: Tier,
+    output = '',
+  ): Extract<CoreEvent, { readonly type: 'final' }> =>
+    attachTerminalCompletionIfFlag({
+      deps: depsArg,
+      final: {
+        type: 'final',
+        success: false,
+        output,
+        tier,
+        totalCostUsd: 0,
+        sessionId: depsArg.session.id,
+        attempts: 0,
+        canceled: true,
+      },
+      task,
+      terminal: 'cancelled',
+    });
   // Raise the deterministic risk via the frame's hints, but ONLY when the flag is ON
   // and a frame exists. OFF or no frame → returns `base` unchanged (combineRisk is
   // never even called) → `classification.risk` stays exactly `det.risk`.
@@ -451,16 +470,7 @@ export async function* orchestrate(
       }
       if (signal.aborted) {
         yield { type: 'notice', level: 'warn', message: 'Cancelled.' };
-        yield {
-          type: 'final',
-          success: false,
-          output: '',
-          tier: detClassification.tier,
-          totalCostUsd: 0,
-          sessionId: depsArg.session.id,
-          attempts: 0,
-          canceled: true,
-        };
+        yield cancelledFinal(detClassification.tier);
         return;
       }
     }
@@ -697,16 +707,7 @@ export async function* orchestrate(
       // ESC mid-loop: a user abort between rounds ends the turn with a cancel final.
       if (signal.aborted) {
         yield { type: 'notice', level: 'warn', message: 'Cancelled.' };
-        yield {
-          type: 'final',
-          success: false,
-          output: '',
-          tier: classification.tier,
-          totalCostUsd: 0,
-          sessionId: depsArg.session.id,
-          attempts: 0,
-          canceled: true,
-        };
+        yield cancelledFinal(classification.tier);
         return;
       }
 
@@ -788,16 +789,7 @@ export async function* orchestrate(
         const webFindings = await buildWebContext(webPort, intentFrame?.goal ?? task, signal);
         if (signal.aborted) {
           yield { type: 'notice', level: 'warn', message: 'Cancelled.' };
-          yield {
-            type: 'final',
-            success: false,
-            output: '',
-            tier: classification.tier,
-            totalCostUsd: 0,
-            sessionId: depsArg.session.id,
-            attempts: 0,
-            canceled: true,
-          };
+          yield cancelledFinal(classification.tier);
           return;
         }
         let webReExtracted: IntentFrame | null = null;
@@ -934,16 +926,7 @@ export async function* orchestrate(
         );
         if (signal.aborted) {
           yield { type: 'notice', level: 'warn', message: 'Cancelled.' };
-          yield {
-            type: 'final',
-            success: false,
-            output: '',
-            tier: classification.tier,
-            totalCostUsd: 0,
-            sessionId: depsArg.session.id,
-            attempts: 0,
-            canceled: true,
-          };
+          yield cancelledFinal(classification.tier);
           return;
         }
       }
@@ -976,16 +959,7 @@ export async function* orchestrate(
       // dangling "done" goal card or mutate any state.
       if (signal.aborted) {
         yield { type: 'notice', level: 'warn', message: 'Cancelled.' };
-        yield {
-          type: 'final',
-          success: false,
-          output: '',
-          tier: classification.tier,
-          totalCostUsd: 0,
-          sessionId: depsArg.session.id,
-          attempts: 0,
-          canceled: true,
-        };
+        yield cancelledFinal(classification.tier);
         return;
       }
 
@@ -1232,16 +1206,7 @@ export async function* orchestrate(
 
     if (signal.aborted || semanticEvidenceReceipts.some((receipt) => receipt.status === 'cancelled')) {
       yield { type: 'notice', level: 'warn', message: 'Cancelled.' };
-      yield {
-        type: 'final',
-        success: false,
-        output: 'Task was cancelled.',
-        tier: classification.tier,
-        totalCostUsd: 0,
-        sessionId: depsArg.session.id,
-        attempts: 0,
-        canceled: true,
-      };
+      yield cancelledFinal(classification.tier, 'Task was cancelled.');
       return;
     }
 
@@ -1333,16 +1298,7 @@ export async function* orchestrate(
     );
     if (signal.aborted) {
       yield { type: 'notice', level: 'warn', message: 'Cancelled.' };
-      yield {
-        type: 'final',
-        success: false,
-        output: '',
-        tier: classification.tier,
-        totalCostUsd: 0,
-        sessionId: depsArg.session.id,
-        attempts: 0,
-        canceled: true,
-      };
+      yield cancelledFinal(classification.tier);
       return;
     }
     if (findings.length > 0) {

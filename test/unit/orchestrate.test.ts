@@ -426,6 +426,54 @@ describe('orchestrate â€” no providers path', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Cancellation terminal path
+// ---------------------------------------------------------------------------
+
+describe('orchestrate — cancellation terminal path', () => {
+  function cancelledDeps(completionResultV1?: true): OrchestrateDeps {
+    const base: OrchestrateDeps = {
+      providers: { claude: makeFakeProvider('claude') },
+      clock: makeFakeClock(),
+      session: makeFakeSession(),
+      ledger: makeFakeLedger(),
+      policy: DEFAULT_POLICY,
+      cwd: '/fake/cwd',
+      sandbox: 'workspace-write',
+      timeoutMs: 30_000,
+    };
+    return completionResultV1 === true ? { ...base, completionResultV1: true } : base;
+  }
+
+  it('aborted signal omits CompletionResultV1 by default', async () => {
+    const ac = new AbortController();
+    ac.abort();
+
+    const events = await collectEvents(orchestrate('refactor X', cancelledDeps(), ac.signal));
+    const finalEv = events.find((e) => e.type === 'final');
+    assert.ok(finalEv !== undefined);
+    if (finalEv.type === 'final') {
+      assert.equal(finalEv.canceled, true);
+      assert.equal(finalEv.completionResult, undefined);
+    }
+  });
+
+  it('aborted signal attaches cancelled CompletionResultV1 when explicitly enabled', async () => {
+    const ac = new AbortController();
+    ac.abort();
+
+    const events = await collectEvents(orchestrate('refactor X', cancelledDeps(true), ac.signal));
+    const finalEv = events.find((e) => e.type === 'final');
+    assert.ok(finalEv !== undefined);
+    if (finalEv.type === 'final') {
+      assert.equal(finalEv.canceled, true);
+      assert.ok(finalEv.completionResult !== undefined);
+      assert.equal(finalEv.completionResult.terminal, 'cancelled');
+      assert.equal(finalEv.completionResult.replayPolicy.replay, 'needs-user');
+      assert.equal(finalEv.completionResult.goalSettlement.state, 'needs-user');
+    }
+  });
+});
+// ---------------------------------------------------------------------------
 // Codex provider path
 // ---------------------------------------------------------------------------
 
