@@ -1229,7 +1229,7 @@ export async function* orchestrate(
     }
 
     if (evidenceDecision.beforeWork !== 'cannot-ground' && !evidenceDecision.mayStartWork) {
-      yield {
+      const evidenceBlockedFinal: Extract<CoreEvent, { readonly type: 'final' }> = {
         type: 'final',
         success: true,
         output: unverifiedEvidenceOutput(evidenceDecision, semanticEvidenceReceipts),
@@ -1238,6 +1238,12 @@ export async function* orchestrate(
         sessionId: depsArg.session.id,
         attempts: 0,
       };
+      yield attachTerminalCompletionIfFlag({
+        deps: depsArg,
+        final: evidenceBlockedFinal,
+        task,
+        terminal: 'blocked',
+      });
       return;
     }
   }

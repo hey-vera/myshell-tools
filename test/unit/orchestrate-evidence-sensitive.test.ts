@@ -234,12 +234,17 @@ describe('semantic evidence enforcement wiring', () => {
       providers: { claude: p },
       researchPort: port,
       semanticPreflightExtractor: async () => ({ result: semantic() }),
+      completionResultV1: true,
     }, p), new AbortController().signal));
 
     assert.equal(p.calls, 0);
     const final = events.find((e): e is Extract<CoreEvent, { type: 'final' }> => e.type === 'final');
     assert.ok(final !== undefined);
     assert.match(final.output, /DET_LOCAL:failed/);
+    assert.equal(final.completionResult?.terminal, 'blocked');
+    assert.equal(final.completionResult?.success, false);
+    assert.equal(final.completionResult?.goalSettlement.state, 'none');
+    assert.equal(final.completionResult?.replayPolicy.replay, 'unknown');
   });
 
   it('observed read path passes validator while invented path fails', () => {
