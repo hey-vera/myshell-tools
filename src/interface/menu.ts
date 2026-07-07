@@ -26,6 +26,7 @@ import type { GoalCeilings } from '../core/goal.js';
 import { appendCheckpointFromContinue, capContract } from '../core/work-contract.js';
 import type { RoadmapItem, RoadmapItemVerdict } from '../core/work-contract.js';
 import { managerCycleEnabled } from './ui/manager-flag.js';
+import { completionResultV1Enabled } from './ui/completion-result-flag.js';
 import {
   pickNextTodo,
   buildTodoTask,
@@ -4645,7 +4646,12 @@ Output ONLY valid JSON (no prose, no markdown).`;
               mutableCtx.config.verbosity ?? 'normal',
               runSchedule(
                 goalSpecs,
-                { runGoal, authedProviders, maxActive },
+                {
+                  runGoal,
+                  authedProviders,
+                  maxActive,
+                  ...(completionResultV1Enabled(process.env, mutableCtx.config) ? { completionResultV1: true as const, isoNow: ctx.clock.isoNow } : {}),
+                },
                 schedAc.signal,
               ),
             );

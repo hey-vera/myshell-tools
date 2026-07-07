@@ -1263,6 +1263,8 @@ describe('runSchedule — DAG: a FAILED dependency BLOCKS its dependents (skip, 
       authedProviders: ['claude', 'codex'],
       now: time.now,
       sleep: time.sleep,
+      completionResultV1: true,
+      isoNow: () => '2026-07-07T00:00:00.000Z',
     };
     const events = await drain(
       runSchedule([dep('a', 'goal a'), dep('b', 'goal b', ['a'])], deps, new AbortController().signal),
@@ -1278,6 +1280,9 @@ describe('runSchedule — DAG: a FAILED dependency BLOCKS its dependents (skip, 
     assert.ok(aFinal !== undefined && aFinal.success === false, 'a should report a failed final');
     assert.ok(bFinal !== undefined && bFinal.success === false, 'b should report a skipped final');
     assert.match(bFinal.output, /prerequisite/i, 'b final should explain the prerequisite failure');
+    assert.equal(bFinal.completionResult?.terminal, 'blocked');
+    assert.equal(bFinal.completionResult?.goalSettlement.state, 'blocked');
+    assert.equal(bFinal.completionResult?.replayPolicy.replay, 'repair-only');
   });
 
   it('cascades transitively: a fails → b blocked → c (depends on b) also blocked', async () => {

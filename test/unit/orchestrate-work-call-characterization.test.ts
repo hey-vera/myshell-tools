@@ -582,6 +582,7 @@ describe('work-call characterization — timeout is terminal', () => {
       {
         policy: { ...DEFAULT_POLICY, maxAttempts: 3 },
         authenticatedProviders: ['claude', 'codex'],
+        completionResultV1: true,
       },
     );
 
@@ -593,6 +594,10 @@ describe('work-call characterization — timeout is terminal', () => {
     const finalEv = norm.find((e) => e.type === 'final');
     assert.equal(finalEv?.success, false);
     assert.equal(finalEv?.errorCategory, 'timeout');
+    const rawFinal = events.find((e) => e.type === 'final');
+    assert.ok(rawFinal !== undefined && rawFinal.type === 'final');
+    assert.equal(rawFinal.completionResult?.terminal, 'failed');
+    assert.equal(rawFinal.completionResult?.success, false);
   });
 });
 

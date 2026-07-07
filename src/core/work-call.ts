@@ -41,7 +41,7 @@
  *  - No process.exit()
  */
 
-import type { CoreEvent, OrchestrateDeps, Tier, Classification, Assessment, Policy } from './types.js';
+import type { CoreEvent, OrchestrateDeps, Tier, Classification, Assessment, Policy, CompletionTerminal } from './types.js';
 import type { CliError, Usage, ProviderRequest, Provider, ProviderEvent, ProviderId } from '../providers/port.js';
 import type { TurnCallBudget } from './turn-call-budget.js';
 import { runBudgetedProvider, type BudgetedProviderCall } from './budgeted-provider.js';
@@ -100,6 +100,7 @@ import { lastJsonObjectBoundsWithKey } from './json-envelope.js';
 import {
   MAX_REVISE_RETRIES,
   appendAcceptedAssistant,
+  attachTerminalCompletionIfFlag,
   runCandidateQualityGate,
   type AcceptedRunSessionData,
   type CandidateResult,
@@ -699,6 +700,11 @@ export async function* runWorkCall(input: WorkCallInput): AsyncGenerator<CoreEve
   let managerNotes: string | undefined;
   let attempts = 0;
   let providerCalls = 0;
+  const terminalFinal = (
+    final: Extract<CoreEvent, { readonly type: 'final' }>,
+    terminal: CompletionTerminal,
+  ): Extract<CoreEvent, { readonly type: 'final' }> =>
+    attachTerminalCompletionIfFlag({ deps, final, task, terminal });
   // Core-answer reservation: the first work provider call is un-sheddable (the
   // product invariant — see menu.ts shed-ladder + capability-budget SheddingPlan).
   // turnCallBudget caps optional work AFTER that first call, and may arrive 0 or
@@ -1549,7 +1555,7 @@ export async function* runWorkCall(input: WorkCallInput): AsyncGenerator<CoreEve
 
     if (outcome.canceled) {
       yield { type: 'notice', level: 'warn', message: 'cancelled' };
-      yield {
+      yield terminalFinal({
         type: 'final',
         success: false,
         output: outcome.canceledBeforeStream
@@ -1562,7 +1568,7 @@ export async function* runWorkCall(input: WorkCallInput): AsyncGenerator<CoreEve
         ...(outcome.canceled ? { canceled: true } : {}),
         ...(lastAttemptedProvider !== undefined ? { provider: lastAttemptedProvider } : {}),
         ...(subscriptionAccount !== null ? { accountId: subscriptionAccount.id } : {}),
-      };
+      }, 'cancelled');
       return;
     }
 
@@ -1824,7 +1830,7 @@ export async function* runWorkCall(input: WorkCallInput): AsyncGenerator<CoreEve
           throw new Error('orchestrate invariant violated: question final without accepted run');
         }
         await appendAcceptedAssistant(deps, acceptedRun);
-        yield {
+        yield terminalFinal({
           type: 'final',
           success: true,
           output: lastOutput,
@@ -1834,7 +1840,7 @@ export async function* runWorkCall(input: WorkCallInput): AsyncGenerator<CoreEve
           attempts,
           questions,
           ...(subscriptionAccount !== null ? { accountId: subscriptionAccount.id } : {}),
-        };
+        }, 'needs-user');
         return;
       }
     }
@@ -1879,7 +1885,7 @@ export async function* runWorkCall(input: WorkCallInput): AsyncGenerator<CoreEve
           message:
             'Timed out before the model finished. Not retrying on another vendor (the same work would likely time out again and double the cost). The task may be too broad — narrow it, or raise the timeout in Settings.',
         };
-        yield {
+        const timeoutFinal: Extract<CoreEvent, { readonly type: 'final' }> = {
           type: 'final',
           success: false,
           output: lastOutput,
@@ -1919,6 +1925,7 @@ export async function* runWorkCall(input: WorkCallInput): AsyncGenerator<CoreEve
               })()
             : {}),
         };
+        yield terminalFinal(timeoutFinal, 'failed');
         return;
       }
 
@@ -2023,7 +2030,7 @@ export async function* runWorkCall(input: WorkCallInput): AsyncGenerator<CoreEve
       // above must get their failover execution. Once none remain, however,
       // escalating tiers would only retry a CLI whose authentication is broken.
       if (errored !== undefined && errored.category === 'auth') {
-        yield {
+        yield terminalFinal({
           type: 'final',
           success: false,
           output: lastOutput,
@@ -2034,7 +2041,7 @@ export async function* runWorkCall(input: WorkCallInput): AsyncGenerator<CoreEve
           errorCategory: 'auth',
           provider: decision.provider,
           ...(subscriptionAccount !== null ? { accountId: subscriptionAccount.id } : {}),
-        };
+        }, 'failed');
         return;
       }
 
@@ -2276,7 +2283,7 @@ export async function* runWorkCall(input: WorkCallInput): AsyncGenerator<CoreEve
 
         if (reviewOutcome.canceled) {
           yield { type: 'notice', level: 'warn', message: 'cancelled' };
-          yield {
+          yield terminalFinal({
             type: 'final',
             success: false,
             output: 'Task was cancelled.',
@@ -2287,7 +2294,7 @@ export async function* runWorkCall(input: WorkCallInput): AsyncGenerator<CoreEve
             ...(reviewOutcome.canceled ? { canceled: true } : {}),
             ...(lastAttemptedProvider !== undefined ? { provider: lastAttemptedProvider } : {}),
             ...(subscriptionAccount !== null ? { accountId: subscriptionAccount.id } : {}),
-          };
+          }, 'cancelled');
           return;
         }
 
@@ -2377,7 +2384,7 @@ export async function* runWorkCall(input: WorkCallInput): AsyncGenerator<CoreEve
               level: 'warn',
               message: 'review inconclusive — not auto-approving',
             };
-            yield {
+            yield terminalFinal({
               type: 'final',
               success: false,
               output: lastOutput,
@@ -2387,7 +2394,7 @@ export async function* runWorkCall(input: WorkCallInput): AsyncGenerator<CoreEve
               attempts,
               ...(lastAttemptedProvider !== undefined ? { provider: lastAttemptedProvider } : {}),
               ...(subscriptionAccount !== null ? { accountId: subscriptionAccount.id } : {}),
-            };
+            }, 'blocked');
             return;
           }
         } else {
@@ -2482,7 +2489,7 @@ export async function* runWorkCall(input: WorkCallInput): AsyncGenerator<CoreEve
               level: 'warn',
               message: 'reviewer requested escalation but already at the top tier — accepting best result',
             };
-            yield {
+            yield terminalFinal({
               type: 'final',
               success: false,
               output: lastOutput,
@@ -2492,7 +2499,7 @@ export async function* runWorkCall(input: WorkCallInput): AsyncGenerator<CoreEve
               attempts,
               ...(lastAttemptedProvider !== undefined ? { provider: lastAttemptedProvider } : {}),
               ...(subscriptionAccount !== null ? { accountId: subscriptionAccount.id } : {}),
-            };
+            }, 'blocked');
             return;
           }
           yield { type: 'escalate', from: currentTier, to: escalateTo, reason: 'reviewer escalation' };
@@ -2615,7 +2622,7 @@ export async function* runWorkCall(input: WorkCallInput): AsyncGenerator<CoreEve
     return;
   }
 
-  yield {
+  const terminalFailureFinal: Extract<CoreEvent, { readonly type: 'final' }> = {
     type: 'final',
     success: false,
     output: lastOutput,
@@ -2689,4 +2696,5 @@ export async function* runWorkCall(input: WorkCallInput): AsyncGenerator<CoreEve
         })()
       : {}),
   };
+  yield terminalFinal(terminalFailureFinal, terminalFailureFinal.blocked !== undefined ? 'blocked' : 'failed');
 }

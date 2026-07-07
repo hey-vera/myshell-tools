@@ -3735,6 +3735,7 @@ describe('orchestrate — ask_user short-circuit', () => {
 
   it('yields a successful final carrying the parsed questions', async () => {
     const { deps } = makeAskDeps();
+    deps.completionResultV1 = true;
     const events = await collectEvents(
       orchestrate('set up tests', deps, new AbortController().signal),
     );
@@ -3745,6 +3746,9 @@ describe('orchestrate — ask_user short-circuit', () => {
       assert.ok(final.questions !== undefined, 'final must carry questions');
       assert.equal(final.questions.questions.length, 1);
       assert.equal(final.questions.questions[0]!.id, 'framework');
+      assert.equal(final.completionResult?.terminal, 'needs-user');
+      assert.equal(final.completionResult?.success, false);
+      assert.equal(final.completionResult?.replayPolicy.replay, 'needs-user');
     }
   });
 
