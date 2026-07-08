@@ -60,6 +60,7 @@ export interface AppStateLayout {
     readonly configFile: string;
     readonly credentialsFile: string;
     readonly conversationsDir: string;
+    readonly durableContextDir: string;
     readonly conversationArchiveDir: string;
     readonly goalsDir: string;
     readonly memoryDir: string;
@@ -177,6 +178,7 @@ function buildPaths(
     configFile: posix.join(configRoot, 'config.json'),
     credentialsFile: posix.join(stateRoot, 'credentials.json'),
     conversationsDir: posix.join(stateRoot, 'conversations'),
+    durableContextDir: posix.join(stateRoot, 'durable-context'),
     conversationArchiveDir: posix.join(stateRoot, '.session-archive'),
     goalsDir: posix.join(stateRoot, 'goals'),
     memoryDir: posix.join(stateRoot, 'memory'),
@@ -198,6 +200,7 @@ function finalizePaths(
     configFile: toPlatform(raw.configFile, platform),
     credentialsFile: toPlatform(raw.credentialsFile, platform),
     conversationsDir: toPlatform(raw.conversationsDir, platform),
+    durableContextDir: toPlatform(raw.durableContextDir, platform),
     conversationArchiveDir: toPlatform(raw.conversationArchiveDir, platform),
     goalsDir: toPlatform(raw.goalsDir, platform),
     memoryDir: toPlatform(raw.memoryDir, platform),

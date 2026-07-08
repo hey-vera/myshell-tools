@@ -296,3 +296,28 @@ export function reconstructUsingCompletionMapSnapshot(
   const recon = reconstructContextV1({ logId: 'l', conversationId: 'current', snapshots: [envSnap], tailEvents: [] });
   return recon;
 }
+
+/**
+ * Minimal wiring of durable store (P0) into history seam.
+ * Uses dynamic import so core stays free of static infra dep (avoids graph issues).
+ * When durable files exist for the log, loads real events/snapshots and reconstructs.
+ * Falls back to empty recon (synthetic parity) when absent or error.
+ * Higher layers (prompts/orchestrate) can call this for real durable path.
+ */
+export async function reconstructFromDurableStore(
+  logId: string,
+  conversationId: string,
+): Promise<ReconstructedContextV1> {
+  try {
+    // dynamic to keep layering; the store itself dynamically pulls pure reconstruct
+    const mod = await import('../infra/durable-context-store.js');
+    if (typeof mod.loadAndReconstruct === 'function') {
+      return await mod.loadAndReconstruct(logId, conversationId);
+    }
+  } catch {
+    // fail soft to synthetic/empty
+  }
+  // synthetic empty (parity with prior no-store behavior)
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  return { version: 1, logId, conversationId, baseSnapshotId: null, replayedEvents: [], promptBlocks: [], openLoops: [], tokenEstimate: 0 } as any;
+}

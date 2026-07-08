@@ -8,6 +8,7 @@
 import type { LedgerEntry, SessionEntry, Tier, Risk } from '../core/types.js';
 import type { ProviderId } from '../providers/port.js';
 import type { IntentVersion } from '../core/intent-version.js';
+import type { CanonicalEventV1, ContextSnapshotV1 } from '../core/durable-context.js';
 import { parseSemanticPreflight } from '../core/semantic-preflight.js';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -324,5 +325,67 @@ export function isIntentVersion(value: unknown): value is IntentVersion {
     !isSemanticPreflightPayload(value['semanticPreflight'])
   ) return false;
 
+  return true;
+}
+
+// ---------------------------------------------------------------------------
+// Guards for durable context (P0 minimal append-only store; provider-neutral)
+// Light structural guards only; full validation (hash/seq/chain) lives in core.
+// ---------------------------------------------------------------------------
+
+const ID_RE = /^[a-z][a-z0-9_-]{0,63}$/;
+
+export function isCanonicalEventV1(value: unknown): value is CanonicalEventV1 {
+  if (!isRecord(value)) return false;
+  if (value['version'] !== 1) return false;
+  const logId = value['logId'];
+  if (typeof logId !== 'string' || !ID_RE.test(logId)) return false;
+  const eventId = value['eventId'];
+  if (typeof eventId !== 'string' || !ID_RE.test(eventId)) return false;
+  const seq = value['sequence'];
+  if (typeof seq !== 'number' || !Number.isInteger(seq) || seq < 0) return false;
+  const prior = value['priorEventId'];
+  if (prior !== null && (typeof prior !== 'string' || !ID_RE.test(prior))) return false;
+  const createdAt = value['createdAt'];
+  if (typeof createdAt !== 'string' || createdAt.length === 0) return false;
+  const convId = value['conversationId'];
+  if (typeof convId !== 'string' || !ID_RE.test(convId)) return false;
+  const kind = value['kind'];
+  const validKinds: string[] = [
+    'turn.user',
+    'turn.preflight',
+    'work-unit.planned',
+    'work-unit.state',
+    'provider.native-session',
+    'provider.observation',
+    'completion.result',
+    'goal.node',
+    'goal.edge',
+    'context.snapshot',
+    'context.invalidation',
+  ];
+  if (typeof kind !== 'string' || !validKinds.includes(kind)) return false;
+  if (typeof value['payloadHash'] !== 'string') return false;
+  if (!('payload' in value)) return false;
+  return true;
+}
+
+export function isContextSnapshotV1(value: unknown): value is ContextSnapshotV1 {
+  if (!isRecord(value)) return false;
+  if (value['version'] !== 1) return false;
+  const snapId = value['snapshotId'];
+  if (typeof snapId !== 'string' || !ID_RE.test(snapId)) return false;
+  const logId = value['logId'];
+  if (typeof logId !== 'string' || !ID_RE.test(logId)) return false;
+  if (typeof value['kind'] !== 'string') return false;
+  const cov = value['coversThrough'];
+  if (!isRecord(cov) || typeof cov['logId'] !== 'string' || typeof cov['eventId'] !== 'string' || typeof cov['sequence'] !== 'number') return false;
+  const createdAt = value['createdAt'];
+  if (typeof createdAt !== 'string' || createdAt.length === 0) return false;
+  if (!Array.isArray(value['sourceEventIds'])) return false;
+  if (typeof value['stateHash'] !== 'string') return false;
+  const tok = value['tokenEstimate'];
+  if (typeof tok !== 'number' || !Number.isFinite(tok)) return false;
+  if (!('state' in value)) return false;
   return true;
 }
