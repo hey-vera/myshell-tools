@@ -6,8 +6,6 @@
  * while refusing to overwrite user edits made after the checkpoint.
  */
 
-import { createHash } from 'node:crypto';
-
 export type AiCheckpointFileKind = 'created' | 'modified' | 'deleted';
 
 export interface AiCheckpointFile {
@@ -61,7 +59,16 @@ export interface UndoPlan {
 }
 
 export function hashText(text: string): string {
-  return createHash('sha256').update(text, 'utf8').digest('hex');
+  // Pure, deterministic local fingerprint for checkpoint change detection.
+  // This is not a security boundary; it avoids importing node:crypto into core.
+  let h1 = 0x811c9dc5;
+  let h2 = 0x01000193;
+  for (let i = 0; i < text.length; i++) {
+    const code = text.charCodeAt(i);
+    h1 = Math.imul(h1 ^ code, 0x01000193) >>> 0;
+    h2 = Math.imul(h2 ^ code, 0x811c9dc5) >>> 0;
+  }
+  return h1.toString(16).padStart(8, '0') + h2.toString(16).padStart(8, '0');
 }
 
 function normalizePath(path: string): string {

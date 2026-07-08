@@ -1,3 +1,6 @@
+export { summarizeSubscriptionPressure } from './subscription-pressure.js';
+export type { PressureSignal, SubscriptionPressureSummary } from './subscription-pressure.js';
+
 /**
  * src/core/capability-budget.ts — an ADVISORY model of the per-turn overhead,
  * plus the ordered quota-shed policy (whole-tool-finish-5.5.md §0.3, §3).

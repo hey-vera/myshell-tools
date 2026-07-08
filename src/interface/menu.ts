@@ -294,6 +294,9 @@ import {
   toggleDefaultShell,
 } from './menu-settings.js';
 import { runOpencodeAccountsMenu } from './menu-opencode-accounts.js';
+import { createAiCheckpointStore } from '../infra/ai-checkpoint-store.js';
+import { localRepoOps } from '../infra/repo-ops.js';
+import { handleRepoChatIntent } from './repo-chat-handler.js';
 import { runClaudeAccountsMenu } from './menu-claude-accounts.js';
 import { runCodexAccountsMenu } from './menu-codex-accounts.js';
 import { runGrokAccountsMenu } from './menu-grok-accounts.js';
@@ -2109,6 +2112,30 @@ export async function runChatLoop(
       return runOneChatInput(newText);
     }
 
+    // Native repo-chat intents: ordinary language, local-only, non-mutating.
+    // Examples: "what changed?", "status", "run the tests", "undo that".
+    // Edit/build requests intentionally fall through to the normal orchestrator.
+    // Undo is preview-only here; actual writes stay behind the checkpoint gate.
+    try {
+      const repoHandled = await handleRepoChatIntent(line, {
+        cwd: activeCwd,
+        repoOps: localRepoOps,
+        checkpointStore: createAiCheckpointStore({ cwd: activeCwd }),
+        readFileText: async (relativePath) => {
+          try {
+            return await fs.promises.readFile(join(activeCwd, relativePath), 'utf8');
+          } catch {
+            return null;
+          }
+        },
+      });
+      if (repoHandled !== null) {
+        out.write('\n' + repoHandled.message + '\n');
+        return 'continue';
+      }
+    } catch {
+      out.write(dim('  Repo helper was unavailable; continuing through normal chat.\n', out.color));
+    }
     // Effective mode: the user's explicit choice, else auto-detected from their
     // subscription plan (Max → top of the knob, etc.) — no interrogation.
       // Concurrency (panel / hedge) is now owned by the mode preset: Balanced and
