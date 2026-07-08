@@ -32,6 +32,8 @@ export interface AcceptedRunSessionData {
   readonly sessionId?: string;
   readonly workTrace?: WorkContract;
   readonly accountId?: string;
+  /** Pre-provider dirty snapshot (if captured) for checkpoint creation on AI edits. */
+  readonly preEditSnapshot?: ReadonlyMap<string, string>;
 }
 
 export interface CandidateResult extends AcceptedRunSessionData {
@@ -340,6 +342,15 @@ export async function* runCandidateQualityGate(
   let outcome = await verify(candidate);
   await emitEvidenceSnapshot(deps, candidate, outcome);
   for (const event of receiptEvents(outcome, candidate)) yield event;
+  if (outcome?.changedPaths && outcome.changedPaths.length > 0 && (deps as any).createAiCheckpoint) { // eslint-disable-line @typescript-eslint/no-explicit-any
+    const createdAt = deps.clock.isoNow();
+    await Promise.resolve((deps as any).createAiCheckpoint({ // eslint-disable-line @typescript-eslint/no-explicit-any
+      intent: (candidate as any).task || 'turn', // eslint-disable-line @typescript-eslint/no-explicit-any
+      changedPaths: outcome.changedPaths,
+      preSnapshot: (candidate as any).preEditSnapshot, // eslint-disable-line @typescript-eslint/no-explicit-any
+      createdAt,
+    })).catch(() => {});
+  }
   const first = gateResult(outcome);
 
   if (!first.repairRequired) {
@@ -362,6 +373,15 @@ export async function* runCandidateQualityGate(
     outcome = await verify(candidate);
     await emitEvidenceSnapshot(deps, candidate, outcome);
     for (const event of receiptEvents(outcome, candidate)) yield event;
+    if (outcome?.changedPaths && outcome.changedPaths.length > 0 && (deps as any).createAiCheckpoint) { // eslint-disable-line @typescript-eslint/no-explicit-any
+      const createdAt = deps.clock.isoNow();
+      await Promise.resolve((deps as any).createAiCheckpoint({ // eslint-disable-line @typescript-eslint/no-explicit-any
+        intent: (candidate as any).task || 'turn', // eslint-disable-line @typescript-eslint/no-explicit-any
+        changedPaths: outcome.changedPaths,
+        preSnapshot: (candidate as any).preEditSnapshot, // eslint-disable-line @typescript-eslint/no-explicit-any
+        createdAt,
+      })).catch(() => {});
+    }
   }
 
   const finalGate = gateResult(outcome);

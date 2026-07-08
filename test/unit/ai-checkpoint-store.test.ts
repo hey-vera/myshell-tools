@@ -1,12 +1,16 @@
 ﻿import { describe, it } from 'vitest';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, writeFile, readFile } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile, readFile, mkdir, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 
 import { buildAiCheckpoint } from '../../src/core/ai-checkpoint.ts';
-import { createAiCheckpointStore, parseAiCheckpoint } from '../../src/infra/ai-checkpoint-store.ts';
+import { createAiCheckpointStore, parseAiCheckpoint, capturePreEditSnapshot, createAiCheckpointCreator } from '../../src/infra/ai-checkpoint-store.ts';
 import { resolveStateLayout } from '../../src/infra/state-layout.ts';
+
+const execFileAsync = promisify(execFile);
 
 function testLayout(homeDir: string, cwd: string) {
   return resolveStateLayout({ env: {}, platform: process.platform, cwd, homeDir });
@@ -98,5 +102,73 @@ describe('ai checkpoint store', () => {
     assert.equal(parseAiCheckpoint(null), null);
     assert.equal(parseAiCheckpoint({ version: 2 }), null);
     assert.equal(parseAiCheckpoint({ version: 1, id: 'x', createdAt: 't', repoRoot: 'r', intent: '', files: [{ path: 'a' }] }), null);
+  });
+
+  it('capturePreEditSnapshot returns contents of dirty files in a git repo', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'myshell-cp-home-'));
+    const cwd = await mkdtemp(join(tmpdir(), 'myshell-cp-repo-'));
+    try {
+      await execFileAsync('git', ['init', '-q'], { cwd });
+      await execFileAsync('git', ['config', 'user.email', 't@t'], { cwd });
+      await execFileAsync('git', ['config', 'user.name', 't'], { cwd });
+      const f = join(cwd, 'dirty.txt');
+      await writeFile(f, 'before-the-ai');
+      await execFileAsync('git', ['add', 'dirty.txt'], { cwd });
+      await execFileAsync('git', ['commit', '-q', '-m', 'base'], { cwd });
+      // make dirty then capture the pre-AI content
+      await writeFile(f, 'pre-ai-dirty-content');
+      const pre = await capturePreEditSnapshot(cwd);
+      // now simulate AI edit
+      await writeFile(f, 'after-the-ai-edit');
+      assert.equal(pre.get('dirty.txt'), 'pre-ai-dirty-content');
+    } finally {
+      await rm(home, { recursive: true, force: true });
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('createAiCheckpointCreator builds+ saves checkpoint using pre snap + post reads + git fallback (smoke that creates one)', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'myshell-cp-home-'));
+    const cwd = await mkdtemp(join(tmpdir(), 'myshell-cp-repo-'));
+    try {
+      await execFileAsync('git', ['init', '-q'], { cwd });
+      await execFileAsync('git', ['config', 'user.email', 't@t'], { cwd });
+      await execFileAsync('git', ['config', 'user.name', 't'], { cwd });
+      await mkdir(join(cwd, 'src'), { recursive: true });
+      const tracked = join(cwd, 'src', 'edit.ts');
+      await writeFile(tracked, 'OLD\n');
+      await execFileAsync('git', ['add', 'src/edit.ts'], { cwd });
+      await execFileAsync('git', ['commit', '-q', '-m', 'base'], { cwd });
+      const pre = await capturePreEditSnapshot(cwd);
+      const untrackedNew = join(cwd, 'created.txt');
+      // simulate AI edit on tracked + create new (file did not exist pre)
+      await writeFile(tracked, 'NEW\nedited by ai\n');
+      await writeFile(untrackedNew, 'CREATED by ai');
+      const layout = testLayout(home, cwd);
+      const creator = createAiCheckpointCreator({ cwd, layout });
+      const ts = '2026-07-07T12:00:00.000Z';
+      await creator({ intent: 'smoke create checkpoint on edit', changedPaths: ['src/edit.ts', 'created.txt'], preSnapshot: pre, createdAt: ts });
+      const store = createAiCheckpointStore({ cwd, layout });
+      const saved = await store.latest();
+      assert.ok(saved, 'checkpoint must have been saved');
+      assert.equal(saved.intent, 'smoke create checkpoint on edit');
+      const mod = saved.files.find((f: any) => f.path.endsWith('edit.ts')); // eslint-disable-line @typescript-eslint/no-explicit-any
+      assert.ok(mod);
+      assert.equal(mod.beforeText, 'OLD\n');
+      assert.equal(mod.afterText, 'NEW\nedited by ai\n');
+      const cre = saved.files.find((f: any) => f.path.endsWith('created.txt')); // eslint-disable-line @typescript-eslint/no-explicit-any
+      assert.ok(cre);
+      assert.ok(cre.beforeText == null, 'created file before must be absent/null');
+      assert.equal(cre.afterText, 'CREATED by ai');
+      // on-disk proof
+      const onDiskLayout = testLayout(home, cwd);
+      const projKey = cwd.replace(/^[A-Za-z]:/, '').replace(/[\\/]/g, '--').replace(/^--+|--+$/g, '');
+      const chkDir = join(onDiskLayout.stateRoot, 'projects', projKey, 'ai-checkpoints');
+      const names = await readdir(chkDir).catch(() => [] as string[]);
+      assert.ok(names.some((n) => n.endsWith('.json')), 'checkpoint json must exist on disk');
+    } finally {
+      await rm(home, { recursive: true, force: true });
+      await rm(cwd, { recursive: true, force: true });
+    }
   });
 });
