@@ -2112,11 +2112,13 @@ export async function runChatLoop(
       return runOneChatInput(newText);
     }
 
-    // Native repo-chat intents: ordinary language, local-only, non-mutating.
-    // Examples: "what changed?", "status", "run the tests", "undo that".
-    // Edit/build requests intentionally fall through to the normal orchestrator.
-    // Undo is preview-only here; actual writes stay behind the checkpoint gate.
+    // Native repo-chat intents: ordinary language, local-only.
+    // verify_only now invokes gated verifyPort.runTests (commandGate + oversight).
+    // commit summarizes, gates via oversight (confirm unless autonomous), calls commitChanges.
+    // Use exact same commandGate/verifyPort/oversight seams as the rest of menu + cli verify paths.
+    // Undo remains preview-only.
     try {
+      const oversight = resolveOversight(mutableCtx.config);
       const repoHandled = await handleRepoChatIntent(line, {
         cwd: activeCwd,
         repoOps: localRepoOps,
@@ -2128,6 +2130,9 @@ export async function runChatLoop(
             return null;
           }
         },
+        commandGate: shellCommandGate,
+        oversight,
+        ...(ctx.verifyPort ? { verifyPort: ctx.verifyPort } : {}),
       });
       if (repoHandled !== null) {
         out.write('\n' + repoHandled.message + '\n');

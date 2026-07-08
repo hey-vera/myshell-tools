@@ -2,6 +2,7 @@
 
 import { buildAiCheckpoint, hashText, type AiChangeCheckpoint } from '../../src/core/ai-checkpoint.js';
 import { handleRepoChatIntent, type RepoChatHandlerDeps } from '../../src/interface/repo-chat-handler.js';
+import type { CommandGateDecision, CommandGatePort } from '../../src/core/command-gate.js';
 
 function deps(overrides: Partial<RepoChatHandlerDeps> = {}): RepoChatHandlerDeps {
   return {
@@ -15,6 +16,9 @@ function deps(overrides: Partial<RepoChatHandlerDeps> = {}): RepoChatHandlerDeps
       },
       async detectTestCommand() {
         return null;
+      },
+      async commitChanges() {
+        return { ok: true, output: 'committed (test mock)' };
       },
     },
     checkpointStore: {
@@ -63,6 +67,9 @@ describe('handleRepoChatIntent', () => {
         async detectTestCommand() {
           return null;
         },
+        async commitChanges() {
+          return { ok: true, output: 'committed (test mock)' };
+        },
       },
     }));
 
@@ -81,6 +88,9 @@ describe('handleRepoChatIntent', () => {
         },
         async detectTestCommand() {
           return null;
+        },
+        async commitChanges() {
+          return { ok: true, output: 'committed (test mock)' };
         },
       },
     }));
@@ -111,6 +121,9 @@ describe('handleRepoChatIntent', () => {
         async detectTestCommand() {
           return null;
         },
+        async commitChanges() {
+          return { ok: true, output: 'committed (test mock)' };
+        },
       },
     }));
 
@@ -119,8 +132,31 @@ describe('handleRepoChatIntent', () => {
     expect(result?.message).toContain('diff --git');
   });
 
-  it('detects but does not run a test command', async () => {
+  it('executes gated verify_only via verifyPort.runTests and returns real outcome/receipt', async () => {
+    const runSpy: Array<{ command: string; hadGate: boolean }> = [];
     const result = await handleRepoChatIntent('run the tests', deps({
+      verifyPort: {
+        async detectTestCommand() {
+          return { label: 'unit', command: 'npm', args: ['test'] };
+        },
+        async runTests(cwd, command, timeoutMs, commandGate) {
+          runSpy.push({ command: command.label, hadGate: !!commandGate });
+          return { outcome: 'green', output: 'ok\n1 passed', durationMs: 42 } as const;
+        },
+      },
+      commandGate: {
+        gate: (): CommandGateDecision => ({
+          allowed: true,
+          requireConfirmation: false,
+          commandTier: 'test-build',
+          forbidBackground: false,
+          mustRecord: false,
+          rationale: '',
+        }),
+        confirm: async () => true,
+        record: () => {},
+      } as CommandGatePort,
+      oversight: 'autonomous',
       repoOps: {
         async status() {
           return { isGitRepo: true, clean: true, changedFiles: [], raw: '' };
@@ -131,11 +167,16 @@ describe('handleRepoChatIntent', () => {
         async detectTestCommand() {
           return { label: 'unit', command: 'npm', args: ['test'] };
         },
+        async commitChanges() {
+          return { ok: true, output: 'committed (test mock)' };
+        },
       },
     }));
 
     expect(result?.operation).toBe('verify_only');
-    expect(result?.message).toBe('Detected test command: unit (npm test). I have not run it yet.');
+    expect(result?.message).toContain('GREEN');
+    expect(result?.message).toContain('42ms');
+    expect(runSpy).toEqual([{ command: 'unit', hadGate: true }]);
   });
 
   it('reports when no test command is detected', async () => {
@@ -187,9 +228,32 @@ describe('handleRepoChatIntent', () => {
     expect(hashText('user changed it')).not.toBe(cp.files[0]?.afterHash);
   });
 
-  it('handles commit intent without mutating the repo', async () => {
-    const result = await handleRepoChatIntent('commit this change', deps());
-    expect(result).toMatchObject({ operation: 'commit_current_ai_change', mutatesWorkspace: false });
-    expect(result?.message).toContain('not executed by this safe handler');
+  it('handles commit: summarizes, gates (autonomous skips confirm), calls commitChanges, returns receipt', async () => {
+    const commitCalls: Array<{ cwd: string; msg: string }> = [];
+    const result = await handleRepoChatIntent('commit this change', deps({
+      repoOps: {
+        async status() {
+          return { isGitRepo: true, clean: false, changedFiles: ['src/foo.ts'], raw: 'M src/foo.ts' };
+        },
+        async diff() {
+          return { isGitRepo: true, empty: false, stat: ' src/foo.ts | 1 +', patchPreview: 'diff...' };
+        },
+        async detectTestCommand() {
+          return null;
+        },
+        async commitChanges(cwd: string, message: string) {
+          commitCalls.push({ cwd, msg: message });
+          return { ok: true, output: '[main abc123] chat: commit 1 file(s) via natural language [src/foo.ts]' };
+        },
+      },
+      // autonomous: no confirm required (test confirm would otherwise be called)
+      oversight: 'autonomous',
+    }));
+    expect(result?.operation).toBe('commit_current_ai_change');
+    expect(result?.mutatesWorkspace).toBe(true);
+    expect(result?.message).toContain('Commit intent:');
+    expect(result?.message).toContain('src/foo.ts');
+    expect(result?.message).toContain('Commit succeeded');
+    expect(commitCalls).toEqual([{ cwd: '/repo', msg: 'chat: commit 1 file(s) via natural language [src/foo.ts]' }]);
   });
 });
