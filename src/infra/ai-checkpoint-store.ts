@@ -8,10 +8,16 @@
 
 import { mkdir, readFile, readdir } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 
 import type { AiChangeCheckpoint, AiCheckpointFile } from '../core/ai-checkpoint.js';
+import type { CheckpointFileInput } from '../core/ai-checkpoint.js';
+import { buildAiCheckpoint } from '../core/ai-checkpoint.js';
 import { atomicWrite } from './atomic.js';
 import { defaultStateLayout, projectStateDirs, type AppStateLayout } from './state-layout.js';
+
+const execFileAsync = promisify(execFile);
 
 export interface AiCheckpointStore {
   readonly save: (checkpoint: AiChangeCheckpoint) => Promise<void>;
@@ -78,6 +84,7 @@ async function readCheckpoint(path: string): Promise<AiChangeCheckpoint | null> 
     const raw = await readFile(path, 'utf8');
     return parseAiCheckpoint(JSON.parse(raw));
   } catch {
+    /* ignore git show / read error for before fallback */
     return null;
   }
 }
@@ -120,5 +127,70 @@ export function createAiCheckpointStore(opts: CreateAiCheckpointStoreOptions): A
       const checkpoints = await this.list();
       return checkpoints.at(-1) ?? null;
     },
+  };
+}
+
+export async function capturePreEditSnapshot(cwd: string): Promise<ReadonlyMap<string, string>> {
+  const map = new Map<string, string>();
+  try {
+    const { stdout } = await execFileAsync('git', ['status', '--porcelain'], { cwd, timeout: 3000 });
+    const dirty: string[] = [];
+    for (const line of stdout.split(/\r?\n/)) {
+      const rel = line.slice(3).trim();
+      if (rel.length > 0) dirty.push(rel.replace(/\\/g, '/'));
+    }
+    for (const p of dirty) {
+      try {
+        const txt = await readFile(join(cwd, p), 'utf8');
+        map.set(p, txt);
+      } catch { /* ignore */ }
+    }
+  } catch { /* ignore fs/git errors for pre-snapshot */ }
+  return map;
+}
+
+async function readFromGitHead(cwd: string, relPath: string): Promise<string | null> {
+  const p = relPath.replace(/\\/g, '/');
+  try {
+    const { stdout } = await execFileAsync('git', ['show', `HEAD:${p}`], { cwd, timeout: 2000, maxBuffer: 4 * 1024 * 1024 });
+    return stdout;
+  } catch {
+    /* ignore git show / read error for before fallback */
+    return null;
+  }
+}
+
+export function createAiCheckpointCreator(opts: { readonly cwd: string; readonly layout?: AppStateLayout }) {
+  return async (input: {
+    readonly intent: string;
+    readonly changedPaths: readonly string[];
+    readonly preSnapshot?: ReadonlyMap<string, string>;
+    readonly createdAt: string;
+  }): Promise<void> => {
+    const { intent, changedPaths = [], preSnapshot, createdAt } = input;
+    if (!changedPaths || changedPaths.length === 0) return;
+    const fileInputs: CheckpointFileInput[] = [];
+    for (const raw of changedPaths) {
+      const path = String(raw).replace(/\\/g, '/');
+      let beforeText: string | null = (preSnapshot && preSnapshot.get(path)) ?? null;
+      if (beforeText === null) {
+        beforeText = await readFromGitHead(opts.cwd, path);
+      }
+      let afterText: string | null = null;
+      try {
+        afterText = await readFile(join(opts.cwd, path), 'utf8');
+      } catch { /* ignore read after for deleted */ }
+      fileInputs.push({ path, beforeText: beforeText ?? null, afterText: afterText ?? null });
+    }
+    const cp = buildAiCheckpoint({
+      id: `ai-${createdAt.replace(/[:.]/g, '-')}-${Math.random().toString(36).slice(2, 9)}`,
+      createdAt,
+      repoRoot: opts.cwd,
+      intent: String(intent || 'turn').slice(0, 200),
+      files: fileInputs,
+    });
+    if (cp.files.length === 0) return;
+    const store = createAiCheckpointStore({ cwd: opts.cwd, ...(opts.layout ? { layout: opts.layout } : {}) });
+    await store.save(cp);
   };
 }

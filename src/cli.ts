@@ -17,6 +17,7 @@ import { createSessionWriter } from './infra/session.js';
 import { createLedger } from './infra/ledger.js';
 import { createCommandAuditRecorder } from './infra/command-audit.js';
 import { gateCommand } from './core/command-gate.js';
+import { capturePreEditSnapshot, createAiCheckpointCreator } from './infra/ai-checkpoint-store.js';
 import type { CommandGatePort } from './core/command-gate.js';
 // routing-memory retained for diagnostics/reporting only (cost/insights), not routing input
 import {
@@ -349,6 +350,8 @@ function buildDeps(
     evidenceReceiptV2: true,
     receiptLedgerSnapshot: () => receiptLedgerEntries,
     nativeSessionsPromote: true,
+    preEditSnapshotCapture: () => capturePreEditSnapshot(cwd),
+    createAiCheckpoint: createAiCheckpointCreator({ cwd }),
   };
 }
 
