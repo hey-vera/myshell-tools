@@ -28,6 +28,7 @@
     "smoke:pty:handoff": "node scripts/pty-smoke-handoff.mjs",
     "smoke:pty:ink": "node scripts/pty-smoke-ink.mjs",
     "smoke:pty:menu-ink": "node scripts/pty-smoke-menu-ink.mjs",
+    "smoke:launch": "node --input-type=module -e \"import { spawnSync } from 'node:child_process'; import { fileURLToPath } from 'node:url'; const cli = fileURLToPath(new URL('./dist/cli.js', import.meta.url)); const v = spawnSync(process.execPath, [cli, '--version'], {encoding:'utf8'}); const h = spawnSync(process.execPath, [cli, '--help'], {encoding:'utf8'}); const ok = v.status===0 && h.status===0 && /3\\.\\d+/.test((v.stdout||'')+(h.stdout||'')) && /Commands:/.test(h.stdout||'') ; console.log(ok ? 'launch-smoke: PASS (cross-platform, no PTY)' : 'launch-smoke: FAIL'); process.exit(ok?0:1);\"",
     "bench:p0": "node scripts/pty-p0-benchmark.mjs",
     "auto-brain:preview": "node --import tsx/esm scripts/auto-brain-preview.mjs",
     "auto-brain:preview:pasted-code": "node --import tsx/esm scripts/auto-brain-preview.mjs pasted-code",

@@ -4,7 +4,27 @@
 
 `myshell-tools` routes each task to the *cheapest* model likely to succeed, runs it on your real codebase, optionally has a **different vendor** review the result, and shows you exactly what it did and how many real tokens it used — with **no fabricated data, ever**.
 
-> **Status: `3.2.0` — honest, tested, and real.** Claude, Codex, and opencode (experimental) all work, provider auth is detected for real, and the header always shows whether you're on the latest version (`(latest)` or `→ x.y.z available`).
+> **Status: `3.163.1` — honest, tested, and real.** Claude, Codex, Grok, and opencode (experimental) all work, provider auth is detected for real, and the header always shows whether you're on the latest version (`(latest)` or `→ x.y.z available`).
+
+---
+
+## Current daily use status (honest snapshot)
+
+**What works today for everyday use ("one chat to rule them all")**:
+- Interactive control panel + natural language chat over your real repos (workspace-bound conversations; NL requests like "fix the failing test" or "refactor X" run via the cheapest suitable provider CLI you have signed in).
+- NL repo operations land via the chat: edits, git-aware work, verification on accept, goal decomposition, multi-turn continuity. (Active polish on menu + per-workspace execution per `docs/menu-build-spec-final.md`; full durable NL repo editing continues to land in slices.)
+- Automatic routing + effort modes (Efficient/Balanced/Max or Auto), learned preferences, parallel goals (default on), honest token accounting + receipts.
+- Provider support: full for Claude, Codex, Grok; opencode experimental but usable. Cross-vendor review/panel on hard turns (governed). Login, install, cost, eval available.
+- Cross-platform (Node 20+): works on Linux/macOS/Windows, containers, SSH, Replit etc. (some PTY/Ink features graceful-fallback).
+- Self-healing health on launch; no fabricated data ever (arch tests + contract tests enforce).
+
+**Gaps / not yet daily-driver for everything** (see `docs/ROADMAP-STATUS.md`, `docs/vision-alignment-audit-2026-07-06.md`):
+- Some advanced contracts (e.g. full intent continuity, certain completion bindings) are merged but dark/default-off pending rollout gates + eval.
+- Native parallel panel / heavy concurrency is governed (quota-aware), not always-on.
+- Menu/workspace UI is in active build (see menu spec); current panel is functional.
+- No PTY-dependent features in CI/headless; use non-interactive paths (`run`, `doctor`, etc.).
+
+Use daily via global install + chat for real work on your codebases. Always run with at least one authenticated provider CLI. For feedback or issues use the hidden-but-supported `myshell-tools doctor`.
 
 ---
 
@@ -16,7 +36,7 @@ npx myshell-tools
 
 That's it.  `npx` fetches the package, runs the interactive setup, and:
 
-1. **Detects** which provider CLIs (Claude Code / Codex) are already installed.
+1. **Detects** which provider CLIs (Claude Code, Codex, Grok, opencode) are already installed.
 2. **Offers to install** any missing ones — one keypress (`Enter` to install, `n` to skip).  It never installs anything silently; consent is always required.
 3. **Offers to sign you in** to providers that are installed but not yet authenticated.
 4. Drops you into the home menu, ready to use.
@@ -47,10 +67,10 @@ Using one frontier model for everything is wasteful (renaming a variable doesn't
 - **A real advisor, not an order-taker** — for a decision (language, library, design) it forms an opinion and recommends a clear winner, surfaces a strong option you may not have considered, and asks only the one or two questions that actually change the answer.
 - **Cross‑vendor adversarial review** — a *different vendor* checks the first model's output (Codex reviewing Claude, or vice‑versa). Different families, different blind spots. Review gating depends on Effort Mode; see the quality knob above.
 - **Multi-turn context continuity** — follow-up messages carry real context. Prior conversation turns are compacted into a bounded history block (~6 k chars, most recent 12 turns) and replayed to the model, so it actually knows what was said earlier. Confidence envelopes are stripped before replay to save tokens.
-- **Native session continuity** *(experimental, opt-in, default off)* — when enabled, a conversation that stays on one provider reuses that provider's *native* session instead of replaying the history block, for better fidelity and less re-sent context. **Claude** uses a session id we choose (the conversation id); **Codex** has its generated thread id captured (from `thread.started`), persisted on the turn, and resumed via `codex exec resume`. Falls back to history replay automatically when a turn routes to a provider without an active session. Because the live behavior depends on your CLI, it ships off with a gated verification test covering both providers — `MYSHELL_NATIVE_SESSION_E2E=1 npm run test:integration` — and you enable it (Settings → Native sessions) only after it passes on your setup.
-- **Parallel Subscription Panel** *(experimental, opt-in, default off)* — on hard (high/critical-risk) turns, instead of running one model then maybe another, it runs a **concurrent panel** of your signed-in providers — each answers independently — then a cross-vendor synthesizer reconciles their answers into one (the synthesizer is admitted to the strongest model on those hard turns). This is uniquely a subscription-first move: on a flat-rate plan the extra concurrent runs cost **$0 in dollars** (the cost is quota + latency), so you buy genuinely independent cross-vendor judgment — which catches single-model confident-but-wrong answers — something an api-key / per-token tool would never afford. **EXPERIMENTAL, default OFF**: it needs ≥2 signed-in providers to do anything, spends 2–4 provider runs per hard turn (quota + wall-clock), and only triggers on turns the classifier rates high/critical risk. Enable via Settings → `[7] Panel (experimental)`.
+- **Native session continuity** *(default on; opt-out via config or env)* — when active for a conversation on the same provider, reuses that provider's *native* session (Claude conversation id; Codex captured thread) instead of replaying the full history block. Improves fidelity and reduces re-sent tokens. Falls back cleanly to history replay. (Promoted from experimental; governed for safety.)
+- **Parallel Subscription Panel** *(governed, not static default-on)* — on hard (high/critical-risk) turns (when ≥2 signed-in providers), runs concurrent panel of providers + cross-vendor synthesis. Subscription-first (no $ cost, only quota/latency). Still opt-in/governed via Auto/Effort; does not fire on every turn. See Settings for related controls.
 - **Smart parallel goals** (default on, opt-out with `MYSHELL_SCHEDULER=0`) — `/goal` (and auto-goals) decomposes plans into independent sub-goals that run concurrently (bounded by providers + pressure; sequential plans stay 1 goal for honesty). DAG deps respected, per-goal progress/ledgers visible, ESC fans out. Subscription-first: no extra cost beyond your plan's quota. First-touch explainer on first use. See `docs/parallel-agent-goals-5.7.md`.
-- **Learned Routing (Local Outcome Learner)** *(experimental, opt-in, default off)* — learns from **your own ledger** which provider tends to finish your work best per tier (ranked by observed success rate, tie-broken by latency) and prefers it. It's observed-only — it uses only recorded success + duration, never plan/quota/token inference. With no per-token dollar cost the honest routing question isn't "cheapest token" but "which of my subscriptions actually does my work best, fastest" — and only your own history answers that. **EXPERIMENTAL, default OFF**: it needs real history before it changes anything (≥3 runs per provider and ≥2 qualifying providers per tier, else it does nothing), and it only **reorders** among reachable signed-in providers — never stranding or inventing one. Enable via Settings → `[8] Learned routing (experimental)`.
+- **Learned Routing (Local Outcome Learner)** *(default on)* — learns from **your own ledger** which provider tends to finish your work best per tier (ranked by observed success rate, tie-broken by latency) and prefers it. It's observed-only — it uses only recorded success + duration, never plan/quota/token inference. Requires history (≥3 runs per provider + ≥2 qualifying per tier) before reordering; otherwise no-op. Safe reorder only. Toggle via Settings if desired.
 
 - **Pure planning (/plan) + persistent plan viz + learned taste (default on)** — `/plan <text>` is a first-class pure-planning pass (full judgeGoal parity: proposal with vision/approach/rationale/deps, diff-stub, heads-up, PLAN.md write, park for /goals, taste record). Plans are preference-aware (taste ledger injected into planner prompts). Approach/rationale always visible on the board (StatusBlock + layout budget). `/taste` or `/prefs` shows your observed playbook + bias. Toggle in Settings [t]. No fake quotas.
 - **Container / SSH sign-in** — `myshell-tools login` auto-detects headless and cloud-IDE environments (Replit, Codespaces, Gitpod, SSH sessions) and switches to a no-localhost sign-in flow automatically. Force either flow with `--code` or `--browser`. For Claude it runs `claude auth login` (claude saves its own credential — nothing for us to store); if the browser shows a localhost / "can't be reached" error after you click Authorize, copy the **full URL from the address bar** (it contains the sign-in code) and paste it back when claude asks. For Codex, a device-code flow is used.
@@ -67,9 +87,10 @@ Using one frontier model for everything is wasteful (renaming a variable doesn't
 - At least one provider CLI.  `npx myshell-tools` will **offer to install** them for you on first run — or you can install manually:
   - **Claude Code** — `npm install -g @anthropic-ai/claude-code`, then sign in when prompted. In containers or over SSH, run `myshell-tools login claude --code`: it runs `claude auth login` and shows a sign-in link; if the page errors on a localhost redirect after you authorize, copy the full address-bar URL (it carries the code) and paste it back when claude asks. Claude persists its own credential — myshell-tools stores nothing.
   - **Codex** — `npm install -g @openai/codex`. In containers or over SSH, run `myshell-tools login codex --code` for a device-code flow (no localhost callback needed).
+  - **Grok** — `npm install -g @xai-official/grok`, then sign in (supports OAuth and device-code for containers/SSH).
   - **opencode** *(experimental, optional)* — auto-detected when the `opencode` CLI is installed. Works immediately with free hosted models (no keys). `[o]` is **always available** in the control-panel Auth section: if opencode is not yet installed, selecting it asks for consent and runs `npm install -g opencode-ai`, then runs `opencode auth login` to add a premium provider or subscription — myshell-tools never handles the credentials. Appears in the control-panel header and raw-session picker only when installed.
 
-You need **one** to start; install **both** claude and codex to unlock cross‑vendor review.
+You need **one** to start; install **claude + codex** (or + grok) to unlock cross‑vendor review. Grok and opencode are first-class too.
 
 ---
 
@@ -91,6 +112,13 @@ For day-to-day use, a global install is recommended:
 npm install -g myshell-tools
 myshell-tools
 ```
+
+**Post-`npm install -g` detection / onboarding notes:**
+- Run `myshell-tools` (or `myshell-tools doctor --fix`) immediately to trigger provider detection + first-run prompts (auth, auto-update consent, optional shell integration).
+- Provider detection is best-effort and re-runs on demand; it probes real CLIs (`claude --version`, `codex --version`, `grok --version`, `opencode --version`) rather than just PATH presence. If a fresh global provider install is not yet in PATH for the current shell, open a new terminal or run `hash -r` (bash) / rehash.
+- For automatic menu on new shells: run `myshell-tools install` (writes guarded startup hook to your rc; safe + idempotent; `uninstall` to remove). This is separate from the npm package install.
+- On Windows / containers / Replit: use `myshell-tools login <prov> --code` for headless flows; detection still works but browser OAuth may need manual URL copy-paste.
+- Hardening tip: if detection seems stale after install, `myshell-tools doctor --fix` forces refresh + repair.
 
 The globally-installed CLI includes the **update notifier**: it checks the npm registry once per 24 hours (cached, non-blocking) and shows a banner in the control panel when a newer version is available:
 
@@ -134,15 +162,21 @@ npm link
 myshell-tools [command] [options]
 
 Commands:
-  (none)          Open the interactive control panel (default)
-  run <task...>   Run a one-shot task and exit
-  repl            Plain line REPL (no menu)
-  login [prov]    Sign in to a provider (claude or codex) via its own OAuth
-  cost            Show real spend + the cost-routing counterfactual
+  (none)            Open the interactive control panel (default)
+  run <task...>     Run a one-shot task and exit
+  repl              Start the plain line REPL (no menu)
+  rollback [off]    Disable or restore verify, judgment, and trust
+  login [provider]  Sign in to a provider (claude, codex, opencode, or grok) via its own OAuth. --code for no-localhost (containers/SSH)
+  cost              Show real spend from the ledger with a per-model breakdown
+  eval              Run the frozen answer-quality ruler (opt-in, cost-stated)
+  install           Write guarded startup hook to rc so new shells auto-launch menu
+  uninstall         Remove the startup hook
+
+(Note: doctor/status/check work as hidden scriptable aliases for health report; not shown in main --help.)
 
 Options:
-  -h, --help      Show help
-  -v, --version   Print version
+  -h, --help     Show this help message
+  -v, --version  Print version number
 ```
 
 ## Home menu and workspaces
@@ -174,12 +208,21 @@ Success — tier: worker, 312 tokens, attempts: 1, session: 0dbfe2e3-…
 
 The confidence (`100%`) is **parsed from the model's own structured reply**, not invented. The token count is the **CLI's own reported usage** — real and measured. Because myshell-tools drives your *subscription* CLIs (not metered API keys), the hot path shows tokens, not dollars; a per-task dollar figure wouldn't map to flat subscription billing. If you want a rough API-equivalent cost estimate, it lives in `myshell-tools cost`.
 
-### Health — automatic, no command needed
+### Health — automatic, no command needed (discover via `doctor`)
 
-The control panel checks its own environment on every launch (Node version, whether the state directory is writable, pricing freshness) and shows a short, actionable warning **only when something is actually wrong**. When everything is fine, it stays quiet — you never run a "doctor" command.
+The control panel checks its own environment on every launch (Node version, whether the state directory is writable, pricing freshness) and shows a short, actionable warning **only when something is actually wrong**. When everything is fine, it stays quiet.
 
-If you want the full report explicitly (handy for support threads or CI), it's still there as a hidden, scriptable command — `status`, `check`, or `doctor`:
+`doctor` / `status` / `check` are intentionally not listed in `--help` (self-healing is preferred; see menu spec), but remain fully supported as scriptable commands for support, CI, and explicit checks. Use directly:
 
+```text
+$ myshell-tools doctor
+# or: myshell-tools status
+# or: myshell-tools check
+```
+
+They also support `--fix` for interactive repair (installs, sign-ins, token refresh).
+
+Example output:
 ```text
 $ myshell-tools status
 myshell-tools — environment health
@@ -193,6 +236,8 @@ Providers
     auth: signed in
 Ready — at least one provider is available.
 ```
+
+**Tip for onboarding / post-install:** run `myshell-tools doctor` (or with `--fix`) right after `npm install -g` or first `npx` to verify detection and auth.
 
 ### Usage & efficiency (`cost`)
 
@@ -319,6 +364,7 @@ npm run lint           # ESLint (typescript-eslint strict)
 npm test               # unit + architecture tests (requires Node ≥ 22)
 npm run test:contract  # parser contract tests vs recorded transcripts
 npm run build          # tsc → dist/
+npm run smoke:launch   # simple cross-platform (no PTY) launch smoke: --version + --help (use for quick post-install / CI verification)
 ```
 
 ---

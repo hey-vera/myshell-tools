@@ -15,6 +15,8 @@
  * as the opt-out fallback for one release, so this coverage stays valuable. The
  * spawn below inherits this process's env, so MYSHELL_INK=0 reaches `node CLI`.
  * The DEFAULT (Ink) path is covered by smoke:pty:ink + test:ui + smoke:pty:handoff.
+ * For a simple cross-platform (no PTY, no script util) launch check use `npm run smoke:launch`
+ * (verifies --version + --help non-interactively; ideal for post-install/CI).
  */
 import { spawn, spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';

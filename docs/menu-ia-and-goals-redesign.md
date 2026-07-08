@@ -574,7 +574,7 @@ This table audits config keys from `src/infra/config.ts`. It separates durable u
 | `memoryApproval` | `src/infra/config.ts:215` | keep hidden advanced | Privacy policy escape hatch. Normal default should be safe. |
 | `memoryDecayDays` | `src/infra/config.ts:220` | keep hidden advanced | Tuning parameter, not normal Settings. |
 | `memoryMaxFactsPerScope` | `src/infra/config.ts:225` | keep hidden advanced | Tuning parameter, not normal Settings. |
-| `experimentalInk` | `src/infra/config.ts:233` | default-on-and-hide when stable | Renderer choice should disappear once stable. |
+| `experimentalInk` | `src/infra/config.ts:233` | promoted (default ON via MYSHELL_INK; opt-out only) | Ink renderer is now the default (legacy via MYSHELL_INK=0 or experimentalInk:false). Docstring in config was stale vs actual default. |
 | `experimentalBasic` | `src/infra/config.ts:246` | keep hidden escape hatch | Emergency simplification flag. |
 | `experimentalScheduler` | `src/infra/config.ts:257` | default-on-and-hide | Goal scheduling should be automated. |
 | `experimentalGovernor` | `src/infra/config.ts:270` | default-on-and-hide | Auto depends on governor behavior. |
