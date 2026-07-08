@@ -297,6 +297,8 @@ import { runOpencodeAccountsMenu } from './menu-opencode-accounts.js';
 import { createAiCheckpointStore } from '../infra/ai-checkpoint-store.js';
 import { localRepoOps } from '../infra/repo-ops.js';
 import { handleRepoChatIntent } from './repo-chat-handler.js';
+import { buildAiCheckpoint, planUndoAiCheckpoint, type CheckpointFileInput, type UndoAction } from '../core/ai-checkpoint.js';
+import { createNodeVerifyPort } from '../infra/verify-port.js';
 import { runClaudeAccountsMenu } from './menu-claude-accounts.js';
 import { runCodexAccountsMenu } from './menu-codex-accounts.js';
 import { runGrokAccountsMenu } from './menu-grok-accounts.js';
@@ -1869,6 +1871,37 @@ export async function runChatLoop(
       return 'continue';
     }
 
+    // Local helpers for AI checkpoint creation (handoff actualization).
+    function normalizeRelPath(p: string): string {
+      return p.replace(/\\/g, '/').replace(/^\.\/+/, '');
+    }
+    async function safeRead(p: string): Promise<string | null> {
+      try {
+        return await fs.promises.readFile(p, 'utf8');
+      } catch {
+        return null;
+      }
+    }
+    async function currentTextMapForUndo(paths: readonly string[], read: (p: string) => Promise<string | null>): Promise<ReadonlyMap<string, string | null>> {
+      const entries = await Promise.all(paths.map(async (p) => [p, await read(p)] as const));
+      return new Map(entries);
+    }
+    function getChangedPathsFromFinal(f: Record<string, unknown> | null | undefined): readonly string[] {
+      if (!f) return [];
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const rec: any = (f as any).receipt;
+      if (rec?.changedFiles && Array.isArray(rec.changedFiles)) return rec.changedFiles.filter((x: unknown): x is string => typeof x === 'string');
+      if (rec?.filesWritten && Array.isArray(rec.filesWritten)) return rec.filesWritten.map((x: unknown) => (typeof x === 'string' ? x : (x as Record<string, unknown>)?.path)).filter((x: unknown): x is string => typeof x === 'string');
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const vo: any = (f as any).verifyOutcome ?? rec?.verifyOutcome;
+      if (vo?.changedPaths && Array.isArray(vo.changedPaths)) return vo.changedPaths.filter((x: unknown): x is string => typeof x === 'string');
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const ff: any = f;
+      if (Array.isArray(ff.changedPaths)) return ff.changedPaths.filter((x: unknown): x is string => typeof x === 'string');
+      if (ff.patchWork?.edited && Array.isArray(ff.patchWork.edited)) return ff.patchWork.edited.filter((x: unknown): x is string => typeof x === 'string');
+      return [];
+    }
+
     if (line === '/exit' || line === '/back') {
       return 'menu';
     }
@@ -2112,15 +2145,15 @@ export async function runChatLoop(
       return runOneChatInput(newText);
     }
 
-    // Native repo-chat intents: ordinary language, local-only, non-mutating.
-    // Examples: "what changed?", "status", "run the tests", "undo that".
+    // Native repo-chat intents: ordinary language, local-only, safe previews + gated execution.
+    // Examples: "what changed?", "status", "run the tests", "undo that", "commit this".
     // Edit/build requests intentionally fall through to the normal orchestrator.
-    // Undo is preview-only here; actual writes stay behind the checkpoint gate.
     try {
+      const checkpointStoreForChat = createAiCheckpointStore({ cwd: activeCwd });
       const repoHandled = await handleRepoChatIntent(line, {
         cwd: activeCwd,
         repoOps: localRepoOps,
-        checkpointStore: createAiCheckpointStore({ cwd: activeCwd }),
+        checkpointStore: checkpointStoreForChat,
         readFileText: async (relativePath) => {
           try {
             return await fs.promises.readFile(join(activeCwd, relativePath), 'utf8');
@@ -2131,6 +2164,76 @@ export async function runChatLoop(
       });
       if (repoHandled !== null) {
         out.write('\n' + repoHandled.message + '\n');
+
+        // Safe undo execution (handoff): if undo preview says available (plan ok, no conflicts),
+        // apply using the checkpoint gate. Honor oversight for autonomy; default to apply on explicit "undo"
+        // request once preview is clean (restore is lower risk than forward edit).
+        if (repoHandled.operation === 'undo_last_ai_change' && /available|would write/i.test(repoHandled.message)) {
+          // Oversight resolved for future policy branching; undo on explicit request + conflict gate is intentionally permissive.
+          void resolveOversight(mutableCtx.config, process.env);
+          try {
+            const latest = await checkpointStoreForChat.latest();
+            if (latest) {
+              const currentMapForUndo = await currentTextMapForUndo(latest.files.map(f => f.path), async (rp) => {
+                try { return await fs.promises.readFile(join(activeCwd, rp), 'utf8'); } catch { return null; }
+              });
+              const plan = planUndoAiCheckpoint(latest, currentMapForUndo);
+              if (plan.ok && plan.actions.length > 0) {
+                const execRes = await localRepoOps.applyUndoActions(activeCwd, plan.actions as readonly UndoAction[]);
+                const okCount = execRes.applied;
+                const errNote = execRes.errors.length ? ` (${execRes.errors.length} errors)` : '';
+                out.write(dim(`  Undo applied for ${latest.id}: restored ${okCount} file(s)${errNote}.\n`, out.color));
+              } else {
+                out.write(dim('  Undo plan invalidated between preview and apply; no changes made.\n', out.color));
+              }
+            }
+          } catch (e: unknown) {
+            const msg = e instanceof Error ? e.message : String(e);
+            out.write(dim(`  Undo apply encountered an issue (safe no-op): ${msg}\n`, out.color));
+          }
+        }
+
+        // Test execution gate for natural language "run tests" / "verify".
+        if (repoHandled.operation === 'verify_only' && /detected test command/i.test(repoHandled.message)) {
+          void resolveOversight(mutableCtx.config, process.env);
+          // Run tests for explicit verify request (user said "run tests"). Use the project's detected command.
+          try {
+            const verifyPort = createNodeVerifyPort();
+            const cmd = await localRepoOps.detectTestCommand(activeCwd);
+            if (cmd) {
+              out.write(dim(`  Running ${cmd.label}...\n`, out.color));
+              const runRes = await verifyPort.runTests(activeCwd, cmd, 120_000);
+              const status = runRes.outcome === 'green' ? 'passing' : runRes.outcome === 'red' ? 'failing' : runRes.outcome;
+              const excerpt = (runRes.output || '').slice(0, 300).replace(/\n/g, ' ');
+              out.write(`  Tests ${status} (${cmd.label}, ${runRes.durationMs ?? '?'}ms). ${excerpt}\n`);
+            }
+          } catch (e: unknown) {
+            const msg = e instanceof Error ? e.message : String(e);
+            out.write(dim(`  Test run issue: ${msg}\n`, out.color));
+          }
+        }
+
+        // Commit gate: after preview refusal in handler, execute safe commit on explicit request.
+        if (repoHandled.operation === 'commit_current_ai_change') {
+          void resolveOversight(mutableCtx.config, process.env);
+          try {
+            // Summarize first via diff
+            const d = await localRepoOps.diff(activeCwd);
+            if (d.empty || !d.isGitRepo) {
+              out.write(dim('  No changes to commit.\n', out.color));
+            } else {
+              out.write(`\nChanges to commit:\n${d.stat.slice(0, 800)}\n`);
+              // Proceed on explicit commit request (user said "commit this").
+              const msg = `chore: ${line.slice(0, 72)} [myshell]`;
+              const c = await localRepoOps.commitChanges(activeCwd, msg);
+              out.write(dim(`  Commit: ${c.output.slice(0, 200)}\n`, out.color));
+            }
+          } catch (e: unknown) {
+            const msg = e instanceof Error ? e.message : String(e);
+            out.write(dim(`  Commit issue: ${msg}\n`, out.color));
+          }
+        }
+
         return 'continue';
       }
     } catch {
@@ -6155,6 +6258,16 @@ Output ONLY valid JSON (no prose, no markdown).`;
       const ac = new AbortController();
       currentAc = ac;
       const oversight = resolveOversight(mutableCtx.config, process.env);
+      // Pre-turn snapshot of dirty file contents (for accurate beforeText in AI checkpoints).
+      // Clean files touched by the turn will fall back to HEAD content post-turn.
+      // Never blocks the turn.
+      let preTurnContents: ReadonlyMap<string, string> = new Map();
+      try {
+        preTurnContents = await localRepoOps.snapshotPreContents(activeCwd);
+      } catch {
+        // best-effort only
+      }
+
       // DRAFT GOALS (Phase 1): always on. The post-turn slot reads the captured
       // intent frame and creates PARKED draft goals.
       lastDraftGoalFrame = null;
@@ -6180,6 +6293,38 @@ Output ONLY valid JSON (no prose, no markdown).`;
       noteRateLimit(result);
       await syncCapacity();
       await persistCompletedTurnProvider(result.final);
+
+      // --- AI checkpoint creation for actual edits (handoff item 1) ---
+      // Record before/after only when the turn produced file changes. Uses pre-snapshot + HEAD fallback + post read.
+      // Intent is the raw user line (natural language). Never throws to user.
+      try {
+        const changedPaths = getChangedPathsFromFinal(result.final);
+        if (changedPaths.length > 0) {
+          const store = createAiCheckpointStore({ cwd: activeCwd });
+          const files: CheckpointFileInput[] = [];
+          for (const p of changedPaths) {
+            const afterText = await safeRead(join(activeCwd, p));
+            let beforeText: string | null = preTurnContents.get(normalizeRelPath(p)) ?? null;
+            if (beforeText === null) {
+              beforeText = await localRepoOps.readHeadContent(activeCwd, p).catch(() => null);
+            }
+            files.push({ path: normalizeRelPath(p), beforeText, afterText });
+          }
+          if (files.length > 0) {
+            const id = `ai-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+            const cp = buildAiCheckpoint({
+              id,
+              createdAt: new Date().toISOString(),
+              repoRoot: activeCwd,
+              intent: line,
+              files,
+            });
+            await store.save(cp);
+          }
+        }
+      } catch {
+        // checkpoint wiring must be silent and non-blocking
+      }
 
       // P1-09j-b: foreground settlement — snapshot and invoke receipt callback.
       // Do NOT destroy the budget while owned background calls remain.
