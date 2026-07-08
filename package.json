@@ -28,6 +28,7 @@
     "smoke:pty:handoff": "node scripts/pty-smoke-handoff.mjs",
     "smoke:pty:ink": "node scripts/pty-smoke-ink.mjs",
     "smoke:pty:menu-ink": "node scripts/pty-smoke-menu-ink.mjs",
+    "smoke:repo-chat": "node --import tsx/esm scripts/pty-smoke.mjs",
     "bench:p0": "node scripts/pty-p0-benchmark.mjs",
     "auto-brain:preview": "node --import tsx/esm scripts/auto-brain-preview.mjs",
     "auto-brain:preview:pasted-code": "node --import tsx/esm scripts/auto-brain-preview.mjs pasted-code",

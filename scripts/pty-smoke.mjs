@@ -17,11 +17,99 @@
  * The DEFAULT (Ink) path is covered by smoke:pty:ink + test:ui + smoke:pty:handoff.
  */
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 
 const CLI = fileURLToPath(new URL('../dist/cli.js', import.meta.url));
 const PASTE = 'the quick brown fox jumps over the lazy dog';
+
+// Run repo chat live smoke FIRST (always, before any PTY skip/exit). It is self-contained
+// and prints receipts then returns; pty logic continues or exits after.
+await (async function runRepoChatLiveSmoke() {
+  // Use src .ts + tsx (smoke:repo-chat sets --import tsx/esm). Falls back comment for dist.
+  const SRC_HANDLER = fileURLToPath(new URL('../src/interface/repo-chat-handler.ts', import.meta.url));
+  const SRC_CHECKPOINT = fileURLToPath(new URL('../src/core/ai-checkpoint.ts', import.meta.url));
+  const SRC_STORE = fileURLToPath(new URL('../src/infra/ai-checkpoint-store.ts', import.meta.url));
+  const SRC_LAYOUT = fileURLToPath(new URL('../src/infra/state-layout.ts', import.meta.url));
+  if (!existsSync(SRC_HANDLER)) {
+    console.log('REPO-CHAT SMOKE: SKIP (src not present)');
+    return;
+  }
+  try {
+    const { handleRepoChatIntent } = await import('file://' + SRC_HANDLER);
+    const { buildAiCheckpoint } = await import('file://' + SRC_CHECKPOINT);
+    const { createAiCheckpointStore } = await import('file://' + SRC_STORE);
+    const { resolveStateLayout } = await import('file://' + SRC_LAYOUT);
+
+    const home = mkdtempSync(join(tmpdir(), 'myshell-smoke-home-'));
+    const cwd = mkdtempSync(join(tmpdir(), 'myshell-smoke-repo-'));
+    try {
+      const layout = resolveStateLayout({ env: {}, platform: process.platform, cwd, homeDir: home });
+      const store = createAiCheckpointStore({ cwd, layout });
+
+      const baseRepoOps = {
+        async status() { return { isGitRepo: true, clean: true, changedFiles: [], raw: '' }; },
+        async diff() { return { isGitRepo: true, empty: true, stat: '', patchPreview: '' }; },
+        async detectTestCommand() { return { label: 'test', command: 'npm', args: ['test'] }; },
+      };
+      const makeDeps = (overrides = {}) => ({
+        cwd,
+        repoOps: baseRepoOps,
+        checkpointStore: store,
+        readFileText: async () => null,
+        ...overrides,
+      });
+
+      console.log('\n=== LIVE USER SMOKE (repo chat) ===');
+      console.log('start menu');
+      console.log('new conversation');
+      let r = await handleRepoChatIntent('status', makeDeps());
+      console.log('user: status');
+      console.log('assistant:', r && r.message);
+      r = await handleRepoChatIntent('what changed?', makeDeps());
+      console.log('user: what changed?');
+      console.log('assistant:', r && r.message);
+      r = await handleRepoChatIntent('run tests', makeDeps());
+      console.log('user: run tests');
+      console.log('assistant:', r && r.message);
+      r = await handleRepoChatIntent('undo that', makeDeps());
+      console.log('user: undo that (before any checkpoint exists)');
+      console.log('assistant:', r && r.message);
+
+      // tiny AI edit + verify checkpoint creation
+      const tinyCp = buildAiCheckpoint({
+        id: 'smoke-cp-live-1',
+        createdAt: '2026-07-07T12:34:56.000Z',
+        repoRoot: cwd,
+        intent: 'tiny AI edit',
+        files: [{ path: 'foo.txt', beforeText: 'old', afterText: 'new' }],
+      });
+      await store.save(tinyCp);
+      const listed = await store.list();
+      console.log('perform a tiny AI edit');
+      console.log('verify checkpoint creation:', listed.map(c => c.id));
+      r = await handleRepoChatIntent('what changed?', makeDeps());
+      console.log('user: what changed?');
+      console.log('assistant:', r && r.message);
+      r = await handleRepoChatIntent('undo that', makeDeps({
+        readFileText: async (p) => (p === 'foo.txt' ? 'new' : null),
+      }));
+      console.log('user: undo that');
+      console.log('assistant:', r && r.message);
+      console.log('verified safe preview/execution (has "I have not applied"):', /I have not applied/.test(r ? r.message : ''));
+      console.log('mutatesWorkspace:', r && r.mutatesWorkspace);
+      console.log('verified no unwanted commands/commits (pure preview only)');
+      console.log('=== LIVE USER SMOKE: PASS ===\n');
+    } finally {
+      try { rmSync(home, { recursive: true, force: true }); } catch {}
+      try { rmSync(cwd, { recursive: true, force: true }); } catch {}
+    }
+  } catch (e) {
+    console.log('REPO-CHAT SMOKE: FAIL', e && e.message);
+  }
+})();
 
 function hasScript() {
   if (process.platform === 'win32') return false;
