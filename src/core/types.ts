@@ -973,6 +973,23 @@ export interface OrchestrateDeps {
    */
   readonly verifyTestTimeoutMs?: number;
   /**
+   * Pre-provider snapshot of dirty-file contents (path -> text) for accurate
+   * before-AI state in checkpoint creation. Injected by interface; core invokes
+   * before editing providers. Optional; absent → no checkpoint creation.
+   */
+  readonly preEditSnapshotCapture?: () => Promise<ReadonlyMap<string, string>>;
+  /**
+   * Optional creator called post-verify at accept points when changedPaths exist.
+   * Infra owns capture timing, reads, buildAiCheckpoint + save. Core only
+   * invokes at the seam. Absent → no checkpoint creation (byte-identical).
+   */
+  readonly createAiCheckpoint?: (input: {
+    readonly intent: string;
+    readonly changedPaths: readonly string[];
+    readonly preSnapshot?: ReadonlyMap<string, string>;
+    readonly createdAt: string;
+  }) => Promise<void> | void;
+  /**
    * Optional evidence emission adapter for the verify accept point. The core hands
    * it the real VerifyOutcome plus turn context; the adapter owns all I/O such as
    * hashing changed files and appending JSONL evidence. Absent → no-op, matching

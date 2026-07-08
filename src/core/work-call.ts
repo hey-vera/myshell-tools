@@ -1079,6 +1079,10 @@ export async function* runWorkCall(input: WorkCallInput): AsyncGenerator<CoreEve
       provider: candidate.provider,
       ...(turnCallLedger !== undefined ? { budget: turnCallLedger } : {}),
     };
+    let preSnapshotForThis: ReadonlyMap<string, string> | undefined;
+    if ((deps as any).preEditSnapshotCapture) { // eslint-disable-line @typescript-eslint/no-explicit-any
+      try { preSnapshotForThis = await (deps as any).preEditSnapshotCapture(); } catch { /* fail soft */ } // eslint-disable-line @typescript-eslint/no-explicit-any
+    }
     const outcome = yield* streamProvider(provider, req, candidate.tier, signal, repairCallMeta);
     // P1-09d: capture the budget callId.
     if (turnCallLedger !== undefined) {
@@ -1165,6 +1169,7 @@ export async function* runWorkCall(input: WorkCallInput): AsyncGenerator<CoreEve
           : {}),
       ...(candidate.workTrace !== undefined ? { workTrace: candidate.workTrace } : {}),
       ...(outcome.toolEvents.length > 0 ? { toolEvents: outcome.toolEvents } : {}),
+      ...(preSnapshotForThis ? { preEditSnapshot: preSnapshotForThis } : {}),
     };
     acceptedRun = repairedRun;
     return makeCandidate(repairedRun, candidate.disposition);
@@ -1542,6 +1547,10 @@ export async function* runWorkCall(input: WorkCallInput): AsyncGenerator<CoreEve
         try { await cb(subscriptionAccount.id, deps.clock.isoNow()); } catch { /* best-effort */ }
       })();
     }
+    let preSnapshotForThis: ReadonlyMap<string, string> | undefined;
+    if ((deps as any).preEditSnapshotCapture) { // eslint-disable-line @typescript-eslint/no-explicit-any
+      try { preSnapshotForThis = await (deps as any).preEditSnapshotCapture(); } catch { /* fail soft */ } // eslint-disable-line @typescript-eslint/no-explicit-any
+    }
     const outcome = yield* streamProvider(provider, req, decision.tier, signal, workCallMeta);
     // P1-09d: capture the budget callId for failover ancestry.
     if (turnCallLedger !== undefined) {
@@ -1713,6 +1722,7 @@ export async function* runWorkCall(input: WorkCallInput): AsyncGenerator<CoreEve
         ...(workTrace !== undefined ? { workTrace } : {}),
         ...(outcome.toolEvents.length > 0 ? { toolEvents: outcome.toolEvents } : {}),
         ...(subscriptionAccount !== null ? { accountId: subscriptionAccount.id } : {}),
+        ...(preSnapshotForThis ? { preEditSnapshot: preSnapshotForThis } : {}),
       };
     }
 

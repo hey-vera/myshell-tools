@@ -250,6 +250,7 @@ import { createIntentStore } from '../infra/intent-store.js';
 import { nodeVerifyPort } from '../infra/verify-port.js';
 import { createEvidenceSink, createEvidenceSnapshotBuilder } from '../infra/evidence-sink.js';
 import { nodeWorktreePort } from '../infra/worktree.js';
+import { capturePreEditSnapshot, createAiCheckpointCreator } from '../infra/ai-checkpoint-store.js';
 import { createCommandAuditRecorder } from '../infra/command-audit.js';
 import { gateCommand } from '../core/command-gate.js';
 import type { CommandGatePort } from '../core/command-gate.js';
@@ -2662,6 +2663,10 @@ export async function runChatLoop(
                 evidenceTurnNumber,
               }
             : {}),
+          // AI checkpoint creation around real edits (pre-provider capture + post-verify build/save).
+          // Always wired (minimal seam); no-op when no edits or when provider absent.
+          preEditSnapshotCapture: () => capturePreEditSnapshot(activeCwd),
+          createAiCheckpoint: createAiCheckpointCreator({ cwd: activeCwd }),
           // THE TRUST SURFACE — unconditional (shipped-on). Disabled only by
           // MYSHELL_ROLLBACK emergency kill-switch. Composed PURELY from real
           // signals (no new model call); absent signal ⇒ absent line.
