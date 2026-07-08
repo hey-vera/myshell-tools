@@ -31,6 +31,7 @@ const SHELL_EXEC_ALLOWLIST = new Set([
   "src/infra/user-memory-store.ts",
   "src/infra/verify-port.ts",
   "src/infra/repo-scan.ts",
+  "src/infra/repo-ops.ts",
   "src/infra/research-port.ts",
 ]);
 
