@@ -30,6 +30,7 @@ import type {
   TestRunResult,
 } from '../core/verify.js';
 import type { CommandGatePort, CommandGateDecision } from '../core/command-gate.js';
+import { parsePorcelain } from './repo-ops.js';
 
 const execFileAsync = promisify(execFile);
 type ExecaRunner = typeof execa;
@@ -66,6 +67,8 @@ export function createNodeVerifyPort(deps: { readonly execa?: ExecaRunner } = {}
 
     // First settle WHICH files changed (porcelain) so an empty diff is detected
     // even when `git diff` text is empty (e.g. new untracked files).
+    // NOTE (checkpoint seam): this is *post* capture. For AI checkpoints, prefer
+    // pre-edit fs reads (see design note below) over this + git show.
     const changedFiles = await dirtyFiles(cwd);
     const files = scoped !== undefined
       ? scoped.map((f) => f.replace(/\\/g, '/')).filter((f) => changedFiles.has(f))
@@ -311,12 +314,8 @@ async function dirtyFiles(cwd: string): Promise<Set<string>> {
       cwd,
       timeout: GIT_TIMEOUT_MS,
     });
-    const set = new Set<string>();
-    for (const line of stdout.split('\n')) {
-      const rel = line.slice(3).trim();
-      if (rel.length > 0) set.add(rel.replace(/\\/g, '/'));
-    }
-    return set;
+    // Re-use the shared parser (now normalizes / and is robust) to deduplicate logic.
+    return new Set(parsePorcelain(stdout));
   } catch {
     return new Set<string>();
   }
@@ -411,3 +410,34 @@ function hasRakeTestTask(content: string): boolean {
 function clip(text: string, max: number): string {
   return text.length <= max ? text : text.slice(0, max);
 }
+
+// ---------------------------------------------------------------------------
+// Design note: best capture strategy for AI checkpoint before/after (creation work)
+// ---------------------------------------------------------------------------
+// Recommended (reliable, handles pre-turn dirt):
+// - Capture "before" *just before the edit action for known files* (not a distant pre-turn):
+//   Use fs read of working-tree content as beforeText (see readFileSafe pattern here).
+//     - absent file → before=null (created by AI)
+//     - present → beforeText = current content (captures user's pre-dirty edits too)
+//   Then edit, read afterText (or null for delete).
+//   buildAiCheckpoint + store.save.
+// - Prefer working-fs read over `git show HEAD:rel` : git show would give committed version,
+//   causing undo to also revert any user uncommitted changes that pre-existed the turn.
+//   (git show + fs mix is ok only to *detect* authorship vs pre-dirty, not for beforeText.)
+// - Pre-turn dirty snapshot strategy (for distinguishing "this turn's changes" e.g. in
+//   verify/completion/ownership): at turn start do `localRepoOps.status(cwd)` (or
+//   port.dirtyFiles) + bulk readWorking of those paths into a Map. After turn, intersect
+//   with verify's captureDiff.files to know authored set; use the pre-snapshot's text
+//   as the "before AI" for checkpoint entries.
+// - New files: before=null; deletes: after=null (buildAiCheckpoint + kindOf already do this).
+// - Untracked handling: fs reads cover them; porcelain already detects (see dirtyFiles).
+// - Integration points: around tool result handlers for workspace edits (claude etc),
+//   or future patch-apply, and post-verify when changedPaths known. Always gate save
+//   behind "AI authored this turn" + oversight checkpoint. Store full text only as needed
+//   for undo apply (current design); hashes for conflict checks.
+// - Current gap: buildAiCheckpoint is test-only today; wiring the capture seam here
+//   (pre/post around edits + using shared status/diff) will close it without drift.
+// - This keeps verify's post-capture (for tests/critic) separate from checkpoint's
+//   before/after (for safe undo).
+// See also: core/ai-checkpoint.ts (build/plan), infra/ai-checkpoint-store.ts, localRepoOps.status/diff.
+// ---------------------------------------------------------------------------

@@ -8,13 +8,9 @@
 
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { join, dirname } from 'node:path';
-import { readFile, rm, mkdir } from 'node:fs/promises';
 
 import type { DetectedTestCommand } from '../core/verify.js';
-import type { UndoAction } from '../core/ai-checkpoint.js';
 import { nodeVerifyPort } from './verify-port.js';
-import { atomicWrite } from './atomic.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -43,14 +39,6 @@ export interface LocalRepoOps {
   readonly status: (cwd: string) => Promise<RepoStatusSummary>;
   readonly diff: (cwd: string, maxPreviewChars?: number) => Promise<RepoDiffSummary>;
   readonly detectTestCommand: (cwd: string) => Promise<DetectedTestCommand | null>;
-  /** Snapshot full text contents of currently dirty files (pre-turn baseline for checkpoints). */
-  readonly snapshotPreContents: (cwd: string) => Promise<ReadonlyMap<string, string>>;
-  /** Read committed (HEAD) content for a path. Returns null if not in HEAD (new file or no repo). Used as before baseline for clean-pre files. */
-  readonly readHeadContent: (cwd: string, path: string) => Promise<string | null>;
-  /** Apply a list of undo actions (write before or delete) exactly. Returns count applied and any errors. Non-transactional per-file best effort. */
-  readonly applyUndoActions: (cwd: string, actions: readonly UndoAction[]) => Promise<{ applied: number; errors: readonly string[] }>;
-  /** Safe commit of current changes. message is required and reviewable. */
-  readonly commitChanges: (cwd: string, message: string) => Promise<{ ok: boolean; output: string }>;
 }
 
 const DEFAULT_DIFF_PREVIEW_CHARS = 12_000;
@@ -72,12 +60,18 @@ async function defaultGitRunner(args: readonly string[], cwd: string): Promise<G
   }
 }
 
-function parsePorcelain(raw: string): readonly string[] {
+/**
+ * Shared parser for `git status --porcelain` (and =v1) output.
+ * Returns repo-relative POSIX paths (defensively normalized).
+ * Used by LocalRepoOps and re-exported for use by verify-port / repo-scan
+ * to avoid duplicated status parsing logic.
+ */
+export function parsePorcelain(raw: string): readonly string[] {
   return raw
     .split(/\r?\n/)
     .map((line) => line.trimEnd())
     .filter((line) => line.length > 0)
-    .map((line) => line.slice(3).trim())
+    .map((line) => line.slice(3).trim().replace(/\\/g, '/'))
     .filter((path) => path.length > 0);
 }
 
@@ -125,80 +119,7 @@ export function createLocalRepoOps(deps: { readonly git?: GitRunner; readonly ve
     async detectTestCommand(cwd: string): Promise<DetectedTestCommand | null> {
       return verifyPort.detectTestCommand(cwd);
     },
-
-    async snapshotPreContents(cwd: string): Promise<ReadonlyMap<string, string>> {
-      const status = await this.status(cwd);
-      if (!status.isGitRepo) return new Map();
-      const map = new Map<string, string>();
-      await Promise.all(
-        status.changedFiles.map(async (p) => {
-          try {
-            const full = await fsReadFileSafe(cwd, p);
-            if (full !== null) map.set(normalizePath(p), full);
-          } catch {
-            // ignore unreadable
-          }
-        }),
-      );
-      return map;
-    },
-
-    async readHeadContent(cwd: string, path: string): Promise<string | null> {
-      const normalized = normalizePath(path);
-      const result = await runGit(['show', `HEAD:${normalized}`], cwd);
-      if (result.stdout.length > 0) return result.stdout;
-      // stderr may indicate missing; treat empty-or-error as null
-      return null;
-    },
-
-    async applyUndoActions(cwd: string, actions: readonly UndoAction[]): Promise<{ applied: number; errors: readonly string[] }> {
-      const errors: string[] = [];
-      let applied = 0;
-      for (const action of actions) {
-        const fullPath = join(cwd, action.path);
-        try {
-          if (action.type === 'write') {
-            // ensure parent dir
-            const dir = dirname(fullPath);
-            await mkdir(dir, { recursive: true });
-            await atomicWrite(fullPath, action.text, 0o644);
-            applied++;
-          } else if (action.type === 'delete') {
-            await rm(fullPath, { force: true });
-            applied++;
-          }
-        } catch (e: unknown) {
-          const m = e instanceof Error ? e.message : String(e);
-          errors.push(`${action.path}: ${m}`);
-        }
-      }
-      return { applied, errors };
-    },
-
-    async commitChanges(cwd: string, message: string): Promise<{ ok: boolean; output: string }> {
-      if (!message || message.trim().length === 0) {
-        return { ok: false, output: 'empty commit message refused' };
-      }
-      // stage all relevant, then commit
-      await runGit(['add', '-A'], cwd);
-      const res = await runGit(['commit', '-m', message], cwd);
-      const combined = (res.stdout + '\n' + res.stderr).trim();
-      void !/nothing to commit|no changes added/i.test(combined);
-      return { ok: true, output: combined || 'committed' };
-    },
   };
-}
-
-function normalizePath(p: string): string {
-  return p.replace(/\\/g, '/').replace(/^\.\/+/, '');
-}
-
-async function fsReadFileSafe(cwd: string, rel: string): Promise<string | null> {
-  try {
-    return await readFile(join(cwd, rel), 'utf8');
-  } catch {
-    return null;
-  }
 }
 
 export const localRepoOps = createLocalRepoOps();

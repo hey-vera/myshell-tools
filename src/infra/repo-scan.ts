@@ -18,6 +18,7 @@ import { createHash } from 'node:crypto';
 
 import type { RepoScanPort } from '../core/repo-map.js';
 import type { RepoFingerprint } from '../core/repo-identity.js';
+import { parsePorcelain } from './repo-ops.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -64,8 +65,8 @@ export const nodeRepoScanPort: RepoScanPort = {
         cwd: root,
         timeout: GIT_TIMEOUT_MS,
       });
-      const lines = stdout.split('\n').filter((l) => l.trim().length > 0);
-      return lines.length;
+      // Use shared parser for count of actual changed files (more precise than raw line count).
+      return parsePorcelain(stdout).length;
     } catch {
       return undefined;
     }
@@ -86,12 +87,8 @@ export const nodeRepoScanPort: RepoScanPort = {
         cwd: root,
         timeout: GIT_TIMEOUT_MS,
       });
-      const set = new Set<string>();
-      for (const line of stdout.split('\n')) {
-        const rel = line.slice(3).trim();
-        if (rel.length > 0) set.add(rel.replace(/\\/g, '/'));
-      }
-      return set;
+      // Re-use shared parser (deduped from repo-ops/verify-port).
+      return new Set(parsePorcelain(stdout));
     } catch {
       return new Set<string>();
     }
