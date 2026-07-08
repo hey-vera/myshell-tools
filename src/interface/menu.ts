@@ -2113,11 +2113,13 @@ export async function runChatLoop(
       return runOneChatInput(newText);
     }
 
+<<<<<<< HEAD
     // Native repo-chat intents: ordinary language, local-only.
     // verify_only now invokes gated verifyPort.runTests (commandGate + oversight).
     // commit summarizes, gates via oversight (confirm unless autonomous), calls commitChanges.
     // Use exact same commandGate/verifyPort/oversight seams as the rest of menu + cli verify paths.
     // Undo remains preview-only.
+    // Checkpoint creation wired for normal turns (pre snapshot + post create).
     try {
       const oversight = resolveOversight(mutableCtx.config);
       const repoHandled = await handleRepoChatIntent(line, {
@@ -2134,6 +2136,8 @@ export async function runChatLoop(
         commandGate: shellCommandGate,
         oversight,
         ...(ctx.verifyPort ? { verifyPort: ctx.verifyPort } : {}),
+        preEditSnapshotCapture: () => capturePreEditSnapshot(activeCwd),
+        createAiCheckpoint: createAiCheckpointCreator({ cwd: activeCwd }),
       });
       if (repoHandled !== null) {
         out.write('\n' + repoHandled.message + '\n');
