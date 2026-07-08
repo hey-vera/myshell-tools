@@ -187,9 +187,9 @@ describe('handleRepoChatIntent', () => {
     expect(hashText('user changed it')).not.toBe(cp.files[0]?.afterHash);
   });
 
-  it('handles commit intent without mutating the repo (safe handler stays non-mutating; execution is in caller)', async () => {
+  it('handles commit intent without mutating the repo', async () => {
     const result = await handleRepoChatIntent('commit this change', deps());
     expect(result).toMatchObject({ operation: 'commit_current_ai_change', mutatesWorkspace: false });
-    expect(result?.message).toContain('summarize changes and commit');
+    expect(result?.message).toContain('not executed by this safe handler');
   });
 });

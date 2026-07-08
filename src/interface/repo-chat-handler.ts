@@ -2,9 +2,9 @@
  * Safe natural-language repo chat handler.
  *
  * This is the interface seam between ordinary user language ("what changed?",
- * "run tests", "undo that") and repo infrastructure. The handler itself stays
- * non-mutating (preview + detection). Execution for undo / test / commit is
- * performed by the caller (menu) behind checkpoint gates + oversight.
+ * "run tests", "undo that") and repo infrastructure. It deliberately performs
+ * no workspace mutations. Apply/commit/undo execution must be wired behind a
+ * separate confirmation + checkpoint gate.
  */
 
 import { planUndoAiCheckpoint } from '../core/ai-checkpoint.js';
@@ -94,7 +94,7 @@ export async function handleRepoChatIntent(
     case 'commit_current_ai_change':
       return handled(
         'commit_current_ai_change',
-        'Commit intent detected. I will summarize changes and commit if the workspace looks safe.',
+        'Commit intent detected, but committing is a mutating operation and is not executed by this safe handler.',
       );
 
     case 'undo_last_ai_change': {
