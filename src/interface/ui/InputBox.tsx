@@ -43,6 +43,12 @@ import { dim, cyan, blue } from '../../ui/theme.js';
 import { visibleLength } from '../../ui/tui.js';
 import { composerShownPlan, fitComposerInfo, INPUT_BORDER_ROWS } from './layout.js';
 import { completeChat, classifyCompletion } from '../menu-completion.js';
+import {
+  applyGhost,
+  GHOST_DEBOUNCE_MS,
+  proposeGhost,
+  type GhostSuggestion,
+} from '../ghost-text.js';
 import type { InkStdinControl } from './App.js';
 
 /** Below this, fall back to the plain caret surface. */
@@ -251,6 +257,16 @@ export interface InputBoxProps {
   readonly pressure?: number;
   /** Live dynamic items for @-mentions (@goal, @board, etc) from stores. */
   readonly dynamicWorldItems?: ReadonlyArray<{ prefix: string; items: readonly string[] }>;
+  /**
+   * Empty-prompt goal-aware ghost hints (P0.17). Injected from board/goals when
+   * available; omitted → empty buffer has no ghost (history-only while typing).
+   */
+  readonly goalHints?: readonly string[];
+  /**
+   * Debounce before showing ghost text (ms). Defaults to {@link GHOST_DEBOUNCE_MS}
+   * (300). Tests may pass 0 for immediate ghost after the next microtask tick.
+   */
+  readonly ghostDebounceMs?: number;
 }
 
 /** The slice of Ink's `key` object {@link InputBoxProps.onReadKey} forwards (a
@@ -354,6 +370,8 @@ export function InputBox({
   onMeasureRows,
   pressure = 0,
   dynamicWorldItems,
+  goalHints,
+  ghostDebounceMs = GHOST_DEBOUNCE_MS,
   onEmptyLeft,
   onEmptyRight,
   onShiftTab,
@@ -376,12 +394,23 @@ export function InputBox({
   const [suggestions, setSuggestions] = useState<string[]>([]);
   const [suggIndex, setSuggIndex] = useState(0);
   const lastCompletionRef = useRef<{ token: string } | null>(null);
+  // Ghost text (P0.17–P0.18): dim inline suffix after the typed prefix. Local-only;
+  // debounced; dismissed by Esc / typing / Tab-accept. Never blocks input.
+  const [ghost, setGhost] = useState<GhostSuggestion | null>(null);
+  /** Session-local cache of recently accepted completions (history-layer boost). */
+  const recentCompletionsRef = useRef<string[]>([]);
   // Live mirrors of value/cursor so the async completeChat() resolve can race-guard
   // against the LATEST buffer (the .then closure captures stale state otherwise).
   const valueRef = useRef(value);
   valueRef.current = value;
   const cursorRef = useRef(cursor);
   cursorRef.current = cursor;
+  const historyRef = useRef(history);
+  historyRef.current = history;
+  const goalHintsRef = useRef(goalHints);
+  goalHintsRef.current = goalHints;
+  const dynamicWorldItemsRef = useRef(dynamicWorldItems);
+  dynamicWorldItemsRef.current = dynamicWorldItems;
 
   // Register the imperative API + queued subscriber; consume the history seed.
   useEffect(() => {
@@ -399,6 +428,7 @@ export function InputBox({
       setCursor((head + prefix + text).length);
       setSuggestions([]);
       setSuggIndex(0);
+      setGhost(null);
       setHistIndex(null);
     };
     return () => {
@@ -446,6 +476,15 @@ export function InputBox({
     // those later sets win and the candidate row survives a cycle.
     setSuggestions([]);
     setSuggIndex(0);
+    // Typing / edits also dismiss ghost immediately (P0.18).
+    setGhost(null);
+  };
+
+  const rememberCompletion = (text: string): void => {
+    if (typeof text !== 'string' || text.trim() === '') return;
+    const prev = recentCompletionsRef.current;
+    if (prev[prev.length - 1] === text) return;
+    recentCompletionsRef.current = [...prev, text].slice(-50);
   };
 
   // Commit `submitted` as a line: record non-blank history, clear the editor,
@@ -465,9 +504,76 @@ export function InputBox({
     setDraft('');
     setSuggestions([]);
     setSuggIndex(0);
+    setGhost(null);
     lastCompletionRef.current = null;
     bridge._submit?.(submitted);
   };
+
+  // Debounced local-first ghost (P0.17). Fail-soft: never blocks typing; async
+  // path/mention hits are best-effort and race-guarded against the live buffer.
+  useEffect(() => {
+    // Multi-candidate Tab row owns the chrome — no parallel ghost.
+    if (suggestions.length > 0) {
+      setGhost(null);
+      return;
+    }
+    // Only propose when the caret is at the end (ghost is a trailing suffix).
+    if (cursor !== value.length) {
+      setGhost(null);
+      return;
+    }
+    let cancelled = false;
+    const delay = Math.max(0, ghostDebounceMs);
+    const timer = setTimeout(() => {
+      const lineToCursor = valueRef.current.slice(0, cursorRef.current);
+      const classified = classifyCompletion(lineToCursor);
+      const hints = goalHintsRef.current;
+      const ghostInput = {
+        line: lineToCursor,
+        history: historyRef.current,
+        recentCompletions: recentCompletionsRef.current,
+        ...(hints !== undefined ? { goalHints: hints } : {}),
+      };
+      const base = proposeGhost(ghostInput);
+
+      // Prose / empty / pure slash already covered. For path/@ (and slash when
+      // pure missed), enrich with completeChat hits — still no model call.
+      const needsAsync =
+        classified.kind === 'path' ||
+        classified.kind === 'mention' ||
+        (classified.kind === 'slash-name' && base === null) ||
+        (classified.kind === 'slash-arg' && base === null);
+
+      if (!needsAsync) {
+        if (!cancelled) setGhost(base);
+        return;
+      }
+
+      if (base && !cancelled) setGhost(base);
+
+      const requestedValue = valueRef.current;
+      const requestedCursor = cursorRef.current;
+      void completeChat(lineToCursor, {
+        dynamicWorldItems: dynamicWorldItemsRef.current ?? [],
+      })
+        .then(([hits]) => {
+          if (cancelled) return;
+          if (valueRef.current !== requestedValue || cursorRef.current !== requestedCursor) return;
+          const enriched = proposeGhost({
+            ...ghostInput,
+            completionHits: hits,
+          });
+          setGhost(enriched);
+        })
+        .catch(() => {
+          /* fail-soft: keep base ghost or null */
+        });
+    }, delay);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [value, cursor, history, suggestions.length, ghostDebounceMs, goalHints, dynamicWorldItems]);
 
   // Ink subscribes the callback passed to useInput in a passive effect. Keep that
   // callback stable across renders so visibility/menu transitions cannot briefly
@@ -503,10 +609,16 @@ export function InputBox({
     // When Tab-completions are showing, a bare ESC DISMISSES them first (clears the
     // candidate row, leaves the buffer untouched) BEFORE the turn-interrupt path, so
     // a user can back out of the suggestion list without aborting an in-flight turn.
+    // Ghost text (P0.18) is also dismissed by Esc before interrupt routing.
     if (key.escape && input === '' && suggestions.length > 0) {
       setSuggestions([]);
       setSuggIndex(0);
       lastCompletionRef.current = null;
+      setGhost(null);
+      return;
+    }
+    if (key.escape && input === '' && ghost !== null) {
+      setGhost(null);
       return;
     }
     if (key.escape && input === '' && onEscape?.() === true) return;
@@ -646,24 +758,25 @@ export function InputBox({
       return;
     }
 
-    // --- Tab → autocomplete (T1–T4 engine) -----------------------------------
-    // Wire the existing offline completion engine (src/interface/menu-completion.ts)
-    // into the Ink editor. The single property we preserve from the legacy readline
-    // path: plain prose is a strict no-op — Tab on a sentence does NOTHING (it must
-    // not insert a literal '\t'). Only a slash-command, a path-shaped token, or an
-    // @-mention drives an active completion.
-    //
-    // FIRST Tab (no candidates yet): classify the line; if prose → return (no-op).
-    // Otherwise fire completeChat() and on resolve either auto-accept a lone hit or
-    // show the candidate row. SUBSEQUENT Tab (candidates shown): cycle the highlight
-    // and splice the selected candidate over the trailing token. A race guard ignores
-    // a stale async resolve whose buffer no longer matches what we classified.
+    // --- Tab → ghost accept (P0.18) then autocomplete (T1–T4 engine) ---------
+    // When a ghost is showing, Tab accepts it into the buffer (Claude Code class).
+    // Otherwise fall through to the existing slash/path/@ multi-candidate path.
+    // Plain prose with NO ghost remains a strict no-op (never insert a literal '\t').
+    // Shift+Tab is handled above and never reaches here.
     if (key.tab) {
+      if (ghost !== null && ghost.suffix.length > 0) {
+        const applied = applyGhost(value, cursor, ghost);
+        rememberCompletion(applied.value.slice(0, applied.cursor));
+        setGhost(null);
+        replace(applied.value, applied.cursor);
+        return;
+      }
+
       const lineToCursor = value.slice(0, cursor);
       const classified = classifyCompletion(lineToCursor);
       if (classified.kind === 'none') {
-        // Plain prose (or a free-text slash arg) → Tab is a deliberate no-op. Do
-        // NOT fall through to the printable catch-all (which would insert '\t').
+        // Plain prose (or a free-text slash arg) without a ghost → deliberate no-op.
+        // Do NOT fall through to the printable catch-all (which would insert '\t').
         return;
       }
       lastCompletionRef.current = { token: classified.token };
@@ -675,7 +788,9 @@ export function InputBox({
         const tokenLen = lastCompletionRef.current?.token.length ?? 0;
         const head = value.slice(0, Math.max(0, cursor - tokenLen));
         const tail = value.slice(cursor);
-        replace(head + candidate + tail, head.length + candidate.length);
+        const next = head + candidate + tail;
+        rememberCompletion(next.slice(0, head.length + candidate.length));
+        replace(next, head.length + candidate.length);
       };
 
       if (suggestions.length > 0) {
@@ -814,13 +929,24 @@ export function InputBox({
   // logical rows shown — and their wrapped physical height — fit the viewport, so a
   // huge/long paste can't blow past it AND the reported height matches the planner's
   // reservation exactly.
+  // Ghost is a trailing dim suffix only when caret is at end and we have a proposal.
+  const ghostSuffix =
+    ghost !== null &&
+    ghost.suffix.length > 0 &&
+    cursor === value.length &&
+    suggestions.length === 0
+      ? ghost.suffix
+      : '';
+  const lastBufferRow = Math.max(0, value.split('\n').length - 1);
+
   if (!canBox) {
     return (
       <Box flexDirection="column">
         {shownRows.map((line, i) => {
           const absRow = firstShown + i;
           const prefix = absRow === 0 ? `${CARET} ` : CONT_GUTTER;
-          return <Text key={absRow}>{`${prefix}${line}`}</Text>;
+          const tail = absRow === lastBufferRow && ghostSuffix ? ghostSuffix : '';
+          return <Text key={absRow}>{`${prefix}${line}${tail}`}</Text>;
         })}
       </Box>
     );
@@ -866,10 +992,12 @@ export function InputBox({
           // owner sees everything they type. The 2-col caret/gutter sits in a
           // fixed-width sibling so wrapped continuation rows stay aligned.
           const isFirst = absRow === 0;
-          const isPlaceholder = line === '' && isFirst;
+          const showGhostHere = absRow === lastBufferRow && ghostSuffix.length > 0;
+          // Empty prompt with a goal-aware ghost: show the dim ghost (not the
+          // generic "Type a message..." placeholder) so Tab-on-empty is discoverable.
+          const isPlaceholder = line === '' && isFirst && value === '' && !showGhostHere;
           const dynCount = (dynamicWorldItems ?? []).length;
           const ph = smartPlaceholder(pressure, dynCount > 0, dynCount);
-          const display = isPlaceholder ? dim(ph, color) : line;
           const gutter =
             isFirst ? (
               <Text>
@@ -883,7 +1011,16 @@ export function InputBox({
             <Box key={absRow}>
               {gutter}
               <Box width={Math.max(1, inputWidth - 2)}>
-                <Text wrap={isPlaceholder ? 'truncate-end' : 'wrap'}>{display}</Text>
+                {isPlaceholder ? (
+                  <Text wrap="truncate-end">{dim(ph, color)}</Text>
+                ) : showGhostHere ? (
+                  <Text wrap="wrap">
+                    {line}
+                    {dim(ghostSuffix, color)}
+                  </Text>
+                ) : (
+                  <Text wrap="wrap">{line}</Text>
+                )}
               </Box>
             </Box>
           );
