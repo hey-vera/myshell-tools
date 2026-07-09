@@ -172,7 +172,10 @@ export function classifyForgeFromRemotes(remotes: readonly GitRemote[]): {
     remotes.find((r) => r.name === 'origin' && r.purpose === 'fetch') ??
     remotes.find((r) => r.name === 'origin') ??
     remotes.find((r) => r.purpose === 'fetch') ??
-    remotes[0]!;
+    remotes[0];
+  if (primary === undefined) {
+    return { hostClass: 'none', primaryRemoteUrl: null };
+  }
   const url = primary.url;
   const cls = classifyRemoteUrl(url);
   return {
