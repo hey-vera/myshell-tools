@@ -148,10 +148,20 @@ Auto-adapt means: detect repo remotes + available CLIs (gh/glab/git), adapt lang
 - [ ] **S.1** Visual polish pass (semantic color, density, modern shell menu research applied)
 - [x] **S.2** Checklist smoke script (`npm run smoke:checklist`) — Effort/legend/panel/Library markers; fail-soft without TTY. Full PTY remains `smoke:pty*`.
 - [x] **S.3** README honest daily-use status updated (3.165.0 multi-goal chat; not API-key product)
-- [ ] **S.4** Full CI green on main (ubuntu/macos/windows) — keep green on this PR; main tip was 3.165.0
-- [x] **S.5** Version bump + CHANGELOG — **3.165.0** cut (#139)
+- [~] **S.4** Full CI green on main (ubuntu/macos/windows) — tip **3.166.0** green at absorb open
+- [x] **S.5** Version bump + CHANGELOG — **3.166.0** cut (#141); prior **3.165.0** (#139)
 - [ ] **S.6** `npm publish` ready (user confirms publish)
 - [ ] Acceptance: Josh can `npm i -g myshell-tools@latest` and love the daily drive — **human publish + Replit smoke pending**
+
+### Wave 7 → Partner principles absorb (Fable-class; not loop clone)
+Spec: `docs/partner-principles-absorb-2026-07-09.md`
+
+- [ ] **W7.1** Built-in partner laws (prompt): done=check, anti-goldplate, anti-overplan, grounded claims
+- [ ] **W7.2** Turn routing receipts: provider · model · effort · account? · why (actual run)
+- [ ] **W7.3** Account weight UX honesty: within-provider seat balance; proof routing uses weights
+- [ ] **W7.4** Done=check binding: doneCondition + goal/terminal settle cannot skip verify on claimed done
+- [ ] **W7.5** Goal rewatch+: resume + mid-session/first-turn context inject for standing goals
+- [ ] Acceptance: one chat shows *who/why*, never greeds max effort silently, never settles done without check, re-engages parked goals
 
 ---
 

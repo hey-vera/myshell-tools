@@ -1,6 +1,6 @@
 # myshell-tools — Active project board (orchestrator)
 
-Last updated: 2026-07-09 (tip **3.166.0** cut)
+Last updated: 2026-07-09 (tip **3.166.0**; partner-principles absorb wave open)
 
 ## North star
 One subscription-native chat to rule them all. Elite partner. Not API-key product.
@@ -76,14 +76,21 @@ Main tip at cut base: `8e66912` (`#140` on `origin/main`). Release branch bumps 
 | Acceptance smokes | **open** | need human Replit/local — code complete ≠ accepted |
 
 ## Open / in flight
-(none)
+| Track | Summary | Spec |
+|-------|---------|------|
+| **Absorb** | Partner principles (Fable-class, not loop clone) | `docs/partner-principles-absorb-2026-07-09.md` |
+| PR-A | Built-in partner laws (prompt) | anti-goldplate / done=check / grounded |
+| PR-B | Turn routing receipts | provider·model·effort·account?·why |
+| PR-C | Account weight UX honesty | within-provider seat balance copy + proof |
+| PR-D | Done=check binding | doneCondition + settle honesty |
+| PR-E | Goal rewatch+ | mid-session / first-turn context inject |
 
 ## Next (priority)
-1. **User smoke** the 3.166.0 build (Effort box, Shift+Tab, legend/panel, goals+recap, resume, Tab ghost, forge/`gh`/`glab` status, undo after edit, Accounts Auto, lag recovery, optional mouse, `smoke:checklist`)
-2. **`npm publish`** (user does this — not agents)
-3. **P1.5** optional budgeted model ghost (toggle; fail-soft; never blocks typing)
-4. **P1.6–1.8** remaining forge depth (PR create/review; GitLab pipelines; other-forge honesty)
-5. P2.4–2.6 partner continuity / shared deps / goal stewardship (only if vision-aligned)
+1. **Absorb wave** PR-A/B/C parallel → PR-D/E (see absorb doc DAG)
+2. **User smoke** the 3.166.0 build (Effort box, Shift+Tab, legend/panel, goals+recap, resume, Tab ghost, forge/`gh`/`glab` status, undo after edit, Accounts Auto, lag recovery, optional mouse, `smoke:checklist`)
+3. **`npm publish`** (user does this — not agents)
+4. **P1.5** optional budgeted model ghost (toggle; fail-soft; never blocks typing)
+5. **P1.6–1.8** remaining forge depth; P2.4–2.6 only if vision-aligned
 
 ## Operating rules
 - Branch from origin/main only
