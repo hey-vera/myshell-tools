@@ -89,6 +89,7 @@ import {
   parseRuleCommand,
 } from '../commands/rules.js';
 import { goalGlyph, roadmapProgress, goalVerdictTag, goalVerdictFromOutcome, isGoalVerifiedDone, isDuplicateGoalTitle, formatGoalsForContext, ROADMAP_LIMIT, goalDepth } from '../core/goal-todo.js';
+import { buildResumeGoalOrientation } from '../core/resume-goal-orientation.js';
 import { buildVerifyReceipt } from '../core/verify.js';
 import type { Goal, GoalState } from '../core/goal-todo.js';
 
@@ -1386,6 +1387,11 @@ export async function runChatLoop(
   // error is swallowed, never thrown, never blocks. The write is gated on the
   // conversation still being live (`conversationLive`, cleared in the loop's finally)
   // so a late recap that resolves AFTER the user has left can't corrupt the menu.
+  //
+  // P0.16 — resume partnering: when parked/inactive goals exist for this
+  // conversation/workspace, the SAME once-per-resume orientation briefly addresses
+  // them (status + next action or resume/drop/adjust). Natural prose line — not a
+  // second board. Loaded from the real goal store only (never invented).
   const recapResolved: Promise<void> = (async (): Promise<void> => {
     let recapText: string | null = null;
     try {
@@ -1393,12 +1399,37 @@ export async function runChatLoop(
     } catch {
       recapText = null; // fail-soft: a recap failure must never block resume
     }
-    if (recapText !== null && conversationLive) {
+
+    // Partner goal orientation (once per resume session — this async block runs once).
+    let goalOrient: string | null = null;
+    try {
+      const resumeGoalStore = createFileGoalStore({ clock: ctx.clock });
+      const allGoals = await resumeGoalStore.list().catch(() => [] as Goal[]);
+      const projectKey = await resolveProjectKey(activeCwd).catch(() => null);
+      goalOrient = buildResumeGoalOrientation(allGoals, {
+        conversationId: convId,
+        projectKey,
+      });
+    } catch {
+      goalOrient = null; // fail-soft: missing/broken goal store never blocks resume
+    }
+
+    if (!conversationLive) return;
+
+    if (recapText !== null) {
       // First-touch explainer for the ※ glyph, once ever, printed ABOVE the recap.
       await showFirstTouch('recap');
       if (conversationLive) {
-        out.write('\n  ' + formatRecapLine(recapText, out.color) + '\n\n');
+        out.write('\n  ' + formatRecapLine(recapText, out.color) + '\n');
       }
+    }
+    // Natural partner line about open goals — after recap when both exist, alone
+    // when there is no recap. Once per resume (this promise); not a board.
+    if (goalOrient !== null && conversationLive) {
+      const pad = recapText !== null ? '' : '\n';
+      out.write(pad + dim(`  ${goalOrient}\n\n`, out.color));
+    } else if (recapText !== null && conversationLive) {
+      out.write('\n');
     }
   })();
   // Surface (and swallow) any rejection so the floating promise never trips an
