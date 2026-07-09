@@ -1,6 +1,6 @@
 # myshell-tools — Active project board (orchestrator)
 
-Last updated: 2026-07-09 (tip **3.165.0** cut)
+Last updated: 2026-07-09 (complete-checklist-wave on tip **3.165.0**)
 
 ## North star
 One subscription-native chat to rule them all. Elite partner. Not API-key product.
@@ -53,20 +53,35 @@ myshell-tools is **not** Claude Projects and must not become a "create project /
 | #136 | Docs: board + checklist sync after #132–#135 |
 | #137 | GitHub PR status via NL when `gh` available |
 | #138 | Optional mouse clicks (panel tabs + legend) |
-| — | **3.165.0** release cut (this branch) |
+| #139 | **3.165.0** release cut |
 
-Main tip at cut base: `034742f` (`#138` on `origin/main`). Release branch bumps package + changelog to **3.165.0**.
+Main tip: **3.165.0** (`c71329a` / #139). Checklist completion wave continues on branch `actualize/complete-checklist-wave`.
+
+## Checklist honesty (2026-07-09 audit)
+
+| Item | Status | Notes |
+|------|--------|-------|
+| **P1.3** Mouse | **done** | #138 panel tabs + legend; menu-row mouse not required |
+| **P1.4** Panel honesty | **done** | capacity/sync + explicit unknowns (no fake quota %) |
+| **P1.6** GitHub depth | **partial** | status NL #137; create/review still open |
+| **P1.7** GitLab depth | **partial** | thin `glab mr list` on complete-checklist-wave |
+| **P2.1** Checkpoint on AI edits | **done** (this wave) | `captureAiEditCheckpoint` after successful turns |
+| **P2.2** Safe undo apply | **done** (this wave) | conflict gate + oversight + commandGate |
+| **P2.3** NL verify + commit | **done** | already gated; re-verified |
+| **S.2** Smoke script | **done** (this wave) | `npm run smoke:checklist` |
+| **S.3** README daily use | **done** (this wave) | 3.165.0 multi-goal honesty |
+| **S.5** Version | **done** | 3.165.0 #139 |
+| Acceptance smokes | **open** | need human Replit/local — code complete ≠ accepted |
 
 ## Open / in flight
-(none)
+- complete-checklist-wave PR (panel honesty audit already green in code; P2 wire + glab thin + docs)
 
 ## Next (priority)
-1. **User smoke** the 3.165.0 build (Effort box, Shift+Tab, legend/panel, goals+recap, resume, Tab ghost, forge/`gh` PR status, Accounts Auto, lag recovery, optional mouse)
+1. **User smoke** the 3.165.0 + checklist-wave build (Effort box, Shift+Tab, legend/panel, goals+recap, resume, Tab ghost, forge/`gh`/`glab` status, undo after edit, Accounts Auto, lag recovery, optional mouse)
 2. **`npm publish`** (user does this — not agents)
 3. **P1.5** optional budgeted model ghost (toggle; fail-soft; never blocks typing)
-4. **P1.6–1.8** GitHub/GitLab/other workflow depth (`gh`/`glab` / honest degrade)
-5. **P1.4** control panel content honesty (real quota/cooldown or `unknown`)
-6. P2 partner-depth audit (checkpoints/undo/NL gates landed earlier — verify honesty vs checklist)
+4. **P1.6–1.8** remaining forge depth (PR create/review; GitLab pipelines; other-forge honesty)
+5. P2.4–2.6 partner continuity / shared deps / goal stewardship (only if vision-aligned)
 
 ## Operating rules
 - Branch from origin/main only

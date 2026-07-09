@@ -1,10 +1,23 @@
 # myshell-tools
 
-**Hierarchical, multi-provider AI orchestration for your shell — over the CLIs you already use.**
+**One subscription-native chat to rule them all — multi-goal partner over the CLIs you already pay for.**
 
-`myshell-tools` routes each task to the *cheapest* model likely to succeed, runs it on your real codebase, optionally has a **different vendor** review the result, and shows you exactly what it did and how many real tokens it used — with **no fabricated data, ever**.
+`myshell-tools` is a terminal chat agent: plans, code, goals, research, and parallel work through conversation. It routes each task to the *cheapest* model likely to succeed, runs it on your real codebase, optionally has a **different vendor** review the result, and shows you exactly what it did — with **no fabricated quota %, ever**.
 
-> **Status: `3.165.0` — honest, tested, and real.** Claude, Codex, and opencode (experimental) all work, provider auth is detected for real, and the header always shows whether you're on the latest version (`(latest)` or `→ x.y.z available`).
+> **Status: `3.165.0` — current daily drive.** Multi-goal one-chat (not an API-key product; not Claude Projects). Claude / Codex / Grok / OpenCode via subscription CLIs. OpenCode Go API key is the only intentional key exception. Live Effort Mode, Shift+Tab per-conversation mode, control panel with honest capacity/unknowns, goals board + recap, local ghost Tab-complete, forge-aware PR/MR status when `gh`/`glab` are present.
+
+### Current daily use (honest)
+
+| You want | What you do |
+|----------|-------------|
+| Start | `npx myshell-tools` or `myshell-tools` after global install |
+| Change effort | Home `m` (global default) or Shift+Tab in chat (this conversation only) |
+| Navigate | Clustered bottom legend; empty-buffer `→` opens control panel; Esc always escapes |
+| Goals | One board + bottom recap; resume partner addresses parked goals |
+| Repo chat | Natural language: status, diff, run tests, undo, commit, PR/MR status |
+| Trust bar | No fake remaining-quota %; cooldowns/pressure/session tokens when observed; else `unknown` |
+
+Human acceptance smoke (Replit/local) and `npm publish` are still owner steps after CI green.
 
 ---
 

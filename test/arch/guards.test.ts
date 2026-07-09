@@ -37,6 +37,8 @@ const SHELL_EXEC_ALLOWLIST = new Set([
   "src/infra/workspace-context.ts",
   // Fail-soft `gh` exec for PR status (gated at interface via CommandGatePort).
   "src/infra/gh-run.ts",
+  // Fail-soft `glab` exec for MR list/status (gated at interface via CommandGatePort).
+  "src/infra/glab-run.ts",
 ]);
 
 /** Recursively collect all .ts files under a directory. Returns [] if dir does not exist. */
