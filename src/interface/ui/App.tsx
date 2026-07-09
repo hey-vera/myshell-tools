@@ -18,6 +18,7 @@ import { BottomLegend } from './BottomLegend.js';
 import { RecapDock } from './RecapDock.js';
 import { layoutForHeight, streamWrappedRows, tailStreamToRows, goalHintsFromBoard, INPUT_ROWS, LEGEND_ROWS, RECAP_DOCK_ROWS } from './layout.js';
 import { backfillTerminalSize } from './mount.js';
+import { disableMouseTracking, enableMouseTracking, type LegendClickAction } from './mouse.js';
 import type { Action, TranscriptLine, UiState } from './state.js';
 
 export interface InputBoxInfo {
@@ -577,6 +578,36 @@ function AppBody({
   const liveColumns = columns ?? stdout.columns ?? process.stdout.columns ?? 80;
   const liveRows = rows ?? stdout.rows ?? process.stdout.rows ?? 24;
   const controlPanelOpen = uiState?.controlPanel.open === true;
+
+  // Optional mouse tracking (P1.3): enable on real TTY while not suspended; fail-soft.
+  // Keyboard remains primary; terminals without mouse simply never emit reports.
+  // Only touch stdout when BOTH App isTty and stream.isTTY — never write CSI into
+  // ink-testing-library / non-TTY captures (golden frames).
+  useEffect(() => {
+    if (!isTty || suspended) return;
+    const ok = enableMouseTracking(stdout);
+    if (!ok) return;
+    return () => {
+      disableMouseTracking(stdout);
+    };
+  }, [isTty, suspended, stdout]);
+
+  const handleLegendClick = (action: LegendClickAction): void => {
+    switch (action) {
+      case 'menu':
+        bridge.input._submit?.('/back');
+        return;
+      case 'panel':
+        bridge.routeControlPanelAction({ type: 'control-panel/open' });
+        return;
+      case 'mode':
+        bridge.cycleMode();
+        return;
+      case 'interrupt':
+        bridge.interrupt();
+        return;
+    }
+  };
   const fullscreenPanelOpen = controlPanelOpen;
   // Live empty-prompt ghost hints from the persistent board (P0.17). Fail-soft [] when
   // no board/goals; prefer real next-step todos, else goal titles of parked/running work.
@@ -820,7 +851,13 @@ function AppBody({
           }}
         />
         {!fullscreenPanelOpen && chatActive && (
-          <BottomLegend color={color} columns={liveColumns} />
+          <BottomLegend
+            color={color}
+            columns={liveColumns}
+            rows={liveRows}
+            active={!suspended}
+            onLegendClick={handleLegendClick}
+          />
         )}
       </Box>
     );
@@ -860,7 +897,13 @@ function AppBody({
         dynamicWorldItems={[]}
       />
       {chatActive && (
-        <BottomLegend color={color} columns={liveColumns} />
+        <BottomLegend
+          color={color}
+          columns={liveColumns}
+          rows={liveRows}
+          active={!suspended}
+          onLegendClick={handleLegendClick}
+        />
       )}
     </Box>
   );
