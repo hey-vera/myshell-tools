@@ -117,7 +117,7 @@ import {
 import type { UserMemoryFact } from '../core/user-memory.js';
 import type { AppConfig } from '../infra/config.js';
 import { saveConfig, resolvePartnerStyle } from '../infra/config.js';
-import type { ConversationMeta, ConversationStore } from '../infra/conversation-store.js';
+import type { ConversationMeta, ConversationMode, ConversationStore } from '../infra/conversation-store.js';
 import { readLedger } from '../infra/ledger.js';
 import { summarizeSessionProviderTokens, summarizeSpend } from '../infra/insights.js';
 import type { EnvironmentStatus } from '../providers/detect.js';
@@ -127,7 +127,6 @@ import type { Provider, ProviderId, ProviderRequest, SandboxLevel } from '../pro
 import { route } from '../core/route.js';
 import {
   POLICY_PRESETS,
-  modeLabel,
   classifyPlan,
   planDisplayLabel,
   tunePolicyForMaxSubTier,
@@ -192,7 +191,8 @@ import {
   resolveIntensity,
   planBudgetCeiling,
 } from './menu-auto-mode.js';
-import { levelToMode, migrateMode, levelLabel } from '../core/mode-levels.js';
+import { levelToMode, migrateMode, levelLabel, nextLevel, isLevel } from '../core/mode-levels.js';
+import type { Level } from '../core/mode-levels.js';
 import { decidePostTurn } from './menu-post-turn.js';
 import { planRetryTruncation, recentUserMessages } from './menu-message-redo.js';
 import { completeChat } from './menu-completion.js';
@@ -721,6 +721,11 @@ export async function runChatLoop(
   // that optimistic state without emitting a completion line.
   inkBeginTurn?: () => void,
   _inkResetTurn?: () => void,
+  // Shift+Tab Effort Mode cycle seam (P0.8). When provided (Ink path), the App
+  // routes Shift+Tab here; the handler persists via ConversationStore.setMode and
+  // updates the InputBox info chrome. Does NOT touch global config.mode. Cleared
+  // in the loop's finally. Absent (legacy/test) → no-op.
+  inkSetCycleMode?: (handler: (() => void) | null) => void,
 ): Promise<'menu' | 'exit'> {
   // Resolve the effective routing mode for THIS conversation. Per-conversation
   // mode (set on the conversation record) overrides the global default
@@ -729,6 +734,8 @@ export async function runChatLoop(
   // Auto Smart Default: absent config.mode uses a neutral balanced base policy
   // (per-turn governor scaling) instead of collapsing to a plan-derived preset
   // (often quality-first/Max).
+  // Mutable: Shift+Tab (P0.8) cycles the conversation level mid-session without
+  // re-entering the chat loop.
   const allMetas = await ctx.store.list();
   const convMeta = allMetas.find((m) => m.id === convId);
   // Slice 9: every conversation-scoped operation runs against the conversation's
@@ -737,10 +744,19 @@ export async function runChatLoop(
   // App/global operations (menu nav, account menus, capability refresh) stay on
   // `ctx.cwd`; only `ctx.cwd` references *inside* runChatLoop are converted below.
   const activeCwd = convMeta?.workspaceRoot ?? ctx.cwd;
-  const convExplicitMode = convMeta?.mode !== undefined && convMeta.mode !== 'auto';
-  const effectiveMode: Mode = convExplicitMode
-    ? (levelToMode(convMeta.mode) ?? resolveAutoMode(mutableCtx.env))
-    : (mutableCtx.config.mode ?? 'balanced');
+  const CHAT_HINTS = ['/goal', '/help', '/back'] as const;
+  let convLevel: Level =
+    convMeta?.mode !== undefined && isLevel(convMeta.mode) ? convMeta.mode : 'auto';
+  const resolveEffectiveMode = (level: Level): Mode => {
+    if (level !== 'auto') {
+      return levelToMode(level) ?? resolveAutoMode(mutableCtx.env);
+    }
+    return mutableCtx.config.mode ?? 'balanced';
+  };
+  let effectiveMode: Mode = resolveEffectiveMode(convLevel);
+  const applyInputInfo = (level: Level): void => {
+    inkSetInputInfo?.({ mode: levelLabel(level), hints: CHAT_HINTS });
+  };
   const shellCommandGate: CommandGatePort = ctx.commandGate ?? (() => {
     const commandAudit = createCommandAuditRecorder({ cwd: activeCwd });
     return {
@@ -1332,20 +1348,32 @@ export async function runChatLoop(
   // never block the user from typing. The recap resolves concurrently and prints when
   // ready (a beat after the prompt is already live; instant input beats perfect order).
   {
-    const entryMode = modeLabel(effectiveMode);
+    const entryMode = levelLabel(convLevel);
     // Show the chat composer now that an active conversation is starting (the
     // menu/sub-flows ran with it hidden). Cleared in the loop's finally on exit.
     inkSetChatActive?.(true);
-    if (inkSetInputInfo !== undefined) {
-      inkSetInputInfo({ mode: entryMode, hints: ['/goal', '/help', '/back'] });
-    } else {
+    applyInputInfo(convLevel);
+    if (inkSetInputInfo === undefined) {
       out.write(
         dim(
-          `Type a message and press Enter.  Mode: ${entryMode} (/mode)  ·  /goal  ·  /help  ·  /back\n`,
+          `Type a message and press Enter.  Mode: ${entryMode} (Shift+Tab)  ·  /goal  ·  /help  ·  /back\n`,
           out.color,
         ),
       );
     }
+    // Shift+Tab → cycle THIS conversation's Effort Mode (Budget…Auto). Persists
+    // via setMode; never mutates global config.mode (home default). Fire-and-
+    // forget: the key handler is sync; store I/O is best-effort fail-soft.
+    inkSetCycleMode?.(() => {
+      const next = nextLevel(convLevel);
+      convLevel = next;
+      effectiveMode = resolveEffectiveMode(next);
+      applyInputInfo(next);
+      const toPersist: ConversationMode = next;
+      void ctx.store.setMode(convId, toPersist).catch(() => {
+        /* best-effort: UI already reflects the cycle */
+      });
+    });
   }
 
   // Recap on resume: replace the weak tail-echo with a real ※ recap line when one
@@ -1838,6 +1866,8 @@ export async function runChatLoop(
     // Hide the chat composer on exit (back to the menu / app exit) so it never
     // lingers in the menu or sub-flows. Mirrors the entry inkSetChatActive(true).
     inkSetChatActive?.(false);
+    // Disarm Shift+Tab mode cycling so it cannot fire outside an active chat.
+    inkSetCycleMode?.(null);
   }
 
   return control.result;
@@ -6779,6 +6809,10 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
   // never in the menu / auth-login / settings. Undefined off the Ink path.
   const inkSetChatActive: ((active: boolean) => void) | undefined =
     inkHandle !== null ? (active) => inkHandle.setChatActive(active) : undefined;
+  // Shift+Tab conversation Effort Mode cycle (P0.8). Armed only while runChatLoop
+  // is live; does not change global config.mode. Undefined off the Ink path.
+  const inkSetCycleMode: ((handler: (() => void) | null) => void) | undefined =
+    inkHandle !== null ? (handler) => inkHandle.setCycleMode(handler) : undefined;
   // Menu key-capture gate (BUG 2): while the main menu panel is showing, arm the
   // bridge's one-key FIFO so a key arriving during paint/refresh is queued instead
   // of falling into the hidden InputBox editor. Cleared before every sub-flow
@@ -7194,7 +7228,7 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
                 ctx, mutableCtx, marker.conversationId, out, readLine,
                 loginFn, detectEnvironmentFn, confirm, suspendStdin, lineReader,
                 inkRenderTurn, inkReadKey, inkSetInterrupt, inkSetInputInfo,
-                inkSetChatActive, inkBeginTurn, inkResetTurn,
+                inkSetChatActive, inkBeginTurn, inkResetTurn, inkSetCycleMode,
               );
               if (chatResult === 'exit') return;
             } catch {
@@ -7474,7 +7508,7 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
           { goalStore: menuGoalStore, clock: ctx.clock, out, readLine, readMenuKey, inkReadKey, env: process.env, config: mutableCtx.config },
           meta.id,
         ))) break;
-        const chatResult = await runChatLoopWithMarker(ctx, mutableCtx, meta.id, out, readLine, loginFn, detectEnvironmentFn, confirm, suspendStdin, lineReader, inkRenderTurn, inkReadKey, inkSetInterrupt, inkSetInputInfo, inkSetChatActive, inkBeginTurn, inkResetTurn);
+        const chatResult = await runChatLoopWithMarker(ctx, mutableCtx, meta.id, out, readLine, loginFn, detectEnvironmentFn, confirm, suspendStdin, lineReader, inkRenderTurn, inkReadKey, inkSetInterrupt, inkSetInputInfo, inkSetChatActive, inkBeginTurn, inkResetTurn, inkSetCycleMode);
         spendDirty = true;
         listDirty = true;
         if (chatResult === 'exit') break;
@@ -7500,7 +7534,7 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
             { goalStore: menuGoalStore, clock: ctx.clock, out, readLine, readMenuKey, inkReadKey, env: process.env, config: mutableCtx.config },
             latest.id,
           ))) break;
-          const chatResult = await runChatLoopWithMarker(ctx, mutableCtx, latest.id, out, readLine, loginFn, detectEnvironmentFn, confirm, suspendStdin, lineReader, inkRenderTurn, inkReadKey, inkSetInterrupt, inkSetInputInfo, inkSetChatActive, inkBeginTurn, inkResetTurn);
+          const chatResult = await runChatLoopWithMarker(ctx, mutableCtx, latest.id, out, readLine, loginFn, detectEnvironmentFn, confirm, suspendStdin, lineReader, inkRenderTurn, inkReadKey, inkSetInterrupt, inkSetInputInfo, inkSetChatActive, inkBeginTurn, inkResetTurn, inkSetCycleMode);
           spendDirty = true; // a task may have run — refresh the spend summary
           listDirty = true; // conversation order/goals may have changed
           if (chatResult === 'exit') break;
@@ -7533,7 +7567,7 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
             { goalStore: menuGoalStore, clock: ctx.clock, out, readLine, readMenuKey, inkReadKey, env: process.env, config: mutableCtx.config },
             target.id,
           ))) break;
-          const chatResult = await runChatLoopWithMarker(ctx, mutableCtx, target.id, out, readLine, loginFn, detectEnvironmentFn, confirm, suspendStdin, lineReader, inkRenderTurn, inkReadKey, inkSetInterrupt, inkSetInputInfo, inkSetChatActive, inkBeginTurn, inkResetTurn);
+          const chatResult = await runChatLoopWithMarker(ctx, mutableCtx, target.id, out, readLine, loginFn, detectEnvironmentFn, confirm, suspendStdin, lineReader, inkRenderTurn, inkReadKey, inkSetInterrupt, inkSetInputInfo, inkSetChatActive, inkBeginTurn, inkResetTurn, inkSetCycleMode);
           spendDirty = true; // a task may have run — refresh the spend summary
           listDirty = true; // conversation order/goals may have changed
           if (chatResult === 'exit') break;
@@ -7575,7 +7609,7 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
             await runManage(ctx, out, readLine, confirm, inkReadKey);
             listDirty = true;
           } else if (libKey === 'i') {
-            const importResult = await runImportNative(ctx, mutableCtx, out, readLine, loginFn, detectEnvironmentFn, confirm, suspendStdin, lineReader, inkRenderTurn, inkReadKey, inkSetInterrupt, inkSetInputInfo, inkSetChatActive);
+            const importResult = await runImportNative(ctx, mutableCtx, out, readLine, loginFn, detectEnvironmentFn, confirm, suspendStdin, lineReader, inkRenderTurn, inkReadKey, inkSetInterrupt, inkSetInputInfo, inkSetChatActive, inkSetCycleMode);
             spendDirty = true;
             listDirty = true;
             if (importResult === 'exit') { keepRunning = false; }
@@ -7667,7 +7701,7 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
 
       // ---- [i] Import a native conversation -----------------------------------
       if (key === 'i') {
-        const importResult = await runImportNative(ctx, mutableCtx, out, readLine, loginFn, detectEnvironmentFn, confirm, suspendStdin, lineReader, inkRenderTurn, inkReadKey, inkSetInterrupt, inkSetInputInfo, inkSetChatActive);
+        const importResult = await runImportNative(ctx, mutableCtx, out, readLine, loginFn, detectEnvironmentFn, confirm, suspendStdin, lineReader, inkRenderTurn, inkReadKey, inkSetInterrupt, inkSetInputInfo, inkSetChatActive, inkSetCycleMode);
         spendDirty = true; // an imported session may run a task — refresh spend
         listDirty = true; // the import created a conversation
         if (importResult === 'exit') break;

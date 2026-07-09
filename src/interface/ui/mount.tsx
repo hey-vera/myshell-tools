@@ -722,6 +722,11 @@ export interface InkMountHandle {
    * {@link InkAppBridge.setInterrupt}.
    */
   setInterrupt(handler: (() => void) | null): void;
+  /**
+   * Install (or clear) the Shift+Tab conversation Effort Mode cycle handler.
+   * See {@link InkAppBridge.setCycleMode}.
+   */
+  setCycleMode(handler: (() => void) | null): void;
   setInputInfo(info: InputBoxInfo | null): void;
   /**
    * Flip whether an active chat conversation is in progress. `true` shows the chat
@@ -873,6 +878,7 @@ export function mountInk(opts: InkMountOptions): InkMountHandle {
       return bridge.readKey();
     },
     setInterrupt: (handler) => bridge.setInterrupt(handler),
+    setCycleMode: (handler) => bridge.setCycleMode(handler),
     setInputInfo: (info) => bridge.setInputInfo(info),
     setChatActive: (active) => {
       bridge.setChatActive(active);

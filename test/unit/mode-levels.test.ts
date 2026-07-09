@@ -17,6 +17,7 @@ import {
   LEVEL_DESC,
   isLevel,
   levelLabel,
+  nextLevel,
   levelToMode,
   policyForLevel,
   defaultIntensityForLevel,
@@ -62,6 +63,35 @@ describe('Level set + isLevel', () => {
       assert.equal(typeof LEVEL_DESC[l], 'string');
       assert.ok(LEVEL_DESC[l].length > 0, `${l} description`);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 1b. nextLevel — Shift+Tab conversation Effort Mode cycle (P0.8)
+// ---------------------------------------------------------------------------
+
+describe('nextLevel — conversation Effort Mode cycle', () => {
+  it('cycles Budget → Balanced → High → Max → Auto → Budget', () => {
+    assert.equal(nextLevel('budget'), 'balanced');
+    assert.equal(nextLevel('balanced'), 'high');
+    assert.equal(nextLevel('high'), 'max');
+    assert.equal(nextLevel('max'), 'auto');
+    assert.equal(nextLevel('auto'), 'budget');
+  });
+
+  it('treats undefined as Auto (start of cycle from the smart default)', () => {
+    assert.equal(nextLevel(undefined), 'budget');
+  });
+
+  it('walks a full ring and returns to the start', () => {
+    let cur: Level | undefined = undefined;
+    const seen: Level[] = [];
+    for (let i = 0; i < ALL_LEVELS.length; i++) {
+      cur = nextLevel(cur);
+      seen.push(cur);
+    }
+    assert.deepEqual(seen, ['budget', 'balanced', 'high', 'max', 'auto']);
+    assert.equal(nextLevel(cur), 'budget');
   });
 });
 

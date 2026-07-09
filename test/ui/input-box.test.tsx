@@ -22,6 +22,8 @@ const RIGHT = '\x1b[C';
 const HOME = '\x01'; // Ctrl+A
 const ALT_ENTER = '\x1b\r'; // Meta+Return
 const TAB = '\t';
+/** Many terminals send CSI Z for Shift+Tab; Ink maps it to key.tab + key.shift. */
+const SHIFT_TAB = '\x1b[Z';
 const ESC = '\x1b';
 
 const tick = (): Promise<void> => new Promise((r) => setTimeout(r, 50));
@@ -867,6 +869,65 @@ test('Ctrl/Meta+Right on empty buffer does NOT call onEmptyRight (falls through)
   // that are not bare Right on an empty buffer.
   assert.equal(rightCalled, 0, 'onEmptyRight must not be called for non-bare Right');
   assert.equal(bridge.currentLine(), '', 'buffer must stay empty');
+});
+
+// ---------------------------------------------------------------------------
+// Shift+Tab → cycle conversation Effort Mode (P0.8)
+// ---------------------------------------------------------------------------
+
+test('Shift+Tab calls onShiftTab and does not insert a tab', async () => {
+  const bridge = createInputBoxBridge();
+  let cycleCalls = 0;
+  const { stdin } = render(
+    <InputBox
+      bridge={bridge}
+      color={true}
+      isTty={true}
+      columns={60}
+      onShiftTab={() => { cycleCalls += 1; }}
+    />,
+  );
+  stdin.write(SHIFT_TAB);
+  await tick();
+  assert.equal(cycleCalls, 1, 'onShiftTab must fire once on Shift+Tab');
+  assert.equal(bridge.currentLine(), '', 'Shift+Tab must not insert text into the buffer');
+});
+
+test('Shift+Tab fires with a non-empty buffer (mode cycle independent of draft)', async () => {
+  const bridge = createInputBoxBridge();
+  let cycleCalls = 0;
+  const { stdin } = render(
+    <InputBox
+      bridge={bridge}
+      color={true}
+      isTty={true}
+      columns={60}
+      onShiftTab={() => { cycleCalls += 1; }}
+    />,
+  );
+  stdin.write('hello');
+  await tick();
+  stdin.write(SHIFT_TAB);
+  await tick();
+  assert.equal(cycleCalls, 1, 'onShiftTab must fire even with a non-empty buffer');
+  assert.equal(bridge.currentLine(), 'hello', 'draft text must be preserved across Shift+Tab');
+});
+
+test('plain Tab does not call onShiftTab', async () => {
+  const bridge = createInputBoxBridge();
+  let cycleCalls = 0;
+  const { stdin } = render(
+    <InputBox
+      bridge={bridge}
+      color={true}
+      isTty={true}
+      columns={60}
+      onShiftTab={() => { cycleCalls += 1; }}
+    />,
+  );
+  stdin.write(TAB);
+  await tick();
+  assert.equal(cycleCalls, 0, 'plain Tab must not cycle mode');
 });
 
 // ---------------------------------------------------------------------------

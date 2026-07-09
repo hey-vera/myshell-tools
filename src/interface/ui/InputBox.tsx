@@ -219,6 +219,12 @@ export interface InputBoxProps {
    */
   readonly onEmptyRight?: (() => void) | undefined;
   /**
+   * Shift+Tab handler — cycles THIS conversation's Effort Mode (P0.8). Fires on
+   * any buffer state (mode is independent of the draft). Does not insert a tab
+   * or advance autocomplete. Optional (tests / legacy path may omit it).
+   */
+  readonly onShiftTab?: (() => void) | undefined;
+  /**
    * Resolve a pending single-key read with a key delivered to the editor's stable
    * `useInput` consumer. The editor itself never mutates for such a key. Only called
    * while `readPending()` is true. Optional. See App.readKey().
@@ -254,6 +260,7 @@ interface KeyCaptureFlagsLike {
   readonly return?: boolean;
   readonly escape?: boolean;
   readonly ctrl?: boolean;
+  readonly shift?: boolean;
   readonly upArrow?: boolean;
   readonly downArrow?: boolean;
   readonly leftArrow?: boolean;
@@ -349,6 +356,7 @@ export function InputBox({
   dynamicWorldItems,
   onEmptyLeft,
   onEmptyRight,
+  onShiftTab,
 }: InputBoxProps): React.ReactElement {
   const { setRawMode, isRawModeSupported } = useStdin();
   const [value, setValue] = useState('');
@@ -622,6 +630,15 @@ export function InputBox({
         setHistIndex(null);
         replace(draft, draft.length);
       }
+      return;
+    }
+
+    // --- Shift+Tab → cycle conversation Effort Mode (P0.8) -------------------
+    // Distinct from plain Tab autocomplete. Consumed even with a non-empty buffer
+    // so the mode dial is always reachable mid-compose. Does not change global
+    // config.mode — the Node-side handler persists via ConversationStore.setMode.
+    if (key.tab && key.shift) {
+      onShiftTab?.();
       return;
     }
 
