@@ -24,6 +24,18 @@ const REPRESENTATIVE_FIXTURES: readonly DecisionFixture[] = [
     },
   },
   {
+    name: 'read-only gh pr status',
+    command: 'gh pr status',
+    expected: {
+      commandTier: 'read-only',
+      allowed: true,
+      requireConfirmation: false,
+      forbidBackground: false,
+      mustRecord: false,
+      rationale: 'read-only: read-only command; no confirmation or audit record required.',
+    },
+  },
+  {
     name: 'test-build',
     command: 'npm test',
     expected: {

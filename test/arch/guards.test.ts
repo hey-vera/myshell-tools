@@ -35,6 +35,8 @@ const SHELL_EXEC_ALLOWLIST = new Set([
   "src/infra/research-port.ts",
   // Fail-soft git remote + PATH probes for forge host class (gh/glab); no user shell.
   "src/infra/workspace-context.ts",
+  // Fail-soft `gh` exec for PR status (gated at interface via CommandGatePort).
+  "src/infra/gh-run.ts",
 ]);
 
 /** Recursively collect all .ts files under a directory. Returns [] if dir does not exist. */
