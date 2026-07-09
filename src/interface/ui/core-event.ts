@@ -167,6 +167,9 @@ export function coreEventToActions(
           ...(ev.questions !== undefined ? { hasQuestions: true } : {}),
           ...(ev.bestEffort === true ? { bestEffort: true } : {}),
           ...(ev.blocked !== undefined ? { blocked: ev.blocked } : {}),
+          ...(ev.routingReceipt !== undefined && ev.routingReceipt.length > 0
+            ? { routingReceipt: ev.routingReceipt }
+            : {}),
         },
       ];
   }

@@ -698,6 +698,19 @@ export function reduce(state: UiState, action: Action): UiState {
         return next;
       }
 
+      // Visible-dispatch chrome: one dim line after a finished (non-cancel) turn.
+      // Suppressed in quiet; shown in normal + verbose when present.
+      const appendRoutingReceipt = (s: UiState): UiState => {
+        if (
+          isQuiet ||
+          action.routingReceipt === undefined ||
+          action.routingReceipt.length === 0
+        ) {
+          return s;
+        }
+        return commit(s, { kind: 'notice', text: action.routingReceipt });
+      };
+
       if (!action.success) {
         if (action.blocked !== undefined) {
           if (!isQuiet) {
@@ -710,6 +723,7 @@ export function reduce(state: UiState, action: Action): UiState {
                 text: `  Preserved: ${action.blocked.preservedWork.slice(0, 200)}`,
               });
             }
+            next = appendRoutingReceipt(next);
           }
           return next;
         }
@@ -734,6 +748,7 @@ export function reduce(state: UiState, action: Action): UiState {
                   `attempts: ${action.attempts} · session: ${action.sessionId}`,
               },
             );
+            next = appendRoutingReceipt(next);
           }
           return next;
         }
@@ -748,6 +763,7 @@ export function reduce(state: UiState, action: Action): UiState {
               `Failed — tier: ${action.tier}, ${tokenStr} tokens, ` +
               `attempts: ${action.attempts}, session: ${action.sessionId}`,
           });
+          next = appendRoutingReceipt(next);
         }
         return next;
       }
@@ -755,7 +771,8 @@ export function reduce(state: UiState, action: Action): UiState {
       // success
       if (action.hasQuestions === true) {
         // Suppress the completion line entirely — the caller drives a selector.
-        return next;
+        // Still surface who ran the ask when known (visible dispatch).
+        return appendRoutingReceipt(next);
       }
       if (action.bestEffort === true && !isQuiet) {
         next = commit(next, {
@@ -787,7 +804,7 @@ export function reduce(state: UiState, action: Action): UiState {
           text: `✓ done${tokenSeg}${elapsedStr}`,
         });
       }
-      return next;
+      return appendRoutingReceipt(next);
     }
 
 

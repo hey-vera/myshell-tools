@@ -911,6 +911,17 @@ export async function renderStream(
         // completion/error line so the conversation reads in order.
         prose.flush();
 
+        // Visible dispatch (PR-B): one dim who/why line after a finished turn.
+        // Suppressed in quiet; never invents fields (pre-formatted from actual run).
+        function writeRoutingReceipt(
+          finalEv: Extract<CoreEvent, { type: 'final' }>,
+        ): void {
+          if (isQuiet) return;
+          const line = finalEv.routingReceipt;
+          if (line === undefined || line.length === 0) return;
+          out.write(`${dim(line, c)}\n`);
+        }
+
         // Render evidence receipt when present.
         // Append after any advisory notice and before the terminal completion line.
         function renderReceipt(): void {
@@ -993,6 +1004,7 @@ export async function renderStream(
               if (ev.blocked.preservedWork.length > 0) {
                 out.write(`  ${dim('Preserved:', c)} ${ev.blocked.preservedWork.slice(0, 200)}\n`);
               }
+              writeRoutingReceipt(ev);
             }
             renderReceipt();
             break;
@@ -1014,6 +1026,7 @@ export async function renderStream(
                   c,
                 )}\n`,
               );
+              writeRoutingReceipt(ev);
             }
             break;
           }
@@ -1034,6 +1047,7 @@ export async function renderStream(
               `attempts: ${ev.attempts}, ` +
               `session: ${ev.sessionId}\n`,
             );
+            writeRoutingReceipt(ev);
           }
           renderReceipt();
           break;
@@ -1046,6 +1060,7 @@ export async function renderStream(
         // lead-in before the ask_user block, already stripped above) has been
         // flushed; printing "✓ done" here would read as if the task were over.
         if (ev.questions !== undefined) {
+          writeRoutingReceipt(ev);
           break;
         }
 
@@ -1093,6 +1108,8 @@ export async function renderStream(
             `${dim(`✓ done${tokenSeg}${elapsedStr}`, c)}\n`,
           );
         }
+        // Visible dispatch: one dim who/why line after a finished turn (PR-B).
+        writeRoutingReceipt(ev);
         break;
       }
     }

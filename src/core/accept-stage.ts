@@ -28,6 +28,7 @@ import type { WorkContract } from './work-contract.js';
 import type { ProviderId } from '../providers/port.js';
 import { buildBlockedRecord } from './blocked.js';
 import { buildEvidenceReceipt } from './evidence-receipt.js';
+import { routingReceiptFromRun } from './turn-routing-receipt.js';
 
 export const MAX_REVISE_RETRIES = 1;
 
@@ -44,6 +45,15 @@ export interface AcceptedRunSessionData {
   readonly sessionId?: string;
   readonly workTrace?: WorkContract;
   readonly accountId?: string;
+  /** Human account label for visible-dispatch receipts (never a secret). */
+  readonly accountLabel?: string;
+  /** Reasoning effort used on the actual work call, when selected. */
+  readonly reasoningEffort?: string;
+  /**
+   * Short routing why from actual decision fields (capabilityReasons[0],
+   * classification.rationale, auto-brain reason). Never fabricated.
+   */
+  readonly routeReason?: string;
 }
 
 export interface CandidateResult extends AcceptedRunSessionData {
@@ -228,6 +238,14 @@ function receiptForFinal(
   return receipt !== undefined ? { receipt } : {};
 }
 
+/** Visible-dispatch line from actual candidate run fields (provider · model · …). */
+function routingReceiptField(
+  candidate: CandidateResult,
+): { readonly routingReceipt?: string } {
+  const line = routingReceiptFromRun(candidate);
+  return line !== undefined ? { routingReceipt: line } : {};
+}
+
 async function finalizeAcceptedCandidate(
   deps: OrchestrateDeps,
   candidate: CandidateResult,
@@ -236,6 +254,7 @@ async function finalizeAcceptedCandidate(
   await appendAcceptedAssistant(deps, candidate);
   const memoryProposal = memoryProposalFor(candidate.content);
   const blockedStateV1 = deps.blockedStateV1 === true;
+  const routing = routingReceiptField(candidate);
 
   if (candidate.disposition === 'bestEffort' && blockedStateV1) {
     const br = buildBlockedRecord({
@@ -255,6 +274,7 @@ async function finalizeAcceptedCandidate(
       ...(br !== null ? { blocked: br } : {}),
       ...(memoryProposal !== undefined ? { memoryProposal } : {}),
       ...(candidate.accountId !== undefined ? { accountId: candidate.accountId } : {}),
+      ...routing,
     };
     const withReceipt = { ...f, ...receiptForFinal(deps, f, verifyOutcome) } as Extract<CoreEvent, { readonly type: 'final' }>;
     return attachCompletionIfFlag(deps, withReceipt, candidate, verifyOutcome);
@@ -271,6 +291,7 @@ async function finalizeAcceptedCandidate(
     ...(candidate.disposition === 'bestEffort' ? { bestEffort: true } : {}),
     ...(memoryProposal !== undefined ? { memoryProposal } : {}),
     ...(candidate.accountId !== undefined ? { accountId: candidate.accountId } : {}),
+    ...routing,
   };
   const withReceipt = { ...f, ...receiptForFinal(deps, f, verifyOutcome) } as Extract<CoreEvent, { readonly type: 'final' }>;
   return attachCompletionIfFlag(deps, withReceipt, candidate, verifyOutcome);
@@ -407,6 +428,7 @@ export async function* runCandidateQualityGate(
       provider: candidate.provider,
       ...(candidate.accountId !== undefined ? { accountId: candidate.accountId } : {}),
       ...(blockedRecord !== null ? { blocked: blockedRecord } : {}),
+      ...routingReceiptField(candidate),
     };
     const withR = { ...failureFinal, ...receiptForFinal(deps, failureFinal, outcome) } as Extract<CoreEvent, { readonly type: 'final' }>;
     yield attachCompletionIfFlag(deps, withR, candidate, outcome);

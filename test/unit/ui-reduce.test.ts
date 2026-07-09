@@ -1055,6 +1055,26 @@ describe('ui reduce — final', () => {
     assert.deepEqual(lines(s), ['Success — tier: ic, attempts: 1, session: sess-1']);
   });
 
+  it('appends visible-dispatch routing receipt after success completion (normal)', () => {
+    const receipt = 'claude \u00b7 opus \u00b7 high \u2014 multi-file refactor';
+    const s = reduce(
+      initialState,
+      finalAction({ routingReceipt: receipt }),
+    );
+    assert.deepEqual(lines(s), ['✓ done', receipt]);
+  });
+
+  it('suppresses routing receipt in quiet mode', () => {
+    const s = reduce(
+      initialState,
+      finalAction({
+        verbosity: 'quiet',
+        routingReceipt: 'claude \u00b7 opus',
+      }),
+    );
+    assert.deepEqual(lines(s), []);
+  });
+
   it('verbose success INCLUDES the token segment when tokens.turn > 0', () => {
     const s = run([
       {
@@ -1444,6 +1464,57 @@ describe('coreEventToActions — mapping fidelity', () => {
       'normal',
     );
     assert.equal((a as Extract<Action, { type: 'turn/final' }>).hasQuestions, true);
+  });
+
+  it('maps final.routingReceipt onto turn/final when present', () => {
+    const receipt = 'claude \u00b7 opus \u00b7 high \u2014 multi-file refactor';
+    const [a] = coreEventToActions(
+      {
+        type: 'final',
+        success: true,
+        output: 'ok',
+        tier: 'ic',
+        totalCostUsd: 0,
+        sessionId: 'S',
+        attempts: 1,
+        routingReceipt: receipt,
+      },
+      'normal',
+    );
+    assert.equal(
+      (a as Extract<Action, { type: 'turn/final' }>).routingReceipt,
+      receipt,
+    );
+  });
+
+  it('omits routingReceipt on turn/final when absent or empty', () => {
+    const [absent] = coreEventToActions(
+      {
+        type: 'final',
+        success: true,
+        output: 'ok',
+        tier: 'ic',
+        totalCostUsd: 0,
+        sessionId: 'S',
+        attempts: 1,
+      },
+      'normal',
+    );
+    assert.ok(!('routingReceipt' in (absent as object)));
+    const [empty] = coreEventToActions(
+      {
+        type: 'final',
+        success: true,
+        output: 'ok',
+        tier: 'ic',
+        totalCostUsd: 0,
+        sessionId: 'S',
+        attempts: 1,
+        routingReceipt: '',
+      },
+      'normal',
+    );
+    assert.ok(!('routingReceipt' in (empty as object)));
   });
 
   it('isDebugEnv reads MYSHELL_DEBUG truthiness', () => {
