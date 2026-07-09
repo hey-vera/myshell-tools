@@ -18,7 +18,8 @@ import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 
 import { conversationModeLabel } from '../../src/interface/menu-display.ts';
-import { migrateMode, levelLabel } from '../../src/core/mode-levels.ts';
+import { migrateMode, levelLabel, nextLevel, ALL_LEVELS } from '../../src/core/mode-levels.ts';
+import type { Level } from '../../src/core/mode-levels.ts';
 import type { ConversationMode } from '../../src/infra/conversation-store.ts';
 import { createFileConversationStore } from '../../src/infra/conversations.ts';
 import type { Clock } from '../../src/core/types.ts';
@@ -301,6 +302,38 @@ describe('per-conversation mode override', () => {
       assert.equal(found.mode, undefined);
       // Label for absent should be 'auto'
       assert.equal(conversationModeLabel(found.mode), 'auto');
+    } finally {
+      await rm(home2, { recursive: true, force: true });
+    }
+  });
+
+  it('Shift+Tab-style nextLevel cycle persists via setMode without needing global config', async () => {
+    // Simulates the P0.8 chat handler: walk the dial, setMode each step, never
+    // touch a global config.mode field.
+    const home2 = await mkdtemp(join(tmpdir(), `conv-shift-tab-${randomUUID()}-`));
+    try {
+      const clock = makeFakeClock();
+      const store = createFileConversationStore({ homeDir: home2, clock });
+      // Stamp balanced as the "home default" on the conversation at create time.
+      const meta = await store.create('Cycle test', 'balanced');
+      assert.equal(meta.mode, 'balanced');
+
+      let level: Level = meta.mode ?? 'auto';
+      const walked: Level[] = [];
+      for (let i = 0; i < ALL_LEVELS.length; i++) {
+        level = nextLevel(level);
+        walked.push(level);
+        await store.setMode(meta.id, level);
+        const found = (await store.list()).find((m) => m.id === meta.id);
+        assert.ok(found !== undefined);
+        // auto clears to absent in storage; others round-trip.
+        if (level === 'auto') {
+          assert.equal(found.mode, undefined);
+        } else {
+          assert.equal(found.mode, level);
+        }
+      }
+      assert.deepEqual(walked, ['high', 'max', 'auto', 'budget', 'balanced']);
     } finally {
       await rm(home2, { recursive: true, force: true });
     }

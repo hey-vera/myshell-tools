@@ -90,6 +90,18 @@ export function levelLabel(level: Level): string {
   return LEVEL_LABEL[level];
 }
 
+/**
+ * Advance one step on the conversation Effort Mode dial
+ * (Budget → Balanced → High → Max → Auto → Budget…). PURE.
+ * Absent/`undefined` is treated as `auto` (the smart default).
+ */
+export function nextLevel(current: Level | undefined): Level {
+  const cur: Level = current !== undefined && isLevel(current) ? current : 'auto';
+  const idx = ALL_LEVELS.indexOf(cur);
+  const nextIdx = idx < 0 ? 0 : (idx + 1) % ALL_LEVELS.length;
+  return ALL_LEVELS[nextIdx] ?? 'budget';
+}
+
 // ---------------------------------------------------------------------------
 // Level → existing Mode (the bridge onto the shipped 3-stop dial).
 // ---------------------------------------------------------------------------

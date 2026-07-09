@@ -160,6 +160,18 @@ export interface InkAppBridge {
    */
   interrupt(): boolean;
   /**
+   * Install (or clear with `null`) the Shift+Tab conversation Effort Mode cycle
+   * handler (P0.8). The menu loop arms this at `runChatLoop` entry and clears it
+   * on exit so Shift+Tab only cycles mode while an active chat is live.
+   */
+  setCycleMode(handler: (() => void) | null): void;
+  /**
+   * Invoke the installed Shift+Tab mode-cycle handler if one is set. Returns
+   * `true` when a handler ran, `false` when idle. Called by `<InputBox>` on
+   * Shift+Tab while chat is active (Control Panel owns Shift+Tab when open).
+   */
+  cycleMode(): boolean;
+  /**
    * Register (or clear with `null`) the Node-side handler for control-panel
    * actions. When a handler is set, `routeControlPanelAction` forwards the action
    * there; when null, routing returns false (off path). Called by the mount
@@ -206,6 +218,8 @@ export interface InkAppBridge {
   /** @internal the installed turn-interrupt handler, set by setInterrupt(); read
    *  by the InputBox's bare-ESC branch. `null`/undefined when idle. */
   _interrupt?: (() => void) | null;
+  /** @internal Shift+Tab conversation mode-cycle handler, set by setCycleMode(). */
+  _cycleMode?: (() => void) | null;
   /** @internal the installed control-panel action handler, set by
    *  onControlPanelAction(); read by routeControlPanelAction(). `null` when the
    *  feature flag is off. */
@@ -243,6 +257,7 @@ export function createInkAppBridge(): InkAppBridge {
     _stdinControl: null,
     _keyResolver: null,
     _interrupt: null,
+    _cycleMode: null,
     _controlPanelAction: null,
     _controlPanelSettingAction: null,
     _menuKeyQueue: [],
@@ -289,6 +304,15 @@ export function createInkAppBridge(): InkAppBridge {
     },
     interrupt(): boolean {
       const handler = bridge._interrupt;
+      if (handler == null) return false;
+      handler();
+      return true;
+    },
+    setCycleMode(handler: (() => void) | null): void {
+      bridge._cycleMode = handler;
+    },
+    cycleMode(): boolean {
+      const handler = bridge._cycleMode;
       if (handler == null) return false;
       handler();
       return true;
@@ -444,6 +468,7 @@ export interface KeyCaptureFlags {
   readonly return?: boolean;
   readonly escape?: boolean;
   readonly ctrl?: boolean;
+  readonly shift?: boolean;
   readonly upArrow?: boolean;
   readonly downArrow?: boolean;
   readonly leftArrow?: boolean;
@@ -763,6 +788,7 @@ function AppBody({
           onToggleFullscreenPanel={() => bridge.routeControlPanelAction({ type: 'control-panel/toggle' })}
           onEmptyLeft={() => { bridge.input._submit?.('/back'); }}
           onEmptyRight={() => { bridge.routeControlPanelAction({ type: 'control-panel/open' }); }}
+          onShiftTab={() => { bridge.cycleMode(); }}
           readPending={() => bridge._keyResolver != null || bridge._menuCaptureActive}
           onReadKey={(input, key) => {
             const normalized = normalizeInkKey(input, key);
@@ -799,6 +825,7 @@ function AppBody({
         onToggleFullscreenPanel={() => bridge.routeControlPanelAction({ type: 'control-panel/toggle' })}
         onEmptyLeft={() => { bridge.input._submit?.('/back'); }}
         onEmptyRight={() => { bridge.routeControlPanelAction({ type: 'control-panel/open' }); }}
+        onShiftTab={() => { bridge.cycleMode(); }}
         readPending={() => bridge._keyResolver != null || bridge._menuCaptureActive}
         onReadKey={(input, key) => {
           const normalized = normalizeInkKey(input, key);
