@@ -23,7 +23,7 @@ import type { PartnerStyle } from '../core/prompt-context.js';
 import type { Oversight } from './ui/oversight.js';
 import { resolveOversight } from './ui/oversight.js';
 import type { Mode } from '../core/policy.js';
-import { levelLabel, LEVEL_DESC, migrateMode, ALL_LEVELS } from '../core/mode-levels.js';
+import { levelLabel, LEVEL_DESC, migrateMode, ALL_LEVELS, levelToMode } from '../core/mode-levels.js';
 import type { Level } from '../core/mode-levels.js';
 import type { EnvironmentStatus } from '../providers/detect.js';
 import { runInstall } from '../commands/install.js';
@@ -32,7 +32,7 @@ import { dim, bold } from '../ui/theme.js';
 import { navFooterText } from './ui/nav-footer.js';
 import type { OutputSink } from './render.js';
 import type { MenuContext } from './menu.js';
-import { resolveAutoMode, renderAutoDetected } from './menu-auto-mode.js';
+import { resolveAutoMode } from './menu-auto-mode.js';
 import { readMenuKey, NAV_ESC, getMenuStack } from './menu-key-confirm.js';
 
 /**
@@ -73,7 +73,7 @@ export async function runModeSelect(
   out: OutputSink,
   readLine: () => Promise<string | null>,
   _autoMode: Mode = 'balanced',
-  env?: EnvironmentStatus,
+  _env?: EnvironmentStatus,
   inkReadKey?: () => Promise<string>,
 ): Promise<AppConfig> {
   // Map the persisted config.mode (legacy 3-stop dial) to a Level so the picker
@@ -109,10 +109,8 @@ export async function runModeSelect(
     }
   }
 
-  // Honest per-provider breakdown of what Auto detected.
-  if (env !== undefined) {
-    lines.push('', ...renderAutoDetected(env, out.color));
-  }
+  // Auto-detected block intentionally omitted — Accounts inventory is the source
+  // of truth for Auto defaults (see actualization checklist P0.3 / P1.2).
 
   out.write('\n' + lines.filter((l) => l !== '').join('\n') + '\n\n');
 
@@ -120,20 +118,20 @@ export async function runModeSelect(
   const key = await readMenuKey(out, readLine, undefined, false, inkReadKey);
   if (key === NAV_ESC) { getMenuStack().requestExit(); }
 
-  // Map keypress to the legacy config.mode value (or clear for Auto).
-  // High aliases Max (quality-first) until a separate High preset exists.
+  // Map keypress via ALL_LEVELS index → levelToMode (Budget=1 … Auto=5).
+  // High and Max both project to quality-first until a separate High preset exists.
   let newMode: AppConfig['mode'];
-  if (key === '1') newMode = undefined;        // Auto — clear pin
-  else if (key === '2') newMode = 'cost-saver'; // Budget
-  else if (key === '3') newMode = 'balanced';   // Balanced
-  else if (key === '4') newMode = 'quality-first'; // High (alias Max)
-  else if (key === '5') newMode = 'quality-first'; // Max
-  else newMode = config.mode; // Enter / EOF — keep current
+  const keyIdx = key !== null && key.length === 1 ? key.charCodeAt(0) - '1'.charCodeAt(0) : -1;
+  if (keyIdx >= 0 && keyIdx < ALL_LEVELS.length) {
+    const level = ALL_LEVELS[keyIdx] as Level;
+    newMode = levelToMode(level);
+  } else {
+    newMode = config.mode; // Enter / EOF / unknown — keep current
+  }
 
   const updated: AppConfig = withOptional(config, 'mode', newMode);
   await saveConfig(updated);
-  const displayLabel = newMode === undefined ? 'Auto (smart)' : levelLabel(migrateMode(newMode));
-  out.write(`Effort Mode: ${displayLabel}\n`);
+  // No redundant "Effort Mode: …" confirmation — the live home/new-conv box is truth.
   return updated;
 }
 

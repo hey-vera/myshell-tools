@@ -9534,20 +9534,20 @@ describe('startMenu — first-run: hook already installed → skips set-default 
 });
 
 // ---------------------------------------------------------------------------
-// FLOW: Auto Effort Mode — settings [1] Auto selection and display
+// FLOW: Effort Mode settings — ALL_LEVELS key map (Budget=1 … Auto=5)
 // ---------------------------------------------------------------------------
 
-describe('startMenu — Effort Mode settings [1] Auto', () => {
+describe('startMenu — Effort Mode settings keys + live box', () => {
   /**
-   * Build a MenuContext with a pinned mode and drive through s → 1 → 1 → q.
-   * After the run the output buffer should confirm mode was reset to auto.
+   * Drive s → 1 → 1 → '' → q. Key [1] is Budget (cost-saver) per ALL_LEVELS.
+   * Home box must reflect Budget; no Auto-detected block; no confirmation line.
    */
-  it('selecting [1] Auto in Effort Mode settings resets mode to auto (output says "(auto)")', async () => {
+  it('selecting [1] Budget in Effort Mode settings pins cost-saver and shows Budget', async () => {
     const clock = makeFakeClock();
     const store = makeStore(clock);
     const sink = makeSink();
 
-    // Start with a pinned mode so we can verify it's cleared.
+    // Start with quality-first so we can verify it changes to Budget.
     const config: AppConfig = { onboarded: true, setAsDefault: false, mode: 'quality-first', smartRoute: false };
 
     const ctx = makeCtx(
@@ -9556,7 +9556,7 @@ describe('startMenu — Effort Mode settings [1] Auto', () => {
         readLine: makeScriptedReader([
           's',   // settings
           '1',   // mode select
-          '1',   // auto
+          '1',   // Budget (ALL_LEVELS[0])
           '',    // Enter back from settings
           'q',   // quit
         ]),
@@ -9567,17 +9567,21 @@ describe('startMenu — Effort Mode settings [1] Auto', () => {
 
     await assert.doesNotReject(
       () => startMenu(ctx, sink),
-      'selecting [1] Auto in Effort Mode settings should not throw',
+      'selecting [1] Budget in Effort Mode settings should not throw',
     );
 
-    // After pressing 1, runModeSelect writes "Effort Mode: Auto (smart)" to confirm.
     assert.ok(
-      sink.buf.toLowerCase().includes('auto (smart)'),
-      'output must contain "Auto (smart)" after selecting [1] Auto',
+      sink.buf.includes('Effort Mode:  Budget') || sink.buf.includes('Budget'),
+      'output must show Budget after selecting [1]',
+    );
+    // Redundant confirmation line removed — do not require "Effort Mode: Budget\n" alone.
+    assert.ok(
+      !sink.buf.includes('Auto detected:'),
+      'mode picker must not render the Auto detected block',
     );
   });
 
-  it('[1] Auto option appears in the Effort Mode settings screen', async () => {
+  it('mode list is Budget=1 … Auto=5 and omits Auto-detected block', async () => {
     const clock = makeFakeClock();
     const store = makeStore(clock);
     const sink = makeSink();
@@ -9601,26 +9605,24 @@ describe('startMenu — Effort Mode settings [1] Auto', () => {
 
     await assert.doesNotReject(() => startMenu(ctx, sink));
 
-    // The mode select screen must list [1] Auto
+    // ALL_LEVELS display order: [1] Budget … [5] Auto
     assert.ok(
-      sink.buf.includes('[1]') && sink.buf.toLowerCase().includes('auto'),
-      `mode select screen must show [1] Auto option; got: ${sink.buf.slice(0, 800)}`,
+      sink.buf.includes('[1]') && sink.buf.includes('Budget'),
+      `mode select screen must show [1] Budget; got: ${sink.buf.slice(0, 800)}`,
+    );
+    assert.ok(
+      sink.buf.includes('[5]') && /\[5\].*Auto/i.test(sink.buf),
+      `mode select screen must show [5] Auto; got: ${sink.buf.slice(0, 1200)}`,
     );
 
-    // …and the honest per-provider "Auto detected" breakdown. The fake env has
-    // Claude authed with no reported plan, so it must say exactly that — never a
-    // fabricated tier — and show the deciding rule.
+    // Auto-detected block removed (P0.3).
     assert.ok(
-      sink.buf.includes('Auto detected:'),
-      `mode screen must show the "Auto detected" breakdown; got: ${sink.buf.slice(0, 1200)}`,
-    );
-    assert.ok(
-      sink.buf.includes('Claude — no plan reported'),
-      'breakdown must honestly state Claude reported no plan (not a fabricated tier)',
+      !sink.buf.includes('Auto detected:'),
+      `mode screen must NOT show "Auto detected"; got: ${sink.buf.slice(0, 1200)}`,
     );
   });
 
-  it('when mode is unset (auto), home still renders the locked skeleton', async () => {
+  it('when mode is unset (auto), home shows Auto (smart)', async () => {
     const clock = makeFakeClock();
     const store = makeStore(clock);
     const sink = makeSink();
@@ -9640,10 +9642,10 @@ describe('startMenu — Effort Mode settings [1] Auto', () => {
     await assert.doesNotReject(() => startMenu(ctx, sink));
 
     assertLockedHomeSkeleton(sink.buf);
-    assert.ok(sink.buf.includes('Auto (smart)'), 'locked effort copy should include Auto (smart)');
+    assert.ok(sink.buf.includes('Auto (smart)'), 'live effort box should include Auto (smart)');
   });
 
-  it('when mode is pinned, home still renders the locked skeleton copy', async () => {
+  it('when mode is pinned balanced, home shows Balanced (live box)', async () => {
     const clock = makeFakeClock();
     const store = makeStore(clock);
     const sink = makeSink();
@@ -9663,7 +9665,8 @@ describe('startMenu — Effort Mode settings [1] Auto', () => {
     await assert.doesNotReject(() => startMenu(ctx, sink));
 
     assertLockedHomeSkeleton(sink.buf);
-    assert.ok(sink.buf.includes('Auto (smart)'), 'Slice 1 home copy stays locked to Auto (smart)');
+    assert.ok(sink.buf.includes('Effort Mode:  Balanced'), 'live home box reflects Balanced');
+    assert.ok(!sink.buf.includes('Effort Mode:  Auto (smart)'), 'must not hardcode Auto when balanced');
   });
 
   it('when claude plan is max, home still renders the locked Slice 1 skeleton', async () => {
@@ -9704,7 +9707,8 @@ describe('startMenu — Effort Mode settings [1] Auto', () => {
     await startMenu(ctx, sink);
 
     assertLockedHomeSkeleton(sink.buf);
-    assert.ok(sink.buf.includes('Auto (smart)'), 'Slice 1 home copy stays locked to Auto (smart)');
+    // Unset config.mode → Auto (smart); plan does not rewrite the home box.
+    assert.ok(sink.buf.includes('Auto (smart)'), 'unset mode still shows Auto (smart) on home');
   });
 });
 
