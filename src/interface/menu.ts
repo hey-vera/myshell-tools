@@ -234,6 +234,7 @@ import {
   checkRelaunchGuard,
   recordRelaunchAttempt,
   buildRecoveryEnv,
+  isRecoveryRelaunch,
 } from '../infra/relaunch-recovery.js';
 import type { WatchdogSnapshot } from './ui/mount.js';
 
@@ -6948,16 +6949,29 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
   let watchdogDisabled = false;
   let activeConversationId: string | null = null;
 
+  // Recovery handoff latch: when the watchdog fires, the parent must NOT fall
+  // back into the menu while the relaunched child owns the TTY. `recoveryDone`
+  // resolves true on successful handoff (parent should exit startMenu), false
+  // when relaunch failed and the parent may resume.
   let recoveryHandoffInProgress = false;
+  let recoveryDone: Promise<boolean> | null = null;
+  let resolveRecoveryDone: ((handedOff: boolean) => void) | null = null;
+
   if (inkHandle !== null && relaunchFn !== undefined) {
     const handle = inkHandle;
     watchdogRecoveryHandler = (_snapshot: WatchdogSnapshot): void => {
       if (watchdogDisabled || activeConversationId === null) return;
       watchdogDisabled = true;
       handle.stopWatchdog();
+      recoveryDone = new Promise<boolean>((resolve) => {
+        resolveRecoveryDone = resolve;
+      });
       void (async () => {
         const convId = activeConversationId;
-        if (convId === null) return;
+        if (convId === null) {
+          resolveRecoveryDone?.(false);
+          return;
+        }
         const state = await readRelaunchRecoveryState();
         const guard = checkRelaunchGuard(state, convId);
         if (!guard.allowed) {
@@ -6965,37 +6979,71 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
             '\n[error] interface recovery was attempted repeatedly and is disabled for now; ' +
             'start myshell-tools again manually.\n',
           );
+          resolveRecoveryDone?.(false);
           return;
         }
         try {
           await recordRelaunchAttempt(convId, 'watchdog-unresponsive');
         } catch {
           out.write('\n[error] interface recovery could not safely record its relaunch attempt.\n');
+          resolveRecoveryDone?.(false);
           return;
         }
         try {
           await writeActiveConversation({ conversationId: convId, reason: 'auto-recovered' });
         } catch {
           out.write('\n[error] interface recovery could not preserve the active conversation.\n');
+          resolveRecoveryDone?.(false);
           return;
         }
         // Unmounting resolves the chat's pending read. Preserve the marker while
         // the parent chat unwinds so the relaunched child can consume it.
         recoveryHandoffInProgress = true;
+        out.write(
+          '\n[recovering] terminal UI stopped responding; restarting and reopening this conversation…\n',
+        );
+        const recoveryStartupInput = ctx.startupInput;
         const resumeStdin = suspendStdin?.();
         try {
-          handle.unmount();
+          // Mirror the update-flow handoff: arm type-ahead capture so keys typed
+          // during relaunch reach the child, then tear down Ink before spawn.
+          if (recoveryStartupInput !== undefined && inkRawInput !== null) {
+            recoveryStartupInput.arm(inkRawInput);
+          }
+          try {
+            handle.unmount();
+          } catch {
+            /* best-effort */
+          }
+          const recoveryEnv = buildRecoveryEnv(convId, 'watchdog-unresponsive');
+          const relaunchEnv: NodeJS.ProcessEnv = {
+            ...process.env,
+            ...recoveryEnv,
+            ...(recoveryStartupInput !== undefined &&
+            recoveryStartupInput.exportPendingBase64() !== null
+              ? { [STARTUP_INPUT_CARRIER_ENV]: recoveryStartupInput.exportPendingBase64() ?? '' }
+              : {}),
+          };
+          const code = await relaunchFn(relaunchEnv).catch(() => 1);
+          if (code === 0) {
+            resolveRecoveryDone?.(true);
+            return;
+          }
+          if (recoveryStartupInput !== undefined) {
+            startupReadKey = recoveryStartupInput.handoff();
+          }
+          recoveryHandoffInProgress = false;
+          await clearActiveConversation();
+          resumeStdin?.();
+          out.write('\n[error] interface recovery relaunch failed.\n');
+          resolveRecoveryDone?.(false);
         } catch {
-          /* best-effort */
+          recoveryHandoffInProgress = false;
+          await clearActiveConversation().catch(() => {});
+          resumeStdin?.();
+          out.write('\n[error] interface recovery relaunch failed.\n');
+          resolveRecoveryDone?.(false);
         }
-        const recoveryEnv = buildRecoveryEnv(convId, 'watchdog-unresponsive');
-        const relaunchEnv = { ...process.env, ...recoveryEnv };
-        const code = await relaunchFn(relaunchEnv).catch(() => 1);
-        if (code === 0) return;
-        recoveryHandoffInProgress = false;
-        await clearActiveConversation();
-        resumeStdin?.();
-        out.write('\n[error] interface recovery relaunch failed.\n');
       })();
     };
   }
@@ -7016,7 +7064,15 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
       /* best-effort */
     }
     try {
-      return await runChatLoop(...args);
+      const result = await runChatLoop(...args);
+      // If the watchdog unmounted mid-chat, wait for the relaunch outcome before
+      // returning to the menu. A successful handoff means the child owned the
+      // session — the parent must exit startMenu (same as update-relaunch).
+      if (recoveryHandoffInProgress && recoveryDone !== null) {
+        const handedOff = await recoveryDone;
+        if (handedOff) return 'exit';
+      }
+      return result;
     } finally {
       activeConversationId = null;
       if (!recoveryHandoffInProgress) {
@@ -7290,7 +7346,7 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
 
     // ---- Watchdog recovery auto-resume ------------------------------------
     // If a prior process wrote an active-conversation marker (watchdog relaunch
-    // or normal exit-with-marker), attempt to auto-resume that conversation.
+    // or abrupt exit mid-chat), attempt to auto-resume that conversation.
     // Fail-soft: any validation failure clears the marker and falls through to
     // the normal menu.
     {
@@ -7302,7 +7358,15 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
           // The parent already checked and recorded the attempt before launch.
           // Rechecking here would reject the second permitted attempt.
           if (hasAuthenticatedProvider(mutableCtx.env)) {
-            out.write('[recovered] restarted after the terminal UI stopped responding; reopened this conversation.\n');
+            // Honest recovery notice only when this really is a recovery path
+            // (watchdog wrote auto-recovered, or child env carries recovery hints).
+            // A leftover chat-active marker after a manual kill still reopens the
+            // conversation, but without claiming the UI self-healed.
+            if (marker.reason === 'auto-recovered' || isRecoveryRelaunch(process.env)) {
+              out.write(
+                '[recovered] restarted after the terminal UI stopped responding; reopened this conversation.\n',
+              );
+            }
             activeConversationId = marker.conversationId;
             try {
               const chatResult = await runChatLoopWithMarker(
