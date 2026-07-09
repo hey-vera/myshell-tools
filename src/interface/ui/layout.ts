@@ -616,6 +616,51 @@ export function boardNextActionText(row: GoalBoardRow): string | undefined {
   return undefined;
 }
 
+/**
+ * Short empty-prompt ghost hints from the live goal board (P0.17 wire).
+ *
+ * For each non-terminal goal (running → queued → parked), prefer the real
+ * next-step todo text (`boardNextActionText`); fall back to the goal title.
+ * Fail-soft: returns `[]` when the board is empty/missing or has no usable
+ * hints. Never fabricates work. PURE.
+ */
+export function goalHintsFromBoard(board: readonly GoalBoardRow[] | null | undefined): readonly string[] {
+  // Avoid Array.isArray — it widens readonly GoalBoardRow[] to any[] under tsc.
+  if (board == null || board.length === 0) return [];
+
+  const rank: Record<GoalBoardRow['state'], number> = {
+    running: 0,
+    queued: 1,
+    parked: 2,
+    done: 99,
+    failed: 99,
+    blocked: 99,
+    superseded: 99,
+  };
+
+  const actionable = board
+    .filter((row) => (rank[row.state] ?? 99) < 99)
+    .slice()
+    .sort((a, b) => (rank[a.state] ?? 9) - (rank[b.state] ?? 9));
+
+  const hints: string[] = [];
+  const seen = new Set<string>();
+  for (const row of actionable) {
+    const next = boardNextActionText(row);
+    const raw = typeof next === 'string' && next.trim().length > 0
+      ? next
+      : typeof row.title === 'string'
+        ? row.title
+        : '';
+    const text = raw.trim();
+    if (text.length === 0) continue;
+    if (seen.has(text)) continue;
+    seen.add(text);
+    hints.push(text);
+  }
+  return hints;
+}
+
 function boardRowHeight(row: GoalBoardRow): number {
   // Base goal line + optional approach line (always, for persistent viz) +
   // next-action hint for non-running goals (running expands the checklist) +
