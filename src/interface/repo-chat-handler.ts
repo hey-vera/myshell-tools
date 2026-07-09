@@ -9,23 +9,17 @@
  * Undo remains preview-only.
  */
 
-import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
-
 import { planUndoAiCheckpoint } from '../core/ai-checkpoint.js';
 import type { CommandGatePort, CommandGateDecision } from '../core/command-gate.js';
 import { inferRepoIntent, type RepoOperationIntent } from '../core/repo-intent.js';
 import type { VerifyPort } from '../core/verify.js';
 import type { WorkspaceContext } from '../core/workspace-context.js';
 import type { AiCheckpointStore } from '../infra/ai-checkpoint-store.js';
+import { runGh as defaultRunGh, type GhRunResult } from '../infra/gh-run.js';
 import type { LocalRepoOps } from '../infra/repo-ops.js';
 import { detectWorkspaceContext } from '../infra/workspace-context.js';
 import type { Oversight } from './ui/oversight.js';
 
-const execFileAsync = promisify(execFile);
-
-/** Cap so a hung gh never blocks chat. */
-const GH_PR_STATUS_TIMEOUT_MS = 15_000;
 /** Clip gh stdout so the chat surface stays readable. */
 const GH_PR_STATUS_OUTPUT_CAP = 4_000;
 
@@ -36,13 +30,8 @@ export interface RepoChatHandled {
   readonly message: string;
 }
 
-/** Result of a single `gh …` invocation (injectable for hermetic tests). */
-export interface GhRunResult {
-  readonly ok: boolean;
-  readonly stdout: string;
-  readonly stderr: string;
-  readonly exitCode: number | null;
-}
+/** Re-export for callers/tests that type against the injectable runner. */
+export type { GhRunResult };
 
 export interface RepoChatHandlerDeps {
   readonly cwd: string;
@@ -61,8 +50,8 @@ export interface RepoChatHandlerDeps {
   /** Injectable forge detector (defaults to detectWorkspaceContext). */
   readonly detectForge?: (cwd: string) => Promise<WorkspaceContext>;
   /**
-   * Injectable `gh` runner. Production spawns real `gh`; tests inject stubs so
-   * unit suites never touch the network or PATH.
+   * Injectable `gh` runner. Production uses {@link defaultRunGh} from infra;
+   * tests inject stubs so unit suites never touch the network or PATH.
    */
   readonly runGh?: (args: readonly string[], cwd: string) => Promise<GhRunResult>;
 }
@@ -94,46 +83,6 @@ async function currentTextMap(
 ): Promise<ReadonlyMap<string, string | null>> {
   const entries = await Promise.all(paths.map(async (path) => [path, await readFileText(path)] as const));
   return new Map(entries);
-}
-
-/**
- * Production `gh` runner. Never throws — non-zero / spawn failure → ok:false.
- */
-async function defaultRunGh(args: readonly string[], cwd: string): Promise<GhRunResult> {
-  try {
-    const { stdout, stderr } = await execFileAsync('gh', [...args], {
-      cwd,
-      timeout: GH_PR_STATUS_TIMEOUT_MS,
-      windowsHide: true,
-      maxBuffer: 512 * 1024,
-    });
-    return {
-      ok: true,
-      stdout: typeof stdout === 'string' ? stdout : '',
-      stderr: typeof stderr === 'string' ? stderr : '',
-      exitCode: 0,
-    };
-  } catch (err: unknown) {
-    const e = err as {
-      stdout?: string;
-      stderr?: string;
-      code?: number | string;
-      message?: string;
-    };
-    const exitCode =
-      typeof e.code === 'number' ? e.code : null;
-    return {
-      ok: false,
-      stdout: typeof e.stdout === 'string' ? e.stdout : '',
-      stderr:
-        typeof e.stderr === 'string' && e.stderr.trim().length > 0
-          ? e.stderr
-          : typeof e.message === 'string'
-            ? e.message
-            : 'gh failed',
-      exitCode,
-    };
-  }
 }
 
 /**
