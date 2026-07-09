@@ -931,6 +931,131 @@ test('plain Tab does not call onShiftTab', async () => {
 });
 
 // ---------------------------------------------------------------------------
+// Ghost text — local-first Tab accept (P0.17–P0.18)
+// ---------------------------------------------------------------------------
+
+/** Wait long enough for ghostDebounceMs=0 setTimeout(0) + React paint. */
+const ghostTick = (): Promise<void> => new Promise((r) => setTimeout(r, 80));
+
+test('history ghost appears after debounce and Tab accepts it', async () => {
+  const bridge = createInputBoxBridge();
+  bridge.seedHistory(['fix the flaky chat test']);
+  bridge.onSubmit(() => {});
+  const { lastFrame, stdin } = render(
+    <InputBox bridge={bridge} color={true} isTty={true} columns={80} ghostDebounceMs={0} />,
+  );
+  stdin.write('fix the');
+  await ghostTick();
+  const frame = plain(lastFrame());
+  assert.ok(
+    frame.includes('flaky chat test'),
+    `expected history ghost suffix in frame, got:\n${frame}`,
+  );
+  assert.equal(bridge.currentLine(), 'fix the', 'ghost must not mutate buffer until Tab');
+  stdin.write(TAB);
+  await tick();
+  assert.equal(bridge.currentLine(), 'fix the flaky chat test');
+});
+
+test('Esc dismisses ghost without changing the buffer', async () => {
+  const bridge = createInputBoxBridge();
+  bridge.seedHistory(['ship the release notes']);
+  bridge.onSubmit(() => {});
+  const { lastFrame, stdin } = render(
+    <InputBox bridge={bridge} color={true} isTty={true} columns={80} ghostDebounceMs={0} />,
+  );
+  stdin.write('ship the');
+  await ghostTick();
+  assert.ok(plain(lastFrame()).includes('release notes'), 'precondition: ghost shown');
+  stdin.write(ESC);
+  await tick();
+  assert.equal(bridge.currentLine(), 'ship the');
+  const frame = plain(lastFrame());
+  assert.ok(!frame.includes('release notes'), `Esc must dismiss ghost, got:\n${frame}`);
+});
+
+test('typing dismisses ghost', async () => {
+  const bridge = createInputBoxBridge();
+  bridge.seedHistory(['continue the migration']);
+  bridge.onSubmit(() => {});
+  const { lastFrame, stdin } = render(
+    <InputBox bridge={bridge} color={true} isTty={true} columns={80} ghostDebounceMs={0} />,
+  );
+  stdin.write('continue');
+  await ghostTick();
+  assert.ok(plain(lastFrame()).includes('the migration'), 'precondition: ghost shown');
+  stdin.write('x');
+  await tick();
+  assert.equal(bridge.currentLine(), 'continuex');
+  // Ghost for "continuex" should not match history; suffix gone immediately on type.
+  assert.ok(!plain(lastFrame()).includes('the migration'), 'typing must dismiss prior ghost');
+});
+
+test('empty-buffer goal hint ghost; Tab accepts', async () => {
+  const bridge = createInputBoxBridge();
+  bridge.onSubmit(() => {});
+  const { lastFrame, stdin } = render(
+    <InputBox
+      bridge={bridge}
+      color={true}
+      isTty={true}
+      columns={80}
+      ghostDebounceMs={0}
+      goalHints={['continue active goal']}
+    />,
+  );
+  await ghostTick();
+  const frame = plain(lastFrame());
+  assert.ok(
+    frame.includes('continue active goal'),
+    `expected empty-prompt goal ghost, got:\n${frame}`,
+  );
+  stdin.write(TAB);
+  await tick();
+  assert.equal(bridge.currentLine(), 'continue active goal');
+});
+
+test('slash ghost shows and Tab accepts /help', async () => {
+  const bridge = createInputBoxBridge();
+  bridge.onSubmit(() => {});
+  const { lastFrame, stdin } = render(
+    <InputBox bridge={bridge} color={true} isTty={true} columns={60} ghostDebounceMs={0} />,
+  );
+  stdin.write('/hel');
+  await ghostTick();
+  assert.ok(plain(lastFrame()).includes('p') || plain(lastFrame()).includes('/help'), 'ghost or completed /help');
+  // Tab accepts ghost → /help (single-hit Tab path also works if ghost missed).
+  stdin.write(TAB);
+  await tick();
+  assert.equal(bridge.currentLine(), '/help');
+});
+
+test('Shift+Tab still cycles mode when ghost is present (does not accept ghost)', async () => {
+  const bridge = createInputBoxBridge();
+  bridge.seedHistory(['hello world from history']);
+  bridge.onSubmit(() => {});
+  let cycleCalls = 0;
+  const { stdin } = render(
+    <InputBox
+      bridge={bridge}
+      color={true}
+      isTty={true}
+      columns={80}
+      ghostDebounceMs={0}
+      onShiftTab={() => {
+        cycleCalls += 1;
+      }}
+    />,
+  );
+  stdin.write('hello');
+  await ghostTick();
+  stdin.write(SHIFT_TAB);
+  await tick();
+  assert.equal(cycleCalls, 1, 'Shift+Tab must still cycle mode with ghost showing');
+  assert.equal(bridge.currentLine(), 'hello', 'Shift+Tab must not accept the ghost');
+});
+
+// ---------------------------------------------------------------------------
 // Phase 5: insertText — imperative text insertion into the composer
 // ---------------------------------------------------------------------------
 
