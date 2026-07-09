@@ -2,7 +2,9 @@
 
 **Date:** 2026-07-09  
 **Branch:** `actualize/pr1-live-effort-mode`  
+**SHA:** `95946fe749068dcae68d706021f9b7830f1acb5d`  
 **Base:** `actualize/10of10-foundation`  
+**PR:** https://github.com/hey-vera/myshell-tools/pull/120 (draft)  
 **Checklist:** Wave 1 P0.1–P0.6 (`docs/actualization-checklist-10of10-2026-07-09.md`)
 
 ## What shipped
