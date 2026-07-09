@@ -95,12 +95,29 @@ await (async function runRepoChatLiveSmoke() {
       console.log('assistant:', r && r.message);
       r = await handleRepoChatIntent('undo that', makeDeps({
         readFileText: async (p) => (p === 'foo.txt' ? 'new' : null),
+        // no applyUndoActions → preview-only path
       }));
       console.log('user: undo that');
       console.log('assistant:', r && r.message);
-      console.log('verified safe preview/execution (has "I have not applied"):', /I have not applied/.test(r ? r.message : ''));
-      console.log('mutatesWorkspace:', r && r.mutatesWorkspace);
-      console.log('verified no unwanted commands/commits (pure preview only)');
+      console.log('verified safe preview (has "I have not applied"):', /I have not applied/.test(r ? r.message : ''));
+      console.log('mutatesWorkspace (preview):', r && r.mutatesWorkspace);
+      // autonomous + apply seam → actual apply receipt
+      const applyCalls = [];
+      r = await handleRepoChatIntent('undo that', makeDeps({
+        readFileText: async (p) => (p === 'foo.txt' ? 'new' : null),
+        oversight: 'autonomous',
+        repoOps: {
+          ...baseRepoOps,
+          async applyUndoActions(_cwd, actions) {
+            applyCalls.push(actions.length);
+            return { applied: actions.length, errors: [] };
+          },
+          async commitChanges() { return { ok: true, output: 'ok' }; },
+        },
+      }));
+      console.log('user: undo that (autonomous apply)');
+      console.log('assistant:', r && r.message);
+      console.log('verified apply path:', /Applied undo/.test(r ? r.message : ''), 'actions:', applyCalls);
       console.log('=== LIVE USER SMOKE: PASS ===\n');
     } finally {
       try { rmSync(home, { recursive: true, force: true }); } catch {}

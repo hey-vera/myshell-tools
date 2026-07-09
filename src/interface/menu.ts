@@ -304,6 +304,7 @@ import {
 import { runOpencodeAccountsMenu } from './menu-opencode-accounts.js';
 import { createAiCheckpointStore } from '../infra/ai-checkpoint-store.js';
 import { localRepoOps } from '../infra/repo-ops.js';
+import { captureAiEditCheckpoint } from './ai-edit-checkpoint.js';
 import { handleRepoChatIntent } from './repo-chat-handler.js';
 import { runClaudeAccountsMenu } from './menu-claude-accounts.js';
 import { runCodexAccountsMenu } from './menu-codex-accounts.js';
@@ -2221,10 +2222,10 @@ export async function runChatLoop(
     }
 
     // Native repo-chat intents: ordinary language, local-only.
-    // verify_only now invokes gated verifyPort.runTests (commandGate + oversight).
+    // verify_only invokes gated verifyPort.runTests (commandGate + oversight).
     // commit summarizes, gates via oversight (confirm unless autonomous), calls commitChanges.
+    // undo plans via checkpoint conflict gate, then applies under oversight + commandGate.
     // Use exact same commandGate/verifyPort/oversight seams as the rest of menu + cli verify paths.
-    // Undo remains preview-only.
     try {
       const oversight = resolveOversight(mutableCtx.config);
       const repoHandled = await handleRepoChatIntent(line, {
@@ -6276,6 +6277,13 @@ Output ONLY valid JSON (no prose, no markdown).`;
       // If preflight after begin fails before renderTurn settles, reset clears it.
       inkBeginTurn?.();
       const oversight = resolveOversight(mutableCtx.config, process.env);
+      // P2.1: pre-turn dirty-file snapshot so we can checkpoint AI edits after the turn.
+      let preEditContents: ReadonlyMap<string, string> = new Map();
+      try {
+        preEditContents = await localRepoOps.snapshotPreContents(activeCwd);
+      } catch {
+        /* best-effort — checkpoint is chrome, never block a turn */
+      }
       let result: Awaited<ReturnType<typeof runTaskWithInputHooks>>;
       try {
         const ac = new AbortController();
@@ -6310,6 +6318,31 @@ Output ONLY valid JSON (no prose, no markdown).`;
       noteRateLimit(result);
       await syncCapacity();
       await persistCompletedTurnProvider(result.final);
+
+      // P2.1: after a successful model turn, persist an AI-edit checkpoint when the
+      // working tree has file deltas (enables safe NL undo). Fail-soft always.
+      if (result.final?.success === true) {
+        try {
+          await captureAiEditCheckpoint({
+            cwd: activeCwd,
+            intent: line,
+            id: ctx.clock.uuid(),
+            createdAt: ctx.clock.isoNow(),
+            preContents: preEditContents,
+            repoOps: localRepoOps,
+            readFileText: async (relativePath) => {
+              try {
+                return await fs.promises.readFile(join(activeCwd, relativePath), 'utf8');
+              } catch {
+                return null;
+              }
+            },
+            store: createAiCheckpointStore({ cwd: activeCwd }),
+          });
+        } catch {
+          /* checkpoint is best-effort chrome */
+        }
+      }
 
       // P1-09j-b: foreground settlement — snapshot and invoke receipt callback.
       // Do NOT destroy the budget while owned background calls remain.

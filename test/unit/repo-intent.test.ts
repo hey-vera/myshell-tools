@@ -68,6 +68,12 @@ const cases: ReadonlyArray<readonly [string, ReturnType<typeof inferRepoIntent>[
   ['show me the pr status', 'github_pr_status'],
   ['how is the pr?', 'github_pr_status'],
   ['current pr', 'github_pr_status'],
+  // P1.7 thin — GitLab MR status
+  ['mr status', 'gitlab_mr_status'],
+  ["what's the MR status", 'gitlab_mr_status'],
+  ['gitlab status', 'gitlab_mr_status'],
+  ['list the merge requests', 'gitlab_mr_status'],
+  ['how is the mr?', 'gitlab_mr_status'],
 ];
 
 describe('inferRepoIntent', () => {

@@ -2,11 +2,13 @@
  * Safe natural-language repo chat handler.
  *
  * This is the interface seam between ordinary user language ("what changed?",
- * "run tests", "undo that", "pr status") and repo infrastructure. verify_only
- * and commit execute under commandGate + oversight (same seams as menu/cli
- * verify paths). GitHub PR status (P1.6 thin) runs `gh pr status` when the
- * workspace is GitHub and gh is on PATH — honest fail-soft otherwise.
- * Undo remains preview-only.
+ * "run tests", "undo that", "pr status", "mr status") and repo infrastructure.
+ * verify_only and commit execute under commandGate + oversight (same seams as
+ * menu/cli verify paths). GitHub PR status (P1.6 thin) runs `gh pr status` when
+ * the workspace is GitHub and gh is on PATH. GitLab MR list (P1.7 thin) runs
+ * `glab mr list` when the workspace is GitLab and glab is on PATH — honest
+ * fail-soft otherwise. Undo plans via checkpoint conflict gate, then applies
+ * under oversight + commandGate when safe.
  */
 
 import { planUndoAiCheckpoint } from '../core/ai-checkpoint.js';
@@ -16,12 +18,13 @@ import type { VerifyPort } from '../core/verify.js';
 import type { WorkspaceContext } from '../core/workspace-context.js';
 import type { AiCheckpointStore } from '../infra/ai-checkpoint-store.js';
 import { runGh as defaultRunGh, type GhRunResult } from '../infra/gh-run.js';
+import { runGlab as defaultRunGlab, type GlabRunResult } from '../infra/glab-run.js';
 import type { LocalRepoOps } from '../infra/repo-ops.js';
 import { detectWorkspaceContext } from '../infra/workspace-context.js';
 import type { Oversight } from './ui/oversight.js';
 
-/** Clip gh stdout so the chat surface stays readable. */
-const GH_PR_STATUS_OUTPUT_CAP = 4_000;
+/** Clip CLI stdout so the chat surface stays readable. */
+const FORGE_STATUS_OUTPUT_CAP = 4_000;
 
 export interface RepoChatHandled {
   readonly handled: true;
@@ -31,11 +34,12 @@ export interface RepoChatHandled {
 }
 
 /** Re-export for callers/tests that type against the injectable runner. */
-export type { GhRunResult };
+export type { GhRunResult, GlabRunResult };
 
 export interface RepoChatHandlerDeps {
   readonly cwd: string;
-  readonly repoOps: Pick<LocalRepoOps, 'status' | 'diff' | 'detectTestCommand' | 'commitChanges'>;
+  readonly repoOps: Pick<LocalRepoOps, 'status' | 'diff' | 'detectTestCommand' | 'commitChanges'> &
+    Partial<Pick<LocalRepoOps, 'applyUndoActions'>>;
   readonly checkpointStore: Pick<AiCheckpointStore, 'latest'>;
   readonly readFileText?: (path: string) => Promise<string | null>;
   /** Gated verify port (use ctx.verifyPort from menu which wraps commandGate). */
@@ -54,13 +58,24 @@ export interface RepoChatHandlerDeps {
    * tests inject stubs so unit suites never touch the network or PATH.
    */
   readonly runGh?: (args: readonly string[], cwd: string) => Promise<GhRunResult>;
+  /**
+   * Injectable `glab` runner. Production uses {@link defaultRunGlab} from infra;
+   * tests inject stubs so unit suites never touch the network or PATH.
+   */
+  readonly runGlab?: (args: readonly string[], cwd: string) => Promise<GlabRunResult>;
 }
 
-function handled(operation: RepoOperationIntent, message: string): RepoChatHandled {
+function handled(
+  operation: RepoOperationIntent,
+  message: string,
+  opts?: { readonly mutatesWorkspace?: boolean },
+): RepoChatHandled {
   return {
     handled: true,
     operation,
-    mutatesWorkspace: operation === 'commit_current_ai_change',
+    mutatesWorkspace:
+      opts?.mutatesWorkspace ??
+      (operation === 'commit_current_ai_change' || operation === 'undo_last_ai_change'),
     message,
   };
 }
@@ -87,15 +102,16 @@ async function currentTextMap(
 
 /**
  * Honest message when forge/tools cannot support GitHub PR status. PURE-ish
- * (no I/O). Returns null when host is GitHub and gh is on PATH (caller may run).
+ * (no I/O). Returns null when host is GitHub and gh is on PATH (caller may run),
+ * or when host is GitLab and glab is on PATH (caller may run glab instead).
  */
 export function githubPrStatusUnavailableMessage(forge: WorkspaceContext): string | null {
   if (forge.hostClass === 'github' && forge.tools.gh) return null;
+  // GitLab + glab: handler runs glab (P1.7 thin) rather than refusing.
+  if (forge.hostClass === 'gitlab' && forge.tools.glab) return null;
 
   if (forge.hostClass === 'gitlab') {
-    return forge.tools.glab
-      ? 'This workspace is GitLab — not GitHub. PR status via gh does not apply. Try `glab mr list` (or ask for MR status) instead.'
-      : 'This workspace is GitLab — not GitHub. gh PR status does not apply, and glab is not on PATH. Use local git or the GitLab UI.';
+    return 'This workspace is GitLab — not GitHub. gh PR status does not apply, and glab is not on PATH. Use local git or the GitLab UI.';
   }
   if (forge.hostClass === 'other') {
     return 'This remote is not GitHub — I will not run gh PR status against a non-GitHub forge.';
@@ -109,20 +125,45 @@ export function githubPrStatusUnavailableMessage(forge: WorkspaceContext): strin
   return 'This is a GitHub repo, but `gh` is not on PATH. Install the GitHub CLI (https://cli.github.com) or check PR status in the browser. I will not pretend gh is available.';
 }
 
-function clipGhOutput(text: string): string {
+/**
+ * Honest message when forge/tools cannot support GitLab MR list. Returns null
+ * when host is GitLab and glab is on PATH.
+ */
+export function gitlabMrStatusUnavailableMessage(forge: WorkspaceContext): string | null {
+  if (forge.hostClass === 'gitlab' && forge.tools.glab) return null;
+
+  if (forge.hostClass === 'github') {
+    return forge.tools.gh
+      ? 'This workspace is GitHub — not GitLab. MR status via glab does not apply. Try `gh pr status` (or ask for PR status) instead.'
+      : 'This workspace is GitHub — not GitLab. glab MR status does not apply, and gh is not on PATH. Use local git or the GitHub UI.';
+  }
+  if (forge.hostClass === 'other') {
+    return 'This remote is not GitLab — I will not run glab MR status against a non-GitLab forge.';
+  }
+  if (forge.hostClass === 'none') {
+    return forge.gitRoot !== null
+      ? 'Local-only workspace (no remote forge) — there is no GitLab MR status to query.'
+      : 'This folder is not a git repo — there is no GitLab MR status to query.';
+  }
+  // gitlab but glab missing
+  return 'This is a GitLab repo, but `glab` is not on PATH. Install the GitLab CLI (https://gitlab.com/gitlab-org/cli) or check MRs in the browser. I will not pretend glab is available.';
+}
+
+function clipForgeOutput(text: string): string {
   const t = text.trim();
   if (t.length === 0) return '';
-  if (t.length <= GH_PR_STATUS_OUTPUT_CAP) return t;
-  return `${t.slice(0, GH_PR_STATUS_OUTPUT_CAP)}\n… (truncated)`;
+  if (t.length <= FORGE_STATUS_OUTPUT_CAP) return t;
+  return `${t.slice(0, FORGE_STATUS_OUTPUT_CAP)}\n… (truncated)`;
 }
 
 async function confirmGate(
   commandGate: CommandGatePort,
   gate: CommandGateDecision,
+  confirmMessage: string,
 ): Promise<boolean | null> {
   if (!gate.requireConfirmation) return null;
   if (commandGate.confirm === undefined) return false;
-  return commandGate.confirm('Run `gh pr status` to show GitHub PR status?');
+  return commandGate.confirm(confirmMessage);
 }
 
 async function recordGate(
@@ -146,26 +187,37 @@ async function recordGate(
   });
 }
 
+async function resolveForge(deps: RepoChatHandlerDeps): Promise<WorkspaceContext | null> {
+  const detect = deps.detectForge ?? detectWorkspaceContext;
+  return (
+    deps.forgeContext ??
+    (await detect(deps.cwd).catch(() => null))
+  );
+}
+
 /**
- * Resolve forge + (when eligible) run gated `gh pr status`. Fail-soft honest
- * messages for non-GitHub / missing gh / gate deny / gh failure.
+ * Resolve forge + (when eligible) run gated `gh pr status`, or on GitLab+glab
+ * run `glab mr list` (honest PR/MR language). Fail-soft for other forges.
  */
 async function handleGithubPrStatus(deps: RepoChatHandlerDeps): Promise<RepoChatHandled> {
-  const detect = deps.detectForge ?? detectWorkspaceContext;
-  const forge =
-    deps.forgeContext ??
-    (await detect(deps.cwd).catch(() => null));
+  const forge = await resolveForge(deps);
 
   if (forge === null) {
     return handled(
       'github_pr_status',
       'Could not detect workspace forge context just now — try again, or run `gh pr status` in the shell.',
+      { mutatesWorkspace: false },
     );
+  }
+
+  // PR language on GitLab → thin glab path when available (same user need).
+  if (forge.hostClass === 'gitlab' && forge.tools.glab) {
+    return handleGitlabMrStatus(deps, 'github_pr_status');
   }
 
   const unavailable = githubPrStatusUnavailableMessage(forge);
   if (unavailable !== null) {
-    return handled('github_pr_status', unavailable);
+    return handled('github_pr_status', unavailable, { mutatesWorkspace: false });
   }
 
   const display = 'gh pr status';
@@ -173,7 +225,11 @@ async function handleGithubPrStatus(deps: RepoChatHandlerDeps): Promise<RepoChat
 
   if (deps.commandGate !== undefined) {
     const gate = deps.commandGate.gate(display);
-    const confirmed = await confirmGate(deps.commandGate, gate);
+    const confirmed = await confirmGate(
+      deps.commandGate,
+      gate,
+      'Run `gh pr status` to show GitHub PR status?',
+    );
     if (!gate.allowed || confirmed === false) {
       await recordGate(deps.commandGate, deps.cwd, display, gate, confirmed, 'denied');
       return handled(
@@ -181,6 +237,7 @@ async function handleGithubPrStatus(deps: RepoChatHandlerDeps): Promise<RepoChat
         gate.allowed
           ? 'PR status check declined by gate.'
           : 'Command gate denied `gh pr status`.',
+        { mutatesWorkspace: false },
       );
     }
 
@@ -189,32 +246,223 @@ async function handleGithubPrStatus(deps: RepoChatHandlerDeps): Promise<RepoChat
     return formatGhPrStatusResult(result);
   }
 
-  // No gate wired (thin paths / tests) — still run honestly.
   const result = await runGh(['pr', 'status'], deps.cwd);
   return formatGhPrStatusResult(result);
 }
 
+/**
+ * Resolve forge + run gated `glab mr list` when GitLab + glab. Fail-soft otherwise.
+ * `operation` lets "pr status" on GitLab still report as github_pr_status intent
+ * while using the glab runner.
+ */
+async function handleGitlabMrStatus(
+  deps: RepoChatHandlerDeps,
+  operation: 'gitlab_mr_status' | 'github_pr_status' = 'gitlab_mr_status',
+): Promise<RepoChatHandled> {
+  const forge = await resolveForge(deps);
+
+  if (forge === null) {
+    return handled(
+      operation,
+      'Could not detect workspace forge context just now — try again, or run `glab mr list` in the shell.',
+      { mutatesWorkspace: false },
+    );
+  }
+
+  // MR language on GitHub → thin gh path when available.
+  if (operation === 'gitlab_mr_status' && forge.hostClass === 'github' && forge.tools.gh) {
+    return handleGithubPrStatus({ ...deps, forgeContext: forge });
+  }
+
+  const unavailable = gitlabMrStatusUnavailableMessage(forge);
+  if (unavailable !== null) {
+    return handled(operation, unavailable, { mutatesWorkspace: false });
+  }
+
+  const display = 'glab mr list';
+  const runGlab = deps.runGlab ?? defaultRunGlab;
+
+  if (deps.commandGate !== undefined) {
+    const gate = deps.commandGate.gate(display);
+    const confirmed = await confirmGate(
+      deps.commandGate,
+      gate,
+      'Run `glab mr list` to show GitLab merge requests?',
+    );
+    if (!gate.allowed || confirmed === false) {
+      await recordGate(deps.commandGate, deps.cwd, display, gate, confirmed, 'denied');
+      return handled(
+        operation,
+        gate.allowed
+          ? 'MR list check declined by gate.'
+          : 'Command gate denied `glab mr list`.',
+        { mutatesWorkspace: false },
+      );
+    }
+
+    const result = await runGlab(['mr', 'list'], deps.cwd);
+    await recordGate(deps.commandGate, deps.cwd, display, gate, confirmed, 'ran');
+    return formatGlabMrListResult(result, operation);
+  }
+
+  const result = await runGlab(['mr', 'list'], deps.cwd);
+  return formatGlabMrListResult(result, operation);
+}
+
 function formatGhPrStatusResult(result: GhRunResult): RepoChatHandled {
-  const out = clipGhOutput(result.stdout);
-  const err = clipGhOutput(result.stderr);
+  const out = clipForgeOutput(result.stdout);
+  const err = clipForgeOutput(result.stderr);
 
   if (result.ok) {
     if (out.length > 0) {
-      return handled('github_pr_status', `GitHub PR status (via gh):\n\n${out}`);
+      return handled('github_pr_status', `GitHub PR status (via gh):\n\n${out}`, {
+        mutatesWorkspace: false,
+      });
     }
-    // Empty success — still honest; point at list as a next step without auto-running it.
     return handled(
       'github_pr_status',
       'gh pr status returned no output. Try `gh pr list --limit 5` in the shell, or open the repo on GitHub.',
+      { mutatesWorkspace: false },
     );
   }
 
   const detail = err.length > 0 ? err : out.length > 0 ? out : 'unknown error';
-  const code =
-    result.exitCode !== null ? ` (exit ${result.exitCode})` : '';
+  const code = result.exitCode !== null ? ` (exit ${result.exitCode})` : '';
   return handled(
     'github_pr_status',
     `gh pr status failed${code}:\n${detail}`,
+    { mutatesWorkspace: false },
+  );
+}
+
+function formatGlabMrListResult(
+  result: GlabRunResult,
+  operation: 'gitlab_mr_status' | 'github_pr_status',
+): RepoChatHandled {
+  const out = clipForgeOutput(result.stdout);
+  const err = clipForgeOutput(result.stderr);
+
+  if (result.ok) {
+    if (out.length > 0) {
+      return handled(operation, `GitLab MR list (via glab):\n\n${out}`, {
+        mutatesWorkspace: false,
+      });
+    }
+    return handled(
+      operation,
+      'glab mr list returned no output. Try `glab mr list --all` in the shell, or open the project on GitLab.',
+      { mutatesWorkspace: false },
+    );
+  }
+
+  const detail = err.length > 0 ? err : out.length > 0 ? out : 'unknown error';
+  const code = result.exitCode !== null ? ` (exit ${result.exitCode})` : '';
+  return handled(
+    operation,
+    `glab mr list failed${code}:\n${detail}`,
+    { mutatesWorkspace: false },
+  );
+}
+
+async function handleUndoLastAiChange(deps: RepoChatHandlerDeps): Promise<RepoChatHandled> {
+  const checkpoint = await deps.checkpointStore.latest();
+  if (checkpoint === null) {
+    return handled(
+      'undo_last_ai_change',
+      "I can't safely undo yet: no AI checkpoint exists for this repo.",
+      { mutatesWorkspace: false },
+    );
+  }
+  if (deps.readFileText === undefined) {
+    return handled(
+      'undo_last_ai_change',
+      `AI checkpoint ${checkpoint.id} exists, but current-file inspection is not wired, so I will not preview or apply undo.`,
+      { mutatesWorkspace: false },
+    );
+  }
+
+  const paths = checkpoint.files.map((file) => file.path);
+  const current = await currentTextMap(paths, deps.readFileText);
+  const plan = planUndoAiCheckpoint(checkpoint, current);
+  if (!plan.ok) {
+    const conflicts = plan.conflicts.map((conflict) => `${conflict.path} (${conflict.reason})`);
+    return handled(
+      'undo_last_ai_change',
+      `I can't safely undo checkpoint ${checkpoint.id}: ${formatPathList(conflicts)} changed after the AI edit.`,
+      { mutatesWorkspace: false },
+    );
+  }
+
+  const writes = plan.actions.filter((action) => action.type === 'write').length;
+  const deletes = plan.actions.filter((action) => action.type === 'delete').length;
+  const summary = `Undo is available for checkpoint ${checkpoint.id}: would write ${writes} file(s) and delete ${deletes} file(s).`;
+
+  // Without applyUndoActions on the deps pick, remain preview-only (tests / thin paths).
+  if (typeof deps.repoOps.applyUndoActions !== 'function') {
+    return handled(
+      'undo_last_ai_change',
+      `${summary} I have not applied it yet.`,
+      { mutatesWorkspace: false },
+    );
+  }
+
+  const oversight: Oversight = deps.oversight ?? 'checkpoint';
+  let proceed = true;
+  if (oversight !== 'autonomous') {
+    const confirmMsg = `${summary}\n\nApply this undo?`;
+    if (deps.commandGate?.confirm) {
+      proceed = await deps.commandGate.confirm(confirmMsg);
+    } else {
+      // Non-autonomous without a confirm seam → honest preview only (safe).
+      return handled(
+        'undo_last_ai_change',
+        `${summary} I have not applied it yet.`,
+        { mutatesWorkspace: false },
+      );
+    }
+  }
+  if (!proceed) {
+    return handled('undo_last_ai_change', 'Undo declined by gate.', { mutatesWorkspace: false });
+  }
+
+  // Record as local-write when a gate is present (audit trail).
+  const display = `apply AI checkpoint undo (${checkpoint.id})`;
+  if (deps.commandGate !== undefined) {
+    const gate = deps.commandGate.gate(display);
+    if (!gate.allowed) {
+      await recordGate(deps.commandGate, deps.cwd, display, gate, true, 'denied');
+      return handled(
+        'undo_last_ai_change',
+        'Command gate denied AI checkpoint undo.',
+        { mutatesWorkspace: false },
+      );
+    }
+    const result = await deps.repoOps.applyUndoActions(deps.cwd, plan.actions);
+    await recordGate(deps.commandGate, deps.cwd, display, gate, true, 'ran');
+    return formatUndoApplyResult(checkpoint.id, summary, result);
+  }
+
+  const result = await deps.repoOps.applyUndoActions(deps.cwd, plan.actions);
+  return formatUndoApplyResult(checkpoint.id, summary, result);
+}
+
+function formatUndoApplyResult(
+  checkpointId: string,
+  summary: string,
+  result: { readonly applied: number; readonly errors: readonly string[] },
+): RepoChatHandled {
+  if (result.errors.length === 0) {
+    return handled(
+      'undo_last_ai_change',
+      `${summary}\n\nApplied undo for checkpoint ${checkpointId}: ${result.applied} action(s).`,
+      { mutatesWorkspace: true },
+    );
+  }
+  const errClip = result.errors.slice(0, 5).join('; ');
+  return handled(
+    'undo_last_ai_change',
+    `${summary}\n\nPartial undo for checkpoint ${checkpointId}: applied ${result.applied}, errors: ${errClip}.`,
+    { mutatesWorkspace: result.applied > 0 },
   );
 }
 
@@ -233,38 +481,49 @@ export async function handleRepoChatIntent(
 
     case 'status': {
       const status = await deps.repoOps.status(deps.cwd);
-      if (!status.isGitRepo) return handled('status', 'This folder is not a git repo.');
-      if (status.clean) return handled('status', 'Repo status: clean.');
+      if (!status.isGitRepo) return handled('status', 'This folder is not a git repo.', { mutatesWorkspace: false });
+      if (status.clean) return handled('status', 'Repo status: clean.', { mutatesWorkspace: false });
       return handled(
         'status',
         `Repo status: ${status.changedFiles.length} changed file(s): ${formatPathList(status.changedFiles)}.`,
+        { mutatesWorkspace: false },
       );
     }
 
     case 'github_pr_status':
       return handleGithubPrStatus(deps);
 
+    case 'gitlab_mr_status':
+      return handleGitlabMrStatus(deps, 'gitlab_mr_status');
+
     case 'summarize_diff': {
       const diff = await deps.repoOps.diff(deps.cwd);
-      if (!diff.isGitRepo) return handled('summarize_diff', 'This folder is not a git repo.');
-      if (diff.empty) return handled('summarize_diff', 'No git diff detected.');
+      if (!diff.isGitRepo) return handled('summarize_diff', 'This folder is not a git repo.', { mutatesWorkspace: false });
+      if (diff.empty) return handled('summarize_diff', 'No git diff detected.', { mutatesWorkspace: false });
       const parts = ['Git diff detected.'];
       if (diff.stat.trim().length > 0) parts.push(`Stat:\n${diff.stat.trim()}`);
       if (diff.patchPreview.trim().length > 0) parts.push(`Preview:\n${diff.patchPreview.trim()}`);
-      return handled('summarize_diff', parts.join('\n\n'));
+      return handled('summarize_diff', parts.join('\n\n'), { mutatesWorkspace: false });
     }
 
     case 'verify_only': {
       const detect = deps.verifyPort?.detectTestCommand ?? deps.repoOps.detectTestCommand;
       const command = await detect(deps.cwd);
       if (command === null) {
-        return handled('verify_only', 'No test command was detected for this repo yet. I have not run anything.');
+        return handled(
+          'verify_only',
+          'No test command was detected for this repo yet. I have not run anything.',
+          { mutatesWorkspace: false },
+        );
       }
       const runner = deps.verifyPort?.runTests;
       if (!runner || !deps.commandGate) {
-        return handled('verify_only', `Detected test command: ${formatCommand(command)}. I have not run it yet.`);
+        return handled(
+          'verify_only',
+          `Detected test command: ${formatCommand(command)}. I have not run it yet.`,
+          { mutatesWorkspace: false },
+        );
       }
-      // Use same timeout cap as CLI verify wiring; gate+oversight honored inside runTests when provided.
       const TIMEOUT_MS = 120_000;
       const result = await runner(deps.cwd, command, TIMEOUT_MS, deps.commandGate);
       let outcomeLine = `Test run ${result.outcome.toUpperCase()} for ${formatCommand(command)} in ${result.durationMs}ms.`;
@@ -272,17 +531,21 @@ export async function handleRepoChatIntent(
         const clip = result.output.trim().slice(0, 400);
         outcomeLine += `\nOutput:\n${clip}${result.output.length > 400 ? '…' : ''}`;
       }
-      return handled('verify_only', outcomeLine);
+      return handled('verify_only', outcomeLine, { mutatesWorkspace: false });
     }
 
     case 'commit_current_ai_change': {
       const status = await deps.repoOps.status(deps.cwd);
       const diff = await deps.repoOps.diff(deps.cwd);
       if (!status.isGitRepo) {
-        return handled('commit_current_ai_change', 'This folder is not a git repo.');
+        return handled('commit_current_ai_change', 'This folder is not a git repo.', {
+          mutatesWorkspace: false,
+        });
       }
       if (diff.empty && status.clean) {
-        return handled('commit_current_ai_change', 'No changes to commit.');
+        return handled('commit_current_ai_change', 'No changes to commit.', {
+          mutatesWorkspace: false,
+        });
       }
       const summaryParts = ['Commit intent:'];
       if (diff.stat.trim().length > 0) summaryParts.push(`Stat:\n${diff.stat.trim()}`);
@@ -300,10 +563,11 @@ export async function handleRepoChatIntent(
         }
       }
       if (!proceed) {
-        return handled('commit_current_ai_change', 'Commit declined by gate.');
+        return handled('commit_current_ai_change', 'Commit declined by gate.', {
+          mutatesWorkspace: false,
+        });
       }
 
-      // Reviewable commit message (caller + user see it in receipt).
       const fileCount = status.changedFiles.length;
       const reviewMsg =
         fileCount > 0
@@ -313,39 +577,13 @@ export async function handleRepoChatIntent(
       const receipt = commitRes.ok
         ? `Commit succeeded: ${commitRes.output}`
         : `Commit failed: ${commitRes.output}`;
-      return handled('commit_current_ai_change', `${summary}\n\n${receipt}`);
+      return handled('commit_current_ai_change', `${summary}\n\n${receipt}`, {
+        mutatesWorkspace: true,
+      });
     }
 
-    case 'undo_last_ai_change': {
-      const checkpoint = await deps.checkpointStore.latest();
-      if (checkpoint === null) {
-        return handled('undo_last_ai_change', "I can't safely undo yet: no AI checkpoint exists for this repo.");
-      }
-      if (deps.readFileText === undefined) {
-        return handled(
-          'undo_last_ai_change',
-          `AI checkpoint ${checkpoint.id} exists, but current-file inspection is not wired, so I will not preview or apply undo.`,
-        );
-      }
-
-      const paths = checkpoint.files.map((file) => file.path);
-      const current = await currentTextMap(paths, deps.readFileText);
-      const plan = planUndoAiCheckpoint(checkpoint, current);
-      if (!plan.ok) {
-        const conflicts = plan.conflicts.map((conflict) => `${conflict.path} (${conflict.reason})`);
-        return handled(
-          'undo_last_ai_change',
-          `I can't safely undo checkpoint ${checkpoint.id}: ${formatPathList(conflicts)} changed after the AI edit.`,
-        );
-      }
-
-      const writes = plan.actions.filter((action) => action.type === 'write').length;
-      const deletes = plan.actions.filter((action) => action.type === 'delete').length;
-      return handled(
-        'undo_last_ai_change',
-        `Undo is available for checkpoint ${checkpoint.id}: would write ${writes} file(s) and delete ${deletes} file(s). I have not applied it yet.`,
-      );
-    }
+    case 'undo_last_ai_change':
+      return handleUndoLastAiChange(deps);
 
     default: {
       const exhaustive: never = intent.operation;

@@ -194,7 +194,7 @@ describe('handleRepoChatIntent', () => {
     expect(result?.message).toContain('no AI checkpoint exists');
   });
 
-  it('previews a safe checkpoint undo without applying it', async () => {
+  it('previews a safe checkpoint undo without applying it when no apply seam / confirm', async () => {
     const cp = checkpoint();
     const result = await handleRepoChatIntent('undo the last change', deps({
       checkpointStore: {
@@ -207,9 +207,109 @@ describe('handleRepoChatIntent', () => {
         if (path === 'src/new.ts') return 'new file';
         return null;
       },
+      // no applyUndoActions + non-autonomous → preview only
     }));
 
     expect(result?.message).toBe('Undo is available for checkpoint cp-1: would write 1 file(s) and delete 1 file(s). I have not applied it yet.');
+    expect(result?.mutatesWorkspace).toBe(false);
+  });
+
+  it('applies a safe checkpoint undo under autonomous oversight', async () => {
+    const cp = checkpoint();
+    const applied: Array<{ path: string; type: string }> = [];
+    const result = await handleRepoChatIntent('undo the last change', deps({
+      checkpointStore: {
+        async latest() {
+          return cp;
+        },
+      },
+      async readFileText(path) {
+        if (path === 'src/a.ts') return 'after';
+        if (path === 'src/new.ts') return 'new file';
+        return null;
+      },
+      oversight: 'autonomous',
+      repoOps: {
+        async status() {
+          return { isGitRepo: true, clean: true, changedFiles: [], raw: '' };
+        },
+        async diff() {
+          return { isGitRepo: true, empty: true, stat: '', patchPreview: '' };
+        },
+        async detectTestCommand() {
+          return null;
+        },
+        async commitChanges() {
+          return { ok: true, output: 'ok' };
+        },
+        async applyUndoActions(_cwd, actions) {
+          for (const a of actions) applied.push({ path: a.path, type: a.type });
+          return { applied: actions.length, errors: [] };
+        },
+      },
+    }));
+
+    expect(result?.message).toContain('Applied undo for checkpoint cp-1');
+    expect(result?.message).toContain('2 action(s)');
+    expect(result?.mutatesWorkspace).toBe(true);
+    expect(applied).toEqual([
+      { path: 'src/a.ts', type: 'write' },
+      { path: 'src/new.ts', type: 'delete' },
+    ]);
+  });
+
+  it('applies undo after confirm under checkpoint oversight', async () => {
+    const cp = checkpoint();
+    let confirmed = false;
+    const result = await handleRepoChatIntent('undo that', deps({
+      checkpointStore: {
+        async latest() {
+          return cp;
+        },
+      },
+      async readFileText(path) {
+        if (path === 'src/a.ts') return 'after';
+        if (path === 'src/new.ts') return 'new file';
+        return null;
+      },
+      oversight: 'checkpoint',
+      commandGate: {
+        gate: (): CommandGateDecision => ({
+          allowed: true,
+          requireConfirmation: false,
+          commandTier: 'local-write',
+          forbidBackground: false,
+          mustRecord: true,
+          rationale: 'test',
+        }),
+        confirm: async () => {
+          confirmed = true;
+          return true;
+        },
+        record: () => {},
+      } as CommandGatePort,
+      repoOps: {
+        async status() {
+          return { isGitRepo: true, clean: true, changedFiles: [], raw: '' };
+        },
+        async diff() {
+          return { isGitRepo: true, empty: true, stat: '', patchPreview: '' };
+        },
+        async detectTestCommand() {
+          return null;
+        },
+        async commitChanges() {
+          return { ok: true, output: 'ok' };
+        },
+        async applyUndoActions(_cwd, actions) {
+          return { applied: actions.length, errors: [] };
+        },
+      },
+    }));
+
+    expect(confirmed).toBe(true);
+    expect(result?.message).toContain('Applied undo');
+    expect(result?.mutatesWorkspace).toBe(true);
   });
 
   it('refuses checkpoint undo when current files diverged', async () => {
@@ -324,8 +424,9 @@ describe('handleRepoChatIntent', () => {
     expect(ghCalls).toEqual([]);
   });
 
-  it('github_pr_status: honest message for GitLab (no false gh)', async () => {
+  it('github_pr_status on GitLab+glab: runs glab mr list (no false gh)', async () => {
     const ghCalls: unknown[] = [];
+    const glabCalls: Array<{ args: readonly string[]; cwd: string }> = [];
     const result = await handleRepoChatIntent('github status', deps({
       forgeContext: {
         cwd: '/repo',
@@ -339,11 +440,67 @@ describe('handleRepoChatIntent', () => {
         ghCalls.push(1);
         return { ok: true, stdout: '', stderr: '', exitCode: 0 };
       },
+      async runGlab(args, cwd) {
+        glabCalls.push({ args, cwd });
+        return {
+          ok: true,
+          stdout: '!42  open  feat: bar',
+          stderr: '',
+          exitCode: 0,
+        };
+      },
     }));
 
-    expect(result?.message).toMatch(/GitLab/i);
+    expect(result?.message).toMatch(/GitLab MR list \(via glab\)/);
+    expect(result?.message).toContain('!42');
     expect(result?.message).not.toMatch(/GitHub PR status \(via gh\)/);
     expect(ghCalls).toEqual([]);
+    expect(glabCalls).toEqual([{ args: ['mr', 'list'], cwd: '/repo' }]);
+  });
+
+  it('gitlab_mr_status: runs glab mr list when host is GitLab and glab is available', async () => {
+    const glabCalls: Array<{ args: readonly string[]; cwd: string }> = [];
+    const result = await handleRepoChatIntent('mr status', deps({
+      forgeContext: {
+        cwd: '/repo',
+        gitRoot: '/repo',
+        remotes: [{ name: 'origin', url: 'git@gitlab.com:acme/app.git', purpose: 'fetch' }],
+        hostClass: 'gitlab',
+        primaryRemoteUrl: 'git@gitlab.com:acme/app.git',
+        tools: { gh: false, glab: true },
+      },
+      async runGlab(args, cwd) {
+        glabCalls.push({ args, cwd });
+        return { ok: true, stdout: '!7 open fix: tests', stderr: '', exitCode: 0 };
+      },
+    }));
+
+    expect(result?.operation).toBe('gitlab_mr_status');
+    expect(result?.mutatesWorkspace).toBe(false);
+    expect(result?.message).toContain('GitLab MR list');
+    expect(result?.message).toContain('!7');
+    expect(glabCalls).toEqual([{ args: ['mr', 'list'], cwd: '/repo' }]);
+  });
+
+  it('gitlab_mr_status: honest message when glab missing on GitLab host', async () => {
+    const glabCalls: unknown[] = [];
+    const result = await handleRepoChatIntent('mr status', deps({
+      forgeContext: {
+        cwd: '/repo',
+        gitRoot: '/repo',
+        remotes: [{ name: 'origin', url: 'git@gitlab.com:acme/app.git', purpose: 'fetch' }],
+        hostClass: 'gitlab',
+        primaryRemoteUrl: 'git@gitlab.com:acme/app.git',
+        tools: { gh: false, glab: false },
+      },
+      async runGlab() {
+        glabCalls.push(1);
+        return { ok: true, stdout: '', stderr: '', exitCode: 0 };
+      },
+    }));
+
+    expect(result?.message).toMatch(/glab.*not on PATH/i);
+    expect(glabCalls).toEqual([]);
   });
 
   it('github_pr_status: honest message for local-only / no remote', async () => {

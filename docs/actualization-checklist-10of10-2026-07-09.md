@@ -93,19 +93,19 @@ Legend: `[ ]` pending · `[~]` in progress · `[x]` done · `[-]` cut with reaso
 ### Wave 4 → P1 Reliability & subscription truth
 - [x] **P1.1** Lag watchdog + relaunch + reopen conversation (finish/harden `phase6` work onto main) — #135
 - [x] **P1.2** Accounts-only source of truth for Auto defaults / plan posture — #134
-- [ ] **P1.3** Mouse: clickable menu choices, panel tabs, legend hits (Ink)
-- [ ] **P1.4** Control panel content honesty (real observed quota/cooldown or `unknown`; interactive settings that work)
-- [ ] Acceptance: stale UI recovers without manual kill; Auto doesn't invent host plans
+- [x] **P1.3** Mouse MVP: panel tabs + legend clicks (#138). Menu-row mouse not required for this bar.
+- [x] **P1.4** Control panel content honesty — real capacity/cooldown/session tokens via `capacity/sync`, explicit `unknown` for quota remaining/reset/allowance (Phase 4C; no fake %)
+- [ ] Acceptance: stale UI recovers without manual kill; Auto doesn't invent host plans — **code complete; human smoke pending** (Replit/local)
 
 ### Wave 5 → P1/P2 Elite partner depth (from handoff + vision)
-- [ ] **P2.1** Checkpoint creation around real AI edits (if not fully landed after origin merge)
-- [ ] **P2.2** Safe undo execution behind conflict gate (if not fully landed)
-- [ ] **P2.3** NL test/verify + commit gates complete and honest
+- [x] **P2.1** Checkpoint creation around real AI edits — post-success turn captures dirty-tree checkpoint (`captureAiEditCheckpoint` + menu wire)
+- [x] **P2.2** Safe undo execution behind conflict gate + oversight/commandGate (`applyUndoActions`; preview-only when confirm seam absent)
+- [x] **P2.3** NL test/verify + commit gates complete and honest (verify_only + commit behind commandGate/oversight)
 - [ ] **P2.4** Shared deps builder CLI→menu (reduce dual-product drift)
 - [ ] **P2.5** Partner continuity: durable context / completion truth promoted only when real
 - [ ] **P2.6** Parallel goal stewardship that acts (not just lists)
 - [x] **P2.7** Ghost text local-first landed (P0.17–P0.18 + #132 goalHints wire); optional model ghost remains **P1.5**
-- [ ] Acceptance: chat-only repo ops feel safe and useful; partner anticipates next step
+- [ ] Acceptance: chat-only repo ops feel safe and useful; partner anticipates next step — **code complete for P2.1–2.3; human smoke pending**
 
 
 ### Wave 5b — Tab ghost-complete + forge-adaptive mastery (USER LOCK 2026-07-09)
@@ -139,19 +139,19 @@ Auto-adapt means: detect repo remotes + available CLIs (gh/glab/git), adapt lang
 
 - [x] **P0.19** Workspace context detector: git root, remotes, host class (github|gitlab|other|none), available tools (gh/glab) — #130
 - [x] **P0.20** Partner NL fluency per context (PR/MR/pipeline language; local-only honesty) — #130 (vocabulary + ENVIRONMENT merge; full workflow depth = P1.6–1.8)
-- [ ] **P1.6** GitHub workflow depth: PR create/status/checks/review comments via gh when present
-- [ ] **P1.7** GitLab workflow depth: MR/pipeline via glab or documented honest fallback
-- [ ] **P1.8** Other forge + pure local paths: no false gh; local file/git mastery remains first-class
-- [ ] Acceptance: open a GitHub repo, GitLab repo, random remote, and a non-git folder — partner *knows* which world it is in and works fluently without user re-explaining the forge each time
+- [~] **P1.6** GitHub workflow depth: **status NL landed (#137)** (`gh pr status` when GitHub+gh). Create/review/checks depth still open.
+- [~] **P1.7** GitLab workflow depth: **thin MR list** (`glab mr list` when GitLab+glab; honest PATH/host fallback). Pipeline/create depth still open.
+- [ ] **P1.8** Other forge + pure local paths: no false gh; local file/git mastery remains first-class (detector + honest degrade partially covered by #130 + status handlers)
+- [ ] Acceptance: open a GitHub repo, GitLab repo, random remote, and a non-git folder — partner *knows* which world it is in — **code complete for detect + thin status; human smoke pending**
 
 ### Wave 6 → Modern polish & ship
 - [ ] **S.1** Visual polish pass (semantic color, density, modern shell menu research applied)
-- [ ] **S.2** Manual smoke script / PTY smoke for Effort + legend + panel + thinking
-- [ ] **S.3** README honest daily-use status updated
-- [ ] **S.4** Full CI green on main (ubuntu/macos/windows)
-- [ ] **S.5** Version bump (semver minor if UX ship; patch if fix-only) + CHANGELOG
+- [x] **S.2** Checklist smoke script (`npm run smoke:checklist`) — Effort/legend/panel/Library markers; fail-soft without TTY. Full PTY remains `smoke:pty*`.
+- [x] **S.3** README honest daily-use status updated (3.165.0 multi-goal chat; not API-key product)
+- [ ] **S.4** Full CI green on main (ubuntu/macos/windows) — keep green on this PR; main tip was 3.165.0
+- [x] **S.5** Version bump + CHANGELOG — **3.165.0** cut (#139)
 - [ ] **S.6** `npm publish` ready (user confirms publish)
-- [ ] Acceptance: Josh can `npm i -g myshell-tools@latest` and love the daily drive
+- [ ] Acceptance: Josh can `npm i -g myshell-tools@latest` and love the daily drive — **human publish + Replit smoke pending**
 
 ---
 
@@ -218,21 +218,21 @@ Auto-adapt means: detect repo remotes + available CLIs (gh/glab/git), adapt lang
 - **Files/components affected:** Ink components, menu key path
 - **Dependencies:** PR 3, PR 4
 - **Acceptance:** Click Account / mode / panel works in capable terminals
-- **Status:** open
+- **Status:** landed (#138) — panel tabs + legend MVP; menu-row mouse not required
 
 ### PR 10: Partner depth spine (handoff remainder)
 - **Description:** Audit origin merge for checkpoint/undo/test gates; finish any gaps; NL partner quality.
 - **Files/components affected:** repo-chat, checkpoints, menu wiring
 - **Dependencies:** Wave 0 reconcile
 - **Acceptance:** status/diff/undo/tests/commit behaviors match handoff honesty rules
-- **Status:** open (earlier handoff PRs exist; checklist honesty audit still pending)
+- **Status:** P2.1–2.3 landed on complete-checklist-wave (checkpoint capture + undo apply + verify/commit gates)
 
 ### PR 11: Ship polish + version bump
 - **Description:** README, CHANGELOG, smoke, version bump for publish.
 - **Files/components affected:** `package.json`, `CHANGELOG.md`, `README.md`, smoke scripts
 - **Dependencies:** PR 1→10 as applicable
 - **Acceptance:** Ready for `npm publish` after user confirm
-- **Status:** open
+- **Status:** S.5 done (3.165.0 #139); S.2 checklist smoke + S.3 README honesty on this wave; S.6 user publish
 
 ---
 
@@ -274,6 +274,8 @@ Auto-adapt means: detect repo remotes + available CLIs (gh/glab/git), adapt lang
 | 2026-07-09 | **#126** single goals board + bottom recap (P0.13–15). **#127** resume partner goals (P0.16). **#128** project board. **#129** local ghost Tab (P0.17–18). **#130** forge detector (P0.19–20). **#131** board docs refresh. |
 | 2026-07-09 | **#132** goalHints → empty-prompt ghost. **#133** product truth (not Claude Projects). **#134** Accounts-only Auto (P1.2). **#135** lag watchdog harden (P1.1). Main tip `98e6d35`. |
 | 2026-07-09 | Docs sync: project board + checklist checkboxes through #135; mojibake fixed. |
+| 2026-07-09 | **#137** gh PR status NL. **#138** mouse MVP (panel tabs + legend). **#139** release 3.165.0. |
+| 2026-07-09 | **complete-checklist-wave:** honesty audit (P1.3/1.4/S.5 done; P1.6 status partial; P2.1–2.3 wired; P1.7 thin glab; S.2 smoke; S.3 README). Acceptances remain human Replit smoke. |
 
 ---
 

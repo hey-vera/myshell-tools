@@ -18,7 +18,9 @@ export type RepoOperationIntent =
   | 'provider_steering'
   | 'status'
   /** NL GitHub PR status (P1.6 thin): "pr status" / "github status" — not local git status. */
-  | 'github_pr_status';
+  | 'github_pr_status'
+  /** NL GitLab MR status (P1.7 thin): "mr status" / "gitlab status" — not local git status. */
+  | 'gitlab_mr_status';
 
 export interface RepoIntentConstraint {
   readonly kind:
@@ -127,6 +129,24 @@ const GITHUB_PR_STATUS_RE: readonly RegExp[] = [
   /\bhow'?s\s+(the\s+)?pr\b/,
   /\bhow\s+is\s+(the\s+)?pr\b/,
   /\bcurrent\s+pr\b/,
+];
+
+/**
+ * GitLab MR status phrases (P1.7 thin). Checked before generic STATUS_RE so
+ * "mr status" / "gitlab status" never collapse to local `git status`.
+ */
+const GITLAB_MR_STATUS_RE: readonly RegExp[] = [
+  /\bmr\s+status\b/,
+  /\bmerge[\s-]?request\s+status\b/,
+  /\bwhat'?s\s+the\s+(mr|merge[\s-]?request)\s+status\b/,
+  /\bwhat\s+is\s+the\s+(mr|merge[\s-]?request)\s+status\b/,
+  /\bgitlab\s+(mr\s+)?status\b/,
+  /\bstatus\s+of\s+(the\s+)?(mr|merge[\s-]?request)\b/,
+  /\b(show|check|get)\s+(me\s+)?(the\s+)?(mr|merge[\s-]?request)\s+status\b/,
+  /\bhow'?s\s+(the\s+)?mr\b/,
+  /\bhow\s+is\s+(the\s+)?mr\b/,
+  /\bcurrent\s+mr\b/,
+  /\blist\s+(the\s+)?(mrs|merge[\s-]?requests)\b/,
 ];
 
 const STATUS_RE: readonly RegExp[] = [
@@ -317,7 +337,7 @@ export function inferRepoIntent(task: string): RepoIntent {
     };
   }
 
-  // PR/GitHub status before generic "status" (which would also match "pr status").
+  // PR/MR/forge status before generic "status" (which would also match "pr status").
   if (hasAny(text, GITHUB_PR_STATUS_RE)) {
     return {
       version: 1,
@@ -327,6 +347,18 @@ export function inferRepoIntent(task: string): RepoIntent {
       needsVerification: false,
       constraints,
       rationale: 'natural-language GitHub PR status request',
+    };
+  }
+
+  if (hasAny(text, GITLAB_MR_STATUS_RE)) {
+    return {
+      version: 1,
+      operation: 'gitlab_mr_status',
+      confidence: 'high',
+      mutatesWorkspace: false,
+      needsVerification: false,
+      constraints,
+      rationale: 'natural-language GitLab MR status request',
     };
   }
 
