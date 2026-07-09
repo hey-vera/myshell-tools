@@ -12,18 +12,15 @@ import {
   type Intensity,
 } from '../core/capacity-allocator.js';
 import {
-  modeLabel,
   autoModeForPlanInfos,
   classifyPlan,
   describePlanSet,
-  planDisplayLabel,
 } from '../core/policy.js';
 import type { PlanInfo } from '../core/policy.js';
 import type { Mode } from '../core/policy.js';
 import { autoPostureForMode } from '../core/governor.js';
 import type { AppConfig } from '../infra/config.js';
 import type { ConversationMeta } from '../infra/conversation-store.js';
-import { dim } from '../ui/theme.js';
 
 export const PROVIDER_LABEL: Record<string, string> = {
   claude: 'Claude',
@@ -150,49 +147,4 @@ export function autoModeReason(env: EnvironmentStatus, autoSmart = false): strin
   return `${planPart} → ${posture}`;
 }
 
-/**
- * One-line, per-provider honest description of a classified plan for the
- * "Auto detected" breakdown. Shows the reported tier + the raw label when the
- * CLI gave one, or an explicit "no plan reported" when it didn't — never a guess.
- */
-function planLineFor(p: ProviderPlanInfo): string {
-  if (p.info.confidence === 'none') {
-    return `${p.label} — no plan reported`;
-  }
-  // Sub-tier-aware label: "Max 5x" / "Max 20x" when known, else the plain tier.
-  const tierLabel = planDisplayLabel(p.info);
-  // Show the raw label alongside the tier when they differ (e.g. label "Max 20x",
-  // raw "default_claude_max_20x") so the breakdown is fully traceable.
-  const raw = p.info.raw;
-  const detail = raw !== null && raw.toLowerCase() !== tierLabel.toLowerCase() ? ` (${raw})` : '';
-  return `${p.label} — ${tierLabel}${detail} · observed`;
-}
 
-/**
- * Render the "Auto detected" breakdown: every authenticated provider with its
- * classified plan, the resulting mode, and the deciding rule. This is the honest
- * answer to "account for all of them and what kind" — it shows exactly what was
- * detected per provider (including providers that report nothing) and why Auto
- * landed where it did. Returns lines (no trailing newline) for the caller to write.
- */
-export function renderAutoDetected(env: EnvironmentStatus, color: boolean): string[] {
-  const plans = authedProviderPlans(env);
-  const mode = autoModeForPlanInfos(plans.map((p) => p.info));
-  const lines: string[] = [dim('  Auto detected:', color)];
-
-  if (plans.length === 0) {
-    lines.push(dim('    (no providers signed in)', color));
-  } else {
-    for (const p of plans) {
-      lines.push(dim(`    • ${planLineFor(p)}`, color));
-    }
-  }
-
-  lines.push(
-    dim(
-      `    → ${describePlanSet(plans.map((p) => p.info))} ⇒ ${modeLabel(mode)} → ${autoPostureForMode(mode)}`,
-      color,
-    ),
-  );
-  return lines;
-}
