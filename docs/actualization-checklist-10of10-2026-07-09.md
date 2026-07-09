@@ -1,12 +1,12 @@
 # myshell-tools 10/10 Actualization Checklist
 
-**Status:** ACTIVE GÇö living checklist. Orchestrator + Grok agents execute until done.  
+**Status:** ACTIVE â†’ï¿½ living checklist. Orchestrator + Grok agents execute until done.  
 **Date opened:** 2026-07-09  
-**Owner vision:** one chat to rule them all GÇö subscription-native elite partner CLI (Claude / Codex / Grok / OpenCode). OpenCode Go API key is the only intentional key exception. Not an API-key product.
+**Owner vision:** one chat to rule them all â†’ï¿½ subscription-native elite partner CLI (Claude / Codex / Grok / OpenCode). OpenCode Go API key is the only intentional key exception. Not an API-key product.
 
 **Operating mode (user-authorized 2026-07-09):**
 - Grok / xAI agents implement (not Claude.md opencode/codex orchestrator rules).
-- Work on feature branches GåÆ PR GåÆ **full green CI** GåÆ merge to `main`.
+- Work on feature branches â†’ï¿½ PR â†’ï¿½ **full green CI** â†’ï¿½ merge to `main`.
 - Version bump + `npm publish` only after the checklist is done and green.
 - Parallelize independent PRs; serialize only when file ownership overlaps.
 - Online research + adversarial self-check before claiming done.
@@ -24,12 +24,12 @@
 
 A developer or vibe coder can open `myshell-tools` and:
 
-1. **See truth** GÇö Effort Mode, accounts, goals, and status never lie.
-2. **Never get stuck** GÇö every surface has visible escape/nav; legend teaches keys.
-3. **Chat as the product** GÇö natural language drives plan, code, research, goals, parallel work.
-4. **Feel modern** GÇö spacing, legend, responsive TUI (Claude Code / Warp / lazygit class).
-5. **Stay reliable** GÇö lag self-heals; resume reopens conversation; partner engages parked goals.
-6. **Subscription-native** GÇö Accounts inventory is truth; ambient CLI detect is not a home-screen story.
+1. **See truth** â†’ï¿½ Effort Mode, accounts, goals, and status never lie.
+2. **Never get stuck** â†’ï¿½ every surface has visible escape/nav; legend teaches keys.
+3. **Chat as the product** â†’ï¿½ natural language drives plan, code, research, goals, parallel work.
+4. **Feel modern** â†’ï¿½ spacing, legend, responsive TUI (Claude Code / Warp / lazygit class).
+5. **Stay reliable** â†’ï¿½ lag self-heals; resume reopens conversation; partner engages parked goals.
+6. **Subscription-native** â†’ï¿½ Accounts inventory is truth; ambient CLI detect is not a home-screen story.
 
 **Measurable done:** user can run a single Replit/local session and complete: change effort (box updates), open chat, see clear legend, cycle mode with Shift+Tab, open/close control panel without stuck state, type a message without eternal GÇ£ThinkingGÇªGÇ¥, see one goals surface + bottom recap, resume with partner addressing inactive goals, kill is not required for lag recovery.
 
@@ -44,68 +44,68 @@ A developer or vibe coder can open `myshell-tools` and:
 | Mode list keys | Display order is Budget=1 GÇª Auto=5; **keys must match** (`ALL_LEVELS` order). |
 | Auto-detected block | **Remove** from mode switcher UI. Auto defaults from **Accounts** (myshell-managed), not ambient host detection marketing. |
 | Spacing | 1 blank line before/after major home sections (Effort, Recent, Session Manager, controls). |
-| Chat legend | Clustered, not edge-padded: e.g. `GåÉ menu -+ GçºTab mode -+ GåÆ panel -+ Esc interrupt`. |
+| Chat legend | Clustered, not edge-padded: e.g. `â†’ï¿½ menu -+ â†’Tab mode -+ â†’ï¿½ panel -+ Esc interrupt`. |
 | Goals chrome | **One** high-quality board; remove redundant strip OR merge into board. **Recap docks at bottom** (replacing lesser board position). |
 | Resume partner | Open with short status + ask resume/drop/adjust for parked goals (not silent museum). |
 | Thinking | State machine: prep phases honest (`Resuming` / `Routing` / GÇª); **Thinking** only when model is composing; then `Responding` / tool verbs. No eternal Thinking on submit. |
 | Control panel | Always escapable; Tab sections discoverable; never a black hole. |
 | Mouse | Keyboard perfect first; mouse click on menu rows / tabs / legend as P1 polish. |
-| Primary env | Replit + local Windows both matter; lag watchdog is product, not GÇ£userGÇÖs problem.GÇ¥ |
+| Primary env | Replit + local Windows both matter; lag watchdog is product, not GÇ£userâ†’ï¿½s problem.GÇ¥ |
 
 ---
 
-## Checklist GÇö progress tracking
+## Checklist â†’ï¿½ progress tracking
 
 Legend: `[ ]` pending -+ `[~]` in progress -+ `[x]` done -+ `[-]` cut with reason
 
-### Wave 0 GÇö Foundation / git hygiene
-- [ ] Reconcile local `main` with `origin/main` (diverged 8 ahead / 4 behind as of open)
-- [ ] Land this checklist on a branch and keep it updated every merge
-- [ ] Baseline: `npm test`, `npm run typecheck`, `npm run lint`, `npm run build` green on base
+### Wave 0 â†’ï¿½ Foundation / git hygiene
+- [x] Reconcile local `main` with `origin/main` (diverged 8 ahead / 4 behind as of open)
+- [x] Land this checklist on a branch and keep it updated every merge
+- [x] Baseline: `npm test`, `npm run typecheck`, `npm run lint`, `npm run build` green on base
 
-### Wave 1 GÇö P0 Trust & feel (home + effort)  **GåÉ START**
-- [ ] **P0.1** Dynamic Effort Mode box (header/footer reflect real mode + short description)
-- [ ] **P0.2** Fix mode key mapping `[1]GÇô[5]` to match `ALL_LEVELS` (BudgetGÇªAuto)
-- [ ] **P0.3** Remove `Auto detected:` block from mode switcher
-- [ ] **P0.4** Drop/replace redundant confirmation line after mode change
-- [ ] **P0.5** Home section spacing (Recent + Session Manager rhythm)
-- [ ] **P0.6** Update unit tests locked to old Auto-only mockup / inverted keys
-- [ ] Acceptance: pick Budget GåÆ home shows Budget; no Auto-detected dump; sections breathe
+### Wave 1 â†’ï¿½ P0 Trust & feel (home + effort)  **â†’ï¿½ START**
+- [x] **P0.1** Dynamic Effort Mode box (header/footer reflect real mode + short description)
+- [x] **P0.2** Fix mode key mapping `[1]â†’ï¿½[5]` to match `ALL_LEVELS` (BudgetGÇªAuto)
+- [x] **P0.3** Remove `Auto detected:` block from mode switcher
+- [x] **P0.4** Drop/replace redundant confirmation line after mode change
+- [x] **P0.5** Home section spacing (Recent + Session Manager rhythm)
+- [x] **P0.6** Update unit tests locked to old Auto-only mockup / inverted keys
+- [ ] Acceptance: pick Budget â†’ï¿½ home shows Budget; no Auto-detected dump; sections breathe
 
-### Wave 2 GÇö P0 Chat navigation & partner chrome
-- [ ] **P0.7** Redesign `BottomLegend` (clustered keys; control panel not exiled right)
+### Wave 2 â†’ï¿½ P0 Chat navigation & partner chrome
+- [x] **P0.7** Redesign `BottomLegend` (clustered keys; control panel not exiled right)
 - [ ] **P0.8** Shift+Tab cycles **conversation** Effort Mode; show current mode in legend or input chrome
-- [ ] **P0.9** Empty-buffer `GåÆ` opens control panel; `GåÉ` back to menu (focus model documented + tested)
+- [ ] **P0.9** Empty-buffer `â†’ï¿½` opens control panel; `â†’ï¿½` back to menu (focus model documented + tested)
 - [ ] **P0.10** Control panel: visible nav footer; Esc always closes; Tab/Shift+Tab sections; no stuck input
 - [ ] **P0.11** Move crammed `ESC to exit` into modern legend/footer patterns on home
 - [ ] Acceptance: new user can discover mode + panel without reading source
 
-### Wave 3 GÇö P0 Thinking + goals + resume partner
+### Wave 3 â†’ï¿½ P0 Thinking + goals + resume partner
 - [ ] **P0.12** Thinking state machine (no optimistic eternal Thinking on submit)
 - [ ] **P0.13** Single goals surface (keep best board quality; kill redundant mini-board)
 - [ ] **P0.14** Recap at bottom (replace lesser board position)
 - [ ] **P0.15** Goal board quality: state, progress, next action hint; not dual clutter
 - [ ] **P0.16** Resume partnering: first orientation addresses parked/inactive goals
-- [ ] Acceptance: type message GåÆ progressive honest status GåÆ response; resume talks about goals
+- [ ] Acceptance: type message â†’ï¿½ progressive honest status â†’ï¿½ response; resume talks about goals
 
-### Wave 4 GÇö P1 Reliability & subscription truth
+### Wave 4 â†’ï¿½ P1 Reliability & subscription truth
 - [ ] **P1.1** Lag watchdog + relaunch + reopen conversation (finish/harden `phase6` work onto main)
 - [ ] **P1.2** Accounts-only source of truth for Auto defaults / plan posture
 - [ ] **P1.3** Mouse: clickable menu choices, panel tabs, legend hits (Ink)
 - [ ] **P1.4** Control panel content honesty (real observed quota/cooldown or `unknown`; interactive settings that work)
-- [ ] Acceptance: stale UI recovers without manual kill; Auto doesnGÇÖt invent host plans
+- [ ] Acceptance: stale UI recovers without manual kill; Auto doesnâ†’ï¿½t invent host plans
 
-### Wave 5 GÇö P1/P2 Elite partner depth (from handoff + vision)
+### Wave 5 â†’ï¿½ P1/P2 Elite partner depth (from handoff + vision)
 - [ ] **P2.1** Checkpoint creation around real AI edits (if not fully landed after origin merge)
 - [ ] **P2.2** Safe undo execution behind conflict gate (if not fully landed)
 - [ ] **P2.3** NL test/verify + commit gates complete and honest
-- [ ] **P2.4** Shared deps builder CLIGåömenu (reduce dual-product drift)
+- [ ] **P2.4** Shared deps builder CLIâ†’ï¿½menu (reduce dual-product drift)
 - [ ] **P2.5** Partner continuity: durable context / completion truth promoted only when real
 - [ ] **P2.6** Parallel goal stewardship that acts (not just lists)
 - [ ] **P2.7** Ghost text / local completions (history, paths, slash) if time
 - [ ] Acceptance: chat-only repo ops feel safe and useful; partner anticipates next step
 
-### Wave 6 GÇö Modern polish & ship
+### Wave 6 â†’ï¿½ Modern polish & ship
 - [ ] **S.1** Visual polish pass (semantic color, density, modern shell menu research applied)
 - [ ] **S.2** Manual smoke script / PTY smoke for Effort + legend + panel + thinking
 - [ ] **S.3** README honest daily-use status updated
@@ -122,12 +122,12 @@ Legend: `[ ]` pending -+ `[~]` in progress -+ `[x]` done -+ `[-]` cut with reaso
 - **Description:** Make Effort Mode box dynamic from config; fix `runModeSelect` key map to `ALL_LEVELS`; remove `renderAutoDetected` from mode UI; remove/replace redundant confirmation line; update tests (`menu-render`, `menu-flow`).
 - **Files/components affected:** `src/interface/menu-render.ts`, `src/interface/menu-new-conversation.ts`, `src/interface/menu-settings.ts`, `src/interface/menu-auto-mode.ts` (optional keep helper), `test/unit/menu-render.test.ts`, `test/unit/menu-flow.test.ts`
 - **Dependencies:** None
-- **Acceptance:** Budget selection updates home box; keys 1GÇô5 match labels; no Auto-detected block
+- **Acceptance:** Budget selection updates home box; keys 1â†’ï¿½5 match labels; no Auto-detected block
 
 ### PR 2: Home spacing + footer legend modernization
 - **Description:** Section spacing around Recent / Session Manager; home ESC into cleaner footer; no vertical jumble.
 - **Files/components affected:** `src/interface/menu-render.ts`, `src/interface/menu-new-conversation.ts`, nav-footer helpers, related tests
-- **Dependencies:** PR 1 preferred (same files GÇö can merge into PR 1 if safer as single home UX PR)
+- **Dependencies:** PR 1 preferred (same files â†’ï¿½ can merge into PR 1 if safer as single home UX PR)
 - **Acceptance:** Visual separation matches modern TUI density
 
 ### PR 3: Chat legend + Shift+Tab conversation mode + panel keys
@@ -140,12 +140,12 @@ Legend: `[ ]` pending -+ `[~]` in progress -+ `[x]` done -+ `[-]` cut with reaso
 - **Description:** Always-visible panel chrome footer; guaranteed Esc close; focus model; prevent input black hole; cluster help text.
 - **Files/components affected:** `src/interface/ui/ControlPanel.tsx`, `src/interface/ui/App.tsx`, `src/interface/ui/control-panel-model.ts`, tests
 - **Dependencies:** PR 3 (shared App/input focus)
-- **Acceptance:** Open GåÆ Tab sections GåÆ Esc back to chat always works
+- **Acceptance:** Open â†’ï¿½ Tab sections â†’ï¿½ Esc back to chat always works
 
 ### PR 5: Thinking state machine
 - **Description:** Replace optimistic eternal Thinking; progressive honest labels; Thinking only for model response composition.
 - **Files/components affected:** `src/interface/menu.ts` (`inkBeginTurn`), `src/interface/ui/reduce.ts`, `src/interface/ui/state.ts`, `src/interface/ui/StatusBlock.tsx`, `src/interface/render.ts`, tests
-- **Dependencies:** None (parallel with PR 1GÇô2)
+- **Dependencies:** None (parallel with PR 1â†’ï¿½2)
 - **Acceptance:** Submit never shows 16s silent Thinking with no phase change
 
 ### PR 6: Single goals board + bottom recap + resume partnering
@@ -164,7 +164,7 @@ Legend: `[ ]` pending -+ `[~]` in progress -+ `[x]` done -+ `[-]` cut with reaso
 - **Description:** Auto defaults from Accounts inventory; remove ambient detect from user-facing Auto story; keep doctor/internal detect if needed.
 - **Files/components affected:** `menu-auto-mode.ts`, subscriptions, settings, tests
 - **Dependencies:** PR 1
-- **Acceptance:** 0 accounts GçÆ no fake Pro observed marketing on mode screen
+- **Acceptance:** 0 accounts â†’ï¿½ no fake Pro observed marketing on mode screen
 
 ### PR 9: Mouse support (optional wave)
 - **Description:** Clickable rows/tabs/legend after keyboard solid.
@@ -181,7 +181,7 @@ Legend: `[ ]` pending -+ `[~]` in progress -+ `[x]` done -+ `[-]` cut with reaso
 ### PR 11: Ship polish + version bump
 - **Description:** README, CHANGELOG, smoke, version bump for publish.
 - **Files/components affected:** `package.json`, `CHANGELOG.md`, `README.md`, smoke scripts
-- **Dependencies:** PR 1GÇô10 as applicable
+- **Dependencies:** PR 1â†’ï¿½10 as applicable
 - **Acceptance:** Ready for `npm publish` after user confirm
 
 ---
@@ -191,10 +191,10 @@ Legend: `[ ]` pending -+ `[~]` in progress -+ `[x]` done -+ `[-]` cut with reaso
 | Safe parallel | Notes |
 |---------------|-------|
 | PR1+PR5+PR7 | Different primary concerns |
-| PR3 alone or after PR1 | Shared chat UI GÇö careful |
+| PR3 alone or after PR1 | Shared chat UI â†’ï¿½ careful |
 | PR6 after PR5 | Layout coupling |
 | PR8 after PR1 | Mode/Auto story |
-| PR2 fold into PR1 | Same home render file GÇö prefer combine |
+| PR2 fold into PR1 | Same home render file â†’ï¿½ prefer combine |
 
 ---
 
@@ -212,6 +212,8 @@ Legend: `[ ]` pending -+ `[~]` in progress -+ `[x]` done -+ `[-]` cut with reaso
 ---
 
 ## Session log
+
+| 2026-07-09 | **#118** green+merged (checklist+3.164.0). **#119** legend green+merged. **#120** Effort Mode green+merged after knip fix. Closed broken #110-117. |
 
 | Date | Event |
 |------|--------|
