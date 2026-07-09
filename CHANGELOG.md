@@ -4,6 +4,48 @@ All notable changes to **myshell-tools** are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.165.0] - 2026-07-09 — actualization UX and reliability wave
+
+Subscription-native one-chat partner polish: truth in Effort Mode and Accounts,
+discoverable chat chrome, goals that resume with you, forge-aware help, and
+self-healing when the TUI stalls. Not a Claude Projects clone; not an API-key
+product.
+
+### Added
+- **Shift+Tab conversation Effort Mode** — cycles the active conversation’s
+  mode without changing the global default used for new chats; current mode is
+  visible in chat chrome.
+- **Tab ghost complete** — local-first ghost text in the chat composer (Tab to
+  accept), including empty-prompt hints wired from the goals board.
+- **Workspace forge detector** — auto-classifies GitHub / GitLab / local (and
+  peers) so workflow help matches the repo you are in, not a GitHub-only habit.
+- **Natural-language GitHub PR status** — when `gh` is available, ask about PR
+  state in chat instead of leaving the partner surface.
+- **Optional mouse** — clickable control-panel tabs and legend hits (keyboard
+  remains the primary path).
+
+### Changed
+- **Live Effort Mode box** on home — reflects the real configured mode and key
+  mapping (Budget→Auto as `1`–`5`); no ambient “Auto detected: Pro” theater.
+- **Chat bottom legend** clustered for discoverability (menu, mode, panel,
+  interrupt) instead of edge-padded key soup.
+- **Honest turn phases** — Preparing / routing-style prep before **Thinking**,
+  then Responding / tool verbs; no eternal Thinking on submit.
+- **Single goals board + bottom recap** — one high-quality goals surface; recap
+  docks at the bottom instead of a second mini-board.
+- **Resume partner orientation** — reopening a conversation surfaces parked /
+  inactive goals and asks resume / drop / adjust rather than silent museum mode.
+- **Auto defaults from Accounts** — plan posture and Auto capacity come from
+  myshell-managed Accounts inventory, not ambient host CLI marketing.
+- **Product-truth docs** — project board + checklist lock multi-goal one-chat
+  north star; explicitly not “create project / paste brief / drop PDFs.”
+
+### Fixed
+- **Control panel nav** — visible section nav, Esc always closes, no stuck input
+  black hole.
+- **Lag / stale UI watchdog** — hardened relaunch so a frozen TUI recovers and
+  can reopen the conversation without a manual process kill.
+
 ## [3.163.0] - 2026-07-06 — home menu + per-conversation workspaces
 
 ### Added

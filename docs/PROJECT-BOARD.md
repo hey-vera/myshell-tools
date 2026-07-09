@@ -1,6 +1,6 @@
 # myshell-tools — Active project board (orchestrator)
 
-Last updated: 2026-07-09 (post #132–#135)
+Last updated: 2026-07-09 (tip **3.165.0** cut)
 
 ## North star
 One subscription-native chat to rule them all. Elite partner. Not API-key product.
@@ -50,18 +50,22 @@ myshell-tools is **not** Claude Projects and must not become a "create project /
 | #133 | Product truth: multi-goal one-chat, not Claude Projects |
 | #134 | Accounts-only Auto truth (no ambient Pro theater) |
 | #135 | Lag/stale UI watchdog relaunch harden |
+| #136 | Docs: board + checklist sync after #132–#135 |
+| #137 | GitHub PR status via NL when `gh` available |
+| #138 | Optional mouse clicks (panel tabs + legend) |
+| — | **3.165.0** release cut (this branch) |
 
-Main tip: `98e6d35` (`origin/main` at last board update).
+Main tip at cut base: `034742f` (`#138` on `origin/main`). Release branch bumps package + changelog to **3.165.0**.
 
 ## Open / in flight
-(none — `gh pr list --state open` empty at last update)
+(none)
 
-## Next queue (priority)
-1. **P1.5** optional budgeted model ghost (toggle; fail-soft; never blocks typing)
-2. **P1.6–1.8** GitHub/GitLab/other workflow depth (`gh`/`glab` / honest degrade)
-3. **P1.3** mouse support (menu rows / panel tabs / legend)
-4. **P1.4** control panel content honesty (real quota/cooldown or `unknown`)
-5. Wave 6 ship polish when ready: smoke, README honesty, version bump, `npm publish` (user confirms)
+## Next (priority)
+1. **User smoke** the 3.165.0 build (Effort box, Shift+Tab, legend/panel, goals+recap, resume, Tab ghost, forge/`gh` PR status, Accounts Auto, lag recovery, optional mouse)
+2. **`npm publish`** (user does this — not agents)
+3. **P1.5** optional budgeted model ghost (toggle; fail-soft; never blocks typing)
+4. **P1.6–1.8** GitHub/GitLab/other workflow depth (`gh`/`glab` / honest degrade)
+5. **P1.4** control panel content honesty (real quota/cooldown or `unknown`)
 6. P2 partner-depth audit (checkpoints/undo/NL gates landed earlier — verify honesty vs checklist)
 
 ## Operating rules
