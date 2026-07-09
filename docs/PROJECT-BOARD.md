@@ -1,6 +1,6 @@
-﻿# myshell-tools — Active project board (orchestrator)
+# myshell-tools — Active project board (orchestrator)
 
-Last updated: 2026-07-09 (session, post-landing)
+Last updated: 2026-07-09 (post #132–#135)
 
 ## North star
 One subscription-native chat to rule them all. Elite partner. Not API-key product.
@@ -45,20 +45,24 @@ myshell-tools is **not** Claude Projects and must not become a "create project /
 | #128 | Project board (v1) |
 | #129 | Local-first ghost text + Tab accept |
 | #130 | Forge context detector (GH/GL/local) |
+| #131 | Docs: refresh board after #126–#130 |
+| #132 | Wire board goalHints → empty-prompt ghost |
+| #133 | Product truth: multi-goal one-chat, not Claude Projects |
+| #134 | Accounts-only Auto truth (no ambient Pro theater) |
+| #135 | Lag/stale UI watchdog relaunch harden |
 
-Main tip: see `git log origin/main -1`.
+Main tip: `98e6d35` (`origin/main` at last board update).
 
 ## Open / in flight
-(none critical at last update — verify with `gh pr list`)
+(none — `gh pr list --state open` empty at last update)
 
 ## Next queue (priority)
-1. Wire live goalHints into ghost empty-prompt (App → InputBox) if not fully wired
-2. P1.5 optional model ghost (budgeted, toggle)
-3. P1.6–1.8 GitHub/GitLab workflow depth (`gh`/`glab`)
-4. P1.1 lag watchdog harden
-5. P1.2 accounts-only Auto truth
-6. P1.3 mouse support
-7. Checklist accuracy pass + version bump + npm publish when user ready
+1. **P1.5** optional budgeted model ghost (toggle; fail-soft; never blocks typing)
+2. **P1.6–1.8** GitHub/GitLab/other workflow depth (`gh`/`glab` / honest degrade)
+3. **P1.3** mouse support (menu rows / panel tabs / legend)
+4. **P1.4** control panel content honesty (real quota/cooldown or `unknown`)
+5. Wave 6 ship polish when ready: smoke, README honesty, version bump, `npm publish` (user confirms)
+6. P2 partner-depth audit (checkpoints/undo/NL gates landed earlier — verify honesty vs checklist)
 
 ## Operating rules
 - Branch from origin/main only
