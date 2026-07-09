@@ -439,6 +439,12 @@ export function reduce(state: UiState, action: Action): UiState {
       return { ...state, board, boardEnabled: action.enabled };
     }
 
+    // -- recap/set: dock (or clear) the bottom ※ recap orientation text.
+    case 'recap/set': {
+      const trimmed = action.text === null ? null : action.text.trim();
+      return { ...state, recap: trimmed !== null && trimmed.length > 0 ? trimmed : null };
+    }
+
     // -- prose: already-cleaned. Apply render.ts's fresh-line heuristics, then
     //    append. The streaming `●` marker is view chrome (3b), tracked here via
     //    markerEmitted. breakBeforeNextProse (tier boundary mid-answer) and

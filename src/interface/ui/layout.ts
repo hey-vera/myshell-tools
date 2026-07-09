@@ -102,6 +102,12 @@ export const INPUT_ROWS = 3;
  *  viewport budget so the stream never overlaps it. */
 export const LEGEND_ROWS = 1;
 /**
+ * Rows reserved for the bottom-docked ※ recap orientation line (above the
+ * composer). Callers pass this when a recap is present; pass 0 when absent so
+ * the budget does not reserve phantom rows.
+ */
+export const RECAP_DOCK_ROWS = 1;
+/**
  * The composer body's MAX_VISIBLE_ROWS cap (InputBox.tsx clamps a huge paste to
  * its last N *logical* rows). Kept here so the layout budget and the editor agree
  * on the same constant. NOTE: each shown logical row may SOFT-WRAP to several
@@ -596,14 +602,32 @@ export interface BoardPlan {
   readonly overflow: number;
 }
 
+/**
+ * First real next-step text on a board row (active preferred, else pending).
+ * Mirrors StatusBlock.boardNextAction so the height plan and view agree.
+ * PURE; never fabricates.
+ */
+export function boardNextActionText(row: GoalBoardRow): string | undefined {
+  if (row.todos === undefined || row.todos.length === 0) return undefined;
+  const active = row.todos.find((t) => t.status === 'active');
+  if (active !== undefined) return active.text;
+  const pending = row.todos.find((t) => t.status === 'pending');
+  if (pending !== undefined) return pending.text;
+  return undefined;
+}
+
 function boardRowHeight(row: GoalBoardRow): number {
   // Base goal line + optional approach line (always, for persistent viz) +
-  // running todos only (live checklist). This keeps the layout budget
-  // honest so StatusBlock + stream + input never overflow viewport.
+  // next-action hint for non-running goals (running expands the checklist) +
+  // running todos only (live checklist). Keeps the layout budget honest so
+  // StatusBlock + stream + input never overflow the viewport.
   const base = 1;
   const approachLines = row.approach ? 1 : 0;
+  // Running rows expand the checklist — the active todo is already visible there.
+  const nextLines =
+    row.state !== 'running' && boardNextActionText(row) !== undefined ? 1 : 0;
   const todoLines = row.state === 'running' ? (row.todos?.length ?? 0) : 0;
-  return base + approachLines + todoLines;
+  return base + approachLines + nextLines + todoLines;
 }
 
 function boardRowsHeight(rows: readonly GoalBoardRow[]): number {

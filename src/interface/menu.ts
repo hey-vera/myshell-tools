@@ -1378,12 +1378,12 @@ export async function runChatLoop(
     });
   }
 
-  // Recap on resume: replace the weak tail-echo with a real ※ recap line when one
-  // is available; otherwise stay silent (prior behaviour with no recap). Resolved
+  // Recap on resume: dock a real ※ recap orientation line at the bottom (near
+  // the composer) when one is available; otherwise stay silent. Resolved
   // CONCURRENTLY (NOT awaited here) so a stale-cache recap's MANAGER-tier model call
   // can't stall input — the composer is already live (above). resolveRecap's side
   // effects (storing the fresh recap + the smart title) still happen. Fail-soft: any
-  // error is swallowed, never thrown, never blocks. The write is gated on the
+  // error is swallowed, never thrown, never blocks. The dock update is gated on the
   // conversation still being live (`conversationLive`, cleared in the loop's finally)
   // so a late recap that resolves AFTER the user has left can't corrupt the menu.
   const recapResolved: Promise<void> = (async (): Promise<void> => {
@@ -1394,10 +1394,16 @@ export async function runChatLoop(
       recapText = null; // fail-soft: a recap failure must never block resume
     }
     if (recapText !== null && conversationLive) {
-      // First-touch explainer for the ※ glyph, once ever, printed ABOVE the recap.
+      // First-touch explainer for the ※ glyph, once ever (transcript chrome).
       await showFirstTouch('recap');
       if (conversationLive) {
-        out.write('\n  ' + formatRecapLine(recapText, out.color) + '\n\n');
+        // Prefer the bottom dock (Ink). Fall back to a transcript line on legacy
+        // sinks that have no setRecap seam.
+        if (typeof out.setRecap === 'function') {
+          out.setRecap(recapText);
+        } else {
+          out.write('\n  ' + formatRecapLine(recapText, out.color) + '\n\n');
+        }
       }
     }
   })();
@@ -1859,10 +1865,12 @@ export async function runChatLoop(
     for (const ac of backgroundGoals) ac.abort();
     backgroundGoals.clear();
     // Mark the conversation no longer live FIRST so a still-pending concurrent recap
-    // (fired on resume) sees the gate closed and skips its write into the menu.
+    // (fired on resume) sees the gate closed and skips its dock/write into the menu.
     conversationLive = false;
+    // Clear the bottom recap dock so it never lingers on the menu surface.
+    if (typeof out.setRecap === 'function') out.setRecap(null);
     // Let the concurrent recap settle so its side effects (storing the fresh recap +
-    // the smart title) complete; the write itself is already gated out above. Never
+    // the smart title) complete; the dock/write itself is already gated out above. Never
     // throws (the promise swallows its own errors).
     await recapResolved;
     // Hide the chat composer on exit (back to the menu / app exit) so it never
@@ -1960,7 +1968,12 @@ export async function runChatLoop(
         recapText = null;
       }
       if (recapText !== null) {
-        out.write('\n  ' + formatRecapLine(recapText, out.color) + '\n\n');
+        // Dock at the bottom (Ink); fall back to a transcript line on legacy sinks.
+        if (typeof out.setRecap === 'function') {
+          out.setRecap(recapText);
+        } else {
+          out.write('\n  ' + formatRecapLine(recapText, out.color) + '\n\n');
+        }
       } else {
         out.write(
           dim('  Not enough yet to recap — keep going and I\'ll have one for you.\n', out.color),

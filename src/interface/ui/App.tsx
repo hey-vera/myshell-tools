@@ -15,8 +15,8 @@ import { Stream, CommittedLine } from './Stream.js';
 import { StatusBlock } from './StatusBlock.js';
 import { ControlPanel } from './ControlPanel.js';
 import { BottomLegend } from './BottomLegend.js';
-import { GoalQuickStrip } from './GoalQuickStrip.js';
-import { selectGoalQuickRows, goalStripPlannedRows, layoutForHeight, streamWrappedRows, tailStreamToRows, INPUT_ROWS, LEGEND_ROWS } from './layout.js';
+import { RecapDock } from './RecapDock.js';
+import { layoutForHeight, streamWrappedRows, tailStreamToRows, INPUT_ROWS, LEGEND_ROWS, RECAP_DOCK_ROWS } from './layout.js';
 import { backfillTerminalSize } from './mount.js';
 import type { Action, TranscriptLine, UiState } from './state.js';
 
@@ -645,13 +645,21 @@ function AppBody({
     // past the viewport. The planner shrinks the stream/status region to fit; the
     // InputBox itself caps its own visible physical rows to the viewport (keeping
     // the caret/tail row) for an extreme paste, so the total is ALWAYS <= viewport.
-    // Reserve rows for the GoalQuickStrip + legend so status/stream/strip/input/legend
-    // never overflow the viewport (Phase 2).
-    const stripRows = goalStripPlannedRows(uiState.board.length);
-    const plan = layoutForHeight(uiState, budgetRows, streamLines, inputBoxRows + LEGEND_ROWS + stripRows);
+    // Reserve rows for the bottom dock (※ recap when present + legend) so
+    // status/stream/input/legend never overflow the viewport. Single goals surface
+    // is the StatusBlock BOARD — GoalQuickStrip is no longer rendered.
+    const recapRows =
+      typeof uiState.recap === 'string' && uiState.recap.trim().length > 0
+        ? RECAP_DOCK_ROWS
+        : 0;
+    const plan = layoutForHeight(
+      uiState,
+      budgetRows,
+      streamLines,
+      inputBoxRows + LEGEND_ROWS + recapRows,
+    );
     const cappedStreamBuffer = tailStreamToRows(uiState.stream.buffer, liveColumns, plan.streamCap);
-    const quickRows = selectGoalQuickRows(uiState);
-    return { streamLines, plan, cappedStreamBuffer, quickRows };
+    return { streamLines, plan, cappedStreamBuffer };
     // The keys are EXACTLY the inputs layoutForHeight / streamWrappedRows /
     // tailStreamToRows read: the live buffer, the geometry, and the reducer fields
     // the planner consults (turnActive gates visibility; goals drive the panel
@@ -669,6 +677,7 @@ function AppBody({
     // board snapshot or its enabled flag changes (off → these never change → no-op).
     uiState?.board,
     uiState?.boardEnabled,
+    uiState?.recap,
     liveColumns,
     liveRows,
     inputBoxRows,
@@ -703,7 +712,7 @@ function AppBody({
     // wrapped/pasted composer can never push the dynamic region past the viewport;
     // the SAME plan flows into StatusBlock so its panel plan and this stream cap
     // agree (see layout.ts).
-    const { streamLines, plan, cappedStreamBuffer, quickRows } = liveLayout;
+    const { streamLines, plan, cappedStreamBuffer } = liveLayout;
     return (
       <Box flexDirection="column">
         <CommittedTranscript lines={uiState.committed} color={color} />
@@ -762,8 +771,10 @@ function AppBody({
             <Stream buffer={cappedStreamBuffer} color={color} />
           </>
         )}
+        {/* Bottom dock: ※ recap orientation (replaces the lesser GoalQuickStrip).
+            Single goals surface remains the StatusBlock BOARD above. */}
         {!fullscreenPanelOpen && chatActive && (
-          <GoalQuickStrip rows={quickRows} color={color} columns={liveColumns} />
+          <RecapDock text={uiState.recap} color={color} columns={liveColumns} />
         )}
         {/*
           Focus model: when the Control Panel is open, InputBox is inactive
