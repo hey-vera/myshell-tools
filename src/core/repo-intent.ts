@@ -16,7 +16,9 @@ export type RepoOperationIntent =
   | 'commit_current_ai_change'
   | 'plan_only'
   | 'provider_steering'
-  | 'status';
+  | 'status'
+  /** NL GitHub PR status (P1.6 thin): "pr status" / "github status" — not local git status. */
+  | 'github_pr_status';
 
 export interface RepoIntentConstraint {
   readonly kind:
@@ -108,6 +110,23 @@ const VERIFY_RE: readonly RegExp[] = [
   /\blint\b/,
   /\bmake\s+sure\b.*\b(passes|green|works)\b/,
   /\bget\b.*\b(tests?|suite|checks?)\b.*\b(green|passing)\b/,
+];
+
+/**
+ * GitHub PR status phrases (P1.6 thin). Checked before generic STATUS_RE so
+ * "pr status" / "github status" never collapse to local `git status`.
+ */
+const GITHUB_PR_STATUS_RE: readonly RegExp[] = [
+  /\bpr\s+status\b/,
+  /\bpull[\s-]?request\s+status\b/,
+  /\bwhat'?s\s+the\s+(pr|pull[\s-]?request)\s+status\b/,
+  /\bwhat\s+is\s+the\s+(pr|pull[\s-]?request)\s+status\b/,
+  /\bgithub\s+(pr\s+)?status\b/,
+  /\bstatus\s+of\s+(the\s+)?(pr|pull[\s-]?request)\b/,
+  /\b(show|check|get)\s+(me\s+)?(the\s+)?(pr|pull[\s-]?request)\s+status\b/,
+  /\bhow'?s\s+(the\s+)?pr\b/,
+  /\bhow\s+is\s+(the\s+)?pr\b/,
+  /\bcurrent\s+pr\b/,
 ];
 
 const STATUS_RE: readonly RegExp[] = [
@@ -295,6 +314,19 @@ export function inferRepoIntent(task: string): RepoIntent {
       needsVerification: false,
       constraints,
       rationale: 'natural-language provider steering request',
+    };
+  }
+
+  // PR/GitHub status before generic "status" (which would also match "pr status").
+  if (hasAny(text, GITHUB_PR_STATUS_RE)) {
+    return {
+      version: 1,
+      operation: 'github_pr_status',
+      confidence: 'high',
+      mutatesWorkspace: false,
+      needsVerification: false,
+      constraints,
+      rationale: 'natural-language GitHub PR status request',
     };
   }
 

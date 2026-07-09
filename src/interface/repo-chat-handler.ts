@@ -1,25 +1,47 @@
-﻿/**
+/**
  * Safe natural-language repo chat handler.
  *
  * This is the interface seam between ordinary user language ("what changed?",
- * "run tests", "undo that") and repo infrastructure. verify_only and commit
- * now execute under commandGate + oversight (same seams as menu/cli verify
- * paths). Undo remains preview-only.
+ * "run tests", "undo that", "pr status") and repo infrastructure. verify_only
+ * and commit execute under commandGate + oversight (same seams as menu/cli
+ * verify paths). GitHub PR status (P1.6 thin) runs `gh pr status` when the
+ * workspace is GitHub and gh is on PATH — honest fail-soft otherwise.
+ * Undo remains preview-only.
  */
 
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+
 import { planUndoAiCheckpoint } from '../core/ai-checkpoint.js';
+import type { CommandGatePort, CommandGateDecision } from '../core/command-gate.js';
 import { inferRepoIntent, type RepoOperationIntent } from '../core/repo-intent.js';
+import type { VerifyPort } from '../core/verify.js';
+import type { WorkspaceContext } from '../core/workspace-context.js';
 import type { AiCheckpointStore } from '../infra/ai-checkpoint-store.js';
 import type { LocalRepoOps } from '../infra/repo-ops.js';
-import type { CommandGatePort } from '../core/command-gate.js';
-import type { VerifyPort } from '../core/verify.js';
+import { detectWorkspaceContext } from '../infra/workspace-context.js';
 import type { Oversight } from './ui/oversight.js';
+
+const execFileAsync = promisify(execFile);
+
+/** Cap so a hung gh never blocks chat. */
+const GH_PR_STATUS_TIMEOUT_MS = 15_000;
+/** Clip gh stdout so the chat surface stays readable. */
+const GH_PR_STATUS_OUTPUT_CAP = 4_000;
 
 export interface RepoChatHandled {
   readonly handled: true;
   readonly operation: RepoOperationIntent;
   readonly mutatesWorkspace: boolean;
   readonly message: string;
+}
+
+/** Result of a single `gh …` invocation (injectable for hermetic tests). */
+export interface GhRunResult {
+  readonly ok: boolean;
+  readonly stdout: string;
+  readonly stderr: string;
+  readonly exitCode: number | null;
 }
 
 export interface RepoChatHandlerDeps {
@@ -31,6 +53,18 @@ export interface RepoChatHandlerDeps {
   readonly verifyPort?: Pick<VerifyPort, 'runTests' | 'detectTestCommand'>;
   readonly commandGate?: CommandGatePort;
   readonly oversight?: Oversight;
+  /**
+   * Optional pre-resolved forge context (tests inject). When omitted, production
+   * uses {@link detectWorkspaceContext} (or `detectForge` when provided).
+   */
+  readonly forgeContext?: WorkspaceContext;
+  /** Injectable forge detector (defaults to detectWorkspaceContext). */
+  readonly detectForge?: (cwd: string) => Promise<WorkspaceContext>;
+  /**
+   * Injectable `gh` runner. Production spawns real `gh`; tests inject stubs so
+   * unit suites never touch the network or PATH.
+   */
+  readonly runGh?: (args: readonly string[], cwd: string) => Promise<GhRunResult>;
 }
 
 function handled(operation: RepoOperationIntent, message: string): RepoChatHandled {
@@ -62,6 +96,179 @@ async function currentTextMap(
   return new Map(entries);
 }
 
+/**
+ * Production `gh` runner. Never throws — non-zero / spawn failure → ok:false.
+ */
+async function defaultRunGh(args: readonly string[], cwd: string): Promise<GhRunResult> {
+  try {
+    const { stdout, stderr } = await execFileAsync('gh', [...args], {
+      cwd,
+      timeout: GH_PR_STATUS_TIMEOUT_MS,
+      windowsHide: true,
+      maxBuffer: 512 * 1024,
+    });
+    return {
+      ok: true,
+      stdout: typeof stdout === 'string' ? stdout : '',
+      stderr: typeof stderr === 'string' ? stderr : '',
+      exitCode: 0,
+    };
+  } catch (err: unknown) {
+    const e = err as {
+      stdout?: string;
+      stderr?: string;
+      code?: number | string;
+      message?: string;
+    };
+    const exitCode =
+      typeof e.code === 'number' ? e.code : null;
+    return {
+      ok: false,
+      stdout: typeof e.stdout === 'string' ? e.stdout : '',
+      stderr:
+        typeof e.stderr === 'string' && e.stderr.trim().length > 0
+          ? e.stderr
+          : typeof e.message === 'string'
+            ? e.message
+            : 'gh failed',
+      exitCode,
+    };
+  }
+}
+
+/**
+ * Honest message when forge/tools cannot support GitHub PR status. PURE-ish
+ * (no I/O). Returns null when host is GitHub and gh is on PATH (caller may run).
+ */
+export function githubPrStatusUnavailableMessage(forge: WorkspaceContext): string | null {
+  if (forge.hostClass === 'github' && forge.tools.gh) return null;
+
+  if (forge.hostClass === 'gitlab') {
+    return forge.tools.glab
+      ? 'This workspace is GitLab — not GitHub. PR status via gh does not apply. Try `glab mr list` (or ask for MR status) instead.'
+      : 'This workspace is GitLab — not GitHub. gh PR status does not apply, and glab is not on PATH. Use local git or the GitLab UI.';
+  }
+  if (forge.hostClass === 'other') {
+    return 'This remote is not GitHub — I will not run gh PR status against a non-GitHub forge.';
+  }
+  if (forge.hostClass === 'none') {
+    return forge.gitRoot !== null
+      ? 'Local-only workspace (no remote forge) — there is no GitHub PR status to query.'
+      : 'This folder is not a git repo — there is no GitHub PR status to query.';
+  }
+  // github but gh missing
+  return 'This is a GitHub repo, but `gh` is not on PATH. Install the GitHub CLI (https://cli.github.com) or check PR status in the browser. I will not pretend gh is available.';
+}
+
+function clipGhOutput(text: string): string {
+  const t = text.trim();
+  if (t.length === 0) return '';
+  if (t.length <= GH_PR_STATUS_OUTPUT_CAP) return t;
+  return `${t.slice(0, GH_PR_STATUS_OUTPUT_CAP)}\n… (truncated)`;
+}
+
+async function confirmGate(
+  commandGate: CommandGatePort,
+  gate: CommandGateDecision,
+): Promise<boolean | null> {
+  if (!gate.requireConfirmation) return null;
+  if (commandGate.confirm === undefined) return false;
+  return commandGate.confirm('Run `gh pr status` to show GitHub PR status?');
+}
+
+async function recordGate(
+  commandGate: CommandGatePort,
+  cwd: string,
+  command: string,
+  gate: CommandGateDecision,
+  confirmed: boolean | null,
+  outcome: 'ran' | 'skipped' | 'denied',
+): Promise<void> {
+  if (!gate.mustRecord || commandGate.record === undefined) return;
+  await commandGate.record({
+    ts: new Date().toISOString(),
+    command,
+    commandTier: gate.commandTier,
+    requireConfirmation: gate.requireConfirmation,
+    forbidBackground: gate.forbidBackground,
+    confirmed,
+    outcome,
+    cwd,
+  });
+}
+
+/**
+ * Resolve forge + (when eligible) run gated `gh pr status`. Fail-soft honest
+ * messages for non-GitHub / missing gh / gate deny / gh failure.
+ */
+async function handleGithubPrStatus(deps: RepoChatHandlerDeps): Promise<RepoChatHandled> {
+  const detect = deps.detectForge ?? detectWorkspaceContext;
+  const forge =
+    deps.forgeContext ??
+    (await detect(deps.cwd).catch(() => null));
+
+  if (forge === null) {
+    return handled(
+      'github_pr_status',
+      'Could not detect workspace forge context just now — try again, or run `gh pr status` in the shell.',
+    );
+  }
+
+  const unavailable = githubPrStatusUnavailableMessage(forge);
+  if (unavailable !== null) {
+    return handled('github_pr_status', unavailable);
+  }
+
+  const display = 'gh pr status';
+  const runGh = deps.runGh ?? defaultRunGh;
+
+  if (deps.commandGate !== undefined) {
+    const gate = deps.commandGate.gate(display);
+    const confirmed = await confirmGate(deps.commandGate, gate);
+    if (!gate.allowed || confirmed === false) {
+      await recordGate(deps.commandGate, deps.cwd, display, gate, confirmed, 'denied');
+      return handled(
+        'github_pr_status',
+        gate.allowed
+          ? 'PR status check declined by gate.'
+          : 'Command gate denied `gh pr status`.',
+      );
+    }
+
+    const result = await runGh(['pr', 'status'], deps.cwd);
+    await recordGate(deps.commandGate, deps.cwd, display, gate, confirmed, 'ran');
+    return formatGhPrStatusResult(result);
+  }
+
+  // No gate wired (thin paths / tests) — still run honestly.
+  const result = await runGh(['pr', 'status'], deps.cwd);
+  return formatGhPrStatusResult(result);
+}
+
+function formatGhPrStatusResult(result: GhRunResult): RepoChatHandled {
+  const out = clipGhOutput(result.stdout);
+  const err = clipGhOutput(result.stderr);
+
+  if (result.ok) {
+    if (out.length > 0) {
+      return handled('github_pr_status', `GitHub PR status (via gh):\n\n${out}`);
+    }
+    // Empty success — still honest; point at list as a next step without auto-running it.
+    return handled(
+      'github_pr_status',
+      'gh pr status returned no output. Try `gh pr list --limit 5` in the shell, or open the repo on GitHub.',
+    );
+  }
+
+  const detail = err.length > 0 ? err : out.length > 0 ? out : 'unknown error';
+  const code =
+    result.exitCode !== null ? ` (exit ${result.exitCode})` : '';
+  return handled(
+    'github_pr_status',
+    `gh pr status failed${code}:\n${detail}`,
+  );
+}
+
 export async function handleRepoChatIntent(
   input: string,
   deps: RepoChatHandlerDeps,
@@ -84,6 +291,9 @@ export async function handleRepoChatIntent(
         `Repo status: ${status.changedFiles.length} changed file(s): ${formatPathList(status.changedFiles)}.`,
       );
     }
+
+    case 'github_pr_status':
+      return handleGithubPrStatus(deps);
 
     case 'summarize_diff': {
       const diff = await deps.repoOps.diff(deps.cwd);

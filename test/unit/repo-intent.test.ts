@@ -58,6 +58,16 @@ const cases: ReadonlyArray<readonly [string, ReturnType<typeof inferRepoIntent>[
   ["what's left?", 'status'],
   ['where are we on this repo?', 'status'],
   ['is the repo clean?', 'status'],
+  // P1.6 thin — GitHub PR status (must not collapse to local git status)
+  ['pr status', 'github_pr_status'],
+  ["what's the PR status", 'github_pr_status'],
+  ['what is the pull request status?', 'github_pr_status'],
+  ['github status', 'github_pr_status'],
+  ['github pr status', 'github_pr_status'],
+  ['status of the pr', 'github_pr_status'],
+  ['show me the pr status', 'github_pr_status'],
+  ['how is the pr?', 'github_pr_status'],
+  ['current pr', 'github_pr_status'],
 ];
 
 describe('inferRepoIntent', () => {

@@ -1,8 +1,12 @@
 ﻿import { describe, expect, it } from 'vitest';
 
 import { buildAiCheckpoint, hashText, type AiChangeCheckpoint } from '../../src/core/ai-checkpoint.js';
-import { handleRepoChatIntent, type RepoChatHandlerDeps } from '../../src/interface/repo-chat-handler.js';
 import type { CommandGateDecision, CommandGatePort } from '../../src/core/command-gate.js';
+import {
+  githubPrStatusUnavailableMessage,
+  handleRepoChatIntent,
+  type RepoChatHandlerDeps,
+} from '../../src/interface/repo-chat-handler.js';
 
 function deps(overrides: Partial<RepoChatHandlerDeps> = {}): RepoChatHandlerDeps {
   return {
@@ -255,5 +259,156 @@ describe('handleRepoChatIntent', () => {
     expect(result?.message).toContain('src/foo.ts');
     expect(result?.message).toContain('Commit succeeded');
     expect(commitCalls).toEqual([{ cwd: '/repo', msg: 'chat: commit 1 file(s) via natural language [src/foo.ts]' }]);
+  });
+
+  // -------------------------------------------------------------------------
+  // P1.6 thin — GitHub PR status via NL ("pr status" / "github status")
+  // -------------------------------------------------------------------------
+
+  const githubForge = {
+    cwd: '/repo',
+    gitRoot: '/repo',
+    remotes: [{ name: 'origin', url: 'git@github.com:acme/app.git', purpose: 'fetch' as const }],
+    hostClass: 'github' as const,
+    primaryRemoteUrl: 'git@github.com:acme/app.git',
+    tools: { gh: true, glab: false },
+  };
+
+  it('github_pr_status: runs gh pr status when host is GitHub and gh is available', async () => {
+    const ghCalls: Array<{ args: readonly string[]; cwd: string }> = [];
+    const result = await handleRepoChatIntent('pr status', deps({
+      forgeContext: githubForge,
+      async runGh(args, cwd) {
+        ghCalls.push({ args, cwd });
+        return {
+          ok: true,
+          stdout: 'Current branch\n  #12  open  feat: foo  [main]',
+          stderr: '',
+          exitCode: 0,
+        };
+      },
+      commandGate: {
+        gate: (): CommandGateDecision => ({
+          allowed: true,
+          requireConfirmation: false,
+          commandTier: 'read-only',
+          forbidBackground: false,
+          mustRecord: false,
+          rationale: '',
+        }),
+      } as CommandGatePort,
+    }));
+
+    expect(result?.operation).toBe('github_pr_status');
+    expect(result?.mutatesWorkspace).toBe(false);
+    expect(result?.message).toContain('GitHub PR status');
+    expect(result?.message).toContain('#12');
+    expect(ghCalls).toEqual([{ args: ['pr', 'status'], cwd: '/repo' }]);
+  });
+
+  it('github_pr_status: honest message when gh is missing on GitHub host (no theater)', async () => {
+    const ghCalls: unknown[] = [];
+    const result = await handleRepoChatIntent("what's the PR status", deps({
+      forgeContext: {
+        ...githubForge,
+        tools: { gh: false, glab: false },
+      },
+      async runGh(args, cwd) {
+        ghCalls.push({ args, cwd });
+        return { ok: true, stdout: '', stderr: '', exitCode: 0 };
+      },
+    }));
+
+    expect(result?.operation).toBe('github_pr_status');
+    expect(result?.message).toMatch(/gh.*not on PATH/i);
+    expect(ghCalls).toEqual([]);
+  });
+
+  it('github_pr_status: honest message for GitLab (no false gh)', async () => {
+    const ghCalls: unknown[] = [];
+    const result = await handleRepoChatIntent('github status', deps({
+      forgeContext: {
+        cwd: '/repo',
+        gitRoot: '/repo',
+        remotes: [{ name: 'origin', url: 'git@gitlab.com:acme/app.git', purpose: 'fetch' }],
+        hostClass: 'gitlab',
+        primaryRemoteUrl: 'git@gitlab.com:acme/app.git',
+        tools: { gh: true, glab: true },
+      },
+      async runGh() {
+        ghCalls.push(1);
+        return { ok: true, stdout: '', stderr: '', exitCode: 0 };
+      },
+    }));
+
+    expect(result?.message).toMatch(/GitLab/i);
+    expect(result?.message).not.toMatch(/GitHub PR status \(via gh\)/);
+    expect(ghCalls).toEqual([]);
+  });
+
+  it('github_pr_status: honest message for local-only / no remote', async () => {
+    const result = await handleRepoChatIntent('pr status', deps({
+      forgeContext: {
+        cwd: '/repo',
+        gitRoot: '/repo',
+        remotes: [],
+        hostClass: 'none',
+        primaryRemoteUrl: null,
+        tools: { gh: false, glab: false },
+      },
+    }));
+
+    expect(result?.message).toMatch(/Local-only|no remote/i);
+  });
+
+  it('github_pr_status: surfaces gh failure honestly', async () => {
+    const result = await handleRepoChatIntent('pr status', deps({
+      forgeContext: githubForge,
+      async runGh() {
+        return {
+          ok: false,
+          stdout: '',
+          stderr: 'HTTP 401: Bad credentials',
+          exitCode: 1,
+        };
+      },
+    }));
+
+    expect(result?.message).toContain('gh pr status failed');
+    expect(result?.message).toContain('401');
+  });
+
+  it('github_pr_status: gate deny does not run gh', async () => {
+    const ghCalls: unknown[] = [];
+    const result = await handleRepoChatIntent('pr status', deps({
+      forgeContext: githubForge,
+      async runGh() {
+        ghCalls.push(1);
+        return { ok: true, stdout: 'ok', stderr: '', exitCode: 0 };
+      },
+      commandGate: {
+        gate: (): CommandGateDecision => ({
+          allowed: false,
+          requireConfirmation: false,
+          commandTier: 'read-only',
+          forbidBackground: false,
+          mustRecord: false,
+          rationale: 'denied in test',
+        }),
+      } as CommandGatePort,
+    }));
+
+    expect(result?.message).toMatch(/denied/i);
+    expect(ghCalls).toEqual([]);
+  });
+
+  it('githubPrStatusUnavailableMessage: null only when GitHub + gh', () => {
+    expect(githubPrStatusUnavailableMessage(githubForge)).toBeNull();
+    expect(
+      githubPrStatusUnavailableMessage({
+        ...githubForge,
+        tools: { gh: false, glab: false },
+      }),
+    ).toMatch(/not on PATH/i);
   });
 });
